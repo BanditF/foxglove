@@ -7,7 +7,7 @@ include:
     shield: nice_view
     #snippet: zmk-usb-logging
   - board: eyelash_corne_left
-    shield: nice_view
+    shield: nice_view raw_hid_adapter
     snippet: studio-rpc-usb-uart
     cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_STUDIO_LOCKING=n
     artifact-name: eyelash_corne_studio_left
