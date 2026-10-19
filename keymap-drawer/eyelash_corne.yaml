@@ -93,11 +93,11 @@ layers:
   - END
   - PG DN
   - {t: '$$mdi:transfer$$', type: trans}
-  - {type: held}
+  - {t: NUMBER, type: held}
   - {t: '$$mdi:transfer$$', type: trans}
-  - $$mdi:backspace-reverse-outline$$
-  - SYMBOL
   - INS
+  - SYMBOL
+  - $$mdi:backspace-reverse-outline$$
   SYMBOL:
   - {t: '$$mdi:transfer$$', type: trans}
   - '!'
@@ -145,7 +145,7 @@ layers:
   - {t: NUMBER, type: held alternate}
   - $$mdi:keyboard-space$$
   - {t: '$$mdi:keyboard-return$$', type: enter}
-  - {type: held}
+  - {t: SYMBOL, type: held}
   - {t: '$$mdi:transfer$$', type: trans}
   GAME:
   - {t: '$$mdi:transfer$$', type: trans}
@@ -194,7 +194,7 @@ layers:
   - GAME+
   - $$mdi:keyboard-space$$
   - {t: '$$mdi:keyboard-return$$', type: enter}
-  - {t: '$$mdi:transfer$$', type: trans}
+  - SYMBOL
   - {t: '$$mdi:transfer$$', type: trans}
   GAME+:
   - $$mdi:keyboard-esc$$
@@ -240,10 +240,10 @@ layers:
   - {t: '$$mdi:transfer$$', type: trans}
   - {t: '$$mdi:transfer$$', type: trans}
   - {t: '$$mdi:transfer$$', type: trans}
-  - {type: held}
+  - {t: GAME+, type: held}
   - {t: '$$mdi:transfer$$', type: trans}
   - {t: '$$mdi:transfer$$', type: trans}
-  - {t: '$$mdi:transfer$$', type: trans}
+  - SYMBOL
   - {t: '$$mdi:transfer$$', type: trans}
   ADMIN:
   - {t: QWERTY, h: toggle}
