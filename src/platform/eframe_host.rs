@@ -32,6 +32,12 @@ struct EframeApp {
     // EWMH WMs like Mutter ignore, so re-assert it for a few frames after mapping.
     #[cfg(target_os = "linux")]
     x11_above_ticks: u32,
+    // The overlay window and the display it was last moved to. Starts as the
+    // main display, where Windows maximizes the window on launch.
+    #[cfg(target_os = "windows")]
+    hwnd: Option<isize>,
+    #[cfg(target_os = "windows")]
+    placed_on_monitor: String,
 }
 
 impl eframe::App for EframeApp {
@@ -62,8 +68,55 @@ impl eframe::App for EframeApp {
             }
         }
 
+        #[cfg(target_os = "windows")]
+        if self.placed_on_monitor != self.app.monitor() {
+            self.placed_on_monitor = self.app.monitor().to_string();
+            if let Some(hwnd) = self.hwnd {
+                move_to_monitor(hwnd, &self.placed_on_monitor);
+            }
+        }
+
         let mut host = EframeHost { ctx: &ctx };
         self.app.ui(&ctx, &mut host);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn window_hwnd(cc: &eframe::CreationContext<'_>) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    match cc.window_handle().map(|h| h.as_raw()) {
+        Ok(RawWindowHandle::Win32(handle)) => Some(handle.hwnd.get()),
+        _ => None,
+    }
+}
+
+// Covers the chosen display's work area with the overlay window, like the
+// maximized window the overlay starts as on the main display.
+#[cfg(target_os = "windows")]
+fn move_to_monitor(hwnd: isize, monitor_id: &str) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOWNOACTIVATE,
+    };
+
+    let Some(monitor) = crate::monitors::find(&crate::monitors::list(), monitor_id) else {
+        return;
+    };
+    let [left, top, right, bottom] = monitor.work_area;
+    let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+    unsafe {
+        // A maximized window snaps back to its own display, so un-maximize first.
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            left,
+            top,
+            right - left,
+            bottom - top,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
     }
 }
 
@@ -193,6 +246,8 @@ fn run_inner(
             show_on_all_spaces(cc);
             #[cfg(target_os = "windows")]
             enable_dwm_per_pixel_alpha(cc);
+            #[cfg(target_os = "windows")]
+            let hwnd = window_hwnd(cc);
 
             egui_extras::install_image_loaders(&cc.egui_ctx);
 
@@ -218,6 +273,10 @@ fn run_inner(
                 sized_to_monitor: false,
                 #[cfg(target_os = "linux")]
                 x11_above_ticks: 10,
+                #[cfg(target_os = "windows")]
+                hwnd,
+                #[cfg(target_os = "windows")]
+                placed_on_monitor: String::new(),
             }))
         }),
     )

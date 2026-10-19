@@ -8,6 +8,7 @@ mod key_paint;
 mod keyboard;
 mod keymap_editor;
 mod layout_key;
+mod monitors;
 mod os_layout;
 mod overlay_window;
 mod platform;

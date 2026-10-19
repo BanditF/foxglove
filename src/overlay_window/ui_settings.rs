@@ -210,6 +210,28 @@ impl OverlayApp {
                         .striped(true)
                         .spacing([20.0, 10.0])
                         .show(ui, |ui| {
+                            let monitors = crate::monitors::list();
+                            if monitors.len() > 1 {
+                                let current =
+                                    crate::monitors::find(&monitors, &self.settings.draft.monitor);
+                                ui.label("Display");
+                                egui::ComboBox::from_id_salt("monitor_combo")
+                                    .width(ui.available_width())
+                                    .selected_text(
+                                        current.map(|m| m.label).unwrap_or_default(),
+                                    )
+                                    .show_ui(ui, |ui| {
+                                        for monitor in &monitors {
+                                            ui.selectable_value(
+                                                &mut self.settings.draft.monitor,
+                                                monitor.id.clone(),
+                                                &monitor.label,
+                                            );
+                                        }
+                                    });
+                                ui.end_row();
+                            }
+
                             ui.label("Alignment");
                             egui::ComboBox::from_id_salt("position_combo")
                                 .width(ui.available_width())

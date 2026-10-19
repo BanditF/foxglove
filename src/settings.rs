@@ -230,6 +230,8 @@ pub struct Settings {
     pub font_size_multiplier: f32,
     pub auto_fit_before_ellipsis: bool,
     pub position: WindowPosition,
+    /// Display the overlay is shown on (see `crate::monitors`); empty means the main display.
+    pub monitor: String,
     pub timeout: i64,
     pub activation_delay: u32,
     pub margin: u32,
@@ -245,6 +247,7 @@ impl Default for Settings {
             font_size_multiplier: 1.0,
             auto_fit_before_ellipsis: false,
             position: WindowPosition::BottomRight,
+            monitor: String::new(),
             timeout: 2000,
             activation_delay: 0,
             margin: 10,
@@ -299,6 +302,7 @@ impl Settings {
             self.auto_fit_before_ellipsis.to_string(),
         );
         section.set("position", self.position.to_string());
+        section.set("monitor", self.monitor.clone());
         section.set("timeout", self.timeout.to_string());
         section.set("activation_delay", self.activation_delay.to_string());
         section.set("margin", self.margin.to_string());
@@ -329,6 +333,9 @@ impl Settings {
             if let Ok(parsed) = val.parse() {
                 s.position = parsed;
             }
+        }
+        if let Some(val) = section.get("monitor") {
+            s.monitor = val.to_string();
         }
         if let Some(val) = section.get("timeout") {
             let parsed = val.parse::<i64>().unwrap_or(s.timeout);

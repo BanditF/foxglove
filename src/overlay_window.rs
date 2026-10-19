@@ -72,6 +72,11 @@ impl OverlayApp {
         }
     }
 
+    /// The display the overlay should be shown on (empty: the main display).
+    pub fn monitor(&self) -> &str {
+        &self.settings.active.monitor
+    }
+
     pub(crate) fn is_any_window_open(&self) -> bool {
         self.ui.settings_visible || self.editor.target.is_some()
     }
