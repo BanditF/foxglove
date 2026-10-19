@@ -217,9 +217,7 @@ impl OverlayApp {
                                 ui.label("Display");
                                 egui::ComboBox::from_id_salt("monitor_combo")
                                     .width(ui.available_width())
-                                    .selected_text(
-                                        current.map(|m| m.label).unwrap_or_default(),
-                                    )
+                                    .selected_text(current.map(|m| m.label).unwrap_or_default())
                                     .show_ui(ui, |ui| {
                                         for monitor in &monitors {
                                             ui.selectable_value(

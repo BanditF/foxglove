@@ -32,7 +32,10 @@ pub fn list() -> Vec<Monitor> {
         let mut info = MONITORINFOEXW::default();
         info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
         let ok = unsafe {
-            GetMonitorInfoW(monitor, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO)
+            GetMonitorInfoW(
+                monitor,
+                &mut info as *mut MONITORINFOEXW as *mut MONITORINFO,
+            )
         };
         if ok.as_bool() {
             let len = info
