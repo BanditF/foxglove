@@ -59,6 +59,12 @@
             bindings = <&soft_off>;
             key-positions = <1 15 29>;
         };
+
+        // Backspace + Esc (right pinky column, top + bottom) toggles the Game layer
+        game_toggle {
+            bindings = <&tog 4>;
+            key-positions = <12 41>;
+        };
     };
 
     keymap {
@@ -110,6 +116,34 @@
             >;
 
             sensor-bindings = <&scroll_encoder>;
+        };
+
+        // Game layer (toggle: Backspace + Esc). Letters stay where they are;
+        // only the thumbs and Shift change so nothing fires late or by accident.
+        game_layer {
+            display-name = "GAME";
+            bindings = <
+&trans      &trans  &trans  &trans    &trans  &trans                            &trans                     &trans  &trans  &trans  &trans  &trans  &trans
+&kp LSHIFT  &trans  &trans  &trans    &trans  &trans                    &trans  &trans  &trans             &trans  &trans  &trans  &trans  &trans  &trans
+&trans      &trans  &trans  &trans    &trans  &trans  &trans                    &trans                     &trans  &trans  &trans  &trans  &trans  &trans
+                            &kp LALT  &mo 5   &kp SPACE                                                    &kp ENTER  &trans  &trans
+            >;
+
+            sensor-bindings = <&inc_dec_kp C_VOLUME_UP C_VOLUME_DOWN>;
+        };
+
+        // Hold the middle left thumb while in GAME: numbers where they'd sit on a
+        // regular keyboard, plus Esc and the Y-P row you can't reach off the mouse.
+        game_extras_layer {
+            display-name = "GAME+";
+            bindings = <
+&kp ESC  &kp N1  &kp N2  &kp N3  &kp N4  &kp N5                            &trans                     &trans  &trans  &trans  &trans  &trans  &trans
+&trans   &kp N6  &kp N7  &kp N8  &kp N9  &kp N0                    &trans  &trans  &trans             &trans  &trans  &trans  &trans  &trans  &trans
+&trans   &kp Y   &kp U   &kp I   &kp O   &kp P   &trans                    &trans                     &trans  &trans  &trans  &trans  &trans  &trans
+                         &trans  &trans  &trans                                                       &trans  &trans  &trans
+            >;
+
+            sensor-bindings = <&inc_dec_kp C_VOLUME_UP C_VOLUME_DOWN>;
         };
     };
 };
