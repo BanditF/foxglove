@@ -19,8 +19,8 @@ manifest:
       revision: v0.3.0
       import: app/west.yml
     - name: zmk-raw-hid
-      remote: zzeneg
-      revision: main
+      url: https://github.com/BanditF/zmk-raw-hid
+      revision: nonblocking
     - name: zmk-keypeek-layer-notifier
       remote: srwi
       revision: master
