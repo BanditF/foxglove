@@ -5,11 +5,19 @@
 
 #pragma once
 
-#include <lvgl.h>
+#include <stdint.h>
 
+#define CUSTOM_ART_W 140
+#define CUSTOM_ART_H 68
+#define CUSTOM_ART_STRIDE ((CUSTOM_ART_W + 7) / 8)
+
+// Frames are LVGL INDEXED_1BIT rows (MSB first, no palette). Each set keeps its unique frames as
+// RLE-packed XOR deltas: applying deltas[k] to a buffer holding unique frame k - 1 gives frame k
+// (deltas[0] is against an all-zero buffer), and applying it again goes back.
 struct custom_art_set {
     const char *name;
-    const lv_img_dsc_t *const *frames;
+    const uint8_t *const *deltas;
+    const uint8_t *order; // play order, as indices into deltas
     int frame_count;
     int fps; // 0 for still images
 };

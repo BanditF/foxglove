@@ -5,6 +5,8 @@
  *
  */
 
+#include <string.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/random/random.h>
 
@@ -113,13 +115,76 @@ ZMK_SUBSCRIPTION(widget_peripheral_status, zmk_split_peripheral_status_changed);
 static const struct custom_art_set *art_set;
 static lv_obj_t *art_img;
 static int art_frame;
+static int art_unique = -1; // unique frame currently unpacked in art_buf
+
+#if CONFIG_NICE_VIEW_WIDGET_INVERTED
+#define ART_PALETTE 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0xff
+#else
+#define ART_PALETTE 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff
+#endif
+
+static uint8_t art_buf[8 + CUSTOM_ART_STRIDE * CUSTOM_ART_H] = {ART_PALETTE};
+static const lv_img_dsc_t art_dsc = {.header.cf = LV_IMG_CF_INDEXED_1BIT,
+                                     .header.w = CUSTOM_ART_W,
+                                     .header.h = CUSTOM_ART_H,
+                                     .data_size = sizeof(art_buf),
+                                     .data = art_buf};
+
+// XOR one RLE-packed delta into the pixels (format in scripts/flipper_art.py:rle).
+static void art_apply(const uint8_t *src) {
+    uint8_t *dst = art_buf + 8;
+    uint8_t *end = art_buf + sizeof(art_buf);
+    while (dst < end) {
+        uint8_t ctrl = *src++;
+        int n = MIN((ctrl & 0x3f) + 1, end - dst);
+        switch (ctrl >> 6) {
+        case 0:
+            for (int i = 0; i < n; i++) {
+                dst[i] ^= src[i];
+            }
+            src += n;
+            break;
+        case 1:
+            break;
+        case 2:
+            for (int i = 0; i < n; i++) {
+                dst[i] ^= 0xff;
+            }
+            break;
+        default:
+            for (int i = 0; i < n; i++) {
+                dst[i] ^= *src;
+            }
+            src++;
+            break;
+        }
+        dst += n;
+    }
+}
+
+static void art_show(int frame) {
+    int target = art_set->order[frame];
+    if (target < art_unique - target) {
+        // Rewinding from scratch is shorter than stepping back.
+        memset(art_buf + 8, 0, sizeof(art_buf) - 8);
+        art_unique = -1;
+    }
+    while (art_unique < target) {
+        art_apply(art_set->deltas[++art_unique]);
+    }
+    while (art_unique > target) {
+        art_apply(art_set->deltas[art_unique--]);
+    }
+    lv_img_cache_invalidate_src(&art_dsc);
+    lv_obj_invalidate(art_img);
+}
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_CUSTOM_ANIMATE)
 static lv_timer_t *art_timer;
 
 static void art_timer_cb(lv_timer_t *timer) {
     art_frame = (art_frame + 1) % art_set->frame_count;
-    lv_img_set_src(art_img, art_set->frames[art_frame]);
+    art_show(art_frame);
 }
 
 struct art_activity_state {
@@ -155,7 +220,8 @@ static void art_init(lv_obj_t *parent) {
     art_frame = 0;
 
     art_img = lv_img_create(parent);
-    lv_img_set_src(art_img, art_set->frames[0]);
+    art_show(0);
+    lv_img_set_src(art_img, &art_dsc);
     lv_obj_align(art_img, LV_ALIGN_TOP_LEFT, 0, 0);
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_CUSTOM_ANIMATE)

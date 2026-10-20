@@ -10,7 +10,9 @@ Inputs can be Flipper animation folders (meta.txt + frame_N.png/.bm), single ima
 `name_128x64.bm` files. Only use art whose license allows redistribution: this repo is public.
 
 Size limit: the nice!nano bootloader (v0.6.0) only accepts firmware up to 0xAD000, which leaves
-roughly 270 KiB for art on the right half. The script prints the art size; keep it under ~240 KiB.
+roughly 270 KiB for art on the right half. Frames are stored as RLE-packed XOR deltas (about a
+third of their raw size) and unpacked on the keyboard; the script prints the compressed size, so
+keep that under ~240 KiB.
 
 Current art (one set is picked at random each power-on; animated while the keyboard is active):
 
