@@ -26,7 +26,7 @@ Current art (one set is picked at random each power-on; animated while the keybo
 | Art | Orientation | Source | License |
 |---|---|---|---|
 | ZMK_1, ZMK_2 (balloon, mountain by Hammerbeam) | portrait | [ZMK nice_view shield](https://github.com/zmkfirmware/zmk/blob/v0.3.0/app/boards/shields/nice_view/widgets/art.c) | MIT |
-| Hammerbeam_1 to Hammerbeam_30 (art by [Hammerbeam](https://linktr.ee/hammerbeam), signed in each image, used with the artist's consent) | portrait | [GPeye/hammerbeam-slideshow](https://github.com/GPeye/hammerbeam-slideshow) | MIT |
+| Hammerbeam_1 to Hammerbeam_30 (art by Hammerbeam, signed in each image, used with the artist's consent) | portrait | [GPeye/hammerbeam-slideshow](https://github.com/GPeye/hammerbeam-slideshow) | MIT |
 | Corro_urchin (GPeye's animation of Corro, the unofficial Rust unsafe-code mascot) | portrait | [GPeye/urchin-peripheral-animation](https://github.com/GPeye/urchin-peripheral-animation) | MIT |
 | Gem_crystal (crystal by Trixelized, lent to nice-view-gem) | portrait | [M165437/nice-view-gem](https://github.com/M165437/nice-view-gem) | MIT |
 | Doom, Painting, Read_books, Sleep, Dj, Hacking_pc, Soldering | landscape | [Flipper Zero firmware](https://github.com/flipperdevices/flipperzero-firmware/tree/dev/assets/dolphin/external) | GPL-3.0 |
