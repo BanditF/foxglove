@@ -77,6 +77,15 @@ int art_relay_begin(uint16_t len, uint32_t crc);
 int art_relay_data(uint16_t offset, const uint8_t *data, uint8_t len);
 int art_relay_commit(void);
 int art_relay_select(int8_t set);
+// How finding the right half's relay service went; negative = a bt_gatt_discover error.
+enum art_relay_discovery {
+    ART_DISCOVERY_IDLE,
+    ART_DISCOVERY_RUNNING,
+    ART_DISCOVERY_NO_SERVICE,
+    ART_DISCOVERY_NO_CHRC,
+    ART_DISCOVERY_DONE,
+};
+void art_relay_discovery(int8_t *result, uint8_t *tries);
 // 0 = right half not connected, 1 = connected, 2 = connected and has the relay service.
 uint8_t art_relay_link(void);
 // Fills out with: state, error, length u16, pushed u16, link, struct art_relay_status.

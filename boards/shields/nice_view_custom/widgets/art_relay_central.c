@@ -25,6 +25,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "art_relay.h"
 
 #define DISCOVER_DELAY K_SECONDS(3)
+#define DISCOVER_RETRY K_SECONDS(5)
+#define DISCOVER_TRIES 20
 #define GATT_TIMEOUT K_SECONDS(3)
 
 static uint8_t blob[CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE];
@@ -45,11 +47,27 @@ static const struct bt_uuid_128 status_uuid = BT_UUID_INIT_128(ART_RELAY_STATUS_
 /* Discovery */
 
 static struct bt_gatt_discover_params discover_params;
+static int8_t discovery = ART_DISCOVERY_IDLE;
+static uint8_t discovery_tries;
+static struct k_work_delayable discover_work;
+
+// Tries again a little later, in case ZMK's own setup of the link got in the way.
+static void discovery_failed(int8_t result) {
+    discovery = result;
+    if (peer != NULL && discovery_tries < DISCOVER_TRIES) {
+        k_work_reschedule(&discover_work, DISCOVER_RETRY);
+    }
+}
 
 static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                           struct bt_gatt_discover_params *params) {
     if (attr == NULL) {
         LOG_INF("art relay: right half %s", data_handle ? "ready" : "has no relay");
+        if (data_handle && status_handle) {
+            discovery = ART_DISCOVERY_DONE;
+        } else {
+            discovery_failed(ART_DISCOVERY_NO_CHRC);
+        }
         return BT_GATT_ITER_STOP;
     }
     const struct bt_gatt_chrc *chrc = attr->user_data;
@@ -65,6 +83,7 @@ static uint8_t service_found(struct bt_conn *conn, const struct bt_gatt_attr *at
                              struct bt_gatt_discover_params *params) {
     if (attr == NULL) {
         LOG_INF("art relay: right half has no relay service");
+        discovery_failed(ART_DISCOVERY_NO_SERVICE);
         return BT_GATT_ITER_STOP;
     }
     const struct bt_gatt_service_val *svc = attr->user_data;
@@ -76,14 +95,17 @@ static uint8_t service_found(struct bt_conn *conn, const struct bt_gatt_attr *at
     int err = bt_gatt_discover(conn, &discover_params);
     if (err) {
         LOG_ERR("art relay: characteristic discovery failed (%d)", err);
+        discovery_failed(MAX(err, INT8_MIN));
     }
     return BT_GATT_ITER_STOP;
 }
 
 static void discover_cb(struct k_work *work) {
-    if (peer == NULL) {
+    if (peer == NULL || (data_handle && status_handle)) {
         return;
     }
+    discovery_tries++;
+    discovery = ART_DISCOVERY_RUNNING;
     discover_params.uuid = &service_uuid.uuid;
     discover_params.func = service_found;
     discover_params.start_handle = 0x0001;
@@ -92,6 +114,7 @@ static void discover_cb(struct k_work *work) {
     int err = bt_gatt_discover(peer, &discover_params);
     if (err) {
         LOG_ERR("art relay: service discovery failed (%d)", err);
+        discovery_failed(MAX(err, INT8_MIN));
     }
 }
 static K_WORK_DELAYABLE_DEFINE(discover_work, discover_cb);
@@ -103,6 +126,7 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     }
     peer = bt_conn_ref(conn);
     data_handle = status_handle = 0;
+    discovery_tries = 0;
     k_work_reschedule(&discover_work, DISCOVER_DELAY);
 }
 
@@ -299,6 +323,11 @@ int art_relay_select(int8_t set) {
     pushed = blob_len = 0;
     k_work_submit_to_queue(&relay_q, &select_work);
     return 0;
+}
+
+void art_relay_discovery(int8_t *result, uint8_t *tries) {
+    *result = discovery;
+    *tries = discovery_tries;
 }
 
 uint8_t art_relay_link(void) {

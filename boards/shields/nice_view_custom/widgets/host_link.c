@@ -106,9 +106,14 @@ static void panel_command(const uint8_t *d) {
 
     switch (d[1]) {
     case PANEL_HELLO: {
+        int8_t discovery = 0;
+        uint8_t tries = 0;
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+        art_relay_discovery(&discovery, &tries);
+#endif
         uint8_t r[] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
                        HOST_PANEL_H,    HOST_PANEL_X,       HOST_PANEL_Y,      right_link(),
-                       right_battery};
+                       right_battery,   (uint8_t)discovery, tries};
         reply(r, sizeof(r));
         break;
     }

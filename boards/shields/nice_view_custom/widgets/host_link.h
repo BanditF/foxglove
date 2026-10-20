@@ -7,7 +7,8 @@
  * Replies come back as input reports with the same byte 0 and byte 1 = command | 0x80.
  *
  * 0xD5 host panel, host -> keyboard:
- *   01 HELLO   ver                  reply: ver, panel w, h, x, y, right link, right battery %
+ *   01 HELLO   ver                  reply: ver, panel w, h, x, y, right link, right battery %,
+ *                                   relay discovery result (int8), discovery tries
  *   02 FILL    colour (0 or 1)      fill the back buffer
  *   03 ROWS    y, n (1-3), n rows   write rows of HOST_PANEL_STRIDE bytes, MSB first, 1 = ink
  *   04 PRESENT                      show the back buffer
