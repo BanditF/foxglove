@@ -56,168 +56,152 @@ struct mods_status_state {
     bool caps_lock;
 };
 
-static void draw_top(lv_obj_t *widget, lv_color_t cbuf[], const struct status_state *state) {
-    lv_obj_t *canvas = lv_obj_get_child(widget, 0);
+/*
+ * The screen is mounted portrait: 68 wide x 160 tall. It is backed by three 68x68 canvases that
+ * show portrait rows 0-67 (top), 68-135 (middle) and 136-159 (the first 24 rows of bottom).
+ * draw_screen() draws the whole portrait layout into each canvas, shifted up by that canvas's
+ * offset; LVGL clips what falls outside, so shapes line up across the seams.
+ */
+#define SCREEN_W 68
+#define SCREEN_H 160
 
-    lv_draw_label_dsc_t label_dsc;
-    init_label_dsc(&label_dsc, LVGL_FOREGROUND, &lv_font_montserrat_16, LV_TEXT_ALIGN_RIGHT);
-    lv_draw_label_dsc_t label_dsc_wpm;
-    init_label_dsc(&label_dsc_wpm, LVGL_FOREGROUND, &lv_font_unscii_8, LV_TEXT_ALIGN_RIGHT);
-    lv_draw_rect_dsc_t rect_black_dsc;
-    init_rect_dsc(&rect_black_dsc, LVGL_BACKGROUND);
-    lv_draw_rect_dsc_t rect_white_dsc;
-    init_rect_dsc(&rect_white_dsc, LVGL_FOREGROUND);
-    lv_draw_line_dsc_t line_dsc;
-    init_line_dsc(&line_dsc, LVGL_FOREGROUND, 1);
-
-    // Fill background
-    lv_canvas_draw_rect(canvas, 0, 0, CANVAS_SIZE, CANVAS_SIZE, &rect_black_dsc);
-
-    // Draw battery
-    draw_battery(canvas, state);
-
-    // Draw output status
-    char output_text[10] = {};
-
-    switch (state->selected_endpoint.transport) {
-    case ZMK_TRANSPORT_USB:
-        strcat(output_text, LV_SYMBOL_USB);
-        break;
-    case ZMK_TRANSPORT_BLE:
-        if (state->active_profile_bonded) {
-            if (state->active_profile_connected) {
-                strcat(output_text, LV_SYMBOL_WIFI);
-            } else {
-                strcat(output_text, LV_SYMBOL_CLOSE);
-            }
-        } else {
-            strcat(output_text, LV_SYMBOL_SETTINGS);
-        }
-        break;
-    }
-
-    lv_canvas_draw_text(canvas, 0, 0, CANVAS_SIZE, &label_dsc, output_text);
-
-    // Draw WPM
-    lv_canvas_draw_rect(canvas, 0, 21, 68, 42, &rect_white_dsc);
-    lv_canvas_draw_rect(canvas, 1, 22, 66, 40, &rect_black_dsc);
-
-    char wpm_text[6] = {};
-    snprintf(wpm_text, sizeof(wpm_text), "%d", state->wpm[9]);
-    lv_canvas_draw_text(canvas, 42, 52, 24, &label_dsc_wpm, wpm_text);
-
-    int max = 0;
-    int min = 256;
-
-    for (int i = 0; i < 10; i++) {
-        if (state->wpm[i] > max) {
-            max = state->wpm[i];
-        }
-        if (state->wpm[i] < min) {
-            min = state->wpm[i];
-        }
-    }
-
-    int range = max - min;
-    if (range == 0) {
-        range = 1;
-    }
-
-    lv_point_t points[10];
-    for (int i = 0; i < 10; i++) {
-        points[i].x = 2 + i * 7;
-        points[i].y = 60 - (state->wpm[i] - min) * 36 / range;
-    }
-    lv_canvas_draw_line(canvas, points, 10, &line_dsc);
-
-    // Rotate canvas
-    rotate_canvas(canvas, cbuf);
+static void rect(lv_obj_t *c, int oy, int x, int y, int w, int h, int radius, bool filled,
+                 bool outline, lv_color_t color) {
+    lv_draw_rect_dsc_t dsc;
+    lv_draw_rect_dsc_init(&dsc);
+    dsc.radius = radius;
+    dsc.bg_color = color;
+    dsc.bg_opa = filled ? LV_OPA_COVER : LV_OPA_TRANSP;
+    dsc.border_color = color;
+    dsc.border_width = outline ? 1 : 0;
+    lv_canvas_draw_rect(c, x, y - oy, w, h, &dsc);
 }
 
-// One labelled box; filled (inverted) while `on`.
-static void draw_box(lv_obj_t *canvas, int x, int y, int w, int h, const char *text, bool on,
-                     const lv_font_t *font, int text_y) {
-    lv_draw_rect_dsc_t frame;
-    init_rect_dsc(&frame, LVGL_FOREGROUND);
-    lv_draw_rect_dsc_t inside;
-    init_rect_dsc(&inside, on ? LVGL_FOREGROUND : LVGL_BACKGROUND);
-    lv_draw_label_dsc_t label;
-    init_label_dsc(&label, on ? LVGL_BACKGROUND : LVGL_FOREGROUND, font, LV_TEXT_ALIGN_CENTER);
-
-    lv_canvas_draw_rect(canvas, x, y, w, h, &frame);
-    lv_canvas_draw_rect(canvas, x + 1, y + 1, w - 2, h - 2, &inside);
-    lv_canvas_draw_text(canvas, x, y + text_y, w, &label, text);
+static void text(lv_obj_t *c, int oy, int x, int y, int w, const char *t, lv_color_t color,
+                 lv_text_align_t align) {
+    lv_draw_label_dsc_t dsc;
+    init_label_dsc(&dsc, color, &lv_font_unscii_8, align);
+    lv_canvas_draw_text(c, x, y - oy, w, &dsc, t);
 }
 
-static void draw_middle(lv_obj_t *widget, lv_color_t cbuf[], const struct status_state *state) {
-    lv_obj_t *canvas = lv_obj_get_child(widget, 1);
+// Rounded pill with a centred label: outlined when off, solid when on.
+static void pill(lv_obj_t *c, int oy, int x, int y, int w, int h, const char *t, bool on) {
+    rect(c, oy, x, y, w, h, h / 2, on, true, LVGL_FOREGROUND);
+    text(c, oy, x, y + (h - 8) / 2, w, t, on ? LVGL_BACKGROUND : LVGL_FOREGROUND,
+         LV_TEXT_ALIGN_CENTER);
+}
 
-    lv_draw_rect_dsc_t rect_black_dsc;
-    init_rect_dsc(&rect_black_dsc, LVGL_BACKGROUND);
-    lv_draw_rect_dsc_t rect_white_dsc;
-    init_rect_dsc(&rect_white_dsc, LVGL_FOREGROUND);
-    lv_draw_label_dsc_t label_dsc;
-    init_label_dsc(&label_dsc, LVGL_FOREGROUND, &lv_font_unscii_8, LV_TEXT_ALIGN_CENTER);
-    lv_draw_label_dsc_t label_dsc_black;
-    init_label_dsc(&label_dsc_black, LVGL_BACKGROUND, &lv_font_unscii_8, LV_TEXT_ALIGN_CENTER);
+static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state) {
+    lv_color_t fg = LVGL_FOREGROUND;
+    lv_color_t bg = LVGL_BACKGROUND;
 
-    // Fill background
-    lv_canvas_draw_rect(canvas, 0, 0, CANVAS_SIZE, CANVAS_SIZE, &rect_black_dsc);
+    lv_canvas_fill_bg(c, bg, LV_OPA_COVER);
 
-    // Bluetooth profiles 1-5 in one row: selected = filled, connected = box,
-    // bonded = underline only.
-    for (int i = 0; i < NICEVIEW_PROFILE_COUNT; i++) {
-        int x = 1 + i * 13;
-        bool selected = i == state->active_profile_index;
-        if (selected) {
-            lv_canvas_draw_rect(canvas, x, 0, 12, 13, &rect_white_dsc);
-        } else if (state->profiles_connected[i]) {
-            lv_canvas_draw_rect(canvas, x, 0, 12, 13, &rect_white_dsc);
-            lv_canvas_draw_rect(canvas, x + 1, 1, 10, 11, &rect_black_dsc);
-        } else if (state->profiles_bonded[i]) {
-            lv_canvas_draw_rect(canvas, x + 1, 12, 10, 1, &rect_white_dsc);
-        }
-        char label[2];
-        snprintf(label, sizeof(label), "%d", i + 1);
-        lv_canvas_draw_text(canvas, x, 3, 12, selected ? &label_dsc_black : &label_dsc, label);
+    // Status strip, like the right half: battery on the left, connection on the right.
+    rect(c, oy, 1, 3, 22, 10, 2, false, true, fg);
+    rect(c, oy, 23, 6, 2, 4, 0, true, false, fg);
+    int fill = (17 * MIN(state->battery, 100) + 50) / 100;
+    if (fill > 0) {
+        rect(c, oy, 3, 5, fill, 6, 0, true, false, fg);
+    }
+    if (state->charging) {
+        lv_draw_rect_dsc_t bolt;
+        init_rect_dsc(&bolt, fg);
+        lv_point_t pts[] = {{29, 2 - oy}, {26, 8 - oy}, {28, 8 - oy},
+                            {27, 13 - oy}, {31, 6 - oy}, {29, 6 - oy}};
+        lv_canvas_draw_polygon(c, pts, ARRAY_SIZE(pts), &bolt);
+    }
+    char conn[6] = "USB";
+    if (state->selected_endpoint.transport == ZMK_TRANSPORT_BLE) {
+        snprintf(conn, sizeof(conn), "BT%d", state->active_profile_index + 1);
+    }
+    text(c, oy, 34, 4, SCREEN_W - 35, conn, fg, LV_TEXT_ALIGN_RIGHT);
+    if (state->selected_endpoint.transport == ZMK_TRANSPORT_BLE &&
+        !state->active_profile_connected) {
+        rect(c, oy, 42, 8, SCREEN_W - 44, 1, 0, true, false, fg); // struck through: not connected
     }
 
-    // Held modifiers (either side), then Caps Lock.
-    const uint8_t m = state->mods;
-    draw_box(canvas, 0, 16, 33, 17, "CTL", m & (BIT(0) | BIT(4)), &lv_font_montserrat_14, 1);
-    draw_box(canvas, 35, 16, 33, 17, "SFT", m & (BIT(1) | BIT(5)), &lv_font_montserrat_14, 1);
-    draw_box(canvas, 0, 35, 33, 17, "ALT", m & (BIT(2) | BIT(6)), &lv_font_montserrat_14, 1);
-    draw_box(canvas, 35, 35, 33, 17, "WIN", m & (BIT(3) | BIT(7)), &lv_font_montserrat_14, 1);
-    draw_box(canvas, 0, 54, 68, 14, "CAPS", state->caps_lock, &lv_font_unscii_8, 3);
-
-    // Rotate canvas
-    rotate_canvas(canvas, cbuf);
-}
-
-static void draw_bottom(lv_obj_t *widget, lv_color_t cbuf[], const struct status_state *state) {
-    lv_obj_t *canvas = lv_obj_get_child(widget, 2);
-
-    lv_draw_rect_dsc_t rect_black_dsc;
-    init_rect_dsc(&rect_black_dsc, LVGL_BACKGROUND);
-    lv_draw_label_dsc_t label_dsc;
-    init_label_dsc(&label_dsc, LVGL_FOREGROUND, &lv_font_montserrat_14, LV_TEXT_ALIGN_CENTER);
-
-    // Fill background
-    lv_canvas_draw_rect(canvas, 0, 0, CANVAS_SIZE, CANVAS_SIZE, &rect_black_dsc);
-
-    // Draw layer
+    // Frame with the layer name in a tab, like the Hammerbeam art on the right.
+    rect(c, oy, 0, 17, SCREEN_W, SCREEN_H - 17, 6, false, true, fg);
+    char layer[12];
     if (state->layer_label == NULL || strlen(state->layer_label) == 0) {
-        char text[10] = {};
-
-        sprintf(text, "LAYER %i", state->layer_index);
-
-        lv_canvas_draw_text(canvas, 0, 5, 68, &label_dsc, text);
+        snprintf(layer, sizeof(layer), "LAYER %d", state->layer_index);
     } else {
-        lv_canvas_draw_text(canvas, 0, 5, 68, &label_dsc, state->layer_label);
+        snprintf(layer, sizeof(layer), "%s", state->layer_label);
     }
+    int tab_w = MIN(8 * (int)strlen(layer) + 8, SCREEN_W - 4);
+    rect(c, oy, 2, 19, tab_w, 13, 6, true, false, fg);
+    text(c, oy, 2, 22, tab_w, layer, bg, LV_TEXT_ALIGN_CENTER);
 
-    // Rotate canvas
-    rotate_canvas(canvas, cbuf);
+    // Held modifiers (either side) as pills, Caps Lock below.
+    const uint8_t m = state->mods;
+    pill(c, oy, 4, 37, 29, 14, "CTL", m & (BIT(0) | BIT(4)));
+    pill(c, oy, 35, 37, 29, 14, "SFT", m & (BIT(1) | BIT(5)));
+    pill(c, oy, 4, 53, 29, 14, "ALT", m & (BIT(2) | BIT(6)));
+    pill(c, oy, 35, 53, 29, 14, "WIN", m & (BIT(3) | BIT(7)));
+    pill(c, oy, 4, 69, 60, 14, "CAPS", state->caps_lock);
+
+    // Bluetooth profiles: filled = selected, ring = connected, small dot = bonded or open.
+    for (int i = 0; i < NICEVIEW_PROFILE_COUNT; i++) {
+        int cx = 10 + i * 12;
+        bool selected = i == state->active_profile_index &&
+                        state->selected_endpoint.transport == ZMK_TRANSPORT_BLE;
+        if (selected) {
+            rect(c, oy, cx - 4, 89, 9, 9, LV_RADIUS_CIRCLE, true, false, fg);
+        } else if (state->profiles_connected[i]) {
+            rect(c, oy, cx - 4, 89, 9, 9, LV_RADIUS_CIRCLE, false, true, fg);
+        } else {
+            rect(c, oy, cx - 1, 92, 3, 3, 0, true, false, fg);
+        }
+    }
+    rect(c, oy, 6, 103, SCREEN_W - 12, 1, 0, true, false, fg);
+
+    // WPM: label, number badge, and a dithered filled-area chart of the last 10 samples.
+    text(c, oy, 5, 110, 30, "WPM", fg, LV_TEXT_ALIGN_LEFT);
+    char wpm_text[6];
+    snprintf(wpm_text, sizeof(wpm_text), "%d", state->wpm[9]);
+    int badge_w = 8 * (int)strlen(wpm_text) + 8;
+    rect(c, oy, SCREEN_W - 5 - badge_w, 108, badge_w, 12, 6, true, false, fg);
+    text(c, oy, SCREEN_W - 5 - badge_w, 110, badge_w, wpm_text, bg, LV_TEXT_ALIGN_CENTER);
+
+    const int top = 124, bot = 152;
+    int lo = 255, hi = 0;
+    for (int i = 0; i < 10; i++) {
+        lo = MIN(lo, state->wpm[i]);
+        hi = MAX(hi, state->wpm[i]);
+    }
+    int range = MAX(hi - lo, 1);
+    lv_point_t pts[10];
+    for (int i = 0; i < 10; i++) {
+        pts[i].x = 5 + i * 58 / 9;
+        pts[i].y = bot - (state->wpm[i] - lo) * (bot - top) / range;
+    }
+    for (int i = 0; i < 9; i++) {
+        for (int x = pts[i].x; x <= pts[i + 1].x; x++) {
+            int span = MAX(pts[i + 1].x - pts[i].x, 1);
+            int y_line = pts[i].y + (pts[i + 1].y - pts[i].y) * (x - pts[i].x) / span;
+            for (int y = MAX(y_line + 1, oy); y <= MIN(bot, oy + CANVAS_SIZE - 1); y++) {
+                if (((x + y) & 1) == 0) {
+                    lv_canvas_set_px_color(c, x, y - oy, fg);
+                }
+            }
+        }
+    }
+    for (int i = 0; i < 10; i++) {
+        pts[i].y -= oy;
+    }
+    lv_draw_line_dsc_t line_dsc;
+    init_line_dsc(&line_dsc, fg, 1);
+    lv_canvas_draw_line(c, pts, 10, &line_dsc);
+}
+
+static void draw_all(struct zmk_widget_status *widget) {
+    lv_color_t *bufs[] = {widget->cbuf, widget->cbuf2, widget->cbuf3};
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *canvas = lv_obj_get_child(widget->obj, i);
+        draw_screen(canvas, i * CANVAS_SIZE, &widget->state);
+        rotate_canvas(canvas, bufs[i]);
+    }
 }
 
 static void set_battery_status(struct zmk_widget_status *widget,
@@ -228,7 +212,7 @@ static void set_battery_status(struct zmk_widget_status *widget,
 
     widget->state.battery = state.level;
 
-    draw_top(widget->obj, widget->cbuf, &widget->state);
+    draw_all(widget);
 }
 
 static void battery_status_update_cb(struct battery_status_state state) {
@@ -266,8 +250,7 @@ static void set_output_status(struct zmk_widget_status *widget,
         widget->state.profiles_bonded[i] = state->profiles_bonded[i];
     }
 
-    draw_top(widget->obj, widget->cbuf, &widget->state);
-    draw_middle(widget->obj, widget->cbuf2, &widget->state);
+    draw_all(widget);
 }
 
 static void output_status_update_cb(struct output_status_state state) {
@@ -304,7 +287,7 @@ static void set_layer_status(struct zmk_widget_status *widget, struct layer_stat
     widget->state.layer_index = state.index;
     widget->state.layer_label = state.label;
 
-    draw_bottom(widget->obj, widget->cbuf3, &widget->state);
+    draw_all(widget);
 }
 
 static void layer_status_update_cb(struct layer_status_state state) {
@@ -329,7 +312,7 @@ static void set_wpm_status(struct zmk_widget_status *widget, struct wpm_status_s
     }
     widget->state.wpm[9] = state.wpm;
 
-    draw_top(widget->obj, widget->cbuf, &widget->state);
+    draw_all(widget);
 }
 
 static void wpm_status_update_cb(struct wpm_status_state state) {
@@ -349,7 +332,7 @@ static void set_mods_status(struct zmk_widget_status *widget, struct mods_status
     widget->state.mods = state.mods;
     widget->state.caps_lock = state.caps_lock;
 
-    draw_middle(widget->obj, widget->cbuf2, &widget->state);
+    draw_all(widget);
 }
 
 static void mods_status_update_cb(struct mods_status_state state) {
