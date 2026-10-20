@@ -4,10 +4,10 @@ include:
 #    shield: nice_view
 #    #snippet: zmk-usb-logging    # Uncomment to log over USB.
   - board: eyelash_corne_right
-    shield: nice_view
+    shield: nice_view_custom
     #snippet: zmk-usb-logging
   - board: eyelash_corne_left
-    shield: nice_view raw_hid_adapter
+    shield: nice_view_custom raw_hid_adapter
     snippet: studio-rpc-usb-uart
     cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_STUDIO_LOCKING=n
     artifact-name: eyelash_corne_studio_left
