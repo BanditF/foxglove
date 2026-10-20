@@ -46,6 +46,24 @@ config NICE_VIEW_CUSTOM_ART_SET
 config NICE_VIEW_CUSTOM_ANIMATE
     bool "Animate multi-frame art sets while the keyboard is active"
 
+config NICE_VIEW_HOST_LINK
+    bool "PC-driven host panel on the left screen (Raw HID)"
+    default y if RAW_HID
+    depends on RAW_HID
+
+config NICE_VIEW_ART_RELAY
+    bool "Take right-hand art pushed from the PC through the left half"
+    default y if ZMK_SPLIT_BLE && (NICE_VIEW_HOST_LINK || !ZMK_SPLIT_ROLE_CENTRAL)
+    select CRC
+
+config NICE_VIEW_ART_RELAY_MAX_SIZE
+    int "Largest pushed art set, in bytes (RAM on both halves)"
+    default 16384
+    range 1024 65535
+
+config ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING
+    default y if NICE_VIEW_HOST_LINK
+
 if !ZMK_SPLIT || ZMK_SPLIT_ROLE_CENTRAL
 
 config NICE_VIEW_WIDGET_STATUS

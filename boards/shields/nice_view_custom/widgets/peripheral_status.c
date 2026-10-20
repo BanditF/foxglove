@@ -116,6 +116,8 @@ static const struct custom_art_set *art_set;
 static lv_obj_t *art_img;
 static int art_frame;
 static int art_unique = -1; // unique frame currently unpacked in art_buf
+// Set while art_set's data is being replaced (art_relay_peripheral.c): hold the current frame.
+static atomic_t art_held;
 
 #if CONFIG_NICE_VIEW_WIDGET_INVERTED
 #define ART_PALETTE 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0xff
@@ -183,6 +185,9 @@ static void art_show(int frame) {
 static lv_timer_t *art_timer;
 
 static void art_timer_cb(lv_timer_t *timer) {
+    if (atomic_get(&art_held)) {
+        return;
+    }
     art_frame = (art_frame + 1) % art_set->frame_count;
     art_show(art_frame);
 }
@@ -211,23 +216,46 @@ ZMK_DISPLAY_WIDGET_LISTENER(widget_art_activity, struct art_activity_state,
 ZMK_SUBSCRIPTION(widget_art_activity, zmk_activity_state_changed);
 #endif
 
-static void art_init(lv_obj_t *parent) {
-    int index = CONFIG_NICE_VIEW_CUSTOM_ART_SET;
+void art_hold(void) { atomic_set(&art_held, 1); }
+
+void art_play(const struct custom_art_set *set) {
+    art_set = set;
+    art_frame = 0;
+    art_unique = -1;
+    memset(art_buf + 8, 0, sizeof(art_buf) - 8);
+    atomic_set(&art_held, 0);
+    if (art_img != NULL) {
+        art_show(0);
+    }
+
+#if IS_ENABLED(CONFIG_NICE_VIEW_CUSTOM_ANIMATE)
+    if (art_timer != NULL) {
+        lv_timer_del(art_timer);
+        art_timer = NULL;
+    }
+    if (set->frame_count > 1 && set->fps > 0) {
+        art_timer = lv_timer_create(art_timer_cb, 1000 / set->fps, NULL);
+        if (zmk_activity_get_state() != ZMK_ACTIVITY_ACTIVE) {
+            lv_timer_pause(art_timer);
+        }
+    }
+#endif
+}
+
+int art_builtin_index(int index) {
     if (index < 0 || index >= custom_art_set_count) {
         index = sys_rand32_get() % custom_art_set_count;
     }
-    art_set = &custom_art_sets[index];
-    art_frame = 0;
+    return index;
+}
 
+static void art_init(lv_obj_t *parent) {
     art_img = lv_img_create(parent);
-    art_show(0);
     lv_img_set_src(art_img, &art_dsc);
     lv_obj_align(art_img, LV_ALIGN_TOP_LEFT, 0, 0);
+    art_play(&custom_art_sets[art_builtin_index(CONFIG_NICE_VIEW_CUSTOM_ART_SET)]);
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_CUSTOM_ANIMATE)
-    if (art_set->frame_count > 1 && art_set->fps > 0) {
-        art_timer = lv_timer_create(art_timer_cb, 1000 / art_set->fps, NULL);
-    }
     widget_art_activity_init();
 #endif
 }

@@ -13,6 +13,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/battery.h>
 #include <zmk/display.h>
 #include "status.h"
+#include "host_link.h"
 #include <zmk/events/usb_conn_state_changed.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/battery_state_changed.h>
@@ -91,7 +92,23 @@ static void pill(lv_obj_t *c, int oy, int x, int y, int w, int h, const char *t,
          LV_TEXT_ALIGN_CENTER);
 }
 
-static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state) {
+// The PC's panel (host_link.c), 1 bit per pixel, MSB first, 1 = ink.
+static void draw_host_panel(lv_obj_t *c, int oy, const uint8_t *panel) {
+    for (int y = MAX(0, oy - HOST_PANEL_Y); y < HOST_PANEL_H; y++) {
+        int sy = HOST_PANEL_Y + y - oy;
+        if (sy >= CANVAS_SIZE) {
+            break;
+        }
+        for (int x = 0; x < HOST_PANEL_W; x++) {
+            if (panel[y * HOST_PANEL_STRIDE + x / 8] & (0x80 >> (x % 8))) {
+                lv_canvas_set_px_color(c, HOST_PANEL_X + x, sy, LVGL_FOREGROUND);
+            }
+        }
+    }
+}
+
+static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
+                        const uint8_t *panel) {
     lv_color_t fg = LVGL_FOREGROUND;
     lv_color_t bg = LVGL_BACKGROUND;
 
@@ -156,6 +173,11 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state) {
     }
     rect(c, oy, 6, 103, SCREEN_W - 12, 1, 0, true, false, fg);
 
+    if (panel != NULL) {
+        draw_host_panel(c, oy, panel);
+        return;
+    }
+
     // WPM: label, number badge, and a dithered filled-area chart of the last 10 samples.
     text(c, oy, 5, 110, 30, "WPM", fg, LV_TEXT_ALIGN_LEFT);
     char wpm_text[6];
@@ -196,12 +218,24 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state) {
 }
 
 static void draw_all(struct zmk_widget_status *widget) {
+    const uint8_t *panel = NULL;
+#if IS_ENABLED(CONFIG_NICE_VIEW_HOST_LINK)
+    static uint8_t panel_buf[HOST_PANEL_BYTES];
+    if (host_panel_get(panel_buf)) {
+        panel = panel_buf;
+    }
+#endif
     lv_color_t *bufs[] = {widget->cbuf, widget->cbuf2, widget->cbuf3};
     for (int i = 0; i < 3; i++) {
         lv_obj_t *canvas = lv_obj_get_child(widget->obj, i);
-        draw_screen(canvas, i * CANVAS_SIZE, &widget->state);
+        draw_screen(canvas, i * CANVAS_SIZE, &widget->state, panel);
         rotate_canvas(canvas, bufs[i]);
     }
+}
+
+void host_panel_redraw(void) {
+    struct zmk_widget_status *widget;
+    SYS_SLIST_FOR_EACH_CONTAINER(&widgets, widget, node) { draw_all(widget); }
 }
 
 static void set_battery_status(struct zmk_widget_status *widget,
