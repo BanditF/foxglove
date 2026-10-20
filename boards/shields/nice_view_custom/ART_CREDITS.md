@@ -6,8 +6,15 @@
 python scripts/flipper_art.py boards/shields/nice_view_custom/widgets/custom_art.c <inputs...> --preview preview.png
 ```
 
-Inputs can be Flipper animation folders (meta.txt + frame_N.png/.bm), single images, or single
-`name_128x64.bm` files. Only use art whose license allows redistribution: this repo is public.
+Inputs can be Flipper animation folders (meta.txt + frame_N.png/.bm), single images, single
+`name_128x64.bm` files, or LVGL C files of 1-bit nice!view images. Only use art whose license
+allows redistribution: this repo is public.
+
+Orientation: the nice!view is mounted portrait, so the art area is 68 wide x 140 tall, below the
+status strip. Inputs are fitted upright into that by default, which suits nice!view art
+(68x140). Wide Flipper art (128x64) would shrink to 68x34 that way, so it gets the `:landscape`
+option: it is stored as-is and reads sideways on the keyboard. The `--preview` sheet shows each
+set as it looks on the keyboard.
 
 Size limit: the nice!nano bootloader (v0.6.0) only accepts firmware up to 0xAD000, which leaves
 roughly 270 KiB for art on the right half. Frames are stored as RLE-packed XOR deltas (about a
@@ -16,8 +23,24 @@ keep that under ~240 KiB.
 
 Current art (one set is picked at random each power-on; animated while the keyboard is active):
 
-| Art | Source | License |
-|---|---|---|
-| Doom, Painting, Read_books, Sleep, Dj, Hacking_pc, Soldering | [Flipper Zero firmware](https://github.com/flipperdevices/flipperzero-firmware/tree/dev/assets/dolphin/external) | GPL-3.0 |
-| Garage | [kainsamara/Flipper-Zero-Animations](https://github.com/kainsamara/Flipper-Zero-Animations) | MPL-2.0 |
-| Porkchop Happy, Idle, Sleepy, Hunting | [pfefferle/PORKCHOP-flipper-asset-pack](https://github.com/pfefferle/PORKCHOP-flipper-asset-pack) | GPL-3.0 |
+| Art | Orientation | Source | License |
+|---|---|---|---|
+| ZMK_1, ZMK_2 (balloon, mountain by Hammerbeam) | portrait | [ZMK nice_view shield](https://github.com/zmkfirmware/zmk/blob/v0.3.0/app/boards/shields/nice_view/widgets/art.c) | MIT |
+| Hammerbeam_1 to Hammerbeam_30 (art by [Hammerbeam](https://linktr.ee/hammerbeam), signed in each image, used with the artist's consent) | portrait | [GPeye/hammerbeam-slideshow](https://github.com/GPeye/hammerbeam-slideshow) | MIT |
+| Corro_urchin (GPeye's animation of Corro, the unofficial Rust unsafe-code mascot) | portrait | [GPeye/urchin-peripheral-animation](https://github.com/GPeye/urchin-peripheral-animation) | MIT |
+| Gem_crystal (crystal by Trixelized, lent to nice-view-gem) | portrait | [M165437/nice-view-gem](https://github.com/M165437/nice-view-gem) | MIT |
+| Doom, Painting, Read_books, Sleep, Dj, Hacking_pc, Soldering | landscape | [Flipper Zero firmware](https://github.com/flipperdevices/flipperzero-firmware/tree/dev/assets/dolphin/external) | GPL-3.0 |
+| Garage | landscape | [kainsamara/Flipper-Zero-Animations](https://github.com/kainsamara/Flipper-Zero-Animations) | MPL-2.0 |
+| Porkchop Happy, Idle, Sleepy, Hunting | landscape | [pfefferle/PORKCHOP-flipper-asset-pack](https://github.com/pfefferle/PORKCHOP-flipper-asset-pack) | GPL-3.0 |
+
+Inputs used for the current `custom_art.c`, in order (paths are local checkouts of the sources above):
+
+```
+zmk/app/boards/shields/nice_view/widgets/art.c:stills:name=ZMK
+hammerbeam-slideshow/boards/shields/nice_view_custom/widgets/art.c:stills:name=Hammerbeam
+urchin-peripheral-animation/assets/example/animated/art.c:fps=1:name=Corro_urchin
+nice-view-gem/boards/shields/nice_view_gem/assets/crystal.c:fps=8:name=Gem_crystal
+flipperzero-firmware/assets/dolphin/external/{L1_Doom,L1_Painting,L1_Read_books,L1_Sleep,L2_Dj,L2_Hacking_pc,L2_Soldering}_128x64:landscape
+Flipper-Zero-Animations/.../L1_Garage_128x64:landscape
+PORKCHOP-flipper-asset-pack/.../Porkchop_{Happy,Idle,Sleepy,Hunting}:landscape
+```

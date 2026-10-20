@@ -5,14 +5,27 @@ Accepts, in any mix:
     official firmware (assets/dolphin/external/*) and community packs
   * a single image file (.png/.gif/.jpg/.bmp)
   * a single compiled Flipper bitmap named like name_128x64.bm
+  * an LVGL C file of 1-bit images (LV_IMG_CF_INDEXED_1BIT / LV_COLOR_FORMAT_I1), as used by
+    nice!view art modules; these are already stored sideways, so they come out exactly as they
+    looked on their original nice!view. All images in the file become one animation.
 
-Each input becomes one "art set" on the right-hand screen. Animations keep all their frames
+Each input becomes one "art set" on the right-hand screen. The nice!view is mounted portrait, so
+art is fitted upright into a 68x140 area (below the status strip) and stored rotated 90 degrees
+clockwise. Options go after the input, separated by colons:
+  :landscape  store it as-is in the 140x68 buffer, which reads sideways on the keyboard
+  :stills     make every frame its own still art set instead of one animation
+  :fps=N      override the frame rate (default: meta.txt, or 2 for LVGL C files)
+  :name=X     override the set name (default: the file or folder name)
+
+Animations keep all their frames
 (in meta.txt order) and frame rate; the firmware shows the first frame unless animation is
 enabled with CONFIG_NICE_VIEW_CUSTOM_ANIMATE. Frames are stored as RLE-packed XOR deltas and
 unpacked into one RAM image buffer on the keyboard.
 
 Usage:
-  python scripts/flipper_art.py OUT.c INPUT [INPUT ...] [--preview preview.png]
+  python scripts/flipper_art.py OUT.c INPUT[:OPTION...] [INPUT[:OPTION...] ...] [--preview preview.png]
+
+The preview shows the screen as you see it on the keyboard: portrait, status strip on top.
 
 Requires: pip install pillow heatshrink2
 """
@@ -24,7 +37,8 @@ import sys
 
 from PIL import Image
 
-ART_W, ART_H = 140, 68  # area left of the status strip on the right-hand nice!view
+ART_W, ART_H = 140, 68  # stored art buffer, left of the status strip on the right-hand nice!view
+SCREEN_W, STRIP_W = 160, 20  # stored screen; the status strip is the top 20px when held upright
 
 
 def decode_bm(data, w, h):
@@ -67,8 +81,59 @@ def load_frame(folder, index, w, h):
     raise FileNotFoundError("frame_%d not found in %s" % (index, folder))
 
 
-def load_input(path):
-    """Returns (name, [PIL images], fps)."""
+def decode_lvgl_c(path):
+    """Upright images from an LVGL C file of 1-bit indexed images (palette + MSB-first rows)."""
+    src = open(path, encoding="utf-8", errors="replace").read()
+    maps = {}
+    for m in re.finditer(r"uint8_t\s+(\w+)\[\]\s*=\s*\{(.*?)\};", src, re.S):
+        body = m.group(2)
+        # Use the non-inverted palette: the #else branch of CONFIG_NICE_VIEW_WIDGET_INVERTED.
+        body = re.sub(r"#if[^\n]*\n(.*?)#else[^\n]*\n(.*?)#endif", r"\2", body, flags=re.S)
+        body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+        maps[m.group(1)] = bytes(int(x, 16) for x in re.findall(r"0x([0-9a-fA-F]{1,2})", body))
+    images = []
+    for m in re.finditer(r"lv_img_dsc_t\s+\w+\s*=\s*\{(.*?)\};", src, re.S):
+        body = m.group(1)
+        if not re.search(r"INDEXED_1BIT|FORMAT_I1\b", body):
+            continue
+        w = int(re.search(r"\.header\.w\s*=\s*(\d+)", body).group(1))
+        h = int(re.search(r"\.header\.h\s*=\s*(\d+)", body).group(1))
+        data = maps[re.search(r"\.data\s*=\s*\(?[^\w]*(\w+)", body).group(1)]
+        ink = 1 if data[0:3] == b"\xff\xff\xff" else 0  # index whose colour is black
+        stride = (w + 7) // 8
+        img = Image.new("1", (w, h), 1)
+        px = img.load()
+        for y in range(h):
+            for x in range(w):
+                if (data[8 + y * stride + x // 8] >> (7 - x % 8) & 1) == ink:
+                    px[x, y] = 0
+        images.append(img.rotate(90, expand=True))  # stored sideways -> upright
+    if not images:
+        sys.exit("%s: no 1-bit LVGL images found" % path)
+    return images
+
+
+def load_input(spec):
+    """Returns [(name, [PIL images], fps, landscape)]: one set, or one per frame with :stills."""
+    path, opts = spec, {}
+    while True:
+        m = re.search(r":(landscape|stills|fps=\d+|name=\w+)$", path, re.I)
+        if not m:
+            break
+        k, _, v = m.group(1).partition("=")
+        opts[k.lower()] = v
+        path = path[: m.start()]
+    name, frames, fps = load_frames(path)
+    name = opts.get("name", name)
+    if "fps" in opts:
+        fps = int(opts["fps"])
+    landscape = "landscape" in opts
+    if "stills" in opts:
+        return [("%s_%d" % (name, i + 1), [f], 0, landscape) for i, f in enumerate(frames)]
+    return [(name, frames, fps if len(frames) > 1 else 0, landscape)]
+
+
+def load_frames(path):
     name = re.sub(r"[^A-Za-z0-9]+", "_", os.path.basename(os.path.normpath(path))).strip("_")
     if os.path.isdir(path):
         meta = parse_meta(os.path.join(path, "meta.txt"))
@@ -87,18 +152,29 @@ def load_input(path):
             sys.exit("%s: name a single .bm like name_128x64.bm so its size is known" % path)
         w, h = int(m.group(1)), int(m.group(2))
         return name, [decode_bm(open(path, "rb").read(), w, h)], 0
+    if path.lower().endswith(".c"):
+        name = re.sub(r"_c$", "", name)
+        return name, decode_lvgl_c(path), 2
     return name, [Image.open(path)], 0
 
 
-def fit(img):
-    """Fit into ART_W x ART_H (never upscales Flipper-sized art), centre, 1-bit."""
+def fit(img, w, h):
+    """Fit into w x h (never upscales), centre, 1-bit."""
     img = img.convert("L")
-    if img.width > ART_W or img.height > ART_H:
-        scale = min(ART_W / img.width, ART_H / img.height)
+    if img.width > w or img.height > h:
+        scale = min(w / img.width, h / img.height)
         img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))))
-    canvas = Image.new("L", (ART_W, ART_H), 255)
-    canvas.paste(img, ((ART_W - img.width) // 2, (ART_H - img.height) // 2))
+    canvas = Image.new("L", (w, h), 255)
+    canvas.paste(img, ((w - img.width) // 2, (h - img.height) // 2))
     return canvas.point(lambda v: 255 if v >= 128 else 0, "1")
+
+
+def to_stored(img, landscape):
+    """The ART_W x ART_H 1-bit image to store. The upright view of the stored buffer is the
+    buffer rotated 90 degrees counter-clockwise, so portrait art is rotated clockwise here."""
+    if landscape:
+        return fit(img, ART_W, ART_H)
+    return fit(img, ART_H, ART_W).rotate(-90, expand=True)
 
 
 def to_lvgl_bytes(img):
@@ -184,10 +260,10 @@ def write_c(path, sets):
     stride = (ART_W + 7) // 8
     raw_bytes = packed_bytes = unique = 0
     set_lines = []
-    for si, (name, frames, fps) in enumerate(sets):
+    for si, (name, frames, fps, landscape) in enumerate(sets):
         uniq, order = [], []
         for img in frames:
-            data = bytes(to_lvgl_bytes(fit(img)))
+            data = bytes(to_lvgl_bytes(to_stored(img, landscape)))
             if data not in uniq:
                 uniq.append(data)
             order.append(uniq.index(data))
@@ -229,13 +305,21 @@ def write_c(path, sets):
     return unique, raw_bytes, packed_bytes
 
 
-def write_preview(path, sets):
-    s, w, h = 3, 160, 68
-    sheet = Image.new("1", (w * s, (h * s + 8) * len(sets)), 1)
-    for i, (_, frames, _) in enumerate(sets):
-        screen = Image.new("1", (w, h), 1)
-        screen.paste(fit(frames[0]), (0, 0))
-        sheet.paste(screen.resize((w * s, h * s), Image.NEAREST), (0, i * (h * s + 8)))
+def write_preview(path, sets, scale=3, per_row=6):
+    """First frame of each set as seen on the keyboard: portrait, status strip on top."""
+    w, h, gap = ART_H, SCREEN_W, 8
+    rows = (len(sets) + per_row - 1) // per_row
+    cols = min(len(sets), per_row)
+    sheet = Image.new("L", ((w * scale + gap) * cols, (h * scale + gap) * rows), 160)
+    for i, (_, frames, _, landscape) in enumerate(sets):
+        screen = Image.new("1", (SCREEN_W, ART_H), 1)
+        screen.paste(to_stored(frames[0], landscape), (0, 0))
+        for x in range(ART_W, SCREEN_W):  # stand-in for the battery/connection strip
+            for y in range(ART_H):
+                if (x + y) % 4 == 0:
+                    screen.putpixel((x, y), 0)
+        upright = screen.rotate(90, expand=True).resize((w * scale, h * scale), Image.NEAREST)
+        sheet.paste(upright.convert("L"), ((i % per_row) * (w * scale + gap), (i // per_row) * (h * scale + gap)))
     sheet.save(path)
 
 
@@ -246,16 +330,19 @@ def main():
     ap.add_argument("--preview")
     args = ap.parse_args()
 
-    sets = [load_input(p) for p in args.inputs]
+    sets = [s for p in args.inputs for s in load_input(p)]
     unique, raw, packed = write_c(args.out, sets)
-    total = sum(len(f) for _, f, _ in sets)
+    total = sum(len(s[1]) for s in sets)
     print("%d art sets, %d frames (%d unique)" % (len(sets), total, unique))
     print(
         "flash: %.1f KiB compressed vs %.1f KiB raw (%.0f%%)"
         % (packed / 1024, raw / 1024, 100.0 * packed / raw)
     )
-    for name, frames, fps in sets:
-        print("  %-32s %3d frame(s)%s" % (name, len(frames), " @ %d fps" % fps if fps else ""))
+    for name, frames, fps, landscape in sets:
+        print(
+            "  %-32s %3d frame(s)%s%s"
+            % (name, len(frames), " @ %d fps" % fps if fps else "", " (landscape)" if landscape else "")
+        )
     if args.preview:
         write_preview(args.preview, sets)
 
