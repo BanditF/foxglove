@@ -21,7 +21,7 @@ roughly 270 KiB for art on the right half. Frames are stored as RLE-packed XOR d
 third of their raw size) and unpacked on the keyboard; the script prints the compressed size, so
 keep that under ~240 KiB.
 
-Current art (one set is picked at random each power-on; animated while the keyboard is active):
+Current art: only portrait (upright) sets; wide Flipper art reads sideways and was left out. One set is picked at random each power-on; animated sets play while the keyboard is active:
 
 | Art | Orientation | Source | License |
 |---|---|---|---|
@@ -29,9 +29,6 @@ Current art (one set is picked at random each power-on; animated while the keybo
 | Hammerbeam_1 to Hammerbeam_30 (art by Hammerbeam, signed in each image, used with the artist's consent) | portrait | [GPeye/hammerbeam-slideshow](https://github.com/GPeye/hammerbeam-slideshow) | MIT |
 | Corro_urchin (GPeye's animation of Corro, the unofficial Rust unsafe-code mascot) | portrait | [GPeye/urchin-peripheral-animation](https://github.com/GPeye/urchin-peripheral-animation) | MIT |
 | Gem_crystal (crystal by Trixelized, lent to nice-view-gem) | portrait | [M165437/nice-view-gem](https://github.com/M165437/nice-view-gem) | MIT |
-| Doom, Painting, Read_books, Sleep, Dj, Hacking_pc, Soldering | landscape | [Flipper Zero firmware](https://github.com/flipperdevices/flipperzero-firmware/tree/dev/assets/dolphin/external) | GPL-3.0 |
-| Garage | landscape | [kainsamara/Flipper-Zero-Animations](https://github.com/kainsamara/Flipper-Zero-Animations) | MPL-2.0 |
-| Porkchop Happy, Idle, Sleepy, Hunting | landscape | [pfefferle/PORKCHOP-flipper-asset-pack](https://github.com/pfefferle/PORKCHOP-flipper-asset-pack) | GPL-3.0 |
 
 Inputs used for the current `custom_art.c`, in order (paths are local checkouts of the sources above):
 
@@ -40,7 +37,4 @@ zmk/app/boards/shields/nice_view/widgets/art.c:stills:name=ZMK
 hammerbeam-slideshow/boards/shields/nice_view_custom/widgets/art.c:stills:name=Hammerbeam
 urchin-peripheral-animation/assets/example/animated/art.c:fps=1:name=Corro_urchin
 nice-view-gem/boards/shields/nice_view_gem/assets/crystal.c:fps=8:name=Gem_crystal
-flipperzero-firmware/assets/dolphin/external/{L1_Doom,L1_Painting,L1_Read_books,L1_Sleep,L2_Dj,L2_Hacking_pc,L2_Soldering}_128x64:landscape
-Flipper-Zero-Animations/.../L1_Garage_128x64:landscape
-PORKCHOP-flipper-asset-pack/.../Porkchop_{Happy,Idle,Sleepy,Hunting}:landscape
 ```
