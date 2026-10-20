@@ -24,6 +24,10 @@ unpacked into one RAM image buffer on the keyboard.
 
 Usage:
   python scripts/flipper_art.py OUT.c INPUT[:OPTION...] [INPUT[:OPTION...] ...] [--preview preview.png]
+  python scripts/flipper_art.py OUT.bin INPUT[:OPTION...] [--preview preview.png]
+
+An OUT.bin is one art set as a blob to push from the PC without flashing (hostpanel push-art
+OUT.bin); the format is in boards/shields/nice_view_custom/widgets/art_relay.h.
 
 The preview shows the screen as you see it on the keyboard: portrait, status strip on top.
 
@@ -33,6 +37,7 @@ Requires: pip install pillow heatshrink2
 import argparse
 import os
 import re
+import struct
 import sys
 
 from PIL import Image
@@ -245,6 +250,49 @@ def unrle_xor(blob, buf):
         pos += n
 
 
+def encode_set(name, frames, landscape):
+    """Returns (order, deltas): the play order as indices into the unique frames, and each
+    unique frame as an RLE-packed XOR delta against the previous one (checked to round-trip)."""
+    uniq, order = [], []
+    for img in frames:
+        data = bytes(to_lvgl_bytes(to_stored(img, landscape)))
+        if data not in uniq:
+            uniq.append(data)
+        order.append(uniq.index(data))
+    if len(uniq) > 256:
+        sys.exit("%s: more than 256 unique frames" % name)
+    prev = bytes(len(uniq[0]))
+    buf = bytearray(len(prev))
+    deltas = []
+    for fi, data in enumerate(uniq):
+        blob = rle(bytes(a ^ b for a, b in zip(data, prev)))
+        unrle_xor(blob, buf)
+        assert bytes(buf) == data, "RLE round-trip failed for %s frame %d" % (name, fi)
+        deltas.append(blob)
+        prev = data
+    return order, deltas
+
+
+def write_blob(path, sets):
+    """One set as a pushable blob: header, order, delta offsets, deltas (see art_relay.h)."""
+    if len(sets) != 1:
+        sys.exit("a .bin holds one art set; got %d (drop :stills or pass one input)" % len(sets))
+    name, frames, fps, landscape = sets[0]
+    order, deltas = encode_set(name, frames, landscape)
+    head = b"NVA1" + struct.pack("<BBBBHH", ART_W, ART_H, fps, 0, len(deltas), len(order))
+    at = len(head) + len(order) + 2 * len(deltas)
+    offsets = []
+    for d in deltas:
+        offsets.append(at)
+        at += len(d)
+    if at > 0xFFFF:
+        sys.exit("%s: %d bytes is more than a blob can hold" % (name, at))
+    blob = head + bytes(order) + struct.pack("<%dH" % len(offsets), *offsets) + b"".join(deltas)
+    open(path, "wb").write(blob)
+    raw = len(deltas) * ((ART_W + 7) // 8) * ART_H
+    return len(deltas), raw, len(blob)
+
+
 def write_c(path, sets):
     """Each set stores its unique frames as XOR deltas against the previous unique frame (the
     first against an empty buffer), RLE-packed, plus the play order as indices into them.
@@ -261,27 +309,15 @@ def write_c(path, sets):
     raw_bytes = packed_bytes = unique = 0
     set_lines = []
     for si, (name, frames, fps, landscape) in enumerate(sets):
-        uniq, order = [], []
-        for img in frames:
-            data = bytes(to_lvgl_bytes(to_stored(img, landscape)))
-            if data not in uniq:
-                uniq.append(data)
-            order.append(uniq.index(data))
-        if len(uniq) > 256:
-            sys.exit("%s: more than 256 unique frames" % name)
-        prev = bytes(len(uniq[0]))
-        buf = bytearray(len(prev))
-        for fi, data in enumerate(uniq):
-            blob = rle(bytes(a ^ b for a, b in zip(data, prev)))
-            unrle_xor(blob, buf)
-            assert bytes(buf) == data, "RLE round-trip failed for %s frame %d" % (name, fi)
+        order, deltas = encode_set(name, frames, landscape)
+        uniq = deltas
+        for fi, blob in enumerate(deltas):
             lines.append("static const uint8_t set_%d_delta_%d[] = {" % (si, fi))
             for i in range(0, len(blob), 16):
                 lines.append("    " + ", ".join("0x%02x" % b for b in blob[i : i + 16]) + ",")
             lines.append("};")
-            raw_bytes += len(data)
+            raw_bytes += stride * ART_H
             packed_bytes += len(blob)
-            prev = data
         unique += len(uniq)
         lines.append(
             "static const uint8_t *const set_%d_deltas[] = {%s};"
@@ -331,7 +367,8 @@ def main():
     args = ap.parse_args()
 
     sets = [s for p in args.inputs for s in load_input(p)]
-    unique, raw, packed = write_c(args.out, sets)
+    write = write_blob if args.out.lower().endswith(".bin") else write_c
+    unique, raw, packed = write(args.out, sets)
     total = sum(len(s[1]) for s in sets)
     print("%d art sets, %d frames (%d unique)" % (len(sets), total, unique))
     print(
