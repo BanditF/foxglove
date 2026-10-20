@@ -111,7 +111,7 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state) {
                             {27, 13 - oy}, {31, 6 - oy}, {29, 6 - oy}};
         lv_canvas_draw_polygon(c, pts, ARRAY_SIZE(pts), &bolt);
     }
-    char conn[12] = "USB";
+    char conn[16] = "USB";
     if (state->selected_endpoint.transport == ZMK_TRANSPORT_BLE) {
         snprintf(conn, sizeof(conn), "BT%d", state->active_profile_index + 1);
     }
