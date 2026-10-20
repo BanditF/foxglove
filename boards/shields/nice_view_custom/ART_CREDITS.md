@@ -6,9 +6,13 @@
 python scripts/flipper_art.py boards/shields/nice_view_custom/widgets/custom_art.c <inputs...> --preview preview.png
 ```
 
-Current art:
+Inputs can be Flipper animation folders (meta.txt + frame_N.png/.bm), single images, or single
+`name_128x64.bm` files. Only use art whose license allows redistribution: this repo is public.
 
-- Dolphin animations (first frames) from the official Flipper Zero firmware,
-  https://github.com/flipperdevices/flipperzero-firmware/tree/dev/assets/dolphin/external
-  (GPL-3.0): Boxing, Doom, Furippa1, Kaiju, Painting, Read_books, Sleep, Coding_in_the_shell,
-  Dj, Hacking_pc, Soldering, Freedom_2_dolphins.
+Current art (one set is picked at random each power-on; animated while the keyboard is active):
+
+| Art | Source | License |
+|---|---|---|
+| Doom, Painting, Read_books, Sleep, Coding_in_the_shell, Dj, Hacking_pc, Soldering | [Flipper Zero firmware](https://github.com/flipperdevices/flipperzero-firmware/tree/dev/assets/dolphin/external) | GPL-3.0 |
+| Garage | [kainsamara/Flipper-Zero-Animations](https://github.com/kainsamara/Flipper-Zero-Animations) | MPL-2.0 |
+| Porkchop Happy, Idle, Sleepy, Hunting | [pfefferle/PORKCHOP-flipper-asset-pack](https://github.com/pfefferle/PORKCHOP-flipper-asset-pack) | GPL-3.0 |
