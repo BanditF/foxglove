@@ -1,4 +1,4 @@
-# Foxglove: merging KeyPeek and hostpanel
+# Foxglove: one app for the keyboard (KeyPeek + hostpanel + firmware)
 
 **Names.** *Foxglove* is the project, the repo (BanditF/foxglove, formerly zmk-new_corne) and the
 desktop app. *Digitalis*, the plant's Latin name, which means "of the finger" and was coined in
@@ -25,7 +25,8 @@ writers fighting over the panel.
 
 ## Recommendation
 
-Do it as one process: the KeyPeek fork is the shell, and hostpanel's logic moves into a library crate.
+Build one app, **Foxglove**. It takes over everything KeyPeek does and adds the screens. Its link
+to the keyboard is a library, **Digitalis**.
 
 Repo layout (decided 2026-10-20, tracker #18): **zmk-new_corne grows into Foxglove.**
 The firmware stays at the root, so the ZMK build, artifact names and flashing are untouched. The
@@ -34,29 +35,62 @@ requires it.
 
 ```
 foxglove/ (formerly zmk-new_corne, public)
-  boards/ config/ zephyr/ build.yaml   firmware, unchanged (MIT)
-  crates/digitalis/            (MIT, ex-hostpanel) protocol, art blob, panel renderer, providers
-  crates/hostpanel/           (MIT) today's tray app/CLI, later a thin client of the local API
-  app/keypeek/                submodule -> BanditF/keypeek (GPL-3.0), the merged app's shell
+  boards/ config/ zephyr/ build.yaml   firmware (Digitalis on the keyboard side: host_link, art_relay)
+  crates/digitalis/           (MIT) the PC end of the link: protocol, HidLink, art blobs
+  app/                        (GPL-3.0) the Foxglove app, KeyPeek absorbed (crate `foxglove`)
+  crates/hostpanel/           (MIT) old tray app until cutover, then only the CLI (`foxglove-cli`)
   scripts/ (tools)  docs/     flipper_art.py, uf2end.py, proposal
 ```
 
-The KeyPeek fork stays a separate repo, used here as a submodule, so PRs to srwi stay plain fork
-PRs. The fork depends on `digitalis` as a git dependency on this repo. Inside the fork:
+### Names inside the code
 
-```
-keypeek/                      (fork, GPL-3.0)
-  src/                        KeyPeek as today, plus:
-    link/                     HidLink: one handle, one reader thread, report dispatch
-    foxglove/                 panel service, art service, facts store, local API, settings tab
-```
+| Name | What it is |
+|---|---|
+| `foxglove` (crate, exe, settings dir, tray) | The app: overlay, keymap editor, settings, tray, screens, providers, local API. All of KeyPeek's features carry over unchanged: VIA/Vial/ZMK, the overlay with all its settings, the keymap editor, monitor choice, and Windows/macOS/Linux support |
+| `digitalis` (crate) | Everything that talks to the keyboard: `protocol` (0xD5/0xD6 builders and parsers), `HidLink` (one handle, report dispatch), `art` (NVA1 blobs: encode, decode, push), `panel` (1-bit canvas). It has no UI and no OS providers, so the CLI and later tools can use it too |
+| `foxglove::screens`, `foxglove::facts`, `foxglove::providers`, `foxglove::api` | App modules, ported from hostpanel's worker, render and providers |
+| Firmware `host_link` / `art_relay` | The keyboard side of Digitalis. File names stay, and the docs call the protocol "Digitalis v1" |
+| Runtime names | Settings `%APPDATA%\Foxglove\settings.ini`, mutex `Local\Foxglove.Panel`, pipe `\.\pipe\foxglove` |
 
-The firmware workflow needs `paths-ignore` for `crates/**`, `app/**` and `docs/**`, so app
-commits don't trigger firmware builds. A Rust workflow builds `crates/` on its own.
+### Absorbing KeyPeek
+
+- **How it comes in:** `git subtree add --prefix=app` from BanditF/keypeek, keeping its history,
+  then rename the crate to `foxglove` and its window, tray and settings to Foxglove. This replaces
+  the earlier submodule plan, because a submodule can't be renamed and restructured freely.
+- **Staying in sync with srwi:** `git subtree pull --prefix=app` from srwi/keypeek, at points of
+  our choosing. The renames will cause some conflicts, so keep them shallow (crate name, strings,
+  the settings path) and leave upstream's file layout alone. New code goes in new modules.
+- **Upstreaming** goes through `git subtree split`, then a PR from BanditF/keypeek. It's harder
+  than from a plain fork, but it's only for the generic pieces.
+- **Credit and license:** the app stays GPL-3.0 with srwi's copyright and LICENSE, and the About
+  box says "based on KeyPeek by Stephan Rumswinkel". `digitalis` stays MIT.
+- **Settings:** on first run, KeyPeek's `settings.ini` and hostpanel's `config.toml` are imported.
+
+### Keyboard first
+
+The keyboard must never depend on the PC app. Losing the app costs features, never typing.
+
+| Situation | Keyboard does |
+|---|---|
+| App not running, crashed, or PC asleep | Types normally on both halves. The left panel keeps the **last frame** the PC sent (no timeout back to WPM; a Kconfig sets the timeout, default "never"). The right half keeps playing whatever set it shows |
+| Cable unplugged mid-frame | Shows the last *presented* frame. A half-written back buffer is never shown |
+| App dies during an art push | The left drops the half-received blob after 10 s with no DATA. The right keeps playing its current set until a new blob passes its CRC |
+| Split link drops during a relay | The push fails cleanly (GATT timeout already exists). The right keeps its current set, and the left reports failure next time anyone asks |
+| Overlay app gone | Layer and key reports are fire-and-forget. Nothing waits for the PC |
+
+The firmware already gets much of this right: the relay has its own work queue, the HID receive
+path uses `K_NO_WAIT` message queues, and GATT calls have timeouts. The gaps are the 65 s fallback
+to WPM, the missing timeout for an abandoned left-side receive, and an unverified right-side
+"keep current until valid" rule. Each gets a firmware issue plus an ugly-cases test pass.
+Lesson from the GATT stall: anything that talks to the other half must have a timeout and must
+never block ZMK's own split traffic.
+
+On the app side, each service (screens, art, providers, API) runs on its own thread with its own
+panic boundary (`catch_unwind`, logged, restart with backoff). A broken provider or API client
+can't take down the overlay.
 
 Rejected: keep two apps and add IPC between them. That still leaves two handles, two trays and
-two settings stores, and the user asked for one suite. Also rejected: hostpanel as a daemon with
-KeyPeek as its client. That diverges much more from upstream.
+two settings stores. Also rejected: hostpanel as a daemon with KeyPeek as its client.
 
 ## Architecture
 
@@ -97,11 +131,12 @@ KeyPeek as its client. That diverges much more from upstream.
 | `config.rs` | KeyPeek `Settings`, new `[screens]` and `[screens.games]` INI sections | one-time import of `config.toml` |
 | `main.rs` worker | `foxglove::panel_service` thread | same loop, sends through `HidLink`; keeps the 20 s resend and 60 s HELLO |
 | `main.rs` tray | KeyPeek `tray.rs` | new menu items (below) |
-| battery CSV | `foxglove::battery_log` | unchanged path, or move it under KeyPeek's dir |
+| battery CSV | `foxglove::battery_log` | moves under `%APPDATA%\Foxglove` |
 | CLI `status/push-art/select/preview` | `hostpanel-cli` | talks to the running app over the local API; falls back to direct HID when the app is not running |
 
-All new code is behind a cargo feature `foxglove`, on by default in the fork, and in new
-files wherever it can be. That keeps the diff against upstream small and rebases cheap.
+New code goes in new modules, and upstream's files are only touched where they must be. That
+keeps `git subtree pull` from srwi cheap. The screens features turn on only when the keyboard
+answers HELLO, so on other boards Foxglove is exactly KeyPeek.
 
 ## UI
 
@@ -138,7 +173,7 @@ that the settings live in the UI.
 - Because the user owns hostpanel, they can relicense it anyway. Keeping `digitalis` as its own
   MIT crate has a payoff: it stays reusable outside KeyPeek (another app, a QMK port), and it
   matches the MIT firmware side (`host_link.h`).
-- What GPL-3.0 requires: the fork is public on GitHub, so it is already distributed. Any binary
+- What GPL-3.0 requires: the repo is public on GitHub, so `app/` is already distributed. Any binary
   handed out needs its source available, which a public repo covers. Private use carries no
   obligations.
 - New dependencies (`embedded-graphics`, `crc32fast`, `chrono`, `toml`, `windows`) are
@@ -157,13 +192,13 @@ Candidates, each as its own PR. Open an issue first to ask whether the author wa
    commands, and no "Device is locked means no layer events" coupling. This is the PR that makes
    everything else rebase-friendly.
 2. **Report tap / extension hook.** A small trait that registers handlers for unclaimed byte-0
-   values. It is generic, and lets the fork add 0xD5/0xD6 without touching upstream files.
+   values. It is generic, and lets Foxglove add 0xD5/0xD6 without touching upstream files.
 3. **Local API exposing layer state** (read-only). Others could use it for stream overlays or
    lighting. Pitch it only after 1 lands.
-4. Monitor selection is already upstream (#49, which replaced our #51), so drop `monitor-select`
-   and base the fork on upstream `master`.
+4. Monitor selection is already upstream (#49, which replaced our #51), so `app/` starts from
+   upstream `master` and drops `monitor-select`.
 
-What stays in the fork: the 0xD5/0xD6 protocol and everything firmware-specific to this board,
+What stays Foxglove-only: the name, the 0xD5/0xD6 protocol and everything firmware-specific to this board,
 the Screens settings and tray items, the Windows providers, the art library, and the hostpanel CLI.
 
 ## Migration (both keep working throughout)
@@ -176,7 +211,8 @@ the Screens settings and tray items, the Windows providers, the art library, and
 3. **Extract `digitalis`.** Make hostpanel a workspace (lib + bin) with the bin using the lib.
    Add golden tests for every report builder/parser against today's `device.rs` bytes. hostpanel
    behaves exactly as before.
-4. **Rebase the fork on upstream master.** Add `HidLink` and route ZMK `hid_read` through it.
+4. **Absorb KeyPeek into `app/`** (subtree from upstream master + our fork's commits; rename to
+   Foxglove). Add `HidLink` (in `digitalis`) and route ZMK `hid_read` through it.
    No new features yet. Verify the overlay (layers, key presses, reconnect after sleep) while
    hostpanel still runs beside it.
 5. **Panel service + Screens tab** (feature `foxglove`). "Drive left screen" is off by default
@@ -227,7 +263,7 @@ Each migration step becomes one issue. Labels: `link`, `panel`, `art`, `ui`, `ap
 
 1. hostpanel: named-mutex panel lock (`hostpanel`)
 2. Extract `digitalis` crate with golden report tests (`hostpanel`)
-3. Rebase fork onto upstream master, drop `monitor-select` (`upstream`)
+3. Absorb KeyPeek into `app/` as the `foxglove` crate (`upstream`)
 4. `HidLink`: single handle, 10 ms reader, dispatch, request/oneshot (`link`)
 5. Route ZMK `hid_read` and reconnect through `HidLink` (`link`)
 6. Upstream proposal issue + PR: report dispatch refactor (`upstream`)
@@ -247,9 +283,8 @@ Each migration step becomes one issue. Labels: `link`, `panel`, `art`, `ui`, `ap
 
 1. ~~Where do the issues live?~~ Decided: in BanditF/foxglove once issues are enabled there. Until
    then they live in the private tracker BanditF/foxglove-tracker.
-2. ~~Name~~ Decided: Foxglove. Still open: does the fork's exe and settings dir become
-   Foxglove (costs rebase churn), or does the fork stay "KeyPeek" internally with Foxglove as the
-   bundle name?
+2. ~~Name~~ Decided: Foxglove for the app (crate, exe, settings), and Digitalis for the link
+   (crate and protocol). KeyPeek is absorbed whole, via subtree into `app/`.
 3. **Fork base.** Rebase onto upstream `master` and drop `monitor-select`, since #49 covers it?
 4. **Upstream appetite.** Do you want to pitch the `HidLink` refactor to srwi at all, or keep
    everything in the fork?
