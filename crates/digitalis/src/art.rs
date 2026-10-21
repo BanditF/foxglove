@@ -58,7 +58,11 @@ pub fn select(t: &impl Transport, set: i8) -> Result<ArtStatus> {
         std::thread::sleep(Duration::from_millis(100));
         st = status(t)?;
     }
-    Ok(st)
+    match st.state {
+        left_state::FAILED => bail!("select failed: {st}"),
+        left_state::PUSHING => bail!("select did not finish in 10 s: {st}"),
+        _ => Ok(st),
+    }
 }
 
 #[cfg(test)]
@@ -104,6 +108,15 @@ mod tests {
         t.replies.borrow_mut().push_back(reply(art::BEGIN, left_state::IDLE));
         assert!(push(&t, b"NVA1", |_| {}).is_err());
         assert_eq!(t.sent.borrow().len(), 1);
+    }
+
+    #[test]
+    fn select_reports_failure() {
+        let t = Mock::default();
+        t.replies.borrow_mut().push_back(reply(art::SELECT, left_state::DONE));
+        assert!(select(&t, 3).is_ok());
+        t.replies.borrow_mut().push_back(reply(art::SELECT, left_state::FAILED));
+        assert!(select(&t, 3).is_err());
     }
 
     #[test]

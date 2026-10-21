@@ -258,9 +258,6 @@ fn worker(shared: Shared) {
 
         // Draw only while we hold the panel lock; paused gives it up so another app can draw.
         let paused = shared.paused.load(Ordering::Relaxed);
-        if paused {
-            lock.release();
-        }
         let driving = !paused && lock.acquire();
         let mut result = Ok(());
         if driving {
@@ -281,6 +278,8 @@ fn worker(shared: Shared) {
                 result = panel::release(k);
                 last = None;
             }
+            // Only after RELEASE went out, so it can't blank the next owner's first frame.
+            lock.release();
             shared.set_status(if paused { "Paused".to_string() } else { "Panel driven by another app".to_string() });
         }
         was_driving = driving;
@@ -293,6 +292,9 @@ fn worker(shared: Shared) {
         if let Err(e) = result {
             shared.set_status(format!("Lost keyboard: {e}"));
             kb = None;
+            // Can't draw while disconnected, so let another app have the panel meanwhile.
+            lock.release();
+            was_driving = false;
             continue;
         }
 
