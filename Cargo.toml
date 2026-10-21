@@ -2,6 +2,9 @@
 [workspace]
 resolver = "2"
 members = ["crates/*"]
+# The app keeps its own workspace and lockfile, as upstream KeyPeek has them, so pulling
+# from srwi/keypeek stays clean. Build it with --manifest-path app/Cargo.toml.
+exclude = ["app"]
 
 [profile.release]
 opt-level = "s"

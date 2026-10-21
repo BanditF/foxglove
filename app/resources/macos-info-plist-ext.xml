@@ -1,0 +1,6 @@
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>Foxglove uses Bluetooth to discover and connect to compatible keyboards so it can show live layer status.</string>
+<key>NSBluetoothPeripheralUsageDescription</key>
+<string>Foxglove uses Bluetooth to communicate with compatible keyboards for live layout and layer updates.</string>
+<key>LSUIElement</key>
+<true/>

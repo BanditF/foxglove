@@ -9,8 +9,11 @@ Firmware and desktop tooling for an Eyelash Peripherals Corne (ZMK v0.3, nice!na
   the BLE split link (`0xD6`). The protocol is in
   [`host_link.h`](boards/shields/nice_view_custom/widgets/host_link.h) and
   [`art_relay.h`](boards/shields/nice_view_custom/widgets/art_relay.h).
-- **App** (planned): one tray app combining the KeyPeek layer overlay with the screen panel, in
-  `crates/` and `app/`. See [docs/proposal.md](docs/proposal.md).
+- **App**: the Foxglove tray app in `app/`, the layer overlay from
+  [KeyPeek](https://github.com/srwi/keypeek) by Stephan Rumswinkel, absorbed and growing the screen
+  panel and art features ([docs/proposal.md](docs/proposal.md),
+  [keeping up with KeyPeek](docs/keypeek-sync.md)). `crates/` holds `digitalis` and the
+  standalone hostpanel.
 
 The name: Digitalis, "of the finger", is the Latin name the botanist Leonhart Fuchs gave the
 foxglove in 1542.
@@ -26,7 +29,9 @@ foxglove in 1542.
 | `boards/shields/nice_view_custom/` | custom screens, host link, art relay ([art credits](boards/shields/nice_view_custom/ART_CREDITS.md)) |
 | `scripts/flipper_art.py` | builds the right-hand art (`custom_art.c`, or a `.bin` blob to push) |
 | `keymap-drawer/` | keymap diagram, redrawn by CI |
-| `crates/`, `app/` | desktop side (coming; `app/keypeek` will be a submodule) |
+| `app/` | the Foxglove app (KeyPeek absorbed; own Cargo workspace): `cargo run --manifest-path app/Cargo.toml` |
+| `crates/` | `digitalis` (the PC end of the link) and `hostpanel` (screens tray app/CLI) |
+| `scripts/check.ps1` | lint and tests for `crates/` and `app/`: run it before pushing desktop changes |
 | `docs/` | design notes; [`docs/upstream/`](docs/upstream/README_EN.md) has the vendor's original README |
 
 ## Building and flashing
