@@ -6,7 +6,7 @@ desktop app. *Digitalis*, the plant's Latin name, which means "of the finger" an
 (formerly `hostlink`) and the 0xD5/0xD6 protocol. The firmware headers keep their `host_link`
 file names.
 
-Status: proposal (2026-10-20). Tracked in BanditF/foxglove-tracker.
+Status: proposal (2026-10-20). Tracked in this repo's issues.
 
 ## Where things stand
 
@@ -28,7 +28,7 @@ writers fighting over the panel.
 Build one app, **Foxglove**. It takes over everything KeyPeek does and adds the screens. Its link
 to the keyboard is a library, **Digitalis**.
 
-Repo layout (decided 2026-10-20, tracker #18): **zmk-new_corne grows into Foxglove.**
+Repo layout (decided 2026-10-20, BanditF/foxglove-tracker#18): **zmk-new_corne grows into Foxglove.**
 The firmware stays at the root, so the ZMK build, artifact names and flashing are untouched. The
 repo was renamed to `foxglove` (GitHub redirects the old URL). It stays public because the art
 requires it.
@@ -281,8 +281,8 @@ Each migration step becomes one issue. Labels: `link`, `panel`, `art`, `ui`, `ap
 
 ## Open questions for the user
 
-1. ~~Where do the issues live?~~ Decided: in BanditF/foxglove once issues are enabled there. Until
-   then they live in the private tracker BanditF/foxglove-tracker.
+1. ~~Where do the issues live?~~ Decided: in BanditF/foxglove (moved 2026-10-20; the old
+   tracker is archived).
 2. ~~Name~~ Decided: Foxglove for the app (crate, exe, settings), and Digitalis for the link
    (crate and protocol). KeyPeek is absorbed whole, via subtree into `app/`.
 3. **Fork base.** Rebase onto upstream `master` and drop `monitor-select`, since #49 covers it?

@@ -1,0 +1,17 @@
+[package]
+name = "digitalis"
+version = "0.1.0"
+edition = "2021"
+description = "Foxglove's link to the keyboard: the host panel and art relay protocol over Raw HID"
+license = "MIT"
+
+[features]
+default = ["hid"]
+# The hidapi transport; leave it out to use the protocol with your own transport.
+hid = ["dep:hidapi"]
+
+[dependencies]
+anyhow = "1"
+crc32fast = "1.4"
+embedded-graphics = "0.8"
+hidapi = { version = "2.6", optional = true }
