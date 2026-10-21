@@ -3,9 +3,9 @@
  * art relay service (art_relay_peripheral.c) over the split connection.
  * SPDX-License-Identifier: MIT
  *
- * The service isn't part of ZMK's split protocol, so this finds it on its own: once the split
- * connection is up (and ZMK has had time to secure it), it discovers the service and its two
- * characteristics. Pushes run on their own work queue, where blocking on the radio is fine.
+ * The service isn't part of ZMK's split protocol, so this finds it on its own: well after the
+ * split connection is secured (once ZMK's own discovery is done), it discovers the service and
+ * its two characteristics. Pushes run on their own work queue, where blocking on the radio is fine.
  */
 
 #include <string.h>
@@ -24,7 +24,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "art_relay.h"
 
-#define DISCOVER_DELAY K_SECONDS(3)
+// ZMK discovers and subscribes to its own split service once the link is secured; a discovery
+// of ours running alongside that wedged both (requests never answered), so wait it out.
+#define DISCOVER_DELAY K_SECONDS(15)
 #define DISCOVER_RETRY K_SECONDS(5)
 #define DISCOVER_TRIES 20
 #define GATT_TIMEOUT K_SECONDS(3)
@@ -140,7 +142,12 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     peer = bt_conn_ref(conn);
     data_handle = status_handle = 0;
     discovery_tries = 0;
-    k_work_reschedule(&discover_work, DISCOVER_DELAY);
+}
+
+static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err) {
+    if (conn == peer && !err && level >= BT_SECURITY_L2 && !(data_handle && status_handle)) {
+        k_work_reschedule(&discover_work, DISCOVER_DELAY);
+    }
 }
 
 static void disconnected(struct bt_conn *conn, uint8_t reason) {
@@ -156,6 +163,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
 BT_CONN_CB_DEFINE(art_relay_conn_cb) = {
     .connected = connected,
     .disconnected = disconnected,
+    .security_changed = security_changed,
 };
 
 /* GATT calls, made synchronous for the push work queue */
