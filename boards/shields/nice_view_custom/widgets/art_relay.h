@@ -86,6 +86,10 @@ enum art_relay_discovery {
     ART_DISCOVERY_DONE,
 };
 void art_relay_discovery(int8_t *result, uint8_t *tries);
+// Counters for debugging the link: chrcs seen, discoveries finished, last request return
+// value, last ATT error, timeouts, callbacks, request in flight, security level, MTU u16.
+#define ART_RELAY_DEBUG_SIZE 10
+void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]);
 // 0 = right half not connected, 1 = connected, 2 = connected and has the relay service.
 uint8_t art_relay_link(void);
 // Fills out with: state, error, length u16, pushed u16, link, struct art_relay_status.

@@ -44,6 +44,16 @@ static const struct bt_uuid_128 service_uuid = BT_UUID_INIT_128(ART_RELAY_SERVIC
 static const struct bt_uuid_128 data_uuid = BT_UUID_INIT_128(ART_RELAY_DATA_UUID);
 static const struct bt_uuid_128 status_uuid = BT_UUID_INIT_128(ART_RELAY_STATUS_UUID);
 
+// Counters and last results, reported to the PC in the HELLO reply (art_relay_debug).
+static struct {
+    uint8_t chrcs;     // characteristics seen by discovery
+    uint8_t ends;      // discovery procedures that finished
+    int8_t write_ret;  // last bt_gatt_write / bt_gatt_read return value
+    uint8_t att_err;   // last ATT error from a write or read callback
+    uint8_t timeouts;  // requests that got no callback within GATT_TIMEOUT
+    uint8_t answered;  // callbacks for requests
+} dbg;
+
 /* Discovery */
 
 static struct bt_gatt_discover_params discover_params;
@@ -62,6 +72,7 @@ static void discovery_failed(int8_t result) {
 static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                           struct bt_gatt_discover_params *params) {
     if (attr == NULL) {
+        dbg.ends++;
         LOG_INF("art relay: right half %s", data_handle ? "ready" : "has no relay");
         if (data_handle && status_handle) {
             discovery = ART_DISCOVERY_DONE;
@@ -70,6 +81,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         }
         return BT_GATT_ITER_STOP;
     }
+    dbg.chrcs++;
     const struct bt_gatt_chrc *chrc = attr->user_data;
     if (bt_uuid_cmp(chrc->uuid, &data_uuid.uuid) == 0) {
         data_handle = chrc->value_handle;
@@ -82,6 +94,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 static uint8_t service_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                              struct bt_gatt_discover_params *params) {
     if (attr == NULL) {
+        dbg.ends++;
         LOG_INF("art relay: right half has no relay service");
         discovery_failed(ART_DISCOVERY_NO_SERVICE);
         return BT_GATT_ITER_STOP;
@@ -149,24 +162,49 @@ BT_CONN_CB_DEFINE(art_relay_conn_cb) = {
 
 static K_SEM_DEFINE(gatt_done, 0, 1);
 static uint8_t gatt_err;
+// A request whose callback hasn't come yet; its params must not be reused until it does.
+static atomic_t in_flight;
+
+static int wait_done(int ret) {
+    dbg.write_ret = MAX(ret, INT8_MIN);
+    if (ret) {
+        atomic_set(&in_flight, 0);
+        return -EIO;
+    }
+    if (k_sem_take(&gatt_done, GATT_TIMEOUT)) {
+        dbg.timeouts++;
+        return -ETIMEDOUT;
+    }
+    dbg.att_err = gatt_err;
+    return gatt_err ? -EIO : 0;
+}
+
+static void request_done(uint8_t err) {
+    gatt_err = err;
+    dbg.answered++;
+    atomic_set(&in_flight, 0);
+    k_sem_give(&gatt_done);
+}
 
 static void write_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_write_params *params) {
-    gatt_err = err;
-    k_sem_give(&gatt_done);
+    request_done(err);
 }
 
 static int write_req(const uint8_t *data, uint16_t len) {
     static struct bt_gatt_write_params params;
+    static uint8_t copy[8];
+    if (atomic_get(&in_flight) || len > sizeof(copy)) {
+        return -EBUSY;
+    }
+    memcpy(copy, data, len); // the request may outlive the caller's buffer
     params.func = write_cb;
     params.handle = data_handle;
     params.offset = 0;
-    params.data = data;
+    params.data = copy;
     params.length = len;
     k_sem_reset(&gatt_done);
-    if (bt_gatt_write(peer, &params) || k_sem_take(&gatt_done, GATT_TIMEOUT)) {
-        return -EIO;
-    }
-    return gatt_err ? -EIO : 0;
+    atomic_set(&in_flight, 1); // before the call: the callback can come before it returns
+    return wait_done(bt_gatt_write(peer, &params));
 }
 
 static int write_cmd(const uint8_t *data, uint16_t len) {
@@ -186,22 +224,22 @@ static uint8_t read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_pa
         memcpy(&right, data, MIN(length, sizeof(right)));
         return BT_GATT_ITER_CONTINUE;
     }
-    gatt_err = err;
-    k_sem_give(&gatt_done);
+    request_done(err);
     return BT_GATT_ITER_STOP;
 }
 
 static int read_status(void) {
     static struct bt_gatt_read_params params;
+    if (atomic_get(&in_flight)) {
+        return -EBUSY;
+    }
     params.func = read_cb;
     params.handle_count = 1;
     params.single.handle = status_handle;
     params.single.offset = 0;
     k_sem_reset(&gatt_done);
-    if (bt_gatt_read(peer, &params) || k_sem_take(&gatt_done, GATT_TIMEOUT)) {
-        return -EIO;
-    }
-    return gatt_err ? -EIO : 0;
+    atomic_set(&in_flight, 1);
+    return wait_done(bt_gatt_read(peer, &params));
 }
 
 /* Pushes */
@@ -328,6 +366,18 @@ int art_relay_select(int8_t set) {
 void art_relay_discovery(int8_t *result, uint8_t *tries) {
     *result = discovery;
     *tries = discovery_tries;
+}
+
+void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]) {
+    out[0] = dbg.chrcs;
+    out[1] = dbg.ends;
+    out[2] = (uint8_t)dbg.write_ret;
+    out[3] = dbg.att_err;
+    out[4] = dbg.timeouts;
+    out[5] = dbg.answered;
+    out[6] = atomic_get(&in_flight);
+    out[7] = peer ? bt_conn_get_security(peer) : 0;
+    sys_put_le16(peer ? bt_gatt_get_mtu(peer) : 0, &out[8]);
 }
 
 uint8_t art_relay_link(void) {

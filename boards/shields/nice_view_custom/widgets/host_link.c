@@ -111,9 +111,12 @@ static void panel_command(const uint8_t *d) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
         art_relay_discovery(&discovery, &tries);
 #endif
-        uint8_t r[] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
-                       HOST_PANEL_H,    HOST_PANEL_X,       HOST_PANEL_Y,      right_link(),
-                       right_battery,   (uint8_t)discovery, tries};
+        uint8_t r[11 + 10] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
+                              HOST_PANEL_H,    HOST_PANEL_X,       HOST_PANEL_Y,      right_link(),
+                              right_battery,   (uint8_t)discovery, tries};
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+        art_relay_debug(&r[11]);
+#endif
         reply(r, sizeof(r));
         break;
     }
