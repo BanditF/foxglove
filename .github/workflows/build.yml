@@ -10,6 +10,8 @@ on:
       - "docs/**"
       - "**/*.md"
       - "LICENSE"
+      - "Cargo.toml"
+      - "Cargo.lock"
 
 jobs:
   build:
