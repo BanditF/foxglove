@@ -90,6 +90,14 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     } else if (bt_uuid_cmp(chrc->uuid, &status_uuid.uuid) == 0) {
         status_handle = chrc->value_handle;
     }
+    if (data_handle && status_handle) {
+        // Stop here: at MTU 23 each response holds one characteristic, and the request Zephyr
+        // sends to look past the last one was never answered, which stalled every request
+        // queued after it on the split link (ZMK's own included).
+        dbg.ends++;
+        discovery = ART_DISCOVERY_DONE;
+        return BT_GATT_ITER_STOP;
+    }
     return BT_GATT_ITER_CONTINUE;
 }
 
