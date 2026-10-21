@@ -4,6 +4,12 @@ on:
   push:
     paths-ignore:
       - "keymap-drawer/**"
+      # Desktop side and docs: no firmware in there.
+      - "crates/**"
+      - "app/**"
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
 
 jobs:
   build:
