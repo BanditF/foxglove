@@ -122,7 +122,7 @@ pub fn run(
     // Build the overlay layer surface: above everything, covering the whole output,
     // initially interactive because the settings window opens on first launch.
     let surface = compositor_state.create_surface(&qh);
-    let layer = shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("keypeek"), None);
+    let layer = shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("foxglove"), None);
     layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
     layer.set_exclusive_zone(-1);
     layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
@@ -263,10 +263,10 @@ impl WaylandApp {
                         self.gl = Some(gl);
                         self.egl = Some(egl);
                     }
-                    Err(e) => eprintln!("KeyPeek: egui_glow painter init failed: {e}"),
+                    Err(e) => eprintln!("Foxglove: egui_glow painter init failed: {e}"),
                 }
             }
-            Err(e) => eprintln!("KeyPeek: EGL init failed: {e}"),
+            Err(e) => eprintln!("Foxglove: EGL init failed: {e}"),
         }
     }
 

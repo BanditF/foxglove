@@ -185,7 +185,7 @@ pub fn run(
             Ok(()) => return Ok(()),
             Err(e) => {
                 eprintln!(
-                    "KeyPeek: XWayland/X11 backend unavailable ({e}); \
+                    "Foxglove: XWayland/X11 backend unavailable ({e}); \
                      retrying on Wayland (overlay will not stay always-on-top)."
                 );
             }
@@ -239,7 +239,7 @@ fn run_inner(
     }
 
     eframe::run_native(
-        "KeyPeek",
+        "Foxglove",
         options,
         Box::new(move |cc| {
             #[cfg(target_os = "macos")]

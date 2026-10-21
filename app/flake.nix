@@ -1,5 +1,5 @@
 {
-  description = "keypeek";
+  description = "foxglove";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -107,20 +107,20 @@
 
       # Build the actual crate itself, reusing the dependency
       # artifacts from above.
-      keypeek = craneLib.buildPackage (commonArgs
+      foxglove = craneLib.buildPackage (commonArgs
         // {
           inherit cargoArtifacts;
         }
         // {
           nativeBuildInputs = [pkgs.makeWrapper];
           postInstall = ''
-            wrapProgram "$out/bin/keypeek" --prefix LD_LIBRARY_PATH : "${libPath}"
+            wrapProgram "$out/bin/foxglove" --prefix LD_LIBRARY_PATH : "${libPath}"
           '';
         });
     in {
       checks = {
         # Build the crate as part of `nix flake check` for convenience
-        inherit keypeek;
+        inherit foxglove;
 
         # Run clippy (and deny all warnings) on the crate source,
         # again, reusing the dependency artifacts from above.
@@ -128,36 +128,36 @@
         # Note that this is done as a separate derivation so that
         # we can block the CI if there are issues here, but not
         # prevent downstream consumers from building our crate by itself.
-        #keypeek-clippy = craneLib.cargoClippy (commonArgs
+        #foxglove-clippy = craneLib.cargoClippy (commonArgs
         #  // {
         #    inherit cargoArtifacts;
         #    cargoClippyExtraArgs = "--all-targets -- --deny warnings";
         #  });
 
-        #keypeek-doc = craneLib.cargoDoc (commonArgs
+        #foxglove-doc = craneLib.cargoDoc (commonArgs
         #  // {
         #    inherit cargoArtifacts;
         #  });
 
         # Check formatting
-        #keypeek-fmt = craneLib.cargoFmt {
+        #foxglove-fmt = craneLib.cargoFmt {
         #  inherit src;
         #};
 
         # Audit dependencies
-        #keypeek-audit = craneLib.cargoAudit {
+        #foxglove-audit = craneLib.cargoAudit {
         #  inherit src advisory-db;
         #};
 
         # Audit licenses
-        #keypeek-deny = craneLib.cargoDeny {
+        #foxglove-deny = craneLib.cargoDeny {
         #  inherit src;
         #};
 
         # Run tests with cargo-nextest
-        # Consider setting `doCheck = false` on `keypeek` if you do not want
+        # Consider setting `doCheck = false` on `foxglove` if you do not want
         # the tests to run twice
-        keypeek-nextest = craneLib.cargoNextest (commonArgs
+        foxglove-nextest = craneLib.cargoNextest (commonArgs
           // {
             inherit cargoArtifacts;
             partitions = 1;
@@ -178,17 +178,17 @@
 
       packages =
         {
-          default = keypeek;
+          default = foxglove;
         }
         // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
-          keypeek-llvm-coverage = craneLibLLvmTools.cargoLlvmCov (commonArgs
+          foxglove-llvm-coverage = craneLibLLvmTools.cargoLlvmCov (commonArgs
             // {
               inherit cargoArtifacts;
             });
         };
 
       apps.default = flake-utils.lib.mkApp {
-        drv = keypeek;
+        drv = foxglove;
       };
 
       devShells.default = craneLib.devShell {

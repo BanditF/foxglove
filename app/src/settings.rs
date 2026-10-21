@@ -267,14 +267,19 @@ impl Settings {
     }
 
     fn project_dirs() -> Option<ProjectDirs> {
-        ProjectDirs::from("dev", "srwi", "KeyPeek")
+        ProjectDirs::from("", "", "Foxglove")
+    }
+
+    /// Where KeyPeek kept its settings; read until Foxglove saves its own.
+    fn keypeek_file_path() -> Option<PathBuf> {
+        ProjectDirs::from("dev", "srwi", "KeyPeek").map(|dirs| dirs.config_dir().join("settings.ini"))
     }
 
     pub fn save(&self) -> std::io::Result<()> {
         let path = Self::config_file_path().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                "could not determine the KeyPeek config directory",
+                "could not determine the Foxglove config directory",
             )
         })?;
         if let Some(parent) = path.parent() {
@@ -286,6 +291,7 @@ impl Settings {
     pub fn load() -> Option<Self> {
         Self::config_file_path()
             .and_then(Self::load_from_file)
+            .or_else(|| Self::keypeek_file_path().and_then(Self::load_from_file))
             .or_else(|| Self::load_from_file("settings.ini"))
     }
 

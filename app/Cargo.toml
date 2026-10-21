@@ -1,11 +1,11 @@
 [package]
-name = "keypeek"
+name = "foxglove"
 license = "GPL-3.0-only"
-description = "Keyboard layer overlay for VIA, Vial, and ZMK"
-authors = ["Stephan Rumswinkel"]
-repository = "https://github.com/srwi/keypeek"
+description = "Foxglove: keyboard layer overlay and screens for the Eyelash Corne; based on KeyPeek"
+authors = ["Stephan Rumswinkel", "BanditF"]
+repository = "https://github.com/BanditF/foxglove"
 readme = "README.md"
-version = "0.10.0"
+version = "0.1.0"
 edition = "2021"
 
 [dependencies]
@@ -60,8 +60,8 @@ winreg = "0.56.0"
 winresource = "0.1.31"
 
 [package.metadata.bundle]
-name = "KeyPeek"
-identifier = "dev.srwi.keypeek"
+name = "Foxglove"
+identifier = "dev.banditf.foxglove"
 osx_info_plist_exts = ["resources/macos-info-plist-ext.xml"]
 
 [package.metadata.appimage]

@@ -1,10 +1,10 @@
 [Desktop Entry]
 Type=Application
-Name=KeyPeek
+Name=Foxglove
 Comment=Live keyboard layer overlay for QMK, Vial, and ZMK keyboards
-Exec=keypeek
-Icon=keypeek
+Exec=foxglove
+Icon=foxglove
 Terminal=false
 Categories=Utility;
 Keywords=keyboard;layer;overlay;qmk;via;vial;zmk;
-StartupWMClass=keypeek
+StartupWMClass=foxglove

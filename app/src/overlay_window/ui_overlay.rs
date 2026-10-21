@@ -24,7 +24,7 @@ impl OverlayApp {
         // in `key_paint` so pickers render identically.
         let style = self.paint_style(size);
 
-        let overlay_response = Window::new("KeyPeek")
+        let overlay_response = Window::new("Foxglove")
             .open(&mut window_open)
             .auto_sized()
             .interactable(hit_test_enabled)

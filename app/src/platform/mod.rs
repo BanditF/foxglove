@@ -42,7 +42,7 @@ pub fn run(
                     // No wlr-layer-shell (e.g. GNOME/Mutter): fall back to eframe on
                     // XWayland, since native Wayland ignores always-on-top.
                     eprintln!(
-                        "KeyPeek: Wayland layer-shell host unavailable ({e}); \
+                        "Foxglove: Wayland layer-shell host unavailable ({e}); \
                          falling back to eframe on XWayland for always-on-top."
                     );
                     return Ok(eframe_host::run(settings, devices, true)?);

@@ -64,7 +64,7 @@ fn build_tray_icon() -> TrayIcon {
     let builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_icon(create_icon())
-        .with_tooltip("KeyPeek");
+        .with_tooltip("Foxglove");
 
     // Left click opens the settings instead (see `create_tray_icon`).
     #[cfg(target_os = "windows")]

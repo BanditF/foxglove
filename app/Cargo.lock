@@ -1760,6 +1760,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "foxglove"
+version = "0.1.0"
+dependencies = [
+ "directories",
+ "eframe",
+ "egui 0.36.1",
+ "egui-file-dialog",
+ "egui-phosphor",
+ "egui_extras",
+ "egui_glow",
+ "gtk",
+ "hidapi",
+ "image",
+ "khronos-egl",
+ "lzma-rs",
+ "objc2-app-kit 0.3.2",
+ "qmk-via-api",
+ "raw-window-handle",
+ "rust-ini",
+ "serde",
+ "serde_json",
+ "serialport",
+ "smithay-client-toolkit 0.21.1",
+ "tray-icon",
+ "wayland-client",
+ "wayland-egl",
+ "windows 0.62.2",
+ "winit",
+ "winreg",
+ "winresource",
+ "x11rb 0.14.0",
+ "xkbcommon 0.9.0",
+ "zmk-studio-api",
+]
+
+[[package]]
 name = "futures"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2694,42 +2730,6 @@ dependencies = [
  "bitflags 2.13.0",
  "serde",
  "unicode-segmentation",
-]
-
-[[package]]
-name = "keypeek"
-version = "0.10.0"
-dependencies = [
- "directories",
- "eframe",
- "egui 0.36.1",
- "egui-file-dialog",
- "egui-phosphor",
- "egui_extras",
- "egui_glow",
- "gtk",
- "hidapi",
- "image",
- "khronos-egl",
- "lzma-rs",
- "objc2-app-kit 0.3.2",
- "qmk-via-api",
- "raw-window-handle",
- "rust-ini",
- "serde",
- "serde_json",
- "serialport",
- "smithay-client-toolkit 0.21.1",
- "tray-icon",
- "wayland-client",
- "wayland-egl",
- "windows 0.62.2",
- "winit",
- "winreg",
- "winresource",
- "x11rb 0.14.0",
- "xkbcommon 0.9.0",
- "zmk-studio-api",
 ]
 
 [[package]]
