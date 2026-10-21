@@ -1,6 +1,10 @@
 /*
  * Right half: takes an art set pushed over the split link (art_relay.h) and plays it from RAM.
  * SPDX-License-Identifier: MIT
+ *
+ * Two slots: one holds the pushed set on screen (if any), the other takes the next push. The
+ * screen only changes once a blob has fully arrived and passed its CRC and header checks, so a
+ * push that fails, stops halfway or never commits leaves whatever is playing alone.
  */
 
 #include <string.h>
@@ -20,9 +24,11 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "custom_art.h"
 #include "peripheral_status.h"
 
-static uint8_t slot[CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE];
-static uint16_t slot_len;
-static uint32_t slot_crc;
+static uint8_t slots[2][CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE];
+static int shown = -1; // slot playing, or -1 for a built-in set
+static int rx;         // slot being received into; never the one shown
+static uint16_t rx_len;
+static uint32_t rx_crc;
 
 static struct art_relay_status status = {
     .version = 1,
@@ -30,12 +36,17 @@ static struct art_relay_status status = {
     .set = -1,
 };
 
-static const uint8_t *ram_deltas[256];
-static struct custom_art_set ram_set = {.name = "pushed", .deltas = ram_deltas};
+static const uint8_t *ram_deltas[2][256];
+static struct custom_art_set ram_sets[2] = {
+    {.name = "pushed", .deltas = ram_deltas[0]},
+    {.name = "pushed", .deltas = ram_deltas[1]},
+};
 
-// Fills ram_set from the blob in slot; false if it doesn't hold together.
+// Fills ram_sets[rx] from the blob in slots[rx]; false if it doesn't hold together.
 static bool parse_blob(void) {
-    const uint8_t *b = slot;
+    const uint8_t *b = slots[rx];
+    uint16_t slot_len = rx_len;
+    struct custom_art_set *ram_set = &ram_sets[rx];
     if (slot_len < ART_RELAY_HEADER_SIZE || memcmp(b, ART_RELAY_MAGIC, 4) != 0 ||
         b[4] != CUSTOM_ART_W || b[5] != CUSTOM_ART_H) {
         return false;
@@ -43,7 +54,7 @@ static bool parse_blob(void) {
     int unique = sys_get_le16(&b[8]);
     int frames = sys_get_le16(&b[10]);
     int deltas_at = ART_RELAY_HEADER_SIZE + frames + 2 * unique;
-    if (unique < 1 || unique > ARRAY_SIZE(ram_deltas) || frames < 1 || deltas_at >= slot_len) {
+    if (unique < 1 || unique > ARRAY_SIZE(ram_deltas[0]) || frames < 1 || deltas_at >= slot_len) {
         return false;
     }
     const uint8_t *order = &b[ART_RELAY_HEADER_SIZE];
@@ -57,19 +68,19 @@ static bool parse_blob(void) {
         if (at < deltas_at || at >= slot_len) {
             return false;
         }
-        ram_deltas[i] = &b[at];
+        ram_deltas[rx][i] = &b[at];
     }
-    ram_set.order = order;
-    ram_set.frame_count = frames;
-    ram_set.fps = b[6];
+    ram_set->order = order;
+    ram_set->frame_count = frames;
+    ram_set->fps = b[6];
     return true;
 }
 
 static int8_t select_set;
 
 static void play_cb(struct k_work *work) {
-    if (status.state == ART_RIGHT_PLAYING) {
-        art_play(&ram_set);
+    if (shown >= 0) {
+        art_play(&ram_sets[shown]);
     } else {
         status.set = art_builtin_index(select_set);
         art_play(&custom_art_sets[status.set]);
@@ -96,13 +107,12 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         if (len < 7) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
         }
-        if (status.state == ART_RIGHT_PLAYING) {
-            art_hold(); // the slot is about to change under the playing set
-        }
-        slot_len = sys_get_le16(&d[1]);
-        slot_crc = sys_get_le32(&d[3]);
+        // The screen keeps playing; this only fills the slot that isn't shown.
+        rx = shown == 0 ? 1 : 0;
+        rx_len = sys_get_le16(&d[1]);
+        rx_crc = sys_get_le32(&d[3]);
         status.received = 0;
-        status.state = slot_len <= sizeof(slot) ? ART_RIGHT_RECEIVING : ART_RIGHT_TOO_BIG;
+        status.state = rx_len <= sizeof(slots[0]) ? ART_RIGHT_RECEIVING : ART_RIGHT_TOO_BIG;
         break;
 
     case ART_RELAY_DATA: {
@@ -111,8 +121,8 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         }
         uint16_t at = sys_get_le16(&d[1]);
         uint16_t n = len - 3;
-        if (at + n <= slot_len) {
-            memcpy(&slot[at], &d[3], n);
+        if (at + n <= rx_len) {
+            memcpy(&slots[rx][at], &d[3], n);
             status.received += n;
         }
         break;
@@ -122,14 +132,17 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         if (status.state != ART_RIGHT_RECEIVING) {
             break;
         }
-        if (status.received != slot_len || crc32_ieee(slot, slot_len) != slot_crc) {
+        if (status.received != rx_len || crc32_ieee(slots[rx], rx_len) != rx_crc) {
             status.state = ART_RIGHT_BAD_CRC;
         } else if (!parse_blob()) {
             status.state = ART_RIGHT_BAD_BLOB;
         } else {
+            // Freeze the old set until play_cb switches over, so the next push can take its slot.
+            art_hold();
+            shown = rx;
             status.state = ART_RIGHT_PLAYING;
             status.set = -1;
-            LOG_INF("art relay: playing pushed set, %d frames", ram_set.frame_count);
+            LOG_INF("art relay: playing pushed set, %d frames", ram_sets[shown].frame_count);
             play();
         }
         break;
@@ -139,6 +152,8 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
         }
         select_set = (int8_t)d[1];
+        art_hold(); // as for COMMIT: a push may reuse the shown slot before play_cb runs
+        shown = -1;
         status.state = ART_RIGHT_IDLE;
         play();
         break;

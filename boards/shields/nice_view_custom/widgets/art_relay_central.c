@@ -5,7 +5,9 @@
  *
  * The service isn't part of ZMK's split protocol, so this finds it on its own: well after the
  * split connection is secured (once ZMK's own discovery is done), it discovers the service and
- * its two characteristics. Pushes run on their own work queue, where blocking on the radio is fine.
+ * its two characteristics. Pushes run on their own work queue, where blocking on the radio is fine;
+ * every request there has a timeout, and a push holds its own reference to the connection so the
+ * link dropping mid-push only fails the push.
  */
 
 #include <string.h>
@@ -206,7 +208,7 @@ static void write_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_write_par
     request_done(err);
 }
 
-static int write_req(const uint8_t *data, uint16_t len) {
+static int write_req(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
     static struct bt_gatt_write_params params;
     static uint8_t copy[8];
     if (atomic_get(&in_flight) || len > sizeof(copy)) {
@@ -220,12 +222,12 @@ static int write_req(const uint8_t *data, uint16_t len) {
     params.length = len;
     k_sem_reset(&gatt_done);
     atomic_set(&in_flight, 1); // before the call: the callback can come before it returns
-    return wait_done(bt_gatt_write(peer, &params));
+    return wait_done(bt_gatt_write(conn, &params));
 }
 
-static int write_cmd(const uint8_t *data, uint16_t len) {
+static int write_cmd(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
     for (int tries = 0; tries < 50; tries++) {
-        int err = bt_gatt_write_without_response(peer, data_handle, data, len, false);
+        int err = bt_gatt_write_without_response(conn, data_handle, data, len, false);
         if (err != -ENOMEM && err != -EAGAIN) {
             return err;
         }
@@ -244,7 +246,7 @@ static uint8_t read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_pa
     return BT_GATT_ITER_STOP;
 }
 
-static int read_status(void) {
+static int read_status(struct bt_conn *conn) {
     static struct bt_gatt_read_params params;
     if (atomic_get(&in_flight)) {
         return -EBUSY;
@@ -255,7 +257,7 @@ static int read_status(void) {
     params.single.offset = 0;
     k_sem_reset(&gatt_done);
     atomic_set(&in_flight, 1);
-    return wait_done(bt_gatt_read(peer, &params));
+    return wait_done(bt_gatt_read(conn, &params));
 }
 
 /* Pushes */
@@ -269,38 +271,66 @@ static void fail(uint8_t err) {
     state = ART_LEFT_FAILED;
 }
 
-static void push_cb(struct k_work *work) {
-    if (art_relay_link() < 2) {
-        fail(ART_ERR_NO_LINK);
-        return;
+// The PC went quiet mid-blob (app killed, cable pulled): drop what came so far.
+static void receive_timeout_cb(struct k_work *work) {
+    if (state == ART_LEFT_RECEIVING) {
+        LOG_WRN("art relay: no data from the PC for a while, dropping the blob");
+        blob_len = 0;
+        error = ART_ERR_TIMEOUT;
+        state = ART_LEFT_IDLE;
     }
+}
+static K_WORK_DELAYABLE_DEFINE(receive_timeout, receive_timeout_cb);
+
+// A reference to the split connection for one job on the relay queue, or NULL if the right half
+// isn't there or has no relay service. If the link drops mid-job, its requests fail with an error
+// instead of touching a connection that is gone.
+static struct bt_conn *job_conn(void) {
+    struct bt_conn *conn = NULL;
+    unsigned int key = irq_lock(); // disconnected() clears peer from the Bluetooth thread
+    if (art_relay_link() == 2) {
+        conn = bt_conn_ref(peer);
+    }
+    irq_unlock(key);
+    return conn;
+}
+
+static int push(struct bt_conn *conn) {
     uint8_t buf[3 + 244];
     buf[0] = ART_RELAY_BEGIN;
     sys_put_le16(blob_len, &buf[1]);
     sys_put_le32(blob_crc, &buf[3]);
-    if (write_req(buf, 7)) {
-        fail(ART_ERR_BLE);
-        return;
+    if (write_req(conn, buf, 7)) {
+        return ART_ERR_BLE;
     }
-    int chunk = CLAMP((int)bt_gatt_get_mtu(peer) - 3 - 3, 16, (int)sizeof(buf) - 3);
+    int chunk = CLAMP((int)bt_gatt_get_mtu(conn) - 3 - 3, 16, (int)sizeof(buf) - 3);
     for (pushed = 0; pushed < blob_len;) {
         int n = MIN(chunk, blob_len - pushed);
         buf[0] = ART_RELAY_DATA;
         sys_put_le16(pushed, &buf[1]);
         memcpy(&buf[3], &blob[pushed], n);
-        if (peer == NULL || write_cmd(buf, 3 + n)) {
-            fail(ART_ERR_BLE);
-            return;
+        if (write_cmd(conn, buf, 3 + n)) {
+            return ART_ERR_BLE;
         }
         pushed += n;
     }
     buf[0] = ART_RELAY_COMMIT;
-    if (write_req(buf, 1) || read_status()) {
-        fail(ART_ERR_BLE);
+    if (write_req(conn, buf, 1) || read_status(conn)) {
+        return ART_ERR_BLE;
+    }
+    return right.state == ART_RIGHT_PLAYING ? ART_ERR_NONE : ART_ERR_RIGHT;
+}
+
+static void push_cb(struct k_work *work) {
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        fail(ART_ERR_NO_LINK);
         return;
     }
-    if (right.state != ART_RIGHT_PLAYING) {
-        fail(ART_ERR_RIGHT);
+    int err = push(conn);
+    bt_conn_unref(conn);
+    if (err) {
+        fail(err);
         return;
     }
     state = ART_LEFT_DONE;
@@ -308,9 +338,16 @@ static void push_cb(struct k_work *work) {
 static K_WORK_DEFINE(push_work, push_cb);
 
 static void select_cb(struct k_work *work) {
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        fail(ART_ERR_NO_LINK);
+        return;
+    }
     uint8_t buf[] = {ART_RELAY_SELECT, select_set};
-    if (art_relay_link() < 2 || write_req(buf, sizeof(buf)) || read_status()) {
-        fail(art_relay_link() < 2 ? ART_ERR_NO_LINK : ART_ERR_BLE);
+    bool err = write_req(conn, buf, sizeof(buf)) || read_status(conn);
+    bt_conn_unref(conn);
+    if (err) {
+        fail(ART_ERR_BLE);
         return;
     }
     state = ART_LEFT_DONE;
@@ -318,8 +355,10 @@ static void select_cb(struct k_work *work) {
 static K_WORK_DEFINE(select_work, select_cb);
 
 static void status_cb(struct k_work *work) {
-    if (art_relay_link() == 2) {
-        read_status();
+    struct bt_conn *conn = job_conn();
+    if (conn != NULL) {
+        read_status(conn);
+        bt_conn_unref(conn);
     }
 }
 static K_WORK_DEFINE(status_work, status_cb);
@@ -331,9 +370,12 @@ int art_relay_begin(uint16_t len, uint32_t crc) {
         return -EBUSY; // leave the running push's state alone
     }
     if (len > sizeof(blob)) {
+        k_work_cancel_delayable(&receive_timeout);
         fail(ART_ERR_TOO_BIG);
         return -ENOMEM;
     }
+    // A BEGIN also replaces a receive that is stuck or still running.
+    k_work_reschedule(&receive_timeout, ART_RELAY_RECEIVE_TIMEOUT);
     blob_len = len;
     blob_crc = crc;
     pushed = 0;
@@ -347,10 +389,12 @@ int art_relay_data(uint16_t offset, const uint8_t *data, uint8_t len) {
         return -EINVAL;
     }
     if (offset + len > blob_len) {
+        k_work_cancel_delayable(&receive_timeout);
         fail(ART_ERR_RANGE);
         return -EINVAL;
     }
     memcpy(&blob[offset], data, len);
+    k_work_reschedule(&receive_timeout, ART_RELAY_RECEIVE_TIMEOUT);
     return 0;
 }
 
@@ -358,6 +402,7 @@ int art_relay_commit(void) {
     if (state != ART_LEFT_RECEIVING) {
         return -EINVAL;
     }
+    k_work_cancel_delayable(&receive_timeout);
     if (crc32_ieee(blob, blob_len) != blob_crc) {
         fail(ART_ERR_BAD_CRC);
         return -EINVAL;
@@ -371,6 +416,7 @@ int art_relay_select(int8_t set) {
     if (state == ART_LEFT_PUSHING) {
         return -EBUSY;
     }
+    k_work_cancel_delayable(&receive_timeout);
     select_set = set;
     state = ART_LEFT_PUSHING;
     error = ART_ERR_NONE;

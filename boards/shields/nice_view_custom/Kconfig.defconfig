@@ -51,6 +51,15 @@ config NICE_VIEW_HOST_LINK
     default y if RAW_HID
     depends on RAW_HID
 
+config NICE_VIEW_HOST_PANEL_TIMEOUT_S
+    int "Seconds without a host panel report before the WPM chart comes back (0 = never)"
+    default 0
+    range 0 3600
+    depends on NICE_VIEW_HOST_LINK
+    help
+      With 0 the left screen keeps the last frame the PC presented until the PC sends RELEASE
+      or the keyboard restarts, so a crashed or unplugged app leaves the screen as it was.
+
 config NICE_VIEW_ART_RELAY
     bool "Take right-hand art pushed from the PC through the left half"
     default y if ZMK_SPLIT_BLE && (NICE_VIEW_HOST_LINK || !ZMK_SPLIT_ROLE_CENTRAL)
