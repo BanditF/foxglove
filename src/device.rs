@@ -157,9 +157,12 @@ impl Keyboard {
                     debug: [0; 10],
                 },
             };
-            if let Ok(hello) = kb.say_hello() {
-                kb.hello = hello;
-                return Ok(kb);
+            // A reply now and then goes missing while other reports are in flight; ask again.
+            for _ in 0..3 {
+                if let Ok(hello) = kb.say_hello() {
+                    kb.hello = hello;
+                    return Ok(kb);
+                }
             }
         }
         if tried == 0 {

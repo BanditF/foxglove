@@ -7,6 +7,7 @@
 
 mod config;
 mod device;
+mod panel_lock;
 mod providers;
 mod render;
 
@@ -206,7 +207,8 @@ fn worker(shared: Shared) {
     let mut last_sent = Instant::now();
     let mut hello_at = Instant::now();
     let mut last_battery = None;
-    let mut was_paused = false;
+    let mut was_driving = false;
+    let mut lock = panel_lock::PanelLock::new();
     let mut tick: u32 = 0;
 
     while !shared.quit.load(Ordering::Relaxed) {
@@ -254,14 +256,17 @@ fn worker(shared: Shared) {
                 .and_then(|exe| cfg.games.get(&exe.to_lowercase()).cloned());
         }
 
+        // Draw only while we hold the panel lock; paused gives it up so another app can draw.
         let paused = shared.paused.load(Ordering::Relaxed);
-        let mut result = Ok(());
         if paused {
-            if !was_paused {
-                result = k.release();
-                last = None;
+            lock.release();
+        }
+        let driving = !paused && lock.acquire();
+        let mut result = Ok(());
+        if driving {
+            if !was_driving {
+                shared.set_status(format!("Connected: {}", k.product));
             }
-        } else {
             render::draw(&mut panel, &view, tick);
             // Resend now and then even when nothing changed: the firmware drops the panel
             // after 65 s of silence.
@@ -271,10 +276,17 @@ fn worker(shared: Shared) {
                 last = Some(panel.bits.clone());
                 last_sent = Instant::now();
             }
+        } else {
+            if was_driving {
+                result = k.release();
+                last = None;
+            }
+            shared.set_status(if paused { "Paused".to_string() } else { "Panel driven by another app".to_string() });
         }
-        was_paused = paused;
+        was_driving = driving;
 
-        if result.is_ok() && hello_at.elapsed() > Duration::from_secs(60) {
+        // HELLO turns the panel back on in the firmware, so only the app drawing it asks.
+        if driving && result.is_ok() && hello_at.elapsed() > Duration::from_secs(60) {
             hello_at = Instant::now();
             result = k.say_hello().map(|h| battery_log(h.right_battery, &mut last_battery));
         }
@@ -288,7 +300,8 @@ fn worker(shared: Shared) {
         let period = Duration::from_millis(1000 / cfg.fps as u64);
         std::thread::sleep(period.saturating_sub(frame_start.elapsed()));
     }
-    if let Some(k) = kb {
+    // Hand the panel back only if it was ours; another app may be drawing it.
+    if let (Some(k), true) = (kb, was_driving) {
         let _ = k.release();
     }
 }
