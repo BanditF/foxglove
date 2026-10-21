@@ -96,6 +96,12 @@ fn status() -> Result<()> {
         ["not connected", "connected (no art relay)", "connected"][h.right_link.min(2) as usize],
         h.right_battery.map(|b| format!("{b}%")).unwrap_or("unknown".into())
     );
+    println!("relay discovery: {} after {} tries", h.discovery_text(), h.discovery_tries);
+    let d = h.debug;
+    println!(
+        "relay debug: chrcs {} ends {} last ret {} att err {} timeouts {} answered {} in flight {} security {} mtu {}",
+        d[0], d[1], d[2] as i8, d[3], d[4], d[5], d[6], d[7], u16::from_le_bytes([d[8], d[9]])
+    );
     // The first STATUS starts a fresh read from the right half; the second returns it.
     kb.art_status()?;
     std::thread::sleep(Duration::from_millis(300));

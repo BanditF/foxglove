@@ -40,6 +40,25 @@ pub struct Hello {
     /// 0 = right half not connected, 1 = connected, 2 = connected with the art relay.
     pub right_link: u8,
     pub right_battery: Option<u8>,
+    /// How the left's search for the right's relay service went (art_relay_discovery).
+    pub discovery: i8,
+    pub discovery_tries: u8,
+    /// art_relay_debug: chrcs, ends, last ret, ATT err, timeouts, answered, in flight,
+    /// security, MTU u16
+    pub debug: [u8; 10],
+}
+
+impl Hello {
+    pub fn discovery_text(&self) -> String {
+        match self.discovery {
+            0 => "not started".into(),
+            1 => "running".into(),
+            2 => "service not found".into(),
+            3 => "service found, characteristics missing".into(),
+            4 => "found".into(),
+            e => format!("bt_gatt_discover error {e}"),
+        }
+    }
 }
 
 /// The art relay's report (art_relay_report in art_relay_central.c).
@@ -127,7 +146,16 @@ impl Keyboard {
             let mut kb = Keyboard {
                 dev,
                 product: name,
-                hello: Hello { version: 0, width: 0, height: 0, right_link: 0, right_battery: None },
+                hello: Hello {
+                    version: 0,
+                    width: 0,
+                    height: 0,
+                    right_link: 0,
+                    right_battery: None,
+                    discovery: 0,
+                    discovery_tries: 0,
+                    debug: [0; 10],
+                },
             };
             if let Ok(hello) = kb.say_hello() {
                 kb.hello = hello;
@@ -176,6 +204,9 @@ impl Keyboard {
             height: r[4] as usize,
             right_link: r[7],
             right_battery: (r[8] != 0xff).then_some(r[8]),
+            discovery: r[9] as i8,
+            discovery_tries: r[10],
+            debug: r[11..21].try_into().unwrap(),
         })
     }
 
