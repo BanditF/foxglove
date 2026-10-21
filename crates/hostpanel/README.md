@@ -1,8 +1,9 @@
 # hostpanel
 
 Drives the Eyelash Corne's nice!view screens from the PC over Raw HID (usage page 0xFF60), so new
-screen content is a PC-side change instead of a reflash. Needs the `host-panel` firmware
-(BanditF/zmk-new_corne); the protocol is in `boards/shields/nice_view_custom/widgets/host_link.h`.
+screen content is a PC-side change instead of a reflash. Needs the Foxglove firmware from this repo;
+the protocol is in `boards/shields/nice_view_custom/widgets/host_link.h`, and the PC side of it is
+the [`digitalis`](../digitalis) crate.
 
 - **Left screen:** a 64x52 panel in place of the WPM chart showing the clock, volume, the media
   title (scrolling) and a per-game hint. The PC draws every pixel, so changing the layout
@@ -23,6 +24,8 @@ Config: `%APPDATA%\hostpanel\config.toml` (written on first run): product filter
 `[games]` (exe name -> hint text). The right half's battery is logged to
 `%APPDATA%\hostpanel\right-battery.csv` whenever it changes.
 
-Runs alongside KeyPeek: both open the same interface and ignore each other's reports.
+Runs alongside KeyPeek: both open the same interface and ignore each other's reports. Only one app
+draws the panel at a time (named mutex `Local\Foxglove.Panel`); a second one waits.
 
-Build: `cargo build --release` (Rust, MSVC).
+Build from the repo root: `cargo build --release -p hostpanel` (Rust, MSVC); the exe lands in
+`target\release`.

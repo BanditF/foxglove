@@ -1,0 +1,8 @@
+# Desktop side of Foxglove. The firmware (boards/, config/) is built by ZMK's own workflow.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[profile.release]
+opt-level = "s"
+lto = true

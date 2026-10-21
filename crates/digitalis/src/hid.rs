@@ -1,0 +1,85 @@
+//! The hidapi transport: the keyboard's Raw HID interface (usage page 0xFF60, usage 0x61).
+
+use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, bail, Result};
+use hidapi::{HidApi, HidDevice};
+
+use crate::protocol::{self, Hello, REPORT};
+use crate::Transport;
+
+pub struct Keyboard {
+    dev: HidDevice,
+    pub product: String,
+    pub hello: Hello,
+}
+
+impl Keyboard {
+    /// Finds the first Raw HID interface that answers HELLO, optionally only products whose name
+    /// contains `product`.
+    pub fn open(api: &mut HidApi, product: Option<&str>) -> Result<Keyboard> {
+        api.refresh_devices()?;
+        let mut tried = 0;
+        for info in api.device_list() {
+            if info.usage_page() != protocol::USAGE_PAGE || info.usage() != protocol::USAGE {
+                continue;
+            }
+            let name = info.product_string().unwrap_or("").to_string();
+            if let Some(p) = product {
+                if !name.to_lowercase().contains(&p.to_lowercase()) {
+                    continue;
+                }
+            }
+            tried += 1;
+            let Ok(dev) = info.open_device(api) else { continue };
+            let mut kb = Keyboard { dev, product: name, hello: Hello::default() };
+            // A reply now and then goes missing while other reports are in flight; ask again.
+            for _ in 0..3 {
+                if let Ok(hello) = kb.say_hello() {
+                    kb.hello = hello;
+                    return Ok(kb);
+                }
+            }
+        }
+        if tried == 0 {
+            bail!("no Raw HID keyboard (usage page 0xFF60) found");
+        }
+        bail!("found {tried} Raw HID interface(s), but none answered: flash the host-panel firmware")
+    }
+
+    /// Drops input reports already waiting (other apps' traffic, stale replies).
+    fn drain(&self) {
+        let mut buf = [0u8; REPORT];
+        while matches!(self.dev.read_timeout(&mut buf, 0), Ok(n) if n > 0) {}
+    }
+
+    pub fn say_hello(&self) -> Result<Hello> {
+        let r = self.request(&protocol::hello(), protocol::PANEL, protocol::panel::HELLO, Duration::from_millis(500))?;
+        Ok(Hello::parse(&r))
+    }
+}
+
+impl Transport for Keyboard {
+    fn send(&self, data: &[u8]) -> Result<()> {
+        let mut buf = [0u8; REPORT + 1]; // byte 0 is the report ID
+        let n = data.len().min(REPORT);
+        buf[1..1 + n].copy_from_slice(&data[..n]);
+        self.dev.write(&buf)?;
+        Ok(())
+    }
+
+    fn request(&self, report: &[u8], proto: u8, cmd: u8, timeout: Duration) -> Result<[u8; REPORT]> {
+        self.drain();
+        self.send(report)?;
+        let end = Instant::now() + timeout;
+        let mut buf = [0u8; REPORT];
+        while Instant::now() < end {
+            let left = end.saturating_duration_since(Instant::now()).as_millis() as i32;
+            let n = self.dev.read_timeout(&mut buf, left.max(1))?;
+            if protocol::is_reply(&buf[..n], proto, cmd) {
+                return Ok(buf);
+            }
+        }
+        Err(anyhow!("no reply from the keyboard"))
+    }
+}

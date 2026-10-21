@@ -1,5 +1,6 @@
-//! Draws the panel: a 1-bit image, rows MSB first, 1 = ink, as the firmware takes it.
+//! Draws the panel's layout onto a digitalis Panel.
 
+pub use digitalis::panel::Panel;
 use embedded_graphics::{
     mono_font::{
         ascii::{FONT_4X6, FONT_5X8, FONT_9X18_BOLD},
@@ -10,56 +11,6 @@ use embedded_graphics::{
     primitives::{Line, PrimitiveStyle, Rectangle, Triangle},
     text::{Baseline, Text},
 };
-
-pub struct Panel {
-    pub width: usize,
-    pub height: usize,
-    pub stride: usize,
-    pub bits: Vec<u8>,
-}
-
-impl Panel {
-    pub fn new(width: usize, height: usize) -> Self {
-        let stride = width.div_ceil(8);
-        Panel { width, height, stride, bits: vec![0; stride * height] }
-    }
-
-    pub fn clear(&mut self) {
-        self.bits.fill(0);
-    }
-
-    fn set(&mut self, x: i32, y: i32, on: bool) {
-        if x < 0 || y < 0 || x as usize >= self.width || y as usize >= self.height {
-            return;
-        }
-        let (x, y) = (x as usize, y as usize);
-        let i = y * self.stride + x / 8;
-        let bit = 0x80 >> (x % 8);
-        if on {
-            self.bits[i] |= bit;
-        } else {
-            self.bits[i] &= !bit;
-        }
-    }
-}
-
-impl OriginDimensions for Panel {
-    fn size(&self) -> Size {
-        Size::new(self.width as u32, self.height as u32)
-    }
-}
-
-impl DrawTarget for Panel {
-    type Color = BinaryColor;
-    type Error = core::convert::Infallible;
-
-    fn draw_iter<I: IntoIterator<Item = Pixel<BinaryColor>>>(&mut self, pixels: I) -> Result<(), Self::Error> {
-        for Pixel(p, c) in pixels {
-            self.set(p.x, p.y, c.is_on());
-        }
-        Ok(())
-    }
-}
 
 /// Everything the panel shows; the providers fill it in.
 #[derive(Clone, Debug, Default, PartialEq)]

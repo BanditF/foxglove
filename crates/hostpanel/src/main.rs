@@ -6,7 +6,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod config;
-mod device;
 mod panel_lock;
 mod providers;
 mod render;
@@ -20,7 +19,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use hidapi::HidApi;
 
-use device::Keyboard;
+use digitalis::hid::Keyboard;
+use digitalis::{art, panel};
 use render::{Panel, View};
 
 #[derive(Parser)]
@@ -104,19 +104,19 @@ fn status() -> Result<()> {
         d[0], d[1], d[2] as i8, d[3], d[4], d[5], d[6], d[7], u16::from_le_bytes([d[8], d[9]])
     );
     // The first STATUS starts a fresh read from the right half; the second returns it.
-    kb.art_status()?;
+    art::status(&kb)?;
     std::thread::sleep(Duration::from_millis(300));
-    println!("art relay: {}", kb.art_status()?);
+    println!("art relay: {}", art::status(&kb)?);
     Ok(())
 }
 
 fn push_art(path: &PathBuf) -> Result<()> {
     let blob = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    anyhow::ensure!(blob.starts_with(b"NVA1"), "{} is not an art blob", path.display());
+    anyhow::ensure!(art::is_blob(&blob), "{} is not an art blob", path.display());
     let kb = open()?;
     let start = Instant::now();
     println!("sending {} bytes to {}", blob.len(), kb.product);
-    let st = kb.push_art(&blob, |s| {
+    let st = art::push(&kb, &blob, |s| {
         eprint!("\rpushing to the right half: {}/{} bytes", s.pushed, s.length);
     })?;
     eprintln!();
@@ -125,7 +125,7 @@ fn push_art(path: &PathBuf) -> Result<()> {
 }
 
 fn select(set: i8) -> Result<()> {
-    let st = open()?.select_art(set)?;
+    let st = art::select(&open()?, set)?;
     println!("{st}");
     Ok(())
 }
@@ -272,13 +272,13 @@ fn worker(shared: Shared) {
             // after 65 s of silence.
             let stale = last_sent.elapsed() > Duration::from_secs(20);
             if last.as_deref() != Some(&panel.bits[..]) || stale {
-                result = k.show(&panel.bits, last.as_deref(), panel.stride).map(|_| ());
+                result = panel::show(k, &panel.bits, last.as_deref(), panel.stride).map(|_| ());
                 last = Some(panel.bits.clone());
                 last_sent = Instant::now();
             }
         } else {
             if was_driving {
-                result = k.release();
+                result = panel::release(k);
                 last = None;
             }
             shared.set_status(if paused { "Paused".to_string() } else { "Panel driven by another app".to_string() });
@@ -302,7 +302,7 @@ fn worker(shared: Shared) {
     }
     // Hand the panel back only if it was ours; another app may be drawing it.
     if let (Some(k), true) = (kb, was_driving) {
-        let _ = k.release();
+        let _ = panel::release(&k);
     }
 }
 

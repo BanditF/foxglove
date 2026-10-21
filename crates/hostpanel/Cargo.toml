@@ -9,9 +9,9 @@ license = "MIT"
 anyhow = "1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
-crc32fast = "1.4"
 dirs = "6"
 embedded-graphics = "0.8"
+digitalis = { path = "../digitalis" }
 hidapi = "2.6"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
@@ -34,7 +34,3 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-
-[profile.release]
-opt-level = "s"
-lto = true

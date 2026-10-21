@@ -4,3 +4,6 @@ modules/
 tools/
 .west/
 __pycache__/
+
+# Rust (crates/)
+/target/
