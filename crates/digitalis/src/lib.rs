@@ -6,12 +6,14 @@
 //!
 //! - [`protocol`]: report builders and reply parsers, no I/O
 //! - [`Transport`]: what the senders need from a connection; [`hid`] has the hidapi one
+//! - [`link`]: one shared owner of the connection, for apps where several parts talk to the board
 //! - [`panel`]: the 1-bit panel image and sending it
 //! - [`art`]: pushing art sets to the right half and picking built-in ones
 
 pub mod art;
 #[cfg(feature = "hid")]
 pub mod hid;
+pub mod link;
 pub mod panel;
 pub mod protocol;
 

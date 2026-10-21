@@ -19,7 +19,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use hidapi::HidApi;
 
-use digitalis::hid::Keyboard;
+use digitalis::hid::{Keyboard, Match};
+use digitalis::link::Link;
 use digitalis::{art, panel};
 use render::{Panel, View};
 
@@ -192,16 +193,14 @@ fn battery_log(battery: Option<u8>, last: &mut Option<u8>) {
 /// Keeps the panel up to date until `quit`; reconnects whenever the keyboard goes away.
 fn worker(shared: Shared) {
     providers::init_thread();
-    let mut api = match HidApi::new() {
-        Ok(api) => api,
-        Err(e) => return shared.set_status(format!("HID unavailable: {e}")),
-    };
     let mut cfg = config::load();
+    // The link reconnects by itself; it's only rebuilt when the product filter changes.
+    let mut link: Option<(Option<String>, Link)> = None;
+    let mut generation = 0;
     let mut cfg_checked = Instant::now();
     let mut media = providers::Media::new();
     let mut view = View::default();
     let mut slow_at = Instant::now() - Duration::from_secs(10);
-    let mut kb: Option<Keyboard> = None;
     let mut panel = Panel::new(64, 52);
     let mut last: Option<Vec<u8>> = None;
     let mut last_sent = Instant::now();
@@ -218,24 +217,36 @@ fn worker(shared: Shared) {
             cfg_checked = Instant::now();
         }
 
-        if kb.is_none() {
-            match Keyboard::open(&mut api, cfg.product.as_deref()) {
-                Ok(k) => {
-                    panel = Panel::new(k.hello.width, k.hello.height);
-                    battery_log(k.hello.right_battery, &mut last_battery);
-                    shared.set_status(format!("Connected: {}", k.product));
-                    last = None;
-                    hello_at = Instant::now();
-                    kb = Some(k);
-                }
+        if link.as_ref().is_none_or(|(product, _)| *product != cfg.product) {
+            let m = Match { vid_pid: None, product: cfg.product.clone() };
+            match Link::hid(m) {
+                Ok(l) => link = Some((cfg.product.clone(), l)),
                 Err(e) => {
-                    shared.set_status(format!("Waiting for keyboard: {e}"));
+                    shared.set_status(format!("HID unavailable: {e}"));
                     std::thread::sleep(Duration::from_secs(3));
                     continue;
                 }
             }
         }
-        let k = kb.as_ref().unwrap();
+        let k = &link.as_ref().unwrap().1;
+        let state = k.state();
+        let Some(conn) = state.connected else {
+            shared.set_status(match state.error {
+                Some(e) => format!("Waiting for keyboard: {e}"),
+                None => "Connecting...".to_string(),
+            });
+            lock.release();
+            was_driving = false;
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        };
+        if state.generation != generation {
+            generation = state.generation;
+            panel = Panel::new(conn.hello.width, conn.hello.height);
+            shared.set_status(format!("Connected: {}", conn.product));
+            last = None;
+            hello_at = Instant::now();
+        }
 
         // Gather: the clock every frame, the rest once a second.
         let now = chrono::Local::now();
@@ -262,7 +273,9 @@ fn worker(shared: Shared) {
         let mut result = Ok(());
         if driving {
             if !was_driving {
-                shared.set_status(format!("Connected: {}", k.product));
+                shared.set_status(format!("Connected: {}", conn.product));
+                // Logged by the app holding the panel only, so two apps don't both write it.
+                battery_log(conn.hello.right_battery, &mut last_battery);
             }
             render::draw(&mut panel, &view, tick);
             // Resend now and then even when nothing changed: the firmware drops the panel
@@ -287,14 +300,15 @@ fn worker(shared: Shared) {
         // HELLO turns the panel back on in the firmware, so only the app drawing it asks.
         if driving && result.is_ok() && hello_at.elapsed() > Duration::from_secs(60) {
             hello_at = Instant::now();
-            result = k.say_hello().map(|h| battery_log(h.right_battery, &mut last_battery));
+            result = panel::hello(k).map(|h| battery_log(h.right_battery, &mut last_battery));
         }
         if let Err(e) = result {
             shared.set_status(format!("Lost keyboard: {e}"));
-            kb = None;
             // Can't draw while disconnected, so let another app have the panel meanwhile.
             lock.release();
             was_driving = false;
+            last = None;
+            std::thread::sleep(Duration::from_millis(200));
             continue;
         }
 
@@ -303,8 +317,9 @@ fn worker(shared: Shared) {
         std::thread::sleep(period.saturating_sub(frame_start.elapsed()));
     }
     // Hand the panel back only if it was ours; another app may be drawing it.
-    if let (Some(k), true) = (kb, was_driving) {
-        let _ = panel::release(&k);
+    if let (Some((_, k)), true) = (&link, was_driving) {
+        // Queued now; dropping the link below writes it before the thread stops.
+        let _ = panel::release(k);
     }
 }
 
