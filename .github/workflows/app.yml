@@ -1,18 +1,10 @@
 name: Foxglove app
 # The app in app/ (KeyPeek absorbed) has its own Cargo workspace. app/.github holds upstream
 # KeyPeek's workflows; GitHub doesn't run those from a subfolder, they're kept for syncing.
+# Runs by hand only (Actions tab), for a Linux check or a release exe to download; the gate is
+# scripts/check.ps1, run locally before pushing.
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - "app/**"
-      - "crates/digitalis/**"
-      - ".github/workflows/app.yml"
-  pull_request:
-    paths:
-      - "app/**"
-      - "crates/digitalis/**"
-      - ".github/workflows/app.yml"
 
 defaults:
   run:

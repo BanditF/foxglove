@@ -12,6 +12,9 @@ on:
       - "LICENSE"
       - "Cargo.toml"
       - "Cargo.lock"
+      - ".github/workflows/rust.yml"
+      - ".github/workflows/app.yml"
+      - "scripts/check.ps1"
 
 jobs:
   build:

@@ -31,6 +31,7 @@ foxglove in 1542.
 | `keymap-drawer/` | keymap diagram, redrawn by CI |
 | `app/` | the Foxglove app (KeyPeek absorbed; own Cargo workspace): `cargo run --manifest-path app/Cargo.toml` |
 | `crates/` | `digitalis` (the PC end of the link) and `hostpanel` (screens tray app/CLI) |
+| `scripts/check.ps1` | lint and tests for `crates/` and `app/`: run it before pushing desktop changes |
 | `docs/` | design notes; [`docs/upstream/`](docs/upstream/README_EN.md) has the vendor's original README |
 
 ## Building and flashing
