@@ -1,6 +1,6 @@
 # Keyboard first: test pass
 
-The rule (tracker #23, #24, #25): if the PC app is gone, crashed or unplugged, the keyboard keeps
+The rule (#23, #24, #25): if the PC app is gone, crashed or unplugged, the keyboard keeps
 typing and both screens keep doing what they were doing. The left keeps its last panel frame, and
 the right keeps its art.
 
