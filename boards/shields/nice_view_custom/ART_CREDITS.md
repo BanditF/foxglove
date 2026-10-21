@@ -21,12 +21,11 @@ roughly 270 KiB for art on the right half. Frames are stored as RLE-packed XOR d
 third of their raw size) and unpacked on the keyboard; the script prints the compressed size, so
 keep that under ~240 KiB.
 
-Current art: only portrait (upright) sets; wide Flipper art reads sideways and was left out. One set is picked at random each power-on; animated sets play while the keyboard is active:
+Current art: only portrait (upright) sets. The 30 signed Hammerbeam slideshow pieces were removed on 2026-10-21: their signature is the artist's attribution, so they are used as-is or not at all; wide Flipper art reads sideways and was left out. One set is picked at random each power-on; animated sets play while the keyboard is active:
 
 | Art | Orientation | Source | License |
 |---|---|---|---|
 | ZMK_1, ZMK_2 (balloon, mountain by Hammerbeam) | portrait | [ZMK nice_view shield](https://github.com/zmkfirmware/zmk/blob/v0.3.0/app/boards/shields/nice_view/widgets/art.c) | MIT |
-| Hammerbeam_1 to Hammerbeam_30 (art by Hammerbeam, signed in each image, used with the artist's consent) | portrait | [GPeye/hammerbeam-slideshow](https://github.com/GPeye/hammerbeam-slideshow) | MIT |
 | Corro_urchin (GPeye's animation of Corro, the unofficial Rust unsafe-code mascot) | portrait | [GPeye/urchin-peripheral-animation](https://github.com/GPeye/urchin-peripheral-animation) | MIT |
 | Gem_crystal (crystal by Trixelized, lent to nice-view-gem) | portrait | [M165437/nice-view-gem](https://github.com/M165437/nice-view-gem) | MIT |
 
@@ -34,7 +33,6 @@ Inputs used for the current `custom_art.c`, in order (paths are local checkouts 
 
 ```
 zmk/app/boards/shields/nice_view/widgets/art.c:stills:name=ZMK
-hammerbeam-slideshow/boards/shields/nice_view_custom/widgets/art.c:stills:name=Hammerbeam
 urchin-peripheral-animation/assets/example/animated/art.c:fps=1:name=Corro_urchin
 nice-view-gem/boards/shields/nice_view_gem/assets/crystal.c:fps=8:name=Gem_crystal
 ```
