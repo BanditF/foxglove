@@ -8,6 +8,28 @@ use hidapi::{HidApi, HidDevice};
 use crate::protocol::{self, Hello, REPORT};
 use crate::Transport;
 
+/// Which keyboard to use: a VID/PID (the one picked in the app), else the first Raw HID interface
+/// that answers HELLO, optionally only products whose name contains `product`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Match {
+    pub vid_pid: Option<(u16, u16)>,
+    pub product: Option<String>,
+}
+
+impl Match {
+    fn accepts(&self, info: &hidapi::DeviceInfo) -> bool {
+        if let Some((vid, pid)) = self.vid_pid {
+            if (info.vendor_id(), info.product_id()) != (vid, pid) {
+                return false;
+            }
+        }
+        match &self.product {
+            Some(p) => info.product_string().unwrap_or("").to_lowercase().contains(&p.to_lowercase()),
+            None => true,
+        }
+    }
+}
+
 pub struct Keyboard {
     dev: HidDevice,
     pub product: String,
@@ -18,18 +40,20 @@ impl Keyboard {
     /// Finds the first Raw HID interface that answers HELLO, optionally only products whose name
     /// contains `product`.
     pub fn open(api: &mut HidApi, product: Option<&str>) -> Result<Keyboard> {
+        Self::open_matching(api, &Match { vid_pid: None, product: product.map(str::to_string) })
+    }
+
+    pub fn open_matching(api: &mut HidApi, m: &Match) -> Result<Keyboard> {
         api.refresh_devices()?;
         let mut tried = 0;
         for info in api.device_list() {
             if info.usage_page() != protocol::USAGE_PAGE || info.usage() != protocol::USAGE {
                 continue;
             }
-            let name = info.product_string().unwrap_or("").to_string();
-            if let Some(p) = product {
-                if !name.to_lowercase().contains(&p.to_lowercase()) {
-                    continue;
-                }
+            if !m.accepts(info) {
+                continue;
             }
+            let name = info.product_string().unwrap_or("").to_string();
             tried += 1;
             let Ok(dev) = info.open_device(api) else { continue };
             let mut kb = Keyboard { dev, product: name, hello: Hello::default() };
@@ -51,6 +75,10 @@ impl Keyboard {
     fn drain(&self) {
         let mut buf = [0u8; REPORT];
         while matches!(self.dev.read_timeout(&mut buf, 0), Ok(n) if n > 0) {}
+    }
+
+    pub(crate) fn device(&self) -> &HidDevice {
+        &self.dev
     }
 
     pub fn say_hello(&self) -> Result<Hello> {

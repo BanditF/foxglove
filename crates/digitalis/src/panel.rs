@@ -3,7 +3,10 @@
 use anyhow::Result;
 use embedded_graphics::{pixelcolor::BinaryColor, prelude::*};
 
-use crate::{protocol, Transport};
+use std::time::Duration;
+
+use crate::protocol::{self, Hello};
+use crate::Transport;
 
 pub struct Panel {
     pub width: usize,
@@ -80,6 +83,12 @@ pub fn show(t: &impl Transport, frame: &[u8], last: Option<&[u8]>, stride: usize
     Ok(sent + 1)
 }
 
+/// Asks the keyboard for its panel size, right-half link and battery.
+pub fn hello(t: &impl Transport) -> Result<Hello> {
+    let r = t.request(&protocol::hello(), protocol::PANEL, protocol::panel::HELLO, Duration::from_millis(500))?;
+    Ok(Hello::parse(&r))
+}
+
 /// Gives the area back to the firmware's own drawing.
 pub fn release(t: &impl Transport) -> Result<()> {
     t.send(&protocol::release())
@@ -90,7 +99,6 @@ pub(crate) mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::VecDeque;
-    use std::time::Duration;
 
     /// Records what was sent; answers requests from a queue of canned replies.
     #[derive(Default)]
