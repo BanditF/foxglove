@@ -2,31 +2,36 @@
 //!
 //! A single thread reads with a short timeout, hands each input report to whoever wants it, and
 //! writes queued reports between reads, so reads and writes never race on the handle:
-//! - replies (byte 1 = command | 0x80) complete the request waiting for that (proto, command);
+//! - replies to our protocols (0xD5/0xD6 with byte 1 = command | 0x80) complete the request
+//!   waiting for that (proto, command), and never reach subscribers;
 //! - everything else goes to the subscribers whose filter matches (the overlay's 0xFF/0xF1, a
 //!   debug tap, later integrations).
 //!
-//! The firmware's replies carry no sequence number, so there is one request in flight per
-//! (proto, command); a second one for the same pair replaces the first, which then times out.
-//! The link reconnects by itself and fails waiting requests while the keyboard is away.
+//! The firmware's replies carry no sequence number, so only one request per (proto, command) is
+//! on the wire at a time; later ones wait their turn, and a request whose caller has given up is
+//! never sent. The link reconnects by itself; whatever was queued for a lost connection is
+//! dropped, never sent to the next one.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 
-use crate::protocol::{Hello, REPORT};
+use crate::protocol::{self, Hello, REPORT};
 use crate::Transport;
 
 /// How long one read waits; a queued write waits at most this long.
 const READ_TIMEOUT_MS: i32 = 10;
-/// Consecutive read or write errors that count as the keyboard being gone.
+/// Consecutive read errors, or consecutive write errors, that count as the keyboard being gone.
 const MAX_ERRORS: u32 = 5;
 const RETRY: Duration = Duration::from_secs(3);
+/// Reports a subscriber may fall behind by; past that, new ones are dropped for it.
+const SUBSCRIBER_BUFFER: usize = 256;
 
 pub type Report = [u8; REPORT];
 
@@ -57,16 +62,43 @@ pub struct State {
     pub error: Option<String>,
 }
 
+struct Request {
+    key: (u8, u8),
+    tx: Sender<Report>,
+    /// When the caller stops waiting.
+    deadline: Instant,
+}
+
 struct Command {
     report: Vec<u8>,
-    reply: Option<((u8, u8), Sender<Report>)>,
+    reply: Option<Request>,
 }
 
 type Filter = Box<dyn Fn(&[u8]) -> bool + Send>;
 
 struct Subscriber {
     filter: Filter,
-    tx: Sender<Report>,
+    tx: SyncSender<Report>,
+    alive: Arc<AtomicBool>,
+}
+
+/// Reports from [`Link::subscribe`]; use it like a `Receiver`. Dropping it unsubscribes.
+pub struct Subscription {
+    rx: Receiver<Report>,
+    alive: Arc<AtomicBool>,
+}
+
+impl Deref for Subscription {
+    type Target = Receiver<Report>;
+    fn deref(&self) -> &Receiver<Report> {
+        &self.rx
+    }
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        self.alive.store(false, Ordering::Relaxed);
+    }
 }
 
 struct Shared {
@@ -117,11 +149,17 @@ impl Link {
         }
     }
 
-    /// Input reports that aren't replies and match `filter`, for as long as the receiver lives.
-    pub fn subscribe(&self, filter: impl Fn(&[u8]) -> bool + Send + 'static) -> Receiver<Report> {
-        let (tx, rx) = mpsc::channel();
-        self.shared.subscribers.lock().unwrap().push(Subscriber { filter: Box::new(filter), tx });
-        rx
+    /// Input reports that aren't replies and match `filter`. A subscriber more than
+    /// [`SUBSCRIBER_BUFFER`] reports behind misses the newest ones.
+    pub fn subscribe(&self, filter: impl Fn(&[u8]) -> bool + Send + 'static) -> Subscription {
+        let (tx, rx) = mpsc::sync_channel(SUBSCRIBER_BUFFER);
+        let alive = Arc::new(AtomicBool::new(true));
+        self.shared.subscribers.lock().unwrap().push(Subscriber {
+            filter: Box::new(filter),
+            tx,
+            alive: alive.clone(),
+        });
+        Subscription { rx, alive }
     }
 
     fn queue(&self, command: Command) -> Result<()> {
@@ -139,10 +177,12 @@ impl Transport for Link {
 
     fn request(&self, report: &[u8], proto: u8, cmd: u8, timeout: Duration) -> Result<Report> {
         let (tx, rx) = mpsc::channel();
-        self.queue(Command { report: report.to_vec(), reply: Some(((proto, cmd), tx)) })?;
+        let deadline = Instant::now() + timeout;
+        self.queue(Command { report: report.to_vec(), reply: Some(Request { key: (proto, cmd), tx, deadline }) })?;
         rx.recv_timeout(timeout).map_err(|e| match e {
-            RecvTimeoutError::Timeout => anyhow!("no reply from the keyboard"),
-            RecvTimeoutError::Disconnected => anyhow!("keyboard disconnected"),
+            // The link drops a request at its deadline, which can beat our own timeout.
+            RecvTimeoutError::Disconnected if Instant::now() < deadline => anyhow!("keyboard disconnected"),
+            _ => anyhow!("no reply from the keyboard"),
         })
     }
 }
@@ -160,17 +200,20 @@ fn set_state(shared: &Shared, f: impl FnOnce(&mut State)) {
     f(&mut shared.state.lock().unwrap());
 }
 
+/// Drops whatever is queued; dropping a request's sender fails it right away.
+fn discard(commands: &Receiver<Command>) {
+    while commands.try_recv().is_ok() {}
+}
+
 fn run(mut open: Opener, commands: Receiver<Command>, shared: &Shared) {
-    let mut pending: HashMap<(u8, u8), Sender<Report>> = HashMap::new();
     while !shared.stop.load(Ordering::Relaxed) {
         let (mut dev, connected) = match open() {
             Ok(c) => c,
             Err(e) => {
                 set_state(shared, |s| s.error = Some(e.to_string()));
-                // Queued commands can't go anywhere; dropping them fails their requests now.
                 let end = Instant::now() + RETRY;
                 while Instant::now() < end && !shared.stop.load(Ordering::Relaxed) {
-                    while commands.try_recv().is_ok() {}
+                    discard(&commands);
                     std::thread::sleep(Duration::from_millis(50));
                 }
                 continue;
@@ -182,63 +225,96 @@ fn run(mut open: Opener, commands: Receiver<Command>, shared: &Shared) {
             s.error = None;
         });
 
-        let error = serve(dev.as_mut(), &commands, &mut pending, shared);
-        pending.clear(); // fails the requests still waiting
+        let error = serve(dev.as_mut(), &commands, shared);
         set_state(shared, |s| {
             s.connected = None;
             s.error = error;
         });
+        // Meant for the connection that just ended, not for the next one.
+        discard(&commands);
     }
 }
 
+/// Requests on the wire, and those waiting for their (proto, command) to be free.
+#[derive(Default)]
+struct Requests {
+    in_flight: HashMap<(u8, u8), Request>,
+    waiting: VecDeque<Command>,
+}
+
 /// Talks to one connection until it fails (returns why) or the link stops (returns None).
-fn serve(
-    dev: &mut dyn RawHid,
-    commands: &Receiver<Command>,
-    pending: &mut HashMap<(u8, u8), Sender<Report>>,
-    shared: &Shared,
-) -> Option<String> {
-    let mut errors = 0;
+fn serve(dev: &mut dyn RawHid, commands: &Receiver<Command>, shared: &Shared) -> Option<String> {
+    let mut requests = Requests::default();
+    let (mut read_errors, mut write_errors) = (0, 0);
     let mut buf = [0u8; REPORT];
     while !shared.stop.load(Ordering::Relaxed) {
         match dev.read(&mut buf, READ_TIMEOUT_MS) {
-            Ok(0) => errors = 0,
-            Ok(_) => {
-                errors = 0;
-                dispatch(&buf, pending, shared);
+            Ok(n) => {
+                read_errors = 0;
+                if n > 0 {
+                    dispatch(&buf, &mut requests, shared);
+                }
             }
             Err(e) => {
-                errors += 1;
-                if errors >= MAX_ERRORS {
+                read_errors += 1;
+                if read_errors >= MAX_ERRORS {
                     return Some(format!("lost keyboard: {e}"));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
-        while let Ok(c) = commands.try_recv() {
-            if let Some((key, tx)) = c.reply {
-                pending.insert(key, tx);
-            }
-            if let Err(e) = dev.write(&c.report) {
-                errors += 1;
-                if errors >= MAX_ERRORS {
-                    return Some(format!("lost keyboard: {e}"));
+
+        // Requests that waited for their key go first, then whatever is new, in order.
+        let now = Instant::now();
+        requests.in_flight.retain(|_, r| r.deadline > now);
+        let queued: Vec<Command> =
+            requests.waiting.drain(..).chain(std::iter::from_fn(|| commands.try_recv().ok())).collect();
+        for c in queued {
+            if let Some(r) = &c.reply {
+                if r.deadline <= now {
+                    continue; // its caller has given up: never send it
                 }
+                if requests.in_flight.contains_key(&r.key) {
+                    requests.waiting.push_back(c);
+                    continue;
+                }
+            }
+            match dev.write(&c.report) {
+                Ok(()) => write_errors = 0,
+                Err(e) => {
+                    write_errors += 1;
+                    if write_errors >= MAX_ERRORS {
+                        return Some(format!("lost keyboard: {e}"));
+                    }
+                    continue;
+                }
+            }
+            if let Some(r) = c.reply {
+                requests.in_flight.insert(r.key, r);
             }
         }
     }
     None
 }
 
-fn dispatch(r: &Report, pending: &mut HashMap<(u8, u8), Sender<Report>>, shared: &Shared) {
-    if r[1] & 0x80 != 0 {
-        if let Some(tx) = pending.remove(&(r[0], r[1] & 0x7f)) {
-            let _ = tx.send(*r);
-            return;
+fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
+    if matches!(r[0], protocol::PANEL | protocol::ART) && r[1] & 0x80 != 0 {
+        // A reply: to its request if one is waiting, otherwise (late, unasked) to nobody.
+        if let Some(req) = requests.in_flight.remove(&(r[0], r[1] & 0x7f)) {
+            let _ = req.tx.send(*r);
         }
+        return;
     }
-    // Subscribers whose receiver is gone drop out here.
-    shared.subscribers.lock().unwrap().retain(|s| !(s.filter)(r) || s.tx.send(*r).is_ok());
+    shared.subscribers.lock().unwrap().retain(|s| {
+        if !s.alive.load(Ordering::Relaxed) {
+            return false;
+        }
+        if !(s.filter)(r) {
+            return true;
+        }
+        // A subscriber that has fallen far behind misses this one but stays subscribed.
+        !matches!(s.tx.try_send(*r), Err(TrySendError::Disconnected(_)))
+    });
 }
 
 #[cfg(feature = "hid")]
@@ -269,26 +345,52 @@ mod hid_open {
     }
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{self, panel};
-    use std::collections::VecDeque;
+    use crate::protocol::{self, art, panel};
 
-    /// A keyboard in memory: answers HELLO and art STATUS, can send its own reports, can die.
+    const WAIT: Duration = Duration::from_secs(2);
+
+    /// A keyboard in memory. It answers every report whose byte 2 is an id by echoing that id,
+    /// right away or once released, and it can send its own reports and die.
     #[derive(Clone, Default)]
     struct Fake {
         inbox: Arc<Mutex<VecDeque<Report>>>,
+        held: Arc<Mutex<VecDeque<Report>>>,
         written: Arc<Mutex<Vec<Vec<u8>>>>,
         dead: Arc<AtomicBool>,
         silent: Arc<AtomicBool>,
+        hold: Arc<AtomicBool>,
+    }
+
+    fn report(bytes: &[u8]) -> Report {
+        let mut r = [0u8; REPORT];
+        r[..bytes.len()].copy_from_slice(bytes);
+        r
     }
 
     impl Fake {
         fn push(&self, bytes: &[u8]) {
-            let mut r = [0u8; REPORT];
-            r[..bytes.len()].copy_from_slice(bytes);
+            self.inbox.lock().unwrap().push_back(report(bytes));
+        }
+
+        /// Lets the oldest held reply through.
+        fn release_one(&self) {
+            let r = self.held.lock().unwrap().pop_front().expect("a held reply");
             self.inbox.lock().unwrap().push_back(r);
+        }
+
+        fn written(&self) -> Vec<Vec<u8>> {
+            self.written.lock().unwrap().clone()
+        }
+
+        fn wait_written(&self, n: usize) {
+            let end = Instant::now() + WAIT;
+            while self.written.lock().unwrap().len() < n && Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(5));
+            }
         }
     }
 
@@ -309,15 +411,20 @@ mod tests {
             }
         }
 
-        fn write(&mut self, report: &[u8]) -> Result<()> {
+        fn write(&mut self, out: &[u8]) -> Result<()> {
             if self.dead.load(Ordering::Relaxed) {
                 return Err(anyhow!("device gone"));
             }
-            self.written.lock().unwrap().push(report.to_vec());
-            if !self.silent.load(Ordering::Relaxed) && report.len() >= 2 {
-                // Another app's traffic arrives first, then the reply.
-                self.push(&[0xFF, 1, 0, 2]);
-                self.push(&[report[0], 0x80 | report[1], 42]);
+            self.written.lock().unwrap().push(out.to_vec());
+            if !self.silent.load(Ordering::Relaxed) {
+                let reply = report(&[out[0], 0x80 | out[1], out.get(2).copied().unwrap_or(0)]);
+                if self.hold.load(Ordering::Relaxed) {
+                    self.held.lock().unwrap().push_back(reply);
+                } else {
+                    // Another app's traffic arrives first, then the reply.
+                    self.push(&[0xFF, 1, 0, 2]);
+                    self.inbox.lock().unwrap().push_back(reply);
+                }
             }
             Ok(())
         }
@@ -325,29 +432,86 @@ mod tests {
 
     fn link(fake: &Fake) -> Link {
         let fake = fake.clone();
-        let opens = Arc::new(Mutex::new(0));
-        Link::start(Box::new(move || {
+        let l = Link::start(Box::new(move || {
             if fake.dead.load(Ordering::Relaxed) {
                 return Err(anyhow!("no keyboard"));
             }
-            *opens.lock().unwrap() += 1;
             let c = Connected { product: "Fake".into(), hello: Hello::default() };
             Ok((Box::new(fake.clone()) as Box<dyn RawHid>, c))
-        }))
+        }));
+        l.wait_connected(WAIT).unwrap();
+        l
+    }
+
+    /// An art STATUS request tagged with `id` (the firmware ignores byte 2).
+    fn status(l: &Link, id: u8, timeout: Duration) -> Result<u8> {
+        l.request(&[protocol::ART, art::STATUS, id], protocol::ART, art::STATUS, timeout).map(|r| r[2])
     }
 
     #[test]
     fn replies_reach_the_request_and_other_reports_the_subscriber() {
         let fake = Fake::default();
         let l = link(&fake);
-        l.wait_connected(Duration::from_secs(1)).unwrap();
         let layers = l.subscribe(|r| r[0] == 0xFF);
-        let r = l.request(&protocol::hello(), protocol::PANEL, panel::HELLO, Duration::from_secs(1)).unwrap();
+        let everything = l.subscribe(|_| true);
+        let r = l.request(&[0xD5, panel::HELLO, 42], protocol::PANEL, panel::HELLO, WAIT).unwrap();
         assert_eq!((r[0], r[1], r[2]), (0xD5, 0x81, 42));
-        let layer = layers.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert_eq!(&layer[..4], &[0xFF, 1, 0, 2]);
-        // Replies never leak to subscribers.
-        assert!(l.subscribe(|_| true).recv_timeout(Duration::from_millis(100)).is_err());
+        assert_eq!(&layers.recv_timeout(WAIT).unwrap()[..4], &[0xFF, 1, 0, 2]);
+        // The catch-all saw the layer report but not the reply.
+        assert_eq!(everything.recv_timeout(WAIT).unwrap()[0], 0xFF);
+        assert!(everything.recv_timeout(Duration::from_millis(100)).is_err());
+    }
+
+    #[test]
+    fn unasked_replies_go_nowhere_but_other_protocols_pass() {
+        let fake = Fake::default();
+        let l = link(&fake);
+        let everything = l.subscribe(|_| true);
+        fake.push(&[0xD6, 0x85, 9]); // a late art reply nobody waits for
+        fake.push(&[0x01, 0x81, 7]); // someone else's protocol with the high bit set
+        assert_eq!(&everything.recv_timeout(WAIT).unwrap()[..3], &[0x01, 0x81, 7]);
+        assert!(everything.recv_timeout(Duration::from_millis(100)).is_err());
+    }
+
+    #[test]
+    fn same_key_requests_take_turns_and_get_their_own_replies() {
+        let fake = Fake::default();
+        fake.hold.store(true, Ordering::Relaxed);
+        let l = Arc::new(link(&fake));
+        let first = std::thread::spawn({
+            let l = l.clone();
+            move || status(&l, 1, WAIT)
+        });
+        fake.wait_written(1);
+        let second = std::thread::spawn({
+            let l = l.clone();
+            move || status(&l, 2, WAIT)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(fake.written().len(), 1, "the second waits until the first is answered");
+
+        fake.release_one();
+        assert_eq!(first.join().unwrap().unwrap(), 1);
+        fake.wait_written(2);
+        fake.release_one();
+        assert_eq!(second.join().unwrap().unwrap(), 2);
+    }
+
+    #[test]
+    fn a_request_whose_caller_gave_up_is_never_sent() {
+        let fake = Fake::default();
+        fake.hold.store(true, Ordering::Relaxed);
+        let l = Arc::new(link(&fake));
+        let first = std::thread::spawn({
+            let l = l.clone();
+            move || status(&l, 1, WAIT)
+        });
+        fake.wait_written(1);
+        assert_eq!(status(&l, 2, Duration::from_millis(100)).unwrap_err().to_string(), "no reply from the keyboard");
+        fake.release_one();
+        assert_eq!(first.join().unwrap().unwrap(), 1);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(fake.written().len(), 1);
     }
 
     #[test]
@@ -355,9 +519,8 @@ mod tests {
         let fake = Fake::default();
         fake.silent.store(true, Ordering::Relaxed);
         let l = link(&fake);
-        l.wait_connected(Duration::from_secs(1)).unwrap();
         let start = Instant::now();
-        let e = l.request(&protocol::art_status(), protocol::ART, 0x05, Duration::from_millis(200)).unwrap_err();
+        let e = status(&l, 1, Duration::from_millis(200)).unwrap_err();
         assert_eq!(e.to_string(), "no reply from the keyboard");
         assert!(start.elapsed() < Duration::from_secs(1));
     }
@@ -367,23 +530,35 @@ mod tests {
         let fake = Fake::default();
         fake.silent.store(true, Ordering::Relaxed);
         let l = link(&fake);
-        l.wait_connected(Duration::from_secs(1)).unwrap();
         for y in 0..5u8 {
             l.send(&[0xD5, 0x03, y]).unwrap();
         }
-        std::thread::sleep(Duration::from_millis(100));
-        let ys: Vec<u8> = fake.written.lock().unwrap().iter().map(|w| w[2]).collect();
+        fake.wait_written(5);
+        let ys: Vec<u8> = fake.written().iter().map(|w| w[2]).collect();
         assert_eq!(ys, [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn dropped_subscriptions_are_forgotten() {
+        let fake = Fake::default();
+        let l = link(&fake);
+        drop(l.subscribe(|_| false));
+        fake.push(&[0xFF, 1, 0, 0]);
+        let end = Instant::now() + WAIT;
+        while !l.shared.subscribers.lock().unwrap().is_empty() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(l.shared.subscribers.lock().unwrap().is_empty());
     }
 
     #[test]
     fn reconnects_after_the_keyboard_goes_away() {
         let fake = Fake::default();
         let l = link(&fake);
-        let first = l.wait_connected(Duration::from_secs(1)).map(|_| l.state().generation).unwrap();
+        let first = l.state().generation;
 
         fake.dead.store(true, Ordering::Relaxed);
-        let end = Instant::now() + Duration::from_secs(2);
+        let end = Instant::now() + WAIT;
         while l.state().connected.is_some() && Instant::now() < end {
             std::thread::sleep(Duration::from_millis(10));
         }
