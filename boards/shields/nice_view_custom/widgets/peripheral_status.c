@@ -119,10 +119,12 @@ static int art_unique = -1; // unique frame currently unpacked in art_buf
 // Set while art_set's data is being replaced (art_relay_peripheral.c): hold the current frame.
 static atomic_t art_held;
 
+// Art is stored with background bits set. This palette shows it light-on-dark, like the status
+// strip and the left screen; NICE_VIEW_WIDGET_INVERTED flips it along with them.
 #if CONFIG_NICE_VIEW_WIDGET_INVERTED
-#define ART_PALETTE 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0xff
-#else
 #define ART_PALETTE 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff
+#else
+#define ART_PALETTE 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0xff
 #endif
 
 static uint8_t art_buf[8 + CUSTOM_ART_STRIDE * CUSTOM_ART_H] = {ART_PALETTE};
