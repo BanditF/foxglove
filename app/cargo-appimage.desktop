@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=KeyPeek
+Comment=Live keyboard layer overlay for QMK, Vial, and ZMK keyboards
+Exec=keypeek
+Icon=keypeek
+Terminal=false
+Categories=Utility;
+Keywords=keyboard;layer;overlay;qmk;via;vial;zmk;
+StartupWMClass=keypeek
