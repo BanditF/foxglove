@@ -91,7 +91,7 @@ fn open() -> Result<Keyboard> {
 
 fn status() -> Result<()> {
     let kb = open()?;
-    let h = kb.hello;
+    let h = kb.hello.expect("open() only returns keyboards that answered HELLO");
     println!("{}: host link v{}, panel {}x{}", kb.product, h.version, h.width, h.height);
     println!(
         "right half: {}, battery {}",
@@ -218,7 +218,7 @@ fn worker(shared: Shared) {
         }
 
         if link.as_ref().is_none_or(|(product, _)| *product != cfg.product) {
-            let m = Match { vid_pid: None, product: cfg.product.clone() };
+            let m = Match { product: cfg.product.clone(), ..Match::default() };
             match Link::hid(m) {
                 Ok(l) => link = Some((cfg.product.clone(), l)),
                 Err(e) => {
@@ -240,9 +240,14 @@ fn worker(shared: Shared) {
             std::thread::sleep(Duration::from_millis(500));
             continue;
         };
+        let Some(hello) = conn.hello else {
+            // Not reachable with the default Match, which only connects to keyboards with a host link.
+            std::thread::sleep(Duration::from_millis(500));
+            continue;
+        };
         if state.generation != generation {
             generation = state.generation;
-            panel = Panel::new(conn.hello.width, conn.hello.height);
+            panel = Panel::new(hello.width, hello.height);
             shared.set_status(format!("Connected: {}", conn.product));
             last = None;
             hello_at = Instant::now();
@@ -275,7 +280,7 @@ fn worker(shared: Shared) {
             if !was_driving {
                 shared.set_status(format!("Connected: {}", conn.product));
                 // Logged by the app holding the panel only, so two apps don't both write it.
-                battery_log(conn.hello.right_battery, &mut last_battery);
+                battery_log(hello.right_battery, &mut last_battery);
             }
             render::draw(&mut panel, &view, tick);
             // Resend now and then even when nothing changed: the firmware drops the panel

@@ -38,6 +38,12 @@ struct EframeApp {
     hwnd: Option<isize>,
     #[cfg(target_os = "windows")]
     placed_on_monitor: String,
+    // Where the overlay should cover, and how often it has been put back there: moving onto
+    // a display with different scaling makes Windows rescale the window afterwards.
+    #[cfg(target_os = "windows")]
+    monitor_rect: Option<[i32; 4]>,
+    #[cfg(target_os = "windows")]
+    rect_fixups: u32,
 }
 
 impl eframe::App for EframeApp {
@@ -72,7 +78,19 @@ impl eframe::App for EframeApp {
         if self.placed_on_monitor != self.app.monitor() {
             self.placed_on_monitor = self.app.monitor().to_string();
             if let Some(hwnd) = self.hwnd {
-                move_to_monitor(hwnd, &self.placed_on_monitor);
+                self.monitor_rect = move_to_monitor(hwnd, &self.placed_on_monitor);
+                self.rect_fixups = 0;
+            }
+        }
+
+        // The move above can land on a display with different scaling, and Windows then
+        // rescales the window (WM_DPICHANGED) after we placed it: put it back until it sticks.
+        #[cfg(target_os = "windows")]
+        if let (Some(hwnd), Some(target)) = (self.hwnd, self.monitor_rect) {
+            if self.rect_fixups < 5 && window_rect(hwnd) != Some(target) {
+                self.rect_fixups += 1;
+                place_window(hwnd, target);
+                ctx.request_repaint();
             }
         }
 
@@ -92,24 +110,29 @@ fn window_hwnd(cc: &eframe::CreationContext<'_>) -> Option<isize> {
 }
 
 // Covers the chosen display's work area with the overlay window, like the
-// maximized window the overlay starts as on the main display.
+// maximized window the overlay starts as on the main display. Returns that area.
 #[cfg(target_os = "windows")]
-fn move_to_monitor(hwnd: isize, monitor_id: &str) {
+fn move_to_monitor(hwnd: isize, monitor_id: &str) -> Option<[i32; 4]> {
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOZORDER, SW_SHOWNOACTIVATE,
-    };
+    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
 
-    let Some(monitor) = crate::monitors::find(&crate::monitors::list(), monitor_id) else {
-        return;
-    };
-    let [left, top, right, bottom] = monitor.work_area;
-    let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+    let monitor = crate::monitors::find(&crate::monitors::list(), monitor_id)?;
     unsafe {
         // A maximized window snaps back to its own display, so un-maximize first.
-        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let _ = ShowWindow(HWND(hwnd as *mut core::ffi::c_void), SW_SHOWNOACTIVATE);
+    }
+    place_window(hwnd, monitor.work_area);
+    Some(monitor.work_area)
+}
+
+#[cfg(target_os = "windows")]
+fn place_window(hwnd: isize, [left, top, right, bottom]: [i32; 4]) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+
+    unsafe {
         let _ = SetWindowPos(
-            hwnd,
+            HWND(hwnd as *mut core::ffi::c_void),
             None,
             left,
             top,
@@ -118,6 +141,17 @@ fn move_to_monitor(hwnd: isize, monitor_id: &str) {
             SWP_NOZORDER | SWP_NOACTIVATE,
         );
     }
+}
+
+/// The window's outer rectangle in physical pixels: left, top, right, bottom.
+#[cfg(target_os = "windows")]
+fn window_rect(hwnd: isize) -> Option<[i32; 4]> {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(HWND(hwnd as *mut core::ffi::c_void), &mut r) }.ok()?;
+    Some([r.left, r.top, r.right, r.bottom])
 }
 
 // Keep the overlay visible when switching Spaces or using fullscreen apps.
@@ -277,6 +311,10 @@ fn run_inner(
                 hwnd,
                 #[cfg(target_os = "windows")]
                 placed_on_monitor: String::new(),
+                #[cfg(target_os = "windows")]
+                monitor_rect: None,
+                #[cfg(target_os = "windows")]
+                rect_fixups: 0,
             }))
         }),
     )

@@ -2,9 +2,11 @@ use super::layout_geometry::flattened_top_left_after_center_rotation;
 use super::zmk_rpc::{self, ZmkData, ZmkStudioSession, ZmkTransport};
 use super::{Key, KeyboardDefinition, KeyboardLayout, KeyboardProtocol, Reopener, WriteSupport};
 use crate::key_action::{KeyAction, KeymapSnapshot, LayerInfo};
-use hidapi::{HidApi, HidDevice};
+use digitalis::link::{Link, Subscription};
+use hidapi::HidApi;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use zmk_studio_api::{BehaviorBindingParametersSet, BehaviorRole, ClientError, ResolvedLayer};
@@ -19,7 +21,9 @@ struct ZmkLayout {
 }
 
 pub struct ZmkProtocol {
-    hid_device: HidDevice,
+    // Foxglove: reports come from the shared link instead of a HID handle of our own.
+    link: Arc<Link>,
+    reports: Subscription,
     layout: Arc<ZmkLayout>,
     transport: ZmkTransport,
     session: Option<ZmkStudioSession>,
@@ -54,14 +58,20 @@ impl ZmkProtocol {
         let (vid, pid) = (layout.definition.vid, layout.definition.pid);
         wait_for_hid_reappearance(vid, pid, ZMK_USAGE_PAGE, Duration::from_secs(8))
             .map_err(std::io::Error::other)?;
-        let hid_device = open_zmk_hid(vid, pid).map_err(|e| {
+        let connect_error = |e: String| {
             std::io::Error::other(format!(
                 "Failed to connect HID ({vid:04x}:{pid:04x}) after reappearance: {e}"
             ))
-        })?;
+        };
+        let link = crate::foxglove::link::shared(vid, pid).map_err(connect_error)?;
+        // Subscribe before waiting, so reports sent while the link connects aren't missed.
+        let reports = link.subscribe(|_| true);
+        link.wait_connected(Duration::from_secs(8))
+            .map_err(|e| connect_error(e.to_string()))?;
 
         Ok(Self {
-            hid_device,
+            link,
+            reports,
             layout,
             transport,
             session: None,
@@ -119,26 +129,6 @@ fn should_drop_session(err: &(dyn Error + 'static)) -> bool {
     )
 }
 
-fn open_zmk_hid(vid: u16, pid: u16) -> Result<HidDevice, String> {
-    let api = HidApi::new().map_err(|e| format!("hidapi init failed: {e}"))?;
-    let path = api
-        .device_list()
-        .find(|device| {
-            device.vendor_id() == vid
-                && device.product_id() == pid
-                && device.usage_page() == ZMK_USAGE_PAGE
-        })
-        .map(|device| device.path().to_owned())
-        .ok_or_else(|| {
-            format!(
-                "could not find HID interface for {:04x}:{:04x} usage 0x{:04x}",
-                vid, pid, ZMK_USAGE_PAGE
-            )
-        })?;
-
-    api.open_path(&path).map_err(|e| e.to_string())
-}
-
 fn wait_for_hid_reappearance(
     vid: u16,
     pid: u16,
@@ -190,12 +180,15 @@ impl KeyboardProtocol for ZmkProtocol {
     }
 
     fn hid_read(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-        let mut buffer = [0u8; 32];
-        let read = self
-            .hid_device
-            .read_timeout(&mut buffer, 200)
-            .map_err(|e| format!("HID read error: {e}"))?;
-        Ok(buffer[..read].to_vec())
+        // Same contract as a 200 ms HID read: a report, nothing, or an error once the keyboard
+        // is gone (the reader treats repeated errors as a lost connection and reopens).
+        match self.reports.recv_timeout(Duration::from_millis(200)) {
+            Ok(report) => Ok(report.to_vec()),
+            Err(RecvTimeoutError::Timeout) if self.link.state().connected.is_some() => {
+                Ok(Vec::new())
+            }
+            Err(_) => Err("HID read error: keyboard disconnected".into()),
+        }
     }
 
     fn write_support(&self) -> WriteSupport {
