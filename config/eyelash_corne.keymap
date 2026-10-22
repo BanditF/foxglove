@@ -26,7 +26,7 @@
     trigger-period-ms = <16>;
 };
 
-&soft_off { hold-time-ms = <2000>; };
+&soft_off { hold-time-ms = <2000>; }; // ADMIN + M; the vendor Q+S+Z combo is gone (hit it while gaming)
 
 / {
     behaviors {
@@ -54,11 +54,6 @@
 
     combos {
         compatible = "zmk,combos";
-
-        softoff {
-            bindings = <&soft_off>;
-            key-positions = <1 15 29>;
-        };
 
         // Backspace + Esc (right pinky column, top + bottom) toggles the Game layer
         game_toggle {
@@ -144,12 +139,14 @@
         // ADMIN: hold BOTH middle thumbs (NUMBER + SYMBOL, or GAME+ + SYMBOL).
         // Layer toggles: Tab=back to QWERTY, N=NUMBER, S=SYMBOL, G=GAME,
         // F=lock ADMIN on. Tap a toggle again to turn it off.
+        // M (hold 2 s) = soft off, both halves; the reset button wakes them. Bootloader is on C, H
+        // and comma, reset on Z and period.
         admin_layer {
             display-name = "ADMIN";
             bindings = <
 &to 0           &kp F1      &kp F2     &kp F3       &kp F4     &kp F5                                  &mmv MOVE_UP                     &kp F6       &kp F7     &kp F8       &kp F9      &kp F10          &kp F11
 &trans          &trans      &tog 2     &mkp MCLK    &tog 5     &tog 3                  &mmv MOVE_LEFT  &mkp LCLK       &mmv MOVE_RIGHT  &bootloader  &mkp LCLK  &mkp MCLK    &mkp RCLK   &kp PRINTSCREEN  &kp F12
-&trans          &sys_reset  &trans     &bootloader  &trans     &mkp MB5  &kp C_MUTE                    &mmv MOVE_DOWN                   &tog 1       &trans     &bootloader  &sys_reset  &kp SCROLLLOCK   &kp PAUSE_BREAK
+&trans          &sys_reset  &trans     &bootloader  &trans     &mkp MB5  &kp C_MUTE                    &mmv MOVE_DOWN                   &tog 1       &soft_off  &bootloader  &sys_reset  &kp SCROLLLOCK   &kp PAUSE_BREAK
                                        &trans       &trans     &trans                                                                   &trans       &trans     &trans
             >;
 

@@ -6,6 +6,8 @@
  *   data   (write, write without response)  op byte + payload, below
  *   status (read)                            struct art_relay_status
  * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set
+ * The right half receives into a spare slot and keeps playing what it shows until a blob passes
+ * its CRC and header checks; a failed or abandoned push leaves the screen alone.
  *
  * Blob, all little endian (scripts/flipper_art.py writes it for OUT.bin):
  *   "NVA1", w u8 (140), h u8 (68), fps u8, 0, unique u16, frames u16
@@ -54,6 +56,8 @@ struct art_relay_status {
 } __packed;
 
 // Left half (art_relay_central.c). The blob is collected on the left, then pushed in one go.
+// A receive that sees no BEGIN or DATA for ART_RELAY_RECEIVE_TIMEOUT goes back to idle.
+#define ART_RELAY_RECEIVE_TIMEOUT K_SECONDS(10)
 enum art_relay_left_state {
     ART_LEFT_IDLE,
     ART_LEFT_RECEIVING, // from the PC
@@ -71,6 +75,7 @@ enum art_relay_error {
     ART_ERR_BAD_CRC,   // what the PC sent doesn't match its CRC
     ART_ERR_BLE,       // a write to the right half failed
     ART_ERR_RIGHT,     // the right half rejected the blob; see its status
+    ART_ERR_TIMEOUT,   // the PC stopped sending mid-blob; the partial blob was dropped
 };
 
 int art_relay_begin(uint16_t len, uint32_t crc);
