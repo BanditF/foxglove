@@ -24,13 +24,14 @@ impl OverlayApp {
         ui.add_space(4.0);
     }
 
-    /// A theme row for the layers in the `layers` bitmask: their visibility checkbox,
+    /// A theme row for the layers in the `layers` bitmask: their show and hold checkboxes,
     /// the label, and the color they are painted in.
     fn theme_layer_entry(
         ui: &mut egui::Ui,
         label: &str,
         color: &mut ThemeColor,
         visible_layers: &mut LayerMask,
+        held_layers: &mut LayerMask,
         layers: u32,
     ) {
         ui.horizontal(|ui| {
@@ -45,6 +46,19 @@ impl OverlayApp {
                 .changed()
             {
                 visible_layers.set(layers, shown);
+            }
+            let mut held = held_layers.contains_any(layers);
+            if ui
+                .add_enabled(
+                    shown,
+                    egui::Checkbox::without_text(&mut held),
+                )
+                .on_hover_text(
+                    "Hold: keep the overlay up for as long as these layers are active.                      Untick for toggled layers (like a game layer): the overlay then shows                      when they turn on and fades after the display duration.",
+                )
+                .changed()
+            {
+                held_layers.set(layers, held);
             }
             ui.label(label);
             Self::theme_color_button(ui, color);
@@ -367,6 +381,7 @@ impl OverlayApp {
                             label,
                             &mut draft.theme.layer_colors[layer],
                             &mut draft.visible_layers,
+                            &mut draft.held_layers,
                             mask,
                         );
                     };
