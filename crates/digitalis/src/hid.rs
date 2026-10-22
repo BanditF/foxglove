@@ -61,8 +61,10 @@ impl Keyboard {
             tried += 1;
             let Ok(dev) = info.open_device(api) else { continue };
             let mut kb = Keyboard { dev, product: name, hello: None };
-            // A reply now and then goes missing while other reports are in flight; ask again.
-            kb.hello = (0..3).find_map(|_| kb.say_hello().ok());
+            // A reply now and then goes missing while other reports are in flight, so ask again;
+            // a keyboard that may lack the host link gets one try, to connect quickly.
+            let tries = if m.without_host_link { 1 } else { 3 };
+            kb.hello = (0..tries).find_map(|_| kb.say_hello().ok());
             if kb.hello.is_some() || m.without_host_link {
                 return Ok(kb);
             }

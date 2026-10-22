@@ -58,18 +58,16 @@ impl ZmkProtocol {
         let (vid, pid) = (layout.definition.vid, layout.definition.pid);
         wait_for_hid_reappearance(vid, pid, ZMK_USAGE_PAGE, Duration::from_secs(8))
             .map_err(std::io::Error::other)?;
-        let link = crate::foxglove::link::shared(vid, pid)
-            .and_then(|link| {
-                link.wait_connected(Duration::from_secs(8))
-                    .map_err(|e| e.to_string())?;
-                Ok(link)
-            })
-            .map_err(|e| {
-                std::io::Error::other(format!(
-                    "Failed to connect HID ({vid:04x}:{pid:04x}) after reappearance: {e}"
-                ))
-            })?;
+        let connect_error = |e: String| {
+            std::io::Error::other(format!(
+                "Failed to connect HID ({vid:04x}:{pid:04x}) after reappearance: {e}"
+            ))
+        };
+        let link = crate::foxglove::link::shared(vid, pid).map_err(connect_error)?;
+        // Subscribe before waiting, so reports sent while the link connects aren't missed.
         let reports = link.subscribe(|_| true);
+        link.wait_connected(Duration::from_secs(8))
+            .map_err(|e| connect_error(e.to_string()))?;
 
         Ok(Self {
             link,

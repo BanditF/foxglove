@@ -31,7 +31,7 @@ const READ_TIMEOUT_MS: i32 = 10;
 const MAX_ERRORS: u32 = 5;
 const RETRY: Duration = Duration::from_secs(3);
 /// Reports a subscriber may fall behind by; past that, new ones are dropped for it.
-const SUBSCRIBER_BUFFER: usize = 256;
+const SUBSCRIBER_BUFFER: usize = 1024;
 
 pub type Report = [u8; REPORT];
 
