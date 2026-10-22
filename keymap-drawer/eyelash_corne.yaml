@@ -195,7 +195,7 @@ layers:
   - $$mdi:keyboard-space$$
   - {t: '$$mdi:keyboard-return$$', type: enter}
   - SYMBOL
-  - {t: '$$mdi:transfer$$', type: trans}
+  - LGUI
   GAME+:
   - $$mdi:keyboard-esc$$
   - {t: '1', s: '!'}

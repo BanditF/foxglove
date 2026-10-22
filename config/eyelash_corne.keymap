@@ -108,14 +108,15 @@
         };
 
         // Game layer (toggle: ADMIN + G, or Backspace + Esc). Letters stay where they are;
-        // only the thumbs and Shift change so nothing fires late or by accident.
+        // only the thumbs and Shift change so nothing fires late or by accident. The right
+        // outer thumb (right Alt on QWERTY) is the Windows key here.
         game_layer {
             display-name = "GAME";
             bindings = <
 &trans      &trans  &trans  &trans    &trans  &trans                            &trans                     &trans  &trans  &trans  &trans  &trans  &trans
 &kp LSHIFT  &trans  &trans  &trans    &trans  &trans                    &trans  &trans  &trans             &trans  &trans  &trans  &trans  &trans  &trans
 &trans      &trans  &trans  &trans    &trans  &trans  &trans                    &trans                     &trans  &trans  &trans  &trans  &trans  &trans
-                            &kp LALT  &mo 4   &kp SPACE                                                    &kp ENTER  &mo 2   &trans
+                            &kp LALT  &mo 4   &kp SPACE                                                    &kp ENTER  &mo 2   &kp LGUI
             >;
 
             sensor-bindings = <&inc_dec_kp C_VOLUME_UP C_VOLUME_DOWN>;
