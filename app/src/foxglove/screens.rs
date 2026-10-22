@@ -3,11 +3,13 @@
 //! whether or not the overlay is connected, and only draws while it holds the panel lock that
 //! the standalone hostpanel also takes.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use digitalis::link::Link;
 use digitalis::panel;
+use digitalis::protocol::Hello;
 use foxglove_panel::panel_lock::PanelLock;
 use foxglove_panel::render::{self, Panel, View};
 use foxglove_panel::Sources;
@@ -15,6 +17,8 @@ use foxglove_panel::Sources;
 use super::screens_settings::ScreensSettings;
 
 static STATUS: Mutex<String> = Mutex::new(String::new());
+static STOP: AtomicBool = AtomicBool::new(false);
+static STOPPED: AtomicBool = AtomicBool::new(false);
 
 /// What the panel service is doing, for the UI.
 #[allow(dead_code)] // shown in the Screens settings (#13)
@@ -37,14 +41,51 @@ pub fn start() {
         .spawn(run);
 }
 
-/// The panel's state while one keyboard is being drawn.
+/// Hands the panel back to the firmware before the app exits (waits up to half a second), so
+/// the left screen doesn't keep Foxglove's last frame.
+pub fn stop() {
+    STOP.store(true, Ordering::Relaxed);
+    let end = Instant::now() + Duration::from_millis(500);
+    while !STOPPED.load(Ordering::Relaxed) && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The keyboard being drawn on and the panel's state there.
 struct Drawing {
     link: Arc<Link>,
+    hello: Hello,
     generation: u64,
     panel: Panel,
     last: Option<Vec<u8>>,
     last_sent: Instant,
     hello_at: Instant,
+}
+
+impl Drawing {
+    fn new(link: Arc<Link>, hello: Hello) -> Self {
+        let generation = link.state().generation;
+        Drawing {
+            link,
+            hello,
+            generation,
+            panel: Panel::new(hello.width, hello.height),
+            last: None,
+            last_sent: Instant::now(),
+            hello_at: Instant::now(),
+        }
+    }
+}
+
+/// Hands the panel back to the firmware and lets another app have it.
+fn stop_driving(lock: &mut PanelLock, drawing: &Option<Drawing>, was_driving: &mut bool) {
+    if *was_driving {
+        if let Some(d) = drawing {
+            let _ = panel::release(d.link.as_ref());
+        }
+    }
+    lock.release();
+    *was_driving = false;
 }
 
 fn run() {
@@ -58,53 +99,25 @@ fn run() {
     let mut last_battery = None;
     let mut tick: u32 = 0;
 
-    loop {
+    while !STOP.load(Ordering::Relaxed) {
         let frame_start = Instant::now();
         if settings_at.elapsed() > Duration::from_secs(5) {
             settings = ScreensSettings::load();
             settings_at = Instant::now();
         }
 
-        // Hands the panel back to the firmware and lets another app have it.
-        let mut stop_driving = |drawing: &Option<Drawing>, was_driving: &mut bool| {
-            if *was_driving {
-                if let Some(d) = drawing {
-                    let _ = panel::release(d.link.as_ref());
-                }
-            }
-            lock.release();
-            *was_driving = false;
-        };
-
         if !settings.drive_left {
-            stop_driving(&drawing, &mut was_driving);
+            stop_driving(&mut lock, &drawing, &mut was_driving);
             set_status("Left panel off");
             std::thread::sleep(Duration::from_secs(1));
             continue;
         }
 
-        // Find a keyboard with the host link, reusing the overlay's link when it has one.
-        let state = drawing.as_ref().map(|d| d.link.state());
-        match state.as_ref().map(|s| {
-            (
-                s.connected.as_ref().map(|c| c.hello.is_some()),
-                s.generation,
-            )
-        }) {
-            None | Some((Some(false), _)) => {
-                stop_driving(&drawing, &mut was_driving);
-                drawing = None;
+        // The keyboard: the one we're on while it's connected, else find one with the host link.
+        match &drawing {
+            None => {
                 match super::link::host_link() {
-                    Some(link) => {
-                        drawing = Some(Drawing {
-                            link,
-                            generation: 0,
-                            panel: Panel::new(64, 52),
-                            last: None,
-                            last_sent: Instant::now(),
-                            hello_at: Instant::now(),
-                        });
-                    }
+                    Some((link, hello)) => drawing = Some(Drawing::new(link, hello)),
                     None => {
                         set_status("Waiting for a keyboard with the host link");
                         std::thread::sleep(Duration::from_secs(3));
@@ -112,25 +125,25 @@ fn run() {
                 }
                 continue;
             }
-            Some((None, _)) => {
-                // Reconnecting; the link does that by itself.
-                stop_driving(&drawing, &mut was_driving);
-                set_status("Waiting for the keyboard");
-                std::thread::sleep(Duration::from_millis(500));
-                continue;
+            Some(d) => {
+                let state = d.link.state();
+                if state.connected.is_none() {
+                    // Reconnecting; the link does that by itself.
+                    stop_driving(&mut lock, &drawing, &mut was_driving);
+                    set_status("Waiting for the keyboard");
+                    std::thread::sleep(Duration::from_millis(500));
+                    continue;
+                }
+                if state.generation != d.generation {
+                    // Reconnected, perhaps to different firmware: ask again.
+                    stop_driving(&mut lock, &drawing, &mut was_driving);
+                    let link = d.link.clone();
+                    drawing = super::link::ask_hello(&link).map(|h| Drawing::new(link, h));
+                    continue;
+                }
             }
-            Some((Some(true), _)) => {}
         }
         let d = drawing.as_mut().unwrap();
-        let state = state.unwrap();
-        let conn = state.connected.unwrap();
-        let hello = conn.hello.unwrap();
-        if state.generation != d.generation {
-            d.generation = state.generation;
-            d.panel = Panel::new(hello.width, hello.height);
-            d.last = None;
-            d.hello_at = Instant::now();
-        }
 
         sources.update(&mut view, |exe| settings.games.get(exe).cloned());
 
@@ -138,9 +151,9 @@ fn run() {
         let mut result = Ok(());
         if driving {
             if !was_driving {
-                set_status(format!("Drawing on {}", conn.product));
+                set_status("Drawing the left panel");
                 // Logged only by the app holding the panel, so two apps don't both write it.
-                battery_log(hello.right_battery, &mut last_battery);
+                battery_log(d.hello.right_battery, &mut last_battery);
             }
             render::draw(&mut d.panel, &view, tick);
             // Resend now and then even when nothing changed, in case the firmware lets the panel go.
@@ -180,6 +193,11 @@ fn run() {
         let period = Duration::from_millis(1000 / settings.fps.clamp(1, 10) as u64);
         std::thread::sleep(period.saturating_sub(frame_start.elapsed()));
     }
+
+    stop_driving(&mut lock, &drawing, &mut was_driving);
+    // Let the link thread write the RELEASE before the process goes.
+    std::thread::sleep(Duration::from_millis(50));
+    STOPPED.store(true, Ordering::Relaxed);
 }
 
 /// Appends the right half's battery to `right-battery.csv` (next to the settings) when it changes.
@@ -189,19 +207,19 @@ fn battery_log(battery: Option<u8>, last: &mut Option<u8>) {
     let Some(percent) = battery.filter(|_| battery != *last) else {
         return;
     };
-    *last = battery;
     let Some(path) = ScreensSettings::path().map(|p| p.with_file_name("right-battery.csv")) else {
         return;
     };
     let new = !path.exists();
-    if let Ok(mut f) = std::fs::OpenOptions::new()
+    let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-    {
-        if new {
-            let _ = writeln!(f, "time,right_battery_percent");
-        }
-        let _ = writeln!(f, "{},{percent}", foxglove_panel::local_timestamp());
+    else {
+        return;
+    };
+    let header_ok = !new || writeln!(f, "time,right_battery_percent").is_ok();
+    if header_ok && writeln!(f, "{},{percent}", foxglove_panel::local_timestamp()).is_ok() {
+        *last = battery;
     }
 }

@@ -42,6 +42,14 @@ impl ScreensSettings {
         if let Some(s) = Self::load_from_file(&path) {
             return s;
         }
+        if path.exists() {
+            // There but unreadable: run on defaults and leave the file for the user to fix.
+            eprintln!(
+                "Foxglove: can't read {}; using default screen settings",
+                path.display()
+            );
+            return Self::default();
+        }
         let imported = hostpanel_config_path()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|text| Self::from_hostpanel(&text));

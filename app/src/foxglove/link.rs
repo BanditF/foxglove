@@ -3,30 +3,30 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::time::Duration;
 
 use digitalis::hid::Match;
 use digitalis::link::Link;
+use digitalis::protocol::Hello;
 
 /// Live links by VID/PID; a link stops once its last holder drops it.
 type Links = HashMap<(u16, u16), Weak<Link>>;
 
 static LINKS: OnceLock<Mutex<Links>> = OnceLock::new();
 
-/// The link to keyboard `vid:pid`, started on first use and kept while anyone holds it. It also
-/// takes keyboards without Foxglove's host link, so the overlay works on any ZMK board.
-/// A link to a keyboard that answers HELLO (has Foxglove's host link): the overlay's, if it
-/// opened one, else the first Raw HID keyboard that answers.
-pub fn host_link() -> Option<Arc<Link>> {
-    let has_host_link = |link: &Link| link.state().connected.is_some_and(|c| c.hello.is_some());
+/// A keyboard with Foxglove's host link and what it said to HELLO: on a link already open (the
+/// overlay's) if one answers, else the first Raw HID keyboard that does.
+pub fn host_link() -> Option<(Arc<Link>, Hello)> {
     let open: Vec<Arc<Link>> = LINKS
         .get_or_init(Default::default)
         .lock()
         .unwrap()
         .values()
         .filter_map(Weak::upgrade)
+        .filter(|l| l.state().connected.is_some())
         .collect();
-    if let Some(link) = open.into_iter().find(|l| has_host_link(l)) {
-        return Some(link);
+    if let Some(found) = open.into_iter().find_map(|l| ask_hello(&l).map(|h| (l, h))) {
+        return Some(found);
     }
 
     let api = hidapi::HidApi::new().ok()?;
@@ -40,13 +40,25 @@ pub fn host_link() -> Option<Arc<Link>> {
         .collect();
     keyboards.into_iter().find_map(|(vid, pid)| {
         let link = shared(vid, pid).ok()?;
-        let connected = link
-            .wait_connected(std::time::Duration::from_secs(3))
-            .ok()?;
-        connected.hello.is_some().then_some(link)
+        link.wait_connected(Duration::from_secs(3)).ok()?;
+        ask_hello(&link).map(|h| (link, h))
     })
 }
 
+/// Asks the keyboard on `link` for HELLO (a few tries; replies sometimes go missing) and
+/// returns it if it describes a usable panel.
+pub fn ask_hello(link: &Link) -> Option<Hello> {
+    let usable = |h: &Hello| (1..=256).contains(&h.width) && (1..=256).contains(&h.height);
+    if let Some(h) = link.state().connected.and_then(|c| c.hello) {
+        if usable(&h) {
+            return Some(h);
+        }
+    }
+    (0..3).find_map(|_| digitalis::panel::hello(link).ok().filter(usable))
+}
+
+/// The link to keyboard `vid:pid`, started on first use and kept while anyone holds it. It also
+/// takes keyboards without Foxglove's host link, so the overlay works on any ZMK board.
 pub fn shared(vid: u16, pid: u16) -> Result<Arc<Link>, String> {
     let mut links = LINKS.get_or_init(Default::default).lock().unwrap();
     if let Some(link) = links.get(&(vid, pid)).and_then(Weak::upgrade) {
