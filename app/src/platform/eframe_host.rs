@@ -38,12 +38,14 @@ struct EframeApp {
     hwnd: Option<isize>,
     #[cfg(target_os = "windows")]
     placed_on_monitor: String,
-    // Where the overlay should cover, and how often it has been put back there: moving onto
-    // a display with different scaling makes Windows rescale the window afterwards.
+    // The area the overlay covers, re-read from Windows now and then so a changed scale,
+    // resolution or display layout moves it again; how many tries the current area has had.
     #[cfg(target_os = "windows")]
     monitor_rect: Option<[i32; 4]>,
     #[cfg(target_os = "windows")]
-    rect_fixups: u32,
+    placement_tries: u32,
+    #[cfg(target_os = "windows")]
+    displays_checked: Option<std::time::Instant>,
 }
 
 impl eframe::App for EframeApp {
@@ -75,24 +77,7 @@ impl eframe::App for EframeApp {
         }
 
         #[cfg(target_os = "windows")]
-        if self.placed_on_monitor != self.app.monitor() {
-            self.placed_on_monitor = self.app.monitor().to_string();
-            if let Some(hwnd) = self.hwnd {
-                self.monitor_rect = move_to_monitor(hwnd, &self.placed_on_monitor);
-                self.rect_fixups = 0;
-            }
-        }
-
-        // The move above can land on a display with different scaling, and Windows then
-        // rescales the window (WM_DPICHANGED) after we placed it: put it back until it sticks.
-        #[cfg(target_os = "windows")]
-        if let (Some(hwnd), Some(target)) = (self.hwnd, self.monitor_rect) {
-            if self.rect_fixups < 5 && window_rect(hwnd) != Some(target) {
-                self.rect_fixups += 1;
-                place_window(hwnd, target);
-                ctx.request_repaint();
-            }
-        }
+        self.keep_on_monitor(&ctx);
 
         let mut host = EframeHost { ctx: &ctx };
         self.app.ui(&ctx, &mut host);
@@ -109,30 +94,77 @@ fn window_hwnd(cc: &eframe::CreationContext<'_>) -> Option<isize> {
     }
 }
 
-// Covers the chosen display's work area with the overlay window, like the
-// maximized window the overlay starts as on the main display. Returns that area.
 #[cfg(target_os = "windows")]
-fn move_to_monitor(hwnd: isize, monitor_id: &str) -> Option<[i32; 4]> {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+impl EframeApp {
+    /// Keeps the overlay window covering the chosen display's work area. The area is read
+    /// from Windows when the choice changes and at most twice a second otherwise, so a
+    /// changed scale, resolution or display layout is picked up while running.
+    fn keep_on_monitor(&mut self, ctx: &egui::Context) {
+        use std::time::{Duration, Instant};
 
-    let monitor = crate::monitors::find(&crate::monitors::list(), monitor_id)?;
-    unsafe {
-        // A maximized window snaps back to its own display, so un-maximize first.
-        let _ = ShowWindow(HWND(hwnd as *mut core::ffi::c_void), SW_SHOWNOACTIVATE);
+        let Some(hwnd) = self.hwnd else {
+            return;
+        };
+        let chosen_changed = self.placed_on_monitor != self.app.monitor();
+        let due = self
+            .displays_checked
+            .is_none_or(|at| at.elapsed() >= Duration::from_millis(500));
+        if !chosen_changed && !due {
+            return;
+        }
+        self.displays_checked = Some(Instant::now());
+        self.placed_on_monitor = self.app.monitor().to_string();
+
+        let Some([left, top, right, bottom]) =
+            crate::monitors::find(&crate::monitors::list(), &self.placed_on_monitor)
+                .map(|m| m.work_area)
+        else {
+            return;
+        };
+        // One pixel short of the bottom: a borderless window covering a whole display counts as
+        // fullscreen, and Windows/the GPU driver then present it directly, bypassing DWM, so its
+        // transparent pixels turn black (here on a display with no taskbar).
+        let target = [left, top, right, bottom - 1];
+        if Some(target) != self.monitor_rect {
+            self.monitor_rect = Some(target);
+            self.placement_tries = 0;
+        }
+        // A few tries per area, so a window manager that insists on another size isn't fought
+        // forever.
+        if window_rect(hwnd) != Some(target) && self.placement_tries < 3 {
+            self.placement_tries += 1;
+            place_window(hwnd, target);
+            ctx.request_repaint();
+        }
     }
-    place_window(hwnd, monitor.work_area);
-    Some(monitor.work_area)
 }
 
+// Covers `area` (physical pixels) with the overlay window, like the maximized window the
+// overlay starts as on the main display.
 #[cfg(target_os = "windows")]
 fn place_window(hwnd: isize, [left, top, right, bottom]: [i32; 4]) {
     use windows::Win32::Foundation::HWND;
-    use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, ShowWindow, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_SHOWNOACTIVATE,
+    };
 
+    let hwnd = HWND(hwnd as *mut core::ffi::c_void);
     unsafe {
+        // A maximized window snaps back to its own display, so un-maximize first.
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        // Two steps: arriving on a display with different scaling makes Windows rescale the
+        // window (WM_DPICHANGED), so first move it there, then give it the exact size.
         let _ = SetWindowPos(
-            HWND(hwnd as *mut core::ffi::c_void),
+            hwnd,
+            None,
+            left,
+            top,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+        let _ = SetWindowPos(
+            hwnd,
             None,
             left,
             top,
@@ -314,7 +346,9 @@ fn run_inner(
                 #[cfg(target_os = "windows")]
                 monitor_rect: None,
                 #[cfg(target_os = "windows")]
-                rect_fixups: 0,
+                placement_tries: 0,
+                #[cfg(target_os = "windows")]
+                displays_checked: None,
             }))
         }),
     )
