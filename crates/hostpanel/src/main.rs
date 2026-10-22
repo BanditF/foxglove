@@ -6,9 +6,6 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod config;
-mod panel_lock;
-mod providers;
-mod render;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,7 +19,8 @@ use hidapi::HidApi;
 use digitalis::hid::{Keyboard, Match};
 use digitalis::link::Link;
 use digitalis::{art, panel};
-use render::{Panel, View};
+use foxglove_panel::render::{self, Panel, View};
+use foxglove_panel::{panel_lock, providers, Sources};
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -192,15 +190,13 @@ fn battery_log(battery: Option<u8>, last: &mut Option<u8>) {
 
 /// Keeps the panel up to date until `quit`; reconnects whenever the keyboard goes away.
 fn worker(shared: Shared) {
-    providers::init_thread();
+    let mut sources = Sources::new();
     let mut cfg = config::load();
     // The link reconnects by itself; it's only rebuilt when the product filter changes.
     let mut link: Option<(Option<String>, Link)> = None;
     let mut generation = 0;
     let mut cfg_checked = Instant::now();
-    let mut media = providers::Media::new();
     let mut view = View::default();
-    let mut slow_at = Instant::now() - Duration::from_secs(10);
     let mut panel = Panel::new(64, 52);
     let mut last: Option<Vec<u8>> = None;
     let mut last_sent = Instant::now();
@@ -253,24 +249,7 @@ fn worker(shared: Shared) {
             hello_at = Instant::now();
         }
 
-        // Gather: the clock every frame, the rest once a second.
-        let now = chrono::Local::now();
-        view.time = now.format("%H:%M").to_string();
-        view.date = now.format("%a %d %b").to_string();
-        if slow_at.elapsed() >= Duration::from_secs(1) {
-            slow_at = Instant::now();
-            view.volume = providers::volume();
-            match media.now_playing() {
-                Some((title, artist, playing)) => {
-                    view.title = Some(title);
-                    view.artist = (!artist.is_empty()).then_some(artist);
-                    view.playing = playing;
-                }
-                None => (view.title, view.artist) = (None, None),
-            }
-            view.hint = providers::foreground_exe()
-                .and_then(|exe| cfg.games.get(&exe.to_lowercase()).cloned());
-        }
+        sources.update(&mut view, |exe| cfg.games.get(exe).cloned());
 
         // Draw only while we hold the panel lock; paused gives it up so another app can draw.
         let paused = shared.paused.load(Ordering::Relaxed);

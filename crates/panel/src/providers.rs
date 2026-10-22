@@ -111,3 +111,9 @@ mod imp {
 }
 
 pub use imp::*;
+
+impl Default for Media {
+    fn default() -> Self {
+        Self::new()
+    }
+}

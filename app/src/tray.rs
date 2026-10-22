@@ -83,7 +83,11 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
             while let Ok(event) = MenuEvent::receiver().recv() {
                 match event.id.0.as_str() {
                     "settings" => on_settings(),
-                    "quit" => process::exit(0),
+                    "quit" => {
+                        // Foxglove: hand the left screen's panel back before going.
+                        crate::foxglove::screens::stop();
+                        process::exit(0)
+                    }
                     _ => {}
                 }
             }

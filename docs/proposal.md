@@ -128,7 +128,7 @@ two settings stores. Also rejected: hostpanel as a daemon with KeyPeek as its cl
 | `device.rs` `show`, `push_art`, `select_art` | `digitalis::{panel_tx, art}` + `foxglove::art_service` | written against a small `Transport` trait (send/request). `HidLink` implements it, and so does a mock for tests |
 | `render.rs` | `digitalis::render` | unchanged; `View` becomes a read of the facts store |
 | `providers.rs` | `digitalis::providers` behind the `Provider` trait (below) | Windows-only impls stay `cfg(windows)` |
-| `config.rs` | KeyPeek `Settings`, new `[screens]` and `[screens.games]` INI sections | one-time import of `config.toml` |
+| `config.rs` | `screens.ini` next to KeyPeek's `settings.ini` (`[screens]`: drive_left, fps; `[games]`: exe → hint), a file of its own because upstream rewrites `settings.ini` on save | one-time import of `config.toml` |
 | `main.rs` worker | `foxglove::panel_service` thread | same loop, sends through `HidLink`; keeps the 20 s resend and 60 s HELLO |
 | `main.rs` tray | KeyPeek `tray.rs` | new menu items (below) |
 | battery CSV | `foxglove::battery_log` | moves under `%APPDATA%\Foxglove` |
@@ -267,7 +267,7 @@ Each migration step becomes one issue. Labels: `link`, `panel`, `art`, `ui`, `ap
 4. `HidLink`: single handle, 10 ms reader, dispatch, request/oneshot (`link`)
 5. Route ZMK `hid_read` and reconnect through `HidLink` (`link`)
 6. Upstream proposal issue + PR: report dispatch refactor (`upstream`)
-7. Settings: `[screens]` INI sections + `config.toml` import (`ui`)
+7. Settings: `screens.ini` + `config.toml` import (`ui`)
 8. Panel service (render loop, resend, HELLO, battery log) behind feature `foxglove` (`panel`)
 9. Screens tab: status + left-panel controls + live preview + game hints (`ui`, `panel`)
 10. Art service: select/push/status with progress and cancel (`art`)
