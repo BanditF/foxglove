@@ -272,7 +272,8 @@ impl Settings {
 
     /// Where KeyPeek kept its settings; read until Foxglove saves its own.
     fn keypeek_file_path() -> Option<PathBuf> {
-        ProjectDirs::from("dev", "srwi", "KeyPeek").map(|dirs| dirs.config_dir().join("settings.ini"))
+        ProjectDirs::from("dev", "srwi", "KeyPeek")
+            .map(|dirs| dirs.config_dir().join("settings.ini"))
     }
 
     pub fn save(&self) -> std::io::Result<()> {

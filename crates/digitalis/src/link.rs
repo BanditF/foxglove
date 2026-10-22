@@ -47,7 +47,8 @@ pub trait RawHid: Send {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Connected {
     pub product: String,
-    pub hello: Hello,
+    /// `None` when the keyboard has no host link (only with [`crate::hid::Match::without_host_link`]).
+    pub hello: Option<Hello>,
 }
 
 /// Finds and opens the keyboard; called again after every disconnect.
@@ -436,7 +437,7 @@ mod tests {
             if fake.dead.load(Ordering::Relaxed) {
                 return Err(anyhow!("no keyboard"));
             }
-            let c = Connected { product: "Fake".into(), hello: Hello::default() };
+            let c = Connected { product: "Fake".into(), hello: None };
             Ok((Box::new(fake.clone()) as Box<dyn RawHid>, c))
         }));
         l.wait_connected(WAIT).unwrap();

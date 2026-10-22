@@ -14,6 +14,9 @@ use crate::Transport;
 pub struct Match {
     pub vid_pid: Option<(u16, u16)>,
     pub product: Option<String>,
+    /// Also take a keyboard that doesn't answer HELLO (firmware without the host link), for
+    /// apps that only listen, like the overlay. Its `hello` is then `None`.
+    pub without_host_link: bool,
 }
 
 impl Match {
@@ -33,14 +36,15 @@ impl Match {
 pub struct Keyboard {
     dev: HidDevice,
     pub product: String,
-    pub hello: Hello,
+    /// What it said to HELLO; `None` for a keyboard without the host link (see [`Match`]).
+    pub hello: Option<Hello>,
 }
 
 impl Keyboard {
     /// Finds the first Raw HID interface that answers HELLO, optionally only products whose name
     /// contains `product`.
     pub fn open(api: &mut HidApi, product: Option<&str>) -> Result<Keyboard> {
-        Self::open_matching(api, &Match { vid_pid: None, product: product.map(str::to_string) })
+        Self::open_matching(api, &Match { product: product.map(str::to_string), ..Match::default() })
     }
 
     pub fn open_matching(api: &mut HidApi, m: &Match) -> Result<Keyboard> {
@@ -56,13 +60,11 @@ impl Keyboard {
             let name = info.product_string().unwrap_or("").to_string();
             tried += 1;
             let Ok(dev) = info.open_device(api) else { continue };
-            let mut kb = Keyboard { dev, product: name, hello: Hello::default() };
+            let mut kb = Keyboard { dev, product: name, hello: None };
             // A reply now and then goes missing while other reports are in flight; ask again.
-            for _ in 0..3 {
-                if let Ok(hello) = kb.say_hello() {
-                    kb.hello = hello;
-                    return Ok(kb);
-                }
+            kb.hello = (0..3).find_map(|_| kb.say_hello().ok());
+            if kb.hello.is_some() || m.without_host_link {
+                return Ok(kb);
             }
         }
         if tried == 0 {
