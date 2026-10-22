@@ -36,12 +36,8 @@ impl OverlayApp {
     ) {
         ui.horizontal(|ui| {
             let mut shown = visible_layers.contains_any(layers);
-            let toggle_size = ui.spacing().interact_size.y;
             if ui
-                .add_sized(
-                    [toggle_size, toggle_size],
-                    egui::Checkbox::without_text(&mut shown),
-                )
+                .checkbox(&mut shown, "Show")
                 .on_hover_text("Show the overlay while these layers are active")
                 .changed()
             {
@@ -49,10 +45,7 @@ impl OverlayApp {
             }
             let mut held = held_layers.contains_any(layers);
             if ui
-                .add_enabled(
-                    shown,
-                    egui::Checkbox::without_text(&mut held),
-                )
+                .add_enabled(shown, egui::Checkbox::new(&mut held, "Hold"))
                 .on_hover_text(
                     "Hold: keep the overlay up for as long as these layers are active.                      Untick for toggled layers (like a game layer): the overlay then shows                      when they turn on and fades after the display duration.",
                 )
@@ -363,22 +356,36 @@ impl OverlayApp {
                 });
 
                 titled_group(ui, "Theme", |ui| {
-                    const LAYER_LABELS: [&str; ThemeSettings::OTHER_LAYERS as usize] = [
-                        "Layer 0", "Layer 1", "Layer 2", "Layer 3", "Layer 4", "Layer 5",
-                    ];
-                    const HALF: usize = LAYER_LABELS.len() / 2;
+                    const LAYERS: usize = ThemeSettings::OTHER_LAYERS as usize;
+                    const HALF: usize = LAYERS / 2;
+
+                    // The keyboard's own layer names (ZMK), else "Layer n".
+                    let names: Vec<Option<String>> = match &self.session.connection {
+                        AppConnectionState::Connected { keyboard } => {
+                            keyboard.layer_infos().into_iter().map(|l| l.name).collect()
+                        }
+                        _ => Vec::new(),
+                    };
+                    let layer_label = |layer: usize| {
+                        names
+                            .get(layer)
+                            .cloned()
+                            .flatten()
+                            .filter(|n| !n.trim().is_empty())
+                            .unwrap_or_else(|| format!("Layer {layer}"))
+                    };
 
                     let draft = &mut self.settings.draft;
 
                     let mut layer_row = |ui: &mut egui::Ui, layer: usize| {
-                        let (label, mask) = if layer == ThemeSettings::OTHER_LAYERS as usize {
-                            ("Other layers", !0 << layer)
+                        let (label, mask) = if layer == LAYERS {
+                            ("Other layers".to_string(), !0 << layer)
                         } else {
-                            (LAYER_LABELS[layer], 1 << layer)
+                            (layer_label(layer), 1 << layer)
                         };
                         Self::theme_layer_entry(
                             ui,
-                            label,
+                            &label,
                             &mut draft.theme.layer_colors[layer],
                             &mut draft.visible_layers,
                             &mut draft.held_layers,
@@ -393,7 +400,7 @@ impl OverlayApp {
                             }
                         });
                         columns[1].vertical(|ui| {
-                            for layer in HALF..LAYER_LABELS.len() {
+                            for layer in HALF..LAYERS {
                                 layer_row(ui, layer);
                             }
                             layer_row(ui, ThemeSettings::OTHER_LAYERS as usize);
