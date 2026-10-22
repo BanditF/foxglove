@@ -236,6 +236,9 @@ pub struct Settings {
     pub activation_delay: u32,
     pub margin: u32,
     pub visible_layers: LayerMask,
+    /// Layers that keep the overlay up for as long as they're active; the others show it when
+    /// they turn on and let it fade after `timeout` (handy for toggled layers like a game layer).
+    pub held_layers: LayerMask,
     pub theme: ThemeSettings,
     pub legend_mode: LegendMode,
 }
@@ -252,6 +255,7 @@ impl Default for Settings {
             activation_delay: 0,
             margin: 10,
             visible_layers: LayerMask::ALL,
+            held_layers: LayerMask::ALL,
             theme: ThemeSettings::default(),
             legend_mode: LegendMode::Stacked,
         }
@@ -314,6 +318,7 @@ impl Settings {
         section.set("activation_delay", self.activation_delay.to_string());
         section.set("margin", self.margin.to_string());
         section.set("visible_layers", self.visible_layers.to_string());
+        section.set("held_layers", self.held_layers.to_string());
         for (index, color) in self.theme.layer_colors.iter().enumerate() {
             section.set(format!("layer_color_{index}"), color.to_string());
         }
@@ -361,6 +366,9 @@ impl Settings {
         }
         if let Some(val) = section.get("visible_layers") {
             s.visible_layers = val.parse().unwrap_or(s.visible_layers);
+        }
+        if let Some(val) = section.get("held_layers") {
+            s.held_layers = val.parse().unwrap_or(s.held_layers);
         }
         for index in 0..s.theme.layer_colors.len() {
             if let Some(val) = section.get(format!("layer_color_{index}")) {

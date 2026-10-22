@@ -26,11 +26,11 @@ fn is_layer_state_packet(response: &[u8]) -> bool {
     size != 0 && size <= MAX_LAYER_STATE_BYTES && 2 + 2 * size <= response.len()
 }
 
-/// The active layers as seen through the visible-layer bitmask (bit `i` selects layer
-/// `i`; see `Settings::visible_layers`).
+/// The active layers as seen through the visible-layer and held-layer bitmasks (bit `i`
+/// selects layer `i`; see `Settings::visible_layers` and `Settings::held_layers`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ActiveLayers {
-    /// A selected layer above the base layer is held.
+    /// A selected layer above the base layer is active and keeps the overlay up.
     Selected,
     /// An active layer is masked out.
     Excluded,
@@ -40,13 +40,20 @@ enum ActiveLayers {
 }
 
 impl ActiveLayers {
-    fn classify(layer_state: u32, default_layer_state: u32, visible_layers: u32) -> Self {
+    fn classify(
+        layer_state: u32,
+        default_layer_state: u32,
+        visible_layers: u32,
+        held_layers: u32,
+    ) -> Self {
         // The base layer is always active underneath the momentary and default layers.
         let active = layer_state | default_layer_state | 1;
 
         // Holding the base layer is not a reason to keep the overlay up; the timeout
         // governs that instead, so it never counts as a selected layer.
-        let held_visible = layer_state & visible_layers & !1 != 0;
+        // A visible layer that isn't held (say, a toggled game layer) shows the overlay when it
+        // turns on and then lets the timeout hide it, as if back on the base layer.
+        let held_visible = layer_state & visible_layers & held_layers & !1 != 0;
         let any_hidden = active & !visible_layers != 0;
         match (held_visible, any_hidden) {
             (true, _) => Self::Selected,
@@ -63,8 +70,11 @@ pub struct OverlayConfig {
     pub timeout_ms: i64,
     /// How long a layer has to be held before the overlay appears.
     pub activation_delay_ms: u32,
-    /// Bit `i` keeps the overlay up while layer `i` is active; see `ActiveLayers`.
+    /// Bit `i` shows the overlay while layer `i` is active; see `ActiveLayers`.
     pub visible_layers: u32,
+    /// Bit `i` keeps it up for as long as layer `i` is active; otherwise it fades after the
+    /// timeout like on the base layer.
+    pub held_layers: u32,
 }
 
 /// The stretch of time the overlay is shown for: from `from` until `until`, where `None`
@@ -323,6 +333,7 @@ impl Keyboard {
             const MAX_CONSECUTIVE_ERRORS: u32 = 5;
             let mut consecutive_errors: u32 = 0;
             let mut previous_layers = ActiveLayers::Base;
+            let mut last_layer_packet: Option<(u32, u32)> = None;
 
             loop {
                 let response = match protocol.hid_read() {
@@ -357,25 +368,31 @@ impl Keyboard {
                         layer_bytes[..size].copy_from_slice(&response[2 + size..2 + 2 * size]);
                         let layer_state = u32::from_le_bytes(layer_bytes);
 
-                        let config = *config_clone.lock().unwrap();
-                        let active_layers = ActiveLayers::classify(
-                            layer_state,
-                            default_layer_state,
-                            config.visible_layers,
-                        );
-                        *layer_state_clone.lock().unwrap() = layer_state;
-                        *default_layer_state_clone.lock().unwrap() = default_layer_state;
+                        // The same state again changes nothing; above all it mustn't restart
+                        // the timeout of a layer that isn't held.
+                        if last_layer_packet != Some((default_layer_state, layer_state)) {
+                            last_layer_packet = Some((default_layer_state, layer_state));
+                            let config = *config_clone.lock().unwrap();
+                            let active_layers = ActiveLayers::classify(
+                                layer_state,
+                                default_layer_state,
+                                config.visible_layers,
+                                config.held_layers,
+                            );
+                            *layer_state_clone.lock().unwrap() = layer_state;
+                            *default_layer_state_clone.lock().unwrap() = default_layer_state;
 
-                        let mut visibility = visibility_clone.lock().unwrap();
-                        *visibility = next_visibility_window(
-                            active_layers,
-                            previous_layers,
-                            *visibility,
-                            Instant::now(),
-                            config,
-                        );
-                        previous_layers = active_layers;
-                        needs_repaint = true;
+                            let mut visibility = visibility_clone.lock().unwrap();
+                            *visibility = next_visibility_window(
+                                active_layers,
+                                previous_layers,
+                                *visibility,
+                                Instant::now(),
+                                config,
+                            );
+                            previous_layers = active_layers;
+                            needs_repaint = true;
+                        }
                     }
                     Some(KEY_EVENT_PACKET) if response.len() >= 4 => {
                         let row = response[1] as usize;
@@ -610,6 +627,7 @@ mod tests {
         timeout_ms: 2000,
         activation_delay_ms: 300,
         visible_layers: u32::MAX,
+        held_layers: u32::MAX,
     };
 
     /// Walks the layer-state transitions the activation delay has to survive.
@@ -662,5 +680,33 @@ mod tests {
         assert!(!excluded.is_visible(start));
         let base = next_visibility_window(Base, Excluded, excluded, start, no_delay);
         assert!(!base.is_visible(start));
+    }
+
+    /// A layer that isn't held shows the overlay when it turns on, then the timeout hides it.
+    #[test]
+    fn layers_that_are_not_held_fade_out() {
+        const GAME: u32 = 1 << 3;
+        const NUMBER: u32 = 1 << 1;
+        let not_game = !GAME;
+
+        // Game mode on: treated like the base layer, so it lingers for the timeout only.
+        assert_eq!(ActiveLayers::classify(GAME, 1, u32::MAX, not_game), Base);
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        let toggled =
+            next_visibility_window(Base, Base, VisibilityWindow::hidden(start), start, CONFIG);
+        assert!(toggled.is_visible(at(1999)));
+        assert!(!toggled.is_visible(at(2000)));
+
+        // A held layer on top still keeps it up.
+        assert_eq!(
+            ActiveLayers::classify(GAME | NUMBER, 1, u32::MAX, not_game),
+            Selected
+        );
+        // Hiding a layer still wins over holding.
+        assert_eq!(
+            ActiveLayers::classify(GAME, 1, not_game, u32::MAX),
+            Excluded
+        );
     }
 }

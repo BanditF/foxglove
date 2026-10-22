@@ -12,6 +12,7 @@ impl OverlayApp {
             timeout_ms: self.settings.active.timeout,
             activation_delay_ms: self.settings.active.activation_delay,
             visible_layers: self.settings.active.visible_layers.bits(),
+            held_layers: self.settings.active.held_layers.bits(),
         }
     }
 
