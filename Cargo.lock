@@ -400,6 +400,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "foxglove-panel"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "digitalis",
+ "embedded-graphics",
+ "windows",
+ "windows-future",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -702,6 +713,7 @@ dependencies = [
  "digitalis",
  "dirs",
  "embedded-graphics",
+ "foxglove-panel",
  "hidapi",
  "serde",
  "toml 0.9.12+spec-1.1.0",

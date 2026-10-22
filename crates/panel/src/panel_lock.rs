@@ -72,6 +72,12 @@ mod imp {
 
 pub use imp::PanelLock;
 
+impl Default for PanelLock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use super::PanelLock;
