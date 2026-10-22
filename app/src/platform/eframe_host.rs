@@ -115,11 +115,16 @@ impl EframeApp {
         self.displays_checked = Some(Instant::now());
         self.placed_on_monitor = self.app.monitor().to_string();
 
-        let Some(target) = crate::monitors::find(&crate::monitors::list(), &self.placed_on_monitor)
-            .map(|m| m.work_area)
+        let Some([left, top, right, bottom]) =
+            crate::monitors::find(&crate::monitors::list(), &self.placed_on_monitor)
+                .map(|m| m.work_area)
         else {
             return;
         };
+        // One pixel short of the bottom: a borderless window covering a whole display counts as
+        // fullscreen, and Windows/the GPU driver then present it directly, bypassing DWM, so its
+        // transparent pixels turn black (here on a display with no taskbar).
+        let target = [left, top, right, bottom - 1];
         if Some(target) != self.monitor_rect {
             self.monitor_rect = Some(target);
             self.placement_tries = 0;
