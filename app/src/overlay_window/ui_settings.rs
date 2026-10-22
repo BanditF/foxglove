@@ -24,9 +24,9 @@ impl OverlayApp {
         ui.add_space(4.0);
     }
 
-    /// A theme row for the layers in the `layers` bitmask: their show and hold checkboxes,
-    /// the label, and the color they are painted in.
-    fn theme_layer_entry(
+    /// A theme table row for the layers in the `layers` bitmask: their Show and Hold
+    /// checkboxes, the label, and the color they are painted in.
+    fn theme_layer_row(
         ui: &mut egui::Ui,
         label: &str,
         color: &mut ThemeColor,
@@ -34,29 +34,27 @@ impl OverlayApp {
         held_layers: &mut LayerMask,
         layers: u32,
     ) {
-        ui.horizontal(|ui| {
-            let mut shown = visible_layers.contains_any(layers);
-            if ui
-                .checkbox(&mut shown, "Show")
-                .on_hover_text("Show the overlay while these layers are active")
-                .changed()
-            {
-                visible_layers.set(layers, shown);
-            }
-            let mut held = held_layers.contains_any(layers);
-            if ui
-                .add_enabled(shown, egui::Checkbox::new(&mut held, "Hold"))
-                .on_hover_text(
-                    "Hold: keep the overlay up for as long as these layers are active.                      Untick for toggled layers (like a game layer): the overlay then shows                      when they turn on and fades after the display duration.",
-                )
-                .changed()
-            {
-                held_layers.set(layers, held);
-            }
-            ui.label(label);
-            Self::theme_color_button(ui, color);
-        });
-        ui.add_space(4.0);
+        let mut shown = visible_layers.contains_any(layers);
+        if ui
+            .add(egui::Checkbox::without_text(&mut shown))
+            .on_hover_text("Show the overlay while these layers are active")
+            .changed()
+        {
+            visible_layers.set(layers, shown);
+        }
+        let mut held = held_layers.contains_any(layers);
+        if ui
+            .add_enabled(shown, egui::Checkbox::without_text(&mut held))
+            .on_hover_text(
+                "Keep the overlay up for as long as these layers are active. Untick for                  toggled layers (like a game layer): the overlay then shows when they turn on                  and fades after the display duration.",
+            )
+            .changed()
+        {
+            held_layers.set(layers, held);
+        }
+        ui.label(label);
+        Self::theme_color_button(ui, color);
+        ui.end_row();
     }
 
     fn timeout_to_ui_value(timeout: i64) -> u32 {
@@ -359,12 +357,16 @@ impl OverlayApp {
                     const LAYERS: usize = ThemeSettings::OTHER_LAYERS as usize;
                     const HALF: usize = LAYERS / 2;
 
-                    // The keyboard's own layer names (ZMK), else "Layer n".
+                    // The keyboard's layer names (ZMK), remembered from the last connection,
+                    // else "Layer n".
                     let names: Vec<Option<String>> = match &self.session.connection {
                         AppConnectionState::Connected { keyboard } => {
-                            keyboard.layer_infos().into_iter().map(|l| l.name).collect()
+                            let names: Vec<_> =
+                                keyboard.layer_infos().into_iter().map(|l| l.name).collect();
+                            crate::foxglove::layer_names::remember(&names);
+                            names
                         }
-                        _ => Vec::new(),
+                        _ => crate::foxglove::layer_names::remembered(),
                     };
                     let layer_label = |layer: usize| {
                         names
@@ -376,35 +378,40 @@ impl OverlayApp {
                     };
 
                     let draft = &mut self.settings.draft;
+                    Self::theme_color_entry(ui, "Font color", &mut draft.theme.font_color);
 
-                    let mut layer_row = |ui: &mut egui::Ui, layer: usize| {
-                        let (label, mask) = if layer == LAYERS {
-                            ("Other layers".to_string(), !0 << layer)
-                        } else {
-                            (layer_label(layer), 1 << layer)
-                        };
-                        Self::theme_layer_entry(
-                            ui,
-                            &label,
-                            &mut draft.theme.layer_colors[layer],
-                            &mut draft.visible_layers,
-                            &mut draft.held_layers,
-                            mask,
-                        );
+                    let mut layer_table = |ui: &mut egui::Ui, id: &str, layers: &[usize]| {
+                        egui::Grid::new(id)
+                            .num_columns(4)
+                            .spacing([12.0, 6.0])
+                            .show(ui, |ui| {
+                                ui.weak("Show");
+                                ui.weak("Hold");
+                                ui.weak("Layer");
+                                ui.label("");
+                                ui.end_row();
+                                for &layer in layers {
+                                    let (label, mask) = if layer == LAYERS {
+                                        ("Other layers".to_string(), !0 << layer)
+                                    } else {
+                                        (layer_label(layer), 1 << layer)
+                                    };
+                                    Self::theme_layer_row(
+                                        ui,
+                                        &label,
+                                        &mut draft.theme.layer_colors[layer],
+                                        &mut draft.visible_layers,
+                                        &mut draft.held_layers,
+                                        mask,
+                                    );
+                                }
+                            });
                     };
                     ui.columns(2, |columns| {
-                        columns[0].vertical(|ui| {
-                            Self::theme_color_entry(ui, "Font color", &mut draft.theme.font_color);
-                            for layer in 0..HALF {
-                                layer_row(ui, layer);
-                            }
-                        });
-                        columns[1].vertical(|ui| {
-                            for layer in HALF..LAYERS {
-                                layer_row(ui, layer);
-                            }
-                            layer_row(ui, ThemeSettings::OTHER_LAYERS as usize);
-                        });
+                        let left: Vec<usize> = (0..HALF).collect();
+                        let right: Vec<usize> = (HALF..=LAYERS).collect();
+                        layer_table(&mut columns[0], "theme_layers_left", &left);
+                        layer_table(&mut columns[1], "theme_layers_right", &right);
                     });
                 });
 
