@@ -11,6 +11,8 @@ edition = "2021"
 [dependencies]
 # Foxglove: the shared link to the keyboard (MIT).
 digitalis = { path = "../crates/digitalis" }
+foxglove-panel = { path = "../crates/panel" }
+toml = "0.9"
 rust-ini = "0.21.3"
 directories = "6.0.0"
 tray-icon = "0.24.2"

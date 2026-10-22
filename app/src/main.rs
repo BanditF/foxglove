@@ -28,5 +28,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     os_layout::init();
     let settings = Settings::load().unwrap_or_default();
     let available_devices = discover_devices();
+    foxglove::screens::start();
     platform::run(settings, available_devices)
 }
