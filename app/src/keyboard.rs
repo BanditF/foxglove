@@ -333,6 +333,7 @@ impl Keyboard {
             const MAX_CONSECUTIVE_ERRORS: u32 = 5;
             let mut consecutive_errors: u32 = 0;
             let mut previous_layers = ActiveLayers::Base;
+            let mut last_layer_packet: Option<(u32, u32)> = None;
 
             loop {
                 let response = match protocol.hid_read() {
@@ -367,26 +368,31 @@ impl Keyboard {
                         layer_bytes[..size].copy_from_slice(&response[2 + size..2 + 2 * size]);
                         let layer_state = u32::from_le_bytes(layer_bytes);
 
-                        let config = *config_clone.lock().unwrap();
-                        let active_layers = ActiveLayers::classify(
-                            layer_state,
-                            default_layer_state,
-                            config.visible_layers,
-                            config.held_layers,
-                        );
-                        *layer_state_clone.lock().unwrap() = layer_state;
-                        *default_layer_state_clone.lock().unwrap() = default_layer_state;
+                        // The same state again changes nothing; above all it mustn't restart
+                        // the timeout of a layer that isn't held.
+                        if last_layer_packet != Some((default_layer_state, layer_state)) {
+                            last_layer_packet = Some((default_layer_state, layer_state));
+                            let config = *config_clone.lock().unwrap();
+                            let active_layers = ActiveLayers::classify(
+                                layer_state,
+                                default_layer_state,
+                                config.visible_layers,
+                                config.held_layers,
+                            );
+                            *layer_state_clone.lock().unwrap() = layer_state;
+                            *default_layer_state_clone.lock().unwrap() = default_layer_state;
 
-                        let mut visibility = visibility_clone.lock().unwrap();
-                        *visibility = next_visibility_window(
-                            active_layers,
-                            previous_layers,
-                            *visibility,
-                            Instant::now(),
-                            config,
-                        );
-                        previous_layers = active_layers;
-                        needs_repaint = true;
+                            let mut visibility = visibility_clone.lock().unwrap();
+                            *visibility = next_visibility_window(
+                                active_layers,
+                                previous_layers,
+                                *visibility,
+                                Instant::now(),
+                                config,
+                            );
+                            previous_layers = active_layers;
+                            needs_repaint = true;
+                        }
                     }
                     Some(KEY_EVENT_PACKET) if response.len() >= 4 => {
                         let row = response[1] as usize;
