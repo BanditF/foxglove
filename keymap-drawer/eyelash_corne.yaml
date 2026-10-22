@@ -283,7 +283,7 @@ layers:
   - $$mdi:volume-off$$
   - {t: '$$mdi:menu-down$$', s: '$$mdi:mouse$$'}
   - {t: NUMBER, h: toggle}
-  - {t: '$$mdi:transfer$$', type: trans}
+  - '&soft_off'
   - $$mdi:progress-download$$
   - {t: '$$mdi:backup-restore$$', type: bootloader}
   - SCROLLLOCK
@@ -295,7 +295,5 @@ layers:
   - {type: held}
   - {t: '$$mdi:transfer$$', type: trans}
 combos:
-- p: [1, 15, 29]
-  k: '&soft_off'
 - p: [12, 41]
   k: {t: GAME, h: toggle}
