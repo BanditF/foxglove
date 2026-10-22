@@ -13,7 +13,9 @@
  *   03 ROWS    y, n (1-3), n rows   write rows of HOST_PANEL_STRIDE bytes, MSB first, 1 = ink
  *   04 PRESENT                      show the back buffer
  *   05 RELEASE                      give the area back to the WPM chart now
- * Any 0xD5 report keeps the panel on for 65 s; after that the WPM chart comes back.
+ * The panel takes the area at the first PRESENT and keeps the last presented frame until RELEASE.
+ * With CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S > 0, the WPM chart also comes back after that many
+ * seconds without a 0xD5 report.
  *
  * 0xD6 right-hand art (see art_relay.h for the blob), host -> keyboard:
  *   01 BEGIN   len u16, crc32 u32   start receiving an art blob on the left
@@ -42,7 +44,7 @@
 #define HOST_PANEL_STRIDE (HOST_PANEL_W / 8)
 #define HOST_PANEL_BYTES (HOST_PANEL_STRIDE * HOST_PANEL_H)
 
-// Copies the shown panel into buf and returns true while the PC app is feeding it.
+// Copies the shown panel into buf and returns true while the panel holds the area.
 bool host_panel_get(uint8_t buf[HOST_PANEL_BYTES]);
 
 // Redraws the left screen; status.c, called on the display work queue.

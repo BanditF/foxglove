@@ -25,12 +25,14 @@ enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE 
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS };
 
 #define REPORT_SIZE CONFIG_RAW_HID_REPORT_SIZE
-#define ALIVE_TIMEOUT K_SECONDS(65)
+#define ALIVE_TIMEOUT K_SECONDS(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S)
 
 /*
  * Reports arrive on the USB thread. Rows go straight into the back buffer and PRESENT copies it
  * to the front one; the display thread only reads the front buffer (host_panel_get), so drawing
- * never waits on USB and USB never waits on drawing.
+ * never waits on USB and USB never waits on drawing. The panel only takes the area at the first
+ * PRESENT, so neither a half-written back buffer nor an empty front one is ever shown, and it keeps
+ * the last presented frame when the PC goes quiet (CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S = 0).
  */
 static struct k_spinlock lock;
 static uint8_t back[HOST_PANEL_BYTES];
@@ -99,9 +101,8 @@ static uint8_t right_link(void) {
 }
 
 static void panel_command(const uint8_t *d) {
-    k_work_reschedule(&timeout_work, ALIVE_TIMEOUT);
-    if (d[1] != PANEL_RELEASE) {
-        set_alive(true);
+    if (CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S > 0 && d[1] != PANEL_RELEASE) {
+        k_work_reschedule(&timeout_work, ALIVE_TIMEOUT);
     }
 
     switch (d[1]) {
@@ -140,6 +141,7 @@ static void panel_command(const uint8_t *d) {
         k_spinlock_key_t key = k_spin_lock(&lock);
         memcpy(front, back, sizeof(front));
         k_spin_unlock(&lock, key);
+        set_alive(true);
         redraw();
         break;
     }
