@@ -18,7 +18,8 @@ rust-ini = "0.21.3"
 directories = "6.0.0"
 tray-icon = "0.24.2"
 egui = "0.36.1"
-eframe = { version = "0.36.1", features = ["glow"] }
+# Keep the native Glow backends, without the AccessKit Windows subclass.
+eframe = { version = "0.36.1", default-features = false, features = ["glow", "default_fonts", "links", "wayland", "x11"] }
 egui_extras = { version = "0.36.1", features = ["all_loaders"] }
 qmk-via-api = "0.9.0"
 hidapi = { version = "2.6.5", features = ["macos-shared-device"] }
