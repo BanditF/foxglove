@@ -1,7 +1,7 @@
 use super::state::AppConnectionState;
 use super::OverlayApp;
 use crate::settings::{LayerMask, LegendMode, Settings, ThemeColor, ThemeSettings, WindowPosition};
-use crate::ui_widgets::titled_group;
+use crate::foxglove::settings_ui::section as titled_group;
 use egui::Window;
 
 impl OverlayApp {
@@ -96,7 +96,7 @@ impl OverlayApp {
             .map(|d| d.display_name())
             .unwrap_or_else(|| "Select device...".to_string());
 
-        let settings_window_size = egui::vec2(450.0, 700.0);
+        let settings_window_size = egui::vec2(450.0, 560.0);
         let settings_window_pos = ctx.viewport_rect().center() - settings_window_size * 0.5;
 
         Window::new("Foxglove Settings")
@@ -104,7 +104,8 @@ impl OverlayApp {
             .default_size(settings_window_size)
             .default_pos(settings_window_pos)
             .collapsible(false)
-            .resizable(false)
+            .resizable(true)
+            .vscroll(true)
             .show(ctx, |ui| {
                 titled_group(ui, "Connection", |ui| {
                     let control_spacing = ui.spacing().item_spacing.x;

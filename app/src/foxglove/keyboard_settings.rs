@@ -3,7 +3,6 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
 
 use digitalis::link::Link;
 use digitalis::protocol::RgbState;
@@ -89,25 +88,24 @@ pub fn invoke(label: String, binding: (u16, u32, u32), hold_ms: u16, ctx: egui::
         };
         *LAST_ACTION.lock().unwrap() = Some((label, result));
         INVOKING.store(false, Ordering::Relaxed);
-        RGB_POLLED_AT.lock().unwrap().take(); // show the effect right away
+        refresh_rgb_state(); // show the effect right away
         ctx.request_repaint();
     });
 }
 
-/// Both halves' lights, polled about once a second while someone looks.
+/// Both halves' lights, refreshed on request and after actions.
 static RGB_STATE: Mutex<Option<RgbState>> = Mutex::new(None);
-static RGB_POLLED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+static RGB_REFRESH: AtomicBool = AtomicBool::new(true);
 static RGB_POLLING: AtomicBool = AtomicBool::new(false);
-const RGB_POLL_EVERY: Duration = Duration::from_secs(1);
 
-/// The latest known state; asks for a fresh one when the last is a second old.
+pub fn refresh_rgb_state() {
+    RGB_REFRESH.store(true, Ordering::Relaxed);
+}
+
+/// Returns the cached state and reads it in the background when requested.
 pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
-    let due = RGB_POLLED_AT
-        .lock()
-        .unwrap()
-        .is_none_or(|at| at.elapsed() >= RGB_POLL_EVERY);
-    if due && !RGB_POLLING.swap(true, Ordering::Relaxed) {
-        *RGB_POLLED_AT.lock().unwrap() = Some(Instant::now());
+    if RGB_REFRESH.load(Ordering::Relaxed) && !RGB_POLLING.swap(true, Ordering::Relaxed) {
+        RGB_REFRESH.store(false, Ordering::Relaxed);
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let state = link().and_then(|l| digitalis::settings::rgb_state(l.as_ref()).ok());
@@ -116,7 +114,6 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
             ctx.request_repaint();
         });
     }
-    ctx.request_repaint_after(RGB_POLL_EVERY);
     *RGB_STATE.lock().unwrap()
 }
 
