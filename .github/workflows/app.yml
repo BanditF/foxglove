@@ -1,10 +1,13 @@
 name: Foxglove app
 # The app in app/ (KeyPeek absorbed) has its own Cargo workspace. app/.github holds upstream
 # KeyPeek's workflows; GitHub doesn't run those from a subfolder, they're kept for syncing.
-# Runs by hand only (Actions tab), for a Linux check or a release exe to download; the gate is
+# Runs by hand or on app release tags; the gate is
 # scripts/check.ps1, run locally before pushing.
 on:
   workflow_dispatch:
+  push:
+    tags:
+      - 'app-v*'
 
 defaults:
   run:
@@ -24,10 +27,52 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
       - run: cargo build --release
+      - name: Install packaging tools
+        run: |
+          choco install wixtoolset --version=3.14.1 -y --no-progress
+          cargo install cargo-wix --version 0.3.8 --locked
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          $env:PATH = "${env:ProgramFiles(x86)}\WiX Toolset v3.14\bin;$env:PATH"
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $version = $env:GITHUB_REF_NAME -replace '^app-v', ''
+            if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Use an app-vMAJOR.MINOR.PATCH tag' }
+            cargo wix --no-build --version $version --output target/wix/foxglove-x64.msi
+          } else {
+            cargo wix --no-build --output target/wix/foxglove-x64.msi
+          }
+          if ($LASTEXITCODE) { throw 'MSI build failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: foxglove-windows
-          path: app/target/release/foxglove.exe
+          path: |
+            app/target/release/foxglove.exe
+            app/target/wix/foxglove-x64.msi
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/app-v')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: foxglove-windows
+          path: dist
+      - name: Attach installer and executable to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        working-directory: dist
+        run: |
+          if ! gh release view "$TAG"; then
+            gh release create "$TAG" --verify-tag --title "Foxglove $TAG" --generate-notes
+          fi
+          gh release upload "$TAG" release/foxglove.exe wix/foxglove-x64.msi --clobber
 
   linux:
     runs-on: ubuntu-latest
