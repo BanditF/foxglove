@@ -9,6 +9,7 @@
 //! - [`link`]: one shared owner of the connection, for apps where several parts talk to the board
 //! - [`panel`]: the 1-bit panel image and sending it
 //! - [`art`]: pushing art sets to the right half and picking built-in ones
+//! - [`settings`]: keyboard settings saved on the keyboard (RGB sync)
 
 pub mod art;
 #[cfg(feature = "hid")]
@@ -16,6 +17,7 @@ pub mod hid;
 pub mod link;
 pub mod panel;
 pub mod protocol;
+pub mod settings;
 
 use std::time::Duration;
 

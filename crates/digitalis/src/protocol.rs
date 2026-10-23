@@ -6,6 +6,8 @@ pub const REPORT: usize = 32;
 
 pub const PANEL: u8 = 0xD5;
 pub const ART: u8 = 0xD6;
+/// Keyboard settings, saved on the keyboard (host_link.h).
+pub const SETTINGS: u8 = 0xD7;
 pub const VERSION: u8 = 1;
 
 pub mod panel {
@@ -27,6 +29,11 @@ pub mod art {
     pub const SELECT: u8 = 0x04;
     pub const STATUS: u8 = 0x05;
     pub const DATA_MAX: usize = 27;
+}
+
+pub mod settings {
+    /// Right half's underglow follows the left's on/off.
+    pub const RGB_SYNC: u8 = 0x01;
 }
 
 /// Whether `r` is the reply to (`proto`, `cmd`).
@@ -82,6 +89,34 @@ pub fn art_select(set: i8) -> Vec<u8> {
 
 pub fn art_status() -> Vec<u8> {
     vec![ART, art::STATUS]
+}
+
+/// RGB_SYNC: `Some` turns "right follows left" on or off, `None` only reads it.
+pub fn rgb_sync(set: Option<bool>) -> Vec<u8> {
+    vec![SETTINGS, settings::RGB_SYNC, set.map_or(0xff, u8::from)]
+}
+
+/// The keyboard's answer to RGB_SYNC.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RgbSync {
+    /// Whether the right half's underglow follows the left's; `None` if the firmware hasn't
+    /// got the feature.
+    pub sync: Option<bool>,
+    /// The left half's underglow is on.
+    pub left_on: bool,
+    /// 0 = right half not connected, 1 = connected, 2 = connected with the relay.
+    pub right_link: u8,
+}
+
+impl RgbSync {
+    /// The reply: sync (0/1, 0xff = not built in), left on, right link.
+    pub fn parse(r: &[u8; REPORT]) -> RgbSync {
+        RgbSync {
+            sync: (r[2] != 0xff).then_some(r[2] != 0),
+            left_on: r[3] != 0,
+            right_link: r[4],
+        }
+    }
 }
 
 /// What the keyboard said to HELLO.
@@ -246,6 +281,21 @@ mod tests {
         assert_eq!(art_select(-1), [0xD6, 0x04, 0xFF]);
         assert_eq!(art_select(5), [0xD6, 0x04, 5]);
         assert_eq!(art_status(), [0xD6, 0x05]);
+    }
+
+    #[test]
+    fn settings_reports() {
+        assert_eq!(rgb_sync(None), [0xD7, 0x01, 0xFF]);
+        assert_eq!(rgb_sync(Some(true)), [0xD7, 0x01, 1]);
+        assert_eq!(rgb_sync(Some(false)), [0xD7, 0x01, 0]);
+        let mut r = [0u8; REPORT];
+        r[..5].copy_from_slice(&[0xD7, 0x81, 1, 1, 2]);
+        assert_eq!(
+            RgbSync::parse(&r),
+            RgbSync { sync: Some(true), left_on: true, right_link: 2 }
+        );
+        r[2] = 0xff;
+        assert_eq!(RgbSync::parse(&r).sync, None);
     }
 
     #[test]

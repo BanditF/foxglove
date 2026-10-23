@@ -9,6 +9,7 @@ use std::time::Instant;
 
 mod connection_flow;
 mod foxglove_connect;
+mod foxglove_settings;
 mod settings_sync;
 mod state;
 mod ui_overlay;

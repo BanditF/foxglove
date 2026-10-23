@@ -2,7 +2,7 @@
 //!
 //! A single thread reads with a short timeout, hands each input report to whoever wants it, and
 //! writes queued reports between reads, so reads and writes never race on the handle:
-//! - replies to our protocols (0xD5/0xD6 with byte 1 = command | 0x80) complete the request
+//! - replies to our protocols (0xD5-0xD7 with byte 1 = command | 0x80) complete the request
 //!   waiting for that (proto, command), and never reach subscribers;
 //! - everything else goes to the subscribers whose filter matches (the overlay's 0xFF/0xF1, a
 //!   debug tap, later integrations).
@@ -32,6 +32,9 @@ const MAX_ERRORS: u32 = 5;
 const RETRY: Duration = Duration::from_secs(3);
 /// Reports a subscriber may fall behind by; past that, new ones are dropped for it.
 const SUBSCRIBER_BUFFER: usize = 1024;
+/// After a request times out, its (proto, command) is held this long: a late reply in that
+/// window is dropped instead of answering the next request of the same kind.
+const LATE_REPLY_GRACE: Duration = Duration::from_millis(500);
 
 pub type Report = [u8; REPORT];
 
@@ -241,6 +244,8 @@ fn run(mut open: Opener, commands: Receiver<Command>, shared: &Shared) {
 struct Requests {
     in_flight: HashMap<(u8, u8), Request>,
     waiting: VecDeque<Command>,
+    /// Keys whose request timed out, held until the time given (see [`LATE_REPLY_GRACE`]).
+    held: HashMap<(u8, u8), Instant>,
 }
 
 /// Talks to one connection until it fails (returns why) or the link stops (returns None).
@@ -267,7 +272,15 @@ fn serve(dev: &mut dyn RawHid, commands: &Receiver<Command>, shared: &Shared) ->
 
         // Requests that waited for their key go first, then whatever is new, in order.
         let now = Instant::now();
-        requests.in_flight.retain(|_, r| r.deadline > now);
+        let held = &mut requests.held;
+        requests.in_flight.retain(|key, r| {
+            let alive = r.deadline > now;
+            if !alive {
+                held.insert(*key, now + LATE_REPLY_GRACE);
+            }
+            alive
+        });
+        requests.held.retain(|_, until| *until > now);
         let queued: Vec<Command> =
             requests.waiting.drain(..).chain(std::iter::from_fn(|| commands.try_recv().ok())).collect();
         for c in queued {
@@ -275,7 +288,7 @@ fn serve(dev: &mut dyn RawHid, commands: &Receiver<Command>, shared: &Shared) ->
                 if r.deadline <= now {
                     continue; // its caller has given up: never send it
                 }
-                if requests.in_flight.contains_key(&r.key) {
+                if requests.in_flight.contains_key(&r.key) || requests.held.contains_key(&r.key) {
                     requests.waiting.push_back(c);
                     continue;
                 }
@@ -299,9 +312,14 @@ fn serve(dev: &mut dyn RawHid, commands: &Receiver<Command>, shared: &Shared) ->
 }
 
 fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
-    if matches!(r[0], protocol::PANEL | protocol::ART) && r[1] & 0x80 != 0 {
-        // A reply: to its request if one is waiting, otherwise (late, unasked) to nobody.
-        if let Some(req) = requests.in_flight.remove(&(r[0], r[1] & 0x7f)) {
+    if matches!(r[0], protocol::PANEL | protocol::ART | protocol::SETTINGS) && r[1] & 0x80 != 0 {
+        // A reply: to its request if one is waiting, otherwise (late, unasked) to nobody. A key
+        // held after a timeout drops the late reply and frees up.
+        let key = (r[0], r[1] & 0x7f);
+        if requests.held.remove(&key).is_some() {
+            return;
+        }
+        if let Some(req) = requests.in_flight.remove(&key) {
             let _ = req.tx.send(*r);
         }
         return;
@@ -513,6 +531,31 @@ mod tests {
         assert_eq!(first.join().unwrap().unwrap(), 1);
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(fake.written().len(), 1);
+    }
+
+    #[test]
+    fn a_late_reply_does_not_answer_the_next_request() {
+        let fake = Fake::default();
+        fake.hold.store(true, Ordering::Relaxed);
+        let l = link(&fake);
+        // The first request times out; its reply only arrives afterwards.
+        assert!(status(&l, 1, Duration::from_millis(100)).is_err());
+        fake.wait_written(1);
+        let second = std::thread::spawn({
+            let l = Arc::new(l);
+            let fake = fake.clone();
+            move || {
+                std::thread::sleep(Duration::from_millis(50));
+                fake.release_one(); // the late reply to request 1
+                let got = status(&l, 2, WAIT);
+                fake.wait_written(2);
+                (got, l)
+            }
+        });
+        std::thread::sleep(Duration::from_millis(700));
+        fake.release_one(); // the real reply to request 2
+        let (got, _l) = second.join().unwrap();
+        assert_eq!(got.unwrap(), 2);
     }
 
     #[test]
