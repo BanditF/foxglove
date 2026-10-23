@@ -177,6 +177,8 @@ impl OverlayApp {
         self.apply_live_visual_settings();
         self.apply_live_layout_settings();
         self.ui.file_dialog.update(ctx);
+        crate::foxglove::art_ui::update(ctx);
+        self._tray.update();
 
         if let Some(path) = self.ui.file_dialog.take_picked() {
             if let ConnectionDraft::Via { json_path } = &mut self.connect.draft {
