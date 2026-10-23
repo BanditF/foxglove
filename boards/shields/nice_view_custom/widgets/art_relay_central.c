@@ -24,11 +24,11 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
-#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_SYNC)
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
 #include <zmk/activity.h>
-#include <zmk/event_manager.h>
-#include <zmk/events/activity_state_changed.h>
 #include <zmk/rgb_underglow.h>
+
+#include "rgb_idle.h"
 #endif
 
 #include "art_relay.h"
@@ -479,24 +479,26 @@ static int art_relay_init(void) {
 
 SYS_INIT(art_relay_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 
-/* Underglow sync: the right half's underglow mirrors ours */
+/* Underglow: the right half follows ours (rgb_idle.c) */
 
-#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_SYNC)
-// After an activity change, give ZMK's own auto-off a moment to switch our underglow first.
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+// Right after the link comes up, ZMK's own setup traffic goes first.
 #define RGB_SETTLE K_MSEC(100)
-// While active, check now and then, in case a send was lost or the halves drifted apart.
+// While active, check now and then, in case a send was lost.
 #define RGB_POLL K_SECONDS(5)
 
-static int8_t rgb_sent = -1; // last on/off the right half got, -1 = unknown
+static int16_t rgb_sent = -1; // last on | follow << 1 the right half got, -1 = unknown
 
 static void rgb_sync_cb(struct k_work *work) {
     bool on;
-    if (zmk_rgb_underglow_get_state(&on) == 0 && on != rgb_sent) {
-        struct bt_conn *conn = job_conn();
+    if (zmk_rgb_underglow_get_state(&on) == 0) {
+        bool follow = rgb_idle_sync();
+        int16_t now = on | follow << 1;
+        struct bt_conn *conn = now != rgb_sent ? job_conn() : NULL;
         if (conn != NULL) {
-            uint8_t buf[] = {ART_RELAY_RGB, on};
+            uint8_t buf[] = {ART_RELAY_RGB, on, follow};
             if (write_cmd(conn, buf, sizeof(buf)) == 0) {
-                rgb_sent = on;
+                rgb_sent = now;
             }
             bt_conn_unref(conn);
         }
@@ -512,15 +514,12 @@ static void rgb_sync_link_up(void) {
     k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, RGB_SETTLE);
 }
 
-static int rgb_activity_listener(const zmk_event_t *eh) {
+void art_relay_rgb_kick(void) {
     if (art_relay_link() == 2) {
-        k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, RGB_SETTLE);
+        k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, K_NO_WAIT);
     }
-    return ZMK_EV_EVENT_BUBBLE;
 }
-
-ZMK_LISTENER(art_relay_rgb, rgb_activity_listener);
-ZMK_SUBSCRIPTION(art_relay_rgb, zmk_activity_state_changed);
 #else
 static void rgb_sync_link_up(void) {}
+void art_relay_rgb_kick(void) {}
 #endif
