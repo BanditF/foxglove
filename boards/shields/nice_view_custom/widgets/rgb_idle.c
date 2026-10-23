@@ -124,7 +124,7 @@ void rgb_idle_remote_lost(void) {
     k_work_submit(&apply_work);
 }
 
-static int settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
+static int rgb_settings_set(const char *name, size_t len, settings_read_cb read_cb, void *cb_arg) {
     if (settings_name_steq(name, "wanted", NULL) && len == sizeof(wanted)) {
         loaded = read_cb(cb_arg, &wanted, sizeof(wanted)) == sizeof(wanted);
     } else if (settings_name_steq(name, "sync", NULL) && len == sizeof(sync)) {
@@ -134,7 +134,7 @@ static int settings_set(const char *name, size_t len, settings_read_cb read_cb, 
 }
 
 // After all settings are loaded (ZMK's own underglow state too).
-static int settings_commit(void) {
+static int rgb_settings_commit(void) {
     if (!loaded) {
         zmk_rgb_underglow_get_state(&wanted); // first boot with this firmware: keep what ZMK had
     }
@@ -143,4 +143,4 @@ static int settings_commit(void) {
     return 0;
 }
 
-SETTINGS_STATIC_HANDLER_DEFINE(nvc_rgb, "nvc_rgb", NULL, settings_set, settings_commit, NULL);
+SETTINGS_STATIC_HANDLER_DEFINE(nvc_rgb, "nvc_rgb", NULL, rgb_settings_set, rgb_settings_commit, NULL);
