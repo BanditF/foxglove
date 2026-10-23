@@ -13,6 +13,7 @@ edition = "2021"
 digitalis = { path = "../crates/digitalis" }
 foxglove-panel = { path = "../crates/panel" }
 toml = "0.9"
+prost = "0.14"
 rust-ini = "0.21.3"
 directories = "6.0.0"
 tray-icon = "0.24.2"
