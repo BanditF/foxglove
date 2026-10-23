@@ -59,16 +59,22 @@ impl OverlayApp {
     }
 }
 
-const SERIAL_SCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
-
+#[cfg(target_os = "windows")]
 type SerialScanResult = (ConnectionSpec, Option<ConnectionSpec>);
 
 #[derive(Default)]
 pub(super) struct SerialWatch {
-    next_scan_at: Option<Instant>,
+    #[cfg(target_os = "windows")]
+    notification: Option<device_watch::DeviceWatch>,
+    #[cfg(target_os = "windows")]
+    registration_attempted: bool,
+    #[cfg(target_os = "windows")]
+    was_eligible: bool,
+    #[cfg(target_os = "windows")]
     pending: Option<std::sync::mpsc::Receiver<SerialScanResult>>,
 }
 
+#[cfg(any(target_os = "windows", test))]
 fn serial_replacement(
     spec: &ConnectionSpec,
     ports: &[crate::protocols::zmk_rpc::ZmkSerialDevice],
@@ -86,7 +92,15 @@ fn serial_replacement(
 }
 
 impl OverlayApp {
-    pub(super) fn watch_serial_connection(&mut self, ctx: &egui::Context) {
+    pub(super) fn watch_serial_connection(&mut self, _ctx: &egui::Context) {
+        #[cfg(target_os = "windows")]
+        self.watch_serial_connection_windows();
+        #[cfg(not(target_os = "windows"))]
+        let _ = &self.serial_watch;
+    }
+
+    #[cfg(target_os = "windows")]
+    fn watch_serial_connection_windows(&mut self) {
         // Let an in-flight connection finish before changing its spec or dropping it.
         if self.connect.pending_connect.is_some() {
             return;
@@ -125,23 +139,29 @@ impl OverlayApp {
                 Err(std::sync::mpsc::TryRecvError::Empty) => {}
             }
         }
+        let entering = eligible && !self.serial_watch.was_eligible;
+        self.serial_watch.was_eligible = eligible;
         if !eligible {
             return;
+        }
+        if !self.serial_watch.registration_attempted {
+            self.serial_watch.registration_attempted = true;
+            self.serial_watch.notification = device_watch::DeviceWatch::new(self.ui_wake.clone());
         }
         let Some(spec @ ConnectionSpec::Zmk { .. }) = self.session.last_spec.clone() else {
             return;
         };
-        let now = Instant::now();
-        let next = self.serial_watch.next_scan_at.unwrap_or(now);
         if self.serial_watch.pending.is_some() {
             return;
         }
-        ctx.request_repaint_after(next.saturating_duration_since(now));
-        if now < next {
+        let arrived = self
+            .serial_watch
+            .notification
+            .as_ref()
+            .is_some_and(device_watch::DeviceWatch::take_arrival);
+        if !entering && !arrived {
             return;
         }
-        self.serial_watch.next_scan_at = Some(now + SERIAL_SCAN_INTERVAL);
-        ctx.request_repaint_after(SERIAL_SCAN_INTERVAL);
         let (tx, rx) = std::sync::mpsc::channel();
         self.serial_watch.pending = Some(rx);
         let wake = self.ui_wake.clone();
@@ -151,6 +171,84 @@ impl OverlayApp {
             let _ = tx.send((spec, replacement));
             wake.request_repaint();
         });
+    }
+}
+
+#[cfg(target_os = "windows")]
+mod device_watch {
+    use crate::ui_wake::UiWake;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use windows::Win32::Devices::DeviceAndDriverInstallation::{
+        CM_Register_Notification, CM_Unregister_Notification, CM_NOTIFY_ACTION,
+        CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL, CM_NOTIFY_EVENT_DATA, CM_NOTIFY_FILTER,
+        CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE, CR_SUCCESS, HCMNOTIFICATION,
+    };
+
+    struct Context {
+        arrived: AtomicBool,
+        wake: UiWake,
+    }
+
+    pub(super) struct DeviceWatch {
+        handle: HCMNOTIFICATION,
+        context: Box<Context>,
+    }
+
+    impl DeviceWatch {
+        pub(super) fn new(wake: UiWake) -> Option<Self> {
+            let context = Box::new(Context {
+                arrived: AtomicBool::new(false),
+                wake,
+            });
+            let mut filter = CM_NOTIFY_FILTER {
+                cbSize: std::mem::size_of::<CM_NOTIFY_FILTER>() as u32,
+                FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
+                ..Default::default()
+            };
+            filter.u.DeviceInterface.ClassGuid =
+                windows::core::GUID::from_u128(0x86e0d1e0_8089_11d0_9ce4_08003e301f73);
+            let mut handle = HCMNOTIFICATION::default();
+            // The boxed context stays at this address until unregister has drained callbacks.
+            let result = unsafe {
+                CM_Register_Notification(
+                    &filter,
+                    Some((&*context as *const Context).cast()),
+                    Some(on_notification),
+                    &mut handle,
+                )
+            };
+            if result != CR_SUCCESS {
+                return None;
+            }
+            Some(Self { handle, context })
+        }
+
+        pub(super) fn take_arrival(&self) -> bool {
+            self.context.arrived.swap(false, Ordering::Relaxed)
+        }
+    }
+
+    impl Drop for DeviceWatch {
+        fn drop(&mut self) {
+            // Unregister waits for callbacks before the context is freed.
+            unsafe { CM_Unregister_Notification(self.handle) };
+        }
+    }
+
+    unsafe extern "system" fn on_notification(
+        _handle: HCMNOTIFICATION,
+        context: *const core::ffi::c_void,
+        action: CM_NOTIFY_ACTION,
+        _event: *const CM_NOTIFY_EVENT_DATA,
+        _size: u32,
+    ) -> u32 {
+        if action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL {
+            // Registered with a stable Box, kept alive until unregister returns.
+            let context = unsafe { &*context.cast::<Context>() };
+            context.arrived.store(true, Ordering::Relaxed);
+            context.wake.request_repaint();
+        }
+        0
     }
 }
 
