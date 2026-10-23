@@ -26,6 +26,7 @@ pub struct OverlayApp {
     settings: SettingsState,
     session: SessionState,
     connect: ConnectDraftState,
+    serial_watch: foxglove_connect::SerialWatch,
     pub(crate) editor: crate::keymap_editor::EditorState,
 }
 
@@ -71,6 +72,7 @@ impl OverlayApp {
                 pending_connect: None,
             },
             editor: crate::keymap_editor::EditorState::new(),
+            serial_watch: foxglove_connect::SerialWatch::default(),
         }
     }
 
