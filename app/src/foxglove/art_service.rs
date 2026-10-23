@@ -4,11 +4,11 @@
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{mpsc, Arc, Mutex, OnceLock, Weak};
+use std::time::Duration;
 
 use digitalis::art;
-use digitalis::link::Link;
+use digitalis::link::{Event as LinkEvent, EventSubscription, Link};
 use digitalis::protocol::ArtStatus;
 use serde::{Deserialize, Serialize};
 
@@ -43,13 +43,16 @@ impl Snapshot {
 }
 
 enum Command {
+    Stop,
+    Available(Arc<Link>),
+    Link(Weak<Link>, LinkEvent),
     Status,
     Choose(Choice),
 }
 
 #[derive(Clone)]
 pub struct Handle {
-    commands: mpsc::SyncSender<Command>,
+    commands: mpsc::Sender<Command>,
     state: Arc<Mutex<Snapshot>>,
     cancel: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
@@ -70,7 +73,7 @@ impl Handle {
             return false;
         }
         self.cancel.store(false, Ordering::Relaxed);
-        if self.commands.try_send(command).is_err() {
+        if self.commands.send(command).is_err() {
             return false;
         }
         state.busy = true;
@@ -110,7 +113,7 @@ pub fn handle() -> Option<Handle> {
 
 pub fn start() {
     SERVICE.get_or_init(|| {
-        let (commands, receiver) = mpsc::sync_channel(1);
+        let (commands, receiver) = mpsc::channel();
         let h = Handle {
             commands,
             state: Arc::new(Mutex::new(Snapshot::default())),
@@ -134,7 +137,6 @@ pub fn start() {
                         s.connected = false;
                         s.error = Some("Art worker panicked; restarting".into());
                     });
-                    std::thread::sleep(Duration::from_secs(3));
                 }
             })
         {
@@ -148,6 +150,7 @@ pub fn stop() {
     if let Some(h) = SERVICE.get() {
         h.stop.store(true, Ordering::Relaxed);
         h.cancel();
+        let _ = h.commands.send(Command::Stop);
     }
 }
 
@@ -209,76 +212,117 @@ fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         .and_then(|p| std::fs::read(p).ok())
         .and_then(|b| serde_json::from_slice::<Choice>(&b).ok());
     h.update(|s| s.pinned = pinned);
-    let mut current: Option<(Arc<Link>, u64)> = None;
-    let mut retry = Instant::now();
-    let mut check_restore = false;
-    let mut restore_delay = Duration::from_secs(1);
+    let notifications = h.commands.clone();
+    let _subscription = super::link::subscribe_links(move |link| {
+        let _ = notifications.send(Command::Available(link));
+    });
+    // Discovery runs once. New shared links and each link's reconnects arrive as events.
+    let _ = super::link::discover_links();
+    run_events(h, receiver);
+}
+
+fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
+    let mut links: Vec<(Arc<Link>, EventSubscription)> = Vec::new();
+    let mut current: Option<(usize, u64)> = None;
     while !h.stop.load(Ordering::Relaxed) {
-        if let Some((link, generation)) = &current {
-            let state = link.state();
-            if state.connected.is_none() || state.generation != *generation {
-                current = None;
-                h.update(|s| {
-                    s.connected = false;
-                    s.status = None;
-                });
-                retry = Instant::now();
-            }
-        }
-        if current.is_none() && Instant::now() >= retry {
-            if let Some((link, _)) = super::link::host_link() {
-                let generation = link.state().generation;
-                current = Some((link, generation));
-                check_restore = true;
-                restore_delay = Duration::from_secs(1);
-                h.update(|s| s.connected = true);
-            }
-            retry = Instant::now() + Duration::from_secs(3);
-        }
-        let command = match receiver.recv_timeout(Duration::from_secs(1)) {
-            Ok(c) => Some(c),
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(mpsc::RecvTimeoutError::Timeout) => None,
-        };
-        let mut automatic = false;
-        if command.is_none() && check_restore && current.is_some() {
-            h.update(|s| {
-                if !s.busy {
-                    h.cancel.store(false, Ordering::Relaxed);
-                    s.busy = true;
-                    s.error = None;
-                    s.cancelled = false;
-                    s.push_progress = None;
-                    automatic = true;
+        let Ok(command) = receiver.recv() else { break };
+        let mut reported = None;
+        let automatic = match &command {
+            Command::Stop => break,
+            Command::Available(link) => {
+                if links.iter().any(|(l, _)| Arc::ptr_eq(l, link)) {
+                    continue;
                 }
+                let source = Arc::downgrade(link);
+                let tx = h.commands.clone();
+                let subscription = link.subscribe_events(move |event| {
+                    let _ = tx.send(Command::Link(source.clone(), event));
+                });
+                links.push((link.clone(), subscription));
+                continue;
+            }
+            Command::Link(source, LinkEvent::State(state)) => {
+                let Some(id) = links
+                    .iter()
+                    .position(|(l, _)| Weak::ptr_eq(&Arc::downgrade(l), source))
+                else {
+                    continue;
+                };
+                if current.is_some_and(|(active, _)| active == id) && state.connected.is_none() {
+                    current = None;
+                    h.update(|s| {
+                        s.connected = false;
+                        s.status = None;
+                    });
+                }
+                if state.connected.is_none() || current == Some((id, state.generation)) {
+                    continue;
+                }
+                let link = &links[id].0;
+                let live = link.state();
+                if live.generation != state.generation
+                    || live.connected.is_none()
+                    || super::link::ask_hello(link).is_none()
+                {
+                    continue;
+                }
+                current = Some((id, state.generation));
+                h.update(|s| s.connected = true);
+                true
+            }
+            Command::Link(source, LinkEvent::ArtStatus { generation, report }) => {
+                let Some(id) = links
+                    .iter()
+                    .position(|(l, _)| Weak::ptr_eq(&Arc::downgrade(l), source))
+                else {
+                    continue;
+                };
+                let live = links[id].0.state();
+                if current != Some((id, *generation))
+                    || live.generation != *generation
+                    || live.connected.is_none()
+                {
+                    continue;
+                }
+                reported = Some(ArtStatus::parse(report));
+                true
+            }
+            _ => false,
+        };
+        // A UI command already queued owns busy/cancel until that command completes.
+        let mut queued_command = false;
+        if automatic {
+            h.update(|s| {
+                queued_command = s.busy;
+                if queued_command {
+                    return;
+                }
+                h.cancel.store(false, Ordering::Relaxed);
+                s.busy = true;
+                s.cancelled = false;
+                s.error = None;
+                s.push_progress = None;
             });
         }
-        if command.is_none() && !automatic {
-            continue;
-        }
-        let result = if let Some((link, _)) = &current {
+        let result = if let Some((id, _)) = current {
+            let link = &links[id].0;
             if automatic {
-                let result = fresh_status(link, h).and_then(|st| {
-                    h.update(|s| s.status = Some(st));
-                    check_restore = st.link != 2;
-                    if let Some(choice) = restore(&h.snapshot().pinned, st) {
-                        choose(link, h, &choice)
-                    } else {
+                reported
+                    .map(Ok)
+                    .unwrap_or_else(|| fresh_status(link, h))
+                    .and_then(|st| {
+                        h.update(|s| s.status = Some(st));
+                        if !queued_command {
+                            if let Some(choice) = restore(&h.snapshot().pinned, st) {
+                                return choose(link, h, &choice);
+                            }
+                        }
                         Ok(st)
-                    }
-                });
-                // Retry a missing right half or failed STATUS, backing off to once a minute so
-                // a sleeping right half doesn't cost the left half's battery.
-                if check_restore {
-                    std::thread::sleep(restore_delay);
-                    restore_delay = (restore_delay * 2).min(Duration::from_secs(60));
-                }
-                result
+                    })
             } else {
-                match command.unwrap() {
+                match command {
                     Command::Status => fresh_status(link, h),
                     Command::Choose(choice) => choose(link, h, &choice).and_then(|st| {
-                        check_restore = false;
                         h.update(|s| {
                             s.status = Some(st);
                             s.pinned = Some(choice.clone());
@@ -293,11 +337,15 @@ fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                         }
                         Ok(st)
                     }),
+                    _ => unreachable!(),
                 }
             }
         } else {
             Err("Waiting for a keyboard with the host link".into())
         };
+        if queued_command {
+            continue;
+        }
         h.update(|s| {
             s.busy = false;
             s.cancelled = h.cancelled();
@@ -321,7 +369,7 @@ mod tests {
 
     #[test]
     fn handle_rejects_overlapping_commands_and_cancel_is_immediate() {
-        let (commands, receiver) = mpsc::sync_channel(1);
+        let (commands, receiver) = mpsc::channel();
         let h = Handle {
             commands,
             state: Arc::new(Mutex::new(Snapshot::default())),
@@ -344,6 +392,35 @@ mod tests {
         h.stop.store(true, Ordering::Relaxed);
         h.update(|s| s.busy = false);
         assert!(!h.refresh());
+    }
+
+    #[test]
+    fn idle_worker_handles_commands_and_stop_without_a_link() {
+        let (commands, receiver) = mpsc::channel();
+        let h = Handle {
+            commands,
+            state: Arc::new(Mutex::new(Snapshot::default())),
+            cancel: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        let worker = h.clone();
+        let (done, finished) = mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            run_events(&worker, &receiver);
+            done.send(()).unwrap();
+        });
+        assert!(h.refresh());
+        // Stop is ordered after the command; it wakes recv even with the sender still alive.
+        h.commands.send(Command::Stop).unwrap();
+        finished.recv_timeout(Duration::from_secs(2)).unwrap();
+        thread.join().unwrap();
+        let snapshot = h.snapshot();
+        assert!(!snapshot.busy);
+        assert!(!snapshot.connected);
+        assert_eq!(
+            snapshot.error.as_deref(),
+            Some("Waiting for a keyboard with the host link")
+        );
     }
 
     #[test]
