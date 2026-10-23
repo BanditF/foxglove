@@ -47,8 +47,6 @@ static uint16_t pushed;
 static uint8_t state = ART_LEFT_IDLE;
 static uint8_t error;
 static struct art_relay_status right;
-static uint16_t right_len;   // bytes of it the last status read filled
-static int64_t right_read_at; // uptime of that read, 0 = never
 
 static struct bt_conn *peer;
 static uint16_t data_handle, status_handle;
@@ -180,7 +178,6 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
     bt_conn_unref(peer);
     peer = NULL;
     data_handle = status_handle = 0;
-    right_read_at = 0;
 }
 
 BT_CONN_CB_DEFINE(art_relay_conn_cb) = {
@@ -253,8 +250,6 @@ static uint8_t read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_pa
                        const void *data, uint16_t length) {
     if (data != NULL) {
         memcpy(&right, data, MIN(length, sizeof(right)));
-        right_len = length;
-        right_read_at = k_uptime_get();
         return BT_GATT_ITER_CONTINUE;
     }
     request_done(err);
@@ -462,19 +457,6 @@ uint8_t art_relay_link(void) {
         return 0;
     }
     return data_handle && status_handle ? 2 : 1;
-}
-
-uint8_t art_relay_right_rgb(struct rgb_idle_wire *out) {
-    if (state != ART_LEFT_PUSHING) {
-        k_work_submit_to_queue(&relay_q, &status_work);
-    }
-    if (art_relay_link() < 2 || right_read_at == 0 || right.version < 2 ||
-        right_len < sizeof(right)) {
-        memset(out, 0, sizeof(*out));
-        return 0xff;
-    }
-    *out = right.rgb;
-    return MIN((k_uptime_get() - right_read_at) / 1000, 254);
 }
 
 void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]) {

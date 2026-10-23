@@ -31,17 +31,6 @@
  *                                                     left underglow on, right link
  *      On: the right half's underglow follows the left's on/off (default). Off: each half turns
  *      its underglow off on its own idle.
- *   02 INVOKE    behavior local id u16, param1 u32, param2 u32, hold ms u16 (0 = tap)
- *                                                     reply: status, local id u16
- *      Presses and releases the binding as a key would, on the left; global behaviors (&rgb_ug,
- *      &soft_off, &sys_reset, ...) reach the right half too. The ids are ZMK Studio's local ids.
- *      hold ms keeps it pressed that long (&soft_off needs its hold-time). Status:
- *      0 ok, 1 unknown id, 2 busy (a held invoke is still running), 3 behavior failed,
- *      4 not built in (no local ids), 5 bad length.
- *   03 RGB_STATE                                      reply: left struct rgb_idle_wire (7 B),
- *                                                     right age s (0xff = none), right (7 B)
- *      The right's state comes from the last relay status read (each request asks for a new one),
- *      so poll it; age says how old it is.
  */
 
 #pragma once
