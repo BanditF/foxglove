@@ -192,12 +192,12 @@ static void art_command(const uint8_t *d) {
     reply(r, sizeof(r));
 }
 
-static void settings_command(const uint8_t *d) {
+static void settings_command(const uint8_t *d, int len) {
     switch (d[1]) {
     case SETTING_RGB_SYNC: {
         uint8_t r[5] = {HOST_LINK_SETTINGS, 0x80 | SETTING_RGB_SYNC, 0xff, 0, right_link()};
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
-        if (d[2] <= 1) {
+        if (len >= 3 && d[2] <= 1) { // a report cut short is a read
             rgb_idle_set_sync(d[2]);
         }
         bool on = false;
@@ -228,7 +228,7 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
         art_command(d);
         break;
     case HOST_LINK_SETTINGS:
-        settings_command(d);
+        settings_command(d, MIN(ev->length, REPORT_SIZE));
         break;
     }
     return ZMK_EV_EVENT_BUBBLE;
