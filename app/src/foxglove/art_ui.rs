@@ -10,6 +10,7 @@ struct UiState {
 thread_local! { static UI: std::cell::RefCell<UiState> = std::cell::RefCell::new(UiState::default()); }
 
 pub fn update(ctx: &egui::Context) {
+    art_service::set_wake(crate::ui_wake::UiWake::from_ctx(ctx));
     UI.with_borrow_mut(|state| {
         if art_library::PICK_FILE.swap(false, Ordering::Relaxed) {
             state.dialog.pick_file();
