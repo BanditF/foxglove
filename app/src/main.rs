@@ -29,5 +29,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings = Settings::load().unwrap_or_default();
     let available_devices = discover_devices();
     foxglove::screens::start();
+    foxglove::art_service::start();
     platform::run(settings, available_devices)
 }

@@ -86,6 +86,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
                     "quit" => {
                         // Foxglove: hand the left screen's panel back before going.
                         crate::foxglove::screens::stop();
+                        crate::foxglove::art_service::stop();
                         process::exit(0)
                     }
                     _ => {}
