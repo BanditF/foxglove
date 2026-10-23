@@ -8,6 +8,15 @@ pub const PANEL: u8 = 0xD5;
 pub const ART: u8 = 0xD6;
 /// Keyboard settings, saved on the keyboard (host_link.h).
 pub const SETTINGS: u8 = 0xD7;
+// 0xD7-0xDF are reserved for host-link protocols; 0xD8-0xDF are unassigned.
+
+/// HELLO capabilities, independent of the protocol version and current split connection.
+pub mod capabilities {
+    pub const PANEL: u32 = 1 << 0;
+    pub const ART_RELAY: u32 = 1 << 1;
+    pub const SETTINGS_RGB: u32 = 1 << 2;
+    pub const ART_STATUS_EVENT: u32 = 1 << 3;
+}
 pub const VERSION: u8 = 1;
 
 pub mod panel {
@@ -134,11 +143,13 @@ pub struct Hello {
     /// art_relay_debug: chrcs, ends, last ret, ATT err, timeouts, answered, in flight,
     /// security, MTU u16
     pub debug: [u8; 10],
+    /// Zero for older firmware, which pads the appended field with zeros.
+    pub capabilities: u32,
 }
 
 impl Hello {
     /// The HELLO reply: ver, panel w, h, x, y, right link, right battery %, discovery, tries,
-    /// then the relay debug counters.
+    /// then the relay debug counters and optional capability bits (u32 LE).
     pub fn parse(r: &[u8; REPORT]) -> Hello {
         Hello {
             version: r[2],
@@ -149,6 +160,7 @@ impl Hello {
             discovery: r[9] as i8,
             discovery_tries: r[10],
             debug: r[11..21].try_into().unwrap(),
+            capabilities: u32::from_le_bytes(r[21..25].try_into().unwrap()),
         }
     }
 
@@ -315,6 +327,7 @@ mod tests {
         assert_eq!((h.version, h.width, h.height), (1, 64, 52));
         assert_eq!((h.right_link, h.right_battery), (2, Some(93)));
         assert_eq!(h.discovery_text(), "found");
+        assert_eq!(h.capabilities, 0);
         assert_eq!(h.discovery_tries, 1);
         assert_eq!(u16::from_le_bytes([h.debug[8], h.debug[9]]), 247);
 
@@ -323,6 +336,20 @@ mod tests {
         let h = Hello::parse(&r);
         assert_eq!(h.right_battery, None);
         assert_eq!(h.discovery_text(), "bt_gatt_discover error -5");
+    }
+
+    #[test]
+    fn parses_hello_capabilities() {
+        let mut r = [0u8; REPORT];
+        let caps = capabilities::PANEL
+            | capabilities::ART_RELAY
+            | capabilities::SETTINGS_RGB
+            | capabilities::ART_STATUS_EVENT
+            | (1 << 31); // Preserve unknown future bits.
+        r[21..25].copy_from_slice(&caps.to_le_bytes());
+        assert_eq!(Hello::parse(&r).capabilities, caps);
+        r[21..25].copy_from_slice(&capabilities::PANEL.to_le_bytes());
+        assert_eq!(Hello::parse(&r).capabilities, capabilities::PANEL);
     }
 
     #[test]

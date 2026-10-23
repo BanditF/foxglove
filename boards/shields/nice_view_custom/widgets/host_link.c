@@ -49,6 +49,8 @@ static uint8_t back[HOST_PANEL_BYTES];
 static uint8_t front[HOST_PANEL_BYTES];
 static bool alive;
 
+static atomic_t host_seen;
+
 static uint8_t right_battery = 0xff; // unknown
 
 bool host_panel_get(uint8_t buf[HOST_PANEL_BYTES]) {
@@ -122,12 +124,20 @@ static void panel_command(const uint8_t *d) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
         art_relay_discovery(&discovery, &tries);
 #endif
-        uint8_t r[11 + 10] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
+        uint8_t r[11 + 10 + 4] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
                               HOST_PANEL_H,    HOST_PANEL_X,       HOST_PANEL_Y,      right_link(),
                               right_battery,   (uint8_t)discovery, tries};
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
         art_relay_debug(&r[11]);
 #endif
+        uint32_t caps = HOST_LINK_CAP_PANEL;
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+        caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT;
+#endif
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+        caps |= HOST_LINK_CAP_SETTINGS_RGB;
+#endif
+        sys_put_le32(caps, &r[21]);
         reply(r, sizeof(r));
         break;
     }
@@ -194,6 +204,13 @@ static void art_command(const uint8_t *d) {
     r[3] = ART_ERR_NO_LINK;
 #endif
     reply(r, sizeof(r));
+}
+
+void host_link_art_status(void) {
+    if (atomic_get(&host_seen)) {
+        const uint8_t d[] = {HOST_LINK_ART, ART_STATUS};
+        art_command(d);
+    }
 }
 
 /* INVOKE: runs on the system work queue, like the keymap does for key presses */
@@ -319,6 +336,9 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
     uint8_t d[REPORT_SIZE] = {0};
     memcpy(d, ev->data, MIN(ev->length, REPORT_SIZE));
 
+    if (d[0] == HOST_LINK_PANEL || d[0] == HOST_LINK_ART || d[0] == HOST_LINK_SETTINGS) {
+        atomic_set(&host_seen, 1);
+    }
     switch (d[0]) {
     case HOST_LINK_PANEL:
         panel_command(d);

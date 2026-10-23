@@ -32,6 +32,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #endif
 
 #include "art_relay.h"
+#include "host_link.h"
 
 // ZMK discovers and subscribes to its own split service once the link is secured; a discovery
 // of ours running alongside that wedged both (requests never answered), so wait it out.
@@ -91,6 +92,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         if (data_handle && status_handle) {
             discovery = ART_DISCOVERY_DONE;
             rgb_sync_link_up();
+            host_link_art_status();
         } else {
             discovery_failed(ART_DISCOVERY_NO_CHRC);
         }
@@ -110,6 +112,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         dbg.ends++;
         discovery = ART_DISCOVERY_DONE;
         rgb_sync_link_up();
+        host_link_art_status();
         return BT_GATT_ITER_STOP;
     }
     return BT_GATT_ITER_CONTINUE;
@@ -176,11 +179,15 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
     if (conn != peer) {
         return;
     }
+    bool was_ready = art_relay_link() == 2;
     k_work_cancel_delayable(&discover_work);
     bt_conn_unref(peer);
     peer = NULL;
     data_handle = status_handle = 0;
     right_read_at = 0;
+    if (was_ready) {
+        host_link_art_status();
+    }
 }
 
 BT_CONN_CB_DEFINE(art_relay_conn_cb) = {

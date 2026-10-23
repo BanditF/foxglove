@@ -4,11 +4,15 @@
  *
  * Raw HID reports are 32 bytes; byte 0 picks the protocol, byte 1 the command. Ours don't collide
  * with KeyPeek (0xFF, 0xF1), VIA (0x01-0x14, 0xFE) or zzeneg's hid host (0xAA-0xB1, 0xCC-0xCD).
+ * 0xD7-0xDF are reserved for host-link protocols (0xD7 is settings; 0xD8-0xDF unassigned).
  * Replies come back as input reports with the same byte 0 and byte 1 = command | 0x80.
  *
  * 0xD5 host panel, host -> keyboard:
  *   01 HELLO   ver                  reply: ver, panel w, h, x, y, right link, right battery %,
- *                                   relay discovery result (int8), discovery tries
+ *                                   relay discovery result (int8), discovery tries,
+ *                                   10 relay debug bytes, capabilities u32 LE (report bytes 21-24)
+ *      Capabilities: bit 0 panel, 1 art relay, 2 settings/RGB, 3 unsolicited art STATUS.
+ *      Old firmware pads the capability bytes with zero; version and prior fields stay unchanged.
  *   02 FILL    colour (0 or 1)      fill the back buffer
  *   03 ROWS    y, n (1-3), n rows   write rows of HOST_PANEL_STRIDE bytes, MSB first, 1 = ink
  *   04 PRESENT                      show the back buffer
@@ -24,7 +28,9 @@
  *   04 SELECT  set (int8, -1 = random built-in)  show a built-in set again
  *   05 STATUS
  * Every command but DATA replies with the relay status (art_relay_central.c); DATA replies only
- * on error.
+ * on error. Once a host has sent any host-link report since boot, relay discovery completion
+ * and loss of a ready relay also send 0xD6 0x85, with exactly the STATUS reply payload.
+ * These best-effort events use the same reply queue; hosts may still request STATUS to resync.
  *
  * 0xD7 keyboard settings, host -> keyboard; saved on the keyboard, so the PC needn't resend them:
  *   01 RGB_SYNC  0 = off, 1 = on, 0xff = just read     reply: sync (0/1, 0xff = not built in),
@@ -53,6 +59,14 @@
 #define HOST_LINK_ART 0xD6
 #define HOST_LINK_SETTINGS 0xD7
 #define HOST_LINK_VERSION 1
+
+#define HOST_LINK_CAP_PANEL (1U << 0)
+#define HOST_LINK_CAP_ART_RELAY (1U << 1)
+#define HOST_LINK_CAP_SETTINGS_RGB (1U << 2)
+#define HOST_LINK_CAP_ART_STATUS_EVENT (1U << 3)
+
+// Called by relay connection/discovery callbacks; queues a report only after host traffic.
+void host_link_art_status(void);
 
 // The panel covers the WPM block of the portrait layout (status.c), inside the frame.
 #define HOST_PANEL_X 2
