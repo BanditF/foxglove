@@ -1833,6 +1833,7 @@ dependencies = [
  "khronos-egl",
  "lzma-rs",
  "objc2-app-kit 0.3.2",
+ "prost",
  "qmk-via-api",
  "raw-window-handle",
  "rust-ini",

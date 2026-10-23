@@ -36,11 +36,33 @@ struct ZmkReopener {
 
 impl Reopener for ZmkReopener {
     fn reopen(&self) -> Result<Box<dyn KeyboardProtocol>, Box<dyn Error>> {
+        // Foxglove: read the keymap again, so a keyboard that comes back with new firmware or
+        // Studio edits shows them. The keyboard may still be starting, so try a few times; keep
+        // the old keymap only if it can't be asked (Studio unreachable or locked).
+        let (vid, pid) = (self.layout.definition.vid, self.layout.definition.pid);
+        let fresh = (0..3).find_map(|attempt| {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(1500));
+            }
+            fetch_and_save(vid, pid, &self.transport)
+                .ok()
+                .and_then(|data| build_from_zmk_data(vid, pid, data).ok())
+        });
+        let layout = fresh.map_or_else(|| Arc::clone(&self.layout), Arc::new);
         Ok(Box::new(ZmkProtocol::open_hid(
-            Arc::clone(&self.layout),
+            layout,
             self.transport.clone(),
         )?))
     }
+}
+
+/// Reads the keymap from the keyboard and keeps a copy of what it said (Foxglove).
+fn fetch_and_save(vid: u16, pid: u16, transport: &ZmkTransport) -> Result<ZmkData, Box<dyn Error>> {
+    let (data, recording) = zmk_rpc::fetch_zmk_data(transport)?;
+    if let Some(recording) = recording {
+        crate::foxglove::keymap_cache::save(vid, pid, &recording);
+    }
+    Ok(data)
 }
 
 impl ZmkProtocol {
@@ -49,7 +71,14 @@ impl ZmkProtocol {
         pid: u16,
         transport: &ZmkTransport,
     ) -> Result<Self, Box<dyn Error>> {
-        let zmk_data = zmk_rpc::fetch_zmk_data(transport)?;
+        // Foxglove: when Studio can't be asked (Bluetooth only, locked), start from the keymap
+        // it last sent, so the overlay works without a cable.
+        let zmk_data = match fetch_and_save(vid, pid, transport) {
+            Ok(data) => data,
+            Err(e) => crate::foxglove::keymap_cache::replay(vid, pid)
+                .and_then(|client| zmk_rpc::fetch_zmk_data_from_client(client).ok())
+                .ok_or(e)?,
+        };
         let layout = build_from_zmk_data(vid, pid, zmk_data)?;
         Self::open_hid(Arc::new(layout), transport.clone())
     }

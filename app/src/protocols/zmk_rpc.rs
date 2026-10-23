@@ -187,16 +187,23 @@ impl ZmkStudioSession {
     }
 }
 
-pub fn fetch_zmk_data(transport: &ZmkTransport) -> Result<ZmkData, Box<dyn Error>> {
+/// Reads the keymap over `transport`. Foxglove: over USB the keyboard's answers are recorded
+/// and returned too, for the saved keymap (`crate::foxglove::keymap_cache`).
+pub fn fetch_zmk_data(
+    transport: &ZmkTransport,
+) -> Result<(ZmkData, Option<crate::foxglove::keymap_cache::Recording>), Box<dyn Error>> {
     match transport {
         ZmkTransport::SerialPort(port_name) => {
-            let client = StudioClient::open_serial(port_name).map_err(|e| {
-                format!(
-                    "Failed to open serial port '{port_name}': {e}. \
-                     The port may be in use by another application such as ZMK Studio."
-                )
-            })?;
-            fetch_zmk_data_from_client(client).map_err(|e| add_timeout_hint(e, "USB"))
+            let (client, recording) = crate::foxglove::keymap_cache::open_serial(port_name)
+                .map_err(|e| {
+                    format!(
+                        "Failed to open serial port '{port_name}': {e}. \
+                         The port may be in use by another application such as ZMK Studio."
+                    )
+                })?;
+            fetch_zmk_data_from_client(client)
+                .map(|data| (data, Some(recording)))
+                .map_err(|e| add_timeout_hint(e, "USB"))
         }
         ZmkTransport::BleDevice(device_id) => {
             let client =
@@ -206,7 +213,9 @@ pub fn fetch_zmk_data(transport: &ZmkTransport) -> Result<ZmkData, Box<dyn Error
                      Make sure the keyboard is paired in your OS Bluetooth settings."
                     )
                 })?;
-            fetch_zmk_data_from_client(client).map_err(|e| add_timeout_hint(e, "Bluetooth"))
+            fetch_zmk_data_from_client(client)
+                .map(|data| (data, None))
+                .map_err(|e| add_timeout_hint(e, "Bluetooth"))
         }
     }
 }
@@ -228,7 +237,7 @@ fn add_timeout_hint(error: Box<dyn Error>, transport_name: &str) -> Box<dyn Erro
     error
 }
 
-fn fetch_zmk_data_from_client<T: Read + Write>(
+pub(crate) fn fetch_zmk_data_from_client<T: Read + Write>(
     mut client: StudioClient<T>,
 ) -> Result<ZmkData, Box<dyn Error>> {
     let lock_state = client.get_lock_state()?;
