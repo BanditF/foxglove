@@ -272,7 +272,7 @@ static void settings_command(const uint8_t *d, int len) {
     case SETTING_RGB_SYNC: {
         uint8_t r[5] = {HOST_LINK_SETTINGS, 0x80 | SETTING_RGB_SYNC, 0xff, 0, right_link()};
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
-        if (d[2] <= 1) {
+        if (len >= 3 && d[2] <= 1) { // a report cut short is a read
             rgb_idle_set_sync(d[2]);
         }
         bool on = false;

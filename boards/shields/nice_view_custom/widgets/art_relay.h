@@ -7,7 +7,7 @@
  *   status (read)                            struct art_relay_status
  * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set |
  *      RGB on u8, follow u8 [, more]
- * RGB (write without response) is the left's underglow on/off; with follow = 1 the right shows
+ * RGB (write request, so the left knows it arrived) is the left's underglow on/off; with follow = 1 the right shows
  * the same, with 0 it goes by its own activity (rgb_idle.c). Bytes after follow are reserved for
  * colour and effect; the right ignores bytes it doesn't know, so the op can grow.
  * The right half receives into a spare slot and keeps playing what it shows until a blob passes

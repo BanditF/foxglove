@@ -172,7 +172,12 @@ static int rgb_settings_set(const char *name, size_t len, settings_read_cb read_
 // After all settings are loaded (ZMK's own underglow state too).
 static int rgb_settings_commit(void) {
     if (!loaded) {
-        zmk_rgb_underglow_get_state(&wanted); // first boot with this firmware: keep what ZMK had
+        // First boot with this firmware. ZMK's saved state can't tell the user's "off" from its
+        // idle auto-off's, and after any idle it says off, so start lit; a user who wants it off
+        // turns it off again and that sticks.
+        wanted = true;
+        loaded = true;
+        save();
     }
     k_work_submit(&apply_work);
     k_work_reschedule(&poll_work, POLL);
