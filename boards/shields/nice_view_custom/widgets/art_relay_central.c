@@ -24,6 +24,13 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_SYNC)
+#include <zmk/activity.h>
+#include <zmk/event_manager.h>
+#include <zmk/events/activity_state_changed.h>
+#include <zmk/rgb_underglow.h>
+#endif
+
 #include "art_relay.h"
 
 // ZMK discovers and subscribes to its own split service once the link is secured; a discovery
@@ -64,6 +71,7 @@ static struct bt_gatt_discover_params discover_params;
 static int8_t discovery = ART_DISCOVERY_IDLE;
 static uint8_t discovery_tries;
 static struct k_work_delayable discover_work;
+static void rgb_sync_link_up(void);
 
 // Tries again a little later, in case ZMK's own setup of the link got in the way.
 static void discovery_failed(int8_t result) {
@@ -80,6 +88,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         LOG_INF("art relay: right half %s", data_handle ? "ready" : "has no relay");
         if (data_handle && status_handle) {
             discovery = ART_DISCOVERY_DONE;
+            rgb_sync_link_up();
         } else {
             discovery_failed(ART_DISCOVERY_NO_CHRC);
         }
@@ -98,6 +107,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         // queued after it on the split link (ZMK's own included).
         dbg.ends++;
         discovery = ART_DISCOVERY_DONE;
+        rgb_sync_link_up();
         return BT_GATT_ITER_STOP;
     }
     return BT_GATT_ITER_CONTINUE;
@@ -468,3 +478,49 @@ static int art_relay_init(void) {
 }
 
 SYS_INIT(art_relay_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
+
+/* Underglow sync: the right half's underglow mirrors ours */
+
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_SYNC)
+// After an activity change, give ZMK's own auto-off a moment to switch our underglow first.
+#define RGB_SETTLE K_MSEC(100)
+// While active, check now and then, in case a send was lost or the halves drifted apart.
+#define RGB_POLL K_SECONDS(5)
+
+static int8_t rgb_sent = -1; // last on/off the right half got, -1 = unknown
+
+static void rgb_sync_cb(struct k_work *work) {
+    bool on;
+    if (zmk_rgb_underglow_get_state(&on) == 0 && on != rgb_sent) {
+        struct bt_conn *conn = job_conn();
+        if (conn != NULL) {
+            uint8_t buf[] = {ART_RELAY_RGB, on};
+            if (write_cmd(conn, buf, sizeof(buf)) == 0) {
+                rgb_sent = on;
+            }
+            bt_conn_unref(conn);
+        }
+    }
+    if (zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE && art_relay_link() == 2) {
+        k_work_schedule_for_queue(&relay_q, k_work_delayable_from_work(work), RGB_POLL);
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(rgb_sync_work, rgb_sync_cb);
+
+static void rgb_sync_link_up(void) {
+    rgb_sent = -1;
+    k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, RGB_SETTLE);
+}
+
+static int rgb_activity_listener(const zmk_event_t *eh) {
+    if (art_relay_link() == 2) {
+        k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, RGB_SETTLE);
+    }
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(art_relay_rgb, rgb_activity_listener);
+ZMK_SUBSCRIPTION(art_relay_rgb, zmk_activity_state_changed);
+#else
+static void rgb_sync_link_up(void) {}
+#endif

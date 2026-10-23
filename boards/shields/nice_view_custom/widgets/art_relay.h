@@ -5,7 +5,11 @@
  * The right half adds its own GATT service to the split connection:
  *   data   (write, write without response)  op byte + payload, below
  *   status (read)                            struct art_relay_status
- * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set
+ * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set |
+ *      RGB on u8 [, more]
+ * RGB (write without response) mirrors the left's underglow on/off on the right, so both halves
+ * follow the keyboard's activity as the left sees it. Bytes after on are reserved for colour and
+ * effect; the right ignores bytes it doesn't know, so the op can grow without breaking older halves.
  * The right half receives into a spare slot and keeps playing what it shows until a blob passes
  * its CRC and header checks; a failed or abandoned push leaves the screen alone.
  *
@@ -32,6 +36,7 @@ enum art_relay_op {
     ART_RELAY_DATA,
     ART_RELAY_COMMIT,
     ART_RELAY_SELECT,
+    ART_RELAY_RGB,
 };
 
 #define ART_RELAY_HEADER_SIZE 12

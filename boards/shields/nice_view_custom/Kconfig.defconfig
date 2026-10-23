@@ -65,6 +65,14 @@ config NICE_VIEW_ART_RELAY
     default y if ZMK_SPLIT_BLE && (NICE_VIEW_HOST_LINK || !ZMK_SPLIT_ROLE_CENTRAL)
     select CRC
 
+config NICE_VIEW_RGB_SYNC
+    bool "Right half's underglow follows the left's on/off (over the art relay link)"
+    default y if NICE_VIEW_ART_RELAY && ZMK_RGB_UNDERGLOW
+    depends on NICE_VIEW_ART_RELAY && ZMK_RGB_UNDERGLOW
+    help
+      The left (central) sees every key press, so its idle auto-off is the keyboard's. The right
+      half should be built with ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE=n so its own idle doesn't fight it.
+
 config NICE_VIEW_ART_RELAY_MAX_SIZE
     int "Largest pushed art set, in bytes (RAM on both halves)"
     default 16384

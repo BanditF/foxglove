@@ -19,6 +19,10 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <zmk/display.h>
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_SYNC)
+#include <zephyr/bluetooth/conn.h>
+#include <zmk/rgb_underglow.h>
+#endif
 
 #include "art_relay.h"
 #include "custom_art.h"
@@ -94,6 +98,37 @@ static void play(void) {
     }
 }
 
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_SYNC)
+// The left decides when the underglow is on (art_relay.h, RGB). Applied off the Bluetooth thread.
+static atomic_t rgb_want;
+
+static void rgb_cb(struct k_work *work) {
+    bool want = atomic_get(&rgb_want), on;
+    if (zmk_rgb_underglow_get_state(&on) == 0 && on != want) {
+        // on/off save the state to flash after a debounce, so skip calls that change nothing.
+        if (want) {
+            zmk_rgb_underglow_on();
+        } else {
+            zmk_rgb_underglow_off();
+        }
+    }
+}
+static K_WORK_DEFINE(rgb_work, rgb_cb);
+
+static void rgb_set(bool on) {
+    atomic_set(&rgb_want, on);
+    k_work_submit(&rgb_work);
+}
+
+// Without the left there's nothing to follow: go dark rather than stay lit until sleep. The left
+// sends its state again once the link is back.
+static void rgb_disconnected(struct bt_conn *conn, uint8_t reason) { rgb_set(false); }
+
+BT_CONN_CB_DEFINE(art_relay_rgb_conn_cb) = {
+    .disconnected = rgb_disconnected,
+};
+#endif
+
 // Runs in the Bluetooth RX thread; keep it to copying and checking.
 static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
                           uint16_t len, uint16_t offset, uint8_t flags) {
@@ -156,6 +191,15 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         shown = -1;
         status.state = ART_RIGHT_IDLE;
         play();
+        break;
+
+    case ART_RELAY_RGB:
+        if (len < 2) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_SYNC)
+        rgb_set(d[1] != 0);
+#endif
         break;
     }
     return len;
