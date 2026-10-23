@@ -20,3 +20,9 @@ if(CONFIG_ZMK_DISPLAY AND CONFIG_NICE_VIEW_WIDGET_STATUS)
     endif()
   endif()
 endif()
+
+# Not a display feature: the underglow's idle handling is built whenever it's on.
+if(CONFIG_NICE_VIEW_RGB_IDLE)
+  zephyr_library_include_directories(${CMAKE_SOURCE_DIR}/include)
+  zephyr_library_sources(widgets/rgb_idle.c)
+endif()

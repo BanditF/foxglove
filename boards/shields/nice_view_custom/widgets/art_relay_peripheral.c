@@ -19,6 +19,11 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <zmk/display.h>
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+#include <zephyr/bluetooth/conn.h>
+
+#include "rgb_idle.h"
+#endif
 
 #include "art_relay.h"
 #include "custom_art.h"
@@ -94,6 +99,14 @@ static void play(void) {
     }
 }
 
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+static void rgb_disconnected(struct bt_conn *conn, uint8_t reason) { rgb_idle_remote_lost(); }
+
+BT_CONN_CB_DEFINE(art_relay_rgb_conn_cb) = {
+    .disconnected = rgb_disconnected,
+};
+#endif
+
 // Runs in the Bluetooth RX thread; keep it to copying and checking.
 static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
                           uint16_t len, uint16_t offset, uint8_t flags) {
@@ -156,6 +169,15 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         shown = -1;
         status.state = ART_RIGHT_IDLE;
         play();
+        break;
+
+    case ART_RELAY_RGB:
+        if (len < 2) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+        rgb_idle_remote(d[1] != 0, len < 3 || d[2] != 0);
+#endif
         break;
     }
     return len;

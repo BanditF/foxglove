@@ -5,7 +5,11 @@
  * The right half adds its own GATT service to the split connection:
  *   data   (write, write without response)  op byte + payload, below
  *   status (read)                            struct art_relay_status
- * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set
+ * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set |
+ *      RGB on u8, follow u8 [, more]
+ * RGB (write request, so the left knows it arrived) is the left's underglow on/off; with follow = 1 the right shows
+ * the same, with 0 it goes by its own activity (rgb_idle.c). Bytes after follow are reserved for
+ * colour and effect; the right ignores bytes it doesn't know, so the op can grow.
  * The right half receives into a spare slot and keeps playing what it shows until a blob passes
  * its CRC and header checks; a failed or abandoned push leaves the screen alone.
  *
@@ -32,6 +36,7 @@ enum art_relay_op {
     ART_RELAY_DATA,
     ART_RELAY_COMMIT,
     ART_RELAY_SELECT,
+    ART_RELAY_RGB,
 };
 
 #define ART_RELAY_HEADER_SIZE 12
@@ -97,6 +102,8 @@ void art_relay_discovery(int8_t *result, uint8_t *tries);
 void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]);
 // 0 = right half not connected, 1 = connected, 2 = connected and has the relay service.
 uint8_t art_relay_link(void);
+// Sends the left's underglow state and sync setting to the right soon, if they changed.
+void art_relay_rgb_kick(void);
 // Fills out with: state, error, length u16, pushed u16, link, struct art_relay_status.
 #define ART_RELAY_REPORT_SIZE (7 + sizeof(struct art_relay_status))
 void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]);

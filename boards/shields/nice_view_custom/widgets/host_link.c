@@ -20,9 +20,15 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "host_link.h"
 #include "art_relay.h"
+#include "rgb_idle.h"
+
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+#include <zmk/rgb_underglow.h>
+#endif
 
 enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS };
+enum { SETTING_RGB_SYNC = 0x01 };
 
 #define REPORT_SIZE CONFIG_RAW_HID_REPORT_SIZE
 #define ALIVE_TIMEOUT K_SECONDS(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S)
@@ -186,6 +192,25 @@ static void art_command(const uint8_t *d) {
     reply(r, sizeof(r));
 }
 
+static void settings_command(const uint8_t *d, int len) {
+    switch (d[1]) {
+    case SETTING_RGB_SYNC: {
+        uint8_t r[5] = {HOST_LINK_SETTINGS, 0x80 | SETTING_RGB_SYNC, 0xff, 0, right_link()};
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+        if (len >= 3 && d[2] <= 1) { // a report cut short is a read
+            rgb_idle_set_sync(d[2]);
+        }
+        bool on = false;
+        zmk_rgb_underglow_get_state(&on);
+        r[2] = rgb_idle_sync();
+        r[3] = on;
+#endif
+        reply(r, sizeof(r));
+        break;
+    }
+    }
+}
+
 static int raw_hid_received_listener(const zmk_event_t *eh) {
     const struct raw_hid_received_event *ev = as_raw_hid_received_event(eh);
     if (ev == NULL || ev->length < 2) {
@@ -201,6 +226,9 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
         break;
     case HOST_LINK_ART:
         art_command(d);
+        break;
+    case HOST_LINK_SETTINGS:
+        settings_command(d, MIN(ev->length, REPORT_SIZE));
         break;
     }
     return ZMK_EV_EVENT_BUBBLE;

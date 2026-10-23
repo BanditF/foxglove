@@ -65,6 +65,15 @@ config NICE_VIEW_ART_RELAY
     default y if ZMK_SPLIT_BLE && (NICE_VIEW_HOST_LINK || !ZMK_SPLIT_ROLE_CENTRAL)
     select CRC
 
+config NICE_VIEW_RGB_IDLE
+    bool "Underglow idle auto-off that survives a reboot; right half follows the left"
+    default y if ZMK_RGB_UNDERGLOW
+    depends on ZMK_RGB_UNDERGLOW && SETTINGS
+    help
+      Replaces ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE (set that to n), which saves its auto-off as the
+      user's choice, so a half that reboots after idle (the right, waking from deep sleep) stays
+      dark. With the art relay, the PC can make the right follow the left's state (0xD7 01).
+
 config NICE_VIEW_ART_RELAY_MAX_SIZE
     int "Largest pushed art set, in bytes (RAM on both halves)"
     default 16384

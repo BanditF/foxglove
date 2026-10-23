@@ -113,6 +113,10 @@ impl OverlayApp {
             keyboard: Arc::new(connected.keyboard),
         };
         self.session.ever_connected = true;
+        // Foxglove: remembered for connecting by itself next time.
+        if let Some(spec) = &self.session.last_spec {
+            crate::foxglove::last_device::remember(spec);
+        }
         self.ui.settings_error = None;
         self.ui.settings_warning = None;
 

@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod connection_flow;
+mod foxglove_connect;
 mod foxglove_settings;
 mod settings_sync;
 mod state;
@@ -169,6 +170,7 @@ impl OverlayApp {
         }
 
         self.poll_connect_result();
+        self.auto_connect(); // Foxglove
         self.maintain_connection(ctx);
         self.apply_live_visual_settings();
         self.apply_live_layout_settings();
