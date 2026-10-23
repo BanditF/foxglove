@@ -2,7 +2,7 @@
 //!
 //! A single thread reads with a short timeout, hands each input report to whoever wants it, and
 //! writes queued reports between reads, so reads and writes never race on the handle:
-//! - replies to our protocols (0xD5/0xD6 with byte 1 = command | 0x80) complete the request
+//! - replies to our protocols (0xD5-0xD7 with byte 1 = command | 0x80) complete the request
 //!   waiting for that (proto, command), and never reach subscribers;
 //! - everything else goes to the subscribers whose filter matches (the overlay's 0xFF/0xF1, a
 //!   debug tap, later integrations).
@@ -299,7 +299,7 @@ fn serve(dev: &mut dyn RawHid, commands: &Receiver<Command>, shared: &Shared) ->
 }
 
 fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
-    if matches!(r[0], protocol::PANEL | protocol::ART) && r[1] & 0x80 != 0 {
+    if matches!(r[0], protocol::PANEL | protocol::ART | protocol::SETTINGS) && r[1] & 0x80 != 0 {
         // A reply: to its request if one is waiting, otherwise (late, unasked) to nobody.
         if let Some(req) = requests.in_flight.remove(&(r[0], r[1] & 0x7f)) {
             let _ = req.tx.send(*r);

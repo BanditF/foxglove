@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 mod connection_flow;
+mod foxglove_settings;
 mod settings_sync;
 mod state;
 mod ui_overlay;

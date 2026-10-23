@@ -415,6 +415,8 @@ impl OverlayApp {
                     });
                 });
 
+                Self::foxglove_keyboard_group(ui); // Foxglove
+
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.add(egui::Hyperlink::from_label_and_url(
