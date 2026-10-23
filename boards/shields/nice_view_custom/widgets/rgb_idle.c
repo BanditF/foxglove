@@ -44,6 +44,42 @@ static bool remote_on;   // right: the left's state
 
 static bool active(void) { return zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE; }
 
+/* State for the PC */
+
+static uint8_t speed = CONFIG_ZMK_RGB_UNDERGLOW_SPD_START;
+
+// ZMK keeps the animation speed to itself, so it comes from what ZMK last saved: struct
+// rgb_underglow_state in rgb_underglow.c (v0.3): h u16, s u8, b u8, speed u8, effect u8, ...
+static int speed_cb(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg,
+                    void *param) {
+    uint8_t buf[16];
+    if (len >= 6 && len <= sizeof(buf) && read_cb(cb_arg, buf, len) == len && buf[4] >= 1 &&
+        buf[4] <= 5) {
+        speed = buf[4];
+    }
+    return 0;
+}
+
+static void speed_work_cb(struct k_work *work) {
+    settings_load_subtree_direct("rgb/underglow/state", speed_cb, NULL);
+}
+static K_WORK_DEFINE(speed_work, speed_work_cb);
+
+void rgb_idle_state(struct rgb_idle_wire *out) {
+    bool on = false;
+    zmk_rgb_underglow_get_state(&on);
+    struct zmk_led_hsb hsb = zmk_rgb_underglow_calc_hue(0);
+    *out = (struct rgb_idle_wire){
+        .on = on,
+        .hue = hsb.h,
+        .saturation = hsb.s,
+        .brightness = hsb.b,
+        .effect = zmk_rgb_underglow_calc_effect(0),
+        .speed = speed,
+    };
+    k_work_submit(&speed_work); // fresher for next time; reading flash doesn't belong here
+}
+
 static void save_cb(struct k_work *work) {
     settings_save_one("nvc_rgb/wanted", &wanted, sizeof(wanted));
 #if CENTRAL
@@ -140,6 +176,7 @@ static int rgb_settings_commit(void) {
     }
     k_work_submit(&apply_work);
     k_work_reschedule(&poll_work, POLL);
+    k_work_submit(&speed_work);
     return 0;
 }
 

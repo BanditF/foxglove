@@ -27,6 +27,8 @@
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/toolchain.h>
 
+#include "rgb_idle.h"
+
 #define ART_RELAY_SERVICE_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7400, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
 #define ART_RELAY_DATA_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7401, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
 #define ART_RELAY_STATUS_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7402, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
@@ -58,6 +60,8 @@ struct art_relay_status {
     uint16_t capacity; // CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE
     int8_t set;        // built-in set shown, or -1 for the pushed one
     uint8_t set_count; // built-in sets
+    // version >= 2
+    struct rgb_idle_wire rgb; // the right's underglow
 } __packed;
 
 // Left half (art_relay_central.c). The blob is collected on the left, then pushed in one go.
@@ -104,6 +108,9 @@ void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]);
 uint8_t art_relay_link(void);
 // Sends the left's underglow state and sync setting to the right soon, if they changed.
 void art_relay_rgb_kick(void);
+// The right's underglow from the last status read; returns its age in seconds (capped at 254), or
+// 0xff if there is none (no link yet, or right firmware without it). Asks for a fresher read.
+uint8_t art_relay_right_rgb(struct rgb_idle_wire *out);
 // Fills out with: state, error, length u16, pushed u16, link, struct art_relay_status.
 #define ART_RELAY_REPORT_SIZE (7 + sizeof(struct art_relay_status))
 void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]);

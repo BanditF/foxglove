@@ -14,9 +14,12 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <raw_hid/events.h>
+#include <zmk/behavior.h>
 #include <zmk/display.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/battery_state_changed.h>
+#include <zmk/events/position_state_changed.h>
+#include <zmk/keymap.h>
 
 #include "host_link.h"
 #include "art_relay.h"
@@ -28,7 +31,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS };
-enum { SETTING_RGB_SYNC = 0x01 };
+enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE };
+enum { INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED, INVOKE_BAD_LENGTH };
 
 #define REPORT_SIZE CONFIG_RAW_HID_REPORT_SIZE
 #define ALIVE_TIMEOUT K_SECONDS(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S)
@@ -192,7 +196,78 @@ static void art_command(const uint8_t *d) {
     reply(r, sizeof(r));
 }
 
-static void settings_command(const uint8_t *d) {
+/* INVOKE: runs on the system work queue, like the keymap does for key presses */
+
+#define INVOKE_MAX_HOLD_MS 10000
+// No key sits here; behaviors that track positions (hold-tap, sticky keys) see a key of its own.
+#define INVOKE_POSITION UINT32_MAX
+
+static struct zmk_behavior_binding invoke_binding;
+static struct zmk_behavior_binding_event invoke_event;
+static uint16_t invoke_id; // of the invoke that holds invoke_busy
+static uint16_t invoke_hold_ms;
+static atomic_t invoke_busy;
+
+static void invoke_reply(uint8_t status, uint16_t id) {
+    uint8_t r[5] = {HOST_LINK_SETTINGS, 0x80 | SETTING_INVOKE, status};
+    sys_put_le16(id, &r[3]);
+    reply(r, sizeof(r));
+}
+
+static void invoke_release_cb(struct k_work *work) {
+    invoke_event.timestamp = k_uptime_get();
+    zmk_behavior_invoke_binding(&invoke_binding, invoke_event, false);
+    atomic_set(&invoke_busy, 0);
+}
+static K_WORK_DELAYABLE_DEFINE(invoke_release_work, invoke_release_cb);
+
+static void invoke_press_cb(struct k_work *work) {
+    invoke_event = (struct zmk_behavior_binding_event){
+        .layer = zmk_keymap_highest_layer_active(),
+        .position = INVOKE_POSITION,
+        .timestamp = k_uptime_get(),
+#if IS_ENABLED(CONFIG_ZMK_SPLIT)
+        .source = ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL,
+#endif
+    };
+    int ret = zmk_behavior_invoke_binding(&invoke_binding, invoke_event, true);
+    invoke_reply(ret < 0 ? INVOKE_FAILED : INVOKE_OK, invoke_id);
+    k_work_schedule(&invoke_release_work, K_MSEC(invoke_hold_ms));
+}
+static K_WORK_DEFINE(invoke_press_work, invoke_press_cb);
+
+// d starts at the local id.
+static uint8_t invoke(const uint8_t *d, int len) {
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS)
+    if (len < 10) {
+        return INVOKE_BAD_LENGTH;
+    }
+    uint16_t id = sys_get_le16(&d[0]);
+    const char *name = zmk_behavior_find_behavior_name_from_local_id(id);
+    if (name == NULL) {
+        return INVOKE_UNKNOWN;
+    }
+    if (!atomic_cas(&invoke_busy, 0, 1)) {
+        return INVOKE_BUSY;
+    }
+    invoke_id = id;
+    invoke_binding = (struct zmk_behavior_binding){
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS_IN_BINDINGS)
+        .local_id = id,
+#endif
+        .behavior_dev = name,
+        .param1 = sys_get_le32(&d[2]),
+        .param2 = sys_get_le32(&d[6]),
+    };
+    invoke_hold_ms = MIN(len >= 12 ? sys_get_le16(&d[10]) : 0, INVOKE_MAX_HOLD_MS);
+    k_work_submit(&invoke_press_work); // replies once pressed
+    return INVOKE_OK;
+#else
+    return INVOKE_UNSUPPORTED;
+#endif
+}
+
+static void settings_command(const uint8_t *d, int len) {
     switch (d[1]) {
     case SETTING_RGB_SYNC: {
         uint8_t r[5] = {HOST_LINK_SETTINGS, 0x80 | SETTING_RGB_SYNC, 0xff, 0, right_link()};
@@ -205,6 +280,30 @@ static void settings_command(const uint8_t *d) {
         r[2] = rgb_idle_sync();
         r[3] = on;
 #endif
+        reply(r, sizeof(r));
+        break;
+    }
+    case SETTING_INVOKE: {
+        uint8_t status = invoke(&d[2], len - 2);
+        if (status != INVOKE_OK) {
+            invoke_reply(status, sys_get_le16(&d[2]));
+        }
+        break;
+    }
+    case SETTING_RGB_STATE: {
+        uint8_t r[2 + 2 * sizeof(struct rgb_idle_wire) + 1] = {HOST_LINK_SETTINGS,
+                                                                0x80 | SETTING_RGB_STATE};
+        struct rgb_idle_wire left = {0}, right = {0};
+        uint8_t age = 0xff;
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+        rgb_idle_state(&left);
+#endif
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+        age = art_relay_right_rgb(&right);
+#endif
+        memcpy(&r[2], &left, sizeof(left));
+        r[2 + sizeof(left)] = age;
+        memcpy(&r[3 + sizeof(left)], &right, sizeof(right));
         reply(r, sizeof(r));
         break;
     }
@@ -228,7 +327,7 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
         art_command(d);
         break;
     case HOST_LINK_SETTINGS:
-        settings_command(d);
+        settings_command(d, MIN(ev->length, REPORT_SIZE));
         break;
     }
     return ZMK_EV_EVENT_BUBBLE;
