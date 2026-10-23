@@ -201,6 +201,7 @@ impl OverlayApp {
     /// Detects a dropped connection and drives background reconnect attempts, reusing
     /// the last successful spec. Called every frame.
     pub(super) fn maintain_connection(&mut self, ctx: &egui::Context) {
+        self.watch_serial_connection(ctx); // Foxglove: prefer USB when a cable appears.
         if let AppConnectionState::Connected { keyboard } = &self.session.connection {
             if !keyboard.is_alive() {
                 self.close_editor();
