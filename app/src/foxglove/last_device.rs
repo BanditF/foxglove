@@ -29,8 +29,17 @@ pub fn remember(spec: &ConnectionSpec) {
         .set("pid", pid.to_string())
         .set("transport", kind)
         .set("id", id.as_str());
-    if let Some(p) = path() {
-        let _ = conf.write_to_file(p);
+    let Some(p) = path() else {
+        return;
+    };
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = conf.write_to_file(&p) {
+        eprintln!(
+            "Foxglove: can't remember the keyboard in {}: {e}",
+            p.display()
+        );
     }
 }
 

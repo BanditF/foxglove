@@ -20,6 +20,8 @@ use zmk_studio_api::proto::zmk::studio::{response, Request, Response};
 use zmk_studio_api::transport::serial::{SerialTransport, SerialTransportError};
 use zmk_studio_api::StudioClient;
 
+use crate::protocols::zmk_rpc::{fetch_zmk_data_from_client, ZmkData};
+
 // ZMK Studio's framing (zmk-studio-api's `framing`, which isn't public).
 const SOF: u8 = 0xAB;
 const ESC: u8 = 0xAC;
@@ -239,10 +241,13 @@ fn path(vid: u16, pid: u16) -> Option<PathBuf> {
         .map(|p| p.with_file_name(format!("keymap-{vid:04X}-{pid:04X}.studio")))
 }
 
-/// The exchanges as a file: for each, the request then the reply, each as its length (u32,
-/// little endian) and its protobuf bytes.
+const MAGIC: &[u8; 4] = b"FXK1";
+
+/// The exchanges as a file: "FXK1", their count (u32, little endian), then for each the request
+/// and the reply, each as its length (u32, little endian) and its protobuf bytes.
 fn to_file(exchanges: &[Exchange]) -> Vec<u8> {
-    let mut out = Vec::new();
+    let mut out = MAGIC.to_vec();
+    out.extend_from_slice(&(exchanges.len() as u32).to_le_bytes());
     for e in exchanges {
         for bytes in [e.request.encode_to_vec(), e.reply.encode_to_vec()] {
             out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
@@ -252,33 +257,69 @@ fn to_file(exchanges: &[Exchange]) -> Vec<u8> {
     out
 }
 
-fn from_file(mut bytes: &[u8]) -> Option<Vec<Exchange>> {
+/// The exchanges in a file written by [`to_file`]; `None` if it's damaged or cut short.
+fn from_file(bytes: &[u8]) -> Option<Vec<Exchange>> {
+    let mut bytes = bytes.strip_prefix(MAGIC)?;
+    let count = u32::from_le_bytes(next_u32(&mut bytes)?) as usize;
     let mut next = || -> Option<&[u8]> {
-        let len = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?) as usize;
-        let item = bytes.get(4..4 + len)?;
-        bytes = &bytes[4 + len..];
+        let len = u32::from_le_bytes(next_u32(&mut bytes)?) as usize;
+        let item = bytes.get(..len)?;
+        bytes = &bytes[len..];
         Some(item)
     };
-    let mut exchanges = Vec::new();
-    while let Some(request) = next() {
+    let mut exchanges = Vec::with_capacity(count.min(1024));
+    for _ in 0..count {
         exchanges.push(Exchange {
-            request: Request::decode(request).ok()?,
+            request: Request::decode(next()?).ok()?,
             reply: Response::decode(next()?).ok()?,
         });
     }
-    Some(exchanges)
+    // Whole only if nothing is left over either.
+    bytes.is_empty().then_some(exchanges)
 }
 
-/// Keeps `recording` as keyboard `vid:pid`'s keymap.
-pub fn save(vid: u16, pid: u16, recording: &Recording) {
+fn next_u32(bytes: &mut &[u8]) -> Option<[u8; 4]> {
+    let head = bytes.get(..4)?.try_into().ok()?;
+    *bytes = &bytes[4..];
+    Some(head)
+}
+
+fn client_for(exchanges: Vec<Exchange>) -> StudioClient<Replay> {
+    let mut client = StudioClient::new(Replay::new(exchanges));
+    client.set_call_timeout(Duration::from_millis(500));
+    client
+}
+
+/// Whether replaying `exchanges` gives exactly `live`.
+fn replays_as(exchanges: &[Exchange], live: &ZmkData) -> bool {
+    fetch_zmk_data_from_client(client_for(exchanges.to_vec())).is_ok_and(|r| {
+        r.resolved_layers == live.resolved_layers
+            && r.physical_layouts == live.physical_layouts
+            && r.supported_behaviors == live.supported_behaviors
+            && r.behavior_metadata == live.behavior_metadata
+    })
+}
+
+/// Keeps `recording` as keyboard `vid:pid`'s keymap, but only if replaying it gives exactly
+/// `live` (what the keyboard just said), so an incomplete recording never replaces a good one.
+/// Written to a temporary file and renamed, so an interruption can't leave half a file.
+pub fn save(vid: u16, pid: u16, recording: &Recording, live: &ZmkData) {
     let exchanges = recording.exchanges();
-    let Some(path) = path(vid, pid).filter(|_| !exchanges.is_empty()) else {
+    let Some(path) = path(vid, pid) else {
         return;
     };
+    if !replays_as(&exchanges, live) {
+        eprintln!("Foxglove: the keymap recording doesn't replay the same; keeping the old one");
+        return;
+    }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    if let Err(e) = std::fs::write(&path, to_file(&exchanges)) {
+    let tmp = path.with_extension("studio.tmp");
+    let written =
+        std::fs::write(&tmp, to_file(&exchanges)).and_then(|()| std::fs::rename(&tmp, &path));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
         eprintln!("Foxglove: can't save the keymap to {}: {e}", path.display());
     }
 }
@@ -286,9 +327,7 @@ pub fn save(vid: u16, pid: u16, recording: &Recording) {
 /// A Studio client that answers from keyboard `vid:pid`'s saved keymap, if there is one.
 pub fn replay(vid: u16, pid: u16) -> Option<StudioClient<Replay>> {
     let exchanges = from_file(&std::fs::read(path(vid, pid)?).ok()?)?;
-    let mut client = StudioClient::new(Replay::new(exchanges));
-    client.set_call_timeout(Duration::from_millis(500));
-    Some(client)
+    Some(client_for(exchanges))
 }
 
 #[cfg(test)]
@@ -367,7 +406,12 @@ mod tests {
         assert_eq!(exchanges.len(), 2);
         assert_eq!(exchanges[0].request, get_lock_state(7));
         assert_eq!(exchanges[1].reply, reply(8, 6));
-        assert_eq!(from_file(&to_file(&exchanges)).unwrap(), exchanges);
+        let file = to_file(&exchanges);
+        assert_eq!(from_file(&file).unwrap(), exchanges);
+        // A file cut short anywhere is rejected, not half-used.
+        for cut in 1..file.len() {
+            assert_eq!(from_file(&file[..cut]), None, "cut at {cut}");
+        }
     }
 
     #[test]
@@ -401,7 +445,6 @@ mod tests {
 #[cfg(test)]
 mod hardware {
     use super::*;
-    use crate::protocols::zmk_rpc::fetch_zmk_data_from_client;
 
     #[test]
     #[ignore]

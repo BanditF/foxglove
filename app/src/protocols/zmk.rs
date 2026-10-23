@@ -40,6 +40,8 @@ impl Reopener for ZmkReopener {
         // Studio edits shows them. The keyboard may still be starting, so try a few times; keep
         // the old keymap only if it can't be asked (Studio unreachable or locked).
         let (vid, pid) = (self.layout.definition.vid, self.layout.definition.pid);
+        // Ask only once the keyboard is back, so a slow restart doesn't use up the tries.
+        let _ = wait_for_hid_reappearance(vid, pid, ZMK_USAGE_PAGE, Duration::from_secs(8));
         let fresh = (0..3).find_map(|attempt| {
             if attempt > 0 {
                 std::thread::sleep(Duration::from_millis(1500));
@@ -60,7 +62,7 @@ impl Reopener for ZmkReopener {
 fn fetch_and_save(vid: u16, pid: u16, transport: &ZmkTransport) -> Result<ZmkData, Box<dyn Error>> {
     let (data, recording) = zmk_rpc::fetch_zmk_data(transport)?;
     if let Some(recording) = recording {
-        crate::foxglove::keymap_cache::save(vid, pid, &recording);
+        crate::foxglove::keymap_cache::save(vid, pid, &recording, &data);
     }
     Ok(data)
 }
