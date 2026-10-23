@@ -15,6 +15,6 @@ pub mod services;
 pub mod art_library;
 mod art_preview;
 pub mod art_ui;
-pub mod tray;
-
 pub mod settings_ui;
+pub mod startup;
+pub mod tray;
