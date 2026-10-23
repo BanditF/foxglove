@@ -25,6 +25,12 @@
  *   05 STATUS
  * Every command but DATA replies with the relay status (art_relay_central.c); DATA replies only
  * on error.
+ *
+ * 0xD7 keyboard settings, host -> keyboard; saved on the keyboard, so the PC needn't resend them:
+ *   01 RGB_SYNC  0 = off, 1 = on, 0xff = just read     reply: sync (0/1, 0xff = not built in),
+ *                                                     left underglow on, right link
+ *      On: the right half's underglow follows the left's on/off (default). Off: each half turns
+ *      its underglow off on its own idle.
  */
 
 #pragma once
@@ -34,6 +40,7 @@
 
 #define HOST_LINK_PANEL 0xD5
 #define HOST_LINK_ART 0xD6
+#define HOST_LINK_SETTINGS 0xD7
 #define HOST_LINK_VERSION 1
 
 // The panel covers the WPM block of the portrait layout (status.c), inside the frame.
