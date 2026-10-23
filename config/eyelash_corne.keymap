@@ -109,11 +109,12 @@
 
         // Game layer (toggle: ADMIN + G, or Backspace + Esc). Letters stay where they are;
         // only the thumbs and Shift change so nothing fires late or by accident. The right
-        // outer thumb (right Alt on QWERTY) is the Windows key here.
+        // outer thumb (right Alt on QWERTY) is the Windows key here, and Tab moves to GAME+
+        // (Esc takes its place) so Shift below it can't catch it by accident.
         game_layer {
             display-name = "GAME";
             bindings = <
-&trans      &trans  &trans  &trans    &trans  &trans                            &trans                     &trans  &trans  &trans  &trans  &trans  &trans
+&kp ESC     &trans  &trans  &trans    &trans  &trans                            &trans                     &trans  &trans  &trans  &trans  &trans  &trans
 &kp LSHIFT  &trans  &trans  &trans    &trans  &trans                    &trans  &trans  &trans             &trans  &trans  &trans  &trans  &trans  &trans
 &trans      &trans  &trans  &trans    &trans  &trans  &trans                    &trans                     &trans  &trans  &trans  &trans  &trans  &trans
                             &kp LALT  &mo 4   &kp SPACE                                                    &kp ENTER  &mo 2   &kp LGUI
@@ -123,11 +124,11 @@
         };
 
         // Hold the middle left thumb while in GAME: numbers where they'd sit on a
-        // regular keyboard, plus Esc and the Y-P row you can't reach off the mouse.
+        // regular keyboard, plus Tab and the Y-P row you can't reach off the mouse.
         game_extras_layer {
             display-name = "GAME+";
             bindings = <
-&kp ESC  &kp N1  &kp N2  &kp N3  &kp N4  &kp N5                            &trans                     &trans  &trans  &trans  &trans  &trans  &trans
+&kp TAB  &kp N1  &kp N2  &kp N3  &kp N4  &kp N5                            &trans                     &trans  &trans  &trans  &trans  &trans  &trans
 &trans   &kp N6  &kp N7  &kp N8  &kp N9  &kp N0                    &trans  &trans  &trans             &trans  &trans  &trans  &trans  &trans  &trans
 &trans   &kp Y   &kp U   &kp I   &kp O   &kp P   &trans                    &trans                     &trans  &trans  &trans  &trans  &trans  &trans
                          &trans  &mo 4   &trans                                                       &trans  &mo 2   &trans
