@@ -36,7 +36,7 @@ static uint16_t rx_len;
 static uint32_t rx_crc;
 
 static struct art_relay_status status = {
-    .version = 2,
+    .version = 1,
     .capacity = CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE,
     .set = -1,
 };
@@ -186,9 +186,6 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
                            uint16_t len, uint16_t offset) {
     status.set_count = custom_art_set_count;
-#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
-    rgb_idle_state(&status.rgb);
-#endif
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &status, sizeof(status));
 }
 
