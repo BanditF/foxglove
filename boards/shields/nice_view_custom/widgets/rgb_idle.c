@@ -50,6 +50,19 @@ static uint8_t speed = CONFIG_ZMK_RGB_UNDERGLOW_SPD_START;
 
 // ZMK keeps the animation speed to itself, so it comes from what ZMK last saved: struct
 // rgb_underglow_state in rgb_underglow.c (v0.3): h u16, s u8, b u8, speed u8, effect u8, ...
+//
+// Reading the settings is slow and takes the settings lock, which main holds for the whole boot
+// time settings_load. Doing it on the system work queue from the settings commit is the likely
+// cause of #45's boot hang (the left didn't even enumerate on USB). So it only happens when the PC
+// asks, well after boot, at most every SPEED_EVERY_MS, on a thread of its own.
+#define SPEED_AFTER_BOOT K_SECONDS(10)
+#define SPEED_EVERY_MS 5000
+#define SPEED_STACK_SIZE 2048
+
+K_THREAD_STACK_DEFINE(speed_stack, SPEED_STACK_SIZE);
+static struct k_work_q speed_q;
+static atomic_t speed_ready;
+static int64_t speed_read_at;
 static int speed_cb(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg,
                     void *param) {
     uint8_t buf[16];
@@ -65,6 +78,16 @@ static void speed_work_cb(struct k_work *work) {
 }
 static K_WORK_DEFINE(speed_work, speed_work_cb);
 
+static void speed_ready_cb(struct k_work *work) {
+    if (atomic_get(&speed_ready)) {
+        return;
+    }
+    k_work_queue_start(&speed_q, speed_stack, K_THREAD_STACK_SIZEOF(speed_stack),
+                       K_LOWEST_APPLICATION_THREAD_PRIO, NULL);
+    atomic_set(&speed_ready, 1);
+}
+static K_WORK_DELAYABLE_DEFINE(speed_ready_work, speed_ready_cb);
+
 void rgb_idle_state(struct rgb_idle_wire *out) {
     bool on = false;
     zmk_rgb_underglow_get_state(&on);
@@ -77,7 +100,11 @@ void rgb_idle_state(struct rgb_idle_wire *out) {
         .effect = zmk_rgb_underglow_calc_effect(0),
         .speed = speed,
     };
-    k_work_submit(&speed_work); // fresher for next time; reading flash doesn't belong here
+    int64_t now = k_uptime_get();
+    if (atomic_get(&speed_ready) && now - speed_read_at >= SPEED_EVERY_MS) {
+        speed_read_at = now;
+        k_work_submit_to_queue(&speed_q, &speed_work); // fresher for next time
+    }
 }
 
 static void save_cb(struct k_work *work) {
@@ -181,7 +208,7 @@ static int rgb_settings_commit(void) {
     }
     k_work_submit(&apply_work);
     k_work_reschedule(&poll_work, POLL);
-    k_work_submit(&speed_work);
+    k_work_schedule(&speed_ready_work, SPEED_AFTER_BOOT); // never during settings_load
     return 0;
 }
 
