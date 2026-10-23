@@ -112,6 +112,8 @@ pub struct ZmkData {
     pub resolved_layers: Vec<ResolvedLayer>,
     pub supported_behaviors: HashSet<BehaviorRole>,
     pub behavior_metadata: HashMap<BehaviorRole, Vec<BehaviorBindingParametersSet>>,
+    /// Foxglove: the keymap's raw bindings (behavior ids and parameters), to invoke them.
+    pub raw_keymap: keymap::Keymap,
 }
 
 /// ZMK Studio RPC connection session.
@@ -249,6 +251,9 @@ pub(crate) fn fetch_zmk_data_from_client<T: Read + Write>(
     let physical_layouts = client.get_physical_layouts()?;
 
     let resolved_layers = client.resolve_keymap()?;
+    // Foxglove: the same keymap with raw behavior ids (the same request, so a saved keymap
+    // can answer it too).
+    let raw_keymap = client.get_keymap()?;
 
     let supported_behaviors = client.supported_roles().unwrap_or_default();
     let behavior_metadata = client.behavior_metadata().unwrap_or_default();
@@ -263,5 +268,6 @@ pub(crate) fn fetch_zmk_data_from_client<T: Read + Write>(
         resolved_layers,
         supported_behaviors,
         behavior_metadata,
+        raw_keymap,
     })
 }

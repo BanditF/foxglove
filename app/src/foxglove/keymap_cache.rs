@@ -297,6 +297,7 @@ fn replays_as(exchanges: &[Exchange], live: &ZmkData) -> bool {
             && r.physical_layouts == live.physical_layouts
             && r.supported_behaviors == live.supported_behaviors
             && r.behavior_metadata == live.behavior_metadata
+            && r.raw_keymap == live.raw_keymap
     })
 }
 

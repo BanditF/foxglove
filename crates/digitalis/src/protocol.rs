@@ -34,6 +34,12 @@ pub mod art {
 pub mod settings {
     /// Right half's underglow follows the left's on/off.
     pub const RGB_SYNC: u8 = 0x01;
+    /// Press (and release) a behavior binding, as a key would.
+    pub const INVOKE: u8 = 0x02;
+    /// Both halves' underglow state.
+    pub const RGB_STATE: u8 = 0x03;
+    /// The longest hold INVOKE accepts.
+    pub const MAX_HOLD_MS: u16 = 10_000;
 }
 
 /// Whether `r` is the reply to (`proto`, `cmd`).
@@ -94,6 +100,108 @@ pub fn art_status() -> Vec<u8> {
 /// RGB_SYNC: `Some` turns "right follows left" on or off, `None` only reads it.
 pub fn rgb_sync(set: Option<bool>) -> Vec<u8> {
     vec![SETTINGS, settings::RGB_SYNC, set.map_or(0xff, u8::from)]
+}
+
+/// INVOKE: press behavior `local_id` (ZMK Studio's id) with these parameters, release it after
+/// `hold_ms` (0 = a tap).
+pub fn invoke(local_id: u16, param1: u32, param2: u32, hold_ms: u16) -> Vec<u8> {
+    let mut r = vec![SETTINGS, settings::INVOKE];
+    r.extend_from_slice(&local_id.to_le_bytes());
+    r.extend_from_slice(&param1.to_le_bytes());
+    r.extend_from_slice(&param2.to_le_bytes());
+    r.extend_from_slice(&hold_ms.min(settings::MAX_HOLD_MS).to_le_bytes());
+    r
+}
+
+/// How INVOKE went.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InvokeStatus {
+    Ok,
+    UnknownBehavior,
+    /// A held invoke is still running.
+    Busy,
+    BehaviorFailed,
+    NotBuiltIn,
+    BadLength,
+    Other(u8),
+}
+
+impl InvokeStatus {
+    pub fn parse(r: &[u8; REPORT]) -> InvokeStatus {
+        match r[2] {
+            0 => Self::Ok,
+            1 => Self::UnknownBehavior,
+            2 => Self::Busy,
+            3 => Self::BehaviorFailed,
+            4 => Self::NotBuiltIn,
+            5 => Self::BadLength,
+            n => Self::Other(n),
+        }
+    }
+}
+
+impl std::fmt::Display for InvokeStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Ok => write!(f, "done"),
+            Self::UnknownBehavior => write!(f, "the keyboard doesn't know that behavior"),
+            Self::Busy => write!(f, "busy with a held action"),
+            Self::BehaviorFailed => write!(f, "the behavior failed"),
+            Self::NotBuiltIn => write!(f, "needs newer keyboard firmware"),
+            Self::BadLength => write!(f, "malformed request"),
+            Self::Other(n) => write!(f, "error {n}"),
+        }
+    }
+}
+
+pub fn rgb_state() -> Vec<u8> {
+    vec![SETTINGS, settings::RGB_STATE]
+}
+
+/// One half's underglow.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RgbHalf {
+    pub on: bool,
+    /// 0-359
+    pub hue: u16,
+    /// 0-100
+    pub sat: u8,
+    /// 0-100
+    pub brightness: u8,
+    /// 0 solid, 1 breathe, 2 spectrum, 3 swirl
+    pub effect: u8,
+    /// 1-5; ZMK's last saved value, which can lag a minute behind a change.
+    pub speed: u8,
+}
+
+impl RgbHalf {
+    fn parse(b: &[u8]) -> RgbHalf {
+        RgbHalf {
+            on: b[0] != 0,
+            hue: u16::from_le_bytes([b[1], b[2]]),
+            sat: b[3],
+            brightness: b[4],
+            effect: b[5],
+            speed: b[6],
+        }
+    }
+}
+
+/// Both halves' underglow; the right half's as last relayed, `right_age` seconds ago.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RgbState {
+    pub left: RgbHalf,
+    /// `None` when there's no data from the right half (no relay link yet, or old firmware).
+    pub right: Option<(RgbHalf, u8)>,
+}
+
+impl RgbState {
+    pub fn parse(r: &[u8; REPORT]) -> RgbState {
+        RgbState {
+            left: RgbHalf::parse(&r[2..9]),
+            right: (r[9] != 0xff).then(|| (RgbHalf::parse(&r[10..17]), r[9])),
+        }
+    }
 }
 
 /// The keyboard's answer to RGB_SYNC.
@@ -296,6 +404,23 @@ mod tests {
         );
         r[2] = 0xff;
         assert_eq!(RgbSync::parse(&r).sync, None);
+
+        assert_eq!(
+            invoke(0x0102, 0x0A0B_0C0D, 2, 2100),
+            [0xD7, 0x02, 0x02, 0x01, 0x0D, 0x0C, 0x0B, 0x0A, 2, 0, 0, 0, 0x34, 0x08]
+        );
+        assert_eq!(invoke(1, 0, 0, 60_000)[12..14], 10_000u16.to_le_bytes());
+        r[..4].copy_from_slice(&[0xD7, 0x82, 2, 0]);
+        assert_eq!(InvokeStatus::parse(&r), InvokeStatus::Busy);
+
+        assert_eq!(rgb_state(), [0xD7, 0x03]);
+        let mut r = [0u8; REPORT];
+        r[..17].copy_from_slice(&[0xD7, 0x83, 1, 0x68, 0x01, 80, 50, 3, 2, 4, 0, 0x2C, 0x01, 100, 20, 0, 1]);
+        let s = RgbState::parse(&r);
+        assert_eq!(s.left, RgbHalf { on: true, hue: 360, sat: 80, brightness: 50, effect: 3, speed: 2 });
+        assert_eq!(s.right, Some((RgbHalf { on: false, hue: 300, sat: 100, brightness: 20, effect: 0, speed: 1 }, 4)));
+        r[9] = 0xff;
+        assert_eq!(RgbState::parse(&r).right, None);
     }
 
     #[test]
