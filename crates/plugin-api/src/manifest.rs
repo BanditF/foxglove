@@ -54,6 +54,19 @@ pub struct Manifest {
     /// Things a key can trigger (#212); the user binds them to keys in the Plugins tab.
     #[serde(default)]
     pub actions: Vec<ActionDecl>,
+    /// Secrets the user enters in the Plugins tab (#213); the plugin reads them with
+    /// `secrets.get`. Needs the `secrets` permission.
+    #[serde(default)]
+    pub secrets: Vec<SecretDecl>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecretDecl {
+    /// What `secrets.get` asks for (`obs-password`).
+    pub name: String,
+    /// For the Plugins tab (`OBS WebSocket password`).
+    pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -104,6 +117,9 @@ impl Manifest {
                 return Err(format!("action {:?} needs a unique id (a-z, 0-9, -) and a name", a.id));
             }
         }
+        if !m.secrets.is_empty() && !m.permissions.contains(&Permission::Secrets) {
+            return Err("[[secrets]] needs the secrets permission".into());
+        }
         Ok(m)
     }
 
@@ -118,6 +134,18 @@ mod tests {
     use super::*;
 
     const APP: Version = Version { major: 1, minor: 0 };
+
+    #[test]
+    fn declared_secrets_need_the_permission() {
+        let decl = "[[secrets]]
+name = \"obs-password\"
+label = \"OBS password\"
+";
+        assert!(Manifest::parse(&plugin(decl), APP).is_err());
+        let with = plugin(&format!("permissions = [\"secrets\"]
+{decl}"));
+        assert_eq!(Manifest::parse(&with, APP).unwrap().secrets[0].name, "obs-password");
+    }
 
     #[test]
     fn actions_need_unique_ids_and_names() {

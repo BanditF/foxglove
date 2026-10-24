@@ -5,6 +5,7 @@
 //! - [`panel_lock`]: only one app draws the panel at a time
 
 pub mod changes;
+pub mod mic;
 pub mod panel_lock;
 pub mod providers;
 pub mod render;
