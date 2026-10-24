@@ -108,6 +108,36 @@ static void draw_host_panel(lv_obj_t *c, int oy, const uint8_t *panel) {
     }
 }
 
+// Bluetooth profiles, so the one in use is obvious (wrong-profile mix-ups): numbered boxes, the
+// active one filled, connected ones outlined; below, the active profile's state, or USB when the
+// output is USB. Inverted while the SYSTEM layer (Bluetooth keys) is up and just after a change.
+static void draw_profiles(lv_obj_t *c, int oy, const struct status_state *state) {
+    bool ble = state->selected_endpoint.transport == ZMK_TRANSPORT_BLE;
+    bool invert = state->profile_flash ||
+                  (state->layer_label != NULL && strcmp(state->layer_label, "SYSTEM") == 0);
+    lv_color_t fg = invert ? LVGL_BACKGROUND : LVGL_FOREGROUND;
+    lv_color_t bg = invert ? LVGL_FOREGROUND : LVGL_BACKGROUND;
+    if (invert) {
+        rect(c, oy, 2, 84, SCREEN_W - 4, 20, 3, true, false, bg);
+    }
+    for (int i = 0; i < NICEVIEW_PROFILE_COUNT; i++) {
+        int x = 4 + i * 12;
+        char digit[2] = {'1' + i, 0};
+        bool active = i == state->active_profile_index;
+        if (active) {
+            rect(c, oy, x, 85, 11, 10, 2, true, false, fg);
+        } else if (state->profiles_connected[i]) {
+            rect(c, oy, x, 85, 11, 10, 2, false, true, fg);
+        }
+        text(c, oy, x, 86, 11, digit, active ? bg : fg, LV_TEXT_ALIGN_CENTER);
+    }
+    const char *word = !ble                              ? "USB"
+                       : state->active_profile_connected ? "LINKED"
+                       : state->active_profile_bonded    ? "SEARCH"
+                                                         : "PAIR";
+    text(c, oy, 2, 96, SCREEN_W - 4, word, fg, LV_TEXT_ALIGN_CENTER);
+}
+
 static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
                         const uint8_t *panel) {
     lv_color_t fg = LVGL_FOREGROUND;
@@ -159,20 +189,8 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
     pill(c, oy, 35, 53, 29, 14, "WIN", m & (BIT(3) | BIT(7)));
     pill(c, oy, 4, 69, 60, 14, "CAPS", state->caps_lock);
 
-    // Bluetooth profiles: filled = selected, ring = connected, small dot = bonded or open.
-    for (int i = 0; i < NICEVIEW_PROFILE_COUNT; i++) {
-        int cx = 10 + i * 12;
-        bool selected = i == state->active_profile_index &&
-                        state->selected_endpoint.transport == ZMK_TRANSPORT_BLE;
-        if (selected) {
-            rect(c, oy, cx - 4, 89, 9, 9, LV_RADIUS_CIRCLE, true, false, fg);
-        } else if (state->profiles_connected[i]) {
-            rect(c, oy, cx - 4, 89, 9, 9, LV_RADIUS_CIRCLE, false, true, fg);
-        } else {
-            rect(c, oy, cx - 1, 92, 3, 3, 0, true, false, fg);
-        }
-    }
-    rect(c, oy, 6, 103, SCREEN_W - 12, 1, 0, true, false, fg);
+    draw_profiles(c, oy, state);
+    rect(c, oy, 6, 104, SCREEN_W - 12, 1, 0, true, false, fg);
 
     if (panel != NULL) {
         draw_host_panel(c, oy, panel);
@@ -274,8 +292,29 @@ ZMK_SUBSCRIPTION(widget_battery_status, zmk_battery_state_changed);
 ZMK_SUBSCRIPTION(widget_battery_status, zmk_usb_conn_state_changed);
 #endif /* IS_ENABLED(CONFIG_USB_DEVICE_STACK) */
 
+// After a profile or output change the profile block stays inverted this long (one-shot, on the
+// display queue; no polling).
+#define PROFILE_FLASH K_SECONDS(3)
+
+static void profile_flash_end(struct k_work *work) {
+    struct zmk_widget_status *widget;
+    SYS_SLIST_FOR_EACH_CONTAINER(&widgets, widget, node) {
+        widget->state.profile_flash = false;
+        draw_all(widget);
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(profile_flash_work, profile_flash_end);
+
 static void set_output_status(struct zmk_widget_status *widget,
                               const struct output_status_state *state) {
+    static bool seen; // the first update is the boot state, not a change
+    bool changed = state->active_profile_index != widget->state.active_profile_index ||
+                   state->selected_endpoint.transport != widget->state.selected_endpoint.transport;
+    if (seen && changed) {
+        widget->state.profile_flash = true;
+        k_work_reschedule_for_queue(zmk_display_work_q(), &profile_flash_work, PROFILE_FLASH);
+    }
+    seen = true;
     widget->state.selected_endpoint = state->selected_endpoint;
     widget->state.active_profile_index = state->active_profile_index;
     widget->state.active_profile_connected = state->active_profile_connected;
