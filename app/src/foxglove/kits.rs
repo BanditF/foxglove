@@ -32,6 +32,17 @@ pub fn sync() {
         if runners.contains_key(&id) {
             continue;
         }
+        // Before every launch: still signed, files unchanged (#159).
+        if let Err(e) = super::kit_trust::check_installed(&id, &kit.manifest.version, &dir.join(&id)) {
+            if !super::kit_trust::dev_unsigned() {
+                STATES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_or_insert_with(HashMap::new)
+                    .insert(id.clone(), KitState::Disabled(format!("not verified: {e}")));
+                continue;
+            }
+        }
         let spec = KitSpec { id: id.clone(), dir: dir.join(&id), run: kit.manifest.run.clone() };
         let approved = kit.record.approved.clone();
         let status_id = id.clone();
