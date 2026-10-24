@@ -49,9 +49,9 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
             $version = $env:GITHUB_REF_NAME -replace '^app-v', ''
             if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Use an app-vMAJOR.MINOR.PATCH tag' }
-            cargo wix --no-build --version $version --output target/wix/foxglove-x64.msi
+            cargo wix --no-build --nocapture --version $version --output target/wix/foxglove-x64.msi
           } else {
-            cargo wix --no-build --output target/wix/foxglove-x64.msi
+            cargo wix --no-build --nocapture --output target/wix/foxglove-x64.msi
           }
           if ($LASTEXITCODE) { throw 'MSI build failed' }
       - uses: actions/upload-artifact@v4
