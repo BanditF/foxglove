@@ -26,6 +26,7 @@ use settings::Settings;
 
 fn main() {
     if foxglove::update::helper_entry() { return; }
+    if foxglove::identity::entry() { return; }
     foxglove::update::start();
     os_layout::init();
     let settings = foxglove::overlay_profile::effective(Settings::load().unwrap_or_default());
@@ -43,5 +44,6 @@ fn main() {
     foxglove::api::start();
     foxglove::via_host::start();
     foxglove::kits::sync();
+    foxglove::identity::start();
     foxglove::startup::finish(platform::run(settings, available_devices))
 }
