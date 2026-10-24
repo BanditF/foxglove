@@ -9,6 +9,7 @@ pub mod last_device;
 pub mod layer_names;
 pub mod link;
 pub mod palm_host;
+pub mod profiles_ui;
 pub mod reconnect;
 pub mod repaint_trace;
 pub mod screens;
@@ -16,8 +17,12 @@ mod screens_watch;
 mod screens_settings;
 pub mod screens_ui;
 pub mod services;
+pub mod accent;
+pub mod store;
 pub mod api;
 pub mod art_library;
+pub mod den;
+pub mod den_ui;
 pub mod art_manifest;
 mod art_preview;
 pub mod art_ui;
@@ -26,6 +31,7 @@ pub mod startup;
 pub mod tray;
 pub mod connection;
 pub mod layer_access;
+pub mod foreground;
 
 #[cfg(target_os = "windows")]
 pub(crate) mod device_watch;

@@ -49,7 +49,13 @@ steps = [
 [[cases]]
 name = "bootloader-refused"
 description = "Safety check: bootloader must be refused (6); never sent on unknown firmware"
-# Not tagged release yet: it stays BLOCKED until HELLO advertises INVOKE refusal (firmware ask).
-tags = ["smoke"]
+tags = ["smoke", "release"]
 requires = ["invoke_refusal"]
 steps = [{ invoke = { behavior = "bootloader", expect_status = "refused" } }]
+
+[[cases]]
+name = "bt-refused"
+description = "Safety check: INVOKE &bt is refused (6). Sends BT_SEL 0, the profile in use, so even firmware without the #142 fix changes nothing"
+tags = ["smoke", "release"]
+requires = ["invoke_refusal", "build_info"]
+steps = [{ invoke = { behavior = "bt", param1 = 3, param2 = 0, expect_status = "refused" } }]

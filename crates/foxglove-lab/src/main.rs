@@ -41,6 +41,21 @@ enum Command {
     Status,
     /// How each half shows up on USB (no keyboard link needed).
     Usb,
+    /// Reboots one half into its UF2 bootloader (D7 08). For scripts/flash only, after the user
+    /// typed FLASH there. Exit code 4: this firmware can't (no HELLO bit 9), use a double tap.
+    Bootloader {
+        #[arg(long, value_parser = ["left", "right"])]
+        half: String,
+        /// Must be the word FLASH, passed by the flasher after the user typed it.
+        #[arg(long)]
+        confirmed: String,
+    },
+    /// Prints one half's running firmware build (D7 09) as JSON. Exit code 4: the firmware
+    /// can't tell (no HELLO bit 12, or the right is not reachable).
+    Build {
+        #[arg(long, value_parser = ["left", "right"])]
+        half: String,
+    },
 }
 fn sha() -> String {
     std::process::Command::new("git")
@@ -52,7 +67,7 @@ fn sha() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 fn firmware(h: digitalis::protocol::Hello) -> serde_json::Value {
-    serde_json::json!({"hello_version":h.version,"panel_width":h.width,"panel_height":h.height,"right_link":h.right_link,"right_battery":h.right_battery,"discovery":h.discovery,"discovery_tries":h.discovery_tries,"debug":h.debug,"capabilities":h.capabilities,"firmware_sha":null,"note":"HELLO does not advertise firmware SHA, refusal, position or screen support"})
+    serde_json::json!({"hello_version":h.version,"panel_width":h.width,"panel_height":h.height,"right_link":h.right_link,"right_battery":h.right_battery,"discovery":h.discovery,"discovery_tries":h.discovery_tries,"debug":h.debug,"capabilities":h.capabilities})
 }
 fn connect(product: Option<String>) -> Result<Link> {
     Link::hid(Match {
@@ -94,6 +109,67 @@ fn main() -> Result<std::process::ExitCode> {
             std::process::ExitCode::SUCCESS
         });
     }
+    if let Command::Build { half } = &cli.command {
+        let _guard = platform::guard(cli.allow_app)?;
+        let link = connect(cli.product.clone())?;
+        let c = link.wait_connected(Duration::from_secs(10))?;
+        let caps = c.hello.map_or(0, |h| h.capabilities);
+        if caps & digitalis::protocol::capabilities::BUILD_INFO == 0 {
+            eprintln!("this firmware doesn't report its build (no HELLO bit 12)");
+            return Ok(std::process::ExitCode::from(4));
+        }
+        return match settings::build_info(&link, u8::from(half == "right")) {
+            Ok(b) => {
+                let v = b.version;
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "half": half,
+                        "version": format!("{}.{}.{}", v.major, v.minor, v.patch),
+                        "profile": if v.profile == 1 { "ga" } else { "dev" },
+                        "sha": b.sha,
+                    })
+                );
+                Ok(std::process::ExitCode::SUCCESS)
+            }
+            Err(e) => {
+                eprintln!("{half}: {e:#}");
+                Ok(std::process::ExitCode::from(4))
+            }
+        };
+    }
+    if let Command::Bootloader { half, confirmed } = &cli.command {
+        ensure!(
+            confirmed == "FLASH",
+            "refused: only scripts/flash/foxglove_flash.py calls this, after the user types FLASH"
+        );
+        let _guard = platform::guard(cli.allow_app)?;
+        let link = connect(cli.product.clone())?;
+        let c = link.wait_connected(Duration::from_secs(10))?;
+        let caps = c.hello.map_or(0, |h| h.capabilities);
+        if caps & digitalis::protocol::capabilities::BOOTLOADER == 0 {
+            eprintln!(
+                "this firmware has no bootloader command (HELLO bit 9); double-tap reset instead"
+            );
+            return Ok(std::process::ExitCode::from(4));
+        }
+        return match settings::enter_bootloader(&link, u8::from(half == "right")) {
+            Ok(()) => {
+                println!("{half} half asked to enter its bootloader");
+                Ok(std::process::ExitCode::SUCCESS)
+            }
+            Err(e) if e.to_string().contains("not built") => {
+                eprintln!("{e:#}; double-tap reset instead");
+                Ok(std::process::ExitCode::from(4))
+            }
+            Err(e) => Err(e),
+        };
+    }
+    let suite_name = if let Command::Run { suite, .. } = &cli.command {
+        suite.clone()
+    } else {
+        String::new()
+    };
     let suite = if let Command::Run { suite, .. } = &cli.command {
         let path = if suite.ends_with(".toml") || suite.contains(['/', '\\']) {
             PathBuf::from(suite)
@@ -159,13 +235,13 @@ fn main() -> Result<std::process::ExitCode> {
         source: format!("No cached IDs: {e:#}; named invokes will fail safely"),
         ..Default::default()
     });
-    let mut report = Report {
-        schema: 1,
-        environment: BTreeMap::from([
+    let mut report = Report::new(
+        &suite_name,
+        now.to_rfc3339(),
+        BTreeMap::from([
             ("utc".into(), now.to_rfc3339()),
             ("git_sha".into(), git),
             ("runner_version".into(), env!("CARGO_PKG_VERSION").into()),
-            ("app_version".into(), "unknown (app is not queried)".into()),
             (
                 "app_manifest_version".into(),
                 toml::from_str::<toml::Value>(include_str!("../../../app/Cargo.toml"))?
@@ -179,9 +255,8 @@ fn main() -> Result<std::process::ExitCode> {
             ("arch".into(), std::env::consts::ARCH.into()),
             ("local_ids".into(), catalog.source.clone()),
         ]),
-        firmware: serde_json::Value::Null,
-        cases: Vec::new(),
-    };
+    );
+    report.app = foxglove_lab::host::app_info();
     let connected = (|| -> Result<_> {
         let link = connect(cli.product)?;
         let c = link.wait_connected(Duration::from_secs(10))?;
@@ -191,7 +266,21 @@ fn main() -> Result<std::process::ExitCode> {
     })();
     match connected {
         Ok((device, hello, product)) => {
-            report.firmware = firmware(hello);
+            report.firmware.hello = firmware(hello);
+            if hello.capabilities & digitalis::protocol::capabilities::BUILD_INFO != 0 {
+                let build = |half| {
+                    settings::build_info(&device, half).ok().map(|b| {
+                        let v = b.version;
+                        foxglove_lab::report::Build {
+                            version: format!("{}.{}.{}", v.major, v.minor, v.patch),
+                            profile: if v.profile == 1 { "ga" } else { "dev" }.into(),
+                            sha: b.sha,
+                        }
+                    })
+                };
+                report.firmware.left = build(0);
+                report.firmware.right = build(1);
+            }
             report.environment.insert("product".into(), product);
             let mut runner =
                 Runner::new(&device, &catalog, hello, cancelled, non_interactive, &out);

@@ -149,10 +149,8 @@ pub fn group(ui: &mut egui::Ui) {
             });
 
             if changed {
-                if let Some(path) = ScreensSettings::path() {
-                    if let Err(e) = settings.save_to_file(path) {
-                        ui.colored_label(ui.visuals().error_fg_color, format!("Can't save: {e}"));
-                    }
+                if let Err(e) = settings.save() {
+                    ui.colored_label(ui.visuals().error_fg_color, format!("Can't save: {e}"));
                 }
             }
         });
