@@ -31,13 +31,8 @@ pub fn subscribe_links(notify: impl Fn(Arc<Link>) + Send + 'static) -> Arc<()> {
     alive
 }
 
-/// A keyboard with Foxglove's host link and what it said to HELLO: on a link already open (the
-/// overlay's) if one answers, else the first Raw HID keyboard that does.
-pub fn host_link() -> Option<(Arc<Link>, Hello)> {
-    host_keyboard().map(|(_, link, hello)| (link, hello))
-}
-
-/// [`host_link`] with the keyboard's VID/PID.
+/// A keyboard with Foxglove's host link, its VID/PID and what it said to HELLO: on a link already
+/// open (the overlay's) if one answers, else the first Raw HID keyboard that does.
 pub fn host_keyboard() -> Option<((u16, u16), Arc<Link>, Hello)> {
     let open: Vec<((u16, u16), Arc<Link>)> = LINKS
         .get_or_init(Default::default)

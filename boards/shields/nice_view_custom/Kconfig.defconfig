@@ -46,6 +46,13 @@ config NICE_VIEW_CUSTOM_ART_SET
 config NICE_VIEW_CUSTOM_ANIMATE
     bool "Animate multi-frame art sets while the keyboard is active"
 
+config FOXGLOVE_TEST_HOOKS
+    bool "Foxglove pre-GA test hooks"
+    default y
+    help
+      Pre-GA test hooks for injecting key positions through the real keymap and split link.
+      The GA build turns this off.
+
 config NICE_VIEW_HOST_LINK
     bool "PC-driven host panel on the left screen (Raw HID)"
     default y if RAW_HID

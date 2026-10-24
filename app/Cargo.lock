@@ -878,6 +878,7 @@ dependencies = [
  "embedded-graphics",
  "hidapi",
  "palm",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1551,6 +1552,7 @@ dependencies = [
  "egui_extras",
  "egui_glow",
  "foxglove-panel",
+ "foxglove-update",
  "gtk",
  "hidapi",
  "image",
@@ -1568,6 +1570,7 @@ dependencies = [
  "smithay-client-toolkit 0.21.1",
  "toml 0.9.12+spec-1.1.0",
  "tray-icon",
+ "ureq",
  "wayland-client",
  "wayland-egl",
  "windows 0.62.2",
@@ -1588,7 +1591,19 @@ dependencies = [
  "digitalis",
  "embedded-graphics",
  "windows 0.62.2",
+ "windows-core",
  "windows-future",
+]
+
+[[package]]
+name = "foxglove-update"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "ring",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -4,9 +4,17 @@
  *
  * The right half adds its own GATT service to the split connection:
  *   data   (write, write without response)  op byte + payload, below
+ *   screen (encrypted read) frame u16 LE, crc32 u32 LE, 1360 native screen bytes
+ *      SNAP (op 7, one byte, write request) queues capture; screen reads return ATT unlikely
+ *      until ready. Long reads use offsets into the frozen image; CRC excludes the 6-byte header.
  *   status (read)                            struct art_relay_status
  * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set |
- *      RGB on u8, follow u8 [, more]
+ *      RGB on u8, follow u8 [, more] | PRESS position u8, state u8
+ * PRESS is exactly three bytes: 06, global keymap position, state (1 down, 0 up).
+ * It uses a write request on relay_q with a job_conn() reference and a 3 s timeout.
+ * The peripheral queues an event on the system queue; acceptance is the ATT reply.
+ * Application ATT errors: 82 busy, 84 hooks not built in, 85 invalid length/position/state.
+ * These map to POSITION statuses 2, 4, 5; ATT success maps to 0 and timeout to 3.
  * RGB (write request, so the left knows it arrived) is the left's underglow on/off; with follow = 1 the right shows
  * the same, with 0 it goes by its own activity (rgb_idle.c). Bytes after follow are reserved for
  * colour and effect; the right ignores bytes it doesn't know, so the op can grow.
@@ -31,6 +39,8 @@
 
 #define ART_RELAY_SERVICE_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7400, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
 #define ART_RELAY_DATA_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7401, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
+#define ART_RELAY_SCREEN_UUID \
+    BT_UUID_128_ENCODE(0x6e766172, 0x7403, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
 #define ART_RELAY_STATUS_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7402, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
 
 enum art_relay_op {
@@ -39,6 +49,8 @@ enum art_relay_op {
     ART_RELAY_COMMIT,
     ART_RELAY_SELECT,
     ART_RELAY_RGB,
+    ART_RELAY_PRESS, // 6: keymap position u8, state u8 (1 down, 0 up)
+    ART_RELAY_SNAP = 7, // one byte, write request: take a screen snapshot
 };
 
 #define ART_RELAY_HEADER_SIZE 12
@@ -114,3 +126,7 @@ uint8_t art_relay_right_rgb(struct rgb_idle_wire *out);
 // Fills out with: state, error, length u16, pushed u16, link, struct art_relay_status.
 #define ART_RELAY_REPORT_SIZE (7 + sizeof(struct art_relay_status))
 void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]);
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+void art_relay_press(uint8_t pos, uint8_t state);
+#endif

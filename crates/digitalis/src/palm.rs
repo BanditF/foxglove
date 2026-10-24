@@ -13,7 +13,6 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 
 use palm::{
     ArtStatus as PalmArt, BehaviorInfo, Behaviors, Caps, Checked, DevSettings, Device, DeviceEvent,
@@ -94,9 +93,8 @@ pub struct DigitalisDevice {
     layers: Arc<Mutex<Vec<u8>>>,
     behaviors: Mutex<Vec<BehaviorInfo>>,
     underglow: Mutex<Option<u16>>,
-    stop: Arc<AtomicBool>,
     _events: EventSubscription,
-    _reports: Option<JoinHandle<()>>,
+    _reports: EventSubscription,
 }
 
 impl DigitalisDevice {
@@ -114,29 +112,19 @@ impl DigitalisDevice {
             }
         });
         let layers = Arc::new(Mutex::new(vec![0]));
-        let stop = Arc::new(AtomicBool::new(false));
-        let reports = link.subscribe(|r| r[0] == LAYER_STATE || r[0] == KEY_EVENT);
-        let (report_sink, report_layers, report_stop) = (sink.clone(), layers.clone(), stop.clone());
-        // Ends at the first report after the device is dropped, or when the link stops.
-        let thread = std::thread::Builder::new()
-            .name("digitalis-palm".into())
-            .spawn(move || {
-                for r in reports.iter() {
-                    if report_stop.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    if r[0] == KEY_EVENT {
-                        report_sink.emit(DeviceEvent::Key { row: r[1].into(), col: r[2].into(), pressed: r[3] != 0 });
-                    } else if let Some(active) = parse_layers(&r) {
-                        let mut current = report_layers.lock().unwrap_or_else(|e| e.into_inner());
-                        if *current != active {
-                            current.clone_from(&active);
-                            report_sink.emit(DeviceEvent::LayerChanged { active });
-                        }
-                    }
+        let (report_sink, report_layers) = (sink.clone(), layers.clone());
+        // Runs on the link's reader thread: emitting only updates facts and queues events.
+        let reports = link.subscribe_reports(move |_, r| {
+            if r[0] == KEY_EVENT {
+                report_sink.emit(DeviceEvent::Key { row: r[1].into(), col: r[2].into(), pressed: r[3] != 0 });
+            } else if let Some(active) = parse_layers(r) {
+                let mut current = report_layers.lock().unwrap_or_else(|e| e.into_inner());
+                if *current != active {
+                    current.clone_from(&active);
+                    report_sink.emit(DeviceEvent::LayerChanged { active });
                 }
-            })
-            .ok();
+            }
+        });
         if let Some(percent) = hello.right_battery {
             sink.emit(DeviceEvent::Battery { part: "right".into(), percent });
         }
@@ -149,9 +137,8 @@ impl DigitalisDevice {
             layers,
             behaviors: Mutex::new(Vec::new()),
             underglow: Mutex::new(None),
-            stop,
             _events: events,
-            _reports: thread,
+            _reports: reports,
         }
     }
 
@@ -179,12 +166,6 @@ impl DigitalisDevice {
 
     fn has(&self, bit: u32) -> bool {
         self.hello.lock().unwrap_or_else(|e| e.into_inner()).capabilities & bit != 0
-    }
-}
-
-impl Drop for DigitalisDevice {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -453,7 +434,8 @@ mod tests {
     /// A keyboard in memory that answers the host link's requests with canned replies.
     #[derive(Clone, Default)]
     struct Fake {
-        inbox: Arc<Mutex<VecDeque<Report>>>,
+        inbox: Arc<(Mutex<VecDeque<Report>>, std::sync::Condvar)>,
+        interrupted: Arc<AtomicBool>,
         written: Arc<Mutex<Vec<Vec<u8>>>>,
     }
 
@@ -465,25 +447,33 @@ mod tests {
 
     impl Fake {
         fn push(&self, bytes: &[u8]) {
-            self.inbox.lock().unwrap().push_back(report(bytes));
+            self.inbox.0.lock().unwrap().push_back(report(bytes));
+            self.inbox.1.notify_all();
         }
     }
 
     impl RawHid for Fake {
-        fn read(&mut self, buf: &mut Report, timeout_ms: i32) -> anyhow::Result<usize> {
-            match self.inbox.lock().unwrap().pop_front() {
-                Some(r) => {
+        fn read(&self, buf: &mut Report) -> anyhow::Result<usize> {
+            let mut inbox = self.inbox.0.lock().unwrap();
+            loop {
+                if self.interrupted.load(Ordering::Relaxed) {
+                    return Ok(0);
+                }
+                if let Some(r) = inbox.pop_front() {
                     *buf = r;
-                    Ok(REPORT)
+                    return Ok(REPORT);
                 }
-                None => {
-                    std::thread::sleep(Duration::from_millis(timeout_ms as u64));
-                    Ok(0)
-                }
+                inbox = self.inbox.1.wait(inbox).unwrap();
             }
         }
 
-        fn write(&mut self, out: &[u8]) -> anyhow::Result<()> {
+        fn interrupt(&self) {
+            let _inbox = self.inbox.0.lock().unwrap();
+            self.interrupted.store(true, Ordering::Relaxed);
+            self.inbox.1.notify_all();
+        }
+
+        fn write(&self, out: &[u8]) -> anyhow::Result<()> {
             self.written.lock().unwrap().push(out.to_vec());
             let reply = match (out[0], out[1]) {
                 (protocol::SETTINGS, protocol::settings::RGB_STATE) => {
@@ -494,7 +484,7 @@ mod tests {
                 (protocol::PANEL, protocol::panel::HELLO) => report(&[0xD5, 0x81, 1, 64, 52, 0, 0, 1, 55]),
                 _ => return Ok(()),
             };
-            self.inbox.lock().unwrap().push_back(reply);
+            self.push(&reply);
             Ok(())
         }
     }
