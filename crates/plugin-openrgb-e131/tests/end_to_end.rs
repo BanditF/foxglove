@@ -59,16 +59,22 @@ fn a_frame_colours_the_keyboard_and_the_sender_stopping_restores_it() {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_openrgb-e131"));
     let keyboard = Arc::new(Keyboard::default());
     let devices = keyboard.clone();
+    // In the sandbox (on Windows), as Foxglove runs it: the plugin has no network of its own,
+    // and the frames reach it through the host. Its own folder, so the build folder's
+    // permissions stay as they are.
+    let dir = std::env::temp_dir().join(format!("openrgb-e131-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(&exe, dir.join(exe.file_name().unwrap())).unwrap();
     let spec = PluginSpec {
         id: "test.openrgb-e131".into(),
-        dir: exe.parent().unwrap().to_path_buf(),
+        dir: dir.clone(),
         run: vec![exe.file_name().unwrap().to_string_lossy().into()],
-        sandbox: false,
+        sandbox: cfg!(windows),
     };
     let context = move || Context {
         facts: foxglove_devices::facts::Facts::default(),
         devices: devices.clone(),
-        client: Client::Plugin(vec![Permission::DevicesRead, Permission::LightingWrite, Permission::Net]),
+        client: Client::Plugin(vec![Permission::DevicesRead, Permission::LightingWrite, Permission::NetListenUdp(5568)]),
         app_version: "test".into(),
         limits: Limits::default(),
     };
@@ -99,4 +105,7 @@ fn a_frame_colours_the_keyboard_and_the_sender_stopping_restores_it() {
         "{sets:?}"
     );
     drop(runner);
+    #[cfg(windows)]
+    foxglove_plugin_host::delete_container("test.openrgb-e131");
+    let _ = std::fs::remove_dir_all(dir);
 }
