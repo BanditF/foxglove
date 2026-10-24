@@ -282,6 +282,9 @@ pub struct ArtKey {
     pub pos: u8,
     #[serde(default)]
     pub subscribed: bool,
+    /// Leave the opt-in on afterwards (to check that a USB unplug ends it).
+    #[serde(default)]
+    pub keep_opt_in: bool,
 }
 /// PANEL RELEASE: the firmware draws its own panel again.
 #[derive(Clone, Debug, Deserialize, Serialize)]

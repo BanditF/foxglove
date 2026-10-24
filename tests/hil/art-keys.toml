@@ -44,3 +44,20 @@ steps = [
   { press_position = { pos = 43, state = "up" } },
   { expect_layer = { top = 0 } },
 ]
+
+[[cases]]
+name = "art-keys-opt-in-for-replug"
+description = "Opt in and leave it on, for the USB-unplug check: after the left's USB is unplugged and plugged back, art-keys-board-steps must pass again (the opt-in ended)"
+tags = ["art-keys", "manual-follow-up"]
+requires = ["art_keys", "position_press"]
+steps = [
+  { press_position = { pos = 43, state = "down" } },
+  { press_position = { pos = 46, state = "down" } },
+  { press_position = { pos = 0, state = "down" } },
+  { expect_layer = { active_contains = [6] } },
+  { art_key = { pos = 11, subscribed = true, keep_opt_in = true } },
+  { press_position = { pos = 0, state = "up" } },
+  { press_position = { pos = 46, state = "up" } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 0 } },
+]

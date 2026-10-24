@@ -49,9 +49,14 @@ pub trait Device: Transport {
     fn layer(&self, timeout: Duration) -> Result<Option<u32>>;
     /// Unsolicited art-key events (D7 8D 01 <dir>, #302), from now on; `None` where the device
     /// can't deliver unsolicited reports.
-    fn art_key_events(&self) -> Option<Subscription> {
+    fn art_key_events(&self) -> Option<Events> {
         None
     }
+}
+/// Reports collected from the link until dropped.
+pub struct Events {
+    pub rx: std::sync::mpsc::Receiver<[u8; 32]>,
+    _watch: digitalis::link::EventSubscription,
 }
 pub struct Hardware {
     pub link: Link,
@@ -90,11 +95,16 @@ impl Transport for Hardware {
     }
 }
 impl Device for Hardware {
-    fn art_key_events(&self) -> Option<Subscription> {
-        Some(
-            self.link
-                .subscribe(|r| r.starts_with(&[protocol::SETTINGS, 0x80 | ART_KEYS, 1])),
-        )
+    fn art_key_events(&self) -> Option<Events> {
+        // Every incoming report: the link's dispatcher drops unsolicited replies before plain
+        // subscribers see them.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let watch = self.link.subscribe_reports(move |_, r| {
+            if r.starts_with(&[protocol::SETTINGS, 0x80 | ART_KEYS, 1]) {
+                let _ = tx.send(*r);
+            }
+        });
+        Some(Events { rx, _watch: watch })
     }
     fn layer(&self, timeout: Duration) -> Result<Option<u32>> {
         self.check_connection()?;
@@ -390,6 +400,7 @@ impl<'a, D: Device> Runner<'a, D> {
             pressed?;
             if k.subscribed {
                 let r = events
+                    .rx
                     .recv_timeout(Duration::from_secs(2))
                     .map_err(|_| anyhow::anyhow!("no D7 8D 01 event within 2 s"))?;
                 ensure!(
@@ -411,7 +422,7 @@ impl<'a, D: Device> Runner<'a, D> {
                 ));
             }
             ensure!(
-                events.try_recv().is_err(),
+                events.rx.try_recv().is_err(),
                 "an art-key event arrived without the opt-in"
             );
             let end = Instant::now() + Duration::from_secs(6);
@@ -429,7 +440,7 @@ impl<'a, D: Device> Runner<'a, D> {
                 );
             }
         })();
-        if k.subscribed {
+        if k.subscribed && !k.keep_opt_in {
             subscribe(self, false)?;
         }
         outcome

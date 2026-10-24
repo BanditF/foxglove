@@ -65,6 +65,8 @@ enum Command {
         #[arg(long, default_value_t = 8)]
         settle_s: u64,
     },
+    /// Prints the art relay's status (D6 STATUS, asked twice so the right's part is fresh).
+    ArtStatus,
     /// Prints one half's running firmware build (D7 09) as JSON. Exit code 4: the firmware
     /// can't tell (no HELLO bit 12, or the right is not reachable).
     Build {
@@ -216,6 +218,18 @@ fn main() -> Result<std::process::ExitCode> {
     let _guard = platform::guard(cli.allow_app)?;
     let _lab = platform::lab_lock(Duration::from_secs(120))?;
     let cancelled = platform::cancellation()?;
+    if matches!(cli.command, Command::ArtStatus) {
+        let link = connect(cli.product)?;
+        link.wait_connected(Duration::from_secs(10))?;
+        digitalis::art::status(&link)?;
+        std::thread::sleep(Duration::from_millis(300));
+        let s = digitalis::art::status(&link)?;
+        println!(
+            "{}",
+            serde_json::json!({"left_state": s.state, "error": s.error, "length": s.length, "right_state": s.right_state, "right_set": s.right_set, "right_set_count": s.right_set_count, "text": s.to_string()})
+        );
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
     if matches!(cli.command, Command::Status) {
         let link = connect(cli.product)?;
         let c = link.wait_connected(Duration::from_secs(10))?;
