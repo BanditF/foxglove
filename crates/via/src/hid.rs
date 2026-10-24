@@ -74,16 +74,23 @@ impl Backend for ViaBackend {
 
     fn discover(&self) -> Result<Vec<DeviceInfo>> {
         let api = HidApi::new().map_err(|e| DeviceError::Backend(e.to_string()))?;
-        let mut found: Vec<DeviceInfo> = Vec::new();
+        let mut seen: Vec<(DeviceId, String)> = Vec::new();
+        let mut names = Vec::new();
         for d in api.device_list() {
             if d.usage_page() != USAGE_PAGE || d.usage() != USAGE {
                 continue;
             }
             let Some(def) = self.definition(d.vendor_id(), d.product_id()) else { continue };
-            let path = d.path().to_string_lossy();
-            let id = DeviceId::new(self.id(), d.vendor_id(), d.product_id(), d.serial_number(), &path);
+            let path = d.path().to_string_lossy().into_owned();
+            seen.push((DeviceId::new(self.id(), d.vendor_id(), d.product_id(), d.serial_number(), &path), path));
+            names.push(def.name.clone());
+        }
+        // Two identical boards with the same serial are told apart by their paths (#292).
+        foxglove_devices::untrust_shared_serials(&mut seen);
+        let mut found: Vec<DeviceInfo> = Vec::new();
+        for ((id, _), name) in seen.into_iter().zip(names) {
             if found.iter().all(|f| f.id != id) {
-                found.push(DeviceInfo { id, backend: self.id(), name: def.name.clone(), kind: DeviceKind::Keyboard, firmware: None });
+                found.push(DeviceInfo { id, backend: self.id(), name, kind: DeviceKind::Keyboard, firmware: None });
             }
         }
         Ok(found)

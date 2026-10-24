@@ -21,7 +21,17 @@ pub const EEPROM_RESET: u8 = 0x0A;
 pub const BOOTLOADER_JUMP: u8 = 0x0B;
 pub const DYNAMIC_KEYMAP_GET_LAYER_COUNT: u8 = 0x11;
 pub const DYNAMIC_KEYMAP_GET_BUFFER: u8 = 0x12;
+/// Vial's commands start with this byte (unlock, QMK settings, dynamic entries).
+pub const VIAL_PREFIX: u8 = 0xFE;
 pub const UNHANDLED: u8 = 0xFF;
+
+/// `GET_KEYBOARD_VALUE` ids.
+pub mod keyboard_value {
+    pub const UPTIME: u8 = 1;
+    pub const LAYOUT_OPTIONS: u8 = 2;
+    /// The physical switches as they're pressed now: key events, so never read (#74).
+    pub const SWITCH_MATRIX_STATE: u8 = 3;
+}
 
 /// VIA custom-value channel and ids for QMK RGB Matrix.
 pub mod rgb_matrix {
@@ -77,12 +87,25 @@ impl<T: Transport> Guarded<T> {
         self.writes
     }
 
-    pub fn check(&self, command: u8) -> Result<()> {
+    /// Whether a report may go out: its command, and for `GET_KEYBOARD_VALUE` which value.
+    pub fn check(&self, bytes: &[u8]) -> Result<()> {
+        let command = *bytes.first().ok_or(DeviceError::Unsupported)?;
+        if command == GET_KEYBOARD_VALUE {
+            return match bytes.get(1).copied() {
+                Some(keyboard_value::UPTIME | keyboard_value::LAYOUT_OPTIONS) => Ok(()),
+                Some(keyboard_value::SWITCH_MATRIX_STATE) => {
+                    Err(DeviceError::Denied("the switch matrix shows keys as they're pressed; it's never read".into()))
+                }
+                other => Err(DeviceError::Denied(format!("keyboard value {other:?} isn't allowed"))),
+            };
+        }
         if READ.contains(&command) || (self.writes && WRITE.contains(&command)) {
             return Ok(());
         }
         Err(DeviceError::Denied(if FORBIDDEN.contains(&command) {
             format!("VIA command {command:#04x} (reset, bootloader or factory) is never sent")
+        } else if command == VIAL_PREFIX {
+            "Vial commands (unlock, settings) aren't sent; Foxglove reads Vial boards through VIA".into()
         } else if WRITE.contains(&command) {
             format!("VIA command {command:#04x} writes; this keyboard is open read-only")
         } else {
@@ -94,7 +117,7 @@ impl<T: Transport> Guarded<T> {
     /// command.
     pub fn send(&self, bytes: &[u8]) -> Result<Report> {
         let command = *bytes.first().ok_or(DeviceError::Unsupported)?;
-        self.check(command)?;
+        self.check(bytes)?;
         let mut report = [0u8; REPORT];
         report[..bytes.len().min(REPORT)].copy_from_slice(&bytes[..bytes.len().min(REPORT)]);
         let reply = self.inner.exchange(&report)?;
@@ -130,7 +153,23 @@ mod tests {
                 assert!(g.send(&[c]).is_err(), "{c:#04x} isn't allowlisted");
             }
         }
+        // Vial: unlock (and everything else) never goes out.
+        for sub in 0..=0x20 {
+            assert!(matches!(g.send(&[VIAL_PREFIX, sub]), Err(DeviceError::Denied(m)) if m.contains("Vial")));
+        }
         assert!(g.inner.0.lock().unwrap().is_empty(), "nothing was sent");
+    }
+
+    #[test]
+    fn keyboard_values_are_read_but_never_the_switch_matrix() {
+        let g = Guarded::read_only(Echo(Mutex::default()));
+        assert!(g.send(&[GET_KEYBOARD_VALUE, keyboard_value::UPTIME]).is_ok());
+        assert!(g.send(&[GET_KEYBOARD_VALUE, keyboard_value::LAYOUT_OPTIONS]).is_ok());
+        assert!(matches!(g.send(&[GET_KEYBOARD_VALUE, keyboard_value::SWITCH_MATRIX_STATE]), Err(DeviceError::Denied(_))));
+        assert!(g.send(&[GET_KEYBOARD_VALUE, 0x42]).is_err());
+        assert!(g.send(&[GET_KEYBOARD_VALUE]).is_err());
+        assert!(g.send(&[SET_KEYBOARD_VALUE, keyboard_value::LAYOUT_OPTIONS]).is_err());
+        assert_eq!(*g.inner.0.lock().unwrap(), vec![GET_KEYBOARD_VALUE, GET_KEYBOARD_VALUE]);
     }
 
     #[test]
