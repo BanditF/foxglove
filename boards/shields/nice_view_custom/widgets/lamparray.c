@@ -16,6 +16,7 @@
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/usb/usb_device.h>
 #include <zephyr/usb/class/usb_hid.h>
 
 #include <drivers/ext_power.h>
