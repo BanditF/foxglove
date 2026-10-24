@@ -27,7 +27,8 @@
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
- *   03 ROWS    y, n (1-3), n rows   write rows of HOST_PANEL_STRIDE bytes, MSB first, 1 = ink
+ *   03 ROWS    y, n, n rows         write rows of the panel's stride, MSB first, 1 = ink; n up to
+ *                                   the panel's rows per report (SCREENS; 3 on the Corne)
  *   04 PRESENT                      show the back buffer
  *   05 RELEASE                      give the area back to the WPM chart now
  *   06 SCREENS index u8             reply D5 86: status (0 ok, 5 index >= count), count, index,
@@ -192,10 +193,18 @@ void host_link_rgb_changed(void);
 void host_link_art_status(void);
 
 // The panel covers the WPM block of the portrait layout (status.c), inside the frame.
+// A board with a panel of its own sets CONFIG_FOXGLOVE_PANEL_* (foxglove_link shield).
+#if defined(CONFIG_FOXGLOVE_PANEL_W)
+#define HOST_PANEL_X CONFIG_FOXGLOVE_PANEL_X
+#define HOST_PANEL_Y CONFIG_FOXGLOVE_PANEL_Y
+#define HOST_PANEL_W CONFIG_FOXGLOVE_PANEL_W
+#define HOST_PANEL_H CONFIG_FOXGLOVE_PANEL_H
+#else
 #define HOST_PANEL_X 2
 #define HOST_PANEL_Y 106
 #define HOST_PANEL_W 64
 #define HOST_PANEL_H 52
+#endif
 #define HOST_PANEL_STRIDE (HOST_PANEL_W / 8)
 #define HOST_PANEL_BYTES (HOST_PANEL_STRIDE * HOST_PANEL_H)
 

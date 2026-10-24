@@ -1625,6 +1625,7 @@ dependencies = [
  "prost",
  "qmk-via-api",
  "raw-window-handle",
+ "resvg",
  "rust-ini",
  "serde",
  "serde_json",

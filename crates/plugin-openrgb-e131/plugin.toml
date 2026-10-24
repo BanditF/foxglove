@@ -1,4 +1,4 @@
-id = "org.foxglove.openrgb-e131"
+id = "org.foxglove.openrgb"
 name = "OpenRGB (E1.31)"
 version = "1.0.0"
 api = "1.1"

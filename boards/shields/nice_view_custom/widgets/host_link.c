@@ -82,8 +82,10 @@ bool host_panel_get(uint8_t buf[HOST_PANEL_BYTES]) {
     return on;
 }
 
-#ifndef FOXGLOVE_HAS_WIDGETS
-// A board without our screen widgets (foxglove_link shield) has no panel to redraw.
+BUILD_ASSERT(HOST_PANEL_W % 8 == 0, "panel rows are whole bytes");
+
+#if !defined(FOXGLOVE_HAS_WIDGETS) && !defined(FOXGLOVE_HAS_PANEL)
+// A board without a panel drawer (status.c, foxglove_link/panel_lvgl.c) has nothing to redraw.
 void host_panel_redraw(void) {}
 #endif
 
