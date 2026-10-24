@@ -12,6 +12,10 @@ zephyr_library_sources(
 
 set(FOXGLOVE_WIDGETS ${CMAKE_CURRENT_LIST_DIR}/../../../boards/shields/nice_view_custom/widgets)
 
+if(CONFIG_FOXGLOVE_SIM_POWEROFF)
+  zephyr_library_sources(sleep_sim.c)
+endif()
+
 if(CONFIG_FOXGLOVE_SIM_DIM)
   # The cap is the shield's shipped default (Kconfig.defconfig), which the simulator doesn't load.
   file(STRINGS ${FOXGLOVE_WIDGETS}/../Kconfig.defconfig FOXGLOVE_DEFCONFIG)

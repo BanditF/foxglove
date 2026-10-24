@@ -1,4 +1,5 @@
-# Q, then 29 min 50 s idle; S still types (awake); after 30 min 10 s idle the board powers off
-# (SIM_SLEEP) and the run ends, so the final Z never appears.
+# Q, idle after 30 s, still idle (not asleep) 29 min 50 s after Q, then sleep and SIM_SLEEP at
+# the production timeout; the run ends there.
 s/.*hid_listener_keycode/kp/p
+/^sleep: /p
 /^SIM_SLEEP$/p
