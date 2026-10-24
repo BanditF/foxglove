@@ -1,0 +1,63 @@
+schema = 1
+
+# Art keys (#302): &art_next / &art_prev on SYSTEM + P / O. Quit Foxglove first (it may take the
+# keys over). The opt-in ending on a USB unplug is a human step (#90); the lab's link can't unplug.
+
+[[cases]]
+name = "art-keys-advertised"
+description = "HELLO capability bit 16 (ART_KEYS) is set"
+tags = ["art-keys"]
+steps = [{ expect_hello = { caps_set = [16] } }]
+
+[[cases]]
+name = "art-keys-board-steps"
+description = "No app opt-in: SYSTEM+P steps the right-screen art forward and SYSTEM+O back, on the board itself"
+tags = ["art-keys"]
+requires = ["art_keys", "position_press"]
+steps = [
+  { press_position = { pos = 43, state = "down" } },
+  { press_position = { pos = 46, state = "down" } },
+  { press_position = { pos = 0, state = "down" } },
+  { expect_layer = { active_contains = [6] } },
+  { art_key = { pos = 11 } },
+  { art_key = { pos = 10 } },
+  { press_position = { pos = 0, state = "up" } },
+  { press_position = { pos = 46, state = "up" } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
+
+[[cases]]
+name = "art-keys-app-opt-in"
+description = "With D7 0D 01: SYSTEM+P / O send D7 8D 01 01 / FF and the art stays put; the opt-in is ended after"
+tags = ["art-keys"]
+requires = ["art_keys", "position_press"]
+steps = [
+  { press_position = { pos = 43, state = "down" } },
+  { press_position = { pos = 46, state = "down" } },
+  { press_position = { pos = 0, state = "down" } },
+  { expect_layer = { active_contains = [6] } },
+  { art_key = { pos = 11, subscribed = true } },
+  { art_key = { pos = 10, subscribed = true } },
+  { press_position = { pos = 0, state = "up" } },
+  { press_position = { pos = 46, state = "up" } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
+
+[[cases]]
+name = "art-keys-opt-in-for-replug"
+description = "Opt in and leave it on, for the USB-unplug check: after the left's USB is unplugged and plugged back, art-keys-board-steps must pass again (the opt-in ended)"
+tags = ["art-keys", "manual-follow-up"]
+requires = ["art_keys", "position_press"]
+steps = [
+  { press_position = { pos = 43, state = "down" } },
+  { press_position = { pos = 46, state = "down" } },
+  { press_position = { pos = 0, state = "down" } },
+  { expect_layer = { active_contains = [6] } },
+  { art_key = { pos = 11, subscribed = true, keep_opt_in = true } },
+  { press_position = { pos = 0, state = "up" } },
+  { press_position = { pos = 46, state = "up" } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
