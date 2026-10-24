@@ -1,6 +1,6 @@
 [package]
 name = "foxglove-plugin"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Write Foxglove plugins in Rust: the local API client over stdio, with a heartbeat and fact events"
 license = "MIT"
