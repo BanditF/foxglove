@@ -36,5 +36,6 @@ fn main() {
     if !foxglove::repaint_trace::disabled("art") {
         foxglove::art_service::start();
     }
+    foxglove::accent::start();
     foxglove::startup::finish(platform::run(settings, available_devices))
 }
