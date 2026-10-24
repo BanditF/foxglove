@@ -13,7 +13,7 @@ cargo wix --no-build --output target/wix/foxglove-x64.msi
 
 The definition is `app/wix/main.wxs`; cargo-wix discovers it automatically.
 This package targets x64 Windows. Its version defaults to `app/Cargo.toml`;
-override it with `cargo wix --no-build --version 0.1.1`. Use increasing MSI
+override it with `cargo wix --no-build --install-version 0.1.1`. Use increasing MSI
 versions (major/minor <= 255, patch <= 65535). Keep the UpgradeCode fixed.
 The installer tools could not be installed or exercised in the offline development
 environment; an actual MSI build and Windows install/uninstall smoke test remain required.
