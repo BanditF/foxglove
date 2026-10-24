@@ -461,9 +461,7 @@ fn dump_panel(frame: &Frame) {
         return;
     };
     let tmp = path.with_extension("tmp");
-    let mut bytes = format!("P4
-{} {}
-", frame.width, frame.height).into_bytes();
+    let mut bytes = format!("P4\n{} {}\n", frame.width, frame.height).into_bytes();
     bytes.extend_from_slice(&frame.bits);
     if std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).is_err() {
         eprintln!("Foxglove screens: can't write {}", path.display());
