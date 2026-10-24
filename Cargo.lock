@@ -359,7 +359,7 @@ dependencies = [
 
 [[package]]
 name = "digitalis"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "crc32fast",
@@ -493,7 +493,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "foxglove-plugin-api",
  "foxglove-plugin-host",
@@ -502,7 +502,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-devices"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -510,7 +510,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-lab"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -529,7 +529,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-panel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "digitalis",
@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-plugin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "foxglove-plugin-api",
@@ -561,7 +561,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-plugin-host"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "foxglove-devices",
@@ -573,7 +573,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-plugin-trust"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "minisign",
  "minisign-verify",
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-update"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "base64",
  "chrono",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-via"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "foxglove-devices",
  "hidapi",
@@ -931,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "hostpanel"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "chrono",
