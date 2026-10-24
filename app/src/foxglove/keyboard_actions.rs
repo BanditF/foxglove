@@ -114,6 +114,22 @@ pub fn learn(resolved: &[ResolvedLayer], raw: &Keymap) {
     *KNOWN.lock().unwrap() = Known { actions, underglow };
 }
 
+/// Learns the actions from keyboard `vid:pid`'s cached keymap when nothing has been learned yet,
+/// so lighting and actions work for plugins and the local API before the overlay opens the
+/// keymap (a fresh config, or the overlay pointed at another keyboard). True when it learned.
+pub fn learn_cached(vid: u16, pid: u16) -> bool {
+    if !KNOWN.lock().unwrap().actions.is_empty() {
+        return false;
+    }
+    let Some(data) = super::keymap_cache::replay(vid, pid)
+        .and_then(|client| crate::protocols::zmk_rpc::fetch_zmk_data_from_client(client).ok())
+    else {
+        return false;
+    };
+    learn(&data.resolved_layers, &data.raw_keymap);
+    true
+}
+
 /// What a binding does, if it's something worth a button: (group, label, hold ms, risky).
 fn describe(b: &Behavior, layer: &dyn Fn(u32) -> String) -> Option<(Group, String, u16, bool)> {
     use Group::*;
@@ -235,6 +251,28 @@ pub fn permitted(binding: (u16, u32, u32)) -> bool {
 mod safety_tests {
     use super::*;
     use zmk_studio_api::{BluetoothCommand, OutputSelection};
+
+    /// Learning from a real cached keymap: `FOXGLOVE_TEST_STUDIO=<keymap-VVVV-PPPP.studio>`
+    /// (copied into a temp config dir; the original is only read). Run with `--ignored`.
+    #[test]
+    #[ignore]
+    fn learns_underglow_from_a_cached_keymap() {
+        let Some(src) = std::env::var_os("FOXGLOVE_TEST_STUDIO").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let name = src.file_name().unwrap().to_string_lossy().to_string();
+        let ids = name.trim_start_matches("keymap-").trim_end_matches(".studio");
+        let (vid, pid) = ids.split_once('-').unwrap();
+        let (vid, pid) = (u16::from_str_radix(vid, 16).unwrap(), u16::from_str_radix(pid, 16).unwrap());
+        let dir = std::env::temp_dir().join(format!("foxglove-learn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(&src, dir.join(&name)).unwrap();
+        std::env::set_var("FOXGLOVE_CONFIG_DIR", &dir);
+        assert!(learn_cached(vid, pid), "learned from the cache");
+        assert!(underglow_behavior().is_some(), "found &rgb_ug");
+        assert!(!learn_cached(vid, pid), "only once");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn disruptive_behaviors_are_never_actions() {
