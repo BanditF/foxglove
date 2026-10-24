@@ -1,0 +1,17 @@
+[package]
+name = "plugin-icue-mirror"
+version = "1.0.0"
+edition = "2021"
+description = "Corsair mirror, a Foxglove plugin: the keyboard's underglow follows a Corsair device's colours through the user's own iCUE SDK"
+license = "MIT"
+
+[[bin]]
+name = "icue-mirror"
+path = "src/main.rs"
+
+[dependencies]
+foxglove-plugin = { path = "../plugin-sdk" }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
