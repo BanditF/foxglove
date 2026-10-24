@@ -174,6 +174,30 @@ enum Event {
 }
 static EVENTS: OnceLock<Mutex<Option<mpsc::Sender<Event>>>> = OnceLock::new();
 
+/// What the panel's providers read, as facts for plugins (`facts.read:media.*`,
+/// `facts.read:volume.*`): one reader of the media sessions for the whole app. Plugins can't
+/// read them themselves, as the sandbox denies SMTC (#215). Unchanged values aren't re-sent.
+fn publish_media(view: &render::View) {
+    use foxglove_devices::facts::Value;
+    let facts = super::devices::bus().facts();
+    let text = |key: &str, v: &Option<String>| match v {
+        Some(t) => facts.set(key, Value::Text(t.clone())),
+        None => {
+            facts.remove(key);
+        }
+    };
+    text("media.title", &view.title);
+    text("media.artist", &view.artist);
+    facts.set("media.playing", Value::Bool(view.playing));
+    match view.volume {
+        Some((level, muted)) => {
+            facts.set("volume.level", Value::Int(i64::from(level)));
+            facts.set("volume.muted", Value::Bool(muted));
+        }
+        None => facts.remove_prefix("volume.", &[]),
+    }
+}
+
 static WALLPAPER_CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// Wallpaper Engine shows another wallpaper: reload its frames on the next draw.
@@ -422,7 +446,9 @@ fn run() {
             changes.refresh();
             providers_dirty = false;
             note_foreground();
-            sources.update(&mut view, |exe| settings.games.get(exe).cloned())
+            let next = sources.update(&mut view, |exe| settings.games.get(exe).cloned());
+            publish_media(&view);
+            next
         } else {
             Sources::update_clock(&mut view)
         };

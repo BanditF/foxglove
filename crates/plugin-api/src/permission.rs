@@ -33,6 +33,9 @@ pub enum Permission {
     Net,
     /// Declared only: the plugin reads or writes the user's files.
     Files,
+    /// Declared: the plugin reads and changes the microphone's mute (Core Audio). Windows lets
+    /// any sandboxed process do this, so it's shown at install but not enforced (#215).
+    AudioMic,
 }
 
 impl Permission {
@@ -56,6 +59,7 @@ impl Permission {
             Permission::ProfilesWrite => "switch your Foxglove profile".into(),
             Permission::Net => "use the network".into(),
             Permission::Files => "read and write your files".into(),
+            Permission::AudioMic => "see and change whether your microphone is muted".into(),
         }
     }
 }
@@ -95,6 +99,7 @@ impl TryFrom<String> for Permission {
                 "profiles.write" => Permission::ProfilesWrite,
                 "net" => Permission::Net,
                 "files" => Permission::Files,
+                "audio.mic" => Permission::AudioMic,
                 _ => return Err(format!("unknown permission {text:?}")),
             },
         })
@@ -116,6 +121,7 @@ impl From<Permission> for String {
             Permission::ProfilesWrite => "profiles.write".into(),
             Permission::Net => "net".into(),
             Permission::Files => "files".into(),
+            Permission::AudioMic => "audio.mic".into(),
         }
     }
 }
@@ -174,7 +180,7 @@ mod tests {
 
     #[test]
     fn parses_round_trips_and_refuses_bad_ones() {
-        for s in ["facts.read:clock.*", "facts.write:weather.temp", "lighting.write", "key.events", "facts.read:*"] {
+        for s in ["facts.read:clock.*", "facts.write:weather.temp", "lighting.write", "key.events", "facts.read:*", "audio.mic"] {
             assert_eq!(String::from(p(s).unwrap()), s);
         }
         assert!(p("facts.write:device.x").is_err(), "device facts are the app's");

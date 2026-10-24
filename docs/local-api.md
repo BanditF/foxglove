@@ -110,6 +110,9 @@ description = "Puts the temperature on the left screen."
 **Containment on Windows:**
 - **Job Object:** every plugin runs in one, killed with Foxglove, with memory and CPU caps and no breakaway.
 - **AppContainer:** Plugins that declare neither `net` nor `files` run in one, so no network and no user files.
+- **Windows APIs in the sandbox (#215).** `crates/plugin-sandbox-probe` runs each API under the real runner, sandboxed and not. Results on Windows 11:
+  - **Media sessions (SMTC):** denied in the AppContainer ("Access is denied"). Plugins read them as facts instead: the app's one media reader publishes `media.title`, `media.artist` and `media.playing`, plus `volume.level` and `volume.muted` (`facts.read:media.*`, `facts.read:volume.*`). They update while the panel service runs.
+  - **Microphone mute (Core Audio endpoint volume):** works in the AppContainer with no capability, so the sandbox can't limit it. A plugin that uses it declares `audio.mic`. The install dialog shows it ("see and change whether your microphone is muted"), but it is not enforced.
   A `net` plugin runs outside it, still in its Job Object. An AppContainer can't receive loopback traffic from another program without a machine-wide exemption (`CheckNetIsolation`, admin), and local listeners such as the OpenRGB Plugin need exactly that. So `net` stays a permission the user approves at install.
 - **"Trusted" Plugins:** the others (vendor SDK Plugins need their vendor service) are marked trusted in the Plugins tab.
 

@@ -1352,6 +1352,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-sandbox-probe"
+version = "0.0.0"
+dependencies = [
+ "foxglove-devices",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
+ "windows",
+]
+
+[[package]]
 name = "png"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
