@@ -110,8 +110,7 @@ static uint32_t arm(void) {
 }
 
 static void driver(void) {
-    printk("hostlink: -- probe refused bluetooth=%d sysreset=%d outputs=%d n_bt=%d n_out=%d n_reset=%d
-",
+    printk("hostlink: -- probe refused bluetooth=%d sysreset=%d outputs=%d n_bt=%d n_out=%d n_reset=%d\n",
            foxglove_behavior_refused("bluetooth"), foxglove_behavior_refused("sysreset"),
            foxglove_behavior_refused("outputs"), DT_NUM_INST_STATUS_OKAY(zmk_behavior_bluetooth),
            DT_NUM_INST_STATUS_OKAY(zmk_behavior_outputs), DT_NUM_INST_STATUS_OKAY(zmk_behavior_reset));
