@@ -352,6 +352,23 @@ void art_relay_press(uint8_t pos, uint8_t state) {
     press_state = state;
     k_work_submit_to_queue(&relay_q, &press_work);
 }
+
+static void boot_cb(struct k_work *work) {
+    uint8_t status = 2;
+    struct bt_conn *conn = job_conn();
+    if (conn != NULL) {
+        const uint8_t d[] = {ART_RELAY_BOOT, 'B', 'O', 'O', 'T'};
+        int err = write_req(conn, d, sizeof(d));
+        status = err == 0 ? 0 : err == -ETIMEDOUT ? 3 : 2;
+        if (err == -EIO && gatt_err == 0x84) {
+            status = 4; // the right's firmware has no test hooks
+        }
+        bt_conn_unref(conn);
+    }
+    test_hooks_boot_relay_done(status);
+}
+static K_WORK_DEFINE(boot_work, boot_cb);
+void art_relay_boot(void) { k_work_submit_to_queue(&relay_q, &boot_work); }
 #endif
 
 static int push(struct bt_conn *conn) {
