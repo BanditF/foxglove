@@ -13,7 +13,9 @@
  *                                   10 relay debug bytes, capabilities u32 LE (report bytes 21-24),
  *                                   panel timeout seconds u16 LE (bytes 25-26; 0 = never),
  *                                   the left's firmware version major, minor, patch, profile
- *                                   (bytes 27-30; profile 0 dev, 1 GA)
+ *                                   (bytes 27-30; profile 0 dev, 1 GA),
+ *                                   split links the #122 guard dropped since boot (byte 31;
+ *                                   0 also when CONFIG_FOXGLOVE_SPLIT_GUARD is off)
  *      Capabilities: bit 0 panel, 1 art relay, 2 settings/RGB, 3 unsolicited art STATUS,
  *                    4 settings CONN_STATE, 5 POSITION (only when test hooks are built),
  *                    6 screen snapshots (D7 06/07), 7 INVOKE refuses &bt/&out/&bootloader/
