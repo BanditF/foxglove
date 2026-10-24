@@ -51,7 +51,7 @@ pub fn rgb_state(t: &impl Transport) -> Result<RgbState> {
 
 /// Reboots `half` (0 left, 1 right; the right goes over the relay) into its UF2 bootloader:
 /// ARM, then TRIGGER with the nonce ARM returned. Only for the flasher, after the user has
-/// confirmed the flash; firmware without HELLO capability bit 8 answers "not built in".
+/// confirmed the flash; firmware without HELLO capability bit 9 answers "not built in".
 pub fn enter_bootloader(t: &impl Transport, half: u8) -> Result<()> {
     anyhow::ensure!(half <= 1, "half must be 0 (left) or 1 (right)");
     let status = |r: &[u8; protocol::REPORT]| match r[2] {

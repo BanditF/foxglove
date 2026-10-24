@@ -77,5 +77,5 @@ need to double-tap:
    10 s while the relay reconnects, then flashes it.
 
 Serial identity, the UF2 preflight and the typed confirmations are unchanged. If foxglove-lab
-isn't built (`cargo build --release -p foxglove-lab`), or the firmware lacks bit 8, it falls
+isn't built (`cargo build --release -p foxglove-lab`), or the firmware lacks bit 9, it falls
 back to double-tap prompts. A settings reset always uses the double tap.
