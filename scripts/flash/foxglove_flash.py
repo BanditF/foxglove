@@ -23,6 +23,7 @@ import time
 
 SERIALS = {'1E89EF085AA8A635': 'left', '35B4541F78DE9CF8': 'right'}
 LIMIT = 0xAD000
+RELAY_WAIT_SECONDS = 60  # before the right's D7 08, for the relay to come back
 SETTLE_SECONDS = 3  # after the bootloader drive appears, before writing
 START = 0x26000  # All inspected real builds, including settings reset, start here.
 ROLLBACK = r'C:\Users\fuchs\splitkeeb\firmware-358c3d0\firmware'
@@ -258,6 +259,20 @@ class WindowsOS:
         if 'foreground focus' in message or 'lost foreground focus' in message:
             return None
         return False
+    def right_link(self):
+        """The left's view of the right (HELLO right link: 0 none, 1 split only, 2 relay up), or
+        None when it can't be read (no foxglove-lab, left not connected)."""
+        exe = lab_binary()
+        if exe is None:
+            return None
+        try:
+            out = subprocess.run([str(exe), '--allow-app', 'status'], capture_output=True, text=True,
+                                 timeout=20).stdout
+        except subprocess.TimeoutExpired:
+            return None
+        found = re.search(r'"right_link":(\d+)', out)
+        return int(found.group(1)) if found else None
+
     def build_info(self, half):
         """The running build of `half` from the keyboard (D7 09) as a dict with version, profile
         and sha, or None when it can't tell (old firmware, right not reachable, no foxglove-lab)."""
@@ -435,9 +450,16 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
             continue
         entered = False
         if not settings_reset:
-            # The right goes through the left's relay, which needs a few seconds after the left
-            # reboots into new firmware: retry before falling back to a double tap.
-            for attempt in range(3 if half == 'right' else 1):
+            # The right goes through the left's relay, which comes back about 20-40 s after the
+            # left reboots (#122, #184): wait for it (HELLO right link 2, up to 60 s) before
+            # asking, then try twice before falling back to a double tap.
+            if half == 'right':
+                try:
+                    wait_for(lambda: backend.right_link() == 2, RELAY_WAIT_SECONDS,
+                             'relay to the right not up', clock, sleep)
+                except TimeoutError:
+                    log(f'right: the relay to the right half is not up after {RELAY_WAIT_SECONDS} s; trying anyway.')
+            for attempt in range(2 if half == 'right' else 1):
                 if attempt:
                     sleep(5)
                 entered = backend.enter_bootloader(half, log)
