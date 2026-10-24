@@ -124,10 +124,10 @@ fn run_with<D: foxglove_lab::runner::Device>(
 #[test]
 fn parses_seed_suites_and_all_step_kinds() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil");
-    assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 6);
+    assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 7);
     assert_eq!(
         spec::load(&root.join("release.toml")).unwrap().cases.len(),
-        19
+        21
     );
     for text in [
         "[{press_position={pos=12,state='down'}}]",
