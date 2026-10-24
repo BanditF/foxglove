@@ -136,6 +136,22 @@ pub fn usb_entries() -> Result<Vec<UsbEntry>> {
     })?)
 }
 
+/// The running Foxglove, if any: its exe path and file version (for the report).
+pub fn app_info() -> crate::report::App {
+    let Ok(out) = powershell(
+        "$p = Get-Process | Where-Object { $_.ProcessName -like 'foxglove*' -and $_.ProcessName -ne 'foxglove-lab' } | Select-Object -First 1;          if ($p) { ConvertTo-Json -Compress @{ path = $p.Path; version =          [string]$p.MainModule.FileVersionInfo.ProductVersion } }",
+    ) else {
+        return crate::report::App::default();
+    };
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap_or_default();
+    let text = |k: &str| v[k].as_str().filter(|s| !s.is_empty()).map(String::from);
+    crate::report::App {
+        running: v.is_object(),
+        path: text("path"),
+        version: text("version"),
+    }
+}
+
 /// Total CPU time (ms) used so far by every process with this name; errors if none runs.
 pub fn process_cpu_ms(name: &str) -> Result<f64> {
     ensure!(

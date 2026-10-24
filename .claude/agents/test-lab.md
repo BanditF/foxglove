@@ -93,7 +93,10 @@ product code, commit, push, merge, or invent missing harness capabilities.
 ## Harness commands (from 6 · Test lab's design; prefer these once they exist)
 - Run a suite: `cargo run -p foxglove-lab -- run --suite <name>`. It writes
   `lab-reports/<date>-<sha>/report.html`, `report.json` and `junit.xml` with screen PNGs; attach
-  those paths to your report.
+  those paths to your report. The format (summary page; `report.json` schema
+  `foxglove-lab-report` v2 with verdict, areas, both halves' BUILD_INFO and the app version;
+  one JUnit testsuite per area) is in `docs/test-lab/report-format.md`. Quote its verdict and
+  per-area table in your report rather than restating case lists.
 - Flash preflight: `python scripts/flash/foxglove_flash.py --firmware <dir> --dry-run` checks the
   UF2 family, 0xAD000 size limit, half marker, version/profile/SHA. With the user's go:
   `python scripts/flash/foxglove_flash.py --firmware <dir> --half left|right|both --yes`
