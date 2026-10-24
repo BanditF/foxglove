@@ -186,7 +186,7 @@ static void driver(void) {
     nonce = arm();
     trigger(2, nonce);
     trigger(1, nonce);
-    note("guard test: no split link in the simulator (2), or not built in (4)");
+    note("guard test: 4, as the simulator has no split guard (no art relay)");
     SEND(0xD7, 0x0B);
     note("bootloader: bad sub-command");
     SEND(0xD7, 0x08, 0x05);
