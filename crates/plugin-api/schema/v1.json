@@ -1302,6 +1302,68 @@
         "title": "Empty",
         "type": "object"
       }
+    },
+    "secrets.get": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "One of the plugin's own secrets (#213, API 1.2).",
+        "properties": {
+          "name": {
+            "description": "1-64 of a-z, 0-9, - _ .",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "SecretName",
+        "type": "object"
+      },
+      "permission": "secrets",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "value": {
+            "description": "`null` when it isn't set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "SecretValue",
+        "type": "object"
+      }
+    },
+    "secrets.set": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Saves a secret (`null` removes it); at most 2048 bytes.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "SetSecretParams",
+        "type": "object"
+      },
+      "permission": "secrets",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
     }
   },
   "transport": "JSON-RPC 2.0, one message per line"

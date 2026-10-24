@@ -305,6 +305,10 @@ pub fn remove(id: &str) -> Result<(), String> {
     }
     #[cfg(windows)]
     ::foxglove_plugin_host::delete_container(id);
+    // Its passwords and tokens go with it (#213).
+    if let Err(e) = ::foxglove_plugin_host::secrets::delete_all(id) {
+        eprintln!("Foxglove: removing {id}'s secrets: {e}");
+    }
     let mut all = super::store::try_load::<Plugins>("plugins").unwrap_or_default();
     all.installed.remove(id);
     super::store::save("plugins", &all).map_err(|e| e.to_string())

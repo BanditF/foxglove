@@ -244,6 +244,26 @@ pub struct ActionInvoked {
     pub action: String,
 }
 
+/// One of the plugin's own secrets (#213, API 1.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SecretName {
+    /// 1-64 of a-z, 0-9, - _ .
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SecretValue {
+    /// `null` when it isn't set.
+    pub value: Option<String>,
+}
+
+/// Saves a secret (`null` removes it); at most 2048 bytes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SetSecretParams {
+    pub name: String,
+    pub value: Option<String>,
+}
+
 /// The kind of connection `net.open` makes (API 1.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -343,6 +363,9 @@ pub const METHODS: &[Method] = &[
     Method { name: "net.close", kind: Kind::Call, permission: None, params: schema!(NetStream), result: Some(schema!(Empty)) },
     Method { name: "net.data", kind: Kind::Event, permission: None, params: schema!(NetData), result: None },
     Method { name: "net.closed", kind: Kind::Event, permission: None, params: schema!(NetClosed), result: None },
+    // A plugin's own secrets; outside tools get none (#213).
+    Method { name: "secrets.get", kind: Kind::Call, permission: Some("secrets"), params: schema!(SecretName), result: Some(schema!(SecretValue)) },
+    Method { name: "secrets.set", kind: Kind::Call, permission: Some("secrets"), params: schema!(SetSecretParams), result: Some(schema!(Empty)) },
     // Sent to one plugin when the key bound to its action is pressed (#212).
     Method { name: "action.invoked", kind: Kind::Event, permission: None, params: schema!(ActionInvoked), result: None },
 ];

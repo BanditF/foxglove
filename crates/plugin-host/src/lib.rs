@@ -114,6 +114,8 @@ struct Session {
     subscriptions: Arc<Mutex<HashMap<u64, String>>>,
     next_subscription: u64,
     forwarding: bool,
+    /// Which plugin this connection is (the runner says), for its secrets; `None` for tools.
+    plugin: Option<String>,
     /// Network streams opened for the plugin (#214).
     net: net::Net,
 }
@@ -121,7 +123,7 @@ struct Session {
 /// Serves one connection until the reader ends or a write fails. Messages are lines; events
 /// are written from other threads through the same writer, one whole line at a time.
 pub fn serve(reader: impl BufRead, writer: impl Write + Send + 'static, ctx: Context) -> std::io::Result<()> {
-    serve_with(reader, writer, ctx, |_| {})
+    serve_with(reader, writer, ctx, None, |_| {})
 }
 
 /// Like [`serve`]; `ready` gets the connection's event channel, through which the app sends
@@ -130,6 +132,7 @@ pub(crate) fn serve_with(
     reader: impl BufRead,
     writer: impl Write + Send + 'static,
     ctx: Context,
+    plugin: Option<String>,
     ready: impl FnOnce(Sender<String>),
 ) -> std::io::Result<()> {
     let (out, rx) = mpsc::channel::<String>();
@@ -158,7 +161,11 @@ pub(crate) fn serve_with(
         let reply = if line.len() > MAX_LINE {
             Some(Response::error(Id::Number(0), code::INVALID_REQUEST, "line too long"))
         } else {
-            handle(&line, &ctx, &mut session, &mut bucket, &out, &closed)
+            let reply = handle(&line, &ctx, &mut session, &mut bucket, &out, &closed);
+            if let Some(s) = session.as_mut().filter(|s| s.plugin.is_none()) {
+                s.plugin = plugin.clone();
+            }
+            reply
         };
         if let Some(reply) = reply {
             if out.send(serde_json::to_string(&reply).unwrap()).is_err() {
@@ -282,6 +289,18 @@ fn dispatch(
             }
             Ok(json!(methods::Subscription { subscription: id }))
         }
+        "secrets.get" | "secrets.set" => {
+            let plugin = s.plugin.as_deref().ok_or_else(|| denied("a plugin connection"))?;
+            let failed = |e: String| error(code::INVALID_PARAMS, e);
+            if method.name == "secrets.get" {
+                let p: methods::SecretName = params(request.params)?;
+                Ok(json!(methods::SecretValue { value: secrets::get(plugin, &p.name).map_err(failed)? }))
+            } else {
+                let p: methods::SetSecretParams = params(request.params)?;
+                secrets::set(plugin, &p.name, p.value.as_deref()).map_err(failed)?;
+                Ok(json!({}))
+            }
+        }
         "net.open" => {
             let p: methods::NetOpenParams = params(request.params)?;
             if !net::allowed(&s.grant, &p) {
@@ -331,6 +350,7 @@ fn initialize(p: Value, ctx: &Context, session: &mut Option<Session>) -> Result<
         next_subscription: 0,
         forwarding: false,
         net: net::Net::default(),
+        plugin: None,
     });
     Ok(json!(InitializeResult { api: API_VERSION.to_string(), app: ctx.app_version.clone(), granted }))
 }
@@ -369,6 +389,7 @@ pub const PING_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(windows)]
 mod net;
+pub mod secrets;
 pub mod pipe;
 
 /// Each running plugin's event channel, by plugin id.

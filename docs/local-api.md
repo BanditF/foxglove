@@ -124,6 +124,12 @@ description = "Puts the temperature on the left screen."
   - **Binding:** in the Plugins tab, the user binds each action to one of F13–F24. Each keyboard can send those keys, and they type nothing; the user puts one on a key in ZMK Studio or VIA. A key triggers one action, and an action has one key.
   - **Delivery:** Foxglove registers the bound keys as global hotkeys and sends `action.invoked {action}` to that plugin only. The SDK delivers them on `Plugin::actions()`. No plugin needs `key.events` for this.
   - **Storage and conflicts:** bindings live in `[plugins.bindings]`. A key another program already holds is flagged in the tab. `FOXGLOVE_DISABLE=actions` turns the hotkeys off.
+- **Secrets (#213, API 1.2):**
+  - **Permission and access:** a plugin with the `secrets` permission keeps passwords and tokens with `secrets.get {name}` and `secrets.set {name, value}`, or `secret()` / `set_secret()` in the SDK. They go in Windows Credential Manager, under `Foxglove/plugin/<id>/<name>`, protected by the user's login and kept out of manifests, command lines, facts, logs and profile exports.
+  - **Scope:** a plugin reaches only its own secrets, and outside tools get none.
+  - **Entering them:** a plugin can declare what the user enters with `[[secrets]] name, label` in `plugin.toml`, and the Plugins tab then shows a password field for each. Values are never shown back, only "saved" or "not set".
+  - **Limits:** names are 1–64 of a-z, 0-9, `-`, `_` and `.`, and values are at most 2048 bytes.
+  - **Uninstall:** uninstalling a plugin deletes its secrets.
 - **Windows APIs in the sandbox (#215).** `crates/plugin-sandbox-probe` runs each API under the real runner, sandboxed and not. Results on Windows 11:
   - **Media sessions (SMTC):** denied in the AppContainer ("Access is denied"). Plugins read them as facts instead: the app's one media reader publishes `media.title`, `media.artist` and `media.playing`, plus `volume.level` and `volume.muted` (`facts.read:media.*`, `facts.read:volume.*`). They update while the panel service runs.
   - **Microphone mute (Core Audio endpoint volume):** works in the AppContainer with no capability, so the sandbox can't limit it. A plugin that uses it declares `audio.mic`. The install dialog shows it ("see and change whether your microphone is muted"), but it is not enforced.
