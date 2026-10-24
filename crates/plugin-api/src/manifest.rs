@@ -58,6 +58,50 @@ pub struct Manifest {
     /// `secrets.get`. Needs the `secrets` permission.
     #[serde(default)]
     pub secrets: Vec<SecretDecl>,
+    /// Options the user sets in the Plugins tab (#69, API 1.3); the plugin reads them with
+    /// `settings.get` and hears of changes as `settings.changed`.
+    #[serde(default)]
+    pub settings: Vec<SettingDecl>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SettingKind {
+    Bool,
+    Int,
+    Text,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SettingDecl {
+    /// What the plugin reads (`focus-minutes`).
+    pub name: String,
+    /// For the Plugins tab (`Focus minutes`).
+    pub label: String,
+    pub kind: SettingKind,
+    /// The value until the user changes it; its type must match `kind`.
+    pub default: serde_json::Value,
+    /// For `int`: the range the Plugins tab allows.
+    #[serde(default)]
+    pub min: Option<i64>,
+    #[serde(default)]
+    pub max: Option<i64>,
+}
+
+impl SettingDecl {
+    /// `value` as this setting takes it (an int clamped to its range), or `None` if it's the
+    /// wrong type.
+    pub fn accept(&self, value: &serde_json::Value) -> Option<serde_json::Value> {
+        match (self.kind, value) {
+            (SettingKind::Bool, serde_json::Value::Bool(_)) | (SettingKind::Text, serde_json::Value::String(_)) => Some(value.clone()),
+            (SettingKind::Int, v) => {
+                let n = v.as_i64()?;
+                Some(n.clamp(self.min.unwrap_or(i64::MIN), self.max.unwrap_or(i64::MAX)).into())
+            }
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -115,6 +159,13 @@ impl Manifest {
             let ok = !a.id.is_empty() && a.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
             if !ok || !ids.insert(a.id.as_str()) || a.name.trim().is_empty() {
                 return Err(format!("action {:?} needs a unique id (a-z, 0-9, -) and a name", a.id));
+            }
+        }
+        let mut names = std::collections::HashSet::new();
+        for s in &m.settings {
+            let ok = !s.name.is_empty() && s.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if !ok || !names.insert(s.name.as_str()) || s.label.trim().is_empty() || s.accept(&s.default).is_none() {
+                return Err(format!("setting {:?} needs a unique name (a-z, 0-9, -), a label and a default of its kind", s.name));
             }
         }
         if !m.secrets.is_empty() && !m.permissions.contains(&Permission::Secrets) {
