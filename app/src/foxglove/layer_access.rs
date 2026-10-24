@@ -230,9 +230,9 @@ mod tests {
             layer(0, "BASE", vec![]),
             layer(1, "NUMBER", vec![]),
             layer(2, "SYMBOL", vec![]),
-            layer(5, "ADMIN", vec![]),
+            layer(5, "FUNCTION", vec![]),
         ];
-        let source = "display-name = \"BASE\"; display-name = \"NUMBER\"; display-name = \"SYMBOL\"; display-name = \"ADMIN\"; if-layers = <1 2>; then-layer = <3>; }";
+        let source = "display-name = \"BASE\"; display-name = \"NUMBER\"; display-name = \"SYMBOL\"; display-name = \"FUNCTION\"; if-layers = <1 2>; then-layer = <3>; }";
         let rules = configured_rules(&layers, source);
         assert_eq!(derive(&layers, &rules)[3], "NUMBER + SYMBOL (tri-layer)");
         assert!(configured_rules(&layers[..3], source).is_empty());
@@ -241,20 +241,83 @@ mod tests {
     }
     #[test]
     fn bundled_rules_map_config_indices_to_studio_ids() {
-        let layers: Vec<_> = ["QWERTY", "NUMBER", "SYMBOL", "GAME", "GAME+", "ADMIN"]
-            .iter()
-            .enumerate()
-            .map(|(i, name)| layer(10 + i as u32, name, vec![]))
-            .collect();
+        let mut layers: Vec<_> = [
+            "QWERTY", "NUMBER", "SYMBOL", "GAME", "GAME+", "FUNCTION", "SYSTEM",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, name)| layer(10 + i as u32, name, vec![]))
+        .collect();
+        layers[0].bindings = vec![Behavior::KeyPress(zmk_studio_api::HidUsage::from_parts(
+            7, 43, 0,
+        ))];
+        layers[5].bindings = vec![Behavior::MomentaryLayer { layer_id: 16 }];
         let rules = configured_rules(
             &layers,
             include_str!("../../../config/eyelash_corne.keymap"),
         );
         assert_eq!(rules, vec![(vec![11, 12], 15), (vec![14, 12], 15)]);
+        assert_eq!(derive(&layers, &rules)[6], "On FUNCTION: Hold Tab");
+        assert!(configured_rules(
+            &layers[..6],
+            include_str!("../../../config/eyelash_corne.keymap")
+        )
+        .is_empty());
         assert_eq!(
             derive(&layers, &rules)[5],
             "NUMBER + SYMBOL (tri-layer)\nGAME+ + SYMBOL (tri-layer)"
         );
+    }
+
+    #[test]
+    fn bundled_keymap_keeps_disruptive_keys_behind_system() {
+        let source = include_str!("../../../config/eyelash_corne.keymap");
+        let keymap = source.split("compatible = \"zmk,keymap\";").nth(1).unwrap();
+        let bindings: Vec<Vec<String>> = keymap
+            .split("display-name = \"")
+            .skip(1)
+            .map(|layer| {
+                layer
+                    .split("bindings = <")
+                    .nth(1)
+                    .unwrap()
+                    .split('>')
+                    .next()
+                    .unwrap()
+                    .split('&')
+                    .skip(1)
+                    .map(|binding| binding.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .collect()
+            })
+            .collect();
+        assert_eq!(bindings.len(), 7);
+        assert!(bindings.iter().all(|layer| layer.len() == 48));
+        for layer in &bindings[..6] {
+            assert!(!layer.iter().any(|binding| {
+                [
+                    "bt ",
+                    "out ",
+                    "bootloader",
+                    "sys_reset",
+                    "soft_off",
+                    "tog ",
+                    "to ",
+                ]
+                .iter()
+                .any(|prefix| binding.starts_with(prefix))
+            }));
+        }
+        assert_eq!(bindings[5][0], "mo 6");
+        assert_eq!(bindings[6][0], "trans");
+        assert_eq!(bindings[6][28], "bt BT_CLR");
+        assert_eq!(bindings[6][41], "bt BT_CLR_ALL");
+        for profile in 0..5 {
+            assert_eq!(bindings[6][profile + 1], format!("bt BT_SEL {profile}"));
+        }
+        // Neither reset, bootloader nor soft-off belongs on the home row.
+        assert!(!bindings[6][13..28].iter().any(|binding| {
+            ["bootloader", "sys_reset", "soft_off"].contains(&binding.as_str())
+        }));
     }
 
     #[test]

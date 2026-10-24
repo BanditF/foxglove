@@ -12,6 +12,7 @@ function Step($name, [scriptblock]$command) {
 Push-Location (Split-Path -Parent $PSScriptRoot)
 try {
     $start = Get-Date
+    Step 'scripts: python tests' { python -m unittest discover -s scripts -p "test_*.py" }
     Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
     Step 'crates: tests' { cargo test --workspace }
     Step 'digitalis without hidapi' { cargo build -p digitalis --no-default-features }
