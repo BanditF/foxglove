@@ -120,6 +120,30 @@ static uint8_t right_link(void) {
 #endif
 }
 
+static void hello_reply(void) {
+    int8_t discovery = 0;
+    uint8_t tries = 0;
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    art_relay_discovery(&discovery, &tries);
+#endif
+    uint8_t r[11 + 10 + 4 + 2] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
+                          HOST_PANEL_H,    HOST_PANEL_X,       HOST_PANEL_Y,      right_link(),
+                          right_battery,   (uint8_t)discovery, tries};
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    art_relay_debug(&r[11]);
+#endif
+    uint32_t caps = HOST_LINK_CAP_PANEL | HOST_LINK_CAP_CONN_STATE;
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT;
+#endif
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+    caps |= HOST_LINK_CAP_SETTINGS_RGB;
+#endif
+    sys_put_le32(caps, &r[21]);
+    sys_put_le16(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S, &r[25]);
+    reply(r, sizeof(r));
+}
+
 static void panel_command(const uint8_t *d) {
     if (CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S > 0 && d[1] != PANEL_RELEASE) {
         k_work_reschedule(&timeout_work, ALIVE_TIMEOUT);
@@ -127,26 +151,7 @@ static void panel_command(const uint8_t *d) {
 
     switch (d[1]) {
     case PANEL_HELLO: {
-        int8_t discovery = 0;
-        uint8_t tries = 0;
-#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
-        art_relay_discovery(&discovery, &tries);
-#endif
-        uint8_t r[11 + 10 + 4] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
-                              HOST_PANEL_H,    HOST_PANEL_X,       HOST_PANEL_Y,      right_link(),
-                              right_battery,   (uint8_t)discovery, tries};
-#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
-        art_relay_debug(&r[11]);
-#endif
-        uint32_t caps = HOST_LINK_CAP_PANEL | HOST_LINK_CAP_CONN_STATE;
-#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
-        caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT;
-#endif
-#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
-        caps |= HOST_LINK_CAP_SETTINGS_RGB;
-#endif
-        sys_put_le32(caps, &r[21]);
-        reply(r, sizeof(r));
+        hello_reply();
         break;
     }
     case PANEL_FILL: {
@@ -395,8 +400,11 @@ ZMK_SUBSCRIPTION(host_link, raw_hid_received_event);
 static int peripheral_battery_listener(const zmk_event_t *eh) {
     const struct zmk_peripheral_battery_state_changed *ev =
         as_zmk_peripheral_battery_state_changed(eh);
-    if (ev != NULL && ev->source == 0) {
+    if (ev != NULL && ev->source == 0 && right_battery != ev->state_of_charge) {
         right_battery = ev->state_of_charge;
+        if (atomic_get(&host_seen)) {
+            hello_reply();
+        }
     }
     return ZMK_EV_EVENT_BUBBLE;
 }

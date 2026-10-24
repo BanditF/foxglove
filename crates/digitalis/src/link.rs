@@ -139,10 +139,13 @@ impl Drop for Subscription {
     }
 }
 
+type ReportListener = (Box<dyn Fn(u64, &Report) + Send>, Arc<AtomicBool>);
+
 struct Shared {
     state: Mutex<State>,
     subscribers: Mutex<Vec<Subscriber>>,
     events: Mutex<Vec<EventSubscriber>>,
+    reports: Mutex<Vec<ReportListener>>,
     stop: AtomicBool,
     reconnect: AtomicBool,
 }
@@ -161,6 +164,7 @@ impl Link {
             state: Mutex::new(State::default()),
             subscribers: Mutex::new(Vec::new()),
             events: Mutex::new(Vec::new()),
+            reports: Mutex::new(Vec::new()),
             stop: AtomicBool::new(false),
             reconnect: AtomicBool::new(false),
         });
@@ -224,6 +228,14 @@ impl Link {
         let alive = Arc::new(AtomicBool::new(true));
         notify(Event::State(state.clone()));
         events.push(EventSubscriber { notify: Box::new(notify), alive: alive.clone() });
+        EventSubscription(alive)
+    }
+
+    /// Observes incoming reports, including HELLO/STATUS replies, without consuming them.
+    /// The callback runs on the reader thread and must only enqueue work.
+    pub fn subscribe_reports(&self, notify: impl Fn(u64, &Report) + Send + 'static) -> EventSubscription {
+        let alive = Arc::new(AtomicBool::new(true));
+        self.shared.reports.lock().unwrap().push((Box::new(notify), alive.clone()));
         EventSubscription(alive)
     }
 
@@ -448,6 +460,12 @@ fn write_loop(dev: &dyn RawHid, commands: &Receiver<Message>, shared: &Shared) -
 
 fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
     requests.expire(Instant::now());
+    let generation = shared.state.lock().unwrap().generation;
+    shared.reports.lock().unwrap().retain(|(notify, alive)| {
+        if !alive.load(Ordering::Relaxed) { return false; }
+        notify(generation, r);
+        true
+    });
     if matches!(r[0], protocol::PANEL | protocol::ART | protocol::SETTINGS) && r[1] & 0x80 != 0 {
         // A reply goes to its request. Unasked art STATUS may be a firmware notification;
         // other replies stay private. A key held after a timeout drops the late reply.
@@ -732,6 +750,23 @@ mod tests {
         assert_eq!(requests.next_deadline(), None, "an idle held key needs no timer");
         requests.expire(now + LATE_REPLY_GRACE);
         assert!(requests.held.is_empty());
+    }
+
+    #[test]
+    fn report_observers_see_replies_without_consuming_them_and_drop_unsubscribes() {
+        let fake = Fake::default();
+        let l = link(&fake);
+        let (tx, rx) = mpsc::channel();
+        let subscription = l.subscribe_reports(move |generation, r| {
+            if r[0] == protocol::ART { let _ = tx.send((generation, *r)); }
+        });
+        assert_eq!(status(&l, 42, WAIT).unwrap(), 42);
+        let (generation, reply) = rx.recv_timeout(WAIT).unwrap();
+        assert_eq!(generation, l.state().generation);
+        assert_eq!(reply[2], 42);
+        drop(subscription);
+        assert_eq!(status(&l, 43, WAIT).unwrap(), 43);
+        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
     }
 
     #[test]

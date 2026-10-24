@@ -10,10 +10,12 @@
  * 0xD5 host panel, host -> keyboard:
  *   01 HELLO   ver                  reply: ver, panel w, h, x, y, right link, right battery %,
  *                                   relay discovery result (int8), discovery tries,
- *                                   10 relay debug bytes, capabilities u32 LE (report bytes 21-24)
+ *                                   10 relay debug bytes, capabilities u32 LE (report bytes 21-24),
+ *                                   panel timeout seconds u16 LE (bytes 25-26; 0 = never)
  *      Capabilities: bit 0 panel, 1 art relay, 2 settings/RGB, 3 unsolicited art STATUS,
  *                    4 settings CONN_STATE.
- *      Old firmware pads the capability bytes with zero; version and prior fields stay unchanged.
+ *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
+ *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
  *   03 ROWS    y, n (1-3), n rows   write rows of HOST_PANEL_STRIDE bytes, MSB first, 1 = ink
  *   04 PRESENT                      show the back buffer
