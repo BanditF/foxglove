@@ -8,6 +8,9 @@
 //!   bandit-wallpapers): each wallpaper has path substrings to match and its right art, either
 //!   a built-in set by name (selected, no push) or a library blob.
 //! - Which monitor to follow is a setting; by default the first one that matches.
+//! - Test hook: `FOXGLOVE_WALLPAPER_OVERRIDE=<file>` replaces Wallpaper Engine's config with
+//!   that file, which holds one wallpaper id or Wallpaper Engine path. It's watched the same
+//!   way, so rewriting it switches the wallpaper; the monitor setting doesn't apply.
 
 use std::path::PathBuf;
 
@@ -120,7 +123,9 @@ pub fn find<'a>(
         .filter(|(m, _)| monitor.is_none_or(|want| want == m))
         .find_map(|(_, file)| {
             let file = file.to_lowercase();
-            index.iter().find(|w| w.matches.iter().any(|m| file.contains(&m.to_lowercase())))
+            index.iter().find(|w| {
+                w.id.eq_ignore_ascii_case(file.trim()) || w.matches.iter().any(|m| file.contains(&m.to_lowercase()))
+            })
         })
 }
 
@@ -152,10 +157,35 @@ pub fn config_path() -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
+/// The test hook's file, when `FOXGLOVE_WALLPAPER_OVERRIDE` is set.
+fn override_path() -> Option<PathBuf> {
+    std::env::var_os("FOXGLOVE_WALLPAPER_OVERRIDE").filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// The file to watch and read: the test hook's, or Wallpaper Engine's config.
+fn source() -> Option<(PathBuf, bool)> {
+    override_path().map(|p| (p, true)).or_else(|| config_path().map(|p| (p, false)))
+}
+
+/// Each monitor's wallpaper from `text`; the override file is one entry with no monitor.
+fn on_screen(text: &str, overridden: bool) -> Vec<(String, String)> {
+    if overridden {
+        let w = text.trim_start_matches('\u{feff}').trim();
+        return if w.is_empty() { vec![] } else { vec![("override".into(), w.replace('\\', "/"))] };
+    }
+    selected(text)
+}
+
+/// The indexed wallpaper in `text` for the monitor setting.
+fn find_in(index: &[Wallpaper], text: &str, overridden: bool, monitor: Option<&str>) -> Option<Wallpaper> {
+    find(index, &on_screen(text, overridden), if overridden { None } else { monitor }).cloned()
+}
+
 /// The indexed wallpaper on screen now, if any.
 pub fn current(monitor: Option<&str>) -> Option<Wallpaper> {
-    let text = std::fs::read_to_string(config_path()?).ok()?;
-    find(&index(), &selected(&text), monitor).cloned()
+    let (path, overridden) = source()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    find_in(&index(), &text, overridden, monitor)
 }
 
 /// The monitors Wallpaper Engine has wallpapers on, for the setting.
@@ -171,7 +201,7 @@ pub fn start() {
     if super::repaint_trace::disabled("wallpaper") {
         return;
     }
-    let Some(config) = config_path() else { return };
+    let Some((config, overridden)) = source() else { return };
     super::services::spawn_named("wallpaper", move || {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let _watch = super::screens_watch::settings(
@@ -186,7 +216,7 @@ pub fn start() {
             let Ok(text) = std::fs::read_to_string(&config) else { continue };
             let index = index();
             let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
-            let Some(w) = find(&index, &selected(&text), monitor.as_deref()) else { continue };
+            let Some(w) = find_in(&index, &text, overridden, monitor.as_deref()) else { continue };
             if last.as_deref() == Some(w.id.as_str()) {
                 continue;
             }
@@ -208,6 +238,17 @@ mod tests {
          "right":{"builtin":"Bandit_Idle","library":"hud.bin","bytes":10},"left":{"bin":"hud.left.bin","frames":1,"fps":0,"order":[0]}},
         {"id":"fury-stars","title":"Stars","workshop_id":null,"match":["projects/myprojects/bandit-fury-stars/"],
          "right":{"builtin":null,"library":"fury-stars.bin","bytes":10},"left":{"bin":"x","frames":1,"fps":0,"order":[0]}}]}"#;
+
+    #[test]
+    fn override_file_names_a_wallpaper_by_id_or_path() {
+        let index = parse_index(INDEX).unwrap();
+        let id = |text: &str| find_in(&index, text, true, Some("Monitor9")).map(|w| w.id);
+        assert_eq!(id("fury-stars\r\n").as_deref(), Some("fury-stars"));
+        assert_eq!(id("\u{feff}HUD").as_deref(), Some("hud"));
+        assert_eq!(id(r"C:\WE\projects\myprojects\bandit-hud\index.html").as_deref(), Some("hud"));
+        assert_eq!(id("nothing"), None);
+        assert_eq!(id(""), None);
+    }
 
     #[test]
     fn left_frames_parse_and_play_in_order() {
