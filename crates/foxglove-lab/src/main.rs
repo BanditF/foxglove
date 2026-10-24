@@ -57,8 +57,9 @@ enum Command {
         writes: u16,
         #[arg(long, default_value_t = 5.0)]
         hz: f64,
-        /// How often to ask for RGB_STATE (D7 83 events arrive on their own).
-        #[arg(long, default_value_t = 50)]
+        /// How often to ask for RGB_STATE, as the app does (D7 83 events arrive on their own). Much
+        /// faster restarts the relay read each time, so the right never updates.
+        #[arg(long, default_value_t = 250)]
         poll_ms: u64,
         /// How long to keep watching after the last write.
         #[arg(long, default_value_t = 8)]
