@@ -16,7 +16,6 @@
 #include <zmk/display.h>
 #include <zmk/event_manager.h>
 
-#include "behavior_safety.h"
 
 /* The Raw HID module's events, and what the board's other widgets would provide */
 
@@ -39,11 +38,20 @@ static void print_report(const char *dir, const uint8_t *d, int len) {
     while (n > 2 && d[n - 1] == 0) {
         n--;
     }
-    bool nonce = d[0] == 0xD7 && d[1] == 0x88 && n >= 7 && dir[0] == 'r' && d[2] == 0;
+    if (d[0] == 0xD7 && d[1] == 0x08 && d[2] == 0x01 && dir[0] == 't') {
+        n = MAX(n, 8); // keep the whole nonce, even when it ends in zeros
+    }
+    if (d[0] == 0xD7 && d[1] == 0x88 && d[2] == 0 && dir[0] == 'r' && d[3] | d[4] | d[5] | d[6]) {
+        n = MAX(n, 7); // an ARM reply
+    }
+    // ARM replies' nonces, and the nonces TRIGGER sends (bytes 4-7), differ every run.
+    bool arm_nonce = d[0] == 0xD7 && d[1] == 0x88 && n >= 7 && dir[0] == 'r' && d[2] == 0;
+    bool trigger_nonce = d[0] == 0xD7 && d[1] == 0x08 && d[2] == 0x01 && dir[0] == 't';
     printk("hostlink: %s", dir);
     for (int i = 0; i < n; i++) {
-        if (nonce && i >= 3 && i <= 6) {
-            if (i == 3) {
+        int first = arm_nonce ? 3 : 4;
+        if ((arm_nonce || trigger_nonce) && i >= first && i <= first + 3) {
+            if (i == first) {
                 printk(" nonce");
             }
             continue;
@@ -110,10 +118,6 @@ static uint32_t arm(void) {
 }
 
 static void driver(void) {
-    printk("hostlink: -- probe refused bluetooth=%d sysreset=%d outputs=%d n_bt=%d n_out=%d n_reset=%d\n",
-           foxglove_behavior_refused("bluetooth"), foxglove_behavior_refused("sysreset"),
-           foxglove_behavior_refused("outputs"), DT_NUM_INST_STATUS_OKAY(zmk_behavior_bluetooth),
-           DT_NUM_INST_STATUS_OKAY(zmk_behavior_outputs), DT_NUM_INST_STATUS_OKAY(zmk_behavior_reset));
     note("hello: version, caps, panel timeout, build");
     SEND(0xD5, 0x01, 0x01);
 
