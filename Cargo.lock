@@ -1335,6 +1335,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
+name = "plugin-broadcast-status"
+version = "1.0.0"
+dependencies = [
+ "base64",
+ "foxglove-devices",
+ "foxglove-plugin",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "plugin-focus-timer"
 version = "1.0.0"
 dependencies = [

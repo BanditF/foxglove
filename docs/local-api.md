@@ -137,6 +137,15 @@ description = "Puts the temperature on the left screen."
   - **Unavailable:** nothing.
   - **Keys:** `toggle`, `mute` and `unmute`.
   - **Caveat:** this is Windows' endpoint mute, not a privacy guarantee.
+- **Broadcast Status (`crates/plugin-broadcast-status`, #211):**
+  - **How it works:** it connects to OBS's WebSocket server (obs-websocket v5, port 4455, set up in OBS under Tools → WebSocket Server Settings) through Foxglove (`net.connect:127.0.0.1:4455`), so it stays sandboxed. The password is the plugin's `obs-password` secret, set in the Plugins tab.
+  - **Listening only:** it asks for a snapshot (`GetStreamStatus`, `GetRecordStatus`, `GetCurrentProgramScene`) when it connects, then follows OBS's events. It never starts, stops or switches anything.
+  - **Streaming:** a red, high-priority lease and the bright LIVE screen, held (re-sent every 30 s with a 60 s lifetime). With a recording too, the LIVE + REC screen.
+  - **Recording:** red at normal priority and REC, held; amber and the pause bars while paused.
+  - **Nothing running:** READY for 3 s, and the lights are left alone.
+  - **OBS gone:** NOT CONNECTED for 3 s when a connection is lost (not while OBS simply isn't running), then it tries again after 2 s, doubling to every 30 s. A missing or wrong password is logged.
+  - **Scene:** its name goes on the panel under the symbol, up to 15 characters.
+  - **Facts:** `broadcast.connected`, `broadcast.streaming`, `broadcast.recording`, `broadcast.paused`, `broadcast.scene`.
 - **Pomodoro (`crates/plugin-focus-timer`, #209):**
   - **Cycle:** focus 25 min, rest 5 min, and a long rest of 15 min every 4 rounds.
   - **Restarts:** the cycle is kept as deadlines in `data/state.json`, so it survives restarts and sleep. After more than a whole cycle away, it starts fresh.

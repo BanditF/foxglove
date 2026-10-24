@@ -1,0 +1,22 @@
+[package]
+name = "plugin-broadcast-status"
+version = "1.0.0"
+edition = "2021"
+description = "Broadcast Status, a Foxglove plugin: OBS's recording, streaming and scene on the left panel and the underglow"
+license = "MIT"
+
+[[bin]]
+name = "broadcast-status"
+path = "src/main.rs"
+
+[dependencies]
+foxglove-plugin = { path = "../plugin-sdk" }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+foxglove-plugin-host = { path = "../plugin-host" }
+foxglove-plugin-api = { path = "../plugin-api" }
+foxglove-devices = { path = "../devices" }

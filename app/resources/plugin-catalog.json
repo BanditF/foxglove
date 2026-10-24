@@ -26,6 +26,19 @@
       ]
     },
     {
+      "id": "org.foxglove.broadcast-status",
+      "name": "Broadcast Status",
+      "description": "Shows whether OBS is recording or streaming, REC or LIVE and the scene on the left screen and red on the keyboard. It only listens to OBS on this PC.",
+      "permissions": [
+        "net.connect:127.0.0.1:4455",
+        "secrets",
+        "facts.write:broadcast.*",
+        "devices.read",
+        "lighting.write",
+        "screens.write"
+      ]
+    },
+    {
       "id": "org.foxglove.signalrgb",
       "name": "SignalRGB",
       "description": "Lets SignalRGB light your Foxglove keyboard along with the rest of your setup.",
