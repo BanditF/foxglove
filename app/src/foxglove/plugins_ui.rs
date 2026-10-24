@@ -18,6 +18,10 @@ struct UiState {
     /// Why no plugin is trusted, if so: checked when the catalog may have changed, not every
     /// frame (it reads and verifies the signed files).
     trust: Option<(super::catalog_refresh::Status, Result<(), String>)>,
+    /// What the user is typing into a secret's field, by `plugin/name`; never shown back.
+    secret_input: std::collections::HashMap<String, String>,
+    /// Whether each declared secret is set, read once per plugin list, not every frame.
+    secret_set: std::collections::HashMap<String, bool>,
 }
 
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
@@ -96,6 +100,7 @@ pub fn group(ui: &mut egui::Ui) {
                 let perms: Vec<String> = plugin.record.approved.iter().map(|p| p.describe()).collect();
                 ui.weak(format!("    may {}", if perms.is_empty() { "do nothing beyond running".into() } else { perms.join(", ") }));
                 action_keys(ui, plugin, state);
+                secret_fields(ui, plugin, state);
             }
 
             ui.add_space(6.0);
@@ -125,6 +130,35 @@ pub fn group(ui: &mut egui::Ui) {
             }
         });
     });
+}
+
+/// A field for each secret the plugin declares (#213): the value goes straight into Windows'
+/// credential store and is never shown again.
+fn secret_fields(ui: &mut egui::Ui, plugin: &Installed, state: &mut UiState) {
+    use foxglove_plugin_host::secrets;
+    let id = &plugin.manifest.id;
+    for decl in &plugin.manifest.secrets {
+        let key = format!("{id}/{}", decl.name);
+        let set = *state
+            .secret_set
+            .entry(key.clone())
+            .or_insert_with(|| secrets::get(id, &decl.name).ok().flatten().is_some());
+        ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            ui.label(&decl.label);
+            let input = state.secret_input.entry(key.clone()).or_default();
+            ui.add(egui::TextEdit::singleline(input).password(true).desired_width(160.0).hint_text(if set { "saved" } else { "not set" }));
+            if ui.add_enabled(!input.is_empty(), egui::Button::new("Save")).clicked() {
+                state.message = secrets::set(id, &decl.name, Some(input.as_str())).err();
+                input.clear();
+                state.secret_set.remove(&key);
+            }
+            if set && ui.small_button("Clear").clicked() {
+                state.message = secrets::set(id, &decl.name, None).err();
+                state.secret_set.remove(&key);
+            }
+        });
+    }
 }
 
 /// A key (F13–F24) for each of the plugin's actions (#212).

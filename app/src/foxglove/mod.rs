@@ -23,6 +23,8 @@ pub mod accent;
 pub mod store;
 pub mod api;
 pub mod art_library;
+pub mod lighting_leases;
+pub mod mic_broker;
 pub mod plugin_actions;
 pub mod plugin_icons;
 pub mod plugin_install;

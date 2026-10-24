@@ -17,6 +17,8 @@ const DATA: usize = 126;
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Packet<'a> {
+    /// The sender's id (its CID): sequence numbers count per sender.
+    pub cid: [u8; 16],
     pub universe: u16,
     pub sequence: u8,
     pub terminated: bool,
@@ -54,6 +56,7 @@ pub fn parse(b: &[u8]) -> Option<Packet<'_>> {
         return None;
     }
     Some(Packet {
+        cid: b[22..38].try_into().expect("16 bytes"),
         universe: u16_at(b, 113),
         sequence: b[111],
         terminated: b[112] & STREAM_TERMINATED != 0,
@@ -70,7 +73,7 @@ pub fn is_stale(last: u8, now: u8) -> bool {
 
 /// A data packet for `channels` on `universe`, as a sender builds it (for tests and the
 /// `--send-test` option).
-pub fn build(universe: u16, sequence: u8, options: u8, channels: &[u8]) -> Vec<u8> {
+pub fn build(cid: [u8; 16], universe: u16, sequence: u8, options: u8, channels: &[u8]) -> Vec<u8> {
     let count = channels.len() + 1;
     let total = DATA + count;
     let mut b = vec![0u8; total];
@@ -79,7 +82,7 @@ pub fn build(universe: u16, sequence: u8, options: u8, channels: &[u8]) -> Vec<u
     b[4..16].copy_from_slice(ACN_ID);
     b[16..18].copy_from_slice(&flags_len(total - 16));
     b[18..22].copy_from_slice(&VECTOR_ROOT_DATA.to_be_bytes());
-    b[22..38].copy_from_slice(b"foxglove-testcid");
+    b[22..38].copy_from_slice(&cid);
     b[38..40].copy_from_slice(&flags_len(total - 38));
     b[40..44].copy_from_slice(&VECTOR_FRAMING_DATA.to_be_bytes());
     b[44..52].copy_from_slice(b"foxglove");
@@ -100,28 +103,30 @@ pub fn build(universe: u16, sequence: u8, options: u8, channels: &[u8]) -> Vec<u
 mod tests {
     use super::*;
 
+    const CID: &[u8; 16] = b"foxglove-testcid";
+
     #[test]
     fn parses_what_a_sender_builds() {
-        let b = build(3, 9, 0, &[10, 20, 30, 40]);
+        let b = build(*CID, 3, 9, 0, &[10, 20, 30, 40]);
         assert_eq!(
             parse(&b),
-            Some(Packet { universe: 3, sequence: 9, terminated: false, preview: false, channels: &[10, 20, 30, 40] })
+            Some(Packet { cid: *CID, universe: 3, sequence: 9, terminated: false, preview: false, channels: &[10, 20, 30, 40] })
         );
-        let b = build(1, 0, STREAM_TERMINATED, &[0; 3]);
+        let b = build(*CID, 1, 0, STREAM_TERMINATED, &[0; 3]);
         let p = parse(&b).unwrap();
         assert!(p.terminated);
     }
 
     #[test]
     fn rejects_other_packets() {
-        let mut b = build(1, 0, 0, &[1, 2, 3]);
+        let mut b = build(*CID, 1, 0, 0, &[1, 2, 3]);
         assert!(parse(&b[..DATA]).is_none());
         b[DATA] = 0xdd; // per-channel priority start code
         assert!(parse(&b).is_none());
-        let mut b = build(1, 0, 0, &[1, 2, 3]);
+        let mut b = build(*CID, 1, 0, 0, &[1, 2, 3]);
         b[43] = 1; // sync packet vector
         assert!(parse(&b).is_none());
-        let mut b = build(1, 0, 0, &[1, 2, 3]);
+        let mut b = build(*CID, 1, 0, 0, &[1, 2, 3]);
         b[123..125].copy_from_slice(&600u16.to_be_bytes()); // count past the end
         assert!(parse(&b).is_none());
     }
