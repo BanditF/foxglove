@@ -146,6 +146,9 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
     caps |= HOST_LINK_CAP_POSITION;
 #endif
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS)
+    caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
+#endif
     sys_put_le32(caps, &r[21]);
     sys_put_le16(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S, &r[25]);
     reply(r, sizeof(r));
