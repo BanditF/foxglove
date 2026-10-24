@@ -51,10 +51,23 @@ pub fn group(ui: &mut egui::Ui) {
                     }
                 });
                 for f in via_host::found() {
-                    match &f.opened {
-                        Ok(layers) => ui.label(format!("{}: connected, {layers} layers (read-only)", f.name)),
-                        Err(e) => ui.weak(format!("{}: {e}", f.name)),
-                    };
+                    ui.horizontal_wrapped(|ui| {
+                        match (&f.opened, f.paused) {
+                            (_, true) => ui.weak(format!("{}: paused, so VIA or its maker's app can use it", f.name)),
+                            (Ok(layers), _) => ui.label(format!("{}: connected, {layers} layers (read-only)", f.name)),
+                            (Err(e), _) => ui.weak(format!("{}: {e}", f.name)),
+                        };
+                        if let Some(key) = &f.key {
+                            let (text, pause) = if f.paused { ("Resume", false) } else { ("Pause Foxglove for this keyboard", true) };
+                            if ui.small_button(text).on_hover_text("Closes Foxglove's connection to it, so only one app talks to it at a time.").clicked() {
+                                state.message = via_host::set_paused(key, pause).err();
+                                state.settings = None;
+                            }
+                        }
+                    });
+                    if f.opened.is_ok() && !f.paused {
+                        ui.weak("    Active layer: unknown (stock firmware doesn't report it).");
+                    }
                 }
                 if s.enabled && s.definitions.is_empty() {
                     ui.weak("Add the keyboard's VIA definition (from its maker, e.g. Keychron's JSON download).");

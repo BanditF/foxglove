@@ -47,6 +47,7 @@ fn main() {
     foxglove::plugin_install::autoinstall();
     foxglove::plugin_runner::sync();
     foxglove::plugin_actions::start();
+    foxglove::plugin_settings::start();
     foxglove::app_windows::start();
     foxglove::mic_broker::start();
     foxglove::catalog_refresh::start();

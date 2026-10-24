@@ -119,8 +119,12 @@ description = "Puts the temperature on the left screen."
   - **Permissions:**
     - `net.connect:<host>:<port>`: TCP. `*.example.com` covers subdomains only, and the port may be `*`.
     - `net.listen:udp:127.0.0.1:<port>`: datagrams to a loopback port.
-  - **Methods:** `net.open {kind: tcp|udp, host, port}` returns a `stream`. `net.send {stream, data}` sends bytes (base64), `net.close` ends a stream, and the events are `net.data {stream, data, from?}` and `net.closed {stream, reason}`.
+    - `net.listen:tcp:127.0.0.1:<port>` (API 1.3, #298): TCP connections to a loopback port, so a local page or tool (a Wallpaper Engine wallpaper) can reach the plugin.
+  - **Methods:** `net.open {kind: tcp|udp|tcp-listen, host, port}` returns a `stream`. With `tcp-listen`, each connection arrives as `net.accepted {listener, stream, from}`, then works like any other stream; closing the listener's stream stops accepting. `net.send {stream, data}` sends bytes (base64), `net.close` ends a stream, and the events are `net.data {stream, data, from?}` and `net.closed {stream, reason}`.
   - **SDK:** `listen_udp(port)`, and `connect_tcp(host, port)`, which gives a `Read + Write` stream to wrap in TLS or a WebSocket.
+    - `listen_tcp(port)` gives a `TcpListener`. Its `accept()` blocks until a connection comes.
+    - The SDK's `ws` module is the WebSocket server side: `read_handshake`, `Handshake::check(origins, token)`, `accept` / `reject`, `Reader` for messages, and `write_text` / `write_frame`.
+    - The checks are the plugin's choice, since a `file://` page sends `Origin: null`. A per-install token (`?token=` or the sub-protocol) is the real check.
   - **Limits:** 16 streams per plugin, and all of them close when the plugin's connection ends.
 - **Network, unrestricted:** bare `net` still works for older plugins. Such a plugin runs outside the AppContainer, still in its Job Object, and the install dialog warns about it ("use any network, without the sandbox").
 - **Key actions (#212, API 1.2):**
@@ -145,6 +149,11 @@ description = "Puts the temperature on the left screen."
     - An elevated app's windows may not be seen.
   - **Off switch:** `FOXGLOVE_DISABLE=apps-watch`.
   - **Rule:** a retry is started by an event and stopped by one (connected, the last window closed), with an attempt limit only as the fallback. No free-running timers.
+- **Settings (#69, API 1.3):** a plugin declares options in `plugin.toml`:
+  - `[[settings]]` with `name`, `label`, `kind` (`bool`, `int` or `text`) and `default`, plus `min`/`max` for `int`.
+  - The Plugins tab shows a control for each, and the values live in Foxglove's settings.
+  - The plugin reads them with `settings.get` and gets them all again as `settings.changed` when the user changes one. SDK: `Plugin::settings()`, `Plugin::settings_changes()`.
+  - A stored value that no longer fits its declaration falls back to the default.
 - **Plugin data (#209):** each plugin gets `data/` in its folder (`Plugin::data_dir()`) for state between runs. It's writable even in the sandbox, and left out of the signed-file check.
 - **Mic mute (`crates/plugin-mic-mute`, #210):**
   - **How it works:** it follows `mic.state` (`audio.inputs.read`) and asks Foxglove to mute or unmute (`audio.inputs.mute`), so it stays sandboxed.
