@@ -57,13 +57,15 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
             $version = $env:GITHUB_REF_NAME -replace '^app-v', ''
             if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Use an app-vMAJOR.MINOR.PATCH tag' }
-            cargo wix --no-build --nocapture --version $version --output target/wix/foxglove-x64.msi
+            cargo wix --no-build --nocapture --install-version $version --output target/wix/foxglove-x64.msi
           } elseif ($env:TEST_VERSION) {
-            cargo wix --no-build --nocapture --version $env:TEST_VERSION --output target/wix/foxglove-x64.msi
+            cargo wix --no-build --nocapture --install-version $env:TEST_VERSION --output target/wix/foxglove-x64.msi
           } else {
             cargo wix --no-build --nocapture --output target/wix/foxglove-x64.msi
           }
           if ($LASTEXITCODE) { throw 'MSI build failed' }
+          # cargo-wix's --version prints its own version and succeeds, so check the MSI is there.
+          if (-not (Test-Path target/wix/foxglove-x64.msi)) { throw 'No MSI was built' }
       - uses: actions/upload-artifact@v4
         with:
           # A test build's artifact is named for it, so it can't be mistaken for a release's.
