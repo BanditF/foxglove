@@ -65,11 +65,11 @@ fn muted_is_red_and_held_and_a_key_unmutes() {
     let context = move || Context { facts: f.clone(), devices: m.clone(), client: Client::Plugin(perms.clone()), app_version: "test".into(), limits: Limits::default() };
     let runner = Runner::start(spec, Config::default(), context, |_| {});
 
-    // Muted at start: a red, high-priority lease and the muted screen, held for a minute.
+    // Muted at start: a red, high-priority lease and the muted screen, held until replaced.
     let lease = mock.wait("a red lease", |m, p| m == "lighting.lease" && p["color"]["hue"] == 0 && p["color"]["saturation"] == 100);
     assert_eq!(lease["priority"], "high");
     let panel = mock.wait("the muted screen", |m, _| m == "screens.panel_override");
-    assert_eq!((panel["width"].clone(), panel["ttl_ms"].clone()), (json!(64), json!(60000)));
+    assert_eq!((panel["width"].clone(), panel["ttl_ms"].clone()), (json!(64), json!(0)), "held, not timed");
 
     // The bound key toggles: the plugin asks Foxglove to unmute.
     let until = Instant::now() + Duration::from_secs(30);
@@ -93,6 +93,13 @@ fn muted_is_red_and_held_and_a_key_unmutes() {
         assert!(Instant::now() < until, "the flash wasn't given back: {:?}", mock.calls.lock().unwrap());
         std::thread::sleep(Duration::from_millis(20));
     }
+
+    // Muted again, then the microphone goes away: the held screen is given back.
+    mock.clear();
+    facts.set("mic.state", DeviceValue::Text("muted".into()));
+    mock.wait("the muted screen again", |m, p| m == "screens.panel_override" && p["ttl_ms"] == 0);
+    facts.set("mic.state", DeviceValue::Text("unavailable".into()));
+    mock.wait("the panel given back", |m, _| m == "screens.panel_release");
 
     drop(runner);
     #[cfg(windows)]

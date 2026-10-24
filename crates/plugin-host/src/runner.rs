@@ -15,10 +15,8 @@ use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 #[cfg(not(windows))]
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::Context;
 
@@ -36,7 +34,6 @@ pub struct PluginSpec {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
-    pub ping_timeout: Duration,
     pub backoff_start: Duration,
     pub backoff_max: Duration,
     pub max_crashes: usize,
@@ -48,7 +45,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            ping_timeout: crate::PING_TIMEOUT,
             backoff_start: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
             max_crashes: 5,
@@ -103,26 +99,6 @@ impl Runner {
     }
 
     pub fn stop(self) {}
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
-}
-
-/// Marks the plugin alive on every byte it writes.
-struct Activity<R> {
-    inner: R,
-    last: Arc<AtomicU64>,
-}
-
-impl<R: Read> Read for Activity<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        if n > 0 {
-            self.last.store(now_ms(), Ordering::Relaxed);
-        }
-        Ok(n)
-    }
 }
 
 enum Proc {
@@ -223,9 +199,8 @@ fn supervise(
             Err(e) => format!("couldn't start: {e}"),
             Ok((mut running, stdin, stdout)) => {
                 status(PluginState::Running);
-                let last = Arc::new(AtomicU64::new(now_ms()));
                 let ctx = context();
-                let reader = BufReader::new(Activity { inner: stdout, last: last.clone() });
+                let reader = BufReader::new(stdout);
                 let exited = events.clone();
                 let this_run = run;
                 #[cfg(windows)]
@@ -241,26 +216,21 @@ fn supervise(
                     crate::register(&id, None);
                     let _ = exited.send(Event::Exited(this_run));
                 });
-                // Wait for an exit, a stop, or silence longer than the ping timeout.
+                // Wait for an exit or a stop. No watchdog: an exit is seen at once (the process
+                // handle on Windows, the pipe's end elsewhere), and a plugin that hangs only
+                // stops itself working; its calls to Foxglove time out on its side (#281).
                 let reason = loop {
-                    match rx.recv_timeout(config.ping_timeout) {
+                    match rx.recv() {
                         // A late notice from an earlier run that was killed.
                         Ok(Event::Exited(n)) if n != run => {}
                         Ok(Event::Exited(_)) => {
                             let code = running.exit_code();
                             break format!("exited ({})", code.map_or("no code".into(), |c| c.to_string()));
                         }
-                        Ok(Event::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                        Ok(Event::Stop) | Err(_) => {
                             running.kill();
                             status(PluginState::Stopped);
                             return;
-                        }
-                        Err(RecvTimeoutError::Timeout) => {
-                            let silent = Duration::from_millis(now_ms().saturating_sub(last.load(Ordering::Relaxed)));
-                            if silent >= config.ping_timeout {
-                                running.kill();
-                                break format!("no sign of life for {} s", silent.as_secs());
-                            }
                         }
                     }
                 };

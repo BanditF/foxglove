@@ -181,7 +181,9 @@ pub struct InvokeParams {
 }
 
 /// Draws over the left panel until `ttl_ms` passes (at most 60 000), then the panel goes back
-/// to what Foxglove draws. A later override replaces an earlier one.
+/// to what Foxglove draws. `ttl_ms` 0 holds it until the plugin replaces it, releases it
+/// (`screens.panel_release`) or its connection closes (API 1.3), so a steady screen needs no
+/// re-sending (#281). A later override replaces an earlier one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PanelOverrideParams {
     pub device: String,
@@ -413,6 +415,8 @@ pub const METHODS: &[Method] = &[
     Method { name: "behaviors.list", kind: Kind::Call, permission: Some("devices.read"), params: schema!(DeviceParams), result: Some(schema!(Behaviors)) },
     Method { name: "behaviors.invoke", kind: Kind::Call, permission: Some("behaviors.invoke"), params: schema!(InvokeParams), result: Some(schema!(Empty)) },
     Method { name: "screens.panel_override", kind: Kind::Call, permission: Some("screens.write"), params: schema!(PanelOverrideParams), result: Some(schema!(Empty)) },
+    // Gives the panel back after a held override (API 1.3).
+    Method { name: "screens.panel_release", kind: Kind::Call, permission: Some("screens.write"), params: schema!(DeviceParams), result: Some(schema!(Empty)) },
     Method { name: "art.status", kind: Kind::Call, permission: Some("devices.read"), params: schema!(DeviceParams), result: Some(schema!(ArtStatus)) },
     Method { name: "art.select", kind: Kind::Call, permission: Some("art.write"), params: schema!(ArtSelectParams), result: Some(schema!(ArtStatus)) },
     Method { name: "profiles.list", kind: Kind::Call, permission: None, params: schema!(Empty), result: Some(schema!(Profiles)) },

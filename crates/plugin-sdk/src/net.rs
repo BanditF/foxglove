@@ -66,6 +66,16 @@ impl Routes {
         }
     }
 
+    /// Ends every stream (Foxglove went away): each gets `Closed`.
+    pub(crate) fn close_all(&self, why: &str) {
+        let mut routes = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, route) in routes.drain() {
+            if let Route::Open(tx) = route {
+                let _ = tx.send(NetEvent::Closed(why.to_string()));
+            }
+        }
+    }
+
     fn register(&self, stream: u64) -> Receiver<NetEvent> {
         let (tx, rx) = mpsc::channel();
         let mut routes = self.0.lock().unwrap_or_else(|e| e.into_inner());

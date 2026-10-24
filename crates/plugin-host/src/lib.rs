@@ -10,7 +10,7 @@ use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use foxglove_plugin_api::methods::{self, ClientInfo, Fact, InitializeParams, InitializeResult, Kind};
@@ -427,9 +427,6 @@ fn forward(facts: Facts, subscriptions: Arc<Mutex<HashMap<u64, String>>>, out: S
         }
     });
 }
-
-/// How long a plugin may stay silent to a ping before the runner restarts it.
-pub const PING_TIMEOUT: Duration = Duration::from_secs(30);
 
 mod net;
 pub mod apps;
