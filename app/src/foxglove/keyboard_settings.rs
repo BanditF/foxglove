@@ -73,6 +73,10 @@ pub fn invoking() -> bool {
 
 /// Presses `binding` (behavior local id, param1, param2) on the keyboard as a key would.
 pub fn invoke(label: String, binding: (u16, u32, u32), hold_ms: u16, ctx: egui::Context) {
+    if !super::keyboard_actions::permitted(binding) {
+        *LAST_ACTION.lock().unwrap() = Some((label, "refused: unsafe or unknown behavior".into()));
+        return;
+    }
     if INVOKING.swap(true, Ordering::Relaxed) {
         return;
     }

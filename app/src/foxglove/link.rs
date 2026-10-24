@@ -154,3 +154,8 @@ pub fn transport_changed(spec: &crate::protocols::ConnectionSpec) {
         link.reconnect();
     }
 }
+
+/// Looks up a selected identity without enumeration or I/O.
+pub fn cached(vid: u16, pid: u16) -> Option<Arc<Link>> {
+    LINKS.get()?.lock().ok()?.get(&(vid, pid))?.upgrade()
+}

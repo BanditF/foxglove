@@ -90,6 +90,7 @@ impl OverlayApp {
     /// keys can do, all of which hold without Foxglove running.
     pub(super) fn foxglove_keyboard_group(ui: &mut egui::Ui) {
         titled_group(ui, "Keyboard", |ui| {
+            crate::foxglove::connection::row(ui);
             Self::rgb_sync_row(ui);
             ui.add_space(4.0);
             egui::CollapsingHeader::new("Lights")
@@ -236,6 +237,6 @@ impl OverlayApp {
                 });
             ui.add_space(4.0);
         }
-        ui.weak("Disruptive actions (restart, bootloader, forget pairings, power off) need a second click.");
+        ui.weak("Connection, reset, bootloader and soft-off behaviors are available only on the keyboard.");
     }
 }

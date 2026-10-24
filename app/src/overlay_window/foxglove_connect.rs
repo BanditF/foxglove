@@ -119,6 +119,8 @@ impl OverlayApp {
     }
 
     pub(super) fn watch_serial_connection(&mut self, _ctx: &egui::Context) {
+        crate::foxglove::connection::start(_ctx);
+        crate::foxglove::connection::settings_visibility(self.ui.settings_visible);
         #[cfg(target_os = "windows")]
         self.watch_serial_connection_windows();
         #[cfg(not(target_os = "windows"))]
@@ -166,6 +168,7 @@ impl OverlayApp {
         if changed || hid_changed {
             self.serial_watch.pending = None;
             crate::foxglove::link::reconnect();
+            crate::foxglove::connection::refresh();
             if let AppConnectionState::Reconnecting { next_attempt_at } =
                 &mut self.session.connection
             {
