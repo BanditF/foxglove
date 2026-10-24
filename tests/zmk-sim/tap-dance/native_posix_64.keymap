@@ -1,0 +1,18 @@
+#include "../common/keymap.dtsi"
+
+&kscan {
+    events = <
+        ZMK_MOCK_PRESS(1,0,30) // position 13
+        ZMK_MOCK_RELEASE(1,0,300) // position 13
+        ZMK_MOCK_PRESS(1,0,300) // position 13
+        ZMK_MOCK_RELEASE(1,0,30) // position 13
+        ZMK_MOCK_PRESS(1,0,30) // position 13
+        ZMK_MOCK_RELEASE(1,0,30) // position 13
+        ZMK_MOCK_PRESS(1,0,30) // position 13
+        ZMK_MOCK_RELEASE(1,0,300) // position 13
+        ZMK_MOCK_PRESS(0,1,30) // position 1
+        ZMK_MOCK_RELEASE(0,1,30) // position 1
+        // Unmapped release: allow queued events/timers/logs to drain before exit.
+        ZMK_MOCK_RELEASE(4,0,300)
+    >;
+};
