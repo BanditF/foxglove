@@ -877,6 +877,7 @@ dependencies = [
  "crc32fast",
  "embedded-graphics",
  "hidapi",
+ "palm",
  "windows-sys 0.61.2",
 ]
 
@@ -1558,6 +1559,7 @@ dependencies = [
  "khronos-egl",
  "lzma-rs",
  "objc2-app-kit 0.3.2",
+ "palm",
  "prost",
  "qmk-via-api",
  "raw-window-handle",
@@ -3515,6 +3517,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "palm"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -82,7 +82,7 @@ fn action_button(ui: &mut egui::Ui, action: &Action) {
         return;
     }
     *confirming = None;
-    ks::invoke(action.label.clone(), action.binding, action.hold_ms, ctx);
+    ks::invoke(action.label.clone(), action.binding, ctx);
 }
 
 impl OverlayApp {

@@ -95,6 +95,22 @@ pub fn learn(resolved: &[ResolvedLayer], raw: &Keymap) {
         }
     }
     actions.sort_by_key(|a| a.group);
+    let allowed = actions
+        .iter()
+        .map(|a| palm::BehaviorInfo {
+            id: a.binding.0.into(),
+            param1: a.binding.1,
+            param2: a.binding.2,
+            name: a.label.clone(),
+            hold_ms: a.hold_ms,
+            risk: if a.risky {
+                palm::Risk::Confirm
+            } else {
+                palm::Risk::Safe
+            },
+        })
+        .collect();
+    super::palm_host::set_actions(allowed, underglow);
     *KNOWN.lock().unwrap() = Known { actions, underglow };
 }
 
