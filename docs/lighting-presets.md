@@ -68,7 +68,7 @@ lights, and reads as a look rather than a colour:
   bandit-wallpapers keyboard set it is; the generator re-copies it from that repo's
   `dist/keyboard/<id>/right.bin` when present, and checks the size and the NVA1 magic.
 - **When it applies:** only when the user picks a preset, and only if **Change the right screen
-  with the preset** is on. A pinned set, the hotlist or "match the wallpaper" are put back when
+  with the preset** is on (the default, the user's pick). A pinned set, the hotlist or "match the wallpaper" are put back when
   the preset is cleared. Leaving a preset doesn't wipe the user's own art choice.
 - Wallpaper-matched presets could later reuse the same file as "match the wallpaper", so the two
   never fight.
