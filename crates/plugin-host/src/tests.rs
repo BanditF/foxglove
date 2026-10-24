@@ -2,6 +2,7 @@
 
 use super::*;
 use std::io::Cursor;
+use std::time::Duration;
 
 #[derive(Clone, Default)]
 struct Out(Arc<Mutex<Vec<u8>>>);
@@ -61,7 +62,7 @@ fn initialize_comes_first_and_reports_the_grant() {
     assert!(err(1, code::INVALID_REQUEST)(&out[0]));
     assert_eq!(
         out[1],
-        json!({"jsonrpc":"2.0","id":0,"result":{"api":"1.2","app":"0.3.0","granted":["facts.read:clock.*"]}})
+        json!({"jsonrpc":"2.0","id":0,"result":{"api":"1.3","app":"0.3.0","granted":["facts.read:clock.*"]}})
     );
     assert_eq!(out[2], json!({"jsonrpc":"2.0","id":2,"result":{}}));
 }
@@ -408,4 +409,48 @@ fn device_calls_know_their_connection_and_hear_it_close() {
     assert_eq!(calls.len(), 2);
     assert_ne!(calls[0], calls[1], "each connection has its own number");
     assert_eq!(*conns.closed.lock().unwrap(), calls, "and each one's end is reported");
+}
+
+#[test]
+fn a_plugin_watches_only_the_apps_it_declares() {
+    let (tx, rx) = mpsc::channel();
+    let out = Out::default();
+    let writer = out.clone();
+    // Its own app name, so the apps module's own test doesn't meet it.
+    let ctx = plugin(&["apps.watch:host-test.exe"]);
+    let server = std::thread::spawn(move || {
+        serve_with(std::io::BufReader::new(ChanReader { rx, buf: vec![] }), writer, ctx, Some("test.watch".into()), |o| register("test.watch", Some(o))).unwrap();
+        register("test.watch", None);
+    });
+    let send = |v: Value| tx.send((v.to_string() + "
+").into_bytes()).unwrap();
+    let wait = |f: &dyn Fn(&Value) -> bool| {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(v) = out.lines().into_iter().find(|v| f(v)) {
+                return v;
+            }
+            assert!(Instant::now() < until, "{:?}", out.lines());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    send(init());
+    send(call(1, "apps.watch", json!({"exe": "notepad.exe"})));
+    assert!(err(1, code::DENIED)(&wait(&|v| v["id"] == 1)), "only the granted app");
+    send(call(2, "apps.watch", json!({"exe": "HOST-TEST.exe"})));
+    assert_eq!(wait(&|v| v["id"] == 2)["result"], json!({"exe": "host-test.exe", "open": 0}));
+    assert_eq!(apps::shown(-5, "host-test.exe"), 1);
+    assert_eq!(wait(&|v| v["method"] == "app.window.appeared")["params"], json!({"exe": "host-test.exe", "open": 1}));
+    assert_eq!(apps::destroyed(-5), 1);
+    assert_eq!(wait(&|v| v["method"] == "app.window.closed")["params"], json!({"exe": "host-test.exe", "open": 0}));
+    // The watch ends with the connection.
+    drop(tx);
+    server.join().unwrap();
+    assert_eq!(apps::shown(-6, "host-test.exe"), 0);
+}
+
+#[test]
+fn tools_cant_watch_apps() {
+    let out = run(plugin(&["apps.watch:obs64.exe"]), &[init(), call(1, "apps.watch", json!({"exe": "obs64.exe"}))]);
+    assert!(err(1, code::DENIED)(&out[1]));
 }

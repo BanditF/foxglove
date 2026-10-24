@@ -14,7 +14,7 @@ const struct screen_descriptor foxglove_screens[] = {
     {.id = 0, .kind = SCREEN_DISPLAY, .half = 0, .parent = SCREEN_UNSET, .width = 160, .height = 68,
      .rotation = 1, .ops = SCREEN_OP_READBACK, .stride = 20, .readback_half = 0},
     {.id = 1, .kind = SCREEN_PANEL, .half = 0, .parent = 0, .width = HOST_PANEL_W,
-     .height = HOST_PANEL_H, .x = HOST_PANEL_X, .y = HOST_PANEL_Y, .ops = SCREEN_OP_ROWS,
+     .height = HOST_PANEL_H, .x = HOST_PANEL_X, .y = HOST_PANEL_Y, .ops = SCREEN_OP_ROWS | SCREEN_OP_ROWS_AT,
      .stride = HOST_PANEL_STRIDE, .rows_per_report = 3, .readback_half = SCREEN_UNSET},
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     {.id = 2, .kind = SCREEN_DISPLAY, .half = 1, .parent = SCREEN_UNSET, .width = 160, .height = 68,

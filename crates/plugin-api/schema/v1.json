@@ -1,5 +1,5 @@
 {
-  "api": "1.2",
+  "api": "1.3",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -15,6 +15,90 @@
           "action"
         ],
         "title": "ActionInvoked",
+        "type": "object"
+      }
+    },
+    "app.window.appeared": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A watched program's visible top-level windows: the answer to `apps.watch` (how many are open\nnow), and the `app.window.appeared` and `app.window.closed` events (how many are open after\nit). `open` 0 after a close means the app has probably quit (API 1.3).",
+        "properties": {
+          "exe": {
+            "type": "string"
+          },
+          "open": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exe",
+          "open"
+        ],
+        "title": "AppWindows",
+        "type": "object"
+      }
+    },
+    "app.window.closed": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A watched program's visible top-level windows: the answer to `apps.watch` (how many are open\nnow), and the `app.window.appeared` and `app.window.closed` events (how many are open after\nit). `open` 0 after a close means the app has probably quit (API 1.3).",
+        "properties": {
+          "exe": {
+            "type": "string"
+          },
+          "open": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exe",
+          "open"
+        ],
+        "title": "AppWindows",
+        "type": "object"
+      }
+    },
+    "apps.watch": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Asks to be told when a program's windows open and close (`apps.watch:<exe>`, API 1.3).",
+        "properties": {
+          "exe": {
+            "description": "The program's file name, such as `obs64.exe`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "exe"
+        ],
+        "title": "AppsWatchParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A watched program's visible top-level windows: the answer to `apps.watch` (how many are open\nnow), and the `app.window.appeared` and `app.window.closed` events (how many are open after\nit). `open` 0 after a close means the app has probably quit (API 1.3).",
+        "properties": {
+          "exe": {
+            "type": "string"
+          },
+          "open": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exe",
+          "open"
+        ],
+        "title": "AppWindows",
         "type": "object"
       }
     },
@@ -1411,7 +1495,7 @@
       "kind": "call",
       "params": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Draws over the left panel until `ttl_ms` passes (at most 60 000), then the panel goes back\nto what Foxglove draws. A later override replaces an earlier one.",
+        "description": "Draws over the left panel until `ttl_ms` passes (at most 60 000), then the panel goes back\nto what Foxglove draws. `ttl_ms` 0 holds it until the plugin replaces it, releases it\n(`screens.panel_release`) or its connection closes (API 1.3), so a steady screen needs no\nre-sending (#281). A later override replaces an earlier one.",
         "properties": {
           "bitmap": {
             "description": "1 bit per pixel, rows MSB first, padded to whole bytes, 1 = ink; base64.",
@@ -1446,6 +1530,28 @@
           "ttl_ms"
         ],
         "title": "PanelOverrideParams",
+        "type": "object"
+      },
+      "permission": "screens.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "screens.panel_release": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "DeviceParams",
         "type": "object"
       },
       "permission": "screens.write",

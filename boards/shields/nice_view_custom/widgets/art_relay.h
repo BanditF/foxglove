@@ -127,6 +127,10 @@ int art_relay_begin(uint16_t len, uint32_t crc);
 int art_relay_data(uint16_t offset, const uint8_t *data, uint8_t len);
 int art_relay_commit(void);
 int art_relay_select(int8_t set);
+// &art_next / &art_prev without the app (#60): select the next (dir 1) or previous (-1) of what
+// the right holds, its built-in sets and then its saved slots, wrapping round. Does nothing
+// without a relay link or before the first status read.
+void art_relay_step(int dir);
 // How finding the right half's relay service went; negative = a bt_gatt_discover error.
 enum art_relay_discovery {
     ART_DISCOVERY_IDLE,
@@ -144,8 +148,9 @@ void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]);
 uint8_t art_relay_link(void);
 // #122 guard: split links dropped for not encrypting in time, since boot (HELLO byte 31).
 uint8_t art_relay_guard_drops(void);
-// D7 0B (test hooks): the guard drops the current split link once, 2 s from now.
-int art_relay_guard_test(void);
+// D7 0B (test hooks): the guard drops the current split link once, delay_ms from now (0: at once,
+// even in the middle of a relay job).
+int art_relay_guard_test(uint16_t delay_ms);
 // Sends the left's underglow state and sync setting to the right soon, if they changed.
 void art_relay_rgb_kick(void);
 // The PC's colour for the right half (#266): sent as one acknowledged write, the newest value

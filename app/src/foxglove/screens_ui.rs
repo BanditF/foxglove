@@ -6,7 +6,6 @@
 //! section is on screen.
 
 use std::cell::RefCell;
-use std::time::Duration;
 
 use super::screens::{self, Frame};
 use super::screens_settings::ScreensSettings;
@@ -113,10 +112,8 @@ pub fn group(ui: &mut egui::Ui) {
 
             if let Some(frame) = snap.frame.as_ref().filter(|_| settings.drive_left) {
                 preview(ui, state_texture(ui.ctx(), &mut state.texture, frame));
-                // Follows the panel at its own rate, only while this section is drawn.
-                ui.ctx().request_repaint_after(Duration::from_millis(
-                    1000 / u64::from(settings.fps.max(1)),
-                ));
+                // Repainted when the panel gets a new frame, only while this section is drawn.
+                super::screens::want_preview(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
             }
 
             ui.add_space(4.0);

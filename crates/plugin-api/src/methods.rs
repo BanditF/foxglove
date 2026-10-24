@@ -181,7 +181,9 @@ pub struct InvokeParams {
 }
 
 /// Draws over the left panel until `ttl_ms` passes (at most 60 000), then the panel goes back
-/// to what Foxglove draws. A later override replaces an earlier one.
+/// to what Foxglove draws. `ttl_ms` 0 holds it until the plugin replaces it, releases it
+/// (`screens.panel_release`) or its connection closes (API 1.3), so a steady screen needs no
+/// re-sending (#281). A later override replaces an earlier one.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PanelOverrideParams {
     pub device: String,
@@ -250,6 +252,22 @@ pub struct Empty {}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ActionInvoked {
     pub action: String,
+}
+
+/// Asks to be told when a program's windows open and close (`apps.watch:<exe>`, API 1.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AppsWatchParams {
+    /// The program's file name, such as `obs64.exe`.
+    pub exe: String,
+}
+
+/// A watched program's visible top-level windows: the answer to `apps.watch` (how many are open
+/// now), and the `app.window.appeared` and `app.window.closed` events (how many are open after
+/// it). `open` 0 after a close means the app has probably quit (API 1.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AppWindows {
+    pub exe: String,
+    pub open: u32,
 }
 
 /// Mutes or unmutes the default communications microphone (#237, API 1.2).
@@ -397,6 +415,8 @@ pub const METHODS: &[Method] = &[
     Method { name: "behaviors.list", kind: Kind::Call, permission: Some("devices.read"), params: schema!(DeviceParams), result: Some(schema!(Behaviors)) },
     Method { name: "behaviors.invoke", kind: Kind::Call, permission: Some("behaviors.invoke"), params: schema!(InvokeParams), result: Some(schema!(Empty)) },
     Method { name: "screens.panel_override", kind: Kind::Call, permission: Some("screens.write"), params: schema!(PanelOverrideParams), result: Some(schema!(Empty)) },
+    // Gives the panel back after a held override (API 1.3).
+    Method { name: "screens.panel_release", kind: Kind::Call, permission: Some("screens.write"), params: schema!(DeviceParams), result: Some(schema!(Empty)) },
     Method { name: "art.status", kind: Kind::Call, permission: Some("devices.read"), params: schema!(DeviceParams), result: Some(schema!(ArtStatus)) },
     Method { name: "art.select", kind: Kind::Call, permission: Some("art.write"), params: schema!(ArtSelectParams), result: Some(schema!(ArtStatus)) },
     Method { name: "profiles.list", kind: Kind::Call, permission: None, params: schema!(Empty), result: Some(schema!(Profiles)) },
@@ -418,6 +438,11 @@ pub const METHODS: &[Method] = &[
     Method { name: "secrets.set", kind: Kind::Call, permission: Some("secrets"), params: schema!(SetSecretParams), result: Some(schema!(Empty)) },
     // Sent to one plugin when the key bound to its action is pressed (#212).
     Method { name: "action.invoked", kind: Kind::Event, permission: None, params: schema!(ActionInvoked), result: None },
+    // Waiting for an app's windows instead of polling for it (#277); checked against the
+    // scoped apps.watch permissions by the host (API 1.3).
+    Method { name: "apps.watch", kind: Kind::Call, permission: None, params: schema!(AppsWatchParams), result: Some(schema!(AppWindows)) },
+    Method { name: "app.window.appeared", kind: Kind::Event, permission: None, params: schema!(AppWindows), result: None },
+    Method { name: "app.window.closed", kind: Kind::Event, permission: None, params: schema!(AppWindows), result: None },
 ];
 
 pub fn find(name: &str) -> Option<&'static Method> {
