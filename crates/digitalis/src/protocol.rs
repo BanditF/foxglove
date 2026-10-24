@@ -35,6 +35,8 @@ pub mod capabilities {
     pub const BOOTLOADER: u32 = 1 << 9;
     /// Art SAVE / SLOT / ERASE (D6 06 / 07 / 08), flash slots on the right half.
     pub const ART_SLOTS: u32 = 1 << 10;
+    /// Settings ART_KEYS (D7 0D): the keymap's &art_next / &art_prev can go to the PC (#60, #302).
+    pub const ART_KEYS: u32 = 1 << 16;
 }
 pub const VERSION: u8 = 1;
 
@@ -80,6 +82,9 @@ pub mod settings {
     pub const BOOTLOADER: u8 = 0x08;
     /// A half's firmware version, profile and git SHA (firmware #133).
     pub const BUILD_INFO: u8 = 0x09;
+    /// While on, &art_next / &art_prev send D7 8D 01 dir to the PC instead of stepping the art
+    /// on the keyboard; the firmware clears it on a USB disconnect or endpoint change.
+    pub const ART_KEYS: u8 = 0x0D;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -87,6 +92,16 @@ pub mod settings {
 /// Whether `r` is the reply to (`proto`, `cmd`).
 pub fn is_reply(r: &[u8], proto: u8, cmd: u8) -> bool {
     r.len() >= 2 && r[0] == proto && r[1] == 0x80 | cmd
+}
+
+/// D7 0D ART_KEYS: take the art keys (`on`) or hand them back to the keyboard.
+pub fn art_keys(on: bool) -> Vec<u8> {
+    vec![SETTINGS, settings::ART_KEYS, on as u8]
+}
+
+/// An art key press (D7 8D 01 dir): `Some(1)` next, `Some(-1)` previous.
+pub fn art_key_event(r: &[u8]) -> Option<i8> {
+    (is_reply(r, SETTINGS, settings::ART_KEYS) && r.len() >= 4 && r[2] == 1).then(|| r[3] as i8)
 }
 
 pub fn hello() -> Vec<u8> {
@@ -632,6 +647,16 @@ impl std::fmt::Display for ArtStatus {
 mod tests {
     //! The bytes hostpanel v0.1 sent and read; the firmware depends on them.
     use super::*;
+
+    #[test]
+    fn art_keys_reports() {
+        assert_eq!(art_keys(true), vec![0xD7, 0x0D, 1]);
+        assert_eq!(art_keys(false), vec![0xD7, 0x0D, 0]);
+        assert_eq!(art_key_event(&[0xD7, 0x8D, 1, 0x01]), Some(1));
+        assert_eq!(art_key_event(&[0xD7, 0x8D, 1, 0xFF]), Some(-1));
+        assert_eq!(art_key_event(&[0xD7, 0x8D, 0, 1]), None, "the opt-in reply isn't a press");
+        assert_eq!(art_key_event(&[0xD7, 0x83, 1, 1]), None);
+    }
 
     #[test]
     fn panel_reports() {

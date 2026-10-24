@@ -39,6 +39,8 @@ pub struct Snapshot {
     pub cycle: Cycle,
     /// The keyboard reports its lights turning on and off (HELLO RGB_STATE_EVENT).
     pub wake_events: bool,
+    /// The keyboard has &art_next / &art_prev and can hand them to the app (HELLO ART_KEYS).
+    pub art_keys: bool,
 }
 
 impl Snapshot {
@@ -99,6 +101,10 @@ enum Command {
     Preset(Option<art_cycle::Item>),
     /// Show a trigger's art without pinning it.
     Show(Choice),
+    /// An art key press (D7 8D 01): 1 next, -1 previous.
+    ArtKey { source: Weak<Link>, generation: u64, dir: i8 },
+    /// Step the hotlist by this much (Next is 1).
+    Step(i8),
 }
 
 #[derive(Clone)]
@@ -276,6 +282,34 @@ fn load_pinned() -> Option<Choice> {
     .pinned
 }
 
+/// Sends D7 0D ART_KEYS when what the hotlist wants differs from `sent`, and returns what the
+/// keyboard now has. Keyboards without the art keys are left alone.
+fn sync_art_keys(link: &Link, h: &Handle, sent: Option<bool>) -> Option<bool> {
+    use digitalis::Transport as _;
+    let snap = h.snapshot();
+    if !snap.art_keys {
+        return sent;
+    }
+    let want = snap.cycle.wants_art_keys();
+    if sent == Some(want) {
+        return sent;
+    }
+    let reply = link.request(
+        &protocol::art_keys(want),
+        protocol::SETTINGS,
+        protocol::settings::ART_KEYS,
+        Duration::from_millis(500),
+    );
+    match reply {
+        Ok(r) if r[2] == 0 && (r[3] != 0) == want => Some(want),
+        Ok(_) => sent,
+        Err(e) => {
+            eprintln!("Foxglove: art keys: {e}");
+            sent
+        }
+    }
+}
+
 fn restore(pinned: &Option<Choice>, status: ArtStatus) -> Option<Choice> {
     // Only link=2 has a ready relay; 1 is connected but still discovering it.
     pinned
@@ -397,6 +431,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let mut due: Option<Instant> = None;
     // Layer and preset art above the pinned choice (#60).
     let mut triggers = Triggers::default();
+    // Whether this connection's art keys come to the app (D7 0D), as last sent.
+    let mut art_keys_on: Option<bool> = None;
     while !h.stop.load(Ordering::Relaxed) {
         let next_deadline = match (due, triggers.deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -452,6 +488,15 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 }
                 Command::Next
             }
+            Command::ArtKey { source, generation, dir } => {
+                let is_current = current.is_some_and(|(id, g)| {
+                    g == generation && Weak::ptr_eq(&Arc::downgrade(&links[id].0), &source)
+                });
+                if !is_current || !h.snapshot().cycle.steps_on(art_cycle::Step::Key) {
+                    continue;
+                }
+                Command::Step(dir)
+            }
             Command::Layers(active) => {
                 let change = triggers.layers(&active, &h.snapshot().cycle, Instant::now());
                 match shown(change, &triggers) {
@@ -498,6 +543,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     s.pinned = pinned.clone();
                     s.cycle = Cycle::load();
                 });
+                if let Some((id, _)) = current {
+                    art_keys_on = sync_art_keys(&links[id].0, h, art_keys_on);
+                }
                 due = reschedule(current.is_some());
                 match pinned.filter(|_| changed && current.is_some() && !h.snapshot().busy) {
                     Some(choice) => {
@@ -510,6 +558,16 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             other => other,
         };
         let command = match command {
+            Command::Next => Command::Step(1),
+            other => other,
+        };
+        // Take the art keys while the hotlist would use them, else let the keyboard step itself.
+        if matches!(command, Command::CycleChanged) {
+            if let Some((id, _)) = current {
+                art_keys_on = sync_art_keys(&links[id].0, h, art_keys_on);
+            }
+        }
+        let command = match command {
             Command::CycleChanged => {
                 due = reschedule(current.is_some());
                 // Turning on "match the wallpaper" shows the current wallpaper's art right away.
@@ -520,7 +578,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 }
                 continue;
             }
-            Command::Next => {
+            Command::Step(dir) => {
                 due = reschedule(current.is_some());
                 let snap = h.snapshot();
                 let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
@@ -531,7 +589,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 let mut cycle = snap.cycle;
-                let Some(choice) = cycle.advance(|item| {
+                let Some(choice) = cycle.step_by(dir, |item| {
                     art_cycle::resolve(item, st.right_set_count, st.flash_used)
                 }) else {
                     continue;
@@ -568,6 +626,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     if protocol::is_reply(r, protocol::SETTINGS, protocol::settings::RGB_STATE) {
                         let on = protocol::RgbState::parse(r).left.on;
                         let _ = tx.send(Command::Lights { source: source.clone(), generation, on });
+                    } else if let Some(dir) = protocol::art_key_event(r) {
+                        let _ = tx.send(Command::ArtKey { source: source.clone(), generation, dir });
                     }
                 }));
                 links.push((link.clone(), subscription));
@@ -584,6 +644,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     current = None;
                     due = None;
                     lights_on = None;
+                    art_keys_on = None; // the firmware drops the subscription with the link
                     triggers.disconnected();
                     h.update(|s| {
                         s.connected = false;
@@ -602,12 +663,15 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 current = Some((id, state.generation));
-                let wake_events = super::link::ask_hello(link)
-                    .is_some_and(|hello| hello.capabilities & protocol::capabilities::RGB_STATE_EVENT != 0);
+                let caps = super::link::ask_hello(link).map_or(0, |hello| hello.capabilities);
+                let wake_events = caps & protocol::capabilities::RGB_STATE_EVENT != 0;
+                let art_keys = caps & protocol::capabilities::ART_KEYS != 0;
                 h.update(|s| {
                     s.connected = true;
                     s.wake_events = wake_events;
+                    s.art_keys = art_keys;
                 });
+                art_keys_on = sync_art_keys(link, h, None);
                 connected_now = true;
                 due = reschedule(true);
                 true
