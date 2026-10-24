@@ -2,7 +2,9 @@
 
 python scripts/flash/foxglove_flash.py --firmware DIR --dry-run
 python scripts/flash/foxglove_flash.py --left L.uf2 --right R.uf2
-Real writes require a terminal and typing FLASH. Double-tap reset only when asked.
+Real writes require a terminal and typing FLASH. When the running firmware supports it
+(HELLO bit 8, #111) each half is put into its bootloader over the link; otherwise double-tap
+reset when asked.
 Settings reset: supply its path with --left/--right, select --half, and add
 --settings-reset; this erases settings and requires a separate confirmation.
 """
@@ -109,8 +111,33 @@ class FlashFailed(Exception):
     pass
 
 
+def lab_binary():
+    """foxglove-lab, which sends the bootloader command; None when it isn't built."""
+    root = Path(__file__).resolve().parents[2]
+    target = Path(os.environ.get('CARGO_TARGET_DIR') or root / 'target')
+    for build in ('release', 'debug'):
+        exe = target / build / ('foxglove-lab.exe' if os.name == 'nt' else 'foxglove-lab')
+        if exe.exists():
+            return exe
+    return None
+
+
 class WindowsOS:
     """OS boundary. One CIM query maps serial -> disk -> partition -> logical disk."""
+    def enter_bootloader(self, half, log):
+        """Asks the running firmware to reboot `half` into its bootloader (D7 08, the right
+        through the left's relay). True when asked; False means double-tap instead."""
+        exe = lab_binary()
+        if exe is None:
+            log('foxglove-lab is not built (cargo build --release -p foxglove-lab), so no hands-free entry.')
+            return False
+        result = subprocess.run([str(exe), '--allow-app', 'bootloader', '--half', half, '--confirmed', 'FLASH'],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            return True
+        reason = (result.stderr or result.stdout).strip().splitlines()
+        log(f'{half}: hands-free entry unavailable ({reason[-1] if reason else result.returncode}).')
+        return False
     def _ps(self, script):
         result = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command',
                                  "$ErrorActionPreference='Stop'; " + script],
@@ -188,7 +215,20 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
     for half in ('left', 'right'):
         if half not in images:
             continue
-        log(f'Double-tap reset on the {half} half only. Waiting up to {seconds:g} seconds.')
+        entered = False
+        if not settings_reset:
+            # The right goes through the left's relay, which needs a few seconds after the left
+            # reboots into new firmware: retry before falling back to a double tap.
+            for attempt in range(3 if half == 'right' else 1):
+                if attempt:
+                    sleep(5)
+                entered = backend.enter_bootloader(half, log)
+                if entered:
+                    break
+        if entered:
+            log(f'Asked the {half} half to enter its bootloader. Waiting up to {seconds:g} seconds for its drive.')
+        else:
+            log(f'Double-tap reset on the {half} half only. Waiting up to {seconds:g} seconds.')
         chosen = []
         def ready():
             serials = backend.enumerate_bootloaders()

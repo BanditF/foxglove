@@ -23,6 +23,9 @@ pub mod capabilities {
     pub const SCREEN: u32 = 1 << 6;
     /// INVOKE refuses &bt, &out, &bootloader, &sys_reset and &soft_off with status 6.
     pub const INVOKE_REFUSES: u32 = 1 << 7;
+    /// Settings BOOTLOADER (D7 08): the host can reboot either half into its UF2 bootloader
+    /// (#111), pre-GA test-hooks builds only.
+    pub const BOOTLOADER: u32 = 1 << 8;
 }
 pub const VERSION: u8 = 1;
 
@@ -55,6 +58,9 @@ pub mod settings {
     /// Both halves' underglow state.
     pub const RGB_STATE: u8 = 0x03;
     pub const CONN_STATE: u8 = 0x04;
+    /// Two-step reboot into the UF2 bootloader (#111): ARM returns a nonce, TRIGGER(half,
+    /// nonce) within 5 s acts on it.
+    pub const BOOTLOADER: u8 = 0x08;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -533,6 +539,24 @@ mod tests {
 
 /// HELLO capability for connection state queries.
 pub const CAP_CONN_STATE: u32 = capabilities::CONN_STATE;
+
+// BOOTLOADER layout, provisional until the firmware side of #111 lands:
+//   ARM      D7 08 00                    -> D7 88 status nonce u32 LE
+//   TRIGGER  D7 08 01 half nonce u32 LE  -> D7 88 status half
+// status: 0 ok, 2 no relay link (right), 4 not built in, 5 bad request, 6 wrong/expired nonce.
+pub const BOOTLOADER_ARM: u8 = 0x00;
+pub const BOOTLOADER_TRIGGER: u8 = 0x01;
+
+pub fn bootloader_arm() -> Vec<u8> {
+    vec![SETTINGS, settings::BOOTLOADER, BOOTLOADER_ARM]
+}
+
+/// `half`: 0 left, 1 right.
+pub fn bootloader_trigger(half: u8, nonce: u32) -> Vec<u8> {
+    let mut r = vec![SETTINGS, settings::BOOTLOADER, BOOTLOADER_TRIGGER, half];
+    r.extend_from_slice(&nonce.to_le_bytes());
+    r
+}
 
 pub fn conn_state() -> Vec<u8> {
     vec![SETTINGS, settings::CONN_STATE]

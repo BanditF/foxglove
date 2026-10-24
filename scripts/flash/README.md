@@ -64,3 +64,18 @@ hold. ADMIN is conditional on NUMBER+SYMBOL or GAME+ + SYMBOL held together.
 The replay covers both thumb press orders and both release orders, normal and
 GAME, including releasing both keys. This is a small layer model, not a timing
 simulation of the complete ZMK engine.
+
+## Hands-free entry (#111)
+
+When the running firmware advertises HELLO capability bit 8 (test-hooks builds), you don't
+need to double-tap:
+1. After you type `FLASH`, the flasher asks the left half to reboot into its bootloader. It runs
+   `foxglove-lab bootloader`, which sends D7 08: ARM, then TRIGGER with the returned nonce.
+2. It flashes the left, waits for the left's own serial to come back, and asks you to confirm
+   it types (`TYPES`).
+3. It asks the right half to enter its bootloader through the left's relay, retrying for about
+   10 s while the relay reconnects, then flashes it.
+
+Serial identity, the UF2 preflight and the typed confirmations are unchanged. If foxglove-lab
+isn't built (`cargo build --release -p foxglove-lab`), or the firmware lacks bit 8, it falls
+back to double-tap prompts. A settings reset always uses the double tap.

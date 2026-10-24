@@ -26,6 +26,8 @@ class FakeOS:
         self.info = 'Board-ID: nRF52840-nice!nano-v2\n'
         self.keyboard = True
         self.keyboard_serials = []
+        self.auto = False
+        self.entered = []
 
     def enumerate_bootloaders(self):
         return self.serials
@@ -42,6 +44,10 @@ class FakeOS:
     def write_file(self, path, data):
         self.writes.append((path, data))
         self.present = self.stays
+
+    def enter_bootloader(self, half, log):
+        self.entered.append(half)
+        return self.auto
 
     def running_keyboard(self, serial):
         self.keyboard_serials.append(serial)
@@ -142,6 +148,29 @@ class FlashTests(unittest.TestCase):
         backend.keyboard = False
         with self.assertRaises(TimeoutError):
             self.run_flash(backend)
+
+    def test_hands_free_entry_only_after_flash_confirmation(self):
+        backend = FakeOS()
+        backend.auto = True
+        with self.assertRaises(f.Refused):
+            self.run_flash(backend, ('NO',))
+        self.assertEqual(backend.entered, [])
+        self.run_flash(backend)
+        self.assertEqual(backend.entered, ['left'])
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_right_entry_retries_then_falls_back_to_double_tap(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        self.run_flash(backend, ('FLASH',), {'right': uf2(b'FOXGLOVE_HALF=right')})
+        self.assertEqual(backend.entered, ['right'] * 3)
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_settings_reset_never_uses_hands_free_entry(self):
+        backend = FakeOS()
+        backend.auto = True
+        self.run_flash(backend, ('FLASH', 'ERASE SETTINGS'), {'left': uf2(b'SETTINGS RESET')},
+                       settings_reset=True)
+        self.assertEqual(backend.entered, [])
 
     def test_left_reenumeration_checks_the_left_serial(self):
         # The right half on USB power also enumerates as 1D50:615E; only the left's serial counts.
