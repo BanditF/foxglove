@@ -81,7 +81,7 @@ pub fn invoke(label: String, binding: (u16, u32, u32), hold_ms: u16, ctx: egui::
         return;
     }
     *LAST_ACTION.lock().unwrap() = Some((label.clone(), "sending…".into()));
-    std::thread::spawn(move || {
+    super::services::spawn_named("keyboard-command", move || {
         let (id, p1, p2) = binding;
         let result = match link() {
             None => "no keyboard with Foxglove's firmware found".to_string(),
@@ -111,7 +111,7 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
     if RGB_REFRESH.load(Ordering::Relaxed) && !RGB_POLLING.swap(true, Ordering::Relaxed) {
         RGB_REFRESH.store(false, Ordering::Relaxed);
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
+        super::services::spawn_named("rgb-state", move || {
             let state = link().and_then(|l| digitalis::settings::rgb_state(l.as_ref()).ok());
             *RGB_STATE.lock().unwrap() = state;
             RGB_POLLING.store(false, Ordering::Relaxed);

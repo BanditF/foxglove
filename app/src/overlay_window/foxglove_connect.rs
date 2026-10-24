@@ -245,7 +245,7 @@ impl OverlayApp {
         self.serial_watch.pending = Some(rx);
         let wake = self.ui_wake.clone();
         let previous_ble = self.serial_watch.previous_ble.clone();
-        std::thread::spawn(move || {
+        crate::foxglove::services::spawn_named("serial-scan", move || {
             let ports = crate::protocols::zmk_rpc::scan_serial_ports();
             let replacement = serial_replacement(&spec, &ports).or_else(|| {
                 let ConnectionSpec::Zmk {

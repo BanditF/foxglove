@@ -48,6 +48,14 @@ impl Backoff {
     }
 }
 
+/// `std::thread::spawn` with a name, so a profiler can tell Foxglove's threads apart.
+pub fn spawn_named<F: FnOnce() + Send + 'static>(name: &str, f: F) -> JoinHandle<()> {
+    thread::Builder::new()
+        .name(name.into())
+        .spawn(f)
+        .expect("failed to spawn thread")
+}
+
 /// Runs each attempt on its own thread. Panics restart; a normal return stops the service.
 /// The supervisor waits on join, sleeping only for backoff after a failure.
 pub fn spawn_supervised(

@@ -291,7 +291,7 @@ impl Keyboard {
             .map_err(|e| e.to_string())?
             .map(|sender| {
                 let (tx, rx) = mpsc::channel::<()>();
-                thread::spawn(move || {
+                crate::foxglove::services::spawn_named("keypeek-keepalive", move || {
                     loop {
                         let _ = sender.set_active(true);
                         match rx.recv_timeout(Duration::from_millis(1000)) {
@@ -326,7 +326,7 @@ impl Keyboard {
         let matrix_clone = Arc::clone(&matrix);
         let alive_clone = Arc::clone(&alive);
 
-        thread::spawn(move || {
+        crate::foxglove::services::spawn_named("keyboard-reader", move || {
             let mut protocol = protocol;
             // A dropped link (sleep, BLE/USB disconnect) makes `hid_read` error repeatedly.
             // Mark the connection dead after a few consecutive errors to trigger reconnect.

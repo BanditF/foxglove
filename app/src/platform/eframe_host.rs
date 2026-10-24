@@ -81,6 +81,45 @@ impl eframe::App for EframeApp {
 
         let mut host = EframeHost { ctx: &ctx };
         self.app.ui(&ctx, &mut host);
+        repaint_trace::frame(&ctx);
+    }
+}
+
+/// `FOXGLOVE_TRACE_REPAINT=1`: every 5 s, prints how many frames ran and what asked for them,
+/// so an idle app that keeps drawing can be traced to the caller (#100).
+mod repaint_trace {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    struct Trace {
+        since: Instant,
+        frames: u32,
+        causes: HashMap<String, u32>,
+    }
+
+    static TRACE: OnceLock<Option<Mutex<Trace>>> = OnceLock::new();
+
+    pub fn frame(ctx: &egui::Context) {
+        let Some(trace) = TRACE.get_or_init(|| {
+            std::env::var_os("FOXGLOVE_TRACE_REPAINT").map(|_| {
+                Mutex::new(Trace { since: Instant::now(), frames: 0, causes: HashMap::new() })
+            })
+        }) else {
+            return;
+        };
+        let mut t = trace.lock().unwrap_or_else(|e| e.into_inner());
+        t.frames += 1;
+        for cause in ctx.repaint_causes() {
+            *t.causes.entry(cause.to_string()).or_default() += 1;
+        }
+        if t.since.elapsed() >= Duration::from_secs(5) {
+            let mut causes: Vec<_> = t.causes.drain().collect();
+            causes.sort_by_key(|c| std::cmp::Reverse(c.1));
+            eprintln!("repaint trace: {} frames in 5 s; causes: {causes:?}", t.frames);
+            t.frames = 0;
+            t.since = Instant::now();
+        }
     }
 }
 

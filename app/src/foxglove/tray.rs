@@ -1,4 +1,6 @@
-//! Foxglove's tray controls. Native menus are updated on their owning UI thread.
+//! Foxglove's tray controls. Native menus are updated on their owning UI thread, and only when
+//! something changed: this runs every frame, and touching a native menu can wake the window
+//! again, which kept an idle app drawing (#100).
 use super::{art_library, art_service, screens};
 use std::sync::atomic::Ordering;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
@@ -10,6 +12,8 @@ pub struct Controls {
     pause: CheckMenuItem,
     art: Submenu,
     signature: String,
+    /// What the items show now: update text, paused, status text, art menu enabled.
+    shown: (Option<String>, bool, String, bool),
 }
 impl Controls {
     pub fn new(menu: &Menu) -> Self {
@@ -33,29 +37,39 @@ impl Controls {
             pause,
             art,
             signature: String::new(),
+            shown: (None, screens::paused(), "Disconnected".into(), false),
         }
     }
     pub fn update(&mut self) {
-        if let Some(version) = super::update::available_version() {
-            let text = format!("Update available: v{version}");
-            if let Some(item) = &self.update_item {
-                item.set_text(text);
-            } else {
-                let item = MenuItem::with_id("fox-update", text, true, None);
-                let _ = self.menu.append(&item);
-                self.update_item = Some(item);
+        let update = super::update::available_version().map(|v| format!("Update available: v{v}"));
+        if update != self.shown.0 {
+            match (&update, &self.update_item) {
+                (Some(text), Some(item)) => item.set_text(text),
+                (Some(text), None) => {
+                    let item = MenuItem::with_id("fox-update", text, true, None);
+                    let _ = self.menu.append(&item);
+                    self.update_item = Some(item);
+                }
+                (None, _) => {
+                    if let Some(item) = self.update_item.take() {
+                        let _ = self.menu.remove(&item);
+                    }
+                }
             }
-        } else if let Some(item) = self.update_item.take() {
-            let _ = self.menu.remove(&item);
+            self.shown.0 = update;
         }
-        self.pause.set_checked(screens::paused());
+        let paused = screens::paused();
+        if paused != self.shown.1 {
+            self.pause.set_checked(paused);
+            self.shown.1 = paused;
+        }
         let Some(h) = art_service::handle() else {
             return;
         };
         let s = h.snapshot();
         let library = art_library::snapshot();
         let name = super::link::connected_name().unwrap_or_default();
-        self.status.set_text(format!(
+        let status = format!(
             "{} {name} / right art: {}",
             if s.connected {
                 "Connected"
@@ -63,7 +77,11 @@ impl Controls {
                 "Disconnected"
             },
             s.status.map_or_else(|| "unknown".into(), |s| s.to_string())
-        ));
+        );
+        if status != self.shown.2 {
+            self.status.set_text(&status);
+            self.shown.2 = status;
+        }
         let signature = format!(
             "{:?}{:?}",
             s.built_ins(),
@@ -73,7 +91,11 @@ impl Controls {
                 .map(|e| (&e.path, e.preview.is_ok()))
                 .collect::<Vec<_>>()
         );
-        self.art.set_enabled(s.connected && !s.busy);
+        let enabled = s.connected && !s.busy;
+        if enabled != self.shown.3 {
+            self.art.set_enabled(enabled);
+            self.shown.3 = enabled;
+        }
         if signature == self.signature {
             return;
         }
