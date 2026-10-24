@@ -18,7 +18,7 @@ enum screen_snap_status {
 /* Called only on the display queue. Returns false before the widget exists. */
 bool screen_snap_pixels(uint8_t out[SCREEN_SNAP_BYTES]);
 #if __has_include(<lvgl.h>)
-void screen_snap_canvas(uint8_t *out, const lv_color_t *pixels, int x);
+void screen_snap_canvas(uint8_t *out, const uint8_t *pixels, int x);
 #endif
 void screen_snap_pixel(uint8_t *out, int x, int y, bool ink);
 uint8_t screen_snap_local(void);

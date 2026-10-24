@@ -15,7 +15,7 @@
 // Indexed 1 bit: an 8-byte palette (0 = paper, 1 = ink), then rows of HOST_PANEL_STRIDE bytes,
 // MSB first: the host link's own format, so the buffer is copied as is.
 static uint8_t image[8 + HOST_PANEL_BYTES] = {0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0xff};
-static const lv_img_dsc_t image_dsc = {.header.cf = LV_IMG_CF_INDEXED_1BIT,
+static const lv_img_dsc_t image_dsc = {.header.cf = LV_COLOR_FORMAT_I1,
                                        .header.w = HOST_PANEL_W,
                                        .header.h = HOST_PANEL_H,
                                        .data_size = sizeof(image),
@@ -28,13 +28,13 @@ void host_panel_redraw(void) {
         if (!alive) {
             return; // made the first time the PC presents a frame; nothing at boot
         }
-        panel = lv_img_create(lv_layer_top());
-        lv_img_set_src(panel, &image_dsc);
+        panel = lv_image_create(lv_layer_top());
+        lv_image_set_src(panel, &image_dsc);
         lv_obj_set_pos(panel, HOST_PANEL_X, HOST_PANEL_Y);
     }
     if (alive) {
         lv_obj_clear_flag(panel, LV_OBJ_FLAG_HIDDEN);
-        lv_img_cache_invalidate_src(&image_dsc);
+        lv_image_cache_drop(&image_dsc);
         lv_obj_invalidate(panel);
     } else {
         lv_obj_add_flag(panel, LV_OBJ_FLAG_HIDDEN);
