@@ -28,7 +28,7 @@ fn main() {
     if foxglove::update::helper_entry() { return; }
     foxglove::update::start();
     os_layout::init();
-    let settings = Settings::load().unwrap_or_default();
+    let settings = foxglove::overlay_profile::effective(Settings::load().unwrap_or_default());
     let available_devices = discover_devices();
     if !foxglove::repaint_trace::disabled("screens") {
         foxglove::screens::start();
