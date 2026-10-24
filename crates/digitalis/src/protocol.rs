@@ -27,6 +27,8 @@ pub mod capabilities {
     pub const CONN_STATE_EVENT: u32 = 1 << 8;
     /// D7 83 RGB_STATE also arrives unsolicited when the underglow turns on or off.
     pub const RGB_STATE_EVENT: u32 = 1 << 11;
+    /// Settings BUILD_INFO (D7 09); HELLO bytes 27-30 carry the left's version and profile.
+    pub const BUILD_INFO: u32 = 1 << 12;
     /// Settings BOOTLOADER (D7 08), pre-GA test builds only.
     pub const BOOTLOADER: u32 = 1 << 9;
     /// Art SAVE / SLOT / ERASE (D6 06 / 07 / 08), flash slots on the right half.
@@ -70,6 +72,11 @@ pub mod settings {
     /// Both halves' underglow state.
     pub const RGB_STATE: u8 = 0x03;
     pub const CONN_STATE: u8 = 0x04;
+    /// Two-step reboot into the UF2 bootloader (#111): ARM returns a nonce, TRIGGER(half,
+    /// nonce) within 5 s acts on it.
+    pub const BOOTLOADER: u8 = 0x08;
+    /// A half's firmware version, profile and git SHA (firmware #133).
+    pub const BUILD_INFO: u8 = 0x09;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -331,6 +338,65 @@ pub struct Hello {
     pub capabilities: u32,
     /// Firmware panel timeout in seconds; zero keeps the frame indefinitely.
     pub panel_timeout_s: u16,
+    /// The left's firmware version (bytes 27-30); `None` from firmware older than that.
+    pub firmware: Option<FirmwareVersion>,
+}
+
+/// A half's firmware version and build profile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FirmwareVersion {
+    pub major: u8,
+    pub minor: u8,
+    pub patch: u8,
+    /// 0 = development build with test hooks, 1 = GA.
+    pub profile: u8,
+}
+
+impl FirmwareVersion {
+    fn parse(b: &[u8]) -> Option<FirmwareVersion> {
+        (b[..4] != [0, 0, 0, 0]).then(|| FirmwareVersion { major: b[0], minor: b[1], patch: b[2], profile: b[3] })
+    }
+}
+
+impl std::fmt::Display for FirmwareVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)?;
+        if self.profile == 0 {
+            write!(f, " (dev)")?;
+        }
+        Ok(())
+    }
+}
+
+pub fn build_info(half: u8) -> Vec<u8> {
+    vec![SETTINGS, settings::BUILD_INFO, half]
+}
+
+/// One half's build (the D7 89 reply).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BuildInfo {
+    /// 0 = left, 1 = right.
+    pub half: u8,
+    pub version: FirmwareVersion,
+    /// Short git SHA.
+    pub sha: String,
+}
+
+impl BuildInfo {
+    /// D7 89: status, half, major, minor, patch, profile, sha[8]. `Err` carries the status
+    /// (1 busy, 2 no relay link, 3 relay error, 4 right firmware without it, 5 bad half).
+    pub fn parse(r: &[u8; REPORT]) -> std::result::Result<BuildInfo, u8> {
+        if r[2] != 0 {
+            return Err(r[2]);
+        }
+        let sha = &r[8..16];
+        let end = sha.iter().position(|&b| b == 0).unwrap_or(sha.len());
+        Ok(BuildInfo {
+            half: r[3],
+            version: FirmwareVersion { major: r[4], minor: r[5], patch: r[6], profile: r[7] },
+            sha: String::from_utf8_lossy(&sha[..end]).into_owned(),
+        })
+    }
 }
 
 impl Hello {
@@ -348,6 +414,7 @@ impl Hello {
             debug: r[11..21].try_into().unwrap(),
             capabilities: u32::from_le_bytes(r[21..25].try_into().unwrap()),
             panel_timeout_s: u16::from_le_bytes(r[25..27].try_into().unwrap()),
+            firmware: FirmwareVersion::parse(&r[27..31]),
         }
     }
 
@@ -626,6 +693,25 @@ mod tests {
 /// HELLO capability for connection state queries.
 pub const CAP_CONN_STATE: u32 = capabilities::CONN_STATE;
 
+// BOOTLOADER layout (host_link.h, #111):
+//   ARM      D7 08 00                    -> D7 88 status nonce u32 LE
+//   TRIGGER  D7 08 01 half nonce u32 LE  -> D7 88 status half
+// status: 0 ok, 2 no relay link (right), 3 relay timeout, 4 not built in, 5 bad request,
+// 6 wrong/expired nonce. The left reboots ~300 ms after its TRIGGER reply.
+pub const BOOTLOADER_ARM: u8 = 0x00;
+pub const BOOTLOADER_TRIGGER: u8 = 0x01;
+
+pub fn bootloader_arm() -> Vec<u8> {
+    vec![SETTINGS, settings::BOOTLOADER, BOOTLOADER_ARM]
+}
+
+/// `half`: 0 left, 1 right.
+pub fn bootloader_trigger(half: u8, nonce: u32) -> Vec<u8> {
+    let mut r = vec![SETTINGS, settings::BOOTLOADER, BOOTLOADER_TRIGGER, half];
+    r.extend_from_slice(&nonce.to_le_bytes());
+    r
+}
+
 pub fn conn_state() -> Vec<u8> {
     vec![SETTINGS, settings::CONN_STATE]
 }
@@ -704,5 +790,25 @@ mod slot_tests {
         assert_eq!((s.flash_slots, s.flash_used, s.right_set), (8, 0b101, 18));
         r[9] = 2; // version 2: the bytes are underglow, not slots
         assert_eq!(ArtStatus::parse(&r).flash_slots, 0);
+    }
+}
+
+#[cfg(test)]
+mod build_info_tests {
+    use super::*;
+
+    #[test]
+    fn build_info_and_hello_version_parse() {
+        let mut r = [0u8; REPORT];
+        r[..16].copy_from_slice(&[0xD7, 0x89, 0, 1, 0, 3, 2, 1, b'a', b'b', b'c', b'1', b'2', b'3', b'4', 0]);
+        let b = BuildInfo::parse(&r).unwrap();
+        assert_eq!((b.half, b.version.to_string(), b.sha.as_str()), (1, "0.3.2".into(), "abc1234"));
+        r[2] = 4;
+        assert_eq!(BuildInfo::parse(&r), Err(4));
+        let mut h = [0u8; REPORT];
+        assert_eq!(Hello::parse(&h).firmware, None, "older firmware");
+        h[27..31].copy_from_slice(&[1, 0, 0, 0]);
+        assert_eq!(Hello::parse(&h).firmware.unwrap().to_string(), "1.0.0 (dev)");
+        assert_eq!(build_info(0), [0xD7, 0x09, 0]);
     }
 }

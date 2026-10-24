@@ -11,14 +11,19 @@
  *   01 HELLO   ver                  reply: ver, panel w, h, x, y, right link, right battery %,
  *                                   relay discovery result (int8), discovery tries,
  *                                   10 relay debug bytes, capabilities u32 LE (report bytes 21-24),
- *                                   panel timeout seconds u16 LE (bytes 25-26; 0 = never)
+ *                                   panel timeout seconds u16 LE (bytes 25-26; 0 = never),
+ *                                   the left's firmware version major, minor, patch, profile
+ *                                   (bytes 27-30; profile 0 dev, 1 GA),
+ *                                   split links the #122 guard dropped since boot (byte 31;
+ *                                   0 also when CONFIG_FOXGLOVE_SPLIT_GUARD is off)
  *      Capabilities: bit 0 panel, 1 art relay, 2 settings/RGB, 3 unsolicited art STATUS,
  *                    4 settings CONN_STATE, 5 POSITION (only when test hooks are built),
  *                    6 screen snapshots (D7 06/07), 7 INVOKE refuses &bt/&out/&bootloader/
  *                    &sys_reset/&soft_off with status 6 (firmware without it may press them),
  *                    8 unsolicited CONN_STATE (D7 84) on connection changes,
  *                    9 BOOTLOADER (D7 08; only when test hooks are built),
- *                    10 flash art slots (D6 06/07/08), 11 unsolicited RGB_STATE (D7 83).
+ *                    10 flash art slots (D6 06/07/08), 11 unsolicited RGB_STATE (D7 83),
+ *                    12 BUILD_INFO (D7 09; HELLO bytes 27-30).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -112,6 +117,12 @@
  *      Left joins the three already rotated TRUE_COLOR canvases (including the displayed host
  *      panel). Right overlays the INDEXED_1BIT art, using its palette, on the status canvas.
  *      Both captures run on zmk_display_work_q(), without touching LVGL from USB/BT RX.
+ *   09 BUILD_INFO  half u8 (0 left, 1 right)    reply: D7 89, status, half, major u8, minor u8,
+ *                                                patch u8, profile u8 (0 dev, 1 GA), sha[8]
+ *      sha is the short git SHA in ASCII, zero-padded. Status: 0 ok, 1 busy, 2 no relay link,
+ *      3 relay error/timeout (3 s), 4 right firmware without it, 5 bad half. The right's comes
+ *      with an offset read of the relay status value (after the slot table); the reply waits.
+ *      The version is FIRMWARE_VERSION (SemVer); release tags are fw-vX.Y.Z.
  *   08 BOOTLOADER (test hooks only), two steps so one stray report can't enter a bootloader:
  *      ARM      request D7 08 00                  reply D7 88, status, nonce u32 LE
  *      TRIGGER  request D7 08 01 half nonce u32   reply D7 88, status, half
@@ -145,6 +156,7 @@
 #define HOST_LINK_CAP_BOOTLOADER (1U << 9) // D7 08, test hooks only
 #define HOST_LINK_CAP_ART_SLOTS (1U << 10)  // D6 06/07/08 flash slots on the right
 #define HOST_LINK_CAP_RGB_STATE_EVENT (1U << 11)
+#define HOST_LINK_CAP_BUILD_INFO (1U << 12)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
@@ -153,6 +165,11 @@ void host_link_bootloader_reply(uint8_t status, uint8_t half);
 
 // Queues a report to the PC (nonblocking; dropped if the queue is full).
 void host_link_send(const uint8_t *data, int len);
+
+struct foxglove_build_info;
+// D7 89 BUILD_INFO reply; build may be NULL on errors.
+void host_link_build_info_reply(uint8_t status, uint8_t half,
+                                const struct foxglove_build_info *build);
 
 // rgb_idle.c, on the left: the underglow went on or off.
 void host_link_rgb_changed(void);

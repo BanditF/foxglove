@@ -32,6 +32,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #endif
 
 #include "art_relay.h"
+#include "half_marker.h"
 #include "host_link.h"
 #include "screen_snap.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
@@ -204,6 +205,9 @@ static void drop_peer(void) {
     memset(&dbg, 0, sizeof(dbg));
 }
 
+static void guard_arm(void);
+static void guard_cancel(bool encrypted);
+
 static bool still_connected(struct bt_conn *conn) {
     struct bt_conn_info info;
     return bt_conn_get_info(conn, &info) == 0 && info.state == BT_CONN_STATE_CONNECTED;
@@ -222,6 +226,7 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     bool was_ready = art_relay_link() == 2;
     drop_peer();
     peer = bt_conn_ref(conn);
+    guard_arm();
     if (bt_conn_get_security(conn) >= BT_SECURITY_L2) { // already encrypted: no security_changed
         k_work_reschedule(&discover_work, DISCOVER_DELAY);
     }
@@ -231,8 +236,11 @@ static void connected(struct bt_conn *conn, uint8_t err) {
 }
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err) {
-    if (conn == peer && !err && level >= BT_SECURITY_L2 && !(data_handle && status_handle)) {
-        k_work_reschedule(&discover_work, DISCOVER_DELAY);
+    if (conn == peer && !err && level >= BT_SECURITY_L2) {
+        guard_cancel(true);
+        if (!(data_handle && status_handle)) {
+            k_work_reschedule(&discover_work, DISCOVER_DELAY);
+        }
     }
 }
 
@@ -241,6 +249,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
         return;
     }
     bool was_ready = art_relay_link() == 2;
+    guard_cancel(false);
     drop_peer();
     if (was_ready) {
         host_link_art_status();
@@ -529,16 +538,19 @@ int art_relay_erase(uint8_t slot) {
 // D6 07 SLOT: one entry of the right's slot table, by an offset read of the status value.
 static uint8_t slot_index;
 static uint8_t slot_info[sizeof(struct art_relay_slot_info)];
-static uint16_t slot_got;
 static atomic_t slot_busy;
+// Where an offset read of the status value lands (one at a time: they run on relay_q, and a new
+// request is never sent while one is in flight).
+static uint8_t *ofs_buf;
+static uint16_t ofs_len, slot_got;
 
 static uint8_t slot_read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_params *params,
                             const void *data, uint16_t length) {
     if (data != NULL) {
-        uint16_t n = MIN(length, sizeof(slot_info) - slot_got);
-        memcpy(&slot_info[slot_got], data, n);
+        uint16_t n = MIN(length, ofs_len - slot_got);
+        memcpy(&ofs_buf[slot_got], data, n);
         slot_got += n;
-        if (slot_got < sizeof(slot_info)) {
+        if (slot_got < ofs_len) {
             return BT_GATT_ITER_CONTINUE; // Zephyr reads on from where this chunk ended
         }
         request_done(0);
@@ -558,6 +570,8 @@ static void slot_read_job(struct k_work *work) {
             status = 3;
             if (!atomic_get(&in_flight)) {
                 slot_got = 0;
+                ofs_buf = slot_info;
+                ofs_len = sizeof(slot_info);
                 params.func = slot_read_cb;
                 params.handle_count = 1;
                 params.single.handle = status_handle;
@@ -580,6 +594,48 @@ static void slot_read_job(struct k_work *work) {
     atomic_clear(&slot_busy);
 }
 static K_WORK_DEFINE(slot_read_work, slot_read_job);
+
+static atomic_t build_busy;
+
+static void build_read_job(struct k_work *work) {
+    static struct bt_gatt_read_params params;
+    static struct foxglove_build_info build;
+    uint8_t status = 2;
+    struct bt_conn *conn = job_conn();
+    if (conn != NULL) {
+        status = 4; // the right's firmware doesn't report it
+        if (right.version >= 4) {
+            status = 3;
+            if (!atomic_get(&in_flight)) {
+                slot_got = 0;
+                ofs_buf = (uint8_t *)&build;
+                ofs_len = sizeof(build);
+                params.func = slot_read_cb;
+                params.handle_count = 1;
+                params.single.handle = status_handle;
+                params.single.offset = sizeof(struct art_relay_status) +
+                                       ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info);
+                k_sem_reset(&gatt_done);
+                atomic_set(&in_flight, 1);
+                if (wait_done(bt_gatt_read(conn, &params)) == 0) {
+                    status = 0;
+                }
+            }
+        }
+        bt_conn_unref(conn);
+    }
+    host_link_build_info_reply(status, 1, status == 0 ? &build : NULL);
+    atomic_clear(&build_busy);
+}
+static K_WORK_DEFINE(build_read_work, build_read_job);
+
+int art_relay_build_info(void) {
+    if (!atomic_cas(&build_busy, 0, 1)) {
+        return -EBUSY;
+    }
+    k_work_submit_to_queue(&relay_q, &build_read_work);
+    return 0;
+}
 
 int art_relay_slot(uint8_t slot) {
     if (!atomic_cas(&slot_busy, 0, 1)) {
@@ -668,6 +724,58 @@ void art_relay_discovery(int8_t *result, uint8_t *tries) {
                   : discovery;
     *tries = discovery_tries;
 }
+
+/* #122 guard: a split link stuck below encryption gets dropped so ZMK reconnects */
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_SPLIT_GUARD)
+#define GUARD_AFTER K_SECONDS(20)
+#define GUARD_MAX_IN_ROW 3
+
+static uint8_t guard_drops;  // since boot, for HELLO
+static uint8_t guard_in_row; // drops since the last link that encrypted
+
+static void guard_cb(struct k_work *work) {
+    struct bt_conn *conn = NULL;
+    unsigned int key = irq_lock();
+    if (peer != NULL) {
+        conn = bt_conn_ref(peer);
+    }
+    irq_unlock(key);
+    if (conn == NULL) {
+        return;
+    }
+    if (still_connected(conn) && bt_conn_get_security(conn) < BT_SECURITY_L2) {
+        if (guard_in_row < GUARD_MAX_IN_ROW) {
+            guard_in_row++;
+            guard_drops = MIN(guard_drops + 1, UINT8_MAX);
+            LOG_WRN("split: link to the right not encrypted after 20 s (security %d, MTU %d), "
+                    "dropping it (%d in a row)",
+                    bt_conn_get_security(conn), bt_gatt_get_mtu(conn), guard_in_row);
+            bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        } else {
+            LOG_WRN("split: link to the right still not encrypted; leaving it (re-pair?)");
+        }
+    }
+    bt_conn_unref(conn);
+}
+// On relay_q: bt_conn_disconnect waits for the controller, which the system queue mustn't.
+static K_WORK_DELAYABLE_DEFINE(guard_work, guard_cb);
+
+static void guard_arm(void) { k_work_reschedule_for_queue(&relay_q, &guard_work, GUARD_AFTER); }
+
+static void guard_cancel(bool encrypted) {
+    k_work_cancel_delayable(&guard_work);
+    if (encrypted) {
+        guard_in_row = 0;
+    }
+}
+
+uint8_t art_relay_guard_drops(void) { return guard_drops; }
+#else
+static void guard_arm(void) {}
+static void guard_cancel(bool encrypted) {}
+uint8_t art_relay_guard_drops(void) { return 0; }
+#endif
 
 void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]) {
     out[0] = dbg.chrcs;

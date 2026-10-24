@@ -17,6 +17,11 @@ pub fn bus() -> &'static EventBus {
     BUS.get_or_init(EventBus::default)
 }
 
+/// The device found so far, without blocking or discovery.
+pub fn cached() -> Option<Arc<DigitalisDevice>> {
+    DEVICE.try_lock().ok()?.clone()
+}
+
 /// The keyboard with Foxglove's host link, found once and kept while it stays connected. May
 /// block on discovery: call it off the UI thread.
 pub fn device() -> Option<Arc<DigitalisDevice>> {
@@ -42,6 +47,13 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
         device
     });
     cached.clone()
+}
+
+/// The current device's connection generation, without blocking or discovery (for the UI).
+pub fn generation() -> Option<u64> {
+    let cached = DEVICE.try_lock().ok()?;
+    let state = cached.as_ref()?.link().state();
+    state.connected.is_some().then_some(state.generation)
 }
 
 /// What the keymap lets the app invoke (the allowlist) and its `&rgb_ug` behavior.

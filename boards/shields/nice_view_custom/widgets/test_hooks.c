@@ -1,5 +1,8 @@
 /* Position injection follows the same event path as kscan. SPDX-License-Identifier: MIT */
 #include <zephyr/kernel.h>
+
+// The half that talks to the PC: a split central, or a keyboard that isn't split at all.
+#define FOXGLOVE_CENTRAL (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
 #include <zephyr/random/random.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/reboot.h>
@@ -8,7 +11,7 @@
 #include <zmk/event_manager.h>
 #include <zmk/events/position_state_changed.h>
 #include <zmk/matrix.h>
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if FOXGLOVE_CENTRAL
 #include <zmk/keymap.h>
 #include "behavior_safety.h"
 #include "host_link.h"
@@ -23,7 +26,9 @@ BUILD_ASSERT(ZMK_KEYMAP_LEN <= 64, "Injection bitmap has 64 positions");
  * Do not subtract 24 or apply the column offset again on the peripheral. */
 static const uint32_t position_map[] = DT_PROP(DT_NODELABEL(default_transform), map);
 BUILD_ASSERT(ARRAY_SIZE(position_map) == ZMK_KEYMAP_LEN, "Unexpected Eyelash layout");
-static bool is_right(uint8_t pos) { return (position_map[pos] & 0xff) >= 7; }
+static bool is_right(uint8_t pos) {
+    return IS_ENABLED(CONFIG_ZMK_SPLIT) && (position_map[pos] & 0xff) >= 7;
+}
 
 /* Only system queue callbacks access this bitmap and its deadlines. */
 static uint64_t downs;
@@ -37,7 +42,7 @@ static K_WORK_DELAYABLE_DEFINE(safety_work, safety_cb);
 
 void test_hooks_host_seen(void) { atomic_set(&host_seen_at, k_uptime_get_32()); }
 
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if FOXGLOVE_CENTRAL
 static bool position_refused(uint8_t pos) {
     /* Match v0.3's layer order, including reordered Studio layers and the default
      * layer floor. Only &trans falls through; &none consumes the position. */
@@ -69,7 +74,7 @@ static bool position_refused(uint8_t pos) {
 #endif
 
 static void finish(uint8_t status) {
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if FOXGLOVE_CENTRAL
     if (!automatic) {
         host_link_position_reply(status, request_pos);
     }
@@ -112,7 +117,7 @@ static void press_cb(struct k_work *work) {
         finish(0);
         return;
     }
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if FOXGLOVE_CENTRAL
     if (request_state && position_refused(pos)) {
         finish(6);
         return;
@@ -122,12 +127,12 @@ static void press_cb(struct k_work *work) {
         downs |= bit;
         expires[pos] = k_uptime_get() + 10000;
     }
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL) && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+#if FOXGLOVE_CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     if (is_right(pos)) {
         art_relay_press(pos, request_state);
         return;
     }
-#elif IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#elif FOXGLOVE_CENTRAL
     if (is_right(pos)) {
         downs &= ~bit;
         finish(2);
@@ -146,7 +151,7 @@ uint8_t test_hooks_press(uint8_t pos, uint8_t state) {
     if (pos >= ZMK_KEYMAP_LEN || state > 1) {
         return 5;
     }
-#if !IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if !FOXGLOVE_CENTRAL
     if (!is_right(pos)) {
         return 5;
     }
@@ -164,7 +169,7 @@ uint8_t test_hooks_press(uint8_t pos, uint8_t state) {
 static void safety_cb(struct k_work *work) {
     int64_t now = k_uptime_get();
     bool quiet = false;
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if FOXGLOVE_CENTRAL
     quiet = (uint32_t)(k_uptime_get_32() - atomic_get(&host_seen_at)) >= 10000;
 #endif
     for (int pos = 0; pos < ZMK_KEYMAP_LEN; pos++) {
@@ -172,7 +177,7 @@ static void safety_cb(struct k_work *work) {
         if (!(downs & bit) || (!quiet && now < expires[pos])) {
             continue;
         }
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if FOXGLOVE_CENTRAL
         if (is_right(pos)) {
             if (atomic_cas(&busy, 0, 1)) {
                 request_pos = pos;
@@ -203,7 +208,7 @@ static K_WORK_DELAYABLE_DEFINE(reboot_work, reboot_cb);
 
 void test_hooks_reboot_soon(void) { k_work_schedule(&reboot_work, BOOT_DELAY); }
 
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if FOXGLOVE_CENTRAL
 static uint32_t boot_nonce; // 0 = not armed
 static int64_t boot_armed_at;
 static atomic_t boot_relaying;
@@ -224,7 +229,17 @@ bool test_hooks_bootloader(const uint8_t *d, int len, uint8_t r[7]) {
         sys_put_le32(boot_nonce, &r[3]);
         return false;
     }
-    if (len < 8 || d[2] != 1 || d[3] > 1) {
+    if (len >= 3 && d[2] == 1) {
+        // Any TRIGGER uses the nonce up, a malformed one too: no second try after a bad guess.
+        uint32_t armed = boot_nonce;
+        boot_nonce = 0;
+        if (len < 8 || d[3] > 1) {
+            r[3] = len >= 4 ? d[3] : 0;
+            return false; // status 5
+        }
+        boot_nonce = armed; // checked below, then used up there
+    }
+    if (len < 8 || d[2] != 1) {
         return false;
     }
     uint8_t half = d[3];

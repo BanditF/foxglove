@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/BanditF/foxglove/docs/test-lab/report.schema.json",
+  "title": "foxglove-lab release-gate report",
+  "description": "report.json written by crates/foxglove-lab. Version 2. Readers must check schema and version; fields may be added within a version, never removed or renamed.",
+  "type": "object",
+  "required": ["schema", "version", "verdict", "suite", "generated_utc", "environment", "firmware", "app", "areas", "counts", "cases"],
+  "properties": {
+    "schema": { "const": "foxglove-lab-report" },
+    "version": { "const": 2 },
+    "verdict": {
+      "enum": ["PASS", "FAIL"],
+      "description": "The release gate: PASS only if no case failed and no case tagged release is blocked."
+    },
+    "suite": { "type": "string", "description": "Suite name or path given to foxglove-lab run --suite." },
+    "generated_utc": { "type": "string", "description": "RFC 3339 start time of the run." },
+    "environment": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "git_sha, runner_version, app_manifest_version, os, arch, local_ids, product, connection_error (when the keyboard couldn't be reached)."
+    },
+    "firmware": {
+      "type": "object",
+      "required": ["hello", "left", "right"],
+      "properties": {
+        "hello": { "description": "Decoded HELLO (capabilities, right_link, discovery, ...), or null without a connection." },
+        "left": { "$ref": "#/$defs/build" },
+        "right": { "$ref": "#/$defs/build" }
+      }
+    },
+    "app": {
+      "type": "object",
+      "required": ["running", "path", "version"],
+      "properties": {
+        "running": { "type": "boolean" },
+        "path": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"] }
+      }
+    },
+    "areas": {
+      "type": "array",
+      "description": "One entry per area (a case's first tag other than release), in first-seen order.",
+      "items": {
+        "type": "object",
+        "required": ["name", "verdict", "pass", "fail", "blocked", "skipped"],
+        "properties": {
+          "name": { "type": "string" },
+          "verdict": { "enum": ["PASS", "FAIL", "BLOCKED"] },
+          "pass": { "type": "integer" },
+          "fail": { "type": "integer" },
+          "blocked": { "type": "integer" },
+          "skipped": { "type": "integer" }
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "required": ["pass", "fail", "blocked", "skipped"],
+      "additionalProperties": { "type": "integer" }
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "area", "description", "tags", "manual", "status", "elapsed_ms", "message", "steps"],
+        "properties": {
+          "id": { "type": "string", "description": "Anchor in report.html (case-1, case-2, ...)." },
+          "name": { "type": "string" },
+          "area": { "type": "string" },
+          "description": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "manual": { "type": "boolean" },
+          "status": { "$ref": "#/$defs/status" },
+          "elapsed_ms": { "type": "integer" },
+          "message": { "type": "string", "description": "Why a case failed or is blocked; empty on a pass." },
+          "steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["status", "elapsed_ms", "expected", "actual", "attachments"],
+              "properties": {
+                "status": { "$ref": "#/$defs/status" },
+                "elapsed_ms": { "type": "integer" },
+                "expected": { "description": "The step as written in the suite." },
+                "actual": { "type": "string" },
+                "attachments": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "Files next to report.json, e.g. screen captures (PNG, portrait, 4x)."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "status": { "enum": ["PASS", "FAIL", "BLOCKED", "SKIPPED"] },
+    "build": {
+      "description": "A half's running build from D7 09 BUILD_INFO, or null when the firmware can't tell.",
+      "type": ["object", "null"],
+      "required": ["version", "profile", "sha"],
+      "properties": {
+        "version": { "type": "string" },
+        "profile": { "enum": ["dev", "ga"] },
+        "sha": { "type": "string" }
+      }
+    }
+  }
+}

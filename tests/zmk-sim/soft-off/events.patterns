@@ -1,3 +1,3 @@
-# M is normal on base, RGB on NUMBER, Plus on SYMBOL; ADMIN+M short/1900ms do not power off, 2100ms calls real soft-off behavior. Q+S+Z emits normal keys only.
+# M on QWERTY/NUMBER/SYMBOL/FUNCTION is never soft-off; on SYSTEM (43+46, hold 0) a short tap and 1.9 s do not power off, 2.1 s calls the real soft-off behavior (exactly one SIM_SOFT_OFF, between the 2nd and 3rd F1). Q+S+Z emits normal keys only.
 s/.*hid_listener_keycode/kp/p
 /^SIM_SOFT_OFF$/p

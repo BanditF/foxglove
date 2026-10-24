@@ -2,10 +2,12 @@
 
 &kscan {
     events = <
-        ZMK_MOCK_PRESS(3,4,30) // position 43
-        ZMK_MOCK_PRESS(3,7,30) // position 46
-        ZMK_MOCK_PRESS(1,5,30) // position 18
+        ZMK_MOCK_PRESS(3,4,30) // position 43: NUMBER (GAME+ in GAME)
+        ZMK_MOCK_PRESS(3,7,30) // position 46: SYMBOL -> FUNCTION
+        ZMK_MOCK_PRESS(0,0,30) // position 0: FUNCTION &mo 6 -> SYSTEM
+        ZMK_MOCK_PRESS(1,5,30) // position 18: SYSTEM &tog 3 (GAME)
         ZMK_MOCK_RELEASE(1,5,30) // position 18
+        ZMK_MOCK_RELEASE(0,0,30) // position 0
         ZMK_MOCK_RELEASE(3,7,30) // position 46
         ZMK_MOCK_RELEASE(3,4,30) // position 43
         ZMK_MOCK_PRESS(0,0,30) // position 0
@@ -66,10 +68,12 @@
         ZMK_MOCK_RELEASE(0,1,30) // position 1
         ZMK_MOCK_PRESS(0,0,30) // position 0
         ZMK_MOCK_RELEASE(0,0,30) // position 0
-        ZMK_MOCK_PRESS(3,4,30) // position 43
-        ZMK_MOCK_PRESS(3,7,30) // position 46
-        ZMK_MOCK_PRESS(1,5,30) // position 18
+        ZMK_MOCK_PRESS(3,4,30) // position 43: NUMBER (GAME+ in GAME)
+        ZMK_MOCK_PRESS(3,7,30) // position 46: SYMBOL -> FUNCTION
+        ZMK_MOCK_PRESS(0,0,30) // position 0: FUNCTION &mo 6 -> SYSTEM
+        ZMK_MOCK_PRESS(1,5,30) // position 18: SYSTEM &tog 3 (GAME)
         ZMK_MOCK_RELEASE(1,5,30) // position 18
+        ZMK_MOCK_RELEASE(0,0,30) // position 0
         ZMK_MOCK_RELEASE(3,7,30) // position 46
         ZMK_MOCK_RELEASE(3,4,30) // position 43
         ZMK_MOCK_PRESS(0,0,30) // position 0

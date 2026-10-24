@@ -1,3 +1,3 @@
-# All 2 press orders x 2 release orders; Q position probes NUMBER/GAME+, SYMBOL, ADMIN, then base. ADMIN+G toggles GAME on and off; Esc/Tab proves mode.
+# GAME on via FUNCTION+SYSTEM (43+46, hold 0, tap 18 = &tog 3), then all 2 press orders x 2 release orders; Q position probes GAME+, SYMBOL, FUNCTION (F1), then base; the same path toggles GAME off. Esc (GAME) vs Tab (QWERTY) at position 0 proves the mode.
 s/.*hid_listener_keycode/kp/p
 /^SIM_SOFT_OFF$/p

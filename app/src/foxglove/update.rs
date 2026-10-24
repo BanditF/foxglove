@@ -47,19 +47,32 @@ impl Transport for Http {
             .read_to_vec()?)
     }
 }
-fn settings_path() -> Option<PathBuf> {
-    crate::settings::Settings::config_file_path().map(|p| p.with_file_name("updates.ini"))
+/// The `[updates]` section of the settings store.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct UpdateSettings {
+    check_at_startup: bool,
 }
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        UpdateSettings { check_at_startup: true }
+    }
+}
+
 fn startup_enabled() -> bool {
-    settings_path()
-        .and_then(|p| ini::Ini::load_from_file(p).ok())
-        .and_then(|i| {
-            i.section(Some("updates"))
-                .and_then(|s| s.get("check_at_startup"))
-                .map(str::to_owned)
-        })
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(true)
+    super::store::load_or_migrate("updates", || {
+        // The old updates.ini, from before the store.
+        let ini = crate::settings::Settings::config_file_path()?.with_file_name("updates.ini");
+        let on = ini::Ini::load_from_file(&ini)
+            .ok()?
+            .section(Some("updates"))?
+            .get("check_at_startup")?
+            .parse()
+            .ok()?;
+        Some((UpdateSettings { check_at_startup: on }, vec![ini]))
+    })
+    .check_at_startup
 }
 fn folder() -> Result<PathBuf> {
     let p = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?)
@@ -163,15 +176,7 @@ pub fn group(ui: &mut egui::Ui) {
             .checkbox(&mut enabled, "Check for updates at startup")
             .changed()
         {
-            let result = (|| -> Result<()> {
-                let p = settings_path().ok_or("Settings directory unavailable")?;
-                std::fs::create_dir_all(p.parent().ok_or("Invalid settings path")?)?;
-                let mut conf = ini::Ini::new();
-                conf.with_section(Some("updates"))
-                    .set("check_at_startup", enabled.to_string());
-                conf.write_to_file(p)?;
-                Ok(())
-            })();
+            let result = super::store::save("updates", &UpdateSettings { check_at_startup: enabled });
             if let Err(e) = result {
                 state().message = e.to_string();
             }

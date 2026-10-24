@@ -74,6 +74,19 @@ impl Facts {
         Some(old)
     }
 
+    /// The facts matching `pattern` (exact key, `prefix.*` or `*`), sorted by key.
+    pub fn list(&self, pattern: &str) -> Vec<(String, Value)> {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut facts: Vec<_> = inner
+            .values
+            .iter()
+            .filter(|(k, _)| matches(pattern, k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        facts.sort_by(|a, b| a.0.cmp(&b.0));
+        facts
+    }
+
     /// Removes every key starting with `prefix` except those in `keep`, notifying each.
     pub fn remove_prefix(&self, prefix: &str, keep: &[&str]) {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
@@ -89,7 +102,7 @@ impl Facts {
         }
     }
 
-    /// Exact key or trailing `.*` subtree. Only future changes are sent.
+    /// Exact key, trailing `.*` subtree, or `*` for every key. Only future changes are sent.
     /// Receivers use unbounded queues; callers should drain or drop them.
     pub fn subscribe(&self, pattern: impl Into<String>) -> Receiver<Change> {
         let (tx, rx) = mpsc::channel();
@@ -102,13 +115,18 @@ impl Facts {
     }
 }
 
-fn notify(inner: &mut Inner, change: Change) {
-    inner.subscribers.retain(|(pattern, tx)| {
-        let matches = pattern
+/// Exact key, trailing `.*` subtree, or `*`.
+fn matches(pattern: &str, key: &str) -> bool {
+    pattern == "*"
+        || pattern
             .strip_suffix('*')
             .filter(|p| p.ends_with('.'))
-            .map_or(pattern == &change.key, |p| change.key.starts_with(p));
-        !matches || tx.send(change.clone()).is_ok()
+            .map_or(pattern == key, |p| key.starts_with(p))
+}
+
+fn notify(inner: &mut Inner, change: Change) {
+    inner.subscribers.retain(|(pattern, tx)| {
+        !matches(pattern, &change.key) || tx.send(change.clone()).is_ok()
     });
 }
 

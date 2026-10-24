@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use crate::protocols::{ConnectionSpec, ZmkTransportConfig};
 use digitalis::protocol::{ConnState, CAP_CONN_STATE};
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 struct Status {
     usb: Option<bool>,
     windows_ble: Option<bool>,
@@ -42,6 +42,9 @@ pub fn refresh() {
 }
 
 pub fn start(ctx: &egui::Context) {
+    if super::repaint_trace::disabled("status") {
+        return;
+    }
     WAKE.get_or_init(|| {
         let (tx, rx) = mpsc::channel();
         let rx = Mutex::new(rx);
@@ -86,8 +89,13 @@ pub fn start(ctx: &egui::Context) {
                     links.push(link);
                 }
                 let status = read(force, &mut previous_link);
-                *STATUS.lock().unwrap_or_else(|e| e.into_inner()) = status;
-                ctx.request_repaint();
+                // Repaint only for news: an unchanged status must not wake an idle UI (#100).
+                let mut current = STATUS.lock().unwrap_or_else(|e| e.into_inner());
+                if *current != status {
+                    *current = status;
+                    ctx.request_repaint();
+                }
+                drop(current);
                 match rx.recv() {
                     Ok(request) => force = request,
                     Err(_) => break,
@@ -330,7 +338,9 @@ mod windows_status {
         ]);
         let watcher = DeviceInformation::CreateWatcherWithKindAqsFilterAndAdditionalProperties(
             &windows::core::HSTRING::from(
-                r#"System.Devices.Aep.ProtocolId:="{BB7BB05E-5972-42B5-94FC-76EAA7084D49}""#,
+                // Paired endpoints only: an unpaired AEP query makes Windows scan for every
+                // Bluetooth LE device in range, with thread-pool callbacks for each (#100).
+                r#"System.Devices.Aep.ProtocolId:="{BB7BB05E-5972-42B5-94FC-76EAA7084D49}" AND System.Devices.Aep.IsPaired:=System.StructuredQueryType.Boolean#True"#,
             ),
             &properties,
             DeviceInformationKind::AssociationEndpoint,
