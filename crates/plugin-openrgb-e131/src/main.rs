@@ -14,6 +14,7 @@
 mod e131;
 
 use std::net::{Ipv4Addr, UdpSocket};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use foxglove_plugin::{Hsb, Plugin, LightingState, SetLightingParams};
@@ -70,16 +71,39 @@ fn hsb((r, g, b): (u8, u8, u8)) -> Hsb {
 }
 
 /// The keyboards with lights, and how their lights were before we took over.
-fn take_over(plugin: &Plugin) -> Vec<(String, Option<LightingState>)> {
+///
+/// What a keyboard showed before the plugin's first takeover is kept for later ones: if a new
+/// takeover finds the keyboard still on the plugin's own last colour (a restore it didn't take,
+/// or one not applied yet), that colour isn't mistaken for the user's.
+fn take_over(
+    plugin: &Plugin,
+    original: &mut HashMap<String, LightingState>,
+    ours: Option<Hsb>,
+) -> Vec<(String, Option<LightingState>)> {
     plugin.devices()
         .unwrap_or_default()
         .into_iter()
         .filter(|d| d.connected && d.caps.iter().any(|c| c == "lighting"))
         .map(|d| {
-            let before = plugin.lighting_state(&d.id).ok();
+            let read = plugin.lighting_state(&d.id).ok();
+            let leftover = |s: &LightingState| ours.is_some_and(|c| near(s.hue, c.hue, 360) && near(s.saturation.into(), c.saturation.into(), 1000));
+            let before = match (read, original.get(&d.id)) {
+                (Some(s), Some(kept)) if leftover(&s) => Some(kept.clone()),
+                (Some(s), _) => {
+                    original.insert(d.id.clone(), s.clone());
+                    Some(s)
+                }
+                (None, kept) => kept.cloned(),
+            };
             (d.id, before)
         })
         .collect()
+}
+
+/// Within 2 of each other, around `wrap`.
+fn near(a: u16, b: u16, wrap: u16) -> bool {
+    let d = a.abs_diff(b);
+    d.min(wrap.saturating_sub(d)) <= 2
 }
 
 /// Sends only what changed since `previous` (each part is a separate keyboard command): the
@@ -105,14 +129,13 @@ const RESENDS: u32 = 3;
 
 /// Whether the keyboard shows what `set` asked for: on or off, and the hue and saturation
 /// (brightness aside: the keyboard may dim on battery).
+///
+/// The colour is compared even with the lights off: the keyboard keeps it for when they come
+/// back on, so a lost colour write in a restore would otherwise go unnoticed.
 fn shows(state: &LightingState, set: &SetLightingParams) -> bool {
-    let near = |a: u16, b: u16, wrap: u16| {
-        let d = a.abs_diff(b);
-        d.min(wrap.saturating_sub(d)) <= 2
-    };
     set.on.is_none_or(|on| state.on == on)
-        && (!state.on
-            || set.color.is_none_or(|c| near(state.hue, c.hue, 360) && near(state.saturation.into(), c.saturation.into(), 1000)))
+        && set.color.is_none_or(|c| near(state.hue, c.hue, 360) && near(state.saturation.into(), c.saturation.into(), 1000))
+        && set.effect.as_ref().is_none_or(|e| state.effect == *e)
 }
 
 /// Reads the lights back after a change and sends the whole colour again (on, colour, static
@@ -208,6 +231,9 @@ fn main() {
     // The last sequence number per sender (E1.31 numbers frames per source).
     let mut last_seq: Option<([u8; 16], u8)> = None;
     let mut devices: Option<Vec<(String, Option<LightingState>)>> = None;
+    // The lights from before the first takeover, and the last colour this plugin showed.
+    let mut original: HashMap<String, LightingState> = HashMap::new();
+    let mut ours: Option<Hsb> = None;
     let mut last_data = Instant::now();
     let mut wanted: Option<Hsb> = None;
     let mut sent: Option<Hsb> = None;
@@ -231,7 +257,7 @@ fn main() {
                 } else if let Some(rgb) = average(p.channels, opts.start_channel, opts.leds) {
                     if devices.is_none() {
                         eprintln!("openrgb-e131: first frame from {from} (universe {}): taking over the lights", p.universe);
-                        devices = Some(take_over(&plugin));
+                        devices = Some(take_over(&plugin, &mut original, ours));
                     }
                     wanted = Some(hsb(rgb));
                 }
@@ -240,6 +266,7 @@ fn main() {
         let now = Instant::now();
         if devices.is_some() && (stop || now.duration_since(last_data) > LOSS_TIMEOUT) {
             restore(&plugin, devices.as_deref().unwrap_or_default());
+            ours = sent.or(ours);
             (devices, wanted, sent, last_seq) = (None, None, None, None);
             continue;
         }

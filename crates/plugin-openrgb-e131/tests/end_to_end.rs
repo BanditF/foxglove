@@ -17,14 +17,17 @@ struct Keyboard {
     sets: Mutex<Vec<Value>>,
     state: Mutex<Value>,
     drop: std::sync::atomic::AtomicUsize,
+    /// Writes whose colour part is lost (the rest applies).
+    drop_color: std::sync::atomic::AtomicUsize,
 }
 
 impl Default for Keyboard {
     fn default() -> Self {
         Keyboard {
             sets: Mutex::default(),
-            state: Mutex::new(json!({"on": true, "hue": 200, "saturation": 50, "brightness": 40, "effect": "3", "speed": 1})),
+            state: Mutex::new(json!({"on": false, "hue": 200, "saturation": 50, "brightness": 40, "effect": "3", "speed": 1})),
             drop: Default::default(),
+            drop_color: Default::default(),
         }
     }
 }
@@ -43,7 +46,8 @@ impl Devices for Keyboard {
                     if let Some(on) = params.get("on").filter(|v| !v.is_null()) {
                         state["on"] = on.clone();
                     }
-                    if let Some(c) = params.get("color").filter(|v| !v.is_null()) {
+                    let color_lost = self.drop_color.try_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| n.checked_sub(1)).is_ok();
+                    if let Some(c) = params.get("color").filter(|v| !v.is_null() && !color_lost) {
                         state["hue"] = c["hue"].clone();
                         state["saturation"] = c["saturation"].clone();
                         state["brightness"] = c["brightness"].clone();
@@ -120,7 +124,7 @@ fn a_frame_colours_the_keyboard_and_the_sender_stopping_restores_it() {
     let sets = wait_for(&keyboard, 2, Duration::from_secs(30));
     assert_eq!(
         sets.get(1),
-        Some(&json!({"device": "kb", "on": true, "color": {"hue": 200, "saturation": 50, "brightness": 40}, "effect": "3"})),
+        Some(&json!({"device": "kb", "on": false, "color": {"hue": 200, "saturation": 50, "brightness": 40}, "effect": "3"})),
         "{sets:?}"
     );
     // A new takeover whose first write the keyboard loses: the plugin reads the lights back and
@@ -143,6 +147,20 @@ fn a_frame_colours_the_keyboard_and_the_sender_stopping_restores_it() {
     let until = Instant::now() + Duration::from_secs(30);
     while keyboard.state.lock().unwrap()["hue"] != json!(240) {
         assert!(Instant::now() < until, "a new sender's frame was dropped: {:?}", keyboard.sets.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The sender stops, and the restore's colour write is lost while the lights go off: the
+    // keyboard would keep the plugin's colour for the next time they come on. The colour is
+    // checked even when off, so it's sent again.
+    keyboard.drop_color.store(1, std::sync::atomic::Ordering::Relaxed);
+    send(green.wrapping_add(1), 0, 0, 0, true);
+    let until = Instant::now() + Duration::from_secs(30);
+    loop {
+        let state = keyboard.state.lock().unwrap().clone();
+        if state["hue"] == json!(200) {
+            break;
+        }
+        assert!(Instant::now() < until, "the restore's lost colour wasn't sent again: {state}");
         std::thread::sleep(Duration::from_millis(20));
     }
     drop(runner);
