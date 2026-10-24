@@ -5,7 +5,9 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use super::art_cycle::{self, Cycle};
 
 use digitalis::art;
 use digitalis::link::{Event as LinkEvent, EventSubscription, Link};
@@ -32,6 +34,8 @@ pub struct Snapshot {
     pub error: Option<String>,
     /// The right half's flash slots, read on connect and after a save or erase.
     pub slots: Vec<SlotInfo>,
+    /// The hotlist and how it cycles (#60).
+    pub cycle: Cycle,
 }
 
 impl Snapshot {
@@ -74,6 +78,10 @@ enum Command {
     Choose(Choice),
     Save { slot: u8, name: String },
     Erase(u8),
+    /// Show the hotlist's next entry (timer, lights wake, or the UI's "Next").
+    Next,
+    /// The hotlist or its mode changed: reschedule.
+    CycleChanged,
 }
 
 #[derive(Clone)]
@@ -136,6 +144,20 @@ impl Handle {
 
     pub fn erase_slot(&self, slot: u8) -> bool {
         self.submit(Command::Erase(slot))
+    }
+
+    /// Replaces the hotlist and its mode, saves them, and reschedules the cycling.
+    pub fn set_cycle(&self, cycle: Cycle) -> Result<(), String> {
+        let saved = cycle.save().map_err(|e| format!("saving the hotlist: {e}"));
+        self.update(|s| s.cycle = cycle);
+        let _ = self.commands.send(Command::CycleChanged);
+        saved
+    }
+
+    /// Shows the hotlist's next entry now.
+    pub fn next(&self) -> bool {
+        let _ = self.commands.send(Command::Next);
+        true
     }
 
     /// Stops further writes/polls; a relay already committed may finish on the keyboard.
@@ -286,7 +308,10 @@ fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let pinned = settings_path()
         .and_then(|p| std::fs::read(p).ok())
         .and_then(|b| serde_json::from_slice::<Choice>(&b).ok());
-    h.update(|s| s.pinned = pinned);
+    h.update(|s| {
+        s.pinned = pinned;
+        s.cycle = Cycle::load();
+    });
     let notifications = h.commands.clone();
     let _subscription = super::link::subscribe_links(move |link| {
         let _ = notifications.send(Command::Available(link));
@@ -299,8 +324,52 @@ fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
 fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let mut links: Vec<(Arc<Link>, EventSubscription)> = Vec::new();
     let mut current: Option<(usize, u64)> = None;
+    // When the timed hotlist mode next changes the art; only while a keyboard is connected.
+    let mut due: Option<Instant> = None;
     while !h.stop.load(Ordering::Relaxed) {
-        let Ok(command) = receiver.recv() else { break };
+        let received = match due {
+            Some(at) => receiver.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => receiver.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+        };
+        let command = match received {
+            Ok(command) => command,
+            Err(mpsc::RecvTimeoutError::Timeout) => Command::Next,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let reschedule = |connected: bool| {
+            connected
+                .then(|| h.snapshot().cycle.period())
+                .flatten()
+                .map(|p| Instant::now() + p)
+        };
+        let command = match command {
+            Command::CycleChanged => {
+                due = reschedule(current.is_some());
+                continue;
+            }
+            Command::Next => {
+                due = reschedule(current.is_some());
+                let snap = h.snapshot();
+                let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
+                    continue;
+                };
+                let mut cycle = snap.cycle;
+                let Some(choice) = cycle.advance(|item| {
+                    art_cycle::resolve(item, st.right_set_count, st.flash_used)
+                }) else {
+                    continue;
+                };
+                let _ = cycle.save();
+                h.update(|s| {
+                    s.cycle = cycle;
+                    s.busy = true;
+                    s.error = None;
+                });
+                h.cancel.store(false, Ordering::Relaxed);
+                Command::Choose(choice)
+            }
+            other => other,
+        };
         let mut reported = None;
         // On a new connection, the flash slots are read once its status is in.
         let mut connected_now = false;
@@ -327,6 +396,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 };
                 if current.is_some_and(|(active, _)| active == id) && state.connected.is_none() {
                     current = None;
+                    due = None;
                     h.update(|s| {
                         s.connected = false;
                         s.status = None;
@@ -346,6 +416,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 current = Some((id, state.generation));
                 h.update(|s| s.connected = true);
                 connected_now = true;
+                due = reschedule(true);
                 true
             }
             Command::Link(source, LinkEvent::ArtStatus { generation, report }) => {

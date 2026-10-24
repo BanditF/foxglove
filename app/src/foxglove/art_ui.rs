@@ -127,6 +127,7 @@ pub fn group(ui: &mut egui::Ui) {
                 });
             }
             slots_section(ui, &h, &s);
+            cycle_section(ui, &h, &s);
         });
         if s.busy {
             if let Some((done, total)) = s.progress() {
@@ -223,4 +224,109 @@ fn slots_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Sn
             ui.weak("Push a file first; saving copies the set now playing on the right.");
         }
     });
+}
+
+/// The hotlist and how it cycles (#60).
+fn cycle_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Snapshot) {
+    use super::art_cycle::{Item, Mode};
+    let Some(st) = s.status else {
+        return;
+    };
+    ui.add_space(6.0);
+    ui.label("Hotlist");
+    let mut cycle = s.cycle.clone();
+    let mut changed = false;
+
+    ui.horizontal(|ui| {
+        changed |= ui.radio_value(&mut cycle.mode, Mode::Off, "Don't cycle").changed();
+        let minutes = match cycle.mode {
+            Mode::Minutes(m) => m,
+            _ => 5,
+        };
+        changed |= ui
+            .radio_value(&mut cycle.mode, Mode::Minutes(minutes), "Every")
+            .changed();
+        let mut m = minutes;
+        if ui
+            .add(egui::DragValue::new(&mut m).range(1..=1440).suffix(" min"))
+            .changed()
+        {
+            cycle.mode = Mode::Minutes(m);
+            changed = true;
+        }
+        ui.add_enabled(false, egui::RadioButton::new(cycle.mode == Mode::LightsWake, "When the lights wake"))
+            .on_disabled_hover_text("Needs keyboard firmware that reports when the lights come back on.");
+    });
+
+    let names = super::art_manifest::sets(st.right_set_count);
+    let label = |item: &Item| match item {
+        Item::BuiltIn(name) => names
+            .and_then(|sets| sets.iter().find(|set| &set.name == name))
+            .map_or_else(|| name.clone(), |set| set.label.clone()),
+        Item::Slot(n) => s
+            .slots
+            .iter()
+            .find(|i| i.slot == *n && i.used)
+            .map_or_else(|| format!("slot {} (empty)", n + 1), |i| format!("saved \"{}\"", i.name)),
+        Item::File(p) => p.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
+    };
+    let mut remove = None;
+    for (i, item) in cycle.items.iter().enumerate() {
+        ui.horizontal(|ui| {
+            if i == cycle.position {
+                ui.strong("▶");
+            }
+            ui.label(label(item));
+            if ui.small_button("Remove").clicked() {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        cycle.items.remove(i);
+        cycle.position = cycle.position.min(cycle.items.len().saturating_sub(1));
+        changed = true;
+    }
+
+    ui.horizontal(|ui| {
+        let mut add = None;
+        egui::ComboBox::from_id_salt("art-hotlist-add")
+            .selected_text("Add to hotlist")
+            .show_ui(ui, |ui| {
+                for set in names.unwrap_or_default() {
+                    if ui.selectable_label(false, &set.label).clicked() {
+                        add = Some(Item::BuiltIn(set.name.clone()));
+                    }
+                }
+                for info in s.slots.iter().filter(|i| i.used) {
+                    if ui.selectable_label(false, format!("saved \"{}\"", info.name)).clicked() {
+                        add = Some(Item::Slot(info.slot));
+                    }
+                }
+                for entry in super::art_library::snapshot().entries.into_iter().filter(|e| e.preview.is_ok()) {
+                    let name = entry.path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                    if ui.selectable_label(false, name).clicked() {
+                        add = Some(Item::File(entry.path));
+                    }
+                }
+            });
+        if let Some(item) = add.filter(|i| !cycle.items.contains(i)) {
+            cycle.items.push(item);
+            changed = true;
+        }
+        if ui
+            .add_enabled(!cycle.items.is_empty() && !s.busy, egui::Button::new("Next"))
+            .clicked()
+        {
+            h.next();
+        }
+    });
+    if names.is_none() {
+        ui.weak("Built-ins can be added once the art manifest matches this keyboard's firmware.");
+    }
+    if changed {
+        if let Err(e) = h.set_cycle(cycle) {
+            ui.colored_label(egui::Color32::RED, e);
+        }
+    }
 }
