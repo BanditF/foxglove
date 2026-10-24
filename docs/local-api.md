@@ -145,6 +145,11 @@ description = "Puts the temperature on the left screen."
     - An elevated app's windows may not be seen.
   - **Off switch:** `FOXGLOVE_DISABLE=apps-watch`.
   - **Rule:** a retry is started by an event and stopped by one (connected, the last window closed), with an attempt limit only as the fallback. No free-running timers.
+- **Settings (#69, API 1.3):** a plugin declares options in `plugin.toml`:
+  - `[[settings]]` with `name`, `label`, `kind` (`bool`, `int` or `text`) and `default`, plus `min`/`max` for `int`.
+  - The Plugins tab shows a control for each, and the values live in Foxglove's settings.
+  - The plugin reads them with `settings.get` and gets them all again as `settings.changed` when the user changes one. SDK: `Plugin::settings()`, `Plugin::settings_changes()`.
+  - A stored value that no longer fits its declaration falls back to the default.
 - **Plugin data (#209):** each plugin gets `data/` in its folder (`Plugin::data_dir()`) for state between runs. It's writable even in the sandbox, and left out of the signed-file check.
 - **Mic mute (`crates/plugin-mic-mute`, #210):**
   - **How it works:** it follows `mic.state` (`audio.inputs.read`) and asks Foxglove to mute or unmute (`audio.inputs.mute`), so it stays sandboxed.

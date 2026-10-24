@@ -1622,6 +1622,47 @@
         "title": "Empty",
         "type": "object"
       }
+    },
+    "settings.changed": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A plugin's settings (`[[settings]]` in `plugin.toml`): the answer to `settings.get` and the\n`settings.changed` event, every setting with its current value (API 1.3).",
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "title": "SettingValues",
+        "type": "object"
+      }
+    },
+    "settings.get": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A plugin's settings (`[[settings]]` in `plugin.toml`): the answer to `settings.get` and the\n`settings.changed` event, every setting with its current value (API 1.3).",
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "title": "SettingValues",
+        "type": "object"
+      }
     }
   },
   "transport": "JSON-RPC 2.0, one message per line"

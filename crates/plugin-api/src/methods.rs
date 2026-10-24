@@ -270,6 +270,13 @@ pub struct AppWindows {
     pub open: u32,
 }
 
+/// A plugin's settings (`[[settings]]` in `plugin.toml`): the answer to `settings.get` and the
+/// `settings.changed` event, every setting with its current value (API 1.3).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SettingValues {
+    pub values: serde_json::Map<String, serde_json::Value>,
+}
+
 /// Mutes or unmutes the default communications microphone (#237, API 1.2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SetMuteParams {
@@ -438,6 +445,9 @@ pub const METHODS: &[Method] = &[
     Method { name: "secrets.set", kind: Kind::Call, permission: Some("secrets"), params: schema!(SetSecretParams), result: Some(schema!(Empty)) },
     // Sent to one plugin when the key bound to its action is pressed (#212).
     Method { name: "action.invoked", kind: Kind::Event, permission: None, params: schema!(ActionInvoked), result: None },
+    // A plugin's own settings (#69): no permission, plugins only (API 1.3).
+    Method { name: "settings.get", kind: Kind::Call, permission: None, params: schema!(Empty), result: Some(schema!(SettingValues)) },
+    Method { name: "settings.changed", kind: Kind::Event, permission: None, params: schema!(SettingValues), result: None },
     // Waiting for an app's windows instead of polling for it (#277); checked against the
     // scoped apps.watch permissions by the host (API 1.3).
     Method { name: "apps.watch", kind: Kind::Call, permission: None, params: schema!(AppsWatchParams), result: Some(schema!(AppWindows)) },

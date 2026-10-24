@@ -38,6 +38,7 @@ pub mod plugins_ui;
 pub mod plugin_trust;
 pub mod identity;
 pub mod plugin_runner;
+pub mod plugin_settings;
 pub mod art_manifest;
 mod art_preview;
 pub mod art_ui;
