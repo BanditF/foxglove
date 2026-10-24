@@ -586,3 +586,39 @@ class RelayWaitTests(unittest.TestCase):
                 ask=lambda p: self.fail(p), log=lambda m: None, clock=clock.clock, sleep=clock.sleep, yes=True)
         self.assertEqual(backend.link_polls, 5)
         self.assertEqual(backend.entered, ['right'], 'asked once, after the relay was up')
+
+
+class LateEntryTests(unittest.TestCase):
+    def test_late_bootloader_after_unanswered_request_never_prompts(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        backend.auto = False  # D7 08 got no reply...
+        real = backend.enumerate_bootloaders
+        polls = {'n': 0}
+        def late():
+            polls['n'] += 1
+            return real() if polls['n'] > 5 else []  # ...but the bootloader shows up ~5 s later
+        backend.enumerate_bootloaders = late
+        logs = []
+        clock = Clock()
+        f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 2, stdin=io.StringIO(''),
+                ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
+        self.assertEqual(len(backend.writes), 1)
+        self.assertFalse(any(m.startswith('Double-tap reset on the right') for m in logs), logs)
+        self.assertTrue(any('late entry' in m for m in logs))
+
+    def test_prompts_only_after_the_watch_window(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        real = backend.enumerate_bootloaders
+        polls = {'n': 0}
+        def very_late():
+            polls['n'] += 1
+            return real() if polls['n'] > 20 else []  # beyond the 15 s watch: user double-taps
+        backend.enumerate_bootloaders = very_late
+        logs = []
+        clock = Clock()
+        f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 60, stdin=io.StringIO(''),
+                ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
+        watch = next(i for i, m in enumerate(logs) if 'late entry' in m)
+        prompt = next(i for i, m in enumerate(logs) if m.startswith('Double-tap reset on the right'))
+        self.assertLess(watch, prompt)
+        self.assertEqual(len(backend.writes), 1)
