@@ -82,7 +82,8 @@ back to double-tap prompts. A settings reset always uses the double tap.
 
 ## No prompts: `--yes`
 
-When the user has said go (the user asked for this on 2026-10-24), `--yes` skips the typed
+`--yes` is the normal path. The user waived the typed confirmations on 2026-10-24, so On-call
+uses it once the user has said go in chat for that flash. It skips the typed
 `FLASH`/`ERASE SETTINGS`/`TYPES` prompts and the terminal requirement:
 
 ```powershell
