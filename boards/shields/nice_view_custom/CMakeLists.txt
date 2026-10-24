@@ -37,6 +37,9 @@ if(CONFIG_NICE_VIEW_RGB_IDLE)
   zephyr_library_include_directories(${CMAKE_SOURCE_DIR}/include)
   zephyr_library_sources(widgets/rgb_idle.c)
 endif()
+if(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
+  zephyr_library_sources(widgets/dim_strip.c)
+endif()
 
 # Version, SHA and half marker, shared with the foxglove_link shield.
 include(${CMAKE_CURRENT_LIST_DIR}/foxglove_common.cmake)

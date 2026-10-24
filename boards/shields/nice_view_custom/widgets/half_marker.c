@@ -18,6 +18,11 @@
 #define FOXGLOVE_FW_MINOR 0
 #define FOXGLOVE_FW_PATCH 0
 #endif
+// The TX power defaults in Kconfig.defconfig only apply if no .conf sets one (#218).
+BUILD_ASSERT(!IS_ENABLED(CONFIG_FOXGLOVE_RIGHT_TX_0DBM) || FOXGLOVE_CENTRAL ||
+                 IS_ENABLED(CONFIG_BT_CTLR_TX_PWR_0),
+             "the right half should transmit at 0 dBm; is CONFIG_BT_CTLR_TX_PWR_* set in a .conf?");
+
 #if FOXGLOVE_CENTRAL
 #define FOXGLOVE_HALF "left"
 #else
