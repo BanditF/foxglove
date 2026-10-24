@@ -20,32 +20,28 @@ Local sources live in `C:\Users\fuchs\splitkeeb\art-src` (not in any repo) unles
 | Flipper Zero dolphin animations | `official/` (folders like `L1_Doom_128x64`); `flipper/` (PNG stills of the same) | [flipperdevices/flipperzero-firmware `assets/dolphin/external`](https://github.com/flipperdevices/flipperzero-firmware/tree/dev/assets/dolphin/external) | GPL-3.0 | Flipper Devices | **OK with conditions** (not shipping today) | Copyleft: see the notes below. They were removed from firmware because 128x64 art reads sideways on the portrait screens. |
 | kainsamara animations (Garage, Soulout) | `licensed/kainsamara` | [kainsamara/Flipper-Zero-Animations](https://github.com/kainsamara/Flipper-Zero-Animations) | MPL-2.0 | kainsamara | **OK with conditions** (not shipping) | File-level copyleft: see the notes below. |
 | PORKCHOP asset pack | `licensed/porkchop` | [pfefferle/PORKCHOP-flipper-asset-pack](https://github.com/pfefferle/PORKCHOP-flipper-asset-pack) | GPL-3.0 | pfefferle | **OK with conditions** (not shipping) | Copyleft: see the notes below. |
-| "bip3r" animations (happy, happy2, herd, roll, wave) | `licensed/bip3r` | unknown | unknown | unknown | **UNCLEAR** | Filed under `licensed/` but no source or licence was recorded, and none was found online. See flag F1. |
-| Community test animations (80sCar, KofH) | `community-test/` | unknown | unknown | unknown | **UNCLEAR / DO NOT SHIP** | Test downloads with no recorded source. Large community packs such as [Kf637/Animations-for-Flipper-Zero](https://github.com/Kf637/Animations-for-Flipper-Zero) mix many creators and licences. See flag F2. |
+| "bip3r" animations (happy, happy2, herd, roll, wave) | `licensed/bip3r` | unknown | unknown | unknown | **UNCLEAR / DO NOT SHIP** (kept locally) | Filed under `licensed/` but no source or licence was recorded, and none was found online. See flag F1. |
+| Community test animations (80sCar, KofH) | `community-test/` | unknown | unknown | unknown | **UNCLEAR / DO NOT SHIP** (kept locally) | Test downloads with no recorded source. Large community packs such as [Kf637/Animations-for-Flipper-Zero](https://github.com/Kf637/Animations-for-Flipper-Zero) mix many creators and licences. See flag F2. |
 | nice-view-elemental | `untrusted/kevinpastor_nice-view-elemental` | [kevinpastor/nice-view-elemental](https://github.com/kevinpastor/nice-view-elemental) | MIT | Kevin Pastor | OK to ship (not used) | Background images and fonts. Check the font licences before reusing those (the fonts are bundled from elsewhere). |
 | zmk-nice-oled: Pokémon art | `untrusted/mctechnology17_zmk-nice-oled` (`assets/pokemon*.c`) | [mctechnology17/zmk-nice-oled](https://github.com/mctechnology17/zmk-nice-oled) | Repo MIT, but the characters are Nintendo / Game Freak IP | n/a | **DO NOT SHIP** | A repo's MIT licence can't license someone else's trademarked characters. |
 | zmk-nice-oled: other art (spaceman, samurai, head, crystal, luna) | same | same | MIT (repo); origin of each image not stated | mctechnology17 | **UNCLEAR** (not used) | Each piece's origin would need checking. The "crystal" looks like nice-view-gem's. Luna is the QMK "Luna" pet, whose origin is also unstated. |
-| Bandit fox motif and the Bandit HUD library | `art-src/bandit`; `BanditF/bandit-wallpapers` `library/bandit` | the repo owner | owner's own work; no licence chosen yet | the owner | **OK to ship** (owner's) | See flag F5. |
-| FURY linocut prints | `BanditF/bandit-wallpapers` `input_media/FURY prints` (private repo) | the repo owner | owner's own work; no licence chosen yet | the owner | **OK to ship** (owner's) | Traced vector and keyboard derivatives live in the private wallpaper repo. See flag F5. |
+| Bandit fox motif and the Bandit HUD library | `art-src/bandit`; `BanditF/bandit-wallpapers` `library/bandit` | the repo owner | © the owner, all rights reserved | the owner | **OK to ship** (owner's; the 13 scenes are firmware built-ins since 2026-10-23) | See F5. |
+| FURY linocut prints | `BanditF/bandit-wallpapers` `input_media/FURY prints` (private repo) | the repo owner | © the owner, all rights reserved | the owner | **OK to ship** (owner's) | Traced vector and keyboard derivatives live in the private wallpaper repo. See flag F5. |
 | Wallpaper keyboard art (12 sets) | `BanditF/bandit-wallpapers` → `dist/keyboard/<name>/right.bin` | generated from the two sources above | owner's own work | the owner | **OK to ship** (owner's) | Mostly the owner's art, plus procedural scenes made in this project. |
 
 ## Flags
 
-- **F1, bip3r (UNCLEAR):** find where these came from (a URL or the author) and their licence.
-  Until then, treat them as unlicensed. If the source can't be found, delete them from `licensed/`
-  so nobody assumes they're cleared.
-- **F2, community-test (UNCLEAR / DO NOT SHIP):** same as F1. These were only ever test inputs. Keep
-  them out of builds and repos, or delete them.
-- **F3, Gem crystal (shipping, OK with conditions):** the art is "lent" by Trixelized inside an
-  MIT repo. To be safe, either get a one-line OK from the artist (or confirm via the repo author
-  that MIT covers it), or replace the built-in with our own art when the built-ins are next
-  changed (#59).
+- **F1, bip3r (UNCLEAR / DO NOT SHIP):** no known source or licence. Owner decision (2026-10-23):
+  keep them in art-src, but never ship them or copy them into a repo.
+- **F2, community-test (UNCLEAR / DO NOT SHIP):** same as F1 and the same decision.
+- **F3, Gem crystal (shipping, OK with conditions):** the art is "lent" by Trixelized inside an MIT
+  repo. Owner decision (2026-10-23): keep it for now and replace it with our own art the next time
+  the built-ins change (#110).
 - **F4, Corro (shipping, OK with conditions):** GPeye's animation is MIT, but Corro is a community
   mascot character. Low risk; same remedy as F3 if we want a fully clean set.
-- **F5, the owner's own art (decision for the owner):** pick a licence for third-party reuse of
-  the Bandit and FURY art. All rights reserved is the default; CC BY-NC is an option if others may
-  share it non-commercially. This only matters if other people redistribute it; shipping it
-  ourselves is fine.
+- **F5, the owner's own art (decided):** the Bandit and FURY art is **all rights reserved**
+  (owner decision, 2026-10-23). It ships in our builds, but nobody else gets a licence to reuse it.
+  That includes the Bandit scenes in `custom_art.c`, which this repo's code licences don't cover.
 - **F6, the Pokémon art (DO NOT SHIP):** never copy it into a repo or a build.
 
 ## Copyleft notes

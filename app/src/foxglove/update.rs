@@ -1,0 +1,287 @@
+//! Auto-update (#65): a check at startup and on demand, a signed manifest, a verified MSI
+//! download, and a copied helper that runs the elevated upgrade after the app exits.
+use foxglove_update::{Manifest, Release, Result, Transport};
+use std::{path::PathBuf, sync::Mutex, time::Duration};
+#[derive(Clone, Default)]
+struct State {
+    busy: bool,
+    message: String,
+    available: Option<(Manifest, String)>,
+}
+static STATE: Mutex<State> = Mutex::new(State {
+    busy: false,
+    message: String::new(),
+    available: None,
+});
+fn state() -> std::sync::MutexGuard<'static, State> {
+    STATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+fn key() -> Result<ed_key::Key> {
+    ed_key::parse(include_str!("../../resources/update-key.pub"))
+}
+// Keep the cryptographic key type inferred outside this adapter.
+mod ed_key {
+    pub type Key = foxglove_update::PublicKey;
+    pub fn parse(s: &str) -> foxglove_update::Result<Key> {
+        foxglove_update::public_key(s)
+    }
+}
+struct Http;
+impl Transport for Http {
+    fn get(&self, url: &str, limit: u64) -> Result<Vec<u8>> {
+        if !url.starts_with("https://") {
+            return Err("Update URL must use HTTPS".into());
+        }
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(Duration::from_secs(120)))
+            .https_only(true)
+            .build()
+            .into();
+        Ok(agent
+            .get(url)
+            .header("User-Agent", "Foxglove-updater")
+            .call()?
+            .body_mut()
+            .with_config()
+            .limit(limit)
+            .read_to_vec()?)
+    }
+}
+fn settings_path() -> Option<PathBuf> {
+    crate::settings::Settings::config_file_path().map(|p| p.with_file_name("updates.ini"))
+}
+fn startup_enabled() -> bool {
+    settings_path()
+        .and_then(|p| ini::Ini::load_from_file(p).ok())
+        .and_then(|i| {
+            i.section(Some("updates"))
+                .and_then(|s| s.get("check_at_startup"))
+                .map(str::to_owned)
+        })
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(true)
+}
+fn folder() -> Result<PathBuf> {
+    let p = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?)
+        .join("Foxglove")
+        .join("updates");
+    std::fs::create_dir_all(&p)?;
+    Ok(p)
+}
+pub fn start() {
+    if let Ok(p) = folder() {
+        if let Ok(error) = std::fs::read_to_string(p.join("error.txt")) {
+            state().message = error;
+            let _ = std::fs::remove_file(p.join("error.txt"));
+        }
+    }
+    if key().is_ok() && startup_enabled() {
+        let _ = std::thread::Builder::new()
+            .name("update-startup".into())
+            .spawn(|| {
+                std::thread::sleep(Duration::from_secs(4));
+                check();
+            });
+    }
+}
+fn check() {
+    if key().is_err() {
+        state().message = "Updates not configured".into();
+        return;
+    }
+    {
+        let mut s = state();
+        if s.busy {
+            return;
+        }
+        s.busy = true;
+        s.message = "Checking for updates…".into();
+    }
+    worker(|| {
+        let mut releases = Vec::new();
+        for page in 1..=100 {
+            let batch: Vec<Release> = serde_json::from_slice(&Http.get(&format!("https://api.github.com/repos/BanditF/foxglove/releases?per_page=100&page={page}"), 8*1024*1024)?)?;
+            let done = batch.len() < 100;
+            releases.extend(batch);
+            if done {
+                break;
+            }
+            if page == 100 {
+                return Err("Too many release pages".into());
+            }
+        }
+        let available =
+            foxglove_update::check(&Http, &releases, env!("CARGO_PKG_VERSION"), &key()?)?;
+        let mut s = state();
+        s.message = if available.is_some() {
+            "Update available"
+        } else {
+            "You are up to date"
+        }
+        .into();
+        s.available = available;
+        Ok(())
+    });
+}
+fn worker(work: impl FnOnce() -> Result<()> + Send + 'static) {
+    if let Err(e) = std::thread::Builder::new()
+        .name("foxglove-update".into())
+        .spawn(move || {
+            let result = work();
+            let mut s = state();
+            s.busy = false;
+            if let Err(e) = result {
+                s.message = e.to_string();
+            }
+        })
+    {
+        let mut s = state();
+        s.busy = false;
+        s.message = e.to_string();
+    }
+}
+pub fn available_version() -> Option<String> {
+    state().available.as_ref().map(|(m, _)| m.version.clone())
+}
+pub fn group(ui: &mut egui::Ui) {
+    super::settings_ui::section(ui, "Updates", |ui| {
+        ui.label(format!("Current version: {}", env!("CARGO_PKG_VERSION")));
+        let s = state().clone();
+        ui.label(if key().is_err() {
+            "Updates not configured"
+        } else {
+            &s.message
+        });
+        if ui
+            .add_enabled(!s.busy && key().is_ok(), egui::Button::new("Check now"))
+            .clicked()
+        {
+            check();
+        }
+        let mut enabled = startup_enabled();
+        if ui
+            .checkbox(&mut enabled, "Check for updates at startup")
+            .changed()
+        {
+            let result = (|| -> Result<()> {
+                let p = settings_path().ok_or("Settings directory unavailable")?;
+                std::fs::create_dir_all(p.parent().ok_or("Invalid settings path")?)?;
+                let mut conf = ini::Ini::new();
+                conf.with_section(Some("updates"))
+                    .set("check_at_startup", enabled.to_string());
+                conf.write_to_file(p)?;
+                Ok(())
+            })();
+            if let Err(e) = result {
+                state().message = e.to_string();
+            }
+        }
+        if let Some((m, url)) = s.available {
+            ui.label(&m.notes);
+            ui.hyperlink_to("View release", url);
+            #[cfg(windows)]
+            if ui
+                .add_enabled(
+                    !s.busy,
+                    egui::Button::new(format!("Install v{}", m.version)),
+                )
+                .clicked()
+            {
+                state().busy = true;
+                worker(move || {
+                    state().message = "Downloading installer…".into();
+                    let p = folder()?.join("foxglove-x64.msi");
+                    let bytes = Http.get(&m.msi.url, m.msi.size)?;
+                    std::fs::write(&p, bytes)?;
+                    foxglove_update::verify_file(&p, &m.msi)?;
+                    let exe = std::env::current_exe()?;
+                    let helper = folder()?.join("foxglove-update-helper.exe");
+                    std::fs::copy(&exe, &helper)?;
+                    std::process::Command::new(helper)
+                        .arg("--apply-update")
+                        .arg(p)
+                        .arg("--pid")
+                        .arg(std::process::id().to_string())
+                        .arg("--restart")
+                        .arg(exe)
+                        .spawn()?;
+                    std::process::exit(0);
+                });
+            }
+        }
+        if s.busy {
+            ui.ctx().request_repaint_after(Duration::from_millis(200));
+        }
+    });
+}
+#[cfg(not(windows))]
+pub fn helper_entry() -> bool {
+    false
+}
+#[cfg(windows)]
+pub fn helper_entry() -> bool {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_none_or(|a| a != "--apply-update") {
+        return false;
+    }
+    let run = || -> Result<()> {
+        use windows::core::{w, PCWSTR};
+        use windows::Win32::{
+            Foundation::{CloseHandle, WAIT_OBJECT_0},
+            System::Threading::{
+                GetExitCodeProcess, OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+            },
+            UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW},
+        };
+        if args.len() != 7 || args[3] != "--pid" || args[5] != "--restart" {
+            return Err("Invalid update helper arguments".into());
+        }
+        let pid: u32 = args[4].to_str().ok_or("Invalid PID")?.parse()?;
+        unsafe {
+            if let Ok(process) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+                let wait = WaitForSingleObject(process, 60000);
+                let _ = CloseHandle(process);
+                if wait != WAIT_OBJECT_0 {
+                    return Err("Timed out waiting for Foxglove to exit".into());
+                }
+            }
+            let msi = PathBuf::from(&args[2]);
+            let path = msi.to_str().ok_or("Invalid installer path")?;
+            if path.contains('"') {
+                return Err("Invalid installer path".into());
+            }
+            let params: Vec<u16> = format!("/i \"{path}\" /passive /norestart")
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let mut info = SHELLEXECUTEINFOW {
+                cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+                fMask: SEE_MASK_NOCLOSEPROCESS,
+                lpVerb: w!("runas"),
+                lpFile: w!("msiexec.exe"),
+                lpParameters: PCWSTR(params.as_ptr()),
+                nShow: 1,
+                ..Default::default()
+            };
+            ShellExecuteExW(&mut info)?;
+            WaitForSingleObject(info.hProcess, u32::MAX);
+            let mut code = 1;
+            let result = GetExitCodeProcess(info.hProcess, &mut code);
+            let _ = CloseHandle(info.hProcess);
+            result?;
+            if code != 0 && code != 3010 {
+                return Err(format!("Windows Installer failed ({code})").into());
+            }
+        }
+        Ok(())
+    };
+    if let Err(e) = run() {
+        if let Ok(p) = folder() {
+            let _ = std::fs::write(p.join("error.txt"), format!("Update failed: {e}"));
+        }
+    }
+    if let Some(exe) = args.get(6) {
+        let _ = std::process::Command::new(exe).spawn();
+    }
+    true
+}

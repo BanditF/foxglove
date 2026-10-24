@@ -1,6 +1,12 @@
 schema = 1
 
 [[cases]]
+name = "usb-halves"
+description = "Left enumerates with its interfaces; the right is absent or bare (no interfaces = peripheral firmware)"
+tags = ["smoke", "release"]
+steps = [{ usb_halves = {} }]
+
+[[cases]]
 name = "status"
 description = "USB or BLE connected, right link ready, right RGB fresh"
 tags = ["smoke", "release"]
