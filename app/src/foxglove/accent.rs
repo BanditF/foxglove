@@ -13,11 +13,44 @@ use foxglove_devices::{DeviceEvent, Device as _};
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static WAKE: OnceLock<Mutex<mpsc::Sender<()>>> = OnceLock::new();
 
-/// The `[lighting]` section of the settings store.
-#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+/// The `[lighting]` section of the settings store (profiled: a profile can pick its own preset).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
-struct LightingSettings {
-    follow_accent: bool,
+pub struct LightingSettings {
+    pub follow_accent: bool,
+    /// The lighting preset's id (lighting_presets), or none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    /// "Change the right screen with the preset" (#273, on by default: the user's pick).
+    pub preset_art: bool,
+}
+
+impl Default for LightingSettings {
+    fn default() -> Self {
+        LightingSettings { follow_accent: false, preset: None, preset_art: true }
+    }
+}
+
+impl LightingSettings {
+    /// The effective settings (the active profile's, else the base).
+    pub fn load() -> Self {
+        super::store::load_or_migrate::<LightingSettings>("lighting", || {
+            // The old lighting.ini, from before the store.
+            let ini = crate::settings::Settings::config_file_path()?.with_file_name("lighting.ini");
+            let on = ini::Ini::load_from_file(&ini)
+                .ok()?
+                .section(Some("lighting"))?
+                .get("follow_accent")?
+                == "true";
+            Some((LightingSettings { follow_accent: on, ..LightingSettings::default() }, vec![ini]))
+        })
+    }
+
+    pub fn save(&self) {
+        if let Err(e) = super::store::save("lighting", self) {
+            eprintln!("Foxglove: can't save the lighting settings: {e}");
+        }
+    }
 }
 
 pub fn enabled() -> bool {
@@ -27,9 +60,12 @@ pub fn enabled() -> bool {
 /// Turns following on or off, saves it, and applies the colour now when turned on.
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
-    if let Err(e) = super::store::save("lighting", &LightingSettings { follow_accent: on }) {
-        eprintln!("Foxglove: can't save the lighting settings: {e}");
+    let mut settings = LightingSettings::load();
+    settings.follow_accent = on;
+    if on {
+        settings.preset = None; // the accent colour and a preset would fight over the hue
     }
+    settings.save();
     if on {
         wake();
     }
@@ -62,17 +98,12 @@ pub fn hue_sat(r: u8, g: u8, b: u8) -> (u16, u8) {
 
 /// The effective setting (the active profile's, else the base).
 fn load_enabled() -> bool {
-    super::store::load_or_migrate::<LightingSettings>("lighting", || {
-        // The old lighting.ini, from before the store.
-        let ini = crate::settings::Settings::config_file_path()?.with_file_name("lighting.ini");
-        let on = ini::Ini::load_from_file(&ini)
-            .ok()?
-            .section(Some("lighting"))?
-            .get("follow_accent")?
-            == "true";
-        Some((LightingSettings { follow_accent: on }, vec![ini]))
-    })
-    .follow_accent
+    LightingSettings::load().follow_accent
+}
+
+/// Stops following without touching the rest of `[lighting]` (a preset was picked).
+pub fn turn_off() {
+    ENABLED.store(false, Ordering::Relaxed);
 }
 
 /// Starts following (Windows): loads the setting, watches the accent and keyboard arrivals.

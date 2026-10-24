@@ -165,14 +165,20 @@ impl Cycle {
     /// Moves to the next entry the keyboard can show and returns it as a choice. Entries that
     /// can't be shown now (a built-in this firmware lacks, an empty slot, a missing file) are
     /// skipped; `None` if none can.
-    pub fn advance(&mut self, resolve: impl Fn(&Item) -> Option<Choice>) -> Option<Choice> {
+    /// Forwards (`dir` > 0) or backwards (the art key's previous).
+    pub fn step_by(&mut self, dir: i8, resolve: impl Fn(&Item) -> Option<Choice>) -> Option<Choice> {
         let n = self.items.len();
         (1..=n).find_map(|step| {
-            let i = (self.position + step) % n;
+            let i = if dir < 0 { (self.position + n - step) % n } else { (self.position + step) % n };
             let choice = resolve(&self.items[i])?;
             self.position = i;
             Some(choice)
         })
+    }
+
+    /// Whether the app takes the art keys: only while they'd step something.
+    pub fn wants_art_keys(&self) -> bool {
+        self.steps_on(Step::Key) && !self.items.is_empty()
     }
 }
 
@@ -214,10 +220,12 @@ mod tests {
             Item::Slot(n) => (used & (1 << n) != 0).then_some(Choice::Slot(*n)),
             _ => None,
         };
-        assert_eq!(c.advance(r), Some(Choice::Slot(2)));
-        assert_eq!(c.advance(r), Some(Choice::Slot(0)));
+        assert_eq!(c.step_by(1, r), Some(Choice::Slot(2)));
+        assert_eq!(c.step_by(1, r), Some(Choice::Slot(0)));
         assert_eq!(c.position, 0);
-        assert_eq!(c.advance(|_| None), None, "nothing showable");
+        assert_eq!(c.step_by(1, |_| None), None, "nothing showable");
+        assert_eq!(c.step_by(-1, r), Some(Choice::Slot(2)), "back from 0 wraps to the end");
+        assert_eq!(c.step_by(-1, r), Some(Choice::Slot(0)), "and skips the empty slot");
         assert_eq!(c.period(), Some(Duration::from_secs(300)));
         c.set_step(Step::Minutes, false);
         c.set_step(Step::LightsWake, true);

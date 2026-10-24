@@ -132,3 +132,5 @@ auto_link_exclude_list = [
 [dev-dependencies]
 # Foxglove: checks that the built-in plugin icons render (the resvg egui_extras uses).
 resvg = { version = "0.45", default-features = false }
+# Foxglove: the fake keyboard in art_service's tests implements digitalis::link::RawHid.
+anyhow = "1"

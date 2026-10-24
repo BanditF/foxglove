@@ -21,6 +21,7 @@ pub mod services;
 pub mod art_cycle;
 mod art_triggers;
 pub mod accent;
+pub mod lighting_presets;
 pub mod store;
 pub mod api;
 pub mod art_library;
