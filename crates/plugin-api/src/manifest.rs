@@ -87,6 +87,10 @@ pub struct SettingDecl {
     pub min: Option<i64>,
     #[serde(default)]
     pub max: Option<i64>,
+    /// For `text`: Foxglove fills it with a random value the first time (a pairing token the
+    /// user copies into another app), and the user can still change it.
+    #[serde(default)]
+    pub random: bool,
 }
 
 impl SettingDecl {
@@ -164,7 +168,8 @@ impl Manifest {
         let mut names = std::collections::HashSet::new();
         for s in &m.settings {
             let ok = !s.name.is_empty() && s.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-            if !ok || !names.insert(s.name.as_str()) || s.label.trim().is_empty() || s.accept(&s.default).is_none() {
+            let random_ok = !s.random || s.kind == SettingKind::Text;
+            if !ok || !random_ok || !names.insert(s.name.as_str()) || s.label.trim().is_empty() || s.accept(&s.default).is_none() {
                 return Err(format!("setting {:?} needs a unique name (a-z, 0-9, -), a label and a default of its kind", s.name));
             }
         }

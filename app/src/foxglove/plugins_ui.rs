@@ -144,6 +144,7 @@ fn setting_fields(ui: &mut egui::Ui, plugin: &Installed, state: &mut UiState) {
         return;
     }
     let id = &plugin.manifest.id;
+    super::plugin_settings::fill_random(&plugin.manifest);
     let values = super::plugin_settings::values_for(&plugin.manifest, super::plugin_settings::stored().get(id.as_str()));
     for decl in &plugin.manifest.settings {
         let current = values.get(&decl.name).cloned().unwrap_or_else(|| decl.default.clone());

@@ -1397,6 +1397,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-wallpaper-match"
+version = "1.0.0"
+dependencies = [
+ "foxglove-devices",
+ "foxglove-plugin",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "png"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

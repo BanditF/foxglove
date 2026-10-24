@@ -9,6 +9,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+getrandom = "0.3"
 foxglove-update = { path = "../crates/foxglove-update" }
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 # Foxglove: the shared link to the keyboard (MIT).

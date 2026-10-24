@@ -1,0 +1,20 @@
+[package]
+name = "plugin-wallpaper-match"
+version = "1.0.0"
+edition = "2021"
+description = "Wallpaper Match, a Foxglove plugin: the keyboard's underglow takes the Bandit wallpaper's accent colour"
+license = "MIT"
+
+[[bin]]
+name = "wallpaper-match"
+path = "src/main.rs"
+
+[dependencies]
+foxglove-plugin = { path = "../plugin-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+foxglove-plugin-host = { path = "../plugin-host" }
+foxglove-plugin-api = { path = "../plugin-api" }
+foxglove-devices = { path = "../devices" }
