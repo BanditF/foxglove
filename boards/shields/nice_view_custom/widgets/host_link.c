@@ -43,7 +43,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #endif
 
 enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE };
-enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS };
+enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER };
 enum {
@@ -123,6 +123,8 @@ static void reply(const uint8_t *data, int len) {
 
 void host_link_screen_reply(const uint8_t *data, int len) { reply(data, len); }
 
+void host_link_send(const uint8_t *data, int len) { reply(data, len); }
+
 static uint8_t right_link(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     return art_relay_link();
@@ -145,7 +147,7 @@ static void hello_reply(void) {
 #endif
     uint32_t caps = HOST_LINK_CAP_PANEL | HOST_LINK_CAP_CONN_STATE | HOST_LINK_CAP_SCREEN;
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
-    caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT;
+    caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT | HOST_LINK_CAP_ART_SLOTS;
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
     caps |= HOST_LINK_CAP_SETTINGS_RGB;
@@ -225,6 +227,20 @@ static void art_command(const uint8_t *d) {
         break;
     case ART_STATUS:
         break;
+    case ART_SAVE:
+        err = art_relay_save(d[2], &d[3]);
+        break;
+    case ART_ERASE:
+        err = art_relay_erase(d[2]);
+        break;
+    case ART_SLOT:
+        if (art_relay_slot(d[2]) == 0) {
+            return; // D6 87 comes from the relay
+        }
+        r[2] = 1; // busy
+        r[3] = d[2];
+        reply(r, sizeof(r));
+        return;
     default:
         return;
     }
