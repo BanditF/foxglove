@@ -76,6 +76,8 @@ enum Command {
     Stop,
     /// The profile changed: its pinned art may differ.
     ProfileChanged,
+    /// Wallpaper Engine shows this wallpaper now.
+    Wallpaper(super::wallpaper::Wallpaper),
     Available(Arc<Link>),
     Link(Weak<Link>, LinkEvent),
     Status,
@@ -158,6 +160,11 @@ impl Handle {
         self.update(|s| s.cycle = cycle);
         let _ = self.commands.send(Command::CycleChanged);
         saved
+    }
+
+    /// Tells the service which wallpaper is on screen; used in the "match the wallpaper" mode.
+    pub fn wallpaper(&self, w: super::wallpaper::Wallpaper) {
+        let _ = self.commands.send(Command::Wallpaper(w));
     }
 
     /// Shows the hotlist's next entry now.
@@ -391,6 +398,22 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 }
                 Command::Next
             }
+            Command::Wallpaper(w) => {
+                let snap = h.snapshot();
+                let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
+                    continue;
+                };
+                if snap.cycle.mode != art_cycle::Mode::Wallpaper {
+                    continue;
+                }
+                match super::wallpaper::choice(&w, st.right_set_count) {
+                    Some(choice) if snap.pinned.as_ref() != Some(&choice) => {
+                        h.update(|s| s.busy = true);
+                        Command::Choose(choice)
+                    }
+                    _ => continue,
+                }
+            }
             Command::ProfileChanged => {
                 // The profile may have its own pinned art and hotlist.
                 let pinned = load_pinned();
@@ -413,6 +436,12 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         let command = match command {
             Command::CycleChanged => {
                 due = reschedule(current.is_some());
+                // Turning on "match the wallpaper" shows the current wallpaper's art right away.
+                if h.snapshot().cycle.mode == art_cycle::Mode::Wallpaper {
+                    if let Some(w) = super::wallpaper::current(h.snapshot().cycle.wallpaper_monitor.as_deref()) {
+                        let _ = h.commands.send(Command::Wallpaper(w));
+                    }
+                }
                 continue;
             }
             Command::Next => {
