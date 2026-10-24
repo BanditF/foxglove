@@ -155,7 +155,9 @@ Only signed plugins install and run, checked by `crates/plugin-trust`.
 5. For each release, write `catalog.json` with a higher `sequence` and sign it with `catalog.key`.
 6. Ship both files and their `.minisig` signatures in `app/resources/plugin-trust/`.
 
-**Developer mode:** `FOXGLOVE_DEV_UNSIGNED_KITS=1` allows unsigned plugins, and the Plugins tab shows a warning.
+**Developer mode:** `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1` allows unsigned plugins, and the Plugins tab shows a warning.
+
+**Test hook:** with developer mode and a test `FOXGLOVE_CONFIG_DIR` (never the real settings folder), `FOXGLOVE_PLUGINS_AUTOINSTALL=<zip or folder>` installs and enables that plugin at start with all its declared permissions, without the approval dialog. It writes a warning to stderr and to `autoinstall.log` in the config dir. It is meant for the Test lab only.
 
 ## Writing a plugin (Rust)
 
@@ -167,4 +169,4 @@ The example is `crates/plugin-focus-timer`, a focus/rest timer that publishes `f
 
 The second example, `crates/plugin-openrgb-e131`, is a plugin with the `net` permission; see [openrgb-plugin.md](openrgb-plugin.md).
 
-**Pack a plugin:** `powershell -File scripts\pack-plugin.ps1 plugin-focus-timer` builds it, zips `plugin.toml` and the program into `target\plugins\`, and prints the catalog entry (archive and file SHA-256s) to add to `catalog.json` before signing. Until the signing keys exist, install it with `FOXGLOVE_DEV_UNSIGNED_KITS=1`.
+**Pack a plugin:** `powershell -File scripts\pack-plugin.ps1 plugin-focus-timer` builds it, zips `plugin.toml` and the program into `target\plugins\`, and prints the catalog entry (archive and file SHA-256s) to add to `catalog.json` before signing. Until the signing keys exist, install it with `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1`.
