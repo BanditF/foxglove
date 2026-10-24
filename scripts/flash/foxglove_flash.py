@@ -190,6 +190,28 @@ def pid_alive(pid):
         return False
 
 
+def history_path():
+    """Where every write is recorded, one line each (FOXGLOVE_FLASH_HISTORY overrides)."""
+    override = os.environ.get('FOXGLOVE_FLASH_HISTORY')
+    if override:
+        return Path(override)
+    base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+    return Path(base) / 'Foxglove' / 'flash-history.log'
+
+
+def record(half, image_sha, outcome, detail=''):
+    """Appends 'UTC time, half, image SHA, outcome, detail' to the flash history. Never fails
+    the flash: a history that can't be written is reported, not fatal."""
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\t{half}\t{image_sha or '?'}\t{outcome}\t{detail}\n"
+    try:
+        path = history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'a', encoding='utf-8') as fh:
+            fh.write(line)
+    except OSError as exc:
+        print(f'flash history not written ({exc}): {line.strip()}', file=sys.stderr)
+
+
 def lab_binary():
     """foxglove-lab, which sends the bootloader command; None when it isn't built."""
     root = Path(__file__).resolve().parents[2]
@@ -276,7 +298,12 @@ class WindowsOS:
         return volume
 
     def exists(self, path):
-        return Path(path).exists()
+        # Once the bootloader reboots, Windows answers a stat on its drive with WinError 433 or
+        # 55 instead of "not found", and Python 3.12 raises. That means the drive is gone (#176).
+        try:
+            return Path(path).exists()
+        except OSError:
+            return False
 
     def read_text(self, path):
         return Path(path).read_text(errors='replace')
@@ -301,7 +328,7 @@ class WindowsOS:
                 os.fsync(stream.fileno())
         except OSError as exc:
             if written < len(data):
-                if not Path(path).parent.exists():
+                if not self.exists(Path(path).parent):
                     raise DriveGone(written, len(data), exc) from exc
                 raise FlashFailed(f'Write stopped after {written}/{len(data)} bytes: {exc}') from exc
 
@@ -444,6 +471,7 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
             except DriveGone as gone:
                 # Don't retry and don't call it a failure yet: the build read-back decides.
                 log(f'{half}: {gone}; the bootloader may have taken the whole image, checking the build.')
+                record(half, expected.get(half), 'written-drive-gone', str(gone))
                 unconfirmed = True
                 break
             try:
@@ -461,8 +489,15 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         log(f'{half} bootloader drive disappeared.')
         if half == 'left' and not settings_reset:
             wait_for(lambda: backend.running_keyboard(chosen[0]), seconds, 'Left keyboard did not re-enumerate (1D50:615E)', clock, sleep)
+        if not unconfirmed:
+            record(half, expected.get(half), 'written')
         if not settings_reset:
-            verify_build(half, expected.get(half), backend, log, clock, sleep, strict=unconfirmed)
+            try:
+                verify_build(half, expected.get(half), backend, log, clock, sleep, strict=unconfirmed)
+            except FlashFailed as exc:
+                record(half, expected.get(half), 'verify-failed', str(exc))
+                raise
+            record(half, expected.get(half), 'verified' if expected.get(half) else 'unverified')
         if settings_reset:
             continue
         if yes:
