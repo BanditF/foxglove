@@ -125,3 +125,7 @@ auto_link_exclude_list = [
     "libseccomp.so*", "libexpat.so*", "libjson-glib*.so*", "libxml2.so*",
     "libsqlite3.so*", "liblcms2.so*", "libicu*.so*",
 ]
+
+[dev-dependencies]
+# Foxglove: checks that the built-in plugin icons render (the resvg egui_extras uses).
+resvg = { version = "0.45", default-features = false }
