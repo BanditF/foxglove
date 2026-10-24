@@ -160,6 +160,11 @@ pub(crate) fn serve_with(
     let writer_thread = std::thread::Builder::new().name("plugin-host-writer".into()).spawn(move || {
         let mut w = writer;
         for line in rx {
+            // The end of the connection: other senders (the plugin's event channel, the fact
+            // forwarder) may outlive it.
+            if line.is_empty() {
+                break;
+            }
             if w.write_all(line.as_bytes()).and_then(|()| w.write_all(b"\n")).and_then(|()| w.flush()).is_err() {
                 writer_closed.store(true, Ordering::Relaxed);
                 break;
@@ -195,9 +200,13 @@ pub(crate) fn serve_with(
     closed.store(true, Ordering::Relaxed);
     if let Some(s) = &session {
         s.net.close_all();
+        if let Some(plugin) = &s.plugin {
+            apps::unwatch(plugin);
+        }
     }
     ctx.devices.closed(conn);
     let forwarding = session.as_ref().is_some_and(|s| s.forwarding);
+    let _ = out.send(String::new());
     drop(out);
     // The fact forwarder keeps the writer alive until the next fact change, when it notices the
     // closed connection; don't wait for that. Without one, every reply is out once this returns.
@@ -309,6 +318,15 @@ fn dispatch(
             }
             Ok(json!(methods::Subscription { subscription: id }))
         }
+        "apps.watch" => {
+            let plugin = s.plugin.as_deref().ok_or_else(|| denied("a plugin connection"))?;
+            let p: methods::AppsWatchParams = params(request.params)?;
+            let exe = p.exe.to_ascii_lowercase();
+            if !s.grant.has(&Permission::AppsWatch(exe.clone())) {
+                return Err(denied(format!("apps.watch:{exe}")));
+            }
+            Ok(json!(methods::AppWindows { open: apps::watch(plugin, &exe), exe }))
+        }
         "secrets.get" | "secrets.set" => {
             let plugin = s.plugin.as_deref().ok_or_else(|| denied("a plugin connection"))?;
             let failed = |e: String| error(code::INVALID_PARAMS, e);
@@ -415,6 +433,7 @@ pub const PING_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(windows)]
 mod net;
+pub mod apps;
 pub mod secrets;
 pub mod pipe;
 

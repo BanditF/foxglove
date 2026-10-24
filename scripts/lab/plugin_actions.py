@@ -17,8 +17,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 TARGET = Path(os.environ.get('CARGO_TARGET_DIR', REPO / 'target'))
 PLUGIN = 'org.foxglove.focus-timer'
-STOP_FOXGLOVE = ("Get-Process | ? { $_.ProcessName -like 'foxglove*' -and $_.ProcessName -notin "
-                 "'foxglove-lab','foxglove-cli' } | % { $_.Path; Stop-Process -Id $_.Id -Confirm:$false }")
+# Exactly the app's process name: test binaries such as foxglove_plugin_host-*.exe are other
+# sessions' work and must never be stopped.
+STOP_FOXGLOVE = "Get-Process -Name foxglove -ErrorAction SilentlyContinue | % { $_.Path; Stop-Process -Id $_.Id -Confirm:$false }"
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--app', required=True, type=Path, help='the Foxglove build under test')
