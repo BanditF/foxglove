@@ -228,7 +228,7 @@ fn slots_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Sn
 
 /// The hotlist and how it cycles (#60).
 fn cycle_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Snapshot) {
-    use super::art_cycle::{Item, Mode};
+    use super::art_cycle::{Follow, Item, Step};
     let Some(st) = s.status else {
         return;
     };
@@ -237,43 +237,41 @@ fn cycle_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Sn
     let mut cycle = s.cycle.clone();
     let mut changed = false;
 
-    ui.horizontal(|ui| {
-        changed |= ui.radio_value(&mut cycle.mode, Mode::Off, "Don't cycle").changed();
-        let minutes = match cycle.mode {
-            Mode::Minutes(m) => m,
-            _ => 5,
+    // What steps the list (any number), and what picks the art outright (docs/art-cycling.md).
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Next entry");
+        let mut toggle = |ui: &mut egui::Ui, step: Step, text: &str, enabled: bool, why: &str| {
+            let mut on = cycle.steps_on(step);
+            if ui
+                .add_enabled(enabled, egui::Checkbox::new(&mut on, text))
+                .on_disabled_hover_text(why)
+                .changed()
+            {
+                cycle.set_step(step, on);
+                changed = true;
+            }
         };
-        changed |= ui
-            .radio_value(&mut cycle.mode, Mode::Minutes(minutes), "Every")
-            .changed();
-        let mut m = minutes;
+        toggle(ui, Step::Key, "on the art key", false, "Needs keyboard firmware with the &art_next key.");
+        toggle(ui, Step::LightsWake, "when the lights wake", s.wake_events,
+            "Needs keyboard firmware that reports when the lights come back on.");
+        toggle(ui, Step::Minutes, "every", true, "");
         if ui
-            .add(egui::DragValue::new(&mut m).range(1..=1440).suffix(" min"))
+            .add(egui::DragValue::new(&mut cycle.minutes).range(1..=1440).suffix(" min"))
             .changed()
         {
-            cycle.mode = Mode::Minutes(m);
-            changed = true;
-        }
-        if ui
-            .radio(cycle.mode == Mode::Wallpaper, "Match the wallpaper")
-            .on_hover_text("Shows the art that goes with the Wallpaper Engine wallpaper on screen (from the art folder's wallpapers.json).")
-            .clicked()
-        {
-            cycle.mode = Mode::Wallpaper;
-            changed = true;
-        }
-        let wake_events = s.wake_events;
-        if ui
-            .add_enabled(wake_events, egui::RadioButton::new(cycle.mode == Mode::LightsWake, "When the lights wake"))
-            .on_disabled_hover_text("Needs keyboard firmware that reports when the lights come back on.")
-            .clicked()
-        {
-            cycle.mode = Mode::LightsWake;
             changed = true;
         }
     });
+    ui.horizontal(|ui| {
+        ui.label("Follow");
+        changed |= ui.radio_value(&mut cycle.follow, Follow::Nothing, "nothing").changed();
+        changed |= ui
+            .radio_value(&mut cycle.follow, Follow::Wallpaper, "the wallpaper")
+            .on_hover_text("Shows the art that goes with the Wallpaper Engine wallpaper on screen (from the art folder's wallpapers.json).")
+            .changed();
+    });
 
-    if cycle.mode == Mode::Wallpaper {
+    if cycle.follow == Follow::Wallpaper {
         let monitors = super::wallpaper::monitors();
         ui.horizontal(|ui| {
             ui.label("Follow");
@@ -360,6 +358,46 @@ fn cycle_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Sn
     if names.is_none() {
         ui.weak("Built-ins can be added once the art manifest matches this keyboard's firmware.");
     }
+
+    // Art for a layer while it's active, over everything else (art_triggers).
+    egui::CollapsingHeader::new("Layer art").id_salt("art-layer-art").show(ui, |ui| {
+        ui.weak("Shown while that layer is active (after 0.4 s, so a quick tap doesn't flash it), then the art before comes back.");
+        let layer_names = super::layer_names::remembered();
+        egui::Grid::new("art-layer-art-grid").num_columns(2).show(ui, |ui| {
+            for (layer, name) in layer_names.iter().enumerate().skip(1) {
+                let Ok(layer) = u8::try_from(layer) else { break };
+                ui.label(name.clone().unwrap_or_else(|| format!("Layer {layer}")));
+                let current = cycle.layer_art(layer).cloned();
+                let mut picked: Option<Option<Item>> = None;
+                egui::ComboBox::from_id_salt(("art-layer", layer))
+                    .selected_text(current.as_ref().map_or_else(|| "none".into(), label))
+                    .show_ui(ui, |ui| {
+                        if ui.selectable_label(current.is_none(), "none").clicked() {
+                            picked = Some(None);
+                        }
+                        for set in names.unwrap_or_default() {
+                            if ui.selectable_label(false, &set.label).clicked() {
+                                picked = Some(Some(Item::BuiltIn(set.name.clone())));
+                            }
+                        }
+                        for info in s.slots.iter().filter(|i| i.used) {
+                            if ui.selectable_label(false, format!("saved \"{}\"", info.name)).clicked() {
+                                picked = Some(Some(Item::Slot(info.slot)));
+                            }
+                        }
+                    });
+                if let Some(art) = picked {
+                    cycle.set_layer_art(layer, art);
+                    changed = true;
+                }
+                ui.end_row();
+            }
+        });
+        if layer_names.len() <= 1 {
+            ui.weak("Layers appear once the keymap has been read.");
+        }
+    });
+
     if changed {
         if let Err(e) = h.set_cycle(cycle) {
             ui.colored_label(egui::Color32::RED, e);
