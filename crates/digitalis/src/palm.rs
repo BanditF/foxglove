@@ -218,9 +218,10 @@ impl Behaviors for DigitalisDevice {
         Ok(self.behaviors.lock().unwrap_or_else(|e| e.into_inner()).clone())
     }
 
-    fn invoke_checked(&self, _checked: Checked, id: u32, p1: u32, p2: u32) -> PResult<()> {
-        let id = u16::try_from(id).map_err(|_| PalmError::Unsupported)?;
-        match settings::invoke(&*self.link, id, p1, p2, 0).map_err(err)? {
+    fn invoke_checked(&self, checked: Checked) -> PResult<()> {
+        let a = checked.action();
+        let id = u16::try_from(a.id).map_err(|_| PalmError::Unsupported)?;
+        match settings::invoke(&*self.link, id, a.param1, a.param2, a.hold_ms).map_err(err)? {
             InvokeStatus::Ok => Ok(()),
             InvokeStatus::UnknownBehavior | InvokeStatus::NotBuiltIn => Err(PalmError::Unsupported),
             InvokeStatus::Busy => Err(PalmError::Busy("a held action is running".into())),
@@ -507,13 +508,14 @@ mod tests {
         let all = capabilities::PANEL | capabilities::ART_RELAY | capabilities::SETTINGS_RGB;
         let (dev, _fake, _bus) = device(all);
         dev.set_behaviors(vec![
-            BehaviorInfo { id: 3, name: "Bootloader".into(), params: vec![], risk: Risk::Confirm },
-            BehaviorInfo { id: 4, name: "RGB toggle".into(), params: vec![], risk: Risk::Safe },
+            BehaviorInfo { id: 3, param1: 0, param2: 0, name: "Bootloader".into(), hold_ms: 0, risk: Risk::Confirm },
+            BehaviorInfo { id: 4, param1: 1, param2: 0, name: "RGB on".into(), hold_ms: 0, risk: Risk::Safe },
         ]);
         palm::contract::check_device(&dev).unwrap();
         let behaviors = dev.behaviors().unwrap();
         assert!(matches!(behaviors.invoke(3, 0, 0, false), Err(PalmError::Denied(_))));
-        behaviors.invoke(4, 0, 0, false).unwrap();
+        behaviors.invoke(4, 1, 0, false).unwrap();
+        assert_eq!(behaviors.invoke(4, 2, 0, false), Err(PalmError::Unsupported));
         assert_eq!(dev.lighting().unwrap().state().unwrap().hue, 0x168);
         assert_eq!(dev.settings().unwrap().get("rgb_sync").unwrap(), Some(Value::Bool(true)));
         assert_eq!(dev.power().unwrap().batteries().unwrap(), vec![("right".to_string(), 55)]);

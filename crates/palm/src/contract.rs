@@ -66,7 +66,7 @@ pub fn check_behaviors(behaviors: &dyn Behaviors) -> Result<()> {
         if behavior.risk == Risk::Confirm {
             require(
                 matches!(
-                    behaviors.invoke(behavior.id, 0, 0, false),
+                    behaviors.invoke(behavior.id, behavior.param1, behavior.param2, false),
                     Err(PalmError::Denied(_))
                 ),
                 "confirmation was not enforced",
@@ -176,9 +176,10 @@ mod tests {
         assert_eq!(screens.art_status().unwrap().selected, Some(2));
         let behaviors = device.behaviors().unwrap();
         assert!(matches!(
-            behaviors.invoke(0, 0, 0, false),
+            behaviors.invoke(0, 1, 2, false),
             Err(PalmError::Denied(_))
         ));
+        assert_eq!(behaviors.invoke(0, 9, 9, true), Err(PalmError::Unsupported));
         behaviors.invoke(0, 1, 2, true).unwrap();
     }
 
