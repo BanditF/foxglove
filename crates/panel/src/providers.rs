@@ -54,8 +54,9 @@ mod imp {
             if self.manager.is_none() {
                 *self = Media::new();
             }
+            let manager = self.manager.as_ref()?;
             let get = || -> Result<(String, String, bool)> {
-                let session = self.manager.as_ref().unwrap().GetCurrentSession()?;
+                let session = manager.GetCurrentSession()?;
                 let props = session.TryGetMediaPropertiesAsync()?.join()?;
                 let playing = session.GetPlaybackInfo()?.PlaybackStatus()? == PlaybackStatus::Playing;
                 Ok((props.Title()?.to_string(), props.Artist()?.to_string(), playing))

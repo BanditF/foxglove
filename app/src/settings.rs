@@ -190,13 +190,13 @@ impl FromStr for ThemeColor {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ThemeSettings {
-    pub layer_colors: [ThemeColor; 7],
+    pub layer_colors: [ThemeColor; 8],
     pub font_color: ThemeColor,
 }
 
 impl ThemeSettings {
     /// Layers from here up share `layer_colors`' last entry and a single visibility bit.
-    pub const OTHER_LAYERS: u8 = 6;
+    pub const OTHER_LAYERS: u8 = 7;
 
     pub fn layer_color(&self, layer: u8) -> ThemeColor {
         *self
@@ -217,6 +217,7 @@ impl Default for ThemeSettings {
                 ThemeColor::new(140, 110, 150, ALPHA),
                 ThemeColor::new(95, 121, 127, ALPHA),
                 ThemeColor::new(147, 137, 110, ALPHA),
+                ThemeColor::new(127, 127, 127, ALPHA),
                 ThemeColor::new(127, 127, 127, ALPHA),
             ],
             font_color: ThemeColor::new(255, 255, 255, 255),
