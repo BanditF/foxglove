@@ -52,7 +52,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define RGB_UG_NAME DEVICE_DT_NAME(DT_INST(0, zmk_behavior_rgb_underglow))
 #endif
 
-enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE, PANEL_SCREENS };
+enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE, PANEL_SCREENS,
+       PANEL_ROWS_AT };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
@@ -206,6 +207,9 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
 #endif
     caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO | HOST_LINK_CAP_SCREENS;
+    if (CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S == 0) {
+        caps |= HOST_LINK_CAP_PANEL_HOLD; // no keep-alive needed (#279)
+    }
     sys_put_le32(caps, &r[21]);
     sys_put_le16(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S, &r[25]);
     struct foxglove_build_info build;
@@ -258,6 +262,20 @@ static void panel_command(const uint8_t *d) {
         }
         k_spinlock_key_t key = k_spin_lock(&lock);
         memcpy(&back[y * HOST_PANEL_STRIDE], &d[4], n * HOST_PANEL_STRIDE);
+        k_spin_unlock(&lock, key);
+        break;
+    }
+    case PANEL_ROWS_AT: {
+        // Byte-addressed (#289): rows wider than a report, panels taller than 255 rows.
+        uint16_t y = sys_get_le16(&d[2]), offset = sys_get_le16(&d[4]);
+        uint8_t n = d[6];
+        size_t at = (size_t)y * HOST_PANEL_STRIDE + offset;
+        if (y >= HOST_PANEL_H || offset >= HOST_PANEL_STRIDE || n > REPORT_SIZE - 7 ||
+            at + n > HOST_PANEL_BYTES) {
+            break;
+        }
+        k_spinlock_key_t key = k_spin_lock(&lock);
+        memcpy(&back[at], &d[7], n);
         k_spin_unlock(&lock, key);
         break;
     }
@@ -373,6 +391,7 @@ static void invoke_press_cb(struct k_work *work) {
 #if RGB_UG_RELAYED
     if (strcmp(invoke_binding.behavior_dev, RGB_UG_NAME) == 0) {
         art_relay_rgb_verify(); // went to the right through ZMK: read it back, then tell the PC
+        rgb_idle_check();       // and an on/off toggle should be saved as the user's
     }
 #endif
     k_work_schedule(&invoke_release_work, K_MSEC(invoke_hold_ms));

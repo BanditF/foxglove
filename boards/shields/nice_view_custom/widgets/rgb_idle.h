@@ -23,6 +23,10 @@ struct rgb_idle_wire {
 // This half's underglow. Any thread.
 void rgb_idle_state(struct rgb_idle_wire *out);
 
+// An rgb_ug binding may just have run (a key, an encoder, a PC invoke): look at the underglow's
+// on/off soon. Any thread.
+void rgb_idle_check(void);
+
 // Left: whether the right half's underglow follows the left's (persisted, default on).
 bool rgb_idle_sync(void);
 void rgb_idle_set_sync(bool sync);
