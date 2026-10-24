@@ -85,7 +85,7 @@ fn try_load_at<T: DeserializeOwned>(path: &Path, section: &str) -> Result<Option
 }
 
 /// Sections a profile may override (docs/profiles.md); the rest describe the machine.
-pub const PROFILED: &[&str] = &["screens", "lighting", "art", "art.cycle"];
+pub const PROFILED: &[&str] = &["screens", "lighting", "art", "art.cycle", "overlay"];
 
 /// The profiles a new install starts with; easy to change once the user decides (#90 row 13).
 pub const STARTERS: &[&str] = &["Work", "Game"];

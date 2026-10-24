@@ -124,7 +124,8 @@ impl OverlayApp {
     }
 
     pub(crate) fn persist_settings(&self) {
-        if let Err(e) = self.settings.active.save() {
+        // Foxglove: into the active profile, or settings.ini without one.
+        if let Err(e) = crate::foxglove::overlay_profile::save(&self.settings.active) {
             eprintln!("Failed to save settings: {e}");
         }
     }

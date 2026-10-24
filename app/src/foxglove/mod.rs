@@ -8,6 +8,7 @@ pub mod keymap_cache;
 pub mod last_device;
 pub mod layer_names;
 pub mod link;
+pub mod overlay_profile;
 pub mod palm_host;
 pub mod profiles_ui;
 pub mod reconnect;
