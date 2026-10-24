@@ -229,9 +229,10 @@ impl<'a, D: Device> Runner<'a, D> {
         // advertises refusal (HELLO bit 7); the case is BLOCKED before this otherwise.
         let refusal_test =
             i.expect_status == "refused" && unsupported("invoke_refusal", &self.hello).is_none();
+        let silent_key = known("kp") && crate::spec::non_typing_key(i.param1) && i.hold_ms <= 200;
         ensure!(
-            if typing { known("kp") && i.hold_ms == 0 } else { safe || refusal_test },
-            "injection blocked: needs verified non-typing behavior, or kp tap inside sink; refusal support unknown"
+            if typing { known("kp") && i.hold_ms == 0 } else { safe || refusal_test || silent_key },
+            "injection blocked: needs verified non-typing behavior (or kp F13-F24), or kp tap inside sink; refusal support unknown"
         );
         self.check()?;
         // Discard prior cases' reports, but retain reports arriving during this invoke.
