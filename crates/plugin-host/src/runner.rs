@@ -165,8 +165,13 @@ impl Running {
 
 type Io = (Running, Box<dyn Write + Send>, Box<dyn Read + Send>);
 
+/// A plugin's own folder for state between runs (inside its folder; left out of the signed-file
+/// check, writable in the sandbox).
+pub const DATA_DIR: &str = "data";
+
 fn spawn(spec: &PluginSpec, config: &Config) -> std::io::Result<Io> {
     let program = spec.run.first().ok_or_else(|| std::io::Error::other("the manifest's run is empty"))?;
+    std::fs::create_dir_all(spec.dir.join(DATA_DIR))?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(spec.dir.join("plugin.log"))?;
     // On Windows the plugin is started with only its own pipe ends inheritable (a handle list),
     // in its AppContainer or not; std::process would let a child started at the same moment

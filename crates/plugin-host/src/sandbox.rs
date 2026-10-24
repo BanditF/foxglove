@@ -32,6 +32,8 @@ use windows_sys::Win32::System::Threading::{
 
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_EXECUTE: u32 = 0x2000_0000;
+const GENERIC_WRITE: u32 = 0x4000_0000;
+const DELETE: u32 = 0x0001_0000;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -80,6 +82,15 @@ impl Drop for ContainerSid {
 
 /// Lets the container read and run what's in the plugin's folder (inherited by everything in it).
 fn grant_folder(dir: &Path, sid: &ContainerSid) -> std::io::Result<()> {
+    grant(dir, sid, GENERIC_READ | GENERIC_EXECUTE)
+}
+
+/// The plugin's own `data/` (its state between runs): read and write, inside its folder.
+fn grant_data(dir: &Path, sid: &ContainerSid) -> std::io::Result<()> {
+    grant(dir, sid, GENERIC_READ | GENERIC_WRITE | DELETE)
+}
+
+fn grant(dir: &Path, sid: &ContainerSid, permissions: u32) -> std::io::Result<()> {
     let path = wide(&dir.to_string_lossy());
     unsafe {
         let mut old: *mut ACL = std::ptr::null_mut();
@@ -89,7 +100,7 @@ fn grant_folder(dir: &Path, sid: &ContainerSid) -> std::io::Result<()> {
             return Err(std::io::Error::from_raw_os_error(e as i32));
         }
         let access = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: GENERIC_READ | GENERIC_EXECUTE,
+            grfAccessPermissions: permissions,
             grfAccessMode: GRANT_ACCESS,
             grfInheritance: SUB_CONTAINERS_AND_OBJECTS_INHERIT,
             Trustee: TRUSTEE_W {
@@ -143,6 +154,7 @@ pub fn spawn(id: &str, dir: &Path, run: &[String], log: File, contained: bool) -
     let sid = if contained {
         let sid = ContainerSid::for_plugin(id)?;
         grant_folder(dir, &sid)?;
+        grant_data(&dir.join(crate::runner::DATA_DIR), &sid)?;
         Some(sid)
     } else {
         None
