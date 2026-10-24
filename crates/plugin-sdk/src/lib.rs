@@ -183,6 +183,17 @@ impl Plugin {
         self.events.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
+    /// One of this plugin's secrets (#213; needs `secrets`): what the user entered in the
+    /// Plugins tab, or what the plugin saved. `None` when it isn't set.
+    pub fn secret(&self, name: &str) -> Result<Option<String>> {
+        Ok(self.call_as::<foxglove_plugin_api::methods::SecretValue>("secrets.get", json!({ "name": name }))?.value)
+    }
+
+    /// Saves (or with `None` removes) one of this plugin's secrets, such as a refreshed token.
+    pub fn set_secret(&self, name: &str, value: Option<&str>) -> Result<()> {
+        self.call("secrets.set", json!({ "name": name, "value": value })).map(|_| ())
+    }
+
     /// Whether Foxglove has gone (its end of the connection closed): a plugin that holds
     /// something, such as a port, should stop.
     pub fn is_closed(&self) -> bool {

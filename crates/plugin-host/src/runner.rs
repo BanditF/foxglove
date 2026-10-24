@@ -232,7 +232,7 @@ fn supervise(
                 }
                 let id = spec.id.clone();
                 let _ = std::thread::Builder::new().name(format!("plugin-{}-io", spec.id)).spawn(move || {
-                    let _ = crate::serve_with(reader, stdin, ctx, |out| crate::register(&id, Some(out)));
+                    let _ = crate::serve_with(reader, stdin, ctx, Some(id.clone()), |out| crate::register(&id, Some(out)));
                     crate::register(&id, None);
                     let _ = exited.send(Event::Exited(this_run));
                 });

@@ -335,3 +335,31 @@ fn notify_sends_declared_events_to_one_running_plugin() {
     register("test.notify", None);
     assert!(!notify("test.notify", "action.invoked", json!({"action": "toggle"})), "not after it stops");
 }
+
+#[test]
+fn secrets_belong_to_one_plugin_and_need_the_permission() {
+    secrets::use_store(Box::new(secrets::Memory::default()));
+    let as_plugin = |id: Option<&str>, perms: &[&str], input: &[Value]| {
+        let text: String = input.iter().map(|v| v.to_string() + "\n").collect();
+        let out = Out::default();
+        serve_with(Cursor::new(text), out.clone(), plugin(perms), id.map(String::from), |_| {}).unwrap();
+        out.lines()
+    };
+    let set = call(1, "secrets.set", json!({"name": "obs-password", "value": "hunter2"}));
+    let get = call(2, "secrets.get", json!({"name": "obs-password"}));
+    let out = as_plugin(Some("org.a"), &["secrets"], &[init(), set.clone(), get.clone()]);
+    assert_eq!(out[2]["result"], json!({"value": "hunter2"}));
+    // Another plugin sees only its own.
+    let out = as_plugin(Some("org.b"), &["secrets"], &[init(), get.clone()]);
+    assert_eq!(out[1]["result"], json!({"value": null}));
+    // Without the permission, or from an outside tool, nothing.
+    let out = as_plugin(Some("org.a"), &[], &[init(), get.clone()]);
+    assert!(err(2, code::DENIED)(&out[1]));
+    let out = as_plugin(None, &["secrets"], &[init(), get.clone()]);
+    assert!(err(2, code::DENIED)(&out[1]));
+    // Removing it, and the uninstall clean-up.
+    as_plugin(Some("org.a"), &["secrets"], &[init(), call(3, "secrets.set", json!({"name": "t", "value": "x"}))]);
+    secrets::delete_all("org.a").unwrap();
+    let out = as_plugin(Some("org.a"), &["secrets"], &[init(), get]);
+    assert_eq!(out[1]["result"], json!({"value": null}));
+}

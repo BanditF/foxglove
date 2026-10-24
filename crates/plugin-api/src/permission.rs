@@ -42,6 +42,8 @@ pub enum Permission {
     /// Declared: the plugin reads and changes the microphone's mute (Core Audio). Windows lets
     /// any sandboxed process do this, so it's shown at install but not enforced (#215).
     AudioMic,
+    /// Keep its own passwords and tokens in Windows' credential store (#213).
+    Secrets,
 }
 
 impl Permission {
@@ -71,6 +73,7 @@ impl Permission {
             Permission::NetListenUdp(port) => format!("receive network messages from this PC on port {port}"),
             Permission::Files => "read and write your files".into(),
             Permission::AudioMic => "see and change whether your microphone is muted".into(),
+            Permission::Secrets => "keep its passwords or tokens in Windows' credential store".into(),
         }
     }
 }
@@ -125,6 +128,7 @@ impl TryFrom<String> for Permission {
                 "net" => Permission::Net,
                 "files" => Permission::Files,
                 "audio.mic" => Permission::AudioMic,
+                "secrets" => Permission::Secrets,
                 _ => return Err(format!("unknown permission {text:?}")),
             },
         })
@@ -151,6 +155,7 @@ impl From<Permission> for String {
             Permission::NetListenUdp(port) => format!("net.listen:udp:127.0.0.1:{port}"),
             Permission::Files => "files".into(),
             Permission::AudioMic => "audio.mic".into(),
+            Permission::Secrets => "secrets".into(),
         }
     }
 }
