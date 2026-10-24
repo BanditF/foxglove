@@ -15,9 +15,20 @@ pub enum AppConnectionState {
     Connected {
         keyboard: Arc<Keyboard>,
     },
+    /// Foxglove (#279): a burst of tries started by an event (the link dropped, the device
+    /// arrived), stopped by connecting or after `RECONNECT_TRIES`; then `None`, waiting for the
+    /// next device arrival instead of retrying forever.
     Reconnecting {
-        next_attempt_at: Instant,
+        next_attempt_at: Option<Instant>,
+        tries: u8,
     },
+}
+
+impl AppConnectionState {
+    /// A new burst of tries, starting now.
+    pub fn reconnect_now() -> Self {
+        AppConnectionState::Reconnecting { next_attempt_at: Some(Instant::now()), tries: 0 }
+    }
 }
 
 #[derive(Clone)]

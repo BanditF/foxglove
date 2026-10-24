@@ -35,6 +35,9 @@ pub mod capabilities {
     pub const BOOTLOADER: u32 = 1 << 9;
     /// Art SAVE / SLOT / ERASE (D6 06 / 07 / 08), flash slots on the right half.
     pub const ART_SLOTS: u32 = 1 << 10;
+    /// The panel stays as drawn until RELEASE, and keeps its last frame on link loss: the host
+    /// sends no keep-alive (#279, #280).
+    pub const PANEL_HOLD: u32 = 1 << 15;
 }
 pub const VERSION: u8 = 1;
 

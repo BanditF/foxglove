@@ -292,6 +292,10 @@ impl Keyboard {
             .map_err(|e| e.to_string())?
             .map(|sender| {
                 let (tx, rx) = mpsc::channel::<()>();
+                // Foxglove (#279): QMK's KeyPeek module drops a layer subscription a few seconds
+                // after its last renewal, and that firmware isn't ours to change, so this renews
+                // it. It starts with the connection and stops when the keyboard is dropped (the
+                // channel closes); there's no event to renew on instead.
                 crate::foxglove::services::spawn_named("keypeek-keepalive", move || {
                     loop {
                         let _ = sender.set_active(true);

@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(3);
+/// Tries in one burst (about half a minute), then wait for the device to arrive (#279).
+const RECONNECT_TRIES: u8 = 10;
 
 fn layout_preference(name: &str) -> Option<String> {
     if name.is_empty() {
@@ -194,8 +196,13 @@ impl OverlayApp {
     }
 
     fn schedule_reconnect(&mut self) {
+        let tries = match self.session.connection {
+            AppConnectionState::Reconnecting { tries, .. } => tries.saturating_add(1),
+            _ => 1,
+        };
         self.session.connection = AppConnectionState::Reconnecting {
-            next_attempt_at: Instant::now() + RECONNECT_INTERVAL,
+            next_attempt_at: (tries < RECONNECT_TRIES).then(|| Instant::now() + RECONNECT_INTERVAL),
+            tries,
         };
     }
 
@@ -205,9 +212,7 @@ impl OverlayApp {
         if let AppConnectionState::Connected { keyboard } = &self.session.connection {
             if !keyboard.is_alive() {
                 self.close_editor();
-                self.session.connection = AppConnectionState::Reconnecting {
-                    next_attempt_at: Instant::now(),
-                };
+                self.session.connection = AppConnectionState::reconnect_now();
             }
         }
 
@@ -216,7 +221,8 @@ impl OverlayApp {
             return;
         }
 
-        let AppConnectionState::Reconnecting { next_attempt_at } = &self.session.connection else {
+        // Out of tries: wait for the device to arrive (the watch sets a new burst).
+        let AppConnectionState::Reconnecting { next_attempt_at: Some(next_attempt_at), .. } = &self.session.connection else {
             return;
         };
         let next_attempt_at = *next_attempt_at;

@@ -62,9 +62,7 @@ impl OverlayApp {
             pid,
             transport,
         });
-        self.session.connection = AppConnectionState::Reconnecting {
-            next_attempt_at: Instant::now(),
-        };
+        self.session.connection = AppConnectionState::reconnect_now();
     }
 }
 
@@ -182,10 +180,9 @@ impl OverlayApp {
             self.serial_watch.pending = None;
             crate::foxglove::link::reconnect();
             crate::foxglove::connection::refresh();
-            if let AppConnectionState::Reconnecting { next_attempt_at } =
-                &mut self.session.connection
-            {
-                *next_attempt_at = Instant::now();
+            // The device arrived or went: a new burst of tries.
+            if let AppConnectionState::Reconnecting { .. } = self.session.connection {
+                self.session.connection = AppConnectionState::reconnect_now();
             }
         }
         if let Some(rx) = &self.serial_watch.pending {
@@ -205,9 +202,7 @@ impl OverlayApp {
                             self.close_editor();
                             self.session.last_spec = Some(spec);
                             self.session.reopen = None;
-                            self.session.connection = AppConnectionState::Reconnecting {
-                                next_attempt_at: Instant::now(),
-                            };
+                            self.session.connection = AppConnectionState::reconnect_now();
                         }
                     }
                 }
@@ -229,7 +224,7 @@ impl OverlayApp {
             return;
         }
         let retry = match self.session.connection {
-            AppConnectionState::Reconnecting { next_attempt_at }
+            AppConnectionState::Reconnecting { next_attempt_at: Some(next_attempt_at), .. }
                 if Instant::now() >= next_attempt_at
                     && self.serial_watch.scanned_attempt != Some(next_attempt_at) =>
             {
