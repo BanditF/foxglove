@@ -37,6 +37,10 @@ pub enum Permission {
     /// UDP datagrams to one local port, received by Foxglove for the plugin
     /// (`net.listen:udp:127.0.0.1:<port>`): loopback only.
     NetListenUdp(u16),
+    /// TCP connections to one local port, accepted by Foxglove for the plugin
+    /// (`net.listen:tcp:127.0.0.1:<port>`, API 1.3): loopback only, for a local page or tool
+    /// (a Wallpaper Engine wallpaper, #298) to reach the plugin.
+    NetListenTcp(u16),
     /// Declared only: the plugin reads or writes the user's files.
     Files,
     /// Read the microphone's state (`mic.*` facts), which Foxglove publishes (#237).
@@ -75,6 +79,7 @@ impl Permission {
                 None => format!("connect to {host}"),
             },
             Permission::NetListenUdp(port) => format!("receive network messages from this PC on port {port}"),
+            Permission::NetListenTcp(port) => format!("accept connections from this PC on port {port}"),
             Permission::Files => "read and write your files".into(),
             Permission::AudioInputsRead => "see whether your microphone is muted".into(),
             Permission::AudioInputsMute => "mute and unmute your microphone".into(),
@@ -117,10 +122,14 @@ impl TryFrom<String> for Permission {
                 }
                 Permission::NetConnect { host: host.to_ascii_lowercase(), port }
             }
-            Some(("net.listen", target)) => match target.strip_prefix("udp:127.0.0.1:").map(str::parse) {
-                Some(Ok(port)) if port != 0 => Permission::NetListenUdp(port),
-                _ => return Err(format!("{text:?}: write net.listen:udp:127.0.0.1:<port>")),
-            },
+            Some(("net.listen", target)) => {
+                let port = |prefix: &str| target.strip_prefix(prefix).and_then(|p| p.parse::<u16>().ok()).filter(|p| *p != 0);
+                match (port("udp:127.0.0.1:"), port("tcp:127.0.0.1:")) {
+                    (Some(p), _) => Permission::NetListenUdp(p),
+                    (_, Some(p)) => Permission::NetListenTcp(p),
+                    _ => return Err(format!("{text:?}: write net.listen:udp:127.0.0.1:<port> or net.listen:tcp:127.0.0.1:<port>")),
+                }
+            }
             Some(("apps.watch", exe)) => {
                 let exe = exe.to_ascii_lowercase();
                 let name = exe.strip_suffix(".exe").unwrap_or_default();
@@ -168,6 +177,7 @@ impl From<Permission> for String {
                 format!("net.connect:{host}:{}", port.map_or("*".to_string(), |p| p.to_string()))
             }
             Permission::NetListenUdp(port) => format!("net.listen:udp:127.0.0.1:{port}"),
+            Permission::NetListenTcp(port) => format!("net.listen:tcp:127.0.0.1:{port}"),
             Permission::Files => "files".into(),
             Permission::AudioInputsRead => "audio.inputs.read".into(),
             Permission::AudioInputsMute => "audio.inputs.mute".into(),
@@ -214,6 +224,10 @@ impl Grant {
 
     pub fn can_listen_udp(&self, port: u16) -> bool {
         self.has(&Permission::NetListenUdp(port))
+    }
+
+    pub fn can_listen_tcp(&self, port: u16) -> bool {
+        self.has(&Permission::NetListenTcp(port))
     }
 
     /// Whether the plugin needs to run outside the sandbox (unrestricted network or files).
@@ -274,10 +288,10 @@ mod tests {
 
     #[test]
     fn scoped_network_permissions() {
-        for s in ["net.connect:127.0.0.1:4455", "net.connect:*.example.com:443", "net.connect:api.example.com:*", "net.listen:udp:127.0.0.1:5568"] {
+        for s in ["net.connect:127.0.0.1:4455", "net.connect:*.example.com:443", "net.connect:api.example.com:*", "net.listen:udp:127.0.0.1:5568", "net.listen:tcp:127.0.0.1:47911"] {
             assert_eq!(String::from(p(s).unwrap()), s);
         }
-        for bad in ["net.connect:*:80", "net.connect:example.com", "net.connect:a b:1", "net.connect:*:*", "net.listen:udp:0.0.0.0:5568", "net.listen:tcp:127.0.0.1:1", "net.listen:udp:127.0.0.1:0"] {
+        for bad in ["net.connect:*:80", "net.connect:example.com", "net.connect:a b:1", "net.connect:*:*", "net.listen:udp:0.0.0.0:5568", "net.listen:tcp:0.0.0.0:1", "net.listen:tcp:127.0.0.1:0", "net.listen:udp:127.0.0.1:0"] {
             assert!(p(bad).is_err(), "{bad}");
         }
         let g = Grant(vec![p("net.connect:*.example.com:443").unwrap(), p("net.connect:127.0.0.1:*").unwrap(), p("net.listen:udp:127.0.0.1:5568").unwrap()]);
@@ -287,6 +301,9 @@ mod tests {
         assert!(!g.can_connect("api.example.com", 80));
         assert!(g.can_connect("127.0.0.1", 4455));
         assert!(g.can_listen_udp(5568) && !g.can_listen_udp(5569));
+        let t = Grant(vec![Permission::try_from("net.listen:tcp:127.0.0.1:47911".to_string()).unwrap()]);
+        assert!(t.can_listen_tcp(47911) && !t.can_listen_udp(47911) && !t.unsandboxed());
+        assert!(Permission::try_from("net.listen:tcp:0.0.0.0:47911".to_string()).is_err(), "loopback only");
         assert!(!g.unsandboxed(), "scoped network keeps the sandbox");
         assert!(Grant(vec![Permission::Net]).unsandboxed() && Permission::Net.sensitive());
     }

@@ -318,6 +318,42 @@ fn net_udp_listen_is_brokered_and_scoped() {
 }
 
 #[test]
+fn net_tcp_listen_accepts_on_loopback_and_stops_when_closed() {
+    let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let live = Live::start(plugin(&[&format!("net.listen:tcp:127.0.0.1:{port}")]));
+    live.send(call(1, "net.open", json!({"kind":"tcp-listen","host":"127.0.0.1","port":port + 1})));
+    assert!(err(1, code::DENIED)(&live.wait(reply(1))), "only the granted port");
+    live.send(call(2, "net.open", json!({"kind":"tcp-listen","host":"127.0.0.1","port":port})));
+    let listener = live.wait(reply(2))["result"]["stream"].as_u64().unwrap();
+    // A local page connects: the plugin is told, with a stream of its own.
+    let mut page = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let accepted = live.wait(|v| v["method"] == "net.accepted");
+    assert_eq!(accepted["params"]["listener"], json!(listener));
+    let stream = accepted["params"]["stream"].as_u64().unwrap();
+    assert!(accepted["params"]["from"].as_str().unwrap().starts_with("127.0.0.1:"));
+    page.write_all(b"hello").unwrap();
+    let data = live.wait(|v| v["method"] == "net.data" && v["params"]["stream"] == json!(stream));
+    assert_eq!(data["params"]["data"], json!(STANDARD.encode(b"hello")));
+    live.send(call(3, "net.send", json!({"stream":stream,"data":STANDARD.encode(b"hi")})));
+    let mut got = [0u8; 2];
+    std::io::Read::read_exact(&mut page, &mut got).unwrap();
+    assert_eq!(&got, b"hi");
+    live.send(call(4, "net.send", json!({"stream":listener,"data":STANDARD.encode(b"x")})));
+    assert!(err(4, code::INVALID_PARAMS)(&live.wait(reply(4))), "nothing is sent to a listener");
+    // Closing the listener stops accepting; the open connection stays until it ends.
+    live.send(call(5, "net.close", json!({"stream":listener})));
+    live.wait(reply(5));
+    let until = Instant::now() + Duration::from_secs(10);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        assert!(Instant::now() < until, "still accepting after close");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(page);
+    live.wait(|v| v["method"] == "net.closed" && v["params"]["stream"] == json!(stream));
+    live.stop();
+}
+
+#[test]
 fn net_tcp_connect_both_ways() {
     let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = server.local_addr().unwrap().port();

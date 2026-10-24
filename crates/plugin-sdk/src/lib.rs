@@ -27,7 +27,8 @@ pub use foxglove_plugin_api::methods::{AppWindows, LeaseParams, LeasePriority};
 use foxglove_plugin_api::rpc::{Error, Id, Outcome, Request, Response};
 
 mod net;
-pub use net::{NetEvent, TcpStream};
+pub use net::{NetEvent, TcpListener, TcpStream};
+pub mod ws;
 
 /// A watched app's window opening or closing (`Plugin::watch_app`): the program's file name,
 /// and how many of its windows are open after it. `Closed { open: 0, .. }`: it has probably quit.
