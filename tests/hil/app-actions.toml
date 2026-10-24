@@ -1,0 +1,14 @@
+schema = 1
+
+# Key-triggered plugin actions (#212) on the real path: the keyboard sends F13, Windows hands it to
+# Foxglove's global hotkey, and Foxglove sends action.invoked to the plugin bound to F13. The keymap
+# has no F13 key, so the keyboard sends it through D7 02 (&kp F13 types nothing).
+# scripts/lab/plugin_actions.py runs this: it starts Foxglove on a temp FOXGLOVE_CONFIG_DIR with the
+# focus timer auto-installed and its pause action bound to F13, runs this case with --allow-app,
+# and reads focus.paused through foxglove-cli. Run on its own, the case only proves F13 is sent.
+
+[[cases]]
+name = "f13-tap"
+description = "The keyboard taps F13 (bound to the focus timer's pause action by the driver)"
+tags = ["app", "plugins"]
+steps = [{ invoke = { behavior = "kp", param1 = 0x70068, hold_ms = 30 } }]
