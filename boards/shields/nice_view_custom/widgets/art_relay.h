@@ -51,6 +51,8 @@ enum art_relay_op {
     ART_RELAY_RGB,
     ART_RELAY_PRESS, // 6: keymap position u8, state u8 (1 down, 0 up)
     ART_RELAY_SNAP = 7, // one byte, write request: take a screen snapshot
+    ART_RELAY_SAVE = 9,  // slot u8, name[16]: save the shown pushed set to flash (write request)
+    ART_RELAY_ERASE = 10, // slot u8: empty a flash slot (write request)
     ART_RELAY_BOOT = 8, // "BOOT", write request: reboot into the bootloader (test hooks only)
 };
 
@@ -64,6 +66,9 @@ enum art_relay_right_state {
     ART_RIGHT_BAD_CRC,
     ART_RIGHT_BAD_BLOB,
     ART_RIGHT_TOO_BIG,
+    ART_RIGHT_SAVING,      // a flash slot is being written or erased
+    ART_RIGHT_SAVED,
+    ART_RIGHT_SAVE_FAILED,
 };
 
 struct art_relay_status {
@@ -75,6 +80,20 @@ struct art_relay_status {
     uint8_t set_count; // built-in sets
     // version >= 2
     struct rgb_idle_wire rgb; // the right's underglow
+    // version >= 3: flash slots (art_slots.c); set = set_count + n while slot n is shown
+    uint8_t flash_slots;
+    uint8_t flash_used; // bit n: slot n holds a set
+} __packed;
+
+// The status characteristic carries ART_RELAY_FLASH_SLOTS of these after struct art_relay_status;
+// the left reads one with an offset read (D6 07 SLOT). Normal status reads stop after the first
+// chunk, so they cost no more than before.
+#define ART_RELAY_FLASH_SLOTS 8
+struct art_relay_slot_info {
+    uint8_t used;
+    uint32_t writes; // erase/write cycles so far
+    uint16_t len;    // blob bytes
+    char name[16];   // not NUL-terminated when 16 long
 } __packed;
 
 // Left half (art_relay_central.c). The blob is collected on the left, then pushed in one go.
@@ -127,6 +146,10 @@ uint8_t art_relay_right_rgb(struct rgb_idle_wire *out);
 // Fills out with: state, error, length u16, pushed u16, link, struct art_relay_status.
 #define ART_RELAY_REPORT_SIZE (7 + sizeof(struct art_relay_status))
 void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]);
+// Flash slots on the right (D6 06/07/08). save/erase report like select; slot replies D6 87 later.
+int art_relay_save(uint8_t slot, const uint8_t name[16]);
+int art_relay_erase(uint8_t slot);
+int art_relay_slot(uint8_t slot);
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 void art_relay_press(uint8_t pos, uint8_t state);

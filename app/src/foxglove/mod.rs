@@ -13,6 +13,7 @@ pub mod reconnect;
 pub mod screens;
 mod screens_watch;
 mod screens_settings;
+pub mod screens_ui;
 pub mod services;
 pub mod art_library;
 pub mod art_manifest;
