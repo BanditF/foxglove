@@ -29,6 +29,7 @@ const BUILT_IN: &[Set] = &[
     set!("org.foxglove.lightsync"),
     set!("org.foxglove.mic-mute"),
     set!("org.foxglove.broadcast-status"),
+    set!("org.foxglove.wallpaper-match"),
     set!("_default"),
 ];
 
