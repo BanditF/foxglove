@@ -31,6 +31,9 @@ Usage:
   Quote inputs with spaces or pipes, e.g. "INPUT:stills:labels=First frame|Second frame".
 
 OUT.c also writes OUT.json with built-in set names, labels, frame counts, and frame rates.
+A set's name (the C name: :name=X, or NAME_1, NAME_2... for :stills) is its stable id in
+Foxglove: the app's hotlist stores names, not indexes. Don't rename a set casually; change
+its :label= instead.
 Use :label=Text for one set or :labels=A|B|C with :stills for individual labels.
 
 An OUT.bin is one art set as a blob to push from the PC without flashing (hostpanel push-art
