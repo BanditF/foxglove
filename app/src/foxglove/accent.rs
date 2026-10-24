@@ -2,7 +2,7 @@
 //!
 //! Event-driven: Windows' UISettings.ColorValuesChanged (accent or theme changed) and Palm's
 //! Connected event (a keyboard came, so it gets the current colour). Only the hue and
-//! saturation follow the accent; the board keeps its own brightness. Saved in `lighting.ini`.
+//! saturation follow the accent; the board keeps its own brightness. Saved in the store's `[lighting]`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -13,8 +13,11 @@ use palm::{DeviceEvent, Device as _};
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static WAKE: OnceLock<Mutex<mpsc::Sender<()>>> = OnceLock::new();
 
-fn settings_path() -> Option<std::path::PathBuf> {
-    crate::settings::Settings::config_file_path().map(|p| p.with_file_name("lighting.ini"))
+/// The `[lighting]` section of the settings store.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct LightingSettings {
+    follow_accent: bool,
 }
 
 pub fn enabled() -> bool {
@@ -24,12 +27,8 @@ pub fn enabled() -> bool {
 /// Turns following on or off, saves it, and applies the colour now when turned on.
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
-    if let Some(path) = settings_path() {
-        let mut conf = ini::Ini::load_from_file(&path).unwrap_or_default();
-        conf.with_section(Some("lighting")).set("follow_accent", on.to_string());
-        if let Err(e) = conf.write_to_file(&path) {
-            eprintln!("Foxglove: can't save {}: {e}", path.display());
-        }
+    if let Err(e) = super::store::save("lighting", &LightingSettings { follow_accent: on }) {
+        eprintln!("Foxglove: can't save the lighting settings: {e}");
     }
     if on {
         wake();
@@ -66,10 +65,17 @@ pub fn start() {
     if super::repaint_trace::disabled("accent") {
         return;
     }
-    let on = settings_path()
-        .and_then(|p| ini::Ini::load_from_file(p).ok())
-        .and_then(|c| c.section(Some("lighting")).and_then(|s| s.get("follow_accent")).map(|v| v == "true"))
-        .unwrap_or(false);
+    let on = super::store::load_or_migrate::<LightingSettings>("lighting", || {
+        // The old lighting.ini, from before the store.
+        let ini = crate::settings::Settings::config_file_path()?.with_file_name("lighting.ini");
+        let on = ini::Ini::load_from_file(&ini)
+            .ok()?
+            .section(Some("lighting"))?
+            .get("follow_accent")?
+            == "true";
+        Some((LightingSettings { follow_accent: on }, vec![ini]))
+    })
+    .follow_accent;
     ENABLED.store(on, Ordering::Relaxed);
     #[cfg(windows)]
     windows_impl::start();

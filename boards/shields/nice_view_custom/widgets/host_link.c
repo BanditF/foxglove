@@ -151,7 +151,7 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     art_relay_discovery(&discovery, &tries);
 #endif
-    uint8_t r[11 + 10 + 4 + 2 + 4] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
+    uint8_t r[11 + 10 + 4 + 2 + 4 + 1] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
                           HOST_PANEL_H,    HOST_PANEL_X,       HOST_PANEL_Y,      right_link(),
                           right_battery,   (uint8_t)discovery, tries};
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
@@ -179,6 +179,9 @@ static void hello_reply(void) {
     r[28] = build.minor;
     r[29] = build.patch;
     r[30] = build.profile;
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    r[31] = art_relay_guard_drops();
+#endif
     reply(r, sizeof(r));
 }
 
