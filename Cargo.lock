@@ -513,6 +513,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "foxglove-kit"
+version = "0.1.0"
+dependencies = [
+ "foxglove-kit-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "foxglove-kit-api"
 version = "1.0.0"
 dependencies = [
@@ -1015,6 +1024,13 @@ dependencies = [
  "bitflags",
  "serde",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "kit-focus-timer"
+version = "1.0.0"
+dependencies = [
+ "foxglove-kit",
 ]
 
 [[package]]

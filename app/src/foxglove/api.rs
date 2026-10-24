@@ -58,6 +58,33 @@ fn caps(c: Caps) -> Vec<String> {
 
 pub(crate) struct AppDevices;
 
+fn params<T: serde::de::DeserializeOwned>(p: Value) -> Result<T, Error> {
+    serde_json::from_value(p).map_err(|e| Error { code: code::INVALID_PARAMS, message: e.to_string(), data: None })
+}
+
+fn unsupported() -> Error {
+    Error { code: code::UNSUPPORTED, message: "this device has no lighting".into(), data: None }
+}
+
+fn palm_error(e: palm::PalmError) -> Error {
+    let code = match e {
+        palm::PalmError::Unsupported => code::UNSUPPORTED,
+        palm::PalmError::Disconnected => code::DISCONNECTED,
+        palm::PalmError::Busy(_) => code::BUSY,
+        palm::PalmError::Timeout => code::TIMEOUT,
+        palm::PalmError::Denied(_) => code::DENIED,
+        palm::PalmError::Backend(_) => code::BACKEND,
+    };
+    Error { code, message: super::palm_host::describe(&e), data: None }
+}
+
+/// The device a call names; only the host-link keyboard for now.
+fn lighting_of(id: &str) -> Result<std::sync::Arc<digitalis::palm::DigitalisDevice>, Error> {
+    super::palm_host::cached()
+        .filter(|d| d.info().id.to_string() == id)
+        .ok_or(Error { code: code::DISCONNECTED, message: format!("no device {id}"), data: None })
+}
+
 impl Devices for AppDevices {
     fn call(&self, method: &str, _params: Value) -> Result<Value, Error> {
         match method {
@@ -77,6 +104,34 @@ impl Devices for AppDevices {
                     .into_iter()
                     .collect();
                 Ok(json!(methods::Devices { devices }))
+            }
+            "lighting.state" => {
+                let p: methods::DeviceParams = params(_params)?;
+                let lighting = lighting_of(&p.device)?;
+                let st = lighting.lighting().ok_or_else(unsupported)?.state().map_err(palm_error)?;
+                Ok(json!(methods::LightingState {
+                    on: st.on,
+                    hue: st.hue,
+                    saturation: st.sat,
+                    brightness: st.brightness,
+                    effect: st.effect.id,
+                    speed: st.speed,
+                }))
+            }
+            "lighting.set" => {
+                let p: methods::SetLightingParams = params(_params)?;
+                let device = lighting_of(&p.device)?;
+                let lighting = device.lighting().ok_or_else(unsupported)?;
+                if let Some(on) = p.on {
+                    lighting.set_on(on).map_err(palm_error)?;
+                }
+                if let Some(c) = p.color {
+                    lighting.set_color(c.hue, c.saturation, c.brightness).map_err(palm_error)?;
+                }
+                if let Some(effect) = p.effect {
+                    lighting.set_effect(palm::Effect { id: effect, params: vec![] }).map_err(palm_error)?;
+                }
+                Ok(json!({}))
             }
             "profiles.list" => {
                 let (names, active) = super::store::profiles();
