@@ -1034,6 +1034,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kit-openrgb-e131"
+version = "1.0.0"
+dependencies = [
+ "den",
+ "foxglove-kit",
+ "foxglove-kit-api",
+ "palm",
+ "serde_json",
+]
+
+[[package]]
 name = "kit-trust"
 version = "0.1.0"
 dependencies = [
