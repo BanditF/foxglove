@@ -89,6 +89,28 @@ pub fn hello(t: &impl Transport) -> Result<Hello> {
     Ok(Hello::parse(&r))
 }
 
+/// Every screen the keyboard describes (D5 06, HELLO capability `SCREENS`, #160): index 0
+/// first for the count, then the rest.
+pub fn screens(t: &impl Transport) -> Result<Vec<protocol::ScreenDescriptor>> {
+    let ask = |i: u8| -> Result<protocol::ScreenDescriptor> {
+        let r = t.request(&protocol::screens(i), protocol::PANEL, protocol::panel::SCREENS, Duration::from_millis(500))?;
+        protocol::ScreenDescriptor::parse(&r).map_err(|status| anyhow::anyhow!("screen {i}: status {status}"))
+    };
+    let first = ask(0)?;
+    let mut all = vec![first.clone()];
+    for i in 1..first.count {
+        all.push(ask(i)?);
+    }
+    Ok(all)
+}
+
+/// The PC-drawable panel among `screens` (the first panel that takes rows).
+pub fn drawable_panel(screens: &[protocol::ScreenDescriptor]) -> Option<&protocol::ScreenDescriptor> {
+    screens
+        .iter()
+        .find(|s| s.kind == protocol::ScreenKind::Panel && s.ops & protocol::ScreenDescriptor::OP_ROWS != 0 && s.format == 0)
+}
+
 /// Gives the area back to the firmware's own drawing.
 pub fn release(t: &impl Transport) -> Result<()> {
     t.send(&protocol::release())
@@ -119,6 +141,34 @@ pub(crate) mod tests {
             anyhow::ensure!(protocol::is_reply(&r, proto, cmd), "wrong reply");
             Ok(r)
         }
+    }
+
+    fn screen(count: u8, index: u8, id: u8, kind: u8, w: u16, h: u16, ops: u16) -> [u8; protocol::REPORT] {
+        let mut r = [0u8; protocol::REPORT];
+        r[..5].copy_from_slice(&[protocol::PANEL, 0x80 | protocol::panel::SCREENS, 0, count, index]);
+        r[5] = id;
+        r[6] = kind;
+        r[8] = if kind == 0 { 0xff } else { 0 };
+        r[9..11].copy_from_slice(&w.to_le_bytes());
+        r[11..13].copy_from_slice(&h.to_le_bytes());
+        r[19..21].copy_from_slice(&ops.to_le_bytes());
+        r
+    }
+
+    #[test]
+    fn reads_every_screen_and_finds_the_panel() {
+        let t = Mock::default();
+        t.replies.borrow_mut().extend([
+            screen(3, 0, 0, 0, 68, 160, 2),
+            screen(3, 1, 1, 1, 64, 52, 1),
+            screen(3, 2, 3, 2, 68, 140, 12),
+        ]);
+        let all = screens(&t).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(t.sent.borrow().iter().map(|r| r[2]).collect::<Vec<_>>(), vec![0, 1, 2]);
+        let panel = drawable_panel(&all).unwrap();
+        assert_eq!((panel.id, panel.width, panel.height), (1, 64, 52));
+        assert!(drawable_panel(&all[..1]).is_none());
     }
 
     #[test]
