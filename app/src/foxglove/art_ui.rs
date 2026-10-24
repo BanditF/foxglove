@@ -31,7 +31,7 @@ pub fn group(ui: &mut egui::Ui) {
     if !s.connected {
         return;
     }
-    crate::ui_widgets::titled_group(ui, "Right screen art", |ui| {
+    super::settings_ui::section(ui, "Right screen art", |ui| {
         ui.label(
             s.status
                 .map_or_else(|| "Waiting for art status".into(), |s| s.to_string()),
@@ -130,11 +130,6 @@ pub fn group(ui: &mut egui::Ui) {
         }
         if let Some(error) = s.error {
             ui.colored_label(egui::Color32::RED, error);
-        }
-        // Progress only moves during a push; otherwise nothing changes without input.
-        if s.busy {
-            ui.ctx()
-                .request_repaint_after(std::time::Duration::from_millis(250));
         }
     });
 }

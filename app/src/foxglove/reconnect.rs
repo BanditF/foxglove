@@ -102,3 +102,70 @@ mod tests {
         );
     }
 }
+
+/// Check the current interfaces once; arrival notifications and the reconnect loop retry later.
+pub fn require_hid(vid: u16, pid: u16) -> Result<(), String> {
+    let api = hidapi::HidApi::new().map_err(|e| e.to_string())?;
+    let present = api.device_list().any(|d| {
+        hid_matches(
+            (vid, pid),
+            (d.vendor_id(), d.product_id()),
+            d.usage_page(),
+            d.usage(),
+        )
+    });
+    present
+        .then_some(())
+        .ok_or_else(|| format!("No HID interface present for {vid:04x}:{pid:04x}"))
+}
+
+fn hid_matches(expected: (u16, u16), actual: (u16, u16), page: u16, usage: u16) -> bool {
+    expected == actual
+        && page == digitalis::protocol::USAGE_PAGE
+        && usage == digitalis::protocol::USAGE
+}
+
+#[cfg(test)]
+mod hid_tests {
+    use super::*;
+
+    #[test]
+    fn matches_identity_and_raw_usage_without_transport_or_path() {
+        assert!(hid_matches((1, 2), (1, 2), 0xff60, 0x61));
+        for (ids, page, usage) in [
+            ((1, 3), 0xff60, 0x61),
+            ((3, 2), 0xff60, 0x61),
+            ((1, 2), 1, 0x61),
+            ((1, 2), 0xff60, 1),
+        ] {
+            assert!(!hid_matches((1, 2), ids, page, usage));
+        }
+    }
+}
+
+/// An arrival scan may supersede an in-flight attempt, but never a newer device selection.
+pub fn scan_is_current(current: Option<&ConnectionSpec>, scanned: &ConnectionSpec) -> bool {
+    current == Some(scanned)
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    #[test]
+    fn arrival_can_supersede_pending_attempt_but_stale_scan_cannot() {
+        let ble = ConnectionSpec::Zmk {
+            vid: 1,
+            pid: 2,
+            transport: ZmkTransportConfig::Ble("keyboard".into()),
+        };
+        let usb = ConnectionSpec::Zmk {
+            vid: 1,
+            pid: 2,
+            transport: ZmkTransportConfig::Serial("COM3".into()),
+        };
+        assert!(scan_is_current(Some(&ble), &ble));
+        assert!(!scan_is_current(Some(&usb), &ble));
+        assert!(!scan_is_current(None, &ble));
+    }
+}

@@ -48,3 +48,39 @@ pub fn rgb_state(t: &impl Transport) -> Result<RgbState> {
     )?;
     Ok(RgbState::parse(&r))
 }
+
+/// Reads the active Bluetooth profile and selected typing endpoint.
+pub fn conn_state(t: &impl Transport) -> Result<protocol::ConnState> {
+    let r = t.request(
+        &protocol::conn_state(), protocol::SETTINGS, protocol::settings::CONN_STATE,
+        Duration::from_millis(500),
+    )?;
+    Ok(protocol::ConnState::parse(&r))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Connection;
+    impl Transport for Connection {
+        fn send(&self, _: &[u8]) -> Result<()> { panic!("connection state uses request") }
+        fn request(&self, report: &[u8], proto: u8, cmd: u8, timeout: Duration)
+            -> Result<[u8; protocol::REPORT]> {
+            assert_eq!(report, [0xd7, 4]);
+            assert_eq!((proto, cmd), (0xd7, 4));
+            assert_eq!(timeout, Duration::from_millis(500));
+            let mut r = [0; protocol::REPORT];
+            r[..8].copy_from_slice(&[0xd7, 0x84, 2, 1, 1, 0, 1, 4]);
+            Ok(r)
+        }
+    }
+
+    #[test]
+    fn connection_query_uses_settings_transport() {
+        let state = conn_state(&Connection).unwrap();
+        assert_eq!(state.active_profile, 2);
+        assert!(state.connected && state.bonded && state.usb_ready);
+        assert_eq!((state.endpoint, state.profile_count), (0, 4));
+    }
+}

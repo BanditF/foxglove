@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use super::OverlayApp;
 use crate::foxglove::keyboard_actions::{self, Action};
 use crate::foxglove::keyboard_settings::{self as ks, RgbSync};
-use crate::ui_widgets::titled_group;
+use crate::foxglove::settings_ui::section as titled_group;
 use digitalis::protocol::RgbHalf;
 
 const EFFECTS: [&str; 4] = ["Solid", "Breathe", "Spectrum", "Swirl"];
@@ -79,7 +79,6 @@ fn action_button(ui: &mut egui::Ui, action: &Action) {
     }
     if action.risky && !armed {
         *confirming = Some((action.label.clone(), Instant::now()));
-        ctx.request_repaint_after(CONFIRM_WITHIN);
         return;
     }
     *confirming = None;
@@ -91,6 +90,7 @@ impl OverlayApp {
     /// keys can do, all of which hold without Foxglove running.
     pub(super) fn foxglove_keyboard_group(ui: &mut egui::Ui) {
         titled_group(ui, "Keyboard", |ui| {
+            crate::foxglove::connection::row(ui);
             Self::rgb_sync_row(ui);
             ui.add_space(4.0);
             egui::CollapsingHeader::new("Lights")
@@ -148,6 +148,9 @@ impl OverlayApp {
 
     fn lights_section(ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if ui.small_button("Refresh lights").clicked() {
+            ks::refresh_rgb_state();
+        }
         let state = ks::rgb_state(&ctx);
         egui::Grid::new("foxglove_lights")
             .num_columns(3)
@@ -223,19 +226,17 @@ impl OverlayApp {
             ui.weak("Connect to the keyboard to list what its keys can do.");
             return;
         }
-        let mut group = None;
         for chunk in actions.chunk_by(|a, b| a.group == b.group) {
-            if group != Some(chunk[0].group) {
-                group = Some(chunk[0].group);
-                ui.label(egui::RichText::new(chunk[0].group.title()).strong());
-            }
-            ui.horizontal_wrapped(|ui| {
-                for action in chunk {
-                    action_button(ui, action);
-                }
-            });
+            egui::CollapsingHeader::new(chunk[0].group.title())
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for action in chunk {
+                            action_button(ui, action);
+                        }
+                    });
+                });
             ui.add_space(4.0);
         }
-        ui.weak("Disruptive actions (restart, bootloader, forget pairings, power off) need a second click.");
+        ui.weak("Connection, reset, bootloader and soft-off behaviors are available only on the keyboard.");
     }
 }

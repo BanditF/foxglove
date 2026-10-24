@@ -16,6 +16,7 @@ pub mod capabilities {
     pub const ART_RELAY: u32 = 1 << 1;
     pub const SETTINGS_RGB: u32 = 1 << 2;
     pub const ART_STATUS_EVENT: u32 = 1 << 3;
+    pub const CONN_STATE: u32 = 1 << 4;
 }
 pub const VERSION: u8 = 1;
 
@@ -47,6 +48,7 @@ pub mod settings {
     pub const INVOKE: u8 = 0x02;
     /// Both halves' underglow state.
     pub const RGB_STATE: u8 = 0x03;
+    pub const CONN_STATE: u8 = 0x04;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -132,6 +134,7 @@ pub enum InvokeStatus {
     BehaviorFailed,
     NotBuiltIn,
     BadLength,
+    Refused,
     Other(u8),
 }
 
@@ -144,6 +147,7 @@ impl InvokeStatus {
             3 => Self::BehaviorFailed,
             4 => Self::NotBuiltIn,
             5 => Self::BadLength,
+            6 => Self::Refused,
             n => Self::Other(n),
         }
     }
@@ -158,6 +162,7 @@ impl std::fmt::Display for InvokeStatus {
             Self::BehaviorFailed => write!(f, "the behavior failed"),
             Self::NotBuiltIn => write!(f, "needs newer keyboard firmware"),
             Self::BadLength => write!(f, "malformed request"),
+            Self::Refused => write!(f, "the keyboard refused this action"),
             Self::Other(n) => write!(f, "error {n}"),
         }
     }
@@ -449,6 +454,7 @@ mod tests {
         r[..11].copy_from_slice(&[0xD5, 0x81, 1, 64, 52, 2, 106, 2, 93, 4, 1]);
         r[11..21].copy_from_slice(&[3, 1, 0, 0, 0, 5, 0, 2, 247, 0]);
         let h = Hello::parse(&r);
+        assert_eq!(h.capabilities, 0);
         assert_eq!((h.version, h.width, h.height), (1, 64, 52));
         assert_eq!((h.right_link, h.right_battery), (2, Some(93)));
         assert_eq!(h.discovery_text(), "found");
@@ -505,5 +511,54 @@ mod tests {
             s.to_string(),
             "left: pushing, 1500/4000 bytes pushed, error: none; right: receiving, set -1, 34 built-in, slot 16384 bytes"
         );
+    }
+}
+
+/// HELLO capability for connection state queries.
+pub const CAP_CONN_STATE: u32 = capabilities::CONN_STATE;
+
+pub fn conn_state() -> Vec<u8> {
+    vec![SETTINGS, settings::CONN_STATE]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnState {
+    pub active_profile: u8,
+    pub connected: bool,
+    pub bonded: bool,
+    /// 0 = USB, 1 = BLE.
+    pub endpoint: u8,
+    pub usb_ready: bool,
+    pub profile_count: u8,
+}
+
+impl ConnState {
+    pub fn parse(r: &[u8; REPORT]) -> Self {
+        Self {
+            active_profile: r[2], connected: r[3] != 0, bonded: r[4] != 0,
+            endpoint: r[5], usb_ready: r[6] != 0, profile_count: r[7],
+        }
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+
+    #[test]
+    fn connection_wire_format_and_capabilities() {
+        assert_eq!(conn_state(), [0xd7, 4]);
+        let mut r = [0; REPORT];
+        r[..8].copy_from_slice(&[0xd7, 0x84, 3, 1, 0, 1, 0, 5]);
+        assert_eq!(ConnState::parse(&r), ConnState {
+            active_profile: 3, connected: true, bonded: false, endpoint: 1,
+            usb_ready: false, profile_count: 5,
+        });
+        r[21..25].copy_from_slice(&0x12345610u32.to_le_bytes());
+        assert_eq!(Hello::parse(&r).capabilities, 0x12345610);
+        assert_ne!(Hello::parse(&r).capabilities & CAP_CONN_STATE, 0);
+        r[2] = 6;
+        assert_eq!(InvokeStatus::parse(&r), InvokeStatus::Refused);
+        assert!(InvokeStatus::Refused.to_string().contains("refused"));
     }
 }

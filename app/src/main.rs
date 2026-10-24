@@ -24,11 +24,11 @@ mod zmk_keycode_labels;
 use device_discovery::discover_devices;
 use settings::Settings;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
     os_layout::init();
     let settings = Settings::load().unwrap_or_default();
     let available_devices = discover_devices();
     foxglove::screens::start();
     foxglove::art_service::start();
-    platform::run(settings, available_devices)
+    foxglove::startup::finish(platform::run(settings, available_devices))
 }

@@ -41,6 +41,7 @@ pub fn remember(spec: &ConnectionSpec) {
             p.display()
         );
     }
+    super::connection::refresh();
 }
 
 /// The last keyboard, if Foxglove has connected to one.

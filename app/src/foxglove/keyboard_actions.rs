@@ -1,19 +1,16 @@
-//! Everything the keyboard's own keys can do besides typing (lights, Bluetooth, layer toggles,
-//! power...), taken from the keymap, so the app can do it too (0xD7 INVOKE).
+//! Safe non-typing keyboard actions, taken from the keymap (0xD7 INVOKE).
 
 use std::collections::HashSet;
 use std::sync::Mutex;
 
 use zmk_studio_api::proto::zmk::keymap::Keymap;
 use zmk_studio_api::{
-    Behavior, BluetoothCommand, ExternalPowerCommand, OutputSelection, ResolvedLayer,
-    UnderglowCommand,
+    Behavior, ExternalPowerCommand, ResolvedLayer, UnderglowCommand,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Group {
     Lights,
-    Connection,
     Layers,
     Power,
     Other,
@@ -23,7 +20,6 @@ impl Group {
     pub fn title(self) -> &'static str {
         match self {
             Group::Lights => "Lights",
-            Group::Connection => "Connection",
             Group::Layers => "Layers",
             Group::Power => "Power and firmware",
             Group::Other => "Other",
@@ -38,9 +34,9 @@ pub struct Action {
     pub group: Group,
     /// Behavior local id and parameters, as the keymap binds them.
     pub binding: (u16, u32, u32),
-    /// How long to hold it (soft off only acts on a held key).
+    /// How long to hold it.
     pub hold_ms: u16,
-    /// Disruptive (resets, bootloader, clearing pairings, power off): ask first.
+    /// Whether this action needs confirmation.
     pub risky: bool,
 }
 
@@ -127,34 +123,6 @@ fn describe(b: &Behavior, layer: &dyn Fn(u32) -> String) -> Option<(Group, Strin
             (Lights, format!("Lights: {what}"), 0, false)
         }
         Behavior::Backlight(c) => (Lights, format!("Backlight: {c:?}"), 0, false),
-        Behavior::Bluetooth(c) => match c {
-            BluetoothCommand::Select(n) => (Connection, format!("Bluetooth profile {n}"), 0, false),
-            BluetoothCommand::Next => (Connection, "Next Bluetooth profile".into(), 0, false),
-            BluetoothCommand::Prev => (Connection, "Previous Bluetooth profile".into(), 0, false),
-            BluetoothCommand::Disconnect(n) => (
-                Connection,
-                format!("Disconnect Bluetooth profile {n}"),
-                0,
-                true,
-            ),
-            BluetoothCommand::Clear => {
-                (Connection, "Forget this Bluetooth profile".into(), 0, true)
-            }
-            BluetoothCommand::ClearAll => {
-                (Connection, "Forget all Bluetooth profiles".into(), 0, true)
-            }
-            BluetoothCommand::Other { .. } => (Connection, "Bluetooth: other".into(), 0, false),
-        },
-        Behavior::OutputSelection(o) => {
-            let what = match o {
-                OutputSelection::Usb => "USB",
-                OutputSelection::Ble => "Bluetooth",
-                OutputSelection::Toggle => "toggle USB/Bluetooth",
-                OutputSelection::None => "none",
-                OutputSelection::Other(_) => "other",
-            };
-            (Connection, format!("Output: {what}"), 0, false)
-        }
         Behavior::ToggleLayer { layer_id } => {
             (Layers, format!("Toggle {}", layer(*layer_id)), 0, false)
         }
@@ -171,10 +139,6 @@ fn describe(b: &Behavior, layer: &dyn Fn(u32) -> String) -> Option<(Group, Strin
             };
             (Power, format!("External power {what}"), 0, false)
         }
-        // Soft off acts only on a key held past its hold time (2 s here).
-        Behavior::SoftOff => (Power, "Turn the keyboard off".into(), 2100, true),
-        Behavior::Reset => (Power, "Restart the keyboard".into(), 0, true),
-        Behavior::Bootloader => (Power, "Bootloader (for flashing)".into(), 0, true),
         Behavior::CapsWord => (Other, "Caps word".into(), 0, false),
         Behavior::StudioUnlock => (Other, "Unlock ZMK Studio".into(), 0, false),
         _ => return None,
@@ -229,13 +193,39 @@ mod tests {
         let a = actions();
         assert_eq!(
             a.len(),
-            3,
-            "the duplicate RGB on and the transparent key are left out"
+            2,
+            "duplicates, typing, and disruptive actions are left out"
         );
         assert_eq!(a[0].label, "Lights: On");
         assert_eq!(a[0].binding, (9, 1, 0));
         assert_eq!(a[1].label, "Toggle QWERTY");
-        assert!(a[2].risky && a[2].hold_ms > 2000);
+
         assert_eq!(underglow_behavior(), Some(9));
+        assert!(permitted((9, 14, 0x123456)));
+        assert!(permitted((4, 0, 0)));
+        assert!(!permitted((7, 0, 0)), "soft off cannot bypass the list");
+        assert!(!permitted((u16::MAX, 0, 0)));
+    }
+}
+
+/// Only bindings learned as safe actions (or direct RGB commands) may be sent.
+pub fn permitted(binding: (u16, u32, u32)) -> bool {
+    let known = KNOWN.lock().unwrap();
+    known.actions.iter().any(|a| a.binding == binding)
+        || known.underglow == Some(binding.0)
+}
+
+#[cfg(test)]
+mod safety_tests {
+    use super::*;
+    use zmk_studio_api::{BluetoothCommand, OutputSelection};
+
+    #[test]
+    fn disruptive_behaviors_are_never_actions() {
+        for b in [Behavior::Bluetooth(BluetoothCommand::Next),
+            Behavior::OutputSelection(OutputSelection::Usb), Behavior::Bootloader,
+            Behavior::Reset, Behavior::SoftOff] {
+            assert!(describe(&b, &|_| String::new()).is_none());
+        }
     }
 }

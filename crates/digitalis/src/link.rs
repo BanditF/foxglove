@@ -131,6 +131,7 @@ struct Shared {
     subscribers: Mutex<Vec<Subscriber>>,
     events: Mutex<Vec<EventSubscriber>>,
     stop: AtomicBool,
+    reconnect: AtomicBool,
 }
 
 pub struct Link {
@@ -148,6 +149,7 @@ impl Link {
             subscribers: Mutex::new(Vec::new()),
             events: Mutex::new(Vec::new()),
             stop: AtomicBool::new(false),
+            reconnect: AtomicBool::new(false),
         });
         let thread_shared = shared.clone();
         let thread = std::thread::Builder::new()
@@ -155,6 +157,14 @@ impl Link {
             .spawn(move || run(open, rx, &thread_shared))
             .expect("link thread");
         Link { commands: Mutex::new(tx), shared, thread: Some(thread) }
+    }
+
+    /// Re-enumerate after a device-interface change, preferring the current transport. No I/O on the caller.
+    pub fn reconnect(&self) {
+        self.shared.reconnect.store(true, Ordering::Relaxed);
+        if let Some(thread) = &self.thread {
+            thread.thread().unpark();
+        }
     }
 
     pub fn state(&self) -> State {
@@ -229,6 +239,7 @@ impl Drop for Link {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
+            t.thread().unpark();
             let _ = t.join();
         }
     }
@@ -260,14 +271,16 @@ fn discard(commands: &Receiver<Command>) {
 
 fn run(mut open: Opener, commands: Receiver<Command>, shared: &Shared) {
     while !shared.stop.load(Ordering::Relaxed) {
+        shared.reconnect.store(false, Ordering::Relaxed);
         let (mut dev, connected) = match open() {
             Ok(c) => c,
             Err(e) => {
                 set_state(shared, |s| s.error = Some(e.to_string()));
                 let end = Instant::now() + RETRY;
-                while Instant::now() < end && !shared.stop.load(Ordering::Relaxed) {
+                while Instant::now() < end && !shared.stop.load(Ordering::Relaxed)
+                    && !shared.reconnect.load(Ordering::Relaxed) {
                     discard(&commands);
-                    std::thread::sleep(Duration::from_millis(50));
+                    std::thread::park_timeout(end.saturating_duration_since(Instant::now()));
                 }
                 continue;
             }
@@ -303,6 +316,9 @@ fn serve(dev: &mut dyn RawHid, commands: &Receiver<Command>, shared: &Shared) ->
     let (mut read_errors, mut write_errors) = (0, 0);
     let mut buf = [0u8; REPORT];
     while !shared.stop.load(Ordering::Relaxed) {
+        if shared.reconnect.load(Ordering::Relaxed) {
+            return Some("device interfaces changed".into());
+        }
         match dev.read(&mut buf, READ_TIMEOUT_MS) {
             Ok(n) => {
                 read_errors = 0;
@@ -521,6 +537,42 @@ mod tests {
     /// An art STATUS request tagged with `id` (the firmware ignores byte 2).
     fn status(l: &Link, id: u8, timeout: Duration) -> Result<u8> {
         l.request(&[protocol::ART, art::STATUS, id], protocol::ART, art::STATUS, timeout).map(|r| r[2])
+    }
+
+    #[test]
+    fn arrival_during_failed_open_skips_retry_delay() {
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let mut first = true;
+        let l = Link::start(Box::new(move || {
+            if first {
+                first = false;
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                return Err(anyhow!("not present"));
+            }
+            Ok((Box::new(Fake::default()), Connected { product: "USB".into(), hello: None }))
+        }));
+        entered_rx.recv_timeout(WAIT).unwrap();
+        l.reconnect();
+        release_tx.send(()).unwrap();
+        assert_eq!(l.wait_connected(WAIT).unwrap().product, "USB");
+    }
+
+    #[test]
+    fn transport_change_replaces_a_handle_that_still_reads_successfully() {
+        let fake = Fake::default();
+        let l = link(&fake);
+        let first = l.state().generation;
+        let (tx, rx) = mpsc::channel();
+        let _subscription = l.subscribe_events(move |event| { let _ = tx.send(event); });
+        rx.recv_timeout(WAIT).unwrap();
+        l.reconnect();
+        let Event::State(away) = rx.recv_timeout(WAIT).unwrap() else { panic!("state") };
+        assert!(away.connected.is_none());
+        let Event::State(back) = rx.recv_timeout(WAIT).unwrap() else { panic!("state") };
+        assert!(back.connected.is_some());
+        assert_eq!(back.generation, first + 1);
     }
 
     #[test]
