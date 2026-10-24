@@ -347,18 +347,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd9f3db6f2cfef61c10613071955154ffdc9e515daebff26de4b54e35038fdd"
 
 [[package]]
-name = "den"
-version = "0.1.0"
-dependencies = [
- "base64",
- "foxglove-kit-api",
- "palm",
- "serde",
- "serde_json",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -376,8 +364,8 @@ dependencies = [
  "anyhow",
  "crc32fast",
  "embedded-graphics",
+ "foxglove-devices",
  "hidapi",
- "palm",
  "windows-sys 0.61.2",
 ]
 
@@ -507,28 +495,17 @@ dependencies = [
 name = "foxglove-cli"
 version = "0.1.0"
 dependencies = [
- "den",
- "foxglove-kit-api",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
  "serde_json",
 ]
 
 [[package]]
-name = "foxglove-kit"
+name = "foxglove-devices"
 version = "0.1.0"
 dependencies = [
- "foxglove-kit-api",
  "serde",
- "serde_json",
-]
-
-[[package]]
-name = "foxglove-kit-api"
-version = "1.0.0"
-dependencies = [
- "schemars",
- "serde",
- "serde_json",
- "toml 0.9.12+spec-1.1.0",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -563,6 +540,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "foxglove-plugin"
+version = "0.1.0"
+dependencies = [
+ "foxglove-plugin-api",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "foxglove-plugin-api"
+version = "1.0.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "foxglove-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "foxglove-devices",
+ "foxglove-plugin-api",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "foxglove-plugin-trust"
+version = "0.1.0"
+dependencies = [
+ "minisign",
+ "minisign-verify",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "foxglove-update"
 version = "0.1.0"
 dependencies = [
@@ -577,8 +596,8 @@ dependencies = [
 name = "foxglove-via"
 version = "0.1.0"
 dependencies = [
+ "foxglove-devices",
  "hidapi",
- "palm",
  "serde",
  "serde_json",
 ]
@@ -1027,35 +1046,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kit-focus-timer"
-version = "1.0.0"
-dependencies = [
- "foxglove-kit",
-]
-
-[[package]]
-name = "kit-openrgb-e131"
-version = "1.0.0"
-dependencies = [
- "den",
- "foxglove-kit",
- "foxglove-kit-api",
- "palm",
- "serde_json",
-]
-
-[[package]]
-name = "kit-trust"
-version = "0.1.0"
-dependencies = [
- "minisign",
- "minisign-verify",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
 name = "libappindicator"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1297,14 +1287,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
-name = "palm"
-version = "0.1.0"
-dependencies = [
- "serde",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "pango"
 version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1350,6 +1332,24 @@ name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+
+[[package]]
+name = "plugin-focus-timer"
+version = "1.0.0"
+dependencies = [
+ "foxglove-plugin",
+]
+
+[[package]]
+name = "plugin-openrgb-e131"
+version = "1.0.0"
+dependencies = [
+ "foxglove-devices",
+ "foxglove-plugin",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
+ "serde_json",
+]
 
 [[package]]
 name = "png"

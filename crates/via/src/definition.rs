@@ -1,10 +1,10 @@
 //! A VIA keyboard definition (the JSON VIA and Keychron publish): which keyboard it is, its
 //! switch matrix, the physical layout and whether it has RGB Matrix lighting.
 //!
-//! Only what Palm needs is read. The layout is KLE (keyboard-layout-editor) rows whose key
+//! Only what the device layer needs is read. The layout is KLE (keyboard-layout-editor) rows whose key
 //! labels start with `row,col`; this is a small parser of our own.
 
-use palm::{Key, Layout};
+use foxglove_devices::{Key, Layout};
 use serde::Deserialize;
 use serde_json::Value;
 
