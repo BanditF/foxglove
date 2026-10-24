@@ -92,6 +92,7 @@ impl OverlayApp {
         crate::foxglove::update::group(ui);
         titled_group(ui, "Keyboard", |ui| {
             crate::foxglove::connection::row(ui);
+            Self::firmware_row(ui);
             Self::rgb_sync_row(ui);
             ui.add_space(4.0);
             egui::CollapsingHeader::new("Lights")
@@ -104,6 +105,34 @@ impl OverlayApp {
                 ui.weak(format!("Last: {label} — {result}"));
             }
         });
+    }
+
+    /// Both halves' firmware version and build, with a warning when they differ (#132).
+    fn firmware_row(ui: &mut egui::Ui) {
+        let describe = |b: &digitalis::protocol::BuildInfo| format!("{} · {}", b.version, b.sha);
+        match ks::firmware(ui.ctx()) {
+            ks::Firmware::Known { left, right } => {
+                let text = |r: &Result<digitalis::protocol::BuildInfo, String>| {
+                    r.as_ref().map_or_else(|e| format!("unknown ({e})"), describe)
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.weak("Firmware");
+                    ui.label(format!("left {} / right {}", text(&left), text(&right)));
+                });
+                if let (Ok(l), Ok(r)) = (&left, &right) {
+                    if l.version != r.version || l.sha != r.sha {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "The halves run different firmware; flash both from the same build.",
+                        );
+                    }
+                }
+            }
+            ks::Firmware::Reading => {
+                ui.weak("Firmware: reading…");
+            }
+            ks::Firmware::NotReported | ks::Firmware::NoKeyboard | ks::Firmware::Unknown => {}
+        }
     }
 
     fn rgb_sync_row(ui: &mut egui::Ui) {
