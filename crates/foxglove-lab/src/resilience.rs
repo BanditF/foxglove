@@ -120,19 +120,35 @@ pub fn push(
         Ok(h[31])
     };
     let before = drops()?;
+    // delay_ms 0 (#305): drop now, on the hook's own queue, so the push is cut mid-write. Older
+    // firmware ignores the delay and drops 2 s later, behind the push.
     let r = t.request(
-        &[protocol::SETTINGS, 0x0B],
+        &[protocol::SETTINGS, 0x0B, 0, 0],
         protocol::SETTINGS,
         0x0B,
         Duration::from_secs(2),
     )?;
     match r[2] {
         0 => {
-            std::thread::sleep(Duration::from_millis(300));
-            let after = drops().map_or("no HELLO reply".into(), |d| d.to_string());
+            let end = Instant::now() + Duration::from_millis(1500);
+            let mut after = None;
+            while Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(100));
+                if let Ok(d) = drops() {
+                    after = Some(d);
+                    if d != before {
+                        break;
+                    }
+                }
+            }
+            if after == Some(before) {
+                bail!("GUARD_TEST's drop is deferred on this firmware (guard drops stayed {before}): not built in with D7 0B delay (#305)");
+            }
             Ok(format!(
-                "split link dropped mid-relay ({} of {} bytes pushed; guard drops {before} -> {after})",
-                st.pushed, st.length
+                "split link dropped mid-relay ({} of {} bytes pushed; guard drops {before} -> {})",
+                st.pushed,
+                st.length,
+                after.map_or("no HELLO reply".into(), |d| d.to_string())
             ))
         }
         4 => bail!("GUARD_TEST not built in (GA build)"),
