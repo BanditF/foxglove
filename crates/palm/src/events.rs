@@ -93,8 +93,16 @@ impl EventSink {
 
     pub fn emit(&self, event: DeviceEvent) {
         match &event {
-            DeviceEvent::Connected => self.publish_fact("connected", Value::Bool(true)),
+            DeviceEvent::Connected => {
+                self.remove_fact("disconnect_reason");
+                self.publish_fact("connected", Value::Bool(true));
+            }
             DeviceEvent::Disconnected { reason } => {
+                // Layers, battery and lighting are unknown until the device is back.
+                let prefix = format!("device.{}.", self.device);
+                let keep = [format!("{prefix}connected"), format!("{prefix}disconnect_reason")];
+                let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
+                self.bus.facts.remove_prefix(&prefix, &keep);
                 self.publish_fact("connected", Value::Bool(false));
                 self.publish_fact("disconnect_reason", Value::Text(reason.clone()));
             }
@@ -151,5 +159,23 @@ mod tests {
         sink.emit(DeviceEvent::Connected);
         assert_eq!(normal.recv().unwrap().event, DeviceEvent::Connected);
         assert_eq!(facts.recv().unwrap().key, format!("device.{id}.connected"));
+    }
+
+    #[test]
+    fn disconnect_clears_stale_facts() {
+        let bus = EventBus::default();
+        let id = DeviceId::new(crate::BackendId("mock".into()), 1, 2, None, "path");
+        let sink = bus.sink(id.clone());
+        sink.emit(DeviceEvent::Connected);
+        sink.emit(DeviceEvent::LayerChanged { active: vec![0, 2] });
+        sink.emit(DeviceEvent::Battery { part: "right".into(), percent: 50 });
+        sink.emit(DeviceEvent::Disconnected { reason: "unplugged".into() });
+        let fact = |name: &str| bus.facts().get(&format!("device.{id}.{name}"));
+        assert_eq!(fact("layers"), None);
+        assert_eq!(fact("battery.right"), None);
+        assert_eq!(fact("connected"), Some(Value::Bool(false)));
+        assert_eq!(fact("disconnect_reason"), Some(Value::Text("unplugged".into())));
+        sink.emit(DeviceEvent::Connected);
+        assert_eq!(fact("disconnect_reason"), None);
     }
 }

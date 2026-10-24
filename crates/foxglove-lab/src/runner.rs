@@ -3,6 +3,7 @@ use crate::{
     behaviors::Catalog,
     host::Verdict,
     report::{CaseResult, Status, StepResult},
+    screen,
     spec::{Case, Invoke, Step},
 };
 use anyhow::{bail, ensure, Result};
@@ -10,11 +11,11 @@ use digitalis::{
     art,
     link::{Link, Subscription},
     panel,
-    protocol::{self, Hello, InvokeStatus},
+    protocol::{self, capabilities as caps, Hello, InvokeStatus},
     settings, Transport,
 };
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -32,6 +33,8 @@ impl std::fmt::Display for Blocked {
     }
 }
 impl std::error::Error for Blocked {}
+
+const POSITION: u8 = 0x05;
 
 pub trait Device: Transport {
     fn layer(&self, timeout: Duration) -> Result<Option<u32>>;
@@ -93,15 +96,22 @@ impl Device for Hardware {
     }
 }
 
-/// Current HELLO has no trustworthy refusal, position, or screen capability.
-/// Do not infer these from CONN_STATE support or from the unchanged v1 number.
+/// Capabilities come only from HELLO's capability bits, never from the version number.
+/// Position presses also need the refusal bit: a press resolves through whatever layers are
+/// active, so the firmware must be known to refuse bt/out/reset/bootloader/soft_off.
 pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
+    let has = |bit| hello.capabilities & bit != 0;
     let reason = match requirement {
+        "invoke_refusal" if has(caps::INVOKE_REFUSES) => return None,
         "invoke_refusal" => {
-            "INVOKE refusal cannot be proven by current HELLO; unsafe request was not sent"
+            "firmware doesn't advertise INVOKE refusal (HELLO bit 7); unsafe request was not sent"
         }
-        "screen_readback" => "needs screen readback #67",
-        "position_press" => "needs position press #78",
+        "screen_readback" if has(caps::SCREEN) => return None,
+        "screen_readback" => "firmware has no screen readback (HELLO bit 6, #67)",
+        "position_press" if has(caps::POSITION) && has(caps::INVOKE_REFUSES) => return None,
+        "position_press" => {
+            "firmware has no position press with refusal (HELLO bits 5 and 7; test-hooks build)"
+        }
         r if r.starts_with("host_link>=") => {
             if r[11..].parse::<u8>().is_ok_and(|v| hello.version >= v) {
                 return None;
@@ -120,7 +130,15 @@ pub struct Runner<'a, D> {
     pub cancelled: Arc<AtomicBool>,
     pub non_interactive: bool,
     pub out: &'a Path,
+    /// Where goldens named in specs live (tests/hil, relative to the repository root).
+    pub golden_dir: PathBuf,
     held_until: Option<Instant>,
+    /// Positions this case pressed down and hasn't released yet; released in cleanup.
+    held_positions: Vec<u8>,
+    /// Files (relative to `out`) the current step saved for the report.
+    attachments: Vec<String>,
+    /// The last capture_screen per half in this case: expect_screen_change compares with it.
+    baselines: std::collections::HashMap<String, image::GrayImage>,
 }
 impl<'a, D: Device> Runner<'a, D> {
     pub fn new(
@@ -138,7 +156,11 @@ impl<'a, D: Device> Runner<'a, D> {
             cancelled,
             non_interactive,
             out,
+            golden_dir: PathBuf::from("tests/hil"),
             held_until: None,
+            held_positions: Vec::new(),
+            attachments: Vec::new(),
+            baselines: Default::default(),
         }
     }
     fn check(&self) -> Result<()> {
@@ -258,8 +280,95 @@ impl<'a, D: Device> Runner<'a, D> {
         }
         Ok(actual)
     }
+    /// D7 05: presses or releases keymap position `p.pos` as if the key moved. Positions on the
+    /// right half travel over the relay and come back through the split link.
+    fn press(&mut self, p: &crate::spec::Position) -> Result<String> {
+        let send = |state: u8| -> Result<u8> {
+            let r = self.device.request(
+                &[protocol::SETTINGS, POSITION, p.pos, state],
+                protocol::SETTINGS,
+                POSITION,
+                Duration::from_secs(4),
+            )?;
+            ensure!(
+                r[3] == p.pos,
+                "position reply for {}, wanted {}",
+                r[3],
+                p.pos
+            );
+            Ok(r[2])
+        };
+        let name = |status: u8| match status {
+            0 => "ok",
+            2 => "busy_or_no_relay",
+            3 => "relay_timeout",
+            4 => "not_built_in",
+            5 => "bad_request",
+            6 => "refused",
+            _ => "unknown_status",
+        };
+        let status = match p.state.as_str() {
+            "down" => {
+                let s = send(1)?;
+                if s == 0 && !self.held_positions.contains(&p.pos) {
+                    self.held_positions.push(p.pos);
+                }
+                s
+            }
+            "up" => {
+                self.held_positions.retain(|&q| q != p.pos);
+                send(0)?
+            }
+            _ => {
+                let s = send(1)?;
+                if s == 0 {
+                    std::thread::sleep(Duration::from_millis(u64::from(p.hold_ms)));
+                    let up = send(0)?;
+                    ensure!(up == 0, "release of {} answered {}", p.pos, name(up));
+                }
+                s
+            }
+        };
+        ensure!(
+            name(status) == p.expect_status,
+            "position {} {}: expected {}, actual {}",
+            p.pos,
+            p.state,
+            p.expect_status,
+            name(status)
+        );
+        Ok(format!("position {} {}: {}", p.pos, p.state, name(status)))
+    }
+    fn capture(&self, half: &str) -> Result<image::GrayImage> {
+        let bits = screen::snapshot(self.device, u8::from(half == "right")).map_err(|e| {
+            match e.downcast_ref::<screen::SnapError>() {
+                Some(screen::SnapError::NotBuiltIn) => {
+                    anyhow::Error::from(Blocked(format!("{half} screen: {e}")))
+                }
+                _ => e.context(format!("{half} screen snapshot")),
+            }
+        })?;
+        screen::portrait(&bits)
+    }
+    /// Saves a portrait capture as a 4x PNG next to the report and attaches it to the step.
+    fn save_png(&mut self, stem: &str, image: &image::GrayImage) -> Result<String> {
+        let name = format!("{stem}.png");
+        std::fs::write(self.out.join(&name), screen::png(image)?)?;
+        self.attachments.push(name.clone());
+        Ok(name)
+    }
     /// Waits out the bounded firmware release even when cancelled; no unsupported release command.
     fn cleanup(&mut self) {
+        self.baselines.clear();
+        for pos in std::mem::take(&mut self.held_positions).into_iter().rev() {
+            // Best effort; the firmware also releases owned downs after 10 s.
+            let _ = self.device.request(
+                &[protocol::SETTINGS, POSITION, pos, 0],
+                protocol::SETTINGS,
+                POSITION,
+                Duration::from_secs(4),
+            );
+        }
         if let Some(end) = self.held_until.take() {
             std::thread::sleep(end.saturating_duration_since(Instant::now()));
         }
@@ -301,18 +410,23 @@ impl<'a, D: Device> Runner<'a, D> {
             Step::TypeIntoSink(t) => {
                 // Preflight everything before opening the sink or issuing a key.
                 for s in &t.via {
-                    let Step::Invoke(i) = s else {
-                        bail!("non-invoke in sink")
-                    };
-                    let id = self.resolve(i)?;
-                    ensure!(
-                        self.catalog.ids.get("kp") == Some(&id),
-                        "sink accepts kp only"
-                    );
+                    match s {
+                        Step::Invoke(i) => {
+                            let id = self.resolve(i)?;
+                            ensure!(
+                                self.catalog.ids.get("kp") == Some(&id),
+                                "sink accepts kp only"
+                            );
+                        }
+                        Step::PressPosition(_) => {}
+                        _ => bail!("sink accepts invoke and press_position taps only"),
+                    }
                 }
                 let actual =
-                    crate::platform::sink(&t.text, &t.via, &self.cancelled.clone(), |i| {
-                        self.invoke(i, true).map(|_| ())
+                    crate::platform::sink(&t.text, &t.via, &self.cancelled.clone(), |s| match s {
+                        Step::Invoke(i) => self.invoke(i, true).map(|_| ()),
+                        Step::PressPosition(p) => self.press(p).map(|_| ()),
+                        _ => bail!("unexpected sink step"),
                     })?;
                 ensure!(
                     actual == t.expect,
@@ -353,8 +467,69 @@ impl<'a, D: Device> Runner<'a, D> {
                 ensure!(used <= i.max_cpu_ms as f64, "{text}");
                 Ok(text)
             }
-            Step::Screen(_) => bail!("needs screen readback #67"),
-            Step::PressPosition(_) => bail!("needs position press #78"),
+            Step::PressPosition(p) => self.press(p),
+            Step::CaptureScreen(c) => {
+                let image = self.capture(&c.half)?;
+                let name = self.save_png(&format!("{}-screen", c.half), &image)?;
+                self.baselines.insert(c.half.clone(), image);
+                Ok(format!("saved {name}"))
+            }
+            Step::Screen(sc) => {
+                let image = self.capture(&sc.half)?;
+                let stem = Path::new(&sc.golden)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| sc.half.clone());
+                let path = self.golden_dir.join(&sc.golden);
+                let Ok(golden) = std::fs::read(&path) else {
+                    let name = self.save_png(&format!("{stem}.candidate"), &image)?;
+                    return Err(Blocked(format!(
+                        "no golden at {}; review {name} in the report and copy it there",
+                        path.display()
+                    ))
+                    .into());
+                };
+                let c = screen::compare(&image, &golden, &sc.mask)?;
+                let actual = self.save_png(&format!("{stem}.actual"), &image)?;
+                let diff = format!("{stem}.diff.png");
+                std::fs::write(self.out.join(&diff), &c.diff)?;
+                self.attachments.push(diff);
+                ensure!(
+                    c.different == 0,
+                    "{} pixels differ from {} (see {actual} and the diff)",
+                    c.different,
+                    sc.golden
+                );
+                Ok(format!("matches {}", sc.golden))
+            }
+            Step::ExpectScreenChange(c) => {
+                let first = match self.baselines.remove(&c.half) {
+                    Some(image) => image,
+                    None => self.capture(&c.half)?,
+                };
+                let started = Instant::now();
+                let end = started + Duration::from_millis(c.within_ms);
+                loop {
+                    self.check()?;
+                    let now = self.capture(&c.half)?;
+                    let n = screen::changed(&first, &now, c.region.as_ref());
+                    if n > 0 {
+                        self.save_png(&format!("{}-before", c.half), &first)?;
+                        self.save_png(&format!("{}-after", c.half), &now)?;
+                        return Ok(format!(
+                            "{n} pixels changed after {} ms",
+                            started.elapsed().as_millis()
+                        ));
+                    }
+                    ensure!(
+                        Instant::now() < end,
+                        "{} screen didn't change within {} ms",
+                        c.half,
+                        c.within_ms
+                    );
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            }
         }
     }
     pub fn case(&mut self, c: &Case, selected: bool) -> CaseResult {
@@ -364,8 +539,21 @@ impl<'a, D: Device> Runner<'a, D> {
             .iter()
             .filter_map(|r| unsupported(r, &self.hello))
             .chain(c.steps.iter().filter_map(|s| match s {
-                Step::Screen(_) => Some("needs screen readback #67".into()),
-                Step::PressPosition(_) => Some("needs position press #78".into()),
+                Step::Screen(_) | Step::CaptureScreen(_) | Step::ExpectScreenChange(_) => {
+                    unsupported("screen_readback", &self.hello)
+                }
+                Step::PressPosition(p) => {
+                    unsupported("position_press", &self.hello).or_else(|| {
+                        (p.expect_status == "refused")
+                            .then(|| unsupported("invoke_refusal", &self.hello))
+                            .flatten()
+                    })
+                }
+                Step::TypeIntoSink(t)
+                    if t.via.iter().any(|v| matches!(v, Step::PressPosition(_))) =>
+                {
+                    unsupported("position_press", &self.hello)
+                }
                 Step::Prompt(p) if self.non_interactive => {
                     Some(format!("manual prompt: {}", p.ask))
                 }
@@ -446,7 +634,7 @@ impl<'a, D: Device> Runner<'a, D> {
                 elapsed_ms: start.elapsed().as_millis(),
                 expected: serde_json::to_value(s).unwrap(),
                 actual,
-                attachments: Vec::new(),
+                attachments: std::mem::take(&mut self.attachments),
             });
         }
         self.cleanup();
