@@ -27,6 +27,8 @@ struct Options {
     start_channel: usize,
     leds: Option<usize>,
     max_hz: u32,
+    /// The UDP port (5568, E1.31's); tests use a free one of their own.
+    port: u16,
 }
 
 fn options(args: &[String]) -> Options {
@@ -36,6 +38,7 @@ fn options(args: &[String]) -> Options {
         start_channel: num("--start-channel").map_or(1, |n| (n as usize).max(1)),
         leds: num("--leds").map(|n| n as usize),
         max_hz: num("--max-hz").map_or(10, |n| (n as u32).clamp(1, 30)),
+        port: num("--port").and_then(|n| u16::try_from(n).ok()).filter(|p| *p != 0).unwrap_or(e131::PORT),
     }
 }
 
@@ -179,7 +182,7 @@ fn restore(plugin: &Plugin, devices: &[(String, Option<LightingState>)]) {
     }
 }
 
-fn send_test(args: &[String], universe: u16) -> std::io::Result<()> {
+fn send_test(args: &[String], universe: u16, port: u16) -> std::io::Result<()> {
     let at = args.iter().position(|a| a == "--send-test").unwrap_or(0);
     let v: Vec<u8> = args[at + 1..].iter().take(3).filter_map(|a| a.parse().ok()).collect();
     let [r, g, b] = v[..] else {
@@ -196,7 +199,7 @@ fn send_test(args: &[String], universe: u16) -> std::io::Result<()> {
     let mut cid = *b"foxglove-test-00";
     let unique = std::process::id() ^ std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
     cid[12..].copy_from_slice(&unique.to_be_bytes());
-    socket.send_to(&e131::build(cid, universe, seq, options, &frame), (Ipv4Addr::LOCALHOST, e131::PORT))?;
+    socket.send_to(&e131::build(cid, universe, seq, options, &frame), (Ipv4Addr::LOCALHOST, port))?;
     Ok(())
 }
 
@@ -204,7 +207,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let opts = options(&args);
     if args.iter().any(|a| a == "--send-test") {
-        if let Err(e) = send_test(&args, opts.universe) {
+        if let Err(e) = send_test(&args, opts.universe, opts.port) {
             eprintln!("openrgb-e131: {e}");
             std::process::exit(1);
         }
@@ -218,10 +221,10 @@ fn main() {
         }
     };
     // Localhost only: other machines can't drive the lights.
-    let socket = match UdpSocket::bind((Ipv4Addr::LOCALHOST, e131::PORT)) {
+    let socket = match UdpSocket::bind((Ipv4Addr::LOCALHOST, opts.port)) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("openrgb-e131: can't listen on 127.0.0.1:{}: {e}", e131::PORT);
+            eprintln!("openrgb-e131: can't listen on 127.0.0.1:{}: {e}", opts.port);
             std::process::exit(1);
         }
     };
