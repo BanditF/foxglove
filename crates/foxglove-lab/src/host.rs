@@ -151,6 +151,58 @@ pub fn process_cpu_ms(name: &str) -> Result<f64> {
     Ok(ms.parse()?)
 }
 
+/// Replaces `%NAME%` with environment variables (unknown names stay as written).
+pub fn expand_env(text: &str) -> String {
+    let parts: Vec<&str> = text.split('%').collect();
+    let mut out = String::from(parts[0]);
+    let mut i = 1;
+    while i < parts.len() {
+        match (std::env::var(parts[i]), i + 1 < parts.len()) {
+            (Ok(v), true) if !parts[i].is_empty() => {
+                out.push_str(&v);
+                out.push_str(parts[i + 1]);
+                i += 2;
+            }
+            _ => {
+                out.push('%');
+                out.push_str(parts[i]);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Sets `key=value` in `[section]` of an INI text, adding the section or key when missing and
+/// keeping everything else as it was.
+pub fn set_ini(text: &str, section: &str, key: &str, value: &str) -> String {
+    let mut out = Vec::new();
+    let (mut in_section, mut done, mut seen) = (false, false, false);
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            if in_section && !done {
+                out.push(format!("{key}={value}"));
+                done = true;
+            }
+            in_section = trimmed.trim_matches(['[', ']']) == section;
+            seen |= in_section;
+        } else if in_section && trimmed.split('=').next().map(str::trim) == Some(key) {
+            out.push(format!("{key}={value}"));
+            done = true;
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    if !done {
+        if !seen {
+            out.push(format!("[{section}]"));
+        }
+        out.push(format!("{key}={value}"));
+    }
+    out.join("\n") + "\n"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,6 +249,36 @@ mod tests {
         assert_eq!(
             verdicts(&[entry(RUNNING, LEFT_SERIAL, "Error", 0)]),
             [Verdict::Fail, Verdict::Info]
+        );
+    }
+
+    #[test]
+    fn ini_set_replaces_adds_and_keeps_the_rest() {
+        let ini = "[screens]\ndrive_left=true\nfps=4\n[other]\nfps=9\n";
+        assert_eq!(
+            set_ini(ini, "screens", "drive_left", "false"),
+            "[screens]\ndrive_left=false\nfps=4\n[other]\nfps=9\n"
+        );
+        assert_eq!(
+            set_ini(
+                "[screens]\nfps=4\n[other]\n",
+                "screens",
+                "drive_left",
+                "true"
+            ),
+            "[screens]\nfps=4\ndrive_left=true\n[other]\n"
+        );
+        assert_eq!(set_ini("", "screens", "fps", "2"), "[screens]\nfps=2\n");
+    }
+
+    #[test]
+    fn expands_known_environment_variables() {
+        std::env::set_var("FOXGLOVE_LAB_TEST_DIR", "C:/t");
+        assert_eq!(expand_env("%FOXGLOVE_LAB_TEST_DIR%/p.pbm"), "C:/t/p.pbm");
+        assert_eq!(expand_env("100% sure"), "100% sure");
+        assert_eq!(
+            expand_env("%NOT_SET_ANYWHERE_X%/a"),
+            "%NOT_SET_ANYWHERE_X%/a"
         );
     }
 
