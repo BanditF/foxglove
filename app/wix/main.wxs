@@ -7,7 +7,11 @@
   <Product Id="*" Name="Foxglove" Language="1033" Version="$(var.Version)"
            Manufacturer="BanditF" UpgradeCode="40F2C6EE-F034-4FE5-91BC-65F1E74F7D24">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
-    <MajorUpgrade DowngradeErrorMessage="A newer version of Foxglove is already installed." />
+    <!-- AllowSameVersionUpgrades: a rebuilt MSI of the same version replaces the installed one
+         instead of installing next to it (the product code changes with every build). Light's
+         ICE61 warning about it is expected: Foxglove has one product line, so a same-version
+         MSI is always a rebuild of this product. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes" DowngradeErrorMessage="A newer version of Foxglove is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Property Id="INSTALLLEVEL" Value="1" />
     <Icon Id="FoxgloveIcon" SourceFile="$(var.CargoManifestDir)\resources\icon.ico" />
