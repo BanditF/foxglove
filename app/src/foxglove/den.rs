@@ -282,7 +282,7 @@ permissions = [\"facts.write:weather.*\", \"key.events\"]
         let kits = installed();
         assert_eq!(kits.len(), 1);
         assert!(kits[0].record.enabled && kits[0].record.approved.len() == 2);
-        assert!(root.join("kits/com.example.weather/weather.exe").exists());
+        assert!(root.join("config/kits/com.example.weather/weather.exe").exists(), "inside the config dir");
         let again = stage(&archive).unwrap();
         assert!(again.new_permissions.is_empty(), "same version asks for nothing new");
         discard(again);

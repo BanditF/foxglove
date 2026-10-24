@@ -269,7 +269,8 @@ impl Settings {
 
     pub fn config_file_path() -> Option<PathBuf> {
         // Foxglove: FOXGLOVE_CONFIG_DIR points every settings file elsewhere (tests, the Test
-        // lab), since the system folder lookup ignores APPDATA. The store goes one folder up.
+        // lab), since the system folder lookup ignores APPDATA. The store (foxglove.toml) and
+        // plugins go in it too.
         if let Some(dir) = std::env::var_os("FOXGLOVE_CONFIG_DIR") {
             return Some(PathBuf::from(dir).join("settings.ini"));
         }
