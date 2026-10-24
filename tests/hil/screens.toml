@@ -1,0 +1,40 @@
+schema = 1
+
+# Screen readback (D7 06/07, HELLO bit 6). Captures are portrait 68x160, as a person sees them.
+# A screen case without its golden is BLOCKED and saves a candidate PNG; review it, then copy it
+# to tests/hil/golden/ (masks keep the clock, battery and animations out of the comparison).
+
+[[cases]]
+name = "capture-both"
+description = "Capture both screens for the report (evidence, no comparison)"
+tags = ["screens", "release"]
+steps = [{ capture_screen = { half = "left" } }, { capture_screen = { half = "right" } }]
+
+[[cases]]
+name = "left-follows-layer"
+description = "Holding the NUMBER thumb changes the left screen within 1 s (layer indicator)"
+tags = ["screens", "release"]
+requires = ["position_press"]
+steps = [
+  { capture_screen = { half = "left" } },
+  { press_position = { pos = 43, state = "down" } },
+  { expect_screen_change = { half = "left", within_ms = 1000 } },
+  { press_position = { pos = 43, state = "up" } },
+]
+
+[[cases]]
+name = "left-clock-ticks"
+description = "The left screen changes within 65 s with nothing pressed (the clock's minute tick)"
+tags = ["screens"]
+steps = [{ expect_screen_change = { half = "left", within_ms = 65000 } }]
+
+[[cases]]
+name = "left-base-golden"
+description = "Left screen on the base layer matches its golden (clock and battery masked)"
+tags = ["screens", "release"]
+# Masked: the status row (battery, USB/BLE) and the PC panel below the divider (clock,
+# volume, media title), which change on their own.
+steps = [{ screen = { half = "left", golden = "golden/left-base.png", mask = [
+  { x = 0, y = 0, width = 68, height = 16 },
+  { x = 0, y = 103, width = 68, height = 57 },
+] } }]

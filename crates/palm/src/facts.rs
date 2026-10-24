@@ -74,6 +74,21 @@ impl Facts {
         Some(old)
     }
 
+    /// Removes every key starting with `prefix` except those in `keep`, notifying each.
+    pub fn remove_prefix(&self, prefix: &str, keep: &[&str]) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let keys: Vec<String> = inner
+            .values
+            .keys()
+            .filter(|k| k.starts_with(prefix) && !keep.contains(&k.as_str()))
+            .cloned()
+            .collect();
+        for key in keys {
+            inner.values.remove(&key);
+            notify(&mut inner, Change { key, value: None });
+        }
+    }
+
     /// Exact key or trailing `.*` subtree. Only future changes are sent.
     /// Receivers use unbounded queues; callers should drain or drop them.
     pub fn subscribe(&self, pattern: impl Into<String>) -> Receiver<Change> {

@@ -30,6 +30,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 #include "test_hooks.h"
 #endif
+#include "art_slots.h"
 #include "custom_art.h"
 #include "peripheral_status.h"
 
@@ -37,10 +38,12 @@ static uint8_t slots[2][CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE];
 static int shown = -1; // slot playing, or -1 for a built-in set
 static int rx;         // slot being received into; never the one shown
 static uint16_t rx_len;
+static uint16_t slot_len[2]; // blob length in each RAM slot, once committed
+static int flash_shown = -1;  // flash slot playing, or -1
 static uint32_t rx_crc;
 
 static struct art_relay_status status = {
-    .version = 2,
+    .version = 3,
     .capacity = CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE,
     .set = -1,
 };
@@ -50,12 +53,12 @@ static struct custom_art_set ram_sets[2] = {
     {.name = "pushed", .deltas = ram_deltas[0]},
     {.name = "pushed", .deltas = ram_deltas[1]},
 };
+static const uint8_t *flash_deltas[256];
+static struct custom_art_set flash_set = {.name = "saved", .deltas = flash_deltas};
 
-// Fills ram_sets[rx] from the blob in slots[rx]; false if it doesn't hold together.
-static bool parse_blob(void) {
-    const uint8_t *b = slots[rx];
-    uint16_t slot_len = rx_len;
-    struct custom_art_set *ram_set = &ram_sets[rx];
+// Fills set (and its deltas) from blob b; false, with set untouched, if it doesn't hold together.
+static bool parse(const uint8_t *b, uint16_t slot_len, const uint8_t **deltas,
+                  struct custom_art_set *set) {
     if (slot_len < ART_RELAY_HEADER_SIZE || memcmp(b, ART_RELAY_MAGIC, 4) != 0 ||
         b[4] != CUSTOM_ART_W || b[5] != CUSTOM_ART_H) {
         return false;
@@ -63,7 +66,7 @@ static bool parse_blob(void) {
     int unique = sys_get_le16(&b[8]);
     int frames = sys_get_le16(&b[10]);
     int deltas_at = ART_RELAY_HEADER_SIZE + frames + 2 * unique;
-    if (unique < 1 || unique > ARRAY_SIZE(ram_deltas[0]) || frames < 1 || deltas_at >= slot_len) {
+    if (unique < 1 || unique > ARRAY_SIZE(flash_deltas) || frames < 1 || deltas_at >= slot_len) {
         return false;
     }
     const uint8_t *order = &b[ART_RELAY_HEADER_SIZE];
@@ -77,18 +80,25 @@ static bool parse_blob(void) {
         if (at < deltas_at || at >= slot_len) {
             return false;
         }
-        ram_deltas[rx][i] = &b[at];
     }
-    ram_set->order = order;
-    ram_set->frame_count = frames;
-    ram_set->fps = b[6];
+    for (int i = 0; i < unique; i++) { // checked above; the set may be on screen, so fill last
+        deltas[i] = &b[sys_get_le16(&b[ART_RELAY_HEADER_SIZE + frames + 2 * i])];
+    }
+    set->order = order;
+    set->frame_count = frames;
+    set->fps = b[6];
     return true;
 }
+
+// Fills ram_sets[rx] from the blob in slots[rx].
+static bool parse_blob(void) { return parse(slots[rx], rx_len, ram_deltas[rx], &ram_sets[rx]); }
 
 static int8_t select_set;
 
 static void play_cb(struct k_work *work) {
-    if (shown >= 0) {
+    if (flash_shown >= 0) {
+        art_play(&flash_set);
+    } else if (shown >= 0) {
         art_play(&ram_sets[shown]);
     } else {
         status.set = art_builtin_index(select_set);
@@ -111,6 +121,9 @@ BT_CONN_CB_DEFINE(art_relay_rgb_conn_cb) = {
 };
 #endif
 
+// From art_slots.c's queue when a SAVE or ERASE has finished.
+static void save_done(int err) { status.state = err ? ART_RIGHT_SAVE_FAILED : ART_RIGHT_SAVED; }
+
 // Runs in the Bluetooth RX thread; keep it to copying and checking.
 static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
                           uint16_t len, uint16_t offset, uint8_t flags) {
@@ -120,6 +133,16 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     }
 
     switch (d[0]) {
+    case ART_RELAY_BOOT:
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+        if (len != 5 || memcmp(&d[1], "BOOT", 4) != 0) {
+            return BT_GATT_ERR(0x85);
+        }
+        test_hooks_reboot_soon(); // after this write's response has gone out
+        break;
+#else
+        return BT_GATT_ERR(0x84);
+#endif
     case ART_RELAY_PRESS:
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
         if (len != 3) {
@@ -136,6 +159,9 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     case ART_RELAY_BEGIN:
         if (len < 7) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+        if (status.state == ART_RIGHT_SAVING) {
+            return BT_GATT_ERR(0x82); // the shown slot is being copied to flash
         }
         // The screen keeps playing; this only fills the slot that isn't shown.
         rx = shown == 0 ? 1 : 0;
@@ -170,6 +196,8 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
             // Freeze the old set until play_cb switches over, so the next push can take its slot.
             art_hold();
             shown = rx;
+            slot_len[rx] = rx_len;
+            flash_shown = -1;
             status.state = ART_RIGHT_PLAYING;
             status.set = -1;
             LOG_INF("art relay: playing pushed set, %d frames", ram_sets[shown].frame_count);
@@ -181,11 +209,70 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         if (len < 2) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
         }
+        if (status.state == ART_RIGHT_SAVING) {
+            return BT_GATT_ERR(0x82);
+        }
         select_set = (int8_t)d[1];
+        if (select_set >= custom_art_set_count &&
+            select_set < custom_art_set_count + art_slots_count()) {
+            uint16_t blob_len;
+            const uint8_t *blob = art_slots_blob(select_set - custom_art_set_count, &blob_len);
+            art_hold(); // flash_set may be on screen while parse fills it
+            if (blob == NULL || !parse(blob, blob_len, flash_deltas, &flash_set)) {
+                status.state = ART_RIGHT_BAD_BLOB;
+                play(); // carry on with whatever was showing
+                break;
+            }
+            flash_shown = select_set - custom_art_set_count;
+            shown = -1;
+            status.set = select_set;
+            status.state = ART_RIGHT_IDLE;
+            play();
+            break;
+        }
         art_hold(); // as for COMMIT: a push may reuse the shown slot before play_cb runs
         shown = -1;
+        flash_shown = -1;
         status.state = ART_RIGHT_IDLE;
         play();
+        break;
+
+    case ART_RELAY_SAVE:
+        if (len != 18) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+        if (status.state == ART_RIGHT_SAVING) {
+            return BT_GATT_ERR(0x82);
+        }
+        if (shown < 0 || d[1] >= art_slots_count()) {
+            return BT_GATT_ERR(0x85); // nothing pushed to save, or no such slot
+        }
+        status.state = ART_RIGHT_SAVING;
+        if (art_slots_save(d[1], slots[shown], slot_len[shown], (const char *)&d[2], save_done)) {
+            status.state = ART_RIGHT_SAVE_FAILED;
+        }
+        break;
+
+    case ART_RELAY_ERASE:
+        if (len != 2) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+        if (status.state == ART_RIGHT_SAVING) {
+            return BT_GATT_ERR(0x82);
+        }
+        if (d[1] >= art_slots_count()) {
+            return BT_GATT_ERR(0x85);
+        }
+        if (flash_shown == d[1]) { // don't play from pages about to be erased
+            art_hold();
+            flash_shown = -1;
+            select_set = -1;
+            play();
+        }
+        status.state = ART_RIGHT_SAVING;
+        if (art_slots_erase(d[1], save_done)) {
+            status.state = ART_RIGHT_SAVE_FAILED;
+        }
         break;
 
     case ART_RELAY_SNAP:
@@ -215,7 +302,19 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
     rgb_idle_state(&status.rgb);
 #endif
-    return bt_gatt_attr_read(conn, attr, buf, len, offset, &status, sizeof(status));
+    status.flash_slots = art_slots_count();
+    status.flash_used = art_slots_used();
+    // Status, then the slot table (only built when a read reaches past the status).
+    static uint8_t value[sizeof(status) + ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info)];
+    memcpy(value, &status, sizeof(status));
+    if (offset + len > sizeof(status)) {
+        for (int i = 0; i < ART_RELAY_FLASH_SLOTS; i++) {
+            struct art_relay_slot_info info;
+            art_slots_info(i, &info);
+            memcpy(&value[sizeof(status) + i * sizeof(info)], &info, sizeof(info));
+        }
+    }
+    return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
 }
 
 static ssize_t screen_read(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,

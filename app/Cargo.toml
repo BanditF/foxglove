@@ -9,8 +9,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+foxglove-update = { path = "../crates/foxglove-update" }
+ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 # Foxglove: the shared link to the keyboard (MIT).
-digitalis = { path = "../crates/digitalis" }
+digitalis = { path = "../crates/digitalis", features = ["palm"] }
+# Foxglove: the device layer (MIT).
+palm = { path = "../crates/palm" }
 foxglove-panel = { path = "../crates/panel" }
 toml = "0.9"
 prost = "0.14"
@@ -59,6 +63,9 @@ windows = { version = "0.62.2", features = [
     "Foundation",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Graphics_Dwm",
+    "Win32_UI_Shell",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Storage_FileSystem",

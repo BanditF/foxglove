@@ -82,13 +82,14 @@ fn action_button(ui: &mut egui::Ui, action: &Action) {
         return;
     }
     *confirming = None;
-    ks::invoke(action.label.clone(), action.binding, action.hold_ms, ctx);
+    ks::invoke(action.label.clone(), action.binding, ctx);
 }
 
 impl OverlayApp {
     /// The keyboard itself: settings saved on it, both halves' lights, and everything its
     /// keys can do, all of which hold without Foxglove running.
     pub(super) fn foxglove_keyboard_group(ui: &mut egui::Ui) {
+        crate::foxglove::update::group(ui);
         titled_group(ui, "Keyboard", |ui| {
             crate::foxglove::connection::row(ui);
             Self::rgb_sync_row(ui);

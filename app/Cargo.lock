@@ -877,6 +877,7 @@ dependencies = [
  "crc32fast",
  "embedded-graphics",
  "hidapi",
+ "palm",
  "windows-sys 0.61.2",
 ]
 
@@ -1551,12 +1552,14 @@ dependencies = [
  "egui_extras",
  "egui_glow",
  "foxglove-panel",
+ "foxglove-update",
  "gtk",
  "hidapi",
  "image",
  "khronos-egl",
  "lzma-rs",
  "objc2-app-kit 0.3.2",
+ "palm",
  "prost",
  "qmk-via-api",
  "raw-window-handle",
@@ -1567,6 +1570,7 @@ dependencies = [
  "smithay-client-toolkit 0.21.1",
  "toml 0.9.12+spec-1.1.0",
  "tray-icon",
+ "ureq",
  "wayland-client",
  "wayland-egl",
  "windows 0.62.2",
@@ -1589,6 +1593,17 @@ dependencies = [
  "windows 0.62.2",
  "windows-core",
  "windows-future",
+]
+
+[[package]]
+name = "foxglove-update"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "ring",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3502,6 +3517,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "palm"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

@@ -1,0 +1,78 @@
+schema = 1
+
+# Key positions pressed through D7 05 (test-hooks firmware: HELLO bits 5 and 7). Layers:
+# 0 QWERTY, 1 NUMBER, 2 SYMBOL, 3 GAME, 4 GAME+, 5 FUNCTION (NUMBER+SYMBOL), 6 SYSTEM.
+# Thumbs: position 43 = &mo 1 (left), 46 = &mo 2 (right). FUNCTION position 0 = &mo 6.
+
+[[cases]]
+name = "function-left-thumb-first"
+description = "Left thumb then right thumb gives FUNCTION; letting go clears it in order"
+tags = ["positions", "release"]
+steps = [
+  { press_position = { pos = 43, state = "down" } },
+  { expect_layer = { active_contains = [1] } },
+  { press_position = { pos = 46, state = "down" } },
+  { expect_layer = { active_contains = [5] } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 2 } },
+  { press_position = { pos = 46, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
+
+[[cases]]
+name = "function-right-thumb-first"
+description = "Right thumb first (it travels over the split link), then left: FUNCTION, then clean release"
+tags = ["positions", "release"]
+steps = [
+  { press_position = { pos = 46, state = "down" } },
+  { expect_layer = { active_contains = [2] } },
+  { press_position = { pos = 43, state = "down" } },
+  { expect_layer = { active_contains = [5] } },
+  { press_position = { pos = 46, state = "up" } },
+  { expect_layer = { top = 1 } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
+
+[[cases]]
+name = "system-from-function"
+description = "FUNCTION + top-left key reaches SYSTEM and everything clears afterwards"
+tags = ["positions", "release"]
+steps = [
+  { press_position = { pos = 43, state = "down" } },
+  { press_position = { pos = 46, state = "down" } },
+  { press_position = { pos = 0, state = "down" } },
+  { expect_layer = { active_contains = [6] } },
+  { press_position = { pos = 0, state = "up" } },
+  { press_position = { pos = 46, state = "up" } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
+
+[[cases]]
+name = "system-bootloader-refused"
+description = "Safety: on SYSTEM, the &bootloader position (31) is refused (status 6), never run"
+tags = ["positions", "release"]
+requires = ["invoke_refusal"]
+steps = [
+  { press_position = { pos = 43, state = "down" } },
+  { press_position = { pos = 46, state = "down" } },
+  { press_position = { pos = 0, state = "down" } },
+  { expect_layer = { active_contains = [6] } },
+  { press_position = { pos = 31, state = "down", expect_status = "refused" } },
+  { press_position = { pos = 0, state = "up" } },
+  { press_position = { pos = 46, state = "up" } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
+
+[[cases]]
+name = "typing-both-halves"
+description = "Q and F (left half), P and J (right half, over the split link) type into the harness window"
+tags = ["positions", "release"]
+steps = [{ type_into_sink = { text = "qpfj", expect = "qpfj", via = [
+  { press_position = { pos = 1, state = "tap" } },
+  { press_position = { pos = 11, state = "tap" } },
+  { press_position = { pos = 17, state = "tap" } },
+  { press_position = { pos = 23, state = "tap" } },
+] } }]

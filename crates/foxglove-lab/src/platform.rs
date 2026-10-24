@@ -1,5 +1,5 @@
 //! Native focus isolation and process exclusion on Windows.
-use crate::spec::{Invoke, Step};
+use crate::spec::Step;
 use anyhow::{ensure, Result};
 use std::{
     io::{self, IsTerminal, Write},
@@ -84,7 +84,10 @@ mod native {
                 CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT,
                 WPARAM,
             },
-            System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
+            System::{
+                LibraryLoader::GetModuleHandleW,
+                Threading::{AttachThreadInput, CreateMutexW, GetCurrentThreadId},
+            },
             UI::WindowsAndMessaging::*,
         },
     };
@@ -144,11 +147,28 @@ mod native {
         }
         Ok(())
     }
+    /// Windows only lets the process that owns the foreground window hand focus over, so a
+    /// console-launched runner can lose that race. Joining the foreground thread's input queue
+    /// for the call is the documented way to be allowed to take it.
+    unsafe fn take_foreground(hwnd: HWND) {
+        let current = GetForegroundWindow();
+        let theirs = GetWindowThreadProcessId(current, None);
+        let ours = GetCurrentThreadId();
+        let attached =
+            theirs != 0 && theirs != ours && AttachThreadInput(ours, theirs, true).as_bool();
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+        if attached {
+            let _ = AttachThreadInput(ours, theirs, false);
+        }
+    }
+
     pub fn sink(
         text: &str,
         via: &[Step],
         cancelled: &Arc<AtomicBool>,
-        mut inject: impl FnMut(&Invoke) -> Result<()>,
+        mut inject: impl FnMut(&Step) -> Result<()>,
     ) -> Result<String> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
@@ -179,11 +199,15 @@ mod native {
                 None,
             )?;
             let _window = Window(hwnd);
-            let _ = SetForegroundWindow(hwnd);
             let mut received = Vec::new();
             let end = Instant::now() + Duration::from_secs(5);
+            let mut asked = Instant::now() - Duration::from_secs(1);
             while GetForegroundWindow() != hwnd {
                 ensure!(!cancelled.load(Ordering::Relaxed), "sink interrupted");
+                if asked.elapsed() >= Duration::from_millis(250) {
+                    take_foreground(hwnd);
+                    asked = Instant::now();
+                }
                 pump(hwnd, &mut received)?;
                 ensure!(
                     Instant::now() < end,
@@ -200,10 +224,7 @@ mod native {
                     GetForegroundWindow() == hwnd,
                     "sink lost foreground focus; injection stopped"
                 );
-                let Step::Invoke(i) = step else {
-                    anyhow::bail!("sink via needs invoke")
-                };
-                inject(i)?;
+                inject(step)?;
                 let end = Instant::now() + Duration::from_millis(80);
                 while Instant::now() < end {
                     ensure!(GetForegroundWindow() == hwnd, "sink lost foreground focus");
@@ -234,7 +255,7 @@ pub fn sink(
     _: &str,
     _: &[Step],
     _: &Arc<AtomicBool>,
-    _: impl FnMut(&Invoke) -> Result<()>,
+    _: impl FnMut(&Step) -> Result<()>,
 ) -> Result<String> {
     anyhow::bail!("typing sink requires Windows")
 }

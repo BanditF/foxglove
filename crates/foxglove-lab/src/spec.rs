@@ -38,6 +38,13 @@ pub enum Step {
     Prompt(Prompt),
     Screen(Screen),
     PressPosition(Position),
+    CaptureScreen(Capture),
+    ExpectScreenChange(ScreenChange),
+    PanelDump(PanelDump),
+    ScreensSetting(ScreensSetting),
+    ArtSelect(Art),
+    UsbHalves(Usb),
+    IdleCpu(Idle),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -116,11 +123,95 @@ pub struct Rect {
     pub width: u32,
     pub height: u32,
 }
+/// Shows built-in art set `set` on the right half through the relay, checks the right reports
+/// it, then puts the previous built-in set back. Pushed art lives in RAM and can't be restored,
+/// so the step refuses to replace it unless `replace_pushed` is set.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Art {
+    pub set: i8,
+    #[serde(default = "yes")]
+    pub restore: bool,
+    #[serde(default)]
+    pub replace_pushed: bool,
+    #[serde(default = "art_timeout")]
+    pub within_ms: u64,
+}
+fn yes() -> bool {
+    true
+}
+fn art_timeout() -> u64 {
+    10_000
+}
+/// Compares the frame the app last sent (its FOXGLOVE_DUMP_PANEL file) with the left screen
+/// readback: `shown = true` expects the frame somewhere on the screen pixel for pixel,
+/// `shown = false` expects it gone (the firmware drawing that area again).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelDump {
+    pub path: String,
+    #[serde(default = "yes")]
+    pub shown: bool,
+    #[serde(default = "art_timeout")]
+    pub within_ms: u64,
+}
+/// Sets one key in the app's screens.ini ([screens] section), which the app watches. The
+/// original file is put back at the end of the case.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreensSetting {
+    pub key: String,
+    pub value: String,
+}
+/// Fails on any half whose USB picture means trouble (see host::classify).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Usb {
+    /// Also fail when a half is in the bootloader or the left is off USB.
+    #[serde(default)]
+    pub strict: bool,
+}
+/// Measures a process's CPU time over `seconds` while nothing is pressed.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Idle {
+    #[serde(default = "foxglove")]
+    pub process: String,
+    pub seconds: u64,
+    pub max_cpu_ms: u64,
+}
+fn foxglove() -> String {
+    "foxglove".into()
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Position {
     pub pos: u8,
+    /// "down", "up", or "tap" (down, hold_ms, up).
     pub state: String,
+    #[serde(default = "tap_ms")]
+    pub hold_ms: u16,
+    #[serde(default = "ok")]
+    pub expect_status: String,
+}
+fn tap_ms() -> u16 {
+    40
+}
+/// Saves a capture of one half's screen (portrait, as a person sees it) to the report.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Capture {
+    pub half: String,
+}
+/// Keeps capturing until the screen differs inside `region` (portrait 68x160 coordinates;
+/// whole screen when absent) from the case's last capture_screen of that half, or from a
+/// capture taken at the start of this step when there is none.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenChange {
+    pub half: String,
+    pub region: Option<Rect>,
+    pub within_ms: u64,
 }
 
 impl Invoke {
@@ -183,17 +274,46 @@ impl Step {
                 wait(r.within_ms)?;
                 ensure!(r.right_age_max_s < 255, "invalid RGB age");
             }
+            Self::ArtSelect(a) => {
+                wait(a.within_ms)?;
+                ensure!(a.set >= 0, "art_select needs a built-in set (0 or more)");
+            }
+            Self::UsbHalves(_) => {}
+            Self::PanelDump(d) => {
+                wait(d.within_ms)?;
+                ensure!(!d.path.is_empty(), "panel_dump needs the dump path");
+            }
+            Self::ScreensSetting(s) => ensure!(
+                ["drive_left", "fps"].contains(&s.key.as_str()) && !s.value.contains(['\n', '\r']),
+                "screens_setting supports drive_left and fps"
+            ),
+            Self::IdleCpu(i) => {
+                ensure!(
+                    (1..=600).contains(&i.seconds),
+                    "idle_cpu seconds must be 1..=600"
+                );
+                ensure!(!i.process.is_empty(), "idle_cpu needs a process name");
+            }
             Self::TypeIntoSink(t) => {
-                ensure!(!t.via.is_empty(), "typing needs via invokes");
+                ensure!(!t.via.is_empty(), "typing needs via steps");
                 for s in &t.via {
-                    let Self::Invoke(i) = s else {
-                        anyhow::bail!("via accepts only invoke steps")
-                    };
-                    i.validate()?;
-                    ensure!(
-                        i.hold_ms == 0 && i.expect_status == "ok",
-                        "sink accepts successful taps only"
-                    );
+                    match s {
+                        Self::Invoke(i) => {
+                            i.validate()?;
+                            ensure!(
+                                i.hold_ms == 0 && i.expect_status == "ok",
+                                "sink accepts successful taps only"
+                            );
+                        }
+                        Self::PressPosition(p) => {
+                            s.validate()?;
+                            ensure!(
+                                p.state == "tap" && p.expect_status == "ok",
+                                "sink accepts successful position taps only"
+                            );
+                        }
+                        _ => anyhow::bail!("via accepts only invoke and press_position taps"),
+                    }
                 }
             }
             Self::Prompt(p) => ensure!(!p.ask.trim().is_empty(), "empty prompt"),
@@ -208,16 +328,42 @@ impl Step {
                     ensure!(
                         r.width > 0
                             && r.height > 0
-                            && r.x.checked_add(r.width).is_some_and(|x| x <= 160)
-                            && r.y.checked_add(r.height).is_some_and(|y| y <= 68),
-                        "mask outside 160x68"
+                            && r.x.checked_add(r.width).is_some_and(|x| x <= 68)
+                            && r.y.checked_add(r.height).is_some_and(|y| y <= 160),
+                        "mask outside the portrait 68x160 screen"
                     );
                 }
             }
-            Self::PressPosition(p) => ensure!(
-                p.pos < 48 && ["up", "down"].contains(&p.state.as_str()),
-                "invalid position/state"
-            ),
+            Self::PressPosition(p) => {
+                ensure!(
+                    p.pos < 48 && ["up", "down", "tap"].contains(&p.state.as_str()),
+                    "invalid position/state"
+                );
+                ensure!(
+                    p.hold_ms <= 2000,
+                    "position tap hold_ms must be at most 2000"
+                );
+                ensure!(
+                    ["ok", "refused"].contains(&p.expect_status.as_str()),
+                    "press_position expect_status must be ok or refused"
+                );
+            }
+            Self::CaptureScreen(c) => {
+                ensure!(["left", "right"].contains(&c.half.as_str()), "invalid half")
+            }
+            Self::ExpectScreenChange(c) => {
+                ensure!(["left", "right"].contains(&c.half.as_str()), "invalid half");
+                ensure!(
+                    (1..=120_000).contains(&c.within_ms),
+                    "screen change within_ms must be 1..=120000"
+                );
+                if let Some(r) = &c.region {
+                    ensure!(
+                        r.width > 0 && r.height > 0 && r.x + r.width <= 68 && r.y + r.height <= 160,
+                        "region outside the portrait 68x160 screen"
+                    );
+                }
+            }
         }
         Ok(())
     }

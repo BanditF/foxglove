@@ -95,6 +95,15 @@ fn catalog() -> Catalog {
     }
 }
 fn run<D: foxglove_lab::runner::Device>(fake: &D, case: &Case) -> foxglove_lab::report::CaseResult {
+    run_with(fake, case, 20)
+}
+/// HELLO bits: 5 position press, 6 screen readback, 7 INVOKE refusal.
+const TEST_HOOKS: u32 = 20 | 1 << 5 | 1 << 6 | 1 << 7;
+fn run_with<D: foxglove_lab::runner::Device>(
+    fake: &D,
+    case: &Case,
+    capabilities: u32,
+) -> foxglove_lab::report::CaseResult {
     let cat = catalog();
     let dir = Temp::new();
     let mut r = Runner::new(
@@ -102,7 +111,7 @@ fn run<D: foxglove_lab::runner::Device>(fake: &D, case: &Case) -> foxglove_lab::
         &cat,
         Hello {
             version: 1,
-            capabilities: 20,
+            capabilities,
             ..Default::default()
         },
         Arc::new(AtomicBool::new(false)),
@@ -115,10 +124,10 @@ fn run<D: foxglove_lab::runner::Device>(fake: &D, case: &Case) -> foxglove_lab::
 #[test]
 fn parses_seed_suites_and_all_step_kinds() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil");
-    assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 5);
+    assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 6);
     assert_eq!(
         spec::load(&root.join("release.toml")).unwrap().cases.len(),
-        9
+        19
     );
     for text in [
         "[{press_position={pos=12,state='down'}}]",
@@ -285,7 +294,8 @@ fn reports_escape_markup_embed_images_and_apply_release_gate() {
     blocked.steps[0].attachments.push("screen.png".into());
     std::fs::write(
         dir.0.join("screen.png"),
-        foxglove_lab::screen::png(&foxglove_lab::screen::bitmap(&vec![0; 1360]).unwrap()).unwrap(),
+        foxglove_lab::screen::png(&foxglove_lab::screen::portrait(&vec![0; 1360]).unwrap())
+            .unwrap(),
     )
     .unwrap();
     let mut report = Report {
@@ -372,7 +382,8 @@ fn real_link_routes_scripted_layer_reports_and_rejects_reconnection() {
             let (lock, ready) = &*self.0;
             let mut q = lock.lock().unwrap();
             // Four-byte little-endian default and active masks. Layer 17 is active.
-            q.reports.push_back(reply(&[0xff, 4, 1, 0, 0, 0, 0, 0, 2, 0]));
+            q.reports
+                .push_back(reply(&[0xff, 4, 1, 0, 0, 0, 0, 0, 2, 0]));
             q.reports.push_back(reply(&[0xd7, 0x82, 0, 42, 0]));
             ready.notify_all();
             Ok(())
@@ -437,4 +448,185 @@ fn failed_behavior_and_busy_keep_prior_release_deadline() {
         Status::Fail
     );
     assert!(started.elapsed() >= Duration::from_millis(20));
+}
+
+/// Art status reply: left state, error, length, pushed, link, then the right's relay status
+/// with `set` at byte 15 and the built-in set count at byte 16.
+fn art(cmd: u8, set: i8, count: u8) -> [u8; REPORT] {
+    let mut r = [0u8; 17];
+    r[..2].copy_from_slice(&[0xd6, 0x80 | cmd]);
+    r[8] = 1;
+    r[15] = set as u8;
+    r[16] = count;
+    reply(&r)
+}
+
+#[test]
+fn art_select_refuses_to_lose_pushed_art() {
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([hello(2, 4), art(5, -1, 4), art(5, -1, 4)]);
+    let result = run(&fake, &case("[{art_select={set=1}}]"));
+    assert_eq!(result.status, Status::Blocked);
+    assert!(result.message.contains("pushed art"));
+}
+
+#[test]
+fn art_select_checks_and_restores() {
+    let fake = Fake::default();
+    // status ×2 (before), select, status (shows 1), restore select.
+    fake.replies.borrow_mut().extend([
+        hello(2, 4),
+        art(5, 0, 4),
+        art(5, 0, 4),
+        art(4, 1, 4),
+        art(5, 1, 4),
+        art(4, 0, 4),
+    ]);
+    let result = run(&fake, &case("[{art_select={set=1}}]"));
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    assert!(result.steps[0].actual.contains("restored set 0"));
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([hello(2, 4), art(5, 0, 2), art(5, 0, 2)]);
+    assert_eq!(
+        run(&fake, &case("[{art_select={set=3}}]")).status,
+        Status::Fail
+    );
+}
+
+fn position(status: u8, pos: u8) -> [u8; REPORT] {
+    reply(&[0xd7, 0x85, status, pos])
+}
+
+#[test]
+fn position_press_needs_capability_bits_and_releases_held_keys() {
+    let steps = "[{press_position={pos=43,state='down'}},{expect_layer={active_contains=[1]}}]";
+    let fake = Fake::default();
+    assert_eq!(run(&fake, &case(steps)).status, Status::Blocked);
+    assert!(
+        fake.requests.borrow().is_empty(),
+        "nothing may be sent without bits 5 and 7"
+    );
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([position(0, 43), position(0, 43)]);
+    fake.layers.borrow_mut().push_back(0b11);
+    assert_eq!(
+        run_with(&fake, &case(steps), TEST_HOOKS).status,
+        Status::Pass
+    );
+    // The held position is released at the end of the case.
+    assert_eq!(fake.requests.borrow()[1], vec![0xd7, 0x05, 43, 0]);
+}
+
+#[test]
+fn position_refusal_and_tap() {
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(position(6, 31));
+    let refused = "[{press_position={pos=31,state='down',expect_status='refused'}}]";
+    assert_eq!(
+        run_with(&fake, &case(refused), TEST_HOOKS).status,
+        Status::Pass
+    );
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([position(0, 1), position(0, 1)]);
+    let tap = "[{press_position={pos=1,state='tap',hold_ms=5}}]";
+    assert_eq!(run_with(&fake, &case(tap), TEST_HOOKS).status, Status::Pass);
+    assert_eq!(fake.requests.borrow().len(), 2);
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(position(6, 1));
+    assert_eq!(run_with(&fake, &case(tap), TEST_HOOKS).status, Status::Fail);
+}
+
+/// Scripted SCREEN_SNAP + SCREEN_READ replies for a native image.
+fn snapshot_replies(half: u8, image: &[u8], crc: u32) -> Vec<[u8; REPORT]> {
+    let mut meta = vec![0xd7, 0x86, 0, half, 1, 0, 160, 68];
+    meta.extend(1360u16.to_le_bytes());
+    meta.extend(crc.to_le_bytes());
+    let mut out = vec![reply(&meta)];
+    for (i, chunk) in image.chunks(REPORT - 7).enumerate() {
+        let mut r = vec![0xd7, 0x87, 0, half];
+        r.extend((((REPORT - 7) * i) as u16).to_le_bytes());
+        r.push(chunk.len() as u8);
+        r.extend(chunk);
+        out.push(reply(&r));
+    }
+    out
+}
+
+#[test]
+fn snapshot_reads_checks_crc_and_rotates() {
+    let mut image = vec![0u8; 1360];
+    image[0] = 0x80;
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend(snapshot_replies(1, &image, crc32fast::hash(&image)));
+    let bits = foxglove_lab::screen::snapshot(&fake, 1).unwrap();
+    assert_eq!(bits, image);
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend(snapshot_replies(0, &image, 1));
+    assert!(foxglove_lab::screen::snapshot(&fake, 0)
+        .unwrap_err()
+        .to_string()
+        .contains("CRC"));
+}
+
+#[test]
+fn screen_without_golden_is_blocked_with_a_candidate() {
+    let image = vec![0u8; 1360];
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend(snapshot_replies(0, &image, crc32fast::hash(&image)));
+    let steps = "[{screen={half='left',golden='golden/does-not-exist.png'}}]";
+    assert_eq!(run(&fake, &case(steps)).status, Status::Blocked);
+    let result = run_with(&fake, &case(steps), TEST_HOOKS);
+    assert_eq!(result.status, Status::Blocked, "{}", result.message);
+    assert!(result.message.contains("no golden"));
+    assert_eq!(
+        result.steps[0].attachments,
+        ["does-not-exist.candidate.png"]
+    );
+}
+
+/// HELLO reply with this right link state and relay discovery result.
+fn hello(right_link: u8, discovery: u8) -> [u8; REPORT] {
+    let mut r = [0u8; REPORT];
+    r[..3].copy_from_slice(&[0xd5, 0x81, 1]);
+    r[7] = right_link;
+    r[9] = discovery;
+    r
+}
+
+#[test]
+fn right_half_steps_wait_for_a_fully_up_relay() {
+    // #122: the split peer is connected (link 1) but the relay never came up. Nothing may be
+    // pressed on the right; the step is BLOCKED, not failed.
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(hello(1, 4));
+    let result = run_with(
+        &fake,
+        &case("[{press_position={pos=46,state='down'}}]"),
+        TEST_HOOKS,
+    );
+    assert_eq!(result.status, Status::Blocked, "{}", result.message);
+    assert!(result.message.contains("#122"));
+    assert_eq!(fake.requests.borrow().len(), 1, "only the HELLO was sent");
+    // Left positions don't ask.
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([position(0, 1), position(0, 1)]);
+    let tap = "[{press_position={pos=1,state='tap',hold_ms=5}}]";
+    assert_eq!(run_with(&fake, &case(tap), TEST_HOOKS).status, Status::Pass);
+    assert!(foxglove_lab::runner::is_right(23) && !foxglove_lab::runner::is_right(17));
 }

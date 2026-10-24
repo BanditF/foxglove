@@ -20,3 +20,22 @@
         zephyr,display = &nice_view;
     };
 };
+
+/*
+ * The nice!nano's UF2 bootloader only writes apps up to 0xAD000, so the code partition ends
+ * there (a bigger build now fails to link instead of failing on the board), and the space
+ * after it holds the right half's saved art (art_slots.c, #121): 8 slots of 20 KiB.
+ * Storage (settings) stays at 0xEC000.
+ */
+&code_partition {
+    reg = <0x00026000 0x00087000>;
+};
+
+&flash0 {
+    partitions {
+        art_partition: partition@ad000 {
+            label = "art";
+            reg = <0x000ad000 0x00028000>;
+        };
+    };
+};
