@@ -9,6 +9,10 @@ from unittest.mock import patch
 
 from flash import foxglove_flash as f
 
+# Tests never touch the real flash history.
+_HISTORY = tempfile.TemporaryDirectory()
+os.environ['FOXGLOVE_FLASH_HISTORY'] = str(Path(_HISTORY.name) / 'flash-history.log')
+
 
 def uf2(payload=b'FOXGLOVE_HALF=left', addr=f.START, family=0xADA52840,
         numbers=(0,), flags=0x2000):
@@ -464,3 +468,41 @@ class DriveGoneTests(unittest.TestCase):
         backend.gone_mid_write = True
         with self.assertRaises(f.FlashFailed):  # no SHA in the image: can't tell
             self.run_yes(backend, {'left': uf2()})
+
+
+class PostWriteDriveVanishTests(unittest.TestCase):
+    """#176: after a complete write, the drive vanishing (stat raising WinError 433) is success."""
+    def test_exists_treats_oserror_as_gone(self):
+        with patch.object(f.Path, 'exists', side_effect=OSError(433, 'device not connected')):
+            self.assertFalse(f.WindowsOS().exists('X:/INFO_UF2.TXT'))
+
+    def test_vanish_during_the_post_write_wait_counts_as_success_and_is_recorded(self):
+        with tempfile.TemporaryDirectory() as d:
+            history = Path(d) / 'history.log'
+            with patch.dict(os.environ, {'FOXGLOVE_FLASH_HISTORY': str(history)}):
+                backend = FakeOS()
+                backend.stays = True  # the fake drive would stay; the real stat raises instead
+                written = []
+                fake_write = backend.write_file
+                def write(path, data):
+                    fake_write(path, data)
+                    written.append(path)
+                backend.write_file = write
+                fake_exists = backend.exists
+                def exists(path):
+                    if not written:
+                        return fake_exists(path)
+                    # After the write: what WindowsOS.exists returns when the stat raises 433.
+                    with patch.object(f.Path, 'exists', side_effect=OSError(433, 'device not connected')):
+                        return f.WindowsOS().exists(path)
+                backend.exists = exists
+                calls = iter([{'version': '0.0.9', 'profile': 'dev', 'sha': '0000000'}] * 2
+                             + [{'version': '0.1.0', 'profile': 'dev', 'sha': 'abc1234'}] * 10)
+                backend.build_info = lambda half: next(calls)
+                clock = Clock()
+                f.flash({'left': marked('left')}, backend, 2, stdin=io.StringIO(''), ask=lambda p: self.fail(p),
+                        log=lambda m: None, clock=clock.clock, sleep=clock.sleep, yes=True)
+                self.assertEqual(len(written), 1, 'one write, no retry')
+                lines = history.read_text().splitlines()
+                self.assertEqual([l.split('	')[3] for l in lines], ['written', 'verified'])
+                self.assertEqual(lines[0].split('	')[1:3], ['left', 'abc1234'])
