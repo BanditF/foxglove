@@ -11,13 +11,15 @@
 void art_relay_step(int dir) { printk("artkeys: board steps %d\n", dir); }
 
 /* The PC for the art-keys case: subscribes at 1.5 s, unsubscribes at 4 s (the case's keys go to
- * the board before, to the PC between, and to the board after). Replaces the protocol walk. */
+ * the board before, to the PC between, and to the board after), then subscribes again at 6 s and
+ * the endpoint changes at 7 s, which must end the opt-in (#302). Replaces the protocol walk. */
 
 #include <string.h>
 
 #include <zephyr/kernel.h>
 
 #include <raw_hid/events.h>
+#include <zmk/events/endpoint_changed.h>
 
 static void put(const uint8_t *d, int len) {
     static uint8_t report[32];
@@ -33,4 +35,9 @@ void art_keys_sim_driver(void) {
     put(on, sizeof(on));
     k_msleep(2500);
     put(off, sizeof(off));
+    k_msleep(2000);
+    put(on, sizeof(on));
+    k_msleep(1000);
+    printk("artkeys: the endpoint changes\n");
+    raise_zmk_endpoint_changed((struct zmk_endpoint_changed){0});
 }

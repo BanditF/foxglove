@@ -50,6 +50,14 @@ pub fn group(ui: &mut egui::Ui) {
                     ui.weak("Keyboard");
                     ui.label(format!("{} · host link v{}", snap.product, hello.version));
                     ui.end_row();
+                    // The board profile (#75): what Foxglove knows beyond the firmware.
+                    ui.weak("Board profile");
+                    ui.label(match super::boards::current() {
+                        Some(b) if b.status == super::boards::Status::Tested => b.name,
+                        Some(b) => format!("{} (untested)", b.name),
+                        None => "none: only what the firmware says".into(),
+                    });
+                    ui.end_row();
                     ui.weak("Right half");
                     ui.label(right_link(hello.right_link));
                     ui.end_row();
@@ -79,7 +87,7 @@ pub fn group(ui: &mut egui::Ui) {
                     };
                     let half = if s.half == 0 { "left" } else { "right" };
                     let on = s.parent.map_or(String::new(), |p| format!(" at ({}, {}) on screen {p}", s.x, s.y));
-                    ui.weak(format!("Screen {}: {half} {kind}, {}×{}{on}", s.id, s.width, s.height));
+                    ui.weak(format!("Screen {}: {half} {kind}, {}×{}, {}{on}", s.id, s.width, s.height, s.format_name()));
                 }
             });
 

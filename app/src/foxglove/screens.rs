@@ -145,8 +145,12 @@ impl Drawing {
         } else {
             vec![]
         };
+        // Its own descriptors first, then its board profile (#75), then HELLO.
+        let profile = super::boards::current().and_then(|b| b.panel().map(|p| (usize::from(p.width), usize::from(p.height))));
         let (width, height) = panel::drawable_panel(&screens)
-            .map_or((hello.width, hello.height), |p| (usize::from(p.width), usize::from(p.height)));
+            .map(|p| (usize::from(p.width), usize::from(p.height)))
+            .or(profile.filter(|_| hello.width == 0 || hello.height == 0))
+            .unwrap_or((hello.width, hello.height));
         update_snapshot(|s| s.screens = screens);
         Drawing {
             link,
