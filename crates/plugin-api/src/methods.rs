@@ -252,6 +252,22 @@ pub struct ActionInvoked {
     pub action: String,
 }
 
+/// Asks to be told when a program's windows open and close (`apps.watch:<exe>`, API 1.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AppsWatchParams {
+    /// The program's file name, such as `obs64.exe`.
+    pub exe: String,
+}
+
+/// A watched program's visible top-level windows: the answer to `apps.watch` (how many are open
+/// now), and the `app.window.appeared` and `app.window.closed` events (how many are open after
+/// it). `open` 0 after a close means the app has probably quit (API 1.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AppWindows {
+    pub exe: String,
+    pub open: u32,
+}
+
 /// Mutes or unmutes the default communications microphone (#237, API 1.2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SetMuteParams {
@@ -418,6 +434,11 @@ pub const METHODS: &[Method] = &[
     Method { name: "secrets.set", kind: Kind::Call, permission: Some("secrets"), params: schema!(SetSecretParams), result: Some(schema!(Empty)) },
     // Sent to one plugin when the key bound to its action is pressed (#212).
     Method { name: "action.invoked", kind: Kind::Event, permission: None, params: schema!(ActionInvoked), result: None },
+    // Waiting for an app's windows instead of polling for it (#277); checked against the
+    // scoped apps.watch permissions by the host (API 1.3).
+    Method { name: "apps.watch", kind: Kind::Call, permission: None, params: schema!(AppsWatchParams), result: Some(schema!(AppWindows)) },
+    Method { name: "app.window.appeared", kind: Kind::Event, permission: None, params: schema!(AppWindows), result: None },
+    Method { name: "app.window.closed", kind: Kind::Event, permission: None, params: schema!(AppWindows), result: None },
 ];
 
 pub fn find(name: &str) -> Option<&'static Method> {

@@ -23,11 +23,19 @@ pub use foxglove_plugin_api::methods::{
     Device, Devices, Fact, FactChanged, FactList, Hsb, InitializeResult, LightingState, SetLightingParams,
 };
 pub use foxglove_plugin_api::methods::NetKind;
-pub use foxglove_plugin_api::methods::{LeaseParams, LeasePriority};
+pub use foxglove_plugin_api::methods::{AppWindows, LeaseParams, LeasePriority};
 use foxglove_plugin_api::rpc::{Error, Id, Outcome, Request, Response};
 
 mod net;
 pub use net::{NetEvent, TcpStream};
+
+/// A watched app's window opening or closing (`Plugin::watch_app`): the program's file name,
+/// and how many of its windows are open after it. `Closed { open: 0, .. }`: it has probably quit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AppWindowEvent {
+    Appeared { exe: String, open: u32 },
+    Closed { exe: String, open: u32 },
+}
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
@@ -62,6 +70,7 @@ pub struct Plugin {
     pending: Pending,
     events: Mutex<Option<Receiver<FactChanged>>>,
     actions: Mutex<Option<Receiver<String>>>,
+    app_windows: Mutex<Option<Receiver<AppWindowEvent>>>,
     closed: Arc<std::sync::atomic::AtomicBool>,
     routes: net::Routes,
     /// What Foxglove granted this plugin.
@@ -84,6 +93,7 @@ impl Plugin {
         let pending: Pending = Arc::default();
         let (events_tx, events_rx) = mpsc::channel();
         let (actions_tx, actions_rx) = mpsc::channel::<String>();
+        let (app_tx, app_rx) = mpsc::channel::<AppWindowEvent>();
         let reader_pending = pending.clone();
         let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_closed = closed.clone();
@@ -107,6 +117,15 @@ impl Plugin {
                         if let Some(a) = n.params.get("action").and_then(Value::as_str) {
                             let _ = actions_tx.send(a.to_string());
                         }
+                    } else if n.method == "app.window.appeared" || n.method == "app.window.closed" {
+                        if let Ok(w) = serde_json::from_value::<AppWindows>(n.params) {
+                            let (exe, open) = (w.exe, w.open);
+                            let _ = app_tx.send(if n.method == "app.window.appeared" {
+                                AppWindowEvent::Appeared { exe, open }
+                            } else {
+                                AppWindowEvent::Closed { exe, open }
+                            });
+                        }
                     } else {
                         reader_routes.handle(&n.method, n.params);
                     }
@@ -122,6 +141,7 @@ impl Plugin {
             pending,
             events: Mutex::new(Some(events_rx)),
             actions: Mutex::new(Some(actions_rx)),
+            app_windows: Mutex::new(Some(app_rx)),
             closed,
             routes,
             granted: vec![],
@@ -230,6 +250,19 @@ impl Plugin {
     /// their keys (#212). Taken once.
     pub fn actions(&self) -> Option<Receiver<String>> {
         self.actions.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// Asks to be told when `exe`'s (such as `obs64.exe`) windows open and close; needs
+    /// `apps.watch:<exe>` (API 1.3). How many of its windows are open now. Wait for an app this
+    /// way instead of polling for it.
+    pub fn watch_app(&self, exe: &str) -> Result<u32> {
+        self.call_as::<AppWindows>("apps.watch", json!({ "exe": exe })).map(|w| w.open)
+    }
+
+    /// The watched apps' windows opening and closing. It ends when Foxglove goes away. Taken
+    /// once.
+    pub fn app_windows(&self) -> Option<Receiver<AppWindowEvent>> {
+        self.app_windows.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
     pub fn devices(&self) -> Result<Vec<Device>> {
