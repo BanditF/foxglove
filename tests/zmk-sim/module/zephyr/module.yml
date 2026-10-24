@@ -1,0 +1,5 @@
+name: foxglove-sim
+build:
+  cmake: .
+  settings:
+    dts_root: .

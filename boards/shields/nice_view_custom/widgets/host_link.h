@@ -13,7 +13,9 @@
  *                                   10 relay debug bytes, capabilities u32 LE (report bytes 21-24),
  *                                   panel timeout seconds u16 LE (bytes 25-26; 0 = never)
  *      Capabilities: bit 0 panel, 1 art relay, 2 settings/RGB, 3 unsolicited art STATUS,
- *                    4 settings CONN_STATE.
+ *                    4 settings CONN_STATE, 5 POSITION (only when test hooks are built),
+ *                    6 screen snapshots (D7 06/07), 7 INVOKE refuses &bt/&out/&bootloader/
+ *                    &sys_reset/&soft_off with status 6 (firmware without it may press them).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -62,7 +64,38 @@
  *      Bonded means the active profile is not open. Endpoint is the currently selected transport,
  *      not the preferred transport. Without BLE, index/connected/bonded/count are zero; without
  *      USB, ready is zero. State is sampled on request only; no boot work or unsolicited replies.
+ *   05 POSITION  byte 0 D7, byte 1 05, byte 2 pos u8, byte 3 state u8 (1 down, 0 up)
+ *                reply: byte 0 D7, byte 1 85, byte 2 status u8, byte 3 pos u8
+ *      Positions are keymap indices 0..ZMK_KEYMAP_LEN-1 (48). Remaining report bytes are padding.
+ *      Status: 0 ok, 2 busy/no relay link, 3 relay timeout (3 s), 4 not built in,
+ *      5 short payload/invalid position/state, 6 refused (same devices as INVOKE).
+ *      Active layers resolve top-down through &trans, stopping at the default layer.
+ *      Left events run on the system queue; right events go over ART_RELAY_PRESS then
+ *      return through ZMK's normal split link. Duplicate downs and unowned ups are no-op ok.
+ *      Owned downs release after 10 s or after 10 s without a host-link report.
+ *      CONFIG_FOXGLOVE_TEST_HOOKS=n omits the handler and returns status 4.
  *      Replies use the existing nonblocking queue and are zero-padded to the report size.
+ *   06 SCREEN_SNAP half u8 (0 left, 1 right), request bytes 0..2 = D7 06 half.
+ *      Reply bytes: 0 D7, 1 86, 2 status, 3 half, 4..5 frame u16, 6 w (160), 7 h (68),
+ *                   8..9 bytes u16 (1360), 10..13 crc32 u32. All multibyte fields are LE.
+ *      Metadata is zero on error. Frame increments per captured image (wraps at 65536).
+ *      CRC is crc32_ieee over the 1360 image bytes. Right reply is asynchronous, after relay
+ *      transfer and CRC verification; USB never waits for the other half.
+ *   07 SCREEN_READ half u8, offset u16 LE, request bytes 0..4 = D7 07 half offset.
+ *      Reply: 0 D7, 1 87, 2 status, 3 half, 4..5 echoed offset u16 LE, 6 n u8, 7.. data[n].
+ *      n = min(1360-offset, report size-7); offset=1360 succeeds with n=0; larger is invalid.
+ *      Reads the frozen local cache, including for half 1. Error replies have n=0.
+ *      Status (both): 0 ok, 1 busy (retry), 2 no right relay/screen link, 3 right timeout
+ *      (3 seconds including queue wait), 4 not built in, 5 bad request, 6 no snapshot yet (READ).
+ *      Capture/transfer makes READ busy. A failed partial transfer invalidates the cache;
+ *      a request rejected before copying pixels preserves the previous snapshot.
+ *      Image: native 160x68 panel coordinates, row-major, 20 bytes/row, MSB first, 1=black ink,
+ *      0=white, after widget inversion. Native top is y=0. On both portrait-mounted halves,
+ *      rotate the returned image 90 degrees counterclockwise for the person's 68x160 view:
+ *      portrait (x,y) = (native y,159-native x). Battery/status is at the portrait top.
+ *      Left joins the three already rotated TRUE_COLOR canvases (including the displayed host
+ *      panel). Right overlays the INDEXED_1BIT art, using its palette, on the status canvas.
+ *      Both captures run on zmk_display_work_q(), without touching LVGL from USB/BT RX.
  */
 
 #pragma once
@@ -80,6 +113,12 @@
 #define HOST_LINK_CAP_SETTINGS_RGB (1U << 2)
 #define HOST_LINK_CAP_ART_STATUS_EVENT (1U << 3)
 #define HOST_LINK_CAP_CONN_STATE (1U << 4)
+#define HOST_LINK_CAP_POSITION (1U << 5)
+#define HOST_LINK_CAP_SCREEN (1U << 6) // set by the screen readback build
+#define HOST_LINK_CAP_INVOKE_REFUSES (1U << 7)
+
+// Nonblocking POSITION response; also used by the test-hooks worker.
+void host_link_position_reply(uint8_t status, uint8_t pos);
 
 // Called by relay connection/discovery callbacks; queues a report only after host traffic.
 void host_link_art_status(void);

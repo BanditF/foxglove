@@ -26,6 +26,10 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #endif
 
 #include "art_relay.h"
+#include "screen_snap.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+#include "test_hooks.h"
+#endif
 #include "custom_art.h"
 #include "peripheral_status.h"
 
@@ -116,6 +120,19 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     }
 
     switch (d[0]) {
+    case ART_RELAY_PRESS:
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+        if (len != 3) {
+            return BT_GATT_ERR(0x85);
+        }
+        uint8_t result = test_hooks_press(d[1], d[2]);
+        if (result) {
+            return BT_GATT_ERR(0x80 + result);
+        }
+        break;
+#else
+        return BT_GATT_ERR(0x84);
+#endif
     case ART_RELAY_BEGIN:
         if (len < 7) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
@@ -171,6 +188,15 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         play();
         break;
 
+    case ART_RELAY_SNAP:
+        if (len != 1) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+        if (screen_snap_local() != SCREEN_OK) {
+            return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
+        }
+        break;
+
     case ART_RELAY_RGB:
         if (len < 2) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
@@ -192,10 +218,21 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
     return bt_gatt_attr_read(conn, attr, buf, len, offset, &status, sizeof(status));
 }
 
+static ssize_t screen_read(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
+                           uint16_t len, uint16_t offset) {
+    if (offset > SCREEN_SNAP_WIRE) {
+        return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+    }
+    int n = screen_snap_wire_read(buf, len, offset);
+    return n < 0 ? BT_GATT_ERR(BT_ATT_ERR_UNLIKELY) : n;
+}
+
 BT_GATT_SERVICE_DEFINE(
     art_relay_svc, BT_GATT_PRIMARY_SERVICE(BT_UUID_DECLARE_128(ART_RELAY_SERVICE_UUID)),
     BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_DATA_UUID),
                            BT_GATT_CHRC_WRITE | BT_GATT_CHRC_WRITE_WITHOUT_RESP,
                            BT_GATT_PERM_WRITE_ENCRYPT, NULL, data_write, NULL),
     BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_STATUS_UUID), BT_GATT_CHRC_READ,
-                           BT_GATT_PERM_READ_ENCRYPT, status_read, NULL, NULL), );
+                           BT_GATT_PERM_READ_ENCRYPT, status_read, NULL, NULL),
+    BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_SCREEN_UUID), BT_GATT_CHRC_READ,
+                           BT_GATT_PERM_READ_ENCRYPT, screen_read, NULL, NULL), );

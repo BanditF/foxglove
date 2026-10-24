@@ -24,3 +24,5 @@ pub mod layer_access;
 
 #[cfg(target_os = "windows")]
 pub(crate) mod device_watch;
+
+pub mod update;
