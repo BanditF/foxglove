@@ -3,6 +3,7 @@ pub mod behaviors;
 pub mod host;
 pub mod platform;
 pub mod report;
+pub mod rgb_latency;
 pub mod runner;
 pub mod screen;
 pub mod spec;
