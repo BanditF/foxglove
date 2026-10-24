@@ -23,6 +23,7 @@ import time
 
 SERIALS = {'1E89EF085AA8A635': 'left', '35B4541F78DE9CF8': 'right'}
 LIMIT = 0xAD000
+LATE_ENTRY_SECONDS = 15  # after an unanswered hands-free request, before prompting a double tap
 RELAY_WAIT_SECONDS = 60  # before the right's D7 08, for the relay to come back
 SETTLE_SECONDS = 3  # after the bootloader drive appears, before writing
 START = 0x26000  # All inspected real builds, including settings reset, start here.
@@ -448,7 +449,7 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
     for half in ('left', 'right'):
         if half not in images:
             continue
-        entered = False
+        entered = attempted = False
         if not settings_reset:
             # The right goes through the left's relay, which comes back about 20-40 s after the
             # left reboots (#122, #184): wait for it (HELLO right link 2, up to 60 s) before
@@ -462,13 +463,13 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
             for attempt in range(2 if half == 'right' else 1):
                 if attempt:
                     sleep(5)
+                attempted = True
                 entered = backend.enter_bootloader(half, log)
                 if entered:
                     break
+        asked = entered or (attempted and not settings_reset)
         if entered:
             log(f'Asked the {half} half to enter its bootloader. Waiting up to {seconds:g} seconds for its drive.')
-        else:
-            log(f'Double-tap reset on the {half} half only. Waiting up to {seconds:g} seconds.')
         chosen = []
         def ready():
             serials = backend.enumerate_bootloaders()
@@ -481,7 +482,20 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
                 return False
             chosen[:] = serials
             return True
-        wait_for(ready, seconds, f'Timed out waiting for {half} bootloader', clock, sleep)
+        if not entered:
+            if asked:
+                # A hands-free request that got no reply may still land (#111: the right entered
+                # its bootloader after the double-tap prompt). Never ask the user while it might.
+                log(f'{half}: no answer to the bootloader request yet; watching {LATE_ENTRY_SECONDS} s '
+                    'for a late entry before asking for a double tap.')
+                try:
+                    wait_for(ready, LATE_ENTRY_SECONDS, 'no late entry', clock, sleep)
+                except TimeoutError:
+                    log(f'Double-tap reset on the {half} half only. Waiting up to {seconds:g} seconds.')
+            else:
+                log(f'Double-tap reset on the {half} half only. Waiting up to {seconds:g} seconds.')
+        if not chosen:
+            wait_for(ready, seconds, f'Timed out waiting for {half} bootloader', clock, sleep)
         volume = backend.find_volume(chosen[0])
         info = volume / 'INFO_UF2.TXT'
         if not backend.exists(info):
