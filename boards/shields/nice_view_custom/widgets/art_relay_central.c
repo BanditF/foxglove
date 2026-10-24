@@ -856,8 +856,6 @@ SYS_INIT(art_relay_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
 // Right after the link comes up, ZMK's own setup traffic goes first.
 #define RGB_SETTLE K_MSEC(100)
-// While active, check now and then.
-#define RGB_POLL K_SECONDS(5)
 // A send that failed is retried this often, idle or not, up to RGB_RETRIES times per change.
 #define RGB_RETRY K_SECONDS(1)
 #define RGB_RETRIES 10
@@ -898,9 +896,7 @@ static void rgb_sync_cb(struct k_work *work) {
     if (synced) {
         rgb_retries = 0;
     }
-    if (zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE) {
-        k_work_schedule_for_queue(&relay_q, dwork, RGB_POLL);
-    }
+    // Nothing else to do until the next change (art_relay_rgb_kick) or link-up (#280).
 }
 static K_WORK_DELAYABLE_DEFINE(rgb_sync_work, rgb_sync_cb);
 
