@@ -13,7 +13,7 @@
  *                                   10 relay debug bytes, capabilities u32 LE (report bytes 21-24),
  *                                   panel timeout seconds u16 LE (bytes 25-26; 0 = never)
  *      Capabilities: bit 0 panel, 1 art relay, 2 settings/RGB, 3 unsolicited art STATUS,
- *                    4 settings CONN_STATE.
+ *                    4 settings CONN_STATE, 5 POSITION (only when test hooks are built).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -62,6 +62,16 @@
  *      Bonded means the active profile is not open. Endpoint is the currently selected transport,
  *      not the preferred transport. Without BLE, index/connected/bonded/count are zero; without
  *      USB, ready is zero. State is sampled on request only; no boot work or unsolicited replies.
+ *   05 POSITION  byte 0 D7, byte 1 05, byte 2 pos u8, byte 3 state u8 (1 down, 0 up)
+ *                reply: byte 0 D7, byte 1 85, byte 2 status u8, byte 3 pos u8
+ *      Positions are keymap indices 0..ZMK_KEYMAP_LEN-1 (48). Remaining report bytes are padding.
+ *      Status: 0 ok, 2 busy/no relay link, 3 relay timeout (3 s), 4 not built in,
+ *      5 short payload/invalid position/state, 6 refused (same devices as INVOKE).
+ *      Active layers resolve top-down through &trans, stopping at the default layer.
+ *      Left events run on the system queue; right events go over ART_RELAY_PRESS then
+ *      return through ZMK's normal split link. Duplicate downs and unowned ups are no-op ok.
+ *      Owned downs release after 10 s or after 10 s without a host-link report.
+ *      CONFIG_FOXGLOVE_TEST_HOOKS=n omits the handler and returns status 4.
  *      Replies use the existing nonblocking queue and are zero-padded to the report size.
  */
 
@@ -80,6 +90,10 @@
 #define HOST_LINK_CAP_SETTINGS_RGB (1U << 2)
 #define HOST_LINK_CAP_ART_STATUS_EVENT (1U << 3)
 #define HOST_LINK_CAP_CONN_STATE (1U << 4)
+#define HOST_LINK_CAP_POSITION (1U << 5)
+
+// Nonblocking POSITION response; also used by the test-hooks worker.
+void host_link_position_reply(uint8_t status, uint8_t pos);
 
 // Called by relay connection/discovery callbacks; queues a report only after host traffic.
 void host_link_art_status(void);

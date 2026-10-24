@@ -26,6 +26,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #endif
 
 #include "art_relay.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+#include "test_hooks.h"
+#endif
 #include "custom_art.h"
 #include "peripheral_status.h"
 
@@ -116,6 +119,19 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     }
 
     switch (d[0]) {
+    case ART_RELAY_PRESS:
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+        if (len != 3) {
+            return BT_GATT_ERR(0x85);
+        }
+        uint8_t result = test_hooks_press(d[1], d[2]);
+        if (result) {
+            return BT_GATT_ERR(0x80 + result);
+        }
+        break;
+#else
+        return BT_GATT_ERR(0x84);
+#endif
     case ART_RELAY_BEGIN:
         if (len < 7) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
