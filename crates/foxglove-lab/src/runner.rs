@@ -36,6 +36,15 @@ impl std::error::Error for Blocked {}
 
 const POSITION: u8 = 0x05;
 
+/// Keymap positions wired to the right half (matrix columns 7-13 in the Eyelash Corne
+/// transform; tests/zmk-sim/common/matrix.dtsi has the same map).
+pub const RIGHT_POSITIONS: [u8; 23] = [
+    6, 7, 8, 9, 10, 11, 12, 19, 20, 21, 22, 23, 24, 25, 26, 27, 35, 36, 37, 38, 39, 40, 41,
+];
+pub fn is_right(pos: u8) -> bool {
+    RIGHT_POSITIONS.contains(&pos) || (45..=47).contains(&pos)
+}
+
 pub trait Device: Transport {
     fn layer(&self, timeout: Duration) -> Result<Option<u32>>;
 }
@@ -254,6 +263,7 @@ impl<'a, D: Device> Runner<'a, D> {
         ))
     }
     fn art_select(&mut self, a: &crate::spec::Art) -> Result<String> {
+        self.right_ready()?;
         ensure!(
             a.set >= 0,
             "pick a built-in set (0 or more) so the result can be checked"
@@ -291,6 +301,9 @@ impl<'a, D: Device> Runner<'a, D> {
     /// D7 05: presses or releases keymap position `p.pos` as if the key moved. Positions on the
     /// right half travel over the relay and come back through the split link.
     fn press(&mut self, p: &crate::spec::Position) -> Result<String> {
+        if is_right(p.pos) && p.state != "up" {
+            self.right_ready()?;
+        }
         let send = |state: u8| -> Result<u8> {
             let r = self.device.request(
                 &[protocol::SETTINGS, POSITION, p.pos, state],
@@ -347,7 +360,26 @@ impl<'a, D: Device> Runner<'a, D> {
         );
         Ok(format!("position {} {}: {}", p.pos, p.state, name(status)))
     }
+    /// Fails BLOCKED unless the left reports the right half's relay fully up (HELLO right link
+    /// 2, relay discovery done). Steps that go to the right half over the relay check this
+    /// first, so the harness never presses on a half-set-up split link (#122: poking it there
+    /// once left the board not typing).
+    fn right_ready(&self) -> Result<()> {
+        let h = digitalis::panel::hello(self.device)?;
+        if h.right_link == 2 && h.discovery == 4 {
+            return Ok(());
+        }
+        Err(Blocked(format!(
+            "right half relay not up (right link {}, discovery {}, tries {}); not touching the \
+             right half (#122)",
+            h.right_link, h.discovery, h.discovery_tries
+        ))
+        .into())
+    }
     fn capture(&self, half: &str) -> Result<image::GrayImage> {
+        if half == "right" {
+            self.right_ready()?;
+        }
         let bits = screen::snapshot(self.device, u8::from(half == "right")).map_err(|e| {
             match e.downcast_ref::<screen::SnapError>() {
                 Some(screen::SnapError::NotBuiltIn) => {
