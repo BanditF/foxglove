@@ -36,6 +36,15 @@ impl std::error::Error for Blocked {}
 
 const POSITION: u8 = 0x05;
 
+/// Keymap positions wired to the right half (matrix columns 7-13 in the Eyelash Corne
+/// transform; tests/zmk-sim/common/matrix.dtsi has the same map).
+pub const RIGHT_POSITIONS: [u8; 23] = [
+    6, 7, 8, 9, 10, 11, 12, 19, 20, 21, 22, 23, 24, 25, 26, 27, 35, 36, 37, 38, 39, 40, 41,
+];
+pub fn is_right(pos: u8) -> bool {
+    RIGHT_POSITIONS.contains(&pos) || (45..=47).contains(&pos)
+}
+
 pub trait Device: Transport {
     fn layer(&self, timeout: Duration) -> Result<Option<u32>>;
 }
@@ -137,6 +146,8 @@ pub struct Runner<'a, D> {
     held_positions: Vec<u8>,
     /// Files (relative to `out`) the current step saved for the report.
     attachments: Vec<String>,
+    /// screens.ini as it was before this case changed it; put back in cleanup.
+    screens_ini: Option<(PathBuf, Option<Vec<u8>>)>,
     /// The last capture_screen per half in this case: expect_screen_change compares with it.
     baselines: std::collections::HashMap<String, image::GrayImage>,
 }
@@ -161,6 +172,7 @@ impl<'a, D: Device> Runner<'a, D> {
             held_positions: Vec::new(),
             attachments: Vec::new(),
             baselines: Default::default(),
+            screens_ini: None,
         }
     }
     fn check(&self) -> Result<()> {
@@ -206,7 +218,14 @@ impl<'a, D: Device> Runner<'a, D> {
         ]
         .iter()
         .any(|n| known(n));
-        ensure!(if typing { known("kp") && i.hold_ms == 0 } else { safe }, "injection blocked: needs verified non-typing behavior, or kp tap inside sink; refusal support unknown");
+        // A dangerous behavior may be sent only as a refusal test, and only to firmware that
+        // advertises refusal (HELLO bit 7); the case is BLOCKED before this otherwise.
+        let refusal_test =
+            i.expect_status == "refused" && unsupported("invoke_refusal", &self.hello).is_none();
+        ensure!(
+            if typing { known("kp") && i.hold_ms == 0 } else { safe || refusal_test },
+            "injection blocked: needs verified non-typing behavior, or kp tap inside sink; refusal support unknown"
+        );
         self.check()?;
         // Discard prior cases' reports, but retain reports arriving during this invoke.
         for _ in 0..1024 {
@@ -247,6 +266,7 @@ impl<'a, D: Device> Runner<'a, D> {
         ))
     }
     fn art_select(&mut self, a: &crate::spec::Art) -> Result<String> {
+        self.right_ready()?;
         ensure!(
             a.set >= 0,
             "pick a built-in set (0 or more) so the result can be checked"
@@ -263,7 +283,8 @@ impl<'a, D: Device> Runner<'a, D> {
         );
         if before.right_set < 0 && !a.replace_pushed {
             return Err(Blocked(
-                "the right shows pushed art, which a select would lose (RAM only);                  run with built-in art showing, or set replace_pushed = true"
+                "the right shows pushed art, which a select would lose (RAM only); run with \
+                 built-in art showing, or set replace_pushed = true"
                     .into(),
             )
             .into());
@@ -283,6 +304,9 @@ impl<'a, D: Device> Runner<'a, D> {
     /// D7 05: presses or releases keymap position `p.pos` as if the key moved. Positions on the
     /// right half travel over the relay and come back through the split link.
     fn press(&mut self, p: &crate::spec::Position) -> Result<String> {
+        if is_right(p.pos) && p.state != "up" {
+            self.right_ready()?;
+        }
         let send = |state: u8| -> Result<u8> {
             let r = self.device.request(
                 &[protocol::SETTINGS, POSITION, p.pos, state],
@@ -339,7 +363,26 @@ impl<'a, D: Device> Runner<'a, D> {
         );
         Ok(format!("position {} {}: {}", p.pos, p.state, name(status)))
     }
+    /// Fails BLOCKED unless the left reports the right half's relay fully up (HELLO right link
+    /// 2, relay discovery done). Steps that go to the right half over the relay check this
+    /// first, so the harness never presses on a half-set-up split link (#122: poking it there
+    /// once left the board not typing).
+    fn right_ready(&self) -> Result<()> {
+        let h = digitalis::panel::hello(self.device)?;
+        if h.right_link == 2 && h.discovery == 4 {
+            return Ok(());
+        }
+        Err(Blocked(format!(
+            "right half relay not up (right link {}, discovery {}, tries {}); not touching the \
+             right half (#122)",
+            h.right_link, h.discovery, h.discovery_tries
+        ))
+        .into())
+    }
     fn capture(&self, half: &str) -> Result<image::GrayImage> {
+        if half == "right" {
+            self.right_ready()?;
+        }
         let bits = screen::snapshot(self.device, u8::from(half == "right")).map_err(|e| {
             match e.downcast_ref::<screen::SnapError>() {
                 Some(screen::SnapError::NotBuiltIn) => {
@@ -360,6 +403,12 @@ impl<'a, D: Device> Runner<'a, D> {
     /// Waits out the bounded firmware release even when cancelled; no unsupported release command.
     fn cleanup(&mut self) {
         self.baselines.clear();
+        if let Some((path, original)) = self.screens_ini.take() {
+            let _ = match original {
+                Some(bytes) => std::fs::write(&path, bytes),
+                None => std::fs::remove_file(&path),
+            };
+        }
         for pos in std::mem::take(&mut self.held_positions).into_iter().rev() {
             // Best effort; the firmware also releases owned downs after 10 s.
             let _ = self.device.request(
@@ -437,6 +486,53 @@ impl<'a, D: Device> Runner<'a, D> {
                 Ok(format!("received {actual:?}"))
             }
             Step::ArtSelect(a) => self.art_select(a),
+            Step::ScreensSetting(s) => {
+                let path = std::env::var_os("APPDATA")
+                    .map(|d| PathBuf::from(d).join("Foxglove/config/screens.ini"))
+                    .ok_or_else(|| anyhow::anyhow!("APPDATA unavailable"))?;
+                let current = std::fs::read(&path).ok();
+                if self.screens_ini.is_none() {
+                    self.screens_ini = Some((path.clone(), current.clone()));
+                }
+                let text = String::from_utf8_lossy(current.as_deref().unwrap_or_default());
+                std::fs::write(
+                    &path,
+                    crate::host::set_ini(&text, "screens", &s.key, &s.value),
+                )?;
+                Ok(format!("screens.ini {}={}", s.key, s.value))
+            }
+            Step::PanelDump(d) => {
+                let end = Instant::now() + Duration::from_millis(d.within_ms);
+                loop {
+                    self.check()?;
+                    let path = crate::host::expand_env(&d.path);
+                    let dump = std::fs::read(&path).map_err(|e| {
+                        anyhow::anyhow!(
+                            "no panel dump at {} ({e}): start Foxglove with FOXGLOVE_DUMP_PANEL",
+                            d.path
+                        )
+                    })?;
+                    let (w, h, bits) = screen::parse_pbm(&dump)?;
+                    let image = self.capture("left")?;
+                    let at = screen::find(&image, w, h, &bits);
+                    if at.is_some() == d.shown {
+                        self.save_png("left-panel", &image)?;
+                        return Ok(match at {
+                            Some((x, y)) => format!("{w}x{h} frame shown at portrait ({x}, {y})"),
+                            None => format!("{w}x{h} frame not on the screen"),
+                        });
+                    }
+                    if Instant::now() >= end {
+                        self.save_png("left-panel", &image)?;
+                        bail!(
+                            "{w}x{h} frame {} the left screen after {} ms",
+                            if d.shown { "not found on" } else { "still on" },
+                            d.within_ms
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            }
             Step::UsbHalves(u) => {
                 let halves = crate::host::classify(&crate::host::usb_entries()?);
                 let text = halves

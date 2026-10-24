@@ -18,7 +18,7 @@
  *                    &sys_reset/&soft_off with status 6 (firmware without it may press them),
  *                    8 unsolicited CONN_STATE (D7 84) on connection changes,
  *                    9 BOOTLOADER (D7 08; only when test hooks are built),
- *                    10 flash art slots (D6 06/07/08).
+ *                    10 flash art slots (D6 06/07/08), 11 unsolicited RGB_STATE (D7 83).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -66,6 +66,9 @@
  *      renamed instances; all Bluetooth parameters are refused.
  *   03 RGB_STATE                                      reply: left struct rgb_idle_wire (7 B),
  *                                                     right age s (0xff = none), right (7 B)
+ *      After host traffic, D7 83 also comes unsolicited ~600 ms after the left's underglow turns
+ *      on or off (idle, wake, a key, sync), if left on / right on / right known changed since the
+ *      last unsolicited one (capability bit 11).
  *      The right's state comes from the last relay status read (each request asks for a new one),
  *      so poll it; age says how old it is.
  *   04 CONN_STATE  no payload (request D7 04)          reply: D7 84, active BLE profile index u8,
@@ -141,6 +144,7 @@
 #define HOST_LINK_CAP_CONN_STATE_EVENT (1U << 8)
 #define HOST_LINK_CAP_BOOTLOADER (1U << 9) // D7 08, test hooks only
 #define HOST_LINK_CAP_ART_SLOTS (1U << 10)  // D6 06/07/08 flash slots on the right
+#define HOST_LINK_CAP_RGB_STATE_EVENT (1U << 11)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
@@ -149,6 +153,9 @@ void host_link_bootloader_reply(uint8_t status, uint8_t half);
 
 // Queues a report to the PC (nonblocking; dropped if the queue is full).
 void host_link_send(const uint8_t *data, int len);
+
+// rgb_idle.c, on the left: the underglow went on or off.
+void host_link_rgb_changed(void);
 
 // Called by relay connection/discovery callbacks; queues a report only after host traffic.
 void host_link_art_status(void);
