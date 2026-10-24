@@ -16,7 +16,7 @@ const struct screen_descriptor foxglove_screens[] = {
     {.id = 0, .kind = SCREEN_DISPLAY, .half = 0, .parent = SCREEN_UNSET, .width = 144,
      .height = 168, .rotation = 0, .ops = 0, .stride = 18, .readback_half = SCREEN_UNSET},
     {.id = 1, .kind = SCREEN_PANEL, .half = 0, .parent = 0, .width = HOST_PANEL_W,
-     .height = HOST_PANEL_H, .x = HOST_PANEL_X, .y = HOST_PANEL_Y, .ops = SCREEN_OP_ROWS,
+     .height = HOST_PANEL_H, .x = HOST_PANEL_X, .y = HOST_PANEL_Y, .ops = SCREEN_OP_ROWS | SCREEN_OP_ROWS_AT,
      .stride = HOST_PANEL_STRIDE, .rows_per_report = 1, .readback_half = SCREEN_UNSET},
 };
 const uint8_t foxglove_screen_count = ARRAY_SIZE(foxglove_screens);
