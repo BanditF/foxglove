@@ -20,6 +20,9 @@ pub struct ViaSettings {
     pub enabled: bool,
     /// VIA JSON definitions (Keychron publishes them per keyboard).
     pub definitions: Vec<PathBuf>,
+    /// Keyboards Foxglove leaves alone (`vvvv:pppp`), so VIA or the maker's app can use them
+    /// (#74): their handles are closed and they aren't opened again until resumed.
+    pub paused: Vec<String>,
 }
 
 pub fn settings() -> ViaSettings {
@@ -41,6 +44,24 @@ pub struct Found {
     pub name: String,
     /// `Ok(layers)` when it answered VIA, else why not.
     pub opened: Result<usize, String>,
+    /// `vvvv:pppp`, for pausing it; none for a definition or scan error.
+    pub key: Option<String>,
+    pub paused: bool,
+}
+
+/// How a keyboard is named for pausing: its USB vendor and product ids.
+pub fn key(id: &foxglove_devices::DeviceId) -> String {
+    format!("{:04x}:{:04x}", id.vid, id.pid)
+}
+
+/// Pauses or resumes Foxglove for one keyboard; a rescan closes or reopens its handle.
+pub fn set_paused(key: &str, paused: bool) -> Result<(), String> {
+    let mut s = settings();
+    s.paused.retain(|k| k != key);
+    if paused {
+        s.paused.push(key.to_string());
+    }
+    save(&s)
 }
 
 pub fn found() -> Vec<Found> {
@@ -77,15 +98,21 @@ pub fn rescan() {
         let report = registry.discover();
         let mut found: Vec<Found> = errors
             .into_iter()
-            .map(|e| Found { name: "definition".into(), opened: Err(e) })
+            .map(|e| Found { name: "definition".into(), opened: Err(e), key: None, paused: false })
             .collect();
-        found.extend(report.errors.iter().map(|(_, e)| Found { name: "scan".into(), opened: Err(e.to_string()) }));
+        found.extend(report.errors.iter().map(|(_, e)| Found { name: "scan".into(), opened: Err(e.to_string()), key: None, paused: false }));
         for entry in report.devices {
+            let key = key(&entry.info.id);
+            // Paused: listed, never opened, so another app has it to itself.
+            if s.paused.contains(&key) {
+                found.push(Found { name: entry.info.name.clone(), opened: Err("paused".into()), key: Some(key), paused: true });
+                continue;
+            }
             let opened = registry
                 .open(&entry.info.id)
                 .and_then(|d| d.keymap().ok_or(foxglove_devices::DeviceError::Unsupported)?.layers().map(|l| l.len()))
                 .map_err(|e| super::devices::describe(&e));
-            found.push(Found { name: entry.info.name.clone(), opened });
+            found.push(Found { name: entry.info.name.clone(), opened, key: Some(key), paused: false });
         }
         *STATUS.lock().unwrap_or_else(|e| e.into_inner()) = found;
         *guard = Some(registry);
