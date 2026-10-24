@@ -52,7 +52,7 @@ impl OverlayApp {
         {
             held_layers.set(layers, held);
         }
-        ui.label(label);
+        crate::foxglove::layer_access::label(ui, label, layers);
         Self::theme_color_button(ui, color);
         ui.end_row();
     }

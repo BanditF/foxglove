@@ -18,3 +18,4 @@ pub mod art_ui;
 pub mod settings_ui;
 pub mod startup;
 pub mod tray;
+pub mod layer_access;
