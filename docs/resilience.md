@@ -53,6 +53,34 @@ the left shows the WPM chart. That is expected, not a failure.
 Typing check for every case: type a short sentence on each half, hold a key for 2 s (one
 character + repeat, no stuck key after release), switch a layer.
 
+## HELLO capabilities and unsolicited art STATUS (#20)
+
+Capture Raw HID input with a passive reader (no automatic HELLO or STATUS polling).
+Firmware builds and all steps below still need CI/hardware verification.
+
+1. Cold-boot the left with the right off and no host-link writer running. Power the right on,
+   wait for discovery (~15 s after security), then off: no `D6 85` reports should arrive.
+   Both halves must boot and type normally, including with saved RGB settings.
+2. Send `D5 01 01`. The first 21 reply bytes keep their old layout and version 1;
+   bytes 21-24 are a little-endian capability mask (normally `0F 00 00 00` with relay and
+   RGB enabled). An old host must still read dimensions, battery and discovery correctly.
+3. Stop sending requests. Power the right on: after both relay characteristics are discovered,
+   expect one 32-byte `D6 85` report with link byte 8 = 2. Power it off: expect one with
+   link byte 8 = 0. Repeat reconnect/disconnect; no periodic STATUS events should follow.
+   The payload is the ordinary STATUS snapshot, including cached right state; discovery
+   itself does not wait for a fresh GATT status read. After a read completes, a requested
+   STATUS should show current right state/set/capacity. Byte 8 determines whether it is usable.
+4. Repeat with a disconnect mid-art-push, while typing on both halves. The event must arrive
+   without stalling keys; the push must fail cleanly, and a push after rediscovery must work.
+5. Boot with an older right firmware without the art service: HELLO should show link 1,
+   and no ready event should be sent. Reboot the left: the host-traffic guard must reset.
+
+Events use the existing bounded, nonblocking reply queue and may be dropped under a flood.
+An explicit STATUS request remains available to resynchronize. The current Digitalis HidLink
+dispatcher drops unsolicited replies; consuming these events in the app needs a separate host
+dispatch change. Use a raw HID capture for these checks. No new SYS_INIT work or
+settings reads are involved.
+
 ## Flood script
 
 Python with `hidapi` (`pip install hidapi`). It finds the Raw HID interface by usage page and
