@@ -139,6 +139,22 @@ fn tools_get_only_what_the_user_approves() {
 }
 
 #[test]
+fn tools_are_never_granted_secrets() {
+    let mut ctx = plugin(&[]);
+    ctx.client = Client::Tool(Arc::new(|_: &ClientInfo, asked: &[Permission]| {
+        assert!(!asked.contains(&Permission::Secrets), "not asked about secrets");
+        let mut all = asked.to_vec();
+        all.push(Permission::Secrets);
+        all
+    }));
+    let mut i = init();
+    i["params"]["permissions"] = json!(["devices.read", "secrets"]);
+    let out = run(ctx, &[i, call(2, "secrets.get", json!({"name": "token"}))]);
+    assert_eq!(out[0]["result"]["granted"], json!(["devices.read"]));
+    assert!(err(2, code::DENIED)(&out[1]));
+}
+
+#[test]
 fn notifications_get_no_reply_and_bad_lines_get_parse_errors() {
     let out = run(
         plugin(&[]),
