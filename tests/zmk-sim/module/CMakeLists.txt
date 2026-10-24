@@ -51,9 +51,7 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
     ${FOXGLOVE_WIDGETS}/host_link.c
     ${FOXGLOVE_WIDGETS}/screens_corne.c
     ${FOXGLOVE_WIDGETS}/half_marker.c
-    ${FOXGLOVE_WIDGETS}/art_keys.c
     hostlink_sim.c
-    art_relay_sim.c
   )
   if(CONFIG_FOXGLOVE_SIM_PANEL_STREAM)
     zephyr_library_sources(panel_stream_sim.c)

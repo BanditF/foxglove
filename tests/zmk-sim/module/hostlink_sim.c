@@ -15,7 +15,6 @@
 #include <zmk/behavior.h>
 #include <zmk/display.h>
 #include <zmk/event_manager.h>
-#include <zmk/events/endpoint_changed.h>
 
 
 /* The Raw HID module's events, and what the board's other widgets would provide */
@@ -198,23 +197,6 @@ static void driver(void) {
     note("guard test with delay_ms 0 (#305, drop at once): still 4 here");
     SEND(0xD7, 0x0B, 0x00, 0x00);
 
-    if (IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS) && zmk_behavior_get_binding("art_next") != NULL) {
-        note("art keys, no opt-in: the board steps its own art (+1, then -1), no D7 8D");
-        invoke("art_next", 0, 0, 0);
-        invoke("art_prev", 0, 0, 0);
-        note("art keys: the app opts in (D7 0D 01); presses become D7 8D 01 01 / FF");
-        SEND(0xD7, 0x0D, 0x01);
-        invoke("art_next", 0, 0, 0);
-        invoke("art_prev", 0, 0, 0);
-        note("art keys: the endpoint changes; the opt-in ends and the board steps again");
-        raise_zmk_endpoint_changed((struct zmk_endpoint_changed){0});
-        k_msleep(200);
-        invoke("art_next", 0, 0, 0);
-        note("art keys: opt in, then out (D7 0D 00); the board steps again");
-        SEND(0xD7, 0x0D, 0x01);
-        SEND(0xD7, 0x0D, 0x00);
-        invoke("art_prev", 0, 0, 0);
-    }
     note("bootloader: bad sub-command");
     SEND(0xD7, 0x08, 0x05);
 

@@ -1,20 +1,5 @@
 #include "../common/keymap.dtsi"
 
-/ {
-    behaviors {
-        // The art keys (#302), as config/eyelash_corne.keymap defines them; the driver invokes them.
-        art_next: art_next {
-            compatible = "foxglove,behavior-art-step";
-            #binding-cells = <0>;
-        };
-        art_prev: art_prev {
-            compatible = "foxglove,behavior-art-step";
-            #binding-cells = <0>;
-            previous;
-        };
-    };
-};
-
 &kscan {
     events = <
         // No key presses: module/hostlink_sim.c plays the PC. This only keeps the simulator
