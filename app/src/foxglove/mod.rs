@@ -19,6 +19,7 @@ mod screens_settings;
 pub mod screens_ui;
 pub mod services;
 pub mod art_cycle;
+mod art_triggers;
 pub mod accent;
 pub mod store;
 pub mod api;
