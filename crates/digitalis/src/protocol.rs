@@ -27,6 +27,8 @@ pub mod capabilities {
     pub const CONN_STATE_EVENT: u32 = 1 << 8;
     /// Settings BOOTLOADER (D7 08), pre-GA test builds only.
     pub const BOOTLOADER: u32 = 1 << 9;
+    /// D6 06/07/08: flash slots on the right half that survive a reboot.
+    pub const ART_SLOTS: u32 = 1 << 10;
 }
 pub const VERSION: u8 = 1;
 
@@ -48,7 +50,14 @@ pub mod art {
     pub const COMMIT: u8 = 0x03;
     pub const SELECT: u8 = 0x04;
     pub const STATUS: u8 = 0x05;
+    /// Saves the pushed set now on the right into a flash slot (firmware #123).
+    pub const SAVE: u8 = 0x06;
+    /// One flash slot's info; replies D6 87 once the right has answered.
+    pub const SLOT: u8 = 0x07;
+    pub const ERASE: u8 = 0x08;
     pub const DATA_MAX: usize = 27;
+    /// Bytes of a slot name.
+    pub const NAME_LEN: usize = 16;
 }
 
 pub mod settings {
@@ -116,6 +125,56 @@ pub fn art_select(set: i8) -> Vec<u8> {
 
 pub fn art_status() -> Vec<u8> {
     vec![ART, art::STATUS]
+}
+
+/// SAVE: `name` is cut to 16 bytes (on a character boundary) and zero-padded.
+pub fn art_save(slot: u8, name: &str) -> Vec<u8> {
+    let mut end = name.len().min(art::NAME_LEN);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut r = vec![ART, art::SAVE, slot];
+    r.extend_from_slice(&name.as_bytes()[..end]);
+    r.resize(3 + art::NAME_LEN, 0);
+    r
+}
+
+pub fn art_erase(slot: u8) -> Vec<u8> {
+    vec![ART, art::ERASE, slot]
+}
+
+pub fn art_slot(slot: u8) -> Vec<u8> {
+    vec![ART, art::SLOT, slot]
+}
+
+/// One flash slot on the right half (the D6 87 reply).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SlotInfo {
+    pub slot: u8,
+    pub used: bool,
+    /// Erase/write cycles so far.
+    pub writes: u32,
+    pub len: u16,
+    pub name: String,
+}
+
+impl SlotInfo {
+    /// D6 87: status, slot, used, writes u32, len u16, name[16]. `Err` carries the status
+    /// (1 busy, 2 no link, 3 BLE error, 4 right without slots).
+    pub fn parse(r: &[u8; REPORT]) -> std::result::Result<SlotInfo, u8> {
+        if r[2] != 0 {
+            return Err(r[2]);
+        }
+        let name = &r[11..11 + art::NAME_LEN];
+        let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+        Ok(SlotInfo {
+            slot: r[3],
+            used: r[4] != 0,
+            writes: u32::from_le_bytes(r[5..9].try_into().unwrap()),
+            len: u16::from_le_bytes([r[9], r[10]]),
+            name: String::from_utf8_lossy(&name[..end]).into_owned(),
+        })
+    }
 }
 
 /// RGB_SYNC: `Some` turns "right follows left" on or off, `None` only reads it.
@@ -315,6 +374,10 @@ pub struct ArtStatus {
     pub right_capacity: u16,
     pub right_set: i8,
     pub right_set_count: u8,
+    /// Right status version 3 and later: flash slots (0 = none) and which hold a set (bit n).
+    /// While slot n plays, `right_set` is `right_set_count + n`.
+    pub flash_slots: u8,
+    pub flash_used: u8,
 }
 
 pub const LEFT_STATES: [&str; 5] = ["idle", "receiving", "pushing", "done", "failed"];
@@ -328,8 +391,26 @@ pub const ERRORS: [&str; 8] = [
     "Bluetooth write failed",
     "right half rejected it",
 ];
-pub const RIGHT_STATES: [&str; 6] =
-    ["built-in", "receiving", "playing pushed set", "bad CRC", "bad blob", "too big"];
+pub const RIGHT_STATES: [&str; 9] = [
+    "built-in",
+    "receiving",
+    "playing pushed set",
+    "bad CRC",
+    "bad blob",
+    "too big",
+    "saving",
+    "saved",
+    "save failed",
+];
+
+/// The right half's art states (art_relay.h `art_relay_right_state`).
+pub mod right_state {
+    pub const BUILT_IN: u8 = 0;
+    pub const PLAYING: u8 = 2;
+    pub const SAVING: u8 = 6;
+    pub const SAVED: u8 = 7;
+    pub const SAVE_FAILED: u8 = 8;
+}
 
 /// Left-half relay states (enum art_relay_left_state).
 pub mod left_state {
@@ -360,6 +441,9 @@ impl ArtStatus {
             right_capacity: u16::from_le_bytes([s[11], s[12]]),
             right_set: s[13] as i8,
             right_set_count: s[14],
+            // After the version-2 underglow (7 bytes): flash_slots, flash_used.
+            flash_slots: if s[7] >= 3 { s[22] } else { 0 },
+            flash_used: if s[7] >= 3 { s[23] } else { 0 },
         }
     }
 }
@@ -526,6 +610,8 @@ mod tests {
                 right_capacity: 16384,
                 right_set: -1,
                 right_set_count: 34,
+                flash_slots: 0,
+                flash_used: 0,
             }
         );
         assert_eq!(
@@ -581,5 +667,40 @@ mod connection_tests {
         r[2] = 6;
         assert_eq!(InvokeStatus::parse(&r), InvokeStatus::Refused);
         assert!(InvokeStatus::Refused.to_string().contains("refused"));
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    #[test]
+    fn slot_reports_round_trip() {
+        let save = art_save(2, "fox ünïcode name too long");
+        assert_eq!(&save[..3], &[ART, art::SAVE, 2]);
+        assert_eq!(save.len(), 3 + art::NAME_LEN);
+        assert!(std::str::from_utf8(save[3..].split(|&b| b == 0).next().unwrap()).is_ok());
+        assert_eq!(art_erase(1), [ART, art::ERASE, 1]);
+        let mut r = [0u8; REPORT];
+        r[..11].copy_from_slice(&[0xD6, 0x87, 0, 3, 1, 5, 0, 0, 0, 0x10, 0x27]);
+        r[11..14].copy_from_slice(b"fox");
+        assert_eq!(
+            SlotInfo::parse(&r),
+            Ok(SlotInfo { slot: 3, used: true, writes: 5, len: 10000, name: "fox".into() })
+        );
+        r[2] = 4;
+        assert_eq!(SlotInfo::parse(&r), Err(4));
+    }
+
+    #[test]
+    fn status_v3_reports_flash_slots() {
+        let mut r = [0u8; REPORT];
+        r[..17].copy_from_slice(&[0xD6, 0x85, 0, 0, 0, 0, 0, 0, 2, 3, 2, 0, 0, 0, 0x40, 18, 17]);
+        r[24] = 8;
+        r[25] = 0b101;
+        let s = ArtStatus::parse(&r);
+        assert_eq!((s.flash_slots, s.flash_used, s.right_set), (8, 0b101, 18));
+        r[9] = 2; // version 2: the bytes are underglow, not slots
+        assert_eq!(ArtStatus::parse(&r).flash_slots, 0);
     }
 }
