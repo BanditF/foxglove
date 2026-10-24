@@ -57,7 +57,7 @@ impl Arbiter {
     /// Takes the lights for `lease` (its `id` is assigned) and shows the winner.
     pub fn add(&mut self, mut lease: Lease, light: &dyn Lighting) -> Result<u64, DeviceError> {
         if !self.base.contains_key(&lease.device) {
-            self.base.insert(lease.device.clone(), light.state()?);
+            self.base.insert(lease.device.clone(), settled(light)?);
         }
         self.next += 1;
         lease.id = self.next;
@@ -89,8 +89,9 @@ impl Arbiter {
     /// Shows the winning lease, or the lights from before the first lease once none is left.
     pub fn apply(&mut self, device: &str, light: &dyn Lighting) -> Result<(), DeviceError> {
         match self.target(device) {
-            Target::Lease(l) => show(light, true, l.hue, l.sat, l.brightness, &l.effect),
-            Target::Restore(s) => show(light, s.on, s.hue, s.sat, s.brightness, &s.effect.id),
+            Target::Lease(l) => show(light, true, l.hue, l.sat, l.brightness, &l.effect, false),
+            // Giving the lights back waits for both halves of a split keyboard.
+            Target::Restore(s) => show(light, s.on, s.hue, s.sat, s.brightness, &s.effect.id, true),
             Target::Nothing => Ok(()),
         }
     }
@@ -108,23 +109,53 @@ fn shows(state: &LightingState, on: bool, hue: u16, sat: u8) -> bool {
     state.on == on && near(state.hue, hue, 360) && near(state.sat.into(), sat.into(), 1000)
 }
 
-fn show(light: &dyn Lighting, on: bool, hue: u16, sat: u8, brightness: u8, effect: &str) -> Result<(), DeviceError> {
+/// How long to wait for a split keyboard's other half to catch up (1.7 s typical, 5.9 s seen).
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(8);
+const SETTLE_STEP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The lights once every part of the device agrees, or as they are after [`SETTLE`].
+fn settled(light: &dyn Lighting) -> Result<LightingState, DeviceError> {
+    let until = std::time::Instant::now() + SETTLE;
+    loop {
+        let s = light.state()?;
+        if s.settled || std::time::Instant::now() >= until {
+            return Ok(s);
+        }
+        std::thread::sleep(SETTLE_STEP);
+    }
+}
+
+/// Sends the lights and reads them back, sending again (a few times) if the keyboard didn't
+/// take them; with `settle`, also until a split keyboard's other half agrees (re-sent half way
+/// through [`SETTLE`] if it still hasn't).
+fn show(light: &dyn Lighting, on: bool, hue: u16, sat: u8, brightness: u8, effect: &str, settle: bool) -> Result<(), DeviceError> {
     let send = || -> Result<(), DeviceError> {
         light.set_on(on)?;
         light.set_color(hue, sat, brightness)?;
         light.set_effect(Effect { id: effect.into(), params: vec![] })
     };
     send()?;
-    for _ in 0..RESENDS {
-        match light.state() {
-            Ok(s) if !shows(&s, on, hue, sat) => {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                send()?;
-            }
-            _ => break,
+    let start = std::time::Instant::now();
+    let mut resent = 0;
+    loop {
+        let Ok(s) = light.state() else { return Ok(()) };
+        let left_ok = shows(&s, on, hue, sat);
+        if left_ok && (!settle || s.settled) {
+            return Ok(());
+        }
+        let late_right = left_ok && start.elapsed() >= SETTLE / 2;
+        if resent >= RESENDS || (settle && start.elapsed() >= SETTLE) || (!settle && left_ok) {
+            return Ok(());
+        }
+        if !left_ok || late_right {
+            resent += 1;
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            send()?;
+        }
+        if settle {
+            std::thread::sleep(SETTLE_STEP);
         }
     }
-    Ok(())
 }
 
 pub static ARBITER: Mutex<Option<Arbiter>> = Mutex::new(None);

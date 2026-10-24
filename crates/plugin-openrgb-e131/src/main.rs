@@ -89,7 +89,9 @@ fn take_over(
         .into_iter()
         .filter(|d| d.connected && d.caps.iter().any(|c| c == "lighting"))
         .map(|d| {
-            let read = plugin.lighting_state(&d.id).ok();
+            // A split keyboard's other half can lag seconds behind; what it shows once both
+            // agree is the "before".
+            let read = settled(plugin, &d.id);
             let leftover = |s: &LightingState| ours.is_some_and(|c| near(s.hue, c.hue, 360) && near(s.saturation.into(), c.saturation.into(), 1000));
             let before = match (read, original.get(&d.id)) {
                 (Some(s), Some(kept)) if leftover(&s) => Some(kept.clone()),
@@ -146,6 +148,49 @@ fn shows(state: &LightingState, set: &SetLightingParams) -> bool {
 /// effect) if the keyboard didn't take it, a few times at most: a write can be lost while the
 /// keyboard is busy with the previous one, and it wouldn't be retried otherwise, since only
 /// changes are sent.
+/// How long to wait for a split keyboard's other half to catch up (Test lab: 1.7 s typical,
+/// 5.9 s seen).
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(8);
+const SETTLE_STEP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The lights once every part of the keyboard agrees, or as they are after [`SETTLE`].
+fn settled(plugin: &Plugin, id: &str) -> Option<LightingState> {
+    let until = std::time::Instant::now() + SETTLE;
+    loop {
+        let state = plugin.lighting_state(id).ok()?;
+        if state.settled || std::time::Instant::now() >= until {
+            return Some(state);
+        }
+        std::thread::sleep(SETTLE_STEP);
+    }
+}
+
+/// After a restore: reads back until the keyboard shows it on both halves, sending it again
+/// if the left didn't take it or the right still hasn't half way through [`SETTLE`].
+fn confirm_settled(plugin: &Plugin, all: &SetLightingParams) {
+    let id = &all.device;
+    let start = std::time::Instant::now();
+    let mut resent = 0;
+    while start.elapsed() < SETTLE {
+        match plugin.lighting_state(id) {
+            Ok(state) if shows(&state, all) && state.settled => return,
+            Ok(state) => {
+                let late_right = shows(&state, all) && start.elapsed() >= SETTLE / 2;
+                if (!shows(&state, all) || late_right) && resent < RESENDS {
+                    resent += 1;
+                    if let Err(e) = plugin.set_lighting(all) {
+                        eprintln!("openrgb-e131: lighting: {e}");
+                        return;
+                    }
+                }
+            }
+            Err(_) => return,
+        }
+        std::thread::sleep(SETTLE_STEP);
+    }
+    eprintln!("openrgb-e131: {id} didn't settle on {all:?} within {} s", SETTLE.as_secs());
+}
+
 fn confirm(plugin: &Plugin, all: &SetLightingParams) {
     let id = &all.device;
     for attempt in 0..=RESENDS {
@@ -177,7 +222,7 @@ fn restore(plugin: &Plugin, devices: &[(String, Option<LightingState>)]) {
             effect: Some(s.effect.clone()),
         };
         match plugin.set_lighting(&set) {
-            Ok(()) => confirm(plugin, &set),
+            Ok(()) => confirm_settled(plugin, &set),
             Err(e) => eprintln!("openrgb-e131: restoring lights: {e}"),
         }
     }
