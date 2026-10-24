@@ -30,6 +30,18 @@
 
 / {
     behaviors {
+        // Step the right screen's art (#60): to the app while it's subscribed, else on the board.
+        art_next: art_next {
+            compatible = "foxglove,behavior-art-step";
+            #binding-cells = <0>;
+            display-name = "Next art";
+        };
+        art_prev: art_prev {
+            compatible = "foxglove,behavior-art-step";
+            #binding-cells = <0>;
+            display-name = "Previous art";
+            previous;
+        };
         td0: td0 {
             compatible = "zmk,behavior-tap-dance";
             display-name = "Shift/Caps Lock Tap Dance";
@@ -162,10 +174,11 @@
         // G=GAME, N=NUMBER. Tap a toggle again to turn it off.
         // Bootloader on C (left), comma and slash (right); reset on Z (left), dot (right).
         // M (hold 2 s) powers off both halves; the reset buttons wake them.
+        // O / P step the right screen's art back / on (#60).
         system_layer {
             display-name = "SYSTEM";
             bindings = <
-&trans          &bt BT_SEL 0  &bt BT_SEL 1  &bt BT_SEL 2  &bt BT_SEL 3  &bt BT_SEL 4          &none         &out OUT_USB  &out OUT_BLE  &none        &none       &none  &none
+&trans          &bt BT_SEL 0  &bt BT_SEL 1  &bt BT_SEL 2  &bt BT_SEL 3  &bt BT_SEL 4          &none         &out OUT_USB  &out OUT_BLE  &none        &art_prev   &art_next  &none
 &none           &to 0         &tog 2        &none         &tog 5        &tog 3         &none  &none  &none  &none         &none         &none        &none       &none  &none
 &bt BT_CLR      &sys_reset    &none         &bootloader   &none         &none   &none          &none         &tog 1        &soft_off     &bootloader  &sys_reset  &bootloader  &bt BT_CLR_ALL
                                             &none         &trans        &none                             &none         &trans        &none

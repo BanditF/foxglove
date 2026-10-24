@@ -717,6 +717,33 @@ int art_relay_select(int8_t set) {
     return 0;
 }
 
+void art_relay_step(int dir) {
+    if (art_relay_link() < 2 || right_read_at == 0) {
+        return;
+    }
+    int8_t ids[INT8_MAX];
+    int total = 0;
+    for (int i = 0; i < right.set_count && total < (int)ARRAY_SIZE(ids); i++) {
+        ids[total++] = i;
+    }
+    uint8_t used = right.version >= 3 ? right.flash_used : 0;
+    for (int n = 0; n < 8 && right.set_count + n < INT8_MAX; n++) {
+        if (used & BIT(n)) {
+            ids[total++] = right.set_count + n;
+        }
+    }
+    if (total == 0) {
+        return;
+    }
+    int at = dir > 0 ? -1 : 0; // a pushed set (-1) isn't in the list: start at either end
+    for (int i = 0; i < total; i++) {
+        if (ids[i] == right.set) {
+            at = i;
+        }
+    }
+    art_relay_select(ids[((at + dir) % total + total) % total]);
+}
+
 void art_relay_discovery(int8_t *result, uint8_t *tries) {
     // DONE only with the handles in hand, on the link we have now.
     *result = discovery == ART_DISCOVERY_DONE && !(data_handle && status_handle)

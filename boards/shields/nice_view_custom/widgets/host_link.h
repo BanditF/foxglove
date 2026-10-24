@@ -148,6 +148,11 @@
  *      once the right has answered, and the right reboots into its bootloader ~300 ms after.
  *      Status: 0 ok, 2 no relay link (right), 3 relay timeout (3 s), 4 not built in
  *      (CONFIG_FOXGLOVE_TEST_HOOKS=n, GA), 5 bad request, 6 bad or expired nonce.
+ *   0D ART_KEYS on u8                                      reply: D7 8D, 00, on
+ *      The PC takes the &art_next / &art_prev keys (#60, HELLO bit 16): while on, each press
+ *      sends D7 8D, 01, dir (i8: 1 next, -1 previous) and the PC steps its hotlist. Off, or after
+ *      a USB disconnect or an endpoint change, the board steps the right's built-ins and saved
+ *      slots itself. No keep-alive: subscribe again after HELLO.
  *   0B GUARD_TEST (test hooks + split guard only)        reply: D7 8B, status
  *      The #122 split guard treats the current split link as stuck once, 2 s from now: it drops
  *      it, ZMK reconnects, HELLO byte 31 counts one more. Status: 0 ok, 2 no split link,
@@ -182,6 +187,8 @@
 // The panel stays until RELEASE and keeps its last frame when the PC or the cable goes away; the
 // PC sends no keep-alive (#279). Set when the panel timeout (bytes 25-26) is 0.
 #define HOST_LINK_CAP_PANEL_HOLD (1U << 15)
+// The keymap has &art_next / &art_prev, and D7 0D ART_KEYS hands them to the PC (#60).
+#define HOST_LINK_CAP_ART_KEYS (1U << 16)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
@@ -198,6 +205,10 @@ void host_link_build_info_reply(uint8_t status, uint8_t half,
 
 // rgb_idle.c, on the left: the underglow went on or off.
 void host_link_rgb_changed(void);
+
+// &art_next / &art_prev (art_keys.c): sends D7 8D 01 dir to the PC and returns 0 while it's
+// subscribed (D7 0D), -ENOTCONN otherwise (the board steps the art itself).
+int host_link_art_key(int8_t dir);
 
 // art_relay_central.c: the right acknowledged the PC's colour, or a read-back after another
 // underglow command came in. Sends RGB_STATE (D7 83) after host traffic.
