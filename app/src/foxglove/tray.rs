@@ -11,6 +11,9 @@ pub struct Controls {
     update_item: Option<MenuItem>,
     pause: CheckMenuItem,
     art: Submenu,
+    profile: Submenu,
+    /// The profile names and active one the submenu shows.
+    profiles_shown: (Vec<String>, Option<String>),
     signature: String,
     /// What the items show now: update text, paused, status text, art menu enabled.
     shown: (Option<String>, bool, String, bool),
@@ -26,21 +29,43 @@ impl Controls {
             None,
         );
         let art = Submenu::new("Right art", false);
+        let profile = Submenu::new("Profile", true);
         let _ = menu.append(&status);
         let _ = menu.append(&MenuItem::with_id("settings", "Settings...", true, None));
         let _ = menu.append(&pause);
         let _ = menu.append(&art);
+        let _ = menu.append(&profile);
         Self {
             status,
             menu: menu.clone(),
             update_item: None,
             pause,
             art,
+            profile,
+            profiles_shown: (vec!["-".into()], None),
             signature: String::new(),
             shown: (None, screens::paused(), "Disconnected".into(), false),
         }
     }
     pub fn update(&mut self) {
+        let profiles = super::store::cached_profiles();
+        if profiles != self.profiles_shown {
+            while self.profile.remove_at(0).is_some() {}
+            let (names, active) = &profiles;
+            let base = CheckMenuItem::with_id("fox-profile:", "Base settings", true, active.is_none(), None);
+            let _ = self.profile.append(&base);
+            for name in names {
+                let item = CheckMenuItem::with_id(
+                    format!("fox-profile:{name}"),
+                    name,
+                    true,
+                    active.as_deref() == Some(name.as_str()),
+                    None,
+                );
+                let _ = self.profile.append(&item);
+            }
+            self.profiles_shown = profiles;
+        }
         let update = super::update::available_version().map(|v| format!("Update available: v{v}"));
         if update != self.shown.0 {
             match (&update, &self.update_item) {
@@ -128,6 +153,12 @@ impl Controls {
     }
 }
 pub fn event(id: &str, on_settings: &dyn Fn()) {
+    if let Some(name) = id.strip_prefix("fox-profile:") {
+        let name = (!name.is_empty()).then_some(name);
+        if let Err(e) = super::store::set_active(name) {
+            eprintln!("Foxglove: can't switch profile: {e}");
+        }
+    }
     if id == "fox-update" {
         on_settings();
     }

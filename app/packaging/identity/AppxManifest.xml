@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Foxglove's sparse identity package (#179): no payload, only package identity for the
+     installed foxglove.exe (AllowExternalContent), so Windows lists Foxglove under
+     Settings > Personalization > Dynamic Lighting > Background light control.
+     Publisher must equal the signing certificate's subject and the exe manifest's
+     <msix publisher>; the placeholder is replaced once the signing identity exists (#90). -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 rescap">
+  <Identity Name="BanditF.Foxglove" Publisher="CN=Foxglove Placeholder" Version="1.0.0.0" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>Foxglove</DisplayName>
+    <PublisherDisplayName>BanditF</PublisherDisplayName>
+    <Logo>Assets\logo50.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+  <Dependencies>
+    <!-- Dynamic Lighting's background control arrived in Windows 11 22H2. -->
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.22621.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+  <Applications>
+    <Application Id="Foxglove" Executable="foxglove.exe"
+                 uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements DisplayName="Foxglove" Description="Foxglove keyboard companion"
+                          BackgroundColor="transparent" Square150x150Logo="Assets\logo150.png"
+                          Square44x44Logo="Assets\logo44.png" AppListEntry="none" />
+      <Extensions>
+        <!-- Makes Foxglove an ambient lighting controller for Dynamic Lighting. -->
+        <uap3:Extension Category="windows.appExtension">
+          <uap3:AppExtension Name="com.microsoft.windows.lighting" Id="foxglove" DisplayName="Foxglove" />
+        </uap3:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>

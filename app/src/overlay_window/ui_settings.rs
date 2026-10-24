@@ -416,9 +416,12 @@ impl OverlayApp {
                     });
                 });
 
+                crate::foxglove::profiles_ui::picker(ui); // Foxglove
                 Self::foxglove_keyboard_group(ui); // Foxglove
                 crate::foxglove::screens_ui::group(ui);
                 crate::foxglove::art_ui::group(ui);
+                crate::foxglove::via_ui::group(ui);
+                crate::foxglove::plugins_ui::group(ui);
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {

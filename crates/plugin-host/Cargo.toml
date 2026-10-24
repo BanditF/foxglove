@@ -1,0 +1,19 @@
+[package]
+name = "foxglove-plugin-host"
+version = "0.1.0"
+edition = "2021"
+description = "The Plugins tab: Foxglove's local API host, serving plugins and outside tools over any byte stream"
+license = "MIT"
+
+[dependencies]
+base64 = "0.22"
+foxglove-plugin-api = { path = "../plugin-api" }
+foxglove-devices = { path = "../devices" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Diagnostics_ToolHelp", "Win32_Security_Isolation"] }
+
+[dev-dependencies]
+foxglove-devices = { path = "../devices" }

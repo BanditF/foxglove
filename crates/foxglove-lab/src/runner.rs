@@ -152,6 +152,8 @@ pub struct Runner<'a, D> {
     attachments: Vec<String>,
     /// screens.ini as it was before this case changed it; put back in cleanup.
     screens_ini: Option<(PathBuf, Option<Vec<u8>>)>,
+    /// File-name prefix for this case's attachments.
+    case_name: String,
     /// The last capture_screen per half in this case: expect_screen_change compares with it.
     baselines: std::collections::HashMap<String, image::GrayImage>,
 }
@@ -176,6 +178,7 @@ impl<'a, D: Device> Runner<'a, D> {
             held_positions: Vec::new(),
             attachments: Vec::new(),
             baselines: Default::default(),
+            case_name: String::new(),
             screens_ini: None,
         }
     }
@@ -399,7 +402,8 @@ impl<'a, D: Device> Runner<'a, D> {
     }
     /// Saves a portrait capture as a 4x PNG next to the report and attaches it to the step.
     fn save_png(&mut self, stem: &str, image: &image::GrayImage) -> Result<String> {
-        let name = format!("{stem}.png");
+        // Prefixed with the case so captures from different cases in one run never overwrite.
+        let name = format!("{}-{stem}.png", self.case_name);
         std::fs::write(self.out.join(&name), screen::png(image)?)?;
         self.attachments.push(name.clone());
         Ok(name)
@@ -544,6 +548,152 @@ impl<'a, D: Device> Runner<'a, D> {
                     std::thread::sleep(Duration::from_millis(300));
                 }
             }
+            Step::ExpectBuild(b) => {
+                let half = u8::from(b.half == "right");
+                let info = settings::build_info(self.device, half)?;
+                let v = info.version;
+                let (version, profile) = (
+                    format!("{}.{}.{}", v.major, v.minor, v.patch),
+                    if v.profile == 1 { "ga" } else { "dev" },
+                );
+                let actual = format!("{} {version} {profile} {}", b.half, info.sha);
+                ensure!(
+                    b.profile.as_deref().is_none_or(|p| p == profile)
+                        && b.version.as_deref().is_none_or(|x| x == version)
+                        && b.sha.as_deref().is_none_or(|s| info.sha.starts_with(s)),
+                    "expected {:?}/{:?}/{:?}, running {actual}",
+                    b.version,
+                    b.profile,
+                    b.sha
+                );
+                Ok(actual)
+            }
+            Step::ExpectHello(h) => {
+                let raw = self.device.request(
+                    &protocol::hello(),
+                    protocol::PANEL,
+                    protocol::panel::HELLO,
+                    Duration::from_millis(500),
+                )?;
+                let hello = protocol::Hello::parse(&raw);
+                let caps = hello.capabilities;
+                let profile = hello
+                    .firmware
+                    .map(|f| if f.profile == 1 { "ga" } else { "dev" });
+                // HELLO byte 31: how often the split guard (#147) dropped the right's link.
+                let drops = raw[31];
+                let mut wrong: Vec<String> = h
+                    .caps_set
+                    .iter()
+                    .filter(|b| caps & (1 << **b) == 0)
+                    .map(|b| format!("bit {b} clear"))
+                    .chain(
+                        h.caps_clear
+                            .iter()
+                            .filter(|b| caps & (1 << **b) != 0)
+                            .map(|b| format!("bit {b} set")),
+                    )
+                    .collect();
+                if let Some(p) = &h.profile {
+                    if profile != Some(p.as_str()) {
+                        wrong.push(format!("profile {profile:?}, expected {p}"));
+                    }
+                }
+                if h.guard_drops_max.is_some_and(|max| drops > max) {
+                    wrong.push(format!("split guard dropped the link {drops} times"));
+                }
+                ensure!(
+                    wrong.is_empty(),
+                    "HELLO caps {caps:#x}: {}",
+                    wrong.join(", ")
+                );
+                Ok(format!(
+                    "HELLO caps {caps:#x}, profile {profile:?}, split-guard drops {drops}"
+                ))
+            }
+            Step::SplitGuardTest(g) => {
+                let hello = |runner: &Self| -> Result<(u8, u8)> {
+                    let raw = runner.device.request(
+                        &protocol::hello(),
+                        protocol::PANEL,
+                        protocol::panel::HELLO,
+                        Duration::from_millis(500),
+                    )?;
+                    Ok((raw[7], raw[31])) // right link, guard drops since boot
+                };
+                let (link, before) = hello(self)?;
+                ensure!(
+                    link == 2,
+                    "right relay not up before the test (right link {link})"
+                );
+                let r = self.device.request(
+                    &[protocol::SETTINGS, 0x0B],
+                    protocol::SETTINGS,
+                    0x0B,
+                    Duration::from_secs(2),
+                )?;
+                match r[2] {
+                    0 => {}
+                    4 => {
+                        return Err(Blocked(
+                            "GUARD_TEST not built in (GA build, or no split guard)".into(),
+                        )
+                        .into())
+                    }
+                    s => bail!("GUARD_TEST answered status {s}"),
+                }
+                let started = Instant::now();
+                let end = started + Duration::from_millis(g.within_ms);
+                let (mut dropped_at, mut lowest) = (None, 2u8);
+                loop {
+                    self.check()?;
+                    std::thread::sleep(Duration::from_millis(500));
+                    // HELLO can time out while the split link is being rebuilt; keep waiting.
+                    if let Ok((link, drops)) = hello(self) {
+                        if link < 2 && dropped_at.is_none() {
+                            dropped_at = Some(started.elapsed());
+                        }
+                        lowest = lowest.min(link);
+                        if let (2, true, Some(dropped)) =
+                            (link, drops == before.wrapping_add(1), dropped_at)
+                        {
+                            return Ok(format!(
+                                "guard drops {before} -> {drops}; link dropped after {:.1} s (lowest {lowest}), relay back after {:.1} s",
+                                dropped.as_secs_f32(),
+                                started.elapsed().as_secs_f32()
+                            ));
+                        }
+                        ensure!(
+                            Instant::now() < end,
+                            "after {} ms: right link {link}, guard drops {before} -> {drops}, link dropped: {}",
+                            g.within_ms,
+                            dropped_at.is_some()
+                        );
+                    } else {
+                        ensure!(
+                            Instant::now() < end,
+                            "no HELLO reply for {} ms",
+                            g.within_ms
+                        );
+                    }
+                }
+            }
+            Step::ExpectNotBuiltIn(n) => {
+                let (report, cmd): (&[u8], u8) = match n.command.as_str() {
+                    "position" => (&[protocol::SETTINGS, POSITION, 1, 0], POSITION),
+                    _ => (&[protocol::SETTINGS, 0x08, 0x00], 0x08),
+                };
+                let r =
+                    self.device
+                        .request(report, protocol::SETTINGS, cmd, Duration::from_secs(4))?;
+                ensure!(
+                    r[2] == 4,
+                    "{} answered status {} (expected 4, not built in)",
+                    n.command,
+                    r[2]
+                );
+                Ok(format!("{}: status 4 (not built in)", n.command))
+            }
             Step::UsbHalves(u) => {
                 let halves = crate::host::classify(&crate::host::usb_entries()?);
                 let text = halves
@@ -598,7 +748,7 @@ impl<'a, D: Device> Runner<'a, D> {
                 };
                 let c = screen::compare(&image, &golden, &sc.mask)?;
                 let actual = self.save_png(&format!("{stem}.actual"), &image)?;
-                let diff = format!("{stem}.diff.png");
+                let diff = format!("{}-{stem}.diff.png", self.case_name);
                 std::fs::write(self.out.join(&diff), &c.diff)?;
                 self.attachments.push(diff);
                 ensure!(
@@ -641,6 +791,17 @@ impl<'a, D: Device> Runner<'a, D> {
     }
     pub fn case(&mut self, c: &Case, selected: bool) -> CaseResult {
         let started = Instant::now();
+        self.case_name = c
+            .name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
         let mut blocked = c
             .requires
             .iter()

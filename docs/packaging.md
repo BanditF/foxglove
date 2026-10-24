@@ -120,3 +120,24 @@ Before shipping, exercise UAC acceptance/cancellation, installer failure,
 interrupted download, successful upgrade/relaunch, and settings preservation on
 a Windows test installation. The development sandbox cannot validate a real MSI
 upgrade.
+
+## Sparse identity for Dynamic Lighting (#179, prototype)
+
+Windows lists an app under **Settings → Personalization → Dynamic Lighting → Background light control** only if it has package identity and declares the `com.microsoft.windows.lighting` app extension. Scout's #178 settled the approach: keep the MSI and add a signed sparse package with no payload.
+
+None of this is on by default. Ordinary builds and MSIs don't change.
+
+**Pieces**
+- **`app/packaging/identity/`:**
+  - `AppxManifest.xml`: `AllowExternalContent`, mediumIL, `win32App`, the lighting app extension, `AppListEntry="none"`.
+  - Logos.
+  - `foxglove.exe.manifest`: the `<msix>` element tying the exe to the package.
+- **Build:** `FOXGLOVE_SPARSE_IDENTITY=1 cargo build --release --manifest-path app/Cargo.toml` embeds that manifest (`app/build.rs`) and turns on registration (`app/src/foxglove/identity.rs`).
+- **Package:** `scripts\pack-identity.ps1` builds `target\identity\foxglove-identity.msix`. `-Thumbprint <sha1>` signs it.
+- **Installer:** `cargo wix -C -dSparseIdentity=<path to signed msix>` installs it next to the exe. It also adds an uninstall step, `foxglove.exe --unregister-identity`, which runs elevated and removes the package for every user. A major upgrade doesn't run that step, so the registration survives. In-place auto-updates keep the same folder and the same embedded manifest, so they keep the identity.
+- **Registration:**
+  - On an unelevated start without identity, Foxglove registers the msix for the user (`AddPackageByUriAsync` with the install folder as `ExternalLocationUri`).
+  - The identity applies from the next start.
+  - Failures are logged and Foxglove carries on without identity. Foreground-only Dynamic Lighting control needs no identity.
+
+**Blocked on signing (#90):** Windows registers the package only with a trusted signature whose subject equals `Publisher` (now the placeholder `CN=Foxglove Placeholder`, in both manifests and `identity.rs`; a test checks they agree). The plan is Azure Artifact Signing (ties to #158/#159). The proof the issue asks for (Foxglove listed under Background light control, and keeping control from the tray) also needs the LampArray controller (#88), so it waits for both. The WiX additions are behind the `SparseIdentity` define and haven't been built yet; no WiX locally, and the app CI is manual.

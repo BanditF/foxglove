@@ -40,6 +40,17 @@ separately authorized; tag pushes can themselves publish releases.
   dedicated firmware release publisher exists because a tag convention exists.
 - Require the code-reviewer gate in addition to Sourcery and the test-lab report
   for applicable hardware/resilience cases. State pending hardware checks.
+- The test-lab report is the release gate's `report.json` (schema `foxglove-lab-report`,
+  version 2; `docs/test-lab/report-format.md`, `docs/test-lab/report.schema.json`). Check
+  `schema`/`version`, require `verdict: PASS`, and require `firmware.left`/`firmware.right` to
+  show the candidate's SHA and the release profile on both halves (`ga` for GA). A BLOCKED
+  release-tagged case is not a pass. Link `report.html` and `junit.xml` in the release notes.
+- GA candidates (#81): the test lab flashes the GA UF2s of the candidate commit (user's go,
+  via On-call) and runs `foxglove-lab run --suite ga`. Require PASS on every `ga` case:
+  BUILD_INFO profile `ga` on both halves, HELLO bits 5 and 9 clear, D7 05 and D7 08 answer
+  4, INVOKE refusals of &bootloader/&bt/&out/&soft_off answer 6. Also require the matching
+  simulator case `tests/zmk-sim/hostlink-ga` green in CI. Then flash the dev build back for
+  development unless the user keeps GA.
 - Preserve GPL-3.0 KeyPeek credits/source availability for the app, MIT notices
   for crates, new dependency notices, and permitted art attribution. The MSI
   currently bundles no firmware or art.

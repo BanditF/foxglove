@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, ensure, Result};
 
-use crate::protocol::{self, art, left_state, ArtStatus};
+use crate::protocol::{self, art, left_state, right_state, ArtStatus, SlotInfo};
 use crate::Transport;
 
 pub const MAGIC: &[u8; 4] = b"NVA1";
@@ -99,6 +99,58 @@ pub fn select(t: &impl Transport, set: i8) -> Result<ArtStatus> {
         left_state::PUSHING => bail!("select did not finish in 10 s: {st}"),
         _ => Ok(st),
     }
+}
+
+/// Saves the pushed set now playing on the right into flash slot `slot`, under `name`, and
+/// waits for the right half to finish writing (a few seconds at most).
+pub fn save(t: &impl Transport, slot: u8, name: &str) -> Result<ArtStatus> {
+    let st = command(t, &protocol::art_save(slot, name))?;
+    finish_slot_op(t, st, "save")
+}
+
+/// Empties flash slot `slot`. If it was on screen, the right switches to a random built-in.
+pub fn erase(t: &impl Transport, slot: u8) -> Result<ArtStatus> {
+    let st = command(t, &protocol::art_erase(slot))?;
+    finish_slot_op(t, st, "erase")
+}
+
+/// SAVE and ERASE run on the right after the left has relayed them: wait for the left's relay
+/// to finish, then for the right to leave SAVING.
+fn finish_slot_op(t: &impl Transport, mut st: ArtStatus, what: &str) -> Result<ArtStatus> {
+    let end = Instant::now() + Duration::from_secs(20);
+    while (st.state == left_state::PUSHING || st.right_state == right_state::SAVING)
+        && Instant::now() < end
+    {
+        std::thread::sleep(Duration::from_millis(250));
+        st = status(t)?;
+    }
+    match (st.state, st.right_state) {
+        (left_state::FAILED, _) => bail!("{what} failed: {st}"),
+        (_, right_state::SAVE_FAILED) => bail!("{what} failed on the right half: {st}"),
+        (_, right_state::SAVING) => bail!("{what} did not finish in 20 s: {st}"),
+        _ => Ok(st),
+    }
+}
+
+/// What flash slot `slot` holds. The left asks the right, so this can take a moment.
+pub fn slot(t: &impl Transport, slot: u8) -> Result<SlotInfo> {
+    let r = t.request(&protocol::art_slot(slot), protocol::ART, art::SLOT, Duration::from_secs(3))?;
+    SlotInfo::parse(&r).map_err(|status| {
+        anyhow::anyhow!(match status {
+            1 => "the relay is busy".to_string(),
+            2 => "the right half is not connected".to_string(),
+            3 => "reading the right half failed".to_string(),
+            4 => "the right half's firmware has no flash slots".to_string(),
+            n => format!("slot read error {n}"),
+        })
+    })
+}
+
+/// Plays flash slot `slot` (SELECT set_count + slot).
+pub fn select_slot(t: &impl Transport, set_count: u8, slot: u8) -> Result<ArtStatus> {
+    let set = i8::try_from(u16::from(set_count) + u16::from(slot))
+        .map_err(|_| anyhow::anyhow!("slot {slot} is out of SELECT's range"))?;
+    select(t, set)
 }
 
 #[cfg(test)]

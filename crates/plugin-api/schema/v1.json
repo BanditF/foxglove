@@ -1,0 +1,1291 @@
+{
+  "api": "1.2",
+  "methods": {
+    "art.select": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "ArtTarget": {
+            "oneOf": [
+              {
+                "enum": [
+                  "random"
+                ],
+                "type": "string"
+              },
+              {
+                "additionalProperties": false,
+                "description": "A built-in set by its manifest name.",
+                "properties": {
+                  "built_in": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "built_in"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "slot": {
+                    "format": "uint8",
+                    "maximum": 255,
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "slot"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "An art blob file (NVA1) on this PC.",
+                "properties": {
+                  "file": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "file"
+                ],
+                "type": "object"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/$defs/ArtTarget"
+          }
+        },
+        "required": [
+          "device",
+          "target"
+        ],
+        "title": "ArtSelectParams",
+        "type": "object"
+      },
+      "permission": "art.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "built_in": {
+            "description": "The built-in set shown, by its manifest name when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flash_slots": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pushed": {
+            "description": "A pushed (RAM) set is shown.",
+            "type": "boolean"
+          },
+          "slot": {
+            "description": "The flash slot shown.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "pushed",
+          "flash_slots"
+        ],
+        "title": "ArtStatus",
+        "type": "object"
+      }
+    },
+    "art.status": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "DeviceParams",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "built_in": {
+            "description": "The built-in set shown, by its manifest name when known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "flash_slots": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pushed": {
+            "description": "A pushed (RAM) set is shown.",
+            "type": "boolean"
+          },
+          "slot": {
+            "description": "The flash slot shown.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "pushed",
+          "flash_slots"
+        ],
+        "title": "ArtStatus",
+        "type": "object"
+      }
+    },
+    "behaviors.invoke": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "param1": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "param2": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "device",
+          "id",
+          "param1",
+          "param2"
+        ],
+        "title": "InvokeParams",
+        "type": "object"
+      },
+      "permission": "behaviors.invoke",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "behaviors.list": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "DeviceParams",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$defs": {
+          "Behavior": {
+            "properties": {
+              "id": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "needs_confirmation": {
+                "description": "Plugins can never invoke these; they need the user's click in Foxglove.",
+                "type": "boolean"
+              },
+              "param1": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "param2": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "param1",
+              "param2",
+              "name",
+              "needs_confirmation"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "behaviors": {
+            "items": {
+              "$ref": "#/$defs/Behavior"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "behaviors"
+        ],
+        "title": "Behaviors",
+        "type": "object"
+      }
+    },
+    "devices.changed": {
+      "kind": "event",
+      "params": {
+        "$defs": {
+          "Device": {
+            "properties": {
+              "backend": {
+                "type": "string"
+              },
+              "caps": {
+                "description": "device capabilities: keymap, layers, behaviors, lighting, color_in, screens, power, settings.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "connected": {
+                "type": "boolean"
+              },
+              "id": {
+                "description": "Stable across reconnects; facts about it live under `device.<id>.*`.",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "kind",
+              "backend",
+              "connected",
+              "caps"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "devices": {
+            "items": {
+              "$ref": "#/$defs/Device"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "devices"
+        ],
+        "title": "Devices",
+        "type": "object"
+      },
+      "permission": "devices.read"
+    },
+    "devices.list": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$defs": {
+          "Device": {
+            "properties": {
+              "backend": {
+                "type": "string"
+              },
+              "caps": {
+                "description": "device capabilities: keymap, layers, behaviors, lighting, color_in, screens, power, settings.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "connected": {
+                "type": "boolean"
+              },
+              "id": {
+                "description": "Stable across reconnects; facts about it live under `device.<id>.*`.",
+                "type": "string"
+              },
+              "kind": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name",
+              "kind",
+              "backend",
+              "connected",
+              "caps"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "devices": {
+            "items": {
+              "$ref": "#/$defs/Device"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "devices"
+        ],
+        "title": "Devices",
+        "type": "object"
+      }
+    },
+    "facts.changed": {
+      "kind": "event",
+      "params": {
+        "$defs": {
+          "Fact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "properties": {
+                  "base64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "base64"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A fact's value. Bytes travel as base64 under `{\"base64\": ...}`."
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event: a subscribed fact changed (`value` null = removed). Only future changes are sent;\nread the current value with `facts.get`.",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "subscription": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Fact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "subscription",
+          "key"
+        ],
+        "title": "FactChanged",
+        "type": "object"
+      }
+    },
+    "facts.get": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "KeyParams",
+        "type": "object"
+      },
+      "result": {
+        "$defs": {
+          "Fact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "properties": {
+                  "base64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "base64"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A fact's value. Bytes travel as base64 under `{\"base64\": ...}`."
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Fact"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "FactResult",
+        "type": "object"
+      }
+    },
+    "facts.list": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "pattern": {
+            "description": "An exact key, `prefix.*`, or `*`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "title": "SubscribeParams",
+        "type": "object"
+      },
+      "result": {
+        "$defs": {
+          "Fact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "properties": {
+                  "base64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "base64"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A fact's value. Bytes travel as base64 under `{\"base64\": ...}`."
+          },
+          "FactEntry": {
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Fact"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The facts matching a pattern, sorted by key.",
+        "properties": {
+          "facts": {
+            "items": {
+              "$ref": "#/$defs/FactEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "facts"
+        ],
+        "title": "FactList",
+        "type": "object"
+      }
+    },
+    "facts.set": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "Fact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "properties": {
+                  "base64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "base64"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A fact's value. Bytes travel as base64 under `{\"base64\": ...}`."
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Fact"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "`null` removes the fact."
+          }
+        },
+        "required": [
+          "key"
+        ],
+        "title": "SetFactParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "facts.subscribe": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "pattern": {
+            "description": "An exact key, `prefix.*`, or `*`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "title": "SubscribeParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "subscription": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subscription"
+        ],
+        "title": "Subscription",
+        "type": "object"
+      }
+    },
+    "facts.unsubscribe": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "subscription": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "subscription"
+        ],
+        "title": "Subscription",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "initialize": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "ClientInfo": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "version"
+            ],
+            "type": "object"
+          },
+          "Permission": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The first call on every connection; nothing else is accepted before it.",
+        "properties": {
+          "api": {
+            "description": "The API version the client was built for, `major.minor`.",
+            "type": "string"
+          },
+          "client": {
+            "$ref": "#/$defs/ClientInfo"
+          },
+          "permissions": {
+            "default": [],
+            "description": "What an outside tool asks for; the user approves it once per tool. Plugins get what their\nmanifest declares and leave this empty.",
+            "items": {
+              "$ref": "#/$defs/Permission"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "api",
+          "client"
+        ],
+        "title": "InitializeParams",
+        "type": "object"
+      },
+      "result": {
+        "$defs": {
+          "Permission": {
+            "type": "string"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "api": {
+            "description": "The API version the app speaks.",
+            "type": "string"
+          },
+          "app": {
+            "description": "The app's own version.",
+            "type": "string"
+          },
+          "granted": {
+            "description": "What this connection may do.",
+            "items": {
+              "$ref": "#/$defs/Permission"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "api",
+          "app",
+          "granted"
+        ],
+        "title": "InitializeResult",
+        "type": "object"
+      }
+    },
+    "key.event": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event (needs `key.events`): one key went down or up.",
+        "properties": {
+          "col": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "device": {
+            "type": "string"
+          },
+          "pressed": {
+            "type": "boolean"
+          },
+          "row": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "device",
+          "row",
+          "col",
+          "pressed"
+        ],
+        "title": "KeyEvent",
+        "type": "object"
+      },
+      "permission": "key.events"
+    },
+    "lighting.set": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "Hsb": {
+            "properties": {
+              "brightness": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hue": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "saturation": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "hue",
+              "saturation",
+              "brightness"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Changes only what's given.",
+        "properties": {
+          "color": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Hsb"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "device": {
+            "type": "string"
+          },
+          "effect": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "on": {
+            "default": null,
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "SetLightingParams",
+        "type": "object"
+      },
+      "permission": "lighting.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "lighting.state": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "DeviceParams",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "brightness": {
+            "description": "0-100.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "effect": {
+            "type": "string"
+          },
+          "hue": {
+            "description": "0-359.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "on": {
+            "type": "boolean"
+          },
+          "saturation": {
+            "description": "0-100.",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "speed": {
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "on",
+          "hue",
+          "saturation",
+          "brightness",
+          "effect",
+          "speed"
+        ],
+        "title": "LightingState",
+        "type": "object"
+      }
+    },
+    "net.close": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream"
+        ],
+        "title": "NetStream",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "net.closed": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event: a stream ended (the other side closed it, or an error).",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream",
+          "reason"
+        ],
+        "title": "NetClosed",
+        "type": "object"
+      }
+    },
+    "net.data": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event: bytes arrived on a stream (base64); `from` is the sender for `udp`.",
+        "properties": {
+          "data": {
+            "type": "string"
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream",
+          "data"
+        ],
+        "title": "NetData",
+        "type": "object"
+      }
+    },
+    "net.open": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "NetKind": {
+            "description": "The kind of connection `net.open` makes (API 1.2).",
+            "oneOf": [
+              {
+                "const": "tcp",
+                "description": "A TCP connection to `host`:`port`; needs a `net.connect` permission covering it.",
+                "type": "string"
+              },
+              {
+                "const": "udp",
+                "description": "Datagrams sent to 127.0.0.1:`port`; needs `net.listen:udp:127.0.0.1:<port>`.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Opens a connection through Foxglove: the plugin stays sandboxed and only reaches what its\npermissions name (API 1.2).",
+        "properties": {
+          "host": {
+            "description": "For `udp`, only `127.0.0.1`.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/NetKind"
+          },
+          "port": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "host",
+          "port"
+        ],
+        "title": "NetOpenParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream"
+        ],
+        "title": "NetStream",
+        "type": "object"
+      }
+    },
+    "net.send": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "data": {
+            "description": "Bytes, base64.",
+            "type": "string"
+          },
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream",
+          "data"
+        ],
+        "title": "NetSendParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "ping": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "profiles.activate": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Switches profile; `name` null = the base settings.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "ActivateProfileParams",
+        "type": "object"
+      },
+      "permission": "profiles.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Foxglove's profiles and the active one (`None` = the base settings).",
+        "properties": {
+          "active": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "title": "Profiles",
+        "type": "object"
+      }
+    },
+    "profiles.list": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Foxglove's profiles and the active one (`None` = the base settings).",
+        "properties": {
+          "active": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "title": "Profiles",
+        "type": "object"
+      }
+    },
+    "screens.panel_override": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Draws over the left panel until `ttl_ms` passes (at most 60 000), then the panel goes back\nto what Foxglove draws. A later override replaces an earlier one.",
+        "properties": {
+          "bitmap": {
+            "description": "1 bit per pixel, rows MSB first, padded to whole bytes, 1 = ink; base64.",
+            "type": "string"
+          },
+          "device": {
+            "type": "string"
+          },
+          "height": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ttl_ms": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "width": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "device",
+          "width",
+          "height",
+          "bitmap",
+          "ttl_ms"
+        ],
+        "title": "PanelOverrideParams",
+        "type": "object"
+      },
+      "permission": "screens.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    }
+  },
+  "transport": "JSON-RPC 2.0, one message per line"
+}

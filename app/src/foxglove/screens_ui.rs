@@ -70,6 +70,18 @@ pub fn group(ui: &mut egui::Ui) {
                 ));
                 ui.weak(format!("Relay counters: {:?}", hello.debug));
                 ui.weak(format!("Capabilities: {:#x}", hello.capabilities));
+                for s in &snap.screens {
+                    use digitalis::protocol::ScreenKind;
+                    let kind = match s.kind {
+                        ScreenKind::Display => "display",
+                        ScreenKind::Panel => "PC panel",
+                        ScreenKind::Art => "art area",
+                        ScreenKind::Other(_) => "other",
+                    };
+                    let half = if s.half == 0 { "left" } else { "right" };
+                    let on = s.parent.map_or(String::new(), |p| format!(" at ({}, {}) on screen {p}", s.x, s.y));
+                    ui.weak(format!("Screen {}: {half} {kind}, {}×{}{on}", s.id, s.width, s.height));
+                }
             });
 
             ui.add_space(4.0);
@@ -84,6 +96,19 @@ pub fn group(ui: &mut egui::Ui) {
                 changed |= ui
                     .add(egui::Slider::new(&mut settings.fps, 1..=10).text("frames per second"))
                     .changed();
+                ui.horizontal(|ui| {
+                    use super::screens_settings::Layout;
+                    ui.label("Show");
+                    changed |= ui
+                        .radio_value(&mut settings.layout, Layout::Info, "Clock, media and hints")
+                        .changed();
+                    changed |= ui
+                        .radio_value(&mut settings.layout, Layout::Wallpaper, "The wallpaper's animation")
+                        .on_hover_text(
+                            "The left frames of the Wallpaper Engine wallpaper on screen (wallpapers.json in the art folder); the clock when it has none.",
+                        )
+                        .changed();
+                });
             });
 
             if let Some(frame) = snap.frame.as_ref().filter(|_| settings.drive_left) {

@@ -29,6 +29,8 @@ pub mod capabilities {
     pub const RGB_STATE_EVENT: u32 = 1 << 11;
     /// Settings BUILD_INFO (D7 09); HELLO bytes 27-30 carry the left's version and profile.
     pub const BUILD_INFO: u32 = 1 << 12;
+    /// Panel SCREENS (D5 06): the board's screens, panels and art areas.
+    pub const SCREENS: u32 = 1 << 13;
     /// Settings BOOTLOADER (D7 08), pre-GA test builds only.
     pub const BOOTLOADER: u32 = 1 << 9;
     /// Art SAVE / SLOT / ERASE (D6 06 / 07 / 08), flash slots on the right half.
@@ -42,6 +44,7 @@ pub mod panel {
     pub const ROWS: u8 = 0x03;
     pub const PRESENT: u8 = 0x04;
     pub const RELEASE: u8 = 0x05;
+    pub const SCREENS: u8 = 0x06;
     /// Rows per ROWS report: what fits after the 4-byte header, at most 3.
     pub fn rows_per_report(stride: usize) -> usize {
         ((super::REPORT - 4) / stride).min(3)
@@ -54,7 +57,14 @@ pub mod art {
     pub const COMMIT: u8 = 0x03;
     pub const SELECT: u8 = 0x04;
     pub const STATUS: u8 = 0x05;
+    /// Saves the pushed set now on the right into a flash slot (firmware #123).
+    pub const SAVE: u8 = 0x06;
+    /// One flash slot's info; replies D6 87 once the right has answered.
+    pub const SLOT: u8 = 0x07;
+    pub const ERASE: u8 = 0x08;
     pub const DATA_MAX: usize = 27;
+    /// Bytes of a slot name.
+    pub const NAME_LEN: usize = 16;
 }
 
 pub mod settings {
@@ -65,6 +75,9 @@ pub mod settings {
     /// Both halves' underglow state.
     pub const RGB_STATE: u8 = 0x03;
     pub const CONN_STATE: u8 = 0x04;
+    /// Two-step reboot into the UF2 bootloader (#111): ARM returns a nonce, TRIGGER(half,
+    /// nonce) within 5 s acts on it.
+    pub const BOOTLOADER: u8 = 0x08;
     /// A half's firmware version, profile and git SHA (firmware #133).
     pub const BUILD_INFO: u8 = 0x09;
     /// The longest hold INVOKE accepts.
@@ -99,6 +112,90 @@ pub fn release() -> Vec<u8> {
     vec![PANEL, panel::RELEASE]
 }
 
+/// D5 06: the descriptor of screen `index` (read index 0 first for the count).
+pub fn screens(index: u8) -> Vec<u8> {
+    vec![PANEL, panel::SCREENS, index]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenKind {
+    Display,
+    Panel,
+    Art,
+    Other(u8),
+}
+
+/// One entry of D5 86 (#160).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenDescriptor {
+    pub count: u8,
+    pub index: u8,
+    pub id: u8,
+    pub kind: ScreenKind,
+    /// 0 = left / central, 1 = right.
+    pub half: u8,
+    /// The display a panel or art area sits on; `None` for a display.
+    pub parent: Option<u8>,
+    /// As the PC addresses the region.
+    pub width: u16,
+    pub height: u16,
+    /// Origin on the parent display, as seen.
+    pub x: u16,
+    pub y: u16,
+    /// 90-degree steps clockwise.
+    pub rotation: u8,
+    /// 0 = 1 bit per pixel, MSB first, 1 = ink.
+    pub format: u8,
+    /// Bit 0 D5 rows, 1 D7 06/07 readback, 2 D6 art, 3 D6 slots.
+    pub ops: u16,
+    pub stride: u16,
+    pub rows_per_report: u8,
+    pub readback_half: Option<u8>,
+    pub version: u8,
+}
+
+impl ScreenDescriptor {
+    pub const OP_ROWS: u16 = 1 << 0;
+    pub const OP_READBACK: u16 = 1 << 1;
+    pub const OP_ART: u16 = 1 << 2;
+    pub const OP_SLOTS: u16 = 1 << 3;
+
+    /// D5 86: status, count, index, then the 24-byte descriptor. `Err` carries the status
+    /// (5 = index past the end).
+    pub fn parse(r: &[u8; REPORT]) -> std::result::Result<ScreenDescriptor, u8> {
+        if r[2] != 0 {
+            return Err(r[2]);
+        }
+        let d = &r[5..29];
+        let u16_at = |i: usize| u16::from_le_bytes([d[i], d[i + 1]]);
+        let opt = |b: u8| if b == 0xff { None } else { Some(b) };
+        Ok(ScreenDescriptor {
+            count: r[3],
+            index: r[4],
+            id: d[0],
+            kind: match d[1] {
+                0 => ScreenKind::Display,
+                1 => ScreenKind::Panel,
+                2 => ScreenKind::Art,
+                k => ScreenKind::Other(k),
+            },
+            half: d[2],
+            parent: opt(d[3]),
+            width: u16_at(4),
+            height: u16_at(6),
+            x: u16_at(8),
+            y: u16_at(10),
+            rotation: d[12],
+            format: d[13],
+            ops: u16_at(14),
+            stride: u16_at(16),
+            rows_per_report: d[18],
+            readback_half: opt(d[19]),
+            version: d[20],
+        })
+    }
+}
+
 pub fn art_begin(len: u16, crc: u32) -> Vec<u8> {
     let mut r = vec![ART, art::BEGIN];
     r.extend_from_slice(&len.to_le_bytes());
@@ -124,6 +221,56 @@ pub fn art_select(set: i8) -> Vec<u8> {
 
 pub fn art_status() -> Vec<u8> {
     vec![ART, art::STATUS]
+}
+
+/// SAVE: `name` is cut to 16 bytes (on a character boundary) and zero-padded.
+pub fn art_save(slot: u8, name: &str) -> Vec<u8> {
+    let mut end = name.len().min(art::NAME_LEN);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut r = vec![ART, art::SAVE, slot];
+    r.extend_from_slice(&name.as_bytes()[..end]);
+    r.resize(3 + art::NAME_LEN, 0);
+    r
+}
+
+pub fn art_erase(slot: u8) -> Vec<u8> {
+    vec![ART, art::ERASE, slot]
+}
+
+pub fn art_slot(slot: u8) -> Vec<u8> {
+    vec![ART, art::SLOT, slot]
+}
+
+/// One flash slot on the right half (the D6 87 reply).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SlotInfo {
+    pub slot: u8,
+    pub used: bool,
+    /// Erase/write cycles so far.
+    pub writes: u32,
+    pub len: u16,
+    pub name: String,
+}
+
+impl SlotInfo {
+    /// D6 87: status, slot, used, writes u32, len u16, name[16]. `Err` carries the status
+    /// (1 busy, 2 no link, 3 BLE error, 4 right without slots).
+    pub fn parse(r: &[u8; REPORT]) -> std::result::Result<SlotInfo, u8> {
+        if r[2] != 0 {
+            return Err(r[2]);
+        }
+        let name = &r[11..11 + art::NAME_LEN];
+        let end = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+        Ok(SlotInfo {
+            slot: r[3],
+            used: r[4] != 0,
+            writes: u32::from_le_bytes(r[5..9].try_into().unwrap()),
+            len: u16::from_le_bytes([r[9], r[10]]),
+            name: String::from_utf8_lossy(&name[..end]).into_owned(),
+        })
+    }
 }
 
 /// RGB_SYNC: `Some` turns "right follows left" on or off, `None` only reads it.
@@ -383,6 +530,10 @@ pub struct ArtStatus {
     pub right_capacity: u16,
     pub right_set: i8,
     pub right_set_count: u8,
+    /// Right status version 3 and later: flash slots (0 = none) and which hold a set (bit n).
+    /// While slot n plays, `right_set` is `right_set_count + n`.
+    pub flash_slots: u8,
+    pub flash_used: u8,
 }
 
 pub const LEFT_STATES: [&str; 5] = ["idle", "receiving", "pushing", "done", "failed"];
@@ -396,8 +547,26 @@ pub const ERRORS: [&str; 8] = [
     "Bluetooth write failed",
     "right half rejected it",
 ];
-pub const RIGHT_STATES: [&str; 6] =
-    ["built-in", "receiving", "playing pushed set", "bad CRC", "bad blob", "too big"];
+pub const RIGHT_STATES: [&str; 9] = [
+    "built-in",
+    "receiving",
+    "playing pushed set",
+    "bad CRC",
+    "bad blob",
+    "too big",
+    "saving",
+    "saved",
+    "save failed",
+];
+
+/// The right half's art states (art_relay.h `art_relay_right_state`).
+pub mod right_state {
+    pub const BUILT_IN: u8 = 0;
+    pub const PLAYING: u8 = 2;
+    pub const SAVING: u8 = 6;
+    pub const SAVED: u8 = 7;
+    pub const SAVE_FAILED: u8 = 8;
+}
 
 /// Left-half relay states (enum art_relay_left_state).
 pub mod left_state {
@@ -428,6 +597,9 @@ impl ArtStatus {
             right_capacity: u16::from_le_bytes([s[11], s[12]]),
             right_set: s[13] as i8,
             right_set_count: s[14],
+            // After the version-2 underglow (7 bytes): flash_slots, flash_used.
+            flash_slots: if s[7] >= 3 { s[22] } else { 0 },
+            flash_used: if s[7] >= 3 { s[23] } else { 0 },
         }
     }
 }
@@ -559,6 +731,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_screen_descriptors() {
+        assert_eq!(screens(1), [0xD5, 0x06, 1]);
+        // The Corne's host panel, as host_link.c describes it.
+        let mut r = [0u8; REPORT];
+        r[..5].copy_from_slice(&[0xD5, 0x86, 0, 4, 1]);
+        r[5..29].copy_from_slice(&[
+            1, 1, 0, 0, 64, 0, 52, 0, 2, 0, 106, 0, 0, 0, 1, 0, 8, 0, 3, 0xff, 1, 0, 0, 0,
+        ]);
+        let s = ScreenDescriptor::parse(&r).unwrap();
+        assert_eq!((s.count, s.index, s.id, s.kind), (4, 1, 1, ScreenKind::Panel));
+        assert_eq!((s.parent, s.width, s.height, s.x, s.y), (Some(0), 64, 52, 2, 106));
+        assert_eq!((s.ops, s.stride, s.rows_per_report), (ScreenDescriptor::OP_ROWS, 8, 3));
+        assert_eq!((s.readback_half, s.version), (None, 1));
+        r[2] = 5;
+        assert_eq!(ScreenDescriptor::parse(&r), Err(5));
+    }
+
+    #[test]
     fn parses_hello_capabilities() {
         let mut r = [0u8; REPORT];
         let caps = capabilities::PANEL
@@ -594,6 +784,8 @@ mod tests {
                 right_capacity: 16384,
                 right_set: -1,
                 right_set_count: 34,
+                flash_slots: 0,
+                flash_used: 0,
             }
         );
         assert_eq!(
@@ -605,6 +797,25 @@ mod tests {
 
 /// HELLO capability for connection state queries.
 pub const CAP_CONN_STATE: u32 = capabilities::CONN_STATE;
+
+// BOOTLOADER layout (host_link.h, #111):
+//   ARM      D7 08 00                    -> D7 88 status nonce u32 LE
+//   TRIGGER  D7 08 01 half nonce u32 LE  -> D7 88 status half
+// status: 0 ok, 2 no relay link (right), 3 relay timeout, 4 not built in, 5 bad request,
+// 6 wrong/expired nonce. The left reboots ~300 ms after its TRIGGER reply.
+pub const BOOTLOADER_ARM: u8 = 0x00;
+pub const BOOTLOADER_TRIGGER: u8 = 0x01;
+
+pub fn bootloader_arm() -> Vec<u8> {
+    vec![SETTINGS, settings::BOOTLOADER, BOOTLOADER_ARM]
+}
+
+/// `half`: 0 left, 1 right.
+pub fn bootloader_trigger(half: u8, nonce: u32) -> Vec<u8> {
+    let mut r = vec![SETTINGS, settings::BOOTLOADER, BOOTLOADER_TRIGGER, half];
+    r.extend_from_slice(&nonce.to_le_bytes());
+    r
+}
 
 pub fn conn_state() -> Vec<u8> {
     vec![SETTINGS, settings::CONN_STATE]
@@ -649,6 +860,41 @@ mod connection_tests {
         r[2] = 6;
         assert_eq!(InvokeStatus::parse(&r), InvokeStatus::Refused);
         assert!(InvokeStatus::Refused.to_string().contains("refused"));
+    }
+}
+
+#[cfg(test)]
+mod slot_tests {
+    use super::*;
+
+    #[test]
+    fn slot_reports_round_trip() {
+        let save = art_save(2, "fox ünïcode name too long");
+        assert_eq!(&save[..3], &[ART, art::SAVE, 2]);
+        assert_eq!(save.len(), 3 + art::NAME_LEN);
+        assert!(std::str::from_utf8(save[3..].split(|&b| b == 0).next().unwrap()).is_ok());
+        assert_eq!(art_erase(1), [ART, art::ERASE, 1]);
+        let mut r = [0u8; REPORT];
+        r[..11].copy_from_slice(&[0xD6, 0x87, 0, 3, 1, 5, 0, 0, 0, 0x10, 0x27]);
+        r[11..14].copy_from_slice(b"fox");
+        assert_eq!(
+            SlotInfo::parse(&r),
+            Ok(SlotInfo { slot: 3, used: true, writes: 5, len: 10000, name: "fox".into() })
+        );
+        r[2] = 4;
+        assert_eq!(SlotInfo::parse(&r), Err(4));
+    }
+
+    #[test]
+    fn status_v3_reports_flash_slots() {
+        let mut r = [0u8; REPORT];
+        r[..17].copy_from_slice(&[0xD6, 0x85, 0, 0, 0, 0, 0, 0, 2, 3, 2, 0, 0, 0, 0x40, 18, 17]);
+        r[24] = 8;
+        r[25] = 0b101;
+        let s = ArtStatus::parse(&r);
+        assert_eq!((s.flash_slots, s.flash_used, s.right_set), (8, 0b101, 18));
+        r[9] = 2; // version 2: the bytes are underglow, not slots
+        assert_eq!(ArtStatus::parse(&r).flash_slots, 0);
     }
 }
 
