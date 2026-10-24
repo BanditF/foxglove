@@ -11,12 +11,10 @@ manifest:
     - name: srwi
       url-base: https://github.com/srwi
   projects:
-    - name: eyelash_corne
-      url: https://github.com/a741725193/zmk-new_corne
-      revision: main
     - name: zmk
       remote: zmkfirmware
-      revision: v0.3.0
+      # ZMK main (Zephyr 4.1), pinned for the #151 port until v0.4.0 is tagged.
+      revision: 4dd95d7840eb3d5a3f59bb29fbf1ab054715ef85
       import: app/west.yml
     - name: zmk-raw-hid
       url: https://github.com/BanditF/zmk-raw-hid

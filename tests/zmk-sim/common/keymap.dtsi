@@ -2,6 +2,6 @@
 #include "../../../config/eyelash_corne.keymap"
 #include "matrix.dtsi"
 
-// Hardware commands absent from native_posix. Preserve their parameter cells.
+// Hardware commands absent from native_sim. Preserve their parameter cells.
 &bt { compatible = "foxglove,sim-noop-two"; };
 &rgb_ug { compatible = "foxglove,sim-noop-two"; };

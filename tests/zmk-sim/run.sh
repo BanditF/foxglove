@@ -11,7 +11,7 @@ mkdir -p "$build_root"
 build_root=$(realpath "$build_root")
 failed=0
 count=0
-for keymap in "$suite"/*/native_posix_64.keymap; do
+for keymap in "$suite"/*/native_sim.keymap; do
     [[ -f "$keymap" ]] || continue
     case_dir=$(dirname "$keymap")
     name=$(basename "$case_dir")
@@ -40,7 +40,7 @@ for keymap in "$suite"/*/native_posix_64.keymap; do
         conf="$conf;$prod"
     fi
     # Log outside the pristine build directory: west -p deletes that directory.
-    if ! west build -s "$ZMK_SRC_DIR" -d "$build" -b native_posix_64 -p -- \
+    if ! west build -s "$ZMK_SRC_DIR" -d "$build" -b native_sim//zmk_test_mock -p -- \
         -DCONFIG_ASSERT=y -DZMK_CONFIG="$case_dir" \
         -DEXTRA_CONF_FILE="$conf" \
         -DZMK_EXTRA_MODULES="$suite/module;$repo" >"$build_root/$name-build.log" 2>&1; then

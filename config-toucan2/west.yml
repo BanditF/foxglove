@@ -12,14 +12,14 @@ manifest:
     - name: zmk
       remote: zmkfirmware
       import: app/west.yml
-      revision: v0.3.0
+      revision: 4dd95d7840eb3d5a3f59bb29fbf1ab054715ef85 # ZMK main for the #151 port
     - name: zmk-keyboard-toucan2
       remote: beekeeb
       # Pinned: the vendor's main moves.
       revision: 6882c95bec5b
     - name: zmk-rgbled-widget
       remote: caksoylar
-      revision: v0.3
+      revision: main # its Zephyr 4.1 branch
     - name: zmk_driver_azoteq
       remote: beekeeb
       revision: main

@@ -76,14 +76,14 @@ static void rect(lv_obj_t *c, int oy, int x, int y, int w, int h, int radius, bo
     dsc.bg_opa = filled ? LV_OPA_COVER : LV_OPA_TRANSP;
     dsc.border_color = color;
     dsc.border_width = outline ? 1 : 0;
-    lv_canvas_draw_rect(c, x, y - oy, w, h, &dsc);
+    canvas_draw_rect(c, x, y - oy, w, h, &dsc);
 }
 
 static void text(lv_obj_t *c, int oy, int x, int y, int w, const char *t, lv_color_t color,
                  lv_text_align_t align) {
     lv_draw_label_dsc_t dsc;
     init_label_dsc(&dsc, color, &lv_font_unscii_8, align);
-    lv_canvas_draw_text(c, x, y - oy, w, &dsc, t);
+    canvas_draw_text(c, x, y - oy, w, &dsc, t);
 }
 
 // Rounded pill with a centred label: outlined when off, solid when on.
@@ -102,7 +102,7 @@ static void draw_host_panel(lv_obj_t *c, int oy, const uint8_t *panel) {
         }
         for (int x = 0; x < HOST_PANEL_W; x++) {
             if (panel[y * HOST_PANEL_STRIDE + x / 8] & (0x80 >> (x % 8))) {
-                lv_canvas_set_px_color(c, HOST_PANEL_X + x, sy, LVGL_FOREGROUND);
+                lv_canvas_set_px(c, HOST_PANEL_X + x, sy, LVGL_FOREGROUND, LV_OPA_COVER);
             }
         }
     }
@@ -153,11 +153,13 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
         rect(c, oy, 3, 5, fill, 6, 0, true, false, fg);
     }
     if (state->charging) {
-        lv_draw_rect_dsc_t bolt;
-        init_rect_dsc(&bolt, fg);
-        lv_point_t pts[] = {{29, 2 - oy}, {26, 8 - oy}, {28, 8 - oy},
-                            {27, 13 - oy}, {31, 6 - oy}, {29, 6 - oy}};
-        lv_canvas_draw_polygon(c, pts, ARRAY_SIZE(pts), &bolt);
+        // LVGL 9 has no polygon fill: the bolt as a closed 1 px outline, which is near enough
+        // at this size (6 x 11 px).
+        lv_point_t pts[] = {{29, 2 - oy},  {26, 8 - oy}, {28, 8 - oy}, {27, 13 - oy},
+                            {31, 6 - oy},  {29, 6 - oy}, {29, 2 - oy}};
+        lv_draw_line_dsc_t bolt;
+        init_line_dsc(&bolt, fg, 1);
+        canvas_draw_line(c, pts, ARRAY_SIZE(pts), &bolt);
     }
     char conn[16] = "USB";
     if (state->selected_endpoint.transport == ZMK_TRANSPORT_BLE) {
@@ -223,7 +225,7 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
             int y_line = pts[i].y + (pts[i + 1].y - pts[i].y) * (x - pts[i].x) / span;
             for (int y = MAX(y_line + 1, oy); y <= MIN(bot, oy + CANVAS_SIZE - 1); y++) {
                 if (((x + y) & 1) == 0) {
-                    lv_canvas_set_px_color(c, x, y - oy, fg);
+                    lv_canvas_set_px(c, x, y - oy, fg, LV_OPA_COVER);
                 }
             }
         }
@@ -233,7 +235,7 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
     }
     lv_draw_line_dsc_t line_dsc;
     init_line_dsc(&line_dsc, fg, 1);
-    lv_canvas_draw_line(c, pts, 10, &line_dsc);
+    canvas_draw_line(c, pts, 10, &line_dsc);
 }
 
 static void draw_all(struct zmk_widget_status *widget) {
@@ -244,11 +246,10 @@ static void draw_all(struct zmk_widget_status *widget) {
         panel = panel_buf;
     }
 #endif
-    lv_color_t *bufs[] = {widget->cbuf, widget->cbuf2, widget->cbuf3};
     for (int i = 0; i < 3; i++) {
         lv_obj_t *canvas = lv_obj_get_child(widget->obj, i);
         draw_screen(canvas, i * CANVAS_SIZE, &widget->state, panel);
-        rotate_canvas(canvas, bufs[i]);
+        rotate_canvas(canvas);
     }
 }
 
@@ -334,7 +335,7 @@ static void output_status_update_cb(struct output_status_state state) {
 
 static struct output_status_state output_status_get_state(const zmk_event_t *_eh) {
     struct output_status_state state = {
-        .selected_endpoint = zmk_endpoints_selected(),
+        .selected_endpoint = zmk_endpoint_get_selected(),
         .active_profile_index = zmk_ble_active_profile_index(),
         .active_profile_connected = zmk_ble_active_profile_is_connected(),
         .active_profile_bonded = !zmk_ble_active_profile_is_open(),
@@ -448,13 +449,13 @@ int zmk_widget_status_init(struct zmk_widget_status *widget, lv_obj_t *parent) {
     lv_obj_set_size(widget->obj, 160, 68);
     lv_obj_t *top = lv_canvas_create(widget->obj);
     lv_obj_align(top, LV_ALIGN_TOP_RIGHT, 0, 0);
-    lv_canvas_set_buffer(top, widget->cbuf, CANVAS_SIZE, CANVAS_SIZE, LV_IMG_CF_TRUE_COLOR);
+    lv_canvas_set_buffer(top, widget->cbuf, CANVAS_SIZE, CANVAS_SIZE, CANVAS_COLOR_FORMAT);
     lv_obj_t *middle = lv_canvas_create(widget->obj);
     lv_obj_align(middle, LV_ALIGN_TOP_LEFT, 24, 0);
-    lv_canvas_set_buffer(middle, widget->cbuf2, CANVAS_SIZE, CANVAS_SIZE, LV_IMG_CF_TRUE_COLOR);
+    lv_canvas_set_buffer(middle, widget->cbuf2, CANVAS_SIZE, CANVAS_SIZE, CANVAS_COLOR_FORMAT);
     lv_obj_t *bottom = lv_canvas_create(widget->obj);
     lv_obj_align(bottom, LV_ALIGN_TOP_LEFT, -44, 0);
-    lv_canvas_set_buffer(bottom, widget->cbuf3, CANVAS_SIZE, CANVAS_SIZE, LV_IMG_CF_TRUE_COLOR);
+    lv_canvas_set_buffer(bottom, widget->cbuf3, CANVAS_SIZE, CANVAS_SIZE, CANVAS_COLOR_FORMAT);
 
     sys_slist_append(&widgets, &widget->node);
     widget_battery_status_init();

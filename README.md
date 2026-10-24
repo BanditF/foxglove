@@ -42,7 +42,7 @@ plugins and updating the firmware.
 | Path | What |
 |---|---|
 | `config/` | keymap, `west.yml`: ZMK v0.3.0, the board from Eyelash Peripherals, [zmk-raw-hid](https://github.com/BanditF/zmk-raw-hid) (`nonblocking`), [zmk-keypeek-layer-notifier](https://github.com/srwi/zmk-keypeek-layer-notifier) |
-| `boards/arm/eyelash_corne/` | board definition (from Eyelash Peripherals) |
+| `boards/foxglove/eyelash_corne/` | board definition (from Eyelash Peripherals) |
 | `boards/shields/nice_view_custom/` | custom screens, host link, art relay ([art credits](boards/shields/nice_view_custom/ART_CREDITS.md)) |
 | `scripts/flipper_art.py` | builds the right-hand art (`custom_art.c`, or a `.bin` blob to push) |
 | `keymap-drawer/` | keymap diagram, redrawn by CI |

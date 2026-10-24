@@ -22,7 +22,7 @@ on:
 
 jobs:
   build:
-    uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@v0.3.0
+    uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@4dd95d7840eb3d5a3f59bb29fbf1ab054715ef85
 
   # Names the UF2s by version, half and profile (foxglove-fw-v0.1.0-1a2b3c4-left-dev.uf2), and on a
   # fw-vX.Y.Z tag checks it against FIRMWARE_VERSION and attaches them to a GitHub release.

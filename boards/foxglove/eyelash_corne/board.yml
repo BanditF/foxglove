@@ -1,0 +1,11 @@
+# Zephyr's hardware model v2 (ZMK main / Zephyr 4.1, #151): two boards, one SoC, no variants, so
+# the build targets stay eyelash_corne_left / eyelash_corne_right.
+boards:
+  - name: eyelash_corne_left
+    full_name: Eyelash Corne (left)
+    socs:
+      - name: nrf52840
+  - name: eyelash_corne_right
+    full_name: Eyelash Corne (right)
+    socs:
+      - name: nrf52840

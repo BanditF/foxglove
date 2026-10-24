@@ -13,8 +13,8 @@
 
 1. [叉取此仓库](https://docs.github.com/en/get-started/quickstart/fork-a-repo#forking-a-repository)。
 2. [点击 **Actions** 选项卡，确保工作流已启用](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/disabling-and-enabling-a-workflow#enabling-a-workflow)。
-3. 确保 [`config/west.yml`](../../config/west.yml) 中的 `eyelash_corne` 项目仍然有效。`boards/arm/eyelash_corne` 文件夹将从此 URL 下载。
-4. 如果您的叉取中仍存在 `boards/arm/eyelash_corne` 文件夹，请将其删除。
+3. 确保 [`config/west.yml`](../../config/west.yml) 中的 `eyelash_corne` 项目仍然有效。`boards/foxglove/eyelash_corne` 文件夹将从此 URL 下载。
+4. 如果您的叉取中仍存在 `boards/foxglove/eyelash_corne` 文件夹，请将其删除。
 
 **如果您已经有 ZMK 配置仓库，[您可以将此作为模块添加，而不是叉取](https://zmk.dev/docs/features/modules#building-with-modules)。**
 

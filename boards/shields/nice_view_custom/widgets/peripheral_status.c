@@ -36,7 +36,7 @@ struct peripheral_status_state {
     bool connected;
 };
 
-static void draw_top(lv_obj_t *widget, lv_color_t cbuf[], const struct status_state *state) {
+static void draw_top(lv_obj_t *widget, const struct status_state *state) {
     lv_obj_t *canvas = lv_obj_get_child(widget, 0);
 
     lv_draw_label_dsc_t label_dsc;
@@ -45,17 +45,17 @@ static void draw_top(lv_obj_t *widget, lv_color_t cbuf[], const struct status_st
     init_rect_dsc(&rect_black_dsc, LVGL_BACKGROUND);
 
     // Fill background
-    lv_canvas_draw_rect(canvas, 0, 0, CANVAS_SIZE, CANVAS_SIZE, &rect_black_dsc);
+    canvas_draw_rect(canvas, 0, 0, CANVAS_SIZE, CANVAS_SIZE, &rect_black_dsc);
 
     // Draw battery
     draw_battery(canvas, state);
 
     // Draw output status
-    lv_canvas_draw_text(canvas, 0, 0, CANVAS_SIZE, &label_dsc,
+    canvas_draw_text(canvas, 0, 0, CANVAS_SIZE, &label_dsc,
                         state->connected ? LV_SYMBOL_WIFI : LV_SYMBOL_CLOSE);
 
     // Rotate canvas
-    rotate_canvas(canvas, cbuf);
+    rotate_canvas(canvas);
 }
 
 static void set_battery_status(struct zmk_widget_status *widget,
@@ -66,7 +66,7 @@ static void set_battery_status(struct zmk_widget_status *widget,
 
     widget->state.battery = state.level;
 
-    draw_top(widget->obj, widget->cbuf, &widget->state);
+    draw_top(widget->obj, &widget->state);
 }
 
 static void battery_status_update_cb(struct battery_status_state state) {
@@ -99,7 +99,7 @@ static void set_connection_status(struct zmk_widget_status *widget,
                                   struct peripheral_status_state state) {
     widget->state.connected = state.connected;
 
-    draw_top(widget->obj, widget->cbuf, &widget->state);
+    draw_top(widget->obj, &widget->state);
 }
 
 static void output_status_update_cb(struct peripheral_status_state state) {
@@ -129,7 +129,7 @@ static atomic_t art_held;
 #endif
 
 static uint8_t art_buf[8 + CUSTOM_ART_STRIDE * CUSTOM_ART_H] = {ART_PALETTE};
-static const lv_img_dsc_t art_dsc = {.header.cf = LV_IMG_CF_INDEXED_1BIT,
+static const lv_img_dsc_t art_dsc = {.header.cf = LV_COLOR_FORMAT_I1,
                                      .header.w = CUSTOM_ART_W,
                                      .header.h = CUSTOM_ART_H,
                                      .data_size = sizeof(art_buf),
@@ -180,7 +180,7 @@ static void art_show(int frame) {
     while (art_unique > target) {
         art_apply(art_set->deltas[art_unique--]);
     }
-    lv_img_cache_invalidate_src(&art_dsc);
+    lv_image_cache_drop(&art_dsc);
     lv_obj_invalidate(art_img);
 }
 
@@ -253,8 +253,8 @@ int art_builtin_index(int index) {
 }
 
 static void art_init(lv_obj_t *parent) {
-    art_img = lv_img_create(parent);
-    lv_img_set_src(art_img, &art_dsc);
+    art_img = lv_image_create(parent);
+    lv_image_set_src(art_img, &art_dsc);
     lv_obj_align(art_img, LV_ALIGN_TOP_LEFT, 0, 0);
     art_play(&custom_art_sets[art_builtin_index(CONFIG_NICE_VIEW_CUSTOM_ART_SET)]);
 
@@ -268,7 +268,7 @@ int zmk_widget_status_init(struct zmk_widget_status *widget, lv_obj_t *parent) {
     lv_obj_set_size(widget->obj, 160, 68);
     lv_obj_t *top = lv_canvas_create(widget->obj);
     lv_obj_align(top, LV_ALIGN_TOP_RIGHT, 0, 0);
-    lv_canvas_set_buffer(top, widget->cbuf, CANVAS_SIZE, CANVAS_SIZE, LV_IMG_CF_TRUE_COLOR);
+    lv_canvas_set_buffer(top, widget->cbuf, CANVAS_SIZE, CANVAS_SIZE, CANVAS_COLOR_FORMAT);
 
     art_init(widget->obj);
 

@@ -31,11 +31,12 @@ void screen_snap_pixel(uint8_t *out, int x, int y, bool ink) {
     }
 }
 
-void screen_snap_canvas(uint8_t *out, const lv_color_t *pixels, int ox) {
+void screen_snap_canvas(uint8_t *out, const uint8_t *pixels, int ox) {
+    // The canvases are 8-bit grey (CANVAS_COLOR_FORMAT, LVGL 9); dark is ink.
+    const uint32_t stride = lv_draw_buf_width_to_stride(68, LV_COLOR_FORMAT_L8);
     for (int y = 0; y < 68; y++) {
         for (int x = MAX(0, -ox); x < MIN(68, 160 - ox); x++) {
-            screen_snap_pixel(out, ox + x, y,
-                              lv_color_brightness(pixels[y * 68 + x]) < 128);
+            screen_snap_pixel(out, ox + x, y, pixels[y * stride + x] < 128);
         }
     }
 }

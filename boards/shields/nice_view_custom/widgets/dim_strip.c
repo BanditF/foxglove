@@ -53,9 +53,12 @@ static int dim_update_channels(const struct device *dev, uint8_t *channels, size
     return -ENOTSUP;
 }
 
+static size_t dim_length(const struct device *dev) { return LEN; }
+
 static const struct led_strip_driver_api dim_api = {
     .update_rgb = dim_update_rgb,
     .update_channels = dim_update_channels,
+    .length = dim_length, // Zephyr 4.1 asks every strip for it
 };
 
 static int dim_init(const struct device *dev) { return device_is_ready(strip) ? 0 : -ENODEV; }
