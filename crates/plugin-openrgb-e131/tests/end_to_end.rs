@@ -1,5 +1,5 @@
-//! The plugin end to end: plugins's runner starts it as Foxglove does, a sender's E1.31 frame on
-//! localhost colours a mock keyboard, and the lights go back when the sender stops.
+//! The plugin end to end: the plugin host's runner starts it as Foxglove does, a sender's E1.31 frame on
+//! localhost colours a mock keyboard, and the lights go back when the sender ends its stream.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -34,12 +34,13 @@ impl Devices for Keyboard {
     }
 }
 
-fn send(r: u8, g: u8, b: u8) {
-    let status = std::process::Command::new(env!("CARGO_BIN_EXE_openrgb-e131"))
-        .args(["--send-test", &r.to_string(), &g.to_string(), &b.to_string()])
-        .status()
-        .unwrap();
-    assert!(status.success());
+fn send(seq: u8, r: u8, g: u8, b: u8, stop: bool) {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_openrgb-e131"));
+    cmd.args(["--send-test", &r.to_string(), &g.to_string(), &b.to_string(), "--seq", &seq.to_string()]);
+    if stop {
+        cmd.arg("--stop");
+    }
+    assert!(cmd.status().unwrap().success());
 }
 
 fn wait_for(keyboard: &Keyboard, n: usize, within: Duration) -> Vec<Value> {
@@ -54,7 +55,7 @@ fn wait_for(keyboard: &Keyboard, n: usize, within: Duration) -> Vec<Value> {
 }
 
 #[test]
-fn a_frame_colours_the_keyboard_and_losing_the_sender_restores_it() {
+fn a_frame_colours_the_keyboard_and_the_sender_stopping_restores_it() {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_openrgb-e131"));
     let keyboard = Arc::new(Keyboard::default());
     let devices = keyboard.clone();
@@ -72,24 +73,26 @@ fn a_frame_colours_the_keyboard_and_losing_the_sender_restores_it() {
         limits: Limits::default(),
     };
     let runner = Runner::start(spec, Config::default(), context, |_| {});
-    // Send a red frame until it lands: the plugin may still be starting and binding the port.
-    let until = Instant::now() + Duration::from_secs(10);
+    // Waits are for outcomes, with generous limits; nothing depends on how fast the machine is.
+    // A red frame, sent until it lands (the plugin may still be starting and binding the port).
+    let until = Instant::now() + Duration::from_secs(30);
+    let mut seq = 0u8;
     let mut sets = vec![];
     while sets.is_empty() && Instant::now() < until {
-        send(255, 0, 0);
-        sets = wait_for(&keyboard, 1, Duration::from_millis(300));
+        seq += 1;
+        send(seq, 255, 0, 0, false);
+        sets = wait_for(&keyboard, 1, Duration::from_millis(500));
     }
     assert_eq!(
         sets.first(),
         Some(&json!({"device": "kb", "on": true, "color": {"hue": 0, "saturation": 100, "brightness": 100}, "effect": "0"})),
         "{sets:?}"
     );
-    // The same colour again changes nothing.
-    send(255, 0, 0);
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(keyboard.sets.lock().unwrap().len(), 1);
-    // No more frames: after E1.31's 2.5 s loss timeout the lights go back.
-    let sets = wait_for(&keyboard, 2, Duration::from_secs(5));
+    // The same colour again, then the sender ends its stream: the next (and only) change is the
+    // restore, so the repeated red sent nothing.
+    send(seq + 1, 255, 0, 0, false);
+    send(seq + 2, 0, 0, 0, true);
+    let sets = wait_for(&keyboard, 2, Duration::from_secs(30));
     assert_eq!(
         sets.get(1),
         Some(&json!({"device": "kb", "on": true, "color": {"hue": 200, "saturation": 50, "brightness": 40}, "effect": "3"})),

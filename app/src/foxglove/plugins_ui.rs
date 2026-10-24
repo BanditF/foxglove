@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 
+use super::plugin_icons as icons;
 use super::plugin_install::{self, Installed, Staged};
 
 #[derive(Default)]
@@ -14,6 +15,9 @@ struct UiState {
     staged: Option<Staged>,
     confirm_remove: Option<String>,
     message: Option<String>,
+    /// Why no plugin is trusted, if so: checked when the catalog may have changed, not every
+    /// frame (it reads and verifies the signed files).
+    trust: Option<(super::catalog_refresh::Status, Result<(), String>)>,
 }
 
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
@@ -36,17 +40,30 @@ pub fn group(ui: &mut egui::Ui) {
             ui.weak("Plugins add features to Foxglove. Each runs as its own program with only the permissions you approve.");
             if super::plugin_trust::dev_unsigned() {
                 ui.colored_label(ui.visuals().warn_fg_color, "Developer mode: unsigned plugins are allowed (FOXGLOVE_DEV_UNSIGNED_PLUGINS).");
-            } else if let Err(e) = super::plugin_trust::catalog() {
-                ui.weak(format!("Only signed plugins install and run; {e}."));
+            } else {
+                let status = super::catalog_refresh::status();
+                if state.trust.as_ref().is_none_or(|(s, _)| *s != status) {
+                    state.trust = Some((status, super::plugin_trust::catalog().map(|_| ())));
+                }
+                if let Some((_, Err(e))) = &state.trust {
+                    ui.weak(format!("Only signed plugins install and run; {e}."));
+                }
             }
+            catalog_status(ui);
 
             ui.add_space(4.0);
             ui.label("Installed");
             if installed.is_empty() {
-                ui.weak("None yet.");
+                ui.vertical_centered(|ui| {
+                    ui.add(icons::empty(ui, 120.0));
+                    ui.weak("No plugins yet. Pick one from the catalog below, or install one from a file.");
+                });
             }
+            let plugins_dir = plugin_install::plugins_dir();
             for plugin in &installed {
+                let dir = plugins_dir.as_ref().map(|d| d.join(&plugin.manifest.id));
                 ui.horizontal_wrapped(|ui| {
+                    ui.add(icons::glyph(ui, &plugin.manifest.id, dir.as_deref(), 20.0));
                     let mut enabled = plugin.record.enabled;
                     if ui.checkbox(&mut enabled, format!("{} {}", plugin.manifest.name, plugin.manifest.version)).changed() {
                         state.message = plugin_install::set_enabled(&plugin.manifest.id, enabled).err();
@@ -86,11 +103,16 @@ pub fn group(ui: &mut egui::Ui) {
                 if installed.iter().any(|k| k.manifest.id == entry.id) {
                     continue;
                 }
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong(&entry.name);
-                    ui.weak(&entry.description);
-                    // Downloads come with the first released plugin; until then entries are listed only.
-                    ui.add_enabled(false, egui::Button::new("Coming soon"));
+                ui.horizontal(|ui| {
+                    ui.add(icons::tile(ui, &entry.id, None, 36.0));
+                    ui.vertical(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong(&entry.name);
+                            // Downloads come with the first released plugin; until then entries are listed only.
+                            ui.add_enabled(false, egui::Button::new("Coming soon"));
+                        });
+                        ui.weak(&entry.description);
+                    });
                 });
             }
             ui.add_space(4.0);
@@ -104,10 +126,36 @@ pub fn group(ui: &mut egui::Ui) {
     });
 }
 
+/// The catalog's freshness, and "Check now". Opening the tab asks for a check when one is due
+/// (at most every 10 minutes, and never while backing off).
+fn catalog_status(ui: &mut egui::Ui) {
+    use super::catalog_refresh::{self, Status, Trigger};
+    catalog_refresh::request(Trigger::TabOpened);
+    ui.horizontal_wrapped(|ui| {
+        let status = catalog_refresh::status();
+        match &status {
+            Status::Idle => ui.weak("Catalog: not checked yet this session."),
+            Status::Checking => {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                ui.weak("Catalog: checking…")
+            }
+            Status::UpToDate { sequence: Some(n) } => ui.weak(format!("Catalog: updated (sequence {n}).")),
+            Status::UpToDate { sequence: None } => ui.weak("Catalog: up to date."),
+            Status::Failed(e) => ui.weak(format!("Catalog: couldn't check ({e}).")),
+        };
+        if ui.add_enabled(status != Status::Checking, egui::Button::new("Check now").small()).clicked() {
+            catalog_refresh::request(Trigger::Manual);
+        }
+    });
+}
+
 /// Shows what a staged plugin may do; returns it again while the user hasn't decided.
 fn approval(ui: &mut egui::Ui, staged: Staged, state: &mut UiState) -> Option<Staged> {
     let m = &staged.manifest;
-    ui.strong(format!("Install {} {}?", m.name, m.version));
+    ui.horizontal(|ui| {
+        ui.add(icons::tile(ui, &m.id, Some(&staged.dir), 48.0));
+        ui.strong(format!("Install {} {}?", m.name, m.version));
+    });
     if !m.description.is_empty() {
         ui.label(&m.description);
     }
