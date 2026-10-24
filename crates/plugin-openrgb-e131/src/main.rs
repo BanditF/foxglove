@@ -4,9 +4,11 @@
 //!
 //! - Receives on 127.0.0.1:5568 (UDP) only, through Foxglove (`net.listen:udp:127.0.0.1:5568`),
 //!   so the plugin itself runs sandboxed, without any network of its own.
-//! - Sends `lighting.set` only when the colour changes, at most `--max-hz` times a second.
+//! - Holds each keyboard's lights with a low-priority lease while a stream runs (#73), so
+//!   notifications win; the leased colour changes only when the colour does, at most
+//!   `--max-hz` times a second.
 //! - When the sender stops (stream terminated, or 2.5 s without data, E1.31's loss timeout),
-//!   it puts each keyboard's lights back as they were.
+//!   or the plugin stops, the leases end and Foxglove gives the lights back as they were.
 //!
 //! Options (in `plugin.toml`'s `run`): `--universe N` (1), `--start-channel N` (1), `--leds N`
 //! (every LED sent), `--max-hz N` (10). `--send-test R G B [--seq N] [--stop]` sends one frame
@@ -15,10 +17,10 @@
 mod e131;
 
 use std::net::{Ipv4Addr, UdpSocket};
-use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use foxglove_plugin::{Hsb, LightingState, NetEvent, Plugin, SetLightingParams};
+use foxglove_plugin::{Hsb, Lease, LeasePriority, NetEvent, Plugin};
 
 /// E1.31 6.7.1: a stream is lost after 2.5 s without data.
 const LOSS_TIMEOUT: Duration = Duration::from_millis(2500);
@@ -74,158 +76,17 @@ fn hsb((r, g, b): (u8, u8, u8)) -> Hsb {
     Hsb { hue: (hue.round() as u16) % 360, saturation: (saturation * 100.0).round() as u8, brightness: (max * 100.0).round() as u8 }
 }
 
-/// The keyboards with lights, and how their lights were before we took over.
-///
-/// What a keyboard showed before the plugin's first takeover is kept for later ones: if a new
-/// takeover finds the keyboard still on the plugin's own last colour (a restore it didn't take,
-/// or one not applied yet), that colour isn't mistaken for the user's.
-fn take_over(
-    plugin: &Plugin,
-    original: &mut HashMap<String, LightingState>,
-    ours: Option<Hsb>,
-) -> Vec<(String, Option<LightingState>)> {
-    plugin.devices()
+/// The keyboards with lights, each held with a low-priority lease in `color` (#73): a
+/// notification (mic muted, a focus timer) outranks the sync, and when the stream ends, or the
+/// plugin stops or crashes, Foxglove gives the lights back as they were.
+fn take_over(plugin: &Arc<Plugin>, color: Hsb) -> Vec<Lease> {
+    plugin
+        .devices()
         .unwrap_or_default()
         .into_iter()
         .filter(|d| d.connected && d.caps.iter().any(|c| c == "lighting"))
-        .map(|d| {
-            // A split keyboard's other half can lag seconds behind; what it shows once both
-            // agree is the "before".
-            let read = settled(plugin, &d.id);
-            let leftover = |s: &LightingState| ours.is_some_and(|c| near(s.hue, c.hue, 360) && near(s.saturation.into(), c.saturation.into(), 1000));
-            let before = match (read, original.get(&d.id)) {
-                (Some(s), Some(kept)) if leftover(&s) => Some(kept.clone()),
-                (Some(s), _) => {
-                    original.insert(d.id.clone(), s.clone());
-                    Some(s)
-                }
-                (None, kept) => kept.cloned(),
-            };
-            (d.id, before)
-        })
+        .filter_map(|d| plugin.lease(&d.id, color, LeasePriority::Low).map_err(|e| eprintln!("openrgb-e131: lighting: {e}")).ok())
         .collect()
-}
-
-/// Within 2 of each other, around `wrap`.
-fn near(a: u16, b: u16, wrap: u16) -> bool {
-    let d = a.abs_diff(b);
-    d.min(wrap.saturating_sub(d)) <= 2
-}
-
-/// Sends only what changed since `previous` (each part is a separate keyboard command): the
-/// first colour also turns the lights on and picks the static effect.
-fn colour(plugin: &Plugin, devices: &[(String, Option<LightingState>)], color: Hsb, previous: Option<Hsb>) {
-    let lit = |c: Hsb| c.brightness > 0;
-    let on = previous.is_none_or(|p| lit(p) != lit(color)).then_some(lit(color));
-    // Effect 0 is the static colour.
-    let effect = previous.is_none().then(|| "0".to_string());
-    for (id, _) in devices {
-        let set = SetLightingParams { device: id.clone(), on, color: Some(color), effect: effect.clone() };
-        if let Err(e) = plugin.set_lighting(&set) {
-            eprintln!("openrgb-e131: lighting: {e}");
-            continue;
-        }
-        let all = SetLightingParams { device: id.clone(), on: Some(color.brightness > 0), color: Some(color), effect: Some("0".into()) };
-        confirm(plugin, &all);
-    }
-}
-
-/// How often a colour the keyboard didn't take is sent again.
-const RESENDS: u32 = 3;
-
-/// Whether the keyboard shows what `set` asked for: on or off, and the hue and saturation
-/// (brightness aside: the keyboard may dim on battery).
-///
-/// The colour is compared even with the lights off: the keyboard keeps it for when they come
-/// back on, so a lost colour write in a restore would otherwise go unnoticed.
-fn shows(state: &LightingState, set: &SetLightingParams) -> bool {
-    set.on.is_none_or(|on| state.on == on)
-        && set.color.is_none_or(|c| near(state.hue, c.hue, 360) && near(state.saturation.into(), c.saturation.into(), 1000))
-        && set.effect.as_ref().is_none_or(|e| state.effect == *e)
-}
-
-/// Reads the lights back after a change and sends the whole colour again (on, colour, static
-/// effect) if the keyboard didn't take it, a few times at most: a write can be lost while the
-/// keyboard is busy with the previous one, and it wouldn't be retried otherwise, since only
-/// changes are sent.
-/// How long to wait for a split keyboard's other half to catch up (Test lab: 1.7 s typical,
-/// 5.9 s seen).
-const SETTLE: std::time::Duration = std::time::Duration::from_secs(8);
-const SETTLE_STEP: std::time::Duration = std::time::Duration::from_millis(250);
-
-/// The lights once every part of the keyboard agrees, or as they are after [`SETTLE`].
-fn settled(plugin: &Plugin, id: &str) -> Option<LightingState> {
-    let until = std::time::Instant::now() + SETTLE;
-    loop {
-        let state = plugin.lighting_state(id).ok()?;
-        if state.settled || std::time::Instant::now() >= until {
-            return Some(state);
-        }
-        std::thread::sleep(SETTLE_STEP);
-    }
-}
-
-/// After a restore: reads back until the keyboard shows it on both halves, sending it again
-/// if the left didn't take it or the right still hasn't half way through [`SETTLE`].
-fn confirm_settled(plugin: &Plugin, all: &SetLightingParams) {
-    let id = &all.device;
-    let start = std::time::Instant::now();
-    let mut resent = 0;
-    while start.elapsed() < SETTLE {
-        match plugin.lighting_state(id) {
-            Ok(state) if shows(&state, all) && state.settled => return,
-            Ok(state) => {
-                let late_right = shows(&state, all) && start.elapsed() >= SETTLE / 2;
-                if (!shows(&state, all) || late_right) && resent < RESENDS {
-                    resent += 1;
-                    if let Err(e) = plugin.set_lighting(all) {
-                        eprintln!("openrgb-e131: lighting: {e}");
-                        return;
-                    }
-                }
-            }
-            Err(_) => return,
-        }
-        std::thread::sleep(SETTLE_STEP);
-    }
-    eprintln!("openrgb-e131: {id} didn't settle on {all:?} within {} s", SETTLE.as_secs());
-}
-
-fn confirm(plugin: &Plugin, all: &SetLightingParams) {
-    let id = &all.device;
-    for attempt in 0..=RESENDS {
-        match plugin.lighting_state(id) {
-            Ok(state) if shows(&state, all) => return,
-            Ok(_) if attempt < RESENDS => {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                if let Err(e) = plugin.set_lighting(all) {
-                    eprintln!("openrgb-e131: lighting: {e}");
-                    return;
-                }
-            }
-            Ok(state) => {
-                eprintln!("openrgb-e131: {id} still shows {state:?} after {RESENDS} resends");
-                return;
-            }
-            Err(_) => return, // can't read it back; the write itself succeeded
-        }
-    }
-}
-
-fn restore(plugin: &Plugin, devices: &[(String, Option<LightingState>)]) {
-    for (id, before) in devices {
-        let Some(s) = before else { continue };
-        let set = SetLightingParams {
-            device: id.clone(),
-            on: Some(s.on),
-            color: Some(Hsb { hue: s.hue, saturation: s.saturation, brightness: s.brightness }),
-            effect: Some(s.effect.clone()),
-        };
-        match plugin.set_lighting(&set) {
-            Ok(()) => confirm_settled(plugin, &set),
-            Err(e) => eprintln!("openrgb-e131: restoring lights: {e}"),
-        }
-    }
 }
 
 fn send_test(args: &[String], universe: u16, port: u16) -> std::io::Result<()> {
@@ -277,10 +138,8 @@ fn main() {
     let period = Duration::from_millis(1000 / u64::from(opts.max_hz));
     // The last sequence number per sender (E1.31 numbers frames per source).
     let mut last_seq: Option<([u8; 16], u8)> = None;
-    let mut devices: Option<Vec<(String, Option<LightingState>)>> = None;
-    // The lights from before the first takeover, and the last colour this plugin showed.
-    let mut original: HashMap<String, LightingState> = HashMap::new();
-    let mut ours: Option<Hsb> = None;
+    // Held while a stream runs; dropping them gives the lights back.
+    let mut leases: Option<Vec<Lease>> = None;
     let mut last_data = Instant::now();
     let mut wanted: Option<Hsb> = None;
     let mut sent: Option<Hsb> = None;
@@ -293,7 +152,7 @@ fn main() {
         let mut stop = false;
         // Idle: block until a frame comes (#281). Showing: wake also when the stream counts as
         // lost, or when a held-back colour may go out (one-shot deadlines).
-        let deadline = devices.is_some().then(|| {
+        let deadline = leases.is_some().then(|| {
             let lost = last_data + LOSS_TIMEOUT;
             if wanted.is_some() && wanted != sent { lost.min(next_send) } else { lost }
         });
@@ -321,24 +180,30 @@ fn main() {
                 if p.terminated {
                     stop = true;
                 } else if let Some(rgb) = average(p.channels, opts.start_channel, opts.leds) {
-                    if devices.is_none() {
-                        eprintln!("openrgb-e131: first frame from {from} (universe {}): taking over the lights", p.universe);
-                        devices = Some(take_over(&plugin, &mut original, ours));
+                    let color = hsb(rgb);
+                    if leases.is_none() {
+                        eprintln!("openrgb-e131: first frame from {from} (universe {}): taking the lights", p.universe);
+                        leases = Some(take_over(&plugin, color));
+                        sent = Some(color);
+                        next_send = Instant::now() + period;
                     }
-                    wanted = Some(hsb(rgb));
+                    wanted = Some(color);
                 }
             }
         }
         let now = Instant::now();
-        if devices.is_some() && (stop || now.duration_since(last_data) > LOSS_TIMEOUT) {
-            restore(&plugin, devices.as_deref().unwrap_or_default());
-            ours = sent.or(ours);
-            (devices, wanted, sent, last_seq) = (None, None, None, None);
+        if leases.is_some() && (stop || now.duration_since(last_data) > LOSS_TIMEOUT) {
+            // The leases end; Foxglove puts the lights back (and confirms them).
+            (leases, wanted, sent, last_seq) = (None, None, None, None);
             continue;
         }
-        if let (Some(d), Some(color)) = (&devices, wanted) {
+        if let (Some(held), Some(color)) = (&leases, wanted) {
             if sent != Some(color) && now >= next_send {
-                colour(&plugin, d, color, sent);
+                for lease in held {
+                    if let Err(e) = lease.set(color) {
+                        eprintln!("openrgb-e131: lighting: {e}");
+                    }
+                }
                 sent = Some(color);
                 next_send = now + period;
             }

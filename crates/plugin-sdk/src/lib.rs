@@ -328,6 +328,14 @@ pub struct Lease {
     id: u64,
 }
 
+impl Lease {
+    /// Changes the leased colour in place (API 1.3): for a stream of colours, one lease for the
+    /// whole stream.
+    pub fn set(&self, color: Hsb) -> Result<()> {
+        self.plugin.call("lighting.update", json!({ "lease": self.id, "color": color })).map(|_| ())
+    }
+}
+
 impl Drop for Lease {
     fn drop(&mut self) {
         let _ = self.plugin.call("lighting.release", json!({ "lease": self.id }));

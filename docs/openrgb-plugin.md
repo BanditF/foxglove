@@ -19,7 +19,8 @@ The plugin doesn't load, link or copy OpenRGB code. E1.31 is a small open protoc
 - It listens on **127.0.0.1:5568 (UDP) only**. Other machines can't reach it, and it sends nothing out.
 - It averages the RGB LEDs it receives into one colour and sets each connected keyboard with lights to that static colour.
 - It sends only when the colour changes, at most `--max-hz` times a second (10 by default). Plugins's limit per connection (50 calls a second) is far above that.
-- **When the sender stops,** the plugin puts each keyboard's lights back as they were before the first frame (on/off, colour, effect). A sender stops when it ends its stream (the E1.31 terminated bit) or after 2.5 s without data (E1.31's loss timeout).
+- **While a stream runs,** the plugin holds each keyboard's lights with a **low-priority lease** (#73), whose colour changes in place (`lighting.update`). A notification, such as mic muted or a focus timer, outranks it.
+- **When the sender stops,** the lease ends, and Foxglove puts each keyboard's lights back as they were before the first frame (on/off, colour, brightness, effect, speed, confirmed by readback, #293). A sender stops when it ends its stream (the E1.31 terminated bit) or after 2.5 s without data (E1.31's loss timeout). The plugin stopping or crashing ends the lease too.
 - It ignores preview packets, other universes, non-level start codes and stale sequence numbers.
 
 ## Options
@@ -42,4 +43,4 @@ The plugin runs in the AppContainer, with no network of its own. Foxglove listen
 
 `cargo test -p plugin-openrgb-e131`:
 - **Unit tests:** the packet parser, sequence handling, colour averaging and conversion.
-- **End-to-end test:** Plugins's runner starts the plugin as Foxglove does. A frame sent with `--send-test` colours a mock keyboard, a repeat of the same colour sends nothing, and the lights are restored after the loss timeout.
+- **End-to-end test:** Plugins's runner starts the plugin as Foxglove does. A frame sent with `--send-test` takes one low-priority lease on a mock keyboard. A new colour updates it in place, and a repeat of the same colour sends nothing. The stream ending, or going silent past the loss timeout, releases the lease.

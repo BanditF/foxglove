@@ -161,6 +161,23 @@ impl Devices for AppDevices {
                 })?;
                 Ok(json!(methods::Lease { lease: id }))
             }
+            "lighting.update" => {
+                let p: methods::LeaseUpdate = serde_json::from_value(params)
+                    .map_err(|e| Error { code: code::INVALID_PARAMS, message: e.to_string(), data: None })?;
+                let effect = p.effect.unwrap_or_else(|| "0".into());
+                let (hue, sat, brightness) = (p.color.hue % 360, p.color.saturation.min(100), p.color.brightness.min(100));
+                leases::with(|a| {
+                    let showing = a.update(p.lease, conn, hue, sat, brightness, &effect).map_err(|e| Error { code: code::INVALID_PARAMS, message: e, data: None })?;
+                    match showing {
+                        Some(device) => with_device(&device, |d| {
+                            let light = d.lighting().ok_or_else(unsupported)?;
+                            a.apply(&device, light).map_err(device_error)
+                        }),
+                        None => Ok(()),
+                    }
+                })?;
+                Ok(json!({}))
+            }
             "lighting.release" => {
                 let p: methods::Lease = serde_json::from_value(params)
                     .map_err(|e| Error { code: code::INVALID_PARAMS, message: e.to_string(), data: None })?;

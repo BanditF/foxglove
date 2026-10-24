@@ -70,6 +70,15 @@ impl Arbiter {
         Ok(id)
     }
 
+    /// Changes a lease's colour and effect; returns its device when the lights need
+    /// [`Arbiter::apply`] (it's the one showing), or an error if `conn` holds no such lease.
+    pub fn update(&mut self, id: u64, conn: u64, hue: u16, sat: u8, brightness: u8, effect: &str) -> Result<Option<String>, String> {
+        let lease = self.leases.iter_mut().find(|l| l.id == id && l.conn == conn).ok_or("no such lease")?;
+        (lease.hue, lease.sat, lease.brightness, lease.effect) = (hue, sat, brightness, effect.to_string());
+        let device = lease.device.clone();
+        Ok(self.winner(&device).is_some_and(|w| w.id == id).then_some(device))
+    }
+
     /// Ends the leases `ends` picks; returns the devices whose lights need [`Arbiter::apply`].
     pub fn end(&mut self, ends: impl Fn(&Lease) -> bool) -> Vec<String> {
         let mut devices: Vec<String> = self.leases.iter().filter(|l| ends(l)).map(|l| l.device.clone()).collect();
@@ -330,6 +339,22 @@ mod tests {
         assert!(a.base.is_empty());
         // Nothing to do on a later connection.
         a.connected("kb", &kb).unwrap();
+    }
+
+    #[test]
+    fn a_lease_changes_colour_in_place() {
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        let low = a.add(lease(1, Priority::Low, 0), &kb).unwrap();
+        assert_eq!(a.update(low, 1, 120, 100, 80, "0").unwrap().as_deref(), Some("kb"));
+        a.apply("kb", &kb).unwrap();
+        assert_eq!(hue(&kb), (true, 120));
+        assert_eq!(a.leases.len(), 1, "no new lease");
+        // Under a higher lease it changes, but nothing is shown yet.
+        a.add(lease(2, Priority::High, 300), &kb).unwrap();
+        assert_eq!(a.update(low, 1, 60, 100, 80, "0").unwrap(), None);
+        assert_eq!(hue(&kb), (true, 300));
+        assert!(a.update(low, 2, 60, 100, 80, "0").is_err(), "only its own connection");
     }
 
     #[test]

@@ -314,6 +314,16 @@ pub struct Lease {
     pub lease: u64,
 }
 
+/// Changes a held lease's colour (and effect) in place, for a stream of colours (a colour sync)
+/// without taking a new lease each time (API 1.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LeaseUpdate {
+    pub lease: u64,
+    pub color: Hsb,
+    #[serde(default)]
+    pub effect: Option<String>,
+}
+
 /// One of the plugin's own secrets (#213, API 1.2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SecretName {
@@ -456,6 +466,7 @@ pub const METHODS: &[Method] = &[
     // Hold and give back the lights (#236).
     Method { name: "lighting.lease", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(LeaseParams), result: Some(schema!(Lease)) },
     Method { name: "lighting.release", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(Lease), result: Some(schema!(Empty)) },
+    Method { name: "lighting.update", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(LeaseUpdate), result: Some(schema!(Empty)) },
     // A plugin's own secrets; outside tools get none (#213).
     Method { name: "secrets.get", kind: Kind::Call, permission: Some("secrets"), params: schema!(SecretName), result: Some(schema!(SecretValue)) },
     Method { name: "secrets.set", kind: Kind::Call, permission: Some("secrets"), params: schema!(SetSecretParams), result: Some(schema!(Empty)) },
