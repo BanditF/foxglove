@@ -178,6 +178,11 @@ impl Devices for AppDevices {
                     .collect();
                 Ok(json!(methods::Devices { devices }))
             }
+            "audio.inputs.set_mute" => {
+                let p: methods::SetMuteParams = params(_params)?;
+                foxglove_panel::mic::set_mute(p.muted).map_err(|e| Error { code: code::BACKEND, message: e, data: None })?;
+                Ok(json!({}))
+            }
             "lighting.state" => {
                 let p: methods::DeviceParams = params(_params)?;
                 let st = with_device(&p.device, |d| d.lighting().ok_or_else(unsupported)?.state().map_err(device_error))?;
