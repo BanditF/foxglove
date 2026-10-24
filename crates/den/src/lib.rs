@@ -225,6 +225,19 @@ fn dispatch(
             }
             Ok(json!(methods::FactResult { value: ctx.facts.get(&p.key).map(to_fact) }))
         }
+        "facts.list" => {
+            let p: methods::SubscribeParams = params(request.params)?;
+            if !s.grant.can_subscribe(&p.pattern) {
+                return Err(denied(format!("facts.read covering {}", p.pattern)));
+            }
+            let facts = ctx
+                .facts
+                .list(&p.pattern)
+                .into_iter()
+                .map(|(key, value)| methods::FactEntry { key, value: to_fact(value) })
+                .collect();
+            Ok(json!(methods::FactList { facts }))
+        }
         "facts.set" => {
             let p: methods::SetFactParams = params(request.params)?;
             if !s.grant.can_write_fact(&p.key) {
@@ -314,6 +327,9 @@ fn forward(facts: Facts, subscriptions: Arc<Mutex<HashMap<u64, String>>>, out: S
 
 /// How long a Kit may stay silent to a ping before the runner restarts it.
 pub const PING_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[cfg(windows)]
+pub mod pipe;
 
 #[cfg(test)]
 mod tests;
