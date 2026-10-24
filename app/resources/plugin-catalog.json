@@ -63,8 +63,9 @@
     {
       "id": "org.foxglove.icue",
       "name": "Corsair iCUE",
-      "description": "Mirrors iCUE's lighting onto your keyboard.",
+      "description": "Your keyboard's underglow follows a Corsair device's colours in iCUE (mirroring only). Needs iCUE and Corsair's iCUE SDK, which you download from Corsair.",
       "permissions": [
+        "files",
         "devices.read",
         "lighting.write"
       ],
