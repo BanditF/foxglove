@@ -52,7 +52,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define RGB_UG_NAME DEVICE_DT_NAME(DT_INST(0, zmk_behavior_rgb_underglow))
 #endif
 
-enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE, PANEL_SCREENS };
+enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE, PANEL_SCREENS,
+       PANEL_ROWS_AT };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
@@ -261,6 +262,20 @@ static void panel_command(const uint8_t *d) {
         }
         k_spinlock_key_t key = k_spin_lock(&lock);
         memcpy(&back[y * HOST_PANEL_STRIDE], &d[4], n * HOST_PANEL_STRIDE);
+        k_spin_unlock(&lock, key);
+        break;
+    }
+    case PANEL_ROWS_AT: {
+        // Byte-addressed (#289): rows wider than a report, panels taller than 255 rows.
+        uint16_t y = sys_get_le16(&d[2]), offset = sys_get_le16(&d[4]);
+        uint8_t n = d[6];
+        size_t at = (size_t)y * HOST_PANEL_STRIDE + offset;
+        if (y >= HOST_PANEL_H || offset >= HOST_PANEL_STRIDE || n > REPORT_SIZE - 7 ||
+            at + n > HOST_PANEL_BYTES) {
+            break;
+        }
+        k_spinlock_key_t key = k_spin_lock(&lock);
+        memcpy(&back[at], &d[7], n);
         k_spin_unlock(&lock, key);
         break;
     }

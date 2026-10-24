@@ -31,6 +31,7 @@
       "description": "Shows whether OBS is recording or streaming, REC or LIVE and the scene on the left screen and red on the keyboard. It only listens to OBS on this PC.",
       "permissions": [
         "net.connect:127.0.0.1:4455",
+        "apps.watch:obs64.exe",
         "secrets",
         "facts.write:broadcast.*",
         "devices.read",
