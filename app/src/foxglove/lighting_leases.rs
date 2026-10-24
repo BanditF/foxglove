@@ -104,7 +104,8 @@ fn shows(state: &LightingState, on: bool, hue: u16, sat: u8) -> bool {
         let d = a.abs_diff(b);
         d.min(wrap.saturating_sub(d)) <= 2
     };
-    state.on == on && (!on || (near(state.hue, hue, 360) && near(state.sat.into(), sat.into(), 1000)))
+    // The colour counts even with the lights off: the keyboard keeps it for when they come back.
+    state.on == on && near(state.hue, hue, 360) && near(state.sat.into(), sat.into(), 1000)
 }
 
 fn show(light: &dyn Lighting, on: bool, hue: u16, sat: u8, brightness: u8, effect: &str) -> Result<(), DeviceError> {
