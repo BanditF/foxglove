@@ -139,6 +139,8 @@ void art_relay_discovery(int8_t *result, uint8_t *tries);
 void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]);
 // 0 = right half not connected, 1 = connected, 2 = connected and has the relay service.
 uint8_t art_relay_link(void);
+// #122 guard: split links dropped for not encrypting in time, since boot (HELLO byte 31).
+uint8_t art_relay_guard_drops(void);
 // Sends the left's underglow state and sync setting to the right soon, if they changed.
 void art_relay_rgb_kick(void);
 // The right's underglow from the last status read; returns its age in seconds (capped at 254), or

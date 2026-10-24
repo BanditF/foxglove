@@ -245,7 +245,7 @@ fn run() {
             Some(Event::PanelAvailable) => lock_watch = None,
             Some(Event::Settings) => {
                 // Keep current settings while an external writer has the file locked.
-                if let Some(s) = ScreensSettings::path().and_then(ScreensSettings::load_from_file) {
+                if let Some(s) = ScreensSettings::try_load() {
                     providers_dirty |= s != settings;
                     settings = s;
                 }
@@ -478,7 +478,7 @@ fn battery_log(battery: Option<u8>, last: &mut Option<u8>) {
     let Some(percent) = battery.filter(|_| battery != *last) else {
         return;
     };
-    let Some(path) = ScreensSettings::path().map(|p| p.with_file_name("right-battery.csv")) else {
+    let Some(path) = crate::settings::Settings::config_file_path().map(|p| p.with_file_name("right-battery.csv")) else {
         return;
     };
     let new = !path.exists();

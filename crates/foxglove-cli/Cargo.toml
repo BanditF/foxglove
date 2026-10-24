@@ -1,0 +1,11 @@
+[package]
+name = "foxglove-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Command-line client for the running Foxglove app, over its local API"
+license = "MIT"
+
+[dependencies]
+den = { path = "../den" }
+foxglove-kit-api = { path = "../kit-api" }
+serde_json = "1"

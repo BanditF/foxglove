@@ -1,12 +1,55 @@
-//! The keyboard Foxglove last connected to, in `connection.ini` next to the settings, so it can
-//! connect again by itself on the next start.
+//! The keyboard Foxglove last connected to, in the settings store's `[connection]` section, so
+//! it can connect again by itself on the next start. Imported once from `connection.ini`.
 
 use ini::Ini;
+use serde::{Deserialize, Serialize};
 
 use crate::protocols::{ConnectionSpec, ZmkTransportConfig};
 
-fn path() -> Option<std::path::PathBuf> {
-    crate::settings::Settings::config_file_path().map(|p| p.with_file_name("connection.ini"))
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct Connection {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last: Option<Last>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Last {
+    vid: u16,
+    pid: u16,
+    /// `serial` or `ble`.
+    transport: String,
+    id: String,
+}
+
+impl Last {
+    fn spec(&self) -> Option<ConnectionSpec> {
+        let transport = match self.transport.as_str() {
+            "serial" => ZmkTransportConfig::Serial(self.id.clone()),
+            "ble" => ZmkTransportConfig::Ble(self.id.clone()),
+            _ => return None,
+        };
+        Some(ConnectionSpec::Zmk {
+            vid: self.vid,
+            pid: self.pid,
+            transport,
+        })
+    }
+}
+
+fn load() -> Connection {
+    super::store::load_or_migrate("connection", || {
+        let ini = crate::settings::Settings::config_file_path()?.with_file_name("connection.ini");
+        let conf = Ini::load_from_file(&ini).ok()?;
+        let s = conf.section(Some("last"))?;
+        let last = Last {
+            vid: s.get("vid")?.parse().ok()?,
+            pid: s.get("pid")?.parse().ok()?,
+            transport: s.get("transport")?.to_string(),
+            id: s.get("id")?.to_string(),
+        };
+        Some((Connection { last: Some(last) }, vec![ini]))
+    })
 }
 
 /// Remembers a ZMK keyboard (the only kind Foxglove reconnects to by itself).
@@ -23,40 +66,48 @@ pub fn remember(spec: &ConnectionSpec) {
         ZmkTransportConfig::Serial(port) => ("serial", port),
         ZmkTransportConfig::Ble(device) => ("ble", device),
     };
-    let mut conf = Ini::new();
-    conf.with_section(Some("last"))
-        .set("vid", vid.to_string())
-        .set("pid", pid.to_string())
-        .set("transport", kind)
-        .set("id", id.as_str());
-    let Some(p) = path() else {
-        return;
+    let last = Last {
+        vid: *vid,
+        pid: *pid,
+        transport: kind.into(),
+        id: id.clone(),
     };
-    if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Err(e) = conf.write_to_file(&p) {
-        eprintln!(
-            "Foxglove: can't remember the keyboard in {}: {e}",
-            p.display()
-        );
+    if load().last.as_ref() != Some(&last) {
+        if let Err(e) = super::store::save("connection", &Connection { last: Some(last) }) {
+            eprintln!("Foxglove: can't remember the keyboard: {e}");
+        }
     }
     super::connection::refresh();
 }
 
 /// The last keyboard, if Foxglove has connected to one.
 pub fn remembered() -> Option<ConnectionSpec> {
-    let conf = Ini::load_from_file(path()?).ok()?;
-    let s = conf.section(Some("last"))?;
-    let id = s.get("id")?.to_string();
-    let transport = match s.get("transport")? {
-        "serial" => ZmkTransportConfig::Serial(id),
-        "ble" => ZmkTransportConfig::Ble(id),
-        _ => return None,
-    };
-    Some(ConnectionSpec::Zmk {
-        vid: s.get("vid")?.parse().ok()?,
-        pid: s.get("pid")?.parse().ok()?,
-        transport,
-    })
+    load().last?.spec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn last_keyboard_round_trips_through_toml() {
+        let c = Connection {
+            last: Some(Last {
+                vid: 0x1d50,
+                pid: 0x615e,
+                transport: "ble".into(),
+                id: "BTHLE#x".into(),
+            }),
+        };
+        let back: Connection = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
+        assert!(matches!(
+            back.last.unwrap().spec(),
+            Some(ConnectionSpec::Zmk {
+                transport: ZmkTransportConfig::Ble(_),
+                ..
+            })
+        ));
+        assert_eq!(toml::to_string(&Connection::default()).unwrap(), "");
+    }
 }

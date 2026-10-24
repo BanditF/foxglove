@@ -311,6 +311,7 @@ dependencies = [
  "palm",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -448,6 +449,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "foxglove-cli"
+version = "0.1.0"
+dependencies = [
+ "den",
+ "foxglove-kit-api",
+ "serde_json",
+]
+
+[[package]]
 name = "foxglove-kit-api"
 version = "1.0.0"
 dependencies = [
@@ -495,6 +505,16 @@ dependencies = [
  "base64",
  "chrono",
  "ring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "foxglove-via"
+version = "0.1.0"
+dependencies = [
+ "hidapi",
+ "palm",
  "serde",
  "serde_json",
 ]

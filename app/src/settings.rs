@@ -268,6 +268,11 @@ impl Settings {
     pub const MAX_ACTIVATION_DELAY_MS: u32 = 3_000;
 
     pub fn config_file_path() -> Option<PathBuf> {
+        // Foxglove: FOXGLOVE_CONFIG_DIR points every settings file elsewhere (tests, the Test
+        // lab), since the system folder lookup ignores APPDATA. The store goes one folder up.
+        if let Some(dir) = std::env::var_os("FOXGLOVE_CONFIG_DIR") {
+            return Some(PathBuf::from(dir).join("settings.ini"));
+        }
         Self::project_dirs().map(|dirs| dirs.config_dir().join("settings.ini"))
     }
 
@@ -277,6 +282,9 @@ impl Settings {
 
     /// Where KeyPeek kept its settings; read until Foxglove saves its own.
     fn keypeek_file_path() -> Option<PathBuf> {
+        if std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some() {
+            return None;
+        }
         ProjectDirs::from("dev", "srwi", "KeyPeek")
             .map(|dirs| dirs.config_dir().join("settings.ini"))
     }
