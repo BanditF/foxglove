@@ -650,3 +650,60 @@ fn right_half_steps_wait_for_a_fully_up_relay() {
     assert_eq!(run_with(&fake, &case(tap), TEST_HOOKS).status, Status::Pass);
     assert!(foxglove_lab::runner::is_right(23) && !foxglove_lab::runner::is_right(17));
 }
+
+fn hello_caps(caps: u32) -> [u8; REPORT] {
+    let mut r = hello(2, 4);
+    r[21..25].copy_from_slice(&caps.to_le_bytes());
+    r
+}
+fn build_reply(half: u8, profile: u8, sha: &[u8]) -> [u8; REPORT] {
+    let mut r = vec![0xd7, 0x89, 0, half, 0, 1, 0, profile];
+    r.extend(sha);
+    reply(&r)
+}
+
+#[test]
+fn ga_gate_steps() {
+    // HELLO bits: GA clears 5 and 9, keeps 7 and 12.
+    let ga = (1u32 << 7) | (1 << 12) | (1 << 6);
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(hello_caps(ga));
+    let hello = "[{expect_hello={caps_clear=[5,9],caps_set=[7,12]}}]";
+    assert_eq!(run(&fake, &case(hello)).status, Status::Pass);
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .push_back(hello_caps(ga | (1 << 5)));
+    let r = run(&fake, &case(hello));
+    assert_eq!(r.status, Status::Fail);
+    assert!(r.message.contains("bit 5 set"));
+    // Test hooks answer 4; ARM only, never TRIGGER; POSITION is a release.
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([reply(&[0xd7, 0x85, 4, 1]), reply(&[0xd7, 0x88, 4])]);
+    let steps =
+        "[{expect_not_built_in={command='position'}},{expect_not_built_in={command='bootloader'}}]";
+    assert_eq!(run(&fake, &case(steps)).status, Status::Pass);
+    assert_eq!(fake.requests.borrow()[0], vec![0xd7, 0x05, 1, 0]);
+    assert_eq!(fake.requests.borrow()[1], vec![0xd7, 0x08, 0]);
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .push_back(reply(&[0xd7, 0x85, 0, 1]));
+    assert_eq!(
+        run(&fake, &case("[{expect_not_built_in={command='position'}}]")).status,
+        Status::Fail
+    );
+    // BUILD_INFO profile.
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([build_reply(0, 1, b"abc1234"), build_reply(1, 0, b"abc1234")]);
+    let r = run(
+        &fake,
+        &case("[{expect_build={half='left',profile='ga',sha='abc1234'}},{expect_build={half='right',profile='ga'}}]"),
+    );
+    assert_eq!(r.status, Status::Fail);
+    assert!(r.message.contains("right 0.1.0 dev"), "{}", r.message);
+}

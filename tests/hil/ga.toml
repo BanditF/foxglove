@@ -1,0 +1,49 @@
+schema = 1
+
+# GA candidate gate (#81): run on a keyboard flashed with the GA UF2s of the release commit.
+#   foxglove-lab run --suite ga --allow-app --non-interactive
+# The test hooks must be compiled out and the safety refusals must hold. Only harmless requests
+# are sent (POSITION releases Q; BOOTLOADER is ARM only; the refusals send BT_SEL/OUT to what
+# is already selected and a 0 ms soft-off tap, which can't power off even if accepted). Set the
+# SHA below with the release commit when running a real candidate (sha = "<7 hex>").
+# The ZMK simulator runs the same assertions in tests/zmk-sim/hostlink-ga (Firmware engineer).
+
+[[cases]]
+name = "ga-build-both-halves"
+description = "Both halves report profile GA (D7 09 BUILD_INFO)"
+tags = ["ga", "release"]
+requires = ["build_info"]
+steps = [
+  { expect_build = { half = "left", profile = "ga" } },
+  { expect_build = { half = "right", profile = "ga" } },
+]
+
+[[cases]]
+name = "ga-hello-no-test-hooks"
+description = "HELLO: position press (bit 5) and bootloader (bit 9) clear; refusal (7) and build info (12) set"
+tags = ["ga", "release"]
+steps = [{ expect_hello = { caps_clear = [5, 9], caps_set = [7, 12] } }]
+
+[[cases]]
+name = "ga-position-not-built-in"
+description = "D7 05 POSITION answers 4 (not built in)"
+tags = ["ga", "release"]
+steps = [{ expect_not_built_in = { command = "position" } }]
+
+[[cases]]
+name = "ga-bootloader-not-built-in"
+description = "D7 08 BOOTLOADER ARM answers 4 (not built in)"
+tags = ["ga", "release"]
+steps = [{ expect_not_built_in = { command = "bootloader" } }]
+
+[[cases]]
+name = "ga-refusals"
+description = "INVOKE refuses &bootloader, &bt, &out and &soft_off with 6"
+tags = ["ga", "release"]
+requires = ["invoke_refusal", "build_info"]
+steps = [
+  { invoke = { behavior = "bootloader", expect_status = "refused" } },
+  { invoke = { behavior = "bt", param1 = 3, param2 = 0, expect_status = "refused" } },
+  { invoke = { behavior = "out", param1 = 1, param2 = 0, expect_status = "refused" } },
+  { invoke = { behavior = "soft_off", expect_status = "refused" } },
+]
