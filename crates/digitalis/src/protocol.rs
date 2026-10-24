@@ -48,9 +48,19 @@ pub mod panel {
     pub const PRESENT: u8 = 0x04;
     pub const RELEASE: u8 = 0x05;
     pub const SCREENS: u8 = 0x06;
+    /// Byte-addressed rows (#289, firmware #294): y u16, offset u16, n, then n bytes. For rows
+    /// wider than a ROWS report and panels taller than 255 rows.
+    pub const ROWS_AT: u8 = 0x07;
+    /// Bytes per ROWS_AT report, after its 7-byte header.
+    pub const ROWS_AT_MAX: usize = super::REPORT - 7;
     /// Rows per ROWS report: what fits after the 4-byte header, at most 3.
     pub fn rows_per_report(stride: usize) -> usize {
         ((super::REPORT - 4) / stride).min(3)
+    }
+    /// Whether a panel needs ROWS_AT: a row wider than a ROWS report holds, or more rows
+    /// than ROWS can address.
+    pub fn needs_rows_at(stride: usize, rows: usize) -> bool {
+        stride > super::REPORT - 4 || rows > 256
     }
 }
 
@@ -107,6 +117,16 @@ pub fn rows(y: usize, rows: &[u8], stride: usize) -> Vec<u8> {
     r
 }
 
+/// D5 07: `bytes` at byte `offset` of row `y` (at most [`panel::ROWS_AT_MAX`]).
+pub fn rows_at(y: usize, offset: usize, bytes: &[u8]) -> Vec<u8> {
+    let mut r = vec![PANEL, panel::ROWS_AT];
+    r.extend_from_slice(&(y as u16).to_le_bytes());
+    r.extend_from_slice(&(offset as u16).to_le_bytes());
+    r.push(bytes.len() as u8);
+    r.extend_from_slice(bytes);
+    r
+}
+
 pub fn present() -> Vec<u8> {
     vec![PANEL, panel::PRESENT]
 }
@@ -147,9 +167,10 @@ pub struct ScreenDescriptor {
     pub y: u16,
     /// 90-degree steps clockwise.
     pub rotation: u8,
-    /// 0 = 1 bit per pixel, MSB first, 1 = ink.
+    /// 0 = 1 bit per pixel, MSB first, 1 = ink; 1 (RGB565) and 2 (2-bit grey) are reserved:
+    /// no board draws them yet, so the app treats them as unsupported (#289).
     pub format: u8,
-    /// Bit 0 D5 rows, 1 D7 06/07 readback, 2 D6 art, 3 D6 slots.
+    /// Bit 0 D5 rows, 1 D7 06/07 readback, 2 D6 art, 3 D6 slots, 4 D5 07 rows-at.
     pub ops: u16,
     pub stride: u16,
     pub rows_per_report: u8,
@@ -162,6 +183,21 @@ impl ScreenDescriptor {
     pub const OP_READBACK: u16 = 1 << 1;
     pub const OP_ART: u16 = 1 << 2;
     pub const OP_SLOTS: u16 = 1 << 3;
+    pub const OP_ROWS_AT: u16 = 1 << 4;
+
+    pub const FORMAT_1BIT: u8 = 0;
+    pub const FORMAT_RGB565: u8 = 1;
+    pub const FORMAT_GREY2: u8 = 2;
+
+    /// Its format in words, for the settings; reserved and unknown ones aren't drawn.
+    pub fn format_name(&self) -> &'static str {
+        match self.format {
+            Self::FORMAT_1BIT => "1-bit",
+            Self::FORMAT_RGB565 => "RGB565 (reserved, unsupported)",
+            Self::FORMAT_GREY2 => "2-bit grey (reserved, unsupported)",
+            _ => "unknown format (unsupported)",
+        }
+    }
 
     /// D5 86: status, count, index, then the 24-byte descriptor. `Err` carries the status
     /// (5 = index past the end).
