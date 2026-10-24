@@ -12,6 +12,12 @@ auto-installed (test hook). Checks, on the real keyboard:
 - a wrong password: refused (plugin.log says so) and tried again; the right one: connected.
 
     python scripts/lab/broadcast.py --app <foxglove.exe>      (exit 0 PASS, 1 FAIL)
+
+--real-obs: against real OBS instead (WebSocket server on, port 4455). The person at the PC saves its
+password in the Plugins tab of the Foxglove window the script opens (the secret store is per plugin,
+so a password saved earlier is used as is). The script only watches and tells the person at the PC what to click in OBS:
+recording, pause, resume, a scene switch, stop, quit, start again. Recording only: if streaming
+ever shows, the run fails.
 Build first: cargo build --release -p plugin-broadcast-status -p foxglove-cli -p foxglove-lab.
 """
 import argparse, os, re, secrets, shutil, subprocess, time
@@ -24,6 +30,7 @@ HERE = Path(__file__).resolve().parent
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--app', required=True)
 ap.add_argument('--target', default=str(TARGET), help='where broadcast-status.exe, foxglove-cli and foxglove-lab are built')
+ap.add_argument('--real-obs', action='store_true', help='watch real OBS; a person clicks in OBS when asked')
 args = ap.parse_args()
 
 PLUGIN = 'org.foxglove.broadcast-status'
@@ -46,10 +53,13 @@ stage.mkdir()
 shutil.copy(REPO / 'crates/plugin-broadcast-status/plugin.toml', stage)
 shutil.copy(release / 'broadcast-status.exe', stage)
 dump = cfg / 'panel.pbm'
-password = secrets.token_urlsafe(18)  # a test value for this run only; never printed
-secret('set', password)
-mock = ObsMock(password)
-mock.start()
+if args.real_obs:
+    mock = None  # the user's OBS, with the password they saved in the Plugins tab
+else:
+    password = secrets.token_urlsafe(18)  # a test value for this run only; never printed
+    secret('set', password)
+    mock = ObsMock(password)
+    mock.start()
 RIGHT_LAG = 10
 try:
     with App(args.app, cfg, {'FOXGLOVE_DEV_UNSIGNED_PLUGINS': '1', 'FOXGLOVE_PLUGINS_AUTOINSTALL': str(stage),
@@ -82,11 +92,45 @@ try:
             return logs[0].read_text(errors='replace') if logs else ''
 
         read = lambda: rgb(lab, app.env)
-        ok, f = wait(facts, lambda f: f.get('connected') == 'true', 30)
+        if args.real_obs:
+            print('>>> In the Foxglove window this script opened: Plugins → Broadcast Status → '
+                  'OBS WebSocket password → Save (unless it is saved already)', flush=True)
+        ok, f = wait(facts, lambda f: f.get('connected') == 'true', 300 if args.real_obs else 30)
         check('connects with the password from the secret store', ok, f)
         time.sleep(6)  # READY's few seconds pass
         base = frame()
         frames = {}
+
+        if args.real_obs:
+            def step(ask, name, pred, seconds=180):
+                print(f'>>> In OBS: {ask}', flush=True)
+                ok, f = wait(facts, lambda f: pred(f) or f.get('streaming') == 'true', seconds)
+                if f.get('streaming') == 'true':
+                    check('never streaming', False, 'OBS is streaming: stop it now')
+                    raise SystemExit(check.finish())
+                return check(name, ok and pred(f), f)
+
+            step('click Start Recording', 'recording: broadcast.recording', lambda f: f.get('recording') == 'true')
+            check('recording: red on both halves', *wait(read, hue_is(0), RIGHT_LAG))
+            ok, frames['rec'] = wait(frame, lambda b: b and not near(b), 5)
+            check('recording: the REC screen (D7 06 too)', ok and on_screen(), 'frame changed, on the screen')
+            step('click Pause (the pause button next to Stop Recording)', 'paused: broadcast.paused',
+                 lambda f: f.get('paused') == 'true')
+            check('paused: amber on both halves', *wait(read, hue_is(35, 10), RIGHT_LAG))
+            step('click Resume', 'resumed', lambda f: f.get('paused') == 'false' and f.get('recording') == 'true')
+            check('resumed: red again', *wait(read, hue_is(0), RIGHT_LAG))
+            scene = facts().get('scene')
+            step('switch to another scene (add one first if there is only one)', 'scene switch: broadcast.scene follows',
+                 lambda f: f.get('scene') not in (None, scene))
+            step('click Stop Recording', 'stopped: broadcast.recording false', lambda f: f.get('recording') == 'false')
+            check('stopped: the lights as before', *wait(read, lambda s: same(s, original), RIGHT_LAG))
+            check("stopped: READY, then Foxglove's panel", *wait(lambda: near(frame()), bool, 10))
+            step('quit OBS (File → Exit)', 'OBS quits: broadcast.connected false', lambda f: f.get('connected') == 'false')
+            print('>>> In OBS: start OBS again', flush=True)
+            t = time.time()
+            ok, f = wait(facts, lambda f: f.get('connected') == 'true', 240)
+            check('OBS back: reconnects (within 30 s of OBS being up)', ok, f'{time.time() - t:.0f} s after asking, {f}')
+            raise SystemExit(check.finish())
 
         mock.set(streaming=True)
         check('streaming: broadcast.streaming', *wait(facts, lambda f: f.get('streaming') == 'true', 5))
@@ -139,7 +183,8 @@ try:
         mock.start()
         check('right password again: connected', *wait(facts, lambda f: f.get('connected') == 'true', 45))
 finally:
-    mock.stop()
-    secret('delete')
+    if mock:
+        mock.stop()
+        secret('delete')
     restore_lights(args.app, lab, original)
 check.finish()
