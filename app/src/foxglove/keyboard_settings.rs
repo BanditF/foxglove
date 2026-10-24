@@ -20,14 +20,14 @@ pub enum RgbSync {
 static RGB_SYNC: Mutex<RgbSync> = Mutex::new(RgbSync::Unknown);
 
 pub fn rgb_sync() -> RgbSync {
-    *RGB_SYNC.lock().unwrap()
+    *RGB_SYNC.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// Reads the setting (`set` = `None`) or changes it, in the background; `ctx` is asked to
 /// repaint when the answer is in.
 pub fn ask_rgb_sync(set: Option<bool>, ctx: egui::Context) {
-    *RGB_SYNC.lock().unwrap() = RgbSync::Asking;
-    std::thread::spawn(move || {
+    *RGB_SYNC.lock().unwrap_or_else(|e| e.into_inner()) = RgbSync::Asking;
+    let _ = super::services::spawn_supervised("keyboard-settings", move || {
         let state = match super::link::host_link() {
             None => RgbSync::NoKeyboard,
             Some((link, _)) => match digitalis::settings::rgb_sync(link.as_ref(), set) {
@@ -38,7 +38,7 @@ pub fn ask_rgb_sync(set: Option<bool>, ctx: egui::Context) {
                 Err(_) => RgbSync::NotSupported,
             },
         };
-        *RGB_SYNC.lock().unwrap() = state;
+        *RGB_SYNC.lock().unwrap_or_else(|e| e.into_inner()) = state;
         ctx.request_repaint();
     });
 }
