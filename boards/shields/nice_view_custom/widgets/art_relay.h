@@ -54,6 +54,9 @@ enum art_relay_op {
     ART_RELAY_SAVE = 9,  // slot u8, name[16]: save the shown pushed set to flash (write request)
     ART_RELAY_ERASE = 10, // slot u8: empty a flash slot (write request)
     ART_RELAY_BOOT = 8, // "BOOT", write request: reboot into the bootloader (test hooks only)
+    // 11, 12: LampArray (#115 branch)
+    ART_RELAY_RGB_HSB = 13, // hue u16, saturation u8, brightness u8 (write request): the PC's
+                            // colour, applied at once; status version >= 5 (#266)
 };
 
 #define ART_RELAY_HEADER_SIZE 12
@@ -145,6 +148,13 @@ uint8_t art_relay_guard_drops(void);
 int art_relay_guard_test(void);
 // Sends the left's underglow state and sync setting to the right soon, if they changed.
 void art_relay_rgb_kick(void);
+// The PC's colour for the right half (#266): sent as one acknowledged write, the newest value
+// only, retried until the right has it. -ENOTSUP when the right can't take it (no relay link, or
+// older right firmware): use ZMK's split invoke instead.
+int art_relay_rgb_hsb(uint16_t hue, uint8_t saturation, uint8_t brightness);
+// Another underglow command went to the right through ZMK: read the right back soon, so the PC
+// hears (RGB_STATE event) once it has followed.
+void art_relay_rgb_verify(void);
 // The right's underglow from the last status read; returns its age in seconds (capped at 254), or
 // 0xff if there is none (no link yet, or right firmware without it). Asks for a fresher read.
 uint8_t art_relay_right_rgb(struct rgb_idle_wire *out);

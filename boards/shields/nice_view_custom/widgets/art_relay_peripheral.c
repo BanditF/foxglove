@@ -25,6 +25,11 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "rgb_idle.h"
 #endif
 
+#include <zephyr/sys/byteorder.h>
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
+#include <zmk/rgb_underglow.h>
+#endif
+
 #include "art_relay.h"
 #include "screen_snap.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
@@ -44,7 +49,7 @@ static int flash_shown = -1;  // flash slot playing, or -1
 static uint32_t rx_crc;
 
 static struct art_relay_status status = {
-    .version = 4,
+    .version = 5, // 5: ART_RELAY_RGB_HSB
     .capacity = CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE,
     .set = -1,
 };
@@ -293,6 +298,20 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         rgb_idle_remote(d[1] != 0, len < 3 || d[2] != 0);
 #endif
         break;
+
+    case ART_RELAY_RGB_HSB: {
+        if (len != 5) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+#if IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW)
+        // What &rgb_ug RGB_COLOR_HSB does, without ZMK's split queue; drawn on the next tick.
+        struct zmk_led_hsb hsb = {.h = sys_get_le16(&d[1]), .s = d[3], .b = d[4]};
+        if (zmk_rgb_underglow_set_hsb(hsb) < 0) {
+            return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
+        }
+#endif
+        break;
+    }
     }
     return len;
 }

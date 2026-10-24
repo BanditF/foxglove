@@ -906,6 +906,7 @@ static K_WORK_DELAYABLE_DEFINE(rgb_sync_work, rgb_sync_cb);
 static void rgb_sync_link_up(void) {
     rgb_sent = -1;
     rgb_retries = 0;
+    atomic_set(&hsb_sent, -1); // a new link: the right may have rebooted
     k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, RGB_SETTLE);
 }
 
@@ -915,7 +916,96 @@ void art_relay_rgb_kick(void) {
         k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, K_NO_WAIT);
     }
 }
+
+/* The PC's colour (#266). &rgb_ug RGB_COLOR_HSB through ZMK's split queue reached the right
+ * seconds late or not at all under streaming (that queue drops its oldest entry when full, and
+ * the PC only saw the right through the next status read). This sends the newest colour as one
+ * write request instead: the write response is the right's ack, the PC's RGB_STATE takes the
+ * right's colour from it, and a value that changes while one is in flight goes next (last wins). */
+
+#define HSB_RETRY K_MSEC(100)
+#define HSB_BUSY_RETRY K_MSEC(20) // another request on the relay (a status read) is in flight
+#define HSB_RETRIES 5
+#define RGB_VERIFY_AFTER K_MSEC(300) // ZMK's split write, then the right's next underglow tick
+
+static atomic_t hsb_want = ATOMIC_INIT(-1); // hue << 16 | saturation << 8 | brightness, -1 none
+static atomic_t hsb_sent = ATOMIC_INIT(-1);
+static uint8_t hsb_retries;
+
+static void hsb_cb(struct k_work *work) {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    atomic_val_t want = atomic_get(&hsb_want);
+    if (want < 0 || want == atomic_get(&hsb_sent)) {
+        return;
+    }
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        return; // link gone: rgb_sync_link_up starts over, the PC re-sends on its own
+    }
+    uint8_t buf[5] = {ART_RELAY_RGB_HSB};
+    sys_put_le16(want >> 16, &buf[1]);
+    buf[3] = (want >> 8) & 0xff;
+    buf[4] = want & 0xff;
+    int err = write_req(conn, buf, sizeof(buf));
+    bt_conn_unref(conn);
+    if (err == -EBUSY) {
+        k_work_reschedule_for_queue(&relay_q, dwork, HSB_BUSY_RETRY);
+        return;
+    }
+    if (err) {
+        if (hsb_retries++ < HSB_RETRIES) {
+            k_work_reschedule_for_queue(&relay_q, dwork, HSB_RETRY);
+        }
+        return;
+    }
+    hsb_retries = 0;
+    atomic_set(&hsb_sent, want);
+    // The ack says the right has it: that's the right's colour now, for RGB_STATE.
+    right.rgb.hue = want >> 16;
+    right.rgb.saturation = (want >> 8) & 0xff;
+    right.rgb.brightness = want & 0xff;
+    right_read_at = k_uptime_get();
+    if (atomic_get(&hsb_want) != want) {
+        k_work_reschedule_for_queue(&relay_q, dwork, K_NO_WAIT); // a newer one came meanwhile
+    } else {
+        host_link_rgb_right_followed();
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(hsb_work, hsb_cb);
+
+int art_relay_rgb_hsb(uint16_t hue, uint8_t saturation, uint8_t brightness) {
+    if (art_relay_link() < 2 || right_read_at == 0 || right.version < 5) {
+        return -ENOTSUP;
+    }
+    atomic_set(&hsb_want, (atomic_val_t)hue << 16 | saturation << 8 | brightness);
+    hsb_retries = 0;
+    k_work_reschedule_for_queue(&relay_q, &hsb_work, K_NO_WAIT);
+    return 0;
+}
+
+static void verify_cb(struct k_work *work) {
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        return;
+    }
+    int err = read_status(conn);
+    bt_conn_unref(conn);
+    if (err == -EBUSY) {
+        k_work_reschedule_for_queue(&relay_q, k_work_delayable_from_work(work), HSB_BUSY_RETRY);
+    } else if (!err) {
+        host_link_rgb_right_followed();
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(verify_work, verify_cb);
+
+void art_relay_rgb_verify(void) {
+    if (art_relay_link() == 2) {
+        k_work_reschedule_for_queue(&relay_q, &verify_work, RGB_VERIFY_AFTER);
+    }
+}
 #else
 static void rgb_sync_link_up(void) {}
 void art_relay_rgb_kick(void) {}
+int art_relay_rgb_hsb(uint16_t hue, uint8_t saturation, uint8_t brightness) { return -ENOTSUP; }
+void art_relay_rgb_verify(void) {}
 #endif
