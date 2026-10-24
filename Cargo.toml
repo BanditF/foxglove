@@ -9,3 +9,12 @@ exclude = ["app"]
 [profile.release]
 opt-level = "s"
 lto = true
+
+# Dev and test builds keep file:line backtraces but drop full debug info, and dependencies
+# carry none: a workspace test build drops from ~2.0 to ~1.2 GB, and every worktree has one.
+# For a debugger session: CARGO_PROFILE_DEV_DEBUG=full.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
