@@ -1,6 +1,6 @@
 [package]
 name = "hostpanel"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Drives the Eyelash Corne's nice!view screens from the PC over Raw HID"
 license = "MIT"

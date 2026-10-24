@@ -1,6 +1,6 @@
 [package]
 name = "digitalis"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Foxglove's link to the keyboard: the host panel and art relay protocol over Raw HID"
 license = "MIT"

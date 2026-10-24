@@ -1,6 +1,6 @@
 [package]
 name = "foxglove-plugin-trust"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Verifies Foxglove plugins: a pinned root key signs root.json, which names the keys that sign the plugin catalog; the catalog pins each plugin's archive hash and files"
 license = "MIT"

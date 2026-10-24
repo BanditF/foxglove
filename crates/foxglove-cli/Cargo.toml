@@ -1,6 +1,6 @@
 [package]
 name = "foxglove-cli"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Command-line client for the running Foxglove app, over its local API"
 license = "MIT"

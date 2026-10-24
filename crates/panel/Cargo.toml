@@ -1,6 +1,6 @@
 [package]
 name = "foxglove-panel"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "The left screen's host panel: what it shows, where that comes from on Windows, and who may draw it"
 license = "MIT"

@@ -53,6 +53,7 @@ pub enum Step {
     PanelShow(PanelShow),
     PanelFlood(PanelFlood),
     PanelRelease(PanelRelease),
+    ArtKey(ArtKey),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -272,6 +273,19 @@ pub struct PanelFlood {
 fn flood_rate() -> u32 {
     100
 }
+/// One art key press with SYSTEM held (#302): `pos` 11 (P, &art_next) or 10 (O, &art_prev).
+/// Without `subscribed` the board steps the right-screen art itself; with it, D7 0D 01 goes first
+/// and a D7 8D 01 <dir> event must arrive while the art stays put (the opt-in is ended after).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtKey {
+    pub pos: u8,
+    #[serde(default)]
+    pub subscribed: bool,
+    /// Leave the opt-in on afterwards (to check that a USB unplug ends it).
+    #[serde(default)]
+    pub keep_opt_in: bool,
+}
 /// PANEL RELEASE: the firmware draws its own panel again.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -442,6 +456,10 @@ impl Step {
                 "panel_flood seconds must be 1..=300"
             ),
             Self::PanelShow(_) | Self::PanelRelease(_) => {}
+            Self::ArtKey(k) => ensure!(
+                [10, 11].contains(&k.pos),
+                "art_key pos is 11 (P, next) or 10 (O, previous)"
+            ),
             Self::IdleCpu(i) => {
                 ensure!(
                     (1..=600).contains(&i.seconds),
@@ -558,6 +576,7 @@ pub fn load(path: &Path) -> Result<Suite> {
             ensure!(
                 [
                     "position_press",
+                    "art_keys",
                     "screen_readback",
                     "invoke_refusal",
                     "build_info"
