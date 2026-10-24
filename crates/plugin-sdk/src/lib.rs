@@ -45,13 +45,19 @@ pub enum PluginError {
     Api(Error),
     Closed,
     Decode(String),
+    /// Foxglove didn't answer within [`CALL_TIMEOUT`].
+    Timeout,
 }
+
+/// How long a call waits for Foxglove's answer; a one-shot deadline per call, not a timer.
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl std::fmt::Display for PluginError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             PluginError::Api(e) => write!(f, "{} (code {})", e.message, e.code),
             PluginError::Closed => write!(f, "Foxglove closed the connection"),
+            PluginError::Timeout => write!(f, "Foxglove didn't answer"),
             PluginError::Decode(e) => write!(f, "unexpected reply: {e}"),
         }
     }
@@ -131,9 +137,11 @@ impl Plugin {
                     }
                 }
             }
-            // Fail every waiting call once Foxglove is gone.
+            // Fail every waiting call once Foxglove is gone, and end every stream, so plugins
+            // blocked on one wake up and can exit.
             reader_closed.store(true, Ordering::Relaxed);
             reader_pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            reader_routes.close_all("Foxglove went away");
         });
         let mut plugin = Plugin {
             write: Mutex::new(Box::new(write)),
@@ -151,16 +159,9 @@ impl Plugin {
             json!({"api": foxglove_plugin_api::API_VERSION.to_string(), "client": {"name": name, "version": version}}),
         )?;
         plugin.granted = init.granted.into_iter().map(String::from).collect();
-        let plugin = Arc::new(plugin);
-        let beat = Arc::downgrade(&plugin);
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(10));
-            match beat.upgrade() {
-                Some(plugin) if plugin.call("ping", json!({})).is_ok() => {}
-                _ => break,
-            }
-        });
-        Ok(plugin)
+        // No heartbeat (#281): Foxglove sees an exit from the process itself, and the plugin
+        // sees Foxglove go when its stdin ends.
+        Ok(Arc::new(plugin))
     }
 
     /// Calls `method` and returns its result.
@@ -173,7 +174,15 @@ impl Plugin {
             let mut w = self.write.lock().unwrap_or_else(|e| e.into_inner());
             writeln!(w, "{line}").and_then(|()| w.flush()).map_err(|_| PluginError::Closed)?;
         }
-        match rx.recv().map_err(|_| PluginError::Closed)? {
+        let outcome = match rx.recv_timeout(CALL_TIMEOUT) {
+            Ok(o) => o,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                return Err(PluginError::Timeout);
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(PluginError::Closed),
+        };
+        match outcome {
             Outcome::Result(v) => Ok(v),
             Outcome::Error(e) => Err(PluginError::Api(e)),
         }
@@ -219,8 +228,22 @@ impl Plugin {
         use base64::Engine;
         let bitmap = base64::engine::general_purpose::STANDARD.encode(frame);
         let ttl_ms = u32::try_from(ttl.as_millis()).unwrap_or(u32::MAX);
-        self.call("screens.panel_override", json!({"device": device, "width": width, "height": height, "bitmap": bitmap, "ttl_ms": ttl_ms}))
+        self.call("screens.panel_override", json!({"device": device, "width": width, "height": height, "bitmap": bitmap, "ttl_ms": ttl_ms.max(1)}))
             .map(|_| ())
+    }
+
+    /// Shows a frame on the left panel until it's replaced, released ([`Plugin::panel_release`])
+    /// or this plugin stops: a steady screen without re-sending it (API 1.3, #281).
+    pub fn panel_hold(&self, device: &str, width: u16, height: u16, frame: &[u8]) -> Result<()> {
+        use base64::Engine;
+        let bitmap = base64::engine::general_purpose::STANDARD.encode(frame);
+        self.call("screens.panel_override", json!({"device": device, "width": width, "height": height, "bitmap": bitmap, "ttl_ms": 0}))
+            .map(|_| ())
+    }
+
+    /// Gives the left panel back to Foxglove.
+    pub fn panel_release(&self, device: &str) -> Result<()> {
+        self.call("screens.panel_release", json!({ "device": device })).map(|_| ())
     }
 
     /// One of this plugin's secrets (#213; needs `secrets`): what the user entered in the

@@ -156,21 +156,30 @@ fn main() {
             }
             leased = Some((t.phase, t.paused()));
         }
-        // Panel: re-sent every second, with a short lifetime, so it clears soon after a stop.
+        // Panel: held until the next frame, and given back when the plugin stops (#281).
         if let Some(art) = &art {
             let hint = hint(&t, &d);
             let view = panel::View { phase: t.phase, paused: t.paused(), round: t.round, rounds: d.rounds, left, progress: t.progress(at, &d), hint: &hint };
             let frame = art.frame(&view);
             for (id, _, _) in boards.iter().filter(|b| b.2) {
-                if let Err(e) = plugin.panel_override(id, panel::W as u16, panel::H as u16, &frame, Duration::from_secs(3)) {
+                if let Err(e) = plugin.panel_hold(id, panel::W as u16, panel::H as u16, &frame) {
                     eprintln!("focus-timer: panel: {e}");
                 }
             }
         }
-        // Wait for the next second, or a key.
+        // Running: wait for the next second (the countdown), or a key. Paused: nothing changes
+        // until a key, so wait only for that (#281).
         let wait = Duration::from_millis(1000 - u64::from(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_millis())));
         let pressed = match &actions {
-            Some(rx) => rx.recv_timeout(wait).ok(),
+            Some(rx) if t.paused() => match rx.recv() {
+                Ok(k) => Some(k),
+                Err(_) => return,
+            },
+            Some(rx) => match rx.recv_timeout(wait) {
+                Ok(k) => Some(k),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            },
             None => {
                 std::thread::sleep(wait);
                 None

@@ -59,12 +59,13 @@ fn lease_all(plugin: &Arc<Plugin>, color: Hsb, priority: LeasePriority) -> Vec<L
         .collect()
 }
 
-/// What's shown: the held lights, and until when the screen and the white flash last.
+/// What's shown: the held lights, whether a screen is held, and until when the white flash
+/// lasts.
 struct Out {
     lights: bool,
     art: Option<screens::Art>,
     leases: Vec<Lease>,
-    screen_until: Option<Instant>,
+    held: bool,
     flash_until: Option<Instant>,
 }
 
@@ -81,17 +82,21 @@ impl Out {
                 self.flash_until = Some(Instant::now() + screens::FLASH);
             }
         }
-        self.screen_until = None;
-        if let (Some(art), Some(frame)) = (&self.art, shown.frame) {
-            let ttl = if shown.hold { screens::HOLD_TTL } else { screens::BRIEF };
-            for (id, _, _) in keyboards(plugin).into_iter().filter(|k| k.2) {
-                if let Err(e) = plugin.panel_override(&id, screens::W, screens::H, art.frame(frame), ttl) {
-                    eprintln!("mic-mute: panel: {e}");
-                }
+        let Some(art) = &self.art else { return };
+        // MUTED is held until the next screen replaces it or the plugin stops (#281); LIVE and
+        // `?` last a few seconds; nothing gives the panel back.
+        for (id, _, _) in keyboards(plugin).into_iter().filter(|k| k.2) {
+            let sent = match shown.frame {
+                Some(frame) if shown.hold => plugin.panel_hold(&id, screens::W, screens::H, art.frame(frame)),
+                Some(frame) => plugin.panel_override(&id, screens::W, screens::H, art.frame(frame), screens::BRIEF),
+                None if self.held => plugin.panel_release(&id),
+                None => Ok(()),
+            };
+            if let Err(e) = sent {
+                eprintln!("mic-mute: panel: {e}");
             }
-            // A held screen is sent again before its lifetime runs out.
-            self.screen_until = shown.hold.then(|| Instant::now() + screens::HOLD_TTL / 2);
         }
+        self.held = shown.frame.is_some() && shown.hold;
     }
 }
 
@@ -134,17 +139,15 @@ fn main() {
     }
 
     let mut mic = parse(plugin.fact("mic.state").ok().flatten().as_ref());
-    let mut out = Out { lights, art, leases: Vec::new(), screen_until: None, flash_until: None };
+    let mut out = Out { lights, art, leases: Vec::new(), held: false, flash_until: None };
     out.show(&plugin, mic, false);
 
     loop {
         if plugin.is_closed() {
             return;
         }
-        // Wake for the next fact or key, or to end the flash, or to re-send a held screen
-        // before its lifetime runs out.
-        let next = [out.screen_until, out.flash_until].into_iter().flatten().min();
-        let got = match next {
+        // Wake for the next fact or key, or to end the flash (a one-shot deadline).
+        let got = match out.flash_until {
             Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
                 Ok(m) => Some(m),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -179,9 +182,6 @@ fn main() {
                 if out.flash_until.is_some_and(|t| t <= now) {
                     out.flash_until = None;
                     out.leases.clear();
-                }
-                if out.screen_until.is_some_and(|t| t <= now) {
-                    out.show(&plugin, mic, false);
                 }
             }
         }
