@@ -11,7 +11,8 @@
  *   01 HELLO   ver                  reply: ver, panel w, h, x, y, right link, right battery %,
  *                                   relay discovery result (int8), discovery tries,
  *                                   10 relay debug bytes, capabilities u32 LE (report bytes 21-24)
- *      Capabilities: bit 0 panel, 1 art relay, 2 settings/RGB, 3 unsolicited art STATUS.
+ *      Capabilities: bit 0 panel, 1 art relay, 2 settings/RGB, 3 unsolicited art STATUS,
+ *                    4 settings CONN_STATE.
  *      Old firmware pads the capability bytes with zero; version and prior fields stay unchanged.
  *   02 FILL    colour (0 or 1)      fill the back buffer
  *   03 ROWS    y, n (1-3), n rows   write rows of HOST_PANEL_STRIDE bytes, MSB first, 1 = ink
@@ -39,15 +40,27 @@
  *      its underglow off on its own idle.
  *   02 INVOKE    behavior local id u16, param1 u32, param2 u32, hold ms u16 (0 = tap)
  *                                                     reply: status, local id u16
- *      Presses and releases the binding as a key would, on the left; global behaviors (&rgb_ug,
- *      &soft_off, &sys_reset, ...) reach the right half too. The ids are ZMK Studio's local ids.
- *      hold ms keeps it pressed that long (&soft_off needs its hold-time). Status:
+ *      Presses and releases the binding as a key would, on the left; allowed global behaviors
+ *      (&rgb_ug, ...) reach the right half too. The ids are ZMK Studio's local ids.
+ *      hold ms keeps it pressed that long. Status:
  *      0 ok, 1 unknown id, 2 busy (a held invoke is still running), 3 behavior failed,
- *      4 not built in (no local ids), 5 bad length.
+ *      4 not built in (no local ids), 5 bad length, 6 refused.
+ *      Refused before scheduling: &bt (BT_SEL/BT_CLR/BT_CLR_ALL/BT_NXT/BT_PRV/BT_DISC),
+ *      &out (all commands), &bootloader, &sys_reset and &soft_off. Matches resolved device
+ *      names of enabled zmk,behavior-{bluetooth,outputs,reset,soft-off} nodes, including
+ *      renamed instances; all Bluetooth parameters are refused.
  *   03 RGB_STATE                                      reply: left struct rgb_idle_wire (7 B),
  *                                                     right age s (0xff = none), right (7 B)
  *      The right's state comes from the last relay status read (each request asks for a new one),
  *      so poll it; age says how old it is.
+ *   04 CONN_STATE  no payload (request D7 04)          reply: D7 84, active BLE profile index u8,
+ *                                                     connected (0/1), bonded (0/1),
+ *                                                     selected endpoint (0 USB, 1 BLE),
+ *                                                     USB HID ready (0/1), BLE profile count u8
+ *      Bonded means the active profile is not open. Endpoint is the currently selected transport,
+ *      not the preferred transport. Without BLE, index/connected/bonded/count are zero; without
+ *      USB, ready is zero. State is sampled on request only; no boot work or unsolicited replies.
+ *      Replies use the existing nonblocking queue and are zero-padded to the report size.
  */
 
 #pragma once
@@ -64,6 +77,7 @@
 #define HOST_LINK_CAP_ART_RELAY (1U << 1)
 #define HOST_LINK_CAP_SETTINGS_RGB (1U << 2)
 #define HOST_LINK_CAP_ART_STATUS_EVENT (1U << 3)
+#define HOST_LINK_CAP_CONN_STATE (1U << 4)
 
 // Called by relay connection/discovery callbacks; queues a report only after host traffic.
 void host_link_art_status(void);
