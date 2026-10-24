@@ -20,6 +20,7 @@ pub mod screens_ui;
 pub mod services;
 pub mod art_cycle;
 mod art_triggers;
+mod art_toast;
 pub mod accent;
 pub mod lighting_presets;
 pub mod store;

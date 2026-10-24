@@ -262,6 +262,27 @@ pub fn set_override(conn: u64, width: u16, height: u16, bits: Vec<u8>, ttl: Opti
     Ok(())
 }
 
+/// The left panel's size, once a keyboard with one has connected.
+pub fn panel_size() -> Option<(u16, u16)> {
+    *PANEL_SIZE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Foxglove's own brief card over the panel (the art key's "ART 3/7", #60) for `ttl`. It ends
+/// by the override's deadline, and it never replaces a plugin's live frame: returns false then.
+pub fn show_card(conn: u64, bits: Vec<u8>, ttl: Duration) -> Result<bool, String> {
+    let now = Instant::now();
+    let busy = OVERRIDE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|o| o.conn != conn && o.until.is_none_or(|u| u > now));
+    if busy {
+        return Ok(false);
+    }
+    let (w, h) = panel_size().ok_or("no left panel connected")?;
+    set_override(conn, w, h, bits, Some(ttl)).map(|()| true)
+}
+
 /// Drops a connection's frame (released, or the plugin stopped).
 pub fn clear_override(conn: u64) {
     let mut o = OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
@@ -660,6 +681,18 @@ fn battery_log(battery: Option<u8>, last: &mut Option<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_card_never_replaces_a_plugins_frame_and_ends_by_its_deadline() {
+        *PANEL_SIZE.lock().unwrap() = Some((64, 52));
+        let frame = || vec![0u8; 416];
+        set_override(7, 64, 52, frame(), None).unwrap();
+        assert_eq!(show_card(u64::MAX, frame(), Duration::from_millis(50)), Ok(false), "the plugin's frame stays");
+        clear_override(7);
+        assert_eq!(show_card(u64::MAX, frame(), Duration::from_millis(50)), Ok(true));
+        let (_, until) = current_override(Instant::now()).expect("the card shows");
+        assert!(until.is_some(), "with its own deadline");
+        assert!(current_override(Instant::now() + Duration::from_millis(60)).is_none(), "and then it's gone");
+    }
     #[test]
     fn frames_change_only_after_pixels_change_or_ownership_resets() {
         assert!(changed(None, &[1, 2]));

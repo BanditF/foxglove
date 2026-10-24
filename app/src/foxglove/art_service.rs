@@ -105,7 +105,7 @@ enum Command {
     ArtKey { source: Weak<Link>, generation: u64, dir: i8 },
     /// Step the hotlist by `dir`. A manual step (the art key, the UI's Next) is the user's own
     /// pick and shows even over layer or preset art; a timed or lights-wake step waits for it.
-    Step { dir: i8, manual: bool },
+    Step { dir: i8, manual: bool, card: bool },
 }
 
 #[derive(Clone)]
@@ -191,7 +191,7 @@ impl Handle {
 
     /// Shows the hotlist's next entry now.
     pub fn next(&self) -> bool {
-        let _ = self.commands.send(Command::Step { dir: 1, manual: true });
+        let _ = self.commands.send(Command::Step { dir: 1, manual: true, card: false });
         true
     }
 
@@ -281,6 +281,27 @@ fn load_pinned() -> Option<Choice> {
         ))
     })
     .pinned
+}
+
+/// The left panel's brief "ART n/m" card after an art-key step, with the entry's name. It ends
+/// by its own deadline (the panel override's TTL); a plugin's frame on the panel wins.
+fn show_card(cycle: &Cycle, slots: &[SlotInfo], st: &ArtStatus, dir: i8) {
+    let Some((w, h)) = super::screens::panel_size() else { return };
+    let Some(item) = cycle.items.get(cycle.position) else { return };
+    let label = match item {
+        art_cycle::Item::BuiltIn(name) => super::art_manifest::sets(st.right_set_count)
+            .and_then(|sets| sets.iter().find(|s| &s.name == name))
+            .map_or_else(|| name.clone(), |s| s.label.clone()),
+        art_cycle::Item::Slot(n) => slots
+            .iter()
+            .find(|i| i.slot == *n)
+            .map_or_else(|| format!("slot {}", n + 1), |i| i.name.clone()),
+        art_cycle::Item::File(p) => p.file_stem().unwrap_or_default().to_string_lossy().replace(['_', '-'], " "),
+    };
+    let bits = super::art_toast::frame(usize::from(w), usize::from(h), cycle.position, cycle.items.len(), &label, dir);
+    if let Err(e) = super::screens::show_card(super::art_toast::CONN, bits, super::art_toast::SHOW_FOR) {
+        eprintln!("Foxglove art: card: {e}");
+    }
 }
 
 /// Sends D7 0D ART_KEYS when what the hotlist wants differs from `sent`, and returns what the
@@ -496,7 +517,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 if !is_current || !h.snapshot().cycle.steps_on(art_cycle::Step::Key) {
                     continue;
                 }
-                Command::Step { dir, manual: true }
+                // The art key also shows "ART n/m" on the left panel for a moment (#60).
+                Command::Step { dir, manual: true, card: true }
             }
             Command::Layers(active) => {
                 let change = triggers.layers(&active, &h.snapshot().cycle, Instant::now());
@@ -559,7 +581,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             other => other,
         };
         let command = match command {
-            Command::Next => Command::Step { dir: 1, manual: false },
+            Command::Next => Command::Step { dir: 1, manual: false, card: false },
             other => other,
         };
         // Take the art keys while the hotlist would use them, else let the keyboard step itself.
@@ -579,7 +601,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 }
                 continue;
             }
-            Command::Step { dir, manual } => {
+            Command::Step { dir, manual, card } => {
                 due = reschedule(current.is_some());
                 let snap = h.snapshot();
                 let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
@@ -606,6 +628,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     }
                     continue;
                 };
+                if card {
+                    show_card(&cycle, &snap.slots, &st, dir);
+                }
                 let _ = cycle.save();
                 h.update(|s| {
                     s.cycle = cycle;
