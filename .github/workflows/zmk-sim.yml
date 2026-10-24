@@ -46,21 +46,22 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            workspace/modules/
-            workspace/tools/
-            workspace/zephyr/
-            workspace/bootloader/
+            workspace/zmk/modules/
+            workspace/zmk/tools/
+            workspace/zmk/zephyr/
+            workspace/zmk/bootloader/
           key: ${{ runner.os }}-zmk-sim-3.5-${{ hashFiles('workspace/zmk/app/west.yml') }}
         timeout-minutes: 2
         continue-on-error: true
+      # `west init -l app` makes workspace/zmk the west topdir, as in ZMK's own test workflow.
       - name: Initialize workspace
-        working-directory: workspace
-        run: west init -l zmk/app
+        working-directory: workspace/zmk
+        run: west init -l app
       - name: Update modules
-        working-directory: workspace
+        working-directory: workspace/zmk
         run: west update --fetch-opt=--filter=tree:0
       - name: Export Zephyr
-        working-directory: workspace
+        working-directory: workspace/zmk
         run: west zephyr-export
       - name: Run keymap cases
         working-directory: workspace/zmk/app
