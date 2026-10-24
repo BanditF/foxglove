@@ -210,6 +210,11 @@ impl OverlayApp {
             }
         }
 
+        self.watch_serial_connection(ctx); // Foxglove: follow USB arrival/removal.
+        if self.serial_scan_pending() {
+            return;
+        }
+
         let AppConnectionState::Reconnecting { next_attempt_at } = &self.session.connection else {
             return;
         };

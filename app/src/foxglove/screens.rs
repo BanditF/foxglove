@@ -17,18 +17,27 @@ use foxglove_panel::Sources;
 use super::screens_settings::ScreensSettings;
 
 static STATUS: Mutex<String> = Mutex::new(String::new());
+static PAUSED: AtomicBool = AtomicBool::new(false);
+
+pub fn paused() -> bool {
+    PAUSED.load(Ordering::Relaxed)
+}
+pub fn set_paused(value: bool) {
+    PAUSED.store(value, Ordering::Relaxed);
+}
+
 static STOP: AtomicBool = AtomicBool::new(false);
 static STOPPED: AtomicBool = AtomicBool::new(false);
 
 /// What the panel service is doing, for the UI.
 #[allow(dead_code)] // shown in the Screens settings (#13)
 pub fn status() -> String {
-    STATUS.lock().unwrap().clone()
+    STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 fn set_status(s: impl Into<String>) {
     let s = s.into();
-    let mut cur = STATUS.lock().unwrap();
+    let mut cur = STATUS.lock().unwrap_or_else(|e| e.into_inner());
     if *cur != s {
         eprintln!("Foxglove screens: {s}");
         *cur = s;
@@ -36,9 +45,7 @@ fn set_status(s: impl Into<String>) {
 }
 
 pub fn start() {
-    let _ = std::thread::Builder::new()
-        .name("foxglove-screens".into())
-        .spawn(run);
+    let _ = super::services::spawn_supervised("screens", run);
 }
 
 /// Hands the panel back to the firmware before the app exits (waits up to half a second), so
@@ -106,9 +113,10 @@ fn run() {
             settings_at = Instant::now();
         }
 
-        if !settings.drive_left {
+        // Paused (tray) or off: the firmware gets its own panel back.
+        if paused() || !settings.drive_left {
             stop_driving(&mut lock, &drawing, &mut was_driving);
-            set_status("Left panel off");
+            set_status(if paused() { "Left panel paused" } else { "Left panel off" });
             std::thread::sleep(Duration::from_secs(1));
             continue;
         }

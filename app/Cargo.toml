@@ -53,6 +53,7 @@ windows = { version = "0.62.2", features = [
     "Devices_Bluetooth",
     "Devices_Radios",
     "Foundation",
+    "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
     "Win32_Foundation",

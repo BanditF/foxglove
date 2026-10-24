@@ -26,6 +26,7 @@ pub struct OverlayApp {
     settings: SettingsState,
     session: SessionState,
     connect: ConnectDraftState,
+    serial_watch: foxglove_connect::SerialWatch,
     pub(crate) editor: crate::keymap_editor::EditorState,
 }
 
@@ -71,6 +72,7 @@ impl OverlayApp {
                 pending_connect: None,
             },
             editor: crate::keymap_editor::EditorState::new(),
+            serial_watch: foxglove_connect::SerialWatch::default(),
         }
     }
 
@@ -175,6 +177,8 @@ impl OverlayApp {
         self.apply_live_visual_settings();
         self.apply_live_layout_settings();
         self.ui.file_dialog.update(ctx);
+        crate::foxglove::art_ui::update(ctx);
+        self._tray.update();
 
         if let Some(path) = self.ui.file_dialog.take_picked() {
             if let ConnectionDraft::Via { json_path } = &mut self.connect.draft {

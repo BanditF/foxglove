@@ -6,6 +6,8 @@
 
 #include <string.h>
 
+#include <zephyr/device.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/spinlock.h>
 #include <zephyr/sys/byteorder.h>
@@ -14,9 +16,15 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <raw_hid/events.h>
+#include <zmk/behavior.h>
+#include <zmk/ble.h>
 #include <zmk/display.h>
+#include <zmk/endpoints.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/battery_state_changed.h>
+#include <zmk/events/position_state_changed.h>
+#include <zmk/keymap.h>
+#include <zmk/usb.h>
 
 #include "host_link.h"
 #include "art_relay.h"
@@ -28,7 +36,11 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS };
-enum { SETTING_RGB_SYNC = 0x01 };
+enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE };
+enum {
+    INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
+    INVOKE_BAD_LENGTH, INVOKE_REFUSED
+};
 
 #define REPORT_SIZE CONFIG_RAW_HID_REPORT_SIZE
 #define ALIVE_TIMEOUT K_SECONDS(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S)
@@ -44,6 +56,8 @@ static struct k_spinlock lock;
 static uint8_t back[HOST_PANEL_BYTES];
 static uint8_t front[HOST_PANEL_BYTES];
 static bool alive;
+
+static atomic_t host_seen;
 
 static uint8_t right_battery = 0xff; // unknown
 
@@ -118,12 +132,20 @@ static void panel_command(const uint8_t *d) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
         art_relay_discovery(&discovery, &tries);
 #endif
-        uint8_t r[11 + 10] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
+        uint8_t r[11 + 10 + 4] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
                               HOST_PANEL_H,    HOST_PANEL_X,       HOST_PANEL_Y,      right_link(),
                               right_battery,   (uint8_t)discovery, tries};
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
         art_relay_debug(&r[11]);
 #endif
+        uint32_t caps = HOST_LINK_CAP_PANEL | HOST_LINK_CAP_CONN_STATE;
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+        caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT;
+#endif
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+        caps |= HOST_LINK_CAP_SETTINGS_RGB;
+#endif
+        sys_put_le32(caps, &r[21]);
         reply(r, sizeof(r));
         break;
     }
@@ -192,8 +214,113 @@ static void art_command(const uint8_t *d) {
     reply(r, sizeof(r));
 }
 
+void host_link_art_status(void) {
+    if (atomic_get(&host_seen)) {
+        const uint8_t d[] = {HOST_LINK_ART, ART_STATUS};
+        art_command(d);
+    }
+}
+
+/* INVOKE: runs on the system work queue, like the keymap does for key presses */
+
+#define INVOKE_MAX_HOLD_MS 10000
+// No key sits here; behaviors that track positions (hold-tap, sticky keys) see a key of its own.
+#define INVOKE_POSITION UINT32_MAX
+
+static struct zmk_behavior_binding invoke_binding;
+static struct zmk_behavior_binding_event invoke_event;
+static uint16_t invoke_id; // of the invoke that holds invoke_busy
+static uint16_t invoke_hold_ms;
+static atomic_t invoke_busy;
+
+static void invoke_reply(uint8_t status, uint16_t id) {
+    uint8_t r[5] = {HOST_LINK_SETTINGS, 0x80 | SETTING_INVOKE, status};
+    sys_put_le16(id, &r[3]);
+    reply(r, sizeof(r));
+}
+
+static void invoke_release_cb(struct k_work *work) {
+    invoke_event.timestamp = k_uptime_get();
+    zmk_behavior_invoke_binding(&invoke_binding, invoke_event, false);
+    atomic_set(&invoke_busy, 0);
+}
+static K_WORK_DELAYABLE_DEFINE(invoke_release_work, invoke_release_cb);
+
+static void invoke_press_cb(struct k_work *work) {
+    invoke_event = (struct zmk_behavior_binding_event){
+        .layer = zmk_keymap_highest_layer_active(),
+        .position = INVOKE_POSITION,
+        .timestamp = k_uptime_get(),
+#if IS_ENABLED(CONFIG_ZMK_SPLIT)
+        .source = ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL,
+#endif
+    };
+    int ret = zmk_behavior_invoke_binding(&invoke_binding, invoke_event, true);
+    invoke_reply(ret < 0 ? INVOKE_FAILED : INVOKE_OK, invoke_id);
+    k_work_schedule(&invoke_release_work, K_MSEC(invoke_hold_ms));
+}
+static K_WORK_DEFINE(invoke_press_work, invoke_press_cb);
+
+// d starts at the local id.
+static uint8_t invoke(const uint8_t *d, int len) {
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS)
+    if (len < 10) {
+        return INVOKE_BAD_LENGTH;
+    }
+    uint16_t id = sys_get_le16(&d[0]);
+    const char *name = zmk_behavior_find_behavior_name_from_local_id(id);
+    if (name == NULL) {
+        return INVOKE_UNKNOWN;
+    }
+    // Local ids resolve to device names, not keymap labels such as "bt" or "out".
+    // Match every enabled instance of these compatibles, including renamed nodes.
+    // Both &bootloader and &sys_reset use zmk,behavior-reset in ZMK v0.3.
+#define REFUSE_INVOKE_NODE(node_id)                                                                 \
+    if (strcmp(name, DEVICE_DT_NAME(node_id)) == 0) {                                               \
+        return INVOKE_REFUSED;                                                                    \
+    }
+    DT_FOREACH_STATUS_OKAY(zmk_behavior_bluetooth, REFUSE_INVOKE_NODE)
+    DT_FOREACH_STATUS_OKAY(zmk_behavior_outputs, REFUSE_INVOKE_NODE)
+    DT_FOREACH_STATUS_OKAY(zmk_behavior_reset, REFUSE_INVOKE_NODE)
+    DT_FOREACH_STATUS_OKAY(zmk_behavior_soft_off, REFUSE_INVOKE_NODE)
+#undef REFUSE_INVOKE_NODE
+    if (!atomic_cas(&invoke_busy, 0, 1)) {
+        return INVOKE_BUSY;
+    }
+    invoke_id = id;
+    invoke_binding = (struct zmk_behavior_binding){
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS_IN_BINDINGS)
+        .local_id = id,
+#endif
+        .behavior_dev = name,
+        .param1 = sys_get_le32(&d[2]),
+        .param2 = sys_get_le32(&d[6]),
+    };
+    invoke_hold_ms = MIN(len >= 12 ? sys_get_le16(&d[10]) : 0, INVOKE_MAX_HOLD_MS);
+    k_work_submit(&invoke_press_work); // replies once pressed
+    return INVOKE_OK;
+#else
+    return INVOKE_UNSUPPORTED;
+#endif
+}
+
 static void settings_command(const uint8_t *d, int len) {
     switch (d[1]) {
+    case SETTING_CONN_STATE: {
+        uint8_t r[8] = {HOST_LINK_SETTINGS, 0x80 | SETTING_CONN_STATE};
+#if IS_ENABLED(CONFIG_ZMK_BLE)
+        r[2] = zmk_ble_active_profile_index();
+        r[3] = zmk_ble_active_profile_is_connected() ? 1 : 0;
+        r[4] = zmk_ble_active_profile_is_open() ? 0 : 1;
+        r[7] = ZMK_BLE_PROFILE_COUNT;
+#endif
+        r[5] = zmk_endpoints_selected().transport == ZMK_TRANSPORT_BLE ? 1 : 0;
+#if IS_ENABLED(CONFIG_ZMK_USB)
+        r[6] = zmk_usb_is_hid_ready() ? 1 : 0;
+#endif
+        reply(r, sizeof(r));
+        break;
+    }
     case SETTING_RGB_SYNC: {
         uint8_t r[5] = {HOST_LINK_SETTINGS, 0x80 | SETTING_RGB_SYNC, 0xff, 0, right_link()};
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
@@ -205,6 +332,30 @@ static void settings_command(const uint8_t *d, int len) {
         r[2] = rgb_idle_sync();
         r[3] = on;
 #endif
+        reply(r, sizeof(r));
+        break;
+    }
+    case SETTING_INVOKE: {
+        uint8_t status = invoke(&d[2], len - 2);
+        if (status != INVOKE_OK) {
+            invoke_reply(status, sys_get_le16(&d[2]));
+        }
+        break;
+    }
+    case SETTING_RGB_STATE: {
+        uint8_t r[2 + 2 * sizeof(struct rgb_idle_wire) + 1] = {HOST_LINK_SETTINGS,
+                                                                0x80 | SETTING_RGB_STATE};
+        struct rgb_idle_wire left = {0}, right = {0};
+        uint8_t age = 0xff;
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+        rgb_idle_state(&left);
+#endif
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+        age = art_relay_right_rgb(&right);
+#endif
+        memcpy(&r[2], &left, sizeof(left));
+        r[2 + sizeof(left)] = age;
+        memcpy(&r[3 + sizeof(left)], &right, sizeof(right));
         reply(r, sizeof(r));
         break;
     }
@@ -220,6 +371,9 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
     uint8_t d[REPORT_SIZE] = {0};
     memcpy(d, ev->data, MIN(ev->length, REPORT_SIZE));
 
+    if (d[0] == HOST_LINK_PANEL || d[0] == HOST_LINK_ART || d[0] == HOST_LINK_SETTINGS) {
+        atomic_set(&host_seen, 1);
+    }
     switch (d[0]) {
     case HOST_LINK_PANEL:
         panel_command(d);
