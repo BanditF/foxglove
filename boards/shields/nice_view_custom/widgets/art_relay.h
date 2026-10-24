@@ -51,6 +51,7 @@ enum art_relay_op {
     ART_RELAY_RGB,
     ART_RELAY_PRESS, // 6: keymap position u8, state u8 (1 down, 0 up)
     ART_RELAY_SNAP = 7, // one byte, write request: take a screen snapshot
+    ART_RELAY_BOOT = 8, // "BOOT", write request: reboot into the bootloader (test hooks only)
 };
 
 #define ART_RELAY_HEADER_SIZE 12
@@ -129,4 +130,6 @@ void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]);
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 void art_relay_press(uint8_t pos, uint8_t state);
+// Asks the right half to reboot into its bootloader; answers test_hooks_boot_relay_done().
+void art_relay_boot(void);
 #endif

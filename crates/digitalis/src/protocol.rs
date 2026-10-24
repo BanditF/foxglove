@@ -25,8 +25,7 @@ pub mod capabilities {
     pub const INVOKE_REFUSES: u32 = 1 << 7;
     /// D7 84 CONN_STATE also arrives unsolicited when the connection changes (after host traffic).
     pub const CONN_STATE_EVENT: u32 = 1 << 8;
-    /// Settings BOOTLOADER (D7 08): the host can reboot either half into its UF2 bootloader
-    /// (#111), pre-GA test-hooks builds only.
+    /// Settings BOOTLOADER (D7 08), pre-GA test builds only.
     pub const BOOTLOADER: u32 = 1 << 9;
 }
 pub const VERSION: u8 = 1;
