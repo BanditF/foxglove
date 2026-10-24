@@ -50,7 +50,11 @@ same messages.
 The params and results are in the schema. Notes:
 
 - **Facts are the main surface.** Device state appears under `device.<id>.*` (connected, layers,
-  battery.right, lighting.*). Plugins publish their own facts (`weather.temp`), and the panel and
+  battery.right, link.*, lighting.*). The keyboard with Foxglove's link is also under short names
+  (#17): `keyboard.connected`, `keyboard.layer` (the highest active layer), `keyboard.layers`,
+  `keyboard.right.battery`, `keyboard.link` (`usb`/`ble`), `keyboard.profile` (1-based) and
+  `keyboard.profile_connected`, all from the firmware's own events; on a disconnect all but
+  `keyboard.connected` go. Plugins publish their own facts (`weather.temp`), and the panel and
   other plugins read them.
 - **`behaviors.invoke` refuses actions that need confirmation** (error 5). A Plugin can never press
   one; only a user's click in Foxglove can. The firmware already refuses &bt, &out, reset and
