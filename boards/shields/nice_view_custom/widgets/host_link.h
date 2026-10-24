@@ -42,7 +42,8 @@
  *   07 ROWS_AT y u16, offset u16, n u8 (<= 25), n bytes      no reply (#289)
  *      Writes n bytes at y * stride + offset of the panel's back buffer (offset < stride; n may run
  *      on into the next rows), for rows wider than a report and panels taller than 255 rows.
- *      Out-of-range writes are dropped. PRESENT shows them, as with ROWS.
+ *      Out-of-range writes are dropped. ROWS, ROWS_AT and FILL all write the same back buffer, so
+ *      one frame may mix them freely; the next PRESENT shows the result, last write wins per byte.
  *      The Corne: 0 left display 160x68 rot 1; 1 panel 64x52 at (2,106) on 0 (D5 02-05 address it);
  *      2 right display; 3 right art area 68x140 at (0,20) on 2.
  * The panel takes the area at the first PRESENT and keeps the last presented frame until RELEASE.
