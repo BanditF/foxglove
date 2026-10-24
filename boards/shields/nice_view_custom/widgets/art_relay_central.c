@@ -774,6 +774,10 @@ static void guard_cancel(bool encrypted) {
 
 uint8_t art_relay_guard_drops(void) { return guard_drops; }
 
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+FOXGLOVE_TEST_HOOK_MARK(guard_test);
+#endif
+
 int art_relay_guard_test(void) {
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
     if (peer == NULL) {
