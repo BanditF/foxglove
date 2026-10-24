@@ -102,6 +102,20 @@ is BLOCKED and **never sent**, even with an explicit ID or `expect_status`.
 Future support must use a firmware-owned advertised contract, not an arbitrary
 version assumption. `CONN_STATE` and `RGB_STATE` also require their HELLO bits.
 
+## Host and app checks
+
+These steps don't press anything. They use Windows' device list and process times.
+
+- `usb_halves = {}` (also `foxglove-lab usb`): classifies each half by its USB serial.
+  - Left running with its interfaces → ok.
+  - Right absent, or present with **no** interfaces (peripheral firmware on USB power; Windows shows problem 28) → info, expected.
+  - Right **with** interfaces → FAIL: left or settings_reset firmware is on it.
+  - A half in the UF2 bootloader → warn (`strict = true` makes warnings fail).
+- `art_select = { set = 1 }`: selects a built-in art set on the right through the relay, waits for the right to report it, and puts the previous set back. Pushed art lives in RAM and can't be restored, so the step reports BLOCKED when pushed art is showing, unless `replace_pushed = true`.
+- `idle_cpu = { seconds = 20, max_cpu_ms = 60 }`: CPU used by `foxglove` (or `process = "..."`) over the window. Run with `--allow-app`; it's the regression test for #100.
+
+`tests/hil/app-idle.toml` holds the app checks; `release.toml` includes it and `smoke.toml`.
+
 ## Safety and manual tests
 
 Outside the sink, only cached, recognized non-typing behaviors (`mo`, `tog`,

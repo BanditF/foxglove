@@ -1,11 +1,13 @@
 //! Bounded execution. Unknown firmware features fail closed before any injection.
 use crate::{
     behaviors::Catalog,
+    host::Verdict,
     report::{CaseResult, Status, StepResult},
     spec::{Case, Invoke, Step},
 };
 use anyhow::{bail, ensure, Result};
 use digitalis::{
+    art,
     link::{Link, Subscription},
     panel,
     protocol::{self, Hello, InvokeStatus},
@@ -19,6 +21,17 @@ use std::{
     },
     time::{Duration, Instant},
 };
+
+/// A step that couldn't run because a precondition outside the test isn't met (reported as
+/// BLOCKED, not FAIL).
+#[derive(Debug)]
+pub struct Blocked(pub String);
+impl std::fmt::Display for Blocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+impl std::error::Error for Blocked {}
 
 pub trait Device: Transport {
     fn layer(&self, timeout: Duration) -> Result<Option<u32>>;
@@ -211,6 +224,40 @@ impl<'a, D: Device> Runner<'a, D> {
             i.param1, i.param2
         ))
     }
+    fn art_select(&mut self, a: &crate::spec::Art) -> Result<String> {
+        ensure!(
+            a.set >= 0,
+            "pick a built-in set (0 or more) so the result can be checked"
+        );
+        // The left answers from its last relay read and asks again, so the second call is fresh.
+        art::status(self.device)?;
+        std::thread::sleep(Duration::from_millis(300));
+        let before = art::status(self.device)?;
+        ensure!(
+            a.set < before.right_set_count as i8,
+            "set {} out of range: the right has {} built-in sets ({before})",
+            a.set,
+            before.right_set_count
+        );
+        if before.right_set < 0 && !a.replace_pushed {
+            return Err(Blocked(
+                "the right shows pushed art, which a select would lose (RAM only);                  run with built-in art showing, or set replace_pushed = true"
+                    .into(),
+            )
+            .into());
+        }
+        art::select(self.device, a.set)?;
+        let actual = self.wait(a.within_ms, || {
+            std::thread::sleep(Duration::from_millis(250));
+            let s = art::status(self.device)?;
+            Ok((s.right_set == a.set, s.to_string()))
+        })?;
+        if a.restore && before.right_set >= 0 && before.right_set != a.set {
+            art::select(self.device, before.right_set)?;
+            return Ok(format!("{actual}; restored set {}", before.right_set));
+        }
+        Ok(actual)
+    }
     /// Waits out the bounded firmware release even when cancelled; no unsupported release command.
     fn cleanup(&mut self) {
         if let Some(end) = self.held_until.take() {
@@ -274,6 +321,37 @@ impl<'a, D: Device> Runner<'a, D> {
                     actual
                 );
                 Ok(format!("received {actual:?}"))
+            }
+            Step::ArtSelect(a) => self.art_select(a),
+            Step::UsbHalves(u) => {
+                let halves = crate::host::classify(&crate::host::usb_entries()?);
+                let text = halves
+                    .iter()
+                    .map(|h| format!("{}: {:?}, {}", h.half, h.verdict, h.message))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                let bad = |v| v == Verdict::Fail || (u.strict && v == Verdict::Warn);
+                ensure!(!halves.iter().any(|h| bad(h.verdict)), "{text}");
+                Ok(text)
+            }
+            Step::IdleCpu(i) => {
+                ensure!((1..=600).contains(&i.seconds), "seconds must be 1..=600");
+                let start = crate::host::process_cpu_ms(&i.process)?;
+                let end = Instant::now() + Duration::from_secs(i.seconds);
+                while Instant::now() < end {
+                    self.check()?;
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                let used = crate::host::process_cpu_ms(&i.process)? - start;
+                let text = format!(
+                    "{} used {used:.0} ms CPU in {} s ({:.2} % of one core; limit {} ms)",
+                    i.process,
+                    i.seconds,
+                    used / (i.seconds as f64 * 10.0),
+                    i.max_cpu_ms
+                );
+                ensure!(used <= i.max_cpu_ms as f64, "{text}");
+                Ok(text)
             }
             Step::Screen(_) => bail!("needs screen readback #67"),
             Step::PressPosition(_) => bail!("needs position press #78"),
@@ -353,9 +431,13 @@ impl<'a, D: Device> Runner<'a, D> {
                     }
                     Err(e) => {
                         stop = true;
-                        result.status = Status::Fail;
+                        result.status = if e.downcast_ref::<Blocked>().is_some() {
+                            Status::Blocked
+                        } else {
+                            Status::Fail
+                        };
                         result.message = format!("{e:#}");
-                        (Status::Fail, result.message.clone())
+                        (result.status, result.message.clone())
                     }
                 }
             };

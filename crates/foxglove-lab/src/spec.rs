@@ -38,6 +38,9 @@ pub enum Step {
     Prompt(Prompt),
     Screen(Screen),
     PressPosition(Position),
+    ArtSelect(Art),
+    UsbHalves(Usb),
+    IdleCpu(Idle),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -116,6 +119,46 @@ pub struct Rect {
     pub width: u32,
     pub height: u32,
 }
+/// Shows built-in art set `set` on the right half through the relay, checks the right reports
+/// it, then puts the previous built-in set back. Pushed art lives in RAM and can't be restored,
+/// so the step refuses to replace it unless `replace_pushed` is set.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Art {
+    pub set: i8,
+    #[serde(default = "yes")]
+    pub restore: bool,
+    #[serde(default)]
+    pub replace_pushed: bool,
+    #[serde(default = "art_timeout")]
+    pub within_ms: u64,
+}
+fn yes() -> bool {
+    true
+}
+fn art_timeout() -> u64 {
+    10_000
+}
+/// Fails on any half whose USB picture means trouble (see host::classify).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Usb {
+    /// Also fail when a half is in the bootloader or the left is off USB.
+    #[serde(default)]
+    pub strict: bool,
+}
+/// Measures a process's CPU time over `seconds` while nothing is pressed.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Idle {
+    #[serde(default = "foxglove")]
+    pub process: String,
+    pub seconds: u64,
+    pub max_cpu_ms: u64,
+}
+fn foxglove() -> String {
+    "foxglove".into()
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Position {
@@ -182,6 +225,18 @@ impl Step {
             Self::ExpectRgb(r) => {
                 wait(r.within_ms)?;
                 ensure!(r.right_age_max_s < 255, "invalid RGB age");
+            }
+            Self::ArtSelect(a) => {
+                wait(a.within_ms)?;
+                ensure!(a.set >= 0, "art_select needs a built-in set (0 or more)");
+            }
+            Self::UsbHalves(_) => {}
+            Self::IdleCpu(i) => {
+                ensure!(
+                    (1..=600).contains(&i.seconds),
+                    "idle_cpu seconds must be 1..=600"
+                );
+                ensure!(!i.process.is_empty(), "idle_cpu needs a process name");
             }
             Self::TypeIntoSink(t) => {
                 ensure!(!t.via.is_empty(), "typing needs via invokes");

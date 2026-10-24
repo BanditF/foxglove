@@ -115,10 +115,10 @@ fn run<D: foxglove_lab::runner::Device>(fake: &D, case: &Case) -> foxglove_lab::
 #[test]
 fn parses_seed_suites_and_all_step_kinds() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil");
-    assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 5);
+    assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 6);
     assert_eq!(
         spec::load(&root.join("release.toml")).unwrap().cases.len(),
-        9
+        12
     );
     for text in [
         "[{press_position={pos=12,state='down'}}]",
@@ -419,4 +419,42 @@ fn failed_behavior_and_busy_keep_prior_release_deadline() {
         Status::Fail
     );
     assert!(started.elapsed() >= Duration::from_millis(20));
+}
+
+/// Art status reply: left state, error, length, pushed, link, then the right's relay status
+/// with `set` at byte 15 and the built-in set count at byte 16.
+fn art(cmd: u8, set: i8, count: u8) -> [u8; REPORT] {
+    let mut r = [0u8; 17];
+    r[..2].copy_from_slice(&[0xd6, 0x80 | cmd]);
+    r[8] = 1;
+    r[15] = set as u8;
+    r[16] = count;
+    reply(&r)
+}
+
+#[test]
+fn art_select_refuses_to_lose_pushed_art() {
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([art(5, -1, 4), art(5, -1, 4)]);
+    let result = run(&fake, &case("[{art_select={set=1}}]"));
+    assert_eq!(result.status, Status::Blocked);
+    assert!(result.message.contains("pushed art"));
+}
+
+#[test]
+fn art_select_checks_and_restores() {
+    let fake = Fake::default();
+    // status ×2 (before), select, status (shows 1), restore select.
+    fake.replies
+        .borrow_mut()
+        .extend([art(5, 0, 4), art(5, 0, 4), art(4, 1, 4), art(5, 1, 4), art(4, 0, 4)]);
+    let result = run(&fake, &case("[{art_select={set=1}}]"));
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    assert!(result.steps[0].actual.contains("restored set 0"));
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([art(5, 0, 2), art(5, 0, 2)]);
+    assert_eq!(
+        run(&fake, &case("[{art_select={set=3}}]")).status,
+        Status::Fail
+    );
 }
