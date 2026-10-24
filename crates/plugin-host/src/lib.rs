@@ -121,7 +121,19 @@ struct Session {
 /// Serves one connection until the reader ends or a write fails. Messages are lines; events
 /// are written from other threads through the same writer, one whole line at a time.
 pub fn serve(reader: impl BufRead, writer: impl Write + Send + 'static, ctx: Context) -> std::io::Result<()> {
+    serve_with(reader, writer, ctx, |_| {})
+}
+
+/// Like [`serve`]; `ready` gets the connection's event channel, through which the app sends
+/// events of its own to this client ([`notify`]).
+pub(crate) fn serve_with(
+    reader: impl BufRead,
+    writer: impl Write + Send + 'static,
+    ctx: Context,
+    ready: impl FnOnce(Sender<String>),
+) -> std::io::Result<()> {
     let (out, rx) = mpsc::channel::<String>();
+    ready(out.clone());
     let closed = Arc::new(AtomicBool::new(false));
     let writer_closed = closed.clone();
     let writer_thread = std::thread::Builder::new().name("plugin-host-writer".into()).spawn(move || {
@@ -358,6 +370,33 @@ pub const PING_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(windows)]
 mod net;
 pub mod pipe;
+
+/// Each running plugin's event channel, by plugin id.
+static PLUGINS: Mutex<Option<HashMap<String, Sender<String>>>> = Mutex::new(None);
+
+pub(crate) fn register(id: &str, out: Option<Sender<String>>) {
+    let mut plugins = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
+    let map = plugins.get_or_insert_with(HashMap::new);
+    match out {
+        Some(out) => {
+            map.insert(id.to_string(), out);
+        }
+        None => {
+            map.remove(id);
+        }
+    }
+}
+
+/// Sends an event to a running plugin, such as `action.invoked` when its key is pressed.
+/// Only events in the method table go out; false if the plugin isn't running.
+pub fn notify(plugin: &str, method: &str, params: Value) -> bool {
+    if methods::find(method).is_none_or(|m| m.kind != Kind::Event) {
+        return false;
+    }
+    let plugins = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(out) = plugins.as_ref().and_then(|m| m.get(plugin)) else { return false };
+    out.send(serde_json::to_string(&Request::notification(method, params)).unwrap()).is_ok()
+}
 pub mod runner;
 #[cfg(windows)]
 mod sandbox;
