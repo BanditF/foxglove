@@ -15,6 +15,7 @@ mod screens_watch;
 mod screens_settings;
 pub mod services;
 pub mod art_library;
+pub mod art_manifest;
 mod art_preview;
 pub mod art_ui;
 pub mod settings_ui;

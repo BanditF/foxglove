@@ -45,14 +45,21 @@ pub fn group(ui: &mut egui::Ui) {
             ui.weak(format!("Pinned: {name} (re-applied after power cycles)"));
         }
         ui.add_enabled_ui(!s.busy, |ui| {
+            let built_ins = s.built_ins();
+            let showing = s.showing_built_in();
+            let current = built_ins
+                .iter()
+                .find(|(n, _)| Some(*n) == showing)
+                .map_or_else(|| "Choose built-in".to_string(), |(_, name)| name.clone());
             egui::ComboBox::from_id_salt("right-art-built-in")
-                .selected_text("Choose built-in")
+                .selected_text(current)
                 .show_ui(ui, |ui| {
                     if ui.selectable_label(false, "Random").clicked() {
                         h.select(-1);
                     }
-                    for (n, name) in s.built_ins() {
-                        if ui.selectable_label(false, name).clicked() {
+                    for (n, name) in built_ins {
+                        // Selected = what the right half shows now.
+                        if ui.selectable_label(Some(n) == showing, name).clicked() {
                             h.select(n);
                         }
                     }
@@ -99,6 +106,9 @@ pub fn group(ui: &mut egui::Ui) {
                         }
                     }
                     ui.label(entry.path.file_stem().unwrap_or_default().to_string_lossy());
+                    if s.showing_file() == Some(&entry.path) {
+                        ui.strong("on the keyboard now");
+                    }
                     if ui.add_enabled(valid, egui::Button::new("Push")).clicked() {
                         h.push(entry.path.clone());
                     }
