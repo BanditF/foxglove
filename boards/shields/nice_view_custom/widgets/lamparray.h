@@ -45,7 +45,7 @@ void lamparray_release(enum lamparray_transport t);
 int lamparray_owner(void);
 
 // SET_FRAME (D7 0C, FOXGLOVE_HOST_FRAMES, #272): count lamps from start, 3 bytes each (r, g, b);
-// show draws the frame. The host link takes the lights if nobody has them: -EBUSY if a LampArray
+// draw shows the frame. The host link takes the lights if nobody has them: -EBUSY if a LampArray
 // transport does, -EINVAL for lamps out of range. With no frame for
 // FOXGLOVE_HOST_FRAMES_TIMEOUT_S, the host link lets go.
-int lamparray_frame(uint8_t start, int count, const uint8_t *rgb, bool show);
+int lamparray_frame(uint8_t start, int count, const uint8_t *rgb, bool draw);

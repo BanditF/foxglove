@@ -296,7 +296,7 @@ int lamparray_owner(void) { return atomic_get(&owner); }
 static void frames_timeout_cb(struct k_work *work) { lamparray_release(LAMPARRAY_HOSTLINK); }
 static K_WORK_DELAYABLE_DEFINE(frames_timeout, frames_timeout_cb);
 
-int lamparray_frame(uint8_t start, int count, const uint8_t *rgb, bool show) {
+int lamparray_frame(uint8_t start, int count, const uint8_t *rgb, bool draw) {
     if (count < 0 || start + count > LAMP_COUNT) {
         return -EINVAL;
     }
@@ -310,7 +310,7 @@ int lamparray_frame(uint8_t start, int count, const uint8_t *rgb, bool show) {
     k_work_reschedule(&frames_timeout, K_SECONDS(CONFIG_FOXGLOVE_HOST_FRAMES_TIMEOUT_S));
     if (cur == 0) {
         set_owner(LAMPARRAY_HOSTLINK); // takes the strips, then draws
-    } else if (show) {
+    } else if (draw) {
         show();
     }
     return 0;
