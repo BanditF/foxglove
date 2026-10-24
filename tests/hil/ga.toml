@@ -20,9 +20,9 @@ steps = [
 
 [[cases]]
 name = "ga-hello-no-test-hooks"
-description = "HELLO: position press (bit 5) and bootloader (bit 9) clear; refusal (7) and build info (12) set"
+description = "HELLO: bits 5 (position) and 9 (bootloader) clear; 6, 7, 12 set; byte 30 = GA; split guard never dropped the link (byte 31 = 0)"
 tags = ["ga", "release"]
-steps = [{ expect_hello = { caps_clear = [5, 9], caps_set = [7, 12] } }]
+steps = [{ expect_hello = { caps_clear = [5, 9], caps_set = [6, 7, 12], profile = "ga", guard_drops_max = 0 } }]
 
 [[cases]]
 name = "ga-position-not-built-in"
@@ -38,11 +38,12 @@ steps = [{ expect_not_built_in = { command = "bootloader" } }]
 
 [[cases]]
 name = "ga-refusals"
-description = "INVOKE refuses &bootloader, &bt, &out and &soft_off with 6"
+description = "INVOKE refuses &bootloader, &sys_reset, &bt, &out and &soft_off with 6"
 tags = ["ga", "release"]
 requires = ["invoke_refusal", "build_info"]
 steps = [
   { invoke = { behavior = "bootloader", expect_status = "refused" } },
+  { invoke = { behavior = "sys_reset", expect_status = "refused" } },
   { invoke = { behavior = "bt", param1 = 3, param2 = 0, expect_status = "refused" } },
   { invoke = { behavior = "out", param1 = 1, param2 = 0, expect_status = "refused" } },
   { invoke = { behavior = "soft_off", expect_status = "refused" } },
