@@ -78,6 +78,28 @@ impl Devices for AppDevices {
                     .collect();
                 Ok(json!(methods::Devices { devices }))
             }
+            "profiles.list" => {
+                let (names, active) = super::store::profiles();
+                Ok(json!(methods::Profiles { names, active }))
+            }
+            "profiles.activate" => {
+                let p: methods::ActivateProfileParams = serde_json::from_value(_params).map_err(|e| Error {
+                    code: code::INVALID_PARAMS,
+                    message: e.to_string(),
+                    data: None,
+                })?;
+                let (names, _) = super::store::profiles();
+                if p.name.as_ref().is_some_and(|n| !names.contains(n)) {
+                    return Err(Error { code: code::INVALID_PARAMS, message: "no such profile".into(), data: None });
+                }
+                super::store::set_active(p.name.as_deref()).map_err(|e| Error {
+                    code: code::BACKEND,
+                    message: e.to_string(),
+                    data: None,
+                })?;
+                let (names, active) = super::store::profiles();
+                Ok(json!(methods::Profiles { names, active }))
+            }
             _ => Err(Error {
                 code: code::UNSUPPORTED,
                 message: format!("{method} is not available yet"),
