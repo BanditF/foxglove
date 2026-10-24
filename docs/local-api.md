@@ -143,9 +143,31 @@ Only signed plugins install and run, checked by `crates/plugin-trust`.
   `{"format":"foxglove-plugin-catalog","sequence":N,"expires":"…Z","plugins":[{"id","version","sha256","files":{"path":"sha256"}}]}`.
 - **Rollback:** the app refuses a catalog whose `sequence` is lower than the highest one it has seen.
 
+**Catalog v2 (#192).** Every new field is optional, so v1 files still read.
+- **Epoch:** `root.json` gains `"epoch"`, and `catalog.json` must carry the same one. Only the offline root can start a new epoch, and a new epoch restarts the sequence.
+- **Rollback state:** the root `version`, the epoch and the sequence never go down. The app keeps them in `[plugins.trust]`, and if it can't save them, it trusts nothing.
+- **Entries** gain `"channel"` (`stable` or `beta`), `"url"` (an immutable GitHub Release asset) and `"size"`.
+- **Revocations:** `"revocations": [{"id", "versions": [...] (empty = all), "action": "yank"|"revoke", "reason"}]`. A yank stops new installs; a revoke also stops installed copies from launching. A pin never overrides a revocation.
+
+**Where the catalog comes from:**
+- The app ships one built-in.
+- It downloads newer ones from `https://banditf.github.io/foxglove/plugins/v2/` (`root.json`, `catalog.json` and their `.minisig` files).
+- It keeps the last download that verified in `plugin-catalog\`, next to the settings store, and uses whichever verified copy is newest.
+
+**When it checks** (`catalog_refresh.rs`; there's no daily check and no polling, per the user's decision):
+- At start, if the last success is more than 24 h old, after 5–60 s of jitter.
+- When the Plugins tab opens, at most every 10 minutes.
+- On **Check now**.
+
+Each check:
+- sends a conditional GET (`If-None-Match`) for each file;
+- after a failure, backs off for 15 min, then 1 h, 6 h and 24 h, persisted in `[plugins.refresh]`. **Check now** ignores the backoff.
+
+`FOXGLOVE_PLUGIN_CATALOG_URL` points the download elsewhere (HTTPS, or a localhost test server), and `FOXGLOVE_DISABLE=catalog` turns the start-up check off.
+
 **What's checked:**
-- **Install:** the archive's SHA-256 must be in the catalog, its manifest must match the entry's id and version, and the unpacked files must match exactly.
-- **Before every launch:** the version must still be in the catalog (removing it revokes it), and the folder must hold exactly the signed files. `plugin.log` is ignored.
+- **Install:** the archive's SHA-256 must be in the catalog and not yanked or revoked, its manifest must match the entry's id and version, and the unpacked files must match exactly.
+- **Before every launch:** the version must still be in the catalog and not revoked (removing it from the catalog also stops it), and the folder must hold exactly the signed files. `plugin.log` is ignored.
 
 **Making the keys (maintainer, once; tracked in #90):**
 1. `minisign -G -p root.pub -s root.key`, then keep `root.key` offline.

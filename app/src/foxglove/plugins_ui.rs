@@ -15,6 +15,9 @@ struct UiState {
     staged: Option<Staged>,
     confirm_remove: Option<String>,
     message: Option<String>,
+    /// Why no plugin is trusted, if so: checked when the catalog may have changed, not every
+    /// frame (it reads and verifies the signed files).
+    trust: Option<(super::catalog_refresh::Status, Result<(), String>)>,
 }
 
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
@@ -37,9 +40,16 @@ pub fn group(ui: &mut egui::Ui) {
             ui.weak("Plugins add features to Foxglove. Each runs as its own program with only the permissions you approve.");
             if super::plugin_trust::dev_unsigned() {
                 ui.colored_label(ui.visuals().warn_fg_color, "Developer mode: unsigned plugins are allowed (FOXGLOVE_DEV_UNSIGNED_PLUGINS).");
-            } else if let Err(e) = super::plugin_trust::catalog() {
-                ui.weak(format!("Only signed plugins install and run; {e}."));
+            } else {
+                let status = super::catalog_refresh::status();
+                if state.trust.as_ref().is_none_or(|(s, _)| *s != status) {
+                    state.trust = Some((status, super::plugin_trust::catalog().map(|_| ())));
+                }
+                if let Some((_, Err(e))) = &state.trust {
+                    ui.weak(format!("Only signed plugins install and run; {e}."));
+                }
             }
+            catalog_status(ui);
 
             ui.add_space(4.0);
             ui.label("Installed");
@@ -113,6 +123,29 @@ pub fn group(ui: &mut egui::Ui) {
                 ui.colored_label(ui.visuals().error_fg_color, m);
             }
         });
+    });
+}
+
+/// The catalog's freshness, and "Check now". Opening the tab asks for a check when one is due
+/// (at most every 10 minutes, and never while backing off).
+fn catalog_status(ui: &mut egui::Ui) {
+    use super::catalog_refresh::{self, Status, Trigger};
+    catalog_refresh::request(Trigger::TabOpened);
+    ui.horizontal_wrapped(|ui| {
+        let status = catalog_refresh::status();
+        match &status {
+            Status::Idle => ui.weak("Catalog: not checked yet this session."),
+            Status::Checking => {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+                ui.weak("Catalog: checking…")
+            }
+            Status::UpToDate { sequence: Some(n) } => ui.weak(format!("Catalog: updated (sequence {n}).")),
+            Status::UpToDate { sequence: None } => ui.weak("Catalog: up to date."),
+            Status::Failed(e) => ui.weak(format!("Catalog: couldn't check ({e}).")),
+        };
+        if ui.add_enabled(status != Status::Checking, egui::Button::new("Check now").small()).clicked() {
+            catalog_refresh::request(Trigger::Manual);
+        }
     });
 }
 
