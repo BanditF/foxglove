@@ -16,6 +16,9 @@ clockwise. Options go after the input, separated by colons:
   :stills     make every frame its own still art set instead of one animation
   :fps=N      override the frame rate (default: meta.txt, or 2 for LVGL C files)
   :name=X     override the set name (default: the file or folder name)
+  :label=Text override the display label (default: set name with underscores replaced by spaces)
+  :labels=A|B|C  with :stills, label each frame in order; missing labels use the default
+  Labels may contain spaces but no colons.
 
 Animations keep all their frames
 (in meta.txt order) and frame rate; the firmware shows the first frame unless animation is
@@ -25,6 +28,10 @@ unpacked into one RAM image buffer on the keyboard.
 Usage:
   python scripts/flipper_art.py OUT.c INPUT[:OPTION...] [INPUT[:OPTION...] ...] [--preview preview.png]
   python scripts/flipper_art.py OUT.bin INPUT[:OPTION...] [--preview preview.png]
+  Quote inputs with spaces or pipes, e.g. "INPUT:stills:labels=First frame|Second frame".
+
+OUT.c also writes OUT.json with built-in set names, labels, frame counts, and frame rates.
+Use :label=Text for one set or :labels=A|B|C with :stills for individual labels.
 
 An OUT.bin is one art set as a blob to push from the PC without flashing (hostpanel push-art
 OUT.bin); the format is in boards/shields/nice_view_custom/widgets/art_relay.h.
@@ -35,6 +42,7 @@ Requires: pip install pillow heatshrink2
 """
 
 import argparse
+import json
 import os
 import re
 import struct
@@ -119,10 +127,10 @@ def decode_lvgl_c(path):
 
 
 def load_input(spec):
-    """Returns [(name, [PIL images], fps, landscape)]: one set, or one per frame with :stills."""
+    """Returns [(name, [PIL images], fps, landscape, label)]: one set, or one per still."""
     path, opts = spec, {}
     while True:
-        m = re.search(r":(landscape|stills|fps=\d+|name=\w+)$", path, re.I)
+        m = re.search(r":(landscape|stills|fps=\d+|name=\w+|labels?=[^:]+)$", path, re.I)
         if not m:
             break
         k, _, v = m.group(1).partition("=")
@@ -134,8 +142,17 @@ def load_input(spec):
         fps = int(opts["fps"])
     landscape = "landscape" in opts
     if "stills" in opts:
-        return [("%s_%d" % (name, i + 1), [f], 0, landscape) for i, f in enumerate(frames)]
-    return [(name, frames, fps if len(frames) > 1 else 0, landscape)]
+        labels = opts["labels"].split("|") if "labels" in opts else []
+        sets = []
+        for i, f in enumerate(frames):
+            set_name = "%s_%d" % (name, i + 1)
+            label = labels[i] if i < len(labels) else set_name.replace("_", " ")
+            if "labels" not in opts:
+                label = opts.get("label", label)
+            sets.append((set_name, [f], 0, landscape, label))
+        return sets
+    label = opts.get("label", name.replace("_", " "))
+    return [(name, frames, fps if len(frames) > 1 else 0, landscape, label)]
 
 
 def load_frames(path):
@@ -277,7 +294,7 @@ def write_blob(path, sets):
     """One set as a pushable blob: header, order, delta offsets, deltas (see art_relay.h)."""
     if len(sets) != 1:
         sys.exit("a .bin holds one art set; got %d (drop :stills or pass one input)" % len(sets))
-    name, frames, fps, landscape = sets[0]
+    name, frames, fps, landscape, label = sets[0]
     order, deltas = encode_set(name, frames, landscape)
     head = b"NVA1" + struct.pack("<BBBBHH", ART_W, ART_H, fps, 0, len(deltas), len(order))
     at = len(head) + len(order) + 2 * len(deltas)
@@ -308,7 +325,8 @@ def write_c(path, sets):
     stride = (ART_W + 7) // 8
     raw_bytes = packed_bytes = unique = 0
     set_lines = []
-    for si, (name, frames, fps, landscape) in enumerate(sets):
+    manifest_sets = []
+    for si, (name, frames, fps, landscape, label) in enumerate(sets):
         order, deltas = encode_set(name, frames, landscape)
         uniq = deltas
         for fi, blob in enumerate(deltas):
@@ -334,9 +352,21 @@ def write_c(path, sets):
         )
         # pointer table + order table
         packed_bytes += 4 * len(uniq) + len(order)
+        manifest_sets.append(
+            {"index": si, "name": name, "label": label, "frames": len(order), "fps": fps}
+        )
     lines += ["const struct custom_art_set custom_art_sets[] = {"] + set_lines + ["};"]
     lines.append("const int custom_art_set_count = %d;" % len(sets))
     open(path, "w", newline="\n").write("\n".join(lines) + "\n")
+    manifest = {
+        "format": "foxglove-builtin-art",
+        "version": 1,
+        "set_count": len(sets),
+        "sets": manifest_sets,
+    }
+    with open(os.path.splitext(path)[0] + ".json", "w", encoding="utf-8", newline="\n") as f:
+        json.dump(manifest, f, indent=2)
+        f.write("\n")
     assert raw_bytes == unique * stride * ART_H
     return unique, raw_bytes, packed_bytes
 
@@ -347,7 +377,7 @@ def write_preview(path, sets, scale=3, per_row=6):
     rows = (len(sets) + per_row - 1) // per_row
     cols = min(len(sets), per_row)
     sheet = Image.new("L", ((w * scale + gap) * cols, (h * scale + gap) * rows), 160)
-    for i, (_, frames, _, landscape) in enumerate(sets):
+    for i, (_, frames, _, landscape, _) in enumerate(sets):
         screen = Image.new("1", (SCREEN_W, ART_H), 1)
         screen.paste(to_stored(frames[0], landscape), (0, 0))
         for x in range(ART_W, SCREEN_W):  # stand-in for the battery/connection strip
@@ -375,7 +405,7 @@ def main():
         "flash: %.1f KiB compressed vs %.1f KiB raw (%.0f%%)"
         % (packed / 1024, raw / 1024, 100.0 * packed / raw)
     )
-    for name, frames, fps, landscape in sets:
+    for name, frames, fps, landscape, label in sets:
         print(
             "  %-32s %3d frame(s)%s%s"
             % (name, len(frames), " @ %d fps" % fps if fps else "", " (landscape)" if landscape else "")

@@ -1,7 +1,13 @@
 //! One owner for the keyboard's Raw HID interface, shared by everything that talks to it.
 //!
-//! A single thread reads with a short timeout, hands each input report to whoever wants it, and
-//! writes queued reports between reads, so reads and writes never race on the handle:
+//! A blocking reader hands reports to a writer waiting on a channel. Only outstanding requests
+//! and reconnect retries use timed waits; an idle Windows connection has no timer.
+//! HidDevice is Send, not Sync. The Windows transport uses a separate overlapped input handle
+//! and a mutex-protected hidapi output handle (Windows permits multiple opens). hidapi exposes
+//! no read cancellation, so input uses the same Win32 overlapped read with an extra stop event;
+//! Drop/reconnect signal it, cancel and finish the pending I/O, then join before closing handles.
+//! Other platforms retain bounded hidapi reads until they have a cancellable input backend.
+//! Reports are dispatched on the writer thread:
 //! - replies to our protocols (0xD5-0xD7 with byte 1 = command | 0x80) complete the request
 //!   waiting for that (proto, command); unsolicited art STATUS also reaches subscribers;
 //! - everything else goes to the subscribers whose filter matches (the overlay's 0xFF/0xF1, a
@@ -25,8 +31,6 @@ use anyhow::{anyhow, Result};
 use crate::protocol::{self, Hello, REPORT};
 use crate::Transport;
 
-/// How long one read waits; a queued write waits at most this long.
-const READ_TIMEOUT_MS: i32 = 10;
 /// Consecutive read errors, or consecutive write errors, that count as the keyboard being gone.
 const MAX_ERRORS: u32 = 5;
 const RETRY: Duration = Duration::from_secs(3);
@@ -39,11 +43,13 @@ const LATE_REPLY_GRACE: Duration = Duration::from_millis(500);
 pub type Report = [u8; REPORT];
 
 /// An open Raw HID interface.
-pub trait RawHid: Send {
-    /// Reads one input report; 0 = nothing within `timeout_ms`.
-    fn read(&mut self, buf: &mut Report, timeout_ms: i32) -> Result<usize>;
+pub trait RawHid: Send + Sync {
+    /// Blocks until input arrives or `interrupt` is called. Only the reader calls this.
+    fn read(&self, buf: &mut Report) -> Result<usize>;
+    /// Permanently wakes this connection's reader; safe before a read starts, too.
+    fn interrupt(&self);
     /// Writes one output report (at most [`REPORT`] bytes; the rest is zero).
-    fn write(&mut self, report: &[u8]) -> Result<()>;
+    fn write(&self, report: &[u8]) -> Result<()>;
 }
 
 /// The keyboard the link is talking to.
@@ -94,6 +100,13 @@ struct Request {
     deadline: Instant,
 }
 
+enum Message {
+    Command(Command),
+    Input(Report),
+    ReadError(String),
+    Wake,
+}
+
 struct Command {
     report: Vec<u8>,
     reply: Option<Request>,
@@ -138,7 +151,7 @@ struct Shared {
 }
 
 pub struct Link {
-    commands: Mutex<Sender<Command>>,
+    commands: Mutex<Sender<Message>>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
 }
@@ -158,7 +171,10 @@ impl Link {
         let thread_shared = shared.clone();
         let thread = std::thread::Builder::new()
             .name("digitalis-link".into())
-            .spawn(move || run(open, rx, &thread_shared))
+            .spawn({
+                let tx = tx.clone();
+                move || run(open, rx, tx, &thread_shared)
+            })
             .expect("link thread");
         Link { commands: Mutex::new(tx), shared, thread: Some(thread) }
     }
@@ -166,6 +182,7 @@ impl Link {
     /// Re-enumerate after a device-interface change, preferring the current transport. No I/O on the caller.
     pub fn reconnect(&self) {
         self.shared.reconnect.store(true, Ordering::Relaxed);
+        let _ = self.commands.lock().unwrap().send(Message::Wake);
         if let Some(thread) = &self.thread {
             thread.thread().unpark();
         }
@@ -226,7 +243,7 @@ impl Link {
         if self.shared.state.lock().unwrap().connected.is_none() {
             return Err(anyhow!("keyboard not connected"));
         }
-        self.commands.lock().unwrap().send(command).map_err(|_| anyhow!("link stopped"))
+        self.commands.lock().unwrap().send(Message::Command(command)).map_err(|_| anyhow!("link stopped"))
     }
 }
 
@@ -250,6 +267,7 @@ impl Transport for Link {
 impl Drop for Link {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
+        let _ = self.commands.lock().unwrap().send(Message::Wake);
         if let Some(t) = self.thread.take() {
             t.thread().unpark();
             let _ = t.join();
@@ -277,14 +295,14 @@ fn publish(shared: &Shared, event: Event) {
 }
 
 /// Drops whatever is queued; dropping a request's sender fails it right away.
-fn discard(commands: &Receiver<Command>) {
+fn discard(commands: &Receiver<Message>) {
     while commands.try_recv().is_ok() {}
 }
 
-fn run(mut open: Opener, commands: Receiver<Command>, shared: &Shared) {
+fn run(mut open: Opener, commands: Receiver<Message>, tx: Sender<Message>, shared: &Shared) {
     while !shared.stop.load(Ordering::Relaxed) {
         shared.reconnect.store(false, Ordering::Relaxed);
-        let (mut dev, connected) = match open() {
+        let (dev, connected) = match open() {
             Ok(c) => c,
             Err(e) => {
                 set_state(shared, |s| s.error = Some(e.to_string()));
@@ -303,7 +321,7 @@ fn run(mut open: Opener, commands: Receiver<Command>, shared: &Shared) {
             s.error = None;
         });
 
-        let error = serve(dev.as_mut(), &commands, shared);
+        let error = serve(Arc::from(dev), &commands, &tx, shared);
         set_state(shared, |s| {
             s.connected = None;
             s.error = error;
@@ -323,46 +341,82 @@ struct Requests {
 }
 
 /// Talks to one connection until it fails (returns why) or the link stops (returns None).
-fn serve(dev: &mut dyn RawHid, commands: &Receiver<Command>, shared: &Shared) -> Option<String> {
+fn serve(dev: Arc<dyn RawHid>, commands: &Receiver<Message>, tx: &Sender<Message>, shared: &Shared) -> Option<String> {
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let finished_ref = &finished;
+        let reading = dev.clone();
+        let reader = scope.spawn(move || {
+            let mut errors = 0;
+            let mut buf = [0; REPORT];
+            while !finished_ref.load(Ordering::Relaxed)
+                && !shared.stop.load(Ordering::Relaxed)
+                && !shared.reconnect.load(Ordering::Relaxed) {
+                match reading.read(&mut buf) {
+                    Ok(n) => {
+                        errors = 0;
+                        if n > 0 && tx.send(Message::Input(buf)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        errors += 1;
+                        if errors >= MAX_ERRORS {
+                            let _ = tx.send(Message::ReadError(format!("lost keyboard: {e}")));
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+        });
+        let error = write_loop(dev.as_ref(), commands, shared);
+        finished.store(true, Ordering::Relaxed);
+        dev.interrupt();
+        // interrupt is latched: even a reader not yet scheduled cannot miss it.
+        let _ = reader.join();
+        error
+    })
+}
+
+impl Requests {
+    fn expire(&mut self, now: Instant) {
+        self.in_flight.retain(|key, r| {
+            if r.deadline > now {
+                return true;
+            }
+            self.held.insert(*key, r.deadline + LATE_REPLY_GRACE);
+            false
+        });
+        self.held.retain(|_, until| *until > now);
+        self.waiting.retain(|c| c.reply.as_ref().is_none_or(|r| r.deadline > now));
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        let waiting = self.waiting.iter().filter_map(|c| c.reply.as_ref());
+        let held = waiting.clone().filter_map(|r| self.held.get(&r.key).copied());
+        self.in_flight.values().map(|r| r.deadline)
+            .chain(waiting.map(|r| r.deadline))
+            .chain(held)
+            .min()
+    }
+}
+
+fn write_loop(dev: &dyn RawHid, commands: &Receiver<Message>, shared: &Shared) -> Option<String> {
     let mut requests = Requests::default();
-    let (mut read_errors, mut write_errors) = (0, 0);
-    let mut buf = [0u8; REPORT];
-    while !shared.stop.load(Ordering::Relaxed) {
+    let mut write_errors = 0;
+    loop {
+        if shared.stop.load(Ordering::Relaxed) {
+            return None;
+        }
         if shared.reconnect.load(Ordering::Relaxed) {
             return Some("device interfaces changed".into());
         }
-        match dev.read(&mut buf, READ_TIMEOUT_MS) {
-            Ok(n) => {
-                read_errors = 0;
-                if n > 0 {
-                    dispatch(&buf, &mut requests, shared);
-                }
-            }
-            Err(e) => {
-                read_errors += 1;
-                if read_errors >= MAX_ERRORS {
-                    return Some(format!("lost keyboard: {e}"));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-        }
-
-        // Requests that waited for their key go first, then whatever is new, in order.
-        let now = Instant::now();
-        let held = &mut requests.held;
-        requests.in_flight.retain(|key, r| {
-            let alive = r.deadline > now;
-            if !alive {
-                held.insert(*key, now + LATE_REPLY_GRACE);
-            }
-            alive
-        });
-        requests.held.retain(|_, until| *until > now);
-        let queued: Vec<Command> =
-            requests.waiting.drain(..).chain(std::iter::from_fn(|| commands.try_recv().ok())).collect();
+        requests.expire(Instant::now());
+        let queued: Vec<_> = requests.waiting.drain(..).collect();
         for c in queued {
             if let Some(r) = &c.reply {
-                if r.deadline <= now {
+                if r.deadline <= Instant::now() {
                     continue; // its caller has given up: never send it
                 }
                 if requests.in_flight.contains_key(&r.key) || requests.held.contains_key(&r.key) {
@@ -384,11 +438,28 @@ fn serve(dev: &mut dyn RawHid, commands: &Receiver<Command>, shared: &Shared) ->
                 requests.in_flight.insert(r.key, r);
             }
         }
+        let message = match requests.next_deadline() {
+            Some(deadline) => match commands.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(m) => m,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => return None,
+            },
+            None => match commands.recv() {
+                Ok(m) => m,
+                Err(_) => return None,
+            },
+        };
+        match message {
+            Message::Command(c) => requests.waiting.push_back(c),
+            Message::Input(r) => dispatch(&r, &mut requests, shared),
+            Message::ReadError(e) => return Some(e),
+            Message::Wake => (),
+        }
     }
-    None
 }
 
 fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
+    requests.expire(Instant::now());
     let generation = shared.state.lock().unwrap().generation;
     shared.reports.lock().unwrap().retain(|(notify, alive)| {
         if !alive.load(Ordering::Relaxed) { return false; }
@@ -431,13 +502,48 @@ mod hid_open {
     use super::*;
     use crate::hid::{Keyboard, Match};
 
-    impl RawHid for Keyboard {
-        fn read(&mut self, buf: &mut Report, timeout_ms: i32) -> Result<usize> {
-            Ok(self.device().read_timeout(buf, timeout_ms)?)
+    #[cfg(windows)]
+    struct Device {
+        writer: Mutex<Keyboard>,
+        reader: crate::hid::Input,
+    }
+
+    #[cfg(windows)]
+    impl RawHid for Device {
+        fn read(&self, buf: &mut Report) -> Result<usize> {
+            self.reader.read(buf)
         }
 
-        fn write(&mut self, report: &[u8]) -> Result<()> {
-            Transport::send(self, report)
+        fn interrupt(&self) {
+            self.reader.interrupt();
+        }
+
+        fn write(&self, report: &[u8]) -> Result<()> {
+            Transport::send(&*self.writer.lock().unwrap(), report)
+        }
+    }
+
+    // hidapi has no portable cancellation API. Keep the existing single-handle bounded
+    // reads off Windows rather than leave a thread blocked forever at shutdown.
+    #[cfg(not(windows))]
+    struct Device {
+        keyboard: Mutex<Keyboard>,
+        interrupted: AtomicBool,
+    }
+
+    #[cfg(not(windows))]
+    impl RawHid for Device {
+        fn read(&self, buf: &mut Report) -> Result<usize> {
+            if self.interrupted.load(Ordering::Relaxed) { return Ok(0); }
+            self.keyboard.lock().unwrap().read_timeout(buf, 10)
+        }
+
+        fn interrupt(&self) {
+            self.interrupted.store(true, Ordering::Relaxed);
+        }
+
+        fn write(&self, report: &[u8]) -> Result<()> {
+            Transport::send(&*self.keyboard.lock().unwrap(), report)
         }
     }
 
@@ -448,7 +554,11 @@ mod hid_open {
             Ok(Link::start(Box::new(move || {
                 let kb = Keyboard::open_matching(&mut api, &m)?;
                 let connected = Connected { product: kb.product.clone(), hello: kb.hello };
-                Ok((Box::new(kb) as Box<dyn RawHid>, connected))
+                #[cfg(windows)]
+                let device = Device { reader: kb.input()?, writer: Mutex::new(kb) };
+                #[cfg(not(windows))]
+                let device = Device { keyboard: Mutex::new(kb), interrupted: AtomicBool::new(false) };
+                Ok((Box::new(device) as Box<dyn RawHid>, connected))
             })))
         }
     }
@@ -466,7 +576,9 @@ mod tests {
     /// right away or once released, and it can send its own reports and die.
     #[derive(Clone, Default)]
     struct Fake {
-        inbox: Arc<Mutex<VecDeque<Report>>>,
+        inbox: Arc<(Mutex<VecDeque<Report>>, std::sync::Condvar)>,
+        interrupted: Arc<AtomicBool>,
+        reads: Arc<std::sync::atomic::AtomicUsize>,
         held: Arc<Mutex<VecDeque<Report>>>,
         written: Arc<Mutex<Vec<Vec<u8>>>>,
         dead: Arc<AtomicBool>,
@@ -482,13 +594,21 @@ mod tests {
 
     impl Fake {
         fn push(&self, bytes: &[u8]) {
-            self.inbox.lock().unwrap().push_back(report(bytes));
+            self.inbox.0.lock().unwrap().push_back(report(bytes));
+            self.inbox.1.notify_all();
         }
 
         /// Lets the oldest held reply through.
         fn release_one(&self) {
             let r = self.held.lock().unwrap().pop_front().expect("a held reply");
-            self.inbox.lock().unwrap().push_back(r);
+            self.inbox.0.lock().unwrap().push_back(r);
+            self.inbox.1.notify_all();
+        }
+
+        fn disconnect(&self) {
+            let _inbox = self.inbox.0.lock().unwrap();
+            self.dead.store(true, Ordering::Relaxed);
+            self.inbox.1.notify_all();
         }
 
         fn written(&self) -> Vec<Vec<u8>> {
@@ -504,23 +624,24 @@ mod tests {
     }
 
     impl RawHid for Fake {
-        fn read(&mut self, buf: &mut Report, timeout_ms: i32) -> Result<usize> {
-            if self.dead.load(Ordering::Relaxed) {
-                return Err(anyhow!("device gone"));
-            }
-            match self.inbox.lock().unwrap().pop_front() {
-                Some(r) => {
-                    *buf = r;
-                    Ok(REPORT)
-                }
-                None => {
-                    std::thread::sleep(Duration::from_millis(timeout_ms as u64));
-                    Ok(0)
-                }
+        fn read(&self, buf: &mut Report) -> Result<usize> {
+            self.reads.fetch_add(1, Ordering::Relaxed);
+            let mut inbox = self.inbox.0.lock().unwrap();
+            loop {
+                if self.interrupted.load(Ordering::Relaxed) { return Ok(0); }
+                if self.dead.load(Ordering::Relaxed) { return Err(anyhow!("device gone")); }
+                if let Some(r) = inbox.pop_front() { *buf = r; return Ok(REPORT); }
+                inbox = self.inbox.1.wait(inbox).unwrap();
             }
         }
 
-        fn write(&mut self, out: &[u8]) -> Result<()> {
+        fn interrupt(&self) {
+            let _inbox = self.inbox.0.lock().unwrap();
+            self.interrupted.store(true, Ordering::Relaxed);
+            self.inbox.1.notify_all();
+        }
+
+        fn write(&self, out: &[u8]) -> Result<()> {
             if self.dead.load(Ordering::Relaxed) {
                 return Err(anyhow!("device gone"));
             }
@@ -532,7 +653,8 @@ mod tests {
                 } else {
                     // Another app's traffic arrives first, then the reply.
                     self.push(&[0xFF, 1, 0, 2]);
-                    self.inbox.lock().unwrap().push_back(reply);
+                    self.inbox.0.lock().unwrap().push_back(reply);
+                    self.inbox.1.notify_all();
                 }
             }
             Ok(())
@@ -546,7 +668,9 @@ mod tests {
                 return Err(anyhow!("no keyboard"));
             }
             let c = Connected { product: "Fake".into(), hello: None };
-            Ok((Box::new(fake.clone()) as Box<dyn RawHid>, c))
+            let mut connection = fake.clone();
+            connection.interrupted = Arc::new(AtomicBool::new(false));
+            Ok((Box::new(connection) as Box<dyn RawHid>, c))
         }));
         l.wait_connected(WAIT).unwrap();
         l
@@ -555,6 +679,77 @@ mod tests {
     /// An art STATUS request tagged with `id` (the firmware ignores byte 2).
     fn status(l: &Link, id: u8, timeout: Duration) -> Result<u8> {
         l.request(&[protocol::ART, art::STATUS, id], protocol::ART, art::STATUS, timeout).map(|r| r[2])
+    }
+
+    #[test]
+    fn idle_reader_stays_blocked_and_drop_wakes_it() {
+        let fake = Fake::default();
+        let l = link(&fake);
+        let end = Instant::now() + WAIT;
+        while fake.reads.load(Ordering::Relaxed) == 0 && Instant::now() < end {
+            std::thread::yield_now();
+        }
+        assert_eq!(fake.reads.load(Ordering::Relaxed), 1);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(fake.reads.load(Ordering::Relaxed), 1, "idle input must not poll");
+        let (tx, rx) = mpsc::channel();
+        let dropping = std::thread::spawn(move || { drop(l); tx.send(()).unwrap(); });
+        rx.recv_timeout(WAIT).expect("Drop must wake the blocked reader");
+        dropping.join().unwrap();
+    }
+
+    #[test]
+    fn reconnect_wakes_idle_input_and_fails_outstanding_requests() {
+        let fake = Fake::default();
+        fake.hold.store(true, Ordering::Relaxed);
+        let l = Arc::new(link(&fake));
+        let first = l.state().generation;
+        let pending = std::thread::spawn({
+            let l = l.clone();
+            move || status(&l, 1, WAIT)
+        });
+        fake.wait_written(1);
+        l.reconnect();
+        assert_eq!(pending.join().unwrap().unwrap_err().to_string(), "keyboard disconnected");
+        let end = Instant::now() + WAIT;
+        while l.state().generation == first && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(l.state().generation, first + 1);
+        assert!(l.state().connected.is_some());
+    }
+
+    #[test]
+    fn held_key_expires_and_wakes_a_waiting_request_without_input() {
+        let fake = Fake::default();
+        fake.silent.store(true, Ordering::Relaxed);
+        let l = Arc::new(link(&fake));
+        assert!(status(&l, 1, Duration::from_millis(50)).is_err());
+        let second = std::thread::spawn({
+            let l = l.clone();
+            move || status(&l, 2, WAIT)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(fake.written().len(), 1, "the timed-out key stays quarantined");
+        fake.wait_written(2);
+        assert_eq!(fake.written().len(), 2, "grace expiry must wake the writer");
+        fake.push(&[protocol::ART, 0x80 | art::STATUS, 2]);
+        assert_eq!(second.join().unwrap().unwrap(), 2);
+    }
+
+    #[test]
+    fn expiry_uses_the_request_deadline_and_cleans_held_keys_on_touch() {
+        let now = Instant::now();
+        let key = (protocol::ART, art::STATUS);
+        let (tx, _rx) = mpsc::channel();
+        let mut requests = Requests::default();
+        requests.in_flight.insert(key, Request { key, tx, deadline: now });
+        requests.expire(now + Duration::from_millis(100));
+        assert!(requests.in_flight.is_empty());
+        assert_eq!(requests.held[&key], now + LATE_REPLY_GRACE);
+        assert_eq!(requests.next_deadline(), None, "an idle held key needs no timer");
+        requests.expire(now + LATE_REPLY_GRACE);
+        assert!(requests.held.is_empty());
     }
 
     #[test]
@@ -794,7 +989,7 @@ mod tests {
         let _subscription = l.subscribe_events(move |event| { let _ = tx.send(event); });
         assert!(matches!(rx.recv_timeout(WAIT).unwrap(), Event::State(_)));
 
-        fake.dead.store(true, Ordering::Relaxed);
+        fake.disconnect();
         let Event::State(s) = rx.recv_timeout(WAIT).unwrap() else { panic!("state") };
         assert!(s.connected.is_none());
         assert!(s.error.is_some());
