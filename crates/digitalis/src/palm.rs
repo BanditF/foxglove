@@ -93,6 +93,7 @@ pub struct DigitalisDevice {
     sink: EventSink,
     layers: Arc<Mutex<Vec<u8>>>,
     behaviors: Mutex<Vec<BehaviorInfo>>,
+    underglow: Mutex<Option<u16>>,
     stop: Arc<AtomicBool>,
     _events: EventSubscription,
     _reports: Option<JoinHandle<()>>,
@@ -147,6 +148,7 @@ impl DigitalisDevice {
             sink,
             layers,
             behaviors: Mutex::new(Vec::new()),
+            underglow: Mutex::new(None),
             stop,
             _events: events,
             _reports: thread,
@@ -156,6 +158,19 @@ impl DigitalisDevice {
     /// The behaviors [`Behaviors::list`] offers; the app fills it from the keymap it reads.
     pub fn set_behaviors(&self, list: Vec<BehaviorInfo>) {
         *self.behaviors.lock().unwrap_or_else(|e| e.into_inner()) = list;
+    }
+
+    /// The keymap's `&rgb_ug` behavior id, which lighting changes go through (the firmware has
+    /// no direct colour command yet).
+    pub fn set_underglow(&self, id: Option<u16>) {
+        *self.underglow.lock().unwrap_or_else(|e| e.into_inner()) = id;
+    }
+
+    /// Sends one `&rgb_ug` command. Lighting commands are always safe, so they skip the
+    /// action list.
+    fn underglow(&self, command: u32, param: u32) -> PResult<()> {
+        let id = self.underglow.lock().unwrap_or_else(|e| e.into_inner()).ok_or(PalmError::Unsupported)?;
+        status(settings::invoke(&*self.link, id, command, param, 0).map_err(err)?)
     }
 
     pub fn link(&self) -> &Arc<Link> {
@@ -221,15 +236,25 @@ impl Behaviors for DigitalisDevice {
     fn invoke_checked(&self, checked: Checked) -> PResult<()> {
         let a = checked.action();
         let id = u16::try_from(a.id).map_err(|_| PalmError::Unsupported)?;
-        match settings::invoke(&*self.link, id, a.param1, a.param2, a.hold_ms).map_err(err)? {
-            InvokeStatus::Ok => Ok(()),
-            InvokeStatus::UnknownBehavior | InvokeStatus::NotBuiltIn => Err(PalmError::Unsupported),
-            InvokeStatus::Busy => Err(PalmError::Busy("a held action is running".into())),
-            InvokeStatus::Refused => Err(PalmError::Denied("the keyboard refused this action".into())),
-            other => Err(PalmError::Backend(other.to_string())),
-        }
+        status(settings::invoke(&*self.link, id, a.param1, a.param2, a.hold_ms).map_err(err)?)
     }
 }
+
+/// The keyboard's answer to INVOKE as a Palm result; the keyboard's own words are kept.
+fn status(s: InvokeStatus) -> PResult<()> {
+    match s {
+        InvokeStatus::Ok => Ok(()),
+        InvokeStatus::Busy => Err(PalmError::Busy(s.to_string())),
+        InvokeStatus::Refused => Err(PalmError::Denied(s.to_string())),
+        other => Err(PalmError::Backend(other.to_string())),
+    }
+}
+
+// `&rgb_ug` commands (ZMK's dt-bindings/zmk/rgb.h).
+const RGB_ON: u32 = 1;
+const RGB_OFF: u32 = 2;
+const RGB_EFFECT_SET: u32 = 13;
+const RGB_COLOR_HSB: u32 = 14;
 
 impl Lighting for DigitalisDevice {
     fn layout(&self) -> PResult<Vec<Zone>> {
@@ -249,8 +274,23 @@ impl Lighting for DigitalisDevice {
         Ok(state)
     }
 
+    /// Effects by the firmware's number: 0 solid, 1 breathe, 2 spectrum, 3 swirl.
+    fn set_effect(&self, effect: Effect) -> PResult<()> {
+        let n: u32 = effect.id.parse().map_err(|_| PalmError::Unsupported)?;
+        self.underglow(RGB_EFFECT_SET, n)
+    }
+
+    fn set_on(&self, on: bool) -> PResult<()> {
+        self.underglow(if on { RGB_ON } else { RGB_OFF }, 0)
+    }
+
+    fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> PResult<()> {
+        let hsb = (u32::from(hue.min(359)) << 16) | (u32::from(sat.min(100)) << 8) | u32::from(brightness.min(100));
+        self.underglow(RGB_COLOR_HSB, hsb)
+    }
+
     fn release(&self) -> PResult<()> {
-        // set_effect/set_frame aren't supported yet, so the keyboard always has control.
+        // Changes go through the keymap's own behavior, so the keyboard always keeps control.
         Ok(())
     }
 }
@@ -506,7 +546,7 @@ mod tests {
     #[test]
     fn passes_the_palm_contract() {
         let all = capabilities::PANEL | capabilities::ART_RELAY | capabilities::SETTINGS_RGB;
-        let (dev, _fake, _bus) = device(all);
+        let (dev, fake, _bus) = device(all);
         dev.set_behaviors(vec![
             BehaviorInfo { id: 3, param1: 0, param2: 0, name: "Bootloader".into(), hold_ms: 0, risk: Risk::Confirm },
             BehaviorInfo { id: 4, param1: 1, param2: 0, name: "RGB on".into(), hold_ms: 0, risk: Risk::Safe },
@@ -516,7 +556,13 @@ mod tests {
         assert!(matches!(behaviors.invoke(3, 0, 0, false), Err(PalmError::Denied(_))));
         behaviors.invoke(4, 1, 0, false).unwrap();
         assert_eq!(behaviors.invoke(4, 2, 0, false), Err(PalmError::Unsupported));
-        assert_eq!(dev.lighting().unwrap().state().unwrap().hue, 0x168);
+        let lighting = dev.lighting().unwrap();
+        assert_eq!(lighting.state().unwrap().hue, 0x168);
+        assert_eq!(lighting.set_on(true), Err(PalmError::Unsupported), "no &rgb_ug known yet");
+        dev.set_underglow(Some(7));
+        lighting.set_color(400, 50, 100).unwrap();
+        let sent = fake.written.lock().unwrap().last().unwrap().clone();
+        assert_eq!(&sent[..12], &protocol::invoke(7, RGB_COLOR_HSB, (359 << 16) | (50 << 8) | 100, 0)[..12]);
         assert_eq!(dev.settings().unwrap().get("rgb_sync").unwrap(), Some(Value::Bool(true)));
         assert_eq!(dev.power().unwrap().batteries().unwrap(), vec![("right".to_string(), 55)]);
     }

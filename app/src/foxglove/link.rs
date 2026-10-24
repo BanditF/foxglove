@@ -34,22 +34,30 @@ pub fn subscribe_links(notify: impl Fn(Arc<Link>) + Send + 'static) -> Arc<()> {
 /// A keyboard with Foxglove's host link and what it said to HELLO: on a link already open (the
 /// overlay's) if one answers, else the first Raw HID keyboard that does.
 pub fn host_link() -> Option<(Arc<Link>, Hello)> {
-    let open: Vec<Arc<Link>> = LINKS
+    host_keyboard().map(|(_, link, hello)| (link, hello))
+}
+
+/// [`host_link`] with the keyboard's VID/PID.
+pub fn host_keyboard() -> Option<((u16, u16), Arc<Link>, Hello)> {
+    let open: Vec<((u16, u16), Arc<Link>)> = LINKS
         .get_or_init(Default::default)
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .values()
-        .filter_map(Weak::upgrade)
-        .filter(|l| l.state().connected.is_some())
+        .iter()
+        .filter_map(|(id, l)| Some((*id, l.upgrade()?)))
+        .filter(|(_, l)| l.state().connected.is_some())
         .collect();
-    if let Some(found) = open.into_iter().find_map(|l| ask_hello(&l).map(|h| (l, h))) {
+    if let Some(found) = open
+        .into_iter()
+        .find_map(|(id, l)| ask_hello(&l).map(|h| (id, l, h)))
+    {
         return Some(found);
     }
 
     keyboards()?.into_iter().find_map(|(vid, pid)| {
         let link = shared(vid, pid).ok()?;
         link.wait_connected(Duration::from_secs(3)).ok()?;
-        ask_hello(&link).map(|h| (link, h))
+        ask_hello(&link).map(|h| ((vid, pid), link, h))
     })
 }
 

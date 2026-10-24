@@ -211,6 +211,16 @@ pub trait Lighting {
         Err(PalmError::Unsupported)
     }
 
+    /// Turns the lights on or off when supported.
+    fn set_on(&self, _on: bool) -> Result<()> {
+        Err(PalmError::Unsupported)
+    }
+
+    /// Sets one colour for the whole device (hue 0-359, saturation and brightness 0-100).
+    fn set_color(&self, _hue: u16, _sat: u8, _brightness: u8) -> Result<()> {
+        Err(PalmError::Unsupported)
+    }
+
     /// Sends colors in LED layout order when supported.
     fn set_frame(&self, _frame: &[Rgb]) -> Result<()> {
         Err(PalmError::Unsupported)
