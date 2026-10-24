@@ -1,0 +1,101 @@
+//! The local API on the named pipe (#69, docs/local-api.md): outside tools and foxglove-cli
+//! reach the app's facts and devices. The listener sleeps in the kernel until a client
+//! connects; each client gets its own thread.
+
+use std::sync::Arc;
+
+use den::{Client, Context, Devices, Limits};
+use foxglove_kit_api::methods::{self, ClientInfo};
+use foxglove_kit_api::permission::Permission;
+use foxglove_kit_api::rpc::{code, Error};
+use palm::{Caps, Device as _};
+use serde_json::{json, Value};
+
+/// Starts the pipe listener (Windows; `FOXGLOVE_DISABLE=api` leaves it out).
+pub fn start() {
+    if super::repaint_trace::disabled("api") {
+        return;
+    }
+    #[cfg(windows)]
+    super::services::spawn_named("api-pipe", || {
+        let result = den::pipe::listen(|| Context {
+            facts: super::palm_host::bus().facts().clone(),
+            devices: Arc::new(AppDevices),
+            client: Client::Tool(Arc::new(approve)),
+            app_version: env!("CARGO_PKG_VERSION").into(),
+            limits: Limits::default(),
+        });
+        if let Err(e) = result {
+            eprintln!("Foxglove API: the pipe isn't available: {e}");
+        }
+    });
+}
+
+/// Until the Den asks the user (next PR), tools get what they ask for except the sensitive
+/// permissions (key events, raw HID), which stay off. Any program of this user could already
+/// read the same state; the pipe admits no one else.
+fn approve(_client: &ClientInfo, asked: &[Permission]) -> Vec<Permission> {
+    asked.iter().filter(|p| !p.sensitive()).cloned().collect()
+}
+
+fn caps(c: Caps) -> Vec<String> {
+    [
+        (Caps::KEYMAP, "keymap"),
+        (Caps::LAYERS, "layers"),
+        (Caps::KEY_EVENTS, "key_events"),
+        (Caps::BEHAVIORS, "behaviors"),
+        (Caps::LIGHTING, "lighting"),
+        (Caps::COLOR_IN, "color_in"),
+        (Caps::SCREENS, "screens"),
+        (Caps::POWER, "power"),
+        (Caps::SETTINGS, "settings"),
+    ]
+    .into_iter()
+    .filter(|(cap, _)| c.contains(*cap))
+    .map(|(_, name)| name.to_string())
+    .collect()
+}
+
+struct AppDevices;
+
+impl Devices for AppDevices {
+    fn call(&self, method: &str, _params: Value) -> Result<Value, Error> {
+        match method {
+            "devices.list" => {
+                let devices = super::palm_host::cached()
+                    .map(|d| {
+                        let info = d.info();
+                        methods::Device {
+                            id: info.id.to_string(),
+                            name: info.name.clone(),
+                            kind: format!("{:?}", info.kind).to_lowercase(),
+                            backend: info.backend.to_string(),
+                            connected: d.link().state().connected.is_some(),
+                            caps: caps(d.caps()),
+                        }
+                    })
+                    .into_iter()
+                    .collect();
+                Ok(json!(methods::Devices { devices }))
+            }
+            _ => Err(Error {
+                code: code::UNSUPPORTED,
+                message: format!("{method} is not available yet"),
+                data: None,
+            }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tools_never_get_sensitive_permissions_unasked() {
+        let asked = [Permission::DevicesRead, Permission::KeyEvents, Permission::HidRaw];
+        let client = ClientInfo { name: "t".into(), version: "1".into() };
+        assert_eq!(approve(&client, &asked), vec![Permission::DevicesRead]);
+        assert_eq!(caps(Caps::LAYERS | Caps::SCREENS), vec!["layers", "screens"]);
+    }
+}
