@@ -189,6 +189,10 @@ void host_link_build_info_reply(uint8_t status, uint8_t half,
 // rgb_idle.c, on the left: the underglow went on or off.
 void host_link_rgb_changed(void);
 
+// art_relay_central.c: the right acknowledged the PC's colour, or a read-back after another
+// underglow command came in. Sends RGB_STATE (D7 83) after host traffic.
+void host_link_rgb_right_followed(void);
+
 // Called by relay connection/discovery callbacks; queues a report only after host traffic.
 void host_link_art_status(void);
 

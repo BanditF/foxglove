@@ -5,12 +5,16 @@ on:
     paths:
       - "config/**"
       - "boards/**"
+      - "dts/**"
+      - "zephyr/module.yml"
       - "tests/zmk-sim/**"
       - ".github/workflows/zmk-sim.yml"
   pull_request:
     paths:
       - "config/**"
       - "boards/**"
+      - "dts/**"
+      - "zephyr/module.yml"
       - "tests/zmk-sim/**"
       - ".github/workflows/zmk-sim.yml"
   workflow_dispatch:

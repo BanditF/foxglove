@@ -43,6 +43,15 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/rgb_underglow.h>
 #endif
 
+// &rgb_ug commands from the PC whose right-half part goes over the relay (#266).
+#define RGB_UG_RELAYED                                                                             \
+    (IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE) && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) &&            \
+     DT_HAS_COMPAT_STATUS_OKAY(zmk_behavior_rgb_underglow))
+#if RGB_UG_RELAYED
+#include <dt-bindings/zmk/rgb.h>
+#define RGB_UG_NAME DEVICE_DT_NAME(DT_INST(0, zmk_behavior_rgb_underglow))
+#endif
+
 enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE, PANEL_SCREENS };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
@@ -361,6 +370,11 @@ static void invoke_press_cb(struct k_work *work) {
     };
     int ret = zmk_behavior_invoke_binding(&invoke_binding, invoke_event, true);
     invoke_reply(ret < 0 ? INVOKE_FAILED : INVOKE_OK, invoke_id);
+#if RGB_UG_RELAYED
+    if (strcmp(invoke_binding.behavior_dev, RGB_UG_NAME) == 0) {
+        art_relay_rgb_verify(); // went to the right through ZMK: read it back, then tell the PC
+    }
+#endif
     k_work_schedule(&invoke_release_work, K_MSEC(invoke_hold_ms));
 }
 static K_WORK_DEFINE(invoke_press_work, invoke_press_cb);
@@ -379,6 +393,24 @@ static uint8_t invoke(const uint8_t *d, int len) {
     if (foxglove_behavior_refused(name)) {
         return INVOKE_REFUSED;
     }
+#if RGB_UG_RELAYED
+    // The PC's colour (#266): set here at once and sent to the right as one acknowledged write,
+    // not through ZMK's split queue, which delays and drops under streaming. Not busy-gated: the
+    // newest colour wins.
+    if (strcmp(name, RGB_UG_NAME) == 0 &&
+        sys_get_le32(&d[2]) == RGB_COLOR_HSB_CMD) {
+        uint32_t hsb = sys_get_le32(&d[6]);
+        struct zmk_led_hsb color = {.h = hsb >> 16, .s = (hsb >> 8) & 0xff, .b = hsb & 0xff};
+        if (color.h > 359 || color.s > 100 || color.b > 100) {
+            return INVOKE_FAILED;
+        }
+        if (art_relay_rgb_hsb(color.h, color.s, color.b) == 0) {
+            zmk_rgb_underglow_set_hsb(color);
+            invoke_reply(INVOKE_OK, id); // the caller only replies to errors
+            return INVOKE_OK;
+        }
+    }
+#endif
     if (!atomic_cas(&invoke_busy, 0, 1)) {
         return INVOKE_BUSY;
     }
@@ -496,6 +528,20 @@ static void rgb_state_event_cb(struct k_work *work) {
     }
 }
 static K_WORK_DELAYABLE_DEFINE(rgb_state_event_work, rgb_state_event_cb);
+
+// The right has followed (#266): the PC hears at once, with the right's colour as acknowledged.
+static void rgb_followed_cb(struct k_work *work) {
+    uint8_t r[RGB_STATE_SIZE];
+    rgb_state(r);
+    reply(r, sizeof(r));
+}
+static K_WORK_DEFINE(rgb_followed_work, rgb_followed_cb);
+
+void host_link_rgb_right_followed(void) {
+    if (atomic_get(&host_seen)) {
+        k_work_submit(&rgb_followed_work);
+    }
+}
 
 void host_link_rgb_changed(void) {
     if (atomic_get(&host_seen)) {
