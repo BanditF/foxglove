@@ -490,3 +490,19 @@ fn tools_cant_watch_apps() {
     let out = run(plugin(&["apps.watch:obs64.exe"]), &[init(), call(1, "apps.watch", json!({"exe": "obs64.exe"}))]);
     assert!(err(1, code::DENIED)(&out[1]));
 }
+
+#[test]
+fn a_plugin_reads_its_own_settings_and_tools_none() {
+    set_settings_source(|plugin| {
+        let mut m = serde_json::Map::new();
+        m.insert("plugin".into(), json!(plugin));
+        m
+    });
+    let get = call(1, "settings.get", json!({}));
+    let out = Out::default();
+    let text: String = [init(), get.clone()].iter().map(|v| v.to_string() + "\n").collect();
+    serve_with(Cursor::new(text), out.clone(), plugin(&[]), Some("org.a".into()), |_| {}).unwrap();
+    assert_eq!(out.lines()[1]["result"], json!({"values": {"plugin": "org.a"}}));
+    let out = run(plugin(&[]), &[init(), get]);
+    assert!(err(1, code::DENIED)(&out[1]), "an outside tool has no settings");
+}

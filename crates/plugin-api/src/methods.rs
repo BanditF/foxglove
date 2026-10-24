@@ -270,6 +270,13 @@ pub struct AppWindows {
     pub open: u32,
 }
 
+/// A plugin's settings (`[[settings]]` in `plugin.toml`): the answer to `settings.get` and the
+/// `settings.changed` event, every setting with its current value (API 1.3).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SettingValues {
+    pub values: serde_json::Map<String, serde_json::Value>,
+}
+
 /// Mutes or unmutes the default communications microphone (#237, API 1.2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SetMuteParams {
@@ -305,6 +312,16 @@ pub struct LeaseParams {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Lease {
     pub lease: u64,
+}
+
+/// Changes a held lease's colour (and effect) in place, for a stream of colours (a colour sync)
+/// without taking a new lease each time (API 1.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LeaseUpdate {
+    pub lease: u64,
+    pub color: Hsb,
+    #[serde(default)]
+    pub effect: Option<String>,
 }
 
 /// One of the plugin's own secrets (#213, API 1.2).
@@ -449,11 +466,15 @@ pub const METHODS: &[Method] = &[
     // Hold and give back the lights (#236).
     Method { name: "lighting.lease", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(LeaseParams), result: Some(schema!(Lease)) },
     Method { name: "lighting.release", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(Lease), result: Some(schema!(Empty)) },
+    Method { name: "lighting.update", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(LeaseUpdate), result: Some(schema!(Empty)) },
     // A plugin's own secrets; outside tools get none (#213).
     Method { name: "secrets.get", kind: Kind::Call, permission: Some("secrets"), params: schema!(SecretName), result: Some(schema!(SecretValue)) },
     Method { name: "secrets.set", kind: Kind::Call, permission: Some("secrets"), params: schema!(SetSecretParams), result: Some(schema!(Empty)) },
     // Sent to one plugin when the key bound to its action is pressed (#212).
     Method { name: "action.invoked", kind: Kind::Event, permission: None, params: schema!(ActionInvoked), result: None },
+    // A plugin's own settings (#69): no permission, plugins only (API 1.3).
+    Method { name: "settings.get", kind: Kind::Call, permission: None, params: schema!(Empty), result: Some(schema!(SettingValues)) },
+    Method { name: "settings.changed", kind: Kind::Event, permission: None, params: schema!(SettingValues), result: None },
     // Waiting for an app's windows instead of polling for it (#277); checked against the
     // scoped apps.watch permissions by the host (API 1.3).
     Method { name: "apps.watch", kind: Kind::Call, permission: None, params: schema!(AppsWatchParams), result: Some(schema!(AppWindows)) },
