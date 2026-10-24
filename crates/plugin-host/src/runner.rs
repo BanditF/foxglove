@@ -150,6 +150,15 @@ impl Running {
         }
     }
 
+    /// Whether the process has ended, without waiting.
+    fn has_exited(&mut self) -> bool {
+        match &mut self.proc {
+            Proc::Std(child) => child.try_wait().map(|s| s.is_some()).unwrap_or(true),
+            #[cfg(windows)]
+            Proc::Contained(p) => p.has_exited(),
+        }
+    }
+
     fn exit_code(&mut self) -> Option<i32> {
         match &mut self.proc {
             Proc::Std(child) => child.wait().ok().and_then(|s| s.code()),
@@ -239,9 +248,12 @@ fn supervise(
                     let _ = crate::serve(reader, stdin, ctx);
                     let _ = exited.send(Event::Exited(this_run));
                 });
-                // Wait for an exit, a stop, or silence longer than the ping timeout.
+                // Wait for an exit, a stop, or silence longer than the ping timeout. The exit is
+                // also checked on the process itself: on Windows another child started at the
+                // same moment can inherit the plugin's stdout and keep it from closing.
+                let poll = config.ping_timeout.min(Duration::from_millis(250));
                 let reason = loop {
-                    match rx.recv_timeout(config.ping_timeout) {
+                    match rx.recv_timeout(poll) {
                         // A late notice from an earlier run that was killed.
                         Ok(Event::Exited(n)) if n != run => {}
                         Ok(Event::Exited(_)) => {
@@ -252,6 +264,10 @@ fn supervise(
                             running.kill();
                             status(PluginState::Stopped);
                             return;
+                        }
+                        Err(RecvTimeoutError::Timeout) if running.has_exited() => {
+                            let code = running.exit_code();
+                            break format!("exited ({})", code.map_or("no code".into(), |c| c.to_string()));
                         }
                         Err(RecvTimeoutError::Timeout) => {
                             let silent = Duration::from_millis(now_ms().saturating_sub(last.load(Ordering::Relaxed)));
@@ -300,7 +316,7 @@ mod job {
     use std::os::windows::io::AsRawHandle;
     use std::process::Child;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
     };
@@ -375,6 +391,10 @@ mod job {
                 TerminateProcess(self.0, 1);
                 WaitForSingleObject(self.0, 5000);
             }
+        }
+
+        pub fn has_exited(&self) -> bool {
+            unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
         }
 
         pub fn wait(&self) -> Option<i32> {
