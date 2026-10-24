@@ -15,7 +15,8 @@
  *      Capabilities: bit 0 panel, 1 art relay, 2 settings/RGB, 3 unsolicited art STATUS,
  *                    4 settings CONN_STATE, 5 POSITION (only when test hooks are built),
  *                    6 screen snapshots (D7 06/07), 7 INVOKE refuses &bt/&out/&bootloader/
- *                    &sys_reset/&soft_off with status 6 (firmware without it may press them).
+ *                    &sys_reset/&soft_off with status 6 (firmware without it may press them),
+ *                    8 unsolicited CONN_STATE (D7 84) on connection changes.
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -63,7 +64,9 @@
  *                                                     USB HID ready (0/1), BLE profile count u8
  *      Bonded means the active profile is not open. Endpoint is the currently selected transport,
  *      not the preferred transport. Without BLE, index/connected/bonded/count are zero; without
- *      USB, ready is zero. State is sampled on request only; no boot work or unsolicited replies.
+ *      USB, ready is zero. No boot work. After host traffic, a change of the active profile (or
+ *      its connection or bond), the endpoint or USB also sends D7 84 unsolicited, ~50 ms after it
+ *      settles and only if the payload differs from the last one sent that way (capability bit 8).
  *   05 POSITION  byte 0 D7, byte 1 05, byte 2 pos u8, byte 3 state u8 (1 down, 0 up)
  *                reply: byte 0 D7, byte 1 85, byte 2 status u8, byte 3 pos u8
  *      Positions are keymap indices 0..ZMK_KEYMAP_LEN-1 (48). Remaining report bytes are padding.
@@ -116,6 +119,7 @@
 #define HOST_LINK_CAP_POSITION (1U << 5)
 #define HOST_LINK_CAP_SCREEN (1U << 6) // set by the screen readback build
 #define HOST_LINK_CAP_INVOKE_REFUSES (1U << 7)
+#define HOST_LINK_CAP_CONN_STATE_EVENT (1U << 8)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
