@@ -1,0 +1,33 @@
+name: Script checks
+# The release gate's checks that need no hardware or Rust: the flasher and keymap tests, and the
+# keymap lint on the real keymap. Firmware images are preflighted in build.yml; the keymap engine
+# runs in zmk-sim.yml.
+on:
+  push:
+    paths:
+      - "scripts/**"
+      - "config/**"
+      - ".github/workflows/checks.yml"
+  pull_request:
+    paths:
+      - "scripts/**"
+      - "config/**"
+      - ".github/workflows/checks.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Flasher and keymap tests
+        run: python -m unittest discover -s scripts -p "test_*.py" -v
+      - name: Keymap lint
+        run: python scripts/keymap/keymap_lint.py config/eyelash_corne.keymap

@@ -37,5 +37,6 @@ fn main() {
         foxglove::art_service::start();
     }
     foxglove::accent::start();
+    foxglove::api::start();
     foxglove::startup::finish(platform::run(settings, available_devices))
 }
