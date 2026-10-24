@@ -76,6 +76,8 @@ pub(super) struct SerialWatch {
     #[cfg(target_os = "windows")]
     notification: Option<device_watch::DeviceWatch>,
     #[cfg(target_os = "windows")]
+    hid_notification: Option<device_watch::DeviceWatch>,
+    #[cfg(target_os = "windows")]
     previous_ble: Option<ConnectionSpec>,
     #[cfg(target_os = "windows")]
     registration_attempted: bool,
@@ -134,10 +136,6 @@ impl OverlayApp {
         {
             self.serial_watch.previous_ble = Some(spec.clone());
         }
-        // Let an in-flight connection finish before changing its spec or dropping it.
-        if self.connect.pending_connect.is_some() {
-            return;
-        }
         let eligible = matches!(
             self.session.connection,
             AppConnectionState::Reconnecting { .. }
@@ -148,12 +146,46 @@ impl OverlayApp {
                 Some(ConnectionSpec::Zmk { .. })
             )
         );
+        if !self.serial_watch.registration_attempted {
+            self.serial_watch.registration_attempted = true;
+            self.serial_watch.notification =
+                device_watch::DeviceWatch::new(self.ui_wake.clone(), false);
+            self.serial_watch.hid_notification =
+                device_watch::DeviceWatch::new(self.ui_wake.clone(), true);
+        }
+        let hid_changed = self
+            .serial_watch
+            .hid_notification
+            .as_ref()
+            .is_some_and(device_watch::DeviceWatch::take_change);
+        let changed = self
+            .serial_watch
+            .notification
+            .as_ref()
+            .is_some_and(device_watch::DeviceWatch::take_change);
+        if changed || hid_changed {
+            self.serial_watch.pending = None;
+            crate::foxglove::link::reconnect();
+            if let AppConnectionState::Reconnecting { next_attempt_at } =
+                &mut self.session.connection
+            {
+                *next_attempt_at = Instant::now();
+            }
+        }
         if let Some(rx) = &self.serial_watch.pending {
             match rx.try_recv() {
                 Ok((original, replacement)) => {
                     self.serial_watch.pending = None;
-                    if eligible && self.session.last_spec.as_ref() == Some(&original) {
+                    if eligible
+                        && crate::foxglove::reconnect::scan_is_current(
+                            self.session.last_spec.as_ref(),
+                            &original,
+                        )
+                    {
                         if let Some(spec) = replacement {
+                            crate::foxglove::link::transport_changed(&spec);
+                            // Discard the old receiver so a stale attempt cannot win the race.
+                            self.connect.pending_connect = None;
                             self.close_editor();
                             self.session.last_spec = Some(spec);
                             self.session.reopen = None;
@@ -174,21 +206,12 @@ impl OverlayApp {
         if !eligible {
             return;
         }
-        if !self.serial_watch.registration_attempted {
-            self.serial_watch.registration_attempted = true;
-            self.serial_watch.notification = device_watch::DeviceWatch::new(self.ui_wake.clone());
-        }
         let Some(spec @ ConnectionSpec::Zmk { .. }) = self.session.last_spec.clone() else {
             return;
         };
         if self.serial_watch.pending.is_some() {
             return;
         }
-        let changed = self
-            .serial_watch
-            .notification
-            .as_ref()
-            .is_some_and(device_watch::DeviceWatch::take_change);
         let retry = match self.session.connection {
             AppConnectionState::Reconnecting { next_attempt_at }
                 if Instant::now() >= next_attempt_at
@@ -199,7 +222,7 @@ impl OverlayApp {
             }
             _ => false,
         };
-        if !entering && !changed && !retry {
+        if !entering && !changed && !hid_changed && !retry {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -256,7 +279,7 @@ mod device_watch {
     }
 
     impl DeviceWatch {
-        pub(super) fn new(wake: UiWake) -> Option<Self> {
+        pub(super) fn new(wake: UiWake, hid: bool) -> Option<Self> {
             let context = Box::new(Context {
                 changed: AtomicBool::new(false),
                 wake,
@@ -266,8 +289,11 @@ mod device_watch {
                 FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
                 ..Default::default()
             };
-            filter.u.DeviceInterface.ClassGuid =
-                windows::core::GUID::from_u128(0x86e0d1e0_8089_11d0_9ce4_08003e301f73);
+            filter.u.DeviceInterface.ClassGuid = windows::core::GUID::from_u128(if hid {
+                0x4d1e55b2_f16f_11cf_88cb_001111000030
+            } else {
+                0x86e0d1e0_8089_11d0_9ce4_08003e301f73
+            });
             let mut handle = HCMNOTIFICATION::default();
             // The boxed context stays at this address until unregister has drained callbacks.
             let result = unsafe {

@@ -51,7 +51,9 @@ impl Keyboard {
     pub fn open_matching(api: &mut HidApi, m: &Match) -> Result<Keyboard> {
         api.refresh_devices()?;
         let mut tried = 0;
-        for info in api.device_list() {
+        let mut devices: Vec<_> = api.device_list().collect();
+        devices.sort_by_key(|info| prefer_usb(info.bus_type()));
+        for info in devices {
             if info.usage_page() != protocol::USAGE_PAGE || info.usage() != protocol::USAGE {
                 continue;
             }
@@ -122,6 +124,10 @@ impl Transport for Keyboard {
     }
 }
 
+fn prefer_usb(bus: BusType) -> bool {
+    !matches!(bus, BusType::Usb)
+}
+
 fn use_output_report(bus_type: BusType, windows: bool) -> bool {
     windows && matches!(bus_type, BusType::Bluetooth)
 }
@@ -129,6 +135,13 @@ fn use_output_report(bus_type: BusType, windows: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usb_precedes_stale_bluetooth_interfaces() {
+        assert!(!prefer_usb(BusType::Usb));
+        assert!(prefer_usb(BusType::Bluetooth));
+        assert!(prefer_usb(BusType::Unknown));
+    }
 
     #[test]
     fn output_report_only_for_windows_bluetooth() {

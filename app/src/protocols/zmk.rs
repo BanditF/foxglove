@@ -3,15 +3,12 @@ use super::zmk_rpc::{self, ZmkData, ZmkStudioSession, ZmkTransport};
 use super::{Key, KeyboardDefinition, KeyboardLayout, KeyboardProtocol, Reopener, WriteSupport};
 use crate::key_action::{KeyAction, KeymapSnapshot, LayerInfo};
 use digitalis::link::{Link, Subscription};
-use hidapi::HidApi;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use zmk_studio_api::{BehaviorBindingParametersSet, BehaviorRole, ClientError, ResolvedLayer};
-
-const ZMK_USAGE_PAGE: u16 = 0xff60;
 
 struct ZmkLayout {
     definition: KeyboardDefinition,
@@ -41,7 +38,7 @@ impl Reopener for ZmkReopener {
         // the old keymap only if it can't be asked (Studio unreachable or locked).
         let (vid, pid) = (self.layout.definition.vid, self.layout.definition.pid);
         // Ask only once the keyboard is back, so a slow restart doesn't use up the tries.
-        let _ = wait_for_hid_reappearance(vid, pid, ZMK_USAGE_PAGE, Duration::from_secs(8));
+        crate::foxglove::reconnect::require_hid(vid, pid)?;
         let fresh = (0..3).find_map(|attempt| {
             if attempt > 0 {
                 std::thread::sleep(Duration::from_millis(1500));
@@ -73,6 +70,7 @@ impl ZmkProtocol {
         pid: u16,
         transport: &ZmkTransport,
     ) -> Result<Self, Box<dyn Error>> {
+        crate::foxglove::reconnect::require_hid(vid, pid)?;
         // Foxglove: when Studio can't be asked (Bluetooth only, locked), start from the keymap
         // it last sent, so the overlay works without a cable.
         let zmk_data = match fetch_and_save(vid, pid, transport) {
@@ -87,14 +85,16 @@ impl ZmkProtocol {
 
     fn open_hid(layout: Arc<ZmkLayout>, transport: ZmkTransport) -> Result<Self, Box<dyn Error>> {
         let (vid, pid) = (layout.definition.vid, layout.definition.pid);
-        wait_for_hid_reappearance(vid, pid, ZMK_USAGE_PAGE, Duration::from_secs(8))
-            .map_err(std::io::Error::other)?;
+        crate::foxglove::reconnect::require_hid(vid, pid).map_err(std::io::Error::other)?;
         let connect_error = |e: String| {
             std::io::Error::other(format!(
                 "Failed to connect HID ({vid:04x}:{pid:04x}) after reappearance: {e}"
             ))
         };
         let link = crate::foxglove::link::shared(vid, pid).map_err(connect_error)?;
+        if link.state().connected.is_none() {
+            link.reconnect();
+        }
         // Subscribe before waiting, so reports sent while the link connects aren't missed.
         let reports = link.subscribe(|_| true);
         link.wait_connected(Duration::from_secs(8))
@@ -158,47 +158,6 @@ fn should_drop_session(err: &(dyn Error + 'static)) -> bool {
             | ClientError::MissingBehaviorRole(_)
             | ClientError::BehaviorIdOutOfRange { .. }
     )
-}
-
-fn wait_for_hid_reappearance(
-    vid: u16,
-    pid: u16,
-    usage_page: u16,
-    timeout: Duration,
-) -> Result<(), String> {
-    // On Linux BLE, the HID node can temporarily disappear while HoG/GATT activity settles; wait
-    // for the matching HID interface to reappear before reconnecting via hidapi.
-    let deadline = Instant::now() + timeout;
-    let mut device_present_without_usage = false;
-    while Instant::now() < deadline {
-        let api = HidApi::new().map_err(|e| format!("hidapi init failed: {e}"))?;
-        let mut matched = false;
-        for d in api.device_list() {
-            if d.vendor_id() == vid && d.product_id() == pid {
-                if d.usage_page() == usage_page {
-                    matched = true;
-                    break;
-                }
-                device_present_without_usage = true;
-            }
-        }
-        if matched {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_millis(150));
-    }
-
-    if device_present_without_usage {
-        return Err("Please re-pair the keyboard to refresh the HID descriptor.".to_string());
-    }
-
-    Err(format!(
-        "HID interface did not reappear in {} ms for {:04x}:{:04x} usage 0x{:04x}",
-        timeout.as_millis(),
-        vid,
-        pid,
-        usage_page
-    ))
 }
 
 impl KeyboardProtocol for ZmkProtocol {

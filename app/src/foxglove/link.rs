@@ -129,3 +129,28 @@ pub fn connected_name() -> Option<String> {
         .filter_map(Weak::upgrade)
         .find_map(|link| link.state().connected.map(|c| c.product))
 }
+
+/// Device notifications only wake existing workers; enumeration stays off the UI thread.
+pub fn reconnect() {
+    let Some(links) = LINKS.get().and_then(|links| links.try_lock().ok()) else {
+        return;
+    };
+    for link in links.values().filter_map(Weak::upgrade) {
+        if link.state().connected.is_none() {
+            link.reconnect();
+        }
+    }
+}
+
+/// A matching serial arrival can replace a BLE handle that has not reported its loss yet.
+pub fn transport_changed(spec: &crate::protocols::ConnectionSpec) {
+    let crate::protocols::ConnectionSpec::Zmk { vid, pid, .. } = spec else {
+        return;
+    };
+    let Some(links) = LINKS.get().and_then(|links| links.try_lock().ok()) else {
+        return;
+    };
+    if let Some(link) = links.get(&(*vid, *pid)).and_then(Weak::upgrade) {
+        link.reconnect();
+    }
+}
