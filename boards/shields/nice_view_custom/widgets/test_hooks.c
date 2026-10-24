@@ -229,7 +229,17 @@ bool test_hooks_bootloader(const uint8_t *d, int len, uint8_t r[7]) {
         sys_put_le32(boot_nonce, &r[3]);
         return false;
     }
-    if (len < 8 || d[2] != 1 || d[3] > 1) {
+    if (len >= 3 && d[2] == 1) {
+        // Any TRIGGER uses the nonce up, a malformed one too: no second try after a bad guess.
+        uint32_t armed = boot_nonce;
+        boot_nonce = 0;
+        if (len < 8 || d[3] > 1) {
+            r[3] = len >= 4 ? d[3] : 0;
+            return false; // status 5
+        }
+        boot_nonce = armed; // checked below, then used up there
+    }
+    if (len < 8 || d[2] != 1) {
         return false;
     }
     uint8_t half = d[3];
