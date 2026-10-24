@@ -1,0 +1,47 @@
+<!doctype html>
+<!-- #298 spike: can a Wallpaper Engine web wallpaper (CEF, loaded from file://) open
+     ws://127.0.0.1? It connects to listener.py, sends a hello, shows what happened, and tries
+     again only when the listener is started (a click on the page), never on a timer. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Foxglove WebSocket spike</title>
+<style>
+  body { margin: 0; background: #111; color: #eee; font: 28px/1.4 Consolas, monospace; }
+  #log { padding: 48px; white-space: pre-wrap; }
+  .ok { color: #7c7; } .bad { color: #e66; }
+</style>
+</head>
+<body>
+<div id="log"></div>
+<script>
+  const PORT = 47911;
+  const log = (text, cls) => {
+    const line = document.createElement('div');
+    line.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+    if (cls) line.className = cls;
+    document.getElementById('log').appendChild(line);
+  };
+  log(`page origin: ${location.origin} (protocol ${location.protocol})`);
+  function connect() {
+    let ws;
+    try {
+      ws = new WebSocket(`ws://127.0.0.1:${PORT}/spike`);
+    } catch (e) {
+      log(`WebSocket constructor threw: ${e}`, 'bad');
+      return;
+    }
+    ws.onopen = () => {
+      log('OPEN: ws://127.0.0.1 reached from the wallpaper', 'ok');
+      ws.send(JSON.stringify({ hello: 'wallpaper', origin: location.origin, ua: navigator.userAgent }));
+    };
+    ws.onmessage = (m) => log(`message: ${m.data}`, 'ok');
+    ws.onerror = () => log('error (listener not running, or blocked)', 'bad');
+    ws.onclose = (e) => log(`closed: code ${e.code} ${e.reason || ''}`);
+  }
+  connect();
+  // A retry only when someone asks for it.
+  document.addEventListener('click', connect);
+</script>
+</body>
+</html>
