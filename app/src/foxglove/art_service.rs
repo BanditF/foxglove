@@ -5,11 +5,13 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use super::art_cycle::{self, Cycle};
 
 use digitalis::art;
 use digitalis::link::{Event as LinkEvent, EventSubscription, Link};
-use digitalis::protocol::{ArtStatus, SlotInfo};
+use digitalis::protocol::{self, ArtStatus, SlotInfo};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -32,6 +34,10 @@ pub struct Snapshot {
     pub error: Option<String>,
     /// The right half's flash slots, read on connect and after a save or erase.
     pub slots: Vec<SlotInfo>,
+    /// The hotlist and how it cycles (#60).
+    pub cycle: Cycle,
+    /// The keyboard reports its lights turning on and off (HELLO RGB_STATE_EVENT).
+    pub wake_events: bool,
 }
 
 impl Snapshot {
@@ -76,6 +82,12 @@ enum Command {
     Choose(Choice),
     Save { slot: u8, name: String },
     Erase(u8),
+    /// Show the hotlist's next entry (timer, lights wake, or the UI's "Next").
+    Next,
+    /// The hotlist or its mode changed: reschedule.
+    CycleChanged,
+    /// The left's underglow is on or off (an RGB_STATE report, firmware #130).
+    Lights { source: Weak<Link>, generation: u64, on: bool },
 }
 
 #[derive(Clone)]
@@ -138,6 +150,20 @@ impl Handle {
 
     pub fn erase_slot(&self, slot: u8) -> bool {
         self.submit(Command::Erase(slot))
+    }
+
+    /// Replaces the hotlist and its mode, saves them, and reschedules the cycling.
+    pub fn set_cycle(&self, cycle: Cycle) -> Result<(), String> {
+        let saved = cycle.save().map_err(|e| format!("saving the hotlist: {e}"));
+        self.update(|s| s.cycle = cycle);
+        let _ = self.commands.send(Command::CycleChanged);
+        saved
+    }
+
+    /// Shows the hotlist's next entry now.
+    pub fn next(&self) -> bool {
+        let _ = self.commands.send(Command::Next);
+        true
     }
 
     /// Stops further writes/polls; a relay already committed may finish on the keyboard.
@@ -305,7 +331,10 @@ fn read_slots(link: &Link, h: &Handle, st: &ArtStatus) {
 
 fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let pinned = load_pinned();
-    h.update(|s| s.pinned = pinned);
+    h.update(|s| {
+        s.pinned = pinned;
+        s.cycle = Cycle::load();
+    });
     let profile_tx = h.commands.clone();
     let profile = super::palm_host::bus().facts().subscribe("profile.active");
     super::services::spawn_named("art-profile", move || {
@@ -326,14 +355,51 @@ fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
 
 fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let mut links: Vec<(Arc<Link>, EventSubscription)> = Vec::new();
+    let mut light_taps: Vec<EventSubscription> = Vec::new();
+    // The left's lights as last reported on the current connection; off then on = a wake.
+    let mut lights_on: Option<bool> = None;
     let mut current: Option<(usize, u64)> = None;
+    // When the timed hotlist mode next changes the art; only while a keyboard is connected.
+    let mut due: Option<Instant> = None;
     while !h.stop.load(Ordering::Relaxed) {
-        let Ok(command) = receiver.recv() else { break };
+        let received = match due {
+            Some(at) => receiver.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => receiver.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+        };
+        let command = match received {
+            Ok(command) => command,
+            Err(mpsc::RecvTimeoutError::Timeout) => Command::Next,
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        let reschedule = |connected: bool| {
+            connected
+                .then(|| h.snapshot().cycle.period())
+                .flatten()
+                .map(|p| Instant::now() + p)
+        };
         let command = match command {
+            Command::Lights { source, generation, on } => {
+                let is_current = current.is_some_and(|(id, g)| {
+                    g == generation && Weak::ptr_eq(&Arc::downgrade(&links[id].0), &source)
+                });
+                if !is_current {
+                    continue;
+                }
+                let woke = lights_on.replace(on) == Some(false) && on;
+                if !(woke && h.snapshot().cycle.mode == art_cycle::Mode::LightsWake) {
+                    continue;
+                }
+                Command::Next
+            }
             Command::ProfileChanged => {
+                // The profile may have its own pinned art and hotlist.
                 let pinned = load_pinned();
                 let changed = h.snapshot().pinned != pinned;
-                h.update(|s| s.pinned = pinned.clone());
+                h.update(|s| {
+                    s.pinned = pinned.clone();
+                    s.cycle = Cycle::load();
+                });
+                due = reschedule(current.is_some());
                 match pinned.filter(|_| changed && current.is_some() && !h.snapshot().busy) {
                     Some(choice) => {
                         h.update(|s| s.busy = true);
@@ -341,6 +407,34 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     }
                     None => continue,
                 }
+            }
+            other => other,
+        };
+        let command = match command {
+            Command::CycleChanged => {
+                due = reschedule(current.is_some());
+                continue;
+            }
+            Command::Next => {
+                due = reschedule(current.is_some());
+                let snap = h.snapshot();
+                let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
+                    continue;
+                };
+                let mut cycle = snap.cycle;
+                let Some(choice) = cycle.advance(|item| {
+                    art_cycle::resolve(item, st.right_set_count, st.flash_used)
+                }) else {
+                    continue;
+                };
+                let _ = cycle.save();
+                h.update(|s| {
+                    s.cycle = cycle;
+                    s.busy = true;
+                    s.error = None;
+                });
+                h.cancel.store(false, Ordering::Relaxed);
+                Command::Choose(choice)
             }
             other => other,
         };
@@ -358,6 +452,15 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 let subscription = link.subscribe_events(move |event| {
                     let _ = tx.send(Command::Link(source.clone(), event));
                 });
+                let source = Arc::downgrade(link);
+                let tx = h.commands.clone();
+                // Runs on the link's reader thread: only enqueue.
+                light_taps.push(link.subscribe_reports(move |generation, r| {
+                    if protocol::is_reply(r, protocol::SETTINGS, protocol::settings::RGB_STATE) {
+                        let on = protocol::RgbState::parse(r).left.on;
+                        let _ = tx.send(Command::Lights { source: source.clone(), generation, on });
+                    }
+                }));
                 links.push((link.clone(), subscription));
                 continue;
             }
@@ -370,6 +473,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 };
                 if current.is_some_and(|(active, _)| active == id) && state.connected.is_none() {
                     current = None;
+                    due = None;
+                    lights_on = None;
                     h.update(|s| {
                         s.connected = false;
                         s.status = None;
@@ -387,8 +492,14 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 current = Some((id, state.generation));
-                h.update(|s| s.connected = true);
+                let wake_events = super::link::ask_hello(link)
+                    .is_some_and(|hello| hello.capabilities & protocol::capabilities::RGB_STATE_EVENT != 0);
+                h.update(|s| {
+                    s.connected = true;
+                    s.wake_events = wake_events;
+                });
                 connected_now = true;
+                due = reschedule(true);
                 true
             }
             Command::Link(source, LinkEvent::ArtStatus { generation, report }) => {
