@@ -120,18 +120,24 @@ pub fn confirm_behavior(list: &[BehaviorInfo], id: u32, confirmed: bool) -> Resu
     Ok(())
 }
 
-/// Lists and invokes device actions.
+/// Proof that Palm checked a behavior's risk. Only Palm can make one, so nothing can reach a
+/// backend's [`Behaviors::invoke_checked`] around the confirmation check.
+pub struct Checked(());
+
+/// Lists and invokes device actions. Callers use `invoke` on `dyn Behaviors`.
 pub trait Behaviors {
     /// Lists available actions and their confirmation requirements.
     fn list(&self) -> Result<Vec<BehaviorInfo>>;
 
-    /// Backends implement this hook and use the default checked entry point.
-    fn invoke_confirmed(&self, id: u32, p1: u32, p2: u32) -> Result<()>;
+    /// Runs an action Palm has already checked; backends implement this.
+    fn invoke_checked(&self, checked: Checked, id: u32, p1: u32, p2: u32) -> Result<()>;
+}
 
-    /// Checks confirmation before invoking an action.
-    fn invoke(&self, id: u32, p1: u32, p2: u32, confirmed: bool) -> Result<()> {
+impl dyn Behaviors + '_ {
+    /// Invokes an action; a [`Risk::Confirm`] action needs `confirmed` (a user's click).
+    pub fn invoke(&self, id: u32, p1: u32, p2: u32, confirmed: bool) -> Result<()> {
         confirm_behavior(&self.list()?, id, confirmed)?;
-        self.invoke_confirmed(id, p1, p2)
+        self.invoke_checked(Checked(()), id, p1, p2)
     }
 }
 

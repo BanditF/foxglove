@@ -50,7 +50,7 @@ pub struct DeviceInfo {
 
 pub trait Backend: Send + Sync {
     fn id(&self) -> BackendId;
-    /// Cheap, repeatable; the registry calls it on hotplug and every few seconds.
+    /// Cheap, repeatable; the app calls it on OS hotplug events and on demand (no timer).
     fn discover(&self) -> Result<Vec<DeviceInfo>, PalmError>;
     fn open(&self, info: &DeviceInfo, bus: EventSink) -> Result<Box<dyn Device>, PalmError>;
 }

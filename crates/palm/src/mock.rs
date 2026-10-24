@@ -294,8 +294,7 @@ impl Behaviors for MockDevice {
         ])
     }
 
-    fn invoke_confirmed(&self, id: u32, p1: u32, p2: u32) -> Result<()> {
-        confirm_behavior(&self.list()?, id, true)?;
+    fn invoke_checked(&self, _checked: Checked, id: u32, p1: u32, p2: u32) -> Result<()> {
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
