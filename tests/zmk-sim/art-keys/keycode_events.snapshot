@@ -1,0 +1,9 @@
+artkeys: board steps 1
+artkeys: board steps -1
+artkeys: pc sends D7 0D 01
+hostlink: rx D7 8D 00 01
+hostlink: rx D7 8D 01 01
+hostlink: rx D7 8D 01 FF
+artkeys: pc sends D7 0D 00
+hostlink: rx D7 8D
+artkeys: board steps 1

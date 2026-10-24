@@ -1,0 +1,5 @@
+# P and O on SYSTEM step the board's art; subscribed, they become D7 8D 01 01 / FF to the PC
+# instead; unsubscribed again, back to the board. No other key reaches the host.
+/^artkeys:/p
+/^hostlink: rx D7 8D/p
+s/.*hid_listener_keycode/kp/p
