@@ -74,6 +74,18 @@ pub struct Subscription {
     pub subscription: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FactEntry {
+    pub key: String,
+    pub value: Fact,
+}
+
+/// The facts matching a pattern, sorted by key.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FactList {
+    pub facts: Vec<FactEntry>,
+}
+
 /// Event: a subscribed fact changed (`value` null = removed). Only future changes are sent;
 /// read the current value with `facts.get`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -240,6 +252,7 @@ pub const METHODS: &[Method] = &[
     Method { name: "initialize", kind: Kind::Call, permission: None, params: schema!(InitializeParams), result: Some(schema!(InitializeResult)) },
     Method { name: "ping", kind: Kind::Call, permission: None, params: schema!(Empty), result: Some(schema!(Empty)) },
     Method { name: "facts.get", kind: Kind::Call, permission: None, params: schema!(KeyParams), result: Some(schema!(FactResult)) },
+    Method { name: "facts.list", kind: Kind::Call, permission: None, params: schema!(SubscribeParams), result: Some(schema!(FactList)) },
     Method { name: "facts.set", kind: Kind::Call, permission: None, params: schema!(SetFactParams), result: Some(schema!(Empty)) },
     Method { name: "facts.subscribe", kind: Kind::Call, permission: None, params: schema!(SubscribeParams), result: Some(schema!(Subscription)) },
     Method { name: "facts.unsubscribe", kind: Kind::Call, permission: None, params: schema!(Subscription), result: Some(schema!(Empty)) },
