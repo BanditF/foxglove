@@ -363,3 +363,33 @@ fn secrets_belong_to_one_plugin_and_need_the_permission() {
     let out = as_plugin(Some("org.a"), &["secrets"], &[init(), get]);
     assert_eq!(out[1]["result"], json!({"value": null}));
 }
+
+/// Records which connection made each device call, and which connections closed.
+#[derive(Default)]
+struct Conns {
+    calls: Mutex<Vec<u64>>,
+    closed: Mutex<Vec<u64>>,
+}
+
+impl Devices for Conns {
+    fn call_from(&self, conn: u64, _method: &str, _params: Value) -> Result<Value, Error> {
+        self.calls.lock().unwrap().push(conn);
+        Ok(json!({}))
+    }
+    fn closed(&self, conn: u64) {
+        self.closed.lock().unwrap().push(conn);
+    }
+}
+
+#[test]
+fn device_calls_know_their_connection_and_hear_it_close() {
+    let conns = Arc::new(Conns::default());
+    let ctx = |c: Arc<Conns>| Context { devices: c, ..plugin(&["lighting.write"]) };
+    let lease = call(1, "lighting.lease", json!({"device": "kb", "color": {"hue": 0, "saturation": 100, "brightness": 50}}));
+    run(ctx(conns.clone()), &[init(), lease.clone()]);
+    run(ctx(conns.clone()), &[init(), lease]);
+    let calls = conns.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2);
+    assert_ne!(calls[0], calls[1], "each connection has its own number");
+    assert_eq!(*conns.closed.lock().unwrap(), calls, "and each one's end is reported");
+}

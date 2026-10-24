@@ -23,6 +23,7 @@ pub use foxglove_plugin_api::methods::{
     Device, Devices, Fact, FactChanged, FactList, Hsb, InitializeResult, LightingState, SetLightingParams,
 };
 pub use foxglove_plugin_api::methods::NetKind;
+pub use foxglove_plugin_api::methods::{LeaseParams, LeasePriority};
 use foxglove_plugin_api::rpc::{Error, Id, Outcome, Request, Response};
 
 mod net;
@@ -183,6 +184,15 @@ impl Plugin {
         self.events.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
+    /// Holds `device`'s lights at `color` until the returned lease is dropped or released, or
+    /// the plugin stops (#236; needs `lighting.write`). The highest-priority lease shows; when
+    /// the last one ends the lights go back as they were.
+    pub fn lease(self: &Arc<Self>, device: &str, color: Hsb, priority: LeasePriority) -> Result<Lease> {
+        let p = LeaseParams { device: device.into(), color, effect: None, priority };
+        let id: foxglove_plugin_api::methods::Lease = self.call_as("lighting.lease", serde_json::to_value(p).expect("serializable"))?;
+        Ok(Lease { plugin: self.clone(), id: id.lease })
+    }
+
     /// One of this plugin's secrets (#213; needs `secrets`): what the user entered in the
     /// Plugins tab, or what the plugin saved. `None` when it isn't set.
     pub fn secret(&self, name: &str) -> Result<Option<String>> {
@@ -218,6 +228,18 @@ impl Plugin {
     /// Changes a device's lights (only what's given). Needs `lighting.write`.
     pub fn set_lighting(&self, params: &SetLightingParams) -> Result<()> {
         self.call("lighting.set", serde_json::to_value(params).expect("serializable")).map(|_| ())
+    }
+}
+
+/// A hold on a device's lights ([`Plugin::lease`]); dropping it gives them back.
+pub struct Lease {
+    plugin: Arc<Plugin>,
+    id: u64,
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let _ = self.plugin.call("lighting.release", json!({ "lease": self.id }));
     }
 }
 
