@@ -35,10 +35,30 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    /// Firmware supplies a count only; labels can later come from the art manifest.
+    /// The built-in sets with their names from the art manifest, or "Set n" when the firmware
+    /// isn't the one the manifest describes.
     pub fn built_ins(&self) -> Vec<(i8, String)> {
         let count = self.status.map_or(0, |s| s.right_set_count).min(128);
-        (0..count).map(|n| (n as i8, format!("Set {n}"))).collect()
+        let names = super::art_manifest::sets(count);
+        (0..count)
+            .map(|n| {
+                let label = names.map_or_else(|| format!("Set {n}"), |s| s[usize::from(n)].label.clone());
+                (n as i8, label)
+            })
+            .collect()
+    }
+
+    /// The built-in set the right half shows now, if it's playing one.
+    pub fn showing_built_in(&self) -> Option<i8> {
+        self.status.filter(|s| s.right_state == 0).map(|s| s.right_set)
+    }
+
+    /// The library file the right half plays now: the pinned file, while it plays a pushed set.
+    pub fn showing_file(&self) -> Option<&PathBuf> {
+        match (&self.pinned, self.status) {
+            (Some(Choice::File(p)), Some(s)) if s.right_state == 2 => Some(p),
+            _ => None,
+        }
     }
 
     pub fn progress(&self) -> Option<(u16, u16)> {
