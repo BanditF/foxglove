@@ -1,0 +1,104 @@
+hostlink: -- hello: version, caps, panel timeout, build
+hostlink: tx D5 01 01
+hostlink: rx D5 81 01 40 34 02 6A 00 FF 00 00 00 00 00 00 00 00 00 00 00 00 D1 11 00 00 00 00 00 01 00 01
+hostlink: -- build info: left, right (no relay here), bad half
+hostlink: tx D7 09
+hostlink: rx D7 89 00 00 00 01 00 01 73 69 6D 74 65 73 74
+hostlink: tx D7 09 01
+hostlink: rx D7 89 02 01
+hostlink: tx D7 09 07
+hostlink: rx D7 89 05 07
+hostlink: -- conn state
+hostlink: tx D7 04
+hostlink: rx D7 84
+hostlink: -- invoke: a key, a refused behavior, an unknown id
+hostlink: -- invoke key_press 458781 0
+hostlink: tx D7 02 DD C4 1D 00 07
+kp_pressed: usage_page 0x07 keycode 0x1D implicit_mods 0x00 explicit_mods 0x00
+hostlink: rx D7 82 00 DD C4
+kp_released: usage_page 0x07 keycode 0x1D implicit_mods 0x00 explicit_mods 0x00
+hostlink: -- invoke bluetooth 0 0
+hostlink: tx D7 02 2B 31
+hostlink: rx D7 82 06 2B 31
+hostlink: -- invoke sysreset 0 0
+hostlink: tx D7 02 18 95
+hostlink: rx D7 82 06 18 95
+hostlink: -- invoke bootload 0 0
+hostlink: tx D7 02 E4 9E
+hostlink: rx D7 82 06 E4 9E
+hostlink: -- invoke outputs 0 0
+hostlink: tx D7 02 52 97
+hostlink: rx D7 82 06 52 97
+hostlink: -- invoke z_so_off 0 0
+hostlink: tx D7 02 3E DC 00 00 00 00 00 00 00 00 34 08
+hostlink: rx D7 82 06 3E DC
+hostlink: tx D7 02 FE FF
+hostlink: rx D7 82 01 FE FF
+hostlink: -- position: press and release Q (pos 1)
+hostlink: tx D7 05 01 01
+hostlink: rx D7 85 04 01
+hostlink: tx D7 05 01
+hostlink: rx D7 85 04 01
+hostlink: -- position: refused on SYSTEM (BT_SEL 0 under Q), then back to QWERTY
+hostlink: -- invoke toggle_layer 6 0
+hostlink: tx D7 02 EC 7C 06
+hostlink: rx D7 82 00 EC 7C
+hostlink: tx D7 05 01 01
+hostlink: rx D7 85 04 01
+hostlink: -- invoke toggle_layer 6 0
+hostlink: tx D7 02 EC 7C 06
+hostlink: rx D7 82 00 EC 7C
+hostlink: -- position: bad position, bad state, a report without the state byte
+hostlink: tx D7 05 63 01
+hostlink: rx D7 85 04 63
+hostlink: tx D7 05 01 02
+hostlink: rx D7 85 04 01
+hostlink: -- 3-byte report
+hostlink: tx D7 05 01
+hostlink: rx D7 85 04 01
+hostlink: -- position: W (pos 2) held, released by the firmware after 10 s
+hostlink: tx D7 05 02 01
+hostlink: rx D7 85 04 02
+hostlink: tx D7 04
+hostlink: rx D7 84
+hostlink: tx D7 04
+hostlink: rx D7 84
+hostlink: tx D7 04
+hostlink: rx D7 84
+hostlink: tx D7 04
+hostlink: rx D7 84
+hostlink: tx D7 04
+hostlink: rx D7 84
+hostlink: tx D7 04
+hostlink: rx D7 84
+hostlink: -- position: W released
+hostlink: -- bootloader: trigger without arm, wrong nonce, used nonce, expired nonce
+hostlink: tx D7 08 01 01 nonce
+hostlink: rx D7 88 04
+hostlink: tx D7 08
+hostlink: rx D7 88 04
+hostlink: tx D7 08 01 01 nonce
+hostlink: rx D7 88 04
+hostlink: tx D7 08 01 01 nonce
+hostlink: rx D7 88 04
+hostlink: tx D7 08
+hostlink: rx D7 88 04
+hostlink: tx D7 08 01 01 nonce
+hostlink: rx D7 88 04
+hostlink: tx D7 08 01 01 nonce
+hostlink: rx D7 88 04
+hostlink: tx D7 08
+hostlink: rx D7 88 04
+hostlink: tx D7 08 01 01 nonce
+hostlink: rx D7 88 04
+hostlink: -- bootloader: invalid half (5), and the nonce is used up by it
+hostlink: tx D7 08
+hostlink: rx D7 88 04
+hostlink: tx D7 08 01 02 nonce
+hostlink: rx D7 88 04
+hostlink: tx D7 08 01 01 nonce
+hostlink: rx D7 88 04
+hostlink: -- bootloader: bad sub-command
+hostlink: tx D7 08 05
+hostlink: rx D7 88 04
+hostlink: -- done
