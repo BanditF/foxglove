@@ -32,6 +32,9 @@ endif()
 if(CONFIG_NICE_VIEW_RGB_IDLE)
   zephyr_library_include_directories(${CMAKE_SOURCE_DIR}/include)
   zephyr_library_sources(widgets/rgb_idle.c)
+  if(CONFIG_FOXGLOVE_LAMPARRAY)
+    zephyr_library_sources(widgets/lamparray.c)
+  endif()
 endif()
 
 # Half identification is present with or without a display and survives section GC.

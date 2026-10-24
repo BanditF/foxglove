@@ -40,6 +40,7 @@ static bool wanted;      // the user's on/off, saved
 static bool loaded;      // wanted came from the settings
 static bool sync = true; // left: the right follows the left, saved
 static bool following;   // right: the left's state is in charge
+static bool host_drawn;  // left: the PC drives the LEDs (lamparray.c)
 static bool remote_on;   // right: the left's state
 
 static bool active(void) { return zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE; }
@@ -120,6 +121,9 @@ static void save(void) { k_work_reschedule(&save_work, SAVE_DELAY); }
 // The work items below all run on the system work queue, one at a time.
 
 static void apply_cb(struct k_work *work) {
+    if (host_drawn) {
+        return;
+    }
     bool on;
     bool target = following ? remote_on : wanted && active();
     if (zmk_rgb_underglow_get_state(&on) == 0 && on != target) {
@@ -143,7 +147,7 @@ static void poll_cb(struct k_work *work) {
         return; // the activity listener starts polling again
     }
     bool on;
-    if (!following && zmk_rgb_underglow_get_state(&on) == 0 && on != wanted) {
+    if (!following && !host_drawn && zmk_rgb_underglow_get_state(&on) == 0 && on != wanted) {
         wanted = on; // toggled with a key
         save();
 #if RELAY_CENTRAL
@@ -179,6 +183,11 @@ void rgb_idle_set_sync(bool on) {
 void rgb_idle_remote(bool on, bool follow) {
     remote_on = on;
     following = follow;
+    k_work_submit(&apply_work);
+}
+
+void rgb_idle_host_control(bool on) {
+    host_drawn = on;
     k_work_submit(&apply_work);
 }
 
