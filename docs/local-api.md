@@ -128,6 +128,16 @@ description = "Puts the temperature on the left screen."
   - **Drawing:** `screens.panel_override {device, width, height, bitmap, ttl_ms}`, with `screens.write`, shows a plugin's 1 bpp frame (rows MSB first, padded to whole bytes, base64) over the panel for up to 60 s.
   - **Keeping it:** a plugin sends it again to keep it, and it goes away by itself when the plugin stops (and at once when its connection closes).
   - **Errors:** a frame of the wrong size is refused. SDK: `Plugin::panel_override()`.
+- **Waiting for an app (#277, API 1.3):**
+  - **Why:** a plugin that needs another app (OBS) waits to be told its windows opened instead of polling for it.
+  - **Asking:** `apps.watch {exe}` with `apps.watch:<name>.exe` (such as `apps.watch:obs64.exe`) returns `{exe, open}`: how many of its visible top-level windows are open now. Plugins only, and only the apps they declare. SDK: `Plugin::watch_app()`, then `Plugin::app_windows()`.
+  - **Telling:** Foxglove follows windows being shown and destroyed with an out-of-context WinEvent hook (no admin, nothing injected).
+    - `app.window.appeared {exe, open}` and `app.window.closed {exe, open}` go to the plugins waiting for that app.
+    - `open` is the count afterwards. A close with `open` 0 means the app has probably quit.
+    - The watch ends when the plugin's connection closes.
+    - An elevated app's windows may not be seen.
+  - **Off switch:** `FOXGLOVE_DISABLE=apps-watch`.
+  - **Rule:** a retry is started by an event and stopped by one (connected, the last window closed), with an attempt limit only as the fallback. No free-running timers.
 - **Plugin data (#209):** each plugin gets `data/` in its folder (`Plugin::data_dir()`) for state between runs. It's writable even in the sandbox, and left out of the signed-file check.
 - **Mic mute (`crates/plugin-mic-mute`, #210):**
   - **How it works:** it follows `mic.state` (`audio.inputs.read`) and asks Foxglove to mute or unmute (`audio.inputs.mute`), so it stays sandboxed.
@@ -143,7 +153,10 @@ description = "Puts the temperature on the left screen."
   - **Streaming:** a red, high-priority lease and the bright LIVE screen, held (re-sent every 30 s with a 60 s lifetime). With a recording too, the LIVE + REC screen.
   - **Recording:** red at normal priority and REC, held; amber and the pause bars while paused.
   - **Nothing running:** READY for 3 s, and the lights are left alone.
-  - **OBS gone:** NOT CONNECTED for 3 s when a connection is lost (not while OBS simply isn't running), then it tries again after 2 s, doubling to every 30 s. A missing or wrong password is logged.
+  - **Connecting:** tries begin when an `obs64.exe` window appears (`apps.watch:obs64.exe`, #277), at start if OBS is open, and when a connection drops.
+    - They stop when it connects or OBS's last window closes, and after 10 tries 2 s apart at most.
+    - There's no timer while OBS is away.
+  - **OBS gone:** NOT CONNECTED for 3 s when a connection is lost (not while OBS simply isn't running). A missing or wrong password is logged.
   - **Scene:** its name goes on the panel under the symbol, up to 15 characters.
   - **Facts:** `broadcast.connected`, `broadcast.streaming`, `broadcast.recording`, `broadcast.paused`, `broadcast.scene`.
 - **Pomodoro (`crates/plugin-focus-timer`, #209):**
