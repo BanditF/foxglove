@@ -1,0 +1,13 @@
+description: |
+  Steps the right screen's art (#60): &art_next / &art_prev. With the app subscribed (D7 0D) the
+  key goes to the app, which steps its hotlist; otherwise the left steps through the right's
+  built-in sets and saved slots itself (art_keys.c).
+
+compatible: "foxglove,behavior-art-step"
+
+include: zero_param.yaml
+
+properties:
+  previous:
+    type: boolean
+    description: Step backwards (&art_prev).

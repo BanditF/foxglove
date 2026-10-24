@@ -305,8 +305,8 @@ layers:
   - OUT USB
   - OUT BLE
   - {t: '$$mdi:minus-circle-outline$$', type: none}
-  - {t: '$$mdi:minus-circle-outline$$', type: none}
-  - {t: '$$mdi:minus-circle-outline$$', type: none}
+  - '&art_prev'
+  - '&art_next'
   - {t: '$$mdi:minus-circle-outline$$', type: none}
   - {t: '$$mdi:minus-circle-outline$$', type: none}
   - {t: QWERTY, h: toggle}
