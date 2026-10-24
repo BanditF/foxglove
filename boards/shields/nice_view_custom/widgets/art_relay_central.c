@@ -33,6 +33,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "art_relay.h"
 #include "host_link.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+#include "test_hooks.h"
+#endif
 
 // ZMK discovers and subscribes to its own split service once the link is secured; a discovery
 // of ours running alongside that wedged both (requests never answered), so wait it out.
@@ -234,6 +237,7 @@ static int write_req(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
     if (atomic_get(&in_flight) || len > sizeof(copy)) {
         return -EBUSY;
     }
+    gatt_err = 0;
     memcpy(copy, data, len); // the request may outlive the caller's buffer
     params.func = write_cb;
     params.handle = data_handle;
@@ -316,6 +320,32 @@ static struct bt_conn *job_conn(void) {
     irq_unlock(key);
     return conn;
 }
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+static uint8_t press_pos, press_state;
+static void press_cb(struct k_work *work) {
+    uint8_t status = 2;
+    struct bt_conn *conn = job_conn();
+    if (conn != NULL) {
+        const uint8_t d[] = {ART_RELAY_PRESS, press_pos, press_state};
+        int err = write_req(conn, d, sizeof(d));
+        status = err == 0 ? 0 : err == -ETIMEDOUT ? 3 : 2;
+        /* Application ATT errors 0x82/84/85 preserve the peripheral's rejection. */
+        if (err == -EIO && gatt_err >= 0x82 && gatt_err <= 0x86) {
+            status = gatt_err - 0x80;
+        }
+        bt_conn_unref(conn);
+    }
+    test_hooks_relay_done(status);
+}
+static K_WORK_DEFINE(press_work, press_cb);
+void art_relay_press(uint8_t pos, uint8_t state) {
+    /* test_hooks owns one request until completion; relay_q serializes GATT params. */
+    press_pos = pos;
+    press_state = state;
+    k_work_submit_to_queue(&relay_q, &press_work);
+}
+#endif
 
 static int push(struct bt_conn *conn) {
     uint8_t buf[3 + 244];
