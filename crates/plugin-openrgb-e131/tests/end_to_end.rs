@@ -143,6 +143,14 @@ fn a_frame_colours_the_keyboard_and_the_sender_stopping_restores_it() {
     let sets = keyboard.sets.lock().unwrap().clone();
     let full_green = json!({"device": "kb", "on": true, "color": {"hue": 120, "saturation": 100, "brightness": 100}, "effect": "0"});
     assert!(sets.iter().filter(|s| **s == full_green).count() >= 2, "the lost write was sent again: {sets:?}");
+    // Another sender (a new process, so a new CID) numbering from 1 again within the same
+    // session: not stale, since sequences count per sender (E1.31).
+    send(1, 0, 0, 255, false);
+    let until = Instant::now() + Duration::from_secs(30);
+    while keyboard.state.lock().unwrap()["hue"] != json!(240) {
+        assert!(Instant::now() < until, "a new sender's frame was dropped: {:?}", keyboard.sets.lock().unwrap());
+        std::thread::sleep(Duration::from_millis(20));
+    }
     drop(runner);
     #[cfg(windows)]
     foxglove_plugin_host::delete_container("test.openrgb-e131");
