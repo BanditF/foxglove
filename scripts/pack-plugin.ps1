@@ -13,12 +13,14 @@ try {
     cargo build --release -p $Crate
     if ($LASTEXITCODE) { throw "build failed" }
 
-    $stage = "target\plugins\$id"
+    # Honour a shared CARGO_TARGET_DIR (the Test lab uses one).
+    $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
+    $stage = "$target\plugins\$id"
     Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force $stage | Out-Null
     Copy-Item "$dir\plugin.toml" $stage
-    Copy-Item "target\release\$program" $stage
-    $zip = "target\plugins\$id-$version.zip"
+    Copy-Item "$target\release\$program" $stage
+    $zip = "$target\plugins\$id-$version.zip"
     Remove-Item $zip -ErrorAction SilentlyContinue
     Compress-Archive -Path "$stage\*" -DestinationPath $zip
 
