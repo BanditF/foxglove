@@ -48,7 +48,19 @@ if(NOT FOXGLOVE_GIT_RESULT EQUAL 0 OR NOT FOXGLOVE_BUILD_SHA)
     set(FOXGLOVE_BUILD_SHA unknown)
   endif()
 endif()
+# The firmware version (SemVer) lives in FIRMWARE_VERSION; a fw-vX.Y.Z tag must match it (CI).
+file(STRINGS ${CMAKE_CURRENT_LIST_DIR}/FIRMWARE_VERSION FOXGLOVE_FW_VERSION LIMIT_COUNT 1)
+string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$" FOXGLOVE_FW_VERSION_OK "${FOXGLOVE_FW_VERSION}")
+if(NOT FOXGLOVE_FW_VERSION_OK)
+  message(FATAL_ERROR "FIRMWARE_VERSION must be X.Y.Z, not '${FOXGLOVE_FW_VERSION}'")
+endif()
 zephyr_library_sources(widgets/half_marker.c)
-set_source_files_properties(widgets/half_marker.c PROPERTIES
-  COMPILE_DEFINITIONS "FOXGLOVE_BUILD_SHA=\"${FOXGLOVE_BUILD_SHA}\"")
+# Library-wide on purpose: a source property set here wouldn't reach the app library's target
+# (it lives in another CMake directory), which is why the SHA used to read 'unknown'.
+zephyr_library_compile_definitions(
+  FOXGLOVE_BUILD_SHA="${FOXGLOVE_BUILD_SHA}"
+  FOXGLOVE_FW_VERSION="${FOXGLOVE_FW_VERSION}"
+  FOXGLOVE_FW_MAJOR=${CMAKE_MATCH_1}
+  FOXGLOVE_FW_MINOR=${CMAKE_MATCH_2}
+  FOXGLOVE_FW_PATCH=${CMAKE_MATCH_3})
 zephyr_linker_sources(RODATA half_marker.ld)

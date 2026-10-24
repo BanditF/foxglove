@@ -31,6 +31,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "test_hooks.h"
 #endif
 #include "art_slots.h"
+#include "half_marker.h"
 #include "custom_art.h"
 #include "peripheral_status.h"
 
@@ -43,7 +44,7 @@ static int flash_shown = -1;  // flash slot playing, or -1
 static uint32_t rx_crc;
 
 static struct art_relay_status status = {
-    .version = 3,
+    .version = 4,
     .capacity = CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE,
     .set = -1,
 };
@@ -305,7 +306,9 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
     status.flash_slots = art_slots_count();
     status.flash_used = art_slots_used();
     // Status, then the slot table (only built when a read reaches past the status).
-    static uint8_t value[sizeof(status) + ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info)];
+    // Status, then the slot table, then the build info.
+    static uint8_t value[sizeof(status) + ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info) +
+                         sizeof(struct foxglove_build_info)];
     memcpy(value, &status, sizeof(status));
     if (offset + len > sizeof(status)) {
         for (int i = 0; i < ART_RELAY_FLASH_SLOTS; i++) {
@@ -313,6 +316,9 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
             art_slots_info(i, &info);
             memcpy(&value[sizeof(status) + i * sizeof(info)], &info, sizeof(info));
         }
+        struct foxglove_build_info build;
+        foxglove_build_info(&build);
+        memcpy(&value[sizeof(value) - sizeof(build)], &build, sizeof(build));
     }
     return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
 }

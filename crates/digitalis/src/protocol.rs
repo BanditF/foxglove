@@ -27,6 +27,8 @@ pub mod capabilities {
     pub const CONN_STATE_EVENT: u32 = 1 << 8;
     /// D7 83 RGB_STATE also arrives unsolicited when the underglow turns on or off.
     pub const RGB_STATE_EVENT: u32 = 1 << 11;
+    /// Settings BUILD_INFO (D7 09); HELLO bytes 27-30 carry the left's version and profile.
+    pub const BUILD_INFO: u32 = 1 << 12;
     /// Settings BOOTLOADER (D7 08), pre-GA test builds only.
     pub const BOOTLOADER: u32 = 1 << 9;
     /// Art SAVE / SLOT / ERASE (D6 06 / 07 / 08), flash slots on the right half.
