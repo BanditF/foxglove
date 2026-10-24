@@ -76,15 +76,21 @@ ZMK_SUBSCRIPTION(hostlink_sim, raw_hid_sent_event);
 
 /* The PC */
 
-static void send(const uint8_t *d, int len) {
+// Sends d as a report of length bytes (32, as hidapi sends them, unless a case wants it short).
+static void send_len(const uint8_t *d, int len, int length) {
     static uint8_t report[32];
     memset(report, 0, sizeof(report));
     memcpy(report, d, len);
-    print_report("tx", report, sizeof(report));
+    if (length < 32) {
+        printk("hostlink: -- %d-byte report\n", length);
+    }
+    print_report("tx", report, length);
     memset(last, 0, sizeof(last));
-    raise_raw_hid_received_event((struct raw_hid_received_event){.data = report, .length = 32});
+    raise_raw_hid_received_event((struct raw_hid_received_event){.data = report, .length = length});
     k_msleep(200); // replies go out from the system work queue
 }
+
+static void send(const uint8_t *d, int len) { send_len(d, len, 32); }
 
 #define SEND(...)                                                                                  \
     do {                                                                                           \
@@ -133,6 +139,9 @@ static void driver(void) {
     invoke("key_press", 0x07001D /* Z */, 0, 0);
     invoke("bluetooth", 0 /* BT_SEL */, 0, 0);
     invoke("sysreset", 0, 0, 0);
+    invoke("bootload", 0, 0, 0);
+    invoke("outputs", 0 /* OUT_TOG */, 0, 0);
+    invoke("z_so_off", 0, 0, 2100);
     {
         const uint8_t d[] = {0xD7, 0x02, 0xFE, 0xFF};
         send(d, sizeof(d));
@@ -145,10 +154,13 @@ static void driver(void) {
     invoke("toggle_layer", 6, 0, 0);
     SEND(0xD7, 0x05, 1, 1);
     invoke("toggle_layer", 6, 0, 0);
-    note("position: bad position, bad state, short report");
+    note("position: bad position, bad state, a report without the state byte");
     SEND(0xD7, 0x05, 99, 1);
     SEND(0xD7, 0x05, 1, 2);
-    SEND(0xD7, 0x05, 1);
+    {
+        const uint8_t d[] = {0xD7, 0x05, 1}; // no state byte: 5, not a release
+        send_len(d, sizeof(d), sizeof(d));
+    }
     note("position: W (pos 2) held, released by the firmware after 10 s");
     SEND(0xD7, 0x05, 2, 1);
     for (int i = 0; i < 6; i++) {
@@ -168,6 +180,10 @@ static void driver(void) {
     nonce = arm();
     k_msleep(5200);
     trigger(1, nonce); // expired
+    note("bootloader: invalid half (5), and the nonce is used up by it");
+    nonce = arm();
+    trigger(2, nonce);
+    trigger(1, nonce);
     note("bootloader: bad sub-command");
     SEND(0xD7, 0x08, 0x05);
 
