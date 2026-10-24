@@ -244,6 +244,37 @@ pub struct ActionInvoked {
     pub action: String,
 }
 
+/// How much a lease matters against others on the same lights (#236).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum LeasePriority {
+    /// Ambient light (a colour sync).
+    Low,
+    #[default]
+    Normal,
+    /// Alerts (the microphone is muted).
+    High,
+}
+
+/// Holds a device's lights at a colour until released (#236, API 1.2). The highest-priority
+/// lease shows, the newest among equals; when the last one ends the lights go back as they were.
+/// A plugin's leases end with its connection.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LeaseParams {
+    pub device: String,
+    pub color: Hsb,
+    /// The effect while leased; the static colour (`"0"`) if absent.
+    #[serde(default)]
+    pub effect: Option<String>,
+    #[serde(default)]
+    pub priority: LeasePriority,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Lease {
+    pub lease: u64,
+}
+
 /// One of the plugin's own secrets (#213, API 1.2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SecretName {
@@ -363,6 +394,9 @@ pub const METHODS: &[Method] = &[
     Method { name: "net.close", kind: Kind::Call, permission: None, params: schema!(NetStream), result: Some(schema!(Empty)) },
     Method { name: "net.data", kind: Kind::Event, permission: None, params: schema!(NetData), result: None },
     Method { name: "net.closed", kind: Kind::Event, permission: None, params: schema!(NetClosed), result: None },
+    // Hold and give back the lights (#236).
+    Method { name: "lighting.lease", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(LeaseParams), result: Some(schema!(Lease)) },
+    Method { name: "lighting.release", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(Lease), result: Some(schema!(Empty)) },
     // A plugin's own secrets; outside tools get none (#213).
     Method { name: "secrets.get", kind: Kind::Call, permission: Some("secrets"), params: schema!(SecretName), result: Some(schema!(SecretValue)) },
     Method { name: "secrets.set", kind: Kind::Call, permission: Some("secrets"), params: schema!(SetSecretParams), result: Some(schema!(Empty)) },

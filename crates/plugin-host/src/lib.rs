@@ -27,7 +27,22 @@ pub trait Devices: Send + Sync {
         let _ = params;
         Err(error(code::UNSUPPORTED, format!("{method} is not available yet")))
     }
+
+    /// Like [`Devices::call`], knowing which connection asked (for what ends with it, such as
+    /// lighting leases).
+    fn call_from(&self, conn: u64, method: &str, params: Value) -> Result<Value, Error> {
+        let _ = conn;
+        self.call(method, params)
+    }
+
+    /// A connection ended (the plugin stopped or crashed, the tool quit).
+    fn closed(&self, conn: u64) {
+        let _ = conn;
+    }
 }
+
+/// Each connection's number, for [`Devices::call_from`] and [`Devices::closed`].
+static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// No devices: facts only.
 pub struct NoDevices;
@@ -116,6 +131,8 @@ struct Session {
     forwarding: bool,
     /// Which plugin this connection is (the runner says), for its secrets; `None` for tools.
     plugin: Option<String>,
+    /// This connection's number (0 until initialized).
+    conn: u64,
     /// Network streams opened for the plugin (#214).
     net: net::Net,
 }
@@ -137,6 +154,7 @@ pub(crate) fn serve_with(
 ) -> std::io::Result<()> {
     let (out, rx) = mpsc::channel::<String>();
     ready(out.clone());
+    let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let closed = Arc::new(AtomicBool::new(false));
     let writer_closed = closed.clone();
     let writer_thread = std::thread::Builder::new().name("plugin-host-writer".into()).spawn(move || {
@@ -162,8 +180,9 @@ pub(crate) fn serve_with(
             Some(Response::error(Id::Number(0), code::INVALID_REQUEST, "line too long"))
         } else {
             let reply = handle(&line, &ctx, &mut session, &mut bucket, &out, &closed);
-            if let Some(s) = session.as_mut().filter(|s| s.plugin.is_none()) {
+            if let Some(s) = session.as_mut().filter(|s| s.conn == 0) {
                 s.plugin = plugin.clone();
+                s.conn = conn;
             }
             reply
         };
@@ -177,6 +196,7 @@ pub(crate) fn serve_with(
     if let Some(s) = &session {
         s.net.close_all();
     }
+    ctx.devices.closed(conn);
     let forwarding = session.as_ref().is_some_and(|s| s.forwarding);
     drop(out);
     // The fact forwarder keeps the writer alive until the next fact change, when it notices the
@@ -327,7 +347,7 @@ fn dispatch(
             s.subscriptions.lock().unwrap_or_else(|e| e.into_inner()).remove(&p.subscription);
             Ok(json!({}))
         }
-        name => ctx.devices.call(name, request.params),
+        name => ctx.devices.call_from(s.conn, name, request.params),
     }
 }
 
@@ -351,6 +371,7 @@ fn initialize(p: Value, ctx: &Context, session: &mut Option<Session>) -> Result<
         forwarding: false,
         net: net::Net::default(),
         plugin: None,
+        conn: 0,
     });
     Ok(json!(InitializeResult { api: API_VERSION.to_string(), app: ctx.app_version.clone(), granted }))
 }
