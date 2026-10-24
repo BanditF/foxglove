@@ -17,6 +17,8 @@ pub struct Controls {
     signature: String,
     /// What the items show now: update text, paused, status text, art menu enabled.
     shown: (Option<String>, bool, String, bool),
+    /// Whether a keyboard is connected, for the tray icon's connected/disconnected glyph.
+    connected: bool,
 }
 impl Controls {
     pub fn new(menu: &Menu) -> Self {
@@ -45,8 +47,13 @@ impl Controls {
             profiles_shown: (vec!["-".into()], None),
             signature: String::new(),
             shown: (None, screens::paused(), "Disconnected".into(), false),
+            connected: false,
         }
     }
+    pub fn connected(&self) -> bool {
+        self.connected
+    }
+
     pub fn update(&mut self) {
         let profiles = super::store::cached_profiles();
         if profiles != self.profiles_shown {
@@ -92,6 +99,7 @@ impl Controls {
             return;
         };
         let s = h.snapshot();
+        self.connected = s.connected;
         let library = art_library::snapshot();
         let name = super::link::connected_name().unwrap_or_default();
         let status = format!(
