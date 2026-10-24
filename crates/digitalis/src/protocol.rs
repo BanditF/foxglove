@@ -25,9 +25,11 @@ pub mod capabilities {
     pub const INVOKE_REFUSES: u32 = 1 << 7;
     /// D7 84 CONN_STATE also arrives unsolicited when the connection changes (after host traffic).
     pub const CONN_STATE_EVENT: u32 = 1 << 8;
+    /// D7 83 RGB_STATE also arrives unsolicited when the underglow turns on or off.
+    pub const RGB_STATE_EVENT: u32 = 1 << 11;
     /// Settings BOOTLOADER (D7 08), pre-GA test builds only.
     pub const BOOTLOADER: u32 = 1 << 9;
-    /// D6 06/07/08: flash slots on the right half that survive a reboot.
+    /// Art SAVE / SLOT / ERASE (D6 06 / 07 / 08), flash slots on the right half.
     pub const ART_SLOTS: u32 = 1 << 10;
 }
 pub const VERSION: u8 = 1;
