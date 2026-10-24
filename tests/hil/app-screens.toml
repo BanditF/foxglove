@@ -1,0 +1,25 @@
+schema = 1
+
+# The app's left panel against the keyboard's screen readback. Start Foxglove with
+# FOXGLOVE_DUMP_PANEL=%TEMP%\foxglove-panel.pbm (it writes every frame it sends) and run with
+# --allow-app. Settings changes go through screens.ini, which the app watches; the file is put
+# back after each case.
+
+[[cases]]
+name = "panel-matches-app-frame"
+description = "The frame the app last sent is on the left screen, pixel for pixel"
+tags = ["app", "screens"]
+requires = ["screen_readback"]
+steps = [{ panel_dump = { path = "%TEMP%/foxglove-panel.pbm" } }]
+
+[[cases]]
+name = "drive-left-handoff"
+description = "Drive left screen off hands the area back to the firmware; on takes it again"
+tags = ["app", "screens"]
+requires = ["screen_readback"]
+steps = [
+  { screens_setting = { key = "drive_left", value = "false" } },
+  { panel_dump = { path = "%TEMP%/foxglove-panel.pbm", shown = false } },
+  { screens_setting = { key = "drive_left", value = "true" } },
+  { panel_dump = { path = "%TEMP%/foxglove-panel.pbm" } },
+]
