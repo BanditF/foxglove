@@ -34,8 +34,8 @@ foxglove in 1542.
    Hold SYSTEM and tap Q for profile 1 (W-T for 2-5); the filled box on the left screen shows
    the active profile.
 
-The [user guide](docs/user-guide.md) covers the screens, every Settings section, profiles,
-plugins and updating the firmware.
+The [user guide](docs/user-guide.md) covers the screens, every Settings section, lighting presets, art cycling and the art library, plugins, VIA keyboards, profiles
+and updating the firmware.
 
 ## Layout
 
