@@ -58,6 +58,26 @@ pub fn conn_state(t: &impl Transport) -> Result<protocol::ConnState> {
     Ok(protocol::ConnState::parse(&r))
 }
 
+/// One half's firmware build (0 = left, 1 = right). The right's comes over the relay, so this
+/// can take a few seconds.
+pub fn build_info(t: &impl Transport, half: u8) -> Result<protocol::BuildInfo> {
+    let r = t.request(
+        &protocol::build_info(half),
+        protocol::SETTINGS,
+        protocol::settings::BUILD_INFO,
+        Duration::from_secs(4),
+    )?;
+    protocol::BuildInfo::parse(&r).map_err(|status| {
+        anyhow::anyhow!(match status {
+            1 => "busy".to_string(),
+            2 => "the right half is not connected".to_string(),
+            3 => "relay error".to_string(),
+            4 => "the right half's firmware doesn't report its build".to_string(),
+            n => format!("error {n}"),
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
