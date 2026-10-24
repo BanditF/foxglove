@@ -4,8 +4,9 @@
  * relay.
  * SPDX-License-Identifier: MIT
  *
- * All six reports are feature reports on the control pipe (HID Usage Tables, Lighting and
- * Illumination page). While the host is in charge (autonomous mode off), ZMK's underglow and
+ * All six reports are feature reports (HID Usage Tables, Lighting and Illumination page): on
+ * USB the control pipe, over Bluetooth a second HID service (lamparray_hog.c,
+ * FOXGLOVE_LAMPARRAY_BLE). While the host is in charge (autonomous mode off), ZMK's underglow and
  * rgb_idle step aside and this file writes the strip; autonomous mode on hands it back.
  */
 
@@ -27,23 +28,13 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "art_relay.h"
 #include "lamp_strip.h"
+#include "lamparray.h"
 
-
-enum {
-    REPORT_ATTRIBUTES = 1,
-    REPORT_ATTR_REQUEST,
-    REPORT_ATTR_RESPONSE,
-    REPORT_MULTI_UPDATE,
-    REPORT_RANGE_UPDATE,
-    REPORT_CONTROL,
-};
-
-#define MULTI_MAX 8
 #define LOGICAL_MAX_U16 0x27, 0xff, 0xff, 0x00, 0x00
 #define LOGICAL_MAX_I32 0x27, 0xff, 0xff, 0xff, 0x7f
 #define RGBI 0x09, 0x51, 0x09, 0x52, 0x09, 0x53, 0x09, 0x54
 
-static const uint8_t report_desc[] = {
+const uint8_t lamparray_report_desc[] = {
     0x05, 0x59, // Usage Page (Lighting and Illumination)
     0x09, 0x01, // Usage (LampArray)
     0xa1, 0x01, // Collection (Application)
@@ -93,6 +84,8 @@ static const uint8_t report_desc[] = {
 #define LAMP_PURPOSE_ACCENT 0x02
 #define LAMP_ARRAY_KIND_KEYBOARD 1
 #define UPDATE_INTERVAL_US 33000
+// A Bluetooth write takes a connection event and a frame is 6 of them, so hosts pace slower.
+#define UPDATE_INTERVAL_BLE_US 100000
 // The right gets at most this many frames a second, so the split link keeps room for keys.
 #define RIGHT_FRAME K_MSEC(100)
 
@@ -145,15 +138,17 @@ static const struct {
 };
 BUILD_ASSERT(ARRAY_SIZE(lamps) == LAMP_COUNT, "lamp table doesn't match the strips");
 
-static const struct device *hid_dev;
+const size_t lamparray_report_desc_len = sizeof(lamparray_report_desc);
+
 static uint16_t requested_lamp;
-static uint8_t get_buf[1 + 28];
-static atomic_t host;
+static atomic_t owner; // the transport in charge, 0 = none (autonomous mode)
 
 static uint8_t right_rgb[HALF_LAMPS][3];
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
-static void right_frame_cb(struct k_work *work) { art_relay_lamps(atomic_get(&host), right_rgb); }
+static void right_frame_cb(struct k_work *work) {
+    art_relay_lamps(atomic_get(&owner) != 0, right_rgb);
+}
 static K_WORK_DELAYABLE_DEFINE(right_frame_work, right_frame_cb);
 #endif
 
@@ -164,9 +159,9 @@ static void show(void) {
 #endif
 }
 
-static void set_host(bool on) {
-    atomic_set(&host, on);
-    lamp_strip_host(on);
+static void set_owner(int t) {
+    atomic_set(&owner, t);
+    lamp_strip_host(t != 0);
     show();
 }
 
@@ -182,12 +177,28 @@ static void set_lamp(uint16_t id, const uint8_t *rgbi) {
     }
 }
 
-static int get_report_cb(const struct device *dev, struct usb_setup_packet *setup, int32_t *len,
-                         uint8_t **data) {
-    uint8_t id = setup->wValue & 0xff;
-    memset(get_buf, 0, sizeof(get_buf));
-    get_buf[0] = id;
-    uint8_t *p = &get_buf[1];
+int lamparray_report_len(uint8_t id) {
+    switch (id) {
+    case REPORT_ATTRIBUTES:
+        return 22;
+    case REPORT_ATTR_REQUEST:
+        return 2;
+    case REPORT_ATTR_RESPONSE:
+        return 28;
+    case REPORT_MULTI_UPDATE:
+        return LAMPARRAY_REPORT_MAX;
+    case REPORT_RANGE_UPDATE:
+        return 9;
+    case REPORT_CONTROL:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+int lamparray_get_report(enum lamparray_transport t, uint8_t id, uint8_t *p) {
+    uint32_t interval = t == LAMPARRAY_BLE ? UPDATE_INTERVAL_BLE_US : UPDATE_INTERVAL_US;
+    memset(p, 0, LAMPARRAY_REPORT_MAX);
     switch (id) {
     case REPORT_ATTRIBUTES:
         sys_put_le16(LAMP_COUNT, &p[0]);
@@ -195,79 +206,100 @@ static int get_report_cb(const struct device *dev, struct usb_setup_packet *setu
         sys_put_le32(BOX_H, &p[6]);
         sys_put_le32(BOX_D, &p[10]);
         sys_put_le32(LAMP_ARRAY_KIND_KEYBOARD, &p[14]);
-        sys_put_le32(UPDATE_INTERVAL_US, &p[18]);
-        *len = 1 + 22;
-        break;
+        sys_put_le32(interval, &p[18]);
+        return 22;
     case REPORT_ATTR_RESPONSE: {
         uint16_t lamp = requested_lamp;
         sys_put_le16(lamp, &p[0]);
         sys_put_le32(lamps[lamp].x, &p[2]);
         sys_put_le32(lamps[lamp].y, &p[6]);
         sys_put_le32(0, &p[10]);
-        sys_put_le32(UPDATE_INTERVAL_US, &p[14]);
+        sys_put_le32(interval, &p[14]);
         sys_put_le32(LAMP_PURPOSE_ACCENT, &p[18]);
         p[22] = p[23] = p[24] = p[25] = 255; // red, green, blue, intensity levels
         p[26] = 1;                           // programmable
         p[27] = 0;                           // no key binding
-        *len = 1 + 28;
         requested_lamp = (lamp + 1) % LAMP_COUNT; // hosts walk the lamps by reading again
-        break;
+        return 28;
     }
     default:
         return -ENOTSUP;
     }
+}
+
+int lamparray_set_report(enum lamparray_transport t, uint8_t id, const uint8_t *d, int n) {
+    switch (id) {
+    case REPORT_ATTR_REQUEST:
+        if (n >= 2) {
+            requested_lamp = MIN(sys_get_le16(&d[0]), LAMP_COUNT - 1);
+        }
+        return 0;
+    case REPORT_MULTI_UPDATE: {
+        if (n < LAMPARRAY_REPORT_MAX) {
+            return -EINVAL;
+        }
+        int count = MIN(d[0], MULTI_MAX);
+        for (int i = 0; i < count; i++) {
+            set_lamp(sys_get_le16(&d[2 + 2 * i]), &d[2 + 2 * MULTI_MAX + 4 * i]);
+        }
+        if (d[1] & 0x01) { // LampUpdateComplete
+            show();
+        }
+        return 0;
+    }
+    case REPORT_RANGE_UPDATE: {
+        if (n < 9) {
+            return -EINVAL;
+        }
+        uint16_t start = sys_get_le16(&d[1]), end = MIN(sys_get_le16(&d[3]), LAMP_COUNT - 1);
+        for (uint16_t lamp = start; lamp <= end; lamp++) {
+            set_lamp(lamp, &d[5]);
+        }
+        if (d[0] & 0x01) {
+            show();
+        }
+        return 0;
+    }
+    case REPORT_CONTROL:
+        if (n >= 1) {
+            set_owner(d[0] ? 0 : t); // autonomous mode off = this host draws
+        }
+        return 0;
+    default:
+        return -ENOTSUP;
+    }
+}
+
+void lamparray_release(enum lamparray_transport t) {
+    if (atomic_cas(&owner, t, 0)) {
+        set_owner(0);
+    }
+}
+
+/* USB */
+
+static const struct device *hid_dev;
+static uint8_t get_buf[1 + LAMPARRAY_REPORT_MAX];
+
+static int get_report_cb(const struct device *dev, struct usb_setup_packet *setup, int32_t *len,
+                         uint8_t **data) {
+    uint8_t id = setup->wValue & 0xff;
+    int n = lamparray_get_report(LAMPARRAY_USB, id, &get_buf[1]);
+    if (n < 0) {
+        return n;
+    }
+    get_buf[0] = id;
+    *len = 1 + n;
     *data = get_buf;
     return 0;
 }
 
 static int set_report_cb(const struct device *dev, struct usb_setup_packet *setup, int32_t *len,
                          uint8_t **data) {
-    const uint8_t *d = *data;
-    int n = *len;
-    if (n < 1) {
+    if (*len < 1) {
         return -EINVAL;
     }
-    switch (d[0]) {
-    case REPORT_ATTR_REQUEST:
-        if (n >= 3) {
-            requested_lamp = MIN(sys_get_le16(&d[1]), LAMP_COUNT - 1);
-        }
-        break;
-    case REPORT_MULTI_UPDATE: {
-        if (n < 3 + 2 * MULTI_MAX + 4 * MULTI_MAX) {
-            return -EINVAL;
-        }
-        int count = MIN(d[1], MULTI_MAX);
-        for (int i = 0; i < count; i++) {
-            set_lamp(sys_get_le16(&d[3 + 2 * i]), &d[3 + 2 * MULTI_MAX + 4 * i]);
-        }
-        if (d[2] & 0x01) { // LampUpdateComplete
-            show();
-        }
-        break;
-    }
-    case REPORT_RANGE_UPDATE: {
-        if (n < 10) {
-            return -EINVAL;
-        }
-        uint16_t start = sys_get_le16(&d[2]), end = MIN(sys_get_le16(&d[4]), LAMP_COUNT - 1);
-        for (uint16_t id = start; id <= end; id++) {
-            set_lamp(id, &d[6]);
-        }
-        if (d[1] & 0x01) {
-            show();
-        }
-        break;
-    }
-    case REPORT_CONTROL:
-        if (n >= 2) {
-            set_host(!d[1]); // autonomous mode off = the host draws
-        }
-        break;
-    default:
-        return -ENOTSUP;
-    }
-    return 0;
+    return lamparray_set_report(LAMPARRAY_USB, (*data)[0], *data + 1, *len - 1);
 }
 
 static const struct hid_ops ops = {
@@ -282,7 +314,7 @@ static int lamparray_init(void) {
         LOG_ERR("LampArray: no %s", CONFIG_FOXGLOVE_LAMPARRAY_DEVICE);
         return -ENODEV;
     }
-    usb_hid_register_device(hid_dev, report_desc, sizeof(report_desc), &ops);
+    usb_hid_register_device(hid_dev, lamparray_report_desc, lamparray_report_desc_len, &ops);
     return usb_hid_init(hid_dev);
 }
 
@@ -290,8 +322,8 @@ SYS_INIT(lamparray_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 
 // Unplugged or suspended: nobody draws any more, so both halves get their own lights back.
 static int usb_listener(const zmk_event_t *eh) {
-    if (atomic_get(&host) && !zmk_usb_is_hid_ready()) {
-        set_host(false);
+    if (!zmk_usb_is_hid_ready()) {
+        lamparray_release(LAMPARRAY_USB);
     }
     return ZMK_EV_EVENT_BUBBLE;
 }

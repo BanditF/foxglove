@@ -89,6 +89,14 @@ config FOXGLOVE_LAMPARRAY
     help
       Needs one more USB HID device: raise USB_HID_DEVICE_COUNT by one.
 
+config FOXGLOVE_LAMPARRAY_BLE
+    bool "Also offer the LampArray over Bluetooth (HID over GATT, prototype, #88)"
+    depends on FOXGLOVE_LAMPARRAY && ZMK_BLE
+    help
+      A second HID service on the left with the same six feature reports. Whether Windows
+      Dynamic Lighting takes a LampArray over Bluetooth is unverified; dev builds only until the
+      #115 sitting says so. Adding a GATT service can make a bonded PC need pairing again.
+
 config FOXGLOVE_LAMPARRAY_DEVICE
     string "USB HID device for the LampArray"
     default "HID_2"
