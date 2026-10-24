@@ -56,6 +56,7 @@ pub struct Plugin {
     next: AtomicI64,
     pending: Pending,
     events: Mutex<Option<Receiver<FactChanged>>>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
     /// What Foxglove granted this plugin.
     pub granted: Vec<String>,
 }
@@ -76,6 +77,8 @@ impl Plugin {
         let pending: Pending = Arc::default();
         let (events_tx, events_rx) = mpsc::channel();
         let reader_pending = pending.clone();
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_closed = closed.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(read).lines() {
                 let Ok(line) = line else { break };
@@ -94,6 +97,7 @@ impl Plugin {
                 }
             }
             // Fail every waiting call once Foxglove is gone.
+            reader_closed.store(true, Ordering::Relaxed);
             reader_pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
         });
         let mut plugin = Plugin {
@@ -101,6 +105,7 @@ impl Plugin {
             next: AtomicI64::new(0),
             pending,
             events: Mutex::new(Some(events_rx)),
+            closed,
             granted: vec![],
         };
         let init: InitializeResult = plugin.call_as(
@@ -159,6 +164,12 @@ impl Plugin {
     /// The fact changes of every subscription (take it once).
     pub fn events(&self) -> Option<Receiver<FactChanged>> {
         self.events.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// Whether Foxglove has gone (its end of the connection closed): a plugin that holds
+    /// something, such as a port, should stop.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
     }
 
     pub fn devices(&self) -> Result<Vec<Device>> {
