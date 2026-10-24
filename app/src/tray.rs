@@ -1,7 +1,6 @@
 use image::load_from_memory;
 use std::process;
 use std::sync::Arc;
-use std::thread;
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     Icon, TrayIcon, TrayIconBuilder,
@@ -79,7 +78,7 @@ fn build_tray_icon() -> (TrayIcon, crate::foxglove::tray::Controls) {
 }
 
 pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
-    thread::spawn({
+    crate::foxglove::services::spawn_named("tray-menu", {
         let on_settings = on_settings.clone();
         move || {
             while let Ok(event) = MenuEvent::receiver().recv() {
@@ -99,7 +98,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
 
     // Left-clicking the icon opens the settings, as is conventional on Windows.
     #[cfg(target_os = "windows")]
-    thread::spawn(move || {
+    crate::foxglove::services::spawn_named("tray-click", move || {
         use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent};
         while let Ok(event) = TrayIconEvent::receiver().recv() {
             if let TrayIconEvent::Click {
@@ -115,7 +114,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
 
     #[cfg(target_os = "linux")]
     {
-        thread::spawn(|| {
+        std::thread::spawn(|| {
             gtk::init().expect("Failed to initialize GTK. Is a display available?");
             let (_icon, mut controls) = build_tray_icon();
             gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {

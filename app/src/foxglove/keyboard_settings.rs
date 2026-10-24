@@ -92,7 +92,7 @@ fn run(
         return;
     }
     *LAST_ACTION.lock().unwrap() = Some((label.clone(), "sending…".into()));
-    std::thread::spawn(move || {
+    super::services::spawn_named("keyboard-command", move || {
         let result = match device() {
             None => "no keyboard with Foxglove's firmware found".to_string(),
             Some(d) => match command(&d) {
@@ -121,7 +121,7 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
     if RGB_REFRESH.load(Ordering::Relaxed) && !RGB_POLLING.swap(true, Ordering::Relaxed) {
         RGB_REFRESH.store(false, Ordering::Relaxed);
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
+        super::services::spawn_named("rgb-state", move || {
             // Read from the link: Palm's lighting state has no per-half age yet.
             let state = device().and_then(|d| digitalis::settings::rgb_state(d.link().as_ref()).ok());
             *RGB_STATE.lock().unwrap() = state;
