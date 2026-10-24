@@ -141,10 +141,10 @@
  *      once the right has answered, and the right reboots into its bootloader ~300 ms after.
  *      Status: 0 ok, 2 no relay link (right), 3 relay timeout (3 s), 4 not built in
  *      (CONFIG_FOXGLOVE_TEST_HOOKS=n, GA), 5 bad request, 6 bad or expired nonce.
- *      Flashers: start writing the UF2 as soon as its drive appears. The nice!nano's bootloader
- *      gives an app-triggered entry (GPREGRET 0x57, this and ZMK's &bootloader) a 3 s timer
- *      and resets into the app unless USB is mounted when it fires (<= 0.9) or a write is under
- *      way; a double-tap has no timer. A settle wait before writing loses the drive (#175).
+ *   0B GUARD_TEST (test hooks + split guard only)        reply: D7 8B, status
+ *      The #122 split guard treats the current split link as stuck once, 2 s from now: it drops
+ *      it, ZMK reconnects, HELLO byte 31 counts one more. Status: 0 ok, 2 no split link,
+ *      4 not built in (GA, or no guard).
  */
 
 #pragma once
