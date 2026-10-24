@@ -1,0 +1,25 @@
+#include "../common/keymap.dtsi"
+
+/ {
+    sim_strip: sim_strip {
+        compatible = "foxglove,sim-strip";
+        chain-length = <2>;
+    };
+
+    underglow_dim: underglow_dim {
+        compatible = "foxglove,dim-strip";
+        led-strip = <&sim_strip>;
+        chain-length = <2>;
+    };
+
+    chosen {
+        zmk,underglow = &underglow_dim;
+    };
+};
+
+&kscan {
+    events = <
+        ZMK_MOCK_PRESS(0,1,100)  // position 1: Q, after the dim checks have run
+        ZMK_MOCK_RELEASE(0,1,30)
+    >;
+};

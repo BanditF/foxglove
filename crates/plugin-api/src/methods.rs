@@ -128,6 +128,14 @@ pub struct LightingState {
     pub brightness: u8,
     pub effect: String,
     pub speed: u8,
+    /// Every part of the device shows this; false while a split keyboard's other half is still
+    /// catching up (it can lag seconds). Older apps don't send it: then true.
+    #[serde(default = "settled_default")]
+    pub settled: bool,
+}
+
+fn settled_default() -> bool {
+    true
 }
 
 /// Changes only what's given.

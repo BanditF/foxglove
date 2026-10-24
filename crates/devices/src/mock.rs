@@ -92,6 +92,7 @@ impl MockDevice {
                         params: vec![],
                     },
                     speed: 0,
+                    settled: true,
                 },
                 frame: vec![],
                 released: true,
