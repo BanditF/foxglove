@@ -17,6 +17,12 @@ pub mod capabilities {
     pub const SETTINGS_RGB: u32 = 1 << 2;
     pub const ART_STATUS_EVENT: u32 = 1 << 3;
     pub const CONN_STATE: u32 = 1 << 4;
+    /// Settings POSITION (D7 05), pre-GA test builds only.
+    pub const POSITION: u32 = 1 << 5;
+    /// Settings SCREEN_SNAP / SCREEN_READ (D7 06 / D7 07).
+    pub const SCREEN: u32 = 1 << 6;
+    /// INVOKE refuses &bt, &out, &bootloader, &sys_reset and &soft_off with status 6.
+    pub const INVOKE_REFUSES: u32 = 1 << 7;
 }
 pub const VERSION: u8 = 1;
 
@@ -258,11 +264,13 @@ pub struct Hello {
     pub debug: [u8; 10],
     /// Zero for older firmware, which pads the appended field with zeros.
     pub capabilities: u32,
+    /// Firmware panel timeout in seconds; zero keeps the frame indefinitely.
+    pub panel_timeout_s: u16,
 }
 
 impl Hello {
     /// The HELLO reply: ver, panel w, h, x, y, right link, right battery %, discovery, tries,
-    /// then the relay debug counters and optional capability bits (u32 LE).
+    /// then relay debug counters, capability bits (u32 LE), panel timeout seconds (u16 LE).
     pub fn parse(r: &[u8; REPORT]) -> Hello {
         Hello {
             version: r[2],
@@ -274,6 +282,7 @@ impl Hello {
             discovery_tries: r[10],
             debug: r[11..21].try_into().unwrap(),
             capabilities: u32::from_le_bytes(r[21..25].try_into().unwrap()),
+            panel_timeout_s: u16::from_le_bytes(r[25..27].try_into().unwrap()),
         }
     }
 
@@ -467,6 +476,14 @@ mod tests {
         let h = Hello::parse(&r);
         assert_eq!(h.right_battery, None);
         assert_eq!(h.discovery_text(), "bt_gatt_discover error -5");
+    }
+
+    #[test]
+    fn hello_timeout_is_optional_and_little_endian() {
+        let mut r = [0; REPORT];
+        assert_eq!(Hello::parse(&r).panel_timeout_s, 0);
+        r[25..27].copy_from_slice(&3600u16.to_le_bytes());
+        assert_eq!(Hello::parse(&r).panel_timeout_s, 3600);
     }
 
     #[test]

@@ -73,3 +73,50 @@ Before release, run `powershell -ExecutionPolicy Bypass -File scripts/check.ps1`
 On a Windows test account, also verify default install, optional startup and sign-in,
 silent install, upgrade/downgrade handling, and uninstall with settings/cache files
 present. Check that the Run entry and shortcut disappear while those files survive.
+
+## Auto-update
+
+The app checks once shortly after startup (unless disabled) and on **Check now**
+in Settings. It selects the highest stable `app-v` SemVer release, ignoring
+firmware tags, drafts, prereleases and versions at or below the installed version.
+There is no periodic update check. Windows offers installation; other platforms
+link to the release. A placeholder public key disables network checks.
+
+Generate an Ed25519 key pair in a trusted environment:
+
+```powershell
+cargo run -p foxglove-update --bin foxglove-update-sign -- keygen
+```
+
+Store the printed private seed as the repository Actions secret
+`FOXGLOVE_UPDATE_KEY`. Put only the printed base64 public key in
+`app/resources/update-key.pub` before building the app. Never commit the private
+key. Existing installations trust their embedded key; changing it requires a
+release signed by the previous key and a coordinated key transition.
+
+The release job requires the secret and produces `foxglove.exe`,
+`foxglove-x64.msi`, `latest.json`, and `latest.json.sig`. The latter is a base64
+Ed25519 signature over the exact JSON bytes (including whitespace). The manifest
+contains:
+
+```json
+{"version":"1.2.3","tag":"app-v1.2.3","msi":{"name":"foxglove-x64.msi","url":"https://github.com/BanditF/foxglove/releases/download/app-v1.2.3/foxglove-x64.msi","sha256":"64 hexadecimal characters","size":12345},"notes":"Release notes","published":"2026-10-23T00:00:00Z"}
+```
+
+Unknown JSON fields are ignored. To build and sign manually, run the signing
+binary with `manifest --version 1.2.3 --msi <path> --url <https-url>
+--notes-file <path>`, then `sign latest.json` with the secret in the environment.
+The manifest command calculates SHA-256, size and the current RFC3339 timestamp.
+The app verifies the signature before trusting metadata, then verifies the MSI
+size and hash in `%LOCALAPPDATA%\Foxglove\updates`. A copied, non-elevated app
+helper waits for the app to exit and requests UAC for `msiexec /i ... /passive
+/norestart`. It waits for installation and restarts the installed app without
+elevation. Cancellation or installation failure leaves `error.txt` for the next
+startup and restarts the old install. Windows Installer handles upgrades;
+settings under `%APPDATA%\Foxglove\config` are preserved. The startup preference
+is `[updates] check_at_startup = true` in `updates.ini` beside the other settings.
+
+Before shipping, exercise UAC acceptance/cancellation, installer failure,
+interrupted download, successful upgrade/relaunch, and settings preservation on
+a Windows test installation. The development sandbox cannot validate a real MSI
+upgrade.

@@ -1,0 +1,55 @@
+schema = 1
+
+[[cases]]
+name = "usb-halves"
+description = "Left enumerates with its interfaces; the right is absent or bare (no interfaces = peripheral firmware)"
+tags = ["smoke", "release"]
+steps = [{ usb_halves = {} }]
+
+[[cases]]
+name = "status"
+description = "USB or BLE connected, right link ready, right RGB fresh"
+tags = ["smoke", "release"]
+requires = ["host_link>=1"]
+steps = [
+  { expect_conn = { usb_or_ble = true, right_link = true, within_ms = 2000 } },
+  { expect_rgb = { right_age_max_s = 5, within_ms = 3000 } },
+]
+
+[[cases]]
+name = "momentary-number"
+description = "Momentary NUMBER layer 1 returns to base"
+tags = ["smoke", "release"]
+steps = [
+  { invoke = { behavior = "mo", param1 = 1, hold_ms = 800 } },
+  { expect_layer = { active_contains = [1], within_ms = 500 } },
+  { expect_layer = { top = 0, within_ms = 1500 } },
+]
+
+[[cases]]
+name = "momentary-symbol"
+description = "Momentary SYMBOL layer 2 returns to base"
+tags = ["smoke", "release"]
+steps = [
+  { invoke = { behavior = "mo", param1 = 2, hold_ms = 800 } },
+  { expect_layer = { active_contains = [2], within_ms = 500 } },
+  { expect_layer = { top = 0, within_ms = 1500 } },
+]
+
+[[cases]]
+name = "momentary-game-number"
+description = "Momentary GAME NUMBER layer 4 returns to base"
+tags = ["smoke", "release"]
+steps = [
+  { invoke = { behavior = "mo", param1 = 4, hold_ms = 800 } },
+  { expect_layer = { active_contains = [4], within_ms = 500 } },
+  { expect_layer = { top = 0, within_ms = 1500 } },
+]
+
+[[cases]]
+name = "bootloader-refused"
+description = "Safety check: bootloader must be refused (6); never sent on unknown firmware"
+# Not tagged release yet: it stays BLOCKED until HELLO advertises INVOKE refusal (firmware ask).
+tags = ["smoke"]
+requires = ["invoke_refusal"]
+steps = [{ invoke = { behavior = "bootloader", expect_status = "refused" } }]

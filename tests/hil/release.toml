@@ -1,0 +1,33 @@
+schema = 1
+include = ["smoke.toml", "app-idle.toml"]
+
+[[cases]]
+name = "typing-abc"
+description = "Type abc into the runner-owned foreground window"
+tags = ["release"]
+steps = [{ type_into_sink = { text = "abc", expect = "abc", via = [
+  { invoke = { behavior = "kp", param1 = 458756 } },
+  { invoke = { behavior = "kp", param1 = 458757 } },
+  { invoke = { behavior = "kp", param1 = 458758 } },
+] } }]
+
+[[cases]]
+name = "screen-left-base"
+description = "Left base screen golden comparison"
+tags = ["release"]
+requires = ["screen_readback"]
+steps = [{ screen = { half = "left", golden = "golden/left-base.png", mask = [] } }]
+
+[[cases]]
+name = "screen-right-base"
+description = "Right base screen golden comparison"
+tags = ["release"]
+requires = ["screen_readback"]
+steps = [{ screen = { half = "right", golden = "golden/right-base.png", mask = [] } }]
+
+[[cases]]
+name = "manual-soft-off-wake"
+description = "Human verifies soft-off and wake; runner sends no power commands"
+tags = ["release"]
+manual = true
+steps = [{ prompt = { ask = "Hold ADMIN+M for 2 s: both halves should switch off. Then press each half's reset button ONCE (a double tap enters the bootloader). Answer y if both halves wake and type, n otherwise" } }]

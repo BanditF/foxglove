@@ -27,6 +27,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/activity.h>
 
 #include "peripheral_status.h"
+#include "screen_snap.h"
 #include "custom_art.h"
 
 static sys_slist_t widgets = SYS_SLIST_STATIC_INIT(&widgets);
@@ -279,3 +280,20 @@ int zmk_widget_status_init(struct zmk_widget_status *widget, lv_obj_t *parent) {
 }
 
 lv_obj_t *zmk_widget_status_obj(struct zmk_widget_status *widget) { return widget->obj; }
+
+bool screen_snap_pixels(uint8_t out[SCREEN_SNAP_BYTES]) {
+    struct zmk_widget_status *widget;
+    SYS_SLIST_FOR_EACH_CONTAINER(&widgets, widget, node) {
+        screen_snap_canvas(out, widget->cbuf, 92);
+        /* The later art child covers x=0..139, including part of the status canvas. */
+        for (int y = 0; y < CUSTOM_ART_H; y++) {
+            for (int x = 0; x < CUSTOM_ART_W; x++) {
+                int index = !!(art_buf[8 + y * CUSTOM_ART_STRIDE + x / 8] &
+                              (0x80 >> (x & 7)));
+                screen_snap_pixel(out, x, y, art_buf[index * 4] < 128);
+            }
+        }
+        return true;
+    }
+    return false;
+}

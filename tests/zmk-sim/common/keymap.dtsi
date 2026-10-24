@@ -1,0 +1,7 @@
+// The production file is included verbatim, never copied or rewritten.
+#include "../../../config/eyelash_corne.keymap"
+#include "matrix.dtsi"
+
+// Hardware commands absent from native_posix. Preserve their parameter cells.
+&bt { compatible = "foxglove,sim-noop-two"; };
+&rgb_ug { compatible = "foxglove,sim-noop-two"; };
