@@ -163,7 +163,9 @@ impl DigitalisDevice {
         let id = self.underglow.lock().unwrap_or_else(|e| e.into_inner()).ok_or(DeviceError::Unsupported)?;
         let mut tries = 0;
         loop {
-            match status(settings::invoke(&*self.link, id, command, param, 0).map_err(err)?) {
+            let result = settings::invoke(&*self.link, id, command, param, 0).map_err(err).and_then(status);
+            log_underglow(command, param, tries, &result);
+            match result {
                 Err(DeviceError::Busy(_)) if tries < UNDERGLOW_BUSY_TRIES => {
                     tries += 1;
                     std::thread::sleep(UNDERGLOW_BUSY_WAIT);
@@ -241,6 +243,25 @@ fn status(s: InvokeStatus) -> PResult<()> {
         InvokeStatus::Busy => Err(DeviceError::Busy(s.to_string())),
         InvokeStatus::Refused => Err(DeviceError::Denied(s.to_string())),
         other => Err(DeviceError::Backend(other.to_string())),
+    }
+}
+
+/// Diagnostics (Test lab, #224): with `FOXGLOVE_LOG_LIGHTING=<file>`, every underglow command
+/// sent to the keyboard is appended there with the time (Unix ms), the command, its value, the
+/// try and the result.
+fn log_underglow(command: u32, param: u32, try_no: u32, result: &PResult<()>) {
+    use std::io::Write;
+    let Some(path) = std::env::var_os("FOXGLOVE_LOG_LIGHTING") else { return };
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    let name = match command {
+        RGB_ON => "on".to_string(),
+        RGB_OFF => "off".into(),
+        RGB_EFFECT_SET => format!("effect {param}"),
+        RGB_COLOR_HSB => format!("hsb {} {} {}", param >> 16, (param >> 8) & 0xff, param & 0xff),
+        c => format!("cmd {c} {param}"),
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{ms} app {name} try {try_no} -> {result:?}");
     }
 }
 

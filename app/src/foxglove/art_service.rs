@@ -487,6 +487,14 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 light_taps.push(link.subscribe_reports(move |generation, r| {
                     if protocol::is_reply(r, protocol::SETTINGS, protocol::settings::RGB_STATE) {
                         let on = protocol::RgbState::parse(r).left.on;
+                        // Diagnostics (#224): every lighting report from the keyboard, with the time.
+                        if let Some(path) = std::env::var_os("FOXGLOVE_LOG_LIGHTING") {
+                            use std::io::Write;
+                            let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+                            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                                let _ = writeln!(f, "{ms} keyboard rgb_state {:?}", protocol::RgbState::parse(r));
+                            }
+                        }
                         let _ = tx.send(Command::Lights { source: source.clone(), generation, on });
                     }
                 }));

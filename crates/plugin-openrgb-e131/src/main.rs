@@ -85,7 +85,7 @@ fn take_over(
         .into_iter()
         .filter(|d| d.connected && d.caps.iter().any(|c| c == "lighting"))
         .map(|d| {
-            let read = plugin.lighting_state(&d.id).ok();
+            let read = read_state(plugin, &d.id).ok();
             let leftover = |s: &LightingState| ours.is_some_and(|c| near(s.hue, c.hue, 360) && near(s.saturation.into(), c.saturation.into(), 1000));
             let before = match (read, original.get(&d.id)) {
                 (Some(s), Some(kept)) if leftover(&s) => Some(kept.clone()),
@@ -115,13 +115,33 @@ fn colour(plugin: &Plugin, devices: &[(String, Option<LightingState>)], color: H
     let effect = previous.is_none().then(|| "0".to_string());
     for (id, _) in devices {
         let set = SetLightingParams { device: id.clone(), on, color: Some(color), effect: effect.clone() };
-        if let Err(e) = plugin.set_lighting(&set) {
+        if let Err(e) = send(plugin, &set) {
             eprintln!("openrgb-e131: lighting: {e}");
             continue;
         }
         let all = SetLightingParams { device: id.clone(), on: Some(color.brightness > 0), color: Some(color), effect: Some("0".into()) };
         confirm(plugin, &all);
     }
+}
+
+/// Every read-back, logged like [`send`].
+fn read_state(plugin: &Plugin, id: &str) -> foxglove_plugin::Result<LightingState> {
+    let state = plugin.lighting_state(id);
+    if std::env::var_os("FOXGLOVE_LOG_LIGHTING").is_some() {
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        eprintln!("{ms} plugin read {state:?}");
+    }
+    state
+}
+
+/// Every lighting change goes through here; with `FOXGLOVE_LOG_LIGHTING` set it's logged with
+/// the time (Unix ms) to plugin.log, for the Test lab (#224).
+fn send(plugin: &Plugin, set: &SetLightingParams) -> foxglove_plugin::Result<()> {
+    if std::env::var_os("FOXGLOVE_LOG_LIGHTING").is_some() {
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        eprintln!("{ms} plugin set {set:?}");
+    }
+    plugin.set_lighting(set)
 }
 
 /// How often a colour the keyboard didn't take is sent again.
@@ -145,11 +165,11 @@ fn shows(state: &LightingState, set: &SetLightingParams) -> bool {
 fn confirm(plugin: &Plugin, all: &SetLightingParams) {
     let id = &all.device;
     for attempt in 0..=RESENDS {
-        match plugin.lighting_state(id) {
+        match read_state(plugin, id) {
             Ok(state) if shows(&state, all) => return,
             Ok(_) if attempt < RESENDS => {
                 std::thread::sleep(std::time::Duration::from_millis(100));
-                if let Err(e) = plugin.set_lighting(all) {
+                if let Err(e) = send(plugin, all) {
                     eprintln!("openrgb-e131: lighting: {e}");
                     return;
                 }
@@ -172,7 +192,7 @@ fn restore(plugin: &Plugin, devices: &[(String, Option<LightingState>)]) {
             color: Some(Hsb { hue: s.hue, saturation: s.saturation, brightness: s.brightness }),
             effect: Some(s.effect.clone()),
         };
-        match plugin.set_lighting(&set) {
+        match send(plugin, &set) {
             Ok(()) => confirm(plugin, &set),
             Err(e) => eprintln!("openrgb-e131: restoring lights: {e}"),
         }
