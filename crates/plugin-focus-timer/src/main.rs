@@ -52,8 +52,10 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // Keys the user binds in the Plugins tab (#212): "pause" toggles, "reset" restarts focus.
+    let actions = plugin.actions();
     let mut focus = true;
-    loop {
+    'phase: loop {
         let period = if focus { opts.focus } else { opts.rest };
         let state = if focus { "focus" } else { "rest" };
         if plugin.set_fact("focus.state", Some(Fact::Text(state.into()))).is_err() {
@@ -64,10 +66,27 @@ fn main() {
         }
         // Count down once a second so the panel or other plugins can show the time left.
         let mut left = period.as_secs();
+        let mut paused = false;
         while left > 0 {
             let _ = plugin.set_fact("focus.remaining", Some(Fact::Int(left as i64)));
-            std::thread::sleep(Duration::from_secs(1));
-            left -= 1;
+            let _ = plugin.set_fact("focus.paused", Some(Fact::Bool(paused)));
+            let pressed = match &actions {
+                Some(rx) => rx.recv_timeout(Duration::from_secs(1)).ok(),
+                None => {
+                    std::thread::sleep(Duration::from_secs(1));
+                    None
+                }
+            };
+            match pressed.as_deref() {
+                Some("pause") => paused = !paused,
+                Some("reset") => {
+                    focus = true;
+                    continue 'phase;
+                }
+                Some(_) => {}
+                None if !paused => left -= 1,
+                None => {}
+            }
         }
         focus = !focus;
     }

@@ -95,6 +95,7 @@ pub fn group(ui: &mut egui::Ui) {
                 }
                 let perms: Vec<String> = plugin.record.approved.iter().map(|p| p.describe()).collect();
                 ui.weak(format!("    may {}", if perms.is_empty() { "do nothing beyond running".into() } else { perms.join(", ") }));
+                action_keys(ui, plugin, state);
             }
 
             ui.add_space(6.0);
@@ -124,6 +125,41 @@ pub fn group(ui: &mut egui::Ui) {
             }
         });
     });
+}
+
+/// A key (F13–F24) for each of the plugin's actions (#212).
+fn action_keys(ui: &mut egui::Ui, plugin: &Installed, state: &mut UiState) {
+    use super::plugin_actions::{self, KEYS};
+    if plugin.manifest.actions.is_empty() {
+        return;
+    }
+    let bindings = plugin_actions::bindings();
+    let taken = plugin_actions::taken();
+    for action in &plugin.manifest.actions {
+        ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            ui.label(&action.name);
+            let current = plugin_actions::key_for(&bindings, &plugin.manifest.id, &action.id);
+            let mut chosen = current.clone();
+            egui::ComboBox::from_id_salt(("plugin-action", &plugin.manifest.id, &action.id))
+                .selected_text(current.as_deref().unwrap_or("no key"))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut chosen, None, "no key");
+                    for key in KEYS {
+                        let used_by = bindings.get(key).filter(|b| b.plugin != plugin.manifest.id || b.action != action.id);
+                        let label = if used_by.is_some() { format!("{key} (in use)") } else { key.to_string() };
+                        ui.selectable_value(&mut chosen, Some(key.to_string()), label);
+                    }
+                });
+            if chosen != current {
+                state.message = plugin_actions::bind(&plugin.manifest.id, &action.id, chosen.as_deref()).err();
+            }
+            if current.as_ref().is_some_and(|k| taken.contains(k)) {
+                ui.colored_label(ui.visuals().warn_fg_color, "another program holds this key");
+            }
+        });
+    }
+    ui.weak("    Put F13–F24 on a key in ZMK Studio or VIA; it types nothing, and Foxglove passes it to the plugin.");
 }
 
 /// The catalog's freshness, and "Check now". Opening the tab asks for a check when one is due

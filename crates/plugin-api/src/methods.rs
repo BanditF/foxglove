@@ -237,6 +237,13 @@ pub struct KeyEvent {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Empty {}
 
+/// Event: the user pressed the key bound to one of the plugin's actions (`[[actions]]` in
+/// `plugin.toml`); sent only to that plugin (API 1.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ActionInvoked {
+    pub action: String,
+}
+
 /// The kind of connection `net.open` makes (API 1.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -336,6 +343,8 @@ pub const METHODS: &[Method] = &[
     Method { name: "net.close", kind: Kind::Call, permission: None, params: schema!(NetStream), result: Some(schema!(Empty)) },
     Method { name: "net.data", kind: Kind::Event, permission: None, params: schema!(NetData), result: None },
     Method { name: "net.closed", kind: Kind::Event, permission: None, params: schema!(NetClosed), result: None },
+    // Sent to one plugin when the key bound to its action is pressed (#212).
+    Method { name: "action.invoked", kind: Kind::Event, permission: None, params: schema!(ActionInvoked), result: None },
 ];
 
 pub fn find(name: &str) -> Option<&'static Method> {
