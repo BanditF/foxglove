@@ -183,8 +183,27 @@ pub fn stop() {
     }
 }
 
-fn settings_path() -> Option<PathBuf> {
-    crate::settings::Settings::config_file_path().map(|p| p.with_file_name("art.json"))
+/// The `[art]` section of the settings store: the pinned choice, re-applied after the right
+/// half power-cycles. Imported once from `art.json`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+struct ArtSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pinned: Option<Choice>,
+}
+
+fn load_pinned() -> Option<Choice> {
+    super::store::load_or_migrate::<ArtSettings>("art", || {
+        let json = crate::settings::Settings::config_file_path()?.with_file_name("art.json");
+        let pinned = serde_json::from_slice::<Choice>(&std::fs::read(&json).ok()?).ok()?;
+        Some((
+            ArtSettings {
+                pinned: Some(pinned),
+            },
+            vec![json],
+        ))
+    })
+    .pinned
 }
 
 fn restore(pinned: &Option<Choice>, status: ArtStatus) -> Option<Choice> {
@@ -237,9 +256,7 @@ fn choose(link: &Link, h: &Handle, choice: &Choice) -> Result<ArtStatus, String>
 }
 
 fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
-    let pinned = settings_path()
-        .and_then(|p| std::fs::read(p).ok())
-        .and_then(|b| serde_json::from_slice::<Choice>(&b).ok());
+    let pinned = load_pinned();
     h.update(|s| s.pinned = pinned);
     let notifications = h.commands.clone();
     let _subscription = super::link::subscribe_links(move |link| {
@@ -356,14 +373,11 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                             s.status = Some(st);
                             s.pinned = Some(choice.clone());
                         });
-                        if let Some(path) = settings_path() {
-                            if let Some(parent) = path.parent() {
-                                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-                            }
-                            let bytes = serde_json::to_vec(&choice).map_err(|e| e.to_string())?;
-                            std::fs::write(path, bytes)
-                                .map_err(|e| format!("saving pinned art: {e}"))?;
-                        }
+                        let art = ArtSettings {
+                            pinned: Some(choice.clone()),
+                        };
+                        super::store::save("art", &art)
+                            .map_err(|e| format!("saving pinned art: {e}"))?;
                         Ok(st)
                     }),
                     _ => unreachable!(),
@@ -395,6 +409,21 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinned_choices_round_trip_through_toml() {
+        for pinned in [
+            Choice::BuiltIn(-1),
+            Choice::BuiltIn(3),
+            Choice::File(PathBuf::from(r"C:\art\fox.bin")),
+        ] {
+            let a = ArtSettings {
+                pinned: Some(pinned),
+            };
+            let back: ArtSettings = toml::from_str(&toml::to_string(&a).unwrap()).unwrap();
+            assert_eq!(back, a);
+        }
+    }
 
     #[test]
     fn handle_rejects_overlapping_commands_and_cancel_is_immediate() {
