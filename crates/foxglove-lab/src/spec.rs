@@ -573,6 +573,7 @@ pub fn load(path: &Path) -> Result<Suite> {
             ensure!(
                 [
                     "position_press",
+                    "art_keys",
                     "screen_readback",
                     "invoke_refusal",
                     "build_info"
