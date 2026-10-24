@@ -193,6 +193,16 @@ impl Plugin {
         Ok(Lease { plugin: self.clone(), id: id.lease })
     }
 
+    /// Shows `frame` (1 bpp, rows MSB first, padded to whole bytes) on a keyboard's left panel
+    /// for `ttl` (60 s at most; send it again to keep it). Needs `screens.write`.
+    pub fn panel_override(&self, device: &str, width: u16, height: u16, frame: &[u8], ttl: Duration) -> Result<()> {
+        use base64::Engine;
+        let bitmap = base64::engine::general_purpose::STANDARD.encode(frame);
+        let ttl_ms = u32::try_from(ttl.as_millis()).unwrap_or(u32::MAX);
+        self.call("screens.panel_override", json!({"device": device, "width": width, "height": height, "bitmap": bitmap, "ttl_ms": ttl_ms}))
+            .map(|_| ())
+    }
+
     /// One of this plugin's secrets (#213; needs `secrets`): what the user entered in the
     /// Plugins tab, or what the plugin saved. `None` when it isn't set.
     pub fn secret(&self, name: &str) -> Result<Option<String>> {
@@ -202,6 +212,12 @@ impl Plugin {
     /// Saves (or with `None` removes) one of this plugin's secrets, such as a refreshed token.
     pub fn set_secret(&self, name: &str, value: Option<&str>) -> Result<()> {
         self.call("secrets.set", json!({ "name": name, "value": value })).map(|_| ())
+    }
+
+    /// The plugin's own folder for state between runs (`data/` in its folder, writable even in
+    /// the sandbox). Foxglove creates it before starting the plugin.
+    pub fn data_dir() -> std::path::PathBuf {
+        std::env::current_dir().unwrap_or_default().join("data")
     }
 
     /// Whether Foxglove has gone (its end of the connection closed): a plugin that holds

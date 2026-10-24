@@ -20,7 +20,7 @@ use foxglove_plugin_trust::{Catalog, Entry, Root, Seen};
 const ROOT_KEY: &str = include_str!("../../resources/plugin-trust/root.pub");
 
 /// Files the runner writes into a plugin's folder itself.
-pub const RUNTIME_FILES: &[&str] = &["plugin.log", "kit.log"];
+pub const RUNTIME_FILES: &[&str] = &["plugin.log", "kit.log", foxglove_plugin_host::runner::DATA_DIR];
 
 /// Whether unsigned plugins are allowed (developers only).
 pub fn dev_unsigned() -> bool {

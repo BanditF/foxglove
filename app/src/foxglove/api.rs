@@ -143,12 +143,25 @@ impl Devices for AppDevices {
                 end_leases(|l| l.id == p.lease && l.conn == conn);
                 Ok(json!({}))
             }
+            "screens.panel_override" => {
+                use base64::Engine;
+                let p: methods::PanelOverrideParams = serde_json::from_value(params)
+                    .map_err(|e| Error { code: code::INVALID_PARAMS, message: e.to_string(), data: None })?;
+                let bits = base64::engine::general_purpose::STANDARD
+                    .decode(&p.bitmap)
+                    .map_err(|e| Error { code: code::INVALID_PARAMS, message: format!("bad base64: {e}"), data: None })?;
+                let ttl = std::time::Duration::from_millis(u64::from(p.ttl_ms));
+                super::screens::set_override(conn, p.width, p.height, bits, ttl)
+                    .map_err(|e| Error { code: code::INVALID_PARAMS, message: e, data: None })?;
+                Ok(json!({}))
+            }
             _ => self.call(method, params),
         }
     }
 
     fn closed(&self, conn: u64) {
         end_leases(|l| l.conn == conn);
+        super::screens::clear_override(conn);
     }
 
     fn call(&self, method: &str, _params: Value) -> Result<Value, Error> {
