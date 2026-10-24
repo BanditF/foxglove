@@ -318,6 +318,10 @@ fn dispatch(
             }
             Ok(json!(methods::Subscription { subscription: id }))
         }
+        "settings.get" => {
+            let plugin = s.plugin.as_deref().ok_or_else(|| denied("a plugin connection"))?;
+            Ok(json!(methods::SettingValues { values: settings_of(plugin) }))
+        }
         "apps.watch" => {
             let plugin = s.plugin.as_deref().ok_or_else(|| denied("a plugin connection"))?;
             let p: methods::AppsWatchParams = params(request.params)?;
@@ -345,6 +349,7 @@ fn dispatch(
                 let need = match p.kind {
                     methods::NetKind::Tcp => format!("net.connect:{}:{}", p.host, p.port),
                     methods::NetKind::Udp => format!("net.listen:udp:127.0.0.1:{}", p.port),
+                    methods::NetKind::TcpListen => format!("net.listen:tcp:127.0.0.1:{}", p.port),
                 };
                 return Err(denied(need));
             }
@@ -450,6 +455,24 @@ pub mod pipe {
     pub fn connect() -> io::Result<std::fs::File> {
         Err(unsupported())
     }
+}
+
+/// Where a plugin's settings come from: the app, which keeps them with its own settings (#69).
+type SettingsSource = fn(&str) -> serde_json::Map<String, Value>;
+static SETTINGS: std::sync::OnceLock<SettingsSource> = std::sync::OnceLock::new();
+
+/// How the host finds a plugin's settings (once, at start).
+pub fn set_settings_source(f: SettingsSource) {
+    let _ = SETTINGS.set(f);
+}
+
+fn settings_of(plugin: &str) -> serde_json::Map<String, Value> {
+    SETTINGS.get().map(|f| f(plugin)).unwrap_or_default()
+}
+
+/// The user changed a plugin's settings: tells it, if it's running.
+pub fn settings_changed(plugin: &str) -> bool {
+    notify(plugin, "settings.changed", json!(methods::SettingValues { values: settings_of(plugin) }))
 }
 
 /// Each running plugin's event channel, by plugin id.
