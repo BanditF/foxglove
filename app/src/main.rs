@@ -42,6 +42,7 @@ fn main() {
     foxglove::accent::start();
     foxglove::wallpaper::start();
     foxglove::api::start();
+    foxglove::keyboard_facts::start();
     foxglove::via_host::start();
     foxglove::plugin_install::autoinstall();
     foxglove::plugin_runner::sync();

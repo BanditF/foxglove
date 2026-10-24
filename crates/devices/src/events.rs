@@ -13,6 +13,9 @@ pub enum DeviceEvent {
     Key { row: u16, col: u16, pressed: bool },
     LightingChanged { state: LightingState },
     Battery { part: String, percent: u8 },
+    /// How the keyboard talks to its host (#17): `output` "USB" or "BLE", the 0-based
+    /// Bluetooth profile, and whether that profile is connected.
+    Link { output: String, profile: u8, connected: bool },
 }
 
 /// A device identity paired with its event.
@@ -111,6 +114,11 @@ impl EventSink {
             }
             DeviceEvent::Battery { part, percent } => {
                 self.publish_fact(&format!("battery.{part}"), Value::Int((*percent).into()))
+            }
+            DeviceEvent::Link { output, profile, connected } => {
+                self.publish_fact("link.output", Value::Text(output.clone()));
+                self.publish_fact("link.profile", Value::Int((*profile).into()));
+                self.publish_fact("link.connected", Value::Bool(*connected));
             }
             DeviceEvent::LightingChanged { state } => {
                 self.publish_fact("lighting.on", Value::Bool(state.on));
