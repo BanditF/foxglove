@@ -79,3 +79,23 @@ need to double-tap:
 Serial identity, the UF2 preflight and the typed confirmations are unchanged. If foxglove-lab
 isn't built (`cargo build --release -p foxglove-lab`), or the firmware lacks bit 9, it falls
 back to double-tap prompts. A settings reset always uses the double tap.
+
+## No prompts: `--yes`
+
+When the user has said go (the user asked for this on 2026-10-24), `--yes` skips the typed
+`FLASH`/`ERASE SETTINGS`/`TYPES` prompts and the terminal requirement:
+
+```powershell
+python scripts/flash/foxglove_flash.py --firmware C:\path	oirmware --half both --yes
+```
+
+Every automatic check still runs:
+- serial identity and the UF2 preflight;
+- the dev/GA mix refusal;
+- the settle wait and one retry;
+- reading back the running build.
+
+Instead of `TYPES`, foxglove-lab types into its own window. For the left half that's INVOKE
+`&kp`; for the right half it's key-position presses over the split link. The flasher never
+touches the right half if the left doesn't type afterwards. A failed right-half typing check
+is reported, with the known fix (one tap on the left reset), rather than treated as fatal.

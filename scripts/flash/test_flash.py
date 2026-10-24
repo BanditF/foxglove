@@ -29,6 +29,8 @@ class FakeOS:
         self.keyboard_serials = []
         self.auto = False
         self.builds = {}
+        self.typing = []
+        self.types = {}
         self.build_calls = []
         self.entered = []
 
@@ -55,6 +57,10 @@ class FakeOS:
     def build_info(self, half):
         self.build_calls.append(half)
         return self.builds.get(half)
+
+    def typing_check(self, half, log):
+        self.typing.append(half)
+        return self.types.get(half, True)
 
     def enter_bootloader(self, half, log):
         self.entered.append(half)
@@ -353,3 +359,38 @@ class BuildInfoTests(unittest.TestCase):
         backend = FakeOS()
         self.run_flash(backend)
         self.assertEqual(len(backend.writes), 1)
+
+
+class YesTests(unittest.TestCase):
+    def run_yes(self, backend, images, **kwargs):
+        clock = Clock()
+        f.flash(images, backend, 2, stdin=io.StringIO(''), ask=lambda prompt: self.fail(f'asked: {prompt}'),
+                log=lambda message: None, clock=clock.clock, sleep=clock.sleep, yes=True, **kwargs)
+
+    def test_yes_never_prompts_and_checks_typing(self):
+        backend = FakeOS()
+        self.run_yes(backend, {'left': uf2()})
+        self.assertEqual(len(backend.writes), 1)
+        self.assertEqual(backend.typing, ['left'])
+
+    def test_yes_keeps_every_automatic_check(self):
+        backend = FakeOS()
+        with self.assertRaises(f.Refused):
+            self.run_yes(backend, {'left': uf2(b'FOXGLOVE_HALF=right')})
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        with self.assertRaises(TimeoutError):  # wrong half in the bootloader: never written
+            self.run_yes(backend, {'left': uf2()})
+        self.assertEqual(backend.writes, [])
+
+    def test_yes_stops_before_the_right_if_the_left_does_not_type(self):
+        backend = FakeOS()
+        backend.types = {'left': False}
+        with self.assertRaises(f.FlashFailed):
+            self.run_yes(backend, {'left': uf2(), 'right': uf2(b'FOXGLOVE_HALF=right')})
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_yes_right_typing_failure_is_reported_not_fatal(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        backend.types = {'right': False}
+        self.run_yes(backend, {'right': uf2(b'FOXGLOVE_HALF=right')})
+        self.assertEqual(backend.typing, ['right'])

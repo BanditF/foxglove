@@ -2,7 +2,8 @@
 
 python scripts/flash/foxglove_flash.py --firmware DIR --dry-run
 python scripts/flash/foxglove_flash.py --left L.uf2 --right R.uf2
-Real writes require a terminal and typing FLASH. When the running firmware supports it
+Real writes require a terminal and typing FLASH, unless --yes is given (the user has said go:
+no prompts; the automatic checks all stay, and a typing check by foxglove-lab replaces TYPES). When the running firmware supports it
 (HELLO bit 9, #111) each half is put into its bootloader over the link; otherwise double-tap
 reset when asked.
 Settings reset: supply its path with --left/--right, select --half, and add
@@ -148,6 +149,27 @@ def lab_binary():
 
 class WindowsOS:
     """OS boundary. One CIM query maps serial -> disk -> partition -> logical disk."""
+    def typing_check(self, half, log):
+        """Has foxglove-lab type into its own window through the left (INVOKE &kp for the left;
+        key-position presses on the right half, over the split link, for the right). True only
+        when the text arrived."""
+        exe = lab_binary()
+        if exe is None:
+            log('foxglove-lab is not built, so typing cannot be checked automatically.')
+            return False
+        case = 'typing-abc' if half == 'left' else 'typing-both-halves'
+        root = Path(__file__).resolve().parents[2]
+        out = Path(os.environ.get('TEMP', root)) / f'foxglove-flash-typing-{half}'
+        try:
+            result = subprocess.run([str(exe), '--allow-app', 'run', '--suite', 'release', '--only', case,
+                                     '--non-interactive', '--out', str(out)],
+                                    capture_output=True, text=True, timeout=120, cwd=root)
+        except subprocess.TimeoutExpired:
+            log(f'{half}: typing check timed out.')
+            return False
+        line = next((l for l in result.stdout.splitlines() if l.endswith(case)), result.stdout.strip())
+        log(f'{half}: typing check: {line or result.returncode}')
+        return result.returncode == 0 and line.startswith('PASS')
     def build_info(self, half):
         """The running build of `half` from the keyboard (D7 09) as a dict with version, profile
         and sha, or None when it can't tell (old firmware, right not reachable, no foxglove-lab)."""
@@ -290,13 +312,16 @@ def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=t
 
 def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
           settings_reset=False, allow_unknown_half=False, clock=time.monotonic, sleep=time.sleep,
-          allow_profile_mix=False):
+          allow_profile_mix=False, yes=False):
     log('Flash left first, check that it types, then flash right. Double-tap reset only on the requested half.')
     log('Rollback: known-good firmware is in ' + ROLLBACK)
     expected = check_builds(images, backend, log, allow_profile_mix, settings_reset)
-    confirm('Type FLASH to continue: ', 'FLASH', stdin, ask)
-    if settings_reset:
-        confirm('This erases saved settings. Type ERASE SETTINGS to confirm: ', 'ERASE SETTINGS', stdin, ask)
+    if yes:
+        log('--yes: the user has said go; no prompts. Every automatic check still applies.')
+    else:
+        confirm('Type FLASH to continue: ', 'FLASH', stdin, ask)
+        if settings_reset:
+            confirm('This erases saved settings. Type ERASE SETTINGS to confirm: ', 'ERASE SETTINGS', stdin, ask)
     for half in ('left', 'right'):
         if half not in images:
             continue
@@ -360,7 +385,20 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
             wait_for(lambda: backend.running_keyboard(chosen[0]), seconds, 'Left keyboard did not re-enumerate (1D50:615E)', clock, sleep)
         if not settings_reset:
             verify_build(half, expected.get(half), backend, log, clock, sleep)
-        if half == 'left' and not settings_reset:
+        if settings_reset:
+            continue
+        if yes:
+            # The right is flashed only after the left is proven to type. The right's own check
+            # needs its relay up again, so give it a moment and report rather than fail.
+            if half == 'left' and not backend.typing_check('left', log):
+                raise FlashFailed('the left half did not type after flashing; not touching the right. '
+                                  'Rollback: ' + ROLLBACK)
+            if half == 'right':
+                sleep(20)
+                if not backend.typing_check('right', log):
+                    log('right: typing over the split link not confirmed yet; check it by hand '
+                        '(one tap on the LEFT reset is the known fix, #122).')
+        elif half == 'left':
             confirm('Test the left keyboard in a text editor. If it types, enter TYPES here: ', 'TYPES', stdin, ask)
 
 
@@ -377,6 +415,8 @@ def main(argv=None):
     parser.add_argument('--json', action='store_true')
     parser.add_argument('--allow-unknown-half', action='store_true')
     parser.add_argument('--settings-reset', action='store_true')
+    parser.add_argument('--yes', action='store_true',
+                        help='no prompts (only once the user has said go); a typing check replaces TYPES')
     parser.add_argument('--allow-profile-mix', action='store_true',
                         help='allow leaving one half dev and the other GA')
     args = parser.parse_args(argv)
@@ -413,7 +453,7 @@ def main(argv=None):
                 return input()
             flash(images, WindowsOS(), args.wait_seconds, log=log, ask=ask_terminal,
                   settings_reset=args.settings_reset, allow_unknown_half=args.allow_unknown_half,
-                  allow_profile_mix=args.allow_profile_mix)
+                  allow_profile_mix=args.allow_profile_mix, yes=args.yes)
     except (TimeoutError, subprocess.TimeoutExpired) as exc:
         code = 2
         log('TIMEOUT: ' + str(exc))
