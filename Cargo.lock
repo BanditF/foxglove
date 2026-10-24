@@ -310,6 +310,7 @@ dependencies = [
  "crc32fast",
  "embedded-graphics",
  "hidapi",
+ "palm",
  "windows-sys 0.61.2",
 ]
 

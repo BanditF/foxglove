@@ -281,20 +281,26 @@ impl Behaviors for MockDevice {
         Ok(vec![
             BehaviorInfo {
                 id: 0,
+                param1: 1,
+                param2: 2,
                 name: "Reset".into(),
-                params: vec![],
+                hold_ms: 0,
                 risk: Risk::Confirm,
             },
             BehaviorInfo {
                 id: 1,
+                param1: 0,
+                param2: 0,
                 name: "Ping".into(),
-                params: vec![],
+                hold_ms: 0,
                 risk: Risk::Safe,
             },
         ])
     }
 
-    fn invoke_checked(&self, _checked: Checked, id: u32, p1: u32, p2: u32) -> Result<()> {
+    fn invoke_checked(&self, checked: Checked) -> Result<()> {
+        let a = checked.action();
+        let (id, p1, p2) = (a.id, a.param1, a.param2);
         self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
