@@ -76,6 +76,10 @@ pub struct Entry {
     pub files: BTreeMap<String, String>,
 }
 
+/// The format a v2 catalog is published with. Older apps don't know it and refuse the file,
+/// instead of reading it and silently ignoring its revocations.
+pub const FORMAT_V2: &str = "foxglove-plugin-catalog-v2";
+
 fn stable() -> String {
     "stable".into()
 }
@@ -206,7 +210,7 @@ pub fn verify_catalog(json: &[u8], signature: &str, root: &Root, now: &str, seen
     let keys: Vec<PublicKey> = root.catalog_keys.iter().filter_map(|k| PublicKey::from_base64(k).ok()).collect();
     verify_with(json, signature, &keys)?;
     let catalog: Catalog = serde_json::from_slice(json).map_err(|e| e.to_string())?;
-    if !matches!(catalog.format.as_str(), "foxglove-plugin-catalog" | "foxglove-kit-catalog") {
+    if !matches!(catalog.format.as_str(), FORMAT_V2 | "foxglove-plugin-catalog" | "foxglove-kit-catalog") {
         return Err("not a Foxglove plugin catalog".into());
     }
     if !time_ok(&catalog.expires) || catalog.expires.as_str() <= now {
