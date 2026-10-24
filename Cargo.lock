@@ -407,6 +407,7 @@ dependencies = [
  "digitalis",
  "embedded-graphics",
  "windows",
+ "windows-core",
  "windows-future",
 ]
 
