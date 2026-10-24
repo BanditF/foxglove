@@ -1,15 +1,15 @@
-//! Settings for the keyboard's screens, in `screens.ini` next to `settings.ini`. A file of its
-//! own because `Settings::save_to_file` (upstream) rewrites `settings.ini` from scratch.
-//!
-//! On first run they're imported from the standalone hostpanel's `config.toml`.
+//! Settings for the keyboard's screens: the `[screens]` section of the settings store
+//! (`foxglove.toml`). The first time it's missing, they're imported from the old `screens.ini`,
+//! or else from the standalone hostpanel's `config.toml`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use ini::Ini;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ScreensSettings {
     /// Draw the left screen's host panel (only on keyboards with Foxglove's host link).
     pub drive_left: bool,
@@ -30,32 +30,43 @@ impl Default for ScreensSettings {
 }
 
 impl ScreensSettings {
-    pub fn path() -> Option<PathBuf> {
+    /// The old `screens.ini`, read once when moving into the store.
+    fn ini_path() -> Option<PathBuf> {
         crate::settings::Settings::config_file_path().map(|p| p.with_file_name("screens.ini"))
     }
 
-    /// The saved settings; on first run the ones imported from hostpanel, else the defaults.
+    /// The file to watch for changes: the settings store.
+    pub fn path() -> Option<PathBuf> {
+        super::store::path()
+    }
+
+    fn normalized(mut self) -> Self {
+        self.fps = self.fps.clamp(1, 10);
+        self.games = self.games.into_iter().map(|(exe, hint)| (exe.to_lowercase(), hint)).collect();
+        self
+    }
+
+    /// The saved settings; on first run the ones imported from `screens.ini` or hostpanel.
     pub fn load() -> Self {
-        let Some(path) = Self::path() else {
-            return Self::default();
-        };
-        if let Some(s) = Self::load_from_file(&path) {
-            return s;
-        }
-        if path.exists() {
-            // There but unreadable: run on defaults and leave the file for the user to fix.
-            eprintln!(
-                "Foxglove: can't read {}; using default screen settings",
-                path.display()
-            );
-            return Self::default();
-        }
-        let imported = hostpanel_config_path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|text| Self::from_hostpanel(&text));
-        let s = imported.unwrap_or_default();
-        let _ = s.save_to_file(&path);
-        s
+        super::store::load_or_migrate("screens", || {
+            if let Some(ini) = Self::ini_path().filter(|p| p.exists()) {
+                return Self::load_from_file(&ini).map(|s| (s, vec![ini]));
+            }
+            hostpanel_config_path()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|text| Self::from_hostpanel(&text))
+                .map(|s| (s, vec![]))
+        })
+        .normalized()
+    }
+
+    /// The settings as saved now, or `None` while the store can't be read (keep the current ones).
+    pub fn try_load() -> Option<Self> {
+        super::store::try_load::<Self>("screens").map(Self::normalized)
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        super::store::save("screens", self)
     }
 
     pub fn load_from_file(path: impl AsRef<Path>) -> Option<Self> {
@@ -76,21 +87,6 @@ impl ScreensSettings {
                 .collect();
         }
         Some(s)
-    }
-
-    pub fn save_to_file(&self, path: impl AsRef<Path>) -> std::io::Result<()> {
-        if let Some(dir) = path.as_ref().parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let mut conf = Ini::new();
-        conf.with_section(Some("screens"))
-            .set("drive_left", self.drive_left.to_string())
-            .set("fps", self.fps.to_string());
-        let mut games = conf.with_section(Some("games"));
-        for (exe, hint) in &self.games {
-            games.set(exe.as_str(), hint.as_str());
-        }
-        conf.write_to_file(path)
     }
 
     /// The panel settings from hostpanel's `config.toml` (fps and game hints).
@@ -143,17 +139,21 @@ mod tests {
     }
 
     #[test]
-    fn round_trips_through_the_file() {
-        let path =
-            std::env::temp_dir().join(format!("foxglove-screens-{}.ini", std::process::id()));
-        let mut s = ScreensSettings {
-            drive_left: false,
-            fps: 7,
-            ..Default::default()
-        };
-        s.games.insert("factorio.exe".into(), "L2 = BUILD".into());
-        s.save_to_file(&path).unwrap();
-        assert_eq!(ScreensSettings::load_from_file(&path), Some(s));
+    fn reads_the_old_ini_and_round_trips_through_toml() {
+        let path = std::env::temp_dir().join(format!("foxglove-screens-{}.ini", std::process::id()));
+        std::fs::write(&path, "[screens]
+drive_left=false
+fps=7
+[games]
+Factorio.exe=L2 = BUILD
+").unwrap();
+        let s = ScreensSettings::load_from_file(&path).unwrap();
+        assert_eq!((s.drive_left, s.fps), (false, 7));
+        assert_eq!(s.games.get("factorio.exe").map(String::as_str), Some("L2 = BUILD"));
+        let text = toml::to_string(&s).unwrap();
+        assert_eq!(toml::from_str::<ScreensSettings>(&text).unwrap(), s);
+        let partial: ScreensSettings = toml::from_str("fps = 30").unwrap();
+        assert_eq!(partial.normalized().fps, 10);
         let _ = std::fs::remove_file(path);
     }
 }
