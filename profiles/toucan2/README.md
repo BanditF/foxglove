@@ -2,7 +2,7 @@
 
 This builds in CI; nothing here has run on hardware yet.
 
-- **Firmware:** `.github/workflows/build.yml` job `toucan2` builds `build.yaml` with
+- **Firmware:** `.github/workflows/build-toucan2.yml` builds `build.yaml` with
   `config-toucan2/` (top level: ZMK's build workflow only takes a one-level config path). Beekeeb's [zmk-keyboard-toucan2](https://github.com/beekeeb/zmk-keyboard-toucan2)
   module (MIT, pinned) supplies the board, its keymap and its own screen widgets (`nice_view_gem`).
   Foxglove adds `raw_hid_adapter` and the `foxglove_link` shield (`boards/shields/foxglove_link`).

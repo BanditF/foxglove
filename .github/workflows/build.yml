@@ -24,14 +24,6 @@ jobs:
   build:
     uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@v0.3.0
 
-  # Beekeeb Toucan2 with the host link (#75): its own config and matrix, its own artifact.
-  toucan2:
-    uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@v0.3.0
-    with:
-      build_matrix_path: profiles/toucan2/build.yaml
-      config_path: config-toucan2 # one level: the workflow mkdirs it without -p
-      archive_name: firmware-toucan2
-
   # Names the UF2s by version, half and profile (foxglove-fw-v0.1.0-1a2b3c4-left-dev.uf2), and on a
   # fw-vX.Y.Z tag checks it against FIRMWARE_VERSION and attaches them to a GitHub release.
   package:
