@@ -1,0 +1,8 @@
+id = "org.foxglove.focus-timer"
+name = "Focus timer"
+version = "1.0.0"
+api = "1.1"
+run = ["focus-timer.exe"]
+permissions = ["devices.read", "lighting.write", "facts.write:focus.*"]
+provides = ["facts", "lighting-effect"]
+description = "Alternates 25 minutes of focus and 5 of rest, and colours your keyboard's lights red to focus and green to rest."

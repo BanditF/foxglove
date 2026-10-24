@@ -147,3 +147,13 @@ Only signed Kits install and run, checked by `crates/kit-trust`.
 6. Ship both files and their `.minisig` signatures in `app/resources/kit-trust/`.
 
 **Developer mode:** `FOXGLOVE_DEV_UNSIGNED_KITS=1` allows unsigned Kits, and the Den shows a warning.
+
+## Writing a Kit (Rust)
+
+The `foxglove-kit` crate (`crates/kit-sdk`, MIT):
+- **Connect:** `Kit::connect(name, version)` says hello and pings every 10 s for you.
+- **Calls:** `set_fact`, `fact`, `subscribe` plus `events()`, `devices`, `set_lighting`, and a generic `call`.
+
+The example is `crates/kit-focus-timer`, a focus/rest timer that publishes `focus.state` and `focus.remaining` and colours the underglow. It asks only for `devices.read`, `lighting.write` and `facts.write:focus.*`, so it runs in the AppContainer.
+
+**Pack a Kit:** `powershell -File scripts\pack-kit.ps1 kit-focus-timer` builds it, zips `kit.toml` and the program into `target\kits\`, and prints the catalog entry (archive and file SHA-256s) to add to `catalog.json` before signing. Until the signing keys exist, install it with `FOXGLOVE_DEV_UNSIGNED_KITS=1`.
