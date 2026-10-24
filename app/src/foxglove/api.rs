@@ -132,6 +132,7 @@ impl Devices for AppDevices {
                     brightness: st.brightness,
                     effect: st.effect.id,
                     speed: st.speed,
+                    settled: st.settled,
                 }))
             }
             "lighting.set" => {
