@@ -40,3 +40,5 @@ pub mod foreground;
 pub(crate) mod device_watch;
 
 pub mod update;
+pub mod via_host;
+pub mod via_ui;
