@@ -27,6 +27,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/usb.h>
 
 #include "host_link.h"
+#include "screen_snap.h"
 #include "art_relay.h"
 #include "rgb_idle.h"
 
@@ -112,6 +113,8 @@ static void reply(const uint8_t *data, int len) {
     }
 }
 
+void host_link_screen_reply(const uint8_t *data, int len) { reply(data, len); }
+
 static uint8_t right_link(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     return art_relay_link();
@@ -132,7 +135,7 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     art_relay_debug(&r[11]);
 #endif
-    uint32_t caps = HOST_LINK_CAP_PANEL | HOST_LINK_CAP_CONN_STATE;
+    uint32_t caps = HOST_LINK_CAP_PANEL | HOST_LINK_CAP_CONN_STATE | HOST_LINK_CAP_SCREEN;
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT;
 #endif
@@ -310,6 +313,10 @@ static uint8_t invoke(const uint8_t *d, int len) {
 }
 
 static void settings_command(const uint8_t *d, int len) {
+    if (d[1] == 0x06 || d[1] == 0x07) {
+        screen_snap_command(d, len);
+        return;
+    }
     switch (d[1]) {
     case SETTING_CONN_STATE: {
         uint8_t r[8] = {HOST_LINK_SETTINGS, 0x80 | SETTING_CONN_STATE};

@@ -4,6 +4,9 @@
  *
  * The right half adds its own GATT service to the split connection:
  *   data   (write, write without response)  op byte + payload, below
+ *   screen (encrypted read) frame u16 LE, crc32 u32 LE, 1360 native screen bytes
+ *      SNAP (op 7, one byte, write request) queues capture; screen reads return ATT unlikely
+ *      until ready. Long reads use offsets into the frozen image; CRC excludes the 6-byte header.
  *   status (read)                            struct art_relay_status
  * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set |
  *      RGB on u8, follow u8 [, more]
@@ -31,6 +34,8 @@
 
 #define ART_RELAY_SERVICE_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7400, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
 #define ART_RELAY_DATA_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7401, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
+#define ART_RELAY_SCREEN_UUID \
+    BT_UUID_128_ENCODE(0x6e766172, 0x7403, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
 #define ART_RELAY_STATUS_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7402, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
 
 enum art_relay_op {
@@ -39,6 +44,7 @@ enum art_relay_op {
     ART_RELAY_COMMIT,
     ART_RELAY_SELECT,
     ART_RELAY_RGB,
+    ART_RELAY_SNAP = 7, // 6 reserved for PRESS; never change existing op values
 };
 
 #define ART_RELAY_HEADER_SIZE 12
