@@ -56,7 +56,7 @@
       "permissions": [
         "devices.read",
         "lighting.write",
-        "net"
+        "net.listen:udp:127.0.0.1:5568"
       ],
       "vendor": "OpenRGB"
     },

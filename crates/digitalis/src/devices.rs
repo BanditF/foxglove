@@ -130,6 +130,15 @@ impl DigitalisDevice {
         let reports = link.subscribe_reports(move |_, r| {
             if r[0] == KEY_EVENT {
                 report_sink.emit(DeviceEvent::Key { row: r[1].into(), col: r[2].into(), pressed: r[3] != 0 });
+            } else if crate::protocol::is_reply(r, crate::protocol::SETTINGS, crate::protocol::settings::CONN_STATE) {
+                // The firmware says when the connection changes (CONN_STATE_EVENT), and answers
+                // a read the same way (#17).
+                let c = crate::protocol::ConnState::parse(r);
+                report_sink.emit(DeviceEvent::Link {
+                    output: if c.endpoint == 0 { "USB" } else { "BLE" }.into(),
+                    profile: c.active_profile,
+                    connected: c.connected,
+                });
             } else if let Some(active) = parse_layers(r) {
                 let mut current = report_layers.lock().unwrap_or_else(|e| e.into_inner());
                 if *current != active {

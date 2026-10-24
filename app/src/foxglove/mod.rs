@@ -3,6 +3,7 @@
 
 pub mod art_service;
 pub mod keyboard_actions;
+pub mod keyboard_facts;
 pub mod keyboard_settings;
 pub mod keymap_cache;
 pub mod last_device;
