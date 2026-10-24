@@ -140,7 +140,13 @@ fn derive(layers: &[ResolvedLayer], rules: &[(Vec<u32>, u32)]) -> Vec<String> {
 }
 
 pub fn learn(layers: &[ResolvedLayer]) {
-    let rules = configured_rules(layers, include_str!("../../../config/eyelash_corne.keymap"));
+    // The board profile's keymap source (#75); before a profile is known, any built-in source
+    // whose layer names are this keyboard's (the rules only apply on an exact match).
+    let profile = super::boards::current().and_then(|b| b.keymap_source());
+    let rules = match profile {
+        Some(source) => configured_rules(layers, &source),
+        None => super::boards::built_in_keymaps().map(|s| configured_rules(layers, s)).find(|r| !r.is_empty()).unwrap_or_default(),
+    };
     if let Ok(mut hints) = HINTS.lock() {
         *hints = derive(layers, &rules);
     }
