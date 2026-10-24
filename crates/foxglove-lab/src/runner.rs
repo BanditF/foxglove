@@ -152,6 +152,8 @@ pub struct Runner<'a, D> {
     attachments: Vec<String>,
     /// screens.ini as it was before this case changed it; put back in cleanup.
     screens_ini: Option<(PathBuf, Option<Vec<u8>>)>,
+    /// File-name prefix for this case's attachments.
+    case_name: String,
     /// The last capture_screen per half in this case: expect_screen_change compares with it.
     baselines: std::collections::HashMap<String, image::GrayImage>,
 }
@@ -176,6 +178,7 @@ impl<'a, D: Device> Runner<'a, D> {
             held_positions: Vec::new(),
             attachments: Vec::new(),
             baselines: Default::default(),
+            case_name: String::new(),
             screens_ini: None,
         }
     }
@@ -399,7 +402,8 @@ impl<'a, D: Device> Runner<'a, D> {
     }
     /// Saves a portrait capture as a 4x PNG next to the report and attaches it to the step.
     fn save_png(&mut self, stem: &str, image: &image::GrayImage) -> Result<String> {
-        let name = format!("{stem}.png");
+        // Prefixed with the case so captures from different cases in one run never overwrite.
+        let name = format!("{}-{stem}.png", self.case_name);
         std::fs::write(self.out.join(&name), screen::png(image)?)?;
         self.attachments.push(name.clone());
         Ok(name)
@@ -677,7 +681,7 @@ impl<'a, D: Device> Runner<'a, D> {
                 };
                 let c = screen::compare(&image, &golden, &sc.mask)?;
                 let actual = self.save_png(&format!("{stem}.actual"), &image)?;
-                let diff = format!("{stem}.diff.png");
+                let diff = format!("{}-{stem}.diff.png", self.case_name);
                 std::fs::write(self.out.join(&diff), &c.diff)?;
                 self.attachments.push(diff);
                 ensure!(
@@ -720,6 +724,17 @@ impl<'a, D: Device> Runner<'a, D> {
     }
     pub fn case(&mut self, c: &Case, selected: bool) -> CaseResult {
         let started = Instant::now();
+        self.case_name = c
+            .name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || ch == '-' {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect();
         let mut blocked = c
             .requires
             .iter()

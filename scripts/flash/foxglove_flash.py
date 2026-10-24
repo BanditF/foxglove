@@ -136,13 +136,24 @@ class FlashFailed(Exception):
     pass
 
 
+class DriveGone(Exception):
+    """The bootloader drive went away during the write. Windows caches the writes, so the
+    byte count says nothing about what the bootloader received: it may have taken the whole
+    image and reset (incident #176: 'failed' runs that had in fact flashed). Only the half's
+    build afterwards tells."""
+    def __init__(self, written, total, cause):
+        super().__init__(f'drive went away after {written}/{total} bytes were queued: {cause}')
+        self.written, self.total = written, total
+
+
 LOCK = Path(os.environ.get('TEMP') or os.environ.get('TMPDIR') or '.') / 'foxglove-flash.lock'
 
 
 class FlashLock:
     """Only one flasher at a time: two writers on one bootloader drive is how a UF2 lands on the
     wrong half. The lock file holds the owner's PID; a lock whose process is gone is taken over."""
-    def __init__(self, path=LOCK, alive=None):
+    def __init__(self, path=None, alive=None):
+        path = path or os.environ.get('FOXGLOVE_FLASH_LOCK') or LOCK
         self.path, self.alive, self.held = Path(path), alive or pid_alive, False
 
     def __enter__(self):
@@ -180,6 +191,28 @@ def pid_alive(pid):
         return False
 
 
+def history_path():
+    """Where every write is recorded, one line each (FOXGLOVE_FLASH_HISTORY overrides)."""
+    override = os.environ.get('FOXGLOVE_FLASH_HISTORY')
+    if override:
+        return Path(override)
+    base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+    return Path(base) / 'Foxglove' / 'flash-history.log'
+
+
+def record(half, image_sha, outcome, detail=''):
+    """Appends 'UTC time, half, image SHA, outcome, detail' to the flash history. Never fails
+    the flash: a history that can't be written is reported, not fatal."""
+    line = f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\t{half}\t{image_sha or '?'}\t{outcome}\t{detail}\n"
+    try:
+        path = history_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, 'a', encoding='utf-8') as fh:
+            fh.write(line)
+    except OSError as exc:
+        print(f'flash history not written ({exc}): {line.strip()}', file=sys.stderr)
+
+
 def lab_binary():
     """foxglove-lab, which sends the bootloader command; None when it isn't built."""
     root = Path(__file__).resolve().parents[2]
@@ -213,7 +246,18 @@ class WindowsOS:
             return False
         line = next((l for l in result.stdout.splitlines() if l.endswith(case)), result.stdout.strip())
         log(f'{half}: typing check: {line or result.returncode}')
-        return result.returncode == 0 and line.startswith('PASS')
+        if result.returncode == 0 and line.startswith('PASS'):
+            return True
+        # The harness window couldn't come to the front (PC locked, someone else's window): the
+        # keyboard wasn't tested, which is not the same as the keyboard failing.
+        try:
+            report = json.loads((out / 'report.json').read_text(encoding='utf-8'))
+            message = ' '.join(c.get('message', '') for c in report.get('cases', []) if c.get('name') == case)
+        except (OSError, ValueError):
+            message = ''
+        if 'foreground focus' in message or 'lost foreground focus' in message:
+            return None
+        return False
     def build_info(self, half):
         """The running build of `half` from the keyboard (D7 09) as a dict with version, profile
         and sha, or None when it can't tell (old firmware, right not reachable, no foxglove-lab)."""
@@ -266,7 +310,12 @@ class WindowsOS:
         return volume
 
     def exists(self, path):
-        return Path(path).exists()
+        # Once the bootloader reboots, Windows answers a stat on its drive with WinError 433 or
+        # 55 instead of "not found", and Python 3.12 raises. That means the drive is gone (#176).
+        try:
+            return Path(path).exists()
+        except OSError:
+            return False
 
     def read_text(self, path):
         return Path(path).read_text(errors='replace')
@@ -290,11 +339,9 @@ class WindowsOS:
                 stream.flush()
                 os.fsync(stream.fileno())
         except OSError as exc:
-            if written == 0 and not Path(path).parent.exists():
-                raise FlashFailed('the bootloader drive disappeared before anything was written (the '
-                                  'bootloader left by itself; the half runs its old firmware). '
-                                  'Nothing was flashed.') from exc
             if written < len(data):
+                if not self.exists(Path(path).parent):
+                    raise DriveGone(written, len(data), exc) from exc
                 raise FlashFailed(f'Write stopped after {written}/{len(data)} bytes: {exc}') from exc
 
 
@@ -341,21 +388,26 @@ def check_builds(images, backend, log, allow_profile_mix=False, settings_reset=F
     return {half: m.sha for half, m in marks.items() if m.sha}, same
 
 
-def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=time.sleep):
-    """After a flash: the half must report the image's SHA (when both sides know it)."""
+def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=time.sleep, strict=False):
+    """After a flash: the half must report the image's SHA (when both sides know it). `strict`:
+    not being able to read it back is a failure too (used when the write's outcome is unknown).
+    Returns True only when the image's SHA was read back."""
     if not expected_sha:
-        return
-    deadline = clock() + 20  # the right answers over the relay once it has reconnected
+        return False
+    # The right answers over the relay, which comes back about 40 s after the right reboots (#122).
+    deadline = clock() + (20 if half == 'left' else 60)
     while True:
         now = backend.build_info(half)
         if now:
             if now.get('sha') != expected_sha:
                 raise FlashFailed(f"{half} runs {describe(now)}, expected SHA {expected_sha}")
             log(f'{half}: verified, running {describe(now)}.')
-            return
+            return True
         if clock() >= deadline:
+            if strict:
+                raise FlashFailed(f"{half}: couldn't read its build back, so whether it was flashed is unknown.")
             log(f"{half}: couldn't read its build back to verify (firmware can't tell, or the right isn't back yet).")
-            return
+            return False
         sleep(2)
 
 
@@ -423,11 +475,19 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         # (left half, 2026-10-24): let it settle first, and write once more if the drive is
         # still there 10 s later.
         sleep(SETTLE_SECONDS)
+        unconfirmed = False
         for attempt in (1, 2):
             # Recheck identity immediately before touching the drive.
             if backend.enumerate_bootloaders() != chosen or backend.find_volume(chosen[0]) != volume:
                 raise Refused('Bootloader identity or volume changed before writing')
-            backend.write_file(volume / 'flash.uf2', images[half])
+            try:
+                backend.write_file(volume / 'flash.uf2', images[half])
+            except DriveGone as gone:
+                # Don't retry and don't call it a failure yet: the build read-back decides.
+                log(f'{half}: {gone}; the bootloader may have taken the whole image, checking the build.')
+                record(half, expected.get(half), 'written-drive-gone', str(gone))
+                unconfirmed = True
+                break
             try:
                 wait_for(lambda: not backend.exists(info), 10 if attempt == 1 else 15,
                          f'{half} drive did not disappear after writing', clock, sleep)
@@ -436,22 +496,42 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
                 if attempt == 2:
                     raise
                 log(f'{half}: the bootloader did not take the image; writing it once more.')
+        if unconfirmed:
+            if not expected.get(half):
+                raise FlashFailed(f"{half}: the drive went away mid-write and this image has no SHA to check "
+                                  "against; can't tell whether it was flashed. Re-run to be sure.")
         log(f'{half} bootloader drive disappeared.')
         if half == 'left' and not settings_reset:
             wait_for(lambda: backend.running_keyboard(chosen[0]), seconds, 'Left keyboard did not re-enumerate (1D50:615E)', clock, sleep)
+        if not unconfirmed:
+            record(half, expected.get(half), 'written')
         if not settings_reset:
-            verify_build(half, expected.get(half), backend, log, clock, sleep)
+            try:
+                verified = verify_build(half, expected.get(half), backend, log, clock, sleep, strict=unconfirmed)
+            except FlashFailed as exc:
+                record(half, expected.get(half), 'verify-failed', str(exc))
+                raise
+            # The history says exactly what the console said.
+            record(half, expected.get(half), 'verified' if verified else 'unverified')
         if settings_reset:
             continue
         if yes:
             # The right is flashed only after the left is proven to type. The right's own check
             # needs its relay up again, so give it a moment and report rather than fail.
-            if half == 'left' and not backend.typing_check('left', log):
-                raise FlashFailed('the left half did not type after flashing; not touching the right. '
-                                  'Rollback: ' + ROLLBACK)
+            if half == 'left':
+                typed = backend.typing_check('left', log)
+                if typed is None:
+                    log('left: typing not checked (no window focus: is the PC locked?). The build read-back '
+                        'passed; carrying on.')
+                elif not typed:
+                    raise FlashFailed('the left half did not type after flashing; not touching the right. '
+                                      'Rollback: ' + ROLLBACK)
             if half == 'right':
                 sleep(20)
-                if not backend.typing_check('right', log):
+                typed = backend.typing_check('right', log)
+                if typed is None:
+                    log('right: typing not checked (no window focus: is the PC locked?).')
+                elif not typed:
                     log('right: typing over the split link not confirmed yet; check it by hand '
                         '(one tap on the LEFT reset is the known fix, #122).')
         elif half == 'left':
@@ -474,7 +554,11 @@ def main(argv=None):
     parser.add_argument('--force', action='store_true',
                         help='flash a half even when it already runs the same build')
     parser.add_argument('--yes', action='store_true',
-                        help='no prompts (only once the user has said go); a typing check replaces TYPES')
+                        help='no prompts: the normal path once the user has said go for this flash '
+                             '(typed FLASH/TYPES waived by the user). Every automatic check still runs: '
+                             'USB serial identity, UF2 preflight and half marker, dev/GA mix, the '
+                             'single-flasher lock, settle and retry, D7 09 build read-back, and a '
+                             'typing check in place of TYPES')
     parser.add_argument('--allow-profile-mix', action='store_true',
                         help='allow leaving one half dev and the other GA')
     args = parser.parse_args(argv)

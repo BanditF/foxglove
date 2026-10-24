@@ -68,6 +68,9 @@ windows = { version = "0.62.2", features = [
     "Devices_Enumeration",
     "Win32_Devices_Properties",
     "Devices_Radios",
+    # Foxglove: the sparse identity package (#179).
+    "ApplicationModel",
+    "Management_Deployment",
     "Foundation",
     "UI",
     "UI_ViewManagement",

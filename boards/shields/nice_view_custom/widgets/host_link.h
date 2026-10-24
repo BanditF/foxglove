@@ -141,6 +141,10 @@
  *      once the right has answered, and the right reboots into its bootloader ~300 ms after.
  *      Status: 0 ok, 2 no relay link (right), 3 relay timeout (3 s), 4 not built in
  *      (CONFIG_FOXGLOVE_TEST_HOOKS=n, GA), 5 bad request, 6 bad or expired nonce.
+ *   0B GUARD_TEST (test hooks + split guard only)        reply: D7 8B, status
+ *      The #122 split guard treats the current split link as stuck once, 2 s from now: it drops
+ *      it, ZMK reconnects, HELLO byte 31 counts one more. Status: 0 ok, 2 no split link,
+ *      4 not built in (GA, or no guard).
  */
 
 #pragma once
