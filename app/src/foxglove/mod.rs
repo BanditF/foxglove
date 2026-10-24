@@ -24,6 +24,7 @@ pub mod accent;
 pub mod store;
 pub mod api;
 pub mod art_library;
+mod art_library_view;
 pub mod lighting_leases;
 pub mod mic_broker;
 pub mod plugin_actions;

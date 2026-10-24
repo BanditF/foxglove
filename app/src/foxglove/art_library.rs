@@ -7,6 +7,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub struct Entry {
     pub path: PathBuf,
     pub preview: Result<Arc<egui::ColorImage>, String>,
+    /// The file's size and a hash of its bytes, so the art library view can show the same art
+    /// in two places once (#59).
+    pub bytes: usize,
+    pub hash: u64,
+}
+
+/// A hash of an art blob's bytes; equal blobs are the same art.
+pub fn blob_hash(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    h.finish()
 }
 #[derive(Clone, Default)]
 pub struct Library {
@@ -54,19 +66,18 @@ fn scan(state: Arc<Mutex<Library>>) {
                         continue;
                     }
                     use std::io::Read;
-                    let preview = std::fs::File::open(&path)
-                        .and_then(|f| {
-                            let mut bytes = Vec::new();
-                            f.take(65536).read_to_end(&mut bytes)?;
-                            Ok(bytes)
-                        })
-                        .map_err(|e| e.to_string())
-                        .and_then(|b| {
-                            super::art_preview::first_frame(&b)
-                                .map(Arc::new)
-                                .map_err(str::to_owned)
-                        });
-                    library.entries.push(Entry { path, preview });
+                    let read = std::fs::File::open(&path).and_then(|f| {
+                        let mut bytes = Vec::new();
+                        f.take(65536).read_to_end(&mut bytes)?;
+                        Ok(bytes)
+                    });
+                    let (bytes, hash) = read.as_ref().map_or((0, 0), |b| (b.len(), blob_hash(b)));
+                    let preview = read.map_err(|e| e.to_string()).and_then(|b| {
+                        super::art_preview::first_frame(&b)
+                            .map(Arc::new)
+                            .map_err(str::to_owned)
+                    });
+                    library.entries.push(Entry { path, preview, bytes, hash });
                 }
                 library.entries.sort_by(|a, b| a.path.cmp(&b.path));
                 Ok(())
@@ -80,11 +91,12 @@ fn scan(state: Arc<Mutex<Library>>) {
         LOADING.store(false, Ordering::Relaxed);
     }
 }
+/// Moves a library file to the Recycle Bin (never a hard delete on Windows), then rescans.
 pub fn delete(path: PathBuf) {
     let _ = std::thread::Builder::new()
         .name("foxglove-art-delete".into())
         .spawn(move || {
-            if let Err(e) = std::fs::remove_file(path) {
+            if let Err(e) = recycle(&path) {
                 if let Some(state) = LIBRARY.get() {
                     state.lock().unwrap_or_else(|e| e.into_inner()).error = Some(e.to_string());
                 }
@@ -92,4 +104,32 @@ pub fn delete(path: PathBuf) {
                 refresh();
             }
         });
+}
+
+#[cfg(target_os = "windows")]
+fn recycle(path: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::UI::Shell::{
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW,
+    };
+    // A double-NUL-terminated list of one path.
+    let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+    from.extend([0, 0]);
+    let mut op = SHFILEOPSTRUCTW {
+        wFunc: FO_DELETE,
+        pFrom: windows::core::PCWSTR(from.as_ptr()),
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT).0 as u16,
+        ..Default::default()
+    };
+    // SAFETY: `from` outlives the call and is double-NUL terminated, as the API requires.
+    let code = unsafe { SHFileOperationW(&mut op) };
+    if code != 0 || op.fAnyOperationsAborted.as_bool() {
+        return Err(std::io::Error::other(format!("couldn't move it to the Recycle Bin (code {code})")));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn recycle(path: &std::path::Path) -> std::io::Result<()> {
+    std::fs::remove_file(path)
 }
