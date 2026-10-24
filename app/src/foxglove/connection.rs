@@ -208,6 +208,19 @@ fn remember_profile(
     })
 }
 
+/// Bluetooth profiles as the left screen counts them (from 1); the firmware numbers them from 0.
+fn shown(profile: u8) -> u8 {
+    profile.saturating_add(1)
+}
+
+/// How to switch to a profile on the keyboard: SYSTEM (hold both middle thumbs + Tab), then
+/// Q, W, E, R or T for profiles 1 to 5 (#94).
+fn switch_hint(profile: Option<u8>) -> String {
+    const KEYS: [&str; 5] = ["Q", "W", "E", "R", "T"];
+    let key = profile.and_then(|p| KEYS.get(usize::from(p))).copied().unwrap_or("Q/W/E/R/T");
+    format!("hold both middle thumbs and Tab (SYSTEM), then press {key}")
+}
+
 fn unsafe_to_unplug(usb: bool, ble: Option<bool>, active: Option<u8>, this_pc: Option<u8>) -> bool {
     usb && (ble == Some(false) || matches!((active, this_pc), (Some(a), Some(p)) if a != p))
 }
@@ -230,7 +243,7 @@ pub fn row(ui: &mut egui::Ui) {
         if let Some(f) = s.firmware {
             ui.label(format!(
                 "active profile {} · {} · endpoint {}",
-                f.active_profile,
+                shown(f.active_profile),
                 if f.connected {
                     "connected"
                 } else {
@@ -240,7 +253,7 @@ pub fn row(ui: &mut egui::Ui) {
             ));
         }
         if let Some(p) = s.this_pc {
-            ui.label(format!("this PC: profile {p}"));
+            ui.label(format!("this PC: profile {}", shown(p)));
         }
     });
     if unsafe_to_unplug(
@@ -249,9 +262,9 @@ pub fn row(ui: &mut egui::Ui) {
         s.firmware.map(|f| f.active_profile),
         s.this_pc,
     ) {
-        let profile = s.this_pc.map_or("for this PC".into(), |p| p.to_string());
+        let profile = s.this_pc.map_or("for this PC".into(), |p| shown(p).to_string());
         ui.colored_label(ui.visuals().warn_fg_color,
-            format!("Unplugging now leaves the keyboard unable to type - select profile {profile} with NUMBER + S/D/F/G"));
+            format!("Unplugging now leaves the keyboard unable to type - select profile {profile}: {}", switch_hint(s.this_pc)));
     }
 }
 
@@ -553,6 +566,7 @@ mod windows_status {
     #[cfg(test)]
     mod tests {
         use super::*;
+
         #[test]
         fn matches_only_keyboard_ble_identity() {
             let id = "BTHLEDEVICE\\{service}_Dev_VID&021234_PID&5678_REV&0001";
@@ -570,6 +584,15 @@ mod windows_status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profiles_show_from_one_with_their_switch_key() {
+        assert_eq!(shown(0), 1);
+        assert_eq!(switch_hint(Some(0)), "hold both middle thumbs and Tab (SYSTEM), then press Q");
+        assert!(switch_hint(Some(4)).ends_with("press T"));
+        assert!(switch_hint(None).ends_with("press Q/W/E/R/T"));
+        assert!(switch_hint(Some(9)).ends_with("press Q/W/E/R/T"));
+    }
     #[test]
     fn filters_ble_events_and_enumeration() {
         let mut events = BleEvents::default();
