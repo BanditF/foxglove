@@ -115,6 +115,10 @@ pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
         "invoke_refusal" => {
             "firmware doesn't advertise INVOKE refusal (HELLO bit 7); unsafe request was not sent"
         }
+        // Firmware new enough to report its build (#133); the &bt refusal fix (#142) landed
+        // with it, so the &bt cases also only send BT_SEL to the profile already in use.
+        "build_info" if has(caps::BUILD_INFO) => return None,
+        "build_info" => "firmware doesn't report its build (HELLO bit 12)",
         "screen_readback" if has(caps::SCREEN) => return None,
         "screen_readback" => "firmware has no screen readback (HELLO bit 6, #67)",
         "position_press" if has(caps::POSITION) && has(caps::INVOKE_REFUSES) => return None,
