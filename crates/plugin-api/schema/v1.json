@@ -185,6 +185,29 @@
         "type": "object"
       }
     },
+    "audio.inputs.set_mute": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Mutes or unmutes the default communications microphone (#237, API 1.2).",
+        "properties": {
+          "muted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "muted"
+        ],
+        "title": "SetMuteParams",
+        "type": "object"
+      },
+      "permission": "audio.inputs.mute",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
     "behaviors.invoke": {
       "kind": "call",
       "params": {
