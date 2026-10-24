@@ -213,6 +213,58 @@ fn announce(name: Option<&str>) {
         .set("profile.active", palm::facts::Value::Text(name.unwrap_or("").into()));
 }
 
+/// One "switch to this profile while this program is in front" rule.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Rule {
+    /// Lower-case exe name, e.g. `eldenring.exe`.
+    pub program: String,
+    pub profile: String,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct RuleSettings {
+    /// Switch by program at all.
+    auto: bool,
+    rules: Vec<Rule>,
+}
+
+impl Default for RuleSettings {
+    fn default() -> Self {
+        RuleSettings { auto: true, rules: vec![] }
+    }
+}
+
+/// Whether switching by program is on, and the rules.
+pub fn rules() -> (bool, Vec<Rule>) {
+    match path().and_then(|p| read(&p).ok()) {
+        Some(table) => rules_in(&table),
+        None => (true, vec![]),
+    }
+}
+
+fn rules_in(table: &Table) -> (bool, Vec<Rule>) {
+    let mut t = Table::new();
+    for key in ["auto", "rules"] {
+        if let Some(v) = get(table, &format!("profiles.{key}")) {
+            t.insert(key.into(), v.clone());
+        }
+    }
+    let r: RuleSettings = Value::Table(t).try_into().unwrap_or_default();
+    (r.auto, r.rules)
+}
+
+/// Saves the rules and the on/off switch, leaving the profiles themselves alone.
+pub fn set_rules(auto: bool, rules: &[Rule]) -> std::io::Result<()> {
+    let path = path().ok_or_else(|| std::io::Error::other("no settings directory"))?;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut table = upgrade(read(&path).map_err(std::io::Error::other)?);
+    set(&mut table, "profiles.auto", Value::Boolean(auto));
+    let list = Value::try_from(rules.to_vec()).map_err(std::io::Error::other)?;
+    set(&mut table, "profiles.rules", list);
+    write(&path, &table)
+}
+
 /// Creates the starter profiles (empty) the first time and announces the active one. Called
 /// once at start-up.
 pub fn init_profiles() {
@@ -386,5 +438,16 @@ mod tests {
         let mut merged = base.clone();
         merge(&mut merged, d);
         assert_eq!(merged, new);
+    }
+
+    #[test]
+    fn rules_round_trip_and_default_to_on() {
+        let mut t = Table::new();
+        assert_eq!(rules_in(&t), (true, vec![]));
+        let rules = vec![Rule { program: "eldenring.exe".into(), profile: "Game".into() }];
+        set(&mut t, "profiles.auto", Value::Boolean(false));
+        set(&mut t, "profiles.rules", Value::try_from(rules.clone()).unwrap());
+        let text = toml::to_string(&t).unwrap();
+        assert_eq!(rules_in(&text.parse().unwrap()), (false, rules));
     }
 }
