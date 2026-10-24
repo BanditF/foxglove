@@ -147,7 +147,7 @@ mod tests {
     impl Fake {
         fn new() -> Fake {
             Fake {
-                state: RefCell::new(LightingState { on: false, hue: 160, sat: 50, brightness: 40, effect: Effect { id: "3".into(), params: vec![] }, speed: 1 }),
+                state: RefCell::new(LightingState { on: false, hue: 160, sat: 50, brightness: 40, effect: Effect { id: "3".into(), params: vec![] }, speed: 1, settled: true }),
                 lose: RefCell::new(0),
             }
         }
