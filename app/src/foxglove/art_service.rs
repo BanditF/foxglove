@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use digitalis::art;
 use digitalis::link::{Event as LinkEvent, EventSubscription, Link};
-use digitalis::protocol::ArtStatus;
+use digitalis::protocol::{ArtStatus, SlotInfo};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -17,6 +17,8 @@ pub enum Choice {
     /// -1 chooses a random built-in.
     BuiltIn(i8),
     File(PathBuf),
+    /// A flash slot on the right half (firmware #123); survives the keyboard's reboots.
+    Slot(u8),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -28,6 +30,8 @@ pub struct Snapshot {
     pub cancelled: bool,
     pub push_progress: Option<(u16, u16)>,
     pub error: Option<String>,
+    /// The right half's flash slots, read on connect and after a save or erase.
+    pub slots: Vec<SlotInfo>,
 }
 
 impl Snapshot {
@@ -70,6 +74,8 @@ enum Command {
     Link(Weak<Link>, LinkEvent),
     Status,
     Choose(Choice),
+    Save { slot: u8, name: String },
+    Erase(u8),
 }
 
 #[derive(Clone)]
@@ -118,6 +124,20 @@ impl Handle {
 
     pub fn push(&self, path: PathBuf) -> bool {
         self.submit(Command::Choose(Choice::File(path)))
+    }
+
+    /// Plays flash slot `slot` and pins it.
+    pub fn play_slot(&self, slot: u8) -> bool {
+        self.submit(Command::Choose(Choice::Slot(slot)))
+    }
+
+    /// Saves the pushed set now playing on the right into flash slot `slot`.
+    pub fn save_to_slot(&self, slot: u8, name: String) -> bool {
+        self.submit(Command::Save { slot, name })
+    }
+
+    pub fn erase_slot(&self, slot: u8) -> bool {
+        self.submit(Command::Erase(slot))
     }
 
     /// Stops further writes/polls; a relay already committed may finish on the keyboard.
@@ -230,6 +250,14 @@ fn choose(link: &Link, h: &Handle, choice: &Choice) -> Result<ArtStatus, String>
     }
     match choice {
         Choice::BuiltIn(set) => art::select(link, *set).map_err(|e| e.to_string()),
+        Choice::Slot(slot) => {
+            let count = h
+                .snapshot()
+                .status
+                .map(|s| s.right_set_count)
+                .ok_or("No art status yet")?;
+            art::select_slot(link, count, *slot).map_err(|e| e.to_string())
+        }
         Choice::File(path) => {
             let mut blob = Vec::new();
             std::fs::File::open(path)
@@ -255,6 +283,24 @@ fn choose(link: &Link, h: &Handle, choice: &Choice) -> Result<ArtStatus, String>
             .map_err(|e| e.to_string())
         }
     }
+}
+
+/// Reads every flash slot the right half has; none on firmware without them.
+fn read_slots(link: &Link, h: &Handle, st: &ArtStatus) {
+    let mut slots = Vec::new();
+    for n in 0..st.flash_slots {
+        if h.cancelled() {
+            return;
+        }
+        match art::slot(link, n) {
+            Ok(info) => slots.push(info),
+            Err(e) => {
+                h.update(|s| s.error = Some(format!("reading flash slot {n}: {e}")));
+                break;
+            }
+        }
+    }
+    h.update(|s| s.slots = slots);
 }
 
 fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
@@ -299,6 +345,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             other => other,
         };
         let mut reported = None;
+        // On a new connection, the flash slots are read once its status is in.
+        let mut connected_now = false;
         let automatic = match &command {
             Command::Stop => break,
             Command::Available(link) => {
@@ -340,6 +388,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 }
                 current = Some((id, state.generation));
                 h.update(|s| s.connected = true);
+                connected_now = true;
                 true
             }
             Command::Link(source, LinkEvent::ArtStatus { generation, report }) => {
@@ -384,6 +433,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     .unwrap_or_else(|| fresh_status(link, h))
                     .and_then(|st| {
                         h.update(|s| s.status = Some(st));
+                        if connected_now && !queued_command {
+                            read_slots(link, h, &st);
+                        }
                         if !queued_command {
                             if let Some(choice) = restore(&h.snapshot().pinned, st) {
                                 return choose(link, h, &choice);
@@ -393,7 +445,13 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     })
             } else {
                 match command {
-                    Command::Status => fresh_status(link, h),
+                    Command::Status => fresh_status(link, h).inspect(|st| read_slots(link, h, st)),
+                    Command::Save { slot, name } => art::save(link.as_ref(), slot, &name)
+                        .map_err(|e| e.to_string())
+                        .inspect(|st| read_slots(link, h, st)),
+                    Command::Erase(slot) => art::erase(link.as_ref(), slot)
+                        .map_err(|e| e.to_string())
+                        .inspect(|st| read_slots(link, h, st)),
                     Command::Choose(choice) => choose(link, h, &choice).and_then(|st| {
                         h.update(|s| {
                             s.status = Some(st);
