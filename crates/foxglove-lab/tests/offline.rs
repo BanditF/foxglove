@@ -466,7 +466,7 @@ fn art_select_refuses_to_lose_pushed_art() {
     let fake = Fake::default();
     fake.replies
         .borrow_mut()
-        .extend([art(5, -1, 4), art(5, -1, 4)]);
+        .extend([hello(2, 4), art(5, -1, 4), art(5, -1, 4)]);
     let result = run(&fake, &case("[{art_select={set=1}}]"));
     assert_eq!(result.status, Status::Blocked);
     assert!(result.message.contains("pushed art"));
@@ -477,6 +477,7 @@ fn art_select_checks_and_restores() {
     let fake = Fake::default();
     // status ×2 (before), select, status (shows 1), restore select.
     fake.replies.borrow_mut().extend([
+        hello(2, 4),
         art(5, 0, 4),
         art(5, 0, 4),
         art(4, 1, 4),
@@ -489,7 +490,7 @@ fn art_select_checks_and_restores() {
     let fake = Fake::default();
     fake.replies
         .borrow_mut()
-        .extend([art(5, 0, 2), art(5, 0, 2)]);
+        .extend([hello(2, 4), art(5, 0, 2), art(5, 0, 2)]);
     assert_eq!(
         run(&fake, &case("[{art_select={set=3}}]")).status,
         Status::Fail
@@ -595,4 +596,37 @@ fn screen_without_golden_is_blocked_with_a_candidate() {
         result.steps[0].attachments,
         ["does-not-exist.candidate.png"]
     );
+}
+
+/// HELLO reply with this right link state and relay discovery result.
+fn hello(right_link: u8, discovery: u8) -> [u8; REPORT] {
+    let mut r = [0u8; REPORT];
+    r[..3].copy_from_slice(&[0xd5, 0x81, 1]);
+    r[7] = right_link;
+    r[9] = discovery;
+    r
+}
+
+#[test]
+fn right_half_steps_wait_for_a_fully_up_relay() {
+    // #122: the split peer is connected (link 1) but the relay never came up. Nothing may be
+    // pressed on the right; the step is BLOCKED, not failed.
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(hello(1, 4));
+    let result = run_with(
+        &fake,
+        &case("[{press_position={pos=46,state='down'}}]"),
+        TEST_HOOKS,
+    );
+    assert_eq!(result.status, Status::Blocked, "{}", result.message);
+    assert!(result.message.contains("#122"));
+    assert_eq!(fake.requests.borrow().len(), 1, "only the HELLO was sent");
+    // Left positions don't ask.
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([position(0, 1), position(0, 1)]);
+    let tap = "[{press_position={pos=1,state='tap',hold_ms=5}}]";
+    assert_eq!(run_with(&fake, &case(tap), TEST_HOOKS).status, Status::Pass);
+    assert!(foxglove_lab::runner::is_right(23) && !foxglove_lab::runner::is_right(17));
 }

@@ -84,7 +84,10 @@ mod native {
                 CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM, LRESULT,
                 WPARAM,
             },
-            System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
+            System::{
+                LibraryLoader::GetModuleHandleW,
+                Threading::{AttachThreadInput, CreateMutexW, GetCurrentThreadId},
+            },
             UI::WindowsAndMessaging::*,
         },
     };
@@ -144,6 +147,23 @@ mod native {
         }
         Ok(())
     }
+    /// Windows only lets the process that owns the foreground window hand focus over, so a
+    /// console-launched runner can lose that race. Joining the foreground thread's input queue
+    /// for the call is the documented way to be allowed to take it.
+    unsafe fn take_foreground(hwnd: HWND) {
+        let current = GetForegroundWindow();
+        let theirs = GetWindowThreadProcessId(current, None);
+        let ours = GetCurrentThreadId();
+        let attached =
+            theirs != 0 && theirs != ours && AttachThreadInput(ours, theirs, true).as_bool();
+        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+        if attached {
+            let _ = AttachThreadInput(ours, theirs, false);
+        }
+    }
+
     pub fn sink(
         text: &str,
         via: &[Step],
@@ -179,11 +199,15 @@ mod native {
                 None,
             )?;
             let _window = Window(hwnd);
-            let _ = SetForegroundWindow(hwnd);
             let mut received = Vec::new();
             let end = Instant::now() + Duration::from_secs(5);
+            let mut asked = Instant::now() - Duration::from_secs(1);
             while GetForegroundWindow() != hwnd {
                 ensure!(!cancelled.load(Ordering::Relaxed), "sink interrupted");
+                if asked.elapsed() >= Duration::from_millis(250) {
+                    take_foreground(hwnd);
+                    asked = Instant::now();
+                }
                 pump(hwnd, &mut received)?;
                 ensure!(
                     Instant::now() < end,
