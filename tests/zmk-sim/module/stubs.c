@@ -21,8 +21,8 @@ static const struct behavior_driver_api noop_api = {
                             CONFIG_KERNEL_INIT_PRIORITY_DEFAULT, &noop_api);
 DT_INST_FOREACH_STATUS_OKAY(NOOP_INST)
 
-// With ZMK_SLEEP (the sleep case), ZMK's own pm.c is built and has the real one.
-#if !IS_ENABLED(CONFIG_ZMK_PM)
+// ZMK's pm.c (built for ZMK_SLEEP in the sleep case) only has it with ZMK_PM_SOFT_OFF.
+#if !IS_ENABLED(CONFIG_ZMK_PM_SOFT_OFF)
 int zmk_pm_soft_off(void) {
     printk("SIM_SOFT_OFF\n");
     return 0;
