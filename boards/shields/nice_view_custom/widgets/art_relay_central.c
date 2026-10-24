@@ -89,8 +89,17 @@ static void discovery_failed(int8_t result) {
     }
 }
 
+static atomic_t discovering; // discover_params belong to Zephyr until the procedure ends
+
 static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                           struct bt_gatt_discover_params *params) {
+    if (conn != peer) { // the end of a discovery on a link that has gone
+        atomic_clear(&discovering);
+        return BT_GATT_ITER_STOP;
+    }
+    if (attr == NULL) {
+        atomic_clear(&discovering);
+    }
     if (attr == NULL) {
         dbg.ends++;
         LOG_INF("art relay: right half %s", data_handle ? "ready" : "has no relay");
@@ -120,6 +129,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         // queued after it on the split link (ZMK's own included).
         dbg.ends++;
         discovery = ART_DISCOVERY_DONE;
+        atomic_clear(&discovering); // Zephyr gets no callback after a STOP
         rgb_sync_link_up();
         host_link_art_status();
         return BT_GATT_ITER_STOP;
@@ -129,6 +139,12 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 
 static uint8_t service_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                              struct bt_gatt_discover_params *params) {
+    if (conn != peer || attr == NULL) {
+        atomic_clear(&discovering);
+    }
+    if (conn != peer) {
+        return BT_GATT_ITER_STOP;
+    }
     if (attr == NULL) {
         dbg.ends++;
         LOG_INF("art relay: right half has no relay service");
@@ -143,6 +159,7 @@ static uint8_t service_found(struct bt_conn *conn, const struct bt_gatt_attr *at
     discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
     int err = bt_gatt_discover(conn, &discover_params);
     if (err) {
+        atomic_clear(&discovering);
         LOG_ERR("art relay: characteristic discovery failed (%d)", err);
         discovery_failed(MAX(err, INT8_MIN));
     }
@@ -151,6 +168,10 @@ static uint8_t service_found(struct bt_conn *conn, const struct bt_gatt_attr *at
 
 static void discover_cb(struct k_work *work) {
     if (peer == NULL || (data_handle && status_handle)) {
+        return;
+    }
+    if (!atomic_cas(&discovering, 0, 1)) { // the last one (maybe on the old link) hasn't ended
+        k_work_reschedule(&discover_work, DISCOVER_RETRY);
         return;
     }
     discovery_tries++;
@@ -162,20 +183,51 @@ static void discover_cb(struct k_work *work) {
     discover_params.type = BT_GATT_DISCOVER_PRIMARY;
     int err = bt_gatt_discover(peer, &discover_params);
     if (err) {
+        atomic_clear(&discovering);
         LOG_ERR("art relay: service discovery failed (%d)", err);
         discovery_failed(MAX(err, INT8_MIN));
     }
 }
 static K_WORK_DELAYABLE_DEFINE(discover_work, discover_cb);
 
+// Forgets the split connection and everything found on it.
+static void drop_peer(void) {
+    k_work_cancel_delayable(&discover_work);
+    if (peer != NULL) {
+        bt_conn_unref(peer);
+        peer = NULL;
+    }
+    data_handle = status_handle = screen_handle = 0;
+    discovery = ART_DISCOVERY_IDLE;
+    discovery_tries = 0;
+    right_read_at = 0;
+    memset(&dbg, 0, sizeof(dbg));
+}
+
+static bool still_connected(struct bt_conn *conn) {
+    struct bt_conn_info info;
+    return bt_conn_get_info(conn, &info) == 0 && info.state == BT_CONN_STATE_CONNECTED;
+}
+
 static void connected(struct bt_conn *conn, uint8_t err) {
     struct bt_conn_info info;
-    if (err || peer != NULL || bt_conn_get_info(conn, &info) || info.role != BT_CONN_ROLE_CENTRAL) {
+    if (err || bt_conn_get_info(conn, &info) || info.role != BT_CONN_ROLE_CENTRAL) {
         return; // only the split link has us as central; host links have us as peripheral
     }
+    if (peer != NULL && peer != conn && still_connected(peer)) {
+        return; // a second link with us as central isn't the split link we know
+    }
+    // A new split link, even if the old one's disconnect hasn't come yet (the right rebooted):
+    // holding on to the dead one left the relay pointed at it and never discovered the new one.
+    bool was_ready = art_relay_link() == 2;
+    drop_peer();
     peer = bt_conn_ref(conn);
-    data_handle = status_handle = screen_handle = 0;
-    discovery_tries = 0;
+    if (bt_conn_get_security(conn) >= BT_SECURITY_L2) { // already encrypted: no security_changed
+        k_work_reschedule(&discover_work, DISCOVER_DELAY);
+    }
+    if (was_ready) {
+        host_link_art_status();
+    }
 }
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err) {
@@ -189,11 +241,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
         return;
     }
     bool was_ready = art_relay_link() == 2;
-    k_work_cancel_delayable(&discover_work);
-    bt_conn_unref(peer);
-    peer = NULL;
-    data_handle = status_handle = screen_handle = 0;
-    right_read_at = 0;
+    drop_peer();
     if (was_ready) {
         host_link_art_status();
     }
@@ -239,7 +287,7 @@ static void write_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_write_par
 
 static int write_req(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
     static struct bt_gatt_write_params params;
-    static uint8_t copy[8];
+    static uint8_t copy[20]; // SAVE is the longest: op, slot, name[16]
     if (atomic_get(&in_flight) || len > sizeof(copy)) {
         return -EBUSY;
     }
@@ -269,10 +317,12 @@ static int write_cmd(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
 static uint8_t read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_params *params,
                        const void *data, uint16_t length) {
     if (data != NULL) {
+        // The value goes on with the flash slot table; the first chunk has all of the status.
         memcpy(&right, data, MIN(length, sizeof(right)));
         right_len = length;
         right_read_at = k_uptime_get();
-        return BT_GATT_ITER_CONTINUE;
+        request_done(0);
+        return BT_GATT_ITER_STOP;
     }
     request_done(err);
     return BT_GATT_ITER_STOP;
@@ -430,6 +480,116 @@ static void select_cb(struct k_work *work) {
 }
 static K_WORK_DEFINE(select_work, select_cb);
 
+/* Flash slots on the right */
+
+static uint8_t slot_op[18]; // the relay write for SAVE or ERASE
+static uint8_t slot_op_len;
+
+static void slot_op_cb(struct k_work *work) {
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        fail(ART_ERR_NO_LINK);
+        return;
+    }
+    bool err = write_req(conn, slot_op, slot_op_len) || read_status(conn);
+    bt_conn_unref(conn);
+    if (err) {
+        fail(ART_ERR_RIGHT);
+        return;
+    }
+    state = ART_LEFT_DONE;
+}
+static K_WORK_DEFINE(slot_op_work, slot_op_cb);
+
+static int start_slot_op(const uint8_t *op, uint8_t len) {
+    if (state == ART_LEFT_PUSHING) {
+        return -EBUSY;
+    }
+    k_work_cancel_delayable(&receive_timeout);
+    memcpy(slot_op, op, len);
+    slot_op_len = len;
+    state = ART_LEFT_PUSHING;
+    error = ART_ERR_NONE;
+    pushed = blob_len = 0;
+    k_work_submit_to_queue(&relay_q, &slot_op_work);
+    return 0;
+}
+
+int art_relay_save(uint8_t slot, const uint8_t name[16]) {
+    uint8_t op[18] = {ART_RELAY_SAVE, slot};
+    memcpy(&op[2], name, 16);
+    return start_slot_op(op, sizeof(op));
+}
+
+int art_relay_erase(uint8_t slot) {
+    uint8_t op[] = {ART_RELAY_ERASE, slot};
+    return start_slot_op(op, sizeof(op));
+}
+
+// D6 07 SLOT: one entry of the right's slot table, by an offset read of the status value.
+static uint8_t slot_index;
+static uint8_t slot_info[sizeof(struct art_relay_slot_info)];
+static uint16_t slot_got;
+static atomic_t slot_busy;
+
+static uint8_t slot_read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_params *params,
+                            const void *data, uint16_t length) {
+    if (data != NULL) {
+        uint16_t n = MIN(length, sizeof(slot_info) - slot_got);
+        memcpy(&slot_info[slot_got], data, n);
+        slot_got += n;
+        if (slot_got < sizeof(slot_info)) {
+            return BT_GATT_ITER_CONTINUE; // Zephyr reads on from where this chunk ended
+        }
+        request_done(0);
+        return BT_GATT_ITER_STOP;
+    }
+    request_done(err ? err : BT_ATT_ERR_UNLIKELY); // the value ended early
+    return BT_GATT_ITER_STOP;
+}
+
+static void slot_read_job(struct k_work *work) {
+    static struct bt_gatt_read_params params;
+    uint8_t status = 2;
+    struct bt_conn *conn = job_conn();
+    if (conn != NULL) {
+        status = 4; // the right's firmware has no slots
+        if (right.version >= 3 && slot_index < right.flash_slots) {
+            status = 3;
+            if (!atomic_get(&in_flight)) {
+                slot_got = 0;
+                params.func = slot_read_cb;
+                params.handle_count = 1;
+                params.single.handle = status_handle;
+                params.single.offset =
+                    sizeof(struct art_relay_status) + slot_index * sizeof(slot_info);
+                k_sem_reset(&gatt_done);
+                atomic_set(&in_flight, 1);
+                if (wait_done(bt_gatt_read(conn, &params)) == 0) {
+                    status = 0;
+                }
+            }
+        }
+        bt_conn_unref(conn);
+    }
+    uint8_t r[4 + sizeof(slot_info)] = {HOST_LINK_ART, 0x87, status, slot_index};
+    if (status == 0) {
+        memcpy(&r[4], slot_info, sizeof(slot_info));
+    }
+    host_link_send(r, sizeof(r));
+    atomic_clear(&slot_busy);
+}
+static K_WORK_DEFINE(slot_read_work, slot_read_job);
+
+int art_relay_slot(uint8_t slot) {
+    if (!atomic_cas(&slot_busy, 0, 1)) {
+        return -EBUSY;
+    }
+    slot_index = slot;
+    k_work_submit_to_queue(&relay_q, &slot_read_work);
+    return 0;
+}
+
 static void status_cb(struct k_work *work) {
     struct bt_conn *conn = job_conn();
     if (conn != NULL) {
@@ -502,7 +662,10 @@ int art_relay_select(int8_t set) {
 }
 
 void art_relay_discovery(int8_t *result, uint8_t *tries) {
-    *result = discovery;
+    // DONE only with the handles in hand, on the link we have now.
+    *result = discovery == ART_DISCOVERY_DONE && !(data_handle && status_handle)
+                  ? ART_DISCOVERY_IDLE
+                  : discovery;
     *tries = discovery_tries;
 }
 
