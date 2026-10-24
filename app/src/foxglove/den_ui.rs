@@ -46,11 +46,14 @@ pub fn group(ui: &mut egui::Ui) {
                     if ui.checkbox(&mut enabled, format!("{} {}", kit.manifest.name, kit.manifest.version)).changed() {
                         state.message = den::set_enabled(&kit.manifest.id, enabled).err();
                         state.installed = None;
+                        super::kits::sync();
                     }
                     let confirming = state.confirm_remove.as_deref() == Some(kit.manifest.id.as_str());
                     if ui.small_button(if confirming { "Remove? Click again" } else { "Remove" }).clicked() {
                         if confirming {
+                            super::kits::stop(&kit.manifest.id);
                             state.message = den::remove(&kit.manifest.id).err();
+                            super::kits::sync();
                             state.confirm_remove = None;
                             state.installed = None;
                         } else {
@@ -58,6 +61,16 @@ pub fn group(ui: &mut egui::Ui) {
                         }
                     }
                 });
+                if kit.record.enabled {
+                    use ::den::runner::KitState;
+                    let text = match super::kits::state(&kit.manifest.id) {
+                        Some(KitState::Running) => "running".to_string(),
+                        Some(KitState::Restarting { reason, wait }) => format!("restarting in {} s: {reason}", wait.as_secs()),
+                        Some(KitState::Disabled(reason)) => format!("stopped after repeated failures ({reason}); turn it off and on to retry"),
+                        Some(KitState::Stopped) | None => "starting".to_string(),
+                    };
+                    ui.weak(format!("    {text}"));
+                }
                 let perms: Vec<String> = kit.record.approved.iter().map(|p| p.describe()).collect();
                 ui.weak(format!("    may {}", if perms.is_empty() { "do nothing beyond running".into() } else { perms.join(", ") }));
             }
@@ -121,7 +134,9 @@ fn approval(ui: &mut egui::Ui, staged: Staged, state: &mut UiState) -> Option<St
             state.installed = None;
             if install {
                 let name = staged.manifest.name.clone();
+                super::kits::stop(&staged.manifest.id);
                 state.message = den::commit(staged, true).err().map(|e| format!("Can't install {name}: {e}"));
+                super::kits::sync();
             } else {
                 den::discard(staged);
             }

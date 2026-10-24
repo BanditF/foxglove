@@ -86,7 +86,10 @@ mod native {
             },
             System::{
                 LibraryLoader::GetModuleHandleW,
-                Threading::{AttachThreadInput, CreateMutexW, GetCurrentThreadId},
+                Threading::{
+                    AttachThreadInput, CreateMutexW, GetCurrentThreadId, ReleaseMutex,
+                    WaitForSingleObject,
+                },
             },
             UI::WindowsAndMessaging::*,
         },
@@ -110,6 +113,35 @@ mod native {
                 "Foxglove is running (Local\\Foxglove.Panel); tray → Quit, or use --allow-app"
             );
             Ok(guard)
+        }
+    }
+    /// One foxglove-lab at a time on the keyboard: two runners interleaving requests on the same
+    /// link make each other's steps fail ("no reply"). A named mutex is released by Windows
+    /// when its owner exits, so a crashed run never leaves a stale lock.
+    pub struct LabLock(HANDLE);
+    impl Drop for LabLock {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = ReleaseMutex(self.0);
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+    pub fn lab_lock(wait: Duration) -> Result<LabLock> {
+        unsafe {
+            let h = CreateMutexW(None, false, w!("Local\\Foxglove.Lab"))?;
+            let lock = LabLock(h);
+            let mut status = WaitForSingleObject(h, 0);
+            if status.0 == 0x102 {
+                eprintln!("waiting for another foxglove-lab run to finish...");
+                status = WaitForSingleObject(h, wait.as_millis().min(u32::MAX as u128) as u32);
+            }
+            // WAIT_OBJECT_0 (0) or WAIT_ABANDONED (0x80): ours now.
+            ensure!(
+                status.0 == 0 || status.0 == 0x80,
+                "another foxglove-lab run is using the keyboard; try again when it finishes"
+            );
+            Ok(lock)
         }
     }
     unsafe extern "system" fn proc(
@@ -244,10 +276,14 @@ mod native {
     }
 }
 #[cfg(windows)]
-pub use native::{guard, sink};
+pub use native::{guard, lab_lock, sink};
 
 #[cfg(not(windows))]
 pub fn guard(_: bool) -> Result<()> {
+    Ok(())
+}
+#[cfg(not(windows))]
+pub fn lab_lock(_: Duration) -> Result<()> {
     Ok(())
 }
 #[cfg(not(windows))]

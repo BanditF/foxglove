@@ -23,6 +23,7 @@ pub mod api;
 pub mod art_library;
 pub mod den;
 pub mod den_ui;
+pub mod kits;
 pub mod art_manifest;
 mod art_preview;
 pub mod art_ui;
