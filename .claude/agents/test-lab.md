@@ -104,3 +104,6 @@ product code, commit, push, merge, or invent missing harness capabilities.
 - `foxglove-lab usb` checks both halves' USB identity. With Foxglove running, pass `--allow-app`.
 - Gate the INVOKE refusal safety test on HELLO capability bit 7 (`INVOKE_REFUSES`); position press is
   bit 5, screen readback bit 6.
+- Always isolate the app's settings: set `FOXGLOVE_CONFIG_DIR` to a temp folder for every app run
+  (overriding APPDATA does not redirect them). Never run a test build against the user's real
+  `%APPDATA%\Foxglove` unless the test is explicitly about migrating it.
