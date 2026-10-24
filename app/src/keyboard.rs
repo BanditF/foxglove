@@ -288,6 +288,7 @@ impl Keyboard {
 
         let keepalive = protocol
             .subscription_sender()
+            .map(|s| s.filter(|_| !crate::foxglove::repaint_trace::disabled("keepalive")))
             .map_err(|e| e.to_string())?
             .map(|sender| {
                 let (tx, rx) = mpsc::channel::<()>();

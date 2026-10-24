@@ -152,9 +152,12 @@ fn run() {
     STOPPED.store(false, Ordering::Relaxed);
     let mut sources = Sources::new();
     let providers_tx = tx.clone();
-    let mut changes = foxglove_panel::changes::Changes::new(Arc::new(move || {
-        let _ = providers_tx.send(Event::Providers);
-    }));
+    // FOXGLOVE_DISABLE=providers: clock only, no Windows media/volume/foreground watchers.
+    let mut changes = (!super::repaint_trace::disabled("providers")).then(|| {
+        foxglove_panel::changes::Changes::new(Arc::new(move || {
+            let _ = providers_tx.send(Event::Providers);
+        }))
+    });
     let mut providers_dirty = true;
     let settings_tx = tx.clone();
     let _settings_watch = ScreensSettings::path().and_then(|p| {
@@ -317,7 +320,7 @@ fn run() {
             battery_log(d.hello.right_battery, &mut last_battery);
         }
         was_driving = true;
-        let clock_at = if providers_dirty {
+        let clock_at = if let Some(changes) = changes.as_mut().filter(|_| providers_dirty) {
             changes.refresh();
             providers_dirty = false;
             sources.update(&mut view, |exe| settings.games.get(exe).cloned())
