@@ -89,8 +89,17 @@ static void discovery_failed(int8_t result) {
     }
 }
 
+static atomic_t discovering; // discover_params belong to Zephyr until the procedure ends
+
 static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                           struct bt_gatt_discover_params *params) {
+    if (conn != peer) { // the end of a discovery on a link that has gone
+        atomic_clear(&discovering);
+        return BT_GATT_ITER_STOP;
+    }
+    if (attr == NULL) {
+        atomic_clear(&discovering);
+    }
     if (attr == NULL) {
         dbg.ends++;
         LOG_INF("art relay: right half %s", data_handle ? "ready" : "has no relay");
@@ -120,6 +129,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         // queued after it on the split link (ZMK's own included).
         dbg.ends++;
         discovery = ART_DISCOVERY_DONE;
+        atomic_clear(&discovering); // Zephyr gets no callback after a STOP
         rgb_sync_link_up();
         host_link_art_status();
         return BT_GATT_ITER_STOP;
@@ -129,6 +139,12 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 
 static uint8_t service_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
                              struct bt_gatt_discover_params *params) {
+    if (conn != peer || attr == NULL) {
+        atomic_clear(&discovering);
+    }
+    if (conn != peer) {
+        return BT_GATT_ITER_STOP;
+    }
     if (attr == NULL) {
         dbg.ends++;
         LOG_INF("art relay: right half has no relay service");
@@ -143,6 +159,7 @@ static uint8_t service_found(struct bt_conn *conn, const struct bt_gatt_attr *at
     discover_params.type = BT_GATT_DISCOVER_CHARACTERISTIC;
     int err = bt_gatt_discover(conn, &discover_params);
     if (err) {
+        atomic_clear(&discovering);
         LOG_ERR("art relay: characteristic discovery failed (%d)", err);
         discovery_failed(MAX(err, INT8_MIN));
     }
@@ -151,6 +168,10 @@ static uint8_t service_found(struct bt_conn *conn, const struct bt_gatt_attr *at
 
 static void discover_cb(struct k_work *work) {
     if (peer == NULL || (data_handle && status_handle)) {
+        return;
+    }
+    if (!atomic_cas(&discovering, 0, 1)) { // the last one (maybe on the old link) hasn't ended
+        k_work_reschedule(&discover_work, DISCOVER_RETRY);
         return;
     }
     discovery_tries++;
@@ -162,20 +183,51 @@ static void discover_cb(struct k_work *work) {
     discover_params.type = BT_GATT_DISCOVER_PRIMARY;
     int err = bt_gatt_discover(peer, &discover_params);
     if (err) {
+        atomic_clear(&discovering);
         LOG_ERR("art relay: service discovery failed (%d)", err);
         discovery_failed(MAX(err, INT8_MIN));
     }
 }
 static K_WORK_DELAYABLE_DEFINE(discover_work, discover_cb);
 
+// Forgets the split connection and everything found on it.
+static void drop_peer(void) {
+    k_work_cancel_delayable(&discover_work);
+    if (peer != NULL) {
+        bt_conn_unref(peer);
+        peer = NULL;
+    }
+    data_handle = status_handle = screen_handle = 0;
+    discovery = ART_DISCOVERY_IDLE;
+    discovery_tries = 0;
+    right_read_at = 0;
+    memset(&dbg, 0, sizeof(dbg));
+}
+
+static bool still_connected(struct bt_conn *conn) {
+    struct bt_conn_info info;
+    return bt_conn_get_info(conn, &info) == 0 && info.state == BT_CONN_STATE_CONNECTED;
+}
+
 static void connected(struct bt_conn *conn, uint8_t err) {
     struct bt_conn_info info;
-    if (err || peer != NULL || bt_conn_get_info(conn, &info) || info.role != BT_CONN_ROLE_CENTRAL) {
+    if (err || bt_conn_get_info(conn, &info) || info.role != BT_CONN_ROLE_CENTRAL) {
         return; // only the split link has us as central; host links have us as peripheral
     }
+    if (peer != NULL && peer != conn && still_connected(peer)) {
+        return; // a second link with us as central isn't the split link we know
+    }
+    // A new split link, even if the old one's disconnect hasn't come yet (the right rebooted):
+    // holding on to the dead one left the relay pointed at it and never discovered the new one.
+    bool was_ready = art_relay_link() == 2;
+    drop_peer();
     peer = bt_conn_ref(conn);
-    data_handle = status_handle = screen_handle = 0;
-    discovery_tries = 0;
+    if (bt_conn_get_security(conn) >= BT_SECURITY_L2) { // already encrypted: no security_changed
+        k_work_reschedule(&discover_work, DISCOVER_DELAY);
+    }
+    if (was_ready) {
+        host_link_art_status();
+    }
 }
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err) {
@@ -189,11 +241,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
         return;
     }
     bool was_ready = art_relay_link() == 2;
-    k_work_cancel_delayable(&discover_work);
-    bt_conn_unref(peer);
-    peer = NULL;
-    data_handle = status_handle = screen_handle = 0;
-    right_read_at = 0;
+    drop_peer();
     if (was_ready) {
         host_link_art_status();
     }
@@ -502,7 +550,10 @@ int art_relay_select(int8_t set) {
 }
 
 void art_relay_discovery(int8_t *result, uint8_t *tries) {
-    *result = discovery;
+    // DONE only with the handles in hand, on the link we have now.
+    *result = discovery == ART_DISCOVERY_DONE && !(data_handle && status_handle)
+                  ? ART_DISCOVERY_IDLE
+                  : discovery;
     *tries = discovery_tries;
 }
 
