@@ -21,6 +21,9 @@ config NICE_VIEW_HOST_PANEL_TIMEOUT_S
     int
     default 0
 
+config FOXGLOVE_SIM_PANEL_STREAM
+    bool "Simulator: left panel stream case (module/panel_stream_sim.c) instead of the protocol walk"
+
 config FOXGLOVE_TEST_HOOKS
     bool "Test hooks (as in dev firmware)"
     default y
