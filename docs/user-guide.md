@@ -143,14 +143,11 @@ Open it from the tray: **Settings...**. From the top:
 - **Right screen art.** What plays on the right:
   - choose a built-in animation, or push one from a file;
   - **Saved on the keyboard** keeps a pushed animation on the keyboard itself;
-  - **Hotlist** cycles through favourites every few minutes, **when the lights wake**, or to
-    **match the wallpaper** (with Wallpaper Engine, the keyboard shows the art that goes with
-    the wallpaper on screen).
-- **Other keyboards (VIA).** Read-only support for VIA/QMK keyboards.
-- **Plugins.** Optional add-ons, such as a focus timer or the bridge from OpenRGB lighting.
-  Each runs as its own small program with only the permissions you approve. The tab lists
-  what's installed (switch it on or off, or remove it) and a catalog. **Install from file…**
-  shows exactly what a plugin may do before you agree. Only signed plugins run.
+  - **Hotlist** and **Art library…**: see [Lights and art that go together](#8-lights-and-art-that-go-together).
+- **Other keyboards (VIA).** Read-only support for VIA/QMK keyboards: see
+  [Other keyboards](#10-other-keyboards-via).
+- **Plugins.** Optional add-ons (Pomodoro, Mic mute, Broadcast Status, OpenRGB): see
+  [Plugins](#9-plugins).
 
 ### Profiles
 
@@ -215,11 +212,119 @@ By hand, the old way: double-tap a half's reset button and a USB drive appears. 
 half's `.uf2` onto it, left half first. The bootloader checks nothing, so be sure which half
 you're holding.
 
+## 8. Lights and art that go together
+
+Two labels in this section:
+- **after 0.1** means the keyboard needs firmware newer than 0.1;
+- **next app update** means the feature is finished but not in the app on `main` yet.
+
+### Lighting presets *(next app update)*
+
+**Settings → Keyboard → Lights → Preset** offers seven ready-made looks, each matched to a
+Bandit wallpaper family:
+
+| preset | lights | right screen |
+|---|---|---|
+| Bandit | orange, steady | Bandit Idle |
+| Fury | red, slow breathe | FURY Print |
+| Constellations | night-sky indigo, breathe | FURY Constellations |
+| Hearth | candle amber, breathe | Cauldron Corner |
+| Moon Garden | violet, steady | Moon Garden |
+| Courier | quiet warm white | Bandit Uplink |
+| Signal | rainbow swirl | Bandit Signal |
+
+- **Change the right screen with the preset** (on by default) shows the preset's art too. Pick
+  "none" and your own art comes back.
+- **Accent colour:** picking a preset turns off **Follow the Windows accent colour**, since the
+  two would fight over the colour.
+- **Profiles:** each profile can have its own preset, and switching profile switches the look.
+
+### Cycling the right screen's art
+
+**Settings → Right screen art → Hotlist** is your list of favourites.
+- **Next entry** steps the list on any of these, in any mix:
+  - **on the art key** *(after 0.1, next app update)*: hold SYSTEM (both middle thumbs + Tab),
+    then **P** for next and **O** for previous. Without the app, the keyboard steps through its
+    own built-ins and saved slots. *(next app update)* The left screen shows **ART 3/7** and the
+    name for a second.
+  - **when the lights wake**: the next entry each time the underglow comes back on.
+  - **every N minutes**.
+- **Follow the wallpaper:** with Wallpaper Engine, the right screen shows the art that goes with
+  the wallpaper on screen.
+- **Layer art:** give a layer its own art, for example Bandit Radar for GAME. It shows while you
+  hold the layer (after 0.4 s, so a quick tap doesn't flash it), then the art before comes back.
+- **Priority:** your own pick (or an art-key press) wins, then layer art, then preset art, then
+  the wallpaper, then the hotlist.
+
+### The art library
+
+**Settings → Right screen art → Art library…** opens one grid of every animation Foxglove
+knows: the keyboard's built-ins, what's saved on it, your library folder, the sets that come with
+the app, and your source folders. The same art in two places shows once.
+- **Each card shows:**
+  - whether it's **on screen**;
+  - where it lives (built-in, saved slot, library, bundled, source);
+  - whether it's pinned, in the hotlist, or a layer's art;
+  - its size; anything over 16 KiB is too big to send.
+- **Actions:**
+  - **Show** shows it now (built-ins and slots at once; files are sent over);
+  - ☆ adds it to the hotlist;
+  - **Clear slot** frees a saved slot (two clicks);
+  - **Recycle** moves a library file to the Recycle Bin.
+- **Stand in for…** (on a saved slot): the slot replaces a built-in everywhere that names it,
+  in the hotlist, layer art and presets. The built-in's card says "replaced by slot N" and
+  has **Undo stand-in**. The firmware itself doesn't change.
+- **Source folders:** add folders of `frame_N.png` + `meta.txt` sets (like `art-src\bandit\out`).
+  Each set shows with a thumbnail, and **Show** or **Add to library** converts it in the app.
+
+## 9. Plugins
+
+**Settings → Plugins.** Each plugin runs as its own small program with only the permissions you
+approve when you install it. Only signed plugins run.
+- **Installing:** the catalog lists the first-party plugins as "Coming soon" until they're
+  published. For now a plugin installs from its file (**Install from file…**), which shows
+  exactly what it may do first.
+- **Managing:** each installed plugin has an on/off switch, **Remove** (two clicks), its status
+  (running / restarting / stopped), its permissions, and its own settings.
+- **Keys for a plugin:** a plugin's actions (pause the timer, mute the mic) each get a key from
+  **F13–F24**. Put that key on your keymap in ZMK Studio or VIA. It types nothing, and Foxglove
+  passes it to the plugin. A key that another program already holds is flagged.
+
+| plugin | what it does | you set up |
+|---|---|---|
+| **Pomodoro** | focus and rest periods; a big countdown on the left screen; red / green lights; a long rest every four rounds | keys for **Pause or resume** and **Start a new focus period** |
+| **Mic mute** | MUTED (bright) / LIVE / ? on the left screen, red when muted; mutes Windows' default communications mic | keys for **toggle**, **mute**, **unmute**. Apps can still mute themselves separately |
+| **Broadcast Status** | OBS: READY / REC / LIVE and the scene name on the left, red on the keyboard while live; it only listens | in OBS, **Tools → WebSocket Server Settings** (port 4455); paste its password into the plugin's settings (kept in Windows' credential store) |
+| **OpenRGB (E1.31)** | OpenRGB colours your keyboard | in OpenRGB, add an E1.31 device at 127.0.0.1, universe 1. It listens on this PC only (UDP 5568) |
+| **SignalRGB** | SignalRGB lights the keyboard with the rest of your setup | coming soon; listed in the catalog |
+
+While a plugin's frame is on the left screen, it's in charge of it. Foxglove's own clock comes
+back when the plugin lets go, or at the latest after a minute.
+
+## 10. Other keyboards (VIA)
+
+**Settings → Other keyboards (VIA)** shows QMK keyboards with VIA (like a Keychron K5 Pro) in
+the overlay, over USB. Foxglove only **reads** them: their keymap, layers and lights. It never
+changes them.
+- **Setup:** tick **Use VIA keyboards** and add the keyboard's VIA definition (the JSON from its
+  maker) with **Add VIA definition (JSON)…**.
+- **Pause Foxglove for this keyboard** closes Foxglove's connection to it, so VIA or the maker's
+  app can use it without two programs talking at once. **Resume** connects again.
+- **Active layer:** stock firmware doesn't report it, so it shows as unknown.
+- **The same keyboard on another port:** Foxglove asks whether it's the one you used before.
+
 ## Where things are kept
 
 | what | where |
 |---|---|
-| settings | `%APPDATA%\Foxglove\config\` |
-| art library (pushed animations, wallpaper art) | `%APPDATA%\Foxglove\config\art\` |
+| Foxglove's settings, profiles, hotlist, presets, plugin settings | `%APPDATA%\Foxglove\foxglove.toml` (one file; older `*.ini` files are imported once and renamed `*.migrated`) |
+| the overlay's own settings (KeyPeek's) | `%APPDATA%\Foxglove\config\settings.ini` |
+| keymap cache | `%APPDATA%\Foxglove\config\keymap-*.studio` |
+| art library (pushed animations, wallpaper art, converted source sets) | `%APPDATA%\Foxglove\config\art\` |
+| installed plugins | `%APPDATA%\Foxglove\plugins\` |
+| plugin passwords and tokens | Windows Credential Manager (`Foxglove/plugin/<id>/<name>`), never in a file |
 | updates downloaded | `%LOCALAPPDATA%\Foxglove\updates\` |
 | firmware flash history | `%LOCALAPPDATA%\Foxglove\flash-history.log` |
+
+To try things without touching your real settings, start Foxglove with `FOXGLOVE_CONFIG_DIR`
+set to another folder: every settings file goes there instead.
