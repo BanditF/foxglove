@@ -47,7 +47,7 @@ enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE,
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
-       SETTING_BUILD_INFO };
+       SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B }; // 0x0A: LAMP_TEST (#115 branch)
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -511,6 +511,15 @@ static void settings_command(const uint8_t *d, int len) {
         return;
     }
     switch (d[1]) {
+    case SETTING_GUARD_TEST: {
+        uint8_t r[3] = {HOST_LINK_SETTINGS, 0x80 | SETTING_GUARD_TEST, 4};
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS) && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+        int err = art_relay_guard_test();
+        r[2] = err == 0 ? 0 : err == -ENOTCONN ? 2 : 4;
+#endif
+        reply(r, sizeof(r));
+        break;
+    }
     case SETTING_BUILD_INFO: {
         uint8_t half = len >= 3 ? d[2] : 0;
         if (half == 0) {

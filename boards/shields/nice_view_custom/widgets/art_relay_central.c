@@ -733,6 +733,7 @@ void art_relay_discovery(int8_t *result, uint8_t *tries) {
 
 static uint8_t guard_drops;  // since boot, for HELLO
 static uint8_t guard_in_row; // drops since the last link that encrypted
+static atomic_t guard_forced; // D7 0B: treat the next check's link as stuck (dev builds)
 
 static void guard_cb(struct k_work *work) {
     struct bt_conn *conn = NULL;
@@ -744,7 +745,8 @@ static void guard_cb(struct k_work *work) {
     if (conn == NULL) {
         return;
     }
-    if (still_connected(conn) && bt_conn_get_security(conn) < BT_SECURITY_L2) {
+    bool forced = atomic_cas(&guard_forced, 1, 0);
+    if (still_connected(conn) && (bt_conn_get_security(conn) < BT_SECURITY_L2 || forced)) {
         if (guard_in_row < GUARD_MAX_IN_ROW) {
             guard_in_row++;
             guard_drops = MIN(guard_drops + 1, UINT8_MAX);
@@ -771,7 +773,23 @@ static void guard_cancel(bool encrypted) {
 }
 
 uint8_t art_relay_guard_drops(void) { return guard_drops; }
+
+int art_relay_guard_test(void) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+    if (peer == NULL) {
+        return -ENOTCONN;
+    }
+    // The real recovery path (drop, ZMK reconnects) on a link that's actually fine; a genuine
+    // stuck-before-encryption link can't be made on purpose without deleting the bond.
+    atomic_set(&guard_forced, 1);
+    k_work_reschedule_for_queue(&relay_q, &guard_work, K_SECONDS(2));
+    return 0;
 #else
+    return -ENOTSUP;
+#endif
+}
+#else
+int art_relay_guard_test(void) { return -ENOTSUP; }
 static void guard_arm(void) {}
 static void guard_cancel(bool encrypted) {}
 uint8_t art_relay_guard_drops(void) { return 0; }
