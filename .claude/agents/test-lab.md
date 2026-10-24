@@ -97,3 +97,10 @@ product code, commit, push, merge, or invent missing harness capabilities.
   yet (to be added). D7 04 is CONN_STATE; INVOKE (D7 02) refuses
   &bt/&out/&bootloader/&sys_reset/&soft_off with status 6.
 - Planned simulator: #68, `tests/zmk-sim/`, and `.github/workflows/zmk-sim.yml`.
+
+## Release gate and USB check
+- Release gate: `scripts/release-test.ps1 -Firmware <dir> -AllowApp -NonInteractive`. It runs
+  preflight → usb → release suite into one report folder and never flashes.
+- `foxglove-lab usb` checks both halves' USB identity. With Foxglove running, pass `--allow-app`.
+- Gate the INVOKE refusal safety test on HELLO capability bit 7 (`INVOKE_REFUSES`); position press is
+  bit 5, screen readback bit 6.
