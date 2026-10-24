@@ -34,6 +34,7 @@ pub mod art_ui;
 pub mod settings_ui;
 pub mod startup;
 pub mod tray;
+pub mod catalog_refresh;
 pub mod connection;
 pub mod layer_access;
 pub mod foreground;
