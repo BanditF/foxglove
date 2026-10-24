@@ -177,7 +177,7 @@ device. Nothing is broken.
    **Q** for profile 1, **W** for 2, **E** for 3, **R** for 4, **T** for 5. The block flashes
    inverted to confirm.
 3. If you're not sure which profile is this PC's, plug the cable in. **Settings → Keyboard**
-   shows "this PC: profile N". That number counts from 0, so profile 0 is box 1 (Q).
+   shows "this PC: profile N", numbered like the boxes.
 4. Typing over the cable but want Bluetooth? SYSTEM + **U**. Back to the cable: SYSTEM + **Y**.
 
 If the PC is missing from every profile, pick an empty one (its word says **PAIR**) and pair
