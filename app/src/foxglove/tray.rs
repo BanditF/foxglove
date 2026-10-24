@@ -82,10 +82,10 @@ impl Controls {
         let _ = self
             .art
             .append(&MenuItem::with_id("fox-set--1", "Random", true, None));
-        for (n, _) in s.built_ins() {
+        for (n, name) in s.built_ins() {
             let _ = self.art.append(&MenuItem::with_id(
                 format!("fox-set-{n}"),
-                format!("Built-in {}", n as u16 + 1),
+                name,
                 true,
                 None,
             ));
