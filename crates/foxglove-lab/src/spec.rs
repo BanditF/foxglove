@@ -47,6 +47,7 @@ pub enum Step {
     ExpectBuild(BuildExpect),
     ExpectHello(HelloExpect),
     ExpectNotBuiltIn(NotBuiltIn),
+    SplitGuardTest(GuardTest),
     IdleCpu(Idle),
 }
 
@@ -196,6 +197,18 @@ pub struct HelloExpect {
 pub struct NotBuiltIn {
     pub command: String,
 }
+/// D7 0B GUARD_TEST (#184, dev builds): the #122 split guard drops the current split link once.
+/// Passes when HELLO byte 31 (guard drops since boot) goes up by exactly one and the right's
+/// relay is back (right link 2) within `within_ms`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuardTest {
+    #[serde(default = "guard_timeout")]
+    pub within_ms: u64,
+}
+fn guard_timeout() -> u64 {
+    60_000
+}
 /// Fails on any half whose USB picture means trouble (see host::classify).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -326,6 +339,10 @@ impl Step {
                         && h.profile.is_none()
                         && h.guard_drops_max.is_none()),
                 "expect_hello needs capability bits 0..31"
+            ),
+            Self::SplitGuardTest(g) => ensure!(
+                (5_000..=120_000).contains(&g.within_ms),
+                "split_guard_test within_ms must be 5000..=120000"
             ),
             Self::ExpectNotBuiltIn(n) => ensure!(
                 ["position", "bootloader"].contains(&n.command.as_str()),

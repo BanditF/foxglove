@@ -52,8 +52,34 @@ fn states(mode: &str, run_for: Duration) -> Vec<PluginState> {
     rx.try_iter().collect()
 }
 
+/// The states until one matches `done` (or `within` runs out), then stopped.
+fn states_until(mode: &str, within: Duration, done: impl Fn(&PluginState) -> bool) -> Vec<PluginState> {
+    let (tx, rx) = mpsc::channel();
+    let runner = Runner::start(spec(mode), fast(), context, move |s| {
+        let _ = tx.send(s);
+    });
+    let until = std::time::Instant::now() + within;
+    let mut seen = Vec::new();
+    while let Some(left) = until.checked_duration_since(std::time::Instant::now()) {
+        match rx.recv_timeout(left) {
+            Ok(s) => {
+                let stop = done(&s);
+                seen.push(s);
+                if stop {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    drop(runner);
+    std::thread::sleep(Duration::from_millis(300));
+    seen.extend(rx.try_iter());
+    seen
+}
+
 #[test]
-fn a_healthy_kit_keeps_running_until_stopped() {
+fn a_healthy_plugin_keeps_running_until_stopped() {
     let s = states("ok", Duration::from_millis(2000));
     assert_eq!(s.first(), Some(&PluginState::Running), "{s:?}");
     assert!(!s.iter().any(|s| matches!(s, PluginState::Restarting { .. })), "pings keep it alive: {s:?}");
@@ -61,15 +87,16 @@ fn a_healthy_kit_keeps_running_until_stopped() {
 }
 
 #[test]
-fn a_crashing_kit_backs_off_then_is_disabled() {
-    let s = states("crash", Duration::from_millis(2000));
+fn a_crashing_plugin_backs_off_then_is_disabled() {
+    // Waits for the outcome rather than a fixed time, so a slow machine doesn't cut it short.
+    let s = states_until("crash", Duration::from_secs(15), |s| matches!(s, PluginState::Disabled(_)));
     let restarts = s.iter().filter(|s| matches!(s, PluginState::Restarting { .. })).count();
     assert_eq!(restarts, 2, "{s:?}");
     assert!(matches!(s.iter().rev().find(|s| matches!(s, PluginState::Disabled(_))), Some(PluginState::Disabled(r)) if r.contains("exited (3)")), "{s:?}");
 }
 
 #[test]
-fn a_silent_kit_is_restarted() {
+fn a_silent_plugin_is_restarted() {
     let s = states("hang", Duration::from_millis(2500));
     assert!(
         s.iter().any(|s| matches!(s, PluginState::Restarting { reason, .. } if reason.contains("no sign of life"))),
@@ -80,7 +107,7 @@ fn a_silent_kit_is_restarted() {
 /// In the AppContainer the plugin still talks to the host, but can't read the user's files.
 #[cfg(windows)]
 #[test]
-fn a_sandboxed_kit_runs_but_cannot_read_user_files() {
+fn a_sandboxed_plugin_runs_but_cannot_read_user_files() {
     let (tx, rx) = mpsc::channel();
     let runner = Runner::start(spec_in("ok", true), fast(), context, move |s| {
         let _ = tx.send(s);
