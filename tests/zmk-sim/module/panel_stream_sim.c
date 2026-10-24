@@ -140,6 +140,57 @@ void panel_stream_driver(void) {
     put(present, sizeof(present));
     k_msleep(100);
     bool bad_ignored = shows_frame(200);
+    // A piece that starts inside the frame but runs past its last byte is dropped whole.
+    {
+        uint8_t d[7 + 4] = {0xD5, 0x07};
+        sys_put_le16(HOST_PANEL_H - 1, &d[2]);
+        sys_put_le16(HOST_PANEL_STRIDE - 2, &d[4]);
+        d[6] = 4;
+        memset(&d[7], 0xAA, 4);
+        put(d, sizeof(d));
+        put(present, sizeof(present));
+        k_msleep(100);
+    }
+    bool overrun_ignored = shows_frame(200);
+
+    // ROWS, ROWS_AT and FILL write the same back buffer before one PRESENT: FILL white, then the
+    // top half by ROWS and the bottom half by ROWS_AT, as frame 300.
+    const uint8_t fill_white[] = {0xD5, 0x02, 0x01};
+    put(fill_white, sizeof(fill_white));
+    int half = HOST_PANEL_H / 2;
+    for (int y = 0; y < half; y += ROWS_PER_REPORT) {
+        int n = MIN(ROWS_PER_REPORT, half - y);
+        uint8_t d[4 + ROWS_PER_REPORT * HOST_PANEL_STRIDE] = {0xD5, 0x03, y, n};
+        for (int i = 0; i < n; i++) {
+            memset(&d[4 + i * HOST_PANEL_STRIDE], frame_byte(300, y + i), HOST_PANEL_STRIDE);
+        }
+        put(d, 4 + n * HOST_PANEL_STRIDE);
+    }
+    for (int at = half * HOST_PANEL_STRIDE; at < HOST_PANEL_BYTES; at += 25) {
+        int n = MIN(25, HOST_PANEL_BYTES - at);
+        uint8_t d[7 + 25] = {0xD5, 0x07};
+        sys_put_le16(at / HOST_PANEL_STRIDE, &d[2]);
+        sys_put_le16(at % HOST_PANEL_STRIDE, &d[4]);
+        d[6] = n;
+        for (int i = 0; i < n; i++) {
+            d[7 + i] = frame_byte(300, (at + i) / HOST_PANEL_STRIDE);
+        }
+        put(d, 7 + n);
+    }
+    k_msleep(100);
+    bool hidden_until_present = shows_frame(200); // the front buffer is untouched until PRESENT
+    put(present, sizeof(present));
+    k_msleep(100);
+    bool mixed_shown = shows_frame(300);
+
+    // PANEL_HOLD (#279): with no timeout the frame stays, through 70 s of silence, until RELEASE.
+    k_msleep(70000);
+    bool held = shows_frame(300);
+    const uint8_t release[] = {0xD5, 0x05};
+    put(release, sizeof(release));
+    k_msleep(100);
+    static uint8_t probe[HOST_PANEL_BYTES];
+    bool released = !host_panel_get(probe);
 
     k_msleep(3000); // after the case's key taps, so the summary always comes last
     printk("stream: %d paced + %d burst frames, %d panel reports\n", PACED_FRAMES, BURST_FRAMES,
@@ -151,4 +202,9 @@ void panel_stream_driver(void) {
            paced_shown ? "yes" : "no", burst_shown ? "yes" : "no");
     printk("stream: ROWS_AT frame shown: %s; out-of-range pieces ignored: %s\n",
            rows_at_shown ? "yes" : "no", bad_ignored ? "yes" : "no");
+    printk("stream: ROWS_AT piece past the last byte ignored: %s\n", overrun_ignored ? "yes" : "no");
+    printk("stream: FILL + ROWS + ROWS_AT hidden until PRESENT: %s; shown after: %s\n",
+           hidden_until_present ? "yes" : "no", mixed_shown ? "yes" : "no");
+    printk("stream: panel held through 70 s of silence: %s; gone after RELEASE: %s\n",
+           held ? "yes" : "no", released ? "yes" : "no");
 }
