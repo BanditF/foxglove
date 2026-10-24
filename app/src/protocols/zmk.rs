@@ -252,6 +252,7 @@ impl KeyboardProtocol for ZmkProtocol {
 fn build_from_zmk_data(vid: u16, pid: u16, data: ZmkData) -> Result<ZmkLayout, Box<dyn Error>> {
     const ACTIVE_LAYOUT_NAME: &str = "active physical layout";
     crate::foxglove::keyboard_actions::learn(&data.resolved_layers, &data.raw_keymap);
+    crate::foxglove::layer_access::learn(&data.resolved_layers);
 
     let active_idx = data.physical_layouts.active_layout_index as usize;
     let proto_layouts = &data.physical_layouts.layouts;
