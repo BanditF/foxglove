@@ -68,6 +68,21 @@ pub fn group(ui: &mut egui::Ui) {
                     if f.opened.is_ok() && !f.paused {
                         ui.weak("    Active layer: unknown (stock firmware doesn't report it).");
                     }
+                    // A keyboard of a known model on a new port, while the known one is away.
+                    if let Some((id, known)) = &f.maybe {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(format!("    Is this the {} you used before, on another port?", known.name));
+                            let model = known.model.clone();
+                            if ui.small_button("This is the same keyboard").clicked() {
+                                state.message = via_host::same_keyboard(id, &f.name, &model, Some(known)).err();
+                                state.settings = None;
+                            }
+                            if ui.small_button("A different keyboard").clicked() {
+                                state.message = via_host::same_keyboard(id, &f.name, &model, None).err();
+                                state.settings = None;
+                            }
+                        });
+                    }
                 }
                 if s.enabled && s.definitions.is_empty() {
                     ui.weak("Add the keyboard's VIA definition (from its maker, e.g. Keychron's JSON download).");
