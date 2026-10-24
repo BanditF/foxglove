@@ -34,6 +34,11 @@ pub fn group(ui: &mut egui::Ui) {
             }
             let installed = state.installed.get_or_insert_with(den::installed).clone();
             ui.weak("Kits add features to Foxglove. Each runs as its own program with only the permissions you approve.");
+            if super::kit_trust::dev_unsigned() {
+                ui.colored_label(ui.visuals().warn_fg_color, "Developer mode: unsigned Kits are allowed (FOXGLOVE_DEV_UNSIGNED_KITS).");
+            } else if let Err(e) = super::kit_trust::catalog() {
+                ui.weak(format!("Only signed Kits install and run; {e}."));
+            }
 
             ui.add_space(4.0);
             ui.label("Installed");

@@ -18,6 +18,7 @@ palm = { path = "../crates/palm" }
 # Foxglove: the local API host and its protocol (MIT).
 den = { path = "../crates/den" }
 foxglove-kit-api = { path = "../crates/kit-api" }
+kit-trust = { path = "../crates/kit-trust" }
 # Foxglove: unpacking Kits in the Den.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 foxglove-panel = { path = "../crates/panel" }

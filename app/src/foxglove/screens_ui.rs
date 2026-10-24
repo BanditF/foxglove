@@ -70,6 +70,18 @@ pub fn group(ui: &mut egui::Ui) {
                 ));
                 ui.weak(format!("Relay counters: {:?}", hello.debug));
                 ui.weak(format!("Capabilities: {:#x}", hello.capabilities));
+                for s in &snap.screens {
+                    use digitalis::protocol::ScreenKind;
+                    let kind = match s.kind {
+                        ScreenKind::Display => "display",
+                        ScreenKind::Panel => "PC panel",
+                        ScreenKind::Art => "art area",
+                        ScreenKind::Other(_) => "other",
+                    };
+                    let half = if s.half == 0 { "left" } else { "right" };
+                    let on = s.parent.map_or(String::new(), |p| format!(" at ({}, {}) on screen {p}", s.x, s.y));
+                    ui.weak(format!("Screen {}: {half} {kind}, {}×{}{on}", s.id, s.width, s.height));
+                }
             });
 
             ui.add_space(4.0);
