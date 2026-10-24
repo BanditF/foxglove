@@ -21,7 +21,7 @@ use foxglove_devices::{
 };
 
 use crate::link::{Event, EventSubscription, Link};
-use crate::protocol::{capabilities, Hello, InvokeStatus, RgbHalf};
+use crate::protocol::{capabilities, Hello, InvokeStatus, RgbHalf, RgbState};
 use crate::{art, panel, settings};
 
 type PResult<T> = foxglove_devices::Result<T>;
@@ -80,7 +80,20 @@ fn lighting_state(h: &RgbHalf) -> LightingState {
         brightness: h.brightness,
         effect: Effect { id: h.effect.to_string(), params: vec![] },
         speed: h.speed,
+        settled: true,
     }
+}
+
+/// Whether the right half (as it last reported) shows what the left does; brightness aside,
+/// since each half dims on its own battery.
+fn halves_agree(rgb: &RgbState) -> bool {
+    let Some((r, _age)) = &rgb.right else { return true };
+    let l = &rgb.left;
+    let near = |a: u16, b: u16, wrap: u16| {
+        let d = a.abs_diff(b);
+        d.min(wrap.saturating_sub(d)) <= 2
+    };
+    l.on == r.on && near(l.hue, r.hue, 360) && near(l.sat.into(), r.sat.into(), 1000) && l.effect == r.effect
 }
 
 /// A Digitalis keyboard as a device-layer device. Events reach the sink for as long as it lives.
@@ -267,7 +280,7 @@ impl Lighting for DigitalisDevice {
 
     fn state(&self) -> PResult<LightingState> {
         let rgb = settings::rgb_state(&*self.link).map_err(err)?;
-        let state = lighting_state(&rgb.left);
+        let state = LightingState { settled: halves_agree(&rgb), ..lighting_state(&rgb.left) };
         self.sink.emit(DeviceEvent::LightingChanged { state: state.clone() });
         Ok(state)
     }
@@ -577,6 +590,18 @@ mod tests {
         assert_eq!(&sent[..12], &protocol::invoke(7, RGB_COLOR_HSB, (359 << 16) | (50 << 8) | 100, 0)[..12]);
         assert_eq!(dev.settings().unwrap().get("rgb_sync").unwrap(), Some(Value::Bool(true)));
         assert_eq!(dev.power().unwrap().batteries().unwrap(), vec![("right".to_string(), 55)]);
+    }
+
+    #[test]
+    fn halves_agree_on_all_but_brightness() {
+        let left = RgbHalf { on: true, hue: 0, sat: 100, brightness: 80, effect: 0, speed: 1 };
+        assert!(halves_agree(&RgbState { left, right: None }), "no right half: nothing to wait for");
+        let dim = RgbHalf { brightness: 30, ..left };
+        assert!(halves_agree(&RgbState { left, right: Some((dim, 1)) }), "a half dimmed on battery still agrees");
+        let behind = RgbHalf { hue: 240, ..left };
+        assert!(!halves_agree(&RgbState { left, right: Some((behind, 2)) }));
+        assert!(!halves_agree(&RgbState { left, right: Some((RgbHalf { on: false, ..left }, 0)) }));
+        assert!(!halves_agree(&RgbState { left, right: Some((RgbHalf { effect: 3, ..left }, 0)) }));
     }
 
     #[test]

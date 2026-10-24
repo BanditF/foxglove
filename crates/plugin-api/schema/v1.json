@@ -1134,6 +1134,11 @@
             "minimum": 0,
             "type": "integer"
           },
+          "settled": {
+            "default": true,
+            "description": "Every part of the device shows this; false while a split keyboard's other half is still\ncatching up (it can lag seconds). Older apps don't send it: then true.",
+            "type": "boolean"
+          },
           "speed": {
             "format": "uint8",
             "maximum": 255,
