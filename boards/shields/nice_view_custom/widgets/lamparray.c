@@ -1,7 +1,7 @@
 /*
  * HID LampArray (usage page 0x59) on the left's USB, so Windows Dynamic Lighting can drive the
- * underglow. Prototype for #88: the left's own strip only; the right half comes later over the
- * art relay.
+ * underglow of both halves (#88, #115): one LampArray of 42 lamps, the right's over the art
+ * relay.
  * SPDX-License-Identifier: MIT
  *
  * All six reports are feature reports on the control pipe (HID Usage Tables, Lighting and
@@ -12,24 +12,22 @@
 #include <string.h>
 
 #include <zephyr/device.h>
-#include <zephyr/drivers/led_strip.h>
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/usb/usb_device.h>
 #include <zephyr/usb/class/usb_hid.h>
 
-#include <drivers/ext_power.h>
-#include <zmk/rgb_underglow.h>
-#include <zmk/workqueue.h>
+#include <zmk/event_manager.h>
+#include <zmk/events/usb_conn_state_changed.h>
+#include <zmk/usb.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
-#include "rgb_idle.h"
+#include "art_relay.h"
+#include "lamp_strip.h"
 
-#define STRIP DT_CHOSEN(zmk_underglow)
-#define LAMPS DT_PROP(STRIP, chain_length)
 
 enum {
     REPORT_ATTRIBUTES = 1,
@@ -83,55 +81,104 @@ static const uint8_t report_desc[] = {
     0xc0,
 };
 
-// Geometry in micrometres. Placeholder: the lamps on a 7 x 3 grid over the left half's
-// footprint; real LED positions come with the right half's support.
-#define HALF_W 130000
-#define HALF_H 95000
-#define GRID_COLS 7
+// Lamps 0-20 are the left's strip, 21-41 the right's, which get their colours over the art relay.
+// Positions in micrometres, from the physical layout (1 key unit = 19.05 mm; thumbs unrotated),
+// assuming each half's LEDs run under its 3x6 keys row by row, then the thumbs. That order is a
+// guess until it's checked on the board (#115).
+#define HALF_LAMPS LAMP_STRIP_LEN
+#define LAMP_COUNT (2 * HALF_LAMPS)
+#define BOX_W 333375
+#define BOX_H 78486
+#define BOX_D 10000
 #define LAMP_PURPOSE_ACCENT 0x02
 #define LAMP_ARRAY_KIND_KEYBOARD 1
 #define UPDATE_INTERVAL_US 33000
+// The right gets at most this many frames a second, so the split link keeps room for keys.
+#define RIGHT_FRAME K_MSEC(100)
 
-static const struct device *const strip = DEVICE_DT_GET(STRIP);
-static const struct device *const ext_power = DEVICE_DT_GET(DT_INST(0, zmk_ext_power_generic));
+static const struct {
+    int32_t x, y;
+    uint8_t key; // keymap position under the lamp
+} lamps[] = {
+    {9525, 16574, 0},
+    {28575, 16574, 1},
+    {47625, 11811, 2},
+    {66675, 9525, 3},
+    {85725, 11811, 4},
+    {104775, 14097, 5},
+    {9525, 35624, 13},
+    {28575, 35624, 14},
+    {47625, 30861, 15},
+    {66675, 28575, 16},
+    {85725, 30861, 17},
+    {104775, 33147, 18},
+    {9525, 54674, 28},
+    {28575, 54674, 29},
+    {47625, 49911, 30},
+    {66675, 47625, 31},
+    {85725, 49911, 32},
+    {104775, 52197, 33},
+    {76200, 68961, 42},
+    {95250, 68961, 43},
+    {114300, 68961, 44},
+    {228600, 14097, 7},
+    {247650, 11811, 8},
+    {266700, 9525, 9},
+    {285750, 11811, 10},
+    {304800, 16574, 11},
+    {323850, 16574, 12},
+    {228600, 33147, 22},
+    {247650, 30861, 23},
+    {266700, 28575, 24},
+    {285750, 30861, 25},
+    {304800, 35624, 26},
+    {323850, 35624, 27},
+    {228600, 52197, 36},
+    {247650, 49911, 37},
+    {266700, 47625, 38},
+    {285750, 49911, 39},
+    {304800, 54674, 40},
+    {323850, 54674, 41},
+    {219075, 68961, 45},
+    {238125, 68961, 46},
+    {257175, 68961, 47},
+};
+BUILD_ASSERT(ARRAY_SIZE(lamps) == LAMP_COUNT, "lamp table doesn't match the strips");
+
 static const struct device *hid_dev;
-
-static struct led_rgb pixels[LAMPS];
 static uint16_t requested_lamp;
-static bool host_control;
 static uint8_t get_buf[1 + 28];
+static atomic_t host;
 
-/* Strip writes run on ZMK's low-priority queue, after ZMK's own underglow off work. */
+static uint8_t right_rgb[HALF_LAMPS][3];
 
-static atomic_t want_host;
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+static void right_frame_cb(struct k_work *work) { art_relay_lamps(atomic_get(&host), right_rgb); }
+static K_WORK_DELAYABLE_DEFINE(right_frame_work, right_frame_cb);
+#endif
 
-static void strip_cb(struct k_work *work) {
-    bool host = atomic_get(&want_host);
-    if (host != host_control) {
-        host_control = host;
-        rgb_idle_host_control(host);
-        if (host) {
-            zmk_rgb_underglow_off(); // stops ZMK's animation; the LEDs need the power back
-            if (device_is_ready(ext_power)) {
-                ext_power_enable(ext_power);
-            }
-            return; // the next update draws; ZMK's off work zeroes the strip first
-        }
-    }
-    if (host_control) {
-        led_strip_update_rgb(strip, pixels, LAMPS);
-    }
+static void show(void) {
+    lamp_strip_show();
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    k_work_schedule(&right_frame_work, RIGHT_FRAME); // coalesces: schedule keeps a pending one
+#endif
 }
-static K_WORK_DEFINE(strip_work, strip_cb);
 
-static void redraw(void) { k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &strip_work); }
+static void set_host(bool on) {
+    atomic_set(&host, on);
+    lamp_strip_host(on);
+    show();
+}
 
 static void set_lamp(uint16_t id, const uint8_t *rgbi) {
-    if (id < LAMPS) {
-        // Intensity scales the colour: ws2812 has no separate brightness channel.
-        pixels[id] = (struct led_rgb){.r = rgbi[0] * rgbi[3] / 255,
-                                      .g = rgbi[1] * rgbi[3] / 255,
-                                      .b = rgbi[2] * rgbi[3] / 255};
+    // Intensity scales the colour: ws2812 has no separate brightness channel.
+    uint8_t r = rgbi[0] * rgbi[3] / 255, g = rgbi[1] * rgbi[3] / 255, b = rgbi[2] * rgbi[3] / 255;
+    if (id < HALF_LAMPS) {
+        lamp_strip_set(id, r, g, b);
+    } else if (id < LAMP_COUNT) {
+        right_rgb[id - HALF_LAMPS][0] = r;
+        right_rgb[id - HALF_LAMPS][1] = g;
+        right_rgb[id - HALF_LAMPS][2] = b;
     }
 }
 
@@ -143,10 +190,10 @@ static int get_report_cb(const struct device *dev, struct usb_setup_packet *setu
     uint8_t *p = &get_buf[1];
     switch (id) {
     case REPORT_ATTRIBUTES:
-        sys_put_le16(LAMPS, &p[0]);
-        sys_put_le32(HALF_W, &p[2]);
-        sys_put_le32(HALF_H, &p[6]);
-        sys_put_le32(10000, &p[10]); // depth
+        sys_put_le16(LAMP_COUNT, &p[0]);
+        sys_put_le32(BOX_W, &p[2]);
+        sys_put_le32(BOX_H, &p[6]);
+        sys_put_le32(BOX_D, &p[10]);
         sys_put_le32(LAMP_ARRAY_KIND_KEYBOARD, &p[14]);
         sys_put_le32(UPDATE_INTERVAL_US, &p[18]);
         *len = 1 + 22;
@@ -154,8 +201,8 @@ static int get_report_cb(const struct device *dev, struct usb_setup_packet *setu
     case REPORT_ATTR_RESPONSE: {
         uint16_t lamp = requested_lamp;
         sys_put_le16(lamp, &p[0]);
-        sys_put_le32((lamp % GRID_COLS) * (HALF_W / GRID_COLS), &p[2]);
-        sys_put_le32((lamp / GRID_COLS) * (HALF_H / 3), &p[6]);
+        sys_put_le32(lamps[lamp].x, &p[2]);
+        sys_put_le32(lamps[lamp].y, &p[6]);
         sys_put_le32(0, &p[10]);
         sys_put_le32(UPDATE_INTERVAL_US, &p[14]);
         sys_put_le32(LAMP_PURPOSE_ACCENT, &p[18]);
@@ -163,7 +210,7 @@ static int get_report_cb(const struct device *dev, struct usb_setup_packet *setu
         p[26] = 1;                           // programmable
         p[27] = 0;                           // no key binding
         *len = 1 + 28;
-        requested_lamp = (lamp + 1) % LAMPS; // hosts walk the lamps by reading again
+        requested_lamp = (lamp + 1) % LAMP_COUNT; // hosts walk the lamps by reading again
         break;
     }
     default:
@@ -183,7 +230,7 @@ static int set_report_cb(const struct device *dev, struct usb_setup_packet *setu
     switch (d[0]) {
     case REPORT_ATTR_REQUEST:
         if (n >= 3) {
-            requested_lamp = MIN(sys_get_le16(&d[1]), LAMPS - 1);
+            requested_lamp = MIN(sys_get_le16(&d[1]), LAMP_COUNT - 1);
         }
         break;
     case REPORT_MULTI_UPDATE: {
@@ -195,7 +242,7 @@ static int set_report_cb(const struct device *dev, struct usb_setup_packet *setu
             set_lamp(sys_get_le16(&d[3 + 2 * i]), &d[3 + 2 * MULTI_MAX + 4 * i]);
         }
         if (d[2] & 0x01) { // LampUpdateComplete
-            redraw();
+            show();
         }
         break;
     }
@@ -203,19 +250,18 @@ static int set_report_cb(const struct device *dev, struct usb_setup_packet *setu
         if (n < 10) {
             return -EINVAL;
         }
-        uint16_t start = sys_get_le16(&d[2]), end = MIN(sys_get_le16(&d[4]), LAMPS - 1);
+        uint16_t start = sys_get_le16(&d[2]), end = MIN(sys_get_le16(&d[4]), LAMP_COUNT - 1);
         for (uint16_t id = start; id <= end; id++) {
             set_lamp(id, &d[6]);
         }
         if (d[1] & 0x01) {
-            redraw();
+            show();
         }
         break;
     }
     case REPORT_CONTROL:
         if (n >= 2) {
-            atomic_set(&want_host, !d[1]); // autonomous mode off = the host draws
-            redraw();
+            set_host(!d[1]); // autonomous mode off = the host draws
         }
         break;
     default:
@@ -241,3 +287,14 @@ static int lamparray_init(void) {
 }
 
 SYS_INIT(lamparray_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
+
+// Unplugged or suspended: nobody draws any more, so both halves get their own lights back.
+static int usb_listener(const zmk_event_t *eh) {
+    if (atomic_get(&host) && !zmk_usb_is_hid_ready()) {
+        set_host(false);
+    }
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(lamparray_usb, usb_listener);
+ZMK_SUBSCRIPTION(lamparray_usb, zmk_usb_conn_state_changed);
