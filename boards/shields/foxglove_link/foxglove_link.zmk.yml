@@ -1,0 +1,5 @@
+file_format: "1"
+id: foxglove_link
+name: Foxglove host link
+type: shield
+url: https://github.com/BanditF/foxglove

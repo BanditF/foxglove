@@ -1,0 +1,13 @@
+# Foxglove's host link (Raw HID 0xD5/0xD7) on a board without our nice!view widgets (#75).
+# SPDX-License-Identifier: MIT
+
+if SHIELD_FOXGLOVE_LINK
+
+config NICE_VIEW_HOST_PANEL_TIMEOUT_S
+    int
+    default 0
+
+config ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING
+    default y if ZMK_SPLIT_ROLE_CENTRAL
+
+endif

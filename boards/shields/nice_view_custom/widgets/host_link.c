@@ -82,6 +82,11 @@ bool host_panel_get(uint8_t buf[HOST_PANEL_BYTES]) {
     return on;
 }
 
+#ifndef FOXGLOVE_HAS_WIDGETS
+// A board without our screen widgets (foxglove_link shield) has no panel to redraw.
+void host_panel_redraw(void) {}
+#endif
+
 static void redraw_cb(struct k_work *work) { host_panel_redraw(); }
 static K_WORK_DEFINE(redraw_work, redraw_cb);
 
@@ -125,6 +130,14 @@ static void reply(const uint8_t *data, int len) {
 
 void host_link_screen_reply(const uint8_t *data, int len) { reply(data, len); }
 
+#ifndef FOXGLOVE_HAS_WIDGETS
+// Without our widgets there's no screen readback (screen_snap.c): D7 06/07 answer 4, not built in.
+void screen_snap_command(const uint8_t *data, int len) {
+    uint8_t r[7] = {HOST_LINK_SETTINGS, 0x80 | data[1], 4, len >= 3 ? data[2] : 0};
+    reply(r, sizeof(r));
+}
+#endif
+
 void host_link_send(const uint8_t *data, int len) { reply(data, len); }
 
 void host_link_build_info_reply(uint8_t status, uint8_t half,
@@ -151,9 +164,20 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     art_relay_discovery(&discovery, &tries);
 #endif
-    uint8_t r[11 + 10 + 4 + 2 + 4 + 1] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
-                          HOST_PANEL_H,    HOST_PANEL_X,       HOST_PANEL_Y,      right_link(),
+    uint8_t r[11 + 10 + 4 + 2 + 4 + 1] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, 0,
+                          0,               0,                  0,                 right_link(),
                           right_battery,   (uint8_t)discovery, tries};
+    // Bytes 3-6: the host panel (the first panel in the board's table) for apps without SCREENS.
+    for (int i = 0; i < foxglove_screen_count; i++) {
+        const struct screen_descriptor *p = &foxglove_screens[i];
+        if (p->kind == SCREEN_PANEL) {
+            r[3] = MIN(p->width, UINT8_MAX);
+            r[4] = MIN(p->height, UINT8_MAX);
+            r[5] = MIN(p->x, UINT8_MAX);
+            r[6] = MIN(p->y, UINT8_MAX);
+            break;
+        }
+    }
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     art_relay_debug(&r[11]);
 #endif
@@ -185,50 +209,14 @@ static void hello_reply(void) {
     reply(r, sizeof(r));
 }
 
-/* D5 06 SCREENS: what this board's screens look like to the PC (#160). The table describes the
- * Corne as it already works; the commands addressing each entry don't change. */
-
-enum { SCREEN_DISPLAY, SCREEN_PANEL, SCREEN_ART };
-enum { SCREEN_OP_ROWS = BIT(0), SCREEN_OP_READBACK = BIT(1), SCREEN_OP_ART = BIT(2),
-       SCREEN_OP_SLOTS = BIT(3) };
-#define SCREEN_DESCRIPTOR_VERSION 1
-#define SCREEN_UNSET 0xff
-
-struct screen_descriptor {
-    uint8_t id, kind, half, parent;
-    uint16_t width, height; // as the PC addresses the region
-    uint16_t x, y;          // on the parent display, as seen; 0 for a display
-    uint8_t rotation;       // region -> parent as seen (displays: native -> as seen), quarter turns cw
-    uint8_t format;         // 0 = 1 bit, MSB first, 1 = ink as seen
-    uint16_t ops;
-    uint16_t stride;
-    uint8_t rows_per_report;
-    uint8_t readback_half; // D7 06's half for a display, 0xff otherwise
-    uint8_t version;
-    uint8_t reserved[3];
-} __packed;
-BUILD_ASSERT(sizeof(struct screen_descriptor) == 24, "descriptor layout");
-
-static const struct screen_descriptor screens[] = {
-    {.id = 0, .kind = SCREEN_DISPLAY, .half = 0, .parent = SCREEN_UNSET, .width = 160, .height = 68,
-     .rotation = 1, .ops = SCREEN_OP_READBACK, .stride = 20, .readback_half = 0},
-    {.id = 1, .kind = SCREEN_PANEL, .half = 0, .parent = 0, .width = HOST_PANEL_W,
-     .height = HOST_PANEL_H, .x = HOST_PANEL_X, .y = HOST_PANEL_Y, .ops = SCREEN_OP_ROWS,
-     .stride = HOST_PANEL_STRIDE, .rows_per_report = 3, .readback_half = SCREEN_UNSET},
-#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
-    {.id = 2, .kind = SCREEN_DISPLAY, .half = 1, .parent = SCREEN_UNSET, .width = 160, .height = 68,
-     .rotation = 1, .ops = SCREEN_OP_READBACK, .stride = 20, .readback_half = 1},
-    // The right's art, upright as the art tools draw it (stored turned in the NVA1 blobs).
-    {.id = 3, .kind = SCREEN_ART, .half = 1, .parent = 2, .width = 68, .height = 140, .x = 0,
-     .y = 20, .ops = SCREEN_OP_ART | SCREEN_OP_SLOTS, .readback_half = SCREEN_UNSET},
-#endif
-};
+/* D5 06 SCREENS (#160): the board's table (foxglove_screens[], e.g. screens_corne.c) as the PC
+ * sees it. */
 
 static void screens_reply(uint8_t index) {
     uint8_t r[5 + sizeof(struct screen_descriptor)] = {HOST_LINK_PANEL, 0x80 | PANEL_SCREENS, 5,
-                                                       ARRAY_SIZE(screens), index};
-    if (index < ARRAY_SIZE(screens)) {
-        struct screen_descriptor s = screens[index];
+                                                       foxglove_screen_count, index};
+    if (index < foxglove_screen_count) {
+        struct screen_descriptor s = foxglove_screens[index];
         s.version = SCREEN_DESCRIPTOR_VERSION;
         r[2] = 0;
         memcpy(&r[5], &s, sizeof(s));
