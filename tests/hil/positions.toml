@@ -93,3 +93,16 @@ steps = [
   { press_position = { pos = 43, state = "up" } },
   { expect_layer = { top = 0 } },
 ]
+
+[[cases]]
+name = "split-guard-test"
+description = "D7 0B: the #122 split guard drops the split link once; the right comes back (relay up, HELLO byte 31 +1) and its keys reach the left again (#184, #81)"
+tags = ["positions", "release"]
+requires = ["position_press"]
+steps = [
+  { split_guard_test = { within_ms = 60000 } },
+  { press_position = { pos = 46, state = "down" } },
+  { expect_layer = { active_contains = [2] } },
+  { press_position = { pos = 46, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
