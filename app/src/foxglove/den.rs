@@ -211,6 +211,8 @@ pub fn remove(id: &str) -> Result<(), String> {
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
+    #[cfg(windows)]
+    ::den::delete_container(id);
     let mut all = super::store::try_load::<Kits>("kits").unwrap_or_default();
     all.installed.remove(id);
     super::store::save("kits", &all).map_err(|e| e.to_string())
