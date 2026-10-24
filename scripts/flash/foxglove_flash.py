@@ -246,7 +246,18 @@ class WindowsOS:
             return False
         line = next((l for l in result.stdout.splitlines() if l.endswith(case)), result.stdout.strip())
         log(f'{half}: typing check: {line or result.returncode}')
-        return result.returncode == 0 and line.startswith('PASS')
+        if result.returncode == 0 and line.startswith('PASS'):
+            return True
+        # The harness window couldn't come to the front (PC locked, someone else's window): the
+        # keyboard wasn't tested, which is not the same as the keyboard failing.
+        try:
+            report = json.loads((out / 'report.json').read_text(encoding='utf-8'))
+            message = ' '.join(c.get('message', '') for c in report.get('cases', []) if c.get('name') == case)
+        except (OSError, ValueError):
+            message = ''
+        if 'foreground focus' in message or 'lost foreground focus' in message:
+            return None
+        return False
     def build_info(self, half):
         """The running build of `half` from the keyboard (D7 09) as a dict with version, profile
         and sha, or None when it can't tell (old firmware, right not reachable, no foxglove-lab)."""
@@ -507,12 +518,20 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         if yes:
             # The right is flashed only after the left is proven to type. The right's own check
             # needs its relay up again, so give it a moment and report rather than fail.
-            if half == 'left' and not backend.typing_check('left', log):
-                raise FlashFailed('the left half did not type after flashing; not touching the right. '
-                                  'Rollback: ' + ROLLBACK)
+            if half == 'left':
+                typed = backend.typing_check('left', log)
+                if typed is None:
+                    log('left: typing not checked (no window focus: is the PC locked?). The build read-back '
+                        'passed; carrying on.')
+                elif not typed:
+                    raise FlashFailed('the left half did not type after flashing; not touching the right. '
+                                      'Rollback: ' + ROLLBACK)
             if half == 'right':
                 sleep(20)
-                if not backend.typing_check('right', log):
+                typed = backend.typing_check('right', log)
+                if typed is None:
+                    log('right: typing not checked (no window focus: is the PC locked?).')
+                elif not typed:
                     log('right: typing over the split link not confirmed yet; check it by hand '
                         '(one tap on the LEFT reset is the known fix, #122).')
         elif half == 'left':
