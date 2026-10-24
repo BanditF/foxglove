@@ -28,7 +28,7 @@ fn a_bound_key_pauses_the_timer() {
     let spec = PluginSpec {
         id: id.into(),
         dir: dir.clone(),
-        run: vec![exe.file_name().unwrap().to_string_lossy().into(), "--focus-seconds".into(), "600".into(), "--no-lights".into()],
+        run: vec![exe.file_name().unwrap().to_string_lossy().into(), "--focus-seconds".into(), "600".into(), "--no-lights".into(), "--no-panel".into()],
         sandbox: cfg!(windows),
     };
     let facts = Facts::default();
@@ -49,6 +49,13 @@ fn a_bound_key_pauses_the_timer() {
         std::thread::sleep(Duration::from_millis(20));
     }
     wait_for(&facts, "focus.paused", &Value::Bool(true));
+    // The pause is kept in its data folder (writable in the sandbox), for a restart.
+    let state = dir.join("data").join("state.json");
+    let until = Instant::now() + Duration::from_secs(30);
+    while !std::fs::read_to_string(&state).is_ok_and(|t| t.contains("\"paused_left\":") && !t.contains("\"paused_left\":null")) {
+        assert!(Instant::now() < until, "no paused state in {}", state.display());
+        std::thread::sleep(Duration::from_millis(20));
+    }
     drop(runner);
     #[cfg(windows)]
     foxglove_plugin_host::delete_container(id);

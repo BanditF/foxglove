@@ -124,6 +124,16 @@ description = "Puts the temperature on the left screen."
   - **Binding:** in the Plugins tab, the user binds each action to one of F13–F24. Each keyboard can send those keys, and they type nothing; the user puts one on a key in ZMK Studio or VIA. A key triggers one action, and an action has one key.
   - **Delivery:** Foxglove registers the bound keys as global hotkeys and sends `action.invoked {action}` to that plugin only. The SDK delivers them on `Plugin::actions()`. No plugin needs `key.events` for this.
   - **Storage and conflicts:** bindings live in `[plugins.bindings]`. A key another program already holds is flagged in the tab. `FOXGLOVE_DISABLE=actions` turns the hotkeys off.
+- **Left panel (#209):**
+  - **Drawing:** `screens.panel_override {device, width, height, bitmap, ttl_ms}`, with `screens.write`, shows a plugin's 1 bpp frame (rows MSB first, padded to whole bytes, base64) over the panel for up to 60 s.
+  - **Keeping it:** a plugin sends it again to keep it, and it goes away by itself when the plugin stops (and at once when its connection closes).
+  - **Errors:** a frame of the wrong size is refused. SDK: `Plugin::panel_override()`.
+- **Plugin data (#209):** each plugin gets `data/` in its folder (`Plugin::data_dir()`) for state between runs. It's writable even in the sandbox, and left out of the signed-file check.
+- **Pomodoro (`crates/plugin-focus-timer`, #209):**
+  - **Cycle:** focus 25 min, rest 5 min, and a long rest of 15 min every 4 rounds.
+  - **Restarts:** the cycle is kept as deadlines in `data/state.json`, so it survives restarts and sleep. After more than a whole cycle away, it starts fresh.
+  - **Showing it:** it draws Art's countdown screen (docs/plugin-screens.md) every second, and holds the underglow with a lease: red to focus, green to rest, given back while paused.
+  - **Keys:** `pause` and `reset`.
 - **Lighting leases (#236, API 1.2):**
   - **Taking and giving back:** `lighting.lease {device, color, effect?, priority: low|normal|high}` takes the lights and returns `{lease}`; `lighting.release {lease}` gives them back. In the SDK, `Plugin::lease()` returns a guard that releases when dropped. Both need `lighting.write`.
   - **Who shows:** the highest-priority lease, and the newest among equals. Use high for alerts (muted), normal for status (recording), and low for ambient light (a colour sync).
