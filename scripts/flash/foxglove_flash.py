@@ -136,6 +136,50 @@ class FlashFailed(Exception):
     pass
 
 
+LOCK = Path(os.environ.get('TEMP') or os.environ.get('TMPDIR') or '.') / 'foxglove-flash.lock'
+
+
+class FlashLock:
+    """Only one flasher at a time: two writers on one bootloader drive is how a UF2 lands on the
+    wrong half. The lock file holds the owner's PID; a lock whose process is gone is taken over."""
+    def __init__(self, path=LOCK, alive=None):
+        self.path, self.alive, self.held = Path(path), alive or pid_alive, False
+
+    def __enter__(self):
+        for _ in range(2):
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    owner = int(self.path.read_text().strip() or 0)
+                except (OSError, ValueError):
+                    owner = 0
+                if owner and self.alive(owner):
+                    raise Refused(f'another flasher is running (PID {owner}, lock {self.path}); wait for it to finish')
+                self.path.unlink(missing_ok=True)  # stale: its process is gone
+                continue
+            with os.fdopen(fd, 'w') as fh:
+                fh.write(str(os.getpid()))
+            self.held = True
+            return self
+        raise Refused(f'could not take the flash lock {self.path}')
+
+    def __exit__(self, *exc):
+        if self.held:
+            self.path.unlink(missing_ok=True)
+
+
+def pid_alive(pid):
+    if os.name == 'nt':
+        out = subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/NH'], capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def lab_binary():
     """foxglove-lab, which sends the bootloader command; None when it isn't built."""
     root = Path(__file__).resolve().parents[2]
@@ -465,9 +509,10 @@ def main(argv=None):
             def ask_terminal(prompt):
                 print(prompt, end='', file=sys.stderr, flush=True)
                 return input()
-            flash(images, WindowsOS(), args.wait_seconds, log=log, ask=ask_terminal,
-                  settings_reset=args.settings_reset, allow_unknown_half=args.allow_unknown_half,
-                  allow_profile_mix=args.allow_profile_mix, yes=args.yes, force=args.force)
+            with FlashLock():
+                flash(images, WindowsOS(), args.wait_seconds, log=log, ask=ask_terminal,
+                      settings_reset=args.settings_reset, allow_unknown_half=args.allow_unknown_half,
+                      allow_profile_mix=args.allow_profile_mix, yes=args.yes, force=args.force)
     except (TimeoutError, subprocess.TimeoutExpired) as exc:
         code = 2
         log('TIMEOUT: ' + str(exc))

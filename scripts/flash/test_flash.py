@@ -1,5 +1,6 @@
 """Synthetic UF2 and fake USB/volume tests: never touch a keyboard."""
 import io
+import os
 from pathlib import Path
 import struct
 import tempfile
@@ -410,3 +411,18 @@ class SkipSameBuildTests(unittest.TestCase):
         self.assertEqual(backend.entered, [])
         self.run_yes(backend, {'left': marked('left')}, force=True)
         self.assertEqual(len(backend.writes), 1)
+
+
+class LockTests(unittest.TestCase):
+    def test_second_flasher_is_refused_and_stale_locks_are_taken_over(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'flash.lock'
+            with f.FlashLock(path, alive=lambda pid: True):
+                with self.assertRaises(f.Refused):
+                    with f.FlashLock(path, alive=lambda pid: True):
+                        pass
+            self.assertFalse(path.exists())
+            path.write_text('999999')
+            with f.FlashLock(path, alive=lambda pid: False):
+                self.assertEqual(path.read_text(), str(os.getpid()))
+            self.assertFalse(path.exists())

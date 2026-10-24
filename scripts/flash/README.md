@@ -99,3 +99,11 @@ Instead of `TYPES`, foxglove-lab types into its own window. For the left half th
 `&kp`; for the right half it's key-position presses over the split link. The flasher never
 touches the right half if the left doesn't type afterwards. A failed right-half typing check
 is reported, with the known fix (one tap on the left reset), rather than treated as fatal.
+
+## One flasher at a time
+
+A real flash holds `%TEMP%\foxglove-flash.lock`, which contains its PID. A second flasher
+refuses to start while that process is alive, because two writers on one bootloader drive is how
+a UF2 lands on the wrong half. A lock left by a process that's gone is taken over. `--dry-run`
+takes no lock. Older scripts such as `flash_both.py` don't know about the lock, so don't run
+them alongside this one.
