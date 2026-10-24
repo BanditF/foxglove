@@ -89,6 +89,12 @@ jobs:
                   assert image['sha'] == sha, f"{half}: marked SHA {image['sha']}, commit {sha}"
           EOF
           done
+      # #81: a GA build that carries any test hook (position press, bootloader, guard test, ...)
+      # fails here; dev builds must still carry them, so the markers can't silently vanish.
+      - name: GA builds carry no test hooks
+        run: |
+          set -eu
+          python scripts/firmware/check_hooks.py --ga out/*-ga.uf2             --dev "$(ls out/*-left-dev.uf2)=position,bootloader,guard_test"             --dev "$(ls out/*-right-dev.uf2)=position,bootloader"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.names.outputs.prefix }}
