@@ -57,6 +57,7 @@ pub fn enter_bootloader(t: &impl Transport, half: u8) -> Result<()> {
     let status = |r: &[u8; protocol::REPORT]| match r[2] {
         0 => Ok(()),
         2 => anyhow::bail!("no relay link to the right half"),
+        3 => anyhow::bail!("the right half did not answer the relay in time"),
         4 => anyhow::bail!("bootloader command not built into this firmware"),
         5 => anyhow::bail!("bootloader command rejected as malformed"),
         6 => anyhow::bail!("bootloader nonce wrong or expired"),
