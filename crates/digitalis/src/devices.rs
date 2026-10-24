@@ -534,7 +534,7 @@ mod tests {
     }
 
     #[test]
-    fn passes_the_palm_contract() {
+    fn passes_the_device_contract() {
         let all = capabilities::PANEL | capabilities::ART_RELAY | capabilities::SETTINGS_RGB;
         let (dev, fake, _bus) = device(all);
         dev.set_behaviors(vec![
