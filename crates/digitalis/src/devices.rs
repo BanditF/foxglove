@@ -264,7 +264,11 @@ const UNDERGLOW_BUSY_WAIT: std::time::Duration = std::time::Duration::from_milli
 // `&rgb_ug` commands (ZMK's dt-bindings/zmk/rgb.h).
 const RGB_ON: u32 = 1;
 const RGB_OFF: u32 = 2;
+const RGB_SPEED_UP: u32 = 9;
+const RGB_SPEED_DOWN: u32 = 10;
 const RGB_EFFECT_SET: u32 = 13;
+/// ZMK's underglow speeds run 1-5, so this many steps reach any of them.
+const SPEED_STEPS: u32 = 5;
 const RGB_COLOR_HSB: u32 = 14;
 
 impl Lighting for DigitalisDevice {
@@ -298,6 +302,19 @@ impl Lighting for DigitalisDevice {
     fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> PResult<()> {
         let hsb = (u32::from(hue.min(359)) << 16) | (u32::from(sat.min(100)) << 8) | u32::from(brightness.min(100));
         self.underglow(RGB_COLOR_HSB, hsb)
+    }
+
+    /// ZMK has no "set speed", only one step up or down: steps toward `speed`, reading it back
+    /// each time, at most [`SPEED_STEPS`] times (#293).
+    fn set_speed(&self, speed: u8) -> PResult<()> {
+        for _ in 0..SPEED_STEPS {
+            let now = settings::rgb_state(&*self.link).map_err(err)?.left.speed;
+            if now == speed {
+                return Ok(());
+            }
+            self.underglow(if now < speed { RGB_SPEED_UP } else { RGB_SPEED_DOWN }, 0)?;
+        }
+        Ok(())
     }
 
     fn release(&self) -> PResult<()> {
