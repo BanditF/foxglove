@@ -153,22 +153,13 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
         rect(c, oy, 3, 5, fill, 6, 0, true, false, fg);
     }
     if (state->charging) {
-        // LVGL 9 has no polygon: the bolt as four triangles.
-        static const int8_t tris[][6] = {{29, 2, 26, 8, 29, 6}, {26, 8, 28, 8, 29, 6},
-                                         {28, 8, 27, 13, 31, 6}, {28, 8, 31, 6, 29, 6}};
-        lv_layer_t layer;
-        lv_canvas_init_layer(c, &layer);
-        for (int i = 0; i < ARRAY_SIZE(tris); i++) {
-            lv_draw_triangle_dsc_t tri;
-            lv_draw_triangle_dsc_init(&tri);
-            tri.color = fg;
-            for (int j = 0; j < 3; j++) {
-                tri.p[j].x = tris[i][2 * j];
-                tri.p[j].y = tris[i][2 * j + 1] - oy;
-            }
-            lv_draw_triangle(&layer, &tri);
-        }
-        lv_canvas_finish_layer(c, &layer);
+        // LVGL 9 has no polygon fill: the bolt as a closed 1 px outline, which is near enough
+        // at this size (6 x 11 px).
+        lv_point_t pts[] = {{29, 2 - oy},  {26, 8 - oy}, {28, 8 - oy}, {27, 13 - oy},
+                            {31, 6 - oy},  {29, 6 - oy}, {29, 2 - oy}};
+        lv_draw_line_dsc_t bolt;
+        init_line_dsc(&bolt, fg, 1);
+        canvas_draw_line(c, pts, ARRAY_SIZE(pts), &bolt);
     }
     char conn[16] = "USB";
     if (state->selected_endpoint.transport == ZMK_TRANSPORT_BLE) {
@@ -344,7 +335,7 @@ static void output_status_update_cb(struct output_status_state state) {
 
 static struct output_status_state output_status_get_state(const zmk_event_t *_eh) {
     struct output_status_state state = {
-        .selected_endpoint = zmk_endpoints_selected(),
+        .selected_endpoint = zmk_endpoint_get_selected(),
         .active_profile_index = zmk_ble_active_profile_index(),
         .active_profile_connected = zmk_ble_active_profile_is_connected(),
         .active_profile_bonded = !zmk_ble_active_profile_is_open(),

@@ -472,7 +472,7 @@ static void conn_state(uint8_t r[CONN_STATE_SIZE]) {
     r[4] = zmk_ble_active_profile_is_open() ? 0 : 1;
     r[7] = ZMK_BLE_PROFILE_COUNT;
 #endif
-    r[5] = zmk_endpoints_selected().transport == ZMK_TRANSPORT_BLE ? 1 : 0;
+    r[5] = zmk_endpoint_get_selected().transport == ZMK_TRANSPORT_BLE ? 1 : 0;
 #if IS_ENABLED(CONFIG_ZMK_USB)
     r[6] = zmk_usb_is_hid_ready() ? 1 : 0;
 #endif
