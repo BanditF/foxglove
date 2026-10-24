@@ -7,9 +7,10 @@ pub mod keymap_cache;
 pub mod last_device;
 pub mod layer_names;
 pub mod link;
+pub mod reconnect;
 pub mod screens;
 mod screens_settings;
-
+pub mod services;
 pub mod art_library;
 mod art_preview;
 pub mod art_ui;

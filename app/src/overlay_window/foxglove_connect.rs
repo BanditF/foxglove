@@ -26,6 +26,15 @@ impl OverlayApp {
             return;
         };
 
+        #[cfg(target_os = "windows")]
+        if matches!(transport, ZmkTransportConfig::Ble(_)) {
+            self.serial_watch.previous_ble = Some(ConnectionSpec::Zmk {
+                vid,
+                pid,
+                transport: transport.clone(),
+            });
+        }
+
         // Prefer what's there now: a serial port (keymap read fresh), else Bluetooth.
         let same = |d: &&crate::device_discovery::DiscoveredDevice| {
             d.kind == DeviceKind::Zmk && d.vid == vid && d.pid == pid
@@ -67,9 +76,13 @@ pub(super) struct SerialWatch {
     #[cfg(target_os = "windows")]
     notification: Option<device_watch::DeviceWatch>,
     #[cfg(target_os = "windows")]
+    previous_ble: Option<ConnectionSpec>,
+    #[cfg(target_os = "windows")]
     registration_attempted: bool,
     #[cfg(target_os = "windows")]
     was_eligible: bool,
+    #[cfg(target_os = "windows")]
+    scanned_attempt: Option<Instant>,
     #[cfg(target_os = "windows")]
     pending: Option<std::sync::mpsc::Receiver<SerialScanResult>>,
 }
@@ -92,6 +105,17 @@ fn serial_replacement(
 }
 
 impl OverlayApp {
+    pub(super) fn serial_scan_pending(&self) -> bool {
+        #[cfg(target_os = "windows")]
+        {
+            self.serial_watch.pending.is_some()
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            false
+        }
+    }
+
     pub(super) fn watch_serial_connection(&mut self, _ctx: &egui::Context) {
         #[cfg(target_os = "windows")]
         self.watch_serial_connection_windows();
@@ -101,6 +125,15 @@ impl OverlayApp {
 
     #[cfg(target_os = "windows")]
     fn watch_serial_connection_windows(&mut self) {
+        if let Some(
+            spec @ ConnectionSpec::Zmk {
+                transport: ZmkTransportConfig::Ble(_),
+                ..
+            },
+        ) = &self.session.last_spec
+        {
+            self.serial_watch.previous_ble = Some(spec.clone());
+        }
         // Let an in-flight connection finish before changing its spec or dropping it.
         if self.connect.pending_connect.is_some() {
             return;
@@ -112,10 +145,7 @@ impl OverlayApp {
             (&self.session.connection, &self.session.last_spec),
             (
                 AppConnectionState::Connected { .. },
-                Some(ConnectionSpec::Zmk {
-                    transport: ZmkTransportConfig::Ble(_),
-                    ..
-                })
+                Some(ConnectionSpec::Zmk { .. })
             )
         );
         if let Some(rx) = &self.serial_watch.pending {
@@ -154,20 +184,50 @@ impl OverlayApp {
         if self.serial_watch.pending.is_some() {
             return;
         }
-        let arrived = self
+        let changed = self
             .serial_watch
             .notification
             .as_ref()
-            .is_some_and(device_watch::DeviceWatch::take_arrival);
-        if !entering && !arrived {
+            .is_some_and(device_watch::DeviceWatch::take_change);
+        let retry = match self.session.connection {
+            AppConnectionState::Reconnecting { next_attempt_at }
+                if Instant::now() >= next_attempt_at
+                    && self.serial_watch.scanned_attempt != Some(next_attempt_at) =>
+            {
+                self.serial_watch.scanned_attempt = Some(next_attempt_at);
+                true
+            }
+            _ => false,
+        };
+        if !entering && !changed && !retry {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
         self.serial_watch.pending = Some(rx);
         let wake = self.ui_wake.clone();
+        let previous_ble = self.serial_watch.previous_ble.clone();
         std::thread::spawn(move || {
-            let replacement =
-                serial_replacement(&spec, &crate::protocols::zmk_rpc::scan_serial_ports());
+            let ports = crate::protocols::zmk_rpc::scan_serial_ports();
+            let replacement = serial_replacement(&spec, &ports).or_else(|| {
+                let ConnectionSpec::Zmk {
+                    transport: ZmkTransportConfig::Serial(port),
+                    ..
+                } = &spec
+                else {
+                    return None;
+                };
+                if ports.iter().any(|p| p.port_name == *port) {
+                    return None;
+                }
+                crate::foxglove::reconnect::ble_replacement(&spec, previous_ble.as_ref(), &[])
+                    .or_else(|| {
+                        crate::foxglove::reconnect::ble_replacement(
+                            &spec,
+                            None,
+                            &crate::device_discovery::discover_devices(),
+                        )
+                    })
+            });
             let _ = tx.send((spec, replacement));
             wake.request_repaint();
         });
@@ -180,12 +240,13 @@ mod device_watch {
     use std::sync::atomic::{AtomicBool, Ordering};
     use windows::Win32::Devices::DeviceAndDriverInstallation::{
         CM_Register_Notification, CM_Unregister_Notification, CM_NOTIFY_ACTION,
-        CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL, CM_NOTIFY_EVENT_DATA, CM_NOTIFY_FILTER,
-        CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE, CR_SUCCESS, HCMNOTIFICATION,
+        CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL, CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL,
+        CM_NOTIFY_EVENT_DATA, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE, CR_SUCCESS,
+        HCMNOTIFICATION,
     };
 
     struct Context {
-        arrived: AtomicBool,
+        changed: AtomicBool,
         wake: UiWake,
     }
 
@@ -197,7 +258,7 @@ mod device_watch {
     impl DeviceWatch {
         pub(super) fn new(wake: UiWake) -> Option<Self> {
             let context = Box::new(Context {
-                arrived: AtomicBool::new(false),
+                changed: AtomicBool::new(false),
                 wake,
             });
             let mut filter = CM_NOTIFY_FILTER {
@@ -223,8 +284,8 @@ mod device_watch {
             Some(Self { handle, context })
         }
 
-        pub(super) fn take_arrival(&self) -> bool {
-            self.context.arrived.swap(false, Ordering::Relaxed)
+        pub(super) fn take_change(&self) -> bool {
+            self.context.changed.swap(false, Ordering::Relaxed)
         }
     }
 
@@ -242,10 +303,12 @@ mod device_watch {
         _event: *const CM_NOTIFY_EVENT_DATA,
         _size: u32,
     ) -> u32 {
-        if action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL {
+        if action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL
+            || action == CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL
+        {
             // Registered with a stable Box, kept alive until unregister returns.
             let context = unsafe { &*context.cast::<Context>() };
-            context.arrived.store(true, Ordering::Relaxed);
+            context.changed.store(true, Ordering::Relaxed);
             context.wake.request_repaint();
         }
         0

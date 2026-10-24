@@ -32,12 +32,12 @@ static STOPPED: AtomicBool = AtomicBool::new(false);
 /// What the panel service is doing, for the UI.
 #[allow(dead_code)] // shown in the Screens settings (#13)
 pub fn status() -> String {
-    STATUS.lock().unwrap().clone()
+    STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 fn set_status(s: impl Into<String>) {
     let s = s.into();
-    let mut cur = STATUS.lock().unwrap();
+    let mut cur = STATUS.lock().unwrap_or_else(|e| e.into_inner());
     if *cur != s {
         eprintln!("Foxglove screens: {s}");
         *cur = s;
@@ -45,9 +45,7 @@ fn set_status(s: impl Into<String>) {
 }
 
 pub fn start() {
-    let _ = std::thread::Builder::new()
-        .name("foxglove-screens".into())
-        .spawn(run);
+    let _ = super::services::spawn_supervised("screens", run);
 }
 
 /// Hands the panel back to the firmware before the app exits (waits up to half a second), so

@@ -37,7 +37,7 @@ pub fn host_link() -> Option<(Arc<Link>, Hello)> {
     let open: Vec<Arc<Link>> = LINKS
         .get_or_init(Default::default)
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .values()
         .filter_map(Weak::upgrade)
         .filter(|l| l.state().connected.is_some())
@@ -91,7 +91,10 @@ pub fn ask_hello(link: &Link) -> Option<Hello> {
 /// The link to keyboard `vid:pid`, started on first use and kept while anyone holds it. It also
 /// takes keyboards without Foxglove's host link, so the overlay works on any ZMK board.
 pub fn shared(vid: u16, pid: u16) -> Result<Arc<Link>, String> {
-    let mut links = LINKS.get_or_init(Default::default).lock().unwrap();
+    let mut links = LINKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(link) = links.get(&(vid, pid)).and_then(Weak::upgrade) {
         return Ok(link);
     }
