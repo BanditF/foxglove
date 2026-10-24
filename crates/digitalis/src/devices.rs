@@ -101,6 +101,8 @@ pub struct DigitalisDevice {
     info: DeviceInfo,
     link: Arc<Link>,
     hello: Mutex<Hello>,
+    /// The PC panel's size, once asked ([`DigitalisDevice::panel_size`]).
+    panel_size: Mutex<Option<(usize, usize)>>,
     caps: Caps,
     sink: EventSink,
     layers: Arc<Mutex<Vec<u8>>>,
@@ -155,6 +157,7 @@ impl DigitalisDevice {
             link,
             caps: caps(&hello),
             hello: Mutex::new(hello),
+            panel_size: Mutex::new(None),
             sink,
             layers,
             behaviors: Mutex::new(Vec::new()),
@@ -197,6 +200,17 @@ impl DigitalisDevice {
 
     pub fn link(&self) -> &Arc<Link> {
         &self.link
+    }
+
+    /// The PC panel's size: from the keyboard's screen descriptors when it has them (#289),
+    /// read once, else from HELLO.
+    fn panel_size(&self) -> (usize, usize) {
+        let hello = *self.hello.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cached = self.panel_size.lock().unwrap_or_else(|e| e.into_inner());
+        *cached.get_or_insert_with(|| {
+            let screens = if hello.capabilities & capabilities::SCREENS != 0 { panel::screens(&*self.link).unwrap_or_default() } else { vec![] };
+            panel::drawable_panel(&screens).map_or((hello.width, hello.height), |p| (usize::from(p.width), usize::from(p.height)))
+        })
     }
 
     fn has(&self, bit: u32) -> bool {
@@ -334,15 +348,10 @@ impl Lighting for DigitalisDevice {
 
 impl Screens for DigitalisDevice {
     fn send_panel(&self, bitmap: &[u8], w: u16, h: u16) -> PResult<()> {
-        let hello = *self.hello.lock().unwrap_or_else(|e| e.into_inner());
+        let (width, height) = self.panel_size();
         let stride = (w as usize).div_ceil(8);
-        if (w as usize, h as usize) != (hello.width, hello.height) || bitmap.len() != stride * h as usize {
-            return Err(DeviceError::Backend(format!(
-                "the panel is {}x{}; got {w}x{h} with {} bytes",
-                hello.width,
-                hello.height,
-                bitmap.len()
-            )));
+        if (w as usize, h as usize) != (width, height) || bitmap.len() != stride * h as usize {
+            return Err(DeviceError::Backend(format!("the panel is {width}x{height}; got {w}x{h} with {} bytes", bitmap.len())));
         }
         panel::show(&*self.link, bitmap, None, stride).map(|_| ()).map_err(err)
     }

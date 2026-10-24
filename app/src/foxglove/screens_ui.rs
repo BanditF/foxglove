@@ -79,7 +79,7 @@ pub fn group(ui: &mut egui::Ui) {
                     };
                     let half = if s.half == 0 { "left" } else { "right" };
                     let on = s.parent.map_or(String::new(), |p| format!(" at ({}, {}) on screen {p}", s.x, s.y));
-                    ui.weak(format!("Screen {}: {half} {kind}, {}×{}{on}", s.id, s.width, s.height));
+                    ui.weak(format!("Screen {}: {half} {kind}, {}×{}, {}{on}", s.id, s.width, s.height, s.format_name()));
                 }
             });
 
