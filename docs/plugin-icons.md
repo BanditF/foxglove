@@ -49,6 +49,8 @@ the catalog (`org.foxglove.openrgb`):
 | `org.foxglove.signalrgb` | a waveform in an RGB gradient (another app's lighting signal) |
 | `org.foxglove.icue` | colour rays over a keycap (lighting mirrored onto the keyboard) |
 | `org.foxglove.lightsync` | two sync arrows round a key |
+| `org.foxglove.mic-mute` | a microphone with a red mute slash |
+| `org.foxglove.broadcast-status` | a broadcast mast with waves and a red tally light (no OBS mark) |
 
 ## Third-party plugins
 
