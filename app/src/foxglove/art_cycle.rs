@@ -28,6 +28,8 @@ pub enum Mode {
     Minutes(u32),
     /// The next entry each time the lights wake after going off (needs firmware support).
     LightsWake,
+    /// The art that goes with the Wallpaper Engine wallpaper on screen (art\\wallpapers.json).
+    Wallpaper,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +40,10 @@ pub struct Cycle {
     /// The entry shown last, so a restart carries on where it left off.
     #[serde(default)]
     pub position: usize,
+    /// Which monitor's wallpaper to follow (a Wallpaper Engine monitor key); `None` = the
+    /// first that matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wallpaper_monitor: Option<String>,
 }
 
 impl Cycle {
@@ -103,6 +109,7 @@ mod tests {
             mode: Mode::Minutes(5),
             items: vec![Item::Slot(0), Item::Slot(1), Item::Slot(2)],
             position: 0,
+            wallpaper_monitor: None,
         };
         let used = 0b101; // slot 1 is empty
         let r = |i: &Item| match i {
@@ -131,6 +138,7 @@ mod tests {
             mode: Mode::Minutes(5),
             items: vec![Item::BuiltIn("ZMK_1".into()), Item::Slot(2), Item::File(PathBuf::from(r"C:rtox.bin"))],
             position: 1,
+            wallpaper_monitor: Some("Monitor0".into()),
         };
         assert_eq!(toml::from_str::<Cycle>(&toml::to_string(&c).unwrap()).unwrap(), c);
         let off = Cycle { mode: Mode::LightsWake, ..Cycle::default() };

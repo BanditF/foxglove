@@ -38,3 +38,4 @@ pub mod foreground;
 pub(crate) mod device_watch;
 
 pub mod update;
+pub mod wallpaper;
