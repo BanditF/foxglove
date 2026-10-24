@@ -1,6 +1,6 @@
 //! Broadcast Status end to end: the runner starts it sandboxed as Foxglove does, against a mock
 //! keyboard and a mock OBS (an obs-websocket v5 server on a free port), with the password in
-//! a test secret store.
+//! a test secret store. OBS starts after the plugin: it waits for Foxglove to say so.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -12,7 +12,7 @@ use foxglove_devices::facts::{Facts, Value as DeviceValue};
 use foxglove_plugin_api::permission::Permission;
 use foxglove_plugin_api::rpc::Error;
 use foxglove_plugin_host::runner::{Config, PluginSpec, Runner};
-use foxglove_plugin_host::{secrets, Client, Context, Devices, Limits};
+use foxglove_plugin_host::{apps, secrets, Client, Context, Devices, Limits};
 use serde_json::{json, Value};
 
 /// Records what the plugin asks for.
@@ -115,9 +115,9 @@ fn streaming_is_red_and_live_and_a_lost_obs_lets_go() {
     secrets::use_store(Box::<secrets::Memory>::default());
     secrets::set(id, "obs-password", Some("hunter2")).unwrap();
 
-    // A mock OBS on a free port, so tests and a real OBS on the machine don't meet.
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    // A mock OBS on a free port, so tests and a real OBS on the machine don't meet. It isn't
+    // running yet when the plugin starts.
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let spec = PluginSpec {
         id: id.into(),
         dir: dir.clone(),
@@ -131,8 +131,18 @@ fn streaming_is_red_and_live_and_a_lost_obs_lets_go() {
         .map(|p| Permission::try_from(p.to_string()).unwrap())
         .to_vec();
     perms.push(Permission::NetConnect { host: "127.0.0.1".into(), port: Some(port) });
+    perms.push(Permission::AppsWatch("obs64.exe".into()));
     let context = move || Context { facts: f.clone(), devices: m.clone(), client: Client::Plugin(perms.clone()), app_version: "test".into(), limits: Limits::default() };
     let runner = Runner::start(spec, Config::default(), context, |_| {});
+
+    // No OBS window is open, so it doesn't try; it waits for one.
+    soon("the plugin waiting for OBS", apps::watching);
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(listener.accept().is_err(), "no connection before OBS opens");
+    listener.set_nonblocking(false).unwrap();
+    assert_eq!(apps::shown(1, "OBS64.exe"), 1);
 
     // Hello with a challenge; the plugin identifies with the password's response.
     let mut obs = Obs::accept(&listener);
@@ -178,13 +188,20 @@ fn streaming_is_red_and_live_and_a_lost_obs_lets_go() {
     assert_eq!(ready["ttl_ms"], json!(3000));
     soon("streaming off", || facts.get("broadcast.streaming") == Some(DeviceValue::Bool(false)));
 
-    // OBS quits: NOT CONNECTED briefly, and it tries again.
+    // OBS quits: NOT CONNECTED briefly, and a burst of tries reconnects.
     mock.clear();
     drop(obs);
     let gone = mock.wait("the NOT CONNECTED screen", |m, _| m == "screens.panel_override");
     assert_eq!(gone["ttl_ms"], json!(3000));
     soon("connected off", || facts.get("broadcast.connected") == Some(DeviceValue::Bool(false)));
-    let _again = Obs::accept(&listener);
+    let again = Obs::accept(&listener);
+
+    // OBS quits for good: its window closes, so after the connection drops it doesn't retry.
+    assert_eq!(apps::destroyed(1), 1);
+    drop(again);
+    listener.set_nonblocking(true).unwrap();
+    std::thread::sleep(Duration::from_secs(5));
+    assert!(listener.accept().is_err(), "no retries after OBS quit");
 
     drop(runner);
     #[cfg(windows)]

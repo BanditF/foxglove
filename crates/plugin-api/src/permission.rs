@@ -45,6 +45,9 @@ pub enum Permission {
     AudioInputsMute,
     /// Keep its own passwords and tokens in Windows' credential store (#213).
     Secrets,
+    /// Be told when a program's windows open and close (`apps.watch:<name>.exe`, API 1.3), so a
+    /// plugin waits for an app instead of polling for it (#277).
+    AppsWatch(String),
 }
 
 impl Permission {
@@ -76,6 +79,7 @@ impl Permission {
             Permission::AudioInputsRead => "see whether your microphone is muted".into(),
             Permission::AudioInputsMute => "mute and unmute your microphone".into(),
             Permission::Secrets => "keep its passwords or tokens in Windows' credential store".into(),
+            Permission::AppsWatch(exe) => format!("notice when {exe} opens or closes its windows"),
         }
     }
 }
@@ -117,6 +121,14 @@ impl TryFrom<String> for Permission {
                 Some(Ok(port)) if port != 0 => Permission::NetListenUdp(port),
                 _ => return Err(format!("{text:?}: write net.listen:udp:127.0.0.1:<port>")),
             },
+            Some(("apps.watch", exe)) => {
+                let exe = exe.to_ascii_lowercase();
+                let name = exe.strip_suffix(".exe").unwrap_or_default();
+                if name.is_empty() || exe.len() > 64 || !name.chars().all(|c| c.is_ascii_alphanumeric() || "._- ".contains(c)) {
+                    return Err(format!("{text:?}: write apps.watch:<name>.exe"));
+                }
+                Permission::AppsWatch(exe)
+            }
             Some(_) => return Err(format!("unknown permission {text:?}")),
             None => match text.as_str() {
                 "devices.read" => Permission::DevicesRead,
@@ -160,6 +172,7 @@ impl From<Permission> for String {
             Permission::AudioInputsRead => "audio.inputs.read".into(),
             Permission::AudioInputsMute => "audio.inputs.mute".into(),
             Permission::Secrets => "secrets".into(),
+            Permission::AppsWatch(exe) => format!("apps.watch:{exe}"),
         }
     }
 }
@@ -248,7 +261,7 @@ mod tests {
 
     #[test]
     fn parses_round_trips_and_refuses_bad_ones() {
-        for s in ["facts.read:clock.*", "facts.write:weather.temp", "lighting.write", "key.events", "facts.read:*", "audio.inputs.read", "audio.inputs.mute"] {
+        for s in ["facts.read:clock.*", "facts.write:weather.temp", "lighting.write", "key.events", "facts.read:*", "audio.inputs.read", "audio.inputs.mute", "apps.watch:obs64.exe"] {
             assert_eq!(String::from(p(s).unwrap()), s);
         }
         assert!(p("facts.write:device.x").is_err(), "device facts are the app's");
