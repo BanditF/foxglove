@@ -20,7 +20,7 @@ pub struct Match {
 }
 
 impl Match {
-    fn accepts(&self, info: &hidapi::DeviceInfo) -> bool {
+    pub(crate) fn accepts(&self, info: &hidapi::DeviceInfo) -> bool {
         if let Some((vid, pid)) = self.vid_pid {
             if (info.vendor_id(), info.product_id()) != (vid, pid) {
                 return false;

@@ -39,6 +39,8 @@ enum Command {
     },
     Behaviors,
     Status,
+    /// How each half shows up on USB (no keyboard link needed).
+    Usb,
 }
 fn sha() -> String {
     std::process::Command::new("git")
@@ -77,6 +79,20 @@ fn main() -> Result<std::process::ExitCode> {
             println!("{name} → {id}: {params}");
         }
         return Ok(std::process::ExitCode::SUCCESS);
+    }
+    if matches!(cli.command, Command::Usb) {
+        let halves = foxglove_lab::host::classify(&foxglove_lab::host::usb_entries()?);
+        for h in &halves {
+            println!("{}: {:?}: {}", h.half, h.verdict, h.message);
+        }
+        let failed = halves
+            .iter()
+            .any(|h| h.verdict == foxglove_lab::host::Verdict::Fail);
+        return Ok(if failed {
+            std::process::ExitCode::FAILURE
+        } else {
+            std::process::ExitCode::SUCCESS
+        });
     }
     let suite = if let Command::Run { suite, .. } = &cli.command {
         let path = if suite.ends_with(".toml") || suite.contains(['/', '\\']) {
