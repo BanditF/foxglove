@@ -31,6 +31,7 @@ class FakeOS:
         self.auto = False
         self.builds = {}
         self.typing = []
+        self.gone_mid_write = False
         self.types = {}
         self.build_calls = []
         self.entered = []
@@ -49,6 +50,9 @@ class FakeOS:
 
     def write_file(self, path, data):
         self.writes.append((path, data))
+        if self.gone_mid_write:
+            self.present = False
+            raise f.DriveGone(512, len(data), OSError('WinError 433'))
         if self.ignore_writes:
             self.ignore_writes -= 1
             self.present = True
@@ -426,3 +430,37 @@ class LockTests(unittest.TestCase):
             with f.FlashLock(path, alive=lambda pid: False):
                 self.assertEqual(path.read_text(), str(os.getpid()))
             self.assertFalse(path.exists())
+
+
+class DriveGoneTests(unittest.TestCase):
+    """#176: a drive that vanishes mid-write may have taken the whole image."""
+    def run_yes(self, backend, images):
+        clock = Clock()
+        f.flash(images, backend, 2, stdin=io.StringIO(''), ask=lambda p: self.fail(p),
+                log=lambda m: None, clock=clock.clock, sleep=clock.sleep, yes=True)
+
+    def test_build_read_back_decides(self):
+        backend = FakeOS()
+        backend.gone_mid_write = True
+        backend.builds = {'left': {'version': '0.1.0', 'profile': 'dev', 'sha': 'abc1234'}}
+        # Running build == image SHA: skipped as same build, so force a different running SHA first.
+        calls = iter([{'version': '0.0.9', 'profile': 'dev', 'sha': '0000000'}] * 2
+                     + [{'version': '0.1.0', 'profile': 'dev', 'sha': 'abc1234'}] * 10)
+        backend.build_info = lambda half: next(calls)
+        self.run_yes(backend, {'left': marked('left')})
+        self.assertEqual(len(backend.writes), 1, 'no blind retry after a vanished drive')
+
+    def test_wrong_or_unknown_build_after_vanished_drive_fails(self):
+        backend = FakeOS()
+        backend.gone_mid_write = True
+        backend.builds = {'left': {'version': '0.0.9', 'profile': 'dev', 'sha': '0000000'}}
+        with self.assertRaises(f.FlashFailed):
+            self.run_yes(backend, {'left': marked('left')})
+        backend = FakeOS()
+        backend.gone_mid_write = True
+        with self.assertRaises(f.FlashFailed):
+            self.run_yes(backend, {'left': marked('left')})
+        backend = FakeOS()
+        backend.gone_mid_write = True
+        with self.assertRaises(f.FlashFailed):  # no SHA in the image: can't tell
+            self.run_yes(backend, {'left': uf2()})

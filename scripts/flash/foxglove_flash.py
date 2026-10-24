@@ -136,6 +136,16 @@ class FlashFailed(Exception):
     pass
 
 
+class DriveGone(Exception):
+    """The bootloader drive went away during the write. Windows caches the writes, so the
+    byte count says nothing about what the bootloader received: it may have taken the whole
+    image and reset (incident #176: 'failed' runs that had in fact flashed). Only the half's
+    build afterwards tells."""
+    def __init__(self, written, total, cause):
+        super().__init__(f'drive went away after {written}/{total} bytes were queued: {cause}')
+        self.written, self.total = written, total
+
+
 LOCK = Path(os.environ.get('TEMP') or os.environ.get('TMPDIR') or '.') / 'foxglove-flash.lock'
 
 
@@ -290,11 +300,9 @@ class WindowsOS:
                 stream.flush()
                 os.fsync(stream.fileno())
         except OSError as exc:
-            if written == 0 and not Path(path).parent.exists():
-                raise FlashFailed('the bootloader drive disappeared before anything was written (the '
-                                  'bootloader left by itself; the half runs its old firmware). '
-                                  'Nothing was flashed.') from exc
             if written < len(data):
+                if not Path(path).parent.exists():
+                    raise DriveGone(written, len(data), exc) from exc
                 raise FlashFailed(f'Write stopped after {written}/{len(data)} bytes: {exc}') from exc
 
 
@@ -341,8 +349,9 @@ def check_builds(images, backend, log, allow_profile_mix=False, settings_reset=F
     return {half: m.sha for half, m in marks.items() if m.sha}, same
 
 
-def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=time.sleep):
-    """After a flash: the half must report the image's SHA (when both sides know it)."""
+def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=time.sleep, strict=False):
+    """After a flash: the half must report the image's SHA (when both sides know it). `strict`:
+    not being able to read it back is a failure too (used when the write's outcome is unknown)."""
     if not expected_sha:
         return
     deadline = clock() + 20  # the right answers over the relay once it has reconnected
@@ -354,6 +363,8 @@ def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=t
             log(f'{half}: verified, running {describe(now)}.')
             return
         if clock() >= deadline:
+            if strict:
+                raise FlashFailed(f"{half}: couldn't read its build back, so whether it was flashed is unknown.")
             log(f"{half}: couldn't read its build back to verify (firmware can't tell, or the right isn't back yet).")
             return
         sleep(2)
@@ -423,11 +434,18 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         # (left half, 2026-10-24): let it settle first, and write once more if the drive is
         # still there 10 s later.
         sleep(SETTLE_SECONDS)
+        unconfirmed = False
         for attempt in (1, 2):
             # Recheck identity immediately before touching the drive.
             if backend.enumerate_bootloaders() != chosen or backend.find_volume(chosen[0]) != volume:
                 raise Refused('Bootloader identity or volume changed before writing')
-            backend.write_file(volume / 'flash.uf2', images[half])
+            try:
+                backend.write_file(volume / 'flash.uf2', images[half])
+            except DriveGone as gone:
+                # Don't retry and don't call it a failure yet: the build read-back decides.
+                log(f'{half}: {gone}; the bootloader may have taken the whole image, checking the build.')
+                unconfirmed = True
+                break
             try:
                 wait_for(lambda: not backend.exists(info), 10 if attempt == 1 else 15,
                          f'{half} drive did not disappear after writing', clock, sleep)
@@ -436,11 +454,15 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
                 if attempt == 2:
                     raise
                 log(f'{half}: the bootloader did not take the image; writing it once more.')
+        if unconfirmed:
+            if not expected.get(half):
+                raise FlashFailed(f"{half}: the drive went away mid-write and this image has no SHA to check "
+                                  "against; can't tell whether it was flashed. Re-run to be sure.")
         log(f'{half} bootloader drive disappeared.')
         if half == 'left' and not settings_reset:
             wait_for(lambda: backend.running_keyboard(chosen[0]), seconds, 'Left keyboard did not re-enumerate (1D50:615E)', clock, sleep)
         if not settings_reset:
-            verify_build(half, expected.get(half), backend, log, clock, sleep)
+            verify_build(half, expected.get(half), backend, log, clock, sleep, strict=unconfirmed)
         if settings_reset:
             continue
         if yes:
