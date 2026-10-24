@@ -1,0 +1,20 @@
+id = "org.foxglove.mic-mute"
+name = "Mic mute"
+version = "1.0.0"
+api = "1.2"
+run = ["mic-mute.exe"]
+permissions = ["audio.inputs.read", "audio.inputs.mute", "devices.read", "lighting.write", "screens.write"]
+provides = ["lighting-effect", "action"]
+description = "Shows whether your microphone is muted, red on the keyboard and MUTED on the left screen, and mutes or unmutes it from a key. This is Windows' mute for the default communications microphone; apps can still mute themselves."
+
+[[actions]]
+id = "toggle"
+name = "Mute or unmute the microphone"
+
+[[actions]]
+id = "mute"
+name = "Mute the microphone"
+
+[[actions]]
+id = "unmute"
+name = "Unmute the microphone"

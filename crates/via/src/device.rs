@@ -136,6 +136,7 @@ impl<T: Transport> Lighting for ViaDevice<T> {
             brightness: to_percent(brightness),
             effect: Effect { id: effect.to_string(), params: vec![] },
             speed,
+            settled: true,
         })
     }
 
