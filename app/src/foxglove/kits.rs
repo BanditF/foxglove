@@ -32,7 +32,10 @@ pub fn sync() {
         if runners.contains_key(&id) {
             continue;
         }
-        let spec = KitSpec { id: id.clone(), dir: dir.join(&id), run: kit.manifest.run.clone() };
+        use foxglove_kit_api::permission::Permission;
+        // Kits that don't ask for the network or the user's files don't get either.
+        let sandbox = !kit.record.approved.iter().any(|p| matches!(p, Permission::Net | Permission::Files));
+        let spec = KitSpec { id: id.clone(), dir: dir.join(&id), run: kit.manifest.run.clone(), sandbox };
         let approved = kit.record.approved.clone();
         let status_id = id.clone();
         let runner = Runner::start(

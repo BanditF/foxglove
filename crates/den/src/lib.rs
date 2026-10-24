@@ -331,6 +331,10 @@ pub const PING_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(windows)]
 pub mod pipe;
 pub mod runner;
+#[cfg(windows)]
+mod sandbox;
+#[cfg(windows)]
+pub use sandbox::delete_container;
 
 #[cfg(test)]
 mod tests;
