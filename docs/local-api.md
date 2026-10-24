@@ -143,9 +143,31 @@ Only signed plugins install and run, checked by `crates/plugin-trust`.
   `{"format":"foxglove-plugin-catalog","sequence":N,"expires":"…Z","plugins":[{"id","version","sha256","files":{"path":"sha256"}}]}`.
 - **Rollback:** the app refuses a catalog whose `sequence` is lower than the highest one it has seen.
 
+**Catalog v2 (#192).** Every new field is optional, so v1 files still read.
+- **Epoch:** `root.json` gains `"epoch"`, and `catalog.json` must carry the same one. Only the offline root can start a new epoch, and a new epoch restarts the sequence.
+- **Rollback state:** the root `version`, the epoch and the sequence never go down. The app keeps them in `[plugins.trust]`, and if it can't save them, it trusts nothing.
+- **Entries** gain `"channel"` (`stable` or `beta`), `"url"` (an immutable GitHub Release asset) and `"size"`.
+- **Revocations:** `"revocations": [{"id", "versions": [...] (empty = all), "action": "yank"|"revoke", "reason"}]`. A yank stops new installs; a revoke also stops installed copies from launching. A pin never overrides a revocation.
+
+**Where the catalog comes from:**
+- The app ships one built-in.
+- It downloads newer ones from `https://banditf.github.io/foxglove/plugins/v2/` (`root.json`, `catalog.json` and their `.minisig` files).
+- It keeps the last download that verified in `plugin-catalog\`, next to the settings store, and uses whichever verified copy is newest.
+
+**When it checks** (`catalog_refresh.rs`; there's no daily check and no polling, per the user's decision):
+- At start, if the last success is more than 24 h old, after 5–60 s of jitter.
+- When the Plugins tab opens, at most every 10 minutes.
+- On **Check now**.
+
+Each check:
+- sends a conditional GET (`If-None-Match`) for each file;
+- after a failure, backs off for 15 min, then 1 h, 6 h and 24 h, persisted in `[plugins.refresh]`. **Check now** ignores the backoff.
+
+`FOXGLOVE_PLUGIN_CATALOG_URL` points the download elsewhere (HTTPS, or a localhost test server), and `FOXGLOVE_DISABLE=catalog` turns the start-up check off.
+
 **What's checked:**
-- **Install:** the archive's SHA-256 must be in the catalog, its manifest must match the entry's id and version, and the unpacked files must match exactly.
-- **Before every launch:** the version must still be in the catalog (removing it revokes it), and the folder must hold exactly the signed files. `plugin.log` is ignored.
+- **Install:** the archive's SHA-256 must be in the catalog and not yanked or revoked, its manifest must match the entry's id and version, and the unpacked files must match exactly.
+- **Before every launch:** the version must still be in the catalog and not revoked (removing it from the catalog also stops it), and the folder must hold exactly the signed files. `plugin.log` is ignored.
 
 **Making the keys (maintainer, once; tracked in #90):**
 1. `minisign -G -p root.pub -s root.key`, then keep `root.key` offline.
@@ -154,6 +176,17 @@ Only signed plugins install and run, checked by `crates/plugin-trust`.
 4. Write `root.json` listing `catalog.pub`'s key and sign it: `minisign -S -s root.key -m root.json`.
 5. For each release, write `catalog.json` with a higher `sequence` and sign it with `catalog.key`.
 6. Ship both files and their `.minisig` signatures in `app/resources/plugin-trust/`.
+
+**Publishing (#190):** `scripts/publish-plugins.ps1`, with the catalog edits done by `plugin-catalog` (in `crates/plugin-trust`). The order is: zips first, checked, then the signed catalog.
+1. Run `powershell -File scripts\publish-plugins.ps1 -Crate plugin-focus-timer[,…] [-Channel beta]`. This dry run:
+   - packs each plugin;
+   - names its release `plugin-<slug>-vX.Y.Z`, with the asset `<id>-<version>-windows-x86_64.zip`;
+   - updates `target\plugin-site\plugins\v2\catalog.json`: it adds the entry with its URL, size and hashes, keeps one previous version per channel, then bumps the sequence and sets a 30-day expiry.
+2. Run the same command with `-Release`. It creates the GitHub releases (never marked latest; beta ones as prereleases), then downloads each asset back and checks its SHA-256. A release that already exists is only checked, since releases are immutable.
+3. **Maintainer step:** `minisign -S -s <catalog.key> -m target\plugin-site\plugins\v2\catalog.json`. The key never passes through an agent.
+4. Run `-Pages`. It pushes `plugins/v2/` to the `gh-pages` branch, and refuses an unsigned or since-changed catalog.
+
+To withdraw a version: `plugin-catalog yank|revoke <catalog.json> <id> [version…] --reason …`, then `-Resign`, sign, and `-Pages`. The weekly re-sign is `-Resign`, sign, `-Pages`. GitHub Pages must be turned on for the `gh-pages` branch once, in the repository settings.
 
 **Developer mode:** `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1` allows unsigned plugins, and the Plugins tab shows a warning.
 
