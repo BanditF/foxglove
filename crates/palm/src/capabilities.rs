@@ -1,5 +1,6 @@
 use crate::{PalmError, Result};
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::Receiver;
 
 /// A key position and its physical geometry.
 #[derive(Clone, Debug, PartialEq)]
@@ -196,6 +197,16 @@ pub trait Lighting {
     fn release(&self) -> Result<()> {
         Err(PalmError::Unsupported)
     }
+}
+
+/// Color in: colors computed elsewhere (vendor software, an E1.31 sender) that Foxglove can
+/// mirror onto other devices. Separate from [`Lighting`], which is RGB out.
+pub trait ColorSource {
+    /// Lists the zones the frames describe.
+    fn layout(&self) -> Result<Vec<Zone>>;
+
+    /// Streams frames in layout order until the receiver is dropped.
+    fn subscribe(&self) -> Result<Receiver<Vec<Rgb>>>;
 }
 
 /// The current screen art selection and transfer state.

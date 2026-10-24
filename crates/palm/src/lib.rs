@@ -43,6 +43,19 @@ pub enum PalmError {
     Backend(String),
 }
 
+/// Vendor device registration: presents a Palm device inside another lighting ecosystem (a
+/// SignalRGB device plugin, an OpenRGB virtual controller) so that ecosystem can drive it.
+/// Kits implement it; it is not a device capability.
+pub trait Exporter: Send + Sync {
+    fn id(&self) -> BackendId;
+
+    /// Registers the device and its LED zones with the ecosystem.
+    fn export(&self, device: &DeviceInfo, zones: &[Zone]) -> Result<()>;
+
+    /// Removes a device registered by [`Exporter::export`].
+    fn withdraw(&self, device: &DeviceId) -> Result<()>;
+}
+
 /// Discovers and opens devices in one identity namespace.
 pub trait Backend: Send + Sync {
     /// Returns the namespace used by all discovered devices.
@@ -80,6 +93,11 @@ pub trait Device: Send {
 
     /// Returns the lighting interface when supported.
     fn lighting(&self) -> Option<&dyn Lighting> {
+        None
+    }
+
+    /// Returns the color-in interface when supported.
+    fn color_source(&self) -> Option<&dyn ColorSource> {
         None
     }
 

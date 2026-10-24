@@ -20,6 +20,7 @@ pub fn check_device(device: &dyn Device) -> Result<()> {
         (Caps::LAYERS, device.layers().is_some()),
         (Caps::BEHAVIORS, device.behaviors().is_some()),
         (Caps::LIGHTING, device.lighting().is_some()),
+        (Caps::COLOR_IN, device.color_source().is_some()),
         (Caps::SCREENS, device.screens().is_some()),
         (Caps::POWER, device.power().is_some()),
         (Caps::SETTINGS, device.settings().is_some()),

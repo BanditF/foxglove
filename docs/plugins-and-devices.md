@@ -82,7 +82,15 @@ pub trait Device: Send {
 
 ### Lighting, specifically
 
-`Lighting` covers both keyboards and RGB SDKs:
+Lighting is three separate capabilities (decided on #73):
+
+- **RGB out** (`Lighting`, `Caps::LIGHTING`): the device takes colors or effects.
+- **Color in** (`ColorSource`, `Caps::COLOR_IN`): colors computed elsewhere (iCUE, LIGHTSYNC, an
+  E1.31 sender like OpenRGB) that Foxglove can mirror onto other devices.
+- **Vendor registration** (`Exporter`, backend-level): our devices appear inside another
+  ecosystem (a SignalRGB device plugin, Razer Connected Devices) so it can drive them.
+
+`Lighting` (RGB out) covers both keyboards and RGB SDKs:
 
 - `layout()`: zones and LEDs with positions (per-key where the device knows them, so an effect
   can paint by key position across devices).
@@ -98,15 +106,15 @@ pub trait Device: Send {
 | Backend | Capabilities | In-process or Kit | Notes |
 |---|---|---|---|
 | **ZMK + Digitalis** (Eyelash Corne) | keymap (Studio RPC), layers, behaviors, lighting (0xD7), screens, power, settings | in-process | Wraps today's `ZmkProtocol` + `Link`. HELLO capability bits (#20) map straight to `Caps` |
-| **QMK Raw HID** | layers + key events (the KeyPeek 0xC0 subscription) | in-process | Any QMK board with the KeyPeek module |
-| **VIA** | keymap r/w, layers, lighting (VIA custom values: RGB Matrix / underglow / backlight channels) | in-process | `qmk-via-api`; layouts from VIA JSON definitions |
-| **Vial** | VIA + embedded layout, macros, combos later | in-process | `qmk-via-api` |
-| **OpenRGB** | lighting for everything OpenRGB sees | in-process | Open TCP SDK protocol (localhost:6742). One backend covers hundreds of devices on Windows/Linux/macOS |
+| **QMK Raw HID** | layers + key events (the KeyPeek 0xC0 subscription) | in-process | Any QMK board with the KeyPeek module. Never sends 0xAA–0xAB or reset/bootloader/factory commands (#74) |
+| **VIA** | keymap r/w, layers, RGB out (VIA custom values: RGB Matrix / underglow / backlight channels) | in-process | VIA protocol over Raw HID, USB only; layouts from VIA JSON definitions. Test board: Keychron K5 Pro. Same command blocklist as QMK Raw HID; doesn't run alongside VIA, Keychron Launcher or OpenRGB |
+| **Vial** | VIA + embedded layout | in-process | Out of scope for now (the K5 Pro would need a reflash) |
+| **OpenRGB** | color in | Kit | First an E1.31 receiver Kit that OpenRGB's E1.31 output drives (#71); an SDK-server Kit or OpenRGB plugin later. The Rust OpenRGB clients are GPL-2.0, so they live only inside a Kit, never in the MIT crates/ |
 | **Windows Dynamic Lighting** | lighting for HID LampArray devices | in-process, `cfg(windows)` | WinRT `LampArray` via the `windows` crate. Background control needs the user to pick Foxglove as the ambient controller in Windows settings |
-| **Razer Chroma** | lighting | Kit | Local REST SDK; proprietary terms |
-| **Logitech LIGHTSYNC** | lighting | Kit | Vendor DLL; proprietary terms |
-| **Corsair iCUE** | lighting | Kit | iCUE SDK DLL; proprietary terms |
-| **SignalRGB** | lighting (probably the other direction) | Kit | No general control SDK that we know of; likely we expose *our* keyboard to SignalRGB through its device-plugin system instead. Needs Scout research |
+| **Razer Chroma** | vendor registration | Kit | Only if Connected Devices partner access is confirmed (#73) |
+| **Logitech LIGHTSYNC** | color in | Kit | Vendor DLL; proprietary terms (#73) |
+| **Corsair iCUE** | color in | Kit | iCUE SDK DLL; proprietary terms (#73) |
+| **SignalRGB** | vendor registration | Kit | A SignalRGB custom device plugin that lets SignalRGB drive our board; first vendor Kit (#73) |
 
 Vendor SDKs go into Kits for three reasons: their licenses may not mix with GPL-3.0 linking,
 their DLLs can crash or hang, and most users have at most one of them. A Kit can load a DLL;

@@ -99,6 +99,7 @@ impl Caps {
 
     pub const BEHAVIORS: Self = Self(16);
 
+    /// RGB out: the device takes colors or effects ([`crate::Lighting`]).
     pub const LIGHTING: Self = Self(32);
 
     pub const SCREENS: Self = Self(64);
@@ -106,6 +107,9 @@ impl Caps {
     pub const POWER: Self = Self(128);
 
     pub const SETTINGS: Self = Self(256);
+
+    /// Color in: the device or vendor software supplies colors ([`crate::ColorSource`]).
+    pub const COLOR_IN: Self = Self(512);
 
     pub const fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
