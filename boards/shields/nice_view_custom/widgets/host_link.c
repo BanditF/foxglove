@@ -43,7 +43,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/rgb_underglow.h>
 #endif
 
-enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE };
+enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE, PANEL_SCREENS };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
@@ -170,7 +170,7 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS)
     caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
 #endif
-    caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO;
+    caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO | HOST_LINK_CAP_SCREENS;
     sys_put_le32(caps, &r[21]);
     sys_put_le16(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S, &r[25]);
     struct foxglove_build_info build;
@@ -182,6 +182,57 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     r[31] = art_relay_guard_drops();
 #endif
+    reply(r, sizeof(r));
+}
+
+/* D5 06 SCREENS: what this board's screens look like to the PC (#160). The table describes the
+ * Corne as it already works; the commands addressing each entry don't change. */
+
+enum { SCREEN_DISPLAY, SCREEN_PANEL, SCREEN_ART };
+enum { SCREEN_OP_ROWS = BIT(0), SCREEN_OP_READBACK = BIT(1), SCREEN_OP_ART = BIT(2),
+       SCREEN_OP_SLOTS = BIT(3) };
+#define SCREEN_DESCRIPTOR_VERSION 1
+#define SCREEN_UNSET 0xff
+
+struct screen_descriptor {
+    uint8_t id, kind, half, parent;
+    uint16_t width, height; // as the PC addresses the region
+    uint16_t x, y;          // on the parent display, as seen; 0 for a display
+    uint8_t rotation;       // region -> parent as seen (displays: native -> as seen), 90° steps cw
+    uint8_t format;         // 0 = 1 bit, MSB first, 1 = ink as seen
+    uint16_t ops;
+    uint16_t stride;
+    uint8_t rows_per_report;
+    uint8_t readback_half; // D7 06's half for a display, 0xff otherwise
+    uint8_t version;
+    uint8_t reserved[3];
+} __packed;
+BUILD_ASSERT(sizeof(struct screen_descriptor) == 24, "descriptor layout");
+
+static const struct screen_descriptor screens[] = {
+    {.id = 0, .kind = SCREEN_DISPLAY, .half = 0, .parent = SCREEN_UNSET, .width = 160, .height = 68,
+     .rotation = 1, .ops = SCREEN_OP_READBACK, .stride = 20, .readback_half = 0},
+    {.id = 1, .kind = SCREEN_PANEL, .half = 0, .parent = 0, .width = HOST_PANEL_W,
+     .height = HOST_PANEL_H, .x = HOST_PANEL_X, .y = HOST_PANEL_Y, .ops = SCREEN_OP_ROWS,
+     .stride = HOST_PANEL_STRIDE, .rows_per_report = 3, .readback_half = SCREEN_UNSET},
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    {.id = 2, .kind = SCREEN_DISPLAY, .half = 1, .parent = SCREEN_UNSET, .width = 160, .height = 68,
+     .rotation = 1, .ops = SCREEN_OP_READBACK, .stride = 20, .readback_half = 1},
+    // The right's art, upright as the art tools draw it (stored turned in the NVA1 blobs).
+    {.id = 3, .kind = SCREEN_ART, .half = 1, .parent = 2, .width = 68, .height = 140, .x = 0,
+     .y = 20, .ops = SCREEN_OP_ART | SCREEN_OP_SLOTS, .readback_half = SCREEN_UNSET},
+#endif
+};
+
+static void screens_reply(uint8_t index) {
+    uint8_t r[5 + sizeof(struct screen_descriptor)] = {HOST_LINK_PANEL, 0x80 | PANEL_SCREENS, 5,
+                                                       ARRAY_SIZE(screens), index};
+    if (index < ARRAY_SIZE(screens)) {
+        struct screen_descriptor s = screens[index];
+        s.version = SCREEN_DESCRIPTOR_VERSION;
+        r[2] = 0;
+        memcpy(&r[5], &s, sizeof(s));
+    }
     reply(r, sizeof(r));
 }
 
@@ -219,6 +270,9 @@ static void panel_command(const uint8_t *d) {
         redraw();
         break;
     }
+    case PANEL_SCREENS:
+        screens_reply(d[2]);
+        break;
     case PANEL_RELEASE:
         k_work_cancel_delayable(&timeout_work);
         set_alive(false);

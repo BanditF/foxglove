@@ -29,6 +29,8 @@ pub mod capabilities {
     pub const RGB_STATE_EVENT: u32 = 1 << 11;
     /// Settings BUILD_INFO (D7 09); HELLO bytes 27-30 carry the left's version and profile.
     pub const BUILD_INFO: u32 = 1 << 12;
+    /// Panel SCREENS (D5 06): the board's screens, panels and art areas.
+    pub const SCREENS: u32 = 1 << 13;
     /// Settings BOOTLOADER (D7 08), pre-GA test builds only.
     pub const BOOTLOADER: u32 = 1 << 9;
     /// Art SAVE / SLOT / ERASE (D6 06 / 07 / 08), flash slots on the right half.
@@ -42,6 +44,7 @@ pub mod panel {
     pub const ROWS: u8 = 0x03;
     pub const PRESENT: u8 = 0x04;
     pub const RELEASE: u8 = 0x05;
+    pub const SCREENS: u8 = 0x06;
     /// Rows per ROWS report: what fits after the 4-byte header, at most 3.
     pub fn rows_per_report(stride: usize) -> usize {
         ((super::REPORT - 4) / stride).min(3)
@@ -100,6 +103,90 @@ pub fn present() -> Vec<u8> {
 
 pub fn release() -> Vec<u8> {
     vec![PANEL, panel::RELEASE]
+}
+
+/// D5 06: the descriptor of screen `index` (read index 0 first for the count).
+pub fn screens(index: u8) -> Vec<u8> {
+    vec![PANEL, panel::SCREENS, index]
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenKind {
+    Display,
+    Panel,
+    Art,
+    Other(u8),
+}
+
+/// One entry of D5 86 (#160).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScreenDescriptor {
+    pub count: u8,
+    pub index: u8,
+    pub id: u8,
+    pub kind: ScreenKind,
+    /// 0 = left / central, 1 = right.
+    pub half: u8,
+    /// The display a panel or art area sits on; `None` for a display.
+    pub parent: Option<u8>,
+    /// As the PC addresses the region.
+    pub width: u16,
+    pub height: u16,
+    /// Origin on the parent display, as seen.
+    pub x: u16,
+    pub y: u16,
+    /// 90° steps clockwise.
+    pub rotation: u8,
+    /// 0 = 1 bit per pixel, MSB first, 1 = ink.
+    pub format: u8,
+    /// Bit 0 D5 rows, 1 D7 06/07 readback, 2 D6 art, 3 D6 slots.
+    pub ops: u16,
+    pub stride: u16,
+    pub rows_per_report: u8,
+    pub readback_half: Option<u8>,
+    pub version: u8,
+}
+
+impl ScreenDescriptor {
+    pub const OP_ROWS: u16 = 1 << 0;
+    pub const OP_READBACK: u16 = 1 << 1;
+    pub const OP_ART: u16 = 1 << 2;
+    pub const OP_SLOTS: u16 = 1 << 3;
+
+    /// D5 86: status, count, index, then the 24-byte descriptor. `Err` carries the status
+    /// (5 = index past the end).
+    pub fn parse(r: &[u8; REPORT]) -> std::result::Result<ScreenDescriptor, u8> {
+        if r[2] != 0 {
+            return Err(r[2]);
+        }
+        let d = &r[5..29];
+        let u16_at = |i: usize| u16::from_le_bytes([d[i], d[i + 1]]);
+        let opt = |b: u8| if b == 0xff { None } else { Some(b) };
+        Ok(ScreenDescriptor {
+            count: r[3],
+            index: r[4],
+            id: d[0],
+            kind: match d[1] {
+                0 => ScreenKind::Display,
+                1 => ScreenKind::Panel,
+                2 => ScreenKind::Art,
+                k => ScreenKind::Other(k),
+            },
+            half: d[2],
+            parent: opt(d[3]),
+            width: u16_at(4),
+            height: u16_at(6),
+            x: u16_at(8),
+            y: u16_at(10),
+            rotation: d[12],
+            format: d[13],
+            ops: u16_at(14),
+            stride: u16_at(16),
+            rows_per_report: d[18],
+            readback_half: opt(d[19]),
+            version: d[20],
+        })
+    }
 }
 
 pub fn art_begin(len: u16, crc: u32) -> Vec<u8> {
@@ -559,6 +646,24 @@ mod tests {
         assert_eq!(Hello::parse(&r).panel_timeout_s, 0);
         r[25..27].copy_from_slice(&3600u16.to_le_bytes());
         assert_eq!(Hello::parse(&r).panel_timeout_s, 3600);
+    }
+
+    #[test]
+    fn parses_screen_descriptors() {
+        assert_eq!(screens(1), [0xD5, 0x06, 1]);
+        // The Corne's host panel, as host_link.c describes it.
+        let mut r = [0u8; REPORT];
+        r[..5].copy_from_slice(&[0xD5, 0x86, 0, 4, 1]);
+        r[5..29].copy_from_slice(&[
+            1, 1, 0, 0, 64, 0, 52, 0, 2, 0, 106, 0, 0, 0, 1, 0, 8, 0, 3, 0xff, 1, 0, 0, 0,
+        ]);
+        let s = ScreenDescriptor::parse(&r).unwrap();
+        assert_eq!((s.count, s.index, s.id, s.kind), (4, 1, 1, ScreenKind::Panel));
+        assert_eq!((s.parent, s.width, s.height, s.x, s.y), (Some(0), 64, 52, 2, 106));
+        assert_eq!((s.ops, s.stride, s.rows_per_report), (ScreenDescriptor::OP_ROWS, 8, 3));
+        assert_eq!((s.readback_half, s.version), (None, 1));
+        r[2] = 5;
+        assert_eq!(ScreenDescriptor::parse(&r), Err(5));
     }
 
     #[test]
