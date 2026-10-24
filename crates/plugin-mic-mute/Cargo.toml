@@ -1,0 +1,21 @@
+[package]
+name = "plugin-mic-mute"
+version = "1.0.0"
+edition = "2021"
+description = "Mic mute, a Foxglove plugin: the microphone's mute on the left panel and the underglow, and a key to toggle it"
+license = "MIT"
+
+[[bin]]
+name = "mic-mute"
+path = "src/main.rs"
+
+[dependencies]
+foxglove-plugin = { path = "../plugin-sdk" }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+foxglove-plugin-host = { path = "../plugin-host" }
+foxglove-plugin-api = { path = "../plugin-api" }
+foxglove-devices = { path = "../devices" }

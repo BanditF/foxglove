@@ -1,0 +1,11 @@
+#include "../common/keymap.dtsi"
+
+&kscan {
+    // No exit after the last event: the run ends when ZMK powers off (SIM_SLEEP), so a board that
+    // never sleeps fails on run.sh's timeout instead of passing quietly.
+    /delete-property/ exit-after;
+    events = <
+        ZMK_MOCK_PRESS(0,1,30)   // position 1: Q
+        ZMK_MOCK_RELEASE(0,1,30) // then nothing: module/sleep_sim.c watches the clock
+    >;
+};
