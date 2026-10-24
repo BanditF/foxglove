@@ -287,7 +287,7 @@ static void write_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_write_par
 
 static int write_req(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
     static struct bt_gatt_write_params params;
-    static uint8_t copy[8];
+    static uint8_t copy[20]; // SAVE is the longest: op, slot, name[16]
     if (atomic_get(&in_flight) || len > sizeof(copy)) {
         return -EBUSY;
     }
@@ -317,10 +317,12 @@ static int write_cmd(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
 static uint8_t read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_params *params,
                        const void *data, uint16_t length) {
     if (data != NULL) {
+        // The value goes on with the flash slot table; the first chunk has all of the status.
         memcpy(&right, data, MIN(length, sizeof(right)));
         right_len = length;
         right_read_at = k_uptime_get();
-        return BT_GATT_ITER_CONTINUE;
+        request_done(0);
+        return BT_GATT_ITER_STOP;
     }
     request_done(err);
     return BT_GATT_ITER_STOP;
@@ -477,6 +479,116 @@ static void select_cb(struct k_work *work) {
     state = ART_LEFT_DONE;
 }
 static K_WORK_DEFINE(select_work, select_cb);
+
+/* Flash slots on the right */
+
+static uint8_t slot_op[18]; // the relay write for SAVE or ERASE
+static uint8_t slot_op_len;
+
+static void slot_op_cb(struct k_work *work) {
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        fail(ART_ERR_NO_LINK);
+        return;
+    }
+    bool err = write_req(conn, slot_op, slot_op_len) || read_status(conn);
+    bt_conn_unref(conn);
+    if (err) {
+        fail(ART_ERR_RIGHT);
+        return;
+    }
+    state = ART_LEFT_DONE;
+}
+static K_WORK_DEFINE(slot_op_work, slot_op_cb);
+
+static int start_slot_op(const uint8_t *op, uint8_t len) {
+    if (state == ART_LEFT_PUSHING) {
+        return -EBUSY;
+    }
+    k_work_cancel_delayable(&receive_timeout);
+    memcpy(slot_op, op, len);
+    slot_op_len = len;
+    state = ART_LEFT_PUSHING;
+    error = ART_ERR_NONE;
+    pushed = blob_len = 0;
+    k_work_submit_to_queue(&relay_q, &slot_op_work);
+    return 0;
+}
+
+int art_relay_save(uint8_t slot, const uint8_t name[16]) {
+    uint8_t op[18] = {ART_RELAY_SAVE, slot};
+    memcpy(&op[2], name, 16);
+    return start_slot_op(op, sizeof(op));
+}
+
+int art_relay_erase(uint8_t slot) {
+    uint8_t op[] = {ART_RELAY_ERASE, slot};
+    return start_slot_op(op, sizeof(op));
+}
+
+// D6 07 SLOT: one entry of the right's slot table, by an offset read of the status value.
+static uint8_t slot_index;
+static uint8_t slot_info[sizeof(struct art_relay_slot_info)];
+static uint16_t slot_got;
+static atomic_t slot_busy;
+
+static uint8_t slot_read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_params *params,
+                            const void *data, uint16_t length) {
+    if (data != NULL) {
+        uint16_t n = MIN(length, sizeof(slot_info) - slot_got);
+        memcpy(&slot_info[slot_got], data, n);
+        slot_got += n;
+        if (slot_got < sizeof(slot_info)) {
+            return BT_GATT_ITER_CONTINUE; // Zephyr reads on from where this chunk ended
+        }
+        request_done(0);
+        return BT_GATT_ITER_STOP;
+    }
+    request_done(err ? err : BT_ATT_ERR_UNLIKELY); // the value ended early
+    return BT_GATT_ITER_STOP;
+}
+
+static void slot_read_job(struct k_work *work) {
+    static struct bt_gatt_read_params params;
+    uint8_t status = 2;
+    struct bt_conn *conn = job_conn();
+    if (conn != NULL) {
+        status = 4; // the right's firmware has no slots
+        if (right.version >= 3 && slot_index < right.flash_slots) {
+            status = 3;
+            if (!atomic_get(&in_flight)) {
+                slot_got = 0;
+                params.func = slot_read_cb;
+                params.handle_count = 1;
+                params.single.handle = status_handle;
+                params.single.offset =
+                    sizeof(struct art_relay_status) + slot_index * sizeof(slot_info);
+                k_sem_reset(&gatt_done);
+                atomic_set(&in_flight, 1);
+                if (wait_done(bt_gatt_read(conn, &params)) == 0) {
+                    status = 0;
+                }
+            }
+        }
+        bt_conn_unref(conn);
+    }
+    uint8_t r[4 + sizeof(slot_info)] = {HOST_LINK_ART, 0x87, status, slot_index};
+    if (status == 0) {
+        memcpy(&r[4], slot_info, sizeof(slot_info));
+    }
+    host_link_send(r, sizeof(r));
+    atomic_clear(&slot_busy);
+}
+static K_WORK_DEFINE(slot_read_work, slot_read_job);
+
+int art_relay_slot(uint8_t slot) {
+    if (!atomic_cas(&slot_busy, 0, 1)) {
+        return -EBUSY;
+    }
+    slot_index = slot;
+    k_work_submit_to_queue(&relay_q, &slot_read_work);
+    return 0;
+}
 
 static void status_cb(struct k_work *work) {
     struct bt_conn *conn = job_conn();

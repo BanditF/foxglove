@@ -17,7 +17,8 @@
  *                    6 screen snapshots (D7 06/07), 7 INVOKE refuses &bt/&out/&bootloader/
  *                    &sys_reset/&soft_off with status 6 (firmware without it may press them),
  *                    8 unsolicited CONN_STATE (D7 84) on connection changes,
- *                    9 BOOTLOADER (D7 08; only when test hooks are built).
+ *                    9 BOOTLOADER (D7 08; only when test hooks are built),
+ *                    10 flash art slots (D6 06/07/08).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -34,6 +35,14 @@
  *   03 COMMIT                       check the CRC, then push the blob to the right half
  *   04 SELECT  set (int8, -1 = random built-in)  show a built-in set again
  *   05 STATUS
+ *   06 SAVE    slot u8, name[16]    save the pushed set now on the right into flash slot n
+ *   07 SLOT    slot u8              reply D6 87: status, slot, used u8, writes u32, len u16,
+ *                                   name[16] (status 0 ok, 1 busy, 2 no link, 3 BLE error,
+ *                                   4 right without slots); comes once the right has answered
+ *   08 ERASE   slot u8              empty flash slot n
+ *   SAVE and ERASE reply like SELECT; the write then runs on the right, and STATUS shows the
+ *   right's state SAVING (6), then SAVED (7) or SAVE_FAILED (8). SELECT set_count + n plays
+ *   flash slot n. The right status (version 3) ends with flash_slots u8, flash_used u8 (bits).
  * Every command but DATA replies with the relay status (art_relay_central.c); DATA replies only
  * on error. Once a host has sent any host-link report since boot, relay discovery completion
  * and loss of a ready relay also send 0xD6 0x85, with exactly the STATUS reply payload.
@@ -131,11 +140,15 @@
 #define HOST_LINK_CAP_INVOKE_REFUSES (1U << 7)
 #define HOST_LINK_CAP_CONN_STATE_EVENT (1U << 8)
 #define HOST_LINK_CAP_BOOTLOADER (1U << 9) // D7 08, test hooks only
+#define HOST_LINK_CAP_ART_SLOTS (1U << 10)  // D6 06/07/08 flash slots on the right
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
 // BOOTLOADER TRIGGER reply for the right half, once the relay has answered.
 void host_link_bootloader_reply(uint8_t status, uint8_t half);
+
+// Queues a report to the PC (nonblocking; dropped if the queue is full).
+void host_link_send(const uint8_t *data, int len);
 
 // Called by relay connection/discovery callbacks; queues a report only after host traffic.
 void host_link_art_status(void);
