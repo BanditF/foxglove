@@ -276,3 +276,37 @@ class OptionalRealImages(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MarkerTests(unittest.TestCase):
+    def test_full_marker_across_blocks_reports_build(self):
+        marker = b'FOXGLOVE_HALF=right;VER=0.1.0;PROFILE=ga;SHA=abc1234'
+        # Two blocks, the marker split between them.
+        first, second = marker[:20], marker[20:]
+        data = uf2(first.rjust(256, b'\0'), numbers=(0,)) [:0]
+        blocks = []
+        for i, part in enumerate((first.rjust(256, b'\0'), second.ljust(256, b'\0'))):
+            blocks.append(struct.pack('<8I', 0x0A324655, 0x9E5D5157, 0x2000, f.START + i * 256,
+                                      256, i, 2, 0xADA52840) + part.ljust(476, b'\0')
+                          + struct.pack('<I', 0x0AB16F30))
+        result = f.preflight(b''.join(blocks), 'right')
+        self.assertTrue(result.ok, result.reasons)
+        self.assertEqual((result.detected_half, result.version, result.profile, result.sha),
+                         ('right', '0.1.0', 'ga', 'abc1234'))
+        self.assertFalse(f.preflight(b''.join(blocks), 'left').ok)
+
+    def test_old_short_marker_still_works(self):
+        result = f.preflight(uf2(b'FOXGLOVE_HALF=left'), 'left')
+        self.assertTrue(result.ok)
+        self.assertEqual(result.version, '')
+
+    def test_firmware_folder_picks_new_names_by_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for name in ('foxglove-fw-v0.1.0-abc1234-left-dev.uf2', 'foxglove-fw-v0.1.0-abc1234-left-ga.uf2'):
+                (d / name).write_bytes(b'')
+            self.assertEqual(f.firmware_file(d, 'left', 'ga').name, 'foxglove-fw-v0.1.0-abc1234-left-ga.uf2')
+            self.assertEqual(f.firmware_file(d, 'right', 'dev').name, f.FILENAMES['right'])
+            (d / 'foxglove-fw-v0.1.1-def5678-left-dev.uf2').write_bytes(b'')
+            with self.assertRaises(f.Refused):
+                f.firmware_file(d, 'left', 'dev')

@@ -9,6 +9,7 @@ Settings reset: supply its path with --left/--right, select --half, and add
 --settings-reset; this erases settings and requires a separate confirmation.
 """
 import argparse
+import re
 from dataclasses import asdict, dataclass
 import json
 import math
@@ -24,6 +25,10 @@ LIMIT = 0xAD000
 SETTLE_SECONDS = 3  # after the bootloader drive appears, before writing
 START = 0x26000  # All inspected real builds, including settings reset, start here.
 ROLLBACK = r'C:\Users\fuchs\splitkeeb\firmware-358c3d0\firmware'
+MARKER = re.compile(rb'FOXGLOVE_HALF=(?P<half>left|right)'
+                    rb'(?:;VER=(?P<ver>[0-9A-Za-z.+-]{1,32}))?'
+                    rb'(?:;PROFILE=(?P<profile>dev|ga))?'
+                    rb'(?:;SHA=(?P<sha>[0-9a-f]{7,40}))?')
 FILENAMES = {'left': 'eyelash_corne_studio_left.uf2',
              'right': 'nice_view_custom-eyelash_corne_right-zmk.uf2'}
 # Decoded address-ordered payloads of firmware-358c3d0 and other local builds:
@@ -40,6 +45,19 @@ class Preflight:
     end_address: int = 0
     headroom_kib: float = 0
     detected_half: str = 'unknown'
+    # From the firmware's marker (#79/#133): FOXGLOVE_HALF=left;VER=0.1.0;PROFILE=dev;SHA=abc1234
+    version: str = ''
+    profile: str = ''
+    sha: str = ''
+
+
+def firmware_file(folder, half, profile):
+    """The UF2 for `half` in a firmware folder: CI's foxglove-fw-<ver>-<sha>-<half>-<profile>.uf2
+    (#133) when present, else the older fixed names."""
+    named = sorted(Path(folder).glob(f'foxglove-fw-*-{half}-{profile}.uf2'))
+    if len(named) > 1:
+        raise Refused(f'more than one {half} {profile} UF2 in {folder}; pass --{half} explicitly')
+    return named[0] if named else Path(folder) / FILENAMES[half]
 
 
 def preflight(data, half, allow_unknown_half=False, settings_reset=False):
@@ -79,7 +97,9 @@ def preflight(data, half, allow_unknown_half=False, settings_reset=False):
     ordered = sorted(ranges)
     if any(a[1] > b[0] for a, b in zip(ordered, ordered[1:])):
         reasons.append('overlapping flash payloads')
-    explicit = {h for h in ('left', 'right') if b'FOXGLOVE_HALF=' + h.encode() in image}
+    # Searched in the decoded flat image, so a marker split across UF2 blocks is still found.
+    markers = [m.groupdict() for m in MARKER.finditer(bytes(image))]
+    explicit = {m['half'].decode() for m in markers}
     reset = b'SETTINGS RESET' in image
     if reset:
         detected = 'settings_reset'
@@ -101,7 +121,10 @@ def preflight(data, half, allow_unknown_half=False, settings_reset=False):
                 reasons.append(f'image is for {detected}, not {half}')
         elif not allow_unknown_half:
             reasons.append('half heuristic inconclusive; use --allow-unknown-half only after checking the build')
-    return Preflight(not reasons, reasons, end, (LIMIT - end) / 1024, detected)
+    info = markers[0] if len(markers) == 1 else {}
+    text = lambda key: (info.get(key) or b'').decode()
+    return Preflight(not reasons, reasons, end, (LIMIT - end) / 1024, detected,
+                     text('ver'), text('profile'), text('sha'))
 
 
 class Refused(Exception):
@@ -280,6 +303,8 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--firmware', type=Path)
+    parser.add_argument('--profile', choices=('dev', 'ga'), default='dev',
+                        help='which build in a --firmware folder with foxglove-fw-* names (default dev)')
     parser.add_argument('--left', type=Path)
     parser.add_argument('--right', type=Path)
     parser.add_argument('--half', choices=('left', 'right', 'both'), default='both')
@@ -302,13 +327,16 @@ def main(argv=None):
         for half in ('left', 'right'):
             if args.half not in ('both', half):
                 continue
-            path = getattr(args, half) or (args.firmware / FILENAMES[half] if args.firmware else None)
+            path = getattr(args, half) or (firmware_file(args.firmware, half, args.profile) if args.firmware else None)
             if path is None:
                 raise Refused(f'Provide --{half} or --firmware DIR')
             images[half] = path.read_bytes()
             result = preflight(images[half], half, args.allow_unknown_half, args.settings_reset)
             report['images'][half] = asdict(result)
-            log(f'{half}: end 0x{result.end_address:X}, headroom {result.headroom_kib:.1f} KiB; half={result.detected_half}')
+            build = ' '.join(f'{k}={v}' for k, v in (('version', result.version), ('profile', result.profile),
+                                                       ('sha', result.sha)) if v)
+            log(f'{half}: {path.name}: end 0x{result.end_address:X}, headroom {result.headroom_kib:.1f} KiB; '
+                f'half={result.detected_half}' + (f'; {build}' if build else ''))
             for reason in result.reasons:
                 log(f'{half}: REFUSED: {reason}')
         if not all(r['ok'] for r in report['images'].values()):
