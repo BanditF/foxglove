@@ -40,5 +40,6 @@ fn main() {
     foxglove::foreground::start();
     foxglove::accent::start();
     foxglove::api::start();
+    foxglove::kits::sync();
     foxglove::startup::finish(platform::run(settings, available_devices))
 }
