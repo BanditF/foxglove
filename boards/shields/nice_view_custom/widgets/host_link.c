@@ -206,6 +206,9 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
 #endif
     caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO | HOST_LINK_CAP_SCREENS;
+    if (CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S == 0) {
+        caps |= HOST_LINK_CAP_PANEL_HOLD; // no keep-alive needed (#279)
+    }
     sys_put_le32(caps, &r[21]);
     sys_put_le16(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S, &r[25]);
     struct foxglove_build_info build;
@@ -373,6 +376,7 @@ static void invoke_press_cb(struct k_work *work) {
 #if RGB_UG_RELAYED
     if (strcmp(invoke_binding.behavior_dev, RGB_UG_NAME) == 0) {
         art_relay_rgb_verify(); // went to the right through ZMK: read it back, then tell the PC
+        rgb_idle_check();       // and an on/off toggle should be saved as the user's
     }
 #endif
     k_work_schedule(&invoke_release_work, K_MSEC(invoke_hold_ms));
