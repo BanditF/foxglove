@@ -9,18 +9,18 @@ license = "MIT"
 default = ["hid"]
 # The hidapi transport; leave it out to use the protocol with your own transport.
 hid = ["dep:hidapi", "dep:windows-sys"]
-# A Palm device and backend for Digitalis keyboards (crates/palm).
-palm = ["dep:palm"]
+# A Devices device and backend for Digitalis keyboards (crates/devices).
+devices = ["dep:foxglove-devices"]
 
 [dependencies]
 anyhow = "1"
 crc32fast = "1.4"
 embedded-graphics = "0.8"
 hidapi = { version = "2.6", optional = true }
-palm = { path = "../palm", optional = true }
+foxglove-devices = { path = "../devices", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_System_Pipes", "Win32_Devices_HumanInterfaceDevice"] }
 
 [dev-dependencies]
-palm = { path = "../palm", features = ["contract"] }
+foxglove-devices = { path = "../devices", features = ["contract"] }

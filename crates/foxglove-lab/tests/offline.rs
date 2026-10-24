@@ -127,7 +127,7 @@ fn parses_seed_suites_and_all_step_kinds() {
     assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 7);
     assert_eq!(
         spec::load(&root.join("release.toml")).unwrap().cases.len(),
-        22
+        23
     );
     for text in [
         "[{press_position={pos=12,state='down'}}]",

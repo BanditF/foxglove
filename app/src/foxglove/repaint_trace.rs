@@ -36,6 +36,10 @@ fn trace() -> Option<&'static Mutex<Trace>> {
 
 /// Whether `FOXGLOVE_DISABLE` names `part`.
 pub fn disabled(part: &str) -> bool {
+    // Renamed in #87; the old name still works.
+    if part == "plugins" && disabled("kits") {
+        return true;
+    }
     static PARTS: OnceLock<Vec<String>> = OnceLock::new();
     PARTS
         .get_or_init(|| {

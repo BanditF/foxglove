@@ -99,7 +99,7 @@ pub fn start() {
 }
 fn check() {
     if key().is_err() {
-        state().message = "Updates not configured".into();
+        state().message = "Automatic updates are off in this version".into();
         return;
     }
     {
@@ -156,15 +156,21 @@ fn worker(work: impl FnOnce() -> Result<()> + Send + 'static) {
 pub fn available_version() -> Option<String> {
     state().available.as_ref().map(|(m, _)| m.version.clone())
 }
+/// Where releases are published, for builds that can't update themselves.
+const RELEASES_PAGE: &str = "https://github.com/BanditF/foxglove/releases";
+
 pub fn group(ui: &mut egui::Ui) {
     super::settings_ui::section(ui, "Updates", |ui| {
         ui.label(format!("Current version: {}", env!("CARGO_PKG_VERSION")));
+        // Builds without the release signing key (0.1) can't verify an update, so they don't
+        // offer one: they point at the release page instead.
+        if key().is_err() {
+            ui.label("Automatic updates are off in this version. New versions are published on GitHub.");
+            ui.hyperlink_to("Foxglove releases on GitHub", RELEASES_PAGE);
+            return;
+        }
         let s = state().clone();
-        ui.label(if key().is_err() {
-            "Updates not configured"
-        } else {
-            &s.message
-        });
+        ui.label(&s.message);
         if ui
             .add_enabled(!s.busy && key().is_ok(), egui::Button::new("Check now"))
             .clicked()

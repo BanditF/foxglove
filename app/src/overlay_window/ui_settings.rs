@@ -421,7 +421,7 @@ impl OverlayApp {
                 crate::foxglove::screens_ui::group(ui);
                 crate::foxglove::art_ui::group(ui);
                 crate::foxglove::via_ui::group(ui);
-                crate::foxglove::den_ui::group(ui);
+                crate::foxglove::plugins_ui::group(ui);
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {

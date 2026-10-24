@@ -18,6 +18,10 @@
 #endif
 #include "art_relay.h"
 #include "test_hooks.h"
+#include "half_marker.h"
+
+FOXGLOVE_TEST_HOOK_MARK(position);
+FOXGLOVE_TEST_HOOK_MARK(bootloader);
 
 BUILD_ASSERT(ZMK_KEYMAP_LEN <= 64, "Injection bitmap has 64 positions");
 /* Eyelash's map entries encode row << 8 | column. Right kscan adds col-offset=7

@@ -28,6 +28,7 @@ Local sources live in `C:\Users\fuchs\splitkeeb\art-src` (not in any repo) unles
 | Bandit fox motif and the Bandit HUD library | `art-src/bandit`; `BanditF/bandit-wallpapers` `library/bandit` | the repo owner | © the owner, all rights reserved | the owner | **OK to ship** (owner's; the 13 scenes are firmware built-ins since 2026-10-23) | See F5. |
 | FURY linocut prints | `BanditF/bandit-wallpapers` `input_media/FURY prints` (private repo) | the repo owner | © the owner, all rights reserved | the owner | **OK to ship** (owner's) | Traced vector and keyboard derivatives live in the private wallpaper repo. See flag F5. |
 | Wallpaper keyboard art (12 sets) | `BanditF/bandit-wallpapers` → `dist/keyboard/<name>/right.bin` | generated from the two sources above | owner's own work | the owner | **OK to ship** (owner's) | Mostly the owner's art, plus procedural scenes made in this project. |
+| Plugin icons and the Plugins-tab empty state | `app/resources/plugins/` (generator `scripts/plugin_icons.py`) | drawn in this project from the Bandit fox motif | © the owner, all rights reserved | the owner | **OK to ship** (owner's) | Generic glyphs, no vendor logos: see [plugin-icons.md](plugin-icons.md) and F5. |
 
 ## Flags
 

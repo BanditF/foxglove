@@ -109,6 +109,9 @@ hostlink: tx D7 08 01 02 nonce
 hostlink: rx D7 88 05 02
 hostlink: tx D7 08 01 01 nonce
 hostlink: rx D7 88 06 01
+hostlink: -- guard test: 4, as the simulator has no split guard (no art relay)
+hostlink: tx D7 0B
+hostlink: rx D7 8B 04
 hostlink: -- bootloader: bad sub-command
 hostlink: tx D7 08 05
 hostlink: rx D7 88 05

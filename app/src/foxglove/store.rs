@@ -21,15 +21,38 @@ pub const SCHEMA: i64 = 1;
 
 static LOCK: Mutex<()> = Mutex::new(());
 
-/// `%APPDATA%\Foxglove\foxglove.toml` (the folder above KeyPeek's `config`).
+/// `%APPDATA%\Foxglove\foxglove.toml` (the folder above KeyPeek's `config`), or inside
+/// `FOXGLOVE_CONFIG_DIR` when that's set, so a test run never shares or touches a store
+/// outside its own folder.
 pub fn path() -> Option<PathBuf> {
-    let settings = crate::settings::Settings::config_file_path()?;
-    Some(settings.parent()?.parent()?.join("foxglove.toml"))
+    path_for(std::env::var_os("FOXGLOVE_CONFIG_DIR").map(PathBuf::from), crate::settings::Settings::config_file_path())
+}
+
+fn path_for(config_dir: Option<PathBuf>, settings_ini: Option<PathBuf>) -> Option<PathBuf> {
+    match config_dir {
+        Some(dir) => Some(dir.join("foxglove.toml")),
+        None => Some(settings_ini?.parent()?.parent()?.join("foxglove.toml")),
+    }
+}
+
+/// Sections renamed since they shipped (#87): the old name is read as the new one, and the next
+/// save writes the new one.
+const RENAMED: &[(&str, &str)] = &[("kits", "plugins")];
+
+fn renamed(mut table: Table) -> Table {
+    for (old, new) in RENAMED {
+        if !table.contains_key(*new) {
+            if let Some(v) = table.remove(*old) {
+                table.insert((*new).into(), v);
+            }
+        }
+    }
+    table
 }
 
 fn read(path: &Path) -> Result<Table, String> {
     match std::fs::read_to_string(path) {
-        Ok(text) => text.parse::<Table>().map_err(|e| format!("{}: {e}", path.display())),
+        Ok(text) => text.parse::<Table>().map(renamed).map_err(|e| format!("{}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Table::new()),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
@@ -208,9 +231,9 @@ pub fn cached_profiles() -> (Vec<String>, Option<String>) {
 
 fn announce(name: Option<&str>) {
     *PROFILES.lock().unwrap_or_else(|e| e.into_inner()) = profiles();
-    super::palm_host::bus()
+    super::devices::bus()
         .facts()
-        .set("profile.active", palm::facts::Value::Text(name.unwrap_or("").into()));
+        .set("profile.active", foxglove_devices::facts::Value::Text(name.unwrap_or("").into()));
 }
 
 /// One "switch to this profile while this program is in front" rule.
@@ -458,6 +481,32 @@ mod tests {
         assert_eq!(try_load_at::<Demo>(&path, "updates").unwrap(), None);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("schema = 1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn store_stays_inside_the_config_dir() {
+        let tmp = std::env::temp_dir().join("foxglove-run-1");
+        assert_eq!(path_for(Some(tmp.clone()), Some(tmp.join("settings.ini"))), Some(tmp.join("foxglove.toml")));
+        let real = PathBuf::from(r"C:\Users\u\AppData\Roaming\Foxglove\config\settings.ini");
+        assert_eq!(
+            path_for(None, Some(real)),
+            Some(PathBuf::from(r"C:\Users\u\AppData\Roaming\Foxglove\foxglove.toml"))
+        );
+        assert_eq!(path_for(None, None), None);
+    }
+
+    #[test]
+    fn kits_section_reads_as_plugins() {
+        let dir = std::env::temp_dir().join(format!("foxglove-store-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("foxglove.toml");
+        std::fs::write(&path, "schema = 1\n[kits.installed.\"com.example.a\"]\nenabled = true\n[kits.trust]\nsequence = 3\n").unwrap();
+        let v: Option<toml::Value> = try_load_at(&path, "plugins.trust").unwrap();
+        assert_eq!(v.and_then(|v| v.get("sequence").and_then(toml::Value::as_integer)), Some(3));
+        save_at(&path, "screens", &toml::Table::new(), true).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[plugins.installed") && !text.contains("[kits"), "{text}");
         let _ = std::fs::remove_dir_all(dir);
     }
 
