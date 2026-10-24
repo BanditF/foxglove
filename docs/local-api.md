@@ -186,6 +186,7 @@ description = "Puts the temperature on the left screen."
   - **Who shows:** the highest-priority lease, and the newest among equals. Use high for alerts (muted), normal for status (recording), and low for ambient light (a colour sync).
   - **Ending:** a plugin's leases end when its connection closes (stopped or crashed). When the last lease on a device ends, its lights go back to how they were before the first one.
   - **Confirmation:** every change is read back and sent again (up to 3 times) if the keyboard didn't take it.
+  - **Changing a lease (API 1.3):** `lighting.update {lease, color, effect?}` changes a held lease in place, so a colour stream (OpenRGB, SignalRGB) keeps one lease. SDK: `Lease::set(color)`.
   - **`lighting.set`:** still changes the lights directly, without any of this.
 - **Secrets (#213, API 1.2):**
   - **Permission and access:** a plugin with the `secrets` permission keeps passwords and tokens with `secrets.get {name}` and `secrets.set {name, value}`, or `secret()` / `set_secret()` in the SDK. They go in Windows Credential Manager, under `Foxglove/plugin/<id>/<name>`, protected by the user's login and kept out of manifests, command lines, facts, logs and profile exports.

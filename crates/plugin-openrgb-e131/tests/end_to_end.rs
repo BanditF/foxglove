@@ -1,5 +1,6 @@
 //! The plugin end to end: the plugin host's runner starts it as Foxglove does, a sender's E1.31 frame on
-//! localhost colours a mock keyboard, and the lights go back when the sender ends its stream.
+//! localhost takes a low-priority lease on a mock keyboard, new colours change it in place, and
+//! the lease ends when the sender ends its stream or goes silent.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -11,75 +12,40 @@ use foxglove_plugin_api::permission::Permission;
 use foxglove_plugin_api::rpc::Error;
 use serde_json::{json, Value};
 
-/// One keyboard with lights: it records every `lighting.set`, keeps its state, and can lose
-/// writes (`drop`), as a busy keyboard sometimes does.
+/// One keyboard with lights: it records the lease calls the plugin makes.
+#[derive(Default)]
 struct Keyboard {
-    sets: Mutex<Vec<Value>>,
-    state: Mutex<Value>,
-    drop: std::sync::atomic::AtomicUsize,
-    /// Writes whose colour part is lost (the rest applies).
-    drop_color: std::sync::atomic::AtomicUsize,
-    /// Read-backs that report the other half as not caught up yet.
-    unsettled: std::sync::atomic::AtomicUsize,
-    reads: std::sync::atomic::AtomicUsize,
-    /// When the restore (effect 3) arrives, the next read-backs report the other half lagging.
-    lag_on_restore: std::sync::atomic::AtomicUsize,
-}
-
-impl Default for Keyboard {
-    fn default() -> Self {
-        Keyboard {
-            sets: Mutex::default(),
-            state: Mutex::new(json!({"on": false, "hue": 200, "saturation": 50, "brightness": 40, "effect": "3", "speed": 1})),
-            drop: Default::default(),
-            drop_color: Default::default(),
-            unsettled: Default::default(),
-            reads: Default::default(),
-            lag_on_restore: Default::default(),
-        }
-    }
+    calls: Mutex<Vec<(String, Value)>>,
 }
 
 impl Devices for Keyboard {
     fn call(&self, method: &str, params: Value) -> Result<Value, Error> {
+        self.calls.lock().unwrap().push((method.to_string(), params));
         match method {
             "devices.list" => Ok(json!({"devices": [{"id": "kb", "name": "Test board", "kind": "keyboard",
                 "backend": "mock", "connected": true, "caps": ["lighting"]}]})),
-            "lighting.state" => {
-                self.reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let lagging = self.unsettled.try_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| n.checked_sub(1)).is_ok();
-                let mut state = self.state.lock().unwrap().clone();
-                state["settled"] = json!(!lagging);
-                Ok(state)
-            }
-            "lighting.set" => {
-                self.sets.lock().unwrap().push(params.clone());
-                if params.get("effect") == Some(&json!("3")) {
-                    let lag = self.lag_on_restore.swap(0, std::sync::atomic::Ordering::Relaxed);
-                    if lag > 0 {
-                        self.unsettled.store(lag, std::sync::atomic::Ordering::Relaxed);
-                        self.reads.store(0, std::sync::atomic::Ordering::Relaxed);
-                    }
-                }
-                let lost = self.drop.try_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| n.checked_sub(1)).is_ok();
-                if !lost {
-                    let mut state = self.state.lock().unwrap();
-                    if let Some(on) = params.get("on").filter(|v| !v.is_null()) {
-                        state["on"] = on.clone();
-                    }
-                    let color_lost = self.drop_color.try_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |n| n.checked_sub(1)).is_ok();
-                    if let Some(c) = params.get("color").filter(|v| !v.is_null() && !color_lost) {
-                        state["hue"] = c["hue"].clone();
-                        state["saturation"] = c["saturation"].clone();
-                        state["brightness"] = c["brightness"].clone();
-                    }
-                    if let Some(e) = params.get("effect").filter(|v| !v.is_null()) {
-                        state["effect"] = e.clone();
-                    }
-                }
-                Ok(json!({}))
-            }
+            "lighting.lease" => Ok(json!({"lease": 7})),
+            "lighting.update" | "lighting.release" => Ok(json!({})),
             _ => Err(Error { code: -32601, message: method.into(), data: None }),
+        }
+    }
+}
+
+impl Keyboard {
+    /// The lease calls so far.
+    fn leases(&self) -> Vec<(String, Value)> {
+        self.calls.lock().unwrap().iter().filter(|(m, _)| m.starts_with("lighting.")).cloned().collect()
+    }
+
+    fn wait(&self, what: &str, f: impl Fn(&[(String, Value)]) -> bool) -> Vec<(String, Value)> {
+        let until = Instant::now() + Duration::from_secs(30);
+        loop {
+            let calls = self.leases();
+            if f(&calls) {
+                return calls;
+            }
+            assert!(Instant::now() < until, "never saw {what}: {calls:?}");
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 }
@@ -105,19 +71,8 @@ fn send(seq: u8, r: u8, g: u8, b: u8, stop: bool) {
     assert!(cmd.status().unwrap().success());
 }
 
-fn wait_for(keyboard: &Keyboard, n: usize, within: Duration) -> Vec<Value> {
-    let until = Instant::now() + within;
-    loop {
-        let sets = keyboard.sets.lock().unwrap().clone();
-        if sets.len() >= n || Instant::now() > until {
-            return sets;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
 #[test]
-fn a_frame_colours_the_keyboard_and_the_sender_stopping_restores_it() {
+fn a_stream_holds_a_low_lease_and_its_end_gives_the_lights_back() {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_openrgb-e131"));
     let keyboard = Arc::new(Keyboard::default());
     let devices = keyboard.clone();
@@ -145,85 +100,31 @@ fn a_frame_colours_the_keyboard_and_the_sender_stopping_restores_it() {
     // A red frame, sent until it lands (the plugin may still be starting and binding the port).
     let until = Instant::now() + Duration::from_secs(30);
     let mut seq = 0u8;
-    let mut sets = vec![];
-    while sets.is_empty() && Instant::now() < until {
+    while keyboard.leases().is_empty() && Instant::now() < until {
         seq += 1;
         send(seq, 255, 0, 0, false);
-        sets = wait_for(&keyboard, 1, Duration::from_millis(500));
-    }
-    assert_eq!(
-        sets.first(),
-        Some(&json!({"device": "kb", "on": true, "color": {"hue": 0, "saturation": 100, "brightness": 100}, "effect": "0"})),
-        "{sets:?}"
-    );
-    // The same colour again, then the sender ends its stream: the next (and only) change is the
-    // restore, so the repeated red sent nothing.
-    send(seq + 1, 255, 0, 0, false);
-    send(seq + 2, 0, 0, 0, true);
-    let sets = wait_for(&keyboard, 2, Duration::from_secs(30));
-    assert_eq!(
-        sets.get(1),
-        Some(&json!({"device": "kb", "on": false, "color": {"hue": 200, "saturation": 50, "brightness": 40}, "effect": "3"})),
-        "{sets:?}"
-    );
-    // A new takeover whose first write the keyboard loses: the plugin reads the lights back and
-    // sends the colour again, so the keyboard ends up green.
-    keyboard.drop.store(1, std::sync::atomic::Ordering::Relaxed);
-    let until = Instant::now() + Duration::from_secs(30);
-    let mut green = seq + 3;
-    while keyboard.state.lock().unwrap()["hue"] != json!(120) {
-        assert!(Instant::now() < until, "never green: {:?}", keyboard.sets.lock().unwrap());
-        send(green, 0, 255, 0, false);
-        green = green.wrapping_add(1);
         std::thread::sleep(Duration::from_millis(300));
     }
-    let sets = keyboard.sets.lock().unwrap().clone();
-    let full_green = json!({"device": "kb", "on": true, "color": {"hue": 120, "saturation": 100, "brightness": 100}, "effect": "0"});
-    assert!(sets.iter().filter(|s| **s == full_green).count() >= 2, "the lost write was sent again: {sets:?}");
-    // Another sender (a new process, so a new CID) numbering from 1 again within the same
-    // session: not stale, since sequences count per sender (E1.31).
-    send(1, 0, 0, 255, false);
-    let until = Instant::now() + Duration::from_secs(30);
-    while keyboard.state.lock().unwrap()["hue"] != json!(240) {
-        assert!(Instant::now() < until, "a new sender's frame was dropped: {:?}", keyboard.sets.lock().unwrap());
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    // The sender stops, and the restore's colour write is lost while the lights go off: the
-    // keyboard would keep the plugin's colour for the next time they come on. The colour is
-    // checked even when off, so it's sent again.
-    keyboard.drop_color.store(1, std::sync::atomic::Ordering::Relaxed);
-    send(green.wrapping_add(1), 0, 0, 0, true);
-    let until = Instant::now() + Duration::from_secs(30);
-    loop {
-        let state = keyboard.state.lock().unwrap().clone();
-        if state["hue"] == json!(200) {
-            break;
-        }
-        assert!(Instant::now() < until, "the restore's lost colour wasn't sent again: {state}");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    // A split keyboard whose other half lags: after the restore the plugin keeps reading until
-    // both halves agree (here 4 read-backs), instead of trusting the left alone.
-    let until = Instant::now() + Duration::from_secs(30);
-    let mut seq2 = green.wrapping_add(10);
-    while keyboard.state.lock().unwrap()["hue"] != json!(60) {
-        assert!(Instant::now() < until, "never yellow");
-        send(seq2, 255, 255, 0, false);
-        seq2 = seq2.wrapping_add(1);
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    keyboard.lag_on_restore.store(4, std::sync::atomic::Ordering::Relaxed);
-    send(seq2, 0, 0, 0, true);
-    let until = Instant::now() + Duration::from_secs(30);
-    // Four unsettled read-backs, then the settled one: five at least.
-    while keyboard.lag_on_restore.load(std::sync::atomic::Ordering::Relaxed) > 0
-        || keyboard.reads.load(std::sync::atomic::Ordering::Relaxed) < 5
-        || keyboard.state.lock().unwrap()["hue"] != json!(200)
-    {
-        assert!(Instant::now() < until, "the restore didn't wait for the other half");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert_eq!(keyboard.unsettled.load(std::sync::atomic::Ordering::Relaxed), 0);
+    let calls = keyboard.wait("a lease", |c| !c.is_empty());
+    assert_eq!(calls[0], ("lighting.lease".into(), json!({"device": "kb", "color": {"hue": 0, "saturation": 100, "brightness": 100}, "effect": null, "priority": "low"})));
+    // A new colour changes the same lease; the same colour again sends nothing.
+    seq += 1;
+    send(seq, 0, 255, 0, false);
+    let calls = keyboard.wait("an update", |c| c.iter().any(|(m, _)| m == "lighting.update"));
+    let update = calls.iter().find(|(m, _)| m == "lighting.update").unwrap();
+    assert_eq!(update.1, json!({"lease": 7, "color": {"hue": 120, "saturation": 100, "brightness": 100}}));
+    seq += 1;
+    send(seq, 0, 255, 0, false);
+    // The sender ends its stream: the lease is given back, once, and no new one was taken.
+    send(seq + 1, 0, 0, 0, true);
+    let calls = keyboard.wait("the release", |c| c.iter().any(|(m, _)| m == "lighting.release"));
+    assert_eq!(calls.iter().filter(|(m, _)| m == "lighting.lease").count(), 1, "{calls:?}");
+    assert_eq!(calls.iter().filter(|(m, _)| m == "lighting.update").count(), 1, "the repeat sent nothing: {calls:?}");
+    assert_eq!(calls.iter().find(|(m, _)| m == "lighting.release").unwrap().1, json!({"lease": 7}));
+    // A new stream that goes silent: released after E1.31's loss timeout.
+    send(seq + 2, 0, 0, 255, false);
+    keyboard.wait("a second lease", |c| c.iter().filter(|(m, _)| m == "lighting.lease").count() == 2);
+    keyboard.wait("the release after silence", |c| c.iter().filter(|(m, _)| m == "lighting.release").count() == 2);
     drop(runner);
     #[cfg(windows)]
     foxglove_plugin_host::delete_container("test.openrgb-e131");
