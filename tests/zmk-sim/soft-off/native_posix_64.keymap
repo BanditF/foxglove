@@ -1,0 +1,44 @@
+#include "../common/keymap.dtsi"
+
+&kscan {
+    events = <
+        ZMK_MOCK_PRESS(2,7,30) // position 37
+        ZMK_MOCK_RELEASE(2,7,30) // position 37
+        ZMK_MOCK_PRESS(3,4,30) // position 43
+        ZMK_MOCK_PRESS(2,7,30) // position 37
+        ZMK_MOCK_RELEASE(2,7,30) // position 37
+        ZMK_MOCK_RELEASE(3,4,30) // position 43
+        ZMK_MOCK_PRESS(3,7,30) // position 46
+        ZMK_MOCK_PRESS(2,7,30) // position 37
+        ZMK_MOCK_RELEASE(2,7,30) // position 37
+        ZMK_MOCK_RELEASE(3,7,30) // position 46
+        ZMK_MOCK_PRESS(3,4,30) // position 43
+        ZMK_MOCK_PRESS(3,7,30) // position 46
+        ZMK_MOCK_PRESS(2,7,30) // position 37
+        ZMK_MOCK_RELEASE(2,7,30) // position 37
+        ZMK_MOCK_PRESS(0,1,30) // ADMIN F1 separates timing assertions
+        ZMK_MOCK_RELEASE(0,1,30)
+        ZMK_MOCK_PRESS(2,7,1900) // position 37
+        ZMK_MOCK_RELEASE(2,7,30) // position 37
+        ZMK_MOCK_PRESS(0,1,30) // ADMIN F1 separates timing assertions
+        ZMK_MOCK_RELEASE(0,1,30)
+        ZMK_MOCK_PRESS(2,7,2100) // position 37
+        ZMK_MOCK_RELEASE(2,7,30) // position 37
+        ZMK_MOCK_PRESS(0,1,30) // ADMIN F1 separates timing assertions
+        ZMK_MOCK_RELEASE(0,1,30)
+        ZMK_MOCK_RELEASE(3,7,30) // position 46
+        ZMK_MOCK_RELEASE(3,4,30) // position 43
+        ZMK_MOCK_PRESS(0,1,30) // position 1
+        ZMK_MOCK_RELEASE(0,1,30) // position 1
+        ZMK_MOCK_PRESS(0,1,10) // position 1
+        ZMK_MOCK_PRESS(1,2,10) // position 15
+        ZMK_MOCK_PRESS(2,1,10) // position 29
+        ZMK_MOCK_RELEASE(0,1,30) // position 1
+        ZMK_MOCK_RELEASE(1,2,30) // position 15
+        ZMK_MOCK_RELEASE(2,1,30) // position 29
+        ZMK_MOCK_PRESS(0,1,30) // position 1
+        ZMK_MOCK_RELEASE(0,1,30) // position 1
+        // Unmapped release: allow queued events/timers/logs to drain before exit.
+        ZMK_MOCK_RELEASE(4,0,300)
+    >;
+};

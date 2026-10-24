@@ -1,0 +1,90 @@
+name: ZMK simulator
+
+on:
+  push:
+    paths:
+      - "config/**"
+      - "boards/**"
+      - "tests/zmk-sim/**"
+      - ".github/workflows/zmk-sim.yml"
+  pull_request:
+    paths:
+      - "config/**"
+      - "boards/**"
+      - "tests/zmk-sim/**"
+      - ".github/workflows/zmk-sim.yml"
+  workflow_dispatch:
+    inputs:
+      auto_accept:
+        description: "Capture snapshots for HUMAN REVIEW (does not validate correctness)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  simulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container:
+      # Same version tag as ZMK v0.3.0 .github/workflows/test.yml.
+      image: docker.io/zmkfirmware/zmk-build-arm:3.5
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: config-repo
+      - uses: actions/checkout@v4
+        with:
+          repository: zmkfirmware/zmk
+          ref: v0.3.0
+          path: workspace/zmk
+      - name: Cache west modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            workspace/modules/
+            workspace/tools/
+            workspace/zephyr/
+            workspace/bootloader/
+          key: ${{ runner.os }}-zmk-sim-3.5-${{ hashFiles('workspace/zmk/app/west.yml') }}
+        timeout-minutes: 2
+        continue-on-error: true
+      - name: Initialize workspace
+        working-directory: workspace
+        run: west init -l zmk/app
+      - name: Update modules
+        working-directory: workspace
+        run: west update --fetch-opt=--filter=tree:0
+      - name: Export Zephyr
+        working-directory: workspace
+        run: west zephyr-export
+      - name: Run keymap cases
+        working-directory: workspace/zmk/app
+        env:
+          ZMK_TESTS_AUTO_ACCEPT: ${{ inputs.auto_accept && '1' || '0' }}
+        run: |
+          export ZMK_SRC_DIR="$GITHUB_WORKSPACE/workspace/zmk/app"
+          bash "$GITHUB_WORKSPACE/config-repo/tests/zmk-sim/run.sh"
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zmk-sim-failure-logs
+          path: |
+            config-repo/tests/zmk-sim/build/**/*.log
+            config-repo/tests/zmk-sim/build/**/*.diff
+            config-repo/tests/zmk-sim/build/**/zephyr.dts
+            config-repo/tests/zmk-sim/build/**/.config
+      - name: Upload candidate snapshots and traces for review
+        if: always() && inputs.auto_accept
+        uses: actions/upload-artifact@v4
+        with:
+          name: zmk-sim-candidate-snapshots
+          path: |
+            config-repo/tests/zmk-sim/*/keycode_events.snapshot
+            config-repo/tests/zmk-sim/build/**/*.log
+            config-repo/tests/zmk-sim/build/**/*.diff
