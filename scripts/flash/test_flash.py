@@ -12,6 +12,8 @@ from flash import foxglove_flash as f
 # Tests never touch the real flash history.
 _HISTORY = tempfile.TemporaryDirectory()
 os.environ['FOXGLOVE_FLASH_HISTORY'] = str(Path(_HISTORY.name) / 'flash-history.log')
+# ...nor the real flasher lock: a test must never block (or be blocked by) a real flash.
+os.environ['FOXGLOVE_FLASH_LOCK'] = str(Path(_HISTORY.name) / 'flash.lock')
 
 
 def uf2(payload=b'FOXGLOVE_HALF=left', addr=f.START, family=0xADA52840,
@@ -529,3 +531,25 @@ class YesKeepsChecksInMain(unittest.TestCase):
                 # Preflight still refuses a wrong-half image before any device access or lock.
                 self.assertEqual(f.main(['--left', str(bad), '--half', 'left', '--yes']), 1)
                 self.assertEqual(entered, [True])
+
+
+class HistoryMatchesConsoleTests(unittest.TestCase):
+    def test_unreadable_build_is_recorded_unverified(self):
+        with tempfile.TemporaryDirectory() as d:
+            history = Path(d) / 'h.log'
+            with patch.dict(os.environ, {'FOXGLOVE_FLASH_HISTORY': str(history)}):
+                backend = FakeOS()  # build_info returns None: the firmware can't tell
+                clock = Clock()
+                logs = []
+                f.flash({'left': marked('left')}, backend, 2, stdin=io.StringIO(''), ask=lambda p: self.fail(p),
+                        log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
+                outcomes = [l.split('	')[3] for l in history.read_text().splitlines()]
+                self.assertEqual(outcomes, ['written', 'unverified'])
+                self.assertTrue(any("couldn't read its build back" in m for m in logs))
+
+    def test_right_gets_a_minute_to_answer(self):
+        backend = FakeOS()
+        answers = iter([None] * 25 + [{'version': '0.1.0', 'profile': 'dev', 'sha': 'abc1234'}])
+        backend.build_info = lambda half: next(answers)
+        clock = Clock()
+        self.assertTrue(f.verify_build('right', 'abc1234', backend, lambda m: None, clock.clock, clock.sleep))

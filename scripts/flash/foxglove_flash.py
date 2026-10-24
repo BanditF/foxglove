@@ -152,7 +152,8 @@ LOCK = Path(os.environ.get('TEMP') or os.environ.get('TMPDIR') or '.') / 'foxglo
 class FlashLock:
     """Only one flasher at a time: two writers on one bootloader drive is how a UF2 lands on the
     wrong half. The lock file holds the owner's PID; a lock whose process is gone is taken over."""
-    def __init__(self, path=LOCK, alive=None):
+    def __init__(self, path=None, alive=None):
+        path = path or os.environ.get('FOXGLOVE_FLASH_LOCK') or LOCK
         self.path, self.alive, self.held = Path(path), alive or pid_alive, False
 
     def __enter__(self):
@@ -378,22 +379,24 @@ def check_builds(images, backend, log, allow_profile_mix=False, settings_reset=F
 
 def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=time.sleep, strict=False):
     """After a flash: the half must report the image's SHA (when both sides know it). `strict`:
-    not being able to read it back is a failure too (used when the write's outcome is unknown)."""
+    not being able to read it back is a failure too (used when the write's outcome is unknown).
+    Returns True only when the image's SHA was read back."""
     if not expected_sha:
-        return
-    deadline = clock() + 20  # the right answers over the relay once it has reconnected
+        return False
+    # The right answers over the relay, which comes back about 40 s after the right reboots (#122).
+    deadline = clock() + (20 if half == 'left' else 60)
     while True:
         now = backend.build_info(half)
         if now:
             if now.get('sha') != expected_sha:
                 raise FlashFailed(f"{half} runs {describe(now)}, expected SHA {expected_sha}")
             log(f'{half}: verified, running {describe(now)}.')
-            return
+            return True
         if clock() >= deadline:
             if strict:
                 raise FlashFailed(f"{half}: couldn't read its build back, so whether it was flashed is unknown.")
             log(f"{half}: couldn't read its build back to verify (firmware can't tell, or the right isn't back yet).")
-            return
+            return False
         sleep(2)
 
 
@@ -493,11 +496,12 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
             record(half, expected.get(half), 'written')
         if not settings_reset:
             try:
-                verify_build(half, expected.get(half), backend, log, clock, sleep, strict=unconfirmed)
+                verified = verify_build(half, expected.get(half), backend, log, clock, sleep, strict=unconfirmed)
             except FlashFailed as exc:
                 record(half, expected.get(half), 'verify-failed', str(exc))
                 raise
-            record(half, expected.get(half), 'verified' if expected.get(half) else 'unverified')
+            # The history says exactly what the console said.
+            record(half, expected.get(half), 'verified' if verified else 'unverified')
         if settings_reset:
             continue
         if yes:
