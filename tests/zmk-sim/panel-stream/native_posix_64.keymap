@@ -10,6 +10,8 @@
         ZMK_MOCK_PRESS(0,1,30)
         ZMK_MOCK_RELEASE(0,1,1200)
         ZMK_MOCK_PRESS(0,1,30)
-        ZMK_MOCK_RELEASE(0,1,90000)  // keeps the simulator running past the 70 s hold and the summary
+        ZMK_MOCK_RELEASE(0,1,60000)  // waits are 16-bit (ms): a fifth Q tap splits the 70 s hold
+        ZMK_MOCK_PRESS(0,1,30)
+        ZMK_MOCK_RELEASE(0,1,30000)  // keeps the simulator running past the hold and the summary
     >;
 };

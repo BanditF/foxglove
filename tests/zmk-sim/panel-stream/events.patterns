@@ -1,4 +1,4 @@
-# Q is tapped four times while the panel streams; then the driver's summary: 40 frames, every
+# Q is tapped four times while the panel streams (and once during the 70 s hold); then the driver's summary: 40 frames, every
 # HELLO and CONN_STATE answered, nothing else sent, and the last frame of each phase is shown.
 s/.*hid_listener_keycode/kp/p
 /^stream: /p
