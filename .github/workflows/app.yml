@@ -26,6 +26,17 @@ jobs:
           workspaces: app
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      - name: Match executable version to release tag
+        if: startsWith(github.ref, 'refs/tags/app-v')
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = $env:TAG -replace '^app-v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Use app-vMAJOR.MINOR.PATCH' }
+          $manifest = Get-Content Cargo.toml -Raw
+          $manifest = [regex]::Replace($manifest, '(?m)^version = "[^"]+"', "version = `"$version`"", 1)
+          Set-Content Cargo.toml $manifest
       - run: cargo build --release
       - name: Install packaging tools
         run: |
@@ -58,6 +69,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require update signing key
+        working-directory: .
+        env:
+          FOXGLOVE_UPDATE_KEY: ${{ secrets.FOXGLOVE_UPDATE_KEY }}
+        run: |
+          if [ -z "$FOXGLOVE_UPDATE_KEY" ]; then
+            echo "::error::FOXGLOVE_UPDATE_KEY is required; refusing to publish unsigned update metadata"
+            exit 1
+          fi
       - uses: actions/download-artifact@v4
         with:
           name: foxglove-windows
@@ -67,12 +89,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
+          FOXGLOVE_UPDATE_KEY: ${{ secrets.FOXGLOVE_UPDATE_KEY }}
         working-directory: dist
         run: |
           if ! gh release view "$TAG"; then
             gh release create "$TAG" --verify-tag --title "Foxglove $TAG" --generate-notes
           fi
-          gh release upload "$TAG" release/foxglove.exe wix/foxglove-x64.msi --clobber
+          gh release view "$TAG" --json body --jq .body > notes.txt
+          cargo run --locked --manifest-path ../Cargo.toml -p foxglove-update --bin foxglove-update-sign -- manifest --version "${TAG#app-v}" --msi wix/foxglove-x64.msi --url "https://github.com/$GH_REPO/releases/download/$TAG/foxglove-x64.msi" --notes-file notes.txt
+          cargo run --locked --manifest-path ../Cargo.toml -p foxglove-update --bin foxglove-update-sign -- sign latest.json
+          gh release upload "$TAG" release/foxglove.exe wix/foxglove-x64.msi latest.json latest.json.sig --clobber
 
   linux:
     runs-on: ubuntu-latest

@@ -5,6 +5,8 @@ use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
 
 pub struct Controls {
     status: MenuItem,
+    menu: Menu,
+    update_item: Option<MenuItem>,
     pause: CheckMenuItem,
     art: Submenu,
     signature: String,
@@ -26,12 +28,26 @@ impl Controls {
         let _ = menu.append(&art);
         Self {
             status,
+            menu: menu.clone(),
+            update_item: None,
             pause,
             art,
             signature: String::new(),
         }
     }
     pub fn update(&mut self) {
+        if let Some(version) = super::update::available_version() {
+            let text = format!("Update available: v{version}");
+            if let Some(item) = &self.update_item {
+                item.set_text(text);
+            } else {
+                let item = MenuItem::with_id("fox-update", text, true, None);
+                let _ = self.menu.append(&item);
+                self.update_item = Some(item);
+            }
+        } else if let Some(item) = self.update_item.take() {
+            let _ = self.menu.remove(&item);
+        }
         self.pause.set_checked(screens::paused());
         let Some(h) = art_service::handle() else {
             return;
@@ -90,6 +106,9 @@ impl Controls {
     }
 }
 pub fn event(id: &str, on_settings: &dyn Fn()) {
+    if id == "fox-update" {
+        on_settings();
+    }
     if id == "fox-pause" {
         screens::set_paused(!screens::paused());
     }
