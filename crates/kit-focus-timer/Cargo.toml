@@ -1,0 +1,13 @@
+[package]
+name = "kit-focus-timer"
+version = "1.0.0"
+edition = "2021"
+description = "Example Foxglove Kit: a focus timer that colours the underglow (red to focus, green to rest)"
+license = "MIT"
+
+[[bin]]
+name = "focus-timer"
+path = "src/main.rs"
+
+[dependencies]
+foxglove-kit = { path = "../kit-sdk" }

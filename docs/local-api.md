@@ -45,6 +45,7 @@ same messages.
 | `screens.panel_override` | call | `screens.write` |
 | `art.status` / `art.select` | call | `devices.read` / `art.write` |
 | `key.event` | event | `key.events` (warned: a keylogger) |
+| `profiles.list` / `profiles.activate` | call | — / `profiles.write` (API 1.1) |
 
 The params and results are in the schema. Notes:
 
@@ -121,3 +122,38 @@ is MIT. (A reading of the licenses, not legal advice.)
 5. **Den tab:** installed Kits (status, permissions, log, enable/disable), the catalog, install/uninstall.
 6. **Device methods** (lighting, behaviors, panel override, art) wired through Palm, and an
    example weather Kit.
+
+## Signing (#159)
+
+Only signed Kits install and run, checked by `crates/kit-trust`.
+
+**The chain:**
+- **Root key:** an **offline root key**, whose public half is pinned in the app at `app/resources/kit-trust/root.pub`, signs `root.json`:
+  `{"format":"foxglove-kit-root","version":1,"expires":"2027-…Z","catalog_keys":["<minisign pubkey>"]}`.
+- **Catalog:** a catalog key named there signs `catalog.json`:
+  `{"format":"foxglove-kit-catalog","sequence":N,"expires":"…Z","kits":[{"id","version","sha256","files":{"path":"sha256"}}]}`.
+- **Rollback:** the app refuses a catalog whose `sequence` is lower than the highest one it has seen.
+
+**What's checked:**
+- **Install:** the archive's SHA-256 must be in the catalog, its manifest must match the entry's id and version, and the unpacked files must match exactly.
+- **Before every launch:** the version must still be in the catalog (removing it revokes it), and the folder must hold exactly the signed files. `kit.log` is ignored.
+
+**Making the keys (maintainer, once; tracked in #90):**
+1. `minisign -G -p root.pub -s root.key`, then keep `root.key` offline.
+2. `minisign -G -p catalog.pub -s catalog.key`.
+3. Put the root public key (the base64 line of `root.pub`) in `app/resources/kit-trust/root.pub`.
+4. Write `root.json` listing `catalog.pub`'s key and sign it: `minisign -S -s root.key -m root.json`.
+5. For each release, write `catalog.json` with a higher `sequence` and sign it with `catalog.key`.
+6. Ship both files and their `.minisig` signatures in `app/resources/kit-trust/`.
+
+**Developer mode:** `FOXGLOVE_DEV_UNSIGNED_KITS=1` allows unsigned Kits, and the Den shows a warning.
+
+## Writing a Kit (Rust)
+
+The `foxglove-kit` crate (`crates/kit-sdk`, MIT):
+- **Connect:** `Kit::connect(name, version)` says hello and pings every 10 s for you.
+- **Calls:** `set_fact`, `fact`, `subscribe` plus `events()`, `devices`, `set_lighting`, and a generic `call`.
+
+The example is `crates/kit-focus-timer`, a focus/rest timer that publishes `focus.state` and `focus.remaining` and colours the underglow. It asks only for `devices.read`, `lighting.write` and `facts.write:focus.*`, so it runs in the AppContainer.
+
+**Pack a Kit:** `powershell -File scripts\pack-kit.ps1 kit-focus-timer` builds it, zips `kit.toml` and the program into `target\kits\`, and prints the catalog entry (archive and file SHA-256s) to add to `catalog.json` before signing. Until the signing keys exist, install it with `FOXGLOVE_DEV_UNSIGNED_KITS=1`.

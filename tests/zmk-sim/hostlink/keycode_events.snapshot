@@ -1,6 +1,13 @@
 hostlink: -- hello: version, caps, panel timeout, build
 hostlink: tx D5 01 01
-hostlink: rx D5 81 01 40 34 02 6A 00 FF 00 00 00 00 00 00 00 00 00 00 00 00 F1 13 00 00 00 00 00 01
+hostlink: rx D5 81 01 40 34 02 6A 00 FF 00 00 00 00 00 00 00 00 00 00 00 00 F1 33 00 00 00 00 00 01
+hostlink: -- screens: the descriptors, then one past the end
+hostlink: tx D5 06
+hostlink: rx D5 86 00 02 00 00 00 00 FF A0 00 44 00 00 00 00 00 01 00 02 00 14 00 00 00 01
+hostlink: tx D5 06 01
+hostlink: rx D5 86 00 02 01 01 01 00 00 40 00 34 00 02 00 6A 00 00 00 01 00 08 00 03 FF 01
+hostlink: tx D5 06 02
+hostlink: rx D5 86 05 02 02
 hostlink: -- build info: left, right (no relay here), bad half
 hostlink: tx D7 09
 hostlink: rx D7 89 00 00 00 01 00 00 73 69 6D 74 65 73 74

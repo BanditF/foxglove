@@ -1,0 +1,4 @@
+# GA profile (test hooks off): the same driver as hostlink; the snapshot pins status 4 for
+# POSITION/BOOTLOADER, HELLO caps without bits 5/9, and INVOKE refusals (6).
+/^hostlink:/p
+s/.*hid_listener_keycode/kp/p

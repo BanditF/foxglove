@@ -136,6 +136,50 @@ class FlashFailed(Exception):
     pass
 
 
+LOCK = Path(os.environ.get('TEMP') or os.environ.get('TMPDIR') or '.') / 'foxglove-flash.lock'
+
+
+class FlashLock:
+    """Only one flasher at a time: two writers on one bootloader drive is how a UF2 lands on the
+    wrong half. The lock file holds the owner's PID; a lock whose process is gone is taken over."""
+    def __init__(self, path=LOCK, alive=None):
+        self.path, self.alive, self.held = Path(path), alive or pid_alive, False
+
+    def __enter__(self):
+        for _ in range(2):
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    owner = int(self.path.read_text().strip() or 0)
+                except (OSError, ValueError):
+                    owner = 0
+                if owner and self.alive(owner):
+                    raise Refused(f'another flasher is running (PID {owner}, lock {self.path}); wait for it to finish')
+                self.path.unlink(missing_ok=True)  # stale: its process is gone
+                continue
+            with os.fdopen(fd, 'w') as fh:
+                fh.write(str(os.getpid()))
+            self.held = True
+            return self
+        raise Refused(f'could not take the flash lock {self.path}')
+
+    def __exit__(self, *exc):
+        if self.held:
+            self.path.unlink(missing_ok=True)
+
+
+def pid_alive(pid):
+    if os.name == 'nt':
+        out = subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/NH'], capture_output=True, text=True).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def lab_binary():
     """foxglove-lab, which sends the bootloader command; None when it isn't built."""
     root = Path(__file__).resolve().parents[2]
@@ -246,6 +290,10 @@ class WindowsOS:
                 stream.flush()
                 os.fsync(stream.fileno())
         except OSError as exc:
+            if written == 0 and not Path(path).parent.exists():
+                raise FlashFailed('the bootloader drive disappeared before anything was written (the '
+                                  'bootloader left by itself; the half runs its old firmware). '
+                                  'Nothing was flashed.') from exc
             if written < len(data):
                 raise FlashFailed(f'Write stopped after {written}/{len(data)} bytes: {exc}') from exc
 
@@ -276,6 +324,7 @@ def check_builds(images, backend, log, allow_profile_mix=False, settings_reset=F
     """Compares each image's marker with what the halves run now (D7 09). Refuses an update that
     would leave one half dev and the other GA, unless allowed. Returns the expected SHA per half."""
     marks = {half: preflight(data, half, settings_reset=settings_reset) for half, data in images.items()}
+    same = set()
     running = {half: backend.build_info(half) for half in ('left', 'right')}
     for half in ('left', 'right'):
         now = running[half]
@@ -283,13 +332,13 @@ def check_builds(images, backend, log, allow_profile_mix=False, settings_reset=F
             + (f"; image {describe({'version': marks[half].version, 'profile': marks[half].profile, 'sha': marks[half].sha})}"
                if half in marks else '; not flashing'))
         if now and half in marks and marks[half].sha and now.get('sha') == marks[half].sha:
-            log(f'{half}: already running this exact build.')
+            same.add(half)
     after = {half: (marks[half].profile if half in marks and marks[half].profile else
                     (running[half] or {}).get('profile')) for half in ('left', 'right')}
     if all(after.values()) and after['left'] != after['right'] and not allow_profile_mix and not settings_reset:
         raise Refused(f"this would leave the left {after['left']} and the right {after['right']}; flash both halves "
                       'with the same profile, or pass --allow-profile-mix')
-    return {half: m.sha for half, m in marks.items() if m.sha}
+    return {half: m.sha for half, m in marks.items() if m.sha}, same
 
 
 def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=time.sleep):
@@ -312,10 +361,17 @@ def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=t
 
 def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
           settings_reset=False, allow_unknown_half=False, clock=time.monotonic, sleep=time.sleep,
-          allow_profile_mix=False, yes=False):
+          allow_profile_mix=False, yes=False, force=False):
     log('Flash left first, check that it types, then flash right. Double-tap reset only on the requested half.')
     log('Rollback: known-good firmware is in ' + ROLLBACK)
-    expected = check_builds(images, backend, log, allow_profile_mix, settings_reset)
+    expected, same = check_builds(images, backend, log, allow_profile_mix, settings_reset)
+    if not force and not settings_reset:
+        for half in sorted(same):
+            log(f'{half}: already running this exact build; skipping it (--force flashes it anyway).')
+        images = {half: data for half, data in images.items() if half not in same}
+        if not images:
+            log('Nothing to flash: both selected halves already run these builds.')
+            return
     if yes:
         log('--yes: the user has said go; no prompts. Every automatic check still applies.')
     else:
@@ -415,6 +471,8 @@ def main(argv=None):
     parser.add_argument('--json', action='store_true')
     parser.add_argument('--allow-unknown-half', action='store_true')
     parser.add_argument('--settings-reset', action='store_true')
+    parser.add_argument('--force', action='store_true',
+                        help='flash a half even when it already runs the same build')
     parser.add_argument('--yes', action='store_true',
                         help='no prompts (only once the user has said go); a typing check replaces TYPES')
     parser.add_argument('--allow-profile-mix', action='store_true',
@@ -451,9 +509,10 @@ def main(argv=None):
             def ask_terminal(prompt):
                 print(prompt, end='', file=sys.stderr, flush=True)
                 return input()
-            flash(images, WindowsOS(), args.wait_seconds, log=log, ask=ask_terminal,
-                  settings_reset=args.settings_reset, allow_unknown_half=args.allow_unknown_half,
-                  allow_profile_mix=args.allow_profile_mix, yes=args.yes)
+            with FlashLock():
+                flash(images, WindowsOS(), args.wait_seconds, log=log, ask=ask_terminal,
+                      settings_reset=args.settings_reset, allow_unknown_half=args.allow_unknown_half,
+                      allow_profile_mix=args.allow_profile_mix, yes=args.yes, force=args.force)
     except (TimeoutError, subprocess.TimeoutExpired) as exc:
         code = 2
         log('TIMEOUT: ' + str(exc))

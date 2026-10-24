@@ -85,7 +85,7 @@ fn try_load_at<T: DeserializeOwned>(path: &Path, section: &str) -> Result<Option
 }
 
 /// Sections a profile may override (docs/profiles.md); the rest describe the machine.
-pub const PROFILED: &[&str] = &["screens", "lighting", "art", "art.cycle"];
+pub const PROFILED: &[&str] = &["screens", "lighting", "art", "art.cycle", "overlay"];
 
 /// The profiles a new install starts with; easy to change once the user decides (#90 row 13).
 pub const STARTERS: &[&str] = &["Work", "Game"];
@@ -263,6 +263,93 @@ pub fn set_rules(auto: bool, rules: &[Rule]) -> std::io::Result<()> {
     let list = Value::try_from(rules.to_vec()).map_err(std::io::Error::other)?;
     set(&mut table, "profiles.rules", list);
     write(&path, &table)
+}
+
+/// A file holding profiles to share: their overrides and the rules that switch to them, never
+/// the machine-specific settings (`.foxprofile`, TOML).
+pub fn export(names: &[String]) -> Result<String, String> {
+    let table = read(&path().ok_or("no settings directory")?)?;
+    export_from(&table, names)
+}
+
+fn export_from(table: &Table, names: &[String]) -> Result<String, String> {
+    let mut out = Table::new();
+    out.insert("format".into(), Value::String("foxglove-profile".into()));
+    out.insert("version".into(), Value::Integer(1));
+    for name in names {
+        let p = get(table, &format!("profiles.list.{name}")).ok_or(format!("no profile {name}"))?;
+        set(&mut out, &format!("profiles.{name}"), keep_profiled(p));
+    }
+    let rules: Vec<Rule> = rules_in(table).1.into_iter().filter(|r| names.contains(&r.profile)).collect();
+    if !rules.is_empty() {
+        out.insert("rules".into(), Value::try_from(rules).map_err(|e| e.to_string())?);
+    }
+    toml::to_string_pretty(&out).map_err(|e| e.to_string())
+}
+
+/// Only the profiled sections of a profile's table.
+fn keep_profiled(profile: &Value) -> Value {
+    let mut t = Table::new();
+    if let Some(src) = profile.as_table() {
+        for section in PROFILED {
+            if let Some(v) = get(src, section) {
+                set(&mut t, section, v.clone());
+            }
+        }
+    }
+    Value::Table(t)
+}
+
+/// Reads a `.foxprofile`: the profile names it holds, and which already exist here.
+pub fn import_names(text: &str) -> Result<(Vec<String>, Vec<String>), String> {
+    let (incoming, _) = parse_export(text)?;
+    let existing = profiles().0;
+    let names: Vec<String> = incoming.keys().cloned().collect();
+    let clashes = names.iter().filter(|n| existing.contains(n)).cloned().collect();
+    Ok((names, clashes))
+}
+
+fn parse_export(text: &str) -> Result<(Table, Vec<Rule>), String> {
+    let t: Table = text.parse().map_err(|e| format!("not a profile file: {e}"))?;
+    if get(&t, "format").and_then(Value::as_str) != Some("foxglove-profile") {
+        return Err("not a Foxglove profile file".into());
+    }
+    if get(&t, "version").and_then(Value::as_integer) != Some(1) {
+        return Err("made by a newer Foxglove".into());
+    }
+    let profiles = get(&t, "profiles").and_then(Value::as_table).cloned().unwrap_or_default();
+    let rules: Vec<Rule> = get(&t, "rules").cloned().map(Value::try_into).transpose().map_err(|e| e.to_string())?.unwrap_or_default();
+    Ok((profiles, rules))
+}
+
+/// Adds the profiles in a `.foxprofile`, replacing ones with the same name, and their rules.
+pub fn import(text: &str) -> Result<Vec<String>, String> {
+    let path = path().ok_or("no settings directory")?;
+    let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut table = upgrade(read(&path)?);
+    let names = import_into(&mut table, text)?;
+    write(&path, &table).map_err(|e| e.to_string())?;
+    drop(_guard);
+    announce(profiles().1.as_deref());
+    Ok(names)
+}
+
+fn import_into(table: &mut Table, text: &str) -> Result<Vec<String>, String> {
+    let (incoming, rules) = parse_export(text)?;
+    let mut names = Vec::new();
+    for (name, profile) in incoming {
+        if name.is_empty() || name.contains('.') {
+            return Err(format!("bad profile name {name:?}"));
+        }
+        set(table, &format!("profiles.list.{name}"), keep_profiled(&profile));
+        names.push(name);
+    }
+    let (auto, mut existing) = rules_in(table);
+    existing.retain(|r| !rules.iter().any(|n| n.program == r.program));
+    existing.extend(rules);
+    set(table, "profiles.auto", Value::Boolean(auto));
+    set(table, "profiles.rules", Value::try_from(existing).map_err(|e| e.to_string())?);
+    Ok(names)
 }
 
 /// Creates the starter profiles (empty) the first time and announces the active one. Called
@@ -449,5 +536,22 @@ mod tests {
         set(&mut t, "profiles.rules", Value::try_from(rules.clone()).unwrap());
         let text = toml::to_string(&t).unwrap();
         assert_eq!(rules_in(&text.parse().unwrap()), (false, rules));
+    }
+
+    #[test]
+    fn export_import_round_trip_without_machine_settings() {
+        let mut t: Table = toml::from_str(
+            "[connection.last]\nid = \"COM4\"\n[profiles.list.Game.screens]\nfps = 10\n[profiles.list.Game.connection]\nid = \"leak\"\n[[profiles.rules]]\nprogram = \"eldenring.exe\"\nprofile = \"Game\"\n",
+        )
+        .unwrap();
+        let text = export_from(&t, &["Game".into()]).unwrap();
+        assert!(text.contains("fps = 10") && text.contains("eldenring.exe"));
+        assert!(!text.contains("COM4") && !text.contains("leak"), "machine settings stay home: {text}");
+        let mut fresh = Table::new();
+        assert_eq!(import_into(&mut fresh, &text).unwrap(), vec!["Game".to_string()]);
+        assert_eq!(get(&fresh, "profiles.list.Game.screens.fps").and_then(Value::as_integer), Some(10));
+        assert_eq!(rules_in(&fresh).1.len(), 1);
+        assert!(import_into(&mut t, "format = \"other\"").is_err());
+        assert!(import_into(&mut t, "format = \"foxglove-profile\"\nversion = 2").is_err());
     }
 }

@@ -24,9 +24,6 @@ ZMK_EVENT_IMPL(raw_hid_sent_event);
 
 bool zmk_display_is_initialized(void) { return false; }
 struct k_work_q *zmk_display_work_q(void) { return &k_sys_work_q; }
-void host_panel_redraw(void) {}
-// The screen readback needs the nice!view; without it D7 06/07 get no reply here.
-void screen_snap_command(const uint8_t *d, int len) {}
 
 /* Replies: printed, and the last one kept for the driver */
 
@@ -126,6 +123,11 @@ static uint32_t arm(void) {
 static void driver(void) {
     note("hello: version, caps, panel timeout, build");
     SEND(0xD5, 0x01, 0x01);
+
+    note("screens: the descriptors, then one past the end");
+    for (uint8_t i = 0; i <= 2; i++) {
+        SEND(0xD5, 0x06, i);
+    }
 
     note("build info: left, right (no relay here), bad half");
     SEND(0xD7, 0x09, 0x00);
