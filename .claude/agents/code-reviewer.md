@@ -43,8 +43,10 @@ commit, push, or merge. The Planner owns the final merge decision.
   app, plugins, firmware or harness. Prefer OS/device events (HID reports,
   file/registry watchers, window/shell hooks, process handles, pipe/socket
   readiness). A poll or retry is acceptable only when (a) no event exists,
-  stated in the PR, (b) an event starts it, and (c) it stops on its own by an
-  attempt or time limit. One-shot deadlines/timeouts on a pending operation
+  stated in the PR, (b) an event starts it, and (c) an event stops it where one
+  exists (connected, window closed, device removed, operation done), with an
+  attempt or time limit as the fallback when no stop event exists. Check both
+  the start and the stop in review. One-shot deadlines/timeouts on a pending operation
   are fine; periodic status checks are not.
 - Require a meaningful `SAFETY` comment for every unsafe block. Check Win32
   handle ownership, validity, callback lifetimes, and exactly-once cleanup.
