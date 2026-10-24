@@ -8,6 +8,9 @@
 //!   bandit-wallpapers): each wallpaper has path substrings to match and its right art, either
 //!   a built-in set by name (selected, no push) or a library blob.
 //! - Which monitor to follow is a setting; by default the first one that matches.
+//! - Test hook: `FOXGLOVE_WALLPAPER_OVERRIDE=<file>` replaces Wallpaper Engine's config with
+//!   that file, which holds one wallpaper id or Wallpaper Engine path. It's watched the same
+//!   way, so rewriting it switches the wallpaper; the monitor setting doesn't apply.
 
 use std::path::PathBuf;
 
@@ -23,6 +26,36 @@ pub struct Wallpaper {
     #[serde(rename = "match")]
     pub matches: Vec<String>,
     pub right: Right,
+    /// Frames for the left panel, when the wallpaper has them.
+    #[serde(default)]
+    pub left: Option<Left>,
+}
+
+/// The wallpaper's left-panel animation: `frames` 1-bit frames of the panel's size in `bin`
+/// (1 = lit), played in `order` at `fps`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Left {
+    pub bin: String,
+    pub frames: usize,
+    pub fps: u32,
+    #[serde(default)]
+    pub order: Vec<usize>,
+}
+
+/// The frames of `left`, each `frame_bytes` long, in playing order; `None` if the file is
+/// missing or the wrong size.
+pub fn left_frames(left: &Left, frame_bytes: usize) -> Option<Vec<Vec<u8>>> {
+    let bytes = std::fs::read(super::art_library::folder()?.join(&left.bin)).ok()?;
+    frames_in_order(&bytes, left, frame_bytes)
+}
+
+fn frames_in_order(bytes: &[u8], left: &Left, frame_bytes: usize) -> Option<Vec<Vec<u8>>> {
+    if frame_bytes == 0 || bytes.len() != left.frames * frame_bytes {
+        return None;
+    }
+    let frames: Vec<Vec<u8>> = bytes.chunks(frame_bytes).map(<[u8]>::to_vec).collect();
+    let order: Vec<usize> = if left.order.is_empty() { (0..frames.len()).collect() } else { left.order.clone() };
+    order.iter().map(|&i| frames.get(i).cloned()).collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -90,7 +123,9 @@ pub fn find<'a>(
         .filter(|(m, _)| monitor.is_none_or(|want| want == m))
         .find_map(|(_, file)| {
             let file = file.to_lowercase();
-            index.iter().find(|w| w.matches.iter().any(|m| file.contains(&m.to_lowercase())))
+            index.iter().find(|w| {
+                w.id.eq_ignore_ascii_case(file.trim()) || w.matches.iter().any(|m| file.contains(&m.to_lowercase()))
+            })
         })
 }
 
@@ -122,10 +157,35 @@ pub fn config_path() -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
+/// The test hook's file, when `FOXGLOVE_WALLPAPER_OVERRIDE` is set.
+fn override_path() -> Option<PathBuf> {
+    std::env::var_os("FOXGLOVE_WALLPAPER_OVERRIDE").filter(|v| !v.is_empty()).map(PathBuf::from)
+}
+
+/// The file to watch and read: the test hook's, or Wallpaper Engine's config.
+fn source() -> Option<(PathBuf, bool)> {
+    override_path().map(|p| (p, true)).or_else(|| config_path().map(|p| (p, false)))
+}
+
+/// Each monitor's wallpaper from `text`; the override file is one entry with no monitor.
+fn on_screen(text: &str, overridden: bool) -> Vec<(String, String)> {
+    if overridden {
+        let w = text.trim_start_matches('\u{feff}').trim();
+        return if w.is_empty() { vec![] } else { vec![("override".into(), w.replace('\\', "/"))] };
+    }
+    selected(text)
+}
+
+/// The indexed wallpaper in `text` for the monitor setting.
+fn find_in(index: &[Wallpaper], text: &str, overridden: bool, monitor: Option<&str>) -> Option<Wallpaper> {
+    find(index, &on_screen(text, overridden), if overridden { None } else { monitor }).cloned()
+}
+
 /// The indexed wallpaper on screen now, if any.
 pub fn current(monitor: Option<&str>) -> Option<Wallpaper> {
-    let text = std::fs::read_to_string(config_path()?).ok()?;
-    find(&index(), &selected(&text), monitor).cloned()
+    let (path, overridden) = source()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    find_in(&index(), &text, overridden, monitor)
 }
 
 /// The monitors Wallpaper Engine has wallpapers on, for the setting.
@@ -141,7 +201,7 @@ pub fn start() {
     if super::repaint_trace::disabled("wallpaper") {
         return;
     }
-    let Some(config) = config_path() else { return };
+    let Some((config, overridden)) = source() else { return };
     super::services::spawn_named("wallpaper", move || {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let _watch = super::screens_watch::settings(
@@ -156,7 +216,7 @@ pub fn start() {
             let Ok(text) = std::fs::read_to_string(&config) else { continue };
             let index = index();
             let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
-            let Some(w) = find(&index, &selected(&text), monitor.as_deref()) else { continue };
+            let Some(w) = find_in(&index, &text, overridden, monitor.as_deref()) else { continue };
             if last.as_deref() == Some(w.id.as_str()) {
                 continue;
             }
@@ -164,6 +224,7 @@ pub fn start() {
             if let Some(h) = super::art_service::handle() {
                 h.wallpaper(w.clone());
             }
+            super::screens::wallpaper_changed();
         }
     });
 }
@@ -177,6 +238,32 @@ mod tests {
          "right":{"builtin":"Bandit_Idle","library":"hud.bin","bytes":10},"left":{"bin":"hud.left.bin","frames":1,"fps":0,"order":[0]}},
         {"id":"fury-stars","title":"Stars","workshop_id":null,"match":["projects/myprojects/bandit-fury-stars/"],
          "right":{"builtin":null,"library":"fury-stars.bin","bytes":10},"left":{"bin":"x","frames":1,"fps":0,"order":[0]}}]}"#;
+
+    #[test]
+    fn override_file_names_a_wallpaper_by_id_or_path() {
+        let index = parse_index(INDEX).unwrap();
+        let id = |text: &str| find_in(&index, text, true, Some("Monitor9")).map(|w| w.id);
+        assert_eq!(id("fury-stars\r\n").as_deref(), Some("fury-stars"));
+        assert_eq!(id("\u{feff}HUD").as_deref(), Some("hud"));
+        assert_eq!(id(r"C:\WE\projects\myprojects\bandit-hud\index.html").as_deref(), Some("hud"));
+        assert_eq!(id("nothing"), None);
+        assert_eq!(id(""), None);
+    }
+
+    #[test]
+    fn left_frames_parse_and_play_in_order() {
+        let i: Index = serde_json::from_str(INDEX).unwrap();
+        let left = i.wallpapers[0].left.clone().unwrap();
+        assert_eq!((left.bin.as_str(), left.frames, left.fps), ("hud.left.bin", 1, 0));
+        let left = Left { bin: "x".into(), frames: 3, fps: 4, order: vec![2, 0, 2] };
+        let bytes = [0u8, 0, 1, 1, 2, 2];
+        assert_eq!(frames_in_order(&bytes, &left, 2), Some(vec![vec![2, 2], vec![0, 0], vec![2, 2]]));
+        // Wrong size or an order past the frames: no animation.
+        assert_eq!(frames_in_order(&bytes[..5], &left, 2), None);
+        assert_eq!(frames_in_order(&bytes, &Left { order: vec![3], ..left.clone() }, 2), None);
+        // No order: every frame once.
+        assert_eq!(frames_in_order(&bytes, &Left { order: vec![], ..left }, 2).map(|f| f.len()), Some(3));
+    }
 
     const CONFIG: &str = r#"{"fuchs":{"general":{"wallpaperconfig":{"selectedwallpapers":{
         "//?/DISPLAY#DEL40EA#x":{"file":"C:/Program Files (x86)/Steam/steamapps/common/wallpaper_engine/projects/myprojects/bandit-fury-stars/index.html"},
