@@ -24,6 +24,8 @@ pub mod api;
 pub mod art_library;
 pub mod den;
 pub mod den_ui;
+pub mod kit_trust;
+pub mod kits;
 pub mod art_manifest;
 mod art_preview;
 pub mod art_ui;
@@ -39,3 +41,5 @@ pub(crate) mod device_watch;
 
 pub mod update;
 pub mod wallpaper;
+pub mod via_host;
+pub mod via_ui;

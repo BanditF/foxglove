@@ -2,10 +2,11 @@
 //!
 //! - `foxglove-cli status`: the app's version, the keyboards it sees, and their state facts.
 //! - `foxglove-cli facts [pattern]`: facts matching a pattern (default `*`).
+//! - `foxglove-cli profile [name|base]`: list the profiles, or switch to one.
 
 use std::io::{BufRead, BufReader, Write};
 
-use foxglove_kit_api::methods::{Devices, FactList, InitializeResult};
+use foxglove_kit_api::methods::{Devices, FactList, InitializeResult, Profiles};
 use foxglove_kit_api::rpc::{Outcome, Request, Response};
 use serde_json::{json, Value};
 
@@ -59,7 +60,7 @@ fn run(args: &[String]) -> Result<(), String> {
             json!({
                 "api": foxglove_kit_api::API_VERSION.to_string(),
                 "client": {"name": "foxglove-cli", "version": env!("CARGO_PKG_VERSION")},
-                "permissions": ["devices.read", "facts.read:*"],
+                "permissions": ["devices.read", "facts.read:*", "profiles.write"],
             }),
         )?)
         .map_err(|e| e.to_string())?;
@@ -98,7 +99,22 @@ fn run(args: &[String]) -> Result<(), String> {
                     println!("{} = {}", f.key, fact_text(&serde_json::to_value(&f.value).unwrap()));
                 }
             }
-            other => return Err(format!("unknown command {other:?}; try status or facts [pattern]")),
+            "profile" => {
+                let profiles: Profiles = match args.get(1).map(String::as_str) {
+                    None => serde_json::from_value(api.call("profiles.list", json!({}))?),
+                    Some(name) => {
+                        let name = (!name.eq_ignore_ascii_case("base")).then_some(name);
+                        serde_json::from_value(api.call("profiles.activate", json!({"name": name}))?)
+                    }
+                }
+                .map_err(|e| e.to_string())?;
+                let active = profiles.active.as_deref();
+                println!("{} Base settings", if active.is_none() { "*" } else { " " });
+                for n in &profiles.names {
+                    println!("{} {n}", if active == Some(n.as_str()) { "*" } else { " " });
+                }
+            }
+            other => return Err(format!("unknown command {other:?}; try status, facts [pattern] or profile [name|base]")),
         }
         Ok(())
     }
