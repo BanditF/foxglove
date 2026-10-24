@@ -26,6 +26,8 @@ pub enum Permission {
     KeyEvents,
     /// Send raw HID reports with unassigned first bytes. Warned like `key.events`.
     HidRaw,
+    /// Switch Foxglove's profile (API 1.1).
+    ProfilesWrite,
     /// Declared only: the Kit uses the network. Kits without it run without network access
     /// where the OS allows (AppContainer on Windows).
     Net,
@@ -51,6 +53,7 @@ impl Permission {
             Permission::ArtWrite => "change the right screen's art".into(),
             Permission::KeyEvents => "see every key you press".into(),
             Permission::HidRaw => "send raw messages to your keyboard".into(),
+            Permission::ProfilesWrite => "switch your Foxglove profile".into(),
             Permission::Net => "use the network".into(),
             Permission::Files => "read and write your files".into(),
         }
@@ -89,6 +92,7 @@ impl TryFrom<String> for Permission {
                 "art.write" => Permission::ArtWrite,
                 "key.events" => Permission::KeyEvents,
                 "hid.raw" => Permission::HidRaw,
+                "profiles.write" => Permission::ProfilesWrite,
                 "net" => Permission::Net,
                 "files" => Permission::Files,
                 _ => return Err(format!("unknown permission {text:?}")),
@@ -109,6 +113,7 @@ impl From<Permission> for String {
             Permission::ArtWrite => "art.write".into(),
             Permission::KeyEvents => "key.events".into(),
             Permission::HidRaw => "hid.raw".into(),
+            Permission::ProfilesWrite => "profiles.write".into(),
             Permission::Net => "net".into(),
             Permission::Files => "files".into(),
         }

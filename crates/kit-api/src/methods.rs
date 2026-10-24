@@ -212,6 +212,19 @@ pub struct ArtSelectParams {
     pub target: ArtTarget,
 }
 
+/// Foxglove's profiles and the active one (`None` = the base settings).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Profiles {
+    pub names: Vec<String>,
+    pub active: Option<String>,
+}
+
+/// Switches profile; `name` null = the base settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ActivateProfileParams {
+    pub name: Option<String>,
+}
+
 /// Event (needs `key.events`): one key went down or up.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct KeyEvent {
@@ -266,6 +279,8 @@ pub const METHODS: &[Method] = &[
     Method { name: "screens.panel_override", kind: Kind::Call, permission: Some("screens.write"), params: schema!(PanelOverrideParams), result: Some(schema!(Empty)) },
     Method { name: "art.status", kind: Kind::Call, permission: Some("devices.read"), params: schema!(DeviceParams), result: Some(schema!(ArtStatus)) },
     Method { name: "art.select", kind: Kind::Call, permission: Some("art.write"), params: schema!(ArtSelectParams), result: Some(schema!(ArtStatus)) },
+    Method { name: "profiles.list", kind: Kind::Call, permission: None, params: schema!(Empty), result: Some(schema!(Profiles)) },
+    Method { name: "profiles.activate", kind: Kind::Call, permission: Some("profiles.write"), params: schema!(ActivateProfileParams), result: Some(schema!(Profiles)) },
     Method { name: "key.event", kind: Kind::Event, permission: Some("key.events"), params: schema!(KeyEvent), result: None },
 ];
 

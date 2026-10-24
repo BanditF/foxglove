@@ -45,6 +45,7 @@ same messages.
 | `screens.panel_override` | call | `screens.write` |
 | `art.status` / `art.select` | call | `devices.read` / `art.write` |
 | `key.event` | event | `key.events` (warned: a keylogger) |
+| `profiles.list` / `profiles.activate` | call | — / `profiles.write` (API 1.1) |
 
 The params and results are in the schema. Notes:
 
