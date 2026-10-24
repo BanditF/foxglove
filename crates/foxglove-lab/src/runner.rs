@@ -611,6 +611,73 @@ impl<'a, D: Device> Runner<'a, D> {
                     "HELLO caps {caps:#x}, profile {profile:?}, split-guard drops {drops}"
                 ))
             }
+            Step::SplitGuardTest(g) => {
+                let hello = |runner: &Self| -> Result<(u8, u8)> {
+                    let raw = runner.device.request(
+                        &protocol::hello(),
+                        protocol::PANEL,
+                        protocol::panel::HELLO,
+                        Duration::from_millis(500),
+                    )?;
+                    Ok((raw[7], raw[31])) // right link, guard drops since boot
+                };
+                let (link, before) = hello(self)?;
+                ensure!(
+                    link == 2,
+                    "right relay not up before the test (right link {link})"
+                );
+                let r = self.device.request(
+                    &[protocol::SETTINGS, 0x0B],
+                    protocol::SETTINGS,
+                    0x0B,
+                    Duration::from_secs(2),
+                )?;
+                match r[2] {
+                    0 => {}
+                    4 => {
+                        return Err(Blocked(
+                            "GUARD_TEST not built in (GA build, or no split guard)".into(),
+                        )
+                        .into())
+                    }
+                    s => bail!("GUARD_TEST answered status {s}"),
+                }
+                let started = Instant::now();
+                let end = started + Duration::from_millis(g.within_ms);
+                let (mut dropped_at, mut lowest) = (None, 2u8);
+                loop {
+                    self.check()?;
+                    std::thread::sleep(Duration::from_millis(500));
+                    // HELLO can time out while the split link is being rebuilt; keep waiting.
+                    if let Ok((link, drops)) = hello(self) {
+                        if link < 2 && dropped_at.is_none() {
+                            dropped_at = Some(started.elapsed());
+                        }
+                        lowest = lowest.min(link);
+                        if let (2, true, Some(dropped)) =
+                            (link, drops == before.wrapping_add(1), dropped_at)
+                        {
+                            return Ok(format!(
+                                "guard drops {before} -> {drops}; link dropped after {:.1} s (lowest {lowest}), relay back after {:.1} s",
+                                dropped.as_secs_f32(),
+                                started.elapsed().as_secs_f32()
+                            ));
+                        }
+                        ensure!(
+                            Instant::now() < end,
+                            "after {} ms: right link {link}, guard drops {before} -> {drops}, link dropped: {}",
+                            g.within_ms,
+                            dropped_at.is_some()
+                        );
+                    } else {
+                        ensure!(
+                            Instant::now() < end,
+                            "no HELLO reply for {} ms",
+                            g.within_ms
+                        );
+                    }
+                }
+            }
             Step::ExpectNotBuiltIn(n) => {
                 let (report, cmd): (&[u8], u8) = match n.command.as_str() {
                     "position" => (&[protocol::SETTINGS, POSITION, 1, 0], POSITION),
