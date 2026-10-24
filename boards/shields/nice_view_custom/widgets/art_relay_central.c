@@ -864,6 +864,7 @@ SYS_INIT(art_relay_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 
 static int16_t rgb_sent = -1; // last on | follow << 1 the right half confirmed, -1 = unknown
 static uint8_t rgb_retries;
+static atomic_t hsb_sent = ATOMIC_INIT(-1); // the PC colour the right last acknowledged (#266)
 
 static void rgb_sync_cb(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -929,7 +930,6 @@ void art_relay_rgb_kick(void) {
 #define RGB_VERIFY_AFTER K_MSEC(300) // ZMK's split write, then the right's next underglow tick
 
 static atomic_t hsb_want = ATOMIC_INIT(-1); // hue << 16 | saturation << 8 | brightness, -1 none
-static atomic_t hsb_sent = ATOMIC_INIT(-1);
 static uint8_t hsb_retries;
 
 static void hsb_cb(struct k_work *work) {
