@@ -16,6 +16,7 @@ pub fn start() {
     if super::repaint_trace::disabled("api") {
         return;
     }
+    restore_on_connect();
     #[cfg(windows)]
     super::services::spawn_named("api-pipe", || {
         let result = foxglove_plugin_host::pipe::listen(|| Context {
@@ -27,6 +28,29 @@ pub fn start() {
         });
         if let Err(e) = result {
             eprintln!("Foxglove API: the pipe isn't available: {e}");
+        }
+    });
+}
+
+/// A keyboard (re)connecting gets back lights whose restore didn't take (#293): the retry is
+/// started by the connection and stopped by the readback.
+fn restore_on_connect() {
+    let events = super::devices::bus().subscribe(false);
+    super::services::spawn_named("lease-restore", move || {
+        for e in events {
+            if e.event != foxglove_devices::DeviceEvent::Connected {
+                continue;
+            }
+            let device = e.device.to_string();
+            super::lighting_leases::with(|a| {
+                let shown = with_device(&device, |d| {
+                    let light = d.lighting().ok_or_else(unsupported)?;
+                    a.connected(&device, light).map_err(device_error)
+                });
+                if let Err(e) = shown {
+                    eprintln!("Foxglove: giving back {device}'s lights: {}", e.message);
+                }
+            });
         }
     });
 }

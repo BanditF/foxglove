@@ -4,7 +4,10 @@
 //! - A lease names a colour (and effect) and a priority; the lights show the highest-priority
 //!   lease, the newest among equals.
 //! - When the first lease on a device starts, its lights as they were are kept; when the last
-//!   one ends they come back.
+//!   one ends they come back: on/off, colour, brightness, effect and speed, each read back
+//!   (#293). The snapshot is kept until the keyboard shows it again, so a restore that didn't
+//!   take is tried again when the keyboard next connects, and a new lease meanwhile doesn't
+//!   take a half-restored state for the original.
 //! - A plugin's leases end when it releases them or its connection closes (stopped, crashed).
 //! - Every change is read back and sent again if the keyboard didn't take it (a few times).
 
@@ -36,7 +39,7 @@ pub struct Lease {
 #[derive(Default)]
 pub struct Arbiter {
     leases: Vec<Lease>,
-    /// Each leased device's lights from before its first lease.
+    /// Each leased device's lights from before its first lease, until they're shown again.
     base: HashMap<String, LightingState>,
     next: u64,
 }
@@ -76,37 +79,80 @@ impl Arbiter {
         devices
     }
 
-    fn target(&mut self, device: &str) -> Target<'_> {
-        if self.winner(device).is_some() {
-            return Target::Lease(self.winner(device).expect("just checked"));
+    fn target(&self, device: &str) -> Target<'_> {
+        if let Some(l) = self.winner(device) {
+            return Target::Lease(l);
         }
-        match self.base.remove(device) {
-            Some(base) => Target::Restore(base),
+        match self.base.get(device) {
+            Some(base) => Target::Restore(base.clone()),
             None => Target::Nothing,
         }
     }
 
     /// Shows the winning lease, or the lights from before the first lease once none is left.
+    /// The snapshot goes only once the keyboard shows it.
     pub fn apply(&mut self, device: &str, light: &dyn Lighting) -> Result<(), DeviceError> {
         match self.target(device) {
-            Target::Lease(l) => show(light, true, l.hue, l.sat, l.brightness, &l.effect, false),
+            Target::Lease(l) => show(light, &Want::lease(l), false).map(|_| ()),
             // Giving the lights back waits for both halves of a split keyboard.
-            Target::Restore(s) => show(light, s.on, s.hue, s.sat, s.brightness, &s.effect.id, true),
+            Target::Restore(s) => {
+                if show(light, &Want::restore(&s), true)? {
+                    self.base.remove(device);
+                } else {
+                    eprintln!("Foxglove: {device}'s lights didn't come back as they were; trying again when it next connects");
+                }
+                Ok(())
+            }
             Target::Nothing => Ok(()),
         }
+    }
+
+    /// The device (re)connected: a restore that didn't take is tried again (#293). Started by
+    /// the connection, stopped by the readback or [`RESENDS`].
+    pub fn connected(&mut self, device: &str, light: &dyn Lighting) -> Result<(), DeviceError> {
+        if self.winner(device).is_none() && self.base.contains_key(device) {
+            return self.apply(device, light);
+        }
+        Ok(())
+    }
+}
+
+/// What the lights should show, and what a readback has to match.
+struct Want<'a> {
+    on: bool,
+    hue: u16,
+    sat: u8,
+    brightness: u8,
+    effect: &'a str,
+    /// A restore puts the speed back too; a lease leaves it.
+    speed: Option<u8>,
+}
+
+impl<'a> Want<'a> {
+    fn lease(l: &'a Lease) -> Self {
+        Want { on: true, hue: l.hue, sat: l.sat, brightness: l.brightness, effect: &l.effect, speed: None }
+    }
+
+    fn restore(s: &'a LightingState) -> Self {
+        Want { on: s.on, hue: s.hue, sat: s.sat, brightness: s.brightness, effect: &s.effect.id, speed: Some(s.speed) }
     }
 }
 
 /// How often a change the keyboard didn't take is sent again.
 const RESENDS: u32 = 3;
 
-fn shows(state: &LightingState, on: bool, hue: u16, sat: u8) -> bool {
+fn shows(state: &LightingState, want: &Want) -> bool {
     let near = |a: u16, b: u16, wrap: u16| {
         let d = a.abs_diff(b);
         d.min(wrap.saturating_sub(d)) <= 2
     };
     // The colour counts even with the lights off: the keyboard keeps it for when they come back.
-    state.on == on && near(state.hue, hue, 360) && near(state.sat.into(), sat.into(), 1000)
+    state.on == want.on
+        && near(state.hue, want.hue, 360)
+        && near(state.sat.into(), want.sat.into(), 1000)
+        && near(state.brightness.into(), want.brightness.into(), 1000)
+        && state.effect.id == want.effect
+        && want.speed.is_none_or(|s| state.speed == s)
 }
 
 /// How long to wait for a split keyboard's other half to catch up (1.7 s typical, 5.9 s seen).
@@ -127,25 +173,30 @@ fn settled(light: &dyn Lighting) -> Result<LightingState, DeviceError> {
 
 /// Sends the lights and reads them back, sending again (a few times) if the keyboard didn't
 /// take them; with `settle`, also until a split keyboard's other half agrees (re-sent half way
-/// through [`SETTLE`] if it still hasn't).
-fn show(light: &dyn Lighting, on: bool, hue: u16, sat: u8, brightness: u8, effect: &str, settle: bool) -> Result<(), DeviceError> {
+/// through [`SETTLE`] if it still hasn't). True once the readback shows them.
+fn show(light: &dyn Lighting, want: &Want, settle: bool) -> Result<bool, DeviceError> {
     let send = || -> Result<(), DeviceError> {
-        light.set_on(on)?;
-        light.set_color(hue, sat, brightness)?;
-        light.set_effect(Effect { id: effect.into(), params: vec![] })
+        light.set_on(want.on)?;
+        light.set_color(want.hue, want.sat, want.brightness)?;
+        light.set_effect(Effect { id: want.effect.into(), params: vec![] })?;
+        match want.speed.map(|s| light.set_speed(s)) {
+            // Lights without a speed control have nothing to put back.
+            Some(Err(DeviceError::Unsupported)) | None => Ok(()),
+            Some(r) => r,
+        }
     };
     send()?;
     let start = std::time::Instant::now();
     let mut resent = 0;
     loop {
-        let Ok(s) = light.state() else { return Ok(()) };
-        let left_ok = shows(&s, on, hue, sat);
+        let Ok(s) = light.state() else { return Ok(false) };
+        let left_ok = shows(&s, want);
         if left_ok && (!settle || s.settled) {
-            return Ok(());
+            return Ok(true);
         }
         let late_right = left_ok && start.elapsed() >= SETTLE / 2;
         if resent >= RESENDS || (settle && start.elapsed() >= SETTLE) || (!settle && left_ok) {
-            return Ok(());
+            return Ok(left_ok && !settle);
         }
         if !left_ok || late_right {
             resent += 1;
@@ -173,6 +224,8 @@ mod tests {
     struct Fake {
         state: RefCell<LightingState>,
         lose: RefCell<u32>,
+        /// Keeps the effect from changing (a keyboard that won't take it).
+        stuck_effect: RefCell<bool>,
     }
 
     impl Fake {
@@ -180,6 +233,7 @@ mod tests {
             Fake {
                 state: RefCell::new(LightingState { on: false, hue: 160, sat: 50, brightness: 40, effect: Effect { id: "3".into(), params: vec![] }, speed: 1, settled: true }),
                 lose: RefCell::new(0),
+                stuck_effect: RefCell::new(false),
             }
         }
         fn lost(&self) -> bool {
@@ -209,7 +263,13 @@ mod tests {
             Ok(())
         }
         fn set_effect(&self, effect: Effect) -> foxglove_devices::Result<()> {
-            self.state.borrow_mut().effect = effect;
+            if !*self.stuck_effect.borrow() {
+                self.state.borrow_mut().effect = effect;
+            }
+            Ok(())
+        }
+        fn set_speed(&self, speed: u8) -> foxglove_devices::Result<()> {
+            self.state.borrow_mut().speed = speed;
             Ok(())
         }
     }
@@ -240,8 +300,36 @@ mod tests {
             a.apply(&d, &kb).unwrap();
         }
         let s = kb.state.borrow().clone();
-        assert_eq!((s.on, s.hue, s.sat, s.effect.id.as_str()), (false, 160, 50, "3"));
+        assert_eq!((s.on, s.hue, s.sat, s.brightness, s.effect.id.as_str(), s.speed), (false, 160, 50, 40, "3", 1));
         assert!(a.leases.is_empty() && a.base.is_empty());
+    }
+
+    #[test]
+    fn speed_comes_back_and_a_restore_that_didnt_take_is_kept_for_the_next_connection() {
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        a.add(lease(1, Priority::Normal, 0), &kb).unwrap();
+        kb.state.borrow_mut().speed = 4; // someone changed it meanwhile
+        // The keyboard won't take the effect: the snapshot stays.
+        *kb.stuck_effect.borrow_mut() = true;
+        for d in a.end(|_| true) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(kb.state.borrow().speed, 1, "speed restored");
+        assert!(a.base.contains_key("kb"), "kept: the effect didn't come back");
+        // A new lease meanwhile keeps the original, not the half-restored state.
+        a.add(lease(2, Priority::Normal, 120), &kb).unwrap();
+        assert_eq!(a.base["kb"].effect.id, "3");
+        for d in a.end(|_| true) {
+            a.apply(&d, &kb).unwrap();
+        }
+        // It connects again and takes it now.
+        *kb.stuck_effect.borrow_mut() = false;
+        a.connected("kb", &kb).unwrap();
+        assert_eq!(kb.state.borrow().effect.id, "3");
+        assert!(a.base.is_empty());
+        // Nothing to do on a later connection.
+        a.connected("kb", &kb).unwrap();
     }
 
     #[test]
