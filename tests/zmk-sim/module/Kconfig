@@ -1,0 +1,21 @@
+# Host-link protocol case (tests/zmk-sim/hostlink): builds the real host_link.c, test_hooks.c and
+# half_marker.c with a driver that plays the PC. The symbols below come from the nice!view shield
+# and the Raw HID module on the board; the simulator loads neither.
+config FOXGLOVE_SIM_HOSTLINK
+    bool "Simulator: host-link protocol case"
+
+if FOXGLOVE_SIM_HOSTLINK
+
+config RAW_HID_REPORT_SIZE
+    int
+    default 32
+
+config NICE_VIEW_HOST_PANEL_TIMEOUT_S
+    int
+    default 0
+
+config FOXGLOVE_TEST_HOOKS
+    bool "Test hooks (as in dev firmware)"
+    default y
+
+endif

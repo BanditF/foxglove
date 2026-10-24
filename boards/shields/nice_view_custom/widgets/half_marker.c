@@ -4,6 +4,9 @@
 #include <zephyr/toolchain.h>
 #include <zephyr/sys/util.h>
 
+// The half that talks to the PC: a split central, or a keyboard that isn't split at all.
+#define FOXGLOVE_CENTRAL (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
+
 #include "half_marker.h"
 
 #ifndef FOXGLOVE_BUILD_SHA
@@ -15,7 +18,7 @@
 #define FOXGLOVE_FW_MINOR 0
 #define FOXGLOVE_FW_PATCH 0
 #endif
-#if IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
+#if FOXGLOVE_CENTRAL
 #define FOXGLOVE_HALF "left"
 #else
 #define FOXGLOVE_HALF "right"
