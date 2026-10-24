@@ -165,6 +165,11 @@ impl Kit {
         Ok(self.call_as::<Devices>("devices.list", json!({}))?.devices)
     }
 
+    /// A device's lights as they are. Needs `devices.read`.
+    pub fn lighting_state(&self, device: &str) -> Result<LightingState> {
+        self.call_as("lighting.state", json!({ "device": device }))
+    }
+
     /// Changes a device's lights (only what's given). Needs `lighting.write`.
     pub fn set_lighting(&self, params: &SetLightingParams) -> Result<()> {
         self.call("lighting.set", serde_json::to_value(params).expect("serializable")).map(|_| ())
