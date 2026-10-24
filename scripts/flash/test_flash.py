@@ -553,3 +553,18 @@ class HistoryMatchesConsoleTests(unittest.TestCase):
         backend.build_info = lambda half: next(answers)
         clock = Clock()
         self.assertTrue(f.verify_build('right', 'abc1234', backend, lambda m: None, clock.clock, clock.sleep))
+
+
+class NoFocusTests(unittest.TestCase):
+    def test_typing_not_checked_is_not_a_failure(self):
+        backend = FakeOS()
+        backend.types = {'left': None}
+        clock = Clock()
+        logs = []
+        # It carries on to the right (whose bootloader never appears in this fake: timeout there).
+        with self.assertRaises(TimeoutError) as ctx:
+            f.flash({'left': uf2(), 'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 2, stdin=io.StringIO(''),
+                    ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
+        self.assertIn('right bootloader', str(ctx.exception))
+        self.assertTrue(any('typing not checked' in m for m in logs))
+        self.assertEqual(len(backend.writes), 1)
