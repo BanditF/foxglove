@@ -27,6 +27,9 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
     ${FOXGLOVE_WIDGETS}/half_marker.c
     hostlink_sim.c
   )
+  if(CONFIG_FOXGLOVE_SIM_PANEL_STREAM)
+    zephyr_library_sources(panel_stream_sim.c)
+  endif()
   if(CONFIG_FOXGLOVE_TEST_HOOKS)
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/test_hooks.c)
   endif()
