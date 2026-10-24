@@ -151,8 +151,10 @@
  *      Per-LED colours for both halves (#272, FOXGLOVE_HOST_FRAMES): lamps numbered as the
  *      LampArray's, 0-20 left and 21-41 right; a frame is 5 reports, the last with flags bit 0
  *      SHOW. Bit 1 RELEASE gives the lights back. The first frame takes the lights from ZMK's
- *      effects; with no frame for FOXGLOVE_HOST_FRAMES_TIMEOUT_S (3 s) they go back. The right
- *      draws at most 10 frames a second, newest first, the last of a burst acknowledged.
+ *      effects, and they stay until RELEASE, a USB unplug or an endpoint change: no keep-alive.
+ *      The right draws at most 10 frames a second, newest first, the last of a burst
+ *      acknowledged. Whenever the owner changes, D7 8C 00 owner comes unsolicited (after host
+ *      traffic), so the PC can wait for a LampArray host to let go without polling.
  *      Status: 0 ok, 1 busy (a LampArray host has the lights), 4 not built in, 5 bad request.
  *      Owner: 0 none, 1 LampArray USB, 2 LampArray BLE, 3 host link.
  *   0B GUARD_TEST (test hooks + split guard only)        reply: D7 8B, status
@@ -202,6 +204,9 @@ void host_link_build_info_reply(uint8_t status, uint8_t half,
 
 // rgb_idle.c, on the left: the underglow went on or off.
 void host_link_rgb_changed(void);
+
+// lamparray.c (FOXGLOVE_HOST_FRAMES): the lights' owner changed; sends D7 8C 00 owner.
+void host_link_lights_owner(int owner);
 
 // Called by relay connection/discovery callbacks; queues a report only after host traffic.
 void host_link_art_status(void);

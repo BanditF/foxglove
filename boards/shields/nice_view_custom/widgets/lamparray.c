@@ -29,6 +29,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "art_relay.h"
 #include "lamp_strip.h"
 #include "lamparray.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+#include "host_link.h"
+#endif
 
 #define LOGICAL_MAX_U16 0x27, 0xff, 0xff, 0x00, 0x00
 #define LOGICAL_MAX_I32 0x27, 0xff, 0xff, 0xff, 0x7f
@@ -160,7 +163,12 @@ static void show(void) {
 }
 
 static void set_owner(int t) {
-    atomic_set(&owner, t);
+    int was = atomic_set(&owner, t);
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+    if (was != t) {
+        host_link_lights_owner(t); // the PC hears when a LampArray host lets go (#272)
+    }
+#endif
     lamp_strip_host(t != 0);
     show();
 }
@@ -292,10 +300,8 @@ int lamparray_owner(void) { return atomic_get(&owner); }
 /* SET_FRAME (#272): the host link as a third transport */
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
-// A crashed or unplugged app never leaves the keyboard on its last frame.
-static void frames_timeout_cb(struct k_work *work) { lamparray_release(LAMPARRAY_HOSTLINK); }
-static K_WORK_DELAYABLE_DEFINE(frames_timeout, frames_timeout_cb);
-
+// Frames hold until RELEASE or the link goes (USB unplugged, another endpoint), like the panel
+// (PANEL_HOLD): no keep-alive, so a static frame costs nothing (#272, the no-polling rule).
 int lamparray_frame(uint8_t start, int count, const uint8_t *rgb, bool draw) {
     if (count < 0 || start + count > LAMP_COUNT) {
         return -EINVAL;
@@ -307,7 +313,6 @@ int lamparray_frame(uint8_t start, int count, const uint8_t *rgb, bool draw) {
     for (int i = 0; i < count; i++) {
         set_rgb(start + i, rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]);
     }
-    k_work_reschedule(&frames_timeout, K_SECONDS(CONFIG_FOXGLOVE_HOST_FRAMES_TIMEOUT_S));
     if (cur == 0) {
         set_owner(LAMPARRAY_HOSTLINK); // takes the strips, then draws
     } else if (draw) {

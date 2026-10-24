@@ -452,7 +452,21 @@ static void conn_state_event_cb(struct k_work *work) {
 }
 static K_WORK_DELAYABLE_DEFINE(conn_state_event_work, conn_state_event_cb);
 
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+void host_link_lights_owner(int owner) {
+    if (atomic_get(&host_seen)) {
+        uint8_t r[4] = {HOST_LINK_SETTINGS, 0x80 | SETTING_FRAME, 0, owner};
+        reply(r, sizeof(r));
+    }
+}
+#endif
+
 static int conn_state_listener(const zmk_event_t *eh) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+    if (as_zmk_endpoint_changed(eh) != NULL) {
+        lamparray_release(LAMPARRAY_HOSTLINK); // the frames came over the old endpoint
+    }
+#endif
     if (atomic_get(&host_seen)) {
         k_work_reschedule(&conn_state_event_work, CONN_STATE_SETTLE);
     }
