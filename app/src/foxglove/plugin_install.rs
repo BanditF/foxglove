@@ -343,14 +343,19 @@ mod tests {
 
     #[test]
     fn autoinstall_only_in_dev_mode_and_a_test_config_dir() {
-        let real = Path::new(r"C:\Users\u\AppData\Roaming\Foxglove\config");
+        // Built with joins, so the paths are real ones on Linux too (CI).
+        let roaming = PathBuf::from(if cfg!(windows) { r"C:\Users\u\AppData\Roaming" } else { "/home/u/.config" });
+        let real = roaming.join("Foxglove").join("config");
+        let real = real.as_path();
         let test = std::env::temp_dir().join("foxglove-lab-1");
         assert!(autoinstall_allowed(true, Some(&test), Some(real)).is_ok());
         assert!(autoinstall_allowed(false, Some(&test), Some(real)).is_err(), "needs developer mode");
         assert!(autoinstall_allowed(true, None, Some(real)).is_err(), "needs a config dir");
         assert!(autoinstall_allowed(true, Some(real), Some(real)).is_err(), "never the real folder");
-        let upper = Path::new(r"c:\users\u\appdata\roaming\foxglove");
-        assert!(autoinstall_allowed(true, Some(upper), Some(real)).is_err(), "nor the folder above it");
+        assert!(autoinstall_allowed(true, Some(&roaming.join("Foxglove")), Some(real)).is_err(), "nor the folder above it");
+        // Windows paths ignore case.
+        #[cfg(windows)]
+        assert!(autoinstall_allowed(true, Some(Path::new(r"c:\users\u\appdata\roaming\foxglove")), Some(real)).is_err());
     }
 
     #[test]
