@@ -52,7 +52,7 @@ fn sha() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 fn firmware(h: digitalis::protocol::Hello) -> serde_json::Value {
-    serde_json::json!({"hello_version":h.version,"panel_width":h.width,"panel_height":h.height,"right_link":h.right_link,"right_battery":h.right_battery,"discovery":h.discovery,"discovery_tries":h.discovery_tries,"debug":h.debug,"capabilities":h.capabilities,"firmware_sha":null,"note":"HELLO does not advertise firmware SHA, refusal, position or screen support"})
+    serde_json::json!({"hello_version":h.version,"panel_width":h.width,"panel_height":h.height,"right_link":h.right_link,"right_battery":h.right_battery,"discovery":h.discovery,"discovery_tries":h.discovery_tries,"debug":h.debug,"capabilities":h.capabilities})
 }
 fn connect(product: Option<String>) -> Result<Link> {
     Link::hid(Match {
@@ -94,6 +94,11 @@ fn main() -> Result<std::process::ExitCode> {
             std::process::ExitCode::SUCCESS
         });
     }
+    let suite_name = if let Command::Run { suite, .. } = &cli.command {
+        suite.clone()
+    } else {
+        String::new()
+    };
     let suite = if let Command::Run { suite, .. } = &cli.command {
         let path = if suite.ends_with(".toml") || suite.contains(['/', '\\']) {
             PathBuf::from(suite)
@@ -159,13 +164,13 @@ fn main() -> Result<std::process::ExitCode> {
         source: format!("No cached IDs: {e:#}; named invokes will fail safely"),
         ..Default::default()
     });
-    let mut report = Report {
-        schema: 1,
-        environment: BTreeMap::from([
+    let mut report = Report::new(
+        &suite_name,
+        now.to_rfc3339(),
+        BTreeMap::from([
             ("utc".into(), now.to_rfc3339()),
             ("git_sha".into(), git),
             ("runner_version".into(), env!("CARGO_PKG_VERSION").into()),
-            ("app_version".into(), "unknown (app is not queried)".into()),
             (
                 "app_manifest_version".into(),
                 toml::from_str::<toml::Value>(include_str!("../../../app/Cargo.toml"))?
@@ -179,9 +184,8 @@ fn main() -> Result<std::process::ExitCode> {
             ("arch".into(), std::env::consts::ARCH.into()),
             ("local_ids".into(), catalog.source.clone()),
         ]),
-        firmware: serde_json::Value::Null,
-        cases: Vec::new(),
-    };
+    );
+    report.app = foxglove_lab::host::app_info();
     let connected = (|| -> Result<_> {
         let link = connect(cli.product)?;
         let c = link.wait_connected(Duration::from_secs(10))?;
@@ -191,7 +195,21 @@ fn main() -> Result<std::process::ExitCode> {
     })();
     match connected {
         Ok((device, hello, product)) => {
-            report.firmware = firmware(hello);
+            report.firmware.hello = firmware(hello);
+            if hello.capabilities & digitalis::protocol::capabilities::BUILD_INFO != 0 {
+                let build = |half| {
+                    settings::build_info(&device, half).ok().map(|b| {
+                        let v = b.version;
+                        foxglove_lab::report::Build {
+                            version: format!("{}.{}.{}", v.major, v.minor, v.patch),
+                            profile: if v.profile == 1 { "ga" } else { "dev" }.into(),
+                            sha: b.sha,
+                        }
+                    })
+                };
+                report.firmware.left = build(0);
+                report.firmware.right = build(1);
+            }
             report.environment.insert("product".into(), product);
             let mut runner =
                 Runner::new(&device, &catalog, hello, cancelled, non_interactive, &out);
