@@ -96,6 +96,19 @@ pub fn group(ui: &mut egui::Ui) {
                 changed |= ui
                     .add(egui::Slider::new(&mut settings.fps, 1..=10).text("frames per second"))
                     .changed();
+                ui.horizontal(|ui| {
+                    use super::screens_settings::Layout;
+                    ui.label("Show");
+                    changed |= ui
+                        .radio_value(&mut settings.layout, Layout::Info, "Clock, media and hints")
+                        .changed();
+                    changed |= ui
+                        .radio_value(&mut settings.layout, Layout::Wallpaper, "The wallpaper's animation")
+                        .on_hover_text(
+                            "The left frames of the Wallpaper Engine wallpaper on screen (wallpapers.json in the art folder); the clock when it has none.",
+                        )
+                        .changed();
+                });
             });
 
             if let Some(frame) = snap.frame.as_ref().filter(|_| settings.drive_left) {

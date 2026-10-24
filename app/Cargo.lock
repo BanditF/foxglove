@@ -901,18 +901,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "den"
-version = "0.1.0"
-dependencies = [
- "base64",
- "foxglove-kit-api",
- "palm",
- "serde",
- "serde_json",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "derive_arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -940,8 +928,8 @@ dependencies = [
  "anyhow",
  "crc32fast",
  "embedded-graphics",
+ "foxglove-devices",
  "hidapi",
- "palm",
  "windows-sys 0.61.2",
 ]
 
@@ -1613,7 +1601,6 @@ dependencies = [
 name = "foxglove"
 version = "0.1.0"
 dependencies = [
- "den",
  "digitalis",
  "directories",
  "eframe",
@@ -1622,18 +1609,19 @@ dependencies = [
  "egui-phosphor",
  "egui_extras",
  "egui_glow",
- "foxglove-kit-api",
+ "foxglove-devices",
  "foxglove-panel",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
+ "foxglove-plugin-trust",
  "foxglove-update",
  "foxglove-via",
  "gtk",
  "hidapi",
  "image",
  "khronos-egl",
- "kit-trust",
  "lzma-rs",
  "objc2-app-kit 0.3.2",
- "palm",
  "prost",
  "qmk-via-api",
  "raw-window-handle",
@@ -1659,13 +1647,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "foxglove-kit-api"
-version = "1.0.0"
+name = "foxglove-devices"
+version = "0.1.0"
 dependencies = [
- "schemars",
  "serde",
- "serde_json",
- "toml 0.9.12+spec-1.1.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1678,6 +1664,38 @@ dependencies = [
  "windows 0.62.2",
  "windows-core",
  "windows-future",
+]
+
+[[package]]
+name = "foxglove-plugin-api"
+version = "1.0.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "foxglove-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "foxglove-devices",
+ "foxglove-plugin-api",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "foxglove-plugin-trust"
+version = "0.1.0"
+dependencies = [
+ "minisign-verify",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1695,8 +1713,8 @@ dependencies = [
 name = "foxglove-via"
 version = "0.1.0"
 dependencies = [
+ "foxglove-devices",
  "hidapi",
- "palm",
  "serde",
  "serde_json",
 ]
@@ -2655,16 +2673,6 @@ name = "khronos_api"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
-
-[[package]]
-name = "kit-trust"
-version = "0.1.0"
-dependencies = [
- "minisign-verify",
- "serde",
- "serde_json",
- "sha2",
-]
 
 [[package]]
 name = "kurbo"
@@ -3638,14 +3646,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
-]
-
-[[package]]
-name = "palm"
-version = "0.1.0"
-dependencies = [
- "serde",
- "thiserror 2.0.18",
 ]
 
 [[package]]

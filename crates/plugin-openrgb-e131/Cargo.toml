@@ -1,0 +1,19 @@
+[package]
+name = "plugin-openrgb-e131"
+version = "1.0.0"
+edition = "2021"
+description = "Foxglove plugin: OpenRGB (or any E1.31 sender) colours the keyboard's lights over localhost"
+license = "MIT"
+
+[[bin]]
+name = "openrgb-e131"
+path = "src/main.rs"
+
+[dependencies]
+foxglove-plugin = { path = "../plugin-sdk" }
+serde_json = "1"
+
+[dev-dependencies]
+foxglove-plugin-host = { path = "../plugin-host" }
+foxglove-plugin-api = { path = "../plugin-api" }
+foxglove-devices = { path = "../devices" }

@@ -1,9 +1,9 @@
-//! A Palm backend for QMK keyboards that speak VIA over Raw HID (usage page 0xFF60, 32-byte
+//! A device-layer backend for QMK keyboards that speak VIA over Raw HID (usage page 0xFF60, 32-byte
 //! reports), first for the Keychron K5 Pro (#74).
 //!
 //! - [`protocol`]: VIA's commands and the allowlist every report passes through
 //! - [`definition`]: a VIA JSON keyboard definition (matrix, layout, lighting)
-//! - [`device`]: the keyboard as a Palm device (keymap read, RGB Matrix lighting)
+//! - [`device`]: the keyboard as a device-layer device (keymap read, RGB Matrix lighting)
 //! - `hid` (feature `hid`): the hidapi transport and backend
 //!
 //! Safety first: only allowlisted commands reach the keyboard. Reading is always allowed;

@@ -43,7 +43,7 @@ fn main() {
     foxglove::wallpaper::start();
     foxglove::api::start();
     foxglove::via_host::start();
-    foxglove::kits::sync();
+    foxglove::plugin_runner::sync();
     foxglove::identity::start();
     foxglove::startup::finish(platform::run(settings, available_devices))
 }

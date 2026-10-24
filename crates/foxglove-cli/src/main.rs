@@ -6,8 +6,8 @@
 
 use std::io::{BufRead, BufReader, Write};
 
-use foxglove_kit_api::methods::{Devices, FactList, InitializeResult, Profiles};
-use foxglove_kit_api::rpc::{Outcome, Request, Response};
+use foxglove_plugin_api::methods::{Devices, FactList, InitializeResult, Profiles};
+use foxglove_plugin_api::rpc::{Outcome, Request, Response};
 use serde_json::{json, Value};
 
 struct Api<S: BufRead, W: Write> {
@@ -48,7 +48,7 @@ fn fact_text(v: &Value) -> String {
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).unwrap_or("status");
     #[cfg(windows)]
-    let pipe = den::pipe::connect().map_err(|e| format!("Foxglove isn't running (or its API is off): {e}"))?;
+    let pipe = foxglove_plugin_host::pipe::connect().map_err(|e| format!("Foxglove isn't running (or its API is off): {e}"))?;
     #[cfg(not(windows))]
     return Err("the local API is Windows-only for now".into());
     #[cfg(windows)]
@@ -58,7 +58,7 @@ fn run(args: &[String]) -> Result<(), String> {
         let init: InitializeResult = serde_json::from_value(api.call(
             "initialize",
             json!({
-                "api": foxglove_kit_api::API_VERSION.to_string(),
+                "api": foxglove_plugin_api::API_VERSION.to_string(),
                 "client": {"name": "foxglove-cli", "version": env!("CARGO_PKG_VERSION")},
                 "permissions": ["devices.read", "facts.read:*", "profiles.write"],
             }),
