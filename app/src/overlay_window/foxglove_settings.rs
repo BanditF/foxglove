@@ -228,13 +228,14 @@ impl OverlayApp {
             return;
         }
         for chunk in actions.chunk_by(|a, b| a.group == b.group) {
-            egui::CollapsingHeader::new(chunk[0].group.title()).show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    for action in chunk {
-                        action_button(ui, action);
-                    }
+            egui::CollapsingHeader::new(chunk[0].group.title())
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for action in chunk {
+                            action_button(ui, action);
+                        }
+                    });
                 });
-            });
             ui.add_space(4.0);
         }
         ui.weak("Connection, reset, bootloader and soft-off behaviors are available only on the keyboard.");

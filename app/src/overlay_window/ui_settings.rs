@@ -1,7 +1,7 @@
 use super::state::AppConnectionState;
 use super::OverlayApp;
-use crate::foxglove::settings_ui::section as titled_group;
 use crate::settings::{LayerMask, LegendMode, Settings, ThemeColor, ThemeSettings, WindowPosition};
+use crate::foxglove::settings_ui::section as titled_group;
 use egui::Window;
 
 impl OverlayApp {

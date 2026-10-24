@@ -4,7 +4,9 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use zmk_studio_api::proto::zmk::keymap::Keymap;
-use zmk_studio_api::{Behavior, ExternalPowerCommand, ResolvedLayer, UnderglowCommand};
+use zmk_studio_api::{
+    Behavior, ExternalPowerCommand, ResolvedLayer, UnderglowCommand,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Group {
@@ -225,7 +227,8 @@ mod tests {
 /// Only bindings learned as safe actions (or direct RGB commands) may be sent.
 pub fn permitted(binding: (u16, u32, u32)) -> bool {
     let known = KNOWN.lock().unwrap();
-    known.actions.iter().any(|a| a.binding == binding) || known.underglow == Some(binding.0)
+    known.actions.iter().any(|a| a.binding == binding)
+        || known.underglow == Some(binding.0)
 }
 
 #[cfg(test)]
@@ -235,13 +238,9 @@ mod safety_tests {
 
     #[test]
     fn disruptive_behaviors_are_never_actions() {
-        for b in [
-            Behavior::Bluetooth(BluetoothCommand::Next),
-            Behavior::OutputSelection(OutputSelection::Usb),
-            Behavior::Bootloader,
-            Behavior::Reset,
-            Behavior::SoftOff,
-        ] {
+        for b in [Behavior::Bluetooth(BluetoothCommand::Next),
+            Behavior::OutputSelection(OutputSelection::Usb), Behavior::Bootloader,
+            Behavior::Reset, Behavior::SoftOff] {
             assert!(describe(&b, &|_| String::new()).is_none());
         }
     }

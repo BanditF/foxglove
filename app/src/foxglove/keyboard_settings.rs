@@ -38,15 +38,12 @@ pub fn ask_rgb_sync(set: Option<bool>, ctx: egui::Context) {
         let state = match device() {
             None => RgbSync::NoKeyboard,
             Some(d) => {
-                let reply = d
-                    .settings()
-                    .ok_or(palm::PalmError::Unsupported)
-                    .and_then(|s| {
-                        if let Some(on) = set {
-                            s.set("rgb_sync", Value::Bool(on))?;
-                        }
-                        s.get("rgb_sync")
-                    });
+                let reply = d.settings().ok_or(palm::PalmError::Unsupported).and_then(|s| {
+                    if let Some(on) = set {
+                        s.set("rgb_sync", Value::Bool(on))?;
+                    }
+                    s.get("rgb_sync")
+                });
                 match reply {
                     Ok(Some(Value::Bool(on))) => RgbSync::Known { on },
                     _ => RgbSync::NotSupported,
@@ -126,8 +123,7 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             // Read from the link: Palm's lighting state has no per-half age yet.
-            let state =
-                device().and_then(|d| digitalis::settings::rgb_state(d.link().as_ref()).ok());
+            let state = device().and_then(|d| digitalis::settings::rgb_state(d.link().as_ref()).ok());
             *RGB_STATE.lock().unwrap() = state;
             RGB_POLLING.store(false, Ordering::Relaxed);
             ctx.request_repaint();
@@ -154,9 +150,7 @@ pub fn set_lights(on: bool, ctx: egui::Context) {
 
 /// Colour: hue 0-359, saturation and brightness 0-100.
 pub fn set_color(hue: u16, sat: u8, brightness: u8, ctx: egui::Context) {
-    lighting("Set colour", ctx, move |l| {
-        l.set_color(hue, sat, brightness)
-    });
+    lighting("Set colour", ctx, move |l| l.set_color(hue, sat, brightness));
 }
 
 /// Effect: 0 solid, 1 breathe, 2 spectrum, 3 swirl.

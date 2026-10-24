@@ -21,26 +21,13 @@ pub fn bus() -> &'static EventBus {
 /// block on discovery: call it off the UI thread.
 pub fn device() -> Option<Arc<DigitalisDevice>> {
     let mut cached = DEVICE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(d) = cached
-        .as_ref()
-        .filter(|d| d.link().state().connected.is_some())
-    {
+    if let Some(d) = cached.as_ref().filter(|d| d.link().state().connected.is_some()) {
         return Some(d.clone());
     }
     *cached = super::link::host_keyboard().map(|((vid, pid), link, hello)| {
         let backend = BackendId("zmk".into());
-        let product = link
-            .state()
-            .connected
-            .map(|c| c.product)
-            .unwrap_or_default();
-        let id = DeviceId::new(
-            backend.clone(),
-            vid,
-            pid,
-            None,
-            &format!("{vid:04x}:{pid:04x}"),
-        );
+        let product = link.state().connected.map(|c| c.product).unwrap_or_default();
+        let id = DeviceId::new(backend.clone(), vid, pid, None, &format!("{vid:04x}:{pid:04x}"));
         let info = DeviceInfo {
             id: id.clone(),
             backend,
@@ -72,8 +59,8 @@ pub fn describe(e: &palm::PalmError) -> String {
         palm::PalmError::Unsupported => "not supported by this keyboard or keymap".into(),
         palm::PalmError::Disconnected => "the keyboard is not connected".into(),
         palm::PalmError::Timeout => "no answer; newer keyboard firmware needed?".into(),
-        palm::PalmError::Busy(why)
-        | palm::PalmError::Denied(why)
-        | palm::PalmError::Backend(why) => why.clone(),
+        palm::PalmError::Busy(why) | palm::PalmError::Denied(why) | palm::PalmError::Backend(why) => {
+            why.clone()
+        }
     }
 }
