@@ -39,3 +39,8 @@ CONFIG_ZMK_EXT_POWER=y
 #EC11 enable
 CONFIG_EC11=y
 CONFIG_EC11_TRIGGER_GLOBAL_THREAD=y
+
+# Left only: ZMK main aborts on Kconfig warnings, and the right has no encoder and no pointing
+# (moved here from config/eyelash_corne.conf, #151).
+CONFIG_EC11_TRIGGER_GLOBAL_THREAD=y
+CONFIG_ZMK_POINTING_SMOOTH_SCROLLING=y
