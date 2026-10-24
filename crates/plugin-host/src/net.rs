@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::net::{Ipv4Addr, Shutdown, TcpStream, ToSocketAddrs, UdpSocket};
+use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -26,7 +26,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 enum Conn {
     Tcp(TcpStream),
-    Udp,
+    /// The receiving socket's address: closing sends it one empty datagram to wake the reader,
+    /// which blocks in `recv_from` with no timeout (#282).
+    Udp(SocketAddr),
 }
 
 struct Open {
@@ -83,9 +85,9 @@ impl Net {
             }
             NetKind::Udp => {
                 let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, p.port)).map_err(failed)?;
-                socket.set_read_timeout(Some(Duration::from_millis(250))).map_err(failed)?;
+                let local = socket.local_addr().map_err(failed)?;
                 self.forward_udp(id, socket, out, stop.clone());
-                Conn::Udp
+                Conn::Udp(local)
             }
         };
         streams.insert(id, Open { conn, stop });
@@ -119,15 +121,17 @@ impl Net {
         let streams = self.streams.clone();
         let _ = std::thread::Builder::new().name(format!("plugin-net-{id}")).spawn(move || {
             let mut buf = vec![0u8; 64 * 1024];
+            // Blocks until a datagram arrives; `close` wakes it with an empty one after setting
+            // `stop`, so an idle stream costs no wakeups.
             while !stop.load(Ordering::Relaxed) {
                 match socket.recv_from(&mut buf) {
+                    Ok(_) if stop.load(Ordering::Relaxed) => break,
                     Ok((n, from)) => {
                         let data = json!(NetData { stream: id, data: STANDARD.encode(&buf[..n]), from: Some(from.to_string()) });
                         if !event(&out, "net.data", data) {
                             break;
                         }
                     }
-                    Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
                     // Windows reports an earlier send's ICMP error on the next receive; keep going.
                     Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
                     Err(_) => break,
@@ -145,7 +149,7 @@ impl Net {
                 let mut s = s;
                 s.write_all(&bytes).map_err(|e| error(code::INVALID_PARAMS, e.to_string()))
             }
-            Some(Conn::Udp) => Err(error(code::INVALID_PARAMS, "a udp stream only receives")),
+            Some(Conn::Udp(_)) => Err(error(code::INVALID_PARAMS, "a udp stream only receives")),
             None => Err(error(code::INVALID_PARAMS, format!("no stream {id}"))),
         }
     }
@@ -153,8 +157,16 @@ impl Net {
     pub(crate) fn close(&self, id: u64) {
         if let Some(o) = self.streams.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
             o.stop.store(true, Ordering::Relaxed);
-            if let Conn::Tcp(s) = o.conn {
-                let _ = s.shutdown(Shutdown::Both);
+            match o.conn {
+                Conn::Tcp(s) => {
+                    let _ = s.shutdown(Shutdown::Both);
+                }
+                Conn::Udp(local) => {
+                    // The reader sees `stop` once this empty datagram wakes it.
+                    if let Ok(waker) = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)) {
+                        let _ = waker.send_to(&[], local);
+                    }
+                }
             }
         }
     }

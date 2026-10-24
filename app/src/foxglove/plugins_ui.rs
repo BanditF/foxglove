@@ -200,15 +200,13 @@ fn action_keys(ui: &mut egui::Ui, plugin: &Installed, state: &mut UiState) {
 /// (at most every 10 minutes, and never while backing off).
 fn catalog_status(ui: &mut egui::Ui) {
     use super::catalog_refresh::{self, Status, Trigger};
+    catalog_refresh::set_wake(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
     catalog_refresh::request(Trigger::TabOpened);
     ui.horizontal_wrapped(|ui| {
         let status = catalog_refresh::status();
         match &status {
             Status::Idle => ui.weak("Catalog: not checked yet this session."),
-            Status::Checking => {
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
-                ui.weak("Catalog: checking…")
-            }
+            Status::Checking => ui.weak("Catalog: checking…"),
             Status::UpToDate { sequence: Some(n) } => ui.weak(format!("Catalog: updated (sequence {n}).")),
             Status::UpToDate { sequence: None } => ui.weak("Catalog: up to date."),
             Status::Failed(e) => ui.weak(format!("Catalog: couldn't check ({e}).")),

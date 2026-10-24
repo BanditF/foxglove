@@ -56,8 +56,13 @@ pub fn spawn_named<F: FnOnce() + Send + 'static>(name: &str, f: F) -> JoinHandle
         .expect("failed to spawn thread")
 }
 
-/// Runs each attempt on its own thread. Panics restart; a normal return stops the service.
-/// The supervisor waits on join, sleeping only for backoff after a failure.
+/// Failures in [`CRASH_WINDOW`] that stop a service for good, like the plugin runner (#279).
+const MAX_CRASHES: usize = 5;
+const CRASH_WINDOW: Duration = Duration::from_secs(600);
+
+/// Runs each attempt on its own thread. Panics restart, until five in ten minutes stop it; a
+/// normal return stops the service. The supervisor waits on join, sleeping only for backoff
+/// after a failure.
 pub fn spawn_supervised(
     name: &'static str,
     run: impl Fn() + Send + Sync + 'static,
@@ -84,6 +89,7 @@ fn supervise(
     mut sleep: impl FnMut(Duration),
 ) {
     let mut backoff = Backoff::default();
+    let mut crashes: std::collections::VecDeque<Instant> = std::collections::VecDeque::new();
     loop {
         let started = Instant::now();
         let run = run.clone();
@@ -108,6 +114,15 @@ fn supervise(
             },
             Err(e) => format!("Could not start worker: {e}"),
         };
+        let now = Instant::now();
+        crashes.push_back(now);
+        while crashes.front().is_some_and(|t| now.duration_since(*t) > CRASH_WINDOW) {
+            crashes.pop_front();
+        }
+        if crashes.len() >= MAX_CRASHES {
+            record(name, false, Some(format!("{failure}; stopped after {MAX_CRASHES} failures in ten minutes")));
+            return;
+        }
         record(name, false, Some(failure));
         sleep(backoff.failed(started.elapsed()));
     }
@@ -133,6 +148,23 @@ mod tests {
             Duration::from_secs(1)
         );
         assert_eq!(backoff.failed(Duration::ZERO), Duration::from_secs(2));
+    }
+
+    #[test]
+    fn a_service_that_keeps_failing_is_stopped() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let calls = attempts.clone();
+        supervise(
+            "crash-cap-test",
+            Arc::new(move || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                panic!("always");
+            }),
+            |_| {},
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), MAX_CRASHES);
+        let snapshot = status();
+        assert!(snapshot["crash-cap-test"].last_failure.as_deref().is_some_and(|f| f.contains("stopped after")));
     }
 
     #[test]
