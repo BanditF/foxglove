@@ -172,6 +172,10 @@
 #define HOST_LINK_CAP_RGB_STATE_EVENT (1U << 11)
 #define HOST_LINK_CAP_BUILD_INFO (1U << 12)
 #define HOST_LINK_CAP_SCREENS (1U << 13)
+// 14: FRAMES (#272 branch)
+// The panel stays until RELEASE and keeps its last frame when the PC or the cable goes away; the
+// PC sends no keep-alive (#279). Set when the panel timeout (bytes 25-26) is 0.
+#define HOST_LINK_CAP_PANEL_HOLD (1U << 15)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);

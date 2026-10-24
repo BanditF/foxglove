@@ -856,8 +856,6 @@ SYS_INIT(art_relay_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
 // Right after the link comes up, ZMK's own setup traffic goes first.
 #define RGB_SETTLE K_MSEC(100)
-// While active, check now and then.
-#define RGB_POLL K_SECONDS(5)
 // A send that failed is retried this often, idle or not, up to RGB_RETRIES times per change.
 #define RGB_RETRY K_SECONDS(1)
 #define RGB_RETRIES 10
@@ -898,9 +896,7 @@ static void rgb_sync_cb(struct k_work *work) {
     if (synced) {
         rgb_retries = 0;
     }
-    if (zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE) {
-        k_work_schedule_for_queue(&relay_q, dwork, RGB_POLL);
-    }
+    // Nothing else to do until the next change (art_relay_rgb_kick) or link-up (#280).
 }
 static K_WORK_DELAYABLE_DEFINE(rgb_sync_work, rgb_sync_cb);
 
@@ -927,10 +923,12 @@ void art_relay_rgb_kick(void) {
 #define HSB_RETRY K_MSEC(100)
 #define HSB_BUSY_RETRY K_MSEC(20) // another request on the relay (a status read) is in flight
 #define HSB_RETRIES 5
+// The request in the way ends with its answer or GATT_TIMEOUT (3 s); this many waits is past that.
+#define BUSY_WAITS 160
 #define RGB_VERIFY_AFTER K_MSEC(300) // ZMK's split write, then the right's next underglow tick
 
 static atomic_t hsb_want = ATOMIC_INIT(-1); // hue << 16 | saturation << 8 | brightness, -1 none
-static uint8_t hsb_retries;
+static uint8_t hsb_retries, hsb_busy, verify_busy;
 
 static void hsb_cb(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -948,10 +946,11 @@ static void hsb_cb(struct k_work *work) {
     buf[4] = want & 0xff;
     int err = write_req(conn, buf, sizeof(buf));
     bt_conn_unref(conn);
-    if (err == -EBUSY) {
+    if (err == -EBUSY && hsb_busy++ < BUSY_WAITS) {
         k_work_reschedule_for_queue(&relay_q, dwork, HSB_BUSY_RETRY);
         return;
     }
+    hsb_busy = 0;
     if (err) {
         if (hsb_retries++ < HSB_RETRIES) {
             k_work_reschedule_for_queue(&relay_q, dwork, HSB_RETRY);
@@ -979,6 +978,7 @@ int art_relay_rgb_hsb(uint16_t hue, uint8_t saturation, uint8_t brightness) {
     }
     atomic_set(&hsb_want, (atomic_val_t)hue << 16 | saturation << 8 | brightness);
     hsb_retries = 0;
+    hsb_busy = 0;
     k_work_reschedule_for_queue(&relay_q, &hsb_work, K_NO_WAIT);
     return 0;
 }
@@ -990,9 +990,12 @@ static void verify_cb(struct k_work *work) {
     }
     int err = read_status(conn);
     bt_conn_unref(conn);
-    if (err == -EBUSY) {
+    if (err == -EBUSY && verify_busy++ < BUSY_WAITS) {
         k_work_reschedule_for_queue(&relay_q, k_work_delayable_from_work(work), HSB_BUSY_RETRY);
-    } else if (!err) {
+        return;
+    }
+    verify_busy = 0;
+    if (!err) {
         host_link_rgb_right_followed();
     }
 }
@@ -1000,6 +1003,7 @@ static K_WORK_DELAYABLE_DEFINE(verify_work, verify_cb);
 
 void art_relay_rgb_verify(void) {
     if (art_relay_link() == 2) {
+        verify_busy = 0;
         k_work_reschedule_for_queue(&relay_q, &verify_work, RGB_VERIFY_AFTER);
     }
 }
