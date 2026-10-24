@@ -39,7 +39,12 @@ execute_process(COMMAND git rev-parse --short HEAD
   OUTPUT_VARIABLE FOXGLOVE_BUILD_SHA OUTPUT_STRIP_TRAILING_WHITESPACE
   ERROR_QUIET RESULT_VARIABLE FOXGLOVE_GIT_RESULT)
 if(NOT FOXGLOVE_GIT_RESULT EQUAL 0 OR NOT FOXGLOVE_BUILD_SHA)
-  set(FOXGLOVE_BUILD_SHA unknown)
+  # CI's container can't run git on the checkout (ownership), but Actions sets GITHUB_SHA.
+  if(DEFINED ENV{GITHUB_SHA})
+    string(SUBSTRING "$ENV{GITHUB_SHA}" 0 7 FOXGLOVE_BUILD_SHA)
+  else()
+    set(FOXGLOVE_BUILD_SHA unknown)
+  endif()
 endif()
 zephyr_library_sources(widgets/half_marker.c)
 set_source_files_properties(widgets/half_marker.c PROPERTIES
