@@ -143,6 +143,39 @@ fn definitions(s: &ViaSettings) -> (Vec<Definition>, Vec<String>) {
     (ok, errors)
 }
 
+/// What a scan does with one keyboard it found.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Planned {
+    /// Its device id on this port.
+    pub own: String,
+    /// The id its saved state (pause) is under: its own, or the one it was confirmed to be.
+    pub key: String,
+    /// Listed but never opened, so another app has it to itself.
+    pub paused: bool,
+    /// The known keyboard it might be (asked in the settings).
+    pub maybe: Option<Known>,
+}
+
+/// Decides, for the keyboards found (`(id, model, name)`), what a scan does: the key their state
+/// is under, whether they're paused, the known keyboard each might be, and the new ones to
+/// remember. Pure, for the scan and the tests.
+pub fn plan(found: &[(String, String, String)], s: &ViaSettings) -> (Vec<Planned>, Vec<Known>) {
+    let present: Vec<(String, String)> = found.iter().map(|(id, model, _)| (id.clone(), model.clone())).collect();
+    let mut learned = Vec::new();
+    let planned = found
+        .iter()
+        .zip(recognise(&present, &s.known, &s.aliases))
+        .map(|((own, model, name), seen)| {
+            if seen.new {
+                learned.push(Known { id: own.clone(), name: name.clone(), model: model.clone() });
+            }
+            let paused = s.paused.contains(&seen.id) || s.paused.contains(model);
+            Planned { own: own.clone(), key: seen.id, paused, maybe: seen.maybe }
+        })
+        .collect();
+    (planned, learned)
+}
+
 /// Finds and opens (read-only) the VIA keyboards matching the definitions; closes them all
 /// when turned off. Runs on a background thread.
 pub fn rescan() {
@@ -163,18 +196,14 @@ pub fn rescan() {
             .map(|e| Found { name: "definition".into(), opened: Err(e), key: None, paused: false, maybe: None })
             .collect();
         found.extend(report.errors.iter().map(|(_, e)| Found { name: "scan".into(), opened: Err(e.to_string()), key: None, paused: false, maybe: None }));
-        let present: Vec<(String, String)> = report.devices.iter().map(|e| (e.info.id.to_string(), model(&e.info.id))).collect();
-        let seen = recognise(&present, &s.known, &s.aliases);
-        let mut learned = Vec::new();
-        for (entry, seen) in report.devices.iter().zip(seen) {
-            let (own, model) = (entry.info.id.to_string(), model(&entry.info.id));
-            if seen.new {
-                learned.push(Known { id: own.clone(), name: entry.info.name.clone(), model: model.clone() });
-            }
-            let maybe = seen.maybe.map(|k| (own, k));
-            let key = seen.id;
+        let present: Vec<(String, String, String)> =
+            report.devices.iter().map(|e| (e.info.id.to_string(), model(&e.info.id), e.info.name.clone())).collect();
+        let (planned, learned) = plan(&present, &s);
+        for (entry, p) in report.devices.iter().zip(planned) {
+            let maybe = p.maybe.map(|k| (p.own, k));
+            let key = p.key;
             // Paused: listed, never opened, so another app has it to itself.
-            if s.paused.contains(&key) || s.paused.contains(&model) {
+            if p.paused {
                 found.push(Found { name: entry.info.name.clone(), opened: Err("paused".into()), key: Some(key), paused: true, maybe });
                 continue;
             }
@@ -252,6 +281,74 @@ mod tests {
         assert_eq!(both[1], Seen { id: "port-c".into(), maybe: None, new: true });
         // Another model is never asked about.
         assert!(recognise(&[("x".into(), "1234:0001".into())], &k, &BTreeMap::new())[0].new);
+    }
+
+    /// Two identical boards with no usable serial (#292), as the VIA backend names them: by
+    /// where they're plugged in (`usb:<container id>@<location path>`).
+    fn twin(port: u8, serial: Option<&str>) -> (String, String, String) {
+        let path = format!("usb:3c2e5d1f9a8b4c6d8e7f0a1b2c3d4e5f@PCIROOT(0)#PCI(1400)#USBROOT(0)#USB({port})");
+        let id = foxglove_devices::DeviceId::new(foxglove_devices::BackendId("via".into()), 0x3434, 0x0250, serial, &path);
+        (id.to_string(), model(&id), "K5 Pro".into())
+    }
+
+    #[test]
+    fn twin_boards_without_a_serial_are_two_keyboards_each_with_its_own_pause() {
+        // No serial, and the placeholder some firmware sends: both fall back to the location.
+        let (a, b) = (twin(1, None), twin(2, Some("000000")));
+        assert_ne!(a.0, b.0, "told apart by the port");
+        assert_eq!(a.0, twin(1, Some("0")).0, "an untrusted serial doesn't change the id");
+        let mut s = ViaSettings::default();
+        let (planned, learned) = plan(&[a.clone(), b.clone()], &s);
+        assert_eq!(learned.len(), 2, "both remembered");
+        assert!(planned.iter().all(|p| !p.paused && p.maybe.is_none() && p.key == p.own));
+        s.known = learned;
+        // Pausing one leaves its twin alone.
+        s.paused.push(a.0.clone());
+        let (planned, learned) = plan(&[a.clone(), b.clone()], &s);
+        assert!(learned.is_empty());
+        assert_eq!(planned.iter().map(|p| p.paused).collect::<Vec<_>>(), [true, false]);
+        // A model-wide pause from before #292 still covers both.
+        let legacy = ViaSettings { paused: vec!["3434:0250".into()], ..s.clone() };
+        assert!(plan(&[a, b], &legacy).0.iter().all(|p| p.paused));
+    }
+
+    #[test]
+    fn a_twin_on_another_port_is_asked_about_and_this_is_the_same_keyboard_carries_its_pause() {
+        let (a, b, moved) = (twin(1, None), twin(2, None), twin(3, None));
+        let known = |t: &(String, String, String)| Known { id: t.0.clone(), name: t.2.clone(), model: t.1.clone() };
+        let mut s = ViaSettings { known: vec![known(&a), known(&b)], paused: vec![a.0.clone()], ..Default::default() };
+        // A moved to port 3 while B stays: maybe A, not remembered, and not paused yet.
+        let (planned, learned) = plan(&[moved.clone(), b.clone()], &s);
+        assert!(learned.is_empty(), "not remembered until the user answers");
+        assert_eq!(planned[0].maybe.as_ref().map(|k| k.id.clone()), Some(a.0.clone()));
+        assert!(!planned[0].paused && planned[1].maybe.is_none() && !planned[1].paused);
+        // "This is the same keyboard": its state (the pause) follows it to port 3.
+        s.aliases.insert(moved.0.clone(), a.0.clone());
+        let (planned, _) = plan(&[moved.clone(), b.clone()], &s);
+        assert_eq!((planned[0].key.as_str(), planned[0].paused), (a.0.as_str(), true));
+        // "A different keyboard" instead: remembered as itself, its own (unpaused) state.
+        let s = ViaSettings { known: vec![known(&a), known(&b), known(&moved)], paused: vec![a.0.clone()], ..Default::default() };
+        let (planned, _) = plan(&[moved.clone(), b], &s);
+        assert_eq!((planned[0].key.as_str(), planned[0].paused, planned[0].maybe.is_none()), (moved.0.as_str(), false, true));
+    }
+
+    #[test]
+    fn pause_and_same_keyboard_answers_are_saved_in_the_settings_store() {
+        // A temp settings folder (FOXGLOVE_CONFIG_DIR), never the real one; VIA stays off, so
+        // the rescan these trigger opens nothing.
+        let dir = super::super::store::test_config_dir();
+        let (a, moved) = (twin(1, None), twin(3, None));
+        let known_a = Known { id: a.0.clone(), name: a.2.clone(), model: a.1.clone() };
+        super::super::store::save("via", &ViaSettings { known: vec![known_a.clone()], ..Default::default() }).unwrap();
+        set_paused(&a.0, true).unwrap();
+        same_keyboard(&moved.0, &moved.2, &moved.1, Some(&known_a)).unwrap();
+        let s = settings();
+        assert_eq!(s.paused, std::slice::from_ref(&a.0));
+        assert_eq!(s.aliases.get(&moved.0), Some(&a.0));
+        assert!(std::fs::read_to_string(dir.join("foxglove.toml")).unwrap().contains("[via"), "in the temp store");
+        assert!(plan(&[moved], &s).0[0].paused, "the pause follows the answer");
+        set_paused(&a.0, false).unwrap();
+        assert!(settings().paused.is_empty(), "resumed");
     }
 
     #[test]
