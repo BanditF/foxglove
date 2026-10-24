@@ -45,6 +45,8 @@ fn main() {
     foxglove::via_host::start();
     foxglove::plugin_install::autoinstall();
     foxglove::plugin_runner::sync();
+    foxglove::plugin_actions::start();
+    foxglove::mic_broker::start();
     foxglove::catalog_refresh::start();
     foxglove::identity::start();
     foxglove::startup::finish(platform::run(settings, available_devices))

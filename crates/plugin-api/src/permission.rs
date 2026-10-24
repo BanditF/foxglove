@@ -39,6 +39,12 @@ pub enum Permission {
     NetListenUdp(u16),
     /// Declared only: the plugin reads or writes the user's files.
     Files,
+    /// Read the microphone's state (`mic.*` facts), which Foxglove publishes (#237).
+    AudioInputsRead,
+    /// Mute or unmute the microphone through Foxglove (`audio.inputs.set_mute`, #237).
+    AudioInputsMute,
+    /// Keep its own passwords and tokens in Windows' credential store (#213).
+    Secrets,
 }
 
 impl Permission {
@@ -67,6 +73,9 @@ impl Permission {
             },
             Permission::NetListenUdp(port) => format!("receive network messages from this PC on port {port}"),
             Permission::Files => "read and write your files".into(),
+            Permission::AudioInputsRead => "see whether your microphone is muted".into(),
+            Permission::AudioInputsMute => "mute and unmute your microphone".into(),
+            Permission::Secrets => "keep its passwords or tokens in Windows' credential store".into(),
         }
     }
 }
@@ -120,6 +129,9 @@ impl TryFrom<String> for Permission {
                 "profiles.write" => Permission::ProfilesWrite,
                 "net" => Permission::Net,
                 "files" => Permission::Files,
+                "audio.inputs.read" => Permission::AudioInputsRead,
+                "audio.inputs.mute" => Permission::AudioInputsMute,
+                "secrets" => Permission::Secrets,
                 _ => return Err(format!("unknown permission {text:?}")),
             },
         })
@@ -145,6 +157,9 @@ impl From<Permission> for String {
             }
             Permission::NetListenUdp(port) => format!("net.listen:udp:127.0.0.1:{port}"),
             Permission::Files => "files".into(),
+            Permission::AudioInputsRead => "audio.inputs.read".into(),
+            Permission::AudioInputsMute => "audio.inputs.mute".into(),
+            Permission::Secrets => "secrets".into(),
         }
     }
 }
@@ -194,7 +209,11 @@ impl Grant {
     }
 
     pub fn can_read_fact(&self, key: &str) -> bool {
-        self.0.iter().any(|p| matches!(p, Permission::FactsRead(pat) if key_matches(pat, key)))
+        self.0.iter().any(|p| match p {
+            Permission::FactsRead(pat) => key_matches(pat, key),
+            Permission::AudioInputsRead => key_matches("mic.*", key),
+            _ => false,
+        })
     }
 
     pub fn can_write_fact(&self, key: &str) -> bool {
@@ -206,6 +225,7 @@ impl Grant {
     /// covered by one granted read pattern.
     pub fn can_subscribe(&self, pattern: &str) -> bool {
         self.0.iter().any(|p| match p {
+            Permission::AudioInputsRead => pattern == "mic.*" || (pattern.starts_with("mic.") && !pattern.contains('*')),
             Permission::FactsRead(granted) => {
                 granted == "*"
                     || granted == pattern
@@ -228,7 +248,7 @@ mod tests {
 
     #[test]
     fn parses_round_trips_and_refuses_bad_ones() {
-        for s in ["facts.read:clock.*", "facts.write:weather.temp", "lighting.write", "key.events", "facts.read:*"] {
+        for s in ["facts.read:clock.*", "facts.write:weather.temp", "lighting.write", "key.events", "facts.read:*", "audio.inputs.read", "audio.inputs.mute"] {
             assert_eq!(String::from(p(s).unwrap()), s);
         }
         assert!(p("facts.write:device.x").is_err(), "device facts are the app's");
@@ -256,6 +276,13 @@ mod tests {
         assert!(g.can_listen_udp(5568) && !g.can_listen_udp(5569));
         assert!(!g.unsandboxed(), "scoped network keeps the sandbox");
         assert!(Grant(vec![Permission::Net]).unsandboxed() && Permission::Net.sensitive());
+    }
+
+    #[test]
+    fn audio_inputs_read_covers_the_mic_facts_only() {
+        let g = Grant(vec![p("audio.inputs.read").unwrap()]);
+        assert!(g.can_read_fact("mic.state") && g.can_subscribe("mic.*") && g.can_subscribe("mic.state"));
+        assert!(!g.can_read_fact("media.title") && !g.can_subscribe("*") && !g.can_subscribe("mic.state.*x"));
     }
 
     #[test]

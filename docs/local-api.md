@@ -119,6 +119,26 @@ description = "Puts the temperature on the left screen."
   - **SDK:** `listen_udp(port)`, and `connect_tcp(host, port)`, which gives a `Read + Write` stream to wrap in TLS or a WebSocket.
   - **Limits:** 16 streams per plugin, and all of them close when the plugin's connection ends.
 - **Network, unrestricted:** bare `net` still works for older plugins. Such a plugin runs outside the AppContainer, still in its Job Object, and the install dialog warns about it ("use any network, without the sandbox").
+- **Key actions (#212, API 1.2):**
+  - **Declaring:** a plugin lists what a key can trigger in `plugin.toml`, `[[actions]]` with `id` and `name`. Ids are unique, using `a-z`, `0-9` and `-`.
+  - **Binding:** in the Plugins tab, the user binds each action to one of F13–F24. Each keyboard can send those keys, and they type nothing; the user puts one on a key in ZMK Studio or VIA. A key triggers one action, and an action has one key.
+  - **Delivery:** Foxglove registers the bound keys as global hotkeys and sends `action.invoked {action}` to that plugin only. The SDK delivers them on `Plugin::actions()`. No plugin needs `key.events` for this.
+  - **Storage and conflicts:** bindings live in `[plugins.bindings]`. A key another program already holds is flagged in the tab. `FOXGLOVE_DISABLE=actions` turns the hotkeys off.
+- **Lighting leases (#236, API 1.2):**
+  - **Taking and giving back:** `lighting.lease {device, color, effect?, priority: low|normal|high}` takes the lights and returns `{lease}`; `lighting.release {lease}` gives them back. In the SDK, `Plugin::lease()` returns a guard that releases when dropped. Both need `lighting.write`.
+  - **Who shows:** the highest-priority lease, and the newest among equals. Use high for alerts (muted), normal for status (recording), and low for ambient light (a colour sync).
+  - **Ending:** a plugin's leases end when its connection closes (stopped or crashed). When the last lease on a device ends, its lights go back to how they were before the first one.
+  - **Confirmation:** every change is read back and sent again (up to 3 times) if the keyboard didn't take it.
+  - **`lighting.set`:** still changes the lights directly, without any of this.
+- **Secrets (#213, API 1.2):**
+  - **Permission and access:** a plugin with the `secrets` permission keeps passwords and tokens with `secrets.get {name}` and `secrets.set {name, value}`, or `secret()` / `set_secret()` in the SDK. They go in Windows Credential Manager, under `Foxglove/plugin/<id>/<name>`, protected by the user's login and kept out of manifests, command lines, facts, logs and profile exports.
+  - **Scope:** a plugin reaches only its own secrets, and outside tools get none.
+  - **Entering them:** a plugin can declare what the user enters with `[[secrets]] name, label` in `plugin.toml`, and the Plugins tab then shows a password field for each. Values are never shown back, only "saved" or "not set".
+  - **Limits:** names are 1–64 of a-z, 0-9, `-`, `_` and `.`, and values are at most 2048 bytes.
+  - **Uninstall:** uninstalling a plugin deletes its secrets.
+- **Windows APIs in the sandbox (#215).** `crates/plugin-sandbox-probe` runs each API under the real runner, sandboxed and not. Results on Windows 11:
+  - **Media sessions (SMTC):** denied in the AppContainer ("Access is denied"). Plugins read them as facts instead: the app's one media reader publishes `media.title`, `media.artist` and `media.playing`, plus `volume.level` and `volume.muted` (`facts.read:media.*`, `facts.read:volume.*`). They update while the panel service runs.
+  - **Microphone mute (Core Audio endpoint volume):** works in the AppContainer with no capability, so the sandbox can't limit it. So Foxglove brokers it instead (#237): it watches the default communications microphone through Core Audio's callbacks, with no polling, and publishes `mic.state` (`muted`, `unmuted`, `unavailable` or `unknown`; a failed read is never shown as muted), `mic.endpoint_id`, `mic.endpoint_name`, `mic.error` and `mic.app_state` (`unknown`; no app reports its own mute yet). `audio.inputs.read` lets a plugin read those facts, and `audio.inputs.mute` lets it call `audio.inputs.set_mute {muted}`. Endpoint mute is what Windows' own mute toggles. It isn't a privacy guarantee: apps can mute themselves, and exclusive-mode streams bypass it. `FOXGLOVE_DISABLE=mic` turns the watcher off.
 - **"Trusted" Plugins:** the others (vendor SDK Plugins need their vendor service) are marked trusted in the Plugins tab.
 
 **Plugins catalog:** curated, first-party, à la carte. Each plugin has an install button, and nothing

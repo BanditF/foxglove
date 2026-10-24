@@ -11,3 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 foxglove-plugin = { path = "../plugin-sdk" }
+
+[dev-dependencies]
+foxglove-plugin-host = { path = "../plugin-host" }
+foxglove-plugin-api = { path = "../plugin-api" }
+foxglove-devices = { path = "../devices" }
+serde_json = "1"
