@@ -57,7 +57,8 @@ enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE,
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
-       SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B }; // 0x0A: LAMP_TEST (#115 branch)
+       SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B, // 0x0A: LAMP_TEST (#115 branch)
+       SETTING_ART_KEYS = 0x0D };                    // 0x0C: FRAME (#272 branch)
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -207,6 +208,9 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
 #endif
     caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO | HOST_LINK_CAP_SCREENS;
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) && DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_art_step)
+    caps |= HOST_LINK_CAP_ART_KEYS;
+#endif
     if (CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S == 0) {
         caps |= HOST_LINK_CAP_PANEL_HOLD; // no keep-alive needed (#279)
     }
@@ -494,7 +498,29 @@ static void conn_state_event_cb(struct k_work *work) {
 }
 static K_WORK_DELAYABLE_DEFINE(conn_state_event_work, conn_state_event_cb);
 
+/* D7 0D ART_KEYS (#60): the app takes &art_next / &art_prev while subscribed */
+
+static atomic_t art_keys;
+
+int host_link_art_key(int8_t dir) {
+    if (!atomic_get(&art_keys)) {
+        return -ENOTCONN;
+    }
+    uint8_t r[4] = {HOST_LINK_SETTINGS, 0x80 | SETTING_ART_KEYS, 1, (uint8_t)dir};
+    reply(r, sizeof(r));
+    return 0;
+}
+
 static int conn_state_listener(const zmk_event_t *eh) {
+    // The PC side may be gone: the keys step the art on the board again until it subscribes anew.
+#if IS_ENABLED(CONFIG_ZMK_USB)
+    if (!zmk_usb_is_hid_ready()) {
+        atomic_set(&art_keys, 0);
+    }
+#endif
+    if (as_zmk_endpoint_changed(eh) != NULL) {
+        atomic_set(&art_keys, 0);
+    }
     if (atomic_get(&host_seen)) {
         k_work_reschedule(&conn_state_event_work, CONN_STATE_SETTLE);
     }
@@ -578,6 +604,12 @@ static void settings_command(const uint8_t *d, int len) {
         return;
     }
     switch (d[1]) {
+    case SETTING_ART_KEYS: {
+        atomic_set(&art_keys, len >= 3 && d[2] != 0);
+        uint8_t r[4] = {HOST_LINK_SETTINGS, 0x80 | SETTING_ART_KEYS, 0, atomic_get(&art_keys)};
+        reply(r, sizeof(r));
+        break;
+    }
     case SETTING_GUARD_TEST: {
         uint8_t r[3] = {HOST_LINK_SETTINGS, 0x80 | SETTING_GUARD_TEST, 4};
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS) && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
