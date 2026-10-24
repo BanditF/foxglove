@@ -64,6 +64,8 @@ impl Snapshot {
 
 enum Command {
     Stop,
+    /// The profile changed: its pinned art may differ.
+    ProfileChanged,
     Available(Arc<Link>),
     Link(Weak<Link>, LinkEvent),
     Status,
@@ -258,6 +260,15 @@ fn choose(link: &Link, h: &Handle, choice: &Choice) -> Result<ArtStatus, String>
 fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let pinned = load_pinned();
     h.update(|s| s.pinned = pinned);
+    let profile_tx = h.commands.clone();
+    let profile = super::palm_host::bus().facts().subscribe("profile.active");
+    super::services::spawn_named("art-profile", move || {
+        for _ in profile {
+            if profile_tx.send(Command::ProfileChanged).is_err() {
+                break;
+            }
+        }
+    });
     let notifications = h.commands.clone();
     let _subscription = super::link::subscribe_links(move |link| {
         let _ = notifications.send(Command::Available(link));
@@ -272,6 +283,21 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let mut current: Option<(usize, u64)> = None;
     while !h.stop.load(Ordering::Relaxed) {
         let Ok(command) = receiver.recv() else { break };
+        let command = match command {
+            Command::ProfileChanged => {
+                let pinned = load_pinned();
+                let changed = h.snapshot().pinned != pinned;
+                h.update(|s| s.pinned = pinned.clone());
+                match pinned.filter(|_| changed && current.is_some() && !h.snapshot().busy) {
+                    Some(choice) => {
+                        h.update(|s| s.busy = true);
+                        Command::Choose(choice)
+                    }
+                    None => continue,
+                }
+            }
+            other => other,
+        };
         let mut reported = None;
         let automatic = match &command {
             Command::Stop => break,
