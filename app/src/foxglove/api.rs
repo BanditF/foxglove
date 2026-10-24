@@ -78,9 +78,16 @@ fn device_error(e: foxglove_devices::DeviceError) -> Error {
     Error { code, message: super::devices::describe(&e), data: None }
 }
 
+/// The host-link keyboard, found now if nothing has looked for it yet: plugins and tools must
+/// see it without the Keyboard panel or another feature having connected first. API calls run
+/// on their connection's own thread, so the discovery can wait there.
+fn keyboard() -> Option<std::sync::Arc<digitalis::devices::DigitalisDevice>> {
+    super::devices::device()
+}
+
 /// Runs `f` on the device a call names: the host-link keyboard or an open VIA keyboard.
 fn with_device<R>(id: &str, f: impl FnOnce(&dyn foxglove_devices::Device) -> Result<R, Error>) -> Result<R, Error> {
-    if let Some(d) = super::devices::cached().filter(|d| d.info().id.to_string() == id) {
+    if let Some(d) = keyboard().filter(|d| d.info().id.to_string() == id) {
         return f(d.as_ref());
     }
     super::via_host::with_device(id, f)
@@ -91,7 +98,7 @@ impl Devices for AppDevices {
     fn call(&self, method: &str, _params: Value) -> Result<Value, Error> {
         match method {
             "devices.list" => {
-                let devices = super::devices::cached()
+                let devices = keyboard()
                     .map(|d| {
                         let info = d.info();
                         methods::Device {
