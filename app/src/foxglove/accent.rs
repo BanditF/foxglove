@@ -60,12 +60,9 @@ pub fn hue_sat(r: u8, g: u8, b: u8) -> (u16, u8) {
     ((hue.round() as u16) % 360, (delta / max * 100.0).round() as u8)
 }
 
-/// Starts following (Windows): loads the setting, watches the accent and keyboard arrivals.
-pub fn start() {
-    if super::repaint_trace::disabled("accent") {
-        return;
-    }
-    let on = super::store::load_or_migrate::<LightingSettings>("lighting", || {
+/// The effective setting (the active profile's, else the base).
+fn load_enabled() -> bool {
+    super::store::load_or_migrate::<LightingSettings>("lighting", || {
         // The old lighting.ini, from before the store.
         let ini = crate::settings::Settings::config_file_path()?.with_file_name("lighting.ini");
         let on = ini::Ini::load_from_file(&ini)
@@ -75,7 +72,15 @@ pub fn start() {
             == "true";
         Some((LightingSettings { follow_accent: on }, vec![ini]))
     })
-    .follow_accent;
+    .follow_accent
+}
+
+/// Starts following (Windows): loads the setting, watches the accent and keyboard arrivals.
+pub fn start() {
+    if super::repaint_trace::disabled("accent") {
+        return;
+    }
+    let on = load_enabled();
     ENABLED.store(on, Ordering::Relaxed);
     #[cfg(windows)]
     windows_impl::start();
@@ -90,6 +95,17 @@ mod windows_impl {
     pub fn start() {
         let (tx, rx) = mpsc::channel::<()>();
         let _ = WAKE.set(Mutex::new(tx.clone()));
+        // A profile switch can change the setting: re-read it, then apply.
+        let switched = tx.clone();
+        let profile = crate::foxglove::palm_host::bus().facts().subscribe("profile.active");
+        crate::foxglove::services::spawn_named("accent-profile", move || {
+            for _ in profile {
+                ENABLED.store(load_enabled(), Ordering::Relaxed);
+                if switched.send(()).is_err() {
+                    break;
+                }
+            }
+        });
         // Keyboard arrivals: apply the current colour to a newly connected board.
         let arrivals = tx.clone();
         let events = crate::foxglove::palm_host::bus().subscribe(false);
