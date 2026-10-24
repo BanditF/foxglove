@@ -254,8 +254,15 @@ fn cycle_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Sn
             cycle.mode = Mode::Minutes(m);
             changed = true;
         }
-        ui.add_enabled(false, egui::RadioButton::new(cycle.mode == Mode::LightsWake, "When the lights wake"))
-            .on_disabled_hover_text("Needs keyboard firmware that reports when the lights come back on.");
+        let wake_events = s.wake_events;
+        if ui
+            .add_enabled(wake_events, egui::RadioButton::new(cycle.mode == Mode::LightsWake, "When the lights wake"))
+            .on_disabled_hover_text("Needs keyboard firmware that reports when the lights come back on.")
+            .clicked()
+        {
+            cycle.mode = Mode::LightsWake;
+            changed = true;
+        }
     });
 
     let names = super::art_manifest::sets(st.right_set_count);
