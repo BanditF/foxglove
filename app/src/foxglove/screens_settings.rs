@@ -17,6 +17,17 @@ pub struct ScreensSettings {
     pub fps: u32,
     /// Lower-case exe name -> hint shown on the panel while that program is in front.
     pub games: BTreeMap<String, String>,
+    /// What the panel shows: the clock, media and hints, or the wallpaper's own animation.
+    pub layout: Layout,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Layout {
+    #[default]
+    Info,
+    /// The Wallpaper Engine wallpaper's left frames (art/wallpapers.json); Info when it has none.
+    Wallpaper,
 }
 
 impl Default for ScreensSettings {
@@ -25,6 +36,7 @@ impl Default for ScreensSettings {
             drive_left: true,
             fps: 4,
             games: BTreeMap::new(),
+            layout: Layout::Info,
         }
     }
 }
@@ -107,6 +119,7 @@ impl ScreensSettings {
                 .into_iter()
                 .map(|(exe, hint)| (exe.to_lowercase(), hint))
                 .collect(),
+            ..defaults
         })
     }
 }

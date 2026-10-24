@@ -23,6 +23,36 @@ pub struct Wallpaper {
     #[serde(rename = "match")]
     pub matches: Vec<String>,
     pub right: Right,
+    /// Frames for the left panel, when the wallpaper has them.
+    #[serde(default)]
+    pub left: Option<Left>,
+}
+
+/// The wallpaper's left-panel animation: `frames` 1-bit frames of the panel's size in `bin`
+/// (1 = lit), played in `order` at `fps`.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Left {
+    pub bin: String,
+    pub frames: usize,
+    pub fps: u32,
+    #[serde(default)]
+    pub order: Vec<usize>,
+}
+
+/// The frames of `left`, each `frame_bytes` long, in playing order; `None` if the file is
+/// missing or the wrong size.
+pub fn left_frames(left: &Left, frame_bytes: usize) -> Option<Vec<Vec<u8>>> {
+    let bytes = std::fs::read(super::art_library::folder()?.join(&left.bin)).ok()?;
+    frames_in_order(&bytes, left, frame_bytes)
+}
+
+fn frames_in_order(bytes: &[u8], left: &Left, frame_bytes: usize) -> Option<Vec<Vec<u8>>> {
+    if frame_bytes == 0 || bytes.len() != left.frames * frame_bytes {
+        return None;
+    }
+    let frames: Vec<Vec<u8>> = bytes.chunks(frame_bytes).map(<[u8]>::to_vec).collect();
+    let order: Vec<usize> = if left.order.is_empty() { (0..frames.len()).collect() } else { left.order.clone() };
+    order.iter().map(|&i| frames.get(i).cloned()).collect()
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -164,6 +194,7 @@ pub fn start() {
             if let Some(h) = super::art_service::handle() {
                 h.wallpaper(w.clone());
             }
+            super::screens::wallpaper_changed();
         }
     });
 }
@@ -177,6 +208,21 @@ mod tests {
          "right":{"builtin":"Bandit_Idle","library":"hud.bin","bytes":10},"left":{"bin":"hud.left.bin","frames":1,"fps":0,"order":[0]}},
         {"id":"fury-stars","title":"Stars","workshop_id":null,"match":["projects/myprojects/bandit-fury-stars/"],
          "right":{"builtin":null,"library":"fury-stars.bin","bytes":10},"left":{"bin":"x","frames":1,"fps":0,"order":[0]}}]}"#;
+
+    #[test]
+    fn left_frames_parse_and_play_in_order() {
+        let i: Index = serde_json::from_str(INDEX).unwrap();
+        let left = i.wallpapers[0].left.clone().unwrap();
+        assert_eq!((left.bin.as_str(), left.frames, left.fps), ("hud.left.bin", 1, 0));
+        let left = Left { bin: "x".into(), frames: 3, fps: 4, order: vec![2, 0, 2] };
+        let bytes = [0u8, 0, 1, 1, 2, 2];
+        assert_eq!(frames_in_order(&bytes, &left, 2), Some(vec![vec![2, 2], vec![0, 0], vec![2, 2]]));
+        // Wrong size or an order past the frames: no animation.
+        assert_eq!(frames_in_order(&bytes[..5], &left, 2), None);
+        assert_eq!(frames_in_order(&bytes, &Left { order: vec![3], ..left.clone() }, 2), None);
+        // No order: every frame once.
+        assert_eq!(frames_in_order(&bytes, &Left { order: vec![], ..left }, 2).map(|f| f.len()), Some(3));
+    }
 
     const CONFIG: &str = r#"{"fuchs":{"general":{"wallpaperconfig":{"selectedwallpapers":{
         "//?/DISPLAY#DEL40EA#x":{"file":"C:/Program Files (x86)/Steam/steamapps/common/wallpaper_engine/projects/myprojects/bandit-fury-stars/index.html"},

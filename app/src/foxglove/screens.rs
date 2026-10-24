@@ -174,6 +174,23 @@ enum Event {
 }
 static EVENTS: OnceLock<Mutex<Option<mpsc::Sender<Event>>>> = OnceLock::new();
 
+static WALLPAPER_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// Wallpaper Engine shows another wallpaper: reload its frames on the next draw.
+pub fn wallpaper_changed() {
+    WALLPAPER_CHANGED.store(true, Ordering::Relaxed);
+    wake();
+}
+
+/// The current wallpaper's left frames (in playing order) and fps, for a panel of
+/// `frame_bytes`; `None` falls back to the info layout.
+fn load_wallpaper_frames(frame_bytes: usize) -> Option<(Vec<Vec<u8>>, u32)> {
+    let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
+    let w = super::wallpaper::current(monitor.as_deref())?;
+    let left = w.left.as_ref()?;
+    Some((super::wallpaper::left_frames(left, frame_bytes)?, left.fps))
+}
+
 fn wake() {
     if let Some(tx) = EVENTS.get().and_then(|s| s.lock().ok()) {
         if let Some(tx) = tx.as_ref() {
@@ -242,6 +259,9 @@ fn run() {
     let mut was_driving = false;
     let mut last_battery = None;
     let mut tick: u32 = 0;
+    let mut wallpaper_frames: Option<Option<(Vec<Vec<u8>>, u32)>> = None;
+    let mut wallpaper_tick: usize = 0;
+    let mut next_wallpaper_frame = Instant::now();
     let mut next_frame = Instant::now();
     let mut wait = None;
 
@@ -414,6 +434,25 @@ fn run() {
             next_frame = now + period;
         }
         render::draw(&mut d.panel, &view, tick);
+        // The wallpaper's own frames, when that's the layout and the wallpaper has them.
+        let mut animated = animated;
+        if settings.layout == super::screens_settings::Layout::Wallpaper {
+            if wallpaper_frames.is_none() || WALLPAPER_CHANGED.swap(false, Ordering::Relaxed) {
+                wallpaper_frames = Some(load_wallpaper_frames(d.panel.bits.len()));
+            }
+            if let Some(Some((frames, fps))) = &wallpaper_frames {
+                if frames.len() > 1 && *fps > 0 {
+                    animated = true;
+                    if now >= next_wallpaper_frame {
+                        wallpaper_tick = wallpaper_tick.wrapping_add(1);
+                        next_wallpaper_frame = now + Duration::from_millis(1000 / u64::from(*fps));
+                    }
+                }
+                d.panel.bits.clone_from(&frames[wallpaper_tick % frames.len()]);
+            }
+        } else {
+            wallpaper_frames = None;
+        }
         let interval = keep_alive(d.hello.panel_timeout_s);
         let result = if changed(d.last.as_deref(), &d.panel.bits) {
             panel::show(
@@ -429,7 +468,7 @@ fn run() {
         } else {
             wait = Some(deadline(
                 clock_at.saturating_duration_since(Instant::now()),
-                animated.then(|| next_frame.saturating_duration_since(Instant::now())),
+                animated.then(|| next_frame.min(next_wallpaper_frame).saturating_duration_since(Instant::now())),
                 interval.map(|i| i.saturating_sub(d.last_sent.elapsed())),
             ));
             continue;
