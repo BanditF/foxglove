@@ -16,7 +16,8 @@
  *                    4 settings CONN_STATE, 5 POSITION (only when test hooks are built),
  *                    6 screen snapshots (D7 06/07), 7 INVOKE refuses &bt/&out/&bootloader/
  *                    &sys_reset/&soft_off with status 6 (firmware without it may press them),
- *                    8 unsolicited CONN_STATE (D7 84) on connection changes.
+ *                    8 unsolicited CONN_STATE (D7 84) on connection changes,
+ *                    9 BOOTLOADER (D7 08; only when test hooks are built).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -99,6 +100,15 @@
  *      Left joins the three already rotated TRUE_COLOR canvases (including the displayed host
  *      panel). Right overlays the INDEXED_1BIT art, using its palette, on the status canvas.
  *      Both captures run on zmk_display_work_q(), without touching LVGL from USB/BT RX.
+ *   08 BOOTLOADER (test hooks only), two steps so one stray report can't enter a bootloader:
+ *      ARM      request D7 08 00                  reply D7 88, status, nonce u32 LE
+ *      TRIGGER  request D7 08 01 half nonce u32   reply D7 88, status, half
+ *      ARM makes a fresh random nonce (never 0), valid for 5 s and for one TRIGGER: any TRIGGER,
+ *      good or bad, uses it up. half 0 = left: the reply goes out, then the left reboots into its
+ *      UF2 bootloader ~300 ms later. half 1 = right: the left relays art op BOOT; the reply comes
+ *      once the right has answered, and the right reboots into its bootloader ~300 ms after.
+ *      Status: 0 ok, 2 no relay link (right), 3 relay timeout (3 s), 4 not built in
+ *      (CONFIG_FOXGLOVE_TEST_HOOKS=n, GA), 5 bad request, 6 bad or expired nonce.
  */
 
 #pragma once
@@ -120,9 +130,12 @@
 #define HOST_LINK_CAP_SCREEN (1U << 6) // set by the screen readback build
 #define HOST_LINK_CAP_INVOKE_REFUSES (1U << 7)
 #define HOST_LINK_CAP_CONN_STATE_EVENT (1U << 8)
+#define HOST_LINK_CAP_BOOTLOADER (1U << 9) // D7 08, test hooks only
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
+// BOOTLOADER TRIGGER reply for the right half, once the relay has answered.
+void host_link_bootloader_reply(uint8_t status, uint8_t half);
 
 // Called by relay connection/discovery callbacks; queues a report only after host traffic.
 void host_link_art_status(void);

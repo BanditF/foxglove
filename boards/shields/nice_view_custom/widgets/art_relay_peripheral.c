@@ -120,6 +120,16 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     }
 
     switch (d[0]) {
+    case ART_RELAY_BOOT:
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+        if (len != 5 || memcmp(&d[1], "BOOT", 4) != 0) {
+            return BT_GATT_ERR(0x85);
+        }
+        test_hooks_reboot_soon(); // after this write's response has gone out
+        break;
+#else
+        return BT_GATT_ERR(0x84);
+#endif
     case ART_RELAY_PRESS:
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
         if (len != 3) {

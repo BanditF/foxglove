@@ -45,7 +45,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
-       SETTING_SCREEN_SNAP, SETTING_SCREEN_READ };
+       SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -151,7 +151,7 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_SETTINGS_RGB;
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
-    caps |= HOST_LINK_CAP_POSITION;
+    caps |= HOST_LINK_CAP_POSITION | HOST_LINK_CAP_BOOTLOADER;
 #endif
 #if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS)
     caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
@@ -318,6 +318,11 @@ static uint8_t invoke(const uint8_t *d, int len) {
 #endif
 }
 
+void host_link_bootloader_reply(uint8_t status, uint8_t half) {
+    const uint8_t r[] = {HOST_LINK_SETTINGS, 0x80 | SETTING_BOOTLOADER, status, half};
+    reply(r, sizeof(r));
+}
+
 void host_link_position_reply(uint8_t status, uint8_t pos) {
     const uint8_t r[] = {HOST_LINK_SETTINGS, 0x80 | SETTING_POSITION, status, pos};
     reply(r, sizeof(r));
@@ -379,6 +384,16 @@ static void settings_command(const uint8_t *d, int len) {
         return;
     }
     switch (d[1]) {
+    case SETTING_BOOTLOADER: {
+        uint8_t r[7] = {HOST_LINK_SETTINGS, 0x80 | SETTING_BOOTLOADER, 4};
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+        if (test_hooks_bootloader(d, len, r)) {
+            break; // the reply comes from the relay
+        }
+#endif
+        reply(r, sizeof(r));
+        break;
+    }
     case SETTING_POSITION: {
         uint8_t status = 4;
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
