@@ -20,13 +20,15 @@ static STATUS: Mutex<Status> = Mutex::new(Status {
     firmware: None,
     this_pc: None,
 });
-static WAKE: OnceLock<mpsc::Sender<()>> = OnceLock::new();
+static WAKE: OnceLock<mpsc::Sender<bool>> = OnceLock::new();
 
 static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
 
 pub fn settings_visibility(open: bool) {
     if open && !SETTINGS_OPEN.swap(open, Ordering::Relaxed) {
-        refresh();
+        if let Some(tx) = WAKE.get() {
+            let _ = tx.send(true);
+        }
     }
     if !open {
         SETTINGS_OPEN.store(false, Ordering::Relaxed);
@@ -35,7 +37,7 @@ pub fn settings_visibility(open: bool) {
 
 pub fn refresh() {
     if let Some(tx) = WAKE.get() {
-        let _ = tx.send(());
+        let _ = tx.send(false);
     }
 }
 
@@ -51,28 +53,44 @@ pub fn start(ctx: &egui::Context) {
             let wake_link = wake.clone();
             let _links = super::link::subscribe_links(move |link| {
                 let _ = links_tx.send(link);
-                let _ = wake_link.send(());
+                let _ = wake_link.send(false);
             });
             #[cfg(target_os = "windows")]
-            let _watcher = windows_status::watch(wake.clone()).ok();
+            let mut watcher = None;
+            #[cfg(target_os = "windows")]
+            let mut watched = None;
             let mut subscriptions = Vec::new();
             let mut links: Vec<Arc<digitalis::link::Link>> = Vec::new();
+            let mut force = true;
+            let mut previous_link = None;
             loop {
-                while rx.try_recv().is_ok() {}
+                while let Ok(request) = rx.try_recv() {
+                    force |= request;
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    let spec = super::last_device::remembered();
+                    if spec != watched {
+                        watcher = windows_status::watch(wake.clone()).ok();
+                        watched = spec;
+                    }
+                    let _ = &watcher;
+                }
                 while let Ok(link) = links_rx.try_recv() {
                     let tx = wake.clone();
                     subscriptions.push(link.subscribe_events(move |event| {
                         if matches!(event, digitalis::link::Event::State(_)) {
-                            let _ = tx.send(());
+                            let _ = tx.send(false);
                         }
                     }));
                     links.push(link);
                 }
-                let status = read();
+                let status = read(force, &mut previous_link);
                 *STATUS.lock().unwrap_or_else(|e| e.into_inner()) = status;
                 ctx.request_repaint();
-                if rx.recv().is_err() {
-                    break;
+                match rx.recv() {
+                    Ok(request) => force = request,
+                    Err(_) => break,
                 }
             }
         });
@@ -80,12 +98,35 @@ pub fn start(ctx: &egui::Context) {
     });
 }
 
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn matches_interface(path: &str, vid: u16, pid: u16) -> bool {
+    let path = path.to_ascii_lowercase();
+    let token = |prefix: &str, value: u16| {
+        let needle = format!("{prefix}{value:04x}");
+        path.match_indices(&needle).any(|(i, _)| {
+            path.as_bytes()
+                .get(i + needle.len())
+                .is_none_or(|c| !c.is_ascii_hexdigit())
+        })
+    };
+    token("vid_", vid) && token("pid_", pid)
+}
+
+fn needs_firmware(
+    settings_opened: bool,
+    link_changed: bool,
+    before: Option<bool>,
+    after: Option<bool>,
+) -> bool {
+    settings_opened || link_changed || before != after
+}
+
 fn profile_path(vid: u16, pid: u16) -> Option<std::path::PathBuf> {
     crate::settings::Settings::config_file_path()
         .map(|p| p.with_file_name(format!("bluetooth-{vid:04x}-{pid:04x}.txt")))
 }
 
-fn read() -> Status {
+fn read(force: bool, previous_link: &mut Option<(u16, u16, bool, u64)>) -> Status {
     let Some(ConnectionSpec::Zmk {
         vid,
         pid,
@@ -98,12 +139,27 @@ fn read() -> Status {
     let windows_ble = windows_status::connected(vid, pid).ok();
     #[cfg(not(target_os = "windows"))]
     let windows_ble = None;
-    let firmware = super::link::cached(vid, pid).and_then(|link| {
-        let hello = link.state().connected?.hello?;
-        (hello.capabilities & CAP_CONN_STATE != 0)
-            .then(|| digitalis::settings::conn_state(link.as_ref()).ok())
-            .flatten()
-    });
+    let old = STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let link = super::link::cached(vid, pid);
+    let state = link.as_ref().map(|l| l.state()).unwrap_or_default();
+    let key = (vid, pid, state.connected.is_some(), state.generation);
+    let query = needs_firmware(
+        force,
+        *previous_link != Some(key),
+        old.windows_ble,
+        windows_ble,
+    );
+    *previous_link = Some(key);
+    let firmware = if !query {
+        old.firmware
+    } else {
+        link.and_then(|link| {
+            let hello = link.state().connected?.hello?;
+            (hello.capabilities & CAP_CONN_STATE != 0)
+                .then(|| digitalis::settings::conn_state(link.as_ref()).ok())
+                .flatten()
+        })
+    };
     let path = profile_path(vid, pid);
     let mut this_pc = path
         .as_ref()
@@ -191,6 +247,40 @@ pub fn row(ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(any(target_os = "windows", test))]
+#[derive(Default)]
+struct BleEvents {
+    enumerated: bool,
+    devices: std::collections::HashMap<String, Option<bool>>,
+}
+
+#[cfg(any(target_os = "windows", test))]
+impl BleEvents {
+    fn added(&mut self, id: String, matches: bool, connected: Option<bool>) -> bool {
+        if !matches {
+            return false;
+        }
+        let previous = self.devices.insert(id, connected);
+        self.enumerated && previous != Some(connected)
+    }
+
+    fn updated(&mut self, id: &str, connected: Option<bool>) -> bool {
+        let Some(value) = connected else {
+            return false;
+        };
+        let Some(previous) = self.devices.get_mut(id) else {
+            return false;
+        };
+        let changed = *previous != Some(value);
+        *previous = Some(value);
+        self.enumerated && changed
+    }
+
+    fn removed(&mut self, id: &str) -> bool {
+        self.devices.remove(id).is_some() && self.enumerated
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod windows_status {
     use std::sync::mpsc::Sender;
@@ -200,7 +290,7 @@ mod windows_status {
     };
     use windows::Foundation::TypedEventHandler;
     use windows::Win32::Devices::DeviceAndDriverInstallation::*;
-    use windows::Win32::Devices::Properties::DEVPROP_TYPE_BOOLEAN;
+    use windows::Win32::Devices::Properties::{DEVPROP_TYPE_BOOLEAN, DEVPROP_TYPE_GUID};
     use windows::Win32::Foundation::DEVPROPKEY;
 
     // DeviceWatcher includes property changes, unlike arrival/removal-only notifications.
@@ -211,10 +301,33 @@ mod windows_status {
         }
     }
 
-    pub fn watch(tx: Sender<()>) -> windows::core::Result<Watch> {
-        let properties = windows_collections::IIterable::from(vec![windows::core::HSTRING::from(
-            "System.Devices.Aep.IsConnected",
-        )]);
+    pub fn watch(tx: Sender<bool>) -> windows::core::Result<Watch> {
+        use windows::core::Interface;
+        use windows::Foundation::IPropertyValue;
+        let spec = super::super::last_device::remembered();
+        let Some(crate::protocols::ConnectionSpec::Zmk {
+            vid,
+            pid,
+            transport,
+        }) = spec
+        else {
+            return Err(windows::core::Error::new(
+                windows::core::HRESULT(0x80070057u32 as i32),
+                "No remembered keyboard",
+            ));
+        };
+        let saved_id = match transport {
+            crate::protocols::ZmkTransportConfig::Ble(id) => Some(id),
+            _ => None,
+        };
+        // AEP ids contain Bluetooth addresses, while the VID/PID lives on a BTHLE devnode.
+        // Their container id joins the two without matching other devices on the radio.
+        let known_containers = containers(vid, pid);
+        let state = std::sync::Arc::new(std::sync::Mutex::new(super::BleEvents::default()));
+        let properties = windows_collections::IIterable::from(vec![
+            windows::core::HSTRING::from("System.Devices.Aep.IsConnected"),
+            windows::core::HSTRING::from("System.Devices.Aep.ContainerId"),
+        ]);
         let watcher = DeviceInformation::CreateWatcherWithKindAqsFilterAndAdditionalProperties(
             &windows::core::HSTRING::from(
                 r#"System.Devices.Aep.ProtocolId:="{BB7BB05E-5972-42B5-94FC-76EAA7084D49}""#,
@@ -223,27 +336,137 @@ mod windows_status {
             DeviceInformationKind::AssociationEndpoint,
         )?;
         let added = tx.clone();
+        let added_state = state.clone();
         watcher.Added(&TypedEventHandler::<DeviceWatcher, DeviceInformation>::new(
-            move |_, _| {
-                let _ = added.send(());
+            move |_, info| {
+                let Some(info) = info.as_ref() else {
+                    return Ok(());
+                };
+                let id = info.Id()?.to_string();
+                let props = info.Properties()?;
+                let container = props
+                    .Lookup(&"System.Devices.Aep.ContainerId".into())
+                    .ok()
+                    .and_then(|v| v.cast::<IPropertyValue>().ok())
+                    .and_then(|v| v.GetGuid().ok());
+                let matches = saved_id
+                    .as_ref()
+                    .is_some_and(|saved| saved.eq_ignore_ascii_case(&id))
+                    || matches_identity(&id, vid, pid)
+                    || container.is_some_and(|c| {
+                        known_containers.contains(&c) || containers(vid, pid).contains(&c)
+                    });
+                let connected = props
+                    .Lookup(&"System.Devices.Aep.IsConnected".into())
+                    .ok()
+                    .and_then(|v| v.cast::<IPropertyValue>().ok())
+                    .and_then(|v| v.GetBoolean().ok());
+                if added_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .added(id, matches, connected)
+                {
+                    let _ = added.send(false);
+                }
                 Ok(())
             },
         ))?;
         let removed = tx.clone();
+        let removed_state = state.clone();
         watcher.Removed(
-            &TypedEventHandler::<DeviceWatcher, DeviceInformationUpdate>::new(move |_, _| {
-                let _ = removed.send(());
+            &TypedEventHandler::<DeviceWatcher, DeviceInformationUpdate>::new(move |_, info| {
+                if let Some(info) = info.as_ref() {
+                    if removed_state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .removed(&info.Id()?.to_string())
+                    {
+                        let _ = removed.send(false);
+                    }
+                }
                 Ok(())
             }),
         )?;
+        let updated = tx.clone();
+        let updated_state = state.clone();
         watcher.Updated(
-            &TypedEventHandler::<DeviceWatcher, DeviceInformationUpdate>::new(move |_, _| {
-                let _ = tx.send(());
+            &TypedEventHandler::<DeviceWatcher, DeviceInformationUpdate>::new(move |_, info| {
+                let Some(info) = info.as_ref() else {
+                    return Ok(());
+                };
+                let connected = info
+                    .Properties()?
+                    .Lookup(&"System.Devices.Aep.IsConnected".into())
+                    .ok()
+                    .and_then(|v| v.cast::<IPropertyValue>().ok())
+                    .and_then(|v| v.GetBoolean().ok());
+                if updated_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .updated(&info.Id()?.to_string(), connected)
+                {
+                    let _ = updated.send(false);
+                }
                 Ok(())
             }),
         )?;
+        watcher.EnumerationCompleted(&TypedEventHandler::<
+            DeviceWatcher,
+            windows::core::IInspectable,
+        >::new(move |_, _| {
+            state.lock().unwrap_or_else(|e| e.into_inner()).enumerated = true;
+            let _ = tx.send(false);
+            Ok(())
+        }))?;
         watcher.Start()?;
         Ok(Watch(watcher))
+    }
+
+    fn containers(vid: u16, pid: u16) -> Vec<GUID> {
+        let mut found = Vec::new();
+        unsafe {
+            let Ok(set) =
+                SetupDiGetClassDevsW(None, PCWSTR::null(), None, DIGCF_ALLCLASSES | DIGCF_PRESENT)
+            else {
+                return found;
+            };
+            let mut index = 0;
+            loop {
+                let mut info = SP_DEVINFO_DATA {
+                    cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
+                    ..Default::default()
+                };
+                if SetupDiEnumDeviceInfo(set, index, &mut info).is_err() {
+                    break;
+                }
+                index += 1;
+                let mut id = [0u16; 2048];
+                if SetupDiGetDeviceInstanceIdW(set, &info, Some(&mut id), None).is_err() {
+                    continue;
+                }
+                let end = id.iter().position(|&c| c == 0).unwrap_or(id.len());
+                if !matches_identity(&String::from_utf16_lossy(&id[..end]), vid, pid) {
+                    continue;
+                }
+                let key = DEVPROPKEY {
+                    fmtid: GUID::from_u128(0x8c7ed206_3f8a_4827_b3ab_ae9e1faefc6c),
+                    pid: 2,
+                };
+                let mut kind = Default::default();
+                let mut value = [0u8; 16];
+                if SetupDiGetDevicePropertyW(set, &info, &key, &mut kind, Some(&mut value), None, 0)
+                    .is_ok()
+                    && kind == DEVPROP_TYPE_GUID
+                {
+                    let container = std::ptr::read_unaligned(value.as_ptr().cast::<GUID>());
+                    if container != GUID::zeroed() {
+                        found.push(container);
+                    }
+                }
+            }
+            let _ = SetupDiDestroyDeviceInfoList(set);
+        }
+        found
     }
 
     pub fn connected(vid: u16, pid: u16) -> windows::core::Result<bool> {
@@ -337,6 +560,48 @@ mod windows_status {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn filters_ble_events_and_enumeration() {
+        let mut events = BleEvents::default();
+        assert!(!events.added("mouse".into(), false, Some(true)));
+        assert!(!events.added("keyboard".into(), true, Some(false)));
+        assert!(!events.updated("keyboard", Some(true)));
+        events.enumerated = true;
+        assert!(!events.updated("mouse", Some(false)));
+        assert!(!events.updated("keyboard", None));
+        assert!(!events.updated("keyboard", Some(true)));
+        assert!(events.updated("keyboard", Some(false)));
+        assert!(!events.updated("keyboard", Some(false)));
+        assert!(!events.removed("mouse"));
+        assert!(events.removed("keyboard"));
+        assert!(!events.removed("keyboard"));
+        assert!(events.added("keyboard".into(), true, Some(true)));
+        assert!(!events.added("keyboard".into(), true, Some(true)));
+    }
+
+    #[test]
+    fn filters_interface_paths_by_both_complete_ids() {
+        let path = r"\\?\HID#VID_1234&PID_5678&MI_00#instance";
+        assert!(matches_interface(path, 0x1234, 0x5678));
+        assert!(!matches_interface(path, 0x1235, 0x5678));
+        assert!(!matches_interface(path, 0x1234, 0x5679));
+        assert!(!matches_interface(
+            &path.replace("PID_5678", "PID_56789"),
+            0x1234,
+            0x5678
+        ));
+        assert!(!matches_interface("", 0x1234, 0x5678));
+    }
+
+    #[test]
+    fn keyboard_requests_require_settings_link_or_windows_change() {
+        assert!(!needs_firmware(false, false, Some(true), Some(true)));
+        assert!(!needs_firmware(false, false, None, None));
+        assert!(needs_firmware(true, false, Some(true), Some(true)));
+        assert!(needs_firmware(false, true, Some(true), Some(true)));
+        assert!(needs_firmware(false, false, Some(true), Some(false)));
+    }
+
     #[test]
     fn learns_only_a_connected_bonded_profile_and_preserves_this_pc() {
         let state = ConnState {

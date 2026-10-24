@@ -26,7 +26,7 @@
     trigger-period-ms = <16>;
 };
 
-&soft_off { hold-time-ms = <2000>; }; // ADMIN + M; the vendor Q+S+Z combo is gone (hit it while gaming)
+&soft_off { hold-time-ms = <2000>; }; // SYSTEM + M; the vendor Q+S+Z combo is gone (hit it while gaming)
 
 / {
     behaviors {
@@ -64,8 +64,8 @@
 
     conditional_layers {
         compatible = "zmk,conditional-layers";
-        admin_from_typing { if-layers = <1 2>; then-layer = <5>; };
-        admin_from_game { if-layers = <4 2>; then-layer = <5>; };
+        function_from_typing { if-layers = <1 2>; then-layer = <5>; };
+        function_from_game { if-layers = <4 2>; then-layer = <5>; };
     };
 
     keymap {
@@ -83,11 +83,13 @@
              sensor-bindings = <&inc_dec_kp C_VOLUME_UP C_VOLUME_DOWN>;
         };
 
+        // NUMBER: hold the middle left thumb. Bluetooth keys moved to SYSTEM;
+        // their old home-row positions are disabled.
         lower_layer {
             display-name = "NUMBER";
             bindings = <
 &trans  &kp N1           &kp N2          &kp N3        &kp N4        &kp N5                                         &mmv MOVE_UP                     &kp N6           &kp N7           &kp N8           &kp N9           &kp N0    &kp BSPC
-&trans  &bt BT_CLR_ALL   &bt BT_SEL 0    &bt BT_SEL 1  &bt BT_SEL 2  &bt BT_SEL 3                   &mmv MOVE_LEFT  &mkp LCLK       &mmv MOVE_RIGHT  &kp LEFT         &kp DOWN         &kp UP           &kp RIGHT        &kp HOME  &kp PG_UP
+&trans  &none   &none    &none  &none  &none                   &mmv MOVE_LEFT  &mkp LCLK       &mmv MOVE_RIGHT  &kp LEFT         &kp DOWN         &kp UP           &kp RIGHT        &kp HOME  &kp PG_UP
 &trans  &rgb_ug RGB_OFF  &rgb_ug RGB_ON  &trans        &trans        &rgb_ug RGB_EFF  &kp C_MUTE                    &mmv MOVE_DOWN                   &rgb_ug RGB_EFR  &rgb_ug RGB_SPI  &rgb_ug RGB_BRI  &rgb_ug RGB_BRD  &kp END   &kp PG_DN
                                          &trans        &mo 1         &trans                                                                          &kp INS          &mo 2            &kp DEL
             >;
@@ -95,19 +97,21 @@
             sensor-bindings = <&scroll_encoder>;
         };
 
+        // SYMBOL: hold the middle right thumb. Bluetooth clear and output keys
+        // moved to SYSTEM; their old positions are disabled.
         raise_layer {
             display-name = "SYMBOL";
             bindings = <
 &trans  &kp EXCL      &kp AT        &kp HASH   &kp DLLR   &kp PRCNT                            &mmv MOVE_UP                     &kp CARET  &kp AMPS   &kp ASTRK  &kp LPAR  &kp RPAR  &kp BSPC
-&trans  &bt BT_CLR    &mkp LCLK     &mkp MCLK  &mkp RCLK  &mkp MB4             &mmv MOVE_LEFT  &mkp LCLK       &mmv MOVE_RIGHT  &kp MINUS  &kp EQUAL  &kp LBKT   &kp RBKT  &kp BSLH  &kp GRAVE
-&trans  &out OUT_USB  &out OUT_BLE  &none      &none      &mkp MB5   &trans                    &mmv MOVE_DOWN                   &kp UNDER  &kp PLUS   &kp LBRC   &kp RBRC  &kp PIPE  &kp TILDE
+&trans  &none    &mkp LCLK     &mkp MCLK  &mkp RCLK  &mkp MB4             &mmv MOVE_LEFT  &mkp LCLK       &mmv MOVE_RIGHT  &kp MINUS  &kp EQUAL  &kp LBKT   &kp RBKT  &kp BSLH  &kp GRAVE
+&trans  &none  &none  &none      &none      &mkp MB5   &trans                    &mmv MOVE_DOWN                   &kp UNDER  &kp PLUS   &kp LBRC   &kp RBRC  &kp PIPE  &kp TILDE
                                     &trans     &mo 1      &kp SPACE                                                             &kp RET    &mo 2      &trans
             >;
 
             sensor-bindings = <&scroll_encoder>;
         };
 
-        // Game layer (toggle: ADMIN + G, or Backspace + Esc). Letters stay where they are;
+        // Game layer (toggle: SYSTEM + G, or Backspace + Esc). Letters stay where they are;
         // only the thumbs and Shift change so nothing fires late or by accident. The right
         // outer thumb (right Alt on QWERTY) is the Windows key here, and Tab moves to GAME+
         // (Esc takes its place) so Shift below it can't catch it by accident.
@@ -137,18 +141,34 @@
             sensor-bindings = <&inc_dec_kp C_VOLUME_UP C_VOLUME_DOWN>;
         };
 
-        // ADMIN: hold BOTH middle thumbs (NUMBER + SYMBOL, or GAME+ + SYMBOL).
-        // Layer toggles: Tab=back to QWERTY, N=NUMBER, S=SYMBOL, G=GAME,
-        // F=lock ADMIN on. Tap a toggle again to turn it off.
-        // M (hold 2 s) = soft off, both halves; the reset button wakes them. Bootloader is on C, H
-        // and comma, reset on Z and period.
-        admin_layer {
-            display-name = "ADMIN";
+        // FUNCTION: hold BOTH middle thumbs (NUMBER + SYMBOL, or GAME+ + SYMBOL).
+        // Function keys, Caps on A, Insert on Z, media and mouse controls stay safe.
+        // Hold Tab as well for SYSTEM; all layer locks and power keys moved there.
+        function_layer {
+            display-name = "FUNCTION";
             bindings = <
-&to 0           &kp F1      &kp F2     &kp F3       &kp F4     &kp F5                                  &mmv MOVE_UP                     &kp F6       &kp F7     &kp F8       &kp F9      &kp F10          &kp F11
-&trans          &trans      &tog 2     &mkp MCLK    &tog 5     &tog 3                  &mmv MOVE_LEFT  &mkp LCLK       &mmv MOVE_RIGHT  &bootloader  &mkp LCLK  &mkp MCLK    &mkp RCLK   &kp PRINTSCREEN  &kp F12
-&trans          &sys_reset  &trans     &bootloader  &trans     &mkp MB5  &kp C_MUTE                    &mmv MOVE_DOWN                   &tog 1       &soft_off  &bootloader  &sys_reset  &kp SCROLLLOCK   &kp PAUSE_BREAK
-                                       &trans       &trans     &trans                                                                   &trans       &trans     &trans
+&mo 6   &kp F1    &kp F2  &kp F3     &kp F4  &kp F5                          &mmv MOVE_UP                     &kp F6  &kp F7  &kp F8  &kp F9  &kp F10          &kp F11
+&trans  &kp CAPS  &none   &mkp MCLK  &none   &none            &mmv MOVE_LEFT  &mkp LCLK       &mmv MOVE_RIGHT  &none   &mkp LCLK  &mkp MCLK  &mkp RCLK  &kp PRINTSCREEN  &kp F12
+&trans  &kp INS   &trans  &none      &trans  &mkp MB5  &kp C_MUTE             &mmv MOVE_DOWN                   &none   &none   &none   &none   &kp SCROLLLOCK   &kp PAUSE_BREAK
+                            &trans  &trans  &trans                                                       &trans  &trans  &trans
+            >;
+
+            sensor-bindings = <&scroll_encoder>;
+        };
+
+        // SYSTEM: keep FUNCTION held, then hold Tab. Tab stays transparent.
+        // Q-T select Bluetooth 0-4; Y/U choose USB/BLE. Bottom far corners clear
+        // the current/all Bluetooth profiles. A=QWERTY, S=SYMBOL, F=FUNCTION,
+        // G=GAME, N=NUMBER. Tap a toggle again to turn it off.
+        // Bootloader on C (left), comma and slash (right); reset on Z (left), dot (right).
+        // M (hold 2 s) powers off both halves; the reset buttons wake them.
+        system_layer {
+            display-name = "SYSTEM";
+            bindings = <
+&trans          &bt BT_SEL 0  &bt BT_SEL 1  &bt BT_SEL 2  &bt BT_SEL 3  &bt BT_SEL 4          &none         &out OUT_USB  &out OUT_BLE  &none        &none       &none  &none
+&none           &to 0         &tog 2        &none         &tog 5        &tog 3         &none  &none  &none  &none         &none         &none        &none       &none  &none
+&bt BT_CLR      &sys_reset    &none         &bootloader   &none         &none   &none          &none         &tog 1        &soft_off     &bootloader  &sys_reset  &bootloader  &bt BT_CLR_ALL
+                                            &none         &trans        &none                             &none         &trans        &none
             >;
 
             sensor-bindings = <&scroll_encoder>;

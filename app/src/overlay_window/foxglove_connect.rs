@@ -74,9 +74,9 @@ type SerialScanResult = (ConnectionSpec, Option<ConnectionSpec>);
 #[derive(Default)]
 pub(super) struct SerialWatch {
     #[cfg(target_os = "windows")]
-    notification: Option<device_watch::DeviceWatch>,
+    notification: Option<crate::foxglove::device_watch::DeviceWatch>,
     #[cfg(target_os = "windows")]
-    hid_notification: Option<device_watch::DeviceWatch>,
+    hid_notification: Option<crate::foxglove::device_watch::DeviceWatch>,
     #[cfg(target_os = "windows")]
     previous_ble: Option<ConnectionSpec>,
     #[cfg(target_os = "windows")]
@@ -151,20 +151,33 @@ impl OverlayApp {
         if !self.serial_watch.registration_attempted {
             self.serial_watch.registration_attempted = true;
             self.serial_watch.notification =
-                device_watch::DeviceWatch::new(self.ui_wake.clone(), false);
+                crate::foxglove::device_watch::DeviceWatch::new(self.ui_wake.clone(), false);
             self.serial_watch.hid_notification =
-                device_watch::DeviceWatch::new(self.ui_wake.clone(), true);
+                crate::foxglove::device_watch::DeviceWatch::new(self.ui_wake.clone(), true);
+        }
+        let identity = match self.session.last_spec.as_ref() {
+            Some(ConnectionSpec::Zmk { vid, pid, .. }) => Some((*vid, *pid)),
+            _ => None,
+        };
+        for watch in [
+            &self.serial_watch.notification,
+            &self.serial_watch.hid_notification,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            watch.set_identity(identity);
         }
         let hid_changed = self
             .serial_watch
             .hid_notification
             .as_ref()
-            .is_some_and(device_watch::DeviceWatch::take_change);
+            .is_some_and(crate::foxglove::device_watch::DeviceWatch::take_change);
         let changed = self
             .serial_watch
             .notification
             .as_ref()
-            .is_some_and(device_watch::DeviceWatch::take_change);
+            .is_some_and(crate::foxglove::device_watch::DeviceWatch::take_change);
         if changed || hid_changed {
             self.serial_watch.pending = None;
             crate::foxglove::link::reconnect();
@@ -257,90 +270,6 @@ impl OverlayApp {
             let _ = tx.send((spec, replacement));
             wake.request_repaint();
         });
-    }
-}
-
-#[cfg(target_os = "windows")]
-mod device_watch {
-    use crate::ui_wake::UiWake;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use windows::Win32::Devices::DeviceAndDriverInstallation::{
-        CM_Register_Notification, CM_Unregister_Notification, CM_NOTIFY_ACTION,
-        CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL, CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL,
-        CM_NOTIFY_EVENT_DATA, CM_NOTIFY_FILTER, CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE, CR_SUCCESS,
-        HCMNOTIFICATION,
-    };
-
-    struct Context {
-        changed: AtomicBool,
-        wake: UiWake,
-    }
-
-    pub(super) struct DeviceWatch {
-        handle: HCMNOTIFICATION,
-        context: Box<Context>,
-    }
-
-    impl DeviceWatch {
-        pub(super) fn new(wake: UiWake, hid: bool) -> Option<Self> {
-            let context = Box::new(Context {
-                changed: AtomicBool::new(false),
-                wake,
-            });
-            let mut filter = CM_NOTIFY_FILTER {
-                cbSize: std::mem::size_of::<CM_NOTIFY_FILTER>() as u32,
-                FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
-                ..Default::default()
-            };
-            filter.u.DeviceInterface.ClassGuid = windows::core::GUID::from_u128(if hid {
-                0x4d1e55b2_f16f_11cf_88cb_001111000030
-            } else {
-                0x86e0d1e0_8089_11d0_9ce4_08003e301f73
-            });
-            let mut handle = HCMNOTIFICATION::default();
-            // The boxed context stays at this address until unregister has drained callbacks.
-            let result = unsafe {
-                CM_Register_Notification(
-                    &filter,
-                    Some((&*context as *const Context).cast()),
-                    Some(on_notification),
-                    &mut handle,
-                )
-            };
-            if result != CR_SUCCESS {
-                return None;
-            }
-            Some(Self { handle, context })
-        }
-
-        pub(super) fn take_change(&self) -> bool {
-            self.context.changed.swap(false, Ordering::Relaxed)
-        }
-    }
-
-    impl Drop for DeviceWatch {
-        fn drop(&mut self) {
-            // Unregister waits for callbacks before the context is freed.
-            unsafe { CM_Unregister_Notification(self.handle) };
-        }
-    }
-
-    unsafe extern "system" fn on_notification(
-        _handle: HCMNOTIFICATION,
-        context: *const core::ffi::c_void,
-        action: CM_NOTIFY_ACTION,
-        _event: *const CM_NOTIFY_EVENT_DATA,
-        _size: u32,
-    ) -> u32 {
-        if action == CM_NOTIFY_ACTION_DEVICEINTERFACEARRIVAL
-            || action == CM_NOTIFY_ACTION_DEVICEINTERFACEREMOVAL
-        {
-            // Registered with a stable Box, kept alive until unregister returns.
-            let context = unsafe { &*context.cast::<Context>() };
-            context.changed.store(true, Ordering::Relaxed);
-            context.wake.request_repaint();
-        }
-        0
     }
 }
 
