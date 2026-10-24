@@ -192,6 +192,7 @@ impl OverlayApp {
         if ui.small_button("Refresh lights").clicked() {
             ks::refresh_rgb_state();
         }
+        Self::presets_row(ui);
         let state = ks::rgb_state(&ctx);
         egui::Grid::new("foxglove_lights")
             .num_columns(3)
@@ -259,6 +260,47 @@ impl OverlayApp {
                 }
             });
         });
+    }
+
+    /// The curated presets (#265): a colour plus an effect, and matching right art (#273).
+    fn presets_row(ui: &mut egui::Ui) {
+        use crate::foxglove::{accent::LightingSettings, lighting_presets as lp};
+        let settings = LightingSettings::load();
+        let current = settings.preset.as_deref().and_then(lp::find);
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Preset");
+            egui::ComboBox::from_id_salt("foxglove-lighting-preset")
+                .selected_text(current.map_or("none", |p| p.name.as_str()))
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(current.is_none(), "none").clicked() {
+                        lp::choose(None);
+                    }
+                    for p in lp::presets() {
+                        ui.horizontal(|ui| {
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                            ui.painter().rect_filled(rect, 3.0, lp::swatch(p));
+                            if ui
+                                .selectable_label(current.is_some_and(|c| c.id == p.id), &p.name)
+                                .on_hover_text(format!("{} ({})", p.description, p.effect))
+                                .clicked()
+                            {
+                                lp::choose(Some(&p.id));
+                            }
+                        });
+                    }
+                });
+            let mut art = settings.preset_art;
+            if ui
+                .checkbox(&mut art, "Change the right screen with the preset")
+                .on_hover_text("Shows the preset's art on the right screen; your own art comes back when you clear the preset.")
+                .changed()
+            {
+                lp::set_preset_art(art);
+            }
+        });
+        if current.is_some() {
+            ui.weak("Picking a preset turns off following the accent colour.");
+        }
     }
 
     fn actions_section(ui: &mut egui::Ui) {

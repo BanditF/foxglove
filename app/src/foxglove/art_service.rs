@@ -39,6 +39,8 @@ pub struct Snapshot {
     pub cycle: Cycle,
     /// The keyboard reports its lights turning on and off (HELLO RGB_STATE_EVENT).
     pub wake_events: bool,
+    /// The keyboard has &art_next / &art_prev and can hand them to the app (HELLO ART_KEYS).
+    pub art_keys: bool,
 }
 
 impl Snapshot {
@@ -99,6 +101,11 @@ enum Command {
     Preset(Option<art_cycle::Item>),
     /// Show a trigger's art without pinning it.
     Show(Choice),
+    /// An art key press (D7 8D 01): 1 next, -1 previous.
+    ArtKey { source: Weak<Link>, generation: u64, dir: i8 },
+    /// Step the hotlist by `dir`. A manual step (the art key, the UI's Next) is the user's own
+    /// pick and shows even over layer or preset art; a timed or lights-wake step waits for it.
+    Step { dir: i8, manual: bool, card: bool },
 }
 
 #[derive(Clone)]
@@ -184,7 +191,7 @@ impl Handle {
 
     /// Shows the hotlist's next entry now.
     pub fn next(&self) -> bool {
-        let _ = self.commands.send(Command::Next);
+        let _ = self.commands.send(Command::Step { dir: 1, manual: true, card: false });
         true
     }
 
@@ -274,6 +281,55 @@ fn load_pinned() -> Option<Choice> {
         ))
     })
     .pinned
+}
+
+/// The left panel's brief "ART n/m" card after an art-key step, with the entry's name. It ends
+/// by its own deadline (the panel override's TTL); a plugin's frame on the panel wins.
+fn show_card(cycle: &Cycle, slots: &[SlotInfo], st: &ArtStatus, dir: i8) {
+    let Some((w, h)) = super::screens::panel_size() else { return };
+    let Some(item) = cycle.items.get(cycle.position) else { return };
+    let label = match item {
+        art_cycle::Item::BuiltIn(name) => super::art_manifest::sets(st.right_set_count)
+            .and_then(|sets| sets.iter().find(|s| &s.name == name))
+            .map_or_else(|| name.clone(), |s| s.label.clone()),
+        art_cycle::Item::Slot(n) => slots
+            .iter()
+            .find(|i| i.slot == *n)
+            .map_or_else(|| format!("slot {}", n + 1), |i| i.name.clone()),
+        art_cycle::Item::File(p) => p.file_stem().unwrap_or_default().to_string_lossy().replace(['_', '-'], " "),
+    };
+    let bits = super::art_toast::frame(usize::from(w), usize::from(h), cycle.position, cycle.items.len(), &label, dir);
+    if let Err(e) = super::screens::show_card(super::art_toast::CONN, bits, super::art_toast::SHOW_FOR) {
+        eprintln!("Foxglove art: card: {e}");
+    }
+}
+
+/// Sends D7 0D ART_KEYS when what the hotlist wants differs from `sent`, and returns what the
+/// keyboard now has. Keyboards without the art keys are left alone.
+fn sync_art_keys(link: &Link, h: &Handle, sent: Option<bool>) -> Option<bool> {
+    use digitalis::Transport as _;
+    let snap = h.snapshot();
+    if !snap.art_keys {
+        return sent;
+    }
+    let want = snap.cycle.wants_art_keys();
+    if sent == Some(want) {
+        return sent;
+    }
+    let reply = link.request(
+        &protocol::art_keys(want),
+        protocol::SETTINGS,
+        protocol::settings::ART_KEYS,
+        Duration::from_millis(500),
+    );
+    match reply {
+        Ok(r) if r[2] == 0 && (r[3] != 0) == want => Some(want),
+        Ok(_) => sent,
+        Err(e) => {
+            eprintln!("Foxglove: art keys: {e}");
+            sent
+        }
+    }
 }
 
 fn restore(pinned: &Option<Choice>, status: ArtStatus) -> Option<Choice> {
@@ -397,6 +453,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let mut due: Option<Instant> = None;
     // Layer and preset art above the pinned choice (#60).
     let mut triggers = Triggers::default();
+    // Whether this connection's art keys come to the app (D7 0D), as last sent.
+    let mut art_keys_on: Option<bool> = None;
     while !h.stop.load(Ordering::Relaxed) {
         let next_deadline = match (due, triggers.deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -452,6 +510,16 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 }
                 Command::Next
             }
+            Command::ArtKey { source, generation, dir } => {
+                let is_current = current.is_some_and(|(id, g)| {
+                    g == generation && Weak::ptr_eq(&Arc::downgrade(&links[id].0), &source)
+                });
+                if !is_current || !h.snapshot().cycle.steps_on(art_cycle::Step::Key) {
+                    continue;
+                }
+                // The art key also shows "ART n/m" on the left panel for a moment (#60).
+                Command::Step { dir, manual: true, card: true }
+            }
             Command::Layers(active) => {
                 let change = triggers.layers(&active, &h.snapshot().cycle, Instant::now());
                 match shown(change, &triggers) {
@@ -498,6 +566,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     s.pinned = pinned.clone();
                     s.cycle = Cycle::load();
                 });
+                if let Some((id, _)) = current {
+                    art_keys_on = sync_art_keys(&links[id].0, h, art_keys_on);
+                }
                 due = reschedule(current.is_some());
                 match pinned.filter(|_| changed && current.is_some() && !h.snapshot().busy) {
                     Some(choice) => {
@@ -510,6 +581,16 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             other => other,
         };
         let command = match command {
+            Command::Next => Command::Step { dir: 1, manual: false, card: false },
+            other => other,
+        };
+        // Take the art keys while the hotlist would use them, else let the keyboard step itself.
+        if matches!(command, Command::CycleChanged) {
+            if let Some((id, _)) = current {
+                art_keys_on = sync_art_keys(&links[id].0, h, art_keys_on);
+            }
+        }
+        let command = match command {
             Command::CycleChanged => {
                 due = reschedule(current.is_some());
                 // Turning on "match the wallpaper" shows the current wallpaper's art right away.
@@ -520,22 +601,36 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 }
                 continue;
             }
-            Command::Next => {
+            Command::Step { dir, manual, card } => {
                 due = reschedule(current.is_some());
                 let snap = h.snapshot();
                 let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
+                    if manual {
+                        eprintln!(
+                            "Foxglove art: step not taken (status {}, busy {}, connected {})",
+                            snap.status.is_some(),
+                            snap.busy,
+                            current.is_some()
+                        );
+                    }
                     continue;
                 };
-                // The hotlist waits while layer or preset art is on top.
-                if triggers.top(&snap.cycle).is_some() {
+                // Timed and lights-wake steps wait while layer or preset art is on top.
+                if !manual && triggers.top(&snap.cycle).is_some() {
                     continue;
                 }
                 let mut cycle = snap.cycle;
-                let Some(choice) = cycle.advance(|item| {
+                let Some(choice) = cycle.step_by(dir, |item| {
                     art_cycle::resolve(item, st.right_set_count, st.flash_used)
                 }) else {
+                    if manual {
+                        eprintln!("Foxglove art: nothing in the hotlist can show now");
+                    }
                     continue;
                 };
+                if card {
+                    show_card(&cycle, &snap.slots, &st, dir);
+                }
                 let _ = cycle.save();
                 h.update(|s| {
                     s.cycle = cycle;
@@ -568,6 +663,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     if protocol::is_reply(r, protocol::SETTINGS, protocol::settings::RGB_STATE) {
                         let on = protocol::RgbState::parse(r).left.on;
                         let _ = tx.send(Command::Lights { source: source.clone(), generation, on });
+                    } else if let Some(dir) = protocol::art_key_event(r) {
+                        let _ = tx.send(Command::ArtKey { source: source.clone(), generation, dir });
                     }
                 }));
                 links.push((link.clone(), subscription));
@@ -584,6 +681,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     current = None;
                     due = None;
                     lights_on = None;
+                    art_keys_on = None; // the firmware drops the subscription with the link
                     triggers.disconnected();
                     h.update(|s| {
                         s.connected = false;
@@ -602,12 +700,15 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 current = Some((id, state.generation));
-                let wake_events = super::link::ask_hello(link)
-                    .is_some_and(|hello| hello.capabilities & protocol::capabilities::RGB_STATE_EVENT != 0);
+                let caps = super::link::ask_hello(link).map_or(0, |hello| hello.capabilities);
+                let wake_events = caps & protocol::capabilities::RGB_STATE_EVENT != 0;
+                let art_keys = caps & protocol::capabilities::ART_KEYS != 0;
                 h.update(|s| {
                     s.connected = true;
                     s.wake_events = wake_events;
+                    s.art_keys = art_keys;
                 });
+                art_keys_on = sync_art_keys(link, h, None);
                 connected_now = true;
                 due = reschedule(true);
                 true
@@ -836,5 +937,143 @@ mod tests {
                 (2, "Set 2".into())
             ]
         );
+    }
+
+    /// A keyboard in memory for the art service: it answers HELLO from its Connected, art
+    /// commands with a live right half (link 2, 17 built-ins), D7 0D with its on/off, and
+    /// everything else with an empty reply. Tests push its own reports (key events).
+    #[derive(Clone, Default)]
+    struct FakeKeyboard {
+        inbox: Arc<(Mutex<std::collections::VecDeque<[u8; protocol::REPORT]>>, std::sync::Condvar)>,
+        written: Arc<Mutex<Vec<Vec<u8>>>>,
+        stop: Arc<AtomicBool>,
+    }
+
+    impl FakeKeyboard {
+        fn send(&self, bytes: &[u8]) {
+            let mut r = [0u8; protocol::REPORT];
+            r[..bytes.len()].copy_from_slice(bytes);
+            self.inbox.0.lock().unwrap().push_back(r);
+            self.inbox.1.notify_all();
+        }
+
+        fn wait_for(&self, what: impl Fn(&[u8]) -> bool, secs: u64) -> bool {
+            let end = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < end {
+                if self.written.lock().unwrap().iter().any(|w| what(w)) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        }
+    }
+
+    impl digitalis::link::RawHid for FakeKeyboard {
+        fn read(&self, buf: &mut [u8; protocol::REPORT]) -> anyhow::Result<usize> {
+            let mut inbox = self.inbox.0.lock().unwrap();
+            loop {
+                if self.stop.load(Ordering::Relaxed) {
+                    return Ok(0);
+                }
+                if let Some(r) = inbox.pop_front() {
+                    *buf = r;
+                    return Ok(protocol::REPORT);
+                }
+                inbox = self.inbox.1.wait(inbox).unwrap();
+            }
+        }
+
+        fn interrupt(&self) {
+            let _inbox = self.inbox.0.lock().unwrap();
+            self.stop.store(true, Ordering::Relaxed);
+            self.inbox.1.notify_all();
+        }
+
+        fn write(&self, out: &[u8]) -> anyhow::Result<()> {
+            self.written.lock().unwrap().push(out.to_vec());
+            let (proto, cmd) = (out[0], out[1]);
+            match proto {
+                protocol::ART => {
+                    // state, error, length, pushed, link 2, version 3, right idle on built-in 0 of 17
+                    let mut r = vec![proto, 0x80 | cmd, 0, 0, 0, 0, 0, 0, 2, 3, 0, 0, 0, 0, 0, 0, 17];
+                    r.resize(protocol::REPORT, 0);
+                    self.send(&r);
+                }
+                protocol::SETTINGS if cmd == protocol::settings::ART_KEYS => {
+                    self.send(&[proto, 0x80 | cmd, 0, out.get(2).copied().unwrap_or(0)]);
+                }
+                _ => self.send(&[proto, 0x80 | cmd, 0]),
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_art_key_press_steps_the_hotlist_through_to_a_push() {
+        let dir = std::env::temp_dir().join(format!("foxglove-artkey-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("FOXGLOVE_CONFIG_DIR", &dir);
+        let blob = include_bytes!("../../resources/lighting/art/fury.bin");
+        let (a, b) = (dir.join("a.bin"), dir.join("b.bin"));
+        std::fs::write(&a, blob).unwrap();
+        std::fs::write(&b, blob).unwrap();
+
+        let fake = FakeKeyboard::default();
+        let hello = protocol::Hello {
+            width: 64,
+            height: 52,
+            right_link: 2,
+            capabilities: protocol::capabilities::ART_RELAY
+                | protocol::capabilities::ART_STATUS_EVENT
+                | protocol::capabilities::ART_KEYS,
+            ..Default::default()
+        };
+        let opener_fake = fake.clone();
+        let link = Arc::new(Link::start(Box::new(move || {
+            let c = digitalis::link::Connected { product: "Fake".into(), hello: Some(hello) };
+            Ok((Box::new(opener_fake.clone()) as Box<dyn digitalis::link::RawHid>, c))
+        })));
+        link.wait_connected(Duration::from_secs(2)).unwrap();
+
+        let (commands, receiver) = mpsc::channel();
+        let h = Handle {
+            commands,
+            state: Arc::new(Mutex::new(Snapshot::default())),
+            cancel: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        h.update(|s| {
+            s.cycle = Cycle {
+                items: vec![art_cycle::Item::File(a), art_cycle::Item::File(b.clone())],
+                step: vec![art_cycle::Step::Key],
+                ..Cycle::default()
+            }
+        });
+        let worker = h.clone();
+        let thread = std::thread::spawn(move || run_events(&worker, &receiver));
+        h.commands.send(Command::Available(link.clone())).unwrap();
+
+        // Connected with ART_KEYS and a hotlist on the key: the app takes the keys.
+        assert!(fake.wait_for(|w| w.starts_with(&[protocol::SETTINGS, protocol::settings::ART_KEYS, 1]), 3), "opt-in sent");
+        let end = Instant::now() + Duration::from_secs(3);
+        while (h.snapshot().busy || h.snapshot().status.is_none()) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // A preset's art is on top (a built-in, shown at once); the key must still step.
+        h.commands.send(Command::Preset(Some(art_cycle::Item::BuiltIn("ZMK_1".into())))).unwrap();
+        let end = Instant::now() + Duration::from_secs(3);
+        while h.snapshot().busy && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // SYSTEM+P: D7 8D 01 +1, the hotlist steps to b.bin and pushes it.
+        fake.send(&[protocol::SETTINGS, 0x80 | protocol::settings::ART_KEYS, 1, 1]);
+        assert!(fake.wait_for(|w| w.starts_with(&[protocol::ART, protocol::art::BEGIN]), 3), "the key press pushed the next entry");
+        assert_eq!(h.snapshot().cycle.position, 1);
+
+        h.stop.store(true, Ordering::Relaxed);
+        h.commands.send(Command::Stop).unwrap();
+        thread.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

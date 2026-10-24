@@ -253,7 +253,8 @@ fn cycle_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Sn
                 changed = true;
             }
         };
-        toggle(ui, Step::Key, "on the art key", false, "Needs keyboard firmware with the &art_next key.");
+        toggle(ui, Step::Key, "on the art key (SYSTEM + P / O)", s.art_keys,
+            "Needs keyboard firmware with the &art_next key.");
         toggle(ui, Step::LightsWake, "when the lights wake", s.wake_events,
             "Needs keyboard firmware that reports when the lights come back on.");
         toggle(ui, Step::Minutes, "every", true, "");
