@@ -32,7 +32,8 @@ fn context() -> Context {
 
 fn fast() -> Config {
     Config {
-        ping_timeout: Duration::from_millis(800),
+        // The test plugin pings every 200 ms; a wide margin, so a loaded machine isn't "silent".
+        ping_timeout: Duration::from_secs(3),
         backoff_start: Duration::from_millis(50),
         backoff_max: Duration::from_millis(200),
         max_crashes: 3,
@@ -54,8 +55,14 @@ fn states(mode: &str, run_for: Duration) -> Vec<PluginState> {
 
 /// The states until one matches `done` (or `within` runs out), then stopped.
 fn states_until(mode: &str, within: Duration, done: impl Fn(&PluginState) -> bool) -> Vec<PluginState> {
+    run_until(spec(mode), within, done)
+}
+
+/// Runs `spec` until a state matches `done` (or `within` runs out): waits on the outcome, not
+/// on a time.
+fn run_until(spec: PluginSpec, within: Duration, done: impl Fn(&PluginState) -> bool) -> Vec<PluginState> {
     let (tx, rx) = mpsc::channel();
-    let runner = Runner::start(spec(mode), fast(), context, move |s| {
+    let runner = Runner::start(spec, fast(), context, move |s| {
         let _ = tx.send(s);
     });
     let until = std::time::Instant::now() + within;
@@ -97,7 +104,8 @@ fn a_crashing_plugin_backs_off_then_is_disabled() {
 
 #[test]
 fn a_silent_plugin_is_restarted() {
-    let s = states("hang", Duration::from_millis(2500));
+    let silent = |s: &PluginState| matches!(s, PluginState::Restarting { reason, .. } if reason.contains("no sign of life"));
+    let s = states_until("hang", Duration::from_secs(30), silent);
     assert!(
         s.iter().any(|s| matches!(s, PluginState::Restarting { reason, .. } if reason.contains("no sign of life"))),
         "{s:?}"
@@ -120,32 +128,21 @@ fn a_sandboxed_plugin_runs_but_cannot_read_user_files() {
     assert!(!s.iter().any(|s| matches!(s, PluginState::Restarting { .. })), "it keeps pinging from the sandbox: {s:?}");
 
     // `probe <file>` exits 7 if it can read the file, 0 if it can't.
-    let (tx, rx) = mpsc::channel();
     let mut probe = spec_in("probe", true);
     let secret = std::env::temp_dir().join(format!("plugin-host-secret-{}.txt", std::process::id()));
     std::fs::write(&secret, "secret").unwrap();
     probe.run.push(secret.to_string_lossy().into());
-    let runner = Runner::start(probe, fast(), context, move |s| {
-        let _ = tx.send(s);
-    });
-    std::thread::sleep(Duration::from_millis(800));
-    drop(runner);
-    let s: Vec<PluginState> = rx.try_iter().collect();
+    let exited = |s: &PluginState| matches!(s, PluginState::Restarting { reason, .. } if reason.contains("exited ("));
+    let s = run_until(probe, Duration::from_secs(30), exited);
     assert!(
         s.iter().any(|s| matches!(s, PluginState::Restarting { reason, .. } if reason.contains("exited (0)"))),
         "the sandbox denied the read: {s:?}"
     );
 
     // The same probe outside the sandbox can read it, so the denial is the sandbox's doing.
-    let (tx, rx) = mpsc::channel();
     let mut open = spec_in("probe", false);
     open.run.push(secret.to_string_lossy().into());
-    let runner = Runner::start(open, fast(), context, move |s| {
-        let _ = tx.send(s);
-    });
-    std::thread::sleep(Duration::from_millis(800));
-    drop(runner);
-    let s: Vec<PluginState> = rx.try_iter().collect();
+    let s = run_until(open, Duration::from_secs(30), exited);
     let _ = std::fs::remove_file(secret);
     assert!(
         s.iter().any(|s| matches!(s, PluginState::Restarting { reason, .. } if reason.contains("exited (7)"))),
