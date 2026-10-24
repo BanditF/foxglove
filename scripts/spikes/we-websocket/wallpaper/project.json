@@ -1,0 +1,7 @@
+{
+  "description": "Foxglove #298 spike: does a web wallpaper reach ws://127.0.0.1? Not for use.",
+  "file": "index.html",
+  "title": "Foxglove WebSocket spike",
+  "type": "web",
+  "visibility": "private"
+}
