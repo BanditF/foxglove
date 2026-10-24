@@ -487,9 +487,16 @@ impl<'a, D: Device> Runner<'a, D> {
             }
             Step::ArtSelect(a) => self.art_select(a),
             Step::ScreensSetting(s) => {
-                let path = std::env::var_os("APPDATA")
-                    .map(|d| PathBuf::from(d).join("Foxglove/config/screens.ini"))
-                    .ok_or_else(|| anyhow::anyhow!("APPDATA unavailable"))?;
+                // Only ever a test config: the app under test must run with the same
+                // FOXGLOVE_CONFIG_DIR. The user's real settings are never written.
+                let Some(dir) = std::env::var_os("FOXGLOVE_CONFIG_DIR") else {
+                    return Err(Blocked(
+                        "screens_setting needs FOXGLOVE_CONFIG_DIR (a temp folder the app under                          test also uses); the user's real settings are never changed"
+                            .into(),
+                    )
+                    .into());
+                };
+                let path = PathBuf::from(dir).join("screens.ini");
                 let current = std::fs::read(&path).ok();
                 if self.screens_ini.is_none() {
                     self.screens_ini = Some((path.clone(), current.clone()));
