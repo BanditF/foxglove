@@ -1,0 +1,4 @@
+# Q, then 29 min 50 s idle; S still types (awake); after 30 min 10 s idle the board powers off
+# (SIM_SLEEP) and the run ends, so the final Z never appears.
+s/.*hid_listener_keycode/kp/p
+/^SIM_SLEEP$/p

@@ -1,0 +1,4 @@
+# On battery each channel is scaled to 30% (integer division); on USB power the frame passes
+# unchanged; the caller's buffer is never written.
+/^dim: /p
+s/.*hid_listener_keycode/kp/p

@@ -10,8 +10,30 @@ zephyr_library_sources(
   stubs.c
 )
 
+set(FOXGLOVE_WIDGETS ${CMAKE_CURRENT_LIST_DIR}/../../../boards/shields/nice_view_custom/widgets)
+
+if(CONFIG_FOXGLOVE_SIM_DIM)
+  # The cap is the shield's shipped default (Kconfig.defconfig), which the simulator doesn't load.
+  file(STRINGS ${FOXGLOVE_WIDGETS}/../Kconfig.defconfig FOXGLOVE_DEFCONFIG)
+  set(FOXGLOVE_CAP "")
+  set(FOXGLOVE_IN_CAP FALSE)
+  foreach(line IN LISTS FOXGLOVE_DEFCONFIG)
+    if(line MATCHES "^config NICE_VIEW_RGB_BATTERY_CAP")
+      set(FOXGLOVE_IN_CAP TRUE)
+    elseif(FOXGLOVE_IN_CAP AND line MATCHES "^[ \t]+default ([0-9]+)")
+      set(FOXGLOVE_CAP ${CMAKE_MATCH_1})
+      break()
+    endif()
+  endforeach()
+  if(FOXGLOVE_CAP STREQUAL "")
+    message(FATAL_ERROR "NICE_VIEW_RGB_BATTERY_CAP's default not found in Kconfig.defconfig")
+  endif()
+  set_source_files_properties(${FOXGLOVE_WIDGETS}/dim_strip.c PROPERTIES
+    COMPILE_DEFINITIONS "CONFIG_NICE_VIEW_RGB_BATTERY_CAP=${FOXGLOVE_CAP}")
+  zephyr_library_sources(${FOXGLOVE_WIDGETS}/dim_strip.c dim_sim.c)
+endif()
+
 if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
-  set(FOXGLOVE_WIDGETS ${CMAKE_CURRENT_LIST_DIR}/../../../boards/shields/nice_view_custom/widgets)
   file(STRINGS ${FOXGLOVE_WIDGETS}/../FIRMWARE_VERSION FOXGLOVE_FW_VERSION LIMIT_COUNT 1)
   string(REGEX MATCH "^([0-9]+)\.([0-9]+)\.([0-9]+)$" FOXGLOVE_FW_OK "${FOXGLOVE_FW_VERSION}")
   zephyr_library_include_directories(include ${FOXGLOVE_WIDGETS})
