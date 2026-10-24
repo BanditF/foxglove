@@ -362,7 +362,12 @@ fn initialize(p: Value, ctx: &Context, session: &mut Option<Session>) -> Result<
     }
     let granted = match &ctx.client {
         Client::Plugin(permissions) => permissions.clone(),
-        Client::Tool(approve) => approve(&p.client, &p.permissions),
+        // Secrets are kept per plugin, so a tool can't use them: it isn't asked about them, and
+        // `granted` says what it can actually use.
+        Client::Tool(approve) => {
+            let asked: Vec<Permission> = p.permissions.iter().filter(|p| **p != Permission::Secrets).cloned().collect();
+            approve(&p.client, &asked).into_iter().filter(|p| *p != Permission::Secrets).collect()
+        }
     };
     *session = Some(Session {
         grant: Grant(granted.clone()),
