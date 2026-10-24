@@ -15,6 +15,7 @@ try {
     Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
     Step 'crates: tests' { cargo test --workspace }
     Step 'digitalis without hidapi' { cargo build -p digitalis --no-default-features }
+    Step 'digitalis Palm device' { cargo clippy -p digitalis --features palm --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p digitalis --features palm } }
     Step 'app: clippy' { cargo clippy --manifest-path app/Cargo.toml --all-targets -- -D warnings }
     Step 'app: tests' { cargo test --manifest-path app/Cargo.toml }
     Write-Host ("All checks passed in {0:N0} s." -f ((Get-Date) - $start).TotalSeconds) -ForegroundColor Green
