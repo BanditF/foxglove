@@ -12,6 +12,8 @@ from flash import foxglove_flash as f
 # Tests never touch the real flash history.
 _HISTORY = tempfile.TemporaryDirectory()
 os.environ['FOXGLOVE_FLASH_HISTORY'] = str(Path(_HISTORY.name) / 'flash-history.log')
+# ...nor the real flasher lock: a test must never block (or be blocked by) a real flash.
+os.environ['FOXGLOVE_FLASH_LOCK'] = str(Path(_HISTORY.name) / 'flash.lock')
 
 
 def uf2(payload=b'FOXGLOVE_HALF=left', addr=f.START, family=0xADA52840,
@@ -506,3 +508,63 @@ class PostWriteDriveVanishTests(unittest.TestCase):
                 lines = history.read_text().splitlines()
                 self.assertEqual([l.split('	')[3] for l in lines], ['written', 'verified'])
                 self.assertEqual(lines[0].split('	')[1:3], ['left', 'abc1234'])
+
+
+class YesKeepsChecksInMain(unittest.TestCase):
+    def test_yes_still_preflights_and_takes_the_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            good = Path(directory) / 'left.uf2'
+            good.write_bytes(uf2())
+            bad = Path(directory) / 'right-image-as-left.uf2'
+            bad.write_bytes(uf2(b'FOXGLOVE_HALF=right'))
+            entered = []
+            class Lock:
+                def __enter__(self):
+                    entered.append(True)
+                    return self
+                def __exit__(self, *exc):
+                    return False
+            with patch.object(f, 'FlashLock', Lock), patch.object(f, 'flash') as flash,                     patch.object(f, 'WindowsOS'), patch('sys.stdout', new_callable=io.StringIO):
+                self.assertEqual(f.main(['--left', str(good), '--half', 'left', '--yes']), 0)
+                self.assertEqual(entered, [True])
+                self.assertTrue(flash.call_args.kwargs['yes'])
+                # Preflight still refuses a wrong-half image before any device access or lock.
+                self.assertEqual(f.main(['--left', str(bad), '--half', 'left', '--yes']), 1)
+                self.assertEqual(entered, [True])
+
+
+class HistoryMatchesConsoleTests(unittest.TestCase):
+    def test_unreadable_build_is_recorded_unverified(self):
+        with tempfile.TemporaryDirectory() as d:
+            history = Path(d) / 'h.log'
+            with patch.dict(os.environ, {'FOXGLOVE_FLASH_HISTORY': str(history)}):
+                backend = FakeOS()  # build_info returns None: the firmware can't tell
+                clock = Clock()
+                logs = []
+                f.flash({'left': marked('left')}, backend, 2, stdin=io.StringIO(''), ask=lambda p: self.fail(p),
+                        log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
+                outcomes = [l.split('	')[3] for l in history.read_text().splitlines()]
+                self.assertEqual(outcomes, ['written', 'unverified'])
+                self.assertTrue(any("couldn't read its build back" in m for m in logs))
+
+    def test_right_gets_a_minute_to_answer(self):
+        backend = FakeOS()
+        answers = iter([None] * 25 + [{'version': '0.1.0', 'profile': 'dev', 'sha': 'abc1234'}])
+        backend.build_info = lambda half: next(answers)
+        clock = Clock()
+        self.assertTrue(f.verify_build('right', 'abc1234', backend, lambda m: None, clock.clock, clock.sleep))
+
+
+class NoFocusTests(unittest.TestCase):
+    def test_typing_not_checked_is_not_a_failure(self):
+        backend = FakeOS()
+        backend.types = {'left': None}
+        clock = Clock()
+        logs = []
+        # It carries on to the right (whose bootloader never appears in this fake: timeout there).
+        with self.assertRaises(TimeoutError) as ctx:
+            f.flash({'left': uf2(), 'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 2, stdin=io.StringIO(''),
+                    ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
+        self.assertIn('right bootloader', str(ctx.exception))
+        self.assertTrue(any('typing not checked' in m for m in logs))
+        self.assertEqual(len(backend.writes), 1)

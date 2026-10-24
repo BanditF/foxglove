@@ -127,7 +127,7 @@ fn parses_seed_suites_and_all_step_kinds() {
     assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 7);
     assert_eq!(
         spec::load(&root.join("release.toml")).unwrap().cases.len(),
-        21
+        22
     );
     for text in [
         "[{press_position={pos=12,state='down'}}]",
@@ -614,7 +614,7 @@ fn screen_without_golden_is_blocked_with_a_candidate() {
     assert!(result.message.contains("no golden"));
     assert_eq!(
         result.steps[0].attachments,
-        ["does-not-exist.candidate.png"]
+        ["test-does-not-exist.candidate.png"]
     );
 }
 

@@ -30,11 +30,31 @@ steps = [{ expect_screen_change = { half = "left", within_ms = 65000 } }]
 
 [[cases]]
 name = "left-base-golden"
-description = "Left screen on the base layer matches its golden (clock and battery masked)"
+description = "Left screen on the base layer, USB connected, matches its golden (#177 profile boxes; clock and battery masked)"
 tags = ["screens", "release"]
-# Masked: the status row (battery, USB/BLE) and the PC panel below the divider (clock,
-# volume, media title), which change on their own.
+# Masked: the status row (battery, USB/BLE) and the PC panel below the divider at y 104 (clock,
+# volume, media title), which change on their own. The profile boxes and the USB state stay in.
 steps = [{ screen = { half = "left", golden = "golden/left-base.png", mask = [
   { x = 0, y = 0, width = 68, height = 16 },
-  { x = 0, y = 103, width = 68, height = 57 },
+  { x = 0, y = 105, width = 68, height = 55 },
 ] } }]
+
+[[cases]]
+name = "left-system-golden"
+description = "Holding SYSTEM inverts the profile box and shows the SYSTEM tab (#177)"
+tags = ["screens", "release"]
+requires = ["position_press"]
+steps = [
+  { press_position = { pos = 43, state = "down" } },
+  { press_position = { pos = 46, state = "down" } },
+  { press_position = { pos = 0, state = "down" } },
+  { expect_layer = { active_contains = [6] } },
+  { screen = { half = "left", golden = "golden/left-system.png", mask = [
+    { x = 0, y = 0, width = 68, height = 16 },
+    { x = 0, y = 105, width = 68, height = 55 },
+  ] } },
+  { press_position = { pos = 0, state = "up" } },
+  { press_position = { pos = 46, state = "up" } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
