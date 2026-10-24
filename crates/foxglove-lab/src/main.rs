@@ -111,6 +111,7 @@ fn main() -> Result<std::process::ExitCode> {
     }
     if let Command::Build { half } = &cli.command {
         let _guard = platform::guard(cli.allow_app)?;
+        let _lab = platform::lab_lock(Duration::from_secs(120))?;
         let link = connect(cli.product.clone())?;
         let c = link.wait_connected(Duration::from_secs(10))?;
         let caps = c.hello.map_or(0, |h| h.capabilities);
@@ -144,6 +145,7 @@ fn main() -> Result<std::process::ExitCode> {
             "refused: only scripts/flash/foxglove_flash.py calls this, after the user types FLASH"
         );
         let _guard = platform::guard(cli.allow_app)?;
+        let _lab = platform::lab_lock(Duration::from_secs(120))?;
         let link = connect(cli.product.clone())?;
         let c = link.wait_connected(Duration::from_secs(10))?;
         let caps = c.hello.map_or(0, |h| h.capabilities);
@@ -197,6 +199,7 @@ fn main() -> Result<std::process::ExitCode> {
         return Ok(std::process::ExitCode::SUCCESS);
     }
     let _guard = platform::guard(cli.allow_app)?;
+    let _lab = platform::lab_lock(Duration::from_secs(120))?;
     let cancelled = platform::cancellation()?;
     if matches!(cli.command, Command::Status) {
         let link = connect(cli.product)?;

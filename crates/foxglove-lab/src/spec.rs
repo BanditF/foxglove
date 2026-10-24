@@ -183,6 +183,10 @@ pub struct HelloExpect {
     pub caps_set: Vec<u8>,
     #[serde(default)]
     pub caps_clear: Vec<u8>,
+    /// The left's build profile from HELLO byte 30 ("dev" or "ga").
+    pub profile: Option<String>,
+    /// HELLO byte 31: split-guard link drops since boot (#147) must not exceed this.
+    pub guard_drops_max: Option<u8>,
 }
 /// A test-hook command must answer status 4 (not built in), as in GA builds. Only harmless
 /// requests are sent: POSITION releases Q (pos 1, state up), BOOTLOADER is ARM only (no
@@ -317,7 +321,10 @@ impl Step {
             }
             Self::ExpectHello(h) => ensure!(
                 h.caps_set.iter().chain(&h.caps_clear).all(|b| *b < 32)
-                    && !(h.caps_set.is_empty() && h.caps_clear.is_empty()),
+                    && !(h.caps_set.is_empty()
+                        && h.caps_clear.is_empty()
+                        && h.profile.is_none()
+                        && h.guard_drops_max.is_none()),
                 "expect_hello needs capability bits 0..31"
             ),
             Self::ExpectNotBuiltIn(n) => ensure!(
