@@ -30,6 +30,8 @@ use minisign_verify::{PublicKey, Signature};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod publish;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Root {
     pub format: String,
@@ -271,7 +273,12 @@ pub fn check_files(dir: &Path, entry: &Entry, skip: &[&str]) -> Result<(), Strin
 
 /// The UTC time now as RFC 3339 (`YYYY-MM-DDTHH:MM:SSZ`), for the expiry checks.
 pub fn now_utc() -> String {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    utc_in(0)
+}
+
+/// The UTC time `secs` from now, as RFC 3339 (expiry dates when publishing).
+pub fn utc_in(secs: u64) -> String {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) + secs;
     let (days, rem) = (secs / 86_400, secs % 86_400);
     // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
     let z = days as i64 + 719_468;

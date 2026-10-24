@@ -177,6 +177,17 @@ Each check:
 5. For each release, write `catalog.json` with a higher `sequence` and sign it with `catalog.key`.
 6. Ship both files and their `.minisig` signatures in `app/resources/plugin-trust/`.
 
+**Publishing (#190):** `scripts/publish-plugins.ps1`, with the catalog edits done by `plugin-catalog` (in `crates/plugin-trust`). The order is: zips first, checked, then the signed catalog.
+1. Run `powershell -File scripts\publish-plugins.ps1 -Crate plugin-focus-timer[,…] [-Channel beta]`. This dry run:
+   - packs each plugin;
+   - names its release `plugin-<slug>-vX.Y.Z`, with the asset `<id>-<version>-windows-x86_64.zip`;
+   - updates `target\plugin-site\plugins\v2\catalog.json`: it adds the entry with its URL, size and hashes, keeps one previous version per channel, then bumps the sequence and sets a 30-day expiry.
+2. Run the same command with `-Release`. It creates the GitHub releases (never marked latest; beta ones as prereleases), then downloads each asset back and checks its SHA-256. A release that already exists is only checked, since releases are immutable.
+3. **Maintainer step:** `minisign -S -s <catalog.key> -m target\plugin-site\plugins\v2\catalog.json`. The key never passes through an agent.
+4. Run `-Pages`. It pushes `plugins/v2/` to the `gh-pages` branch, and refuses an unsigned or since-changed catalog.
+
+To withdraw a version: `plugin-catalog yank|revoke <catalog.json> <id> [version…] --reason …`, then `-Resign`, sign, and `-Pages`. The weekly re-sign is `-Resign`, sign, `-Pages`. GitHub Pages must be turned on for the `gh-pages` branch once, in the repository settings.
+
 **Developer mode:** `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1` allows unsigned plugins, and the Plugins tab shows a warning.
 
 **Test hook:** with developer mode and a test `FOXGLOVE_CONFIG_DIR` (never the real settings folder), `FOXGLOVE_PLUGINS_AUTOINSTALL=<zip or folder>` installs and enables that plugin at start with all its declared permissions, without the approval dialog. It writes a warning to stderr and to `autoinstall.log` in the config dir. It is meant for the Test lab only.
