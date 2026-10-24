@@ -114,6 +114,8 @@ struct Session {
     subscriptions: Arc<Mutex<HashMap<u64, String>>>,
     next_subscription: u64,
     forwarding: bool,
+    /// Network streams opened for the plugin (#214).
+    net: net::Net,
 }
 
 /// Serves one connection until the reader ends or a write fails. Messages are lines; events
@@ -153,6 +155,9 @@ pub fn serve(reader: impl BufRead, writer: impl Write + Send + 'static, ctx: Con
         }
     }
     closed.store(true, Ordering::Relaxed);
+    if let Some(s) = &session {
+        s.net.close_all();
+    }
     let forwarding = session.as_ref().is_some_and(|s| s.forwarding);
     drop(out);
     // The fact forwarder keeps the writer alive until the next fact change, when it notices the
@@ -265,6 +270,27 @@ fn dispatch(
             }
             Ok(json!(methods::Subscription { subscription: id }))
         }
+        "net.open" => {
+            let p: methods::NetOpenParams = params(request.params)?;
+            if !net::allowed(&s.grant, &p) {
+                let need = match p.kind {
+                    methods::NetKind::Tcp => format!("net.connect:{}:{}", p.host, p.port),
+                    methods::NetKind::Udp => format!("net.listen:udp:127.0.0.1:{}", p.port),
+                };
+                return Err(denied(need));
+            }
+            Ok(json!(methods::NetStream { stream: s.net.open(&p, out.clone())? }))
+        }
+        "net.send" => {
+            let p: methods::NetSendParams = params(request.params)?;
+            s.net.send(p.stream, &p.data)?;
+            Ok(json!({}))
+        }
+        "net.close" => {
+            let p: methods::NetStream = params(request.params)?;
+            s.net.close(p.stream);
+            Ok(json!({}))
+        }
         "facts.unsubscribe" => {
             let p: methods::Subscription = params(request.params)?;
             s.subscriptions.lock().unwrap_or_else(|e| e.into_inner()).remove(&p.subscription);
@@ -292,6 +318,7 @@ fn initialize(p: Value, ctx: &Context, session: &mut Option<Session>) -> Result<
         subscriptions: Arc::default(),
         next_subscription: 0,
         forwarding: false,
+        net: net::Net::default(),
     });
     Ok(json!(InitializeResult { api: API_VERSION.to_string(), app: ctx.app_version.clone(), granted }))
 }
@@ -329,6 +356,7 @@ fn forward(facts: Facts, subscriptions: Arc<Mutex<HashMap<u64, String>>>, out: S
 pub const PING_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(windows)]
+mod net;
 pub mod pipe;
 pub mod runner;
 #[cfg(windows)]

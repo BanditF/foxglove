@@ -1,5 +1,5 @@
 {
-  "api": "1.1",
+  "api": "1.2",
   "methods": {
     "art.select": {
       "kind": "call",
@@ -986,6 +986,170 @@
           "speed"
         ],
         "title": "LightingState",
+        "type": "object"
+      }
+    },
+    "net.close": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream"
+        ],
+        "title": "NetStream",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "net.closed": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event: a stream ended (the other side closed it, or an error).",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream",
+          "reason"
+        ],
+        "title": "NetClosed",
+        "type": "object"
+      }
+    },
+    "net.data": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event: bytes arrived on a stream (base64); `from` is the sender for `udp`.",
+        "properties": {
+          "data": {
+            "type": "string"
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream",
+          "data"
+        ],
+        "title": "NetData",
+        "type": "object"
+      }
+    },
+    "net.open": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "NetKind": {
+            "description": "The kind of connection `net.open` makes (API 1.2).",
+            "oneOf": [
+              {
+                "const": "tcp",
+                "description": "A TCP connection to `host`:`port`; needs a `net.connect` permission covering it.",
+                "type": "string"
+              },
+              {
+                "const": "udp",
+                "description": "Datagrams sent to 127.0.0.1:`port`; needs `net.listen:udp:127.0.0.1:<port>`.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Opens a connection through Foxglove: the plugin stays sandboxed and only reaches what its\npermissions name (API 1.2).",
+        "properties": {
+          "host": {
+            "description": "For `udp`, only `127.0.0.1`.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/NetKind"
+          },
+          "port": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "host",
+          "port"
+        ],
+        "title": "NetOpenParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream"
+        ],
+        "title": "NetStream",
+        "type": "object"
+      }
+    },
+    "net.send": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "data": {
+            "description": "Bytes, base64.",
+            "type": "string"
+          },
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream",
+          "data"
+        ],
+        "title": "NetSendParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
         "type": "object"
       }
     },
