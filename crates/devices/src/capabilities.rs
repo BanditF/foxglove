@@ -196,6 +196,9 @@ pub struct LightingState {
     pub brightness: u8,
     pub effect: Effect,
     pub speed: u8,
+    /// Every part of the device shows this: false while a split keyboard's other half hasn't
+    /// caught up yet (it can lag seconds behind a change).
+    pub settled: bool,
 }
 
 /// Reads lighting state and optionally controls LEDs.

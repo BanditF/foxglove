@@ -1,0 +1,8 @@
+description: Simulator LED strip that prints every frame it gets (tests/zmk-sim/battery-dim).
+
+compatible: "foxglove,sim-strip"
+
+properties:
+  chain-length:
+    type: int
+    required: true

@@ -129,6 +129,14 @@ description = "Puts the temperature on the left screen."
   - **Keeping it:** a plugin sends it again to keep it, and it goes away by itself when the plugin stops (and at once when its connection closes).
   - **Errors:** a frame of the wrong size is refused. SDK: `Plugin::panel_override()`.
 - **Plugin data (#209):** each plugin gets `data/` in its folder (`Plugin::data_dir()`) for state between runs. It's writable even in the sandbox, and left out of the signed-file check.
+- **Mic mute (`crates/plugin-mic-mute`, #210):**
+  - **How it works:** it follows `mic.state` (`audio.inputs.read`) and asks Foxglove to mute or unmute (`audio.inputs.mute`), so it stays sandboxed.
+  - **Muted:** a red, high-priority lease, and Art's inverted MUTED screen, held while muted and re-sent every 30 s with a 60 s lifetime.
+  - **Unmuted:** a brief white flash, then the lights go back, and LIVE shows for 3 s.
+  - **Unknown:** amber, and the `?` screen. A failed read is never shown as muted.
+  - **Unavailable:** nothing.
+  - **Keys:** `toggle`, `mute` and `unmute`.
+  - **Caveat:** this is Windows' endpoint mute, not a privacy guarantee.
 - **Pomodoro (`crates/plugin-focus-timer`, #209):**
   - **Cycle:** focus 25 min, rest 5 min, and a long rest of 15 min every 4 rounds.
   - **Restarts:** the cycle is kept as deadlines in `data/state.json`, so it survives restarts and sleep. After more than a whole cycle away, it starts fresh.

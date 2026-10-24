@@ -120,7 +120,13 @@ static uint32_t arm(void) {
     return sys_get_le32(&last[3]);
 }
 
+void panel_stream_driver(void);
+
 static void driver(void) {
+    if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_PANEL_STREAM)) {
+        panel_stream_driver(); // the panel-stream case plays a different PC
+        return;
+    }
     note("hello: version, caps, panel timeout, build");
     SEND(0xD5, 0x01, 0x01);
 
