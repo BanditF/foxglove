@@ -544,6 +544,85 @@ impl<'a, D: Device> Runner<'a, D> {
                     std::thread::sleep(Duration::from_millis(300));
                 }
             }
+            Step::ExpectBuild(b) => {
+                let half = u8::from(b.half == "right");
+                let info = settings::build_info(self.device, half)?;
+                let v = info.version;
+                let (version, profile) = (
+                    format!("{}.{}.{}", v.major, v.minor, v.patch),
+                    if v.profile == 1 { "ga" } else { "dev" },
+                );
+                let actual = format!("{} {version} {profile} {}", b.half, info.sha);
+                ensure!(
+                    b.profile.as_deref().is_none_or(|p| p == profile)
+                        && b.version.as_deref().is_none_or(|x| x == version)
+                        && b.sha.as_deref().is_none_or(|s| info.sha.starts_with(s)),
+                    "expected {:?}/{:?}/{:?}, running {actual}",
+                    b.version,
+                    b.profile,
+                    b.sha
+                );
+                Ok(actual)
+            }
+            Step::ExpectHello(h) => {
+                let raw = self.device.request(
+                    &protocol::hello(),
+                    protocol::PANEL,
+                    protocol::panel::HELLO,
+                    Duration::from_millis(500),
+                )?;
+                let hello = protocol::Hello::parse(&raw);
+                let caps = hello.capabilities;
+                let profile = hello
+                    .firmware
+                    .map(|f| if f.profile == 1 { "ga" } else { "dev" });
+                // HELLO byte 31: how often the split guard (#147) dropped the right's link.
+                let drops = raw[31];
+                let mut wrong: Vec<String> = h
+                    .caps_set
+                    .iter()
+                    .filter(|b| caps & (1 << **b) == 0)
+                    .map(|b| format!("bit {b} clear"))
+                    .chain(
+                        h.caps_clear
+                            .iter()
+                            .filter(|b| caps & (1 << **b) != 0)
+                            .map(|b| format!("bit {b} set")),
+                    )
+                    .collect();
+                if let Some(p) = &h.profile {
+                    if profile != Some(p.as_str()) {
+                        wrong.push(format!("profile {profile:?}, expected {p}"));
+                    }
+                }
+                if h.guard_drops_max.is_some_and(|max| drops > max) {
+                    wrong.push(format!("split guard dropped the link {drops} times"));
+                }
+                ensure!(
+                    wrong.is_empty(),
+                    "HELLO caps {caps:#x}: {}",
+                    wrong.join(", ")
+                );
+                Ok(format!(
+                    "HELLO caps {caps:#x}, profile {profile:?}, split-guard drops {drops}"
+                ))
+            }
+            Step::ExpectNotBuiltIn(n) => {
+                let (report, cmd): (&[u8], u8) = match n.command.as_str() {
+                    "position" => (&[protocol::SETTINGS, POSITION, 1, 0], POSITION),
+                    _ => (&[protocol::SETTINGS, 0x08, 0x00], 0x08),
+                };
+                let r =
+                    self.device
+                        .request(report, protocol::SETTINGS, cmd, Duration::from_secs(4))?;
+                ensure!(
+                    r[2] == 4,
+                    "{} answered status {} (expected 4, not built in)",
+                    n.command,
+                    r[2]
+                );
+                Ok(format!("{}: status 4 (not built in)", n.command))
+            }
             Step::UsbHalves(u) => {
                 let halves = crate::host::classify(&crate::host::usb_entries()?);
                 let text = halves

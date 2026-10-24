@@ -1,0 +1,31 @@
+name: Build Toucan2 firmware
+# Beekeeb Toucan2 with the host link (#75). A workflow of its own: two calls of ZMK's reusable
+# build in one run share the run's artifacts, and the first merge step deletes the other's.
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore:
+      - "keymap-drawer/**"
+      # Desktop side and docs: no firmware in there.
+      - "crates/**"
+      - "app/**"
+      - "docs/**"
+      - "**/*.md"
+      - "LICENSE"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/rust.yml"
+      - ".github/workflows/app.yml"
+      - "scripts/check.ps1"
+      - "tests/**"
+      - "scripts/**"
+      - "lab-reports/**"
+      - ".github/workflows/zmk-sim.yml"
+
+jobs:
+  build:
+    uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@v0.3.0
+    with:
+      build_matrix_path: profiles/toucan2/build.yaml
+      config_path: config-toucan2 # one level: the workflow mkdirs it without -p
+      archive_name: firmware-toucan2

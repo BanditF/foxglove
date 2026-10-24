@@ -53,6 +53,8 @@ pub struct Snapshot {
     pub hello: Option<Hello>,
     pub frame: Option<Frame>,
     pub foreground: Option<String>,
+    /// The screens the keyboard describes, when it does (#160).
+    pub screens: Vec<protocol::ScreenDescriptor>,
 }
 
 static SNAPSHOT: Mutex<Snapshot> = Mutex::new(Snapshot {
@@ -60,6 +62,7 @@ static SNAPSHOT: Mutex<Snapshot> = Mutex::new(Snapshot {
     hello: None,
     frame: None,
     foreground: None,
+    screens: Vec::new(),
 });
 
 pub fn snapshot() -> Snapshot {
@@ -121,11 +124,21 @@ struct Drawing {
 impl Drawing {
     fn new(link: Arc<Link>, hello: Hello) -> Self {
         let generation = link.state().generation;
+        // Keyboards that describe their screens (#160) say where the PC may draw; older ones
+        // have the one panel HELLO reports.
+        let screens = if hello.capabilities & protocol::capabilities::SCREENS != 0 {
+            panel::screens(link.as_ref()).unwrap_or_default()
+        } else {
+            vec![]
+        };
+        let (width, height) = panel::drawable_panel(&screens)
+            .map_or((hello.width, hello.height), |p| (usize::from(p.width), usize::from(p.height)));
+        update_snapshot(|s| s.screens = screens);
         Drawing {
             link,
             hello,
             generation,
-            panel: Panel::new(hello.width, hello.height),
+            panel: Panel::new(width, height),
             last: None,
             last_sent: Instant::now(),
         }

@@ -56,7 +56,36 @@ fn caps(c: Caps) -> Vec<String> {
     .collect()
 }
 
-struct AppDevices;
+pub(crate) struct AppDevices;
+
+fn params<T: serde::de::DeserializeOwned>(p: Value) -> Result<T, Error> {
+    serde_json::from_value(p).map_err(|e| Error { code: code::INVALID_PARAMS, message: e.to_string(), data: None })
+}
+
+fn unsupported() -> Error {
+    Error { code: code::UNSUPPORTED, message: "this device has no lighting".into(), data: None }
+}
+
+fn palm_error(e: palm::PalmError) -> Error {
+    let code = match e {
+        palm::PalmError::Unsupported => code::UNSUPPORTED,
+        palm::PalmError::Disconnected => code::DISCONNECTED,
+        palm::PalmError::Busy(_) => code::BUSY,
+        palm::PalmError::Timeout => code::TIMEOUT,
+        palm::PalmError::Denied(_) => code::DENIED,
+        palm::PalmError::Backend(_) => code::BACKEND,
+    };
+    Error { code, message: super::palm_host::describe(&e), data: None }
+}
+
+/// Runs `f` on the device a call names: the host-link keyboard or an open VIA keyboard.
+fn with_device<R>(id: &str, f: impl FnOnce(&dyn palm::Device) -> Result<R, Error>) -> Result<R, Error> {
+    if let Some(d) = super::palm_host::cached().filter(|d| d.info().id.to_string() == id) {
+        return f(d.as_ref());
+    }
+    super::via_host::with_device(id, f)
+        .unwrap_or_else(|| Err(Error { code: code::DISCONNECTED, message: format!("no device {id}"), data: None }))
+}
 
 impl Devices for AppDevices {
     fn call(&self, method: &str, _params: Value) -> Result<Value, Error> {
@@ -75,8 +104,66 @@ impl Devices for AppDevices {
                         }
                     })
                     .into_iter()
+                    .chain(super::via_host::devices().into_iter().map(|(info, c)| methods::Device {
+                        id: info.id.to_string(),
+                        name: info.name.clone(),
+                        kind: format!("{:?}", info.kind).to_lowercase(),
+                        backend: info.backend.to_string(),
+                        connected: true,
+                        caps: caps(c),
+                    }))
                     .collect();
                 Ok(json!(methods::Devices { devices }))
+            }
+            "lighting.state" => {
+                let p: methods::DeviceParams = params(_params)?;
+                let st = with_device(&p.device, |d| d.lighting().ok_or_else(unsupported)?.state().map_err(palm_error))?;
+                Ok(json!(methods::LightingState {
+                    on: st.on,
+                    hue: st.hue,
+                    saturation: st.sat,
+                    brightness: st.brightness,
+                    effect: st.effect.id,
+                    speed: st.speed,
+                }))
+            }
+            "lighting.set" => {
+                let p: methods::SetLightingParams = params(_params)?;
+                with_device(&p.device, |d| {
+                    let lighting = d.lighting().ok_or_else(unsupported)?;
+                    if let Some(on) = p.on {
+                        lighting.set_on(on).map_err(palm_error)?;
+                    }
+                    if let Some(c) = p.color {
+                        lighting.set_color(c.hue, c.saturation, c.brightness).map_err(palm_error)?;
+                    }
+                    if let Some(effect) = p.effect {
+                        lighting.set_effect(palm::Effect { id: effect, params: vec![] }).map_err(palm_error)?;
+                    }
+                    Ok(json!({}))
+                })
+            }
+            "profiles.list" => {
+                let (names, active) = super::store::profiles();
+                Ok(json!(methods::Profiles { names, active }))
+            }
+            "profiles.activate" => {
+                let p: methods::ActivateProfileParams = serde_json::from_value(_params).map_err(|e| Error {
+                    code: code::INVALID_PARAMS,
+                    message: e.to_string(),
+                    data: None,
+                })?;
+                let (names, _) = super::store::profiles();
+                if p.name.as_ref().is_some_and(|n| !names.contains(n)) {
+                    return Err(Error { code: code::INVALID_PARAMS, message: "no such profile".into(), data: None });
+                }
+                super::store::set_active(p.name.as_deref()).map_err(|e| Error {
+                    code: code::BACKEND,
+                    message: e.to_string(),
+                    data: None,
+                })?;
+                let (names, active) = super::store::profiles();
+                Ok(json!(methods::Profiles { names, active }))
             }
             _ => Err(Error {
                 code: code::UNSUPPORTED,

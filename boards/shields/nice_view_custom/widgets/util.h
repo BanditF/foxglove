@@ -32,6 +32,7 @@ struct status_state {
     uint8_t wpm[10];
     uint8_t mods; // bit per HID modifier (0xE0 + bit): LCtrl LShift LAlt LGui RCtrl RShift RAlt RGui
     bool caps_lock;
+    bool profile_flash; // a profile or output change just happened: show the block inverted
 #else
     bool connected;
 #endif

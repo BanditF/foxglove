@@ -1,5 +1,6 @@
 """Synthetic UF2 and fake USB/volume tests: never touch a keyboard."""
 import io
+import os
 from pathlib import Path
 import struct
 import tempfile
@@ -394,3 +395,34 @@ class YesTests(unittest.TestCase):
         backend.types = {'right': False}
         self.run_yes(backend, {'right': uf2(b'FOXGLOVE_HALF=right')})
         self.assertEqual(backend.typing, ['right'])
+
+
+class SkipSameBuildTests(unittest.TestCase):
+    def run_yes(self, backend, images, **kwargs):
+        clock = Clock()
+        f.flash(images, backend, 2, stdin=io.StringIO(''), ask=lambda prompt: self.fail(prompt),
+                log=lambda message: None, clock=clock.clock, sleep=clock.sleep, yes=True, **kwargs)
+
+    def test_half_already_on_the_build_is_skipped_unless_forced(self):
+        backend = FakeOS()
+        backend.builds = {'left': {'version': '0.1.0', 'profile': 'dev', 'sha': 'abc1234'}}
+        self.run_yes(backend, {'left': marked('left')})
+        self.assertEqual(backend.writes, [])
+        self.assertEqual(backend.entered, [])
+        self.run_yes(backend, {'left': marked('left')}, force=True)
+        self.assertEqual(len(backend.writes), 1)
+
+
+class LockTests(unittest.TestCase):
+    def test_second_flasher_is_refused_and_stale_locks_are_taken_over(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / 'flash.lock'
+            with f.FlashLock(path, alive=lambda pid: True):
+                with self.assertRaises(f.Refused):
+                    with f.FlashLock(path, alive=lambda pid: True):
+                        pass
+            self.assertFalse(path.exists())
+            path.write_text('999999')
+            with f.FlashLock(path, alive=lambda pid: False):
+                self.assertEqual(path.read_text(), str(os.getpid()))
+            self.assertFalse(path.exists())

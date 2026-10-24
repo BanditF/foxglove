@@ -28,7 +28,7 @@ fn main() {
     if foxglove::update::helper_entry() { return; }
     foxglove::update::start();
     os_layout::init();
-    let settings = Settings::load().unwrap_or_default();
+    let settings = foxglove::overlay_profile::effective(Settings::load().unwrap_or_default());
     let available_devices = discover_devices();
     if !foxglove::repaint_trace::disabled("screens") {
         foxglove::screens::start();
@@ -41,5 +41,7 @@ fn main() {
     foxglove::accent::start();
     foxglove::wallpaper::start();
     foxglove::api::start();
+    foxglove::via_host::start();
+    foxglove::kits::sync();
     foxglove::startup::finish(platform::run(settings, available_devices))
 }

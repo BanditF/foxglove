@@ -1,0 +1,33 @@
+# Beekeeb Toucan2 with Foxglove's host link (#75). The board and its own screen widgets come from
+# beekeeb's module (MIT); this repo (added by the build as an extra module) brings foxglove_link.
+manifest:
+  remotes:
+    - name: zmkfirmware
+      url-base: https://github.com/zmkfirmware
+    - name: caksoylar
+      url-base: https://github.com/caksoylar
+    - name: beekeeb
+      url-base: https://github.com/beekeeb
+  projects:
+    - name: zmk
+      remote: zmkfirmware
+      import: app/west.yml
+      revision: v0.3.0
+    - name: zmk-keyboard-toucan2
+      remote: beekeeb
+      # Pinned: the vendor's main moves.
+      revision: 6882c95bec5b
+    - name: zmk-rgbled-widget
+      remote: caksoylar
+      revision: v0.3
+    - name: zmk_driver_azoteq
+      remote: beekeeb
+      revision: main
+    - name: zmk-input-zoom
+      remote: beekeeb
+      revision: main
+    - name: zmk-raw-hid
+      url: https://github.com/BanditF/zmk-raw-hid
+      revision: nonblocking
+  self:
+    path: config-toucan2
