@@ -114,9 +114,27 @@ pub fn stage(archive: &Path) -> Result<Staged, String> {
     let kits = kits_dir().ok_or("no settings folder")?;
     let staging = kits.join(format!(".staging-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
+    // Only signed Kits: the archive's hash must be in the signed catalog (#159).
+    let bytes = std::fs::read(archive).map_err(|e| e.to_string())?;
+    let signed = match super::kit_trust::entry_for_archive(&bytes) {
+        Ok(entry) => Some(entry),
+        Err(_) if super::kit_trust::dev_unsigned() => None,
+        Err(e) => return Err(e),
+    };
     unpack(archive, &staging)?;
     let text = std::fs::read_to_string(staging.join("kit.toml")).map_err(|_| "the archive has no kit.toml at its top".to_string())?;
     let manifest = Manifest::parse(&text, API_VERSION)?;
+    if let Some(entry) = &signed {
+        let checked = if (entry.id.as_str(), entry.version.as_str()) != (manifest.id.as_str(), manifest.version.as_str()) {
+            Err(format!("the archive says {} {}, the catalog {} {}", manifest.id, manifest.version, entry.id, entry.version))
+        } else {
+            kit_trust::check_files(&staging, entry, super::kit_trust::RUNTIME_FILES)
+        };
+        if let Err(e) = checked {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+    }
     let previous = std::fs::read_to_string(kits.join(&manifest.id).join("kit.toml"))
         .ok()
         .and_then(|t| Manifest::parse(&t, API_VERSION).ok());
@@ -193,6 +211,8 @@ pub fn remove(id: &str) -> Result<(), String> {
     if dir.exists() {
         std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
+    #[cfg(windows)]
+    ::den::delete_container(id);
     let mut all = super::store::try_load::<Kits>("kits").unwrap_or_default();
     all.installed.remove(id);
     super::store::save("kits", &all).map_err(|e| e.to_string())
@@ -252,6 +272,9 @@ run = [\"weather.exe\"]
 permissions = [\"facts.write:weather.*\", \"key.events\"]
 ";
         let archive = zip_with(&[("kit.toml", manifest.as_bytes()), ("weather.exe", b"MZ")]);
+        // Unsigned: refused, then allowed in developer mode for the rest of the flow.
+        assert!(stage(&archive).unwrap_err().contains("signed"));
+        std::env::set_var("FOXGLOVE_DEV_UNSIGNED_KITS", "1");
         let staged = stage(&archive).unwrap();
         assert_eq!(staged.new_permissions.len(), 2);
         assert!(staged.new_permissions.iter().any(Permission::sensitive));

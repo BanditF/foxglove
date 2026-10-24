@@ -23,6 +23,7 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
     FOXGLOVE_FW_PATCH=${CMAKE_MATCH_3})
   zephyr_library_sources(
     ${FOXGLOVE_WIDGETS}/host_link.c
+    ${FOXGLOVE_WIDGETS}/screens_corne.c
     ${FOXGLOVE_WIDGETS}/half_marker.c
     hostlink_sim.c
   )

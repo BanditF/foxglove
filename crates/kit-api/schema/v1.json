@@ -1,5 +1,5 @@
 {
-  "api": "1.0",
+  "api": "1.1",
   "methods": {
     "art.select": {
       "kind": "call",
@@ -999,6 +999,78 @@
       "result": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Empty",
+        "type": "object"
+      }
+    },
+    "profiles.activate": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Switches profile; `name` null = the base settings.",
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "ActivateProfileParams",
+        "type": "object"
+      },
+      "permission": "profiles.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Foxglove's profiles and the active one (`None` = the base settings).",
+        "properties": {
+          "active": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "title": "Profiles",
+        "type": "object"
+      }
+    },
+    "profiles.list": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Foxglove's profiles and the active one (`None` = the base settings).",
+        "properties": {
+          "active": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "names": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "title": "Profiles",
         "type": "object"
       }
     },

@@ -44,6 +44,9 @@ pub enum Step {
     ScreensSetting(ScreensSetting),
     ArtSelect(Art),
     UsbHalves(Usb),
+    ExpectBuild(BuildExpect),
+    ExpectHello(HelloExpect),
+    ExpectNotBuiltIn(NotBuiltIn),
     IdleCpu(Idle),
 }
 
@@ -163,6 +166,36 @@ pub struct ScreensSetting {
     pub key: String,
     pub value: String,
 }
+/// A half's running build (D7 09 BUILD_INFO); unset fields aren't checked.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildExpect {
+    pub half: String,
+    pub profile: Option<String>,
+    pub version: Option<String>,
+    pub sha: Option<String>,
+}
+/// HELLO capability bits that must be set or clear.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HelloExpect {
+    #[serde(default)]
+    pub caps_set: Vec<u8>,
+    #[serde(default)]
+    pub caps_clear: Vec<u8>,
+    /// The left's build profile from HELLO byte 30 ("dev" or "ga").
+    pub profile: Option<String>,
+    /// HELLO byte 31: split-guard link drops since boot (#147) must not exceed this.
+    pub guard_drops_max: Option<u8>,
+}
+/// A test-hook command must answer status 4 (not built in), as in GA builds. Only harmless
+/// requests are sent: POSITION releases Q (pos 1, state up), BOOTLOADER is ARM only (no
+/// TRIGGER, so nothing reboots even on a dev build).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NotBuiltIn {
+    pub command: String,
+}
 /// Fails on any half whose USB picture means trouble (see host::classify).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -279,6 +312,25 @@ impl Step {
                 ensure!(a.set >= 0, "art_select needs a built-in set (0 or more)");
             }
             Self::UsbHalves(_) => {}
+            Self::ExpectBuild(b) => {
+                ensure!(["left", "right"].contains(&b.half.as_str()), "invalid half");
+                ensure!(
+                    b.profile.as_deref().is_none_or(|p| p == "dev" || p == "ga"),
+                    "profile must be dev or ga"
+                );
+            }
+            Self::ExpectHello(h) => ensure!(
+                h.caps_set.iter().chain(&h.caps_clear).all(|b| *b < 32)
+                    && !(h.caps_set.is_empty()
+                        && h.caps_clear.is_empty()
+                        && h.profile.is_none()
+                        && h.guard_drops_max.is_none()),
+                "expect_hello needs capability bits 0..31"
+            ),
+            Self::ExpectNotBuiltIn(n) => ensure!(
+                ["position", "bootloader"].contains(&n.command.as_str()),
+                "expect_not_built_in supports position and bootloader"
+            ),
             Self::PanelDump(d) => {
                 wait(d.within_ms)?;
                 ensure!(!d.path.is_empty(), "panel_dump needs the dump path");

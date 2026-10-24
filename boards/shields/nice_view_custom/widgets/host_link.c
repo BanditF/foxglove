@@ -43,7 +43,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/rgb_underglow.h>
 #endif
 
-enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE };
+enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE, PANEL_SCREENS };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
@@ -81,6 +81,11 @@ bool host_panel_get(uint8_t buf[HOST_PANEL_BYTES]) {
     k_spin_unlock(&lock, key);
     return on;
 }
+
+#ifndef FOXGLOVE_HAS_WIDGETS
+// A board without our screen widgets (foxglove_link shield) has no panel to redraw.
+void host_panel_redraw(void) {}
+#endif
 
 static void redraw_cb(struct k_work *work) { host_panel_redraw(); }
 static K_WORK_DEFINE(redraw_work, redraw_cb);
@@ -125,6 +130,14 @@ static void reply(const uint8_t *data, int len) {
 
 void host_link_screen_reply(const uint8_t *data, int len) { reply(data, len); }
 
+#ifndef FOXGLOVE_HAS_WIDGETS
+// Without our widgets there's no screen readback (screen_snap.c): D7 06/07 answer 4, not built in.
+void screen_snap_command(const uint8_t *data, int len) {
+    uint8_t r[7] = {HOST_LINK_SETTINGS, 0x80 | data[1], 4, len >= 3 ? data[2] : 0};
+    reply(r, sizeof(r));
+}
+#endif
+
 void host_link_send(const uint8_t *data, int len) { reply(data, len); }
 
 void host_link_build_info_reply(uint8_t status, uint8_t half,
@@ -151,9 +164,20 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     art_relay_discovery(&discovery, &tries);
 #endif
-    uint8_t r[11 + 10 + 4 + 2 + 4 + 1] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
-                          HOST_PANEL_H,    HOST_PANEL_X,       HOST_PANEL_Y,      right_link(),
+    uint8_t r[11 + 10 + 4 + 2 + 4 + 1] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, 0,
+                          0,               0,                  0,                 right_link(),
                           right_battery,   (uint8_t)discovery, tries};
+    // Bytes 3-6: the host panel (the first panel in the board's table) for apps without SCREENS.
+    for (int i = 0; i < foxglove_screen_count; i++) {
+        const struct screen_descriptor *p = &foxglove_screens[i];
+        if (p->kind == SCREEN_PANEL) {
+            r[3] = MIN(p->width, UINT8_MAX);
+            r[4] = MIN(p->height, UINT8_MAX);
+            r[5] = MIN(p->x, UINT8_MAX);
+            r[6] = MIN(p->y, UINT8_MAX);
+            break;
+        }
+    }
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     art_relay_debug(&r[11]);
 #endif
@@ -170,7 +194,7 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS)
     caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
 #endif
-    caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO;
+    caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO | HOST_LINK_CAP_SCREENS;
     sys_put_le32(caps, &r[21]);
     sys_put_le16(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S, &r[25]);
     struct foxglove_build_info build;
@@ -182,6 +206,21 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     r[31] = art_relay_guard_drops();
 #endif
+    reply(r, sizeof(r));
+}
+
+/* D5 06 SCREENS (#160): the board's table (foxglove_screens[], e.g. screens_corne.c) as the PC
+ * sees it. */
+
+static void screens_reply(uint8_t index) {
+    uint8_t r[5 + sizeof(struct screen_descriptor)] = {HOST_LINK_PANEL, 0x80 | PANEL_SCREENS, 5,
+                                                       foxglove_screen_count, index};
+    if (index < foxglove_screen_count) {
+        struct screen_descriptor s = foxglove_screens[index];
+        s.version = SCREEN_DESCRIPTOR_VERSION;
+        r[2] = 0;
+        memcpy(&r[5], &s, sizeof(s));
+    }
     reply(r, sizeof(r));
 }
 
@@ -219,6 +258,9 @@ static void panel_command(const uint8_t *d) {
         redraw();
         break;
     }
+    case PANEL_SCREENS:
+        screens_reply(d[2]);
+        break;
     case PANEL_RELEASE:
         k_work_cancel_delayable(&timeout_work);
         set_alive(false);
