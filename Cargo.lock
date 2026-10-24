@@ -510,6 +510,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "foxglove-via"
+version = "0.1.0"
+dependencies = [
+ "hidapi",
+ "palm",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
