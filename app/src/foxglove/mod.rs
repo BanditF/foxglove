@@ -2,6 +2,7 @@
 //! pulling from srwi/keypeek stays easy (docs/keypeek-sync.md).
 
 pub mod art_service;
+pub mod keyboard_actions;
 pub mod keyboard_settings;
 pub mod keymap_cache;
 pub mod last_device;
