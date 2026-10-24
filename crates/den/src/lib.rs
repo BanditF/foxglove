@@ -330,6 +330,7 @@ pub const PING_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(windows)]
 pub mod pipe;
+pub mod runner;
 
 #[cfg(test)]
 mod tests;

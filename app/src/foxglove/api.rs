@@ -56,7 +56,7 @@ fn caps(c: Caps) -> Vec<String> {
     .collect()
 }
 
-struct AppDevices;
+pub(crate) struct AppDevices;
 
 impl Devices for AppDevices {
     fn call(&self, method: &str, _params: Value) -> Result<Value, Error> {
