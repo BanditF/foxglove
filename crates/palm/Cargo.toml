@@ -1,0 +1,15 @@
+[package]
+name = "palm"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Palm: portable device capabilities, events, facts and actors for Foxglove"
+readme = "README.md"
+
+[features]
+mock = []
+contract = []
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
