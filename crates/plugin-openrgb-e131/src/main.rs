@@ -8,8 +8,8 @@
 //!   it puts each keyboard's lights back as they were.
 //!
 //! Options (in `plugin.toml`'s `run`): `--universe N` (1), `--start-channel N` (1), `--leds N`
-//! (every LED sent), `--max-hz N` (10). `--send-test R G B` sends one frame to the plugin and
-//! exits, for testing without OpenRGB.
+//! (every LED sent), `--max-hz N` (10). `--send-test R G B [--seq N] [--stop]` sends one frame
+//! to the plugin and exits, for testing without OpenRGB.
 
 mod e131;
 
@@ -82,10 +82,15 @@ fn take_over(plugin: &Plugin) -> Vec<(String, Option<LightingState>)> {
         .collect()
 }
 
-fn colour(plugin: &Plugin, devices: &[(String, Option<LightingState>)], color: Hsb) {
+/// Sends only what changed since `previous` (each part is a separate keyboard command): the
+/// first colour also turns the lights on and picks the static effect.
+fn colour(plugin: &Plugin, devices: &[(String, Option<LightingState>)], color: Hsb, previous: Option<Hsb>) {
+    let lit = |c: Hsb| c.brightness > 0;
+    let on = previous.is_none_or(|p| lit(p) != lit(color)).then_some(lit(color));
+    // Effect 0 is the static colour.
+    let effect = previous.is_none().then(|| "0".to_string());
     for (id, _) in devices {
-        // Effect 0 is the static colour.
-        let set = SetLightingParams { device: id.clone(), on: Some(color.brightness > 0), color: Some(color), effect: Some("0".into()) };
+        let set = SetLightingParams { device: id.clone(), on, color: Some(color), effect: effect.clone() };
         if let Err(e) = plugin.set_lighting(&set) {
             eprintln!("openrgb-e131: lighting: {e}");
         }
@@ -114,9 +119,13 @@ fn send_test(args: &[String], universe: u16) -> std::io::Result<()> {
         eprintln!("openrgb-e131: --send-test R G B");
         std::process::exit(2);
     };
+    // --seq N numbers the frame (a repeat of the last number counts as stale); --stop marks it
+    // the stream's end.
+    let seq = args.windows(2).find(|w| w[0] == "--seq").and_then(|w| w[1].parse().ok()).unwrap_or(1);
+    let options = if args.iter().any(|a| a == "--stop") { 0x40 } else { 0 };
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     let frame: Vec<u8> = [r, g, b].repeat(8);
-    socket.send_to(&e131::build(universe, 1, 0, &frame), (Ipv4Addr::LOCALHOST, e131::PORT))?;
+    socket.send_to(&e131::build(universe, seq, options, &frame), (Ipv4Addr::LOCALHOST, e131::PORT))?;
     Ok(())
 }
 
@@ -157,7 +166,7 @@ fn main() {
     let mut next_check = Instant::now() + Duration::from_secs(10);
     loop {
         let mut stop = false;
-        if let Ok((n, _)) = socket.recv_from(&mut buf) {
+        if let Ok((n, from)) = socket.recv_from(&mut buf) {
             if let Some(p) = e131::parse(&buf[..n]).filter(|p| p.universe == opts.universe && !p.preview) {
                 if last_seq.is_some_and(|last| e131::is_stale(last, p.sequence)) && !p.terminated {
                     continue;
@@ -168,6 +177,7 @@ fn main() {
                     stop = true;
                 } else if let Some(rgb) = average(p.channels, opts.start_channel, opts.leds) {
                     if devices.is_none() {
+                        eprintln!("openrgb-e131: first frame from {from} (universe {}): taking over the lights", p.universe);
                         devices = Some(take_over(&plugin));
                     }
                     wanted = Some(hsb(rgb));
@@ -189,7 +199,7 @@ fn main() {
         }
         if let (Some(d), Some(color)) = (&devices, wanted) {
             if sent != Some(color) && now >= next_send {
-                colour(&plugin, d, color);
+                colour(&plugin, d, color, sent);
                 sent = Some(color);
                 next_send = now + period;
             }

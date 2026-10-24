@@ -155,9 +155,22 @@ impl DigitalisDevice {
 
     /// Sends one `&rgb_ug` command. Lighting commands are always safe, so they skip the
     /// action list.
+    ///
+    /// The firmware answers Busy while it's still releasing the previous command, so a quick
+    /// run of changes (a plugin streaming colours) waits briefly and tries again instead of
+    /// dropping them.
     fn underglow(&self, command: u32, param: u32) -> PResult<()> {
         let id = self.underglow.lock().unwrap_or_else(|e| e.into_inner()).ok_or(DeviceError::Unsupported)?;
-        status(settings::invoke(&*self.link, id, command, param, 0).map_err(err)?)
+        let mut tries = 0;
+        loop {
+            match status(settings::invoke(&*self.link, id, command, param, 0).map_err(err)?) {
+                Err(DeviceError::Busy(_)) if tries < UNDERGLOW_BUSY_TRIES => {
+                    tries += 1;
+                    std::thread::sleep(UNDERGLOW_BUSY_WAIT);
+                }
+                other => return other,
+            }
+        }
     }
 
     pub fn link(&self) -> &Arc<Link> {
@@ -230,6 +243,10 @@ fn status(s: InvokeStatus) -> PResult<()> {
         other => Err(DeviceError::Backend(other.to_string())),
     }
 }
+
+/// Underglow commands that find the firmware busy are retried this many times, this far apart.
+const UNDERGLOW_BUSY_TRIES: u32 = 10;
+const UNDERGLOW_BUSY_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
 
 // `&rgb_ug` commands (ZMK's dt-bindings/zmk/rgb.h).
 const RGB_ON: u32 = 1;
@@ -437,6 +454,8 @@ mod tests {
         inbox: Arc<(Mutex<VecDeque<Report>>, std::sync::Condvar)>,
         interrupted: Arc<AtomicBool>,
         written: Arc<Mutex<Vec<Vec<u8>>>>,
+        /// INVOKEs to answer "busy" before answering OK.
+        busy: Arc<std::sync::atomic::AtomicU32>,
     }
 
     fn report(bytes: &[u8]) -> Report {
@@ -479,7 +498,10 @@ mod tests {
                 (protocol::SETTINGS, protocol::settings::RGB_STATE) => {
                     report(&[0xD7, 0x83, 1, 0x68, 0x01, 80, 50, 3, 2, 0xff])
                 }
-                (protocol::SETTINGS, protocol::settings::INVOKE) => report(&[0xD7, 0x82, 0]),
+                (protocol::SETTINGS, protocol::settings::INVOKE) => {
+                    let busy = self.busy.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1)).is_ok();
+                    report(&[0xD7, 0x82, if busy { 2 } else { 0 }])
+                }
                 (protocol::SETTINGS, protocol::settings::RGB_SYNC) => report(&[0xD7, 0x81, 1, 1, 2]),
                 (protocol::PANEL, protocol::panel::HELLO) => report(&[0xD5, 0x81, 1, 64, 52, 0, 0, 1, 55]),
                 _ => return Ok(()),
@@ -555,6 +577,19 @@ mod tests {
         assert_eq!(&sent[..12], &protocol::invoke(7, RGB_COLOR_HSB, (359 << 16) | (50 << 8) | 100, 0)[..12]);
         assert_eq!(dev.settings().unwrap().get("rgb_sync").unwrap(), Some(Value::Bool(true)));
         assert_eq!(dev.power().unwrap().batteries().unwrap(), vec![("right".to_string(), 55)]);
+    }
+
+    #[test]
+    fn underglow_waits_out_a_busy_keyboard() {
+        let (dev, fake, _bus) = device(capabilities::PANEL | capabilities::SETTINGS_RGB);
+        dev.set_underglow(Some(7));
+        let lighting = dev.lighting().unwrap();
+        fake.busy.store(3, Ordering::Relaxed);
+        lighting.set_on(true).unwrap();
+        let invokes = |f: &Fake| f.written.lock().unwrap().iter().filter(|w| w[1] == protocol::settings::INVOKE).count();
+        assert_eq!(invokes(&fake), 4, "three busy answers, then OK");
+        fake.busy.store(UNDERGLOW_BUSY_TRIES + 1, Ordering::Relaxed);
+        assert!(matches!(lighting.set_on(false), Err(DeviceError::Busy(_))), "gives up after the retries");
     }
 
     #[test]
