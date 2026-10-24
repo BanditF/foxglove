@@ -21,6 +21,9 @@ config NICE_VIEW_HOST_PANEL_TIMEOUT_S
     int
     default 0
 
+config FOXGLOVE_SIM_ART_KEYS
+    bool "Simulator: build &art_next / &art_prev (art_keys.c), with a printing board-side step"
+
 config FOXGLOVE_SIM_PANEL_STREAM
     bool "Simulator: left panel stream case (module/panel_stream_sim.c) instead of the protocol walk"
 

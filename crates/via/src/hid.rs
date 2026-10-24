@@ -13,6 +13,12 @@ use crate::definition::Definition;
 use crate::device::ViaDevice;
 use crate::protocol::{Guarded, Report, Transport, REPORT};
 
+/// What names a keyboard without a trusted serial: where it's plugged in (#292), else the HID
+/// path.
+fn stable_path(hid_path: &str) -> String {
+    crate::location::of(hid_path).unwrap_or_else(|| hid_path.to_string())
+}
+
 pub const USAGE_PAGE: u16 = 0xFF60;
 pub const USAGE: u16 = 0x61;
 const REPLY_TIMEOUT: Duration = Duration::from_millis(500);
@@ -81,7 +87,7 @@ impl Backend for ViaBackend {
                 continue;
             }
             let Some(def) = self.definition(d.vendor_id(), d.product_id()) else { continue };
-            let path = d.path().to_string_lossy().into_owned();
+            let path = stable_path(&d.path().to_string_lossy());
             seen.push((DeviceId::new(self.id(), d.vendor_id(), d.product_id(), d.serial_number(), &path), path));
             names.push(def.name.clone());
         }
@@ -102,9 +108,12 @@ impl Backend for ViaBackend {
         let path = api
             .device_list()
             .find(|d| {
+                let stable = stable_path(&d.path().to_string_lossy());
+                // By serial, or by where it's plugged in when its serial was shared (#292).
                 d.usage_page() == USAGE_PAGE
                     && d.usage() == USAGE
-                    && DeviceId::new(self.id(), d.vendor_id(), d.product_id(), d.serial_number(), &d.path().to_string_lossy()) == info.id
+                    && (DeviceId::new(self.id(), d.vendor_id(), d.product_id(), d.serial_number(), &stable) == info.id
+                        || DeviceId::new(self.id(), d.vendor_id(), d.product_id(), None, &stable) == info.id)
             })
             .map(|d| d.path().to_owned())
             .ok_or(DeviceError::Disconnected)?;
