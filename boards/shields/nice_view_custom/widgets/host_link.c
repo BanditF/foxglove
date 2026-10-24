@@ -33,6 +33,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "host_link.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_LAMPARRAY)
 #include "lamp_strip.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+#include "lamparray.h"
+#endif
 #endif
 #include "screen_snap.h"
 #include "art_relay.h"
@@ -50,7 +53,7 @@ enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE,
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
-       SETTING_BUILD_INFO, SETTING_LAMP_TEST, SETTING_GUARD_TEST };
+       SETTING_BUILD_INFO, SETTING_LAMP_TEST, SETTING_GUARD_TEST, SETTING_FRAME };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -200,6 +203,9 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
 #endif
     caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO | HOST_LINK_CAP_SCREENS;
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+    caps |= HOST_LINK_CAP_FRAMES;
+#endif
     sys_put_le32(caps, &r[21]);
     sys_put_le16(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S, &r[25]);
     struct foxglove_build_info build;
@@ -446,7 +452,21 @@ static void conn_state_event_cb(struct k_work *work) {
 }
 static K_WORK_DELAYABLE_DEFINE(conn_state_event_work, conn_state_event_cb);
 
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+void host_link_lights_owner(int owner) {
+    if (atomic_get(&host_seen)) {
+        uint8_t r[4] = {HOST_LINK_SETTINGS, 0x80 | SETTING_FRAME, 0, owner};
+        reply(r, sizeof(r));
+    }
+}
+#endif
+
 static int conn_state_listener(const zmk_event_t *eh) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+    if (as_zmk_endpoint_changed(eh) != NULL) {
+        lamparray_release(LAMPARRAY_HOSTLINK); // the frames came over the old endpoint
+    }
+#endif
     if (atomic_get(&host_seen)) {
         k_work_reschedule(&conn_state_event_work, CONN_STATE_SETTLE);
     }
@@ -545,6 +565,10 @@ static uint8_t lamp_test(const uint8_t *d, int len) {
 }
 #endif
 
+#define FRAME_SHOW BIT(0)
+#define FRAME_RELEASE BIT(1)
+#define FRAME_MAX_LAMPS 9 // 5 + 27 bytes: one 32-byte report
+
 static void settings_command(const uint8_t *d, int len) {
     if (d[1] == SETTING_SCREEN_SNAP || d[1] == SETTING_SCREEN_READ) {
         screen_snap_command(d, len);
@@ -555,6 +579,28 @@ static void settings_command(const uint8_t *d, int len) {
         uint8_t r[5] = {HOST_LINK_SETTINGS, 0x80 | SETTING_LAMP_TEST, 4, d[2], d[3]};
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS) && IS_ENABLED(CONFIG_FOXGLOVE_LAMPARRAY)
         r[2] = lamp_test(d, len);
+#endif
+        reply(r, sizeof(r));
+        break;
+    }
+    case SETTING_FRAME: {
+        uint8_t r[4] = {HOST_LINK_SETTINGS, 0x80 | SETTING_FRAME, 4, 0};
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+        uint8_t flags = len >= 3 ? d[2] : 0, start = len >= 4 ? d[3] : 0;
+        uint8_t count = len >= 5 ? d[4] : 0;
+        if (flags & FRAME_RELEASE) {
+            lamparray_release(LAMPARRAY_HOSTLINK);
+            r[2] = 0;
+        } else if (count > FRAME_MAX_LAMPS || len < 5 + 3 * count) {
+            r[2] = 5;
+        } else {
+            int err = lamparray_frame(start, count, &d[5], flags & FRAME_SHOW);
+            r[2] = err == -EBUSY ? 1 : err ? 5 : 0;
+        }
+        r[3] = lamparray_owner();
+        if (r[2] == 0 && !(flags & (FRAME_SHOW | FRAME_RELEASE))) {
+            break; // chunks don't reply, like the panel's ROWS
+        }
 #endif
         reply(r, sizeof(r));
         break;

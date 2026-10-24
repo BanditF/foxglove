@@ -29,6 +29,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "art_relay.h"
 #include "lamp_strip.h"
 #include "lamparray.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+#include "host_link.h"
+#endif
 
 #define LOGICAL_MAX_U16 0x27, 0xff, 0xff, 0x00, 0x00
 #define LOGICAL_MAX_I32 0x27, 0xff, 0xff, 0xff, 0x7f
@@ -160,14 +163,17 @@ static void show(void) {
 }
 
 static void set_owner(int t) {
-    atomic_set(&owner, t);
+    int was = atomic_set(&owner, t);
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+    if (was != t) {
+        host_link_lights_owner(t); // the PC hears when a LampArray host lets go (#272)
+    }
+#endif
     lamp_strip_host(t != 0);
     show();
 }
 
-static void set_lamp(uint16_t id, const uint8_t *rgbi) {
-    // Intensity scales the colour: ws2812 has no separate brightness channel.
-    uint8_t r = rgbi[0] * rgbi[3] / 255, g = rgbi[1] * rgbi[3] / 255, b = rgbi[2] * rgbi[3] / 255;
+static void set_rgb(uint16_t id, uint8_t r, uint8_t g, uint8_t b) {
     if (id < HALF_LAMPS) {
         lamp_strip_set(id, r, g, b);
     } else if (id < LAMP_COUNT) {
@@ -175,6 +181,11 @@ static void set_lamp(uint16_t id, const uint8_t *rgbi) {
         right_rgb[id - HALF_LAMPS][1] = g;
         right_rgb[id - HALF_LAMPS][2] = b;
     }
+}
+
+static void set_lamp(uint16_t id, const uint8_t *rgbi) {
+    // Intensity scales the colour: ws2812 has no separate brightness channel.
+    set_rgb(id, rgbi[0] * rgbi[3] / 255, rgbi[1] * rgbi[3] / 255, rgbi[2] * rgbi[3] / 255);
 }
 
 int lamparray_report_len(uint8_t id) {
@@ -262,7 +273,15 @@ int lamparray_set_report(enum lamparray_transport t, uint8_t id, const uint8_t *
     }
     case REPORT_CONTROL:
         if (n >= 1) {
-            set_owner(d[0] ? 0 : t); // autonomous mode off = this host draws
+            if (d[0]) {
+                lamparray_release(t); // autonomous mode on: hand the lights back, if t had them
+            } else {
+                int cur = atomic_get(&owner);
+                if (cur != 0 && cur != t) {
+                    return -EBUSY; // another transport (or the host link's frames) has them
+                }
+                set_owner(t); // autonomous mode off = this host draws
+            }
         }
         return 0;
     default:
@@ -275,6 +294,33 @@ void lamparray_release(enum lamparray_transport t) {
         set_owner(0);
     }
 }
+
+int lamparray_owner(void) { return atomic_get(&owner); }
+
+/* SET_FRAME (#272): the host link as a third transport */
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+// Frames hold until RELEASE or the link goes (USB unplugged, another endpoint), like the panel
+// (PANEL_HOLD): no keep-alive, so a static frame costs nothing (#272, the no-polling rule).
+int lamparray_frame(uint8_t start, int count, const uint8_t *rgb, bool draw) {
+    if (count < 0 || start + count > LAMP_COUNT) {
+        return -EINVAL;
+    }
+    int cur = atomic_get(&owner);
+    if (cur != 0 && cur != LAMPARRAY_HOSTLINK) {
+        return -EBUSY;
+    }
+    for (int i = 0; i < count; i++) {
+        set_rgb(start + i, rgb[3 * i], rgb[3 * i + 1], rgb[3 * i + 2]);
+    }
+    if (cur == 0) {
+        set_owner(LAMPARRAY_HOSTLINK); // takes the strips, then draws
+    } else if (draw) {
+        show();
+    }
+    return 0;
+}
+#endif
 
 /* USB */
 
@@ -324,6 +370,7 @@ SYS_INIT(lamparray_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 static int usb_listener(const zmk_event_t *eh) {
     if (!zmk_usb_is_hid_ready()) {
         lamparray_release(LAMPARRAY_USB);
+        lamparray_release(LAMPARRAY_HOSTLINK); // frames come over USB Raw HID too
     }
     return ZMK_EV_EVENT_BUBBLE;
 }

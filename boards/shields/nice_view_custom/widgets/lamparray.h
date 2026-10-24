@@ -3,6 +3,7 @@
 // Bluetooth (lamparray_hog.c, FOXGLOVE_LAMPARRAY_BLE) share one LampArray (#88).
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -20,7 +21,7 @@ enum {
 // The largest report payload (without its report ID): LampMultiUpdate.
 #define LAMPARRAY_REPORT_MAX (2 + 2 * MULTI_MAX + 4 * MULTI_MAX)
 
-enum lamparray_transport { LAMPARRAY_USB = 1, LAMPARRAY_BLE = 2 };
+enum lamparray_transport { LAMPARRAY_USB = 1, LAMPARRAY_BLE = 2, LAMPARRAY_HOSTLINK = 3 };
 
 extern const uint8_t lamparray_report_desc[];
 extern const size_t lamparray_report_desc_len;
@@ -39,3 +40,12 @@ int lamparray_set_report(enum lamparray_transport t, uint8_t id, const uint8_t *
 // The transport went away (unplugged, disconnected, another profile): if it was in charge, both
 // halves get their own lights back.
 void lamparray_release(enum lamparray_transport t);
+
+// The transport in charge, 0 = none (both halves draw their own effects).
+int lamparray_owner(void);
+
+// SET_FRAME (D7 0C, FOXGLOVE_HOST_FRAMES, #272): count lamps from start, 3 bytes each (r, g, b);
+// draw shows the frame. The host link takes the lights if nobody has them: -EBUSY if a LampArray
+// transport does, -EINVAL for lamps out of range. With no frame for
+// FOXGLOVE_HOST_FRAMES_TIMEOUT_S, the host link lets go.
+int lamparray_frame(uint8_t start, int count, const uint8_t *rgb, bool draw);
