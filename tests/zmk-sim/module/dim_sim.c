@@ -34,9 +34,12 @@ static int sim_update_channels(const struct device *dev, uint8_t *channels, size
     return -ENOTSUP;
 }
 
+static size_t sim_length(const struct device *dev) { return DT_INST_PROP(0, chain_length); }
+
 static const struct led_strip_driver_api sim_api = {
     .update_rgb = sim_update_rgb,
     .update_channels = sim_update_channels,
+    .length = sim_length,
 };
 
 DEVICE_DT_INST_DEFINE(0, NULL, NULL, NULL, NULL, POST_KERNEL, CONFIG_KERNEL_INIT_PRIORITY_DEFAULT,

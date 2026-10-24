@@ -32,8 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     container:
-      # Same version tag as ZMK v0.3.0 .github/workflows/test.yml.
-      image: docker.io/zmkfirmware/zmk-build-arm:3.5
+      # Same image as ZMK main .github/workflows/test.yml (#151 port).
+      image: docker.io/zmkfirmware/zmk-build-arm:4.1
     defaults:
       run:
         shell: bash
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zmkfirmware/zmk
-          ref: v0.3.0
+          ref: 4dd95d7840eb3d5a3f59bb29fbf1ab054715ef85
           path: workspace/zmk
       - name: Cache west modules
         uses: actions/cache@v4
@@ -54,7 +54,7 @@ jobs:
             workspace/zmk/tools/
             workspace/zmk/zephyr/
             workspace/zmk/bootloader/
-          key: ${{ runner.os }}-zmk-sim-3.5-${{ hashFiles('workspace/zmk/app/west.yml') }}
+          key: ${{ runner.os }}-zmk-sim-4.1-${{ hashFiles('workspace/zmk/app/west.yml') }}
         timeout-minutes: 2
         continue-on-error: true
       # `west init -l app` makes workspace/zmk the west topdir, as in ZMK's own test workflow.
