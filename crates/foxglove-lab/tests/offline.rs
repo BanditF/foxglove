@@ -126,6 +126,13 @@ fn parses_seed_suites_and_all_step_kinds() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil");
     assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 7);
     assert_eq!(
+        spec::load(&root.join("resilience.toml"))
+            .unwrap()
+            .cases
+            .len(),
+        9
+    );
+    assert_eq!(
         spec::load(&root.join("app-actions.toml"))
             .unwrap()
             .cases
