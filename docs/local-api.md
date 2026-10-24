@@ -109,11 +109,19 @@ description = "Puts the temperature on the left screen."
 
 **Containment on Windows:**
 - **Job Object:** every plugin runs in one, killed with Foxglove, with memory and CPU caps and no breakaway.
-- **AppContainer:** Plugins that declare neither `net` nor `files` run in one, so no network and no user files.
+- **AppContainer:** plugins that declare neither `net` nor `files` run in one, so they have no network of their own and no user files.
+- **Network, scoped (#214, API 1.2):**
+  - **Why a broker:** Windows can't limit an AppContainer to particular hosts without admin-only, machine-wide settings, and it blocks loopback outright. So Foxglove opens the connections a plugin's permissions name, and the plugin stays in the AppContainer.
+  - **Permissions:**
+    - `net.connect:<host>:<port>`: TCP. `*.example.com` covers subdomains only, and the port may be `*`.
+    - `net.listen:udp:127.0.0.1:<port>`: datagrams to a loopback port.
+  - **Methods:** `net.open {kind: tcp|udp, host, port}` returns a `stream`. `net.send {stream, data}` sends bytes (base64), `net.close` ends a stream, and the events are `net.data {stream, data, from?}` and `net.closed {stream, reason}`.
+  - **SDK:** `listen_udp(port)`, and `connect_tcp(host, port)`, which gives a `Read + Write` stream to wrap in TLS or a WebSocket.
+  - **Limits:** 16 streams per plugin, and all of them close when the plugin's connection ends.
+- **Network, unrestricted:** bare `net` still works for older plugins. Such a plugin runs outside the AppContainer, still in its Job Object, and the install dialog warns about it ("use any network, without the sandbox").
 - **Windows APIs in the sandbox (#215).** `crates/plugin-sandbox-probe` runs each API under the real runner, sandboxed and not. Results on Windows 11:
   - **Media sessions (SMTC):** denied in the AppContainer ("Access is denied"). Plugins read them as facts instead: the app's one media reader publishes `media.title`, `media.artist` and `media.playing`, plus `volume.level` and `volume.muted` (`facts.read:media.*`, `facts.read:volume.*`). They update while the panel service runs.
   - **Microphone mute (Core Audio endpoint volume):** works in the AppContainer with no capability, so the sandbox can't limit it. A plugin that uses it declares `audio.mic`. The install dialog shows it ("see and change whether your microphone is muted"), but it is not enforced.
-  A `net` plugin runs outside it, still in its Job Object. An AppContainer can't receive loopback traffic from another program without a machine-wide exemption (`CheckNetIsolation`, admin), and local listeners such as the OpenRGB Plugin need exactly that. So `net` stays a permission the user approves at install.
 - **"Trusted" Plugins:** the others (vendor SDK Plugins need their vendor service) are marked trusted in the Plugins tab.
 
 **Plugins catalog:** curated, first-party, à la carte. Each plugin has an install button, and nothing
@@ -203,6 +211,6 @@ The `foxglove-plugin` crate (`crates/plugin-sdk`, MIT):
 
 The example is `crates/plugin-focus-timer`, a focus/rest timer that publishes `focus.state` and `focus.remaining` and colours the underglow. It asks only for `devices.read`, `lighting.write` and `facts.write:focus.*`, so it runs in the AppContainer.
 
-The second example, `crates/plugin-openrgb-e131`, is a plugin with the `net` permission; see [openrgb-plugin.md](openrgb-plugin.md).
+The second example, `crates/plugin-openrgb-e131`, receives network data through Foxglove (`net.listen:udp:127.0.0.1:5568`) and stays sandboxed; see [openrgb-plugin.md](openrgb-plugin.md).
 
 **Pack a plugin:** `powershell -File scripts\pack-plugin.ps1 plugin-focus-timer` builds it, zips `plugin.toml` and the program into `target\plugins\`, and prints the catalog entry (archive and file SHA-256s) to add to `catalog.json` before signing. Until the signing keys exist, install it with `FOXGLOVE_DEV_UNSIGNED_PLUGINS=1`.

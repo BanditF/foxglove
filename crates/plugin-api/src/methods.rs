@@ -237,6 +237,54 @@ pub struct KeyEvent {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Empty {}
 
+/// The kind of connection `net.open` makes (API 1.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum NetKind {
+    /// A TCP connection to `host`:`port`; needs a `net.connect` permission covering it.
+    Tcp,
+    /// Datagrams sent to 127.0.0.1:`port`; needs `net.listen:udp:127.0.0.1:<port>`.
+    Udp,
+}
+
+/// Opens a connection through Foxglove: the plugin stays sandboxed and only reaches what its
+/// permissions name (API 1.2).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NetOpenParams {
+    pub kind: NetKind,
+    /// For `udp`, only `127.0.0.1`.
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NetStream {
+    pub stream: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NetSendParams {
+    pub stream: u64,
+    /// Bytes, base64.
+    pub data: String,
+}
+
+/// Event: bytes arrived on a stream (base64); `from` is the sender for `udp`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NetData {
+    pub stream: u64,
+    pub data: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+/// Event: a stream ended (the other side closed it, or an error).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NetClosed {
+    pub stream: u64,
+    pub reason: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     /// Client → app, answered.
@@ -282,6 +330,12 @@ pub const METHODS: &[Method] = &[
     Method { name: "profiles.list", kind: Kind::Call, permission: None, params: schema!(Empty), result: Some(schema!(Profiles)) },
     Method { name: "profiles.activate", kind: Kind::Call, permission: Some("profiles.write"), params: schema!(ActivateProfileParams), result: Some(schema!(Profiles)) },
     Method { name: "key.event", kind: Kind::Event, permission: Some("key.events"), params: schema!(KeyEvent), result: None },
+    // Checked against the scoped net permissions by the host (API 1.2).
+    Method { name: "net.open", kind: Kind::Call, permission: None, params: schema!(NetOpenParams), result: Some(schema!(NetStream)) },
+    Method { name: "net.send", kind: Kind::Call, permission: None, params: schema!(NetSendParams), result: Some(schema!(Empty)) },
+    Method { name: "net.close", kind: Kind::Call, permission: None, params: schema!(NetStream), result: Some(schema!(Empty)) },
+    Method { name: "net.data", kind: Kind::Event, permission: None, params: schema!(NetData), result: None },
+    Method { name: "net.closed", kind: Kind::Event, permission: None, params: schema!(NetClosed), result: None },
 ];
 
 pub fn find(name: &str) -> Option<&'static Method> {

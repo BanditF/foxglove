@@ -1,10 +1,10 @@
 # OpenRGB Plugin (E1.31)
 
-`crates/plugin-openrgb-e131` (MIT) lets OpenRGB, or any sACN/E1.31 sender, colour your keyboards' lights. It is also the first plugin with the `net` permission (#71).
+`crates/plugin-openrgb-e131` (MIT) lets OpenRGB, or any sACN/E1.31 sender, colour your keyboards' lights. It is also the first plugin that gets network data through Foxglove instead of a socket of its own (#71, #214).
 
 ## Using it with OpenRGB
 
-1. Install the plugin from plugins. It asks for `devices.read`, `lighting.write` and `net`.
+1. Install the plugin from plugins. It asks for `devices.read`, `lighting.write` and `net.listen:udp:127.0.0.1:5568`.
 2. In OpenRGB, open **Settings → E1.31 Devices**, then **Add**:
    - **IP:** `127.0.0.1` (unicast; the plugin doesn't join multicast)
    - **Universe:** 1, **Start channel:** 1
@@ -36,7 +36,7 @@ These go in `plugin.toml`'s `run`:
 
 ## Sandbox
 
-`net` plugins run outside the AppContainer but still in their Job Object; see local-api.md, "Plugins". The plugin binds only the loopback address.
+The plugin runs in the AppContainer, with no network of its own. Foxglove listens on 127.0.0.1:5568 for it and passes the datagrams on (see local-api.md, "Network, scoped"). The end-to-end test runs it sandboxed.
 
 ## Tests
 

@@ -61,7 +61,7 @@ fn initialize_comes_first_and_reports_the_grant() {
     assert!(err(1, code::INVALID_REQUEST)(&out[0]));
     assert_eq!(
         out[1],
-        json!({"jsonrpc":"2.0","id":0,"result":{"api":"1.1","app":"0.3.0","granted":["facts.read:clock.*"]}})
+        json!({"jsonrpc":"2.0","id":0,"result":{"api":"1.2","app":"0.3.0","granted":["facts.read:clock.*"]}})
     );
     assert_eq!(out[2], json!({"jsonrpc":"2.0","id":2,"result":{}}));
 }
@@ -209,4 +209,116 @@ fn wait(mut done: impl FnMut() -> bool) {
     while !done() && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+/// A live connection for the network tests: lines go in while `serve` runs.
+struct Live {
+    tx: Option<mpsc::Sender<Vec<u8>>>,
+    out: Out,
+    server: Option<std::thread::JoinHandle<()>>,
+}
+
+struct ChanReader {
+    rx: mpsc::Receiver<Vec<u8>>,
+    buf: Vec<u8>,
+}
+
+impl std::io::Read for ChanReader {
+    fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+        if self.buf.is_empty() {
+            match self.rx.recv() {
+                Ok(v) => self.buf = v,
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = b.len().min(self.buf.len());
+        b[..n].copy_from_slice(&self.buf[..n]);
+        self.buf.drain(..n);
+        Ok(n)
+    }
+}
+
+impl Live {
+    fn start(ctx: Context) -> Live {
+        let (tx, rx) = mpsc::channel();
+        let out = Out::default();
+        let writer = out.clone();
+        let server = std::thread::spawn(move || {
+            serve(std::io::BufReader::new(ChanReader { rx, buf: vec![] }), writer, ctx).unwrap();
+        });
+        let live = Live { tx: Some(tx), out, server: Some(server) };
+        live.send(init());
+        live
+    }
+
+    fn send(&self, v: Value) {
+        self.tx.as_ref().unwrap().send((v.to_string() + "\n").into_bytes()).unwrap();
+    }
+
+    /// Waits (up to 10 s) for a line matching `f`.
+    fn wait(&self, f: impl Fn(&Value) -> bool) -> Value {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(v) = self.out.lines().into_iter().find(|v| f(v)) {
+                return v;
+            }
+            assert!(Instant::now() < until, "timed out; got {:?}", self.out.lines());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn stop(mut self) {
+        drop(self.tx.take());
+        self.server.take().unwrap().join().unwrap();
+    }
+}
+
+fn reply(id: i64) -> impl Fn(&Value) -> bool {
+    move |v: &Value| v["id"] == json!(id)
+}
+
+#[test]
+fn net_udp_listen_is_brokered_and_scoped() {
+    // A free port for the grant.
+    let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let live = Live::start(plugin(&[&format!("net.listen:udp:127.0.0.1:{port}")]));
+    live.send(call(1, "net.open", json!({"kind":"udp","host":"127.0.0.1","port":port.wrapping_add(1)})));
+    assert!(err(1, code::DENIED)(&live.wait(reply(1))), "another port is refused");
+    live.send(call(2, "net.open", json!({"kind":"udp","host":"0.0.0.0","port":port})));
+    assert!(err(2, code::DENIED)(&live.wait(reply(2))), "loopback only");
+    live.send(call(3, "net.open", json!({"kind":"udp","host":"127.0.0.1","port":port})));
+    let stream = live.wait(reply(3))["result"]["stream"].as_u64().unwrap();
+    std::net::UdpSocket::bind("127.0.0.1:0").unwrap().send_to(b"hello", ("127.0.0.1", port)).unwrap();
+    let data = live.wait(|v| v["method"] == "net.data");
+    assert_eq!(data["params"]["stream"], json!(stream));
+    assert_eq!(data["params"]["data"], json!(STANDARD.encode(b"hello")));
+    live.stop();
+    // The connection ended, so the port is free again.
+    assert!(std::net::UdpSocket::bind(("127.0.0.1", port)).is_ok() || {
+        std::thread::sleep(Duration::from_millis(500));
+        std::net::UdpSocket::bind(("127.0.0.1", port)).is_ok()
+    });
+}
+
+#[test]
+fn net_tcp_connect_both_ways() {
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = server.local_addr().unwrap().port();
+    let live = Live::start(plugin(&[&format!("net.connect:127.0.0.1:{port}")]));
+    live.send(call(1, "net.open", json!({"kind":"tcp","host":"localhost","port":port})));
+    assert!(err(1, code::DENIED)(&live.wait(reply(1))), "the grant names 127.0.0.1, not localhost");
+    live.send(call(2, "net.open", json!({"kind":"tcp","host":"127.0.0.1","port":port})));
+    let (mut peer, _) = server.accept().unwrap();
+    let stream = live.wait(reply(2))["result"]["stream"].as_u64().unwrap();
+    live.send(call(3, "net.send", json!({"stream":stream,"data":STANDARD.encode(b"ping")})));
+    let mut got = [0u8; 4];
+    std::io::Read::read_exact(&mut peer, &mut got).unwrap();
+    assert_eq!(&got, b"ping");
+    peer.write_all(b"pong").unwrap();
+    let data = live.wait(|v| v["method"] == "net.data");
+    assert_eq!(data["params"]["data"], json!(STANDARD.encode(b"pong")));
+    drop(peer);
+    let closed = live.wait(|v| v["method"] == "net.closed");
+    assert_eq!(closed["params"]["stream"], json!(stream));
+    live.stop();
 }
