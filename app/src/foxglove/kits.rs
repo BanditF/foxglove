@@ -32,6 +32,17 @@ pub fn sync() {
         if runners.contains_key(&id) {
             continue;
         }
+        // Before every launch: still signed, files unchanged (#159).
+        if let Err(e) = super::kit_trust::check_installed(&id, &kit.manifest.version, &dir.join(&id)) {
+            if !super::kit_trust::dev_unsigned() {
+                STATES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get_or_insert_with(HashMap::new)
+                    .insert(id.clone(), KitState::Disabled(format!("not verified: {e}")));
+                continue;
+            }
+        }
         use foxglove_kit_api::permission::Permission;
         // Kits that don't ask for the network or the user's files don't get either.
         let sandbox = !kit.record.approved.iter().any(|p| matches!(p, Permission::Net | Permission::Files));
