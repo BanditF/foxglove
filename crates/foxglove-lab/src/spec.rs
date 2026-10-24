@@ -49,6 +49,10 @@ pub enum Step {
     ExpectNotBuiltIn(NotBuiltIn),
     SplitGuardTest(GuardTest),
     IdleCpu(Idle),
+    ArtPush(ArtPush),
+    PanelShow(PanelShow),
+    PanelFlood(PanelFlood),
+    PanelRelease(PanelRelease),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -217,6 +221,61 @@ pub struct Usb {
     #[serde(default)]
     pub strict: bool,
 }
+/// A D6 art push as a misbehaving PC would send it (docs/resilience.md, #25), then the art STATUS
+/// it should leave: `cut` "data" (BEGIN and a few DATA, then silence) or "commit" (silence after
+/// COMMIT); `corrupt` "crc" (BEGIN announces a wrong CRC) or "header" (a width byte the right
+/// rejects); `drop_link` drops the split link mid-relay (D7 0B, dev builds).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArtPush {
+    /// A blob file, relative to the repository root.
+    pub blob: String,
+    #[serde(default)]
+    pub cut: String,
+    #[serde(default)]
+    pub corrupt: String,
+    #[serde(default)]
+    pub drop_link: bool,
+    pub expect_left_state: u8,
+    /// Accepted left errors; empty = any.
+    #[serde(default)]
+    pub expect_errors: Vec<u8>,
+    pub expect_right_state: Option<u8>,
+    /// The right must still show the set it showed before this push.
+    #[serde(default)]
+    pub right_keeps_set: bool,
+    #[serde(default = "push_timeout")]
+    pub within_ms: u64,
+}
+fn push_timeout() -> u64 {
+    30_000
+}
+/// Shows test frame `pattern` on the left panel (ROWS + PRESENT, as the app does) and saves it as a
+/// PBM at `save` for panel_dump.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelShow {
+    pub pattern: u8,
+    pub save: String,
+}
+/// Panel frames at `rate` a second (default 100: the app's 2 Hz stream ×50) for `seconds`, with a
+/// layer key pressed and checked every 2 s (no dropped, doubled or stuck key). Saves the last
+/// frame at `save`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelFlood {
+    pub seconds: u64,
+    pub save: String,
+    #[serde(default = "flood_rate")]
+    pub rate: u32,
+}
+fn flood_rate() -> u32 {
+    100
+}
+/// PANEL RELEASE: the firmware draws its own panel again.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelRelease {}
 /// Measures a process's CPU time over `seconds` while nothing is pressed.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -363,6 +422,26 @@ impl Step {
                 ["drive_left", "fps"].contains(&s.key.as_str()) && !s.value.contains(['\n', '\r']),
                 "screens_setting supports drive_left and fps"
             ),
+            Self::ArtPush(a) => {
+                ensure!(
+                    ["", "data", "commit"].contains(&a.cut.as_str()),
+                    "art_push cut is data or commit"
+                );
+                ensure!(
+                    ["", "crc", "header"].contains(&a.corrupt.as_str()),
+                    "art_push corrupt is crc or header"
+                );
+                ensure!(a.expect_left_state <= 4, "left states are 0..=4");
+                ensure!(
+                    (1_000..=180_000).contains(&a.within_ms),
+                    "art_push within_ms must be 1000..=180000"
+                );
+            }
+            Self::PanelFlood(f) => ensure!(
+                (1..=300).contains(&f.seconds),
+                "panel_flood seconds must be 1..=300"
+            ),
+            Self::PanelShow(_) | Self::PanelRelease(_) => {}
             Self::IdleCpu(i) => {
                 ensure!(
                     (1..=600).contains(&i.seconds),

@@ -73,6 +73,20 @@ fn update_snapshot(f: impl FnOnce(&mut Snapshot)) {
     f(&mut SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()));
 }
 
+/// The settings window's panel preview, while it's drawn: a new frame repaints it once. The
+/// preview asks again each time it's drawn, so a closed preview stops the repaints (#279).
+static PREVIEW: Mutex<Option<crate::ui_wake::UiWake>> = Mutex::new(None);
+
+pub fn want_preview(wake: crate::ui_wake::UiWake) {
+    *PREVIEW.lock().unwrap_or_else(|e| e.into_inner()) = Some(wake);
+}
+
+fn new_frame_shown() {
+    if let Some(wake) = PREVIEW.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        wake.request_repaint();
+    }
+}
+
 /// Remembers the program in front unless it's Foxglove itself, so "Add foreground app" can
 /// offer the game the user just left for the settings window.
 fn note_foreground() {
@@ -218,7 +232,8 @@ fn load_wallpaper_frames(frame_bytes: usize) -> Option<(Vec<Vec<u8>>, u32)> {
 /// A plugin's frame over the left panel (`screens.panel_override`, #209), until `until`.
 struct Override {
     bits: Vec<u8>,
-    until: Instant,
+    /// `None`: held until replaced, released, or the connection closes.
+    until: Option<Instant>,
     conn: u64,
 }
 
@@ -226,12 +241,12 @@ static OVERRIDE: Mutex<Option<Override>> = Mutex::new(None);
 /// The panel's size, once a keyboard with one has connected.
 static PANEL_SIZE: Mutex<Option<(u16, u16)>> = Mutex::new(None);
 
-/// The longest a plugin's frame stays without being sent again.
+/// The longest a plugin's timed frame lasts.
 pub const MAX_OVERRIDE: Duration = Duration::from_secs(60);
 
-/// Shows a plugin's frame (1 bpp, rows MSB first, padded to whole bytes) for `ttl`; a plugin
-/// re-sends to keep it, so the panel goes back by itself if the plugin stops.
-pub fn set_override(conn: u64, width: u16, height: u16, bits: Vec<u8>, ttl: Duration) -> Result<(), String> {
+/// Shows a plugin's frame (1 bpp, rows MSB first, padded to whole bytes) for `ttl`, or with no
+/// `ttl` until it's replaced, released or the plugin's connection closes (#281).
+pub fn set_override(conn: u64, width: u16, height: u16, bits: Vec<u8>, ttl: Option<Duration>) -> Result<(), String> {
     let size = *PANEL_SIZE.lock().unwrap_or_else(|e| e.into_inner());
     let Some((w, h)) = size else { return Err("no left panel connected".into()) };
     if (width, height) != (w, h) {
@@ -241,13 +256,13 @@ pub fn set_override(conn: u64, width: u16, height: u16, bits: Vec<u8>, ttl: Dura
     if bits.len() != want {
         return Err(format!("a {w}x{h} frame is {want} bytes, not {}", bits.len()));
     }
-    let until = Instant::now() + ttl.min(MAX_OVERRIDE);
+    let until = ttl.map(|t| Instant::now() + t.min(MAX_OVERRIDE));
     *OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Override { bits, until, conn });
     wake();
     Ok(())
 }
 
-/// Drops a connection's frame (the plugin stopped).
+/// Drops a connection's frame (released, or the plugin stopped).
 pub fn clear_override(conn: u64) {
     let mut o = OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
     if o.as_ref().is_some_and(|o| o.conn == conn) {
@@ -257,10 +272,10 @@ pub fn clear_override(conn: u64) {
     }
 }
 
-/// The current plugin frame and when it ends, if one is showing.
-fn current_override(now: Instant) -> Option<(Vec<u8>, Instant)> {
+/// The current plugin frame and when it ends (`None`: held), if one is showing.
+fn current_override(now: Instant) -> Option<(Vec<u8>, Option<Instant>)> {
     let mut o = OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
-    if o.as_ref().is_some_and(|o| o.until <= now) {
+    if o.as_ref().is_some_and(|o| o.until.is_some_and(|u| u <= now)) {
         *o = None;
     }
     o.as_ref().map(|o| (o.bits.clone(), o.until))
@@ -275,6 +290,16 @@ fn wake() {
 }
 
 /// Zero means firmware keeps the frame forever. Leave queue/USB scheduling headroom.
+/// How often the panel needs a PRESENT to stay ours: never when the firmware holds it
+/// (PANEL_HOLD, or no timeout); otherwise just inside its timeout. For older firmware it starts
+/// with drawing and stops with RELEASE or the link going (#279).
+fn keep_alive_for(hello: &Hello) -> Option<Duration> {
+    if hello.capabilities & protocol::capabilities::PANEL_HOLD != 0 {
+        return None;
+    }
+    keep_alive(hello.panel_timeout_s)
+}
+
 fn keep_alive(timeout_s: u16) -> Option<Duration> {
     (timeout_s > 0).then(|| {
         let timeout = Duration::from_secs(u64::from(timeout_s));
@@ -536,8 +561,8 @@ fn run() {
         if let Some((bits, _)) = &overridden {
             d.panel.bits.clone_from(bits);
         }
-        let clock_at = overridden.as_ref().map_or(clock_at, |(_, until)| clock_at.min(*until));
-        let interval = keep_alive(d.hello.panel_timeout_s);
+        let clock_at = overridden.as_ref().and_then(|(_, until)| *until).map_or(clock_at, |until| clock_at.min(until));
+        let interval = keep_alive_for(&d.hello);
         let result = if changed(d.last.as_deref(), &d.panel.bits) {
             panel::show(
                 d.link.as_ref(),
@@ -569,6 +594,7 @@ fn run() {
                 };
                 dump_panel(&frame);
                 update_snapshot(|s| s.frame = Some(frame));
+                new_frame_shown();
             }
             Err(e) => {
                 set_status(format!("Lost keyboard: {e}"));
@@ -644,6 +670,10 @@ mod tests {
     fn sleeps_until_the_first_visible_change_or_firmware_deadline() {
         let minute = Duration::from_secs(47);
         assert_eq!(keep_alive(0), None);
+        let mut hello = Hello { panel_timeout_s: 10, ..Hello::default() };
+        assert_eq!(keep_alive_for(&hello), Some(Duration::from_secs(9)), "older firmware");
+        hello.capabilities |= protocol::capabilities::PANEL_HOLD;
+        assert_eq!(keep_alive_for(&hello), None, "the firmware holds the panel");
         assert_eq!(deadline(minute, None, None), minute);
         assert_eq!(
             deadline(minute, Some(Duration::from_millis(250)), None),

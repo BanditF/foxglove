@@ -1,0 +1,91 @@
+schema = 1
+
+# Keyboard first (docs/resilience.md, #25): what the keyboard does when the PC side dies or
+# misbehaves mid-push or mid-frame. Quit Foxglove first (it would fight the pushes and the panel).
+# Rows 1 and 2a need the app or a fresh boot: scripts/lab/resilience.py. Rows 3, 4 and 5b are
+# human (#90). Row 5a needs a dev build (D7 0B); it is BLOCKED on GA. Pushes leave test art on the
+# right; the last case puts a built-in set back (Foxglove re-pushes its own art when it starts).
+
+[[cases]]
+name = "r2b-push-stops-mid-usb"
+description = "2b: BEGIN and a few DATA, then silence (app killed while sending). After ~10 s the left drops it (state 0, error 8); the right keeps its set; a new push works"
+tags = ["resilience"]
+steps = [
+  { art_push = { blob = "app/resources/lighting/art/fury.bin", cut = "data", expect_left_state = 0, expect_errors = [8], right_keeps_set = true, within_ms = 20000 } },
+  { art_push = { blob = "app/resources/lighting/art/fury.bin", expect_left_state = 3, expect_right_state = 2, within_ms = 60000 } },
+]
+
+[[cases]]
+name = "r2c-silence-after-commit"
+description = "2c: the app goes silent right after COMMIT; the left finishes the push on its own and the right plays the new set"
+tags = ["resilience"]
+steps = [
+  { art_push = { blob = "app/resources/lighting/art/hearth.bin", cut = "commit", expect_left_state = 3, expect_right_state = 2, within_ms = 60000 } },
+]
+
+[[cases]]
+name = "r2d-stuck-then-new-push"
+description = "2d: a stuck receive, then within 10 s a full push; the new BEGIN replaces the stuck one and the push succeeds"
+tags = ["resilience"]
+steps = [
+  { art_push = { blob = "app/resources/lighting/art/fury.bin", cut = "data", expect_left_state = 1, within_ms = 3000 } },
+  { art_push = { blob = "app/resources/lighting/art/moon-garden.bin", expect_left_state = 3, expect_right_state = 2, within_ms = 60000 } },
+]
+
+[[cases]]
+name = "r5a-split-drop-mid-relay"
+description = "5a: the split link drops while the left pushes to the right (D7 0B); the push fails cleanly (state 4, error 6 or 1), the right types again after reconnecting, and a new push works"
+tags = ["resilience"]
+requires = ["position_press"]
+steps = [
+  { art_push = { blob = "app/resources/lighting/art/fury.bin", drop_link = true, expect_left_state = 4, expect_errors = [6, 1], within_ms = 30000 } },
+  { press_position = { pos = 46, state = "down" } },
+  { expect_layer = { active_contains = [2], within_ms = 2000 } },
+  { press_position = { pos = 46, state = "up" } },
+  { expect_layer = { top = 0 } },
+  { art_push = { blob = "app/resources/lighting/art/constellations.bin", expect_left_state = 3, expect_right_state = 2, within_ms = 90000 } },
+]
+
+[[cases]]
+name = "r5c-bad-crc"
+description = "5c: BEGIN announces a CRC the data doesn't match; the left refuses it (state 4, error 5) and the right keeps its set"
+tags = ["resilience"]
+steps = [
+  { art_push = { blob = "app/resources/lighting/art/fury.bin", corrupt = "crc", expect_left_state = 4, expect_errors = [5], right_keeps_set = true, within_ms = 15000 } },
+]
+
+[[cases]]
+name = "r5c-bad-header"
+description = "5c: a valid CRC but a broken header (wrong width); the right rejects it (left state 4, error 7) and keeps its set"
+tags = ["resilience"]
+steps = [
+  { art_push = { blob = "app/resources/lighting/art/hearth.bin", corrupt = "header", expect_left_state = 4, expect_errors = [7], right_keeps_set = true, within_ms = 30000 } },
+]
+
+[[cases]]
+name = "r6-flood"
+description = "6: panel frames as fast as the link takes them for 60 s with NUMBER pressed every 2 s; the layer follows every time, and afterwards the left keeps the last frame"
+tags = ["resilience"]
+requires = ["position_press", "screen_readback"]
+steps = [
+  { panel_flood = { seconds = 60, save = "%TEMP%/foxglove-resilience-flood.pbm" } },
+  { panel_dump = { path = "%TEMP%/foxglove-resilience-flood.pbm", within_ms = 4000 } },
+]
+
+[[cases]]
+name = "r7-release"
+description = "7: a frame is shown and kept; PANEL RELEASE brings the firmware's own panel back right away"
+tags = ["resilience"]
+requires = ["screen_readback"]
+steps = [
+  { panel_show = { pattern = 3, save = "%TEMP%/foxglove-resilience-frame.pbm" } },
+  { panel_dump = { path = "%TEMP%/foxglove-resilience-frame.pbm", within_ms = 4000 } },
+  { panel_release = {} },
+  { panel_dump = { path = "%TEMP%/foxglove-resilience-frame.pbm", shown = false, within_ms = 3000 } },
+]
+
+[[cases]]
+name = "r-cleanup-built-in-art"
+description = "Puts a built-in set back on the right (the pushes left test art)"
+tags = ["resilience"]
+steps = [{ art_select = { set = 0, restore = false, replace_pushed = true } }]

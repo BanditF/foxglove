@@ -82,7 +82,9 @@ pub fn group(ui: &mut egui::Ui) {
                     art_library::refresh();
                     UI.with_borrow_mut(|s| s.textures.clear());
                 }
+                super::art_library_view::button(ui);
             });
+            super::art_library_view::window(ui.ctx(), &h, &s);
             if let Some(folder) = art_library::folder() {
                 ui.weak(format!("Library: {}", folder.display()));
             }
