@@ -23,6 +23,15 @@ hostlink: rx D7 82 06 2B 31
 hostlink: -- invoke sysreset 0 0
 hostlink: tx D7 02 18 95
 hostlink: rx D7 82 06 18 95
+hostlink: -- invoke bootload 0 0
+hostlink: tx D7 02 E4 9E
+hostlink: rx D7 82 06 E4 9E
+hostlink: -- invoke outputs 0 0
+hostlink: tx D7 02 52 97
+hostlink: rx D7 82 06 52 97
+hostlink: -- invoke z_so_off 0 0
+hostlink: tx D7 02 3E DC 00 00 00 00 00 00 00 00 34 08
+hostlink: rx D7 82 06 3E DC
 hostlink: tx D7 02 FE FF
 hostlink: rx D7 82 01 FE FF
 hostlink: -- position: press and release Q (pos 1)
@@ -41,13 +50,14 @@ hostlink: rx D7 85 06 01
 hostlink: -- invoke toggle_layer 6 0
 hostlink: tx D7 02 EC 7C 06
 hostlink: rx D7 82 00 EC 7C
-hostlink: -- position: bad position, bad state, short report
+hostlink: -- position: bad position, bad state, a report without the state byte
 hostlink: tx D7 05 63 01
 hostlink: rx D7 85 05 63
 hostlink: tx D7 05 01 02
 hostlink: rx D7 85 05 01
+hostlink: -- 3-byte report
 hostlink: tx D7 05 01
-hostlink: rx D7 85 00 01
+hostlink: rx D7 85 05 01
 hostlink: -- position: W (pos 2) held, released by the firmware after 10 s
 hostlink: tx D7 05 02 01
 kp_pressed: usage_page 0x07 keycode 0x1A implicit_mods 0x00 explicit_mods 0x00
@@ -83,6 +93,13 @@ hostlink: tx D7 08 01 01 nonce
 hostlink: rx D7 88 06 01
 hostlink: tx D7 08
 hostlink: rx D7 88 00 nonce
+hostlink: tx D7 08 01 01 nonce
+hostlink: rx D7 88 06 01
+hostlink: -- bootloader: invalid half (5), and the nonce is used up by it
+hostlink: tx D7 08
+hostlink: rx D7 88 00 nonce
+hostlink: tx D7 08 01 02 nonce
+hostlink: rx D7 88 05 02
 hostlink: tx D7 08 01 01 nonce
 hostlink: rx D7 88 06 01
 hostlink: -- bootloader: bad sub-command
