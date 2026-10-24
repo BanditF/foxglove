@@ -23,6 +23,7 @@ pub mod accent;
 pub mod store;
 pub mod api;
 pub mod art_library;
+pub mod plugin_icons;
 pub mod plugin_install;
 pub mod plugins_ui;
 pub mod plugin_trust;

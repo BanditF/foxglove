@@ -20,6 +20,23 @@ foxglove in 1542.
 
 **This board is not foostan's Corne.** Standard `corne` firmware does not work on it.
 
+## Getting started
+
+1. **Install the app:** download `foxglove-x64.msi` from
+   [Releases](https://github.com/BanditF/foxglove/releases) and run it. The installer isn't
+   signed yet, so Windows SmartScreen warns you: click **More info**, then **Run anyway**.
+2. **Connect:** plug the keyboard's **left** half in by USB. In the fox tray icon, choose
+   **Settings... → Connection**, pick the keyboard and click **Connect**. To add Bluetooth,
+   pair "Eyelash Corne" in Windows' Bluetooth settings.
+3. **Learn the layers:** hold a middle thumb for NUMBER or SYMBOL, or both for FUNCTION. Add Tab
+   to both for SYSTEM (Bluetooth profiles on Q-T). See [docs/layers.md](docs/layers.md).
+4. **Types on the cable but not on Bluetooth?** It's on another device's Bluetooth profile.
+   Hold SYSTEM and tap Q for profile 1 (W-T for 2-5); the filled box on the left screen shows
+   the active profile.
+
+The [user guide](docs/user-guide.md) covers the screens, every Settings section, profiles,
+plugins and updating the firmware.
+
 ## Layout
 
 | Path | What |

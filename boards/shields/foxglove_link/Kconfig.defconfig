@@ -7,6 +7,36 @@ config NICE_VIEW_HOST_PANEL_TIMEOUT_S
     int
     default 0
 
+config FOXGLOVE_PANEL
+    bool "A panel the PC draws into, on this board's display (panel_lvgl.c)"
+    default y if SHIELD_TOUCAN_LEFT
+    depends on ZMK_DISPLAY
+
+if FOXGLOVE_PANEL
+
+# The panel's place on the display, as seen; width a multiple of 8. Toucan2: the bottom third
+# of its 144x168 memory LCD.
+config FOXGLOVE_PANEL_X
+    int
+    default 0
+
+config FOXGLOVE_PANEL_Y
+    int
+    default 112 if SHIELD_TOUCAN_LEFT
+    default 0
+
+config FOXGLOVE_PANEL_W
+    int
+    default 144 if SHIELD_TOUCAN_LEFT
+    default 64
+
+config FOXGLOVE_PANEL_H
+    int
+    default 56 if SHIELD_TOUCAN_LEFT
+    default 52
+
+endif
+
 config ZMK_SPLIT_BLE_CENTRAL_BATTERY_LEVEL_FETCHING
     default y if ZMK_SPLIT_ROLE_CENTRAL
 

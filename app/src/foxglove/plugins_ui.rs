@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 
+use super::plugin_icons as icons;
 use super::plugin_install::{self, Installed, Staged};
 
 #[derive(Default)]
@@ -53,10 +54,16 @@ pub fn group(ui: &mut egui::Ui) {
             ui.add_space(4.0);
             ui.label("Installed");
             if installed.is_empty() {
-                ui.weak("None yet.");
+                ui.vertical_centered(|ui| {
+                    ui.add(icons::empty(ui, 120.0));
+                    ui.weak("No plugins yet. Pick one from the catalog below, or install one from a file.");
+                });
             }
+            let plugins_dir = plugin_install::plugins_dir();
             for plugin in &installed {
+                let dir = plugins_dir.as_ref().map(|d| d.join(&plugin.manifest.id));
                 ui.horizontal_wrapped(|ui| {
+                    ui.add(icons::glyph(ui, &plugin.manifest.id, dir.as_deref(), 20.0));
                     let mut enabled = plugin.record.enabled;
                     if ui.checkbox(&mut enabled, format!("{} {}", plugin.manifest.name, plugin.manifest.version)).changed() {
                         state.message = plugin_install::set_enabled(&plugin.manifest.id, enabled).err();
@@ -96,11 +103,16 @@ pub fn group(ui: &mut egui::Ui) {
                 if installed.iter().any(|k| k.manifest.id == entry.id) {
                     continue;
                 }
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong(&entry.name);
-                    ui.weak(&entry.description);
-                    // Downloads come with the first released plugin; until then entries are listed only.
-                    ui.add_enabled(false, egui::Button::new("Coming soon"));
+                ui.horizontal(|ui| {
+                    ui.add(icons::tile(ui, &entry.id, None, 36.0));
+                    ui.vertical(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong(&entry.name);
+                            // Downloads come with the first released plugin; until then entries are listed only.
+                            ui.add_enabled(false, egui::Button::new("Coming soon"));
+                        });
+                        ui.weak(&entry.description);
+                    });
                 });
             }
             ui.add_space(4.0);
@@ -140,7 +152,10 @@ fn catalog_status(ui: &mut egui::Ui) {
 /// Shows what a staged plugin may do; returns it again while the user hasn't decided.
 fn approval(ui: &mut egui::Ui, staged: Staged, state: &mut UiState) -> Option<Staged> {
     let m = &staged.manifest;
-    ui.strong(format!("Install {} {}?", m.name, m.version));
+    ui.horizontal(|ui| {
+        ui.add(icons::tile(ui, &m.id, Some(&staged.dir), 48.0));
+        ui.strong(format!("Install {} {}?", m.name, m.version));
+    });
     if !m.description.is_empty() {
         ui.label(&m.description);
     }

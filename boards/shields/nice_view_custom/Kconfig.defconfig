@@ -48,13 +48,13 @@ config NICE_VIEW_CUSTOM_ANIMATE
 
 config FOXGLOVE_SPLIT_GUARD
     bool "Drop and retry a split link that hasn't encrypted within 20 s (#122)"
-    default y if FOXGLOVE_TEST_HOOKS
+    default y
     depends on NICE_VIEW_ART_RELAY
     help
       A link to the right half that stays below security L2 never gets ZMK's split service
       set up, so the right doesn't type. The guard disconnects it so ZMK reconnects, at most 3
-      times in a row, with a log line and a count in HELLO. On in dev builds, off in GA until it
-      has proven itself on hardware.
+      times in a row, with a log line and a count in HELLO. On in dev and GA builds: the
+      forced recovery case (D7 0B, #81) passed on hardware.
 
 config FOXGLOVE_TEST_HOOKS
     bool "Foxglove pre-GA test hooks"
