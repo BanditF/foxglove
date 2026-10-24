@@ -47,6 +47,16 @@ pub fn is_right(pos: u8) -> bool {
 
 pub trait Device: Transport {
     fn layer(&self, timeout: Duration) -> Result<Option<u32>>;
+    /// Unsolicited art-key events (D7 8D 01 <dir>, #302), from now on; `None` where the device
+    /// can't deliver unsolicited reports.
+    fn art_key_events(&self) -> Option<Events> {
+        None
+    }
+}
+/// Reports collected from the link until dropped.
+pub struct Events {
+    pub rx: std::sync::mpsc::Receiver<[u8; 32]>,
+    _watch: digitalis::link::EventSubscription,
 }
 pub struct Hardware {
     pub link: Link,
@@ -85,6 +95,17 @@ impl Transport for Hardware {
     }
 }
 impl Device for Hardware {
+    fn art_key_events(&self) -> Option<Events> {
+        // Every incoming report: the link's dispatcher drops unsolicited replies before plain
+        // subscribers see them.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let watch = self.link.subscribe_reports(move |_, r| {
+            if r.starts_with(&[protocol::SETTINGS, 0x80 | ART_KEYS, 1]) {
+                let _ = tx.send(*r);
+            }
+        });
+        Some(Events { rx, _watch: watch })
+    }
     fn layer(&self, timeout: Duration) -> Result<Option<u32>> {
         self.check_connection()?;
         match self.layers.recv_timeout(timeout) {
@@ -108,6 +129,11 @@ impl Device for Hardware {
 /// Capabilities come only from HELLO's capability bits, never from the version number.
 /// Position presses also need the refusal bit: a press resolves through whatever layers are
 /// active, so the firmware must be known to refuse bt/out/reset/bootloader/soft_off.
+/// D7 0D ART_KEYS: the app takes over the art keys (#302); its events come back as D7 8D 01 <dir>.
+const ART_KEYS: u8 = 0x0D;
+/// HELLO capability bit 16: the keymap has &art_next/&art_prev and the art relay is built.
+const ART_KEYS_CAP: u32 = 1 << 16;
+
 pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
     let has = |bit| hello.capabilities & bit != 0;
     let reason = match requirement {
@@ -121,6 +147,8 @@ pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
         "build_info" => "firmware doesn't report its build (HELLO bit 12)",
         "screen_readback" if has(caps::SCREEN) => return None,
         "screen_readback" => "firmware has no screen readback (HELLO bit 6, #67)",
+        "art_keys" if hello.capabilities & ART_KEYS_CAP != 0 => return None,
+        "art_keys" => "firmware has no art keys (HELLO bit 16, #302)",
         "position_press" if has(caps::POSITION) && has(caps::INVOKE_REFUSES) => return None,
         "position_press" => {
             "firmware has no position press with refusal (HELLO bits 5 and 7; test-hooks build)"
@@ -330,6 +358,92 @@ impl<'a, D: Device> Runner<'a, D> {
                 );
             }
         }
+    }
+    fn art_key(&mut self, k: &crate::spec::ArtKey) -> Result<String> {
+        self.right_ready()?;
+        let dir: i8 = if k.pos == 11 { 1 } else { -1 };
+        let fresh = |runner: &Self| -> Result<protocol::ArtStatus> {
+            art::status(runner.device)?;
+            std::thread::sleep(Duration::from_millis(300));
+            art::status(runner.device)
+        };
+        let subscribe = |runner: &Self, on: bool| -> Result<()> {
+            let r = runner.device.request(
+                &[protocol::SETTINGS, ART_KEYS, u8::from(on)],
+                protocol::SETTINGS,
+                ART_KEYS,
+                Duration::from_secs(1),
+            )?;
+            ensure!(
+                r[2] == 0 && r[3] == u8::from(on),
+                "ART_KEYS {on} answered {:02x?}",
+                &r[..4]
+            );
+            Ok(())
+        };
+        let before = fresh(self)?;
+        let events = self
+            .device
+            .art_key_events()
+            .ok_or_else(|| anyhow::anyhow!("this device can't deliver unsolicited reports"))?;
+        if k.subscribed {
+            subscribe(self, true)?;
+        }
+        let tap = crate::spec::Position {
+            pos: k.pos,
+            state: "tap".into(),
+            hold_ms: 30,
+            expect_status: "ok".into(),
+        };
+        let pressed = self.press(&tap);
+        let outcome = (|| -> Result<String> {
+            pressed?;
+            if k.subscribed {
+                let r = events
+                    .rx
+                    .recv_timeout(Duration::from_secs(2))
+                    .map_err(|_| anyhow::anyhow!("no D7 8D 01 event within 2 s"))?;
+                ensure!(
+                    r[3] as i8 == dir,
+                    "event direction {} (wanted {dir})",
+                    r[3] as i8
+                );
+                std::thread::sleep(Duration::from_millis(1500));
+                let after = fresh(self)?;
+                ensure!(
+                    after.right_set == before.right_set,
+                    "the art stepped anyway: {} -> {}",
+                    before.right_set,
+                    after.right_set
+                );
+                return Ok(format!(
+                    "D7 8D 01 {:02X} arrived; the art stayed on set {}",
+                    r[3], after.right_set
+                ));
+            }
+            ensure!(
+                events.rx.try_recv().is_err(),
+                "an art-key event arrived without the opt-in"
+            );
+            let end = Instant::now() + Duration::from_secs(6);
+            loop {
+                let after = fresh(self)?;
+                if after.right_set != before.right_set {
+                    return Ok(format!(
+                        "the board stepped the art: set {} -> {} ({after})",
+                        before.right_set, after.right_set
+                    ));
+                }
+                ensure!(
+                    Instant::now() < end,
+                    "the art didn't step within 6 s: {after}"
+                );
+            }
+        })();
+        if k.subscribed && !k.keep_opt_in {
+            subscribe(self, false)?;
+        }
+        outcome
     }
     fn panel_flood(&mut self, f: &crate::spec::PanelFlood) -> Result<String> {
         use crate::spec::Layer;
@@ -824,6 +938,7 @@ impl<'a, D: Device> Runner<'a, D> {
                 ))
             }
             Step::PanelFlood(f) => self.panel_flood(f),
+            Step::ArtKey(k) => self.art_key(k),
             Step::PanelRelease(_) => {
                 panel::release(self.device)?;
                 Ok("PANEL RELEASE sent".into())

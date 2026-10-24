@@ -1495,7 +1495,7 @@
       "kind": "call",
       "params": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Draws over the left panel until `ttl_ms` passes (at most 60 000), then the panel goes back\nto what Foxglove draws. A later override replaces an earlier one.",
+        "description": "Draws over the left panel until `ttl_ms` passes (at most 60 000), then the panel goes back\nto what Foxglove draws. `ttl_ms` 0 holds it until the plugin replaces it, releases it\n(`screens.panel_release`) or its connection closes (API 1.3), so a steady screen needs no\nre-sending (#281). A later override replaces an earlier one.",
         "properties": {
           "bitmap": {
             "description": "1 bit per pixel, rows MSB first, padded to whole bytes, 1 = ink; base64.",
@@ -1530,6 +1530,28 @@
           "ttl_ms"
         ],
         "title": "PanelOverrideParams",
+        "type": "object"
+      },
+      "permission": "screens.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "screens.panel_release": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "DeviceParams",
         "type": "object"
       },
       "permission": "screens.write",

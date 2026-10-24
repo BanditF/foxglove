@@ -175,7 +175,7 @@ fn streaming_is_red_and_live_and_a_lost_obs_lets_go() {
     let lease = mock.wait("a red lease", |m, p| m == "lighting.lease" && p["color"]["hue"] == 0 && p["color"]["saturation"] == 100);
     assert_eq!(lease["priority"], "high");
     let live = mock.wait("the LIVE screen", |m, _| m == "screens.panel_override");
-    assert_eq!((live["width"].clone(), live["ttl_ms"].clone()), (json!(64), json!(60000)));
+    assert_eq!((live["width"].clone(), live["ttl_ms"].clone()), (json!(64), json!(0)), "held, not timed");
     soon("the facts", || {
         facts.get("broadcast.streaming") == Some(DeviceValue::Bool(true)) && facts.get("broadcast.scene") == Some(DeviceValue::Text("Gameplay".into()))
     });

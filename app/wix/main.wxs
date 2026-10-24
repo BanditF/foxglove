@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!-- cargo-wix 0.3.8 doesn't define CargoManifestDir: the app folder is the one above this file. -->
+  <?ifndef CargoManifestDir?>
+  <?define CargoManifestDir = "$(sys.SOURCEFILEDIR).." ?>
+  <?endif?>
   <Product Id="*" Name="Foxglove" Language="1033" Version="$(var.Version)"
            Manufacturer="BanditF" UpgradeCode="40F2C6EE-F034-4FE5-91BC-65F1E74F7D24">
     <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
@@ -25,8 +29,11 @@
 <?endif?>
           <Component Id="StartMenu" Guid="*" Win64="yes">
             <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Foxglove"
-                      Target="[#FoxgloveExe]" WorkingDirectory="INSTALLFOLDER" Icon="FoxgloveIcon" />
-            <RegistryValue Root="HKLM" Key="Software\Foxglove\Installer" Name="StartMenu"
+                      Target="[INSTALLFOLDER]foxglove.exe" WorkingDirectory="INSTALLFOLDER" Icon="FoxgloveIcon" />
+            <!-- The Start menu is a per-user folder to the ICE checks (ICE43, ICE57), so the
+                 key path is per-user too; the exe is named by path, not by another
+                 component's file (ICE69). -->
+            <RegistryValue Root="HKCU" Key="Software\Foxglove\Installer" Name="StartMenu"
                            Type="integer" Value="1" KeyPath="yes" />
           </Component>
         </Directory>
@@ -36,7 +43,7 @@
         <!-- Per-user opt-in: owned and removed by MSI, never touches app settings. -->
         <Component Id="Autostart" Guid="*" Win64="yes">
           <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run"
-                         Name="Foxglove" Type="string" Value="&quot;[#FoxgloveExe]&quot;" KeyPath="yes" />
+                         Name="Foxglove" Type="string" Value="&quot;[INSTALLFOLDER]foxglove.exe&quot;" KeyPath="yes" />
         </Component>
       </Directory>
     </Directory>
