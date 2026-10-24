@@ -24,12 +24,14 @@
 
 #include "rgb_idle.h"
 #include "art_relay.h"
+#include "host_link.h"
 
 BUILD_ASSERT(!IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE),
              "NICE_VIEW_RGB_IDLE replaces ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE; turn that off");
 
 #define CENTRAL (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
 #define RELAY_CENTRAL (CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY))
+#define HOST_CENTRAL (CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_HOST_LINK))
 
 // Picks up on/off changes made with the rgb_ug behaviours while active.
 #define POLL K_SECONDS(2)
@@ -128,6 +130,9 @@ static void apply_cb(struct k_work *work) {
         } else {
             zmk_rgb_underglow_off();
         }
+#if HOST_CENTRAL
+        host_link_rgb_changed();
+#endif
     }
 #if RELAY_CENTRAL
     art_relay_rgb_kick();
@@ -146,6 +151,9 @@ static void poll_cb(struct k_work *work) {
     if (!following && zmk_rgb_underglow_get_state(&on) == 0 && on != wanted) {
         wanted = on; // toggled with a key
         save();
+#if HOST_CENTRAL
+        host_link_rgb_changed();
+#endif
 #if RELAY_CENTRAL
         art_relay_rgb_kick();
 #endif

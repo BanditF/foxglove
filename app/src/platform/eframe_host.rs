@@ -81,6 +81,7 @@ impl eframe::App for EframeApp {
 
         let mut host = EframeHost { ctx: &ctx };
         self.app.ui(&ctx, &mut host);
+        crate::foxglove::repaint_trace::frame(&ctx);
     }
 }
 

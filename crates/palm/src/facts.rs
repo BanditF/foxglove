@@ -89,7 +89,7 @@ impl Facts {
         }
     }
 
-    /// Exact key or trailing `.*` subtree. Only future changes are sent.
+    /// Exact key, trailing `.*` subtree, or `*` for every key. Only future changes are sent.
     /// Receivers use unbounded queues; callers should drain or drop them.
     pub fn subscribe(&self, pattern: impl Into<String>) -> Receiver<Change> {
         let (tx, rx) = mpsc::channel();
@@ -104,10 +104,11 @@ impl Facts {
 
 fn notify(inner: &mut Inner, change: Change) {
     inner.subscribers.retain(|(pattern, tx)| {
-        let matches = pattern
-            .strip_suffix('*')
-            .filter(|p| p.ends_with('.'))
-            .map_or(pattern == &change.key, |p| change.key.starts_with(p));
+        let matches = pattern == "*"
+            || pattern
+                .strip_suffix('*')
+                .filter(|p| p.ends_with('.'))
+                .map_or(pattern == &change.key, |p| change.key.starts_with(p));
         !matches || tx.send(change.clone()).is_ok()
     });
 }

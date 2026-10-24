@@ -92,7 +92,7 @@ fn run(
         return;
     }
     *LAST_ACTION.lock().unwrap() = Some((label.clone(), "sending…".into()));
-    std::thread::spawn(move || {
+    super::services::spawn_named("keyboard-command", move || {
         let result = match device() {
             None => "no keyboard with Foxglove's firmware found".to_string(),
             Some(d) => match command(&d) {
@@ -121,7 +121,7 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
     if RGB_REFRESH.load(Ordering::Relaxed) && !RGB_POLLING.swap(true, Ordering::Relaxed) {
         RGB_REFRESH.store(false, Ordering::Relaxed);
         let ctx = ctx.clone();
-        std::thread::spawn(move || {
+        super::services::spawn_named("rgb-state", move || {
             // Read from the link: Palm's lighting state has no per-half age yet.
             let state = device().and_then(|d| digitalis::settings::rgb_state(d.link().as_ref()).ok());
             *RGB_STATE.lock().unwrap() = state;
@@ -161,4 +161,52 @@ pub fn set_effect(effect: u8, ctx: egui::Context) {
             params: vec![],
         })
     });
+}
+
+/// Both halves' firmware builds (#132), read once per connection.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Firmware {
+    Unknown,
+    Reading,
+    /// No keyboard with the host link; read again once one connects.
+    NoKeyboard,
+    /// The firmware doesn't report its build.
+    NotReported,
+    Known {
+        left: Result<digitalis::protocol::BuildInfo, String>,
+        right: Result<digitalis::protocol::BuildInfo, String>,
+    },
+}
+
+static FIRMWARE: Mutex<(Option<u64>, Firmware)> = Mutex::new((None, Firmware::Unknown));
+
+/// The cached builds; reads them in the background when there's a new connection.
+pub fn firmware(ctx: &egui::Context) -> Firmware {
+    let generation = super::palm_host::generation();
+    let mut cached = FIRMWARE.lock().unwrap_or_else(|e| e.into_inner());
+    let stale = cached.0 != generation || cached.1 == Firmware::Unknown;
+    if stale && cached.1 != Firmware::Reading {
+        cached.1 = Firmware::Reading;
+        let ctx = ctx.clone();
+        super::services::spawn_named("firmware-info", move || {
+            let read = match device() {
+                None => (None, Firmware::NoKeyboard),
+                Some(d) => {
+                    let link = d.link();
+                    let state = link.state();
+                    let caps = state.connected.and_then(|c| c.hello).map_or(0, |h| h.capabilities);
+                    let firmware = if caps & digitalis::protocol::capabilities::BUILD_INFO == 0 {
+                        Firmware::NotReported
+                    } else {
+                        let half = |n| digitalis::settings::build_info(link.as_ref(), n).map_err(|e| e.to_string());
+                        Firmware::Known { left: half(0), right: half(1) }
+                    };
+                    (Some(state.generation), firmware)
+                }
+            };
+            *FIRMWARE.lock().unwrap_or_else(|e| e.into_inner()) = read;
+            ctx.request_repaint();
+        });
+    }
+    cached.1.clone()
 }

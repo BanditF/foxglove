@@ -44,6 +44,13 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
     cached.clone()
 }
 
+/// The current device's connection generation, without blocking or discovery (for the UI).
+pub fn generation() -> Option<u64> {
+    let cached = DEVICE.try_lock().ok()?;
+    let state = cached.as_ref()?.link().state();
+    state.connected.is_some().then_some(state.generation)
+}
+
 /// What the keymap lets the app invoke (the allowlist) and its `&rgb_ug` behavior.
 pub fn set_actions(actions: Vec<BehaviorInfo>, underglow: Option<u16>) {
     if let Some(d) = DEVICE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {

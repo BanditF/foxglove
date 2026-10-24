@@ -32,6 +32,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #endif
 
 #include "art_relay.h"
+#include "half_marker.h"
 #include "host_link.h"
 #include "screen_snap.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
@@ -529,16 +530,19 @@ int art_relay_erase(uint8_t slot) {
 // D6 07 SLOT: one entry of the right's slot table, by an offset read of the status value.
 static uint8_t slot_index;
 static uint8_t slot_info[sizeof(struct art_relay_slot_info)];
-static uint16_t slot_got;
 static atomic_t slot_busy;
+// Where an offset read of the status value lands (one at a time: they run on relay_q, and a new
+// request is never sent while one is in flight).
+static uint8_t *ofs_buf;
+static uint16_t ofs_len, slot_got;
 
 static uint8_t slot_read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_params *params,
                             const void *data, uint16_t length) {
     if (data != NULL) {
-        uint16_t n = MIN(length, sizeof(slot_info) - slot_got);
-        memcpy(&slot_info[slot_got], data, n);
+        uint16_t n = MIN(length, ofs_len - slot_got);
+        memcpy(&ofs_buf[slot_got], data, n);
         slot_got += n;
-        if (slot_got < sizeof(slot_info)) {
+        if (slot_got < ofs_len) {
             return BT_GATT_ITER_CONTINUE; // Zephyr reads on from where this chunk ended
         }
         request_done(0);
@@ -558,6 +562,8 @@ static void slot_read_job(struct k_work *work) {
             status = 3;
             if (!atomic_get(&in_flight)) {
                 slot_got = 0;
+                ofs_buf = slot_info;
+                ofs_len = sizeof(slot_info);
                 params.func = slot_read_cb;
                 params.handle_count = 1;
                 params.single.handle = status_handle;
@@ -580,6 +586,48 @@ static void slot_read_job(struct k_work *work) {
     atomic_clear(&slot_busy);
 }
 static K_WORK_DEFINE(slot_read_work, slot_read_job);
+
+static atomic_t build_busy;
+
+static void build_read_job(struct k_work *work) {
+    static struct bt_gatt_read_params params;
+    static struct foxglove_build_info build;
+    uint8_t status = 2;
+    struct bt_conn *conn = job_conn();
+    if (conn != NULL) {
+        status = 4; // the right's firmware doesn't report it
+        if (right.version >= 4) {
+            status = 3;
+            if (!atomic_get(&in_flight)) {
+                slot_got = 0;
+                ofs_buf = (uint8_t *)&build;
+                ofs_len = sizeof(build);
+                params.func = slot_read_cb;
+                params.handle_count = 1;
+                params.single.handle = status_handle;
+                params.single.offset = sizeof(struct art_relay_status) +
+                                       ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info);
+                k_sem_reset(&gatt_done);
+                atomic_set(&in_flight, 1);
+                if (wait_done(bt_gatt_read(conn, &params)) == 0) {
+                    status = 0;
+                }
+            }
+        }
+        bt_conn_unref(conn);
+    }
+    host_link_build_info_reply(status, 1, status == 0 ? &build : NULL);
+    atomic_clear(&build_busy);
+}
+static K_WORK_DEFINE(build_read_work, build_read_job);
+
+int art_relay_build_info(void) {
+    if (!atomic_cas(&build_busy, 0, 1)) {
+        return -EBUSY;
+    }
+    k_work_submit_to_queue(&relay_q, &build_read_work);
+    return 0;
+}
 
 int art_relay_slot(uint8_t slot) {
     if (!atomic_cas(&slot_busy, 0, 1)) {

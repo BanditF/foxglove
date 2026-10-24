@@ -29,6 +29,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/keymap.h>
 #include <zmk/usb.h>
 
+#include "half_marker.h"
 #include "host_link.h"
 #include "screen_snap.h"
 #include "art_relay.h"
@@ -45,7 +46,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
-       SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER };
+       SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
+       SETTING_BUILD_INFO };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -125,6 +127,16 @@ void host_link_screen_reply(const uint8_t *data, int len) { reply(data, len); }
 
 void host_link_send(const uint8_t *data, int len) { reply(data, len); }
 
+void host_link_build_info_reply(uint8_t status, uint8_t half,
+                                const struct foxglove_build_info *build) {
+    uint8_t r[4 + sizeof(struct foxglove_build_info)] = {HOST_LINK_SETTINGS,
+                                                         0x80 | SETTING_BUILD_INFO, status, half};
+    if (build != NULL) {
+        memcpy(&r[4], build, sizeof(*build));
+    }
+    reply(r, sizeof(r));
+}
+
 static uint8_t right_link(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     return art_relay_link();
@@ -139,7 +151,7 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     art_relay_discovery(&discovery, &tries);
 #endif
-    uint8_t r[11 + 10 + 4 + 2] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
+    uint8_t r[11 + 10 + 4 + 2 + 4] = {HOST_LINK_PANEL, 0x80 | PANEL_HELLO, HOST_LINK_VERSION, HOST_PANEL_W,
                           HOST_PANEL_H,    HOST_PANEL_X,       HOST_PANEL_Y,      right_link(),
                           right_battery,   (uint8_t)discovery, tries};
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
@@ -150,7 +162,7 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT | HOST_LINK_CAP_ART_SLOTS;
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
-    caps |= HOST_LINK_CAP_SETTINGS_RGB;
+    caps |= HOST_LINK_CAP_SETTINGS_RGB | HOST_LINK_CAP_RGB_STATE_EVENT;
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
     caps |= HOST_LINK_CAP_POSITION | HOST_LINK_CAP_BOOTLOADER;
@@ -158,9 +170,15 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS)
     caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
 #endif
-    caps |= HOST_LINK_CAP_CONN_STATE_EVENT;
+    caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO;
     sys_put_le32(caps, &r[21]);
     sys_put_le16(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S, &r[25]);
+    struct foxglove_build_info build;
+    foxglove_build_info(&build);
+    r[27] = build.major;
+    r[28] = build.minor;
+    r[29] = build.patch;
+    r[30] = build.profile;
     reply(r, sizeof(r));
 }
 
@@ -394,12 +412,79 @@ ZMK_SUBSCRIPTION(host_link_conn, zmk_ble_active_profile_changed);
 ZMK_SUBSCRIPTION(host_link_conn, zmk_usb_conn_state_changed);
 #endif
 
+#define RGB_STATE_SIZE (2 + 2 * sizeof(struct rgb_idle_wire) + 1)
+
+// The RGB_STATE reply; asks the relay for a fresher right state on the way.
+static void rgb_state(uint8_t r[RGB_STATE_SIZE]) {
+    struct rgb_idle_wire left = {0}, right = {0};
+    uint8_t age = 0xff;
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+    rgb_idle_state(&left);
+#endif
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    age = art_relay_right_rgb(&right);
+#endif
+    r[0] = HOST_LINK_SETTINGS;
+    r[1] = 0x80 | SETTING_RGB_STATE;
+    memcpy(&r[2], &left, sizeof(left));
+    r[2 + sizeof(left)] = age;
+    memcpy(&r[3 + sizeof(left)], &right, sizeof(right));
+}
+
+// Unsolicited RGB_STATE: after host traffic, the left's underglow switching on or off (idle,
+// wake, a key, sync) sends the same reply on its own. The right's half of it is the relay's
+// freshest read, taken RGB_STATE_SETTLE after the change so the right has followed by then.
+#define RGB_STATE_SETTLE K_MSEC(600)
+
+static uint8_t rgb_state_sent = 0xff; // left on | right on << 1 | right known << 2, last sent
+
+static void rgb_state_event_cb(struct k_work *work) {
+    uint8_t r[RGB_STATE_SIZE];
+    rgb_state(r);
+    uint8_t age = r[2 + sizeof(struct rgb_idle_wire)];
+    uint8_t now = r[2] | r[3 + sizeof(struct rgb_idle_wire)] << 1 | (age != 0xff) << 2;
+    if (now != rgb_state_sent) {
+        rgb_state_sent = now;
+        reply(r, sizeof(r));
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(rgb_state_event_work, rgb_state_event_cb);
+
+void host_link_rgb_changed(void) {
+    if (atomic_get(&host_seen)) {
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+        struct rgb_idle_wire right;
+        art_relay_right_rgb(&right); // starts the status read the event will use
+#endif
+        k_work_reschedule(&rgb_state_event_work, RGB_STATE_SETTLE);
+    }
+}
+
 static void settings_command(const uint8_t *d, int len) {
     if (d[1] == SETTING_SCREEN_SNAP || d[1] == SETTING_SCREEN_READ) {
         screen_snap_command(d, len);
         return;
     }
     switch (d[1]) {
+    case SETTING_BUILD_INFO: {
+        uint8_t half = len >= 3 ? d[2] : 0;
+        if (half == 0) {
+            struct foxglove_build_info build;
+            foxglove_build_info(&build);
+            host_link_build_info_reply(0, 0, &build);
+            break;
+        }
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+        if (half == 1) {
+            if (art_relay_build_info()) {
+                host_link_build_info_reply(1, 1, NULL); // one is on its way
+            }
+            break;
+        }
+#endif
+        host_link_build_info_reply(half == 1 ? 2 : 5, half, NULL);
+        break;
+    }
     case SETTING_BOOTLOADER: {
         uint8_t r[7] = {HOST_LINK_SETTINGS, 0x80 | SETTING_BOOTLOADER, 4};
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
@@ -448,19 +533,8 @@ static void settings_command(const uint8_t *d, int len) {
         break;
     }
     case SETTING_RGB_STATE: {
-        uint8_t r[2 + 2 * sizeof(struct rgb_idle_wire) + 1] = {HOST_LINK_SETTINGS,
-                                                                0x80 | SETTING_RGB_STATE};
-        struct rgb_idle_wire left = {0}, right = {0};
-        uint8_t age = 0xff;
-#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
-        rgb_idle_state(&left);
-#endif
-#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
-        age = art_relay_right_rgb(&right);
-#endif
-        memcpy(&r[2], &left, sizeof(left));
-        r[2 + sizeof(left)] = age;
-        memcpy(&r[3 + sizeof(left)], &right, sizeof(right));
+        uint8_t r[RGB_STATE_SIZE];
+        rgb_state(r);
         reply(r, sizeof(r));
         break;
     }

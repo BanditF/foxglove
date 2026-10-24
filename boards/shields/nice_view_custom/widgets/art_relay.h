@@ -83,6 +83,7 @@ struct art_relay_status {
     // version >= 3: flash slots (art_slots.c); set = set_count + n while slot n is shown
     uint8_t flash_slots;
     uint8_t flash_used; // bit n: slot n holds a set
+    // version >= 4: struct foxglove_build_info comes after the slot table (D7 09 for half 1)
 } __packed;
 
 // The status characteristic carries ART_RELAY_FLASH_SLOTS of these after struct art_relay_status;
@@ -150,6 +151,8 @@ void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]);
 int art_relay_save(uint8_t slot, const uint8_t name[16]);
 int art_relay_erase(uint8_t slot);
 int art_relay_slot(uint8_t slot);
+// D7 09 for the right: its build info, by an offset read; replies D7 89 later.
+int art_relay_build_info(void);
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 void art_relay_press(uint8_t pos, uint8_t state);

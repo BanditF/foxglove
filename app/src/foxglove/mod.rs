@@ -10,6 +10,7 @@ pub mod layer_names;
 pub mod link;
 pub mod palm_host;
 pub mod reconnect;
+pub mod repaint_trace;
 pub mod screens;
 mod screens_watch;
 mod screens_settings;
