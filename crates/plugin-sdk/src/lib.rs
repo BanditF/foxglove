@@ -78,6 +78,7 @@ pub struct Plugin {
     events: Mutex<Option<Receiver<FactChanged>>>,
     actions: Mutex<Option<Receiver<String>>>,
     app_windows: Mutex<Option<Receiver<AppWindowEvent>>>,
+    settings_changes: Mutex<Option<Receiver<serde_json::Map<String, Value>>>>,
     closed: Arc<std::sync::atomic::AtomicBool>,
     routes: net::Routes,
     /// What Foxglove granted this plugin.
@@ -101,6 +102,7 @@ impl Plugin {
         let (events_tx, events_rx) = mpsc::channel();
         let (actions_tx, actions_rx) = mpsc::channel::<String>();
         let (app_tx, app_rx) = mpsc::channel::<AppWindowEvent>();
+        let (settings_tx, settings_rx) = mpsc::channel::<serde_json::Map<String, Value>>();
         let reader_pending = pending.clone();
         let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let reader_closed = closed.clone();
@@ -123,6 +125,10 @@ impl Plugin {
                     } else if n.method == "action.invoked" {
                         if let Some(a) = n.params.get("action").and_then(Value::as_str) {
                             let _ = actions_tx.send(a.to_string());
+                        }
+                    } else if n.method == "settings.changed" {
+                        if let Ok(s) = serde_json::from_value::<foxglove_plugin_api::methods::SettingValues>(n.params) {
+                            let _ = settings_tx.send(s.values);
                         }
                     } else if n.method == "app.window.appeared" || n.method == "app.window.closed" {
                         if let Ok(w) = serde_json::from_value::<AppWindows>(n.params) {
@@ -151,6 +157,7 @@ impl Plugin {
             events: Mutex::new(Some(events_rx)),
             actions: Mutex::new(Some(actions_rx)),
             app_windows: Mutex::new(Some(app_rx)),
+            settings_changes: Mutex::new(Some(settings_rx)),
             closed,
             routes,
             granted: vec![],
@@ -281,6 +288,17 @@ impl Plugin {
     /// way instead of polling for it.
     pub fn watch_app(&self, exe: &str) -> Result<u32> {
         self.call_as::<AppWindows>("apps.watch", json!({ "exe": exe })).map(|w| w.open)
+    }
+
+    /// This plugin's settings (`[[settings]]` in `plugin.toml`), as the user set them in the
+    /// Plugins tab, or their defaults (API 1.3).
+    pub fn settings(&self) -> Result<serde_json::Map<String, Value>> {
+        self.call_as::<foxglove_plugin_api::methods::SettingValues>("settings.get", json!({})).map(|s| s.values)
+    }
+
+    /// All the settings again each time the user changes one. Taken once.
+    pub fn settings_changes(&self) -> Option<Receiver<serde_json::Map<String, Value>>> {
+        self.settings_changes.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
     /// The watched apps' windows opening and closing. It ends when Foxglove goes away. Taken
