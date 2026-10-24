@@ -345,6 +345,7 @@ fn dispatch(
                 let need = match p.kind {
                     methods::NetKind::Tcp => format!("net.connect:{}:{}", p.host, p.port),
                     methods::NetKind::Udp => format!("net.listen:udp:127.0.0.1:{}", p.port),
+                    methods::NetKind::TcpListen => format!("net.listen:tcp:127.0.0.1:{}", p.port),
                 };
                 return Err(denied(need));
             }
