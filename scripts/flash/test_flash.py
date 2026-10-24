@@ -37,6 +37,8 @@ class FakeOS:
         self.auto = False
         self.builds = {}
         self.typing = []
+        self.links = []
+        self.link_polls = 0
         self.gone_mid_write = False
         self.types = {}
         self.build_calls = []
@@ -64,6 +66,10 @@ class FakeOS:
             self.present = True
         else:
             self.present = self.stays
+
+    def right_link(self):
+        self.link_polls += 1
+        return self.links.pop(0) if self.links else 2
 
     def build_info(self, half):
         self.build_calls.append(half)
@@ -190,7 +196,7 @@ class FlashTests(unittest.TestCase):
     def test_right_entry_retries_then_falls_back_to_double_tap(self):
         backend = FakeOS(['35B4541F78DE9CF8'])
         self.run_flash(backend, ('FLASH',), {'right': uf2(b'FOXGLOVE_HALF=right')})
-        self.assertEqual(backend.entered, ['right'] * 3)
+        self.assertEqual(backend.entered, ['right'] * 2)
         self.assertEqual(len(backend.writes), 1)
 
     def test_settings_reset_never_uses_hands_free_entry(self):
@@ -568,3 +574,15 @@ class NoFocusTests(unittest.TestCase):
         self.assertIn('right bootloader', str(ctx.exception))
         self.assertTrue(any('typing not checked' in m for m in logs))
         self.assertEqual(len(backend.writes), 1)
+
+
+class RelayWaitTests(unittest.TestCase):
+    def test_right_entry_waits_for_the_relay(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        backend.auto = True
+        backend.links = [0, 1, 1, 1, 2]  # relay comes back on the fifth poll
+        clock = Clock()
+        f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 2, stdin=io.StringIO(''),
+                ask=lambda p: self.fail(p), log=lambda m: None, clock=clock.clock, sleep=clock.sleep, yes=True)
+        self.assertEqual(backend.link_polls, 5)
+        self.assertEqual(backend.entered, ['right'], 'asked once, after the relay was up')
