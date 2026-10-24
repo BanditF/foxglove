@@ -148,8 +148,9 @@ void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]);
 uint8_t art_relay_link(void);
 // #122 guard: split links dropped for not encrypting in time, since boot (HELLO byte 31).
 uint8_t art_relay_guard_drops(void);
-// D7 0B (test hooks): the guard drops the current split link once, 2 s from now.
-int art_relay_guard_test(void);
+// D7 0B (test hooks): the guard drops the current split link once, delay_ms from now (0: at once,
+// even in the middle of a relay job).
+int art_relay_guard_test(uint16_t delay_ms);
 // Sends the left's underglow state and sync setting to the right soon, if they changed.
 void art_relay_rgb_kick(void);
 // The PC's colour for the right half (#266): sent as one acknowledged write, the newest value

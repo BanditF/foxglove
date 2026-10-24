@@ -26,7 +26,7 @@ mod ws;
 
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use foxglove_plugin::{AppWindowEvent, Fact, Hsb, Lease, LeasePriority, NetEvent, NetKind, Plugin};
 use obs::Status;
@@ -60,13 +60,12 @@ fn lease_all(plugin: &Arc<Plugin>, color: Hsb, priority: LeasePriority) -> Vec<L
         .collect()
 }
 
-/// What's shown: the state and scene, the held lights, and when a held screen is re-sent.
+/// What's shown: the state and scene, and the held lights.
 struct Out {
     lights: bool,
     art: Option<screens::Art>,
     leases: Vec<Lease>,
     shown: Option<(State, Option<String>)>,
-    screen_until: Option<Instant>,
 }
 
 impl Out {
@@ -89,23 +88,24 @@ impl Out {
         let lost = state == State::Disconnected && before.is_some_and(|b| b.0 != State::Disconnected);
         if state != State::Disconnected || lost {
             self.send_screen(plugin);
-        } else {
-            self.screen_until = None;
         }
     }
 
-    fn send_screen(&mut self, plugin: &Arc<Plugin>) {
-        self.screen_until = None;
+    /// A held screen stays until the next one replaces it or the plugin stops (#281); READY
+    /// and NOT CONNECTED last a few seconds.
+    fn send_screen(&self, plugin: &Arc<Plugin>) {
         let (Some(art), Some((state, scene))) = (&self.art, &self.shown) else { return };
         let frame = art.frame(*state, scene.as_deref());
-        let ttl = if state.hold() { screens::HOLD_TTL } else { screens::BRIEF };
         for (id, _, _) in keyboards(plugin).into_iter().filter(|k| k.2) {
-            if let Err(e) = plugin.panel_override(&id, screens::W, screens::H, &frame, ttl) {
+            let sent = if state.hold() {
+                plugin.panel_hold(&id, screens::W, screens::H, &frame)
+            } else {
+                plugin.panel_override(&id, screens::W, screens::H, &frame, screens::BRIEF)
+            };
+            if let Err(e) = sent {
                 eprintln!("broadcast-status: panel: {e}");
             }
         }
-        // A held screen is sent again before its lifetime runs out.
-        self.screen_until = state.hold().then(|| Instant::now() + screens::HOLD_TTL / 2);
     }
 }
 
@@ -127,18 +127,10 @@ fn session(plugin: &Arc<Plugin>, out: &mut Out, stream: u64, rx: Receiver<NetEve
     let mut obs = obs::Session::new(password);
     let mut decoder = ws::Decoder::default();
     loop {
-        let event = match out.screen_until {
-            Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
-            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
-        };
-        let bytes = match event {
+        let bytes = match rx.recv() {
             Ok(NetEvent::Data(bytes, _)) => bytes,
             Ok(NetEvent::Closed(why)) => return (format!("the connection closed: {why}"), obs.ready()),
-            Err(RecvTimeoutError::Timeout) => {
-                out.send_screen(plugin);
-                continue;
-            }
-            Err(RecvTimeoutError::Disconnected) => return ("Foxglove went away".into(), obs.ready()),
+            Err(_) => return ("Foxglove went away".into(), obs.ready()),
         };
         let messages = match decoder.feed(&bytes) {
             Ok(m) => m,
@@ -179,7 +171,7 @@ fn main() {
         }
     };
     let art = if panel { screens::Art::load().map_err(|e| eprintln!("broadcast-status: panel art: {e}")).ok() } else { None };
-    let mut out = Out { lights, art, leases: Vec::new(), shown: None, screen_until: None };
+    let mut out = Out { lights, art, leases: Vec::new(), shown: None };
     out.show(&plugin, false, &Status::default());
 
     // Tries start when OBS's window appears, at start if it's open, and when a connection

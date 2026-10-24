@@ -285,15 +285,25 @@ fn main() {
     let mut wanted: Option<Hsb> = None;
     let mut sent: Option<Hsb> = None;
     let mut next_send = Instant::now();
-    let mut next_check = Instant::now() + Duration::from_secs(10);
     loop {
         // Foxglove gone (stopped, or killed): don't linger.
         if plugin.is_closed() {
             return;
         }
         let mut stop = false;
-        let received = match frames.recv_timeout(Duration::from_millis(250)) {
+        // Idle: block until a frame comes (#281). Showing: wake also when the stream counts as
+        // lost, or when a held-back colour may go out (one-shot deadlines).
+        let deadline = devices.is_some().then(|| {
+            let lost = last_data + LOSS_TIMEOUT;
+            if wanted.is_some() && wanted != sent { lost.min(next_send) } else { lost }
+        });
+        let event = match deadline {
+            Some(at) => frames.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => frames.recv().map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
+        };
+        let received = match event {
             Ok(NetEvent::Data(bytes, from)) => Some((bytes, from.unwrap_or_default())),
+            // Foxglove stopped listening, or went away.
             Ok(NetEvent::Closed(why)) => {
                 eprintln!("openrgb-e131: Foxglove stopped listening: {why}");
                 return;
@@ -325,13 +335,6 @@ fn main() {
             ours = sent.or(ours);
             (devices, wanted, sent, last_seq) = (None, None, None, None);
             continue;
-        }
-        // Idle on the socket, so check now and then that Foxglove is still there.
-        if now >= next_check {
-            if plugin.call("ping", serde_json::json!({})).is_err() {
-                return;
-            }
-            next_check = now + Duration::from_secs(10);
         }
         if let (Some(d), Some(color)) = (&devices, wanted) {
             if sent != Some(color) && now >= next_send {

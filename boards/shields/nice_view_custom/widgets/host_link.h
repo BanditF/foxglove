@@ -153,10 +153,11 @@
  *      sends D7 8D, 01, dir (i8: 1 next, -1 previous) and the PC steps its hotlist. Off, or after
  *      a USB disconnect or an endpoint change, the board steps the right's built-ins and saved
  *      slots itself. No keep-alive: subscribe again after HELLO.
- *   0B GUARD_TEST (test hooks + split guard only)        reply: D7 8B, status
- *      The #122 split guard treats the current split link as stuck once, 2 s from now: it drops
- *      it, ZMK reconnects, HELLO byte 31 counts one more. Status: 0 ok, 2 no split link,
- *      4 not built in (GA, or no guard).
+ *   0B GUARD_TEST [delay_ms u16] (test hooks + split guard only)        reply: D7 8B, status
+ *      The #122 split guard treats the current split link as stuck once, delay_ms from now (2000
+ *      when left out; 0 = at once, even mid-relay, e.g. during an art push): it drops it, ZMK
+ *      reconnects, HELLO byte 31 counts one more. Status: 0 ok, 2 no split link, 4 not built in
+ *      (GA, or no guard).
  */
 
 #pragma once

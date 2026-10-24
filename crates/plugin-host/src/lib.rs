@@ -10,7 +10,7 @@ use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use foxglove_plugin_api::methods::{self, ClientInfo, Fact, InitializeParams, InitializeResult, Kind};
@@ -428,14 +428,29 @@ fn forward(facts: Facts, subscriptions: Arc<Mutex<HashMap<u64, String>>>, out: S
     });
 }
 
-/// How long a plugin may stay silent to a ping before the runner restarts it.
-pub const PING_TIMEOUT: Duration = Duration::from_secs(30);
-
-#[cfg(windows)]
 mod net;
 pub mod apps;
 pub mod secrets;
+// The local API's named pipe is Windows-only; elsewhere it reports that (the app builds and
+// tests on Linux too).
+#[cfg(windows)]
 pub mod pipe;
+#[cfg(not(windows))]
+pub mod pipe {
+    use std::io;
+
+    fn unsupported() -> io::Error {
+        io::Error::new(io::ErrorKind::Unsupported, "the local API needs Windows")
+    }
+
+    pub fn listen(_context: impl Fn() -> crate::Context + Send + Sync + 'static) -> io::Result<()> {
+        Err(unsupported())
+    }
+
+    pub fn connect() -> io::Result<std::fs::File> {
+        Err(unsupported())
+    }
+}
 
 /// Each running plugin's event channel, by plugin id.
 static PLUGINS: Mutex<Option<HashMap<String, Sender<String>>>> = Mutex::new(None);

@@ -2,6 +2,7 @@
 
 use super::*;
 use std::io::Cursor;
+use std::time::Duration;
 
 #[derive(Clone, Default)]
 struct Out(Arc<Mutex<Vec<u8>>>);
