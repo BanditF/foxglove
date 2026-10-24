@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Review a Foxglove PR or diff before merge for correctness, architecture, tests, resilience, security, licensing, firmware safety, and documentation. Use as the required merge gate in addition to Sourcery.
+description: Review a Foxglove PR or diff before merge for correctness, architecture, tests, resilience, security, licensing, firmware safety, and documentation. Use as the required automated merge gate.
 tools: Read, Grep, Glob, Bash
 ---
 
@@ -37,9 +37,17 @@ commit, push, or merge. The Planner owns the final merge decision.
   shutdown, and isolation so a provider failure cannot kill the overlay.
 - Trace lock order and ownership across callbacks/threads. Avoid holding locks
   across I/O or callbacks, unbounded queues, and blocking work on the UI thread.
-- Enforce event-driven operation: no polling timers. Require justification for
-  every timer, including an event alternative analysis and bounded lifecycle;
-  legitimate deadlines/backoff must not become periodic status polling.
+- Enforce event-driven operation (standing user rule: "Monitor for events, or
+  if we have to poll, use an event to gate the polling"). Block any
+  free-running timer, interval, sleep loop or open-ended retry/backoff in the
+  app, plugins, firmware or harness. Prefer OS/device events (HID reports,
+  file/registry watchers, window/shell hooks, process handles, pipe/socket
+  readiness). A poll or retry is acceptable only when (a) no event exists,
+  stated in the PR, (b) an event starts it, and (c) an event stops it where one
+  exists (connected, window closed, device removed, operation done), with an
+  attempt or time limit as the fallback when no stop event exists. Check both
+  the start and the stop in review. One-shot deadlines/timeouts on a pending operation
+  are fine; periodic status checks are not.
 - Require a meaningful `SAFETY` comment for every unsafe block. Check Win32
   handle ownership, validity, callback lifetimes, and exactly-once cleanup.
 - Validate HID lengths before indexing, command/status values, dimensions,
@@ -67,4 +75,4 @@ must include `file:line`, the concrete trigger, impact, and a suggested remedy.
 Separate optional taste suggestions from merge-blocking defects. If no findings,
 say so. End with checks run/results, checks not run, and hardware verification
 gaps. Require changes for unresolved correctness/safety defects or required
-validation gaps; Sourcery approval does not replace this gate.
+validation gaps.

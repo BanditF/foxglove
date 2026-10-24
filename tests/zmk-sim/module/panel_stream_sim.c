@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
 
 #include <raw_hid/events.h>
@@ -51,6 +52,9 @@ static void put(const uint8_t *d, int len) {
     raise_raw_hid_received_event((struct raw_hid_received_event){.data = report, .length = 32});
 }
 
+static const uint8_t fill_black[] = {0xD5, 0x02, 0x01};
+static const uint8_t present[] = {0xD5, 0x04};
+
 // Frame f: every byte of row y is (f + y) & 0xff, so the shown frame says which one it is.
 static uint8_t frame_byte(int f, int y) { return (uint8_t)(f + y); }
 
@@ -68,7 +72,6 @@ static int send_frame(int f) {
         put(d, 4 + n * HOST_PANEL_STRIDE);
         reports++;
     }
-    const uint8_t present[] = {0xD5, 0x04};
     put(present, sizeof(present));
     return reports + 1;
 }
@@ -112,6 +115,32 @@ void panel_stream_driver(void) {
     k_msleep(500);
     bool burst_shown = shows_frame(100 + BURST_FRAMES - 1);
 
+    // ROWS_AT (#289): the same kind of frame, byte-addressed in 25-byte pieces that cross rows,
+    // then a piece past the last row and one past the row's end, which must change nothing.
+    put(fill_black, sizeof(fill_black));
+    for (int at = 0; at < HOST_PANEL_BYTES; at += 25) {
+        int n = MIN(25, HOST_PANEL_BYTES - at);
+        uint8_t d[7 + 25] = {0xD5, 0x07};
+        sys_put_le16(at / HOST_PANEL_STRIDE, &d[2]);
+        sys_put_le16(at % HOST_PANEL_STRIDE, &d[4]);
+        d[6] = n;
+        for (int i = 0; i < n; i++) {
+            d[7 + i] = frame_byte(200, (at + i) / HOST_PANEL_STRIDE);
+        }
+        put(d, 7 + n);
+        reports++;
+    }
+    put(present, sizeof(present));
+    k_msleep(100);
+    bool rows_at_shown = shows_frame(200);
+    const uint8_t past_rows[] = {0xD5, 0x07, HOST_PANEL_H, 0, 0, 0, 1, 0xAA};
+    const uint8_t past_row_end[] = {0xD5, 0x07, 0, 0, HOST_PANEL_STRIDE, 0, 1, 0xAA};
+    put(past_rows, sizeof(past_rows));
+    put(past_row_end, sizeof(past_row_end));
+    put(present, sizeof(present));
+    k_msleep(100);
+    bool bad_ignored = shows_frame(200);
+
     k_msleep(3000); // after the case's key taps, so the summary always comes last
     printk("stream: %d paced + %d burst frames, %d panel reports\n", PACED_FRAMES, BURST_FRAMES,
            reports);
@@ -120,4 +149,6 @@ void panel_stream_driver(void) {
            (int)atomic_get(&other_replies));
     printk("stream: last paced frame shown: %s; last burst frame shown: %s\n",
            paced_shown ? "yes" : "no", burst_shown ? "yes" : "no");
+    printk("stream: ROWS_AT frame shown: %s; out-of-range pieces ignored: %s\n",
+           rows_at_shown ? "yes" : "no", bad_ignored ? "yes" : "no");
 }

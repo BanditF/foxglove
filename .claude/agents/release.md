@@ -38,7 +38,7 @@ separately authorized; tag pushes can themselves publish releases.
   or on `app-v*`; Rust crates CI is manual. Firmware uses the ZMK reusable
   workflow at `v0.3.0`; inspect its actual runs/artifacts. Do not assume a
   dedicated firmware release publisher exists because a tag convention exists.
-- Require the code-reviewer gate in addition to Sourcery and the test-lab report
+- Require the code-reviewer gate and the test-lab report
   for applicable hardware/resilience cases. State pending hardware checks.
 - The test-lab report is the release gate's `report.json` (schema `foxglove-lab-report`,
   version 2; `docs/test-lab/report-format.md`, `docs/test-lab/report.schema.json`). Check
