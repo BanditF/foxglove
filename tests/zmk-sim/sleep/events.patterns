@@ -1,0 +1,5 @@
+# Q, idle after 30 s, still idle (not asleep) 29 min 50 s after Q, then sleep and SIM_SLEEP at
+# the production timeout; the run ends there.
+s/.*hid_listener_keycode/kp/p
+/^sleep: /p
+/^SIM_SLEEP$/p

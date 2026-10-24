@@ -1,0 +1,15 @@
+#include "../common/keymap.dtsi"
+
+&kscan {
+    events = <
+        // module/panel_stream_sim.c streams from 0.5 s to about 5.5 s and prints at about 9 s.
+        ZMK_MOCK_PRESS(0,1,30)       // Q while the panel streams
+        ZMK_MOCK_RELEASE(0,1,1200)
+        ZMK_MOCK_PRESS(0,1,30)
+        ZMK_MOCK_RELEASE(0,1,1200)
+        ZMK_MOCK_PRESS(0,1,30)
+        ZMK_MOCK_RELEASE(0,1,1200)
+        ZMK_MOCK_PRESS(0,1,30)
+        ZMK_MOCK_RELEASE(0,1,8000)   // keeps the simulator running past the summary
+    >;
+};

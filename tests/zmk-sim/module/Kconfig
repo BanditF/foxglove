@@ -1,6 +1,13 @@
 # Host-link protocol case (tests/zmk-sim/hostlink): builds the real host_link.c, test_hooks.c and
 # half_marker.c with a driver that plays the PC. The symbols below come from the nice!view shield
 # and the Raw HID module on the board; the simulator loads neither.
+config FOXGLOVE_SIM_POWEROFF
+    bool "Simulator: sys_poweroff prints SIM_SLEEP and ends the run (sleep case)"
+    select HAS_POWEROFF
+
+config FOXGLOVE_SIM_DIM
+    bool "Simulator: underglow battery cap case (dim_strip.c with a fake strip and cable)"
+
 config FOXGLOVE_SIM_HOSTLINK
     bool "Simulator: host-link protocol case"
 
@@ -13,6 +20,9 @@ config RAW_HID_REPORT_SIZE
 config NICE_VIEW_HOST_PANEL_TIMEOUT_S
     int
     default 0
+
+config FOXGLOVE_SIM_PANEL_STREAM
+    bool "Simulator: left panel stream case (module/panel_stream_sim.c) instead of the protocol walk"
 
 config FOXGLOVE_TEST_HOOKS
     bool "Test hooks (as in dev firmware)"

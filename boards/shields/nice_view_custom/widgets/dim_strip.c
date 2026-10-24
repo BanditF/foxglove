@@ -10,6 +10,7 @@
 #include <zephyr/drivers/led_strip.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/toolchain.h>
 
 #if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
 #include <zmk/usb.h>
@@ -21,17 +22,18 @@ static const struct device *const strip = DEVICE_DT_GET(DT_INST_PHANDLE(0, led_s
 static struct led_rgb scaled[LEN]; // the WS2812 driver may write into the buffer it's given
 static K_MUTEX_DEFINE(scaled_lock); // the underglow and the LampArray (#115) both draw
 
-static bool on_battery(void) {
+// Weak so the simulator can fake the cable (tests/zmk-sim/battery-dim).
+__weak bool dim_strip_usb_powered(void) {
 #if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
-    return !zmk_usb_is_powered();
+    return zmk_usb_is_powered();
 #else
-    return true;
+    return false;
 #endif
 }
 
 static int dim_update_rgb(const struct device *dev, struct led_rgb *pixels, size_t n) {
     const unsigned int cap = CONFIG_NICE_VIEW_RGB_BATTERY_CAP;
-    if (cap >= 100 || !on_battery()) {
+    if (cap >= 100 || dim_strip_usb_powered()) {
         return led_strip_update_rgb(strip, pixels, n);
     }
     n = MIN(n, LEN);

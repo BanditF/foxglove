@@ -1,0 +1,12 @@
+dim: ready 1
+dim: battery
+dim: strip 76,38,3 30,0,60
+dim: err 0, caller's frame unchanged
+dim: usb
+dim: strip 255,128,10 100,0,200
+dim: err 0, caller's frame unchanged
+dim: battery again
+dim: strip 76,38,3 30,0,60
+dim: err 0, caller's frame unchanged
+kp_pressed: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00
