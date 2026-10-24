@@ -127,6 +127,11 @@ static void driver(void) {
     note("hello: version, caps, panel timeout, build");
     SEND(0xD5, 0x01, 0x01);
 
+    note("screens: the descriptors, then one past the end");
+    for (uint8_t i = 0; i <= 2; i++) {
+        SEND(0xD5, 0x06, i);
+    }
+
     note("build info: left, right (no relay here), bad half");
     SEND(0xD7, 0x09, 0x00);
     SEND(0xD7, 0x09, 0x01);

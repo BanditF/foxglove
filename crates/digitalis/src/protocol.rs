@@ -135,7 +135,7 @@ pub struct ScreenDescriptor {
     /// Origin on the parent display, as seen.
     pub x: u16,
     pub y: u16,
-    /// 90° steps clockwise.
+    /// 90-degree steps clockwise.
     pub rotation: u8,
     /// 0 = 1 bit per pixel, MSB first, 1 = ink.
     pub format: u8,

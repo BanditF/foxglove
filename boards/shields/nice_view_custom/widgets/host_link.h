@@ -34,7 +34,7 @@
  *                                   descriptor (24 B, #160): id, kind (0 display, 1 panel, 2 art),
  *                                   half, parent id (0xff for a display), width u16, height u16 (as
  *                                   the PC addresses it), x u16, y u16 (on the parent, as seen),
- *                                   rotation (90° steps cw), format (0 = 1 bit), ops u16 (bit 0 D5
+ *                                   rotation (quarter turns cw), format (0 = 1 bit), ops u16 (bit 0 D5
  *                                   rows, 1 D7 06/07 readback, 2 D6 art, 3 D6 slots), stride u16,
  *                                   rows per report, readback half (0xff none), version (1), 0 0 0
  *      The Corne: 0 left display 160x68 rot 1; 1 panel 64x52 at (2,106) on 0 (D5 02-05 address it);

@@ -198,7 +198,7 @@ struct screen_descriptor {
     uint8_t id, kind, half, parent;
     uint16_t width, height; // as the PC addresses the region
     uint16_t x, y;          // on the parent display, as seen; 0 for a display
-    uint8_t rotation;       // region -> parent as seen (displays: native -> as seen), 90° steps cw
+    uint8_t rotation;       // region -> parent as seen (displays: native -> as seen), quarter turns cw
     uint8_t format;         // 0 = 1 bit, MSB first, 1 = ink as seen
     uint16_t ops;
     uint16_t stride;
