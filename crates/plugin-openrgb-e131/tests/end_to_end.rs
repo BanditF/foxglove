@@ -59,9 +59,21 @@ impl Devices for Keyboard {
     }
 }
 
+/// A free UDP port for this run, so tests and other runs on the machine don't share E1.31's.
+fn free_port() -> u16 {
+    std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+fn port() -> u16 {
+    *PORT.get_or_init(free_port)
+}
+
 fn send(seq: u8, r: u8, g: u8, b: u8, stop: bool) {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_openrgb-e131"));
     cmd.args(["--send-test", &r.to_string(), &g.to_string(), &b.to_string(), "--seq", &seq.to_string()]);
+    cmd.args(["--port", &port().to_string()]);
     if stop {
         cmd.arg("--stop");
     }
@@ -87,7 +99,7 @@ fn a_frame_colours_the_keyboard_and_the_sender_stopping_restores_it() {
     let spec = PluginSpec {
         id: "test.openrgb-e131".into(),
         dir: exe.parent().unwrap().to_path_buf(),
-        run: vec![exe.file_name().unwrap().to_string_lossy().into()],
+        run: vec![exe.file_name().unwrap().to_string_lossy().into(), "--port".into(), port().to_string()],
         sandbox: false,
     };
     let context = move || Context {
