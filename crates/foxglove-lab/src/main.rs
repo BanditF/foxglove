@@ -71,6 +71,65 @@ enum Command {
         #[arg(long, value_parser = ["left", "right"])]
         half: String,
     },
+    /// The LampArray sitting (#88, #115): lights one LED of one half alone (D7 0A LAMP_TEST, dev
+    /// LampArray firmware), so a person can name the key above it. `--index off` gives the half
+    /// its own lights back.
+    Lamp {
+        #[arg(long, value_parser = ["left", "right"])]
+        half: String,
+        /// The LED's place on its half's strip, 0-20; "off"; or "walk": 0 to 20 in turn, each in
+        /// the next colour of red, green, blue, white, so the person reading the keys off in
+        /// order can keep count, then off.
+        #[arg(long)]
+        index: String,
+        /// Colour as RRGGBB (one index; walk uses its own colours).
+        #[arg(long, default_value = "ffffff")]
+        rgb: String,
+        /// Walk: how long each LED stays lit.
+        #[arg(long, default_value_t = 3000)]
+        hold_ms: u64,
+    },
+    /// The LampArray sitting (#272): a white dot through lamps 0-41 with SET_FRAME (D7 0C), one
+    /// frame per acknowledgement, then RELEASE. Needs HELLO bit 14 (FRAMES).
+    FrameDot {
+        /// How long each lamp stays lit.
+        #[arg(long, default_value_t = 400)]
+        step_ms: u64,
+    },
+}
+
+const SETTINGS: u8 = 0xD7;
+const LAMP_TEST: u8 = 0x0A;
+const FRAME: u8 = 0x0C;
+const FRAMES_CAP: u32 = 1 << 14;
+const LAMPS: usize = 42;
+
+fn rgb_arg(s: &str) -> Result<[u8; 3]> {
+    let v = u32::from_str_radix(s.trim_start_matches('#'), 16)?;
+    ensure!(
+        s.trim_start_matches('#').len() == 6,
+        "colour must be RRGGBB"
+    );
+    Ok([(v >> 16) as u8, (v >> 8) as u8, v as u8])
+}
+
+/// One whole frame (5 reports of up to 9 lamps), SHOW on the last; returns the D7 8C reply.
+fn send_frame(link: &Link, rgb: &[[u8; 3]; LAMPS]) -> Result<[u8; digitalis::protocol::REPORT]> {
+    use digitalis::Transport;
+    let mut start = 0;
+    loop {
+        let n = (LAMPS - start).min(9);
+        let last = start + n == LAMPS;
+        let mut r = vec![SETTINGS, FRAME, u8::from(last), start as u8, n as u8];
+        for c in &rgb[start..start + n] {
+            r.extend_from_slice(c);
+        }
+        if last {
+            return link.request(&r, SETTINGS, FRAME, Duration::from_secs(2));
+        }
+        link.send(&r)?;
+        start += n;
+    }
 }
 fn sha() -> String {
     std::process::Command::new("git")
@@ -123,6 +182,115 @@ fn main() -> Result<std::process::ExitCode> {
         } else {
             std::process::ExitCode::SUCCESS
         });
+    }
+    if let Command::Lamp {
+        half,
+        index,
+        rgb,
+        hold_ms,
+    } = &cli.command
+    {
+        use digitalis::Transport;
+        let _guard = platform::guard(cli.allow_app)?;
+        let _lab = platform::lab_lock(Duration::from_secs(300))?;
+        let link = connect(cli.product.clone())?;
+        link.wait_connected(Duration::from_secs(10))?;
+        let half_id = u8::from(half == "right");
+        let light = |i: u8, c: [u8; 3]| -> Result<u8> {
+            let r = link.request(
+                &[SETTINGS, LAMP_TEST, half_id, i, c[0], c[1], c[2]],
+                SETTINGS,
+                LAMP_TEST,
+                Duration::from_secs(4),
+            )?;
+            Ok(r[2])
+        };
+        let steps: Vec<(u8, [u8; 3])> = match index.as_str() {
+            "off" => vec![(0xff, [0; 3])],
+            "walk" => {
+                const COLOURS: [(&str, [u8; 3]); 4] = [
+                    ("red", [255, 0, 0]),
+                    ("green", [0, 255, 0]),
+                    ("blue", [0, 0, 255]),
+                    ("white", [255, 255, 255]),
+                ];
+                (0..=20u8)
+                    .map(|i| (i, COLOURS[usize::from(i) % COLOURS.len()].1))
+                    .chain(std::iter::once((0xff, [0; 3])))
+                    .collect()
+            }
+            n => {
+                let i: u8 = n.parse()?;
+                ensure!(i <= 20, "index is 0-20, off or walk");
+                vec![(i, rgb_arg(rgb)?)]
+            }
+        };
+        let walk = index == "walk";
+        for (i, c) in steps {
+            let status = light(i, c)?;
+            if status != 0 {
+                eprintln!(
+                    "LAMP_TEST status {status} ({})",
+                    match status {
+                        4 => "this firmware has no LAMP_TEST: dev LampArray build only",
+                        2 => "no relay link to the right",
+                        _ => "bad request",
+                    }
+                );
+                return Ok(std::process::ExitCode::from(if status == 4 {
+                    4
+                } else {
+                    1
+                }));
+            }
+            println!(
+                "{}",
+                serde_json::json!({"half": half, "index": if i == 0xff { "off".to_string() } else { i.to_string() }, "rgb": format!("{:02x}{:02x}{:02x}", c[0], c[1], c[2])})
+            );
+            if walk && i != 0xff {
+                std::thread::sleep(Duration::from_millis(*hold_ms));
+            }
+        }
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+    if let Command::FrameDot { step_ms } = &cli.command {
+        let _guard = platform::guard(cli.allow_app)?;
+        let _lab = platform::lab_lock(Duration::from_secs(300))?;
+        let link = connect(cli.product.clone())?;
+        let c = link.wait_connected(Duration::from_secs(10))?;
+        if c.hello.map_or(0, |h| h.capabilities) & FRAMES_CAP == 0 {
+            eprintln!("this firmware has no SET_FRAME (no HELLO bit 14)");
+            return Ok(std::process::ExitCode::from(4));
+        }
+        for i in 0..LAMPS {
+            let mut frame = [[0u8; 3]; LAMPS];
+            frame[i] = [255, 255, 255];
+            let r = send_frame(&link, &frame)?;
+            if r[2] != 0 {
+                eprintln!(
+                    "SET_FRAME status {} (1 busy: owner {}), stopping",
+                    r[2], r[3]
+                );
+                return Ok(std::process::ExitCode::from(1));
+            }
+            println!(
+                "{}",
+                serde_json::json!({"lamp": i, "half": if i < 21 { "left" } else { "right" }})
+            );
+            std::thread::sleep(Duration::from_millis(*step_ms));
+        }
+        use digitalis::Transport;
+        let r = link.request(
+            &[SETTINGS, FRAME, 2],
+            SETTINGS,
+            FRAME,
+            Duration::from_secs(2),
+        )?;
+        println!(
+            "{}",
+            serde_json::json!({"released": r[2] == 0, "owner": r[3]})
+        );
+        return Ok(std::process::ExitCode::SUCCESS);
     }
     if let Command::Build { half } = &cli.command {
         let _guard = platform::guard(cli.allow_app)?;
