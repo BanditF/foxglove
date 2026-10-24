@@ -118,3 +118,14 @@ pub fn shared(vid: u16, pid: u16) -> Result<Arc<Link>, String> {
         });
     Ok(link)
 }
+
+/// Cached identity only; never probes HID from a UI thread.
+pub fn connected_name() -> Option<String> {
+    LINKS
+        .get()?
+        .try_lock()
+        .ok()?
+        .values()
+        .filter_map(Weak::upgrade)
+        .find_map(|link| link.state().connected.map(|c| c.product))
+}

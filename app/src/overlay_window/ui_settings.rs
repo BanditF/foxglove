@@ -416,6 +416,7 @@ impl OverlayApp {
                 });
 
                 Self::foxglove_keyboard_group(ui); // Foxglove
+                crate::foxglove::art_ui::group(ui);
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {

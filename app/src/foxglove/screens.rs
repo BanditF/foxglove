@@ -17,6 +17,15 @@ use foxglove_panel::Sources;
 use super::screens_settings::ScreensSettings;
 
 static STATUS: Mutex<String> = Mutex::new(String::new());
+static PAUSED: AtomicBool = AtomicBool::new(false);
+
+pub fn paused() -> bool {
+    PAUSED.load(Ordering::Relaxed)
+}
+pub fn set_paused(value: bool) {
+    PAUSED.store(value, Ordering::Relaxed);
+}
+
 static STOP: AtomicBool = AtomicBool::new(false);
 static STOPPED: AtomicBool = AtomicBool::new(false);
 
@@ -104,9 +113,10 @@ fn run() {
             settings_at = Instant::now();
         }
 
-        if !settings.drive_left {
+        // Paused (tray) or off: the firmware gets its own panel back.
+        if paused() || !settings.drive_left {
             stop_driving(&mut lock, &drawing, &mut was_driving);
-            set_status("Left panel off");
+            set_status(if paused() { "Left panel paused" } else { "Left panel off" });
             std::thread::sleep(Duration::from_secs(1));
             continue;
         }

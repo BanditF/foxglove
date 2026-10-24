@@ -15,6 +15,8 @@ use tray_icon::{
 pub struct Tray {
     #[cfg(not(target_os = "linux"))]
     _icon: TrayIcon,
+    #[cfg(not(target_os = "linux"))]
+    controls: crate::foxglove::tray::Controls,
 }
 
 // Windows convention is a monochrome glyph matching the taskbar theme.
@@ -52,10 +54,10 @@ fn create_icon() -> Icon {
     Icon::from_rgba(icon.into_raw(), width, height).expect("Failed to create icon.")
 }
 
-fn build_tray_icon() -> TrayIcon {
+fn build_tray_icon() -> (TrayIcon, crate::foxglove::tray::Controls) {
     let menu = Menu::new();
+    let controls = crate::foxglove::tray::Controls::new(&menu);
     menu.append_items(&[
-        &MenuItem::with_id("settings", "Settings…", true, None),
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("quit", "Quit", true, None),
     ])
@@ -73,7 +75,7 @@ fn build_tray_icon() -> TrayIcon {
     #[cfg(target_os = "macos")]
     let builder = builder.with_icon_as_template(true);
 
-    builder.build().unwrap()
+    (builder.build().unwrap(), controls)
 }
 
 pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
@@ -89,7 +91,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
                         crate::foxglove::art_service::stop();
                         process::exit(0)
                     }
-                    _ => {}
+                    _ => crate::foxglove::tray::event(event.id.0.as_str(), on_settings.as_ref()),
                 }
             }
         }
@@ -115,14 +117,26 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
     {
         thread::spawn(|| {
             gtk::init().expect("Failed to initialize GTK. Is a display available?");
-            let _icon = build_tray_icon();
+            let (_icon, mut controls) = build_tray_icon();
+            gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                controls.update();
+                gtk::glib::ControlFlow::Continue
+            });
             gtk::main();
         });
         Tray {}
     }
 
     #[cfg(not(target_os = "linux"))]
-    Tray {
-        _icon: build_tray_icon(),
+    {
+        let (_icon, controls) = build_tray_icon();
+        Tray { _icon, controls }
+    }
+}
+
+impl Tray {
+    pub fn update(&mut self) {
+        #[cfg(not(target_os = "linux"))]
+        self.controls.update();
     }
 }

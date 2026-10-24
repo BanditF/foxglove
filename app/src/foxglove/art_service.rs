@@ -65,6 +65,9 @@ impl Handle {
 
     fn update(&self, f: impl FnOnce(&mut Snapshot)) {
         f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()));
+        if let Some(wake) = WAKE.get() {
+            wake.request_repaint();
+        }
     }
 
     fn submit(&self, command: Command) -> bool {
@@ -106,6 +109,12 @@ impl Handle {
 }
 
 static SERVICE: OnceLock<Handle> = OnceLock::new();
+static WAKE: OnceLock<crate::ui_wake::UiWake> = OnceLock::new();
+
+/// Repaints the UI (settings, tray) whenever the snapshot changes, so it needn't poll.
+pub fn set_wake(wake: crate::ui_wake::UiWake) {
+    let _ = WAKE.set(wake);
+}
 
 pub fn handle() -> Option<Handle> {
     SERVICE.get().cloned()
