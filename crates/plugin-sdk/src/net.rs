@@ -1,6 +1,7 @@
 //! Network through Foxglove (API 1.2, #214): the plugin stays sandboxed and Foxglove opens the
 //! connections its permissions name (`net.connect:<host>:<port>`,
-//! `net.listen:udp:127.0.0.1:<port>`).
+//! `net.listen:udp:127.0.0.1:<port>`), and accepts them on a loopback port
+//! (`net.listen:tcp:127.0.0.1:<port>`, API 1.3, #298).
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -9,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use foxglove_plugin_api::methods::{NetClosed, NetData, NetKind, NetOpenParams, NetStream as NetStreamId};
+use foxglove_plugin_api::methods::{NetAccepted, NetClosed, NetData, NetKind, NetOpenParams, NetStream as NetStreamId};
 use serde_json::{json, Value};
 
 use crate::{Plugin, PluginError, Result};
@@ -23,10 +24,16 @@ pub enum NetEvent {
     Closed(String),
 }
 
+/// An accepted connection: its stream, who connected, and what arrives on it.
+type Accepted = (u64, String, Receiver<NetEvent>);
+
 enum Route {
     /// Events that came before `net.open` returned the stream's id.
     Early(Vec<NetEvent>),
     Open(Sender<NetEvent>),
+    /// Connections accepted before `net.open` returned the listener's id.
+    EarlyAccepts(Vec<Accepted>),
+    Listener(Sender<Accepted>),
 }
 
 /// Routes `net.data` / `net.closed` events to their streams.
@@ -43,7 +50,35 @@ impl Routes {
                     routes.remove(&stream);
                 }
             }
+            Route::EarlyAccepts(_) | Route::Listener(_) => {}
         }
+    }
+
+    /// A listener accepted `stream`: its own route starts now, so none of its data is lost.
+    fn accepted(&self, a: NetAccepted) {
+        let rx = self.register(a.stream);
+        let mut routes = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match routes.entry(a.listener).or_insert_with(|| Route::EarlyAccepts(vec![])) {
+            Route::EarlyAccepts(early) => early.push((a.stream, a.from, rx)),
+            Route::Listener(tx) => {
+                if tx.send((a.stream, a.from, rx)).is_err() {
+                    routes.remove(&a.listener);
+                }
+            }
+            Route::Early(_) | Route::Open(_) => {}
+        }
+    }
+
+    fn register_listener(&self, listener: u64) -> Receiver<Accepted> {
+        let (tx, rx) = mpsc::channel();
+        let mut routes = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(Route::EarlyAccepts(early)) = routes.remove(&listener) {
+            for a in early {
+                let _ = tx.send(a);
+            }
+        }
+        routes.insert(listener, Route::Listener(tx));
+        rx
     }
 
     /// Handles a notification; false if it isn't a network one.
@@ -62,11 +97,17 @@ impl Routes {
                 }
                 true
             }
+            "net.accepted" => {
+                if let Ok(a) = serde_json::from_value::<NetAccepted>(params) {
+                    self.accepted(a);
+                }
+                true
+            }
             _ => false,
         }
     }
 
-    /// Ends every stream (Foxglove went away): each gets `Closed`.
+    /// Ends every stream (Foxglove went away): each gets `Closed`, and listeners stop.
     pub(crate) fn close_all(&self, why: &str) {
         let mut routes = self.0.lock().unwrap_or_else(|e| e.into_inner());
         for (_, route) in routes.drain() {
@@ -115,6 +156,37 @@ impl Plugin {
     pub fn connect_tcp(self: &Arc<Self>, host: &str, port: u16) -> Result<TcpStream> {
         let (id, rx) = self.net_open(NetKind::Tcp, host, port)?;
         Ok(TcpStream { plugin: self.clone(), id, rx, buf: vec![], closed: false })
+    }
+
+    /// Accepts TCP connections on 127.0.0.1:`port` (needs `net.listen:tcp:127.0.0.1:<port>`,
+    /// API 1.3): for a local page or tool to reach the plugin. See [`crate::ws`] for WebSocket
+    /// clients.
+    pub fn listen_tcp(self: &Arc<Self>, port: u16) -> Result<TcpListener> {
+        let p = NetOpenParams { kind: NetKind::TcpListen, host: "127.0.0.1".into(), port };
+        let id: NetStreamId = self.call_as("net.open", serde_json::to_value(p).expect("serializable"))?;
+        Ok(TcpListener { plugin: self.clone(), id: id.stream, rx: self.routes.register_listener(id.stream) })
+    }
+}
+
+/// Connections accepted on a loopback port; it stops accepting when dropped.
+pub struct TcpListener {
+    plugin: Arc<Plugin>,
+    id: u64,
+    rx: Receiver<Accepted>,
+}
+
+impl TcpListener {
+    /// The next connection and who made it; blocks until one comes. `None` once Foxglove is
+    /// gone.
+    pub fn accept(&self) -> Option<(TcpStream, String)> {
+        let (id, from, rx) = self.rx.recv().ok()?;
+        Some((TcpStream { plugin: self.plugin.clone(), id, rx, buf: vec![], closed: false }, from))
+    }
+}
+
+impl Drop for TcpListener {
+    fn drop(&mut self) {
+        let _ = self.plugin.net_close(self.id);
     }
 }
 
