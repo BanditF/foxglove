@@ -5,7 +5,7 @@
  *
  * The service isn't part of ZMK's split protocol, so this finds it on its own: well after the
  * split connection is secured (once ZMK's own discovery is done), it discovers the service and
- * its two characteristics. Pushes run on their own work queue, where blocking on the radio is fine;
+ * its characteristics. Pushes run on their own work queue, where blocking on the radio is fine;
  * every request there has a timeout, and a push holds its own reference to the connection so the
  * link dropping mid-push only fails the push.
  */
@@ -33,6 +33,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "art_relay.h"
 #include "host_link.h"
+#include "screen_snap.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 #include "test_hooks.h"
 #endif
@@ -55,10 +56,11 @@ static uint16_t right_len;   // bytes of it the last status read filled
 static int64_t right_read_at; // uptime of that read, 0 = never
 
 static struct bt_conn *peer;
-static uint16_t data_handle, status_handle;
+static uint16_t data_handle, status_handle, screen_handle;
 
 static const struct bt_uuid_128 service_uuid = BT_UUID_INIT_128(ART_RELAY_SERVICE_UUID);
 static const struct bt_uuid_128 data_uuid = BT_UUID_INIT_128(ART_RELAY_DATA_UUID);
+static const struct bt_uuid_128 screen_uuid = BT_UUID_INIT_128(ART_RELAY_SCREEN_UUID);
 static const struct bt_uuid_128 status_uuid = BT_UUID_INIT_128(ART_RELAY_STATUS_UUID);
 
 // Counters and last results, reported to the PC in the HELLO reply (art_relay_debug).
@@ -107,8 +109,12 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         data_handle = chrc->value_handle;
     } else if (bt_uuid_cmp(chrc->uuid, &status_uuid.uuid) == 0) {
         status_handle = chrc->value_handle;
+    } else if (bt_uuid_cmp(chrc->uuid, &screen_uuid.uuid) == 0) {
+        screen_handle = chrc->value_handle;
     }
-    if (data_handle && status_handle) {
+    if (data_handle && status_handle &&
+        (screen_handle || chrc->value_handle == params->end_handle)) {
+        // Older firmware ends at status; new firmware ends at screen.
         // Stop here: at MTU 23 each response holds one characteristic, and the request Zephyr
         // sends to look past the last one was never answered, which stalled every request
         // queued after it on the split link (ZMK's own included).
@@ -168,7 +174,7 @@ static void connected(struct bt_conn *conn, uint8_t err) {
         return; // only the split link has us as central; host links have us as peripheral
     }
     peer = bt_conn_ref(conn);
-    data_handle = status_handle = 0;
+    data_handle = status_handle = screen_handle = 0;
     discovery_tries = 0;
 }
 
@@ -186,7 +192,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
     k_work_cancel_delayable(&discover_work);
     bt_conn_unref(peer);
     peer = NULL;
-    data_handle = status_handle = 0;
+    data_handle = status_handle = screen_handle = 0;
     right_read_at = 0;
     if (was_ready) {
         host_link_art_status();
@@ -321,6 +327,7 @@ static struct bt_conn *job_conn(void) {
     return conn;
 }
 
+#include "screen_snap_relay.inc"
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 static uint8_t press_pos, press_state;
 static void press_cb(struct k_work *work) {

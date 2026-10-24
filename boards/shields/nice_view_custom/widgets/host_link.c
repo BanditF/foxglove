@@ -27,6 +27,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/usb.h>
 
 #include "host_link.h"
+#include "screen_snap.h"
 #include "art_relay.h"
 #include "rgb_idle.h"
 #include "behavior_safety.h"
@@ -40,7 +41,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS };
-enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION };
+enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
+       SETTING_SCREEN_SNAP, SETTING_SCREEN_READ };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -116,6 +118,8 @@ static void reply(const uint8_t *data, int len) {
     }
 }
 
+void host_link_screen_reply(const uint8_t *data, int len) { reply(data, len); }
+
 static uint8_t right_link(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     return art_relay_link();
@@ -136,7 +140,7 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     art_relay_debug(&r[11]);
 #endif
-    uint32_t caps = HOST_LINK_CAP_PANEL | HOST_LINK_CAP_CONN_STATE;
+    uint32_t caps = HOST_LINK_CAP_PANEL | HOST_LINK_CAP_CONN_STATE | HOST_LINK_CAP_SCREEN;
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT;
 #endif
@@ -316,6 +320,10 @@ void host_link_position_reply(uint8_t status, uint8_t pos) {
 }
 
 static void settings_command(const uint8_t *d, int len) {
+    if (d[1] == SETTING_SCREEN_SNAP || d[1] == SETTING_SCREEN_READ) {
+        screen_snap_command(d, len);
+        return;
+    }
     switch (d[1]) {
     case SETTING_POSITION: {
         uint8_t status = 4;

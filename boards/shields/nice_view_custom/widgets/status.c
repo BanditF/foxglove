@@ -13,6 +13,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/battery.h>
 #include <zmk/display.h>
 #include "status.h"
+#include "screen_snap.h"
 #include "host_link.h"
 #include <zmk/events/usb_conn_state_changed.h>
 #include <zmk/event_manager.h>
@@ -427,3 +428,14 @@ int zmk_widget_status_init(struct zmk_widget_status *widget, lv_obj_t *parent) {
 }
 
 lv_obj_t *zmk_widget_status_obj(struct zmk_widget_status *widget) { return widget->obj; }
+
+bool screen_snap_pixels(uint8_t out[SCREEN_SNAP_BYTES]) {
+    struct zmk_widget_status *widget;
+    SYS_SLIST_FOR_EACH_CONTAINER(&widgets, widget, node) {
+        screen_snap_canvas(out, widget->cbuf, 92);
+        screen_snap_canvas(out, widget->cbuf2, 24);
+        screen_snap_canvas(out, widget->cbuf3, -44);
+        return true;
+    }
+    return false;
+}
