@@ -438,6 +438,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "crc32fast",
  "digitalis",
  "image",
  "libc",

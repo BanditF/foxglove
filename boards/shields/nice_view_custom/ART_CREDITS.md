@@ -27,7 +27,8 @@ Current art: only portrait (upright) sets. The 30 signed Hammerbeam slideshow pi
 |---|---|---|---|
 | ZMK_1, ZMK_2 (balloon, mountain by Hammerbeam) | portrait | [ZMK nice_view shield](https://github.com/zmkfirmware/zmk/blob/v0.3.0/app/boards/shields/nice_view/widgets/art.c) | MIT |
 | Corro_urchin (GPeye's animation of Corro, the unofficial Rust unsafe-code mascot) | portrait | [GPeye/urchin-peripheral-animation](https://github.com/GPeye/urchin-peripheral-animation) | MIT |
-| Gem_crystal (crystal by Trixelized, lent to nice-view-gem) | portrait | [M165437/nice-view-gem](https://github.com/M165437/nice-view-gem) | MIT |
+| Gem_crystal (crystal by Trixelized, lent to nice-view-gem; to be replaced with our own art, #110) | portrait | [M165437/nice-view-gem](https://github.com/M165437/nice-view-gem) | MIT |
+| Bandit_Boot, Bandit_Idle, Bandit_Lock, Bandit_Emblem, Bandit_Radar, Bandit_Signal, Bandit_Decrypt, Bandit_Uplink, Bandit_Vitals, Bandit_Route, Bandit_Dossier, Bandit_Standby, Bandit_Skyline (the Bandit HUD scenes) | portrait | the repo owner's own art (generator: `art-src/bandit/bandit_art.py`, not in this repo) | © the repo owner, all rights reserved: not covered by this repo's code licences |
 
 Inputs used for the current `custom_art.c`, in order (paths are local checkouts of the sources above):
 
@@ -35,6 +36,7 @@ Inputs used for the current `custom_art.c`, in order (paths are local checkouts 
 zmk/app/boards/shields/nice_view/widgets/art.c:stills:name=ZMK:labels=ZMK balloon|ZMK mountain
 urchin-peripheral-animation/assets/example/animated/art.c:fps=1:name=Corro_urchin:label=Corro the urchin
 nice-view-gem/boards/shields/nice_view_gem/assets/crystal.c:fps=8:name=Gem_crystal:label=Gem crystal
+art-src/bandit/out/Bandit_<Scene>:name=Bandit_<Scene>:label=Bandit <scene>   (for boot idle lock emblem radar signal decrypt uplink vitals route dossier standby skyline, in that order)
 ```
 
 The run also writes `widgets/custom_art.json`, which Foxglove uses to name the built-in sets.

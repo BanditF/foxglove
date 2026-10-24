@@ -22,6 +22,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/endpoints.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/battery_state_changed.h>
+#include <zmk/events/ble_active_profile_changed.h>
+#include <zmk/events/endpoint_changed.h>
+#include <zmk/events/usb_conn_state_changed.h>
 #include <zmk/events/position_state_changed.h>
 #include <zmk/keymap.h>
 #include <zmk/usb.h>
@@ -153,6 +156,7 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS)
     caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
 #endif
+    caps |= HOST_LINK_CAP_CONN_STATE_EVENT;
     sys_put_le32(caps, &r[21]);
     sys_put_le16(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S, &r[25]);
     reply(r, sizeof(r));
@@ -319,6 +323,56 @@ void host_link_position_reply(uint8_t status, uint8_t pos) {
     reply(r, sizeof(r));
 }
 
+#define CONN_STATE_SIZE 8
+
+static void conn_state(uint8_t r[CONN_STATE_SIZE]) {
+    memset(r, 0, CONN_STATE_SIZE);
+    r[0] = HOST_LINK_SETTINGS;
+    r[1] = 0x80 | SETTING_CONN_STATE;
+#if IS_ENABLED(CONFIG_ZMK_BLE)
+    r[2] = zmk_ble_active_profile_index();
+    r[3] = zmk_ble_active_profile_is_connected() ? 1 : 0;
+    r[4] = zmk_ble_active_profile_is_open() ? 0 : 1;
+    r[7] = ZMK_BLE_PROFILE_COUNT;
+#endif
+    r[5] = zmk_endpoints_selected().transport == ZMK_TRANSPORT_BLE ? 1 : 0;
+#if IS_ENABLED(CONFIG_ZMK_USB)
+    r[6] = zmk_usb_is_hid_ready() ? 1 : 0;
+#endif
+}
+
+// Unsolicited CONN_STATE: after host traffic, a change of the active BLE profile, its connection
+// or bond, the endpoint or USB sends the same reply on its own, once things have settled.
+#define CONN_STATE_SETTLE K_MSEC(50)
+
+static uint8_t conn_state_sent[CONN_STATE_SIZE];
+
+static void conn_state_event_cb(struct k_work *work) {
+    uint8_t r[CONN_STATE_SIZE];
+    conn_state(r);
+    if (memcmp(r, conn_state_sent, sizeof(r)) != 0) {
+        memcpy(conn_state_sent, r, sizeof(r));
+        reply(r, sizeof(r));
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(conn_state_event_work, conn_state_event_cb);
+
+static int conn_state_listener(const zmk_event_t *eh) {
+    if (atomic_get(&host_seen)) {
+        k_work_reschedule(&conn_state_event_work, CONN_STATE_SETTLE);
+    }
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(host_link_conn, conn_state_listener);
+ZMK_SUBSCRIPTION(host_link_conn, zmk_endpoint_changed);
+#if IS_ENABLED(CONFIG_ZMK_BLE)
+ZMK_SUBSCRIPTION(host_link_conn, zmk_ble_active_profile_changed);
+#endif
+#if IS_ENABLED(CONFIG_ZMK_USB)
+ZMK_SUBSCRIPTION(host_link_conn, zmk_usb_conn_state_changed);
+#endif
+
 static void settings_command(const uint8_t *d, int len) {
     if (d[1] == SETTING_SCREEN_SNAP || d[1] == SETTING_SCREEN_READ) {
         screen_snap_command(d, len);
@@ -336,17 +390,8 @@ static void settings_command(const uint8_t *d, int len) {
         break;
     }
     case SETTING_CONN_STATE: {
-        uint8_t r[8] = {HOST_LINK_SETTINGS, 0x80 | SETTING_CONN_STATE};
-#if IS_ENABLED(CONFIG_ZMK_BLE)
-        r[2] = zmk_ble_active_profile_index();
-        r[3] = zmk_ble_active_profile_is_connected() ? 1 : 0;
-        r[4] = zmk_ble_active_profile_is_open() ? 0 : 1;
-        r[7] = ZMK_BLE_PROFILE_COUNT;
-#endif
-        r[5] = zmk_endpoints_selected().transport == ZMK_TRANSPORT_BLE ? 1 : 0;
-#if IS_ENABLED(CONFIG_ZMK_USB)
-        r[6] = zmk_usb_is_hid_ready() ? 1 : 0;
-#endif
+        uint8_t r[CONN_STATE_SIZE];
+        conn_state(r);
         reply(r, sizeof(r));
         break;
     }
