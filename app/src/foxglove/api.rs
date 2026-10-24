@@ -78,11 +78,13 @@ fn palm_error(e: palm::PalmError) -> Error {
     Error { code, message: super::palm_host::describe(&e), data: None }
 }
 
-/// The device a call names; only the host-link keyboard for now.
-fn lighting_of(id: &str) -> Result<std::sync::Arc<digitalis::palm::DigitalisDevice>, Error> {
-    super::palm_host::cached()
-        .filter(|d| d.info().id.to_string() == id)
-        .ok_or(Error { code: code::DISCONNECTED, message: format!("no device {id}"), data: None })
+/// Runs `f` on the device a call names: the host-link keyboard or an open VIA keyboard.
+fn with_device<R>(id: &str, f: impl FnOnce(&dyn palm::Device) -> Result<R, Error>) -> Result<R, Error> {
+    if let Some(d) = super::palm_host::cached().filter(|d| d.info().id.to_string() == id) {
+        return f(d.as_ref());
+    }
+    super::via_host::with_device(id, f)
+        .unwrap_or_else(|| Err(Error { code: code::DISCONNECTED, message: format!("no device {id}"), data: None }))
 }
 
 impl Devices for AppDevices {
@@ -102,13 +104,20 @@ impl Devices for AppDevices {
                         }
                     })
                     .into_iter()
+                    .chain(super::via_host::devices().into_iter().map(|(info, c)| methods::Device {
+                        id: info.id.to_string(),
+                        name: info.name.clone(),
+                        kind: format!("{:?}", info.kind).to_lowercase(),
+                        backend: info.backend.to_string(),
+                        connected: true,
+                        caps: caps(c),
+                    }))
                     .collect();
                 Ok(json!(methods::Devices { devices }))
             }
             "lighting.state" => {
                 let p: methods::DeviceParams = params(_params)?;
-                let lighting = lighting_of(&p.device)?;
-                let st = lighting.lighting().ok_or_else(unsupported)?.state().map_err(palm_error)?;
+                let st = with_device(&p.device, |d| d.lighting().ok_or_else(unsupported)?.state().map_err(palm_error))?;
                 Ok(json!(methods::LightingState {
                     on: st.on,
                     hue: st.hue,
@@ -120,18 +129,19 @@ impl Devices for AppDevices {
             }
             "lighting.set" => {
                 let p: methods::SetLightingParams = params(_params)?;
-                let device = lighting_of(&p.device)?;
-                let lighting = device.lighting().ok_or_else(unsupported)?;
-                if let Some(on) = p.on {
-                    lighting.set_on(on).map_err(palm_error)?;
-                }
-                if let Some(c) = p.color {
-                    lighting.set_color(c.hue, c.saturation, c.brightness).map_err(palm_error)?;
-                }
-                if let Some(effect) = p.effect {
-                    lighting.set_effect(palm::Effect { id: effect, params: vec![] }).map_err(palm_error)?;
-                }
-                Ok(json!({}))
+                with_device(&p.device, |d| {
+                    let lighting = d.lighting().ok_or_else(unsupported)?;
+                    if let Some(on) = p.on {
+                        lighting.set_on(on).map_err(palm_error)?;
+                    }
+                    if let Some(c) = p.color {
+                        lighting.set_color(c.hue, c.saturation, c.brightness).map_err(palm_error)?;
+                    }
+                    if let Some(effect) = p.effect {
+                        lighting.set_effect(palm::Effect { id: effect, params: vec![] }).map_err(palm_error)?;
+                    }
+                    Ok(json!({}))
+                })
             }
             "profiles.list" => {
                 let (names, active) = super::store::profiles();
