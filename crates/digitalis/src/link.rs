@@ -3,7 +3,7 @@
 //! A single thread reads with a short timeout, hands each input report to whoever wants it, and
 //! writes queued reports between reads, so reads and writes never race on the handle:
 //! - replies to our protocols (0xD5-0xD7 with byte 1 = command | 0x80) complete the request
-//!   waiting for that (proto, command), and never reach subscribers;
+//!   waiting for that (proto, command); unsolicited art STATUS also reaches subscribers;
 //! - everything else goes to the subscribers whose filter matches (the overlay's 0xFF/0xF1, a
 //!   debug tap, later integrations).
 //!
@@ -66,6 +66,27 @@ pub struct State {
     pub error: Option<String>,
 }
 
+/// Connection changes and unsolicited art STATUS reports. Solicited replies stay private.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Event {
+    State(State),
+    ArtStatus { generation: u64, report: Report },
+}
+
+struct EventSubscriber {
+    notify: Box<dyn Fn(Event) + Send>,
+    alive: Arc<AtomicBool>,
+}
+
+/// Keeps an event listener registered until dropped.
+pub struct EventSubscription(Arc<AtomicBool>);
+
+impl Drop for EventSubscription {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
+}
+
 struct Request {
     key: (u8, u8),
     tx: Sender<Report>,
@@ -108,6 +129,7 @@ impl Drop for Subscription {
 struct Shared {
     state: Mutex<State>,
     subscribers: Mutex<Vec<Subscriber>>,
+    events: Mutex<Vec<EventSubscriber>>,
     stop: AtomicBool,
 }
 
@@ -124,6 +146,7 @@ impl Link {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             subscribers: Mutex::new(Vec::new()),
+            events: Mutex::new(Vec::new()),
             stop: AtomicBool::new(false),
         });
         let thread_shared = shared.clone();
@@ -166,6 +189,17 @@ impl Link {
         Subscription { rx, alive }
     }
 
+    /// Registers a nonblocking event sink and immediately sends the current state. The sink
+    /// runs on the link thread: only enqueue events here, never perform I/O or call the link.
+    pub fn subscribe_events(&self, notify: impl Fn(Event) + Send + 'static) -> EventSubscription {
+        let state = self.shared.state.lock().unwrap();
+        let mut events = self.shared.events.lock().unwrap();
+        let alive = Arc::new(AtomicBool::new(true));
+        notify(Event::State(state.clone()));
+        events.push(EventSubscriber { notify: Box::new(notify), alive: alive.clone() });
+        EventSubscription(alive)
+    }
+
     fn queue(&self, command: Command) -> Result<()> {
         if self.shared.state.lock().unwrap().connected.is_none() {
             return Err(anyhow!("keyboard not connected"));
@@ -201,7 +235,22 @@ impl Drop for Link {
 }
 
 fn set_state(shared: &Shared, f: impl FnOnce(&mut State)) {
-    f(&mut shared.state.lock().unwrap());
+    let mut state = shared.state.lock().unwrap();
+    let before = state.clone();
+    f(&mut state);
+    if state.connected != before.connected || state.generation != before.generation {
+        publish(shared, Event::State(state.clone()));
+    }
+}
+
+fn publish(shared: &Shared, event: Event) {
+    shared.events.lock().unwrap().retain(|s| {
+        if !s.alive.load(Ordering::Relaxed) {
+            return false;
+        }
+        (s.notify)(event.clone());
+        true
+    });
 }
 
 /// Drops whatever is queued; dropping a request's sender fails it right away.
@@ -313,16 +362,23 @@ fn serve(dev: &mut dyn RawHid, commands: &Receiver<Command>, shared: &Shared) ->
 
 fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
     if matches!(r[0], protocol::PANEL | protocol::ART | protocol::SETTINGS) && r[1] & 0x80 != 0 {
-        // A reply: to its request if one is waiting, otherwise (late, unasked) to nobody. A key
-        // held after a timeout drops the late reply and frees up.
+        // A reply goes to its request. Unasked art STATUS may be a firmware notification;
+        // other replies stay private. A key held after a timeout drops the late reply.
         let key = (r[0], r[1] & 0x7f);
         if requests.held.remove(&key).is_some() {
             return;
         }
         if let Some(req) = requests.in_flight.remove(&key) {
             let _ = req.tx.send(*r);
+            return;
         }
-        return;
+        if key != (protocol::ART, protocol::art::STATUS) {
+            return;
+        }
+    }
+    if r[0] == protocol::ART && r[1] & 0x7f == protocol::art::STATUS {
+        let generation = shared.state.lock().unwrap().generation;
+        publish(shared, Event::ArtStatus { generation, report: *r });
     }
     shared.subscribers.lock().unwrap().retain(|s| {
         if !s.alive.load(Ordering::Relaxed) {
@@ -482,14 +538,61 @@ mod tests {
     }
 
     #[test]
-    fn unasked_replies_go_nowhere_but_other_protocols_pass() {
+    fn unsolicited_art_status_and_other_protocols_pass() {
         let fake = Fake::default();
         let l = link(&fake);
         let everything = l.subscribe(|_| true);
-        fake.push(&[0xD6, 0x85, 9]); // a late art reply nobody waits for
+        fake.push(&[0xD5, 0x81, 9]); // an unasked HELLO stays private
+        fake.push(&[0xD6, 0x85, 9]); // future firmware may announce art STATUS
         fake.push(&[0x01, 0x81, 7]); // someone else's protocol with the high bit set
+        assert_eq!(&everything.recv_timeout(WAIT).unwrap()[..3], &[0xD6, 0x85, 9]);
         assert_eq!(&everything.recv_timeout(WAIT).unwrap()[..3], &[0x01, 0x81, 7]);
         assert!(everything.recv_timeout(Duration::from_millis(100)).is_err());
+    }
+
+    #[test]
+    fn state_events_include_initial_state_disconnect_and_new_generation() {
+        let fake = Fake::default();
+        let l = link(&fake);
+        let (tx, rx) = mpsc::channel();
+        let subscription = l.subscribe_events(move |event| { let _ = tx.send(event); });
+        let first = l.state();
+        assert_eq!(rx.recv_timeout(WAIT).unwrap(), Event::State(first.clone()));
+        set_state(&l.shared, |s| s.connected = None);
+        let Event::State(away) = rx.recv_timeout(WAIT).unwrap() else { panic!("state") };
+        assert!(away.connected.is_none());
+        set_state(&l.shared, |s| {
+            s.generation += 1;
+            s.connected = first.connected;
+        });
+        let Event::State(back) = rx.recv_timeout(WAIT).unwrap() else { panic!("state") };
+        assert_eq!(back.generation, first.generation + 1);
+        assert!(back.connected.is_some());
+        drop(subscription);
+        set_state(&l.shared, |s| s.connected = None);
+        assert!(rx.try_recv().is_err());
+        assert!(l.shared.events.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn status_events_exclude_solicited_and_quarantined_replies() {
+        let fake = Fake::default();
+        let l = link(&fake);
+        let (tx, rx) = mpsc::channel();
+        let _subscription = l.subscribe_events(move |event| { let _ = tx.send(event); });
+        assert!(matches!(rx.recv_timeout(WAIT).unwrap(), Event::State(_)));
+        assert_eq!(status(&l, 7, WAIT).unwrap(), 7);
+        assert!(rx.try_recv().is_err());
+        let report = report(&[protocol::ART, 0x80 | art::STATUS, 9]);
+        let mut requests = Requests::default();
+        requests.held.insert((protocol::ART, art::STATUS), Instant::now() + WAIT);
+        dispatch(&report, &mut requests, &l.shared);
+        assert!(rx.try_recv().is_err());
+        dispatch(&report, &mut requests, &l.shared);
+        assert_eq!(rx.recv_timeout(WAIT).unwrap(), Event::ArtStatus { generation: l.state().generation, report });
+        let report = self::report(&[protocol::ART, art::STATUS, 0]);
+        dispatch(&report, &mut requests, &l.shared);
+        assert_eq!(rx.recv_timeout(WAIT).unwrap(), Event::ArtStatus { generation: l.state().generation, report });
     }
 
     #[test]
@@ -600,19 +703,19 @@ mod tests {
         let fake = Fake::default();
         let l = link(&fake);
         let first = l.state().generation;
+        let (tx, rx) = mpsc::channel();
+        let _subscription = l.subscribe_events(move |event| { let _ = tx.send(event); });
+        assert!(matches!(rx.recv_timeout(WAIT).unwrap(), Event::State(_)));
 
         fake.dead.store(true, Ordering::Relaxed);
-        let end = Instant::now() + WAIT;
-        while l.state().connected.is_some() && Instant::now() < end {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        let s = l.state();
+        let Event::State(s) = rx.recv_timeout(WAIT).unwrap() else { panic!("state") };
         assert!(s.connected.is_none());
         assert!(s.error.is_some());
         assert!(l.send(&protocol::present()).is_err(), "sends fail fast while away");
 
         fake.dead.store(false, Ordering::Relaxed);
-        l.wait_connected(Duration::from_secs(5)).unwrap();
-        assert_eq!(l.state().generation, first + 1);
+        let Event::State(s) = rx.recv_timeout(Duration::from_secs(5)).unwrap() else { panic!("state") };
+        assert!(s.connected.is_some());
+        assert_eq!(s.generation, first + 1);
     }
 }
