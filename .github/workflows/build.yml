@@ -29,7 +29,7 @@ jobs:
     uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@v0.3.0
     with:
       build_matrix_path: profiles/toucan2/build.yaml
-      config_path: profiles/toucan2/config
+      config_path: config-toucan2 # one level: the workflow mkdirs it without -p
       archive_name: firmware-toucan2
 
   # Names the UF2s by version, half and profile (foxglove-fw-v0.1.0-1a2b3c4-left-dev.uf2), and on a

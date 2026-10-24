@@ -30,4 +30,4 @@ manifest:
       url: https://github.com/BanditF/zmk-raw-hid
       revision: nonblocking
   self:
-    path: profiles/toucan2/config
+    path: config-toucan2
