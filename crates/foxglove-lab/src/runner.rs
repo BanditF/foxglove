@@ -146,6 +146,8 @@ pub struct Runner<'a, D> {
     held_positions: Vec<u8>,
     /// Files (relative to `out`) the current step saved for the report.
     attachments: Vec<String>,
+    /// screens.ini as it was before this case changed it; put back in cleanup.
+    screens_ini: Option<(PathBuf, Option<Vec<u8>>)>,
     /// The last capture_screen per half in this case: expect_screen_change compares with it.
     baselines: std::collections::HashMap<String, image::GrayImage>,
 }
@@ -170,6 +172,7 @@ impl<'a, D: Device> Runner<'a, D> {
             held_positions: Vec::new(),
             attachments: Vec::new(),
             baselines: Default::default(),
+            screens_ini: None,
         }
     }
     fn check(&self) -> Result<()> {
@@ -400,6 +403,12 @@ impl<'a, D: Device> Runner<'a, D> {
     /// Waits out the bounded firmware release even when cancelled; no unsupported release command.
     fn cleanup(&mut self) {
         self.baselines.clear();
+        if let Some((path, original)) = self.screens_ini.take() {
+            let _ = match original {
+                Some(bytes) => std::fs::write(&path, bytes),
+                None => std::fs::remove_file(&path),
+            };
+        }
         for pos in std::mem::take(&mut self.held_positions).into_iter().rev() {
             // Best effort; the firmware also releases owned downs after 10 s.
             let _ = self.device.request(
@@ -477,6 +486,53 @@ impl<'a, D: Device> Runner<'a, D> {
                 Ok(format!("received {actual:?}"))
             }
             Step::ArtSelect(a) => self.art_select(a),
+            Step::ScreensSetting(s) => {
+                let path = std::env::var_os("APPDATA")
+                    .map(|d| PathBuf::from(d).join("Foxglove/config/screens.ini"))
+                    .ok_or_else(|| anyhow::anyhow!("APPDATA unavailable"))?;
+                let current = std::fs::read(&path).ok();
+                if self.screens_ini.is_none() {
+                    self.screens_ini = Some((path.clone(), current.clone()));
+                }
+                let text = String::from_utf8_lossy(current.as_deref().unwrap_or_default());
+                std::fs::write(
+                    &path,
+                    crate::host::set_ini(&text, "screens", &s.key, &s.value),
+                )?;
+                Ok(format!("screens.ini {}={}", s.key, s.value))
+            }
+            Step::PanelDump(d) => {
+                let end = Instant::now() + Duration::from_millis(d.within_ms);
+                loop {
+                    self.check()?;
+                    let path = crate::host::expand_env(&d.path);
+                    let dump = std::fs::read(&path).map_err(|e| {
+                        anyhow::anyhow!(
+                            "no panel dump at {} ({e}): start Foxglove with FOXGLOVE_DUMP_PANEL",
+                            d.path
+                        )
+                    })?;
+                    let (w, h, bits) = screen::parse_pbm(&dump)?;
+                    let image = self.capture("left")?;
+                    let at = screen::find(&image, w, h, &bits);
+                    if at.is_some() == d.shown {
+                        self.save_png("left-panel", &image)?;
+                        return Ok(match at {
+                            Some((x, y)) => format!("{w}x{h} frame shown at portrait ({x}, {y})"),
+                            None => format!("{w}x{h} frame not on the screen"),
+                        });
+                    }
+                    if Instant::now() >= end {
+                        self.save_png("left-panel", &image)?;
+                        bail!(
+                            "{w}x{h} frame {} the left screen after {} ms",
+                            if d.shown { "not found on" } else { "still on" },
+                            d.within_ms
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(300));
+                }
+            }
             Step::UsbHalves(u) => {
                 let halves = crate::host::classify(&crate::host::usb_entries()?);
                 let text = halves
