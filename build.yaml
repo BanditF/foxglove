@@ -20,3 +20,9 @@ include:
     snippet: studio-rpc-usb-uart
     cmake-args: -DCONFIG_ZMK_STUDIO=y -DCONFIG_ZMK_STUDIO_LOCKING=n -DCONFIG_FOXGLOVE_TEST_HOOKS=n
     artifact-name: eyelash_corne_studio_left_ga
+  # Debug only (not for main): the left with USB logging instead of Studio, for #122.
+  - board: eyelash_corne_left
+    shield: nice_view_custom raw_hid_adapter
+    snippet: zmk-usb-logging
+    cmake-args: -DCONFIG_ZMK_LOG_LEVEL_DBG=y
+    artifact-name: eyelash_corne_left_usb_logging
