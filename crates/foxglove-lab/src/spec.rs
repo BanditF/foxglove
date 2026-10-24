@@ -40,6 +40,8 @@ pub enum Step {
     PressPosition(Position),
     CaptureScreen(Capture),
     ExpectScreenChange(ScreenChange),
+    PanelDump(PanelDump),
+    ScreensSetting(ScreensSetting),
     ArtSelect(Art),
     UsbHalves(Usb),
     IdleCpu(Idle),
@@ -140,6 +142,26 @@ fn yes() -> bool {
 }
 fn art_timeout() -> u64 {
     10_000
+}
+/// Compares the frame the app last sent (its FOXGLOVE_DUMP_PANEL file) with the left screen
+/// readback: `shown = true` expects the frame somewhere on the screen pixel for pixel,
+/// `shown = false` expects it gone (the firmware drawing that area again).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PanelDump {
+    pub path: String,
+    #[serde(default = "yes")]
+    pub shown: bool,
+    #[serde(default = "art_timeout")]
+    pub within_ms: u64,
+}
+/// Sets one key in the app's screens.ini ([screens] section), which the app watches. The
+/// original file is put back at the end of the case.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreensSetting {
+    pub key: String,
+    pub value: String,
 }
 /// Fails on any half whose USB picture means trouble (see host::classify).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -257,6 +279,14 @@ impl Step {
                 ensure!(a.set >= 0, "art_select needs a built-in set (0 or more)");
             }
             Self::UsbHalves(_) => {}
+            Self::PanelDump(d) => {
+                wait(d.within_ms)?;
+                ensure!(!d.path.is_empty(), "panel_dump needs the dump path");
+            }
+            Self::ScreensSetting(s) => ensure!(
+                ["drive_left", "fps"].contains(&s.key.as_str()) && !s.value.contains(['\n', '\r']),
+                "screens_setting supports drive_left and fps"
+            ),
             Self::IdleCpu(i) => {
                 ensure!(
                     (1..=600).contains(&i.seconds),

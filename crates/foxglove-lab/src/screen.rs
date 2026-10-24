@@ -153,6 +153,43 @@ pub fn changed(a: &GrayImage, b: &GrayImage, region: Option<&Rect>) -> usize {
         .count()
 }
 
+/// A binary PBM (P4): width, height and the packed rows (MSB first, rows padded to bytes).
+pub fn parse_pbm(data: &[u8]) -> Result<(u32, u32, Vec<u8>)> {
+    let text_end = data
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| **b == b'\n')
+        .map(|(i, _)| i)
+        .nth(1)
+        .ok_or_else(|| anyhow::anyhow!("not a P4 PBM"))?;
+    let header = std::str::from_utf8(&data[..text_end])?;
+    let mut parts = header.split_whitespace();
+    ensure!(parts.next() == Some("P4"), "not a P4 PBM");
+    let w: u32 = parts.next().unwrap_or_default().parse()?;
+    let h: u32 = parts.next().unwrap_or_default().parse()?;
+    let bits = data[text_end + 1..].to_vec();
+    ensure!(
+        w > 0 && h > 0 && bits.len() == (w.div_ceil(8) * h) as usize,
+        "PBM size doesn't match {w}x{h}"
+    );
+    Ok((w, h, bits))
+}
+
+/// Where a packed w x h frame (1 = ink) appears exactly in a portrait capture, if anywhere.
+pub fn find(image: &GrayImage, w: u32, h: u32, bits: &[u8]) -> Option<(u32, u32)> {
+    let (iw, ih) = image.dimensions();
+    if w > iw || h > ih {
+        return None;
+    }
+    let stride = w.div_ceil(8);
+    let ink = |x: u32, y: u32| bits[(y * stride + x / 8) as usize] & (0x80 >> (x % 8)) != 0;
+    (0..=ih - h)
+        .flat_map(|oy| (0..=iw - w).map(move |ox| (ox, oy)))
+        .find(|&(ox, oy)| {
+            (0..h).all(|y| (0..w).all(|x| (image[(ox + x, oy + y)][0] == 0) == ink(x, y)))
+        })
+}
+
 pub struct Comparison {
     pub different: usize,
     pub diff: Vec<u8>,
@@ -238,6 +275,22 @@ mod tests {
                 .different,
             0
         );
+    }
+
+    #[test]
+    fn finds_a_dumped_frame_on_the_screen() {
+        let mut bits = vec![0; BYTES];
+        // native (159 - 10, 20) is portrait (20, 10)
+        let x = 149;
+        bits[20 * 20 + x / 8] |= 0x80 >> (x % 8);
+        let screen = portrait(&bits).unwrap();
+        let mut pbm = b"P4\n8 2\n".to_vec();
+        pbm.extend([0x00, 0x08]); // ink at (4, 1)
+        let (w, h, frame) = parse_pbm(&pbm).unwrap();
+        assert_eq!(find(&screen, w, h, &frame), Some((16, 9)));
+        assert!(parse_pbm(b"P4\n8 2\n\x00").is_err());
+        let empty = portrait(&vec![0; BYTES]).unwrap();
+        assert_eq!(find(&empty, w, h, &frame), None);
     }
 
     #[test]
