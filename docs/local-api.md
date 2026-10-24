@@ -102,6 +102,7 @@ description = "Puts the temperature on the left screen."
 **Containment on Windows:**
 - **Job Object:** every Kit runs in one, killed with Foxglove, with memory and CPU caps and no breakaway.
 - **AppContainer:** Kits that declare neither `net` nor `files` run in one, so no network and no user files.
+  A `net` Kit runs outside it, still in its Job Object. An AppContainer can't receive loopback traffic from another program without a machine-wide exemption (`CheckNetIsolation`, admin), and local listeners such as the OpenRGB Kit need exactly that. So `net` stays a permission the user approves at install.
 - **"Trusted" Kits:** the others (vendor SDK Kits need their vendor service) are marked trusted in the Den.
 
 **Den catalog:** curated, first-party, à la carte. Each Kit has an install button, and nothing
@@ -155,5 +156,7 @@ The `foxglove-kit` crate (`crates/kit-sdk`, MIT):
 - **Calls:** `set_fact`, `fact`, `subscribe` plus `events()`, `devices`, `set_lighting`, and a generic `call`.
 
 The example is `crates/kit-focus-timer`, a focus/rest timer that publishes `focus.state` and `focus.remaining` and colours the underglow. It asks only for `devices.read`, `lighting.write` and `facts.write:focus.*`, so it runs in the AppContainer.
+
+The second example, `crates/kit-openrgb-e131`, is a Kit with the `net` permission; see [openrgb-kit.md](openrgb-kit.md).
 
 **Pack a Kit:** `powershell -File scripts\pack-kit.ps1 kit-focus-timer` builds it, zips `kit.toml` and the program into `target\kits\`, and prints the catalog entry (archive and file SHA-256s) to add to `catalog.json` before signing. Until the signing keys exist, install it with `FOXGLOVE_DEV_UNSIGNED_KITS=1`.
