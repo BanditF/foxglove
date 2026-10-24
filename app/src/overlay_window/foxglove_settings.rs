@@ -178,6 +178,17 @@ impl OverlayApp {
 
     fn lights_section(ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        let mut follow = crate::foxglove::accent::enabled();
+        if ui
+            .checkbox(&mut follow, "Follow the Windows accent colour")
+            .on_hover_text(
+                "The underglow takes the accent colour's hue and saturation whenever it changes                  in Windows, and when the keyboard connects. The brightness stays the board's.",
+            )
+            .changed()
+        {
+            crate::foxglove::accent::set_enabled(follow);
+            ks::refresh_rgb_state();
+        }
         if ui.small_button("Refresh lights").clicked() {
             ks::refresh_rgb_state();
         }

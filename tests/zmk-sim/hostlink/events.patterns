@@ -1,0 +1,4 @@
+# Host-link protocol over Raw HID (module/hostlink_sim.c): HELLO, BUILD_INFO, CONN_STATE,
+# INVOKE refusal, POSITION gating and auto-release, BOOTLOADER arm/nonce rules.
+/^hostlink:/p
+s/.*hid_listener_keycode/kp/p

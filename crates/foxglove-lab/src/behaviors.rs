@@ -91,15 +91,20 @@ impl Catalog {
         Ok(c)
     }
 
-    /// Uses an explicit cache, or a single unambiguous cache in APPDATA.
+    /// Uses an explicit cache, or a single unambiguous cache in FOXGLOVE_CONFIG_DIR or APPDATA
+    /// (read only).
     pub fn load(path: Option<PathBuf>) -> Result<Self> {
         let path = match path {
             Some(p) => p,
             None => {
-                let dir = PathBuf::from(
-                    std::env::var("APPDATA").context("APPDATA unavailable; use --keymap")?,
-                )
-                .join("Foxglove/config");
+                // A test config first; otherwise the user's real one, read only.
+                let dir = match std::env::var_os("FOXGLOVE_CONFIG_DIR") {
+                    Some(d) => PathBuf::from(d),
+                    None => PathBuf::from(
+                        std::env::var("APPDATA").context("APPDATA unavailable; use --keymap")?,
+                    )
+                    .join("Foxglove/config"),
+                };
                 let files: Vec<_> = std::fs::read_dir(dir)?
                     .filter_map(|e| e.ok().map(|e| e.path()))
                     .filter(|p| {

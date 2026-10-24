@@ -2,35 +2,43 @@
 
 &kscan {
     events = <
-        ZMK_MOCK_PRESS(2,7,30) // position 37
+        ZMK_MOCK_PRESS(2,7,30) // position 37: M on QWERTY
         ZMK_MOCK_RELEASE(2,7,30) // position 37
-        ZMK_MOCK_PRESS(3,4,30) // position 43
-        ZMK_MOCK_PRESS(2,7,30) // position 37
+        ZMK_MOCK_PRESS(3,4,30) // position 43: NUMBER
+        ZMK_MOCK_PRESS(2,7,30) // position 37 on NUMBER
         ZMK_MOCK_RELEASE(2,7,30) // position 37
         ZMK_MOCK_RELEASE(3,4,30) // position 43
-        ZMK_MOCK_PRESS(3,7,30) // position 46
-        ZMK_MOCK_PRESS(2,7,30) // position 37
+        ZMK_MOCK_PRESS(3,7,30) // position 46: SYMBOL
+        ZMK_MOCK_PRESS(2,7,30) // position 37 on SYMBOL
         ZMK_MOCK_RELEASE(2,7,30) // position 37
         ZMK_MOCK_RELEASE(3,7,30) // position 46
         ZMK_MOCK_PRESS(3,4,30) // position 43
-        ZMK_MOCK_PRESS(3,7,30) // position 46
-        ZMK_MOCK_PRESS(2,7,30) // position 37
+        ZMK_MOCK_PRESS(3,7,30) // position 46: FUNCTION
+        ZMK_MOCK_PRESS(2,7,30) // position 37 on FUNCTION: no soft-off here
         ZMK_MOCK_RELEASE(2,7,30) // position 37
-        ZMK_MOCK_PRESS(0,1,30) // ADMIN F1 separates timing assertions
+        ZMK_MOCK_PRESS(0,0,30) // position 0: SYSTEM
+        ZMK_MOCK_PRESS(2,7,30) // position 37 on SYSTEM: &soft_off, short tap
+        ZMK_MOCK_RELEASE(2,7,30) // position 37
+        ZMK_MOCK_RELEASE(0,0,30) // leave SYSTEM so F1 marks the boundary
+        ZMK_MOCK_PRESS(0,1,30) // position 1 on FUNCTION: F1 separates timing assertions
         ZMK_MOCK_RELEASE(0,1,30)
-        ZMK_MOCK_PRESS(2,7,1900) // position 37
+        ZMK_MOCK_PRESS(0,0,30) // position 0: SYSTEM
+        ZMK_MOCK_PRESS(2,7,1900) // position 37 held 1.9 s: still no soft-off
         ZMK_MOCK_RELEASE(2,7,30) // position 37
-        ZMK_MOCK_PRESS(0,1,30) // ADMIN F1 separates timing assertions
+        ZMK_MOCK_RELEASE(0,0,30)
+        ZMK_MOCK_PRESS(0,1,30) // F1 separator
         ZMK_MOCK_RELEASE(0,1,30)
-        ZMK_MOCK_PRESS(2,7,2100) // position 37
+        ZMK_MOCK_PRESS(0,0,30) // position 0: SYSTEM
+        ZMK_MOCK_PRESS(2,7,2100) // position 37 held 2.1 s: soft-off
         ZMK_MOCK_RELEASE(2,7,30) // position 37
-        ZMK_MOCK_PRESS(0,1,30) // ADMIN F1 separates timing assertions
+        ZMK_MOCK_RELEASE(0,0,30)
+        ZMK_MOCK_PRESS(0,1,30) // F1 separator
         ZMK_MOCK_RELEASE(0,1,30)
         ZMK_MOCK_RELEASE(3,7,30) // position 46
         ZMK_MOCK_RELEASE(3,4,30) // position 43
-        ZMK_MOCK_PRESS(0,1,30) // position 1
+        ZMK_MOCK_PRESS(0,1,30) // position 1: Q
         ZMK_MOCK_RELEASE(0,1,30) // position 1
-        ZMK_MOCK_PRESS(0,1,10) // position 1
+        ZMK_MOCK_PRESS(0,1,10) // position 1: Q+S+Z together
         ZMK_MOCK_PRESS(1,2,10) // position 15
         ZMK_MOCK_PRESS(2,1,10) // position 29
         ZMK_MOCK_RELEASE(0,1,30) // position 1

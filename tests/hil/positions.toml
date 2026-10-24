@@ -76,3 +76,20 @@ steps = [{ type_into_sink = { text = "qpfj", expect = "qpfj", via = [
   { press_position = { pos = 17, state = "tap" } },
   { press_position = { pos = 23, state = "tap" } },
 ] } }]
+
+[[cases]]
+name = "system-bt-refused"
+description = "Safety: on SYSTEM, position 1 (&bt BT_SEL 0, the profile in use) is refused (6)"
+tags = ["positions", "release"]
+requires = ["invoke_refusal", "build_info"]
+steps = [
+  { press_position = { pos = 43, state = "down" } },
+  { press_position = { pos = 46, state = "down" } },
+  { press_position = { pos = 0, state = "down" } },
+  { expect_layer = { active_contains = [6] } },
+  { press_position = { pos = 1, state = "down", expect_status = "refused" } },
+  { press_position = { pos = 0, state = "up" } },
+  { press_position = { pos = 46, state = "up" } },
+  { press_position = { pos = 43, state = "up" } },
+  { expect_layer = { top = 0 } },
+]
