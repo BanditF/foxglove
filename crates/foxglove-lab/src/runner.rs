@@ -206,7 +206,14 @@ impl<'a, D: Device> Runner<'a, D> {
         ]
         .iter()
         .any(|n| known(n));
-        ensure!(if typing { known("kp") && i.hold_ms == 0 } else { safe }, "injection blocked: needs verified non-typing behavior, or kp tap inside sink; refusal support unknown");
+        // A dangerous behavior may be sent only as a refusal test, and only to firmware that
+        // advertises refusal (HELLO bit 7); the case is BLOCKED before this otherwise.
+        let refusal_test =
+            i.expect_status == "refused" && unsupported("invoke_refusal", &self.hello).is_none();
+        ensure!(
+            if typing { known("kp") && i.hold_ms == 0 } else { safe || refusal_test },
+            "injection blocked: needs verified non-typing behavior, or kp tap inside sink; refusal support unknown"
+        );
         self.check()?;
         // Discard prior cases' reports, but retain reports arriving during this invoke.
         for _ in 0..1024 {
@@ -263,7 +270,8 @@ impl<'a, D: Device> Runner<'a, D> {
         );
         if before.right_set < 0 && !a.replace_pushed {
             return Err(Blocked(
-                "the right shows pushed art, which a select would lose (RAM only);                  run with built-in art showing, or set replace_pushed = true"
+                "the right shows pushed art, which a select would lose (RAM only); run with \
+                 built-in art showing, or set replace_pushed = true"
                     .into(),
             )
             .into());

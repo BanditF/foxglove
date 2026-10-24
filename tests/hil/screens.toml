@@ -32,4 +32,9 @@ steps = [{ expect_screen_change = { half = "left", within_ms = 65000 } }]
 name = "left-base-golden"
 description = "Left screen on the base layer matches its golden (clock and battery masked)"
 tags = ["screens", "release"]
-steps = [{ screen = { half = "left", golden = "golden/left-base.png" } }]
+# Masked: the status row (battery, USB/BLE) and the PC panel below the divider (clock,
+# volume, media title), which change on their own.
+steps = [{ screen = { half = "left", golden = "golden/left-base.png", mask = [
+  { x = 0, y = 0, width = 68, height = 16 },
+  { x = 0, y = 103, width = 68, height = 57 },
+] } }]
