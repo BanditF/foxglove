@@ -52,6 +52,8 @@ The extra `SIM_SOFT_OFF` marker observes the power-off boundary.
 | `thumbs-game` | Same four sequences after real ADMIN+G `&tog 3`; Esc verifies GAME, Tab after toggling off; GAME supplies `&mo 4` on the left thumb in either order, so GAME+ plus SYMBOL activates ADMIN |
 | `combos` | The only current combo (12+41, default 50 ms) toggles GAME on/off in both press orders; 120 ms separation emits Backspace/Esc and leaves Tab unchanged |
 | `soft-off` | M emits M on base, nothing for NUMBER RGB command, Plus on SYMBOL; ADMIN+M 30/1900 ms emits no key and no power-off, 2100 ms calls power-off once; interleaved F1 taps distinguish these intervals. Q+S+Z pressed together emits Q/S/Z down and up, then Q still works |
+| `sleep` | Deep sleep at the **production** idle timeout (`prod.keys` copies `CONFIG_ZMK_IDLE_SLEEP_TIMEOUT` from `config/eyelash_corne.conf`, #223): after one Q, idle at 30 s, still idle (not asleep) 29 min 50 s later, then sleep and `SIM_SLEEP` (the stubbed `sys_poweroff` ends the run). Simulated time runs unslowed; `module/sleep_sim.c` watches the clock, and there's no exit-after, so a board that never sleeps fails on the timeout |
+| `battery-dim` | The real `dim_strip.c` (#222) in front of a fake strip with a fake cable (`module/dim_sim.c`), at the shield's shipped `NICE_VIEW_RGB_BATTERY_CAP` default: battery scales 255,128,10 / 100,0,200 to 76,38,3 / 30,0,60, USB passes them unchanged, and the caller's buffer is never written |
 | `tap-dance` | Real position 13: single tap gives Shift, 300 ms hold gives Shift, double tap gives Caps; final Q checks cleanup |
 
 There is **no `&mt`, `&lt`, or custom hold-tap binding** in this keymap.
