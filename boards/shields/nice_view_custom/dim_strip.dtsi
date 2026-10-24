@@ -1,0 +1,12 @@
+/* The underglow goes through dim_strip.c, which caps it on battery (#218). */
+/ {
+    underglow_dim: underglow_dim {
+        compatible = "foxglove,dim-strip";
+        led-strip = <&led_strip>;
+        chain-length = <21>;
+    };
+
+    chosen {
+        zmk,underglow = &underglow_dim;
+    };
+};

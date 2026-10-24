@@ -91,6 +91,21 @@ config NICE_VIEW_RGB_IDLE
       user's choice, so a half that reboots after idle (the right, waking from deep sleep) stays
       dark. With the art relay, the PC can make the right follow the left's state (0xD7 01).
 
+config NICE_VIEW_RGB_BATTERY_DIM
+    def_bool DT_HAS_FOXGLOVE_DIM_STRIP_ENABLED
+    help
+      The board's zmk,underglow is a foxglove,dim-strip in front of the real strip (the shield's
+      boards/<board>.overlay), so dim_strip.c is built.
+
+config NICE_VIEW_RGB_BATTERY_CAP
+    int "Underglow brightness on battery, in percent (100 = no cap)"
+    default 30
+    range 1 100
+    depends on NICE_VIEW_RGB_BATTERY_DIM
+    help
+      While a half has no USB power, its underglow is scaled to this much of what ZMK draws
+      (#218). On the cable it's full brightness. ZMK's own brightness setting is unchanged.
+
 config NICE_VIEW_ART_RELAY_MAX_SIZE
     int "Largest pushed art set, in bytes (RAM on both halves)"
     default 16384
