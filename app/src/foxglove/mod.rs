@@ -3,6 +3,7 @@
 
 pub mod art_service;
 pub mod keyboard_actions;
+pub mod keyboard_facts;
 pub mod keyboard_settings;
 pub mod keymap_cache;
 pub mod last_device;
@@ -19,6 +20,7 @@ mod screens_settings;
 pub mod screens_ui;
 pub mod services;
 pub mod art_cycle;
+pub mod boards;
 mod art_triggers;
 pub mod accent;
 pub mod store;
@@ -37,6 +39,7 @@ pub mod plugins_ui;
 pub mod plugin_trust;
 pub mod identity;
 pub mod plugin_runner;
+pub mod plugin_settings;
 pub mod art_manifest;
 mod art_preview;
 pub mod art_ui;

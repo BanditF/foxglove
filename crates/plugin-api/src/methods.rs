@@ -270,6 +270,13 @@ pub struct AppWindows {
     pub open: u32,
 }
 
+/// A plugin's settings (`[[settings]]` in `plugin.toml`): the answer to `settings.get` and the
+/// `settings.changed` event, every setting with its current value (API 1.3).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SettingValues {
+    pub values: serde_json::Map<String, serde_json::Value>,
+}
+
 /// Mutes or unmutes the default communications microphone (#237, API 1.2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SetMuteParams {
@@ -307,6 +314,16 @@ pub struct Lease {
     pub lease: u64,
 }
 
+/// Changes a held lease's colour (and effect) in place, for a stream of colours (a colour sync)
+/// without taking a new lease each time (API 1.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LeaseUpdate {
+    pub lease: u64,
+    pub color: Hsb,
+    #[serde(default)]
+    pub effect: Option<String>,
+}
+
 /// One of the plugin's own secrets (#213, API 1.2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SecretName {
@@ -335,6 +352,12 @@ pub enum NetKind {
     Tcp,
     /// Datagrams sent to 127.0.0.1:`port`; needs `net.listen:udp:127.0.0.1:<port>`.
     Udp,
+    /// Accepts TCP connections on 127.0.0.1:`port` (API 1.3); needs
+    /// `net.listen:tcp:127.0.0.1:<port>`. Each connection arrives as `net.accepted` with its own
+    /// stream, then `net.data` and `net.closed` like any other; closing the listener's stream
+    /// stops accepting.
+    #[serde(rename = "tcp-listen")]
+    TcpListen,
 }
 
 /// Opens a connection through Foxglove: the plugin stays sandboxed and only reaches what its
@@ -366,6 +389,15 @@ pub struct NetData {
     pub data: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<String>,
+}
+
+/// Event: a listener (`tcp-listen`) accepted a connection, which is the new `stream` (API 1.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct NetAccepted {
+    pub listener: u64,
+    pub stream: u64,
+    /// The other side's address (always on this PC).
+    pub from: String,
 }
 
 /// Event: a stream ended (the other side closed it, or an error).
@@ -428,16 +460,21 @@ pub const METHODS: &[Method] = &[
     Method { name: "net.close", kind: Kind::Call, permission: None, params: schema!(NetStream), result: Some(schema!(Empty)) },
     Method { name: "net.data", kind: Kind::Event, permission: None, params: schema!(NetData), result: None },
     Method { name: "net.closed", kind: Kind::Event, permission: None, params: schema!(NetClosed), result: None },
+    Method { name: "net.accepted", kind: Kind::Event, permission: None, params: schema!(NetAccepted), result: None },
     // The microphone, through Foxglove (#237); its state is the `mic.*` facts.
     Method { name: "audio.inputs.set_mute", kind: Kind::Call, permission: Some("audio.inputs.mute"), params: schema!(SetMuteParams), result: Some(schema!(Empty)) },
     // Hold and give back the lights (#236).
     Method { name: "lighting.lease", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(LeaseParams), result: Some(schema!(Lease)) },
     Method { name: "lighting.release", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(Lease), result: Some(schema!(Empty)) },
+    Method { name: "lighting.update", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(LeaseUpdate), result: Some(schema!(Empty)) },
     // A plugin's own secrets; outside tools get none (#213).
     Method { name: "secrets.get", kind: Kind::Call, permission: Some("secrets"), params: schema!(SecretName), result: Some(schema!(SecretValue)) },
     Method { name: "secrets.set", kind: Kind::Call, permission: Some("secrets"), params: schema!(SetSecretParams), result: Some(schema!(Empty)) },
     // Sent to one plugin when the key bound to its action is pressed (#212).
     Method { name: "action.invoked", kind: Kind::Event, permission: None, params: schema!(ActionInvoked), result: None },
+    // A plugin's own settings (#69): no permission, plugins only (API 1.3).
+    Method { name: "settings.get", kind: Kind::Call, permission: None, params: schema!(Empty), result: Some(schema!(SettingValues)) },
+    Method { name: "settings.changed", kind: Kind::Event, permission: None, params: schema!(SettingValues), result: None },
     // Waiting for an app's windows instead of polling for it (#277); checked against the
     // scoped apps.watch permissions by the host (API 1.3).
     Method { name: "apps.watch", kind: Kind::Call, permission: None, params: schema!(AppsWatchParams), result: Some(schema!(AppWindows)) },

@@ -71,6 +71,14 @@ GLYPHS = {
         ("ink", '<path d="M6.5 3.5 A7 7 0 0 0 6.5 10.5 M17.5 3.5 A7 7 0 0 1 17.5 10.5"/>'),
         ("r", '<circle cx="12" cy="7" r="1.5"/>'),
     ],
+    # wallpaper match: the screen's colour drips down into the keyboard's underglow
+    "org.foxglove.wallpaper-match": [
+        ("ink", '<rect x="3" y="2.5" width="18" height="12" rx="1.5"/>'),
+        ("accent", '<path d="M12 5.5 C10 8 9.5 9.2 9.5 10 A2.5 2.5 0 0 0 14.5 10 C14.5 9.2 14 8 12 5.5 Z"/>'),
+        ("ink", '<path d="M12 14.5 V17"/>'),
+        ("ink", '<rect x="4" y="17.5" width="16" height="3" rx="1"/>'),
+        ("rgb", '<path d="M3 22.5 H21"/>'),
+    ],
     # lighting mirrored onto a key: rays over a keycap
     "org.foxglove.icue": [
         ("ink", '<rect x="5" y="10" width="14" height="11" rx="2"/>'),

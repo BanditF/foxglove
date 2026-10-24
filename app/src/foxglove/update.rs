@@ -16,6 +16,14 @@ static STATE: Mutex<State> = Mutex::new(State {
 fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
+/// Repaints the settings window when a check or download starts or ends (#282): the worker
+/// says when, instead of the UI redrawing every 200 ms while busy. Set by `group`.
+static WAKE: std::sync::OnceLock<crate::ui_wake::UiWake> = std::sync::OnceLock::new();
+fn wake() {
+    if let Some(w) = WAKE.get() {
+        w.request_repaint();
+    }
+}
 fn key() -> Result<ed_key::Key> {
     ed_key::parse(include_str!("../../resources/update-key.pub"))
 }
@@ -110,6 +118,7 @@ fn check() {
         s.busy = true;
         s.message = "Checking for updates…".into();
     }
+    wake();
     worker(|| {
         let mut releases = Vec::new();
         for page in 1..=100 {
@@ -141,11 +150,14 @@ fn worker(work: impl FnOnce() -> Result<()> + Send + 'static) {
         .name("foxglove-update".into())
         .spawn(move || {
             let result = work();
-            let mut s = state();
-            s.busy = false;
-            if let Err(e) = result {
-                s.message = e.to_string();
+            {
+                let mut s = state();
+                s.busy = false;
+                if let Err(e) = result {
+                    s.message = e.to_string();
+                }
             }
+            wake();
         })
     {
         let mut s = state();
@@ -160,6 +172,7 @@ pub fn available_version() -> Option<String> {
 const RELEASES_PAGE: &str = "https://github.com/BanditF/foxglove/releases";
 
 pub fn group(ui: &mut egui::Ui) {
+    let _ = WAKE.set(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
     super::settings_ui::section(ui, "Updates", |ui| {
         ui.label(format!("Current version: {}", env!("CARGO_PKG_VERSION")));
         // Builds without the release signing key (0.1) can't verify an update, so they don't
@@ -219,9 +232,6 @@ pub fn group(ui: &mut egui::Ui) {
                     std::process::exit(0);
                 });
             }
-        }
-        if s.busy {
-            ui.ctx().request_repaint_after(Duration::from_millis(200));
         }
     });
 }

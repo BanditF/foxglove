@@ -29,6 +29,8 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
         found = Some((vid, pid));
         let backend = BackendId("zmk".into());
         let product = link.state().connected.map(|c| c.product).unwrap_or_default();
+        // Its board profile, read once now it's connected (#75).
+        super::boards::connected(vid, pid, &product);
         let id = DeviceId::new(backend.clone(), vid, pid, None, &format!("{vid:04x}:{pid:04x}"));
         let info = DeviceInfo {
             id: id.clone(),

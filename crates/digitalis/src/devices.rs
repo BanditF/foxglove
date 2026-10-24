@@ -101,6 +101,8 @@ pub struct DigitalisDevice {
     info: DeviceInfo,
     link: Arc<Link>,
     hello: Mutex<Hello>,
+    /// The PC panel's size, once asked ([`DigitalisDevice::panel_size`]).
+    panel_size: Mutex<Option<(usize, usize)>>,
     caps: Caps,
     sink: EventSink,
     layers: Arc<Mutex<Vec<u8>>>,
@@ -130,6 +132,15 @@ impl DigitalisDevice {
         let reports = link.subscribe_reports(move |_, r| {
             if r[0] == KEY_EVENT {
                 report_sink.emit(DeviceEvent::Key { row: r[1].into(), col: r[2].into(), pressed: r[3] != 0 });
+            } else if crate::protocol::is_reply(r, crate::protocol::SETTINGS, crate::protocol::settings::CONN_STATE) {
+                // The firmware says when the connection changes (CONN_STATE_EVENT), and answers
+                // a read the same way (#17).
+                let c = crate::protocol::ConnState::parse(r);
+                report_sink.emit(DeviceEvent::Link {
+                    output: if c.endpoint == 0 { "USB" } else { "BLE" }.into(),
+                    profile: c.active_profile,
+                    connected: c.connected,
+                });
             } else if let Some(active) = parse_layers(r) {
                 let mut current = report_layers.lock().unwrap_or_else(|e| e.into_inner());
                 if *current != active {
@@ -146,6 +157,7 @@ impl DigitalisDevice {
             link,
             caps: caps(&hello),
             hello: Mutex::new(hello),
+            panel_size: Mutex::new(None),
             sink,
             layers,
             behaviors: Mutex::new(Vec::new()),
@@ -188,6 +200,17 @@ impl DigitalisDevice {
 
     pub fn link(&self) -> &Arc<Link> {
         &self.link
+    }
+
+    /// The PC panel's size: from the keyboard's screen descriptors when it has them (#289),
+    /// read once, else from HELLO.
+    fn panel_size(&self) -> (usize, usize) {
+        let hello = *self.hello.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cached = self.panel_size.lock().unwrap_or_else(|e| e.into_inner());
+        *cached.get_or_insert_with(|| {
+            let screens = if hello.capabilities & capabilities::SCREENS != 0 { panel::screens(&*self.link).unwrap_or_default() } else { vec![] };
+            panel::drawable_panel(&screens).map_or((hello.width, hello.height), |p| (usize::from(p.width), usize::from(p.height)))
+        })
     }
 
     fn has(&self, bit: u32) -> bool {
@@ -264,7 +287,11 @@ const UNDERGLOW_BUSY_WAIT: std::time::Duration = std::time::Duration::from_milli
 // `&rgb_ug` commands (ZMK's dt-bindings/zmk/rgb.h).
 const RGB_ON: u32 = 1;
 const RGB_OFF: u32 = 2;
+const RGB_SPEED_UP: u32 = 9;
+const RGB_SPEED_DOWN: u32 = 10;
 const RGB_EFFECT_SET: u32 = 13;
+/// ZMK's underglow speeds run 1-5, so this many steps reach any of them.
+const SPEED_STEPS: u32 = 5;
 const RGB_COLOR_HSB: u32 = 14;
 
 impl Lighting for DigitalisDevice {
@@ -300,6 +327,19 @@ impl Lighting for DigitalisDevice {
         self.underglow(RGB_COLOR_HSB, hsb)
     }
 
+    /// ZMK has no "set speed", only one step up or down: steps toward `speed`, reading it back
+    /// each time, at most [`SPEED_STEPS`] times (#293).
+    fn set_speed(&self, speed: u8) -> PResult<()> {
+        for _ in 0..SPEED_STEPS {
+            let now = settings::rgb_state(&*self.link).map_err(err)?.left.speed;
+            if now == speed {
+                return Ok(());
+            }
+            self.underglow(if now < speed { RGB_SPEED_UP } else { RGB_SPEED_DOWN }, 0)?;
+        }
+        Ok(())
+    }
+
     fn release(&self) -> PResult<()> {
         // Changes go through the keymap's own behavior, so the keyboard always keeps control.
         Ok(())
@@ -308,15 +348,10 @@ impl Lighting for DigitalisDevice {
 
 impl Screens for DigitalisDevice {
     fn send_panel(&self, bitmap: &[u8], w: u16, h: u16) -> PResult<()> {
-        let hello = *self.hello.lock().unwrap_or_else(|e| e.into_inner());
+        let (width, height) = self.panel_size();
         let stride = (w as usize).div_ceil(8);
-        if (w as usize, h as usize) != (hello.width, hello.height) || bitmap.len() != stride * h as usize {
-            return Err(DeviceError::Backend(format!(
-                "the panel is {}x{}; got {w}x{h} with {} bytes",
-                hello.width,
-                hello.height,
-                bitmap.len()
-            )));
+        if (w as usize, h as usize) != (width, height) || bitmap.len() != stride * h as usize {
+            return Err(DeviceError::Backend(format!("the panel is {width}x{height}; got {w}x{h} with {} bytes", bitmap.len())));
         }
         panel::show(&*self.link, bitmap, None, stride).map(|_| ()).map_err(err)
     }

@@ -601,6 +601,7 @@ dependencies = [
  "hidapi",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1359,6 +1360,15 @@ dependencies = [
  "foxglove-plugin-host",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "plugin-icue-mirror"
+version = "1.0.0"
+dependencies = [
+ "foxglove-plugin",
+ "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -224,6 +224,11 @@ pub trait Lighting {
         Err(DeviceError::Unsupported)
     }
 
+    /// Sets the effect's speed (as [`LightingState::speed`] reports it) when supported.
+    fn set_speed(&self, _speed: u8) -> Result<()> {
+        Err(DeviceError::Unsupported)
+    }
+
     /// Sends colors in LED layout order when supported.
     fn set_frame(&self, _frame: &[Rgb]) -> Result<()> {
         Err(DeviceError::Unsupported)

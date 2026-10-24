@@ -22,6 +22,8 @@ struct UiState {
     secret_input: std::collections::HashMap<String, String>,
     /// Whether each declared secret is set, read once per plugin list, not every frame.
     secret_set: std::collections::HashMap<String, bool>,
+    /// A text setting being edited, by `plugin/name`, until it's committed.
+    setting_text: std::collections::HashMap<String, String>,
 }
 
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
@@ -101,6 +103,7 @@ pub fn group(ui: &mut egui::Ui) {
                 ui.weak(format!("    may {}", if perms.is_empty() { "do nothing beyond running".into() } else { perms.join(", ") }));
                 action_keys(ui, plugin, state);
                 secret_fields(ui, plugin, state);
+                setting_fields(ui, plugin, state);
             }
 
             ui.add_space(6.0);
@@ -130,6 +133,47 @@ pub fn group(ui: &mut egui::Ui) {
             }
         });
     });
+}
+
+/// A control for each setting the plugin declares (#69); a change is saved and sent to the
+/// plugin at once (text when the field loses focus).
+fn setting_fields(ui: &mut egui::Ui, plugin: &Installed, state: &mut UiState) {
+    use foxglove_plugin_api::manifest::SettingKind;
+    use serde_json::Value;
+    if plugin.manifest.settings.is_empty() {
+        return;
+    }
+    let id = &plugin.manifest.id;
+    let values = super::plugin_settings::values_for(&plugin.manifest, super::plugin_settings::stored().get(id.as_str()));
+    for decl in &plugin.manifest.settings {
+        let current = values.get(&decl.name).cloned().unwrap_or_else(|| decl.default.clone());
+        ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            let changed = match decl.kind {
+                SettingKind::Bool => {
+                    let mut on = current.as_bool().unwrap_or(false);
+                    ui.checkbox(&mut on, &decl.label).changed().then(|| Value::from(on))
+                }
+                SettingKind::Int => {
+                    ui.label(&decl.label);
+                    let mut n = current.as_i64().unwrap_or(0);
+                    let range = decl.min.unwrap_or(i64::MIN)..=decl.max.unwrap_or(i64::MAX);
+                    ui.add(egui::DragValue::new(&mut n).range(range)).changed().then(|| Value::from(n))
+                }
+                SettingKind::Text => {
+                    ui.label(&decl.label);
+                    let key = format!("{id}/{}", decl.name);
+                    let text = state.setting_text.entry(key.clone()).or_insert_with(|| current.as_str().unwrap_or_default().to_string());
+                    let done = ui.text_edit_singleline(text).lost_focus();
+                    let text = text.clone();
+                    (done && Some(text.as_str()) != current.as_str()).then(|| Value::from(text))
+                }
+            };
+            if let Some(v) = changed {
+                state.message = super::plugin_settings::set(id, decl, v).err();
+            }
+        });
+    }
 }
 
 /// A field for each secret the plugin declares (#213): the value goes straight into Windows'
@@ -200,15 +244,13 @@ fn action_keys(ui: &mut egui::Ui, plugin: &Installed, state: &mut UiState) {
 /// (at most every 10 minutes, and never while backing off).
 fn catalog_status(ui: &mut egui::Ui) {
     use super::catalog_refresh::{self, Status, Trigger};
+    catalog_refresh::set_wake(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
     catalog_refresh::request(Trigger::TabOpened);
     ui.horizontal_wrapped(|ui| {
         let status = catalog_refresh::status();
         match &status {
             Status::Idle => ui.weak("Catalog: not checked yet this session."),
-            Status::Checking => {
-                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
-                ui.weak("Catalog: checking…")
-            }
+            Status::Checking => ui.weak("Catalog: checking…"),
             Status::UpToDate { sequence: Some(n) } => ui.weak(format!("Catalog: updated (sequence {n}).")),
             Status::UpToDate { sequence: None } => ui.weak("Catalog: up to date."),
             Status::Failed(e) => ui.weak(format!("Catalog: couldn't check ({e}).")),

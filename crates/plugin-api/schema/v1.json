@@ -1242,6 +1242,102 @@
         "type": "object"
       }
     },
+    "lighting.update": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "Hsb": {
+            "properties": {
+              "brightness": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hue": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "saturation": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "hue",
+              "saturation",
+              "brightness"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Changes a held lease's colour (and effect) in place, for a stream of colours (a colour sync)\nwithout taking a new lease each time (API 1.3).",
+        "properties": {
+          "color": {
+            "$ref": "#/$defs/Hsb"
+          },
+          "effect": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lease": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lease",
+          "color"
+        ],
+        "title": "LeaseUpdate",
+        "type": "object"
+      },
+      "permission": "lighting.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "net.accepted": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event: a listener (`tcp-listen`) accepted a connection, which is the new `stream` (API 1.3).",
+        "properties": {
+          "from": {
+            "description": "The other side's address (always on this PC).",
+            "type": "string"
+          },
+          "listener": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "listener",
+          "stream",
+          "from"
+        ],
+        "title": "NetAccepted",
+        "type": "object"
+      }
+    },
     "net.close": {
       "kind": "call",
       "params": {
@@ -1332,6 +1428,11 @@
               {
                 "const": "udp",
                 "description": "Datagrams sent to 127.0.0.1:`port`; needs `net.listen:udp:127.0.0.1:<port>`.",
+                "type": "string"
+              },
+              {
+                "const": "tcp-listen",
+                "description": "Accepts TCP connections on 127.0.0.1:`port` (API 1.3); needs\n`net.listen:tcp:127.0.0.1:<port>`. Each connection arrives as `net.accepted` with its own\nstream, then `net.data` and `net.closed` like any other; closing the listener's stream\nstops accepting.",
                 "type": "string"
               }
             ]
@@ -1620,6 +1721,47 @@
       "result": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Empty",
+        "type": "object"
+      }
+    },
+    "settings.changed": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A plugin's settings (`[[settings]]` in `plugin.toml`): the answer to `settings.get` and the\n`settings.changed` event, every setting with its current value (API 1.3).",
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "title": "SettingValues",
+        "type": "object"
+      }
+    },
+    "settings.get": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A plugin's settings (`[[settings]]` in `plugin.toml`): the answer to `settings.get` and the\n`settings.changed` event, every setting with its current value (API 1.3).",
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "title": "SettingValues",
         "type": "object"
       }
     }

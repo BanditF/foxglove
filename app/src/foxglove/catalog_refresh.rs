@@ -89,8 +89,19 @@ pub fn status() -> Status {
     STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// Repaints the Plugins tab when the status changes (#282), instead of every 250 ms while a
+/// check runs. Set by the tab (`set_wake`).
+static WAKE: std::sync::OnceLock<crate::ui_wake::UiWake> = std::sync::OnceLock::new();
+
+pub fn set_wake(wake: crate::ui_wake::UiWake) {
+    let _ = WAKE.set(wake);
+}
+
 fn set_status(s: Status) {
     *STATUS.lock().unwrap_or_else(|e| e.into_inner()) = s;
+    if let Some(w) = WAKE.get() {
+        w.request_repaint();
+    }
 }
 
 fn base() -> String {

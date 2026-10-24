@@ -66,8 +66,19 @@ pub fn show(t: &impl Transport, frame: &[u8], last: Option<&[u8]>, stride: usize
         Some(l) => frame[y * stride..(y + 1) * stride] != l[y * stride..(y + 1) * stride],
         None => true,
     };
-    let per_report = protocol::panel::rows_per_report(stride);
     let mut sent = 0;
+    // Wide rows or tall panels go byte-addressed (ROWS_AT, #289); the rest as whole rows.
+    if protocol::panel::needs_rows_at(stride, rows) {
+        for y in (0..rows).filter(|y| changed(*y)) {
+            for (i, chunk) in frame[y * stride..(y + 1) * stride].chunks(protocol::panel::ROWS_AT_MAX).enumerate() {
+                t.send(&protocol::rows_at(y, i * protocol::panel::ROWS_AT_MAX, chunk))?;
+                sent += 1;
+            }
+        }
+        t.send(&protocol::present())?;
+        return Ok(sent + 1);
+    }
+    let per_report = protocol::panel::rows_per_report(stride);
     let mut y = 0;
     while y < rows {
         if !changed(y) {
@@ -104,11 +115,16 @@ pub fn screens(t: &impl Transport) -> Result<Vec<protocol::ScreenDescriptor>> {
     Ok(all)
 }
 
-/// The PC-drawable panel among `screens` (the first panel that takes rows).
+/// The PC-drawable panel among `screens`: the first 1-bit panel that takes the rows it needs
+/// (ROWS, or ROWS_AT when its rows are too wide or it's too tall for ROWS). Reserved formats
+/// (RGB565, 2-bit grey) aren't drawn (#289).
 pub fn drawable_panel(screens: &[protocol::ScreenDescriptor]) -> Option<&protocol::ScreenDescriptor> {
-    screens
-        .iter()
-        .find(|s| s.kind == protocol::ScreenKind::Panel && s.ops & protocol::ScreenDescriptor::OP_ROWS != 0 && s.format == 0)
+    use protocol::ScreenDescriptor as S;
+    screens.iter().find(|s| {
+        let stride = usize::from(s.width).div_ceil(8);
+        let ops = if protocol::panel::needs_rows_at(stride, usize::from(s.height)) { S::OP_ROWS_AT } else { S::OP_ROWS | S::OP_ROWS_AT };
+        s.kind == protocol::ScreenKind::Panel && s.ops & ops != 0 && s.format == S::FORMAT_1BIT
+    })
 }
 
 /// Gives the area back to the firmware's own drawing.
@@ -169,6 +185,32 @@ pub(crate) mod tests {
         let panel = drawable_panel(&all).unwrap();
         assert_eq!((panel.id, panel.width, panel.height), (1, 64, 52));
         assert!(drawable_panel(&all[..1]).is_none());
+    }
+
+    #[test]
+    fn wide_or_tall_panels_and_reserved_formats() {
+        // 144x168 (Toucan2's Sharp LCD): 18-byte rows fit ROWS; 300 wide doesn't.
+        let narrow = screen(1, 0, 1, 1, 144, 168, 1);
+        let wide = screen(1, 0, 1, 1, 300, 40, protocol::ScreenDescriptor::OP_ROWS_AT);
+        let wide_rows_only = screen(1, 0, 1, 1, 300, 40, protocol::ScreenDescriptor::OP_ROWS);
+        let mut rgb = screen(1, 0, 1, 1, 64, 52, 1);
+        rgb[18] = protocol::ScreenDescriptor::FORMAT_RGB565;
+        let parse = |r: [u8; protocol::REPORT]| protocol::ScreenDescriptor::parse(&r).unwrap();
+        assert!(drawable_panel(&[parse(narrow)]).is_some());
+        assert!(drawable_panel(&[parse(wide)]).is_some());
+        assert!(drawable_panel(&[parse(wide_rows_only)]).is_none(), "too wide for ROWS, and no ROWS_AT");
+        assert!(drawable_panel(&[parse(rgb)]).is_none(), "RGB565 is reserved");
+        assert!(parse(rgb).format_name().contains("reserved"));
+        // A 300-wide panel goes byte-addressed: 38-byte rows in 25 + 13.
+        let t = Mock::default();
+        let p = Panel::new(300, 2);
+        assert_eq!(show(&t, &p.bits, None, p.stride).unwrap(), 5);
+        let sent = t.sent.borrow();
+        assert_eq!(&sent[0][..7], &[0xD5, 0x07, 0, 0, 0, 0, 25]);
+        assert_eq!(&sent[1][..7], &[0xD5, 0x07, 0, 0, 25, 0, 13]);
+        assert_eq!(&sent[3][..7], &[0xD5, 0x07, 1, 0, 25, 0, 13]);
+        assert_eq!(sent[4], protocol::present());
+        assert!(sent.iter().all(|r| r.len() <= protocol::REPORT));
     }
 
     #[test]

@@ -1,0 +1,28 @@
+# Board profile (#75). Untested: Halcyon wireless with splitkb's e-paper module (SSD1680), one
+# per half when fitted (Scout's #157). Needs Foxglove's host link added to splitkb's ZMK module.
+format = "foxglove-board"
+version = 1
+id = "halcyon-corne-epaper"
+name = "Halcyon Corne (e-paper)"
+status = "untested"
+protocol = "zmk"
+halves = 2
+
+[[match]]
+vid = 0x1d50
+pid = 0x615e
+product = "Halcyon Corne"
+
+[[screens]]
+kind = "display"
+half = "left"
+width = 88
+height = 184
+format = "1bit"
+
+[[screens]]
+kind = "display"
+half = "right"
+width = 88
+height = 184
+format = "1bit"
