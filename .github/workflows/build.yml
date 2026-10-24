@@ -23,3 +23,87 @@ on:
 jobs:
   build:
     uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@v0.3.0
+
+  # Names the UF2s by version, half and profile (foxglove-fw-v0.1.0-1a2b3c4-left-dev.uf2), and on a
+  # fw-vX.Y.Z tag checks it against FIRMWARE_VERSION and attaches them to a GitHub release.
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: built
+      - name: Name the UF2s
+        id: names
+        run: |
+          set -eu
+          version=$(head -n1 boards/shields/nice_view_custom/FIRMWARE_VERSION | tr -d '\r')
+          sha=${GITHUB_SHA::7}
+          prefix="foxglove-fw-v${version}-${sha}"
+          mkdir -p out
+          for f in built/*.uf2; do
+            case "$(basename "$f")" in
+              eyelash_corne_studio_left.uf2) name=left-dev ;;
+              eyelash_corne_studio_left_ga.uf2) name=left-ga ;;
+              nice_view_custom-eyelash_corne_right-zmk.uf2) name=right-dev ;;
+              eyelash_corne_right_ga.uf2) name=right-ga ;;
+              eyelash_corne_studio_left_lamparray.uf2) name=left-lamparray ;;
+              settings_reset-nice_nano_v2-zmk.uf2) name=settings-reset ;;
+              *) name=$(basename "$f" .uf2) ;;
+            esac
+            cp "$f" "out/${prefix}-${name}.uf2"
+          done
+          ls -l out
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
+      # The release gate's file checks (scripts/flash, read-only): every UF2 is a valid nRF52840
+      # image under the bootloader's 0xAD000 limit, marked for the right half; dev and GA builds
+      # say their profile and this commit's SHA when the flasher can read them.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Preflight the UF2s
+        run: |
+          set -eu
+          for profile in dev ga; do
+            left=$(ls out/*-left-${profile}.uf2 2>/dev/null || true)
+            right=$(ls out/*-right-${profile}.uf2 2>/dev/null || true)
+            if [ -z "$left" ] || [ -z "$right" ]; then
+              echo "::warning::no ${profile} left/right pair to preflight"; continue
+            fi
+            python scripts/flash/foxglove_flash.py --left "$left" --right "$right" --dry-run --json > "preflight-${profile}.json" || {
+              cat "preflight-${profile}.json"; exit 1; }
+            python - "preflight-${profile}.json" "$profile" "${GITHUB_SHA::7}" <<'EOF'
+          import json, sys
+          report, profile, sha = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
+          for half, image in report['images'].items():
+              print(f"{profile} {half}: end 0x{image['end_address']:X}, {image['headroom_kib']:.1f} KiB headroom, "
+                    f"half={image['detected_half']} {image.get('version', '')} {image.get('profile', '')} {image.get('sha', '')}")
+              assert image['ok'] and image['detected_half'] == half, image
+              if image.get('profile'):
+                  assert image['profile'] == profile, f"{half}: marked {image['profile']}, file says {profile}"
+              if image.get('sha'):
+                  assert image['sha'] == sha, f"{half}: marked SHA {image['sha']}, commit {sha}"
+          EOF
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.names.outputs.prefix }}
+          path: out/*.uf2
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/fw-v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tag=${GITHUB_REF_NAME}
+          if [ "$tag" != "fw-v${{ steps.names.outputs.version }}" ]; then
+            echo "Tag $tag doesn't match FIRMWARE_VERSION ${{ steps.names.outputs.version }}" >&2
+            exit 1
+          fi
+          gh release create "$tag" out/*.uf2 --title "Firmware $tag" --notes \
+            "Dev builds have the test hooks (position press, D7 08 bootloader); GA builds don't. Flash the left first, then the right."

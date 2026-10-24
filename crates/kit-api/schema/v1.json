@@ -528,6 +528,87 @@
         "type": "object"
       }
     },
+    "facts.list": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "pattern": {
+            "description": "An exact key, `prefix.*`, or `*`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "title": "SubscribeParams",
+        "type": "object"
+      },
+      "result": {
+        "$defs": {
+          "Fact": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "format": "int64",
+                "type": "integer"
+              },
+              {
+                "format": "double",
+                "type": "number"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "properties": {
+                  "base64": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "base64"
+                ],
+                "type": "object"
+              }
+            ],
+            "description": "A fact's value. Bytes travel as base64 under `{\"base64\": ...}`."
+          },
+          "FactEntry": {
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "value": {
+                "$ref": "#/$defs/Fact"
+              }
+            },
+            "required": [
+              "key",
+              "value"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The facts matching a pattern, sorted by key.",
+        "properties": {
+          "facts": {
+            "items": {
+              "$ref": "#/$defs/FactEntry"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "facts"
+        ],
+        "title": "FactList",
+        "type": "object"
+      }
+    },
     "facts.set": {
       "kind": "call",
       "params": {

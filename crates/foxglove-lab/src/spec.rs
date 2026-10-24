@@ -401,7 +401,13 @@ pub fn load(path: &Path) -> Result<Suite> {
         );
         for r in &c.requires {
             ensure!(
-                ["position_press", "screen_readback", "invoke_refusal"].contains(&r.as_str())
+                [
+                    "position_press",
+                    "screen_readback",
+                    "invoke_refusal",
+                    "build_info"
+                ]
+                .contains(&r.as_str())
                     || r.strip_prefix("host_link>=")
                         .is_some_and(|s| s.parse::<u8>().is_ok()),
                 "unknown requirement {r}"

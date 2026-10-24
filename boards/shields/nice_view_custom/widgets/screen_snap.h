@@ -2,7 +2,9 @@
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>
+#if __has_include(<lvgl.h>) // not in builds without a display (the ZMK simulator)
 #include <lvgl.h>
+#endif
 
 #define SCREEN_SNAP_W 160
 #define SCREEN_SNAP_H 68
@@ -15,7 +17,9 @@ enum screen_snap_status {
 };
 /* Called only on the display queue. Returns false before the widget exists. */
 bool screen_snap_pixels(uint8_t out[SCREEN_SNAP_BYTES]);
+#if __has_include(<lvgl.h>)
 void screen_snap_canvas(uint8_t *out, const lv_color_t *pixels, int x);
+#endif
 void screen_snap_pixel(uint8_t *out, int x, int y, bool ink);
 uint8_t screen_snap_local(void);
 /* Copies only frozen bytes; safe on the Bluetooth RX thread. */

@@ -36,7 +36,7 @@ same messages.
 | Method | Kind | Needs |
 |---|---|---|
 | `initialize`, `ping` | call | — |
-| `facts.get`, `facts.subscribe`, `facts.unsubscribe` | call | `facts.read:<pattern>` covering the key/pattern |
+| `facts.get`, `facts.list`, `facts.subscribe`, `facts.unsubscribe` | call | `facts.read:<pattern>` covering the key/pattern |
 | `facts.set` | call | `facts.write:<pattern>`; `device.*` keys are never writable |
 | `facts.changed` | event | the subscription |
 | `devices.list` / `devices.changed` | call / event | `devices.read` |
