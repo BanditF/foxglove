@@ -60,6 +60,7 @@ pub struct Plugin {
     next: AtomicI64,
     pending: Pending,
     events: Mutex<Option<Receiver<FactChanged>>>,
+    actions: Mutex<Option<Receiver<String>>>,
     routes: net::Routes,
     /// What Foxglove granted this plugin.
     pub granted: Vec<String>,
@@ -80,6 +81,7 @@ impl Plugin {
     ) -> Result<Arc<Plugin>> {
         let pending: Pending = Arc::default();
         let (events_tx, events_rx) = mpsc::channel();
+        let (actions_tx, actions_rx) = mpsc::channel::<String>();
         let reader_pending = pending.clone();
         let routes = net::Routes::default();
         let reader_routes = routes.clone();
@@ -97,6 +99,10 @@ impl Plugin {
                         if let Ok(ev) = serde_json::from_value(n.params) {
                             let _ = events_tx.send(ev);
                         }
+                    } else if n.method == "action.invoked" {
+                        if let Some(a) = n.params.get("action").and_then(Value::as_str) {
+                            let _ = actions_tx.send(a.to_string());
+                        }
                     } else {
                         reader_routes.handle(&n.method, n.params);
                     }
@@ -110,6 +116,7 @@ impl Plugin {
             next: AtomicI64::new(0),
             pending,
             events: Mutex::new(Some(events_rx)),
+            actions: Mutex::new(Some(actions_rx)),
             routes,
             granted: vec![],
         };
@@ -169,6 +176,12 @@ impl Plugin {
     /// The fact changes of every subscription (take it once).
     pub fn events(&self) -> Option<Receiver<FactChanged>> {
         self.events.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
+    /// The ids of this plugin's actions (`[[actions]]` in `plugin.toml`) as the user presses
+    /// their keys (#212). Taken once.
+    pub fn actions(&self) -> Option<Receiver<String>> {
+        self.actions.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
     pub fn devices(&self) -> Result<Vec<Device>> {

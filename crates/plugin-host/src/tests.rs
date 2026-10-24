@@ -322,3 +322,16 @@ fn net_tcp_connect_both_ways() {
     assert_eq!(closed["params"]["stream"], json!(stream));
     live.stop();
 }
+
+#[test]
+fn notify_sends_declared_events_to_one_running_plugin() {
+    let (tx, rx) = mpsc::channel();
+    register("test.notify", Some(tx));
+    assert!(notify("test.notify", "action.invoked", json!({"action": "toggle"})));
+    let sent: Value = serde_json::from_str(&rx.try_recv().unwrap()).unwrap();
+    assert_eq!(sent, json!({"jsonrpc":"2.0","method":"action.invoked","params":{"action":"toggle"}}));
+    assert!(!notify("test.notify", "facts.get", json!({})), "only events");
+    assert!(!notify("test.other", "action.invoked", json!({"action": "toggle"})), "only that plugin");
+    register("test.notify", None);
+    assert!(!notify("test.notify", "action.invoked", json!({"action": "toggle"})), "not after it stops");
+}

@@ -1,6 +1,23 @@
 {
   "api": "1.2",
   "methods": {
+    "action.invoked": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event: the user pressed the key bound to one of the plugin's actions (`[[actions]]` in\n`plugin.toml`); sent only to that plugin (API 1.2).",
+        "properties": {
+          "action": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "ActionInvoked",
+        "type": "object"
+      }
+    },
     "art.select": {
       "kind": "call",
       "params": {

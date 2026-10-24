@@ -51,6 +51,18 @@ pub struct Manifest {
     pub provides: Vec<Provides>,
     #[serde(default)]
     pub description: String,
+    /// Things a key can trigger (#212); the user binds them to keys in the Plugins tab.
+    #[serde(default)]
+    pub actions: Vec<ActionDecl>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionDecl {
+    /// Stable: bindings and `action.invoked` use it (`toggle-mute`).
+    pub id: String,
+    /// For the Plugins tab (`Toggle mic mute`).
+    pub name: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +97,13 @@ impl Manifest {
         if escapes {
             return Err(format!("run {program:?} must stay inside the plugin's folder"));
         }
+        let mut ids = std::collections::HashSet::new();
+        for a in &m.actions {
+            let ok = !a.id.is_empty() && a.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if !ok || !ids.insert(a.id.as_str()) || a.name.trim().is_empty() {
+                return Err(format!("action {:?} needs a unique id (a-z, 0-9, -) and a name", a.id));
+            }
+        }
         Ok(m)
     }
 
@@ -99,6 +118,32 @@ mod tests {
     use super::*;
 
     const APP: Version = Version { major: 1, minor: 0 };
+
+    #[test]
+    fn actions_need_unique_ids_and_names() {
+        let ok = plugin("[[actions]]
+id = \"toggle-mute\"
+name = \"Toggle mute\"
+");
+        assert_eq!(Manifest::parse(&ok, APP).unwrap().actions[0].id, "toggle-mute");
+        let twice = plugin("[[actions]]
+id = \"a\"
+name = \"A\"
+[[actions]]
+id = \"a\"
+name = \"B\"
+");
+        assert!(Manifest::parse(&twice, APP).is_err());
+        assert!(Manifest::parse(&plugin("[[actions]]
+id = \"Bad Id\"
+name = \"x\"
+"), APP).is_err());
+        assert!(Manifest::parse(&plugin("[[actions]]
+id = \"a\"
+name = \"x\"
+key = \"F13\"
+"), APP).is_err());
+    }
 
     #[test]
     fn reads_plugin_toml_or_the_old_kit_toml() {
