@@ -1,0 +1,30 @@
+id = "org.foxglove.icue"
+name = "Corsair iCUE"
+version = "1.0.0"
+api = "1.3"
+run = ["icue-mirror.exe"]
+# `files`: it loads the iCUE SDK from where you put it and talks to iCUE, which the sandbox
+# doesn't allow; it reads colours only and never takes control of Corsair lighting.
+permissions = ["files", "devices.read", "lighting.write"]
+provides = ["lighting-effect"]
+description = "Your keyboard's underglow follows a Corsair device's colours in iCUE (mirroring only). Needs iCUE running with SDK access on, and Corsair's iCUE SDK, which you download from Corsair: point the plugin at its iCUESDK.x64_2019.dll. Foxglove ships no Corsair files."
+
+[[settings]]
+name = "sdk-dll"
+label = "Path to iCUESDK.x64_2019.dll (from Corsair's iCUE SDK download)"
+kind = "text"
+default = ""
+
+[[settings]]
+name = "device"
+label = "Corsair device to follow (part of its model name; empty: the first one with lights)"
+kind = "text"
+default = ""
+
+[[settings]]
+name = "max-hz"
+label = "Colour reads per second while it follows"
+kind = "int"
+default = 10
+min = 1
+max = 30

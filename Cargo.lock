@@ -1363,6 +1363,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin-icue-mirror"
+version = "1.0.0"
+dependencies = [
+ "foxglove-plugin",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "plugin-mic-mute"
 version = "1.0.0"
 dependencies = [
