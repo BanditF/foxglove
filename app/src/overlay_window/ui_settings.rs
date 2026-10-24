@@ -1,7 +1,7 @@
 use super::state::AppConnectionState;
 use super::OverlayApp;
-use crate::settings::{LayerMask, LegendMode, Settings, ThemeColor, ThemeSettings, WindowPosition};
 use crate::foxglove::settings_ui::section as titled_group;
+use crate::settings::{LayerMask, LegendMode, Settings, ThemeColor, ThemeSettings, WindowPosition};
 use egui::Window;
 
 impl OverlayApp {
@@ -417,6 +417,7 @@ impl OverlayApp {
                 });
 
                 Self::foxglove_keyboard_group(ui); // Foxglove
+                crate::foxglove::screens_ui::group(ui);
                 crate::foxglove::art_ui::group(ui);
 
                 ui.add_space(8.0);

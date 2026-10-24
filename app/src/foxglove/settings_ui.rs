@@ -8,7 +8,10 @@ pub fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
             ui.set_min_width(ui.available_width());
             egui::CollapsingHeader::new(egui::RichText::new(title).weak())
                 .id_salt(("settings-section", title))
-                .default_open(matches!(title, "Connection" | "Overlay Appearance" | "Keyboard"))
+                .default_open(matches!(
+                    title,
+                    "Connection" | "Overlay Appearance" | "Keyboard"
+                ))
                 .show(ui, add_contents);
         });
 }

@@ -25,7 +25,9 @@ use device_discovery::discover_devices;
 use settings::Settings;
 
 fn main() {
-    if foxglove::update::helper_entry() { return; }
+    if foxglove::update::helper_entry() {
+        return;
+    }
     foxglove::update::start();
     os_layout::init();
     let settings = Settings::load().unwrap_or_default();
