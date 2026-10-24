@@ -22,7 +22,11 @@ use std::time::Duration;
 pub use foxglove_plugin_api::methods::{
     Device, Devices, Fact, FactChanged, FactList, Hsb, InitializeResult, LightingState, SetLightingParams,
 };
+pub use foxglove_plugin_api::methods::NetKind;
 use foxglove_plugin_api::rpc::{Error, Id, Outcome, Request, Response};
+
+mod net;
+pub use net::{NetEvent, TcpStream};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
@@ -56,6 +60,7 @@ pub struct Plugin {
     next: AtomicI64,
     pending: Pending,
     events: Mutex<Option<Receiver<FactChanged>>>,
+    routes: net::Routes,
     /// What Foxglove granted this plugin.
     pub granted: Vec<String>,
 }
@@ -76,6 +81,8 @@ impl Plugin {
         let pending: Pending = Arc::default();
         let (events_tx, events_rx) = mpsc::channel();
         let reader_pending = pending.clone();
+        let routes = net::Routes::default();
+        let reader_routes = routes.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(read).lines() {
                 let Ok(line) = line else { break };
@@ -90,6 +97,8 @@ impl Plugin {
                         if let Ok(ev) = serde_json::from_value(n.params) {
                             let _ = events_tx.send(ev);
                         }
+                    } else {
+                        reader_routes.handle(&n.method, n.params);
                     }
                 }
             }
@@ -101,6 +110,7 @@ impl Plugin {
             next: AtomicI64::new(0),
             pending,
             events: Mutex::new(Some(events_rx)),
+            routes,
             granted: vec![],
         };
         let init: InitializeResult = plugin.call_as(

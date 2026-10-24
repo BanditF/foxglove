@@ -2,7 +2,8 @@
 //! keyboard's lights. Point an OpenRGB E1.31 device at 127.0.0.1, universe 1, and its colour
 //! becomes the keyboards' underglow colour (the average of the LEDs it sends).
 //!
-//! - Listens on 127.0.0.1:5568 (UDP) only: it declares `net`, but nothing leaves the PC.
+//! - Receives on 127.0.0.1:5568 (UDP) only, through Foxglove (`net.listen:udp:127.0.0.1:5568`),
+//!   so the plugin itself runs sandboxed, without any network of its own.
 //! - Sends `lighting.set` only when the colour changes, at most `--max-hz` times a second.
 //! - When the sender stops (stream terminated, or 2.5 s without data, E1.31's loss timeout),
 //!   it puts each keyboard's lights back as they were.
@@ -16,7 +17,7 @@ mod e131;
 use std::net::{Ipv4Addr, UdpSocket};
 use std::time::{Duration, Instant};
 
-use foxglove_plugin::{Hsb, Plugin, LightingState, SetLightingParams};
+use foxglove_plugin::{Hsb, LightingState, NetEvent, Plugin, SetLightingParams};
 
 /// E1.31 6.7.1: a stream is lost after 2.5 s without data.
 const LOSS_TIMEOUT: Duration = Duration::from_millis(2500);
@@ -146,17 +147,15 @@ fn main() {
             std::process::exit(1);
         }
     };
-    // Localhost only: other machines can't drive the lights.
-    let socket = match UdpSocket::bind((Ipv4Addr::LOCALHOST, e131::PORT)) {
-        Ok(s) => s,
+    // Localhost only: other machines can't drive the lights. Foxglove does the listening.
+    let frames = match plugin.listen_udp(e131::PORT) {
+        Ok(rx) => rx,
         Err(e) => {
             eprintln!("openrgb-e131: can't listen on 127.0.0.1:{}: {e}", e131::PORT);
             std::process::exit(1);
         }
     };
-    let _ = socket.set_read_timeout(Some(Duration::from_millis(250)));
     let period = Duration::from_millis(1000 / u64::from(opts.max_hz));
-    let mut buf = [0u8; 1144];
     let mut last_seq: Option<u8> = None;
     let mut devices: Option<Vec<(String, Option<LightingState>)>> = None;
     let mut last_data = Instant::now();
@@ -166,8 +165,17 @@ fn main() {
     let mut next_check = Instant::now() + Duration::from_secs(10);
     loop {
         let mut stop = false;
-        if let Ok((n, from)) = socket.recv_from(&mut buf) {
-            if let Some(p) = e131::parse(&buf[..n]).filter(|p| p.universe == opts.universe && !p.preview) {
+        let received = match frames.recv_timeout(Duration::from_millis(250)) {
+            Ok(NetEvent::Data(bytes, from)) => Some((bytes, from.unwrap_or_default())),
+            Ok(NetEvent::Closed(why)) => {
+                eprintln!("openrgb-e131: Foxglove stopped listening: {why}");
+                return;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        };
+        if let Some((buf, from)) = received {
+            if let Some(p) = e131::parse(&buf).filter(|p| p.universe == opts.universe && !p.preview) {
                 if last_seq.is_some_and(|last| e131::is_stale(last, p.sequence)) && !p.terminated {
                     continue;
                 }
