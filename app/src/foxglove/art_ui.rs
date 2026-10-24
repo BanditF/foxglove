@@ -254,6 +254,14 @@ fn cycle_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Sn
             cycle.mode = Mode::Minutes(m);
             changed = true;
         }
+        if ui
+            .radio(cycle.mode == Mode::Wallpaper, "Match the wallpaper")
+            .on_hover_text("Shows the art that goes with the Wallpaper Engine wallpaper on screen (from the art folder's wallpapers.json).")
+            .clicked()
+        {
+            cycle.mode = Mode::Wallpaper;
+            changed = true;
+        }
         let wake_events = s.wake_events;
         if ui
             .add_enabled(wake_events, egui::RadioButton::new(cycle.mode == Mode::LightsWake, "When the lights wake"))
@@ -265,6 +273,27 @@ fn cycle_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Sn
         }
     });
 
+    if cycle.mode == Mode::Wallpaper {
+        let monitors = super::wallpaper::monitors();
+        ui.horizontal(|ui| {
+            ui.label("Follow");
+            // "//?/DISPLAY#DEL40EA#..." -> "DEL40EA" (the monitor's model).
+            let short = |m: &str| m.split('#').nth(1).unwrap_or(m).to_string();
+            let shown = cycle.wallpaper_monitor.as_deref().map_or_else(|| "any monitor".into(), short);
+            egui::ComboBox::from_id_salt("art-wallpaper-monitor")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    changed |= ui.selectable_value(&mut cycle.wallpaper_monitor, None, "any monitor").changed();
+                    for m in monitors {
+                        let label = short(&m);
+                        changed |= ui.selectable_value(&mut cycle.wallpaper_monitor, Some(m), label).changed();
+                    }
+                });
+        });
+        if super::wallpaper::config_path().is_none() {
+            ui.weak("Wallpaper Engine isn't installed (no config.json under Steam).");
+        }
+    }
     let names = super::art_manifest::sets(st.right_set_count);
     let label = |item: &Item| match item {
         Item::BuiltIn(name) => names

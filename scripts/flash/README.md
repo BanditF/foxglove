@@ -107,3 +107,15 @@ refuses to start while that process is alive, because two writers on one bootloa
 a UF2 lands on the wrong half. A lock left by a process that's gone is taken over. `--dry-run`
 takes no lock. Older scripts such as `flash_both.py` don't know about the lock, so don't run
 them alongside this one.
+
+## After the write (#176)
+
+When the bootloader has the whole image it reboots, and its drive goes away. Windows then
+answers a stat on that drive with WinError 433 or 55, which Python raises. The flasher treats
+that as "drive gone" in every post-write step, and then reads the half's build back over D7 09:
+the image's SHA running means the flash worked. The 3-second settle before writing stays, since
+writes about 1 s after the drive appears were sometimes ignored.
+
+Every write is recorded in `%LOCALAPPDATA%\Foxglove\flash-history.log` (override with
+`FOXGLOVE_FLASH_HISTORY`), one tab-separated line each: UTC time, half, image SHA, outcome
+(`written`, `written-drive-gone`, `verified`, `unverified`, `verify-failed`), and detail.

@@ -39,6 +39,7 @@ fn main() {
     foxglove::store::init_profiles();
     foxglove::foreground::start();
     foxglove::accent::start();
+    foxglove::wallpaper::start();
     foxglove::api::start();
     foxglove::via_host::start();
     foxglove::kits::sync();
