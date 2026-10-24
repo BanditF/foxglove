@@ -1625,6 +1625,7 @@ dependencies = [
  "foxglove-kit-api",
  "foxglove-panel",
  "foxglove-update",
+ "foxglove-via",
  "gtk",
  "hidapi",
  "image",
@@ -1686,6 +1687,16 @@ dependencies = [
  "base64",
  "chrono",
  "ring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "foxglove-via"
+version = "0.1.0"
+dependencies = [
+ "hidapi",
+ "palm",
  "serde",
  "serde_json",
 ]
