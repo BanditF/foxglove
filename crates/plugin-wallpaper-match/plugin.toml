@@ -1,0 +1,21 @@
+id = "org.foxglove.wallpaper-match"
+name = "Wallpaper Match"
+version = "1.0.0"
+api = "1.3"
+run = ["wallpaper-match.exe"]
+permissions = ["net.listen:tcp:127.0.0.1:8767", "facts.read:keyboard.connected", "devices.read", "lighting.write"]
+provides = ["lighting-effect"]
+description = "Your keyboard's underglow takes the Bandit wallpaper's accent colour. In Wallpaper Engine, turn on the wallpaper's Foxglove option and paste this plugin's pairing token. It only accepts that wallpaper on this PC, and gives the lights back when the wallpaper pauses or closes."
+
+[[settings]]
+name = "pairing-token"
+label = "Pairing token (paste it into the wallpaper's Foxglove settings)"
+kind = "text"
+default = ""
+random = true
+
+[[settings]]
+name = "origins"
+label = "Allowed page origins (comma-separated; empty allows any page that has the token)"
+kind = "text"
+default = ""

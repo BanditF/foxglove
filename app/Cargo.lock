@@ -1617,6 +1617,7 @@ dependencies = [
  "foxglove-plugin-trust",
  "foxglove-update",
  "foxglove-via",
+ "getrandom 0.3.4",
  "gtk",
  "hidapi",
  "image",

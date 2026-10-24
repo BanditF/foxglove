@@ -29,7 +29,40 @@ pub fn values_for(manifest: &Manifest, stored: Option<&Map<String, Value>>) -> M
 /// A plugin's settings, by id (the host's settings source).
 pub fn values(plugin: &str) -> Map<String, Value> {
     let Some(p) = super::plugin_install::installed().into_iter().find(|p| p.manifest.id == plugin) else { return Map::new() };
+    fill_random(&p.manifest);
     values_for(&p.manifest, stored().get(plugin))
+}
+
+/// A random value for each `random` text setting that has none yet, saved: 24 characters from
+/// the OS's random source.
+pub fn fill_random(manifest: &Manifest) {
+    let missing: Vec<&SettingDecl> = manifest.settings.iter().filter(|d| d.random).collect();
+    if missing.is_empty() {
+        return;
+    }
+    let mut all = stored();
+    let mine = all.entry(manifest.id.clone()).or_default();
+    let mut changed = false;
+    for d in missing {
+        if mine.get(&d.name).and_then(Value::as_str).is_some_and(|s| !s.is_empty()) {
+            continue;
+        }
+        let Some(token) = random_token() else { continue };
+        mine.insert(d.name.clone(), Value::from(token));
+        changed = true;
+    }
+    if changed {
+        if let Err(e) = super::store::save("plugins.settings", &all) {
+            eprintln!("Foxglove: saving a plugin's token: {e}");
+        }
+    }
+}
+
+fn random_token() -> Option<String> {
+    const ALPHABET: &[u8] = b"abcdefghijkmnpqrstuvwxyzACDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut bytes = [0u8; 24];
+    getrandom::fill(&mut bytes).ok()?;
+    Some(bytes.iter().map(|b| ALPHABET[usize::from(*b) % ALPHABET.len()] as char).collect())
 }
 
 /// Saves one setting and tells the plugin.
@@ -49,6 +82,13 @@ pub fn start() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn random_tokens_are_long_and_differ() {
+        let (a, b) = (random_token().unwrap(), random_token().unwrap());
+        assert_eq!(a.len(), 24);
+        assert_ne!(a, b);
+    }
 
     #[test]
     fn defaults_until_changed_and_stale_values_are_dropped() {

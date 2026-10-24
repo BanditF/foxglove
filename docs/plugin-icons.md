@@ -51,6 +51,7 @@ the catalog (`org.foxglove.openrgb`):
 | `org.foxglove.lightsync` | two sync arrows round a key |
 | `org.foxglove.mic-mute` | a microphone with a red mute slash |
 | `org.foxglove.broadcast-status` | a broadcast mast with waves and a red tally light (no OBS mark) |
+| `org.foxglove.wallpaper-match` | a monitor with an accent drop, over a keyboard with an RGB underglow line (the wallpaper's colour reaching the lights) |
 
 ## Third-party plugins
 

@@ -175,6 +175,14 @@ description = "Puts the temperature on the left screen."
   - **OBS gone:** NOT CONNECTED for 3 s when a connection is lost (not while OBS simply isn't running). A missing or wrong password is logged.
   - **Scene:** its name goes on the panel under the symbol, up to 15 characters.
   - **Facts:** `broadcast.connected`, `broadcast.streaming`, `broadcast.recording`, `broadcast.paused`, `broadcast.scene`.
+- **Wallpaper Match (`crates/plugin-wallpaper-match`, #70):**
+  - **How it works:** a Bandit wallpaper (bandit-wallpapers `shared/match.js`) connects to `ws://127.0.0.1:8767` and sends `{v: 1, wallpaperId, theme, accent, palette, paused}` when it opens and when that changes. Foxglove accepts the connection for the plugin (`net.listen:tcp:127.0.0.1:8767`), so the plugin stays sandboxed.
+  - **Who may connect:**
+    - The pairing token, a `random` setting Foxglove fills on first use. The user copies it into the wallpaper's Foxglove settings. With no token set, nothing is accepted.
+    - Optionally, the page origins named in the "origins" setting, until Wallpaper Engine's origin is known (#320).
+  - **Lights:** a low-priority lease in the accent colour, changed in place (`lighting.update`), and taken afresh for another wallpaper. With several monitors, the last wallpaper that spoke and isn't paused wins.
+  - **Given back** when the wallpaper pauses, its connection closes, `keyboard.connected` turns false, or the plugin stops. Nothing polls.
+- **Random settings (#70):** a `text` setting with `random = true` gets a 24-character random value from the OS the first time, which the user can copy (a pairing token) or change.
 - **Pomodoro (`crates/plugin-focus-timer`, #209):**
   - **Cycle:** focus 25 min, rest 5 min, and a long rest of 15 min every 4 rounds.
   - **Restarts:** the cycle is kept as deadlines in `data/state.json`, so it survives restarts and sleep. After more than a whole cycle away, it starts fresh.
