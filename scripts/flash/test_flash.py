@@ -283,7 +283,6 @@ class MarkerTests(unittest.TestCase):
         marker = b'FOXGLOVE_HALF=right;VER=0.1.0;PROFILE=ga;SHA=abc1234'
         # Two blocks, the marker split between them.
         first, second = marker[:20], marker[20:]
-        data = uf2(first.rjust(256, b'\0'), numbers=(0,)) [:0]
         blocks = []
         for i, part in enumerate((first.rjust(256, b'\0'), second.ljust(256, b'\0'))):
             blocks.append(struct.pack('<8I', 0x0A324655, 0x9E5D5157, 0x2000, f.START + i * 256,
