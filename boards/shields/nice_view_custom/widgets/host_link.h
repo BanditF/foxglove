@@ -14,7 +14,8 @@
  *                                   panel timeout seconds u16 LE (bytes 25-26; 0 = never)
  *      Capabilities: bit 0 panel, 1 art relay, 2 settings/RGB, 3 unsolicited art STATUS,
  *                    4 settings CONN_STATE, 5 POSITION (only when test hooks are built),
- *                    6 screen snapshots (both commands).
+ *                    6 screen snapshots (D7 06/07), 7 INVOKE refuses &bt/&out/&bootloader/
+ *                    &sys_reset/&soft_off with status 6 (firmware without it may press them).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -113,7 +114,8 @@
 #define HOST_LINK_CAP_ART_STATUS_EVENT (1U << 3)
 #define HOST_LINK_CAP_CONN_STATE (1U << 4)
 #define HOST_LINK_CAP_POSITION (1U << 5)
-#define HOST_LINK_CAP_SCREEN (1U << 6)
+#define HOST_LINK_CAP_SCREEN (1U << 6) // set by the screen readback build
+#define HOST_LINK_CAP_INVOKE_REFUSES (1U << 7)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
