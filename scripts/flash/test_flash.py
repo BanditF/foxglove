@@ -506,3 +506,26 @@ class PostWriteDriveVanishTests(unittest.TestCase):
                 lines = history.read_text().splitlines()
                 self.assertEqual([l.split('	')[3] for l in lines], ['written', 'verified'])
                 self.assertEqual(lines[0].split('	')[1:3], ['left', 'abc1234'])
+
+
+class YesKeepsChecksInMain(unittest.TestCase):
+    def test_yes_still_preflights_and_takes_the_lock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            good = Path(directory) / 'left.uf2'
+            good.write_bytes(uf2())
+            bad = Path(directory) / 'right-image-as-left.uf2'
+            bad.write_bytes(uf2(b'FOXGLOVE_HALF=right'))
+            entered = []
+            class Lock:
+                def __enter__(self):
+                    entered.append(True)
+                    return self
+                def __exit__(self, *exc):
+                    return False
+            with patch.object(f, 'FlashLock', Lock), patch.object(f, 'flash') as flash,                     patch.object(f, 'WindowsOS'), patch('sys.stdout', new_callable=io.StringIO):
+                self.assertEqual(f.main(['--left', str(good), '--half', 'left', '--yes']), 0)
+                self.assertEqual(entered, [True])
+                self.assertTrue(flash.call_args.kwargs['yes'])
+                # Preflight still refuses a wrong-half image before any device access or lock.
+                self.assertEqual(f.main(['--left', str(bad), '--half', 'left', '--yes']), 1)
+                self.assertEqual(entered, [True])

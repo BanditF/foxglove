@@ -531,7 +531,11 @@ def main(argv=None):
     parser.add_argument('--force', action='store_true',
                         help='flash a half even when it already runs the same build')
     parser.add_argument('--yes', action='store_true',
-                        help='no prompts (only once the user has said go); a typing check replaces TYPES')
+                        help='no prompts: the normal path once the user has said go for this flash '
+                             '(typed FLASH/TYPES waived by the user). Every automatic check still runs: '
+                             'USB serial identity, UF2 preflight and half marker, dev/GA mix, the '
+                             'single-flasher lock, settle and retry, D7 09 build read-back, and a '
+                             'typing check in place of TYPES')
     parser.add_argument('--allow-profile-mix', action='store_true',
                         help='allow leaving one half dev and the other GA')
     args = parser.parse_args(argv)
