@@ -286,6 +286,7 @@ dependencies = [
  "crc32fast",
  "embedded-graphics",
  "hidapi",
+ "windows-sys",
 ]
 
 [[package]]
