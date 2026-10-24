@@ -260,6 +260,13 @@ pub struct ScreenChange {
     pub within_ms: u64,
 }
 
+/// F13–F24 as `&kp` params (HID keyboard page 7, usages 0x68–0x73, no modifiers). They type
+/// nothing, so a short tap is safe outside the typing sink: it's how a test presses a key bound
+/// to a plugin action (#212).
+pub fn non_typing_key(param1: u32) -> bool {
+    (0x0007_0068..=0x0007_0073).contains(&param1)
+}
+
 impl Invoke {
     pub fn validate(&self) -> Result<()> {
         ensure!(
