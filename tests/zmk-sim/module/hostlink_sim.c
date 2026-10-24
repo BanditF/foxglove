@@ -16,6 +16,8 @@
 #include <zmk/display.h>
 #include <zmk/event_manager.h>
 
+#include "behavior_safety.h"
+
 /* The Raw HID module's events, and what the board's other widgets would provide */
 
 ZMK_EVENT_IMPL(raw_hid_received_event);
@@ -108,6 +110,11 @@ static uint32_t arm(void) {
 }
 
 static void driver(void) {
+    printk("hostlink: -- probe refused bluetooth=%d sysreset=%d outputs=%d n_bt=%d n_out=%d n_reset=%d
+",
+           foxglove_behavior_refused("bluetooth"), foxglove_behavior_refused("sysreset"),
+           foxglove_behavior_refused("outputs"), DT_NUM_INST_STATUS_OKAY(zmk_behavior_bluetooth),
+           DT_NUM_INST_STATUS_OKAY(zmk_behavior_outputs), DT_NUM_INST_STATUS_OKAY(zmk_behavior_reset));
     note("hello: version, caps, panel timeout, build");
     SEND(0xD5, 0x01, 0x01);
 
