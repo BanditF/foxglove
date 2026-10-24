@@ -150,9 +150,14 @@ impl Devices for AppDevices {
                 let bits = base64::engine::general_purpose::STANDARD
                     .decode(&p.bitmap)
                     .map_err(|e| Error { code: code::INVALID_PARAMS, message: format!("bad base64: {e}"), data: None })?;
-                let ttl = std::time::Duration::from_millis(u64::from(p.ttl_ms));
+                // 0: held until replaced, released or the connection closes.
+                let ttl = (p.ttl_ms > 0).then(|| std::time::Duration::from_millis(u64::from(p.ttl_ms)));
                 super::screens::set_override(conn, p.width, p.height, bits, ttl)
                     .map_err(|e| Error { code: code::INVALID_PARAMS, message: e, data: None })?;
+                Ok(json!({}))
+            }
+            "screens.panel_release" => {
+                super::screens::clear_override(conn);
                 Ok(json!({}))
             }
             _ => self.call(method, params),

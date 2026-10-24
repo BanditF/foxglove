@@ -273,7 +273,11 @@ fn run_inner(
         .with_maximized(true)
         .with_transparent(true)
         .with_has_shadow(false)
-        .with_always_on_top();
+        .with_always_on_top()
+        // Foxglove: the window icon (Alt+Tab, Linux), the same art as the exe's.
+        .with_icon(std::sync::Arc::new(
+            eframe::icon_data::from_png_bytes(include_bytes!("../../resources/icon.png")).unwrap_or_default(),
+        ));
 
     #[cfg(target_os = "linux")]
     {

@@ -10,7 +10,10 @@
 //! - **Recording:** red (normal priority) and REC, held; amber and the pause bars while paused.
 //! - **Both:** red (high) and the LIVE + REC screen.
 //! - **Nothing running:** READY for a few seconds; the lights are left alone.
-//! - **OBS gone:** NOT CONNECTED for a few seconds, then it tries again (2 s, doubling to 30 s).
+//! - **OBS gone:** NOT CONNECTED for a few seconds. It then waits for OBS without polling:
+//!   Foxglove says when an `obs64.exe` window appears (`apps.watch`, #277), and only then does
+//!   it try to connect: until it connects or OBS's last window closes, at most 10 times 2 s
+//!   apart. It tries the same way at start if OBS is open, and when a connection drops.
 //! - **Facts:** `broadcast.connected`, `broadcast.streaming`, `broadcast.recording`,
 //!   `broadcast.paused`, `broadcast.scene`.
 //!
@@ -21,17 +24,19 @@ mod obs;
 mod screens;
 mod ws;
 
-use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use foxglove_plugin::{Fact, Hsb, Lease, LeasePriority, NetEvent, NetKind, Plugin};
+use foxglove_plugin::{AppWindowEvent, Fact, Hsb, Lease, LeasePriority, NetEvent, NetKind, Plugin};
 use obs::Status;
 use screens::State;
 
 const HOST: &str = "127.0.0.1";
-const RETRY_FIRST: Duration = Duration::from_secs(2);
-const RETRY_MAX: Duration = Duration::from_secs(30);
+const OBS_EXE: &str = "obs64.exe";
+/// Tries after OBS starts (its WebSocket server comes up a few seconds after its window).
+const TRIES: usize = 10;
+const TRY_GAP: Duration = Duration::from_secs(2);
 
 /// The keyboards: (id, has lights, has a left panel).
 fn keyboards(plugin: &Plugin) -> Vec<(String, bool, bool)> {
@@ -55,13 +60,12 @@ fn lease_all(plugin: &Arc<Plugin>, color: Hsb, priority: LeasePriority) -> Vec<L
         .collect()
 }
 
-/// What's shown: the state and scene, the held lights, and when a held screen is re-sent.
+/// What's shown: the state and scene, and the held lights.
 struct Out {
     lights: bool,
     art: Option<screens::Art>,
     leases: Vec<Lease>,
     shown: Option<(State, Option<String>)>,
-    screen_until: Option<Instant>,
 }
 
 impl Out {
@@ -84,23 +88,24 @@ impl Out {
         let lost = state == State::Disconnected && before.is_some_and(|b| b.0 != State::Disconnected);
         if state != State::Disconnected || lost {
             self.send_screen(plugin);
-        } else {
-            self.screen_until = None;
         }
     }
 
-    fn send_screen(&mut self, plugin: &Arc<Plugin>) {
-        self.screen_until = None;
+    /// A held screen stays until the next one replaces it or the plugin stops (#281); READY
+    /// and NOT CONNECTED last a few seconds.
+    fn send_screen(&self, plugin: &Arc<Plugin>) {
         let (Some(art), Some((state, scene))) = (&self.art, &self.shown) else { return };
         let frame = art.frame(*state, scene.as_deref());
-        let ttl = if state.hold() { screens::HOLD_TTL } else { screens::BRIEF };
         for (id, _, _) in keyboards(plugin).into_iter().filter(|k| k.2) {
-            if let Err(e) = plugin.panel_override(&id, screens::W, screens::H, &frame, ttl) {
+            let sent = if state.hold() {
+                plugin.panel_hold(&id, screens::W, screens::H, &frame)
+            } else {
+                plugin.panel_override(&id, screens::W, screens::H, &frame, screens::BRIEF)
+            };
+            if let Err(e) = sent {
                 eprintln!("broadcast-status: panel: {e}");
             }
         }
-        // A held screen is sent again before its lifetime runs out.
-        self.screen_until = state.hold().then(|| Instant::now() + screens::HOLD_TTL / 2);
     }
 }
 
@@ -122,18 +127,10 @@ fn session(plugin: &Arc<Plugin>, out: &mut Out, stream: u64, rx: Receiver<NetEve
     let mut obs = obs::Session::new(password);
     let mut decoder = ws::Decoder::default();
     loop {
-        let event = match out.screen_until {
-            Some(at) => rx.recv_timeout(at.saturating_duration_since(Instant::now())),
-            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
-        };
-        let bytes = match event {
+        let bytes = match rx.recv() {
             Ok(NetEvent::Data(bytes, _)) => bytes,
             Ok(NetEvent::Closed(why)) => return (format!("the connection closed: {why}"), obs.ready()),
-            Err(RecvTimeoutError::Timeout) => {
-                out.send_screen(plugin);
-                continue;
-            }
-            Err(RecvTimeoutError::Disconnected) => return ("Foxglove went away".into(), obs.ready()),
+            Err(_) => return ("Foxglove went away".into(), obs.ready()),
         };
         let messages = match decoder.feed(&bytes) {
             Ok(m) => m,
@@ -174,30 +171,84 @@ fn main() {
         }
     };
     let art = if panel { screens::Art::load().map_err(|e| eprintln!("broadcast-status: panel art: {e}")).ok() } else { None };
-    let mut out = Out { lights, art, leases: Vec::new(), shown: None, screen_until: None };
+    let mut out = Out { lights, art, leases: Vec::new(), shown: None };
     out.show(&plugin, false, &Status::default());
 
-    let mut retry = RETRY_FIRST;
+    // Tries start when OBS's window appears, at start if it's open, and when a connection
+    // drops; they stop on connecting or when OBS's last window closes.
     let mut last_error = String::new();
-    while !plugin.is_closed() {
+    // Ends when Foxglove goes away.
+    let Some(events) = plugin.app_windows() else { return };
+    let mut tries = match plugin.watch_app(OBS_EXE) {
+        Ok(0) => 0,
+        Ok(_) => TRIES,
+        Err(e) => {
+            eprintln!("broadcast-status: Foxglove can't say when OBS opens ({e}), so it connects only at start");
+            1
+        }
+    };
+    loop {
+        while tries > 0 && burst(&plugin, &mut out, port, tries, &events, &mut last_error) {
+            tries = TRIES;
+        }
+        // Idle until OBS's window appears; what came before is stale.
+        let _ = events.try_iter().count();
+        loop {
+            match events.recv() {
+                Ok(AppWindowEvent::Appeared { .. }) => break,
+                Ok(AppWindowEvent::Closed { .. }) => {}
+                Err(_) => return,
+            }
+        }
+        tries = TRIES;
+    }
+}
+
+/// OBS's last window closed: it has quit.
+fn quit(e: &AppWindowEvent) -> bool {
+    matches!(e, AppWindowEvent::Closed { open: 0, .. })
+}
+
+/// Tries to connect up to `tries` times, `TRY_GAP` apart, and stops early if OBS's windows
+/// close. True once a connection got through to OBS's status (and has since ended).
+fn burst(plugin: &Arc<Plugin>, out: &mut Out, port: u16, tries: usize, events: &Receiver<AppWindowEvent>, last_error: &mut String) -> bool {
+    for i in 0..tries {
+        if plugin.is_closed() {
+            return false;
+        }
+        if i > 0 {
+            let until = std::time::Instant::now() + TRY_GAP;
+            loop {
+                match events.recv_timeout(until.saturating_duration_since(std::time::Instant::now())) {
+                    Ok(e) if quit(&e) => return false,
+                    Err(RecvTimeoutError::Disconnected) => return false,
+                    Ok(_) => {}
+                    Err(RecvTimeoutError::Timeout) => break,
+                }
+            }
+        } else {
+            match events.try_recv() {
+                Ok(e) if quit(&e) => return false,
+                Err(TryRecvError::Disconnected) => return false,
+                _ => {}
+            }
+        }
         let (why, got_status) = match plugin.net_open(NetKind::Tcp, HOST, port) {
             Ok((stream, rx)) => {
-                let ended = session(&plugin, &mut out, stream, rx, port);
+                let ended = session(plugin, out, stream, rx, port);
                 let _ = plugin.net_close(stream);
                 ended
             }
             Err(e) => (format!("OBS isn't reachable on port {port}: {e}"), false),
         };
-        out.show(&plugin, false, &Status::default());
-        if got_status {
-            retry = RETRY_FIRST;
-        }
-        if why != last_error {
+        out.show(plugin, false, &Status::default());
+        if why != *last_error {
             eprintln!("broadcast-status: {why}");
-            last_error = why;
+            *last_error = why;
         }
-        // OBS can't announce itself, so try again later, less often the longer it's away.
-        std::thread::sleep(retry);
-        retry = (retry * 2).min(RETRY_MAX);
+        if got_status {
+            return true;
+        }
     }
+    false
 }

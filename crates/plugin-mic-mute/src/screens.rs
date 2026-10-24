@@ -10,8 +10,6 @@ use serde::Deserialize;
 
 pub const W: u16 = 64;
 pub const H: u16 = 52;
-/// How long a held screen lives; it's re-sent at half that.
-pub const HOLD_TTL: Duration = Duration::from_secs(60);
 /// How long LIVE or `?` shows after a change.
 pub const BRIEF: Duration = Duration::from_secs(3);
 /// The white acknowledgement on unmute.

@@ -8,6 +8,7 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use super::art_cycle::{self, Cycle};
+use super::art_triggers::{Change, Triggers};
 
 use digitalis::art;
 use digitalis::link::{Event as LinkEvent, EventSubscription, Link};
@@ -90,6 +91,14 @@ enum Command {
     CycleChanged,
     /// The left's underglow is on or off (an RGB_STATE report, firmware #130).
     Lights { source: Weak<Link>, generation: u64, on: bool },
+    /// The keyboard's active layers changed (the device event bus).
+    Layers(Vec<u8>),
+    /// A layer's art delay ran out (art_triggers::LAYER_DELAY).
+    LayerDue,
+    /// A lighting preset's art (`None` = no preset, or the preset doesn't change the art).
+    Preset(Option<art_cycle::Item>),
+    /// Show a trigger's art without pinning it.
+    Show(Choice),
 }
 
 #[derive(Clone)]
@@ -163,6 +172,12 @@ impl Handle {
     }
 
     /// Tells the service which wallpaper is on screen; used in the "match the wallpaper" mode.
+    /// A lighting preset was applied with this art, or cleared (`None`). The preset code calls
+    /// this only when "Change the right screen with the preset" is on (#273).
+    pub fn preset_art(&self, art: Option<art_cycle::Item>) {
+        let _ = self.commands.send(Command::Preset(art));
+    }
+
     pub fn wallpaper(&self, w: super::wallpaper::Wallpaper) {
         let _ = self.commands.send(Command::Wallpaper(w));
     }
@@ -351,6 +366,18 @@ fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             }
         }
     });
+    // Layer changes for layer art (#60), straight from the device events.
+    let layers_tx = h.commands.clone();
+    let events = super::devices::bus().subscribe(false);
+    super::services::spawn_named("art-layers", move || {
+        for event in events {
+            if let foxglove_devices::DeviceEvent::LayerChanged { active } = event.event {
+                if layers_tx.send(Command::Layers(active)).is_err() {
+                    break;
+                }
+            }
+        }
+    });
     let notifications = h.commands.clone();
     let _subscription = super::link::subscribe_links(move |link| {
         let _ = notifications.send(Command::Available(link));
@@ -368,15 +395,42 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let mut current: Option<(usize, u64)> = None;
     // When the timed hotlist mode next changes the art; only while a keyboard is connected.
     let mut due: Option<Instant> = None;
+    // Layer and preset art above the pinned choice (#60).
+    let mut triggers = Triggers::default();
     while !h.stop.load(Ordering::Relaxed) {
-        let received = match due {
+        let next_deadline = match (due, triggers.deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        let received = match next_deadline {
             Some(at) => receiver.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => receiver.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
         };
         let command = match received {
             Ok(command) => command,
-            Err(mpsc::RecvTimeoutError::Timeout) => Command::Next,
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if triggers.deadline().is_some_and(|at| at <= Instant::now()) {
+                    Command::LayerDue
+                } else {
+                    Command::Next
+                }
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        };
+        // What a trigger change means on screen: its art, or the next one down / the pin.
+        let shown = |change: Change, triggers: &Triggers| -> Option<Command> {
+            let snap = h.snapshot();
+            let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
+                return None;
+            };
+            let resolve = |item: &art_cycle::Item| art_cycle::resolve(item, st.right_set_count, st.flash_used);
+            let choice = match change {
+                Change::Nothing => return None,
+                Change::Show(item) => resolve(&item)?,
+                Change::Restore => triggers.top(&snap.cycle).and_then(|i| resolve(&i)).or(snap.pinned)?,
+            };
+            h.update(|s| s.busy = true);
+            Some(Command::Show(choice))
         };
         let reschedule = |connected: bool| {
             connected
@@ -393,17 +447,39 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 let woke = lights_on.replace(on) == Some(false) && on;
-                if !(woke && h.snapshot().cycle.mode == art_cycle::Mode::LightsWake) {
+                if !(woke && h.snapshot().cycle.steps_on(art_cycle::Step::LightsWake)) {
                     continue;
                 }
                 Command::Next
+            }
+            Command::Layers(active) => {
+                let change = triggers.layers(&active, &h.snapshot().cycle, Instant::now());
+                match shown(change, &triggers) {
+                    Some(command) => command,
+                    None => continue,
+                }
+            }
+            Command::LayerDue => {
+                let change = triggers.due(&h.snapshot().cycle, Instant::now());
+                match shown(change, &triggers) {
+                    Some(command) => command,
+                    None => continue,
+                }
+            }
+            Command::Preset(art) => {
+                let change = triggers.preset(art);
+                match shown(change, &triggers) {
+                    Some(command) => command,
+                    None => continue,
+                }
             }
             Command::Wallpaper(w) => {
                 let snap = h.snapshot();
                 let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
                     continue;
                 };
-                if snap.cycle.mode != art_cycle::Mode::Wallpaper {
+                // Layer or preset art is on top; the wallpaper's art shows when it ends.
+                if snap.cycle.follow != art_cycle::Follow::Wallpaper || triggers.top(&snap.cycle).is_some() {
                     continue;
                 }
                 match super::wallpaper::choice(&w, st.right_set_count) {
@@ -437,7 +513,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             Command::CycleChanged => {
                 due = reschedule(current.is_some());
                 // Turning on "match the wallpaper" shows the current wallpaper's art right away.
-                if h.snapshot().cycle.mode == art_cycle::Mode::Wallpaper {
+                if h.snapshot().cycle.follow == art_cycle::Follow::Wallpaper {
                     if let Some(w) = super::wallpaper::current(h.snapshot().cycle.wallpaper_monitor.as_deref()) {
                         let _ = h.commands.send(Command::Wallpaper(w));
                     }
@@ -450,6 +526,10 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
                     continue;
                 };
+                // The hotlist waits while layer or preset art is on top.
+                if triggers.top(&snap.cycle).is_some() {
+                    continue;
+                }
                 let mut cycle = snap.cycle;
                 let Some(choice) = cycle.advance(|item| {
                     art_cycle::resolve(item, st.right_set_count, st.flash_used)
@@ -504,6 +584,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     current = None;
                     due = None;
                     lights_on = None;
+                    triggers.disconnected();
                     h.update(|s| {
                         s.connected = false;
                         s.status = None;
@@ -577,7 +658,14 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                             read_slots(link, h, &st);
                         }
                         if !queued_command {
-                            if let Some(choice) = restore(&h.snapshot().pinned, st) {
+                            // Preset art (layers are unknown until the keyboard reports them)
+                            // comes back over the pin after a reconnect.
+                            let snap = h.snapshot();
+                            let wanted = triggers
+                                .top(&snap.cycle)
+                                .and_then(|i| art_cycle::resolve(&i, st.right_set_count, st.flash_used))
+                                .or(snap.pinned);
+                            if let Some(choice) = restore(&wanted, st) {
                                 return choose(link, h, &choice);
                             }
                         }
@@ -592,6 +680,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     Command::Erase(slot) => art::erase(link.as_ref(), slot)
                         .map_err(|e| e.to_string())
                         .inspect(|st| read_slots(link, h, st)),
+                    Command::Show(choice) => choose(link, h, &choice),
                     Command::Choose(choice) => choose(link, h, &choice).and_then(|st| {
                         h.update(|s| {
                             s.status = Some(st);

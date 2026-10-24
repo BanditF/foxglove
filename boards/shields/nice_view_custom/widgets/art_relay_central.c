@@ -717,6 +717,33 @@ int art_relay_select(int8_t set) {
     return 0;
 }
 
+void art_relay_step(int dir) {
+    if (art_relay_link() < 2 || right_read_at == 0) {
+        return;
+    }
+    int8_t ids[INT8_MAX];
+    int total = 0;
+    for (int i = 0; i < right.set_count && total < (int)ARRAY_SIZE(ids); i++) {
+        ids[total++] = i;
+    }
+    uint8_t used = right.version >= 3 ? right.flash_used : 0;
+    for (int n = 0; n < 8 && right.set_count + n < INT8_MAX; n++) {
+        if (used & BIT(n)) {
+            ids[total++] = right.set_count + n;
+        }
+    }
+    if (total == 0) {
+        return;
+    }
+    int at = dir > 0 ? -1 : 0; // a pushed set (-1) isn't in the list: start at either end
+    for (int i = 0; i < total; i++) {
+        if (ids[i] == right.set) {
+            at = i;
+        }
+    }
+    art_relay_select(ids[((at + dir) % total + total) % total]);
+}
+
 void art_relay_discovery(int8_t *result, uint8_t *tries) {
     // DONE only with the handles in hand, on the link we have now.
     *result = discovery == ART_DISCOVERY_DONE && !(data_handle && status_handle)
@@ -745,7 +772,7 @@ static void guard_cb(struct k_work *work) {
     if (conn == NULL) {
         return;
     }
-    bool forced = atomic_cas(&guard_forced, 1, 0);
+    bool forced = atomic_cas(&guard_forced, 1, 0); // D7 0B: from guard_test_q, the same work
     if (still_connected(conn) && (bt_conn_get_security(conn) < BT_SECURITY_L2 || forced)) {
         if (guard_in_row < GUARD_MAX_IN_ROW) {
             guard_in_row++;
@@ -778,22 +805,40 @@ uint8_t art_relay_guard_drops(void) { return guard_drops; }
 FOXGLOVE_TEST_HOOK_MARK(guard_test);
 #endif
 
-int art_relay_guard_test(void) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+// Its own queue (dev builds only): on relay_q the drop would wait behind the very relay job a
+// test wants to cut, and the system queue mustn't wait for bt_conn_disconnect.
+K_THREAD_STACK_DEFINE(guard_test_stack, 768);
+static struct k_work_q guard_test_q;
+static atomic_t guard_test_q_started;
+
+static void guard_test_cb(struct k_work *work) {
+    atomic_set(&guard_forced, 1);
+    guard_cb(work);
+}
+static K_WORK_DELAYABLE_DEFINE(guard_test_work, guard_test_cb);
+#endif
+
+int art_relay_guard_test(uint16_t delay_ms) {
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
     if (peer == NULL) {
         return -ENOTCONN;
     }
     // The real recovery path (drop, ZMK reconnects) on a link that's actually fine; a genuine
-    // stuck-before-encryption link can't be made on purpose without deleting the bond.
-    atomic_set(&guard_forced, 1);
-    k_work_reschedule_for_queue(&relay_q, &guard_work, K_SECONDS(2));
+    // stuck-before-encryption link can't be made on purpose without deleting the bond. Started
+    // on first use, so nothing runs at boot.
+    if (atomic_cas(&guard_test_q_started, 0, 1)) {
+        k_work_queue_start(&guard_test_q, guard_test_stack, K_THREAD_STACK_SIZEOF(guard_test_stack),
+                           K_LOWEST_APPLICATION_THREAD_PRIO, NULL);
+    }
+    k_work_reschedule_for_queue(&guard_test_q, &guard_test_work, K_MSEC(delay_ms));
     return 0;
 #else
     return -ENOTSUP;
 #endif
 }
 #else
-int art_relay_guard_test(void) { return -ENOTSUP; }
+int art_relay_guard_test(uint16_t delay_ms) { return -ENOTSUP; }
 static void guard_arm(void) {}
 static void guard_cancel(bool encrypted) {}
 uint8_t art_relay_guard_drops(void) { return 0; }

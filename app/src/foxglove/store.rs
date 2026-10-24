@@ -488,11 +488,10 @@ mod tests {
     fn store_stays_inside_the_config_dir() {
         let tmp = std::env::temp_dir().join("foxglove-run-1");
         assert_eq!(path_for(Some(tmp.clone()), Some(tmp.join("settings.ini"))), Some(tmp.join("foxglove.toml")));
-        let real = PathBuf::from(r"C:\Users\u\AppData\Roaming\Foxglove\config\settings.ini");
-        assert_eq!(
-            path_for(None, Some(real)),
-            Some(PathBuf::from(r"C:\Users\u\AppData\Roaming\Foxglove\foxglove.toml"))
-        );
+        // Built with joins, so the paths are real ones on Linux too (CI).
+        let foxglove = PathBuf::from(if cfg!(windows) { r"C:\Users\u\AppData\Roaming" } else { "/home/u/.config" }).join("Foxglove");
+        let real = foxglove.join("config").join("settings.ini");
+        assert_eq!(path_for(None, Some(real)), Some(foxglove.join("foxglove.toml")));
         assert_eq!(path_for(None, None), None);
     }
 

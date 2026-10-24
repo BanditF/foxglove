@@ -104,7 +104,7 @@ description = "Puts the temperature on the left screen."
 
 **Lifecycle** (next PR):
 - **Supervision:** Foxglove starts each enabled plugin under `services::spawn_supervised`, with backoff from 1 s to 60 s.
-- **Liveness:** a `ping` every 10 s; no answer in 30 s means a restart. Five crashes in ten minutes disables the plugin, with a notice in the Plugins tab.
+- **Liveness (#281):** no heartbeat. Foxglove sees a plugin exit from its process handle, and a plugin sees Foxglove go when its stdin ends; the SDK then fails waiting calls and ends every stream. A call that gets no answer fails after 30 s (`PluginError::Timeout`). Five crashes in ten minutes disables the plugin, with a notice in the Plugins tab.
 - **Rate limits:** per plugin (calls/s, lighting frames/s, panel overrides); over the limit gets error 8.
 
 **Containment on Windows:**
@@ -126,12 +126,25 @@ description = "Puts the temperature on the left screen."
   - **Storage and conflicts:** bindings live in `[plugins.bindings]`. A key another program already holds is flagged in the tab. `FOXGLOVE_DISABLE=actions` turns the hotkeys off.
 - **Left panel (#209):**
   - **Drawing:** `screens.panel_override {device, width, height, bitmap, ttl_ms}`, with `screens.write`, shows a plugin's 1 bpp frame (rows MSB first, padded to whole bytes, base64) over the panel for up to 60 s.
-  - **Keeping it:** a plugin sends it again to keep it, and it goes away by itself when the plugin stops (and at once when its connection closes).
+  - **Holding it (API 1.3, #281):**
+    - `ttl_ms` 0 holds the frame until the next one replaces it, `screens.panel_release {device}` gives the panel back, or the plugin's connection closes.
+    - A steady screen is sent once, never re-sent. SDK: `Plugin::panel_hold()`, `Plugin::panel_release()`.
+    - A timed frame goes away by itself, and at once when the connection closes.
   - **Errors:** a frame of the wrong size is refused. SDK: `Plugin::panel_override()`.
+- **Waiting for an app (#277, API 1.3):**
+  - **Why:** a plugin that needs another app (OBS) waits to be told its windows opened instead of polling for it.
+  - **Asking:** `apps.watch {exe}` with `apps.watch:<name>.exe` (such as `apps.watch:obs64.exe`) returns `{exe, open}`: how many of its visible top-level windows are open now. Plugins only, and only the apps they declare. SDK: `Plugin::watch_app()`, then `Plugin::app_windows()`.
+  - **Telling:** Foxglove follows windows being shown and destroyed with an out-of-context WinEvent hook (no admin, nothing injected).
+    - `app.window.appeared {exe, open}` and `app.window.closed {exe, open}` go to the plugins waiting for that app.
+    - `open` is the count afterwards. A close with `open` 0 means the app has probably quit.
+    - The watch ends when the plugin's connection closes.
+    - An elevated app's windows may not be seen.
+  - **Off switch:** `FOXGLOVE_DISABLE=apps-watch`.
+  - **Rule:** a retry is started by an event and stopped by one (connected, the last window closed), with an attempt limit only as the fallback. No free-running timers.
 - **Plugin data (#209):** each plugin gets `data/` in its folder (`Plugin::data_dir()`) for state between runs. It's writable even in the sandbox, and left out of the signed-file check.
 - **Mic mute (`crates/plugin-mic-mute`, #210):**
   - **How it works:** it follows `mic.state` (`audio.inputs.read`) and asks Foxglove to mute or unmute (`audio.inputs.mute`), so it stays sandboxed.
-  - **Muted:** a red, high-priority lease, and Art's inverted MUTED screen, held while muted and re-sent every 30 s with a 60 s lifetime.
+  - **Muted:** a red, high-priority lease, and Art's inverted MUTED screen, held while muted (sent once). When the microphone goes away, the panel is given back.
   - **Unmuted:** a brief white flash, then the lights go back, and LIVE shows for 3 s.
   - **Unknown:** amber, and the `?` screen. A failed read is never shown as muted.
   - **Unavailable:** nothing.
@@ -140,16 +153,20 @@ description = "Puts the temperature on the left screen."
 - **Broadcast Status (`crates/plugin-broadcast-status`, #211):**
   - **How it works:** it connects to OBS's WebSocket server (obs-websocket v5, port 4455, set up in OBS under Tools → WebSocket Server Settings) through Foxglove (`net.connect:127.0.0.1:4455`), so it stays sandboxed. The password is the plugin's `obs-password` secret, set in the Plugins tab.
   - **Listening only:** it asks for a snapshot (`GetStreamStatus`, `GetRecordStatus`, `GetCurrentProgramScene`) when it connects, then follows OBS's events. It never starts, stops or switches anything.
-  - **Streaming:** a red, high-priority lease and the bright LIVE screen, held (re-sent every 30 s with a 60 s lifetime). With a recording too, the LIVE + REC screen.
+  - **Streaming:** a red, high-priority lease and the bright LIVE screen, held (sent once). With a recording too, the LIVE + REC screen.
   - **Recording:** red at normal priority and REC, held; amber and the pause bars while paused.
   - **Nothing running:** READY for 3 s, and the lights are left alone.
-  - **OBS gone:** NOT CONNECTED for 3 s when a connection is lost (not while OBS simply isn't running), then it tries again after 2 s, doubling to every 30 s. A missing or wrong password is logged.
+  - **Connecting:** tries begin when an `obs64.exe` window appears (`apps.watch:obs64.exe`, #277), at start if OBS is open, and when a connection drops.
+    - They stop when it connects or OBS's last window closes, and after 10 tries 2 s apart at most.
+    - There's no timer while OBS is away.
+  - **OBS gone:** NOT CONNECTED for 3 s when a connection is lost (not while OBS simply isn't running). A missing or wrong password is logged.
   - **Scene:** its name goes on the panel under the symbol, up to 15 characters.
   - **Facts:** `broadcast.connected`, `broadcast.streaming`, `broadcast.recording`, `broadcast.paused`, `broadcast.scene`.
 - **Pomodoro (`crates/plugin-focus-timer`, #209):**
   - **Cycle:** focus 25 min, rest 5 min, and a long rest of 15 min every 4 rounds.
   - **Restarts:** the cycle is kept as deadlines in `data/state.json`, so it survives restarts and sleep. After more than a whole cycle away, it starts fresh.
-  - **Showing it:** it draws Art's countdown screen (docs/plugin-screens.md) every second, and holds the underglow with a lease: red to focus, green to rest, given back while paused.
+  - **Showing it:** it draws Art's countdown screen (docs/plugin-screens.md) every second while running, and holds the underglow with a lease: red to focus, green to rest, given back while paused.
+  - **Paused:** nothing ticks; the paused screen stays held until a key (#281).
   - **Keys:** `pause` and `reset`.
 - **Lighting leases (#236, API 1.2):**
   - **Taking and giving back:** `lighting.lease {device, color, effect?, priority: low|normal|high}` takes the lights and returns `{lease}`; `lighting.release {lease}` gives them back. In the SDK, `Plugin::lease()` returns a guard that releases when dropped. Both need `lighting.write`.
