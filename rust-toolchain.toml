@@ -1,0 +1,5 @@
+# Release builds use this exact toolchain, so they can be reproduced.
+[toolchain]
+channel = "1.99.1"
+components = ["clippy", "rustfmt"]
+profile = "minimal"
