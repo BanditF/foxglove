@@ -67,7 +67,7 @@ simulation of the complete ZMK engine.
 
 ## Hands-free entry (#111)
 
-When the running firmware advertises HELLO capability bit 8 (test-hooks builds), you don't
+When the running firmware advertises HELLO capability bit 9 (test-hooks builds), you don't
 need to double-tap:
 1. After you type `FLASH`, the flasher asks the left half to reboot into its bootloader. It runs
    `foxglove-lab bootloader`, which sends D7 08: ARM, then TRIGGER with the returned nonce.

@@ -3,7 +3,7 @@
 python scripts/flash/foxglove_flash.py --firmware DIR --dry-run
 python scripts/flash/foxglove_flash.py --left L.uf2 --right R.uf2
 Real writes require a terminal and typing FLASH. When the running firmware supports it
-(HELLO bit 8, #111) each half is put into its bootloader over the link; otherwise double-tap
+(HELLO bit 9, #111) each half is put into its bootloader over the link; otherwise double-tap
 reset when asked.
 Settings reset: supply its path with --left/--right, select --half, and add
 --settings-reset; this erases settings and requires a separate confirmation.

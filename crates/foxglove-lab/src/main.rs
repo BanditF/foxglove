@@ -42,7 +42,7 @@ enum Command {
     /// How each half shows up on USB (no keyboard link needed).
     Usb,
     /// Reboots one half into its UF2 bootloader (D7 08). For scripts/flash only, after the user
-    /// typed FLASH there. Exit code 4: this firmware can't (no HELLO bit 8), use a double tap.
+    /// typed FLASH there. Exit code 4: this firmware can't (no HELLO bit 9), use a double tap.
     Bootloader {
         #[arg(long, value_parser = ["left", "right"])]
         half: String,
@@ -114,7 +114,7 @@ fn main() -> Result<std::process::ExitCode> {
         let caps = c.hello.map_or(0, |h| h.capabilities);
         if caps & digitalis::protocol::capabilities::BOOTLOADER == 0 {
             eprintln!(
-                "this firmware has no bootloader command (HELLO bit 8); double-tap reset instead"
+                "this firmware has no bootloader command (HELLO bit 9); double-tap reset instead"
             );
             return Ok(std::process::ExitCode::from(4));
         }
