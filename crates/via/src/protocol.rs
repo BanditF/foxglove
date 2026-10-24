@@ -3,7 +3,7 @@
 //! Every report starts with a command id; the keyboard answers with the same id, or 0xFF for a
 //! command it doesn't handle.
 
-use palm::{PalmError, Result};
+use foxglove_devices::{DeviceError, Result};
 
 pub const REPORT: usize = 32;
 pub type Report = [u8; REPORT];
@@ -81,7 +81,7 @@ impl<T: Transport> Guarded<T> {
         if READ.contains(&command) || (self.writes && WRITE.contains(&command)) {
             return Ok(());
         }
-        Err(PalmError::Denied(if FORBIDDEN.contains(&command) {
+        Err(DeviceError::Denied(if FORBIDDEN.contains(&command) {
             format!("VIA command {command:#04x} (reset, bootloader or factory) is never sent")
         } else if WRITE.contains(&command) {
             format!("VIA command {command:#04x} writes; this keyboard is open read-only")
@@ -93,15 +93,15 @@ impl<T: Transport> Guarded<T> {
     /// Sends `bytes` (zero-padded) if allowed and returns the reply, which must echo the
     /// command.
     pub fn send(&self, bytes: &[u8]) -> Result<Report> {
-        let command = *bytes.first().ok_or(PalmError::Unsupported)?;
+        let command = *bytes.first().ok_or(DeviceError::Unsupported)?;
         self.check(command)?;
         let mut report = [0u8; REPORT];
         report[..bytes.len().min(REPORT)].copy_from_slice(&bytes[..bytes.len().min(REPORT)]);
         let reply = self.inner.exchange(&report)?;
         match reply[0] {
             c if c == command => Ok(reply),
-            UNHANDLED => Err(PalmError::Unsupported),
-            other => Err(PalmError::Backend(format!("reply {other:#04x} to command {command:#04x}"))),
+            UNHANDLED => Err(DeviceError::Unsupported),
+            other => Err(DeviceError::Backend(format!("reply {other:#04x} to command {command:#04x}"))),
         }
     }
 }
@@ -123,7 +123,7 @@ mod tests {
     fn forbidden_commands_never_reach_the_keyboard() {
         let g = Guarded::with_writes(Echo(Mutex::default()));
         for &c in FORBIDDEN {
-            assert!(matches!(g.send(&[c]), Err(PalmError::Denied(_))), "{c:#04x}");
+            assert!(matches!(g.send(&[c]), Err(DeviceError::Denied(_))), "{c:#04x}");
         }
         for c in 0x0C..=0xFE {
             if !READ.contains(&c) && !WRITE.contains(&c) {
@@ -137,8 +137,8 @@ mod tests {
     fn read_only_refuses_writes_but_reads() {
         let g = Guarded::read_only(Echo(Mutex::default()));
         assert!(g.send(&[GET_PROTOCOL_VERSION]).is_ok());
-        assert!(matches!(g.send(&[DYNAMIC_KEYMAP_SET_KEYCODE]), Err(PalmError::Denied(_))));
-        assert!(matches!(g.send(&[CUSTOM_SAVE]), Err(PalmError::Denied(_))));
+        assert!(matches!(g.send(&[DYNAMIC_KEYMAP_SET_KEYCODE]), Err(DeviceError::Denied(_))));
+        assert!(matches!(g.send(&[CUSTOM_SAVE]), Err(DeviceError::Denied(_))));
         assert_eq!(*g.inner.0.lock().unwrap(), vec![GET_PROTOCOL_VERSION]);
     }
 }

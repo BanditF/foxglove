@@ -1,6 +1,6 @@
 //! Follow the Windows accent colour on the keyboard's underglow (#93), as an option in Settings.
 //!
-//! Event-driven: Windows' UISettings.ColorValuesChanged (accent or theme changed) and Palm's
+//! Event-driven: Windows' UISettings.ColorValuesChanged (accent or theme changed) and the device layer's
 //! Connected event (a keyboard came, so it gets the current colour). Only the hue and
 //! saturation follow the accent; the board keeps its own brightness. Saved in the store's `[lighting]`.
 
@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 
-use palm::{DeviceEvent, Device as _};
+use foxglove_devices::{DeviceEvent, Device as _};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static WAKE: OnceLock<Mutex<mpsc::Sender<()>>> = OnceLock::new();
@@ -97,7 +97,7 @@ mod windows_impl {
         let _ = WAKE.set(Mutex::new(tx.clone()));
         // A profile switch can change the setting: re-read it, then apply.
         let switched = tx.clone();
-        let profile = crate::foxglove::palm_host::bus().facts().subscribe("profile.active");
+        let profile = crate::foxglove::devices::bus().facts().subscribe("profile.active");
         crate::foxglove::services::spawn_named("accent-profile", move || {
             for _ in profile {
                 ENABLED.store(load_enabled(), Ordering::Relaxed);
@@ -108,7 +108,7 @@ mod windows_impl {
         });
         // Keyboard arrivals: apply the current colour to a newly connected board.
         let arrivals = tx.clone();
-        let events = crate::foxglove::palm_host::bus().subscribe(false);
+        let events = crate::foxglove::devices::bus().subscribe(false);
         crate::foxglove::services::spawn_named("accent-arrivals", move || {
             for e in events {
                 if e.event == DeviceEvent::Connected && arrivals.send(()).is_err() {
@@ -137,12 +137,12 @@ mod windows_impl {
                     continue;
                 }
                 // device() may discover a keyboard; this thread can wait for it.
-                let Some(d) = crate::foxglove::palm_host::device() else { continue };
+                let Some(d) = crate::foxglove::devices::device() else { continue };
                 let Some(lighting) = d.lighting() else { continue };
                 let brightness = lighting.state().map_or(100, |s| s.brightness);
                 match lighting.set_color(hue, sat, brightness.max(1)) {
                     Ok(()) => applied = Some((hue, sat)),
-                    Err(e) => eprintln!("Foxglove accent: {}", crate::foxglove::palm_host::describe(&e)),
+                    Err(e) => eprintln!("Foxglove accent: {}", crate::foxglove::devices::describe(&e)),
                 }
             }
         });

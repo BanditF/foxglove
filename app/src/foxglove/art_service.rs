@@ -343,7 +343,7 @@ fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         s.cycle = Cycle::load();
     });
     let profile_tx = h.commands.clone();
-    let profile = super::palm_host::bus().facts().subscribe("profile.active");
+    let profile = super::devices::bus().facts().subscribe("profile.active");
     super::services::spawn_named("art-profile", move || {
         for _ in profile {
             if profile_tx.send(Command::ProfileChanged).is_err() {

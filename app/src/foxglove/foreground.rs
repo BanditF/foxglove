@@ -49,9 +49,9 @@ pub fn start() {
                 continue;
             }
             last = Some(program.clone());
-            super::palm_host::bus()
+            super::devices::bus()
                 .facts()
-                .set("app.foreground", palm::facts::Value::Text(program.clone()));
+                .set("app.foreground", foxglove_devices::facts::Value::Text(program.clone()));
             let (auto, rules) = store::rules();
             if !auto {
                 continue;

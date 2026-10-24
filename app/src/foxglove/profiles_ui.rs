@@ -148,7 +148,7 @@ fn rules(ui: &mut egui::Ui, names: &[String]) {
         }
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut state.new_program).hint_text("game.exe").desired_width(140.0));
-            if let Some(palm::facts::Value::Text(front)) = super::palm_host::bus().facts().get("app.foreground") {
+            if let Some(foxglove_devices::facts::Value::Text(front)) = super::devices::bus().facts().get("app.foreground") {
                 if ui.small_button("Program in front").on_hover_text(&front).clicked() {
                     state.new_program = front;
                 }

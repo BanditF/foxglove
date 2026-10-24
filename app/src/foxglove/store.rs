@@ -27,9 +27,24 @@ pub fn path() -> Option<PathBuf> {
     Some(settings.parent()?.parent()?.join("foxglove.toml"))
 }
 
+/// Sections renamed since they shipped (#87): the old name is read as the new one, and the next
+/// save writes the new one.
+const RENAMED: &[(&str, &str)] = &[("kits", "plugins")];
+
+fn renamed(mut table: Table) -> Table {
+    for (old, new) in RENAMED {
+        if !table.contains_key(*new) {
+            if let Some(v) = table.remove(*old) {
+                table.insert((*new).into(), v);
+            }
+        }
+    }
+    table
+}
+
 fn read(path: &Path) -> Result<Table, String> {
     match std::fs::read_to_string(path) {
-        Ok(text) => text.parse::<Table>().map_err(|e| format!("{}: {e}", path.display())),
+        Ok(text) => text.parse::<Table>().map(renamed).map_err(|e| format!("{}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Table::new()),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
@@ -208,9 +223,9 @@ pub fn cached_profiles() -> (Vec<String>, Option<String>) {
 
 fn announce(name: Option<&str>) {
     *PROFILES.lock().unwrap_or_else(|e| e.into_inner()) = profiles();
-    super::palm_host::bus()
+    super::devices::bus()
         .facts()
-        .set("profile.active", palm::facts::Value::Text(name.unwrap_or("").into()));
+        .set("profile.active", foxglove_devices::facts::Value::Text(name.unwrap_or("").into()));
 }
 
 /// One "switch to this profile while this program is in front" rule.
@@ -458,6 +473,20 @@ mod tests {
         assert_eq!(try_load_at::<Demo>(&path, "updates").unwrap(), None);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("schema = 1"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn kits_section_reads_as_plugins() {
+        let dir = std::env::temp_dir().join(format!("foxglove-store-rename-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("foxglove.toml");
+        std::fs::write(&path, "schema = 1\n[kits.installed.\"com.example.a\"]\nenabled = true\n[kits.trust]\nsequence = 3\n").unwrap();
+        let v: Option<toml::Value> = try_load_at(&path, "plugins.trust").unwrap();
+        assert_eq!(v.and_then(|v| v.get("sequence").and_then(toml::Value::as_integer)), Some(3));
+        save_at(&path, "screens", &toml::Table::new(), true).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[plugins.installed") && !text.contains("[kits"), "{text}");
         let _ = std::fs::remove_dir_all(dir);
     }
 

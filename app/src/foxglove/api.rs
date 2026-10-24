@@ -4,11 +4,11 @@
 
 use std::sync::Arc;
 
-use den::{Client, Context, Devices, Limits};
-use foxglove_kit_api::methods::{self, ClientInfo};
-use foxglove_kit_api::permission::Permission;
-use foxglove_kit_api::rpc::{code, Error};
-use palm::{Caps, Device as _};
+use foxglove_plugin_host::{Client, Context, Devices, Limits};
+use foxglove_plugin_api::methods::{self, ClientInfo};
+use foxglove_plugin_api::permission::Permission;
+use foxglove_plugin_api::rpc::{code, Error};
+use foxglove_devices::{Caps, Device as _};
 use serde_json::{json, Value};
 
 /// Starts the pipe listener (Windows; `FOXGLOVE_DISABLE=api` leaves it out).
@@ -18,8 +18,8 @@ pub fn start() {
     }
     #[cfg(windows)]
     super::services::spawn_named("api-pipe", || {
-        let result = den::pipe::listen(|| Context {
-            facts: super::palm_host::bus().facts().clone(),
+        let result = foxglove_plugin_host::pipe::listen(|| Context {
+            facts: super::devices::bus().facts().clone(),
             devices: Arc::new(AppDevices),
             client: Client::Tool(Arc::new(approve)),
             app_version: env!("CARGO_PKG_VERSION").into(),
@@ -31,7 +31,7 @@ pub fn start() {
     });
 }
 
-/// Until the Den asks the user (next PR), tools get what they ask for except the sensitive
+/// Until the Plugins tab asks the user (next PR), tools get what they ask for except the sensitive
 /// permissions (key events, raw HID), which stay off. Any program of this user could already
 /// read the same state; the pipe admits no one else.
 fn approve(_client: &ClientInfo, asked: &[Permission]) -> Vec<Permission> {
@@ -66,21 +66,21 @@ fn unsupported() -> Error {
     Error { code: code::UNSUPPORTED, message: "this device has no lighting".into(), data: None }
 }
 
-fn palm_error(e: palm::PalmError) -> Error {
+fn device_error(e: foxglove_devices::DeviceError) -> Error {
     let code = match e {
-        palm::PalmError::Unsupported => code::UNSUPPORTED,
-        palm::PalmError::Disconnected => code::DISCONNECTED,
-        palm::PalmError::Busy(_) => code::BUSY,
-        palm::PalmError::Timeout => code::TIMEOUT,
-        palm::PalmError::Denied(_) => code::DENIED,
-        palm::PalmError::Backend(_) => code::BACKEND,
+        foxglove_devices::DeviceError::Unsupported => code::UNSUPPORTED,
+        foxglove_devices::DeviceError::Disconnected => code::DISCONNECTED,
+        foxglove_devices::DeviceError::Busy(_) => code::BUSY,
+        foxglove_devices::DeviceError::Timeout => code::TIMEOUT,
+        foxglove_devices::DeviceError::Denied(_) => code::DENIED,
+        foxglove_devices::DeviceError::Backend(_) => code::BACKEND,
     };
-    Error { code, message: super::palm_host::describe(&e), data: None }
+    Error { code, message: super::devices::describe(&e), data: None }
 }
 
 /// Runs `f` on the device a call names: the host-link keyboard or an open VIA keyboard.
-fn with_device<R>(id: &str, f: impl FnOnce(&dyn palm::Device) -> Result<R, Error>) -> Result<R, Error> {
-    if let Some(d) = super::palm_host::cached().filter(|d| d.info().id.to_string() == id) {
+fn with_device<R>(id: &str, f: impl FnOnce(&dyn foxglove_devices::Device) -> Result<R, Error>) -> Result<R, Error> {
+    if let Some(d) = super::devices::cached().filter(|d| d.info().id.to_string() == id) {
         return f(d.as_ref());
     }
     super::via_host::with_device(id, f)
@@ -91,7 +91,7 @@ impl Devices for AppDevices {
     fn call(&self, method: &str, _params: Value) -> Result<Value, Error> {
         match method {
             "devices.list" => {
-                let devices = super::palm_host::cached()
+                let devices = super::devices::cached()
                     .map(|d| {
                         let info = d.info();
                         methods::Device {
@@ -117,7 +117,7 @@ impl Devices for AppDevices {
             }
             "lighting.state" => {
                 let p: methods::DeviceParams = params(_params)?;
-                let st = with_device(&p.device, |d| d.lighting().ok_or_else(unsupported)?.state().map_err(palm_error))?;
+                let st = with_device(&p.device, |d| d.lighting().ok_or_else(unsupported)?.state().map_err(device_error))?;
                 Ok(json!(methods::LightingState {
                     on: st.on,
                     hue: st.hue,
@@ -132,13 +132,13 @@ impl Devices for AppDevices {
                 with_device(&p.device, |d| {
                     let lighting = d.lighting().ok_or_else(unsupported)?;
                     if let Some(on) = p.on {
-                        lighting.set_on(on).map_err(palm_error)?;
+                        lighting.set_on(on).map_err(device_error)?;
                     }
                     if let Some(c) = p.color {
-                        lighting.set_color(c.hue, c.saturation, c.brightness).map_err(palm_error)?;
+                        lighting.set_color(c.hue, c.saturation, c.brightness).map_err(device_error)?;
                     }
                     if let Some(effect) = p.effect {
-                        lighting.set_effect(palm::Effect { id: effect, params: vec![] }).map_err(palm_error)?;
+                        lighting.set_effect(foxglove_devices::Effect { id: effect, params: vec![] }).map_err(device_error)?;
                     }
                     Ok(json!({}))
                 })
