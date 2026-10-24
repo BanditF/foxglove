@@ -16,36 +16,45 @@ pub struct Tray {
     _icon: TrayIcon,
     #[cfg(not(target_os = "linux"))]
     controls: crate::foxglove::tray::Controls,
+    /// Foxglove: the glyph shown, connected (solid fox) or not (outline).
+    #[cfg(not(target_os = "linux"))]
+    connected: bool,
 }
 
 // Windows convention is a monochrome glyph matching the taskbar theme.
 #[cfg(target_os = "windows")]
-fn icon_bytes() -> &'static [u8] {
+fn icon_bytes(connected: bool) -> &'static [u8] {
     let light_theme = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
         .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
         .and_then(|key| key.get_value::<u32, _>("SystemUsesLightTheme"))
         .map(|value| value != 0)
         .unwrap_or(false);
-    if light_theme {
-        include_bytes!("../resources/tray-icon-black.png")
-    } else {
-        include_bytes!("../resources/tray-icon-white.png")
+    // Foxglove: the outline fox while no keyboard is connected.
+    match (light_theme, connected) {
+        (true, true) => include_bytes!("../resources/tray-icon-black.png"),
+        (true, false) => include_bytes!("../resources/tray-icon-black-off.png"),
+        (false, true) => include_bytes!("../resources/tray-icon-white.png"),
+        (false, false) => include_bytes!("../resources/tray-icon-white-off.png"),
     }
 }
 
 // Monochrome template image; macOS tints it to match the menu bar.
 #[cfg(target_os = "macos")]
-fn icon_bytes() -> &'static [u8] {
-    include_bytes!("../resources/tray-icon-template.png")
+fn icon_bytes(connected: bool) -> &'static [u8] {
+    if connected {
+        include_bytes!("../resources/tray-icon-template.png")
+    } else {
+        include_bytes!("../resources/tray-icon-template-off.png")
+    }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn icon_bytes() -> &'static [u8] {
+fn icon_bytes(_connected: bool) -> &'static [u8] {
     include_bytes!("../resources/icon.ico")
 }
 
-fn create_icon() -> Icon {
-    let icon = load_from_memory(icon_bytes())
+fn create_icon(connected: bool) -> Icon {
+    let icon = load_from_memory(icon_bytes(connected))
         .expect("Failed to load icon.")
         .into_rgba8();
 
@@ -64,7 +73,7 @@ fn build_tray_icon() -> (TrayIcon, crate::foxglove::tray::Controls) {
 
     let builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_icon(create_icon())
+        .with_icon(create_icon(false))
         .with_tooltip("Foxglove");
 
     // Left click opens the settings instead (see `create_tray_icon`).
@@ -129,13 +138,21 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
     #[cfg(not(target_os = "linux"))]
     {
         let (_icon, controls) = build_tray_icon();
-        Tray { _icon, controls }
+        Tray { _icon, controls, connected: false }
     }
 }
 
 impl Tray {
     pub fn update(&mut self) {
         #[cfg(not(target_os = "linux"))]
-        self.controls.update();
+        {
+            self.controls.update();
+            // Foxglove: swap the glyph only when the connection changes.
+            let connected = self.controls.connected();
+            if connected != self.connected {
+                self.connected = connected;
+                let _ = self._icon.set_icon(Some(create_icon(connected)));
+            }
+        }
     }
 }
