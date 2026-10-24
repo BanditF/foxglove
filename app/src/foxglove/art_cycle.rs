@@ -179,13 +179,21 @@ impl Cycle {
 /// What an entry means on the keyboard as it is now: built-in names through the art manifest
 /// (only when it matches this firmware), slots only while they hold a set.
 pub fn resolve(item: &Item, set_count: u8, flash_used: u8) -> Option<Choice> {
+    resolve_with(item, set_count, flash_used, super::art_sources::stand_in)
+}
+
+/// As `resolve`, with the stand-ins (art_sources) passed in: a built-in with a saved slot
+/// standing in for it shows that slot, while the slot holds a set.
+pub fn resolve_with(item: &Item, set_count: u8, flash_used: u8, stand_in: impl Fn(&str) -> Option<u8>) -> Option<Choice> {
+    let used = |n: u8| n < 8 && flash_used & (1 << n) != 0;
     match item {
+        Item::BuiltIn(name) if stand_in(name).is_some_and(used) => stand_in(name).map(Choice::Slot),
         Item::BuiltIn(name) => super::art_manifest::sets(set_count)?
             .iter()
             .find(|s| &s.name == name)
             .and_then(|s| i8::try_from(s.index).ok())
             .map(Choice::BuiltIn),
-        Item::Slot(n) => (*n < 8 && flash_used & (1 << n) != 0).then_some(Choice::Slot(*n)),
+        Item::Slot(n) => used(*n).then_some(Choice::Slot(*n)),
         Item::File(p) => p.exists().then(|| Choice::File(p.clone())),
     }
 }
@@ -242,9 +250,14 @@ mod tests {
 
     #[test]
     fn empty_slots_and_unknown_names_do_not_resolve() {
-        assert_eq!(resolve(&Item::Slot(3), 17, 0b1000), Some(Choice::Slot(3)));
-        assert_eq!(resolve(&Item::Slot(3), 17, 0), None);
-        assert_eq!(resolve(&Item::BuiltIn("no such set".into()), 17, 0), None);
+        let none = |_: &str| None;
+        assert_eq!(resolve_with(&Item::Slot(3), 17, 0b1000, none), Some(Choice::Slot(3)));
+        assert_eq!(resolve_with(&Item::Slot(3), 17, 0, none), None);
+        assert_eq!(resolve_with(&Item::BuiltIn("no such set".into()), 17, 0, none), None);
+        // a stand-in slot shows instead of the built-in, but only while it holds a set
+        let gem = |n: &str| (n == "Bandit_Gem").then_some(2);
+        assert_eq!(resolve_with(&Item::BuiltIn("Bandit_Gem".into()), 17, 0b100, gem), Some(Choice::Slot(2)));
+        assert_ne!(resolve_with(&Item::BuiltIn("Bandit_Gem".into()), 17, 0, gem), Some(Choice::Slot(2)));
     }
 
     #[test]

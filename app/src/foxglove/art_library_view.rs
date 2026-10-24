@@ -30,6 +30,8 @@ pub enum Place {
     Library(PathBuf),
     /// Index into `BUNDLED`.
     Bundled(usize),
+    /// A set folder under a source folder (converted on demand).
+    Source(PathBuf),
 }
 
 impl Place {
@@ -39,6 +41,7 @@ impl Place {
             Place::Slot(_) => "saved",
             Place::Library(_) => "library",
             Place::Bundled(_) => "bundled",
+            Place::Source(_) => "source",
         }
     }
 
@@ -46,7 +49,7 @@ impl Place {
     fn item(&self) -> Option<Item> {
         match self {
             Place::BuiltIn(_, Some(name)) => Some(Item::BuiltIn(name.clone())),
-            Place::BuiltIn(_, None) | Place::Bundled(_) => None,
+            Place::BuiltIn(_, None) | Place::Bundled(_) | Place::Source(_) => None,
             Place::Slot(n) => Some(Item::Slot(*n)),
             Place::Library(p) => Some(Item::File(p.clone())),
         }
@@ -58,7 +61,7 @@ impl Place {
             Place::BuiltIn(n, _) => Some(Choice::BuiltIn(*n)),
             Place::Slot(n) => Some(Choice::Slot(*n)),
             Place::Library(p) => Some(Choice::File(p.clone())),
-            Place::Bundled(_) => None,
+            Place::Bundled(_) | Place::Source(_) => None,
         }
     }
 }
@@ -81,7 +84,7 @@ impl Piece {
             Place::BuiltIn(..) => 0,
             Place::Slot(_) => 1,
             Place::Library(_) => 2,
-            Place::Bundled(_) => 3,
+            Place::Bundled(_) | Place::Source(_) => 3,
         };
         self.places.iter().min_by_key(|p| rank(p))
     }
@@ -174,6 +177,7 @@ struct ViewState {
     textures: Vec<(u64, egui::TextureHandle)>,
     /// A slot whose Clear was clicked once.
     confirm_clear: Option<u8>,
+    dialog: egui_file_dialog::FileDialog,
     message: Option<String>,
 }
 
@@ -232,6 +236,21 @@ pub fn window(ctx: &egui::Context, h: &Handle, s: &Snapshot) {
         })
         .collect();
     blobs.extend(bundled_blobs());
+    blobs.extend(library.sources.iter().filter_map(|src| {
+        let bytes = src.blob.as_ref().ok()?;
+        Some(Blob {
+            place: Place::Source(src.folder.clone()),
+            label: src.folder.file_name().unwrap_or_default().to_string_lossy().replace('_', " "),
+            preview: src.preview.as_ref().map(|img| Arc::new(upright(img))),
+            bytes: bytes.len(),
+            hash: art_library::blob_hash(bytes),
+        })
+    }));
+    let sources: Vec<(PathBuf, Arc<Vec<u8>>)> = library
+        .sources
+        .iter()
+        .filter_map(|src| Some((src.folder.clone(), src.blob.as_ref().ok()?.clone())))
+        .collect();
     let index = super::wallpaper::index();
     let builtin_of = |file: &str| {
         index
@@ -245,7 +264,19 @@ pub fn window(ctx: &egui::Context, h: &Handle, s: &Snapshot) {
     egui::Window::new("Art library")
         .open(&mut open)
         .default_size([640.0, 520.0])
-        .show(ctx, |ui| VIEW.with_borrow_mut(|v| contents(ui, v, h, s, &all, library.error.as_deref())));
+        .show(ctx, |ui| {
+            VIEW.with_borrow_mut(|v| {
+                sources_section(ui, v, &library);
+                contents(ui, v, h, s, &all, &sources, library.error.as_deref());
+            })
+        });
+    VIEW.with_borrow_mut(|v| {
+        v.dialog.update(ctx);
+        if let Some(folder) = v.dialog.take_picked() {
+            super::art_sources::add_source(folder);
+            art_library::refresh();
+        }
+    });
     if !open {
         VIEW.with_borrow_mut(|v| v.open = false);
     }
@@ -260,11 +291,42 @@ fn on_screen(s: &Snapshot, place: &Place) -> bool {
             s.pinned == Some(Choice::Slot(*n))
                 && s.status.is_some_and(|st| st.right_state == digitalis::protocol::right_state::PLAYING)
         }
-        Place::Bundled(_) => false,
+        Place::Bundled(_) | Place::Source(_) => false,
     }
 }
 
-fn contents(ui: &mut egui::Ui, v: &mut ViewState, h: &Handle, s: &Snapshot, all: &[Piece], error: Option<&str>) {
+/// The source folders: Flipper-style frame folders listed and converted on demand.
+fn sources_section(ui: &mut egui::Ui, v: &mut ViewState, library: &art_library::Library) {
+    egui::CollapsingHeader::new("Source folders").id_salt("art-lib-sources").show(ui, |ui| {
+        ui.weak("Folders of frame_N.png + meta.txt sets (like art-src/bandit/out), converted when you show or add one.");
+        for folder in super::art_sources::load().sources {
+            ui.horizontal(|ui| {
+                let n = library.sources.iter().filter(|s| s.folder.starts_with(&folder)).count();
+                ui.label(format!("{} ({n} sets)", folder.display()));
+                if ui.small_button("Remove").clicked() {
+                    super::art_sources::remove_source(&folder);
+                    art_library::refresh();
+                }
+            });
+        }
+        for (src, e) in library.sources.iter().filter_map(|s| s.blob.as_ref().err().map(|e| (s, e))) {
+            ui.colored_label(ui.visuals().warn_fg_color, format!("{}: {e}", src.folder.display()));
+        }
+        if ui.button("Add folder…").clicked() {
+            v.dialog.pick_directory();
+        }
+    });
+}
+
+fn contents(
+    ui: &mut egui::Ui,
+    v: &mut ViewState,
+    h: &Handle,
+    s: &Snapshot,
+    all: &[Piece],
+    sources: &[(PathBuf, Arc<Vec<u8>>)],
+    error: Option<&str>,
+) {
     ui.horizontal_wrapped(|ui| {
         for (f, text) in [
             (Filter::All, "All"),
@@ -296,7 +358,9 @@ fn contents(ui: &mut egui::Ui, v: &mut ViewState, h: &Handle, s: &Snapshot, all:
                 p.places.iter().any(|pl| matches!(pl, Place::BuiltIn(..) | Place::Slot(_)))
                     || p.places.iter().any(|pl| on_screen(s, pl))
             }
-            Filter::Library => p.places.iter().any(|pl| matches!(pl, Place::Library(_) | Place::Bundled(_))),
+            Filter::Library => {
+                p.places.iter().any(|pl| matches!(pl, Place::Library(_) | Place::Bundled(_) | Place::Source(_)))
+            }
             Filter::Hotlist => in_hotlist(p),
         })
         .filter(|p| search.is_empty() || p.label.to_lowercase().contains(&search))
@@ -307,13 +371,30 @@ fn contents(ui: &mut egui::Ui, v: &mut ViewState, h: &Handle, s: &Snapshot, all:
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
             for piece in shown {
-                card(ui, v, h, s, piece, in_hotlist(piece));
+                card(ui, v, h, s, piece, in_hotlist(piece), sources);
             }
         });
     });
 }
 
-fn card(ui: &mut egui::Ui, v: &mut ViewState, h: &Handle, s: &Snapshot, piece: &Piece, hotlisted: bool) {
+fn card(
+    ui: &mut egui::Ui,
+    v: &mut ViewState,
+    h: &Handle,
+    s: &Snapshot,
+    piece: &Piece,
+    hotlisted: bool,
+    sources: &[(PathBuf, Arc<Vec<u8>>)],
+) {
+    // A built-in with a saved slot standing in for it (art_sources) shows the slot.
+    let builtin_name = piece.places.iter().find_map(|p| match p {
+        Place::BuiltIn(_, Some(n)) => Some(n.clone()),
+        _ => None,
+    });
+    let stand_in = builtin_name
+        .as_deref()
+        .and_then(super::art_sources::stand_in)
+        .filter(|n| s.slots.iter().any(|i| i.slot == *n && i.used));
     let showing = piece.places.iter().any(|pl| on_screen(s, pl));
     let pinned = piece.places.iter().filter_map(Place::choice).any(|c| s.pinned.as_ref() == Some(&c));
     let layer = piece
@@ -360,6 +441,9 @@ fn card(ui: &mut egui::Ui, v: &mut ViewState, h: &Handle, s: &Snapshot, piece: &
             if let Some(l) = layer {
                 tags.push(format!("layer {l} art"));
             }
+            if let Some(n) = stand_in {
+                tags.push(format!("replaced by slot {}", n + 1));
+            }
             ui.weak(tags.join(" · "));
             let mut info = Vec::new();
             if let Some(b) = piece.bytes {
@@ -376,7 +460,7 @@ fn card(ui: &mut egui::Ui, v: &mut ViewState, h: &Handle, s: &Snapshot, piece: &
                 ui.colored_label(ui.visuals().warn_fg_color, "over 16 KiB: too big to push");
             }
             ui.horizontal_wrapped(|ui| {
-                let best = piece.best().cloned();
+                let best = stand_in.map(Place::Slot).or_else(|| piece.best().cloned());
                 if ui
                     .add_enabled(!s.busy && !too_big && best.is_some(), egui::Button::new("Show"))
                     .clicked()
@@ -392,6 +476,12 @@ fn card(ui: &mut egui::Ui, v: &mut ViewState, h: &Handle, s: &Snapshot, piece: &
                             h.push(p);
                         }
                         Some(Place::Bundled(i)) => match copy_to_library(i) {
+                            Ok(p) => {
+                                h.push(p);
+                            }
+                            Err(e) => v.message = Some(e),
+                        },
+                        Some(Place::Source(folder)) => match source_to_library(&folder, sources) {
                             Ok(p) => {
                                 h.push(p);
                             }
@@ -428,6 +518,32 @@ fn card(ui: &mut egui::Ui, v: &mut ViewState, h: &Handle, s: &Snapshot, piece: &
                                     v.confirm_clear = Some(*n);
                                 }
                             }
+                            if builtin_name.is_none() {
+                                // Stand in for a built-in (app-side; undo it on the built-in's card).
+                                let names = super::art_manifest::sets(s.status.map_or(0, |st| st.right_set_count));
+                                egui::ComboBox::from_id_salt(("art-lib-stand-in", *n))
+                                    .selected_text("Stand in for…")
+                                    .show_ui(ui, |ui| {
+                                        for set in names.unwrap_or_default() {
+                                            if ui.selectable_label(false, &set.label).clicked() {
+                                                super::art_sources::set_stand_in(&set.name, Some(*n));
+                                            }
+                                        }
+                                    });
+                            }
+                        }
+                        Place::BuiltIn(_, Some(name)) if stand_in.is_some() => {
+                            if ui.small_button("Undo stand-in").clicked() {
+                                super::art_sources::set_stand_in(name, None);
+                            }
+                        }
+                        Place::Source(folder)
+                            if !piece.places.iter().any(|p| matches!(p, Place::Library(_)))
+                                && ui.small_button("Add to library").clicked() =>
+                        {
+                            if let Err(e) = source_to_library(folder, sources) {
+                                v.message = Some(e);
+                            }
                         }
                         Place::Library(p) => {
                             if ui.small_button("Recycle").on_hover_text("Moves the file to the Recycle Bin").clicked() {
@@ -450,10 +566,21 @@ fn card(ui: &mut egui::Ui, v: &mut ViewState, h: &Handle, s: &Snapshot, piece: &
     });
 }
 
+/// Writes a source folder's converted set into the library as `<folder name>.bin`.
+fn source_to_library(folder: &std::path::Path, sources: &[(PathBuf, Arc<Vec<u8>>)]) -> Result<PathBuf, String> {
+    let (_, blob) = sources.iter().find(|(f, _)| f == folder).ok_or("that source isn't converted yet")?;
+    let name = folder.file_name().ok_or("no folder name")?.to_string_lossy().into_owned() + ".bin";
+    write_to_library(&name, blob)
+}
+
 /// Writes a bundled set into the library folder (so it can be pushed, hotlisted or saved) and
 /// returns its path.
 fn copy_to_library(i: usize) -> Result<PathBuf, String> {
     let (name, bytes) = BUNDLED.get(i).ok_or("no such set")?;
+    write_to_library(name, bytes)
+}
+
+fn write_to_library(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     let folder = art_library::folder().ok_or("No settings directory")?;
     std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     let path = folder.join(name);
