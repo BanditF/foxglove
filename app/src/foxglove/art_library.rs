@@ -20,9 +20,18 @@ pub fn blob_hash(bytes: &[u8]) -> u64 {
     bytes.hash(&mut h);
     h.finish()
 }
+/// A set folder under one of the library's source folders, encoded on the scan thread.
+#[derive(Clone)]
+pub struct Source {
+    pub folder: PathBuf,
+    pub blob: Result<Arc<Vec<u8>>, String>,
+    pub preview: Option<Arc<egui::ColorImage>>,
+}
+
 #[derive(Clone, Default)]
 pub struct Library {
     pub entries: Vec<Entry>,
+    pub sources: Vec<Source>,
     pub error: Option<String>,
 }
 static LIBRARY: OnceLock<Arc<Mutex<Library>>> = OnceLock::new();
@@ -80,6 +89,18 @@ fn scan(state: Arc<Mutex<Library>>) {
                     library.entries.push(Entry { path, preview, bytes, hash });
                 }
                 library.entries.sort_by(|a, b| a.path.cmp(&b.path));
+                // Source folders (#59): every set folder under them, converted for the view.
+                for source in super::art_sources::load().sources {
+                    for folder in super::art_sources::sets_in(&source) {
+                        let blob = super::art_encode::encode_folder(&folder);
+                        let preview = blob
+                            .as_ref()
+                            .ok()
+                            .and_then(|b| super::art_preview::first_frame(b).ok())
+                            .map(Arc::new);
+                        library.sources.push(Source { folder, blob: blob.map(Arc::new), preview });
+                    }
+                }
                 Ok(())
             })();
             library.error = result.err();

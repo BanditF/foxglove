@@ -25,6 +25,8 @@ pub mod store;
 pub mod api;
 pub mod art_library;
 mod art_library_view;
+mod art_encode;
+mod art_sources;
 pub mod lighting_leases;
 pub mod mic_broker;
 pub mod plugin_actions;
