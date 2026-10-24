@@ -8,7 +8,9 @@ pub const PANEL: u8 = 0xD5;
 pub const ART: u8 = 0xD6;
 /// Keyboard settings, saved on the keyboard (host_link.h).
 pub const SETTINGS: u8 = 0xD7;
-/// HELLO capabilities, independent of the protocol version.
+// 0xD7-0xDF are reserved for host-link protocols; 0xD8-0xDF are unassigned.
+
+/// HELLO capabilities, independent of the protocol version and current split connection.
 pub mod capabilities {
     pub const PANEL: u32 = 1 << 0;
     pub const ART_RELAY: u32 = 1 << 1;
@@ -456,6 +458,7 @@ mod tests {
         assert_eq!((h.version, h.width, h.height), (1, 64, 52));
         assert_eq!((h.right_link, h.right_battery), (2, Some(93)));
         assert_eq!(h.discovery_text(), "found");
+        assert_eq!(h.capabilities, 0);
         assert_eq!(h.discovery_tries, 1);
         assert_eq!(u16::from_le_bytes([h.debug[8], h.debug[9]]), 247);
 
@@ -464,6 +467,20 @@ mod tests {
         let h = Hello::parse(&r);
         assert_eq!(h.right_battery, None);
         assert_eq!(h.discovery_text(), "bt_gatt_discover error -5");
+    }
+
+    #[test]
+    fn parses_hello_capabilities() {
+        let mut r = [0u8; REPORT];
+        let caps = capabilities::PANEL
+            | capabilities::ART_RELAY
+            | capabilities::SETTINGS_RGB
+            | capabilities::ART_STATUS_EVENT
+            | (1 << 31); // Preserve unknown future bits.
+        r[21..25].copy_from_slice(&caps.to_le_bytes());
+        assert_eq!(Hello::parse(&r).capabilities, caps);
+        r[21..25].copy_from_slice(&capabilities::PANEL.to_le_bytes());
+        assert_eq!(Hello::parse(&r).capabilities, capabilities::PANEL);
     }
 
     #[test]
