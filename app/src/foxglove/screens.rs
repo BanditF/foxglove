@@ -428,6 +428,7 @@ fn run() {
                     stride: d.panel.stride,
                     bits: d.panel.bits.clone(),
                 };
+                dump_panel(&frame);
                 update_snapshot(|s| s.frame = Some(frame));
             }
             Err(e) => {
@@ -449,6 +450,24 @@ fn run() {
     std::thread::sleep(Duration::from_millis(50));
     *EVENTS.get().unwrap().lock().unwrap() = None;
     STOPPED.store(true, Ordering::Relaxed);
+}
+
+/// `FOXGLOVE_DUMP_PANEL=<path>`: writes every frame sent as a binary PBM (P4: 1 bit per pixel,
+/// MSB first, rows padded to whole bytes, exactly the panel's own layout; 1 = ink), so the Test
+/// lab can compare it with the keyboard's screen readback. Replaced atomically.
+fn dump_panel(frame: &Frame) {
+    static PATH: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    let Some(path) = PATH.get_or_init(|| std::env::var_os("FOXGLOVE_DUMP_PANEL").map(Into::into)) else {
+        return;
+    };
+    let tmp = path.with_extension("tmp");
+    let mut bytes = format!("P4
+{} {}
+", frame.width, frame.height).into_bytes();
+    bytes.extend_from_slice(&frame.bits);
+    if std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).is_err() {
+        eprintln!("Foxglove screens: can't write {}", path.display());
+    }
 }
 
 /// Appends the right half's battery to `right-battery.csv` (next to the settings) when it changes.
