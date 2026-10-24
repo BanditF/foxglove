@@ -1,6 +1,6 @@
 # Foxglove: plugins (Kits) and one device layer (Palm)
 
-Status: proposal for approval (2026-10-23). Owner: App engineer (session 3). Builds on
+Status: approved 2026-10-24 (decisions at the end). Owner: App engineer (session 3). Builds on
 [proposal.md](proposal.md) (facts store, provider plugins, local API) and issues #17, #39, #40, #44.
 
 ## Why
@@ -110,7 +110,8 @@ pub trait Device: Send {
 
 Vendor SDKs go into Kits for three reasons: their licenses may not mix with GPL-3.0 linking,
 their DLLs can crash or hang, and most users have at most one of them. A Kit can load a DLL;
-the app never does.
+the app never does. Nothing vendor-specific ships by default: the Den's catalog offers each
+vendor Kit with its own install button (see Lifecycle).
 
 Firmware follow-up (for 4 · Firmware): if the Corne itself spoke **HID LampArray**, Windows
 Dynamic Lighting and every app on top of it could light it with no Foxglove at all. That is
@@ -208,8 +209,12 @@ The Den shows each Kit's trust level, permissions, status, restarts and log.
 
 ### Lifecycle
 
-- Discovered from `%APPDATA%\Foxglove\kits\*\kit.toml` (installing = unzipping a folder; a
-  signed index can come later).
+- **Catalog, à la carte.** The Den lists a curated catalog of optional first-party Kits (the vendor
+  lighting Kits, example providers), each with a description, its permissions and a Download /
+  Install button. The catalog is a signed index in the repo's releases; a Kit is a zip with
+  a checksum. Nothing in the catalog is installed by default. Third-party Kits are a later
+  decision.
+- Installed Kits live in `%APPDATA%\Foxglove\kits\*\kit.toml`; uninstalling deletes the folder.
 - Started by the existing supervisor (`foxglove::services`, backoff 1 s → 60 s). Heartbeat every
   10 s; no answer for 30 s = restart. Five crashes in ten minutes = disabled, with a notice.
 - Rate limits per Kit (calls/s, lighting frames/s, panel overrides). A Kit that floods is
@@ -232,13 +237,13 @@ Each phase leaves the app shippable. Codex writes the code, one worktree per job
 | # | Phase | Delivers | Done when |
 |---|---|---|---|
 | 1 | **Palm core** | `crates/palm` (types, capability traits, registry, actor helper, mock backend, a contract test suite every backend must pass); facts store (#17) as Palm's event target; ZMK/Digitalis and `KeyPeekKeymap` adapters | Overlay, screens, art, RGB sync run through Palm with **no visible change**; contract tests pass for mock + ZMK |
-| 2 | **QMK, VIA, Vial** | Backends + identification + VIA JSON definitions + grid fallback; VIA lighting channels | A QMK/VIA board shows its layers in the overlay and its RGB in the Lighting tab (needs a test board, see questions) |
+| 2 | **QMK, VIA, Vial** | Backends + identification + VIA JSON definitions + grid fallback; VIA lighting channels | A QMK/VIA board shows its layers in the overlay and its RGB in the Lighting tab (test board: the user's Keychron K5 Pro, read-only until the user OKs a flash) |
 | 3 | **Local API + Den v1** | JSON-RPC schema v1, named pipe, stdio Kits, manifest, permissions, Job Objects, Den tab, Rust SDK, an example Kit | A sample weather Kit puts a fact on the panel; killing it never affects the overlay |
 | 4 | **Lighting** | `Lighting` + arbiter; OpenRGB and Dynamic Lighting in-process; Chroma, LIGHTSYNC, iCUE as Kits after a license check; SignalRGB after research | One effect paints the Corne and an OpenRGB device in sync, and gives them back on exit |
 | 5 | **Profiles** | `foxglove.toml` + migrations, profiles, foreground rules, export/import | Switching to a game flips lighting, panel and Kits together |
 | 6 | **WASM tier** (optional) | wasmtime + WIT for pure-logic Kits (panel layouts, effects, fact transforms) with a real sandbox | Only if third-party Kits show up |
 
-Phases 1 → 3 are sequential. Phase 2 and the API schema work in phase 3 can run in parallel
+Phase 1 goes before the open UI issues (#13, #59, #60). Phases 1 → 3 are sequential. Phase 2 and the API schema work in phase 3 can run in parallel
 once phase 1 lands. Phase 4 needs 1 and 3.
 
 ## Routing
@@ -250,11 +255,14 @@ once phase 1 lands. Phase 4 needs 1 and 3.
 - **9 · Scout:** vendor SDK license terms (Chroma, LIGHTSYNC, iCUE) and SignalRGB's integration
   options.
 
-## Questions for the user
+## Decisions (user, 2026-10-24)
 
-1. **Names:** Palm (device layer), Kits (plugins), Den (plugin host/tab). Keep, or other names?
-2. **QMK hardware:** do you have a QMK/VIA board for phase 2, or should we buy a cheap one?
-3. **Third-party Kits:** your own and first-party only for now, or open to others from the start
-   (which pulls signing and the WASM tier forward)?
-4. **Vendor SDKs:** fine to ship Chroma/LIGHTSYNC/iCUE as separate optional Kit downloads?
-5. **Order:** Palm core before the open UI issues (#13 Screens tab, #59/#60 art), or after?
+1. **Names:** Palm, Kits and Den stay for now and are revisited before release (release checklist).
+2. **QMK test board:** the user's Keychron K5 Pro (QMK + VIA, Bluetooth). It is their daily
+   keyboard: phase 2 starts read-only (layers, keymap read, lighting over VIA). Any flash needs
+   the user's OK, and stock firmware stays restorable.
+3. **Kits:** optional but offered, à la carte: a curated first-party catalog in the Den with
+   download buttons, including the vendor lighting Kits. Nothing vendor-specific ships by
+   default. Third-party Kits are a later decision.
+4. **Vendor SDKs:** separate optional Kits from the catalog (follows from 3).
+5. **Order:** Palm core (phase 1) before #13, #59 and #60.
