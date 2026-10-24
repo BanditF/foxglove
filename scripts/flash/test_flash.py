@@ -28,6 +28,8 @@ class FakeOS:
         self.keyboard = True
         self.keyboard_serials = []
         self.auto = False
+        self.builds = {}
+        self.build_calls = []
         self.entered = []
 
     def enumerate_bootloaders(self):
@@ -49,6 +51,10 @@ class FakeOS:
             self.present = True
         else:
             self.present = self.stays
+
+    def build_info(self, half):
+        self.build_calls.append(half)
+        return self.builds.get(half)
 
     def enter_bootloader(self, half, log):
         self.entered.append(half)
@@ -309,3 +315,41 @@ class MarkerTests(unittest.TestCase):
             (d / 'foxglove-fw-v0.1.1-def5678-left-dev.uf2').write_bytes(b'')
             with self.assertRaises(f.Refused):
                 f.firmware_file(d, 'left', 'dev')
+
+
+def marked(half, profile='dev', sha='abc1234'):
+    return uf2(f'FOXGLOVE_HALF={half};VER=0.1.0;PROFILE={profile};SHA={sha}'.encode())
+
+
+class BuildInfoTests(unittest.TestCase):
+    def run_flash(self, backend, answers=('FLASH', 'TYPES'), images=None, **kwargs):
+        clock = Clock()
+        answers = iter(answers)
+        f.flash(images or {'left': marked('left')}, backend, 2,
+                stdin=type('TTY', (), {'isatty': lambda self: True})(),
+                ask=lambda prompt: next(answers), log=lambda message: None,
+                clock=clock.clock, sleep=clock.sleep, **kwargs)
+
+    def test_refuses_a_dev_ga_mix_before_asking_anything(self):
+        backend = FakeOS()
+        backend.builds = {'right': {'version': '0.1.0', 'profile': 'dev', 'sha': 'abc1234'}}
+        with self.assertRaises(f.Refused):
+            self.run_flash(backend, ('FLASH', 'TYPES'), {'left': marked('left', 'ga')})
+        self.assertEqual(backend.writes, [])
+        self.assertEqual(backend.entered, [])
+        self.run_flash(FakeOS(), ('FLASH', 'TYPES'), {'left': marked('left', 'ga')}, allow_profile_mix=True)
+
+    def test_verifies_the_new_build_after_flashing(self):
+        backend = FakeOS()
+        backend.builds = {'left': {'version': '0.1.0', 'profile': 'dev', 'sha': 'abc1234'}}
+        self.run_flash(backend)
+        self.assertIn('left', backend.build_calls)
+        backend = FakeOS()
+        backend.builds = {'left': {'version': '0.0.9', 'profile': 'dev', 'sha': '0000000'}}
+        with self.assertRaises(f.FlashFailed):
+            self.run_flash(backend)
+
+    def test_unknown_running_build_is_not_an_error(self):
+        backend = FakeOS()
+        self.run_flash(backend)
+        self.assertEqual(len(backend.writes), 1)

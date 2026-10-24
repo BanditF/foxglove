@@ -148,6 +148,23 @@ def lab_binary():
 
 class WindowsOS:
     """OS boundary. One CIM query maps serial -> disk -> partition -> logical disk."""
+    def build_info(self, half):
+        """The running build of `half` from the keyboard (D7 09) as a dict with version, profile
+        and sha, or None when it can't tell (old firmware, right not reachable, no foxglove-lab)."""
+        exe = lab_binary()
+        if exe is None:
+            return None
+        try:
+            result = subprocess.run([str(exe), '--allow-app', 'build', '--half', half],
+                                    capture_output=True, text=True, timeout=20)
+        except subprocess.TimeoutExpired:
+            return None
+        if result.returncode != 0:
+            return None
+        try:
+            return json.loads(result.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return None
     def enter_bootloader(self, half, log):
         """Asks the running firmware to reboot `half` into its bootloader (D7 08, the right
         through the left's relay). True when asked; False means double-tap instead."""
@@ -229,10 +246,54 @@ def confirm(prompt, word, stdin, ask):
         raise Refused('Confirmation did not match; nothing further will be written.')
 
 
+def describe(build):
+    return f"{build.get('version') or '?'} {build.get('profile') or '?'} {build.get('sha') or '?'}"
+
+
+def check_builds(images, backend, log, allow_profile_mix=False, settings_reset=False):
+    """Compares each image's marker with what the halves run now (D7 09). Refuses an update that
+    would leave one half dev and the other GA, unless allowed. Returns the expected SHA per half."""
+    marks = {half: preflight(data, half, settings_reset=settings_reset) for half, data in images.items()}
+    running = {half: backend.build_info(half) for half in ('left', 'right')}
+    for half in ('left', 'right'):
+        now = running[half]
+        log(f"{half}: running {describe(now) if now else 'unknown (the firmware does not say)'}"
+            + (f"; image {describe({'version': marks[half].version, 'profile': marks[half].profile, 'sha': marks[half].sha})}"
+               if half in marks else '; not flashing'))
+        if now and half in marks and marks[half].sha and now.get('sha') == marks[half].sha:
+            log(f'{half}: already running this exact build.')
+    after = {half: (marks[half].profile if half in marks and marks[half].profile else
+                    (running[half] or {}).get('profile')) for half in ('left', 'right')}
+    if all(after.values()) and after['left'] != after['right'] and not allow_profile_mix and not settings_reset:
+        raise Refused(f"this would leave the left {after['left']} and the right {after['right']}; flash both halves "
+                      'with the same profile, or pass --allow-profile-mix')
+    return {half: m.sha for half, m in marks.items() if m.sha}
+
+
+def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=time.sleep):
+    """After a flash: the half must report the image's SHA (when both sides know it)."""
+    if not expected_sha:
+        return
+    deadline = clock() + 20  # the right answers over the relay once it has reconnected
+    while True:
+        now = backend.build_info(half)
+        if now:
+            if now.get('sha') != expected_sha:
+                raise FlashFailed(f"{half} runs {describe(now)}, expected SHA {expected_sha}")
+            log(f'{half}: verified, running {describe(now)}.')
+            return
+        if clock() >= deadline:
+            log(f"{half}: couldn't read its build back to verify (firmware can't tell, or the right isn't back yet).")
+            return
+        sleep(2)
+
+
 def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
-          settings_reset=False, allow_unknown_half=False, clock=time.monotonic, sleep=time.sleep):
+          settings_reset=False, allow_unknown_half=False, clock=time.monotonic, sleep=time.sleep,
+          allow_profile_mix=False):
     log('Flash left first, check that it types, then flash right. Double-tap reset only on the requested half.')
     log('Rollback: known-good firmware is in ' + ROLLBACK)
+    expected = check_builds(images, backend, log, allow_profile_mix, settings_reset)
     confirm('Type FLASH to continue: ', 'FLASH', stdin, ask)
     if settings_reset:
         confirm('This erases saved settings. Type ERASE SETTINGS to confirm: ', 'ERASE SETTINGS', stdin, ask)
@@ -297,6 +358,9 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         log(f'{half} bootloader drive disappeared.')
         if half == 'left' and not settings_reset:
             wait_for(lambda: backend.running_keyboard(chosen[0]), seconds, 'Left keyboard did not re-enumerate (1D50:615E)', clock, sleep)
+        if not settings_reset:
+            verify_build(half, expected.get(half), backend, log, clock, sleep)
+        if half == 'left' and not settings_reset:
             confirm('Test the left keyboard in a text editor. If it types, enter TYPES here: ', 'TYPES', stdin, ask)
 
 
@@ -313,6 +377,8 @@ def main(argv=None):
     parser.add_argument('--json', action='store_true')
     parser.add_argument('--allow-unknown-half', action='store_true')
     parser.add_argument('--settings-reset', action='store_true')
+    parser.add_argument('--allow-profile-mix', action='store_true',
+                        help='allow leaving one half dev and the other GA')
     args = parser.parse_args(argv)
     if not math.isfinite(args.wait_seconds) or args.wait_seconds <= 0:
         parser.error('--wait-seconds must be positive and finite')
@@ -346,7 +412,8 @@ def main(argv=None):
                 print(prompt, end='', file=sys.stderr, flush=True)
                 return input()
             flash(images, WindowsOS(), args.wait_seconds, log=log, ask=ask_terminal,
-                  settings_reset=args.settings_reset, allow_unknown_half=args.allow_unknown_half)
+                  settings_reset=args.settings_reset, allow_unknown_half=args.allow_unknown_half,
+                  allow_profile_mix=args.allow_profile_mix)
     except (TimeoutError, subprocess.TimeoutExpired) as exc:
         code = 2
         log('TIMEOUT: ' + str(exc))
