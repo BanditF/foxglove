@@ -77,12 +77,17 @@ enum Command {
     Lamp {
         #[arg(long, value_parser = ["left", "right"])]
         half: String,
-        /// The LED's place on its half's strip, 0-20, or "off".
+        /// The LED's place on its half's strip, 0-20; "off"; or "walk": 0 to 20 in turn, each in
+        /// the next colour of red, green, blue, white, so the person reading the keys off in
+        /// order can keep count, then off.
         #[arg(long)]
         index: String,
-        /// Colour as RRGGBB.
+        /// Colour as RRGGBB (one index; walk uses its own colours).
         #[arg(long, default_value = "ffffff")]
         rgb: String,
+        /// Walk: how long each LED stays lit.
+        #[arg(long, default_value_t = 3000)]
+        hold_ms: u64,
     },
     /// The LampArray sitting (#272): a white dot through lamps 0-41 with SET_FRAME (D7 0C), one
     /// frame per acknowledgement, then RELEASE. Needs HELLO bit 14 (FRAMES).
@@ -178,38 +183,75 @@ fn main() -> Result<std::process::ExitCode> {
             std::process::ExitCode::SUCCESS
         });
     }
-    if let Command::Lamp { half, index, rgb } = &cli.command {
+    if let Command::Lamp {
+        half,
+        index,
+        rgb,
+        hold_ms,
+    } = &cli.command
+    {
         use digitalis::Transport;
         let _guard = platform::guard(cli.allow_app)?;
-        let _lab = platform::lab_lock(Duration::from_secs(120))?;
+        let _lab = platform::lab_lock(Duration::from_secs(300))?;
         let link = connect(cli.product.clone())?;
         link.wait_connected(Duration::from_secs(10))?;
-        let i: u8 = if index == "off" { 0xff } else { index.parse()? };
-        ensure!(i == 0xff || i <= 20, "index is 0-20 or off");
-        let c = rgb_arg(rgb)?;
         let half_id = u8::from(half == "right");
-        let r = link.request(
-            &[SETTINGS, LAMP_TEST, half_id, i, c[0], c[1], c[2]],
-            SETTINGS,
-            LAMP_TEST,
-            Duration::from_secs(4),
-        )?;
-        let status = r[2];
-        println!(
-            "{}",
-            serde_json::json!({"half": half, "index": index, "status": status})
-        );
-        return Ok(match status {
-            0 => std::process::ExitCode::SUCCESS,
-            4 => {
-                eprintln!("this firmware has no LAMP_TEST (dev LampArray build only)");
-                std::process::ExitCode::from(4)
+        let light = |i: u8, c: [u8; 3]| -> Result<u8> {
+            let r = link.request(
+                &[SETTINGS, LAMP_TEST, half_id, i, c[0], c[1], c[2]],
+                SETTINGS,
+                LAMP_TEST,
+                Duration::from_secs(4),
+            )?;
+            Ok(r[2])
+        };
+        let steps: Vec<(u8, [u8; 3])> = match index.as_str() {
+            "off" => vec![(0xff, [0; 3])],
+            "walk" => {
+                const COLOURS: [(&str, [u8; 3]); 4] = [
+                    ("red", [255, 0, 0]),
+                    ("green", [0, 255, 0]),
+                    ("blue", [0, 0, 255]),
+                    ("white", [255, 255, 255]),
+                ];
+                (0..=20u8)
+                    .map(|i| (i, COLOURS[usize::from(i) % COLOURS.len()].1))
+                    .chain(std::iter::once((0xff, [0; 3])))
+                    .collect()
             }
             n => {
-                eprintln!("LAMP_TEST status {n} (2 no relay link, 5 bad request)");
-                std::process::ExitCode::from(1)
+                let i: u8 = n.parse()?;
+                ensure!(i <= 20, "index is 0-20, off or walk");
+                vec![(i, rgb_arg(rgb)?)]
             }
-        });
+        };
+        let walk = index == "walk";
+        for (i, c) in steps {
+            let status = light(i, c)?;
+            if status != 0 {
+                eprintln!(
+                    "LAMP_TEST status {status} ({})",
+                    match status {
+                        4 => "this firmware has no LAMP_TEST: dev LampArray build only",
+                        2 => "no relay link to the right",
+                        _ => "bad request",
+                    }
+                );
+                return Ok(std::process::ExitCode::from(if status == 4 {
+                    4
+                } else {
+                    1
+                }));
+            }
+            println!(
+                "{}",
+                serde_json::json!({"half": half, "index": if i == 0xff { "off".to_string() } else { i.to_string() }, "rgb": format!("{:02x}{:02x}{:02x}", c[0], c[1], c[2])})
+            );
+            if walk && i != 0xff {
+                std::thread::sleep(Duration::from_millis(*hold_ms));
+            }
+        }
+        return Ok(std::process::ExitCode::SUCCESS);
     }
     if let Command::FrameDot { step_ms } = &cli.command {
         let _guard = platform::guard(cli.allow_app)?;
