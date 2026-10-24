@@ -1,5 +1,5 @@
 //! Native focus isolation and process exclusion on Windows.
-use crate::spec::{Invoke, Step};
+use crate::spec::Step;
 use anyhow::{ensure, Result};
 use std::{
     io::{self, IsTerminal, Write},
@@ -148,7 +148,7 @@ mod native {
         text: &str,
         via: &[Step],
         cancelled: &Arc<AtomicBool>,
-        mut inject: impl FnMut(&Invoke) -> Result<()>,
+        mut inject: impl FnMut(&Step) -> Result<()>,
     ) -> Result<String> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
@@ -200,10 +200,7 @@ mod native {
                     GetForegroundWindow() == hwnd,
                     "sink lost foreground focus; injection stopped"
                 );
-                let Step::Invoke(i) = step else {
-                    anyhow::bail!("sink via needs invoke")
-                };
-                inject(i)?;
+                inject(step)?;
                 let end = Instant::now() + Duration::from_millis(80);
                 while Instant::now() < end {
                     ensure!(GetForegroundWindow() == hwnd, "sink lost foreground focus");
@@ -234,7 +231,7 @@ pub fn sink(
     _: &str,
     _: &[Step],
     _: &Arc<AtomicBool>,
-    _: impl FnMut(&Invoke) -> Result<()>,
+    _: impl FnMut(&Step) -> Result<()>,
 ) -> Result<String> {
     anyhow::bail!("typing sink requires Windows")
 }
