@@ -43,6 +43,10 @@ F57 = {
     "I": ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
     "V": ["10001", "10001", "10001", "10001", "01010", "01010", "00100"],
     "?": ["01110", "10001", "00001", "00110", "00100", "00000", "00100"],
+    "R": ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+    "A": ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+    "Y": ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
+    "C": ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
 }
 
 
@@ -243,6 +247,88 @@ def mute_frame(state, label=""):
     return img
 
 
+# ---------------------------------------------------------------- broadcast status
+def tower(img, v, cx=32, top=3, waves=False, dotted=False, small=False):
+    """A broadcast mast: a beacon on top of a braced A-frame, optionally radiating."""
+    d = ImageDraw.Draw(img)
+    k = 0.6 if small else 1.0
+    h, half = round(22 * k), round(8 * k)
+    by = top + h  # foot of the mast
+    d.ellipse([cx - 2, top, cx + 2, top + 4], fill=v)
+    d.line([(cx, top + 5), (cx - half, by)], fill=v, width=2)
+    d.line([(cx, top + 5), (cx + half, by)], fill=v, width=2)
+    for t in (0.45, 0.75):  # cross braces
+        y = round(top + 5 + (by - top - 5) * t)
+        w = round(half * t)
+        d.line([(cx - w, y), (cx + w, y)], fill=v)
+    if waves:  # two arcs each side of the beacon
+        for r in (6, 11):
+            r = round(r * k)
+            box = [cx - r, top + 2 - r, cx + r, top + 2 + r]
+            d.arc(box, 140, 220, fill=v, width=2)
+            d.arc(box, -40, 40, fill=v, width=2)
+    if dotted:
+        px = img.load()
+        for y in range(0, by + 1):
+            if y % 3 == 0:
+                for x in range(cx - 14, cx + 15):
+                    if px[x, y] == v:
+                        px[x, y] = 1 - v
+
+
+def rec_dot(img, v, cx, cy, r, ring=True):
+    d = ImageDraw.Draw(img)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=v)
+    if ring:
+        d.ellipse([cx - r - 3, cy - r - 3, cx + r + 3, cy + r + 3], outline=v)
+
+
+def broadcast_frame(state, label=""):
+    """idle, recording, recording-paused, streaming, both, disconnected."""
+    inverted = state == "streaming"
+    img = blank(v=1 if inverted else 0)
+    ink = 0 if inverted else 1
+    d = ImageDraw.Draw(img)
+    if state == "idle":
+        tower(img, ink)
+        text57x2(img, (W - text57x2_w("READY")) // 2, 31, "READY", v=ink)
+    elif state in ("recording", "recording-paused"):
+        if state == "recording":
+            rec_dot(img, ink, 32, 13, 8)
+        else:  # paused: the ring stays, the dot becomes pause bars
+            d.ellipse([21, 2, 43, 24], outline=ink)
+            d.rectangle([27, 7, 30, 19], fill=ink)
+            d.rectangle([34, 7, 37, 19], fill=ink)
+        text57x2(img, (W - text57x2_w("REC")) // 2, 31, "REC", v=ink)
+    elif state == "streaming":
+        tower(img, ink, waves=True)
+        text57x2(img, (W - text57x2_w("LIVE")) // 2, 31, "LIVE", v=ink)
+    elif state == "both":  # LIVE in a bright band on top, REC below
+        d.rectangle([0, 0, W - 1, 22], fill=1)
+        tower(img, 0, cx=8, top=5, small=True)
+        text57x2(img, 17, 4, "LIVE", v=0)
+        rec_dot(img, 1, 11, 33, 5, ring=False)
+        text57x2(img, 22, 27, "REC", v=1)
+    elif state == "disconnected":
+        tower(img, ink, dotted=True)
+        msg = "NOT CONNECTED"
+        text35(img, (W - text35_w(msg)) // 2, 33, msg, v=ink)
+        d.line([(16, 41), (47, 41)], fill=ink)
+    if label:
+        text35(img, (W - text35_w(label)) // 2, 47, label, v=ink)
+    brackets(img, ink)
+    if state == "both":
+        brackets(img, 0)  # the top corners sit on the bright band
+        d.line([(0, H - 1), (3, H - 1)], fill=1)
+        d.line([(0, H - 4), (0, H - 1)], fill=1)
+        d.line([(W - 4, H - 1), (W - 1, H - 1)], fill=1)
+        d.line([(W - 1, H - 4), (W - 1, H - 1)], fill=1)
+    return img
+
+
+BROADCAST_STATES = ("idle", "recording", "recording-paused", "streaming", "both", "disconnected")
+
+
 # ---------------------------------------------------------------- encoding
 def pack(img):
     w, h = img.size
@@ -303,11 +389,22 @@ def main():
     mute_prev["muted-label"] = mute_frame("muted", "HEADSET")
     mute_prev["live-label"] = mute_frame("live", "USB MIC")
     write("org.foxglove.mic-mute", mute, mute_prev)
+    bc_states = {s: broadcast_frame(s) for s in BROADCAST_STATES}
+    bc = dict(head, plugin="org.foxglove.broadcast-status",
+              frames={s: pack(img) for s, img in bc_states.items()},
+              layout={"label": {"x": 32, "y": 47, "align": "center",
+                                "ink": {s: 0 if s == "streaming" else 1 for s in BROADCAST_STATES}}},
+              font=font35())
+    bc_prev = dict(bc_states)
+    bc_prev["streaming-label"] = broadcast_frame("streaming", "GAMEPLAY")
+    bc_prev["both-label"] = broadcast_frame("both", "BRB SCREEN")
+    write("org.foxglove.broadcast-status", bc, bc_prev)
     print("wrote panel assets to assets/plugins/")
     if a.sheet:
-        cells = list(pomo_prev.items()) + list(mute_prev.items())
+        cells = list(pomo_prev.items()) + list(mute_prev.items()) + list(bc_prev.items())
         s = 4
-        sheet = Image.new("L", (5 * (W * s + 12) + 12, 2 * (H * s + 28) + 12), 90)
+        rows = (len(cells) + 4) // 5
+        sheet = Image.new("L", (5 * (W * s + 12) + 12, rows * (H * s + 28) + 12), 90)
         dr = ImageDraw.Draw(sheet)
         for i, (name, img) in enumerate(cells):
             x, y = 12 + (i % 5) * (W * s + 12), 12 + (i // 5) * (H * s + 28)

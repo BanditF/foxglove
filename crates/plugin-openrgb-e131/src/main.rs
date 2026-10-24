@@ -15,6 +15,7 @@
 mod e131;
 
 use std::net::{Ipv4Addr, UdpSocket};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use foxglove_plugin::{Hsb, LightingState, NetEvent, Plugin, SetLightingParams};
@@ -27,6 +28,8 @@ struct Options {
     start_channel: usize,
     leds: Option<usize>,
     max_hz: u32,
+    /// The UDP port (5568, E1.31's); tests use a free one of their own.
+    port: u16,
 }
 
 fn options(args: &[String]) -> Options {
@@ -36,6 +39,7 @@ fn options(args: &[String]) -> Options {
         start_channel: num("--start-channel").map_or(1, |n| (n as usize).max(1)),
         leds: num("--leds").map(|n| n as usize),
         max_hz: num("--max-hz").map_or(10, |n| (n as u32).clamp(1, 30)),
+        port: num("--port").and_then(|n| u16::try_from(n).ok()).filter(|p| *p != 0).unwrap_or(e131::PORT),
     }
 }
 
@@ -71,16 +75,41 @@ fn hsb((r, g, b): (u8, u8, u8)) -> Hsb {
 }
 
 /// The keyboards with lights, and how their lights were before we took over.
-fn take_over(plugin: &Plugin) -> Vec<(String, Option<LightingState>)> {
+///
+/// What a keyboard showed before the plugin's first takeover is kept for later ones: if a new
+/// takeover finds the keyboard still on the plugin's own last colour (a restore it didn't take,
+/// or one not applied yet), that colour isn't mistaken for the user's.
+fn take_over(
+    plugin: &Plugin,
+    original: &mut HashMap<String, LightingState>,
+    ours: Option<Hsb>,
+) -> Vec<(String, Option<LightingState>)> {
     plugin.devices()
         .unwrap_or_default()
         .into_iter()
         .filter(|d| d.connected && d.caps.iter().any(|c| c == "lighting"))
         .map(|d| {
-            let before = plugin.lighting_state(&d.id).ok();
+            // A split keyboard's other half can lag seconds behind; what it shows once both
+            // agree is the "before".
+            let read = settled(plugin, &d.id);
+            let leftover = |s: &LightingState| ours.is_some_and(|c| near(s.hue, c.hue, 360) && near(s.saturation.into(), c.saturation.into(), 1000));
+            let before = match (read, original.get(&d.id)) {
+                (Some(s), Some(kept)) if leftover(&s) => Some(kept.clone()),
+                (Some(s), _) => {
+                    original.insert(d.id.clone(), s.clone());
+                    Some(s)
+                }
+                (None, kept) => kept.cloned(),
+            };
             (d.id, before)
         })
         .collect()
+}
+
+/// Within 2 of each other, around `wrap`.
+fn near(a: u16, b: u16, wrap: u16) -> bool {
+    let d = a.abs_diff(b);
+    d.min(wrap.saturating_sub(d)) <= 2
 }
 
 /// Sends only what changed since `previous` (each part is a separate keyboard command): the
@@ -106,20 +135,62 @@ const RESENDS: u32 = 3;
 
 /// Whether the keyboard shows what `set` asked for: on or off, and the hue and saturation
 /// (brightness aside: the keyboard may dim on battery).
+///
+/// The colour is compared even with the lights off: the keyboard keeps it for when they come
+/// back on, so a lost colour write in a restore would otherwise go unnoticed.
 fn shows(state: &LightingState, set: &SetLightingParams) -> bool {
-    let near = |a: u16, b: u16, wrap: u16| {
-        let d = a.abs_diff(b);
-        d.min(wrap.saturating_sub(d)) <= 2
-    };
     set.on.is_none_or(|on| state.on == on)
-        && (!state.on
-            || set.color.is_none_or(|c| near(state.hue, c.hue, 360) && near(state.saturation.into(), c.saturation.into(), 1000)))
+        && set.color.is_none_or(|c| near(state.hue, c.hue, 360) && near(state.saturation.into(), c.saturation.into(), 1000))
+        && set.effect.as_ref().is_none_or(|e| state.effect == *e)
 }
 
 /// Reads the lights back after a change and sends the whole colour again (on, colour, static
 /// effect) if the keyboard didn't take it, a few times at most: a write can be lost while the
 /// keyboard is busy with the previous one, and it wouldn't be retried otherwise, since only
 /// changes are sent.
+/// How long to wait for a split keyboard's other half to catch up (Test lab: 1.7 s typical,
+/// 5.9 s seen).
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(8);
+const SETTLE_STEP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The lights once every part of the keyboard agrees, or as they are after [`SETTLE`].
+fn settled(plugin: &Plugin, id: &str) -> Option<LightingState> {
+    let until = std::time::Instant::now() + SETTLE;
+    loop {
+        let state = plugin.lighting_state(id).ok()?;
+        if state.settled || std::time::Instant::now() >= until {
+            return Some(state);
+        }
+        std::thread::sleep(SETTLE_STEP);
+    }
+}
+
+/// After a restore: reads back until the keyboard shows it on both halves, sending it again
+/// if the left didn't take it or the right still hasn't half way through [`SETTLE`].
+fn confirm_settled(plugin: &Plugin, all: &SetLightingParams) {
+    let id = &all.device;
+    let start = std::time::Instant::now();
+    let mut resent = 0;
+    while start.elapsed() < SETTLE {
+        match plugin.lighting_state(id) {
+            Ok(state) if shows(&state, all) && state.settled => return,
+            Ok(state) => {
+                let late_right = shows(&state, all) && start.elapsed() >= SETTLE / 2;
+                if (!shows(&state, all) || late_right) && resent < RESENDS {
+                    resent += 1;
+                    if let Err(e) = plugin.set_lighting(all) {
+                        eprintln!("openrgb-e131: lighting: {e}");
+                        return;
+                    }
+                }
+            }
+            Err(_) => return,
+        }
+        std::thread::sleep(SETTLE_STEP);
+    }
+    eprintln!("openrgb-e131: {id} didn't settle on {all:?} within {} s", SETTLE.as_secs());
+}
+
 fn confirm(plugin: &Plugin, all: &SetLightingParams) {
     let id = &all.device;
     for attempt in 0..=RESENDS {
@@ -151,13 +222,13 @@ fn restore(plugin: &Plugin, devices: &[(String, Option<LightingState>)]) {
             effect: Some(s.effect.clone()),
         };
         match plugin.set_lighting(&set) {
-            Ok(()) => confirm(plugin, &set),
+            Ok(()) => confirm_settled(plugin, &set),
             Err(e) => eprintln!("openrgb-e131: restoring lights: {e}"),
         }
     }
 }
 
-fn send_test(args: &[String], universe: u16) -> std::io::Result<()> {
+fn send_test(args: &[String], universe: u16, port: u16) -> std::io::Result<()> {
     let at = args.iter().position(|a| a == "--send-test").unwrap_or(0);
     let v: Vec<u8> = args[at + 1..].iter().take(3).filter_map(|a| a.parse().ok()).collect();
     let [r, g, b] = v[..] else {
@@ -174,7 +245,7 @@ fn send_test(args: &[String], universe: u16) -> std::io::Result<()> {
     let mut cid = *b"foxglove-test-00";
     let unique = std::process::id() ^ std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
     cid[12..].copy_from_slice(&unique.to_be_bytes());
-    socket.send_to(&e131::build(cid, universe, seq, options, &frame), (Ipv4Addr::LOCALHOST, e131::PORT))?;
+    socket.send_to(&e131::build(cid, universe, seq, options, &frame), (Ipv4Addr::LOCALHOST, port))?;
     Ok(())
 }
 
@@ -182,7 +253,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let opts = options(&args);
     if args.iter().any(|a| a == "--send-test") {
-        if let Err(e) = send_test(&args, opts.universe) {
+        if let Err(e) = send_test(&args, opts.universe, opts.port) {
             eprintln!("openrgb-e131: {e}");
             std::process::exit(1);
         }
@@ -196,10 +267,10 @@ fn main() {
         }
     };
     // Localhost only: other machines can't drive the lights. Foxglove does the listening.
-    let frames = match plugin.listen_udp(e131::PORT) {
+    let frames = match plugin.listen_udp(opts.port) {
         Ok(rx) => rx,
         Err(e) => {
-            eprintln!("openrgb-e131: can't listen on 127.0.0.1:{}: {e}", e131::PORT);
+            eprintln!("openrgb-e131: can't listen on 127.0.0.1:{}: {e}", opts.port);
             std::process::exit(1);
         }
     };
@@ -207,6 +278,9 @@ fn main() {
     // The last sequence number per sender (E1.31 numbers frames per source).
     let mut last_seq: Option<([u8; 16], u8)> = None;
     let mut devices: Option<Vec<(String, Option<LightingState>)>> = None;
+    // The lights from before the first takeover, and the last colour this plugin showed.
+    let mut original: HashMap<String, LightingState> = HashMap::new();
+    let mut ours: Option<Hsb> = None;
     let mut last_data = Instant::now();
     let mut wanted: Option<Hsb> = None;
     let mut sent: Option<Hsb> = None;
@@ -239,7 +313,7 @@ fn main() {
                 } else if let Some(rgb) = average(p.channels, opts.start_channel, opts.leds) {
                     if devices.is_none() {
                         eprintln!("openrgb-e131: first frame from {from} (universe {}): taking over the lights", p.universe);
-                        devices = Some(take_over(&plugin));
+                        devices = Some(take_over(&plugin, &mut original, ours));
                     }
                     wanted = Some(hsb(rgb));
                 }
@@ -248,6 +322,7 @@ fn main() {
         let now = Instant::now();
         if devices.is_some() && (stop || now.duration_since(last_data) > LOSS_TIMEOUT) {
             restore(&plugin, devices.as_deref().unwrap_or_default());
+            ours = sent.or(ours);
             (devices, wanted, sent, last_seq) = (None, None, None, None);
             continue;
         }
