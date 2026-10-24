@@ -32,7 +32,9 @@ Current art: only portrait (upright) sets. The 30 signed Hammerbeam slideshow pi
 Inputs used for the current `custom_art.c`, in order (paths are local checkouts of the sources above):
 
 ```
-zmk/app/boards/shields/nice_view/widgets/art.c:stills:name=ZMK
-urchin-peripheral-animation/assets/example/animated/art.c:fps=1:name=Corro_urchin
-nice-view-gem/boards/shields/nice_view_gem/assets/crystal.c:fps=8:name=Gem_crystal
+zmk/app/boards/shields/nice_view/widgets/art.c:stills:name=ZMK:labels=ZMK balloon|ZMK mountain
+urchin-peripheral-animation/assets/example/animated/art.c:fps=1:name=Corro_urchin:label=Corro the urchin
+nice-view-gem/boards/shields/nice_view_gem/assets/crystal.c:fps=8:name=Gem_crystal:label=Gem crystal
 ```
+
+The run also writes `widgets/custom_art.json`, which Foxglove uses to name the built-in sets.
