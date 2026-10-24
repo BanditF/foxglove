@@ -438,6 +438,9 @@ void art_relay_boot(void) { k_work_submit_to_queue(&relay_q, &boot_work); }
 static uint8_t lamps_rgb[LAMP_STRIP_LEN][3];
 static atomic_t lamps_host;
 static int8_t lamps_host_sent = -1; // last LAMP_HOST the right confirmed, -1 = unknown
+static uint8_t lamps_tries;
+static void lamps_cb(struct k_work *work);
+static K_WORK_DEFINE(lamps_work, lamps_cb);
 
 static void lamps_cb(struct k_work *work) {
     struct bt_conn *conn = job_conn();
@@ -453,22 +456,41 @@ static void lamps_cb(struct k_work *work) {
         }
     }
     if (host && lamps_host_sent == 1) {
+        // All but the last lamp as commands, then the last as a write request: ATT keeps their
+        // order, so its response acknowledges the whole frame (#272). A frame that fails is sent
+        // again a few times, so the last one of a burst isn't lost.
         uint8_t buf[3 + 3 * LAMP_STRIP_LEN];
         int per = CLAMP(((int)bt_gatt_get_mtu(conn) - 3 - 3) / 3, 1, LAMP_STRIP_LEN);
-        for (int start = 0; start < LAMP_STRIP_LEN; start += per) {
-            int n = MIN(per, LAMP_STRIP_LEN - start);
-            buf[0] = ART_RELAY_LAMPS;
+        int err = 0;
+        buf[0] = ART_RELAY_LAMPS;
+        for (int start = 0; start < LAMP_STRIP_LEN - 1 && !err; start += per) {
+            int n = MIN(per, LAMP_STRIP_LEN - 1 - start);
             buf[1] = start;
             buf[2] = n;
             memcpy(&buf[3], lamps_rgb[start], 3 * n);
-            if (write_cmd(conn, buf, 3 + 3 * n)) {
-                break; // the next frame tries again
+            err = write_cmd(conn, buf, 3 + 3 * n);
+        }
+        buf[1] = LAMP_STRIP_LEN - 1;
+        buf[2] = 1;
+        memcpy(&buf[3], lamps_rgb[LAMP_STRIP_LEN - 1], 3);
+        for (int busy = 0; !err && busy < 10; busy++) {
+            err = write_req(conn, buf, 6);
+            if (err != -EBUSY) {
+                break;
             }
+            if (busy < 9) {
+                err = 0;
+                k_msleep(10); // a status read holds the relay
+            }
+        }
+        if (err && lamps_tries++ < 3) {
+            k_work_submit_to_queue(&relay_q, &lamps_work);
+        } else {
+            lamps_tries = 0;
         }
     }
     bt_conn_unref(conn);
 }
-static K_WORK_DEFINE(lamps_work, lamps_cb);
 
 void art_relay_lamps(bool host, const uint8_t rgb[][3]) {
     memcpy(lamps_rgb, rgb, sizeof(lamps_rgb));

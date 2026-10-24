@@ -146,6 +146,15 @@
  *      once the right has answered, and the right reboots into its bootloader ~300 ms after.
  *      Status: 0 ok, 2 no relay link (right), 3 relay timeout (3 s), 4 not built in
  *      (CONFIG_FOXGLOVE_TEST_HOOKS=n, GA), 5 bad request, 6 bad or expired nonce.
+ *   0C FRAME  flags u8, start u8, count u8 (<= 9), rgb[count * 3]       reply (SHOW, RELEASE or an
+ *             error only): D7 8C, status, owner
+ *      Per-LED colours for both halves (#272, FOXGLOVE_HOST_FRAMES): lamps numbered as the
+ *      LampArray's, 0-20 left and 21-41 right; a frame is 5 reports, the last with flags bit 0
+ *      SHOW. Bit 1 RELEASE gives the lights back. The first frame takes the lights from ZMK's
+ *      effects; with no frame for FOXGLOVE_HOST_FRAMES_TIMEOUT_S (3 s) they go back. The right
+ *      draws at most 10 frames a second, newest first, the last of a burst acknowledged.
+ *      Status: 0 ok, 1 busy (a LampArray host has the lights), 4 not built in, 5 bad request.
+ *      Owner: 0 none, 1 LampArray USB, 2 LampArray BLE, 3 host link.
  *   0B GUARD_TEST (test hooks + split guard only)        reply: D7 8B, status
  *      The #122 split guard treats the current split link as stuck once, 2 s from now: it drops
  *      it, ZMK reconnects, HELLO byte 31 counts one more. Status: 0 ok, 2 no split link,
@@ -176,6 +185,7 @@
 #define HOST_LINK_CAP_RGB_STATE_EVENT (1U << 11)
 #define HOST_LINK_CAP_BUILD_INFO (1U << 12)
 #define HOST_LINK_CAP_SCREENS (1U << 13)
+#define HOST_LINK_CAP_FRAMES (1U << 14) // D7 0C SET_FRAME (#272)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);

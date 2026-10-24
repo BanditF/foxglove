@@ -97,6 +97,16 @@ config FOXGLOVE_LAMPARRAY_BLE
       Dynamic Lighting takes a LampArray over Bluetooth is unverified; dev builds only until the
       #115 sitting says so. Adding a GATT service can make a bonded PC need pairing again.
 
+config FOXGLOVE_HOST_FRAMES
+    bool "Per-LED frames from the PC over the host link (D7 0C SET_FRAME, prototype, #272)"
+    depends on FOXGLOVE_LAMPARRAY && NICE_VIEW_HOST_LINK
+
+config FOXGLOVE_HOST_FRAMES_TIMEOUT_S
+    int "Seconds without a frame before both halves get their own lights back"
+    default 3
+    range 1 60
+    depends on FOXGLOVE_HOST_FRAMES
+
 config FOXGLOVE_LAMPARRAY_DEVICE
     string "USB HID device for the LampArray"
     default "HID_2"
