@@ -1,0 +1,22 @@
+# Board profile (#75). Untested: no Toucan2 has run Foxglove's firmware yet (Scout's #157).
+format = "foxglove-board"
+version = 1
+id = "toucan2"
+name = "Beekeeb Toucan2"
+status = "untested"
+protocol = "zmk"
+halves = 2
+keymap = "toucan"
+
+[[match]]
+vid = 0x1d50
+pid = 0x615e
+product = "Toucan"
+
+# One Sharp memory LCD (sharp,ls0xx) on the left; the right half has the trackpad.
+[[screens]]
+kind = "display"
+half = "left"
+width = 144
+height = 168
+format = "1bit"

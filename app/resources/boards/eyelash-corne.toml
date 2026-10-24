@@ -1,0 +1,36 @@
+# Board profile (#75): what Foxglove needs to know about a keyboard that the firmware doesn't
+# say. A new board is a profile like this plus firmware with the host link; no app code.
+# The firmware's own screen descriptors (HELLO capability SCREENS) win over [[screens]] here.
+format = "foxglove-board"
+version = 1
+id = "eyelash-corne"
+name = "Eyelash Corne"
+status = "tested"
+protocol = "zmk"
+halves = 2
+# The keymap source behind Settings' layer-access hints: a built-in one, or a .keymap file
+# next to a profile in the boards folder.
+keymap = "eyelash_corne"
+
+[[match]]
+vid = 0x1d50
+pid = 0x615e
+product = "Eyelash Corne"
+
+[[screens]]
+kind = "panel"
+half = "left"
+width = 64
+height = 52
+format = "1bit"
+
+[[screens]]
+kind = "art"
+half = "right"
+width = 140
+height = 68
+format = "1bit"
+
+[lighting]
+lamps = 42
+layout = "underglow, 21 per half"
