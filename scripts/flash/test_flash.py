@@ -23,6 +23,7 @@ class FakeOS:
         self.present = True
         self.writes = []
         self.stays = False
+        self.ignore_writes = 0  # writes the bootloader ignores before taking one
         self.info = 'Board-ID: nRF52840-nice!nano-v2\n'
         self.keyboard = True
         self.keyboard_serials = []
@@ -43,7 +44,11 @@ class FakeOS:
 
     def write_file(self, path, data):
         self.writes.append((path, data))
-        self.present = self.stays
+        if self.ignore_writes:
+            self.ignore_writes -= 1
+            self.present = True
+        else:
+            self.present = self.stays
 
     def enter_bootloader(self, half, log):
         self.entered.append(half)
@@ -171,6 +176,17 @@ class FlashTests(unittest.TestCase):
         self.run_flash(backend, ('FLASH', 'ERASE SETTINGS'), {'left': uf2(b'SETTINGS RESET')},
                        settings_reset=True)
         self.assertEqual(backend.entered, [])
+
+    def test_ignored_write_is_retried_once_after_settling(self):
+        backend = FakeOS()
+        backend.ignore_writes = 1
+        self.run_flash(backend)
+        self.assertEqual(len(backend.writes), 2)
+        backend = FakeOS()
+        backend.stays = True
+        with self.assertRaises(TimeoutError):
+            self.run_flash(backend)
+        self.assertEqual(len(backend.writes), 2, 'never more than one retry')
 
     def test_left_reenumeration_checks_the_left_serial(self):
         # The right half on USB power also enumerates as 1D50:615E; only the left's serial counts.

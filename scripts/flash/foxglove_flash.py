@@ -21,6 +21,7 @@ import time
 
 SERIALS = {'1E89EF085AA8A635': 'left', '35B4541F78DE9CF8': 'right'}
 LIMIT = 0xAD000
+SETTLE_SECONDS = 3  # after the bootloader drive appears, before writing
 START = 0x26000  # All inspected real builds, including settings reset, start here.
 ROLLBACK = r'C:\Users\fuchs\splitkeeb\firmware-358c3d0\firmware'
 FILENAMES = {'left': 'eyelash_corne_studio_left.uf2',
@@ -253,11 +254,23 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         result = preflight(images[half], half, allow_unknown_half, settings_reset)
         if not result.ok:
             raise Refused('; '.join(result.reasons))
-        # Recheck identity immediately before touching the drive.
-        if backend.enumerate_bootloaders() != chosen or backend.find_volume(chosen[0]) != volume:
-            raise Refused('Bootloader identity or volume changed before writing')
-        backend.write_file(volume / 'flash.uf2', images[half])
-        wait_for(lambda: not backend.exists(info), 15, f'{half} drive did not disappear after writing', clock, sleep)
+        # A UF2 written about 1 s after the drive appears is sometimes ignored by the bootloader
+        # (left half, 2026-10-24): let it settle first, and write once more if the drive is
+        # still there 10 s later.
+        sleep(SETTLE_SECONDS)
+        for attempt in (1, 2):
+            # Recheck identity immediately before touching the drive.
+            if backend.enumerate_bootloaders() != chosen or backend.find_volume(chosen[0]) != volume:
+                raise Refused('Bootloader identity or volume changed before writing')
+            backend.write_file(volume / 'flash.uf2', images[half])
+            try:
+                wait_for(lambda: not backend.exists(info), 10 if attempt == 1 else 15,
+                         f'{half} drive did not disappear after writing', clock, sleep)
+                break
+            except TimeoutError:
+                if attempt == 2:
+                    raise
+                log(f'{half}: the bootloader did not take the image; writing it once more.')
         log(f'{half} bootloader drive disappeared.')
         if half == 'left' and not settings_reset:
             wait_for(lambda: backend.running_keyboard(chosen[0]), seconds, 'Left keyboard did not re-enumerate (1D50:615E)', clock, sleep)
