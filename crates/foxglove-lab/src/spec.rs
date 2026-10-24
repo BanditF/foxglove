@@ -38,6 +38,8 @@ pub enum Step {
     Prompt(Prompt),
     Screen(Screen),
     PressPosition(Position),
+    CaptureScreen(Capture),
+    ExpectScreenChange(ScreenChange),
     ArtSelect(Art),
     UsbHalves(Usb),
     IdleCpu(Idle),
@@ -163,7 +165,31 @@ fn foxglove() -> String {
 #[serde(deny_unknown_fields)]
 pub struct Position {
     pub pos: u8,
+    /// "down", "up", or "tap" (down, hold_ms, up).
     pub state: String,
+    #[serde(default = "tap_ms")]
+    pub hold_ms: u16,
+    #[serde(default = "ok")]
+    pub expect_status: String,
+}
+fn tap_ms() -> u16 {
+    40
+}
+/// Saves a capture of one half's screen (portrait, as a person sees it) to the report.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Capture {
+    pub half: String,
+}
+/// Keeps capturing until the screen differs inside `region` (portrait 68x160 coordinates;
+/// whole screen when absent) from the case's last capture_screen of that half, or from a
+/// capture taken at the start of this step when there is none.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenChange {
+    pub half: String,
+    pub region: Option<Rect>,
+    pub within_ms: u64,
 }
 
 impl Invoke {
@@ -239,16 +265,25 @@ impl Step {
                 ensure!(!i.process.is_empty(), "idle_cpu needs a process name");
             }
             Self::TypeIntoSink(t) => {
-                ensure!(!t.via.is_empty(), "typing needs via invokes");
+                ensure!(!t.via.is_empty(), "typing needs via steps");
                 for s in &t.via {
-                    let Self::Invoke(i) = s else {
-                        anyhow::bail!("via accepts only invoke steps")
-                    };
-                    i.validate()?;
-                    ensure!(
-                        i.hold_ms == 0 && i.expect_status == "ok",
-                        "sink accepts successful taps only"
-                    );
+                    match s {
+                        Self::Invoke(i) => {
+                            i.validate()?;
+                            ensure!(
+                                i.hold_ms == 0 && i.expect_status == "ok",
+                                "sink accepts successful taps only"
+                            );
+                        }
+                        Self::PressPosition(p) => {
+                            s.validate()?;
+                            ensure!(
+                                p.state == "tap" && p.expect_status == "ok",
+                                "sink accepts successful position taps only"
+                            );
+                        }
+                        _ => anyhow::bail!("via accepts only invoke and press_position taps"),
+                    }
                 }
             }
             Self::Prompt(p) => ensure!(!p.ask.trim().is_empty(), "empty prompt"),
@@ -263,16 +298,42 @@ impl Step {
                     ensure!(
                         r.width > 0
                             && r.height > 0
-                            && r.x.checked_add(r.width).is_some_and(|x| x <= 160)
-                            && r.y.checked_add(r.height).is_some_and(|y| y <= 68),
-                        "mask outside 160x68"
+                            && r.x.checked_add(r.width).is_some_and(|x| x <= 68)
+                            && r.y.checked_add(r.height).is_some_and(|y| y <= 160),
+                        "mask outside the portrait 68x160 screen"
                     );
                 }
             }
-            Self::PressPosition(p) => ensure!(
-                p.pos < 48 && ["up", "down"].contains(&p.state.as_str()),
-                "invalid position/state"
-            ),
+            Self::PressPosition(p) => {
+                ensure!(
+                    p.pos < 48 && ["up", "down", "tap"].contains(&p.state.as_str()),
+                    "invalid position/state"
+                );
+                ensure!(
+                    p.hold_ms <= 2000,
+                    "position tap hold_ms must be at most 2000"
+                );
+                ensure!(
+                    ["ok", "refused"].contains(&p.expect_status.as_str()),
+                    "press_position expect_status must be ok or refused"
+                );
+            }
+            Self::CaptureScreen(c) => {
+                ensure!(["left", "right"].contains(&c.half.as_str()), "invalid half")
+            }
+            Self::ExpectScreenChange(c) => {
+                ensure!(["left", "right"].contains(&c.half.as_str()), "invalid half");
+                ensure!(
+                    (1..=120_000).contains(&c.within_ms),
+                    "screen change within_ms must be 1..=120000"
+                );
+                if let Some(r) = &c.region {
+                    ensure!(
+                        r.width > 0 && r.height > 0 && r.x + r.width <= 68 && r.y + r.height <= 160,
+                        "region outside the portrait 68x160 screen"
+                    );
+                }
+            }
         }
         Ok(())
     }
