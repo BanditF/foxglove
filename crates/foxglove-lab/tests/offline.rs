@@ -707,3 +707,21 @@ fn ga_gate_steps() {
     assert_eq!(r.status, Status::Fail);
     assert!(r.message.contains("right 0.1.0 dev"), "{}", r.message);
 }
+
+#[test]
+fn hello_profile_and_split_guard_drops() {
+    let mut r = hello_caps((1 << 7) | (1 << 12));
+    r[27..31].copy_from_slice(&[0, 1, 0, 1]); // 0.1.0, profile 1 = GA
+    r[31] = 0;
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(r);
+    let steps = "[{expect_hello={profile='ga',guard_drops_max=0}}]";
+    assert_eq!(run(&fake, &case(steps)).status, Status::Pass);
+    r[30] = 0; // dev
+    r[31] = 2;
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(r);
+    let result = run(&fake, &case(steps));
+    assert_eq!(result.status, Status::Fail);
+    assert!(result.message.contains("expected ga") && result.message.contains("2 times"));
+}

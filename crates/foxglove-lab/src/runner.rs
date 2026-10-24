@@ -565,9 +565,20 @@ impl<'a, D: Device> Runner<'a, D> {
                 Ok(actual)
             }
             Step::ExpectHello(h) => {
-                let hello = digitalis::panel::hello(self.device)?;
+                let raw = self.device.request(
+                    &protocol::hello(),
+                    protocol::PANEL,
+                    protocol::panel::HELLO,
+                    Duration::from_millis(500),
+                )?;
+                let hello = protocol::Hello::parse(&raw);
                 let caps = hello.capabilities;
-                let wrong: Vec<String> = h
+                let profile = hello
+                    .firmware
+                    .map(|f| if f.profile == 1 { "ga" } else { "dev" });
+                // HELLO byte 31: how often the split guard (#147) dropped the right's link.
+                let drops = raw[31];
+                let mut wrong: Vec<String> = h
                     .caps_set
                     .iter()
                     .filter(|b| caps & (1 << **b) == 0)
@@ -579,12 +590,22 @@ impl<'a, D: Device> Runner<'a, D> {
                             .map(|b| format!("bit {b} set")),
                     )
                     .collect();
+                if let Some(p) = &h.profile {
+                    if profile != Some(p.as_str()) {
+                        wrong.push(format!("profile {profile:?}, expected {p}"));
+                    }
+                }
+                if h.guard_drops_max.is_some_and(|max| drops > max) {
+                    wrong.push(format!("split guard dropped the link {drops} times"));
+                }
                 ensure!(
                     wrong.is_empty(),
                     "HELLO caps {caps:#x}: {}",
                     wrong.join(", ")
                 );
-                Ok(format!("HELLO caps {caps:#x}"))
+                Ok(format!(
+                    "HELLO caps {caps:#x}, profile {profile:?}, split-guard drops {drops}"
+                ))
             }
             Step::ExpectNotBuiltIn(n) => {
                 let (report, cmd): (&[u8], u8) = match n.command.as_str() {
