@@ -23,6 +23,10 @@ pub mod capabilities {
     pub const SCREEN: u32 = 1 << 6;
     /// INVOKE refuses &bt, &out, &bootloader, &sys_reset and &soft_off with status 6.
     pub const INVOKE_REFUSES: u32 = 1 << 7;
+    /// D7 84 CONN_STATE also arrives unsolicited when the connection changes (after host traffic).
+    pub const CONN_STATE_EVENT: u32 = 1 << 8;
+    /// Settings BOOTLOADER (D7 08), pre-GA test builds only.
+    pub const BOOTLOADER: u32 = 1 << 9;
 }
 pub const VERSION: u8 = 1;
 

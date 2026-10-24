@@ -99,30 +99,47 @@ pub enum Risk {
     Confirm,
 }
 
-/// A callable device action and its parameters.
+/// One action the device offers: a behavior with its parameters, as a key binding has them
+/// (`&bt BT_SEL 0` and `&bt BT_CLR` are separate actions with their own risk).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BehaviorInfo {
     pub id: u32,
+    pub param1: u32,
+    pub param2: u32,
     pub name: String,
-    pub params: Vec<String>,
+    /// How long the key is held; 0 = a tap.
+    pub hold_ms: u16,
     pub risk: Risk,
 }
 
-/// Call before executing a behavior. Unknown ids are unsupported.
-pub fn confirm_behavior(list: &[BehaviorInfo], id: u32, confirmed: bool) -> Result<()> {
+/// Finds a listed action and checks its risk. Actions that aren't listed are unsupported, so
+/// the list is also the allowlist.
+pub fn confirm_behavior(
+    list: &[BehaviorInfo],
+    id: u32,
+    p1: u32,
+    p2: u32,
+    confirmed: bool,
+) -> Result<BehaviorInfo> {
     let info = list
         .iter()
-        .find(|b| b.id == id)
+        .find(|b| (b.id, b.param1, b.param2) == (id, p1, p2))
         .ok_or(PalmError::Unsupported)?;
     if info.risk == Risk::Confirm && !confirmed {
         return Err(PalmError::Denied(info.name.clone()));
     }
-    Ok(())
+    Ok(info.clone())
 }
 
-/// Proof that Palm checked a behavior's risk. Only Palm can make one, so nothing can reach a
-/// backend's [`Behaviors::invoke_checked`] around the confirmation check.
-pub struct Checked(());
+/// Proof that Palm checked an action's risk, carrying the action. Only Palm can make one, so
+/// nothing can reach a backend's [`Behaviors::invoke_checked`] around the check.
+pub struct Checked(BehaviorInfo);
+
+impl Checked {
+    pub fn action(&self) -> &BehaviorInfo {
+        &self.0
+    }
+}
 
 /// Lists and invokes device actions. Callers use `invoke` on `dyn Behaviors`.
 pub trait Behaviors {
@@ -130,14 +147,14 @@ pub trait Behaviors {
     fn list(&self) -> Result<Vec<BehaviorInfo>>;
 
     /// Runs an action Palm has already checked; backends implement this.
-    fn invoke_checked(&self, checked: Checked, id: u32, p1: u32, p2: u32) -> Result<()>;
+    fn invoke_checked(&self, checked: Checked) -> Result<()>;
 }
 
 impl dyn Behaviors + '_ {
     /// Invokes an action; a [`Risk::Confirm`] action needs `confirmed` (a user's click).
     pub fn invoke(&self, id: u32, p1: u32, p2: u32, confirmed: bool) -> Result<()> {
-        confirm_behavior(&self.list()?, id, confirmed)?;
-        self.invoke_checked(Checked(()), id, p1, p2)
+        let action = confirm_behavior(&self.list()?, id, p1, p2, confirmed)?;
+        self.invoke_checked(Checked(action))
     }
 }
 
@@ -191,6 +208,16 @@ pub trait Lighting {
 
     /// Selects an effect when supported.
     fn set_effect(&self, _effect: Effect) -> Result<()> {
+        Err(PalmError::Unsupported)
+    }
+
+    /// Turns the lights on or off when supported.
+    fn set_on(&self, _on: bool) -> Result<()> {
+        Err(PalmError::Unsupported)
+    }
+
+    /// Sets one colour for the whole device (hue 0-359, saturation and brightness 0-100).
+    fn set_color(&self, _hue: u16, _sat: u8, _brightness: u8) -> Result<()> {
         Err(PalmError::Unsupported)
     }
 

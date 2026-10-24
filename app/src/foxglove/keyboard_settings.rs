@@ -1,11 +1,13 @@
-//! Talking to the keyboard's settings and actions (0xD7) off the UI thread: the RGB sync
-//! switch, both halves' lights, and invoking any action from the keymap.
+//! Talking to the keyboard's settings and actions off the UI thread, through its Palm device:
+//! the RGB sync switch, both halves' lights, and invoking any action from the keymap.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
-use digitalis::link::Link;
 use digitalis::protocol::RgbState;
+use palm::{Device, Value};
+
+use super::palm_host::{describe, device};
 
 /// What Foxglove knows about "right half's lights follow the left".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,17 +25,6 @@ pub enum RgbSync {
 }
 
 static RGB_SYNC: Mutex<RgbSync> = Mutex::new(RgbSync::Unknown);
-static LINK: Mutex<Option<Arc<Link>>> = Mutex::new(None);
-
-/// The keyboard with the host link, found once and kept while it stays connected.
-fn link() -> Option<Arc<Link>> {
-    let mut cached = LINK.lock().unwrap();
-    if let Some(l) = cached.as_ref().filter(|l| l.state().connected.is_some()) {
-        return Some(l.clone());
-    }
-    *cached = super::link::host_link().map(|(l, _)| l);
-    cached.clone()
-}
 
 pub fn rgb_sync() -> RgbSync {
     *RGB_SYNC.lock().unwrap_or_else(|e| e.into_inner())
@@ -44,15 +35,20 @@ pub fn rgb_sync() -> RgbSync {
 pub fn ask_rgb_sync(set: Option<bool>, ctx: egui::Context) {
     *RGB_SYNC.lock().unwrap_or_else(|e| e.into_inner()) = RgbSync::Asking;
     let _ = super::services::spawn_supervised("keyboard-settings", move || {
-        let state = match link() {
+        let state = match device() {
             None => RgbSync::NoKeyboard,
-            Some(link) => match digitalis::settings::rgb_sync(link.as_ref(), set) {
-                Ok(reply) => match reply.sync {
-                    Some(on) => RgbSync::Known { on },
-                    None => RgbSync::NotSupported,
-                },
-                Err(_) => RgbSync::NotSupported,
-            },
+            Some(d) => {
+                let reply = d.settings().ok_or(palm::PalmError::Unsupported).and_then(|s| {
+                    if let Some(on) = set {
+                        s.set("rgb_sync", Value::Bool(on))?;
+                    }
+                    s.get("rgb_sync")
+                });
+                match reply {
+                    Ok(Some(Value::Bool(on))) => RgbSync::Known { on },
+                    _ => RgbSync::NotSupported,
+                }
+            }
         };
         *RGB_SYNC.lock().unwrap_or_else(|e| e.into_inner()) = state;
         ctx.request_repaint();
@@ -71,23 +67,37 @@ pub fn invoking() -> bool {
     INVOKING.load(Ordering::Relaxed)
 }
 
-/// Presses `binding` (behavior local id, param1, param2) on the keyboard as a key would.
-pub fn invoke(label: String, binding: (u16, u32, u32), hold_ms: u16, ctx: egui::Context) {
+/// Presses `binding` (behavior local id, param1, param2) on the keyboard as a key would. The
+/// hold time comes from the action learned from the keymap. Risky actions reach here only after
+/// the panel's confirmation, so they go out confirmed.
+pub fn invoke(label: String, binding: (u16, u32, u32), ctx: egui::Context) {
     if !super::keyboard_actions::permitted(binding) {
         *LAST_ACTION.lock().unwrap() = Some((label, "refused: unsafe or unknown behavior".into()));
         return;
     }
+    let (id, p1, p2) = binding;
+    run(label, ctx, move |d| {
+        let behaviors = d.behaviors().ok_or(palm::PalmError::Unsupported)?;
+        behaviors.invoke(id.into(), p1, p2, true)
+    });
+}
+
+/// Runs one keyboard command in the background and reports it as the last action.
+fn run(
+    label: String,
+    ctx: egui::Context,
+    command: impl FnOnce(&digitalis::palm::DigitalisDevice) -> palm::Result<()> + Send + 'static,
+) {
     if INVOKING.swap(true, Ordering::Relaxed) {
         return;
     }
     *LAST_ACTION.lock().unwrap() = Some((label.clone(), "sending…".into()));
     super::services::spawn_named("keyboard-command", move || {
-        let (id, p1, p2) = binding;
-        let result = match link() {
+        let result = match device() {
             None => "no keyboard with Foxglove's firmware found".to_string(),
-            Some(link) => match digitalis::settings::invoke(link.as_ref(), id, p1, p2, hold_ms) {
-                Ok(status) => status.to_string(),
-                Err(e) => format!("no answer ({e}); newer keyboard firmware needed?"),
+            Some(d) => match command(&d) {
+                Ok(()) => "done".to_string(),
+                Err(e) => describe(&e),
             },
         };
         *LAST_ACTION.lock().unwrap() = Some((label, result));
@@ -112,7 +122,8 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
         RGB_REFRESH.store(false, Ordering::Relaxed);
         let ctx = ctx.clone();
         super::services::spawn_named("rgb-state", move || {
-            let state = link().and_then(|l| digitalis::settings::rgb_state(l.as_ref()).ok());
+            // Read from the link: Palm's lighting state has no per-half age yet.
+            let state = device().and_then(|d| digitalis::settings::rgb_state(d.link().as_ref()).ok());
             *RGB_STATE.lock().unwrap() = state;
             RGB_POLLING.store(false, Ordering::Relaxed);
             ctx.request_repaint();
@@ -121,42 +132,33 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
     *RGB_STATE.lock().unwrap()
 }
 
-// `&rgb_ug` commands (ZMK's dt-bindings/zmk/rgb.h).
-const RGB_ON: u32 = 1;
-const RGB_OFF: u32 = 2;
-const RGB_EFFECT_SET: u32 = 13;
-const RGB_COLOR_HSB: u32 = 14;
+fn lighting(
+    label: &str,
+    ctx: egui::Context,
+    change: impl FnOnce(&dyn palm::Lighting) -> palm::Result<()> + Send + 'static,
+) {
+    run(label.into(), ctx, move |d| {
+        change(d.lighting().ok_or(palm::PalmError::Unsupported)?)
+    });
+}
 
 /// Lights on or off on both halves, through the keymap's `&rgb_ug`.
 pub fn set_lights(on: bool, ctx: egui::Context) {
-    if let Some(id) = super::keyboard_actions::underglow_behavior() {
-        let (label, cmd) = if on {
-            ("Lights on", RGB_ON)
-        } else {
-            ("Lights off", RGB_OFF)
-        };
-        invoke(label.into(), (id, cmd, 0), 0, ctx);
-    }
+    let label = if on { "Lights on" } else { "Lights off" };
+    lighting(label, ctx, move |l| l.set_on(on));
 }
 
 /// Colour: hue 0-359, saturation and brightness 0-100.
 pub fn set_color(hue: u16, sat: u8, brightness: u8, ctx: egui::Context) {
-    if let Some(id) = super::keyboard_actions::underglow_behavior() {
-        let hsb = (u32::from(hue.min(359)) << 16)
-            | (u32::from(sat.min(100)) << 8)
-            | u32::from(brightness.min(100));
-        invoke("Set colour".into(), (id, RGB_COLOR_HSB, hsb), 0, ctx);
-    }
+    lighting("Set colour", ctx, move |l| l.set_color(hue, sat, brightness));
 }
 
 /// Effect: 0 solid, 1 breathe, 2 spectrum, 3 swirl.
 pub fn set_effect(effect: u8, ctx: egui::Context) {
-    if let Some(id) = super::keyboard_actions::underglow_behavior() {
-        invoke(
-            "Set effect".into(),
-            (id, RGB_EFFECT_SET, u32::from(effect)),
-            0,
-            ctx,
-        );
-    }
+    lighting("Set effect", ctx, move |l| {
+        l.set_effect(palm::Effect {
+            id: effect.to_string(),
+            params: vec![],
+        })
+    });
 }

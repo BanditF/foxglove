@@ -338,7 +338,9 @@ mod windows_status {
         ]);
         let watcher = DeviceInformation::CreateWatcherWithKindAqsFilterAndAdditionalProperties(
             &windows::core::HSTRING::from(
-                r#"System.Devices.Aep.ProtocolId:="{BB7BB05E-5972-42B5-94FC-76EAA7084D49}""#,
+                // Paired endpoints only: an unpaired AEP query makes Windows scan for every
+                // Bluetooth LE device in range, with thread-pool callbacks for each (#100).
+                r#"System.Devices.Aep.ProtocolId:="{BB7BB05E-5972-42B5-94FC-76EAA7084D49}" AND System.Devices.Aep.IsPaired:=System.StructuredQueryType.Boolean#True"#,
             ),
             &properties,
             DeviceInformationKind::AssociationEndpoint,

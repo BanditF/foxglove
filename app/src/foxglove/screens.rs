@@ -32,9 +32,56 @@ static STOP: AtomicBool = AtomicBool::new(false);
 static STOPPED: AtomicBool = AtomicBool::new(false);
 
 /// What the panel service is doing, for the UI.
-#[allow(dead_code)] // shown in the Screens settings (#13)
 pub fn status() -> String {
     STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The last frame sent to the left panel, for the Screens settings' preview.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Frame {
+    pub width: usize,
+    pub height: usize,
+    pub stride: usize,
+    pub bits: Vec<u8>,
+}
+
+/// What the Screens settings show: the keyboard with the host link and what it said to HELLO,
+/// the frame last sent, and the last program in front other than Foxglove.
+#[derive(Clone, Debug, Default)]
+pub struct Snapshot {
+    pub product: String,
+    pub hello: Option<Hello>,
+    pub frame: Option<Frame>,
+    pub foreground: Option<String>,
+}
+
+static SNAPSHOT: Mutex<Snapshot> = Mutex::new(Snapshot {
+    product: String::new(),
+    hello: None,
+    frame: None,
+    foreground: None,
+});
+
+pub fn snapshot() -> Snapshot {
+    SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn update_snapshot(f: impl FnOnce(&mut Snapshot)) {
+    f(&mut SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()));
+}
+
+/// Remembers the program in front unless it's Foxglove itself, so "Add foreground app" can
+/// offer the game the user just left for the settings window.
+fn note_foreground() {
+    let Some(exe) = foxglove_panel::providers::foreground_exe().map(|e| e.to_lowercase()) else {
+        return;
+    };
+    let own = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()));
+    if own.as_deref() != Some(exe.as_str()) {
+        update_snapshot(|s| s.foreground = Some(exe));
+    }
 }
 
 fn set_status(s: impl Into<String>) {
@@ -258,6 +305,24 @@ fn run() {
             _ => {}
         }
         wait = None;
+        let shown = drawing
+            .as_ref()
+            .map(|d| (d.link.clone(), d.hello))
+            .or_else(|| {
+                links.iter().find_map(|w| {
+                    let state = w.link.state();
+                    let (generation, hello) = w.hello?;
+                    (state.connected.is_some() && generation == state.generation)
+                        .then(|| (w.link.clone(), hello))
+                })
+            });
+        update_snapshot(|s| {
+            s.product = shown
+                .as_ref()
+                .and_then(|(l, _)| l.state().connected.map(|c| c.product))
+                .unwrap_or_default();
+            s.hello = shown.map(|(_, h)| h);
+        });
         if paused() || !settings.drive_left {
             stop_driving(&mut lock, &drawing, &mut was_driving);
             if let Some(d) = drawing.as_mut() {
@@ -323,6 +388,7 @@ fn run() {
         let clock_at = if let Some(changes) = changes.as_mut().filter(|_| providers_dirty) {
             changes.refresh();
             providers_dirty = false;
+            note_foreground();
             sources.update(&mut view, |exe| settings.games.get(exe).cloned())
         } else {
             Sources::update_clock(&mut view)
@@ -359,6 +425,14 @@ fn run() {
             Ok(()) => {
                 d.last = Some(d.panel.bits.clone());
                 d.last_sent = Instant::now();
+                let frame = Frame {
+                    width: d.panel.width,
+                    height: d.panel.height,
+                    stride: d.panel.stride,
+                    bits: d.panel.bits.clone(),
+                };
+                dump_panel(&frame);
+                update_snapshot(|s| s.frame = Some(frame));
             }
             Err(e) => {
                 set_status(format!("Lost keyboard: {e}"));
@@ -379,6 +453,22 @@ fn run() {
     std::thread::sleep(Duration::from_millis(50));
     *EVENTS.get().unwrap().lock().unwrap() = None;
     STOPPED.store(true, Ordering::Relaxed);
+}
+
+/// `FOXGLOVE_DUMP_PANEL=<path>`: writes every frame sent as a binary PBM (P4: 1 bit per pixel,
+/// MSB first, rows padded to whole bytes, exactly the panel's own layout; 1 = ink), so the Test
+/// lab can compare it with the keyboard's screen readback. Replaced atomically.
+fn dump_panel(frame: &Frame) {
+    static PATH: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
+    let Some(path) = PATH.get_or_init(|| std::env::var_os("FOXGLOVE_DUMP_PANEL").map(Into::into)) else {
+        return;
+    };
+    let tmp = path.with_extension("tmp");
+    let mut bytes = format!("P4\n{} {}\n", frame.width, frame.height).into_bytes();
+    bytes.extend_from_slice(&frame.bits);
+    if std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).is_err() {
+        eprintln!("Foxglove screens: can't write {}", path.display());
+    }
 }
 
 /// Appends the right half's battery to `right-battery.csv` (next to the settings) when it changes.
