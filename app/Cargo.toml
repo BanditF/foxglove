@@ -15,6 +15,11 @@ ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 digitalis = { path = "../crates/digitalis", features = ["palm"] }
 # Foxglove: the device layer (MIT).
 palm = { path = "../crates/palm" }
+# Foxglove: the local API host and its protocol (MIT).
+den = { path = "../crates/den" }
+foxglove-kit-api = { path = "../crates/kit-api" }
+# Foxglove: unpacking Kits in the Den.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 foxglove-panel = { path = "../crates/panel" }
 toml = "0.9"
 prost = "0.14"
@@ -61,6 +66,8 @@ windows = { version = "0.62.2", features = [
     "Win32_Devices_Properties",
     "Devices_Radios",
     "Foundation",
+    "UI",
+    "UI_ViewManagement",
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Graphics_Dwm",
     "Win32_UI_Shell",

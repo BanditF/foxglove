@@ -14,7 +14,9 @@ impl UiWake {
         Self(Arc::new(move || ctx.request_repaint()))
     }
 
+    #[track_caller]
     pub fn request_repaint(&self) {
+        crate::foxglove::repaint_trace::wake(std::panic::Location::caller()); // Foxglove: #100
         (self.0)();
     }
 }

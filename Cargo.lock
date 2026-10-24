@@ -303,6 +303,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a31eee39dddec8330830986fcd7625edb5a24ec90ea038215273bbc3adb08ac6"
 
 [[package]]
+name = "den"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "foxglove-kit-api",
+ "palm",
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "digitalis"
 version = "0.1.0"
 dependencies = [
@@ -437,6 +449,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "foxglove-cli"
+version = "0.1.0"
+dependencies = [
+ "den",
+ "foxglove-kit-api",
+ "serde_json",
+]
+
+[[package]]
 name = "foxglove-kit-api"
 version = "1.0.0"
 dependencies = [
@@ -484,6 +505,16 @@ dependencies = [
  "base64",
  "chrono",
  "ring",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "foxglove-via"
+version = "0.1.0"
+dependencies = [
+ "hidapi",
+ "palm",
  "serde",
  "serde_json",
 ]

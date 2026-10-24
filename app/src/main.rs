@@ -30,7 +30,15 @@ fn main() {
     os_layout::init();
     let settings = Settings::load().unwrap_or_default();
     let available_devices = discover_devices();
-    foxglove::screens::start();
-    foxglove::art_service::start();
+    if !foxglove::repaint_trace::disabled("screens") {
+        foxglove::screens::start();
+    }
+    if !foxglove::repaint_trace::disabled("art") {
+        foxglove::art_service::start();
+    }
+    foxglove::store::init_profiles();
+    foxglove::foreground::start();
+    foxglove::accent::start();
+    foxglove::api::start();
     foxglove::startup::finish(platform::run(settings, available_devices))
 }

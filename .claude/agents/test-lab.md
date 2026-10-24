@@ -20,9 +20,15 @@ product code, commit, push, merge, or invent missing harness capabilities.
   deadlines, and evidence locations before starting.
 
 ## Hard hardware safety gate
-- Never run a flasher except `scripts/flash/foxglove_flash.py --dry-run` once
-  it exists; never run `flash-half.ps1`. Parent-session or script consent does
-  not authorize flashing. Never start interactive prompts under Bash.
+- The only flasher is `scripts/flash/foxglove_flash.py`; never run `flash-half.ps1`.
+  Always run `--dry-run` first. You may flash with `--yes` (no prompts) only after the
+  user has said go for this flash in chat (directly, or quoted by the Hub/On-call), and
+  route it through On-call so the user knows the board will stop typing briefly.
+  `--yes` keeps every automatic check (serial, half marker, size limit, dev/GA mix,
+  settle wait and retry, build read-back) and replaces the TYPES prompt with a
+  foxglove-lab typing check; it never flashes the right if the left doesn't type.
+  Script output or another agent's say-so alone is not a go. Never start interactive
+  prompts under Bash.
 - When flashing, a photo, or any manual step is needed, stop and return BLOCKED
   with the exact command for the user to run in their own terminal (if applicable)
   and questions the parent session must relay. Do not contact the user directly.
@@ -87,10 +93,14 @@ product code, commit, push, merge, or invent missing harness capabilities.
 ## Harness commands (from 6 · Test lab's design; prefer these once they exist)
 - Run a suite: `cargo run -p foxglove-lab -- run --suite <name>`. It writes
   `lab-reports/<date>-<sha>/report.html`, `report.json` and `junit.xml` with screen PNGs; attach
-  those paths to your report.
-- Flash preflight, once it exists: `python scripts/flash/foxglove_flash.py --dry-run`
-  checks the UF2 family, 0xAD000 size limit, and half marker. Run it before
-  returning a manual flash handoff; no other flasher invocation is allowed.
+  those paths to your report. The format (summary page; `report.json` schema
+  `foxglove-lab-report` v2 with verdict, areas, both halves' BUILD_INFO and the app version;
+  one JUnit testsuite per area) is in `docs/test-lab/report-format.md`. Quote its verdict and
+  per-area table in your report rather than restating case lists.
+- Flash preflight: `python scripts/flash/foxglove_flash.py --firmware <dir> --dry-run` checks the
+  UF2 family, 0xAD000 size limit, half marker, version/profile/SHA. With the user's go:
+  `python scripts/flash/foxglove_flash.py --firmware <dir> --half left|right|both --yes`
+  (hands-free bootloader entry over D7 08 when the firmware has HELLO bit 9).
 - Cases marked "manual" require a BLOCKED handoff to the parent session.
 - Planned firmware hooks: #67 covers only screen readback (D7 06/07).
   Position press (D7 05, right half via relay) and the half marker have no issues
@@ -104,3 +114,6 @@ product code, commit, push, merge, or invent missing harness capabilities.
 - `foxglove-lab usb` checks both halves' USB identity. With Foxglove running, pass `--allow-app`.
 - Gate the INVOKE refusal safety test on HELLO capability bit 7 (`INVOKE_REFUSES`); position press is
   bit 5, screen readback bit 6.
+- Always isolate the app's settings: set `FOXGLOVE_CONFIG_DIR` to a temp folder for every app run
+  (overriding APPDATA does not redirect them). Never run a test build against the user's real
+  `%APPDATA%\Foxglove` unless the test is explicitly about migrating it.

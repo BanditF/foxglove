@@ -23,9 +23,16 @@ class FakeOS:
         self.present = True
         self.writes = []
         self.stays = False
+        self.ignore_writes = 0  # writes the bootloader ignores before taking one
         self.info = 'Board-ID: nRF52840-nice!nano-v2\n'
         self.keyboard = True
         self.keyboard_serials = []
+        self.auto = False
+        self.builds = {}
+        self.typing = []
+        self.types = {}
+        self.build_calls = []
+        self.entered = []
 
     def enumerate_bootloaders(self):
         return self.serials
@@ -41,7 +48,23 @@ class FakeOS:
 
     def write_file(self, path, data):
         self.writes.append((path, data))
-        self.present = self.stays
+        if self.ignore_writes:
+            self.ignore_writes -= 1
+            self.present = True
+        else:
+            self.present = self.stays
+
+    def build_info(self, half):
+        self.build_calls.append(half)
+        return self.builds.get(half)
+
+    def typing_check(self, half, log):
+        self.typing.append(half)
+        return self.types.get(half, True)
+
+    def enter_bootloader(self, half, log):
+        self.entered.append(half)
+        return self.auto
 
     def running_keyboard(self, serial):
         self.keyboard_serials.append(serial)
@@ -143,6 +166,40 @@ class FlashTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             self.run_flash(backend)
 
+    def test_hands_free_entry_only_after_flash_confirmation(self):
+        backend = FakeOS()
+        backend.auto = True
+        with self.assertRaises(f.Refused):
+            self.run_flash(backend, ('NO',))
+        self.assertEqual(backend.entered, [])
+        self.run_flash(backend)
+        self.assertEqual(backend.entered, ['left'])
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_right_entry_retries_then_falls_back_to_double_tap(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        self.run_flash(backend, ('FLASH',), {'right': uf2(b'FOXGLOVE_HALF=right')})
+        self.assertEqual(backend.entered, ['right'] * 3)
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_settings_reset_never_uses_hands_free_entry(self):
+        backend = FakeOS()
+        backend.auto = True
+        self.run_flash(backend, ('FLASH', 'ERASE SETTINGS'), {'left': uf2(b'SETTINGS RESET')},
+                       settings_reset=True)
+        self.assertEqual(backend.entered, [])
+
+    def test_ignored_write_is_retried_once_after_settling(self):
+        backend = FakeOS()
+        backend.ignore_writes = 1
+        self.run_flash(backend)
+        self.assertEqual(len(backend.writes), 2)
+        backend = FakeOS()
+        backend.stays = True
+        with self.assertRaises(TimeoutError):
+            self.run_flash(backend)
+        self.assertEqual(len(backend.writes), 2, 'never more than one retry')
+
     def test_left_reenumeration_checks_the_left_serial(self):
         # The right half on USB power also enumerates as 1D50:615E; only the left's serial counts.
         backend = FakeOS()
@@ -231,3 +288,109 @@ class OptionalRealImages(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class MarkerTests(unittest.TestCase):
+    def test_full_marker_across_blocks_reports_build(self):
+        marker = b'FOXGLOVE_HALF=right;VER=0.1.0;PROFILE=ga;SHA=abc1234'
+        # Two blocks, the marker split between them.
+        first, second = marker[:20], marker[20:]
+        blocks = []
+        for i, part in enumerate((first.rjust(256, b'\0'), second.ljust(256, b'\0'))):
+            blocks.append(struct.pack('<8I', 0x0A324655, 0x9E5D5157, 0x2000, f.START + i * 256,
+                                      256, i, 2, 0xADA52840) + part.ljust(476, b'\0')
+                          + struct.pack('<I', 0x0AB16F30))
+        result = f.preflight(b''.join(blocks), 'right')
+        self.assertTrue(result.ok, result.reasons)
+        self.assertEqual((result.detected_half, result.version, result.profile, result.sha),
+                         ('right', '0.1.0', 'ga', 'abc1234'))
+        self.assertFalse(f.preflight(b''.join(blocks), 'left').ok)
+
+    def test_old_short_marker_still_works(self):
+        result = f.preflight(uf2(b'FOXGLOVE_HALF=left'), 'left')
+        self.assertTrue(result.ok)
+        self.assertEqual(result.version, '')
+
+    def test_firmware_folder_picks_new_names_by_profile(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            for name in ('foxglove-fw-v0.1.0-abc1234-left-dev.uf2', 'foxglove-fw-v0.1.0-abc1234-left-ga.uf2'):
+                (d / name).write_bytes(b'')
+            self.assertEqual(f.firmware_file(d, 'left', 'ga').name, 'foxglove-fw-v0.1.0-abc1234-left-ga.uf2')
+            self.assertEqual(f.firmware_file(d, 'right', 'dev').name, f.FILENAMES['right'])
+            (d / 'foxglove-fw-v0.1.1-def5678-left-dev.uf2').write_bytes(b'')
+            with self.assertRaises(f.Refused):
+                f.firmware_file(d, 'left', 'dev')
+
+
+def marked(half, profile='dev', sha='abc1234'):
+    return uf2(f'FOXGLOVE_HALF={half};VER=0.1.0;PROFILE={profile};SHA={sha}'.encode())
+
+
+class BuildInfoTests(unittest.TestCase):
+    def run_flash(self, backend, answers=('FLASH', 'TYPES'), images=None, **kwargs):
+        clock = Clock()
+        answers = iter(answers)
+        f.flash(images or {'left': marked('left')}, backend, 2,
+                stdin=type('TTY', (), {'isatty': lambda self: True})(),
+                ask=lambda prompt: next(answers), log=lambda message: None,
+                clock=clock.clock, sleep=clock.sleep, **kwargs)
+
+    def test_refuses_a_dev_ga_mix_before_asking_anything(self):
+        backend = FakeOS()
+        backend.builds = {'right': {'version': '0.1.0', 'profile': 'dev', 'sha': 'abc1234'}}
+        with self.assertRaises(f.Refused):
+            self.run_flash(backend, ('FLASH', 'TYPES'), {'left': marked('left', 'ga')})
+        self.assertEqual(backend.writes, [])
+        self.assertEqual(backend.entered, [])
+        self.run_flash(FakeOS(), ('FLASH', 'TYPES'), {'left': marked('left', 'ga')}, allow_profile_mix=True)
+
+    def test_verifies_the_new_build_after_flashing(self):
+        backend = FakeOS()
+        backend.builds = {'left': {'version': '0.1.0', 'profile': 'dev', 'sha': 'abc1234'}}
+        self.run_flash(backend)
+        self.assertIn('left', backend.build_calls)
+        backend = FakeOS()
+        backend.builds = {'left': {'version': '0.0.9', 'profile': 'dev', 'sha': '0000000'}}
+        with self.assertRaises(f.FlashFailed):
+            self.run_flash(backend)
+
+    def test_unknown_running_build_is_not_an_error(self):
+        backend = FakeOS()
+        self.run_flash(backend)
+        self.assertEqual(len(backend.writes), 1)
+
+
+class YesTests(unittest.TestCase):
+    def run_yes(self, backend, images, **kwargs):
+        clock = Clock()
+        f.flash(images, backend, 2, stdin=io.StringIO(''), ask=lambda prompt: self.fail(f'asked: {prompt}'),
+                log=lambda message: None, clock=clock.clock, sleep=clock.sleep, yes=True, **kwargs)
+
+    def test_yes_never_prompts_and_checks_typing(self):
+        backend = FakeOS()
+        self.run_yes(backend, {'left': uf2()})
+        self.assertEqual(len(backend.writes), 1)
+        self.assertEqual(backend.typing, ['left'])
+
+    def test_yes_keeps_every_automatic_check(self):
+        backend = FakeOS()
+        with self.assertRaises(f.Refused):
+            self.run_yes(backend, {'left': uf2(b'FOXGLOVE_HALF=right')})
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        with self.assertRaises(TimeoutError):  # wrong half in the bootloader: never written
+            self.run_yes(backend, {'left': uf2()})
+        self.assertEqual(backend.writes, [])
+
+    def test_yes_stops_before_the_right_if_the_left_does_not_type(self):
+        backend = FakeOS()
+        backend.types = {'left': False}
+        with self.assertRaises(f.FlashFailed):
+            self.run_yes(backend, {'left': uf2(), 'right': uf2(b'FOXGLOVE_HALF=right')})
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_yes_right_typing_failure_is_reported_not_fatal(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        backend.types = {'right': False}
+        self.run_yes(backend, {'right': uf2(b'FOXGLOVE_HALF=right')})
+        self.assertEqual(backend.typing, ['right'])

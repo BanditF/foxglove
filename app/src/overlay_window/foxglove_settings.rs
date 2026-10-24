@@ -92,6 +92,7 @@ impl OverlayApp {
         crate::foxglove::update::group(ui);
         titled_group(ui, "Keyboard", |ui| {
             crate::foxglove::connection::row(ui);
+            Self::firmware_row(ui);
             Self::rgb_sync_row(ui);
             ui.add_space(4.0);
             egui::CollapsingHeader::new("Lights")
@@ -104,6 +105,34 @@ impl OverlayApp {
                 ui.weak(format!("Last: {label} — {result}"));
             }
         });
+    }
+
+    /// Both halves' firmware version and build, with a warning when they differ (#132).
+    fn firmware_row(ui: &mut egui::Ui) {
+        let describe = |b: &digitalis::protocol::BuildInfo| format!("{} · {}", b.version, b.sha);
+        match ks::firmware(ui.ctx()) {
+            ks::Firmware::Known { left, right } => {
+                let text = |r: &Result<digitalis::protocol::BuildInfo, String>| {
+                    r.as_ref().map_or_else(|e| format!("unknown ({e})"), describe)
+                };
+                ui.horizontal_wrapped(|ui| {
+                    ui.weak("Firmware");
+                    ui.label(format!("left {} / right {}", text(&left), text(&right)));
+                });
+                if let (Ok(l), Ok(r)) = (&left, &right) {
+                    if l.version != r.version || l.sha != r.sha {
+                        ui.colored_label(
+                            ui.visuals().warn_fg_color,
+                            "The halves run different firmware; flash both from the same build.",
+                        );
+                    }
+                }
+            }
+            ks::Firmware::Reading => {
+                ui.weak("Firmware: reading…");
+            }
+            ks::Firmware::NotReported | ks::Firmware::NoKeyboard | ks::Firmware::Unknown => {}
+        }
     }
 
     fn rgb_sync_row(ui: &mut egui::Ui) {
@@ -149,6 +178,17 @@ impl OverlayApp {
 
     fn lights_section(ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        let mut follow = crate::foxglove::accent::enabled();
+        if ui
+            .checkbox(&mut follow, "Follow the Windows accent colour")
+            .on_hover_text(
+                "The underglow takes the accent colour's hue and saturation whenever it changes                  in Windows, and when the keyboard connects. The brightness stays the board's.",
+            )
+            .changed()
+        {
+            crate::foxglove::accent::set_enabled(follow);
+            ks::refresh_rgb_state();
+        }
         if ui.small_button("Refresh lights").clicked() {
             ks::refresh_rgb_state();
         }

@@ -1,6 +1,6 @@
-//! The right art hotlist and how it cycles (#60), saved in `art-cycle.json` next to the other
-//! settings. The art service does the cycling; this module only holds the list and picks the
-//! next entry.
+//! The right art hotlist and how it cycles (#60), saved in the settings store's `[art.cycle]`
+//! (profiled: each profile can have its own). The art service does the cycling; this module
+//! only holds the list and picks the next entry.
 //!
 //! Built-ins are stored by their manifest name (the stable id), not their index, so a firmware
 //! that reorders its sets still shows the same art.
@@ -31,6 +31,7 @@ pub enum Mode {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Cycle {
     pub mode: Mode,
     pub items: Vec<Item>,
@@ -40,23 +41,18 @@ pub struct Cycle {
 }
 
 impl Cycle {
-    pub fn path() -> Option<PathBuf> {
-        crate::settings::Settings::config_file_path().map(|p| p.with_file_name("art-cycle.json"))
-    }
-
+    /// The hotlist (the active profile's, else the base), from the store's `[art.cycle]`.
+    /// Imported once from the `art-cycle.json` of earlier builds.
     pub fn load() -> Self {
-        Self::path()
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        super::store::load_or_migrate("art.cycle", || {
+            let json = crate::settings::Settings::config_file_path()?.with_file_name("art-cycle.json");
+            let cycle = serde_json::from_slice(&std::fs::read(&json).ok()?).ok()?;
+            Some((cycle, vec![json]))
+        })
     }
 
     pub fn save(&self) -> std::io::Result<()> {
-        let path = Self::path().ok_or_else(|| std::io::Error::other("no settings directory"))?;
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        std::fs::write(path, serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?)
+        super::store::save("art.cycle", self)
     }
 
     /// How long until the next timed change; `None` when not cycling on a timer.
@@ -127,5 +123,17 @@ mod tests {
         assert_eq!(resolve(&Item::Slot(3), 17, 0b1000), Some(Choice::Slot(3)));
         assert_eq!(resolve(&Item::Slot(3), 17, 0), None);
         assert_eq!(resolve(&Item::BuiltIn("no such set".into()), 17, 0), None);
+    }
+
+    #[test]
+    fn hotlist_round_trips_through_toml() {
+        let c = Cycle {
+            mode: Mode::Minutes(5),
+            items: vec![Item::BuiltIn("ZMK_1".into()), Item::Slot(2), Item::File(PathBuf::from(r"C:rtox.bin"))],
+            position: 1,
+        };
+        assert_eq!(toml::from_str::<Cycle>(&toml::to_string(&c).unwrap()).unwrap(), c);
+        let off = Cycle { mode: Mode::LightsWake, ..Cycle::default() };
+        assert_eq!(toml::from_str::<Cycle>(&toml::to_string(&off).unwrap()).unwrap(), off);
     }
 }

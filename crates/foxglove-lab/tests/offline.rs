@@ -124,10 +124,10 @@ fn run_with<D: foxglove_lab::runner::Device>(
 #[test]
 fn parses_seed_suites_and_all_step_kinds() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil");
-    assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 6);
+    assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 7);
     assert_eq!(
         spec::load(&root.join("release.toml")).unwrap().cases.len(),
-        19
+        21
     );
     for text in [
         "[{press_position={pos=12,state='down'}}]",
@@ -298,25 +298,45 @@ fn reports_escape_markup_embed_images_and_apply_release_gate() {
             .unwrap(),
     )
     .unwrap();
-    let mut report = Report {
-        schema: 1,
-        environment: BTreeMap::from([("runner_version".into(), "test".into())]),
-        firmware: serde_json::json!({"hello_version":1}),
-        cases: vec![blocked],
-    };
+    let mut report = Report::new(
+        "release",
+        "2026-10-24T00:00:00Z".into(),
+        BTreeMap::from([("runner_version".into(), "test".into())]),
+    );
+    report.firmware.hello = serde_json::json!({"hello_version":1});
+    report.cases.push(blocked);
     assert!(!report.overall_pass());
     assert!(!report.exit_success());
     report.write(&dir.0).unwrap();
     let json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.0.join("report.json")).unwrap()).unwrap();
     assert_eq!(json["cases"][0]["status"], "BLOCKED");
+    // Stable v2 shape (docs/test-lab/report.schema.json lists these as required).
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/test-lab/report.schema.json")).unwrap();
+    for key in schema["required"].as_array().unwrap() {
+        assert!(
+            json.get(key.as_str().unwrap()).is_some(),
+            "report.json lacks {key}"
+        );
+    }
+    assert_eq!(json["schema"], "foxglove-lab-report");
+    assert_eq!(json["version"], 2);
+    assert_eq!(json["verdict"], "FAIL");
+    assert_eq!(json["areas"][0]["name"], "general");
+    assert_eq!(json["areas"][0]["verdict"], "BLOCKED");
+    assert_eq!(json["cases"][0]["area"], "general");
+    assert!(json["firmware"]["left"].is_null());
     let junit = std::fs::read_to_string(dir.0.join("junit.xml")).unwrap();
     assert!(junit.contains("<skipped message="));
+    assert!(junit.contains("<testsuites name=\"foxglove-lab\""));
+    assert!(junit.contains("classname=\"foxglove-lab.general\""));
+    assert!(junit.contains("<property name=\"verdict\" value=\"FAIL\"/>"));
     assert!(junit.contains("&lt;script&gt;&quot;&amp;"));
     let html = std::fs::read_to_string(dir.0.join("report.html")).unwrap();
     assert!(html.contains("data:image/png;base64,"));
     assert!(!html.contains("<script>"));
-    assert!(html.find("<table>").unwrap() < html.find("<article>").unwrap());
+    assert!(html.find("<table>").unwrap() < html.find("<article").unwrap());
     report.cases[0].tags.clear();
     assert!(report.overall_pass());
     report.cases[0].manual = false;

@@ -17,10 +17,13 @@ for keymap in "$suite"/*/native_posix_64.keymap; do
     mkdir -p "$build"
     count=$((count + 1))
     echo "Running $name"
+    # A case can add its own Kconfig (hostlink/case.conf turns on the protocol driver).
+    conf="$suite/common/sim.conf"
+    if [[ -f "$case_dir/case.conf" ]]; then conf="$conf;$case_dir/case.conf"; fi
     # Log outside the pristine build directory: west -p deletes that directory.
     if ! west build -s "$ZMK_SRC_DIR" -d "$build" -b native_posix_64 -p -- \
         -DCONFIG_ASSERT=y -DZMK_CONFIG="$case_dir" \
-        -DEXTRA_CONF_FILE="$suite/common/sim.conf" \
+        -DEXTRA_CONF_FILE="$conf" \
         -DZMK_EXTRA_MODULES="$suite/module" >"$build_root/$name-build.log" 2>&1; then
         echo "FAILED: $name did not build (see $build_root/$name-build.log)"
         failed=1
