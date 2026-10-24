@@ -48,13 +48,27 @@ config NICE_VIEW_CUSTOM_ANIMATE
 
 config FOXGLOVE_SPLIT_GUARD
     bool "Drop and retry a split link that hasn't encrypted within 20 s (#122)"
-    default y if FOXGLOVE_TEST_HOOKS
+    default y
     depends on NICE_VIEW_ART_RELAY
     help
       A link to the right half that stays below security L2 never gets ZMK's split service
       set up, so the right doesn't type. The guard disconnects it so ZMK reconnects, at most 3
-      times in a row, with a log line and a count in HELLO. On in dev builds, off in GA until it
-      has proven itself on hardware.
+      times in a row, with a log line and a count in HELLO. On in dev and GA builds: the
+      forced recovery case (D7 0B, #81) passed on hardware.
+
+config FOXGLOVE_RIGHT_TX_0DBM
+    bool "Right half: transmit at 0 dBm instead of +8 dBm (#218)"
+    default y
+    help
+      The right half's only link is the split link to the left, a few centimetres away, so +8 dBm
+      only costs battery. The left keeps +8 dBm for the PC. Turn this off if the split link drops
+      (the guard counter in HELLO byte 31 is the first sign).
+
+# Defaults only: a CONFIG_BT_CTLR_TX_PWR_* line in a .conf still wins.
+choice BT_CTLR_TX_PWR
+    default BT_CTLR_TX_PWR_0 if FOXGLOVE_RIGHT_TX_0DBM && ZMK_SPLIT && !ZMK_SPLIT_ROLE_CENTRAL
+    default BT_CTLR_TX_PWR_PLUS_8
+endchoice
 
 config FOXGLOVE_TEST_HOOKS
     bool "Foxglove pre-GA test hooks"
@@ -90,6 +104,21 @@ config NICE_VIEW_RGB_IDLE
       Replaces ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE (set that to n), which saves its auto-off as the
       user's choice, so a half that reboots after idle (the right, waking from deep sleep) stays
       dark. With the art relay, the PC can make the right follow the left's state (0xD7 01).
+
+config NICE_VIEW_RGB_BATTERY_DIM
+    def_bool DT_HAS_FOXGLOVE_DIM_STRIP_ENABLED
+    help
+      The board's zmk,underglow is a foxglove,dim-strip in front of the real strip (the shield's
+      boards/<board>.overlay), so dim_strip.c is built.
+
+config NICE_VIEW_RGB_BATTERY_CAP
+    int "Underglow brightness on battery, in percent (100 = no cap)"
+    default 30
+    range 1 100
+    depends on NICE_VIEW_RGB_BATTERY_DIM
+    help
+      While a half has no USB power, its underglow is scaled to this much of what ZMK draws
+      (#218). On the cable it's full brightness. ZMK's own brightness setting is unchanged.
 
 config NICE_VIEW_ART_RELAY_MAX_SIZE
     int "Largest pushed art set, in bytes (RAM on both halves)"

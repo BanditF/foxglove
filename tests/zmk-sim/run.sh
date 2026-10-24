@@ -2,6 +2,8 @@
 # ZMK v0.3.0 app/run-test.sh mechanics, with retained build logs and pipefail.
 set -euo pipefail
 suite=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# The repository is a Zephyr module too (zephyr/module.yml: its dts bindings, e.g. dim-strip).
+repo=$(cd -- "$suite/../.." && pwd)
 : "${ZMK_SRC_DIR:?Set ZMK_SRC_DIR to the v0.3.0 zmk/app directory}"
 ZMK_SRC_DIR=$(realpath "$ZMK_SRC_DIR")
 build_root=${ZMK_BUILD_DIR:-"$suite/build"}
@@ -20,11 +22,28 @@ for keymap in "$suite"/*/native_posix_64.keymap; do
     # A case can add its own Kconfig (hostlink/case.conf turns on the protocol driver).
     conf="$suite/common/sim.conf"
     if [[ -f "$case_dir/case.conf" ]]; then conf="$conf;$case_dir/case.conf"; fi
+    # A case can take named settings from the production .conf (sleep/prod.keys), so the case
+    # guards the value that ships, not a copy of it.
+    if [[ -f "$case_dir/prod.keys" ]]; then
+        prod="$build_root/$name-prod.conf"
+        : >"$prod"
+        while read -r key; do
+            [[ -n "$key" ]] || continue
+            line=$(grep -E "^${key}=" "$suite/../../config/eyelash_corne.conf" | tr -d '\r' || true)
+            if [[ -z "$line" ]]; then
+                echo "FAILED: $name: $key isn't set in config/eyelash_corne.conf"
+                failed=1
+                continue 2
+            fi
+            echo "$line" >>"$prod"
+        done < <(tr -d '\r' <"$case_dir/prod.keys")
+        conf="$conf;$prod"
+    fi
     # Log outside the pristine build directory: west -p deletes that directory.
     if ! west build -s "$ZMK_SRC_DIR" -d "$build" -b native_posix_64 -p -- \
         -DCONFIG_ASSERT=y -DZMK_CONFIG="$case_dir" \
         -DEXTRA_CONF_FILE="$conf" \
-        -DZMK_EXTRA_MODULES="$suite/module" >"$build_root/$name-build.log" 2>&1; then
+        -DZMK_EXTRA_MODULES="$suite/module;$repo" >"$build_root/$name-build.log" 2>&1; then
         echo "FAILED: $name did not build (see $build_root/$name-build.log)"
         failed=1
         continue

@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 
+use super::plugin_icons as icons;
 use super::plugin_install::{self, Installed, Staged};
 
 #[derive(Default)]
@@ -14,6 +15,15 @@ struct UiState {
     staged: Option<Staged>,
     confirm_remove: Option<String>,
     message: Option<String>,
+    /// Why no plugin is trusted, if so: checked when the catalog may have changed, not every
+    /// frame (it reads and verifies the signed files).
+    trust: Option<(super::catalog_refresh::Status, Result<(), String>)>,
+    /// What the user is typing into a secret's field, by `plugin/name`; never shown back.
+    secret_input: std::collections::HashMap<String, String>,
+    /// Whether each declared secret is set, read once per plugin list, not every frame.
+    secret_set: std::collections::HashMap<String, bool>,
+    /// A text setting being edited, by `plugin/name`, until it's committed.
+    setting_text: std::collections::HashMap<String, String>,
 }
 
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
@@ -36,17 +46,30 @@ pub fn group(ui: &mut egui::Ui) {
             ui.weak("Plugins add features to Foxglove. Each runs as its own program with only the permissions you approve.");
             if super::plugin_trust::dev_unsigned() {
                 ui.colored_label(ui.visuals().warn_fg_color, "Developer mode: unsigned plugins are allowed (FOXGLOVE_DEV_UNSIGNED_PLUGINS).");
-            } else if let Err(e) = super::plugin_trust::catalog() {
-                ui.weak(format!("Only signed plugins install and run; {e}."));
+            } else {
+                let status = super::catalog_refresh::status();
+                if state.trust.as_ref().is_none_or(|(s, _)| *s != status) {
+                    state.trust = Some((status, super::plugin_trust::catalog().map(|_| ())));
+                }
+                if let Some((_, Err(e))) = &state.trust {
+                    ui.weak(format!("Only signed plugins install and run; {e}."));
+                }
             }
+            catalog_status(ui);
 
             ui.add_space(4.0);
             ui.label("Installed");
             if installed.is_empty() {
-                ui.weak("None yet.");
+                ui.vertical_centered(|ui| {
+                    ui.add(icons::empty(ui, 120.0));
+                    ui.weak("No plugins yet. Pick one from the catalog below, or install one from a file.");
+                });
             }
+            let plugins_dir = plugin_install::plugins_dir();
             for plugin in &installed {
+                let dir = plugins_dir.as_ref().map(|d| d.join(&plugin.manifest.id));
                 ui.horizontal_wrapped(|ui| {
+                    ui.add(icons::glyph(ui, &plugin.manifest.id, dir.as_deref(), 20.0));
                     let mut enabled = plugin.record.enabled;
                     if ui.checkbox(&mut enabled, format!("{} {}", plugin.manifest.name, plugin.manifest.version)).changed() {
                         state.message = plugin_install::set_enabled(&plugin.manifest.id, enabled).err();
@@ -78,6 +101,9 @@ pub fn group(ui: &mut egui::Ui) {
                 }
                 let perms: Vec<String> = plugin.record.approved.iter().map(|p| p.describe()).collect();
                 ui.weak(format!("    may {}", if perms.is_empty() { "do nothing beyond running".into() } else { perms.join(", ") }));
+                action_keys(ui, plugin, state);
+                secret_fields(ui, plugin, state);
+                setting_fields(ui, plugin, state);
             }
 
             ui.add_space(6.0);
@@ -86,11 +112,16 @@ pub fn group(ui: &mut egui::Ui) {
                 if installed.iter().any(|k| k.manifest.id == entry.id) {
                     continue;
                 }
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong(&entry.name);
-                    ui.weak(&entry.description);
-                    // Downloads come with the first released plugin; until then entries are listed only.
-                    ui.add_enabled(false, egui::Button::new("Coming soon"));
+                ui.horizontal(|ui| {
+                    ui.add(icons::tile(ui, &entry.id, None, 36.0));
+                    ui.vertical(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.strong(&entry.name);
+                            // Downloads come with the first released plugin; until then entries are listed only.
+                            ui.add_enabled(false, egui::Button::new("Coming soon"));
+                        });
+                        ui.weak(&entry.description);
+                    });
                 });
             }
             ui.add_space(4.0);
@@ -104,10 +135,139 @@ pub fn group(ui: &mut egui::Ui) {
     });
 }
 
+/// A control for each setting the plugin declares (#69); a change is saved and sent to the
+/// plugin at once (text when the field loses focus).
+fn setting_fields(ui: &mut egui::Ui, plugin: &Installed, state: &mut UiState) {
+    use foxglove_plugin_api::manifest::SettingKind;
+    use serde_json::Value;
+    if plugin.manifest.settings.is_empty() {
+        return;
+    }
+    let id = &plugin.manifest.id;
+    let values = super::plugin_settings::values_for(&plugin.manifest, super::plugin_settings::stored().get(id.as_str()));
+    for decl in &plugin.manifest.settings {
+        let current = values.get(&decl.name).cloned().unwrap_or_else(|| decl.default.clone());
+        ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            let changed = match decl.kind {
+                SettingKind::Bool => {
+                    let mut on = current.as_bool().unwrap_or(false);
+                    ui.checkbox(&mut on, &decl.label).changed().then(|| Value::from(on))
+                }
+                SettingKind::Int => {
+                    ui.label(&decl.label);
+                    let mut n = current.as_i64().unwrap_or(0);
+                    let range = decl.min.unwrap_or(i64::MIN)..=decl.max.unwrap_or(i64::MAX);
+                    ui.add(egui::DragValue::new(&mut n).range(range)).changed().then(|| Value::from(n))
+                }
+                SettingKind::Text => {
+                    ui.label(&decl.label);
+                    let key = format!("{id}/{}", decl.name);
+                    let text = state.setting_text.entry(key.clone()).or_insert_with(|| current.as_str().unwrap_or_default().to_string());
+                    let done = ui.text_edit_singleline(text).lost_focus();
+                    let text = text.clone();
+                    (done && Some(text.as_str()) != current.as_str()).then(|| Value::from(text))
+                }
+            };
+            if let Some(v) = changed {
+                state.message = super::plugin_settings::set(id, decl, v).err();
+            }
+        });
+    }
+}
+
+/// A field for each secret the plugin declares (#213): the value goes straight into Windows'
+/// credential store and is never shown again.
+fn secret_fields(ui: &mut egui::Ui, plugin: &Installed, state: &mut UiState) {
+    use foxglove_plugin_host::secrets;
+    let id = &plugin.manifest.id;
+    for decl in &plugin.manifest.secrets {
+        let key = format!("{id}/{}", decl.name);
+        let set = *state
+            .secret_set
+            .entry(key.clone())
+            .or_insert_with(|| secrets::get(id, &decl.name).ok().flatten().is_some());
+        ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            ui.label(&decl.label);
+            let input = state.secret_input.entry(key.clone()).or_default();
+            ui.add(egui::TextEdit::singleline(input).password(true).desired_width(160.0).hint_text(if set { "saved" } else { "not set" }));
+            if ui.add_enabled(!input.is_empty(), egui::Button::new("Save")).clicked() {
+                state.message = secrets::set(id, &decl.name, Some(input.as_str())).err();
+                input.clear();
+                state.secret_set.remove(&key);
+            }
+            if set && ui.small_button("Clear").clicked() {
+                state.message = secrets::set(id, &decl.name, None).err();
+                state.secret_set.remove(&key);
+            }
+        });
+    }
+}
+
+/// A key (F13–F24) for each of the plugin's actions (#212).
+fn action_keys(ui: &mut egui::Ui, plugin: &Installed, state: &mut UiState) {
+    use super::plugin_actions::{self, KEYS};
+    if plugin.manifest.actions.is_empty() {
+        return;
+    }
+    let bindings = plugin_actions::bindings();
+    let taken = plugin_actions::taken();
+    for action in &plugin.manifest.actions {
+        ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            ui.label(&action.name);
+            let current = plugin_actions::key_for(&bindings, &plugin.manifest.id, &action.id);
+            let mut chosen = current.clone();
+            egui::ComboBox::from_id_salt(("plugin-action", &plugin.manifest.id, &action.id))
+                .selected_text(current.as_deref().unwrap_or("no key"))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut chosen, None, "no key");
+                    for key in KEYS {
+                        let used_by = bindings.get(key).filter(|b| b.plugin != plugin.manifest.id || b.action != action.id);
+                        let label = if used_by.is_some() { format!("{key} (in use)") } else { key.to_string() };
+                        ui.selectable_value(&mut chosen, Some(key.to_string()), label);
+                    }
+                });
+            if chosen != current {
+                state.message = plugin_actions::bind(&plugin.manifest.id, &action.id, chosen.as_deref()).err();
+            }
+            if current.as_ref().is_some_and(|k| taken.contains(k)) {
+                ui.colored_label(ui.visuals().warn_fg_color, "another program holds this key");
+            }
+        });
+    }
+    ui.weak("    Put F13–F24 on a key in ZMK Studio or VIA; it types nothing, and Foxglove passes it to the plugin.");
+}
+
+/// The catalog's freshness, and "Check now". Opening the tab asks for a check when one is due
+/// (at most every 10 minutes, and never while backing off).
+fn catalog_status(ui: &mut egui::Ui) {
+    use super::catalog_refresh::{self, Status, Trigger};
+    catalog_refresh::set_wake(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
+    catalog_refresh::request(Trigger::TabOpened);
+    ui.horizontal_wrapped(|ui| {
+        let status = catalog_refresh::status();
+        match &status {
+            Status::Idle => ui.weak("Catalog: not checked yet this session."),
+            Status::Checking => ui.weak("Catalog: checking…"),
+            Status::UpToDate { sequence: Some(n) } => ui.weak(format!("Catalog: updated (sequence {n}).")),
+            Status::UpToDate { sequence: None } => ui.weak("Catalog: up to date."),
+            Status::Failed(e) => ui.weak(format!("Catalog: couldn't check ({e}).")),
+        };
+        if ui.add_enabled(status != Status::Checking, egui::Button::new("Check now").small()).clicked() {
+            catalog_refresh::request(Trigger::Manual);
+        }
+    });
+}
+
 /// Shows what a staged plugin may do; returns it again while the user hasn't decided.
 fn approval(ui: &mut egui::Ui, staged: Staged, state: &mut UiState) -> Option<Staged> {
     let m = &staged.manifest;
-    ui.strong(format!("Install {} {}?", m.name, m.version));
+    ui.horizontal(|ui| {
+        ui.add(icons::tile(ui, &m.id, Some(&staged.dir), 48.0));
+        ui.strong(format!("Install {} {}?", m.name, m.version));
+    });
     if !m.description.is_empty() {
         ui.label(&m.description);
     }

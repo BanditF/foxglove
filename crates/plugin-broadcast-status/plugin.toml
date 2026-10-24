@@ -1,0 +1,12 @@
+id = "org.foxglove.broadcast-status"
+name = "Broadcast Status"
+version = "1.0.0"
+api = "1.3"
+run = ["broadcast-status.exe"]
+permissions = ["net.connect:127.0.0.1:4455", "apps.watch:obs64.exe", "secrets", "facts.write:broadcast.*", "devices.read", "lighting.write", "screens.write"]
+provides = ["lighting-effect"]
+description = "Shows whether OBS is recording or streaming, REC or LIVE and the scene on the left screen and red on the keyboard. It connects to OBS's WebSocket server on this PC (Tools → WebSocket Server Settings, port 4455) and only listens: it never starts, stops or switches anything."
+
+[[secrets]]
+name = "obs-password"
+label = "OBS WebSocket password"

@@ -50,6 +50,21 @@ enum Command {
         #[arg(long)]
         confirmed: String,
     },
+    /// Streams colours to the underglow (INVOKE rgb_ug RGB_COLOR_HSB, as the app's lighting does)
+    /// and measures how soon each half reports each one (#266). Puts the colour back; JSON out.
+    RgbLatency {
+        #[arg(long, default_value_t = 60)]
+        writes: u16,
+        #[arg(long, default_value_t = 5.0)]
+        hz: f64,
+        /// How often to ask for RGB_STATE, as the app does (D7 83 events arrive on their own). Much
+        /// faster restarts the relay read each time, so the right never updates.
+        #[arg(long, default_value_t = 250)]
+        poll_ms: u64,
+        /// How long to keep watching after the last write.
+        #[arg(long, default_value_t = 8)]
+        settle_s: u64,
+    },
     /// Prints one half's running firmware build (D7 09) as JSON. Exit code 4: the firmware
     /// can't tell (no HELLO bit 12, or the right is not reachable).
     Build {
@@ -211,6 +226,33 @@ fn main() -> Result<std::process::ExitCode> {
             settings::conn_state(&link)?,
             settings::rgb_state(&link)?
         );
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+    if let Command::RgbLatency {
+        writes,
+        hz,
+        poll_ms,
+        settle_s,
+    } = cli.command
+    {
+        let link = connect(cli.product)?;
+        link.wait_connected(Duration::from_secs(10))?;
+        let catalog = Catalog::load(cli.keymap)?;
+        let rgb_ug = *catalog.ids.get("rgb_ug").ok_or_else(|| {
+            anyhow::anyhow!(
+                "rgb_ug absent from the keymap metadata ({})",
+                catalog.source
+            )
+        })?;
+        let summary = foxglove_lab::rgb_latency::run(
+            &link,
+            rgb_ug,
+            writes,
+            hz,
+            Duration::from_millis(poll_ms),
+            Duration::from_secs(settle_s),
+        )?;
+        println!("{}", serde_json::to_string_pretty(&summary)?);
         return Ok(std::process::ExitCode::SUCCESS);
     }
     let Command::Run {

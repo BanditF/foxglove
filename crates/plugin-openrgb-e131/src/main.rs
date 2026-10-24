@@ -2,21 +2,25 @@
 //! keyboard's lights. Point an OpenRGB E1.31 device at 127.0.0.1, universe 1, and its colour
 //! becomes the keyboards' underglow colour (the average of the LEDs it sends).
 //!
-//! - Listens on 127.0.0.1:5568 (UDP) only: it declares `net`, but nothing leaves the PC.
-//! - Sends `lighting.set` only when the colour changes, at most `--max-hz` times a second.
+//! - Receives on 127.0.0.1:5568 (UDP) only, through Foxglove (`net.listen:udp:127.0.0.1:5568`),
+//!   so the plugin itself runs sandboxed, without any network of its own.
+//! - Holds each keyboard's lights with a low-priority lease while a stream runs (#73), so
+//!   notifications win; the leased colour changes only when the colour does, at most
+//!   `--max-hz` times a second.
 //! - When the sender stops (stream terminated, or 2.5 s without data, E1.31's loss timeout),
-//!   it puts each keyboard's lights back as they were.
+//!   or the plugin stops, the leases end and Foxglove gives the lights back as they were.
 //!
 //! Options (in `plugin.toml`'s `run`): `--universe N` (1), `--start-channel N` (1), `--leds N`
-//! (every LED sent), `--max-hz N` (10). `--send-test R G B` sends one frame to the plugin and
-//! exits, for testing without OpenRGB.
+//! (every LED sent), `--max-hz N` (10). `--send-test R G B [--seq N] [--stop]` sends one frame
+//! to the plugin and exits, for testing without OpenRGB.
 
 mod e131;
 
 use std::net::{Ipv4Addr, UdpSocket};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use foxglove_plugin::{Hsb, Plugin, LightingState, SetLightingParams};
+use foxglove_plugin::{Hsb, Lease, LeasePriority, NetEvent, Plugin};
 
 /// E1.31 6.7.1: a stream is lost after 2.5 s without data.
 const LOSS_TIMEOUT: Duration = Duration::from_millis(2500);
@@ -26,6 +30,8 @@ struct Options {
     start_channel: usize,
     leds: Option<usize>,
     max_hz: u32,
+    /// The UDP port (5568, E1.31's); tests use a free one of their own.
+    port: u16,
 }
 
 fn options(args: &[String]) -> Options {
@@ -35,6 +41,7 @@ fn options(args: &[String]) -> Options {
         start_channel: num("--start-channel").map_or(1, |n| (n as usize).max(1)),
         leds: num("--leds").map(|n| n as usize),
         max_hz: num("--max-hz").map_or(10, |n| (n as u32).clamp(1, 30)),
+        port: num("--port").and_then(|n| u16::try_from(n).ok()).filter(|p| *p != 0).unwrap_or(e131::PORT),
     }
 }
 
@@ -69,54 +76,37 @@ fn hsb((r, g, b): (u8, u8, u8)) -> Hsb {
     Hsb { hue: (hue.round() as u16) % 360, saturation: (saturation * 100.0).round() as u8, brightness: (max * 100.0).round() as u8 }
 }
 
-/// The keyboards with lights, and how their lights were before we took over.
-fn take_over(plugin: &Plugin) -> Vec<(String, Option<LightingState>)> {
-    plugin.devices()
+/// The keyboards with lights, each held with a low-priority lease in `color` (#73): a
+/// notification (mic muted, a focus timer) outranks the sync, and when the stream ends, or the
+/// plugin stops or crashes, Foxglove gives the lights back as they were.
+fn take_over(plugin: &Arc<Plugin>, color: Hsb) -> Vec<Lease> {
+    plugin
+        .devices()
         .unwrap_or_default()
         .into_iter()
         .filter(|d| d.connected && d.caps.iter().any(|c| c == "lighting"))
-        .map(|d| {
-            let before = plugin.lighting_state(&d.id).ok();
-            (d.id, before)
-        })
+        .filter_map(|d| plugin.lease(&d.id, color, LeasePriority::Low).map_err(|e| eprintln!("openrgb-e131: lighting: {e}")).ok())
         .collect()
 }
 
-fn colour(plugin: &Plugin, devices: &[(String, Option<LightingState>)], color: Hsb) {
-    for (id, _) in devices {
-        // Effect 0 is the static colour.
-        let set = SetLightingParams { device: id.clone(), on: Some(color.brightness > 0), color: Some(color), effect: Some("0".into()) };
-        if let Err(e) = plugin.set_lighting(&set) {
-            eprintln!("openrgb-e131: lighting: {e}");
-        }
-    }
-}
-
-fn restore(plugin: &Plugin, devices: &[(String, Option<LightingState>)]) {
-    for (id, before) in devices {
-        let Some(s) = before else { continue };
-        let set = SetLightingParams {
-            device: id.clone(),
-            on: Some(s.on),
-            color: Some(Hsb { hue: s.hue, saturation: s.saturation, brightness: s.brightness }),
-            effect: Some(s.effect.clone()),
-        };
-        if let Err(e) = plugin.set_lighting(&set) {
-            eprintln!("openrgb-e131: restoring lights: {e}");
-        }
-    }
-}
-
-fn send_test(args: &[String], universe: u16) -> std::io::Result<()> {
+fn send_test(args: &[String], universe: u16, port: u16) -> std::io::Result<()> {
     let at = args.iter().position(|a| a == "--send-test").unwrap_or(0);
     let v: Vec<u8> = args[at + 1..].iter().take(3).filter_map(|a| a.parse().ok()).collect();
     let [r, g, b] = v[..] else {
         eprintln!("openrgb-e131: --send-test R G B");
         std::process::exit(2);
     };
+    // --seq N numbers the frame (a repeat of the last number counts as stale); --stop marks it
+    // the stream's end.
+    let seq = args.windows(2).find(|w| w[0] == "--seq").and_then(|w| w[1].parse().ok()).unwrap_or(1);
+    let options = if args.iter().any(|a| a == "--stop") { 0x40 } else { 0 };
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     let frame: Vec<u8> = [r, g, b].repeat(8);
-    socket.send_to(&e131::build(universe, 1, 0, &frame), (Ipv4Addr::LOCALHOST, e131::PORT))?;
+    // Each test sender is its own source, as separate senders are in E1.31.
+    let mut cid = *b"foxglove-test-00";
+    let unique = std::process::id() ^ std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    cid[12..].copy_from_slice(&unique.to_be_bytes());
+    socket.send_to(&e131::build(cid, universe, seq, options, &frame), (Ipv4Addr::LOCALHOST, port))?;
     Ok(())
 }
 
@@ -124,7 +114,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let opts = options(&args);
     if args.iter().any(|a| a == "--send-test") {
-        if let Err(e) = send_test(&args, opts.universe) {
+        if let Err(e) = send_test(&args, opts.universe, opts.port) {
             eprintln!("openrgb-e131: {e}");
             std::process::exit(1);
         }
@@ -137,59 +127,83 @@ fn main() {
             std::process::exit(1);
         }
     };
-    // Localhost only: other machines can't drive the lights.
-    let socket = match UdpSocket::bind((Ipv4Addr::LOCALHOST, e131::PORT)) {
-        Ok(s) => s,
+    // Localhost only: other machines can't drive the lights. Foxglove does the listening.
+    let frames = match plugin.listen_udp(opts.port) {
+        Ok(rx) => rx,
         Err(e) => {
-            eprintln!("openrgb-e131: can't listen on 127.0.0.1:{}: {e}", e131::PORT);
+            eprintln!("openrgb-e131: can't listen on 127.0.0.1:{}: {e}", opts.port);
             std::process::exit(1);
         }
     };
-    let _ = socket.set_read_timeout(Some(Duration::from_millis(250)));
     let period = Duration::from_millis(1000 / u64::from(opts.max_hz));
-    let mut buf = [0u8; 1144];
-    let mut last_seq: Option<u8> = None;
-    let mut devices: Option<Vec<(String, Option<LightingState>)>> = None;
+    // The last sequence number per sender (E1.31 numbers frames per source).
+    let mut last_seq: Option<([u8; 16], u8)> = None;
+    // Held while a stream runs; dropping them gives the lights back.
+    let mut leases: Option<Vec<Lease>> = None;
     let mut last_data = Instant::now();
     let mut wanted: Option<Hsb> = None;
     let mut sent: Option<Hsb> = None;
     let mut next_send = Instant::now();
-    let mut next_check = Instant::now() + Duration::from_secs(10);
     loop {
+        // Foxglove gone (stopped, or killed): don't linger.
+        if plugin.is_closed() {
+            return;
+        }
         let mut stop = false;
-        if let Ok((n, _)) = socket.recv_from(&mut buf) {
-            if let Some(p) = e131::parse(&buf[..n]).filter(|p| p.universe == opts.universe && !p.preview) {
-                if last_seq.is_some_and(|last| e131::is_stale(last, p.sequence)) && !p.terminated {
+        // Idle: block until a frame comes (#281). Showing: wake also when the stream counts as
+        // lost, or when a held-back colour may go out (one-shot deadlines).
+        let deadline = leases.is_some().then(|| {
+            let lost = last_data + LOSS_TIMEOUT;
+            if wanted.is_some() && wanted != sent { lost.min(next_send) } else { lost }
+        });
+        let event = match deadline {
+            Some(at) => frames.recv_timeout(at.saturating_duration_since(Instant::now())),
+            None => frames.recv().map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
+        };
+        let received = match event {
+            Ok(NetEvent::Data(bytes, from)) => Some((bytes, from.unwrap_or_default())),
+            // Foxglove stopped listening, or went away.
+            Ok(NetEvent::Closed(why)) => {
+                eprintln!("openrgb-e131: Foxglove stopped listening: {why}");
+                return;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        };
+        if let Some((buf, from)) = received {
+            if let Some(p) = e131::parse(&buf).filter(|p| p.universe == opts.universe && !p.preview) {
+                if last_seq.is_some_and(|(cid, last)| cid == p.cid && e131::is_stale(last, p.sequence)) && !p.terminated {
                     continue;
                 }
-                last_seq = Some(p.sequence);
+                last_seq = Some((p.cid, p.sequence));
                 last_data = Instant::now();
                 if p.terminated {
                     stop = true;
                 } else if let Some(rgb) = average(p.channels, opts.start_channel, opts.leds) {
-                    if devices.is_none() {
-                        devices = Some(take_over(&plugin));
+                    let color = hsb(rgb);
+                    if leases.is_none() {
+                        eprintln!("openrgb-e131: first frame from {from} (universe {}): taking the lights", p.universe);
+                        leases = Some(take_over(&plugin, color));
+                        sent = Some(color);
+                        next_send = Instant::now() + period;
                     }
-                    wanted = Some(hsb(rgb));
+                    wanted = Some(color);
                 }
             }
         }
         let now = Instant::now();
-        if devices.is_some() && (stop || now.duration_since(last_data) > LOSS_TIMEOUT) {
-            restore(&plugin, devices.as_deref().unwrap_or_default());
-            (devices, wanted, sent, last_seq) = (None, None, None, None);
+        if leases.is_some() && (stop || now.duration_since(last_data) > LOSS_TIMEOUT) {
+            // The leases end; Foxglove puts the lights back (and confirms them).
+            (leases, wanted, sent, last_seq) = (None, None, None, None);
             continue;
         }
-        // Idle on the socket, so check now and then that Foxglove is still there.
-        if now >= next_check {
-            if plugin.call("ping", serde_json::json!({})).is_err() {
-                return;
-            }
-            next_check = now + Duration::from_secs(10);
-        }
-        if let (Some(d), Some(color)) = (&devices, wanted) {
+        if let (Some(held), Some(color)) = (&leases, wanted) {
             if sent != Some(color) && now >= next_send {
-                colour(&plugin, d, color);
+                for lease in held {
+                    if let Err(e) = lease.set(color) {
+                        eprintln!("openrgb-e131: lighting: {e}");
+                    }
+                }
                 sent = Some(color);
                 next_send = now + period;
             }

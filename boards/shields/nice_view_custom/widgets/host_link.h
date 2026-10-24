@@ -27,16 +27,23 @@
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
- *   03 ROWS    y, n (1-3), n rows   write rows of HOST_PANEL_STRIDE bytes, MSB first, 1 = ink
+ *   03 ROWS    y, n, n rows         write rows of the panel's stride, MSB first, 1 = ink; n up to
+ *                                   the panel's rows per report (SCREENS; 3 on the Corne)
  *   04 PRESENT                      show the back buffer
  *   05 RELEASE                      give the area back to the WPM chart now
  *   06 SCREENS index u8             reply D5 86: status (0 ok, 5 index >= count), count, index,
  *                                   descriptor (24 B, #160): id, kind (0 display, 1 panel, 2 art),
  *                                   half, parent id (0xff for a display), width u16, height u16 (as
  *                                   the PC addresses it), x u16, y u16 (on the parent, as seen),
- *                                   rotation (quarter turns cw), format (0 = 1 bit), ops u16 (bit 0 D5
- *                                   rows, 1 D7 06/07 readback, 2 D6 art, 3 D6 slots), stride u16,
+ *                                   rotation (quarter turns cw), format (0 = 1 bit; 1 RGB565 and
+ *                                   2 2-bit grey reserved), ops u16 (bit 0 D5 rows, 1 D7 06/07
+ *                                   readback, 2 D6 art, 3 D6 slots, 4 D5 07 rows-at), stride u16,
  *                                   rows per report, readback half (0xff none), version (1), 0 0 0
+ *   07 ROWS_AT y u16, offset u16, n u8 (<= 25), n bytes      no reply (#289)
+ *      Writes n bytes at y * stride + offset of the panel's back buffer (offset < stride; n may run
+ *      on into the next rows), for rows wider than a report and panels taller than 255 rows.
+ *      Out-of-range writes are dropped. ROWS, ROWS_AT and FILL all write the same back buffer, so
+ *      one frame may mix them freely; the next PRESENT shows the result, last write wins per byte.
  *      The Corne: 0 left display 160x68 rot 1; 1 panel 64x52 at (2,106) on 0 (D5 02-05 address it);
  *      2 right display; 3 right art area 68x140 at (0,20) on 2.
  * The panel takes the area at the first PRESENT and keeps the last presented frame until RELEASE.
@@ -141,10 +148,16 @@
  *      once the right has answered, and the right reboots into its bootloader ~300 ms after.
  *      Status: 0 ok, 2 no relay link (right), 3 relay timeout (3 s), 4 not built in
  *      (CONFIG_FOXGLOVE_TEST_HOOKS=n, GA), 5 bad request, 6 bad or expired nonce.
- *   0B GUARD_TEST (test hooks + split guard only)        reply: D7 8B, status
- *      The #122 split guard treats the current split link as stuck once, 2 s from now: it drops
- *      it, ZMK reconnects, HELLO byte 31 counts one more. Status: 0 ok, 2 no split link,
- *      4 not built in (GA, or no guard).
+ *   0D ART_KEYS on u8                                      reply: D7 8D, 00, on
+ *      The PC takes the &art_next / &art_prev keys (#60, HELLO bit 16): while on, each press
+ *      sends D7 8D, 01, dir (i8: 1 next, -1 previous) and the PC steps its hotlist. Off, or after
+ *      a USB disconnect or an endpoint change, the board steps the right's built-ins and saved
+ *      slots itself. No keep-alive: subscribe again after HELLO.
+ *   0B GUARD_TEST [delay_ms u16] (test hooks + split guard only)        reply: D7 8B, status
+ *      The #122 split guard treats the current split link as stuck once, delay_ms from now (2000
+ *      when left out; 0 = at once, even mid-relay, e.g. during an art push): it drops it, ZMK
+ *      reconnects, HELLO byte 31 counts one more. Status: 0 ok, 2 no split link, 4 not built in
+ *      (GA, or no guard).
  */
 
 #pragma once
@@ -171,6 +184,12 @@
 #define HOST_LINK_CAP_RGB_STATE_EVENT (1U << 11)
 #define HOST_LINK_CAP_BUILD_INFO (1U << 12)
 #define HOST_LINK_CAP_SCREENS (1U << 13)
+// 14: FRAMES (#272 branch)
+// The panel stays until RELEASE and keeps its last frame when the PC or the cable goes away; the
+// PC sends no keep-alive (#279). Set when the panel timeout (bytes 25-26) is 0.
+#define HOST_LINK_CAP_PANEL_HOLD (1U << 15)
+// The keymap has &art_next / &art_prev, and D7 0D ART_KEYS hands them to the PC (#60).
+#define HOST_LINK_CAP_ART_KEYS (1U << 16)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
@@ -188,14 +207,30 @@ void host_link_build_info_reply(uint8_t status, uint8_t half,
 // rgb_idle.c, on the left: the underglow went on or off.
 void host_link_rgb_changed(void);
 
+// &art_next / &art_prev (art_keys.c): sends D7 8D 01 dir to the PC and returns 0 while it's
+// subscribed (D7 0D), -ENOTCONN otherwise (the board steps the art itself).
+int host_link_art_key(int8_t dir);
+
+// art_relay_central.c: the right acknowledged the PC's colour, or a read-back after another
+// underglow command came in. Sends RGB_STATE (D7 83) after host traffic.
+void host_link_rgb_right_followed(void);
+
 // Called by relay connection/discovery callbacks; queues a report only after host traffic.
 void host_link_art_status(void);
 
 // The panel covers the WPM block of the portrait layout (status.c), inside the frame.
+// A board with a panel of its own sets CONFIG_FOXGLOVE_PANEL_* (foxglove_link shield).
+#if defined(CONFIG_FOXGLOVE_PANEL_W)
+#define HOST_PANEL_X CONFIG_FOXGLOVE_PANEL_X
+#define HOST_PANEL_Y CONFIG_FOXGLOVE_PANEL_Y
+#define HOST_PANEL_W CONFIG_FOXGLOVE_PANEL_W
+#define HOST_PANEL_H CONFIG_FOXGLOVE_PANEL_H
+#else
 #define HOST_PANEL_X 2
 #define HOST_PANEL_Y 106
 #define HOST_PANEL_W 64
 #define HOST_PANEL_H 52
+#endif
 #define HOST_PANEL_STRIDE (HOST_PANEL_W / 8)
 #define HOST_PANEL_BYTES (HOST_PANEL_STRIDE * HOST_PANEL_H)
 
@@ -203,7 +238,10 @@ void host_link_art_status(void);
  * foxglove_link/screens_*.c). Layout in the 0xD5 comment above. */
 enum { SCREEN_DISPLAY, SCREEN_PANEL, SCREEN_ART };
 enum { SCREEN_OP_ROWS = 1 << 0, SCREEN_OP_READBACK = 1 << 1, SCREEN_OP_ART = 1 << 2,
-       SCREEN_OP_SLOTS = 1 << 3 };
+       SCREEN_OP_SLOTS = 1 << 3, SCREEN_OP_ROWS_AT = 1 << 4 };
+// The descriptor's format. Only formats the board draws are advertised; 1 and 2 are reserved
+// until a board with such a display exists (#289: Toucan2 and Halcyon are 1-bit too).
+enum { SCREEN_FMT_1BIT = 0, SCREEN_FMT_RGB565 = 1, SCREEN_FMT_GRAY2 = 2 };
 #define SCREEN_DESCRIPTOR_VERSION 1
 #define SCREEN_UNSET 0xff
 

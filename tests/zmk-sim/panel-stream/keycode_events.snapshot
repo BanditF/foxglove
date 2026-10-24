@@ -1,0 +1,12 @@
+kp_pressed: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00
+kp_pressed: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00
+kp_pressed: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00
+kp_pressed: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00
+stream: 10 paced + 30 burst frames, 817 panel reports
+stream: HELLO replies 11 of 11, CONN_STATE replies 10 of 10, other 0
+stream: last paced frame shown: yes; last burst frame shown: yes
+stream: ROWS_AT frame shown: yes; out-of-range pieces ignored: yes

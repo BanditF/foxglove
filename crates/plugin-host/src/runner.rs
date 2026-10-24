@@ -13,11 +13,10 @@
 use std::collections::VecDeque;
 use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
+#[cfg(not(windows))]
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::Context;
 
@@ -35,7 +34,6 @@ pub struct PluginSpec {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
-    pub ping_timeout: Duration,
     pub backoff_start: Duration,
     pub backoff_max: Duration,
     pub max_crashes: usize,
@@ -47,7 +45,6 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            ping_timeout: crate::PING_TIMEOUT,
             backoff_start: Duration::from_secs(1),
             backoff_max: Duration::from_secs(60),
             max_crashes: 5,
@@ -104,27 +101,8 @@ impl Runner {
     pub fn stop(self) {}
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
-}
-
-/// Marks the plugin alive on every byte it writes.
-struct Activity<R> {
-    inner: R,
-    last: Arc<AtomicU64>,
-}
-
-impl<R: Read> Read for Activity<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        if n > 0 {
-            self.last.store(now_ms(), Ordering::Relaxed);
-        }
-        Ok(n)
-    }
-}
-
 enum Proc {
+    #[cfg(not(windows))]
     Std(Child),
     #[cfg(windows)]
     Contained(job::Process),
@@ -141,6 +119,7 @@ impl Running {
         #[cfg(windows)]
         self._job.terminate();
         match &mut self.proc {
+            #[cfg(not(windows))]
             Proc::Std(child) => {
                 let _ = child.kill();
                 let _ = child.wait();
@@ -152,6 +131,7 @@ impl Running {
 
     fn exit_code(&mut self) -> Option<i32> {
         match &mut self.proc {
+            #[cfg(not(windows))]
             Proc::Std(child) => child.wait().ok().and_then(|s| s.code()),
             #[cfg(windows)]
             Proc::Contained(p) => p.wait(),
@@ -161,12 +141,21 @@ impl Running {
 
 type Io = (Running, Box<dyn Write + Send>, Box<dyn Read + Send>);
 
+/// A plugin's own folder for state between runs (inside its folder; left out of the signed-file
+/// check, writable in the sandbox).
+pub const DATA_DIR: &str = "data";
+
 fn spawn(spec: &PluginSpec, config: &Config) -> std::io::Result<Io> {
     let program = spec.run.first().ok_or_else(|| std::io::Error::other("the manifest's run is empty"))?;
+    std::fs::create_dir_all(spec.dir.join(DATA_DIR))?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(spec.dir.join("plugin.log"))?;
+    // On Windows the plugin is started with only its own pipe ends inheritable (a handle list),
+    // in its AppContainer or not; std::process would let a child started at the same moment
+    // inherit them too, which keeps a plugin's stdout open after it exits.
     #[cfg(windows)]
-    if spec.sandbox {
-        let c = crate::sandbox::spawn(&spec.id, &spec.dir, &spec.run, log)?;
+    {
+        let _ = program;
+        let c = crate::sandbox::spawn(&spec.id, &spec.dir, &spec.run, log, spec.sandbox)?;
         let process = job::Process(c.process);
         let job = job::Job::new(config.memory_limit)?;
         if let Err(e) = job.assign_handle(c.process) {
@@ -175,40 +164,20 @@ fn spawn(spec: &PluginSpec, config: &Config) -> std::io::Result<Io> {
         }
         job::resume_thread(c.thread);
         let running = Running { proc: Proc::Contained(process), _job: job };
-        return Ok((running, Box::new(c.stdin), Box::new(c.stdout)));
+        Ok((running, Box::new(c.stdin), Box::new(c.stdout)))
     }
+    #[cfg(not(windows))]
+    {
     let mut cmd = Command::new(spec.dir.join(program));
     cmd.args(&spec.run[1..])
         .current_dir(&spec.dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::from(log));
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        use windows_sys::Win32::System::Threading::{CREATE_NO_WINDOW, CREATE_SUSPENDED};
-        cmd.creation_flags(CREATE_SUSPENDED | CREATE_NO_WINDOW);
-    }
     let mut child = cmd.spawn()?;
-    #[cfg(windows)]
-    {
-        // Into the job before its first instruction, so nothing it starts can escape.
-        let job = match job::Job::new(config.memory_limit).and_then(|j| j.assign(&child).map(|()| j)) {
-            Ok(job) => job,
-            Err(e) => {
-                let _ = child.kill();
-                return Err(e);
-            }
-        };
-        job::resume(child.id());
-        let (stdin, stdout) = (child.stdin.take().expect("piped"), child.stdout.take().expect("piped"));
-        Ok((Running { proc: Proc::Std(child), _job: job }, Box::new(stdin), Box::new(stdout)))
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = config;
-        let (stdin, stdout) = (child.stdin.take().expect("piped"), child.stdout.take().expect("piped"));
-        Ok((Running { proc: Proc::Std(child) }, Box::new(stdin), Box::new(stdout)))
+    let _ = config;
+    let (stdin, stdout) = (child.stdin.take().expect("piped"), child.stdout.take().expect("piped"));
+    Ok((Running { proc: Proc::Std(child) }, Box::new(stdin), Box::new(stdout)))
     }
 }
 
@@ -230,35 +199,38 @@ fn supervise(
             Err(e) => format!("couldn't start: {e}"),
             Ok((mut running, stdin, stdout)) => {
                 status(PluginState::Running);
-                let last = Arc::new(AtomicU64::new(now_ms()));
                 let ctx = context();
-                let reader = BufReader::new(Activity { inner: stdout, last: last.clone() });
+                let reader = BufReader::new(stdout);
                 let exited = events.clone();
                 let this_run = run;
+                #[cfg(windows)]
+                {
+                    // Blocked on the process itself, so its exit is reported at once even if its
+                    // stdout stays open.
+                    let Proc::Contained(p) = &running.proc;
+                    p.on_exit(events.clone(), this_run);
+                }
+                let id = spec.id.clone();
                 let _ = std::thread::Builder::new().name(format!("plugin-{}-io", spec.id)).spawn(move || {
-                    let _ = crate::serve(reader, stdin, ctx);
+                    let _ = crate::serve_with(reader, stdin, ctx, Some(id.clone()), |out| crate::register(&id, Some(out)));
+                    crate::register(&id, None);
                     let _ = exited.send(Event::Exited(this_run));
                 });
-                // Wait for an exit, a stop, or silence longer than the ping timeout.
+                // Wait for an exit or a stop. No watchdog: an exit is seen at once (the process
+                // handle on Windows, the pipe's end elsewhere), and a plugin that hangs only
+                // stops itself working; its calls to Foxglove time out on its side (#281).
                 let reason = loop {
-                    match rx.recv_timeout(config.ping_timeout) {
+                    match rx.recv() {
                         // A late notice from an earlier run that was killed.
                         Ok(Event::Exited(n)) if n != run => {}
                         Ok(Event::Exited(_)) => {
                             let code = running.exit_code();
                             break format!("exited ({})", code.map_or("no code".into(), |c| c.to_string()));
                         }
-                        Ok(Event::Stop) | Err(RecvTimeoutError::Disconnected) => {
+                        Ok(Event::Stop) | Err(_) => {
                             running.kill();
                             status(PluginState::Stopped);
                             return;
-                        }
-                        Err(RecvTimeoutError::Timeout) => {
-                            let silent = Duration::from_millis(now_ms().saturating_sub(last.load(Ordering::Relaxed)));
-                            if silent >= config.ping_timeout {
-                                running.kill();
-                                break format!("no sign of life for {} s", silent.as_secs());
-                            }
                         }
                     }
                 };
@@ -297,20 +269,15 @@ fn supervise(
 
 #[cfg(windows)]
 mod job {
-    use std::os::windows::io::AsRawHandle;
-    use std::process::Child;
-
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
-    };
+    use windows_sys::Win32::Foundation::{CloseHandle, DuplicateHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
         TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
     };
     use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenThread, ResumeThread, TerminateProcess, WaitForSingleObject, THREAD_SUSPEND_RESUME,
+        GetCurrentProcess, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject, INFINITE,
+        PROCESS_SYNCHRONIZE,
     };
 
     /// A Job Object holding one plugin and everything it starts; closing it kills them all.
@@ -343,10 +310,6 @@ mod job {
             Ok(job)
         }
 
-        pub fn assign(&self, child: &Child) -> std::io::Result<()> {
-            self.assign_handle(child.as_raw_handle() as HANDLE)
-        }
-
         pub fn assign_handle(&self, process: HANDLE) -> std::io::Result<()> {
             if unsafe { AssignProcessToJobObject(self.0, process) } == 0 {
                 return Err(std::io::Error::last_os_error());
@@ -377,6 +340,25 @@ mod job {
             }
         }
 
+        /// Sends `Exited(run)` when the process ends, from a thread blocked on its handle (a
+        /// copy of it, so dropping this one doesn't matter).
+        pub fn on_exit(&self, events: std::sync::mpsc::Sender<super::Event>, run: u64) {
+            let mut copy: HANDLE = std::ptr::null_mut();
+            let ok = unsafe {
+                let me = GetCurrentProcess();
+                DuplicateHandle(me, self.0, me, &mut copy, PROCESS_SYNCHRONIZE, 0, 0) != 0
+            };
+            if !ok {
+                return;
+            }
+            let copy = Process(copy);
+            let _ = std::thread::Builder::new().name("plugin-exit".into()).spawn(move || {
+                let process = copy;
+                unsafe { WaitForSingleObject(process.0, INFINITE) };
+                let _ = events.send(super::Event::Exited(run));
+            });
+        }
+
         pub fn wait(&self) -> Option<i32> {
             let mut code = 0u32;
             unsafe {
@@ -400,27 +382,4 @@ mod job {
         }
     }
 
-    /// Resumes the threads of a process started suspended.
-    pub fn resume(pid: u32) {
-        unsafe {
-            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-            if snap == INVALID_HANDLE_VALUE {
-                return;
-            }
-            let mut entry: THREADENTRY32 = std::mem::zeroed();
-            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
-            let mut more = Thread32First(snap, &mut entry) != 0;
-            while more {
-                if entry.th32OwnerProcessID == pid {
-                    let t = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
-                    if !t.is_null() {
-                        ResumeThread(t);
-                        CloseHandle(t);
-                    }
-                }
-                more = Thread32Next(snap, &mut entry) != 0;
-            }
-            CloseHandle(snap);
-        }
-    }
 }

@@ -23,6 +23,8 @@ foxglove-plugin-api = { path = "../crates/plugin-api" }
 foxglove-plugin-trust = { path = "../crates/plugin-trust" }
 # Foxglove: unpacking plugins in the Plugins tab.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Foxglove: plugins' panel frames arrive as base64.
+base64 = "0.22"
 foxglove-panel = { path = "../crates/panel" }
 toml = "0.9"
 prost = "0.14"
@@ -84,6 +86,7 @@ windows = { version = "0.62.2", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_Threading",
     "Win32_Foundation",
+    "Win32_UI_Accessibility",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
@@ -125,3 +128,14 @@ auto_link_exclude_list = [
     "libseccomp.so*", "libexpat.so*", "libjson-glib*.so*", "libxml2.so*",
     "libsqlite3.so*", "liblcms2.so*", "libicu*.so*",
 ]
+
+[dev-dependencies]
+# Foxglove: checks that the built-in plugin icons render (the resvg egui_extras uses).
+resvg = { version = "0.45", default-features = false }
+
+# Foxglove: smaller dev/test builds (same as the root workspace; see its Cargo.toml).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

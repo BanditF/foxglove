@@ -21,7 +21,7 @@ use foxglove_devices::{
 };
 
 use crate::link::{Event, EventSubscription, Link};
-use crate::protocol::{capabilities, Hello, InvokeStatus, RgbHalf};
+use crate::protocol::{capabilities, Hello, InvokeStatus, RgbHalf, RgbState};
 use crate::{art, panel, settings};
 
 type PResult<T> = foxglove_devices::Result<T>;
@@ -80,7 +80,20 @@ fn lighting_state(h: &RgbHalf) -> LightingState {
         brightness: h.brightness,
         effect: Effect { id: h.effect.to_string(), params: vec![] },
         speed: h.speed,
+        settled: true,
     }
+}
+
+/// Whether the right half (as it last reported) shows what the left does; brightness aside,
+/// since each half dims on its own battery.
+fn halves_agree(rgb: &RgbState) -> bool {
+    let Some((r, _age)) = &rgb.right else { return true };
+    let l = &rgb.left;
+    let near = |a: u16, b: u16, wrap: u16| {
+        let d = a.abs_diff(b);
+        d.min(wrap.saturating_sub(d)) <= 2
+    };
+    l.on == r.on && near(l.hue, r.hue, 360) && near(l.sat.into(), r.sat.into(), 1000) && l.effect == r.effect
 }
 
 /// A Digitalis keyboard as a device-layer device. Events reach the sink for as long as it lives.
@@ -117,6 +130,15 @@ impl DigitalisDevice {
         let reports = link.subscribe_reports(move |_, r| {
             if r[0] == KEY_EVENT {
                 report_sink.emit(DeviceEvent::Key { row: r[1].into(), col: r[2].into(), pressed: r[3] != 0 });
+            } else if crate::protocol::is_reply(r, crate::protocol::SETTINGS, crate::protocol::settings::CONN_STATE) {
+                // The firmware says when the connection changes (CONN_STATE_EVENT), and answers
+                // a read the same way (#17).
+                let c = crate::protocol::ConnState::parse(r);
+                report_sink.emit(DeviceEvent::Link {
+                    output: if c.endpoint == 0 { "USB" } else { "BLE" }.into(),
+                    profile: c.active_profile,
+                    connected: c.connected,
+                });
             } else if let Some(active) = parse_layers(r) {
                 let mut current = report_layers.lock().unwrap_or_else(|e| e.into_inner());
                 if *current != active {
@@ -155,9 +177,22 @@ impl DigitalisDevice {
 
     /// Sends one `&rgb_ug` command. Lighting commands are always safe, so they skip the
     /// action list.
+    ///
+    /// The firmware answers Busy while it's still releasing the previous command, so a quick
+    /// run of changes (a plugin streaming colours) waits briefly and tries again instead of
+    /// dropping them.
     fn underglow(&self, command: u32, param: u32) -> PResult<()> {
         let id = self.underglow.lock().unwrap_or_else(|e| e.into_inner()).ok_or(DeviceError::Unsupported)?;
-        status(settings::invoke(&*self.link, id, command, param, 0).map_err(err)?)
+        let mut tries = 0;
+        loop {
+            match status(settings::invoke(&*self.link, id, command, param, 0).map_err(err)?) {
+                Err(DeviceError::Busy(_)) if tries < UNDERGLOW_BUSY_TRIES => {
+                    tries += 1;
+                    std::thread::sleep(UNDERGLOW_BUSY_WAIT);
+                }
+                other => return other,
+            }
+        }
     }
 
     pub fn link(&self) -> &Arc<Link> {
@@ -231,10 +266,18 @@ fn status(s: InvokeStatus) -> PResult<()> {
     }
 }
 
+/// Underglow commands that find the firmware busy are retried this many times, this far apart.
+const UNDERGLOW_BUSY_TRIES: u32 = 10;
+const UNDERGLOW_BUSY_WAIT: std::time::Duration = std::time::Duration::from_millis(20);
+
 // `&rgb_ug` commands (ZMK's dt-bindings/zmk/rgb.h).
 const RGB_ON: u32 = 1;
 const RGB_OFF: u32 = 2;
+const RGB_SPEED_UP: u32 = 9;
+const RGB_SPEED_DOWN: u32 = 10;
 const RGB_EFFECT_SET: u32 = 13;
+/// ZMK's underglow speeds run 1-5, so this many steps reach any of them.
+const SPEED_STEPS: u32 = 5;
 const RGB_COLOR_HSB: u32 = 14;
 
 impl Lighting for DigitalisDevice {
@@ -250,7 +293,7 @@ impl Lighting for DigitalisDevice {
 
     fn state(&self) -> PResult<LightingState> {
         let rgb = settings::rgb_state(&*self.link).map_err(err)?;
-        let state = lighting_state(&rgb.left);
+        let state = LightingState { settled: halves_agree(&rgb), ..lighting_state(&rgb.left) };
         self.sink.emit(DeviceEvent::LightingChanged { state: state.clone() });
         Ok(state)
     }
@@ -268,6 +311,19 @@ impl Lighting for DigitalisDevice {
     fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> PResult<()> {
         let hsb = (u32::from(hue.min(359)) << 16) | (u32::from(sat.min(100)) << 8) | u32::from(brightness.min(100));
         self.underglow(RGB_COLOR_HSB, hsb)
+    }
+
+    /// ZMK has no "set speed", only one step up or down: steps toward `speed`, reading it back
+    /// each time, at most [`SPEED_STEPS`] times (#293).
+    fn set_speed(&self, speed: u8) -> PResult<()> {
+        for _ in 0..SPEED_STEPS {
+            let now = settings::rgb_state(&*self.link).map_err(err)?.left.speed;
+            if now == speed {
+                return Ok(());
+            }
+            self.underglow(if now < speed { RGB_SPEED_UP } else { RGB_SPEED_DOWN }, 0)?;
+        }
+        Ok(())
     }
 
     fn release(&self) -> PResult<()> {
@@ -437,6 +493,8 @@ mod tests {
         inbox: Arc<(Mutex<VecDeque<Report>>, std::sync::Condvar)>,
         interrupted: Arc<AtomicBool>,
         written: Arc<Mutex<Vec<Vec<u8>>>>,
+        /// INVOKEs to answer "busy" before answering OK.
+        busy: Arc<std::sync::atomic::AtomicU32>,
     }
 
     fn report(bytes: &[u8]) -> Report {
@@ -479,7 +537,10 @@ mod tests {
                 (protocol::SETTINGS, protocol::settings::RGB_STATE) => {
                     report(&[0xD7, 0x83, 1, 0x68, 0x01, 80, 50, 3, 2, 0xff])
                 }
-                (protocol::SETTINGS, protocol::settings::INVOKE) => report(&[0xD7, 0x82, 0]),
+                (protocol::SETTINGS, protocol::settings::INVOKE) => {
+                    let busy = self.busy.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1)).is_ok();
+                    report(&[0xD7, 0x82, if busy { 2 } else { 0 }])
+                }
                 (protocol::SETTINGS, protocol::settings::RGB_SYNC) => report(&[0xD7, 0x81, 1, 1, 2]),
                 (protocol::PANEL, protocol::panel::HELLO) => report(&[0xD5, 0x81, 1, 64, 52, 0, 0, 1, 55]),
                 _ => return Ok(()),
@@ -534,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn passes_the_palm_contract() {
+    fn passes_the_device_contract() {
         let all = capabilities::PANEL | capabilities::ART_RELAY | capabilities::SETTINGS_RGB;
         let (dev, fake, _bus) = device(all);
         dev.set_behaviors(vec![
@@ -555,6 +616,31 @@ mod tests {
         assert_eq!(&sent[..12], &protocol::invoke(7, RGB_COLOR_HSB, (359 << 16) | (50 << 8) | 100, 0)[..12]);
         assert_eq!(dev.settings().unwrap().get("rgb_sync").unwrap(), Some(Value::Bool(true)));
         assert_eq!(dev.power().unwrap().batteries().unwrap(), vec![("right".to_string(), 55)]);
+    }
+
+    #[test]
+    fn halves_agree_on_all_but_brightness() {
+        let left = RgbHalf { on: true, hue: 0, sat: 100, brightness: 80, effect: 0, speed: 1 };
+        assert!(halves_agree(&RgbState { left, right: None }), "no right half: nothing to wait for");
+        let dim = RgbHalf { brightness: 30, ..left };
+        assert!(halves_agree(&RgbState { left, right: Some((dim, 1)) }), "a half dimmed on battery still agrees");
+        let behind = RgbHalf { hue: 240, ..left };
+        assert!(!halves_agree(&RgbState { left, right: Some((behind, 2)) }));
+        assert!(!halves_agree(&RgbState { left, right: Some((RgbHalf { on: false, ..left }, 0)) }));
+        assert!(!halves_agree(&RgbState { left, right: Some((RgbHalf { effect: 3, ..left }, 0)) }));
+    }
+
+    #[test]
+    fn underglow_waits_out_a_busy_keyboard() {
+        let (dev, fake, _bus) = device(capabilities::PANEL | capabilities::SETTINGS_RGB);
+        dev.set_underglow(Some(7));
+        let lighting = dev.lighting().unwrap();
+        fake.busy.store(3, Ordering::Relaxed);
+        lighting.set_on(true).unwrap();
+        let invokes = |f: &Fake| f.written.lock().unwrap().iter().filter(|w| w[1] == protocol::settings::INVOKE).count();
+        assert_eq!(invokes(&fake), 4, "three busy answers, then OK");
+        fake.busy.store(UNDERGLOW_BUSY_TRIES + 1, Ordering::Relaxed);
+        assert!(matches!(lighting.set_on(false), Err(DeviceError::Busy(_))), "gives up after the retries");
     }
 
     #[test]

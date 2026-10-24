@@ -196,6 +196,9 @@ pub struct LightingState {
     pub brightness: u8,
     pub effect: Effect,
     pub speed: u8,
+    /// Every part of the device shows this: false while a split keyboard's other half hasn't
+    /// caught up yet (it can lag seconds behind a change).
+    pub settled: bool,
 }
 
 /// Reads lighting state and optionally controls LEDs.
@@ -218,6 +221,11 @@ pub trait Lighting {
 
     /// Sets one colour for the whole device (hue 0-359, saturation and brightness 0-100).
     fn set_color(&self, _hue: u16, _sat: u8, _brightness: u8) -> Result<()> {
+        Err(DeviceError::Unsupported)
+    }
+
+    /// Sets the effect's speed (as [`LightingState::speed`] reports it) when supported.
+    fn set_speed(&self, _speed: u8) -> Result<()> {
         Err(DeviceError::Unsupported)
     }
 

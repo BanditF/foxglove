@@ -20,6 +20,12 @@ try {
     Step 'app: clippy' { cargo clippy --manifest-path app/Cargo.toml --all-targets -- -D warnings }
     Step 'app: tests' { cargo test --manifest-path app/Cargo.toml }
     Write-Host ("All checks passed in {0:N0} s." -f ((Get-Date) - $start).TotalSeconds) -ForegroundColor Green
+    # Disk hygiene on this event, not a timer: free other worktrees' builds that are done with.
+    # Best effort; it never fails the gate. FOXGLOVE_NO_CLEAN=1 skips it.
+    if (-not $env:FOXGLOVE_NO_CLEAN) {
+        try { & "$PSScriptRoot\clean-worktrees.ps1" -Apply }
+        catch { Write-Warning "clean-worktrees: $_" }
+    }
 } finally {
     Pop-Location
 }

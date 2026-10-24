@@ -229,9 +229,10 @@ impl<'a, D: Device> Runner<'a, D> {
         // advertises refusal (HELLO bit 7); the case is BLOCKED before this otherwise.
         let refusal_test =
             i.expect_status == "refused" && unsupported("invoke_refusal", &self.hello).is_none();
+        let silent_key = known("kp") && crate::spec::non_typing_key(i.param1) && i.hold_ms <= 200;
         ensure!(
-            if typing { known("kp") && i.hold_ms == 0 } else { safe || refusal_test },
-            "injection blocked: needs verified non-typing behavior, or kp tap inside sink; refusal support unknown"
+            if typing { known("kp") && i.hold_ms == 0 } else { safe || refusal_test || silent_key },
+            "injection blocked: needs verified non-typing behavior (or kp F13-F24), or kp tap inside sink; refusal support unknown"
         );
         self.check()?;
         // Discard prior cases' reports, but retain reports arriving during this invoke.
@@ -270,6 +271,111 @@ impl<'a, D: Device> Runner<'a, D> {
         Ok(format!(
             "local_id={id}, param1={}, param2={}, status={actual}",
             i.param1, i.param2
+        ))
+    }
+    fn art_push(&mut self, a: &crate::spec::ArtPush) -> Result<String> {
+        use crate::resilience::{bad_header, push, Cut};
+        self.right_ready()?;
+        let root = self.golden_dir.join("../..");
+        let mut blob = std::fs::read(root.join(&a.blob))
+            .map_err(|e| anyhow::anyhow!("blob {}: {e}", a.blob))?;
+        ensure!(art::is_blob(&blob), "{} is not an art blob", a.blob);
+        if a.corrupt == "header" {
+            blob = bad_header(&blob);
+        }
+        // The left answers from its last relay read and asks again, so the second call is fresh.
+        art::status(self.device)?;
+        std::thread::sleep(Duration::from_millis(300));
+        let before = art::status(self.device)?;
+        let cut = match a.cut.as_str() {
+            "data" => Cut::Data,
+            "commit" => Cut::Commit,
+            _ => Cut::None,
+        };
+        let sent = match push(self.device, &blob, a.corrupt == "crc", cut, a.drop_link) {
+            Err(e) if e.to_string().contains("not built in") => {
+                return Err(Blocked(e.to_string()).into())
+            }
+            other => other?,
+        };
+        let want = |s: &protocol::ArtStatus| {
+            s.state == a.expect_left_state
+                && (a.expect_errors.is_empty() || a.expect_errors.contains(&s.error))
+                && a.expect_right_state.is_none_or(|r| s.right_state == r)
+                && (!a.right_keeps_set || s.right_set == before.right_set)
+        };
+        let end = Instant::now() + Duration::from_millis(a.within_ms);
+        loop {
+            self.check()?;
+            std::thread::sleep(Duration::from_millis(500));
+            // Status can time out while the split link is being rebuilt; keep asking.
+            if let Ok(s) = art::status(self.device) {
+                if want(&s) {
+                    return Ok(format!(
+                        "{sent}; then {s} (before: right set {})",
+                        before.right_set
+                    ));
+                }
+                ensure!(
+                    Instant::now() < end,
+                    "{sent}; after {} ms: {s} (before: right set {})",
+                    a.within_ms,
+                    before.right_set
+                );
+            } else {
+                ensure!(
+                    Instant::now() < end,
+                    "{sent}; no art STATUS reply for {} ms",
+                    a.within_ms
+                );
+            }
+        }
+    }
+    fn panel_flood(&mut self, f: &crate::spec::PanelFlood) -> Result<String> {
+        use crate::spec::Layer;
+        let (w, h) = (self.hello.width, self.hello.height);
+        let frames = [0u8, 1].map(|p| crate::resilience::test_frame(w, h, p));
+        let start = Instant::now();
+        let (end, mut reports, mut shown, mut presses) =
+            (start + Duration::from_secs(f.seconds), 0, 0usize, 0);
+        let mut next_press = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < end {
+            self.check()?;
+            reports += panel::show(self.device, &frames[shown % 2], None, w.div_ceil(8))?;
+            shown += 1;
+            // Paced: sends only queue, so an unpaced loop floods the PC's own queue, not the keyboard.
+            let due = start + Duration::from_secs_f64(shown as f64 / f64::from(f.rate.max(1)));
+            std::thread::sleep(due.saturating_duration_since(Instant::now()));
+            if Instant::now() >= next_press {
+                // NUMBER held and let go mid-flood, sent without waiting for POSITION's reply (a
+                // flooded keyboard may drop replies); the layer reports must follow both ways.
+                let raw = |state: u8| self.device.send(&[protocol::SETTINGS, POSITION, 43, state]);
+                raw(1)?;
+                let down = self.execute(&Step::ExpectLayer(Layer {
+                    active_contains: vec![1],
+                    top: None,
+                    within_ms: 2000,
+                }));
+                raw(0)?;
+                let up = self.execute(&Step::ExpectLayer(Layer {
+                    active_contains: vec![],
+                    top: Some(0),
+                    within_ms: 2000,
+                }));
+                if let Err(e) = down.and(up) {
+                    let _ = raw(0);
+                    bail!("after {shown} frames, a NUMBER press wasn't followed: {e}");
+                }
+                presses += 1;
+                next_press = Instant::now() + Duration::from_secs(2);
+            }
+        }
+        let last = &frames[(shown + 1) % 2];
+        let path = crate::host::expand_env(&f.save);
+        std::fs::write(&path, crate::resilience::pbm(w, h, last))?;
+        Ok(format!(
+            "{shown} frames ({reports} reports) in {} s at {}/s, {presses} layer presses all followed; last frame saved to {path}",
+            f.seconds, f.rate
         ))
     }
     fn art_select(&mut self, a: &crate::spec::Art) -> Result<String> {
@@ -614,6 +720,73 @@ impl<'a, D: Device> Runner<'a, D> {
                     "HELLO caps {caps:#x}, profile {profile:?}, split-guard drops {drops}"
                 ))
             }
+            Step::SplitGuardTest(g) => {
+                let hello = |runner: &Self| -> Result<(u8, u8)> {
+                    let raw = runner.device.request(
+                        &protocol::hello(),
+                        protocol::PANEL,
+                        protocol::panel::HELLO,
+                        Duration::from_millis(500),
+                    )?;
+                    Ok((raw[7], raw[31])) // right link, guard drops since boot
+                };
+                let (link, before) = hello(self)?;
+                ensure!(
+                    link == 2,
+                    "right relay not up before the test (right link {link})"
+                );
+                let r = self.device.request(
+                    &[protocol::SETTINGS, 0x0B],
+                    protocol::SETTINGS,
+                    0x0B,
+                    Duration::from_secs(2),
+                )?;
+                match r[2] {
+                    0 => {}
+                    4 => {
+                        return Err(Blocked(
+                            "GUARD_TEST not built in (GA build, or no split guard)".into(),
+                        )
+                        .into())
+                    }
+                    s => bail!("GUARD_TEST answered status {s}"),
+                }
+                let started = Instant::now();
+                let end = started + Duration::from_millis(g.within_ms);
+                let (mut dropped_at, mut lowest) = (None, 2u8);
+                loop {
+                    self.check()?;
+                    std::thread::sleep(Duration::from_millis(500));
+                    // HELLO can time out while the split link is being rebuilt; keep waiting.
+                    if let Ok((link, drops)) = hello(self) {
+                        if link < 2 && dropped_at.is_none() {
+                            dropped_at = Some(started.elapsed());
+                        }
+                        lowest = lowest.min(link);
+                        if let (2, true, Some(dropped)) =
+                            (link, drops == before.wrapping_add(1), dropped_at)
+                        {
+                            return Ok(format!(
+                                "guard drops {before} -> {drops}; link dropped after {:.1} s (lowest {lowest}), relay back after {:.1} s",
+                                dropped.as_secs_f32(),
+                                started.elapsed().as_secs_f32()
+                            ));
+                        }
+                        ensure!(
+                            Instant::now() < end,
+                            "after {} ms: right link {link}, guard drops {before} -> {drops}, link dropped: {}",
+                            g.within_ms,
+                            dropped_at.is_some()
+                        );
+                    } else {
+                        ensure!(
+                            Instant::now() < end,
+                            "no HELLO reply for {} ms",
+                            g.within_ms
+                        );
+                    }
+                }
+            }
             Step::ExpectNotBuiltIn(n) => {
                 let (report, cmd): (&[u8], u8) = match n.command.as_str() {
                     "position" => (&[protocol::SETTINGS, POSITION, 1, 0], POSITION),
@@ -640,6 +813,23 @@ impl<'a, D: Device> Runner<'a, D> {
                 let bad = |v| v == Verdict::Fail || (u.strict && v == Verdict::Warn);
                 ensure!(!halves.iter().any(|h| bad(h.verdict)), "{text}");
                 Ok(text)
+            }
+            Step::ArtPush(a) => self.art_push(a),
+            Step::PanelShow(p) => {
+                let (w, h) = (self.hello.width, self.hello.height);
+                let frame = crate::resilience::test_frame(w, h, p.pattern);
+                panel::show(self.device, &frame, None, w.div_ceil(8))?;
+                let path = crate::host::expand_env(&p.save);
+                std::fs::write(&path, crate::resilience::pbm(w, h, &frame))?;
+                Ok(format!(
+                    "test frame {} ({w}x{h}) shown, saved to {path}",
+                    p.pattern
+                ))
+            }
+            Step::PanelFlood(f) => self.panel_flood(f),
+            Step::PanelRelease(_) => {
+                panel::release(self.device)?;
+                Ok("PANEL RELEASE sent".into())
             }
             Step::IdleCpu(i) => {
                 ensure!((1..=600).contains(&i.seconds), "seconds must be 1..=600");

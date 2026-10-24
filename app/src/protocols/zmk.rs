@@ -2,10 +2,10 @@ use super::layout_geometry::flattened_top_left_after_center_rotation;
 use super::zmk_rpc::{self, ZmkData, ZmkStudioSession, ZmkTransport};
 use super::{Key, KeyboardDefinition, KeyboardLayout, KeyboardProtocol, Reopener, WriteSupport};
 use crate::key_action::{KeyAction, KeymapSnapshot, LayerInfo};
-use digitalis::link::{Link, Subscription};
+use digitalis::link::{Event as LinkEvent, EventSubscription, Link};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::sync::mpsc::RecvTimeoutError;
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use zmk_studio_api::{BehaviorBindingParametersSet, BehaviorRole, ClientError, ResolvedLayer};
@@ -17,10 +17,19 @@ struct ZmkLayout {
     behavior_metadata: HashMap<BehaviorRole, Vec<BehaviorBindingParametersSet>>,
 }
 
+/// What the keyboard reader is woken for (#282): a report, or the link going away.
+enum Incoming {
+    Report([u8; digitalis::protocol::REPORT]),
+    Disconnected,
+}
+
 pub struct ZmkProtocol {
-    // Foxglove: reports come from the shared link instead of a HID handle of our own.
+    // Foxglove: reports come from the shared link instead of a HID handle of our own. The
+    // reader blocks on them; a disconnect wakes it with `Incoming::Disconnected`, so an idle
+    // keyboard costs no wakeups (#282). Dropping the protocol ends both taps.
     link: Arc<Link>,
-    reports: Subscription,
+    reports: Receiver<Incoming>,
+    _taps: (EventSubscription, EventSubscription),
     layout: Arc<ZmkLayout>,
     transport: ZmkTransport,
     session: Option<ZmkStudioSession>,
@@ -96,13 +105,25 @@ impl ZmkProtocol {
             link.reconnect();
         }
         // Subscribe before waiting, so reports sent while the link connects aren't missed.
-        let reports = link.subscribe(|_| true);
+        let (tx, reports) = mpsc::channel();
+        let report_tx = tx.clone();
+        let report_tap = link.subscribe_reports(move |_, r| {
+            let _ = report_tx.send(Incoming::Report(*r));
+        });
+        let state_tap = link.subscribe_events(move |event| {
+            if let LinkEvent::State(state) = event {
+                if state.connected.is_none() {
+                    let _ = tx.send(Incoming::Disconnected);
+                }
+            }
+        });
         link.wait_connected(Duration::from_secs(8))
             .map_err(|e| connect_error(e.to_string()))?;
 
         Ok(Self {
             link,
             reports,
+            _taps: (report_tap, state_tap),
             layout,
             transport,
             session: None,
@@ -170,14 +191,15 @@ impl KeyboardProtocol for ZmkProtocol {
     }
 
     fn hid_read(&self) -> Result<Vec<u8>, Box<dyn Error>> {
-        // Same contract as a 200 ms HID read: a report, nothing, or an error once the keyboard
+        // Blocks until a report or a disconnect (#282), and errors at once while the keyboard
         // is gone (the reader treats repeated errors as a lost connection and reopens).
-        match self.reports.recv_timeout(Duration::from_millis(200)) {
-            Ok(report) => Ok(report.to_vec()),
-            Err(RecvTimeoutError::Timeout) if self.link.state().connected.is_some() => {
-                Ok(Vec::new())
-            }
-            Err(_) => Err("HID read error: keyboard disconnected".into()),
+        let gone = || -> Result<Vec<u8>, Box<dyn Error>> { Err("HID read error: keyboard disconnected".into()) };
+        if self.link.state().connected.is_none() {
+            return gone();
+        }
+        match self.reports.recv() {
+            Ok(Incoming::Report(report)) => Ok(report.to_vec()),
+            Ok(Incoming::Disconnected) | Err(_) => gone(),
         }
     }
 

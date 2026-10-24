@@ -43,11 +43,22 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/rgb_underglow.h>
 #endif
 
-enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE, PANEL_SCREENS };
+// &rgb_ug commands from the PC whose right-half part goes over the relay (#266).
+#define RGB_UG_RELAYED                                                                             \
+    (IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE) && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) &&            \
+     DT_HAS_COMPAT_STATUS_OKAY(zmk_behavior_rgb_underglow))
+#if RGB_UG_RELAYED
+#include <dt-bindings/zmk/rgb.h>
+#define RGB_UG_NAME DEVICE_DT_NAME(DT_INST(0, zmk_behavior_rgb_underglow))
+#endif
+
+enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE, PANEL_SCREENS,
+       PANEL_ROWS_AT };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
-       SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B }; // 0x0A: LAMP_TEST (#115 branch)
+       SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B, // 0x0A: LAMP_TEST (#115 branch)
+       SETTING_ART_KEYS = 0x0D };                    // 0x0C: FRAME (#272 branch)
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -82,8 +93,10 @@ bool host_panel_get(uint8_t buf[HOST_PANEL_BYTES]) {
     return on;
 }
 
-#ifndef FOXGLOVE_HAS_WIDGETS
-// A board without our screen widgets (foxglove_link shield) has no panel to redraw.
+BUILD_ASSERT(HOST_PANEL_W % 8 == 0, "panel rows are whole bytes");
+
+#if !defined(FOXGLOVE_HAS_WIDGETS) && !defined(FOXGLOVE_HAS_PANEL)
+// A board without a panel drawer (status.c, foxglove_link/panel_lvgl.c) has nothing to redraw.
 void host_panel_redraw(void) {}
 #endif
 
@@ -195,6 +208,12 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
 #endif
     caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO | HOST_LINK_CAP_SCREENS;
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) && DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_art_step)
+    caps |= HOST_LINK_CAP_ART_KEYS;
+#endif
+    if (CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S == 0) {
+        caps |= HOST_LINK_CAP_PANEL_HOLD; // no keep-alive needed (#279)
+    }
     sys_put_le32(caps, &r[21]);
     sys_put_le16(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S, &r[25]);
     struct foxglove_build_info build;
@@ -247,6 +266,20 @@ static void panel_command(const uint8_t *d) {
         }
         k_spinlock_key_t key = k_spin_lock(&lock);
         memcpy(&back[y * HOST_PANEL_STRIDE], &d[4], n * HOST_PANEL_STRIDE);
+        k_spin_unlock(&lock, key);
+        break;
+    }
+    case PANEL_ROWS_AT: {
+        // Byte-addressed (#289): rows wider than a report, panels taller than 255 rows.
+        uint16_t y = sys_get_le16(&d[2]), offset = sys_get_le16(&d[4]);
+        uint8_t n = d[6];
+        size_t at = (size_t)y * HOST_PANEL_STRIDE + offset;
+        if (y >= HOST_PANEL_H || offset >= HOST_PANEL_STRIDE || n > REPORT_SIZE - 7 ||
+            at + n > HOST_PANEL_BYTES) {
+            break;
+        }
+        k_spinlock_key_t key = k_spin_lock(&lock);
+        memcpy(&back[at], &d[7], n);
         k_spin_unlock(&lock, key);
         break;
     }
@@ -359,6 +392,12 @@ static void invoke_press_cb(struct k_work *work) {
     };
     int ret = zmk_behavior_invoke_binding(&invoke_binding, invoke_event, true);
     invoke_reply(ret < 0 ? INVOKE_FAILED : INVOKE_OK, invoke_id);
+#if RGB_UG_RELAYED
+    if (strcmp(invoke_binding.behavior_dev, RGB_UG_NAME) == 0) {
+        art_relay_rgb_verify(); // went to the right through ZMK: read it back, then tell the PC
+        rgb_idle_check();       // and an on/off toggle should be saved as the user's
+    }
+#endif
     k_work_schedule(&invoke_release_work, K_MSEC(invoke_hold_ms));
 }
 static K_WORK_DEFINE(invoke_press_work, invoke_press_cb);
@@ -377,6 +416,24 @@ static uint8_t invoke(const uint8_t *d, int len) {
     if (foxglove_behavior_refused(name)) {
         return INVOKE_REFUSED;
     }
+#if RGB_UG_RELAYED
+    // The PC's colour (#266): set here at once and sent to the right as one acknowledged write,
+    // not through ZMK's split queue, which delays and drops under streaming. Not busy-gated: the
+    // newest colour wins.
+    if (strcmp(name, RGB_UG_NAME) == 0 &&
+        sys_get_le32(&d[2]) == RGB_COLOR_HSB_CMD) {
+        uint32_t hsb = sys_get_le32(&d[6]);
+        struct zmk_led_hsb color = {.h = hsb >> 16, .s = (hsb >> 8) & 0xff, .b = hsb & 0xff};
+        if (color.h > 359 || color.s > 100 || color.b > 100) {
+            return INVOKE_FAILED;
+        }
+        if (art_relay_rgb_hsb(color.h, color.s, color.b) == 0) {
+            zmk_rgb_underglow_set_hsb(color);
+            invoke_reply(INVOKE_OK, id); // the caller only replies to errors
+            return INVOKE_OK;
+        }
+    }
+#endif
     if (!atomic_cas(&invoke_busy, 0, 1)) {
         return INVOKE_BUSY;
     }
@@ -441,7 +498,29 @@ static void conn_state_event_cb(struct k_work *work) {
 }
 static K_WORK_DELAYABLE_DEFINE(conn_state_event_work, conn_state_event_cb);
 
+/* D7 0D ART_KEYS (#60): the app takes &art_next / &art_prev while subscribed */
+
+static atomic_t art_keys;
+
+int host_link_art_key(int8_t dir) {
+    if (!atomic_get(&art_keys)) {
+        return -ENOTCONN;
+    }
+    uint8_t r[4] = {HOST_LINK_SETTINGS, 0x80 | SETTING_ART_KEYS, 1, (uint8_t)dir};
+    reply(r, sizeof(r));
+    return 0;
+}
+
 static int conn_state_listener(const zmk_event_t *eh) {
+    // The PC side may be gone: the keys step the art on the board again until it subscribes anew.
+#if IS_ENABLED(CONFIG_ZMK_USB)
+    if (!zmk_usb_is_hid_ready()) {
+        atomic_set(&art_keys, 0);
+    }
+#endif
+    if (as_zmk_endpoint_changed(eh) != NULL) {
+        atomic_set(&art_keys, 0);
+    }
     if (atomic_get(&host_seen)) {
         k_work_reschedule(&conn_state_event_work, CONN_STATE_SETTLE);
     }
@@ -495,6 +574,20 @@ static void rgb_state_event_cb(struct k_work *work) {
 }
 static K_WORK_DELAYABLE_DEFINE(rgb_state_event_work, rgb_state_event_cb);
 
+// The right has followed (#266): the PC hears at once, with the right's colour as acknowledged.
+static void rgb_followed_cb(struct k_work *work) {
+    uint8_t r[RGB_STATE_SIZE];
+    rgb_state(r);
+    reply(r, sizeof(r));
+}
+static K_WORK_DEFINE(rgb_followed_work, rgb_followed_cb);
+
+void host_link_rgb_right_followed(void) {
+    if (atomic_get(&host_seen)) {
+        k_work_submit(&rgb_followed_work);
+    }
+}
+
 void host_link_rgb_changed(void) {
     if (atomic_get(&host_seen)) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
@@ -511,10 +604,16 @@ static void settings_command(const uint8_t *d, int len) {
         return;
     }
     switch (d[1]) {
+    case SETTING_ART_KEYS: {
+        atomic_set(&art_keys, len >= 3 && d[2] != 0);
+        uint8_t r[4] = {HOST_LINK_SETTINGS, 0x80 | SETTING_ART_KEYS, 0, atomic_get(&art_keys)};
+        reply(r, sizeof(r));
+        break;
+    }
     case SETTING_GUARD_TEST: {
         uint8_t r[3] = {HOST_LINK_SETTINGS, 0x80 | SETTING_GUARD_TEST, 4};
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS) && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
-        int err = art_relay_guard_test();
+        int err = art_relay_guard_test(len >= 4 ? sys_get_le16(&d[2]) : 2000);
         r[2] = err == 0 ? 0 : err == -ENOTCONN ? 2 : 4;
 #endif
         reply(r, sizeof(r));

@@ -12,13 +12,30 @@ Firmware and desktop tooling for an Eyelash Peripherals Corne (ZMK v0.3, nice!na
 - **App**: the Foxglove tray app in `app/`, the layer overlay from
   [KeyPeek](https://github.com/srwi/keypeek) by Stephan Rumswinkel, absorbed and growing the screen
   panel and art features ([docs/proposal.md](docs/proposal.md),
-  [keeping up with KeyPeek](docs/keypeek-sync.md)). `crates/` holds `digitalis` and the
-  standalone hostpanel.
+  [keeping up with KeyPeek](docs/keypeek-sync.md)). `crates/` holds `digitalis`, the plugin
+  crates and `foxglove-cli`; `hostpanel` is kept only for a few CLI commands (its tray is retired).
 
 The name: Digitalis, "of the finger", is the Latin name the botanist Leonhart Fuchs gave the
 foxglove in 1542.
 
 **This board is not foostan's Corne.** Standard `corne` firmware does not work on it.
+
+## Getting started
+
+1. **Install the app:** download `foxglove-x64.msi` from
+   [Releases](https://github.com/BanditF/foxglove/releases) and run it. The installer isn't
+   signed yet, so Windows SmartScreen warns you: click **More info**, then **Run anyway**.
+2. **Connect:** plug the keyboard's **left** half in by USB. In the fox tray icon, choose
+   **Settings... → Connection**, pick the keyboard and click **Connect**. To add Bluetooth,
+   pair "Eyelash Corne" in Windows' Bluetooth settings.
+3. **Learn the layers:** hold a middle thumb for NUMBER or SYMBOL, or both for FUNCTION. Add Tab
+   to both for SYSTEM (Bluetooth profiles on Q-T). See [docs/layers.md](docs/layers.md).
+4. **Types on the cable but not on Bluetooth?** It's on another device's Bluetooth profile.
+   Hold SYSTEM and tap Q for profile 1 (W-T for 2-5); the filled box on the left screen shows
+   the active profile.
+
+The [user guide](docs/user-guide.md) covers the screens, every Settings section, profiles,
+plugins and updating the firmware.
 
 ## Layout
 
@@ -30,7 +47,7 @@ foxglove in 1542.
 | `scripts/flipper_art.py` | builds the right-hand art (`custom_art.c`, or a `.bin` blob to push) |
 | `keymap-drawer/` | keymap diagram, redrawn by CI |
 | `app/` | the Foxglove app (KeyPeek absorbed; own Cargo workspace): `cargo run --manifest-path app/Cargo.toml` |
-| `crates/` | `digitalis` (the PC end of the link) and `hostpanel` (screens tray app/CLI) |
+| `crates/` | `digitalis` (the PC end of the link), `foxglove-cli`, the plugin crates, and `hostpanel` (retired tray; CLI for push-art/select/preview) |
 | `scripts/check.ps1` | lint and tests for `crates/` and `app/`: run it before pushing desktop changes |
 | `docs/` | design notes; [`docs/upstream/`](docs/upstream/README_EN.md) has the vendor's original README |
 

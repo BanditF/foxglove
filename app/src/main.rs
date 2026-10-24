@@ -42,8 +42,15 @@ fn main() {
     foxglove::accent::start();
     foxglove::wallpaper::start();
     foxglove::api::start();
+    foxglove::keyboard_facts::start();
     foxglove::via_host::start();
+    foxglove::plugin_install::autoinstall();
     foxglove::plugin_runner::sync();
+    foxglove::plugin_actions::start();
+    foxglove::plugin_settings::start();
+    foxglove::app_windows::start();
+    foxglove::mic_broker::start();
+    foxglove::catalog_refresh::start();
     foxglove::identity::start();
     foxglove::startup::finish(platform::run(settings, available_devices))
 }

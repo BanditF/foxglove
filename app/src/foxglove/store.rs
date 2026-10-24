@@ -21,10 +21,18 @@ pub const SCHEMA: i64 = 1;
 
 static LOCK: Mutex<()> = Mutex::new(());
 
-/// `%APPDATA%\Foxglove\foxglove.toml` (the folder above KeyPeek's `config`).
+/// `%APPDATA%\Foxglove\foxglove.toml` (the folder above KeyPeek's `config`), or inside
+/// `FOXGLOVE_CONFIG_DIR` when that's set, so a test run never shares or touches a store
+/// outside its own folder.
 pub fn path() -> Option<PathBuf> {
-    let settings = crate::settings::Settings::config_file_path()?;
-    Some(settings.parent()?.parent()?.join("foxglove.toml"))
+    path_for(std::env::var_os("FOXGLOVE_CONFIG_DIR").map(PathBuf::from), crate::settings::Settings::config_file_path())
+}
+
+fn path_for(config_dir: Option<PathBuf>, settings_ini: Option<PathBuf>) -> Option<PathBuf> {
+    match config_dir {
+        Some(dir) => Some(dir.join("foxglove.toml")),
+        None => Some(settings_ini?.parent()?.parent()?.join("foxglove.toml")),
+    }
 }
 
 /// Sections renamed since they shipped (#87): the old name is read as the new one, and the next
@@ -474,6 +482,17 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("schema = 1"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn store_stays_inside_the_config_dir() {
+        let tmp = std::env::temp_dir().join("foxglove-run-1");
+        assert_eq!(path_for(Some(tmp.clone()), Some(tmp.join("settings.ini"))), Some(tmp.join("foxglove.toml")));
+        // Built with joins, so the paths are real ones on Linux too (CI).
+        let foxglove = PathBuf::from(if cfg!(windows) { r"C:\Users\u\AppData\Roaming" } else { "/home/u/.config" }).join("Foxglove");
+        let real = foxglove.join("config").join("settings.ini");
+        assert_eq!(path_for(None, Some(real)), Some(foxglove.join("foxglove.toml")));
+        assert_eq!(path_for(None, None), None);
     }
 
     #[test]

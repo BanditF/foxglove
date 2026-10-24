@@ -14,6 +14,7 @@ pub mod definition;
 pub mod device;
 #[cfg(feature = "hid")]
 pub mod hid;
+pub mod location;
 pub mod protocol;
 
 pub use definition::Definition;

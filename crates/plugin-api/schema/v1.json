@@ -1,6 +1,107 @@
 {
-  "api": "1.1",
+  "api": "1.3",
   "methods": {
+    "action.invoked": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event: the user pressed the key bound to one of the plugin's actions (`[[actions]]` in\n`plugin.toml`); sent only to that plugin (API 1.2).",
+        "properties": {
+          "action": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "title": "ActionInvoked",
+        "type": "object"
+      }
+    },
+    "app.window.appeared": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A watched program's visible top-level windows: the answer to `apps.watch` (how many are open\nnow), and the `app.window.appeared` and `app.window.closed` events (how many are open after\nit). `open` 0 after a close means the app has probably quit (API 1.3).",
+        "properties": {
+          "exe": {
+            "type": "string"
+          },
+          "open": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exe",
+          "open"
+        ],
+        "title": "AppWindows",
+        "type": "object"
+      }
+    },
+    "app.window.closed": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A watched program's visible top-level windows: the answer to `apps.watch` (how many are open\nnow), and the `app.window.appeared` and `app.window.closed` events (how many are open after\nit). `open` 0 after a close means the app has probably quit (API 1.3).",
+        "properties": {
+          "exe": {
+            "type": "string"
+          },
+          "open": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exe",
+          "open"
+        ],
+        "title": "AppWindows",
+        "type": "object"
+      }
+    },
+    "apps.watch": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Asks to be told when a program's windows open and close (`apps.watch:<exe>`, API 1.3).",
+        "properties": {
+          "exe": {
+            "description": "The program's file name, such as `obs64.exe`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "exe"
+        ],
+        "title": "AppsWatchParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A watched program's visible top-level windows: the answer to `apps.watch` (how many are open\nnow), and the `app.window.appeared` and `app.window.closed` events (how many are open after\nit). `open` 0 after a close means the app has probably quit (API 1.3).",
+        "properties": {
+          "exe": {
+            "type": "string"
+          },
+          "open": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "exe",
+          "open"
+        ],
+        "title": "AppWindows",
+        "type": "object"
+      }
+    },
     "art.select": {
       "kind": "call",
       "params": {
@@ -165,6 +266,29 @@
           "flash_slots"
         ],
         "title": "ArtStatus",
+        "type": "object"
+      }
+    },
+    "audio.inputs.set_mute": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Mutes or unmutes the default communications microphone (#237, API 1.2).",
+        "properties": {
+          "muted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "muted"
+        ],
+        "title": "SetMuteParams",
+        "type": "object"
+      },
+      "permission": "audio.inputs.mute",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
         "type": "object"
       }
     },
@@ -846,6 +970,130 @@
       },
       "permission": "key.events"
     },
+    "lighting.lease": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "Hsb": {
+            "properties": {
+              "brightness": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hue": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "saturation": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "hue",
+              "saturation",
+              "brightness"
+            ],
+            "type": "object"
+          },
+          "LeasePriority": {
+            "description": "How much a lease matters against others on the same lights (#236).",
+            "oneOf": [
+              {
+                "enum": [
+                  "normal"
+                ],
+                "type": "string"
+              },
+              {
+                "const": "low",
+                "description": "Ambient light (a colour sync).",
+                "type": "string"
+              },
+              {
+                "const": "high",
+                "description": "Alerts (the microphone is muted).",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Holds a device's lights at a colour until released (#236, API 1.2). The highest-priority\nlease shows, the newest among equals; when the last one ends the lights go back as they were.\nA plugin's leases end with its connection.",
+        "properties": {
+          "color": {
+            "$ref": "#/$defs/Hsb"
+          },
+          "device": {
+            "type": "string"
+          },
+          "effect": {
+            "default": null,
+            "description": "The effect while leased; the static colour (`\"0\"`) if absent.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "priority": {
+            "$ref": "#/$defs/LeasePriority",
+            "default": "normal"
+          }
+        },
+        "required": [
+          "device",
+          "color"
+        ],
+        "title": "LeaseParams",
+        "type": "object"
+      },
+      "permission": "lighting.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "lease": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lease"
+        ],
+        "title": "Lease",
+        "type": "object"
+      }
+    },
+    "lighting.release": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "lease": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lease"
+        ],
+        "title": "Lease",
+        "type": "object"
+      },
+      "permission": "lighting.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
     "lighting.set": {
       "kind": "call",
       "params": {
@@ -970,6 +1218,11 @@
             "minimum": 0,
             "type": "integer"
           },
+          "settled": {
+            "default": true,
+            "description": "Every part of the device shows this; false while a split keyboard's other half is still\ncatching up (it can lag seconds). Older apps don't send it: then true.",
+            "type": "boolean"
+          },
           "speed": {
             "format": "uint8",
             "maximum": 255,
@@ -986,6 +1239,271 @@
           "speed"
         ],
         "title": "LightingState",
+        "type": "object"
+      }
+    },
+    "lighting.update": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "Hsb": {
+            "properties": {
+              "brightness": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "hue": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "saturation": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "hue",
+              "saturation",
+              "brightness"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Changes a held lease's colour (and effect) in place, for a stream of colours (a colour sync)\nwithout taking a new lease each time (API 1.3).",
+        "properties": {
+          "color": {
+            "$ref": "#/$defs/Hsb"
+          },
+          "effect": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lease": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "lease",
+          "color"
+        ],
+        "title": "LeaseUpdate",
+        "type": "object"
+      },
+      "permission": "lighting.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "net.accepted": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event: a listener (`tcp-listen`) accepted a connection, which is the new `stream` (API 1.3).",
+        "properties": {
+          "from": {
+            "description": "The other side's address (always on this PC).",
+            "type": "string"
+          },
+          "listener": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "listener",
+          "stream",
+          "from"
+        ],
+        "title": "NetAccepted",
+        "type": "object"
+      }
+    },
+    "net.close": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream"
+        ],
+        "title": "NetStream",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "net.closed": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event: a stream ended (the other side closed it, or an error).",
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream",
+          "reason"
+        ],
+        "title": "NetClosed",
+        "type": "object"
+      }
+    },
+    "net.data": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Event: bytes arrived on a stream (base64); `from` is the sender for `udp`.",
+        "properties": {
+          "data": {
+            "type": "string"
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream",
+          "data"
+        ],
+        "title": "NetData",
+        "type": "object"
+      }
+    },
+    "net.open": {
+      "kind": "call",
+      "params": {
+        "$defs": {
+          "NetKind": {
+            "description": "The kind of connection `net.open` makes (API 1.2).",
+            "oneOf": [
+              {
+                "const": "tcp",
+                "description": "A TCP connection to `host`:`port`; needs a `net.connect` permission covering it.",
+                "type": "string"
+              },
+              {
+                "const": "udp",
+                "description": "Datagrams sent to 127.0.0.1:`port`; needs `net.listen:udp:127.0.0.1:<port>`.",
+                "type": "string"
+              },
+              {
+                "const": "tcp-listen",
+                "description": "Accepts TCP connections on 127.0.0.1:`port` (API 1.3); needs\n`net.listen:tcp:127.0.0.1:<port>`. Each connection arrives as `net.accepted` with its own\nstream, then `net.data` and `net.closed` like any other; closing the listener's stream\nstops accepting.",
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Opens a connection through Foxglove: the plugin stays sandboxed and only reaches what its\npermissions name (API 1.2).",
+        "properties": {
+          "host": {
+            "description": "For `udp`, only `127.0.0.1`.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/$defs/NetKind"
+          },
+          "port": {
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind",
+          "host",
+          "port"
+        ],
+        "title": "NetOpenParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream"
+        ],
+        "title": "NetStream",
+        "type": "object"
+      }
+    },
+    "net.send": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "data": {
+            "description": "Bytes, base64.",
+            "type": "string"
+          },
+          "stream": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stream",
+          "data"
+        ],
+        "title": "NetSendParams",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
         "type": "object"
       }
     },
@@ -1078,7 +1596,7 @@
       "kind": "call",
       "params": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "description": "Draws over the left panel until `ttl_ms` passes (at most 60 000), then the panel goes back\nto what Foxglove draws. A later override replaces an earlier one.",
+        "description": "Draws over the left panel until `ttl_ms` passes (at most 60 000), then the panel goes back\nto what Foxglove draws. `ttl_ms` 0 holds it until the plugin replaces it, releases it\n(`screens.panel_release`) or its connection closes (API 1.3), so a steady screen needs no\nre-sending (#281). A later override replaces an earlier one.",
         "properties": {
           "bitmap": {
             "description": "1 bit per pixel, rows MSB first, padded to whole bytes, 1 = ink; base64.",
@@ -1119,6 +1637,131 @@
       "result": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Empty",
+        "type": "object"
+      }
+    },
+    "screens.panel_release": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "DeviceParams",
+        "type": "object"
+      },
+      "permission": "screens.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "secrets.get": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "One of the plugin's own secrets (#213, API 1.2).",
+        "properties": {
+          "name": {
+            "description": "1-64 of a-z, 0-9, - _ .",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "SecretName",
+        "type": "object"
+      },
+      "permission": "secrets",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "value": {
+            "description": "`null` when it isn't set.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "SecretValue",
+        "type": "object"
+      }
+    },
+    "secrets.set": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Saves a secret (`null` removes it); at most 2048 bytes.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "SetSecretParams",
+        "type": "object"
+      },
+      "permission": "secrets",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      }
+    },
+    "settings.changed": {
+      "kind": "event",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A plugin's settings (`[[settings]]` in `plugin.toml`): the answer to `settings.get` and the\n`settings.changed` event, every setting with its current value (API 1.3).",
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "title": "SettingValues",
+        "type": "object"
+      }
+    },
+    "settings.get": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A plugin's settings (`[[settings]]` in `plugin.toml`): the answer to `settings.get` and the\n`settings.changed` event, every setting with its current value (API 1.3).",
+        "properties": {
+          "values": {
+            "additionalProperties": true,
+            "type": "object"
+          }
+        },
+        "required": [
+          "values"
+        ],
+        "title": "SettingValues",
         "type": "object"
       }
     }

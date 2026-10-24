@@ -3,31 +3,81 @@
   "version": 1,
   "plugins": [
     {
+      "id": "org.foxglove.focus-timer",
+      "name": "Pomodoro",
+      "description": "A focus timer on the left screen and the underglow: focus, short rests and a long rest every four rounds, with keys to pause and restart.",
+      "permissions": [
+        "devices.read",
+        "lighting.write",
+        "screens.write",
+        "facts.write:focus.*"
+      ]
+    },
+    {
+      "id": "org.foxglove.mic-mute",
+      "name": "Mic mute",
+      "description": "Shows whether your microphone is muted, red on the keyboard and MUTED on the left screen, and mutes or unmutes it from a key.",
+      "permissions": [
+        "audio.inputs.read",
+        "audio.inputs.mute",
+        "devices.read",
+        "lighting.write",
+        "screens.write"
+      ]
+    },
+    {
+      "id": "org.foxglove.broadcast-status",
+      "name": "Broadcast Status",
+      "description": "Shows whether OBS is recording or streaming, REC or LIVE and the scene on the left screen and red on the keyboard. It only listens to OBS on this PC.",
+      "permissions": [
+        "net.connect:127.0.0.1:4455",
+        "apps.watch:obs64.exe",
+        "secrets",
+        "facts.write:broadcast.*",
+        "devices.read",
+        "lighting.write",
+        "screens.write"
+      ]
+    },
+    {
       "id": "org.foxglove.signalrgb",
       "name": "SignalRGB",
       "description": "Lets SignalRGB light your Foxglove keyboard along with the rest of your setup.",
-      "permissions": ["devices.read", "lighting.write"],
+      "permissions": [
+        "devices.read",
+        "lighting.write"
+      ],
       "vendor": "SignalRGB"
     },
     {
       "id": "org.foxglove.openrgb",
       "name": "OpenRGB",
       "description": "Receives OpenRGB's E1.31 output and shows it on your keyboard.",
-      "permissions": ["devices.read", "lighting.write", "net"],
+      "permissions": [
+        "devices.read",
+        "lighting.write",
+        "net.listen:udp:127.0.0.1:5568"
+      ],
       "vendor": "OpenRGB"
     },
     {
       "id": "org.foxglove.icue",
       "name": "Corsair iCUE",
       "description": "Mirrors iCUE's lighting onto your keyboard.",
-      "permissions": ["devices.read", "lighting.write"],
+      "permissions": [
+        "devices.read",
+        "lighting.write"
+      ],
       "vendor": "Corsair"
     },
     {
       "id": "org.foxglove.lightsync",
       "name": "Logitech LIGHTSYNC",
       "description": "Mirrors G HUB's lighting onto your keyboard.",
-      "permissions": ["devices.read", "lighting.write"],
+      "permissions": [
+        "devices.read",
+        "lighting.write"
+      ],
       "vendor": "Logitech"
     }
   ]

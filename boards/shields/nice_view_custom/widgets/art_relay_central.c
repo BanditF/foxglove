@@ -717,6 +717,33 @@ int art_relay_select(int8_t set) {
     return 0;
 }
 
+void art_relay_step(int dir) {
+    if (art_relay_link() < 2 || right_read_at == 0) {
+        return;
+    }
+    int8_t ids[INT8_MAX];
+    int total = 0;
+    for (int i = 0; i < right.set_count && total < (int)ARRAY_SIZE(ids); i++) {
+        ids[total++] = i;
+    }
+    uint8_t used = right.version >= 3 ? right.flash_used : 0;
+    for (int n = 0; n < 8 && right.set_count + n < INT8_MAX; n++) {
+        if (used & BIT(n)) {
+            ids[total++] = right.set_count + n;
+        }
+    }
+    if (total == 0) {
+        return;
+    }
+    int at = dir > 0 ? -1 : 0; // a pushed set (-1) isn't in the list: start at either end
+    for (int i = 0; i < total; i++) {
+        if (ids[i] == right.set) {
+            at = i;
+        }
+    }
+    art_relay_select(ids[((at + dir) % total + total) % total]);
+}
+
 void art_relay_discovery(int8_t *result, uint8_t *tries) {
     // DONE only with the handles in hand, on the link we have now.
     *result = discovery == ART_DISCOVERY_DONE && !(data_handle && status_handle)
@@ -745,7 +772,7 @@ static void guard_cb(struct k_work *work) {
     if (conn == NULL) {
         return;
     }
-    bool forced = atomic_cas(&guard_forced, 1, 0);
+    bool forced = atomic_cas(&guard_forced, 1, 0); // D7 0B: from guard_test_q, the same work
     if (still_connected(conn) && (bt_conn_get_security(conn) < BT_SECURITY_L2 || forced)) {
         if (guard_in_row < GUARD_MAX_IN_ROW) {
             guard_in_row++;
@@ -774,22 +801,44 @@ static void guard_cancel(bool encrypted) {
 
 uint8_t art_relay_guard_drops(void) { return guard_drops; }
 
-int art_relay_guard_test(void) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+FOXGLOVE_TEST_HOOK_MARK(guard_test);
+#endif
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+// Its own queue (dev builds only): on relay_q the drop would wait behind the very relay job a
+// test wants to cut, and the system queue mustn't wait for bt_conn_disconnect.
+K_THREAD_STACK_DEFINE(guard_test_stack, 768);
+static struct k_work_q guard_test_q;
+static atomic_t guard_test_q_started;
+
+static void guard_test_cb(struct k_work *work) {
+    atomic_set(&guard_forced, 1);
+    guard_cb(work);
+}
+static K_WORK_DELAYABLE_DEFINE(guard_test_work, guard_test_cb);
+#endif
+
+int art_relay_guard_test(uint16_t delay_ms) {
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
     if (peer == NULL) {
         return -ENOTCONN;
     }
     // The real recovery path (drop, ZMK reconnects) on a link that's actually fine; a genuine
-    // stuck-before-encryption link can't be made on purpose without deleting the bond.
-    atomic_set(&guard_forced, 1);
-    k_work_reschedule_for_queue(&relay_q, &guard_work, K_SECONDS(2));
+    // stuck-before-encryption link can't be made on purpose without deleting the bond. Started
+    // on first use, so nothing runs at boot.
+    if (atomic_cas(&guard_test_q_started, 0, 1)) {
+        k_work_queue_start(&guard_test_q, guard_test_stack, K_THREAD_STACK_SIZEOF(guard_test_stack),
+                           K_LOWEST_APPLICATION_THREAD_PRIO, NULL);
+    }
+    k_work_reschedule_for_queue(&guard_test_q, &guard_test_work, K_MSEC(delay_ms));
     return 0;
 #else
     return -ENOTSUP;
 #endif
 }
 #else
-int art_relay_guard_test(void) { return -ENOTSUP; }
+int art_relay_guard_test(uint16_t delay_ms) { return -ENOTSUP; }
 static void guard_arm(void) {}
 static void guard_cancel(bool encrypted) {}
 uint8_t art_relay_guard_drops(void) { return 0; }
@@ -852,14 +901,13 @@ SYS_INIT(art_relay_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
 // Right after the link comes up, ZMK's own setup traffic goes first.
 #define RGB_SETTLE K_MSEC(100)
-// While active, check now and then.
-#define RGB_POLL K_SECONDS(5)
 // A send that failed is retried this often, idle or not, up to RGB_RETRIES times per change.
 #define RGB_RETRY K_SECONDS(1)
 #define RGB_RETRIES 10
 
 static int16_t rgb_sent = -1; // last on | follow << 1 the right half confirmed, -1 = unknown
 static uint8_t rgb_retries;
+static atomic_t hsb_sent = ATOMIC_INIT(-1); // the PC colour the right last acknowledged (#266)
 
 static void rgb_sync_cb(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -893,15 +941,14 @@ static void rgb_sync_cb(struct k_work *work) {
     if (synced) {
         rgb_retries = 0;
     }
-    if (zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE) {
-        k_work_schedule_for_queue(&relay_q, dwork, RGB_POLL);
-    }
+    // Nothing else to do until the next change (art_relay_rgb_kick) or link-up (#280).
 }
 static K_WORK_DELAYABLE_DEFINE(rgb_sync_work, rgb_sync_cb);
 
 static void rgb_sync_link_up(void) {
     rgb_sent = -1;
     rgb_retries = 0;
+    atomic_set(&hsb_sent, -1); // a new link: the right may have rebooted
     k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, RGB_SETTLE);
 }
 
@@ -911,7 +958,103 @@ void art_relay_rgb_kick(void) {
         k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, K_NO_WAIT);
     }
 }
+
+/* The PC's colour (#266). &rgb_ug RGB_COLOR_HSB through ZMK's split queue reached the right
+ * seconds late or not at all under streaming (that queue drops its oldest entry when full, and
+ * the PC only saw the right through the next status read). This sends the newest colour as one
+ * write request instead: the write response is the right's ack, the PC's RGB_STATE takes the
+ * right's colour from it, and a value that changes while one is in flight goes next (last wins). */
+
+#define HSB_RETRY K_MSEC(100)
+#define HSB_BUSY_RETRY K_MSEC(20) // another request on the relay (a status read) is in flight
+#define HSB_RETRIES 5
+// The request in the way ends with its answer or GATT_TIMEOUT (3 s); this many waits is past that.
+#define BUSY_WAITS 160
+#define RGB_VERIFY_AFTER K_MSEC(300) // ZMK's split write, then the right's next underglow tick
+
+static atomic_t hsb_want = ATOMIC_INIT(-1); // hue << 16 | saturation << 8 | brightness, -1 none
+static uint8_t hsb_retries, hsb_busy, verify_busy;
+
+static void hsb_cb(struct k_work *work) {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    atomic_val_t want = atomic_get(&hsb_want);
+    if (want < 0 || want == atomic_get(&hsb_sent)) {
+        return;
+    }
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        return; // link gone: rgb_sync_link_up starts over, the PC re-sends on its own
+    }
+    uint8_t buf[5] = {ART_RELAY_RGB_HSB};
+    sys_put_le16(want >> 16, &buf[1]);
+    buf[3] = (want >> 8) & 0xff;
+    buf[4] = want & 0xff;
+    int err = write_req(conn, buf, sizeof(buf));
+    bt_conn_unref(conn);
+    if (err == -EBUSY && hsb_busy++ < BUSY_WAITS) {
+        k_work_reschedule_for_queue(&relay_q, dwork, HSB_BUSY_RETRY);
+        return;
+    }
+    hsb_busy = 0;
+    if (err) {
+        if (hsb_retries++ < HSB_RETRIES) {
+            k_work_reschedule_for_queue(&relay_q, dwork, HSB_RETRY);
+        }
+        return;
+    }
+    hsb_retries = 0;
+    atomic_set(&hsb_sent, want);
+    // The ack says the right has it: that's the right's colour now, for RGB_STATE.
+    right.rgb.hue = want >> 16;
+    right.rgb.saturation = (want >> 8) & 0xff;
+    right.rgb.brightness = want & 0xff;
+    right_read_at = k_uptime_get();
+    if (atomic_get(&hsb_want) != want) {
+        k_work_reschedule_for_queue(&relay_q, dwork, K_NO_WAIT); // a newer one came meanwhile
+    } else {
+        host_link_rgb_right_followed();
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(hsb_work, hsb_cb);
+
+int art_relay_rgb_hsb(uint16_t hue, uint8_t saturation, uint8_t brightness) {
+    if (art_relay_link() < 2 || right_read_at == 0 || right.version < 5) {
+        return -ENOTSUP;
+    }
+    atomic_set(&hsb_want, (atomic_val_t)hue << 16 | saturation << 8 | brightness);
+    hsb_retries = 0;
+    hsb_busy = 0;
+    k_work_reschedule_for_queue(&relay_q, &hsb_work, K_NO_WAIT);
+    return 0;
+}
+
+static void verify_cb(struct k_work *work) {
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        return;
+    }
+    int err = read_status(conn);
+    bt_conn_unref(conn);
+    if (err == -EBUSY && verify_busy++ < BUSY_WAITS) {
+        k_work_reschedule_for_queue(&relay_q, k_work_delayable_from_work(work), HSB_BUSY_RETRY);
+        return;
+    }
+    verify_busy = 0;
+    if (!err) {
+        host_link_rgb_right_followed();
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(verify_work, verify_cb);
+
+void art_relay_rgb_verify(void) {
+    if (art_relay_link() == 2) {
+        verify_busy = 0;
+        k_work_reschedule_for_queue(&relay_q, &verify_work, RGB_VERIFY_AFTER);
+    }
+}
 #else
 static void rgb_sync_link_up(void) {}
 void art_relay_rgb_kick(void) {}
+int art_relay_rgb_hsb(uint16_t hue, uint8_t saturation, uint8_t brightness) { return -ENOTSUP; }
+void art_relay_rgb_verify(void) {}
 #endif

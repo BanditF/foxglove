@@ -17,11 +17,6 @@ pub fn bus() -> &'static EventBus {
     BUS.get_or_init(EventBus::default)
 }
 
-/// The device found so far, without blocking or discovery.
-pub fn cached() -> Option<Arc<DigitalisDevice>> {
-    DEVICE.try_lock().ok()?.clone()
-}
-
 /// The keyboard with Foxglove's host link, found once and kept while it stays connected. May
 /// block on discovery: call it off the UI thread.
 pub fn device() -> Option<Arc<DigitalisDevice>> {
@@ -29,7 +24,9 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
     if let Some(d) = cached.as_ref().filter(|d| d.link().state().connected.is_some()) {
         return Some(d.clone());
     }
+    let mut found = None;
     *cached = super::link::host_keyboard().map(|((vid, pid), link, hello)| {
+        found = Some((vid, pid));
         let backend = BackendId("zmk".into());
         let product = link.state().connected.map(|c| c.product).unwrap_or_default();
         let id = DeviceId::new(backend.clone(), vid, pid, None, &format!("{vid:04x}:{pid:04x}"));
@@ -46,7 +43,14 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
         device.set_underglow(underglow);
         device
     });
-    cached.clone()
+    let out = cached.clone();
+    drop(cached);
+    // Nothing learned from the keymap yet (the overlay hasn't opened it): use the cached one,
+    // so plugins can change the lights without the UI. Outside the lock: learning sets it.
+    if let Some((vid, pid)) = found {
+        super::keyboard_actions::learn_cached(vid, pid);
+    }
+    out
 }
 
 /// The current device's connection generation, without blocking or discovery (for the UI).

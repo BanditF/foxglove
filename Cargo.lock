@@ -543,6 +543,7 @@ dependencies = [
 name = "foxglove-plugin"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "foxglove-plugin-api",
  "serde",
  "serde_json",
@@ -600,6 +601,7 @@ dependencies = [
  "hidapi",
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1334,10 +1336,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
+name = "plugin-broadcast-status"
+version = "1.0.0"
+dependencies = [
+ "base64",
+ "foxglove-devices",
+ "foxglove-plugin",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "plugin-focus-timer"
 version = "1.0.0"
 dependencies = [
+ "base64",
+ "foxglove-devices",
  "foxglove-plugin",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "plugin-mic-mute"
+version = "1.0.0"
+dependencies = [
+ "base64",
+ "foxglove-devices",
+ "foxglove-plugin",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1349,6 +1384,16 @@ dependencies = [
  "foxglove-plugin-api",
  "foxglove-plugin-host",
  "serde_json",
+]
+
+[[package]]
+name = "plugin-sandbox-probe"
+version = "0.0.0"
+dependencies = [
+ "foxglove-devices",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
+ "windows",
 ]
 
 [[package]]
