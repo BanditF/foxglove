@@ -1,0 +1,24 @@
+[package]
+name = "foxglove-lab"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Hardware-in-the-loop test runner for Foxglove"
+
+[dependencies]
+anyhow = "1"
+digitalis = { path = "../digitalis" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+clap = { version = "4", features = ["derive"] }
+chrono = "0.4"
+prost = "0.14"
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_System_Console", "Win32_System_LibraryLoader", "Win32_Security", "Win32_UI_WindowsAndMessaging", "Win32_Graphics_Gdi"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

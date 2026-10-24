@@ -43,6 +43,15 @@ fn band_text(p: &mut Panel, font: &'static MonoFont, s: &str, y: i32, ink: Binar
     Text::with_baseline(s, Point::new(x + tw + gap, y), style, Baseline::Top).draw(p).ok();
 }
 
+/// Only visible overflowing text needs animation frames.
+pub fn animated(v: &View, width: usize) -> bool {
+    let over = |font, text: &str| text_width(font, text) > width as i32;
+    v.title.as_deref().is_some_and(|s| over(&FONT_5X8, s))
+        || (v.title.is_some() && v.hint.is_none()
+            && v.artist.as_deref().is_some_and(|s| over(&FONT_4X6, s)))
+        || v.hint.as_deref().is_some_and(|s| over(&FONT_5X8, s))
+}
+
 pub fn draw(p: &mut Panel, v: &View, tick: u32) {
     p.clear();
     let on = BinaryColor::On;
@@ -103,6 +112,24 @@ pub fn draw(p: &mut Panel, v: &View, tick: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_visible_overflowing_bands_animate() {
+        let mut v = View { time: "12:34".into(), date: "Fri 23 Oct".into(), ..View::default() };
+        assert!(!animated(&v, 64));
+        v.artist = Some("An artist with a very long name".into());
+        assert!(!animated(&v, 64)); // artist is hidden without a title
+        v.title = Some("Short".into());
+        assert!(animated(&v, 64));
+        v.hint = Some("Hint".into());
+        assert!(!animated(&v, 64)); // hint replaces artist
+        v.title = Some("A title that needs to scroll".into());
+        assert!(animated(&v, 64));
+        v.title = None;
+        v.hint = Some("A hint that needs to scroll".into());
+        assert!(animated(&v, 64));
+        assert!(!animated(&v, 256));
+    }
 
     #[test]
     fn draws_inside_the_panel() {
