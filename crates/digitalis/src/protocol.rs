@@ -65,6 +65,9 @@ pub mod settings {
     /// Both halves' underglow state.
     pub const RGB_STATE: u8 = 0x03;
     pub const CONN_STATE: u8 = 0x04;
+    /// Two-step reboot into the UF2 bootloader (#111): ARM returns a nonce, TRIGGER(half,
+    /// nonce) within 5 s acts on it.
+    pub const BOOTLOADER: u8 = 0x08;
     /// A half's firmware version, profile and git SHA (firmware #133).
     pub const BUILD_INFO: u8 = 0x09;
     /// The longest hold INVOKE accepts.
@@ -605,6 +608,25 @@ mod tests {
 
 /// HELLO capability for connection state queries.
 pub const CAP_CONN_STATE: u32 = capabilities::CONN_STATE;
+
+// BOOTLOADER layout (host_link.h, #111):
+//   ARM      D7 08 00                    -> D7 88 status nonce u32 LE
+//   TRIGGER  D7 08 01 half nonce u32 LE  -> D7 88 status half
+// status: 0 ok, 2 no relay link (right), 3 relay timeout, 4 not built in, 5 bad request,
+// 6 wrong/expired nonce. The left reboots ~300 ms after its TRIGGER reply.
+pub const BOOTLOADER_ARM: u8 = 0x00;
+pub const BOOTLOADER_TRIGGER: u8 = 0x01;
+
+pub fn bootloader_arm() -> Vec<u8> {
+    vec![SETTINGS, settings::BOOTLOADER, BOOTLOADER_ARM]
+}
+
+/// `half`: 0 left, 1 right.
+pub fn bootloader_trigger(half: u8, nonce: u32) -> Vec<u8> {
+    let mut r = vec![SETTINGS, settings::BOOTLOADER, BOOTLOADER_TRIGGER, half];
+    r.extend_from_slice(&nonce.to_le_bytes());
+    r
+}
 
 pub fn conn_state() -> Vec<u8> {
     vec![SETTINGS, settings::CONN_STATE]

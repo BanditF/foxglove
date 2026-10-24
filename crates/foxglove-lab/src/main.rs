@@ -41,6 +41,21 @@ enum Command {
     Status,
     /// How each half shows up on USB (no keyboard link needed).
     Usb,
+    /// Reboots one half into its UF2 bootloader (D7 08). For scripts/flash only, after the user
+    /// typed FLASH there. Exit code 4: this firmware can't (no HELLO bit 9), use a double tap.
+    Bootloader {
+        #[arg(long, value_parser = ["left", "right"])]
+        half: String,
+        /// Must be the word FLASH, passed by the flasher after the user typed it.
+        #[arg(long)]
+        confirmed: String,
+    },
+    /// Prints one half's running firmware build (D7 09) as JSON. Exit code 4: the firmware
+    /// can't tell (no HELLO bit 12, or the right is not reachable).
+    Build {
+        #[arg(long, value_parser = ["left", "right"])]
+        half: String,
+    },
 }
 fn sha() -> String {
     std::process::Command::new("git")
@@ -93,6 +108,62 @@ fn main() -> Result<std::process::ExitCode> {
         } else {
             std::process::ExitCode::SUCCESS
         });
+    }
+    if let Command::Build { half } = &cli.command {
+        let _guard = platform::guard(cli.allow_app)?;
+        let link = connect(cli.product.clone())?;
+        let c = link.wait_connected(Duration::from_secs(10))?;
+        let caps = c.hello.map_or(0, |h| h.capabilities);
+        if caps & digitalis::protocol::capabilities::BUILD_INFO == 0 {
+            eprintln!("this firmware doesn't report its build (no HELLO bit 12)");
+            return Ok(std::process::ExitCode::from(4));
+        }
+        return match settings::build_info(&link, u8::from(half == "right")) {
+            Ok(b) => {
+                let v = b.version;
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "half": half,
+                        "version": format!("{}.{}.{}", v.major, v.minor, v.patch),
+                        "profile": if v.profile == 1 { "ga" } else { "dev" },
+                        "sha": b.sha,
+                    })
+                );
+                Ok(std::process::ExitCode::SUCCESS)
+            }
+            Err(e) => {
+                eprintln!("{half}: {e:#}");
+                Ok(std::process::ExitCode::from(4))
+            }
+        };
+    }
+    if let Command::Bootloader { half, confirmed } = &cli.command {
+        ensure!(
+            confirmed == "FLASH",
+            "refused: only scripts/flash/foxglove_flash.py calls this, after the user types FLASH"
+        );
+        let _guard = platform::guard(cli.allow_app)?;
+        let link = connect(cli.product.clone())?;
+        let c = link.wait_connected(Duration::from_secs(10))?;
+        let caps = c.hello.map_or(0, |h| h.capabilities);
+        if caps & digitalis::protocol::capabilities::BOOTLOADER == 0 {
+            eprintln!(
+                "this firmware has no bootloader command (HELLO bit 9); double-tap reset instead"
+            );
+            return Ok(std::process::ExitCode::from(4));
+        }
+        return match settings::enter_bootloader(&link, u8::from(half == "right")) {
+            Ok(()) => {
+                println!("{half} half asked to enter its bootloader");
+                Ok(std::process::ExitCode::SUCCESS)
+            }
+            Err(e) if e.to_string().contains("not built") => {
+                eprintln!("{e:#}; double-tap reset instead");
+                Ok(std::process::ExitCode::from(4))
+            }
+            Err(e) => Err(e),
+        };
     }
     let suite_name = if let Command::Run { suite, .. } = &cli.command {
         suite.clone()

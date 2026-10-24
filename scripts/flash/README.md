@@ -64,3 +64,38 @@ hold. ADMIN is conditional on NUMBER+SYMBOL or GAME+ + SYMBOL held together.
 The replay covers both thumb press orders and both release orders, normal and
 GAME, including releasing both keys. This is a small layer model, not a timing
 simulation of the complete ZMK engine.
+
+## Hands-free entry (#111)
+
+When the running firmware advertises HELLO capability bit 9 (test-hooks builds), you don't
+need to double-tap:
+1. After you type `FLASH`, the flasher asks the left half to reboot into its bootloader. It runs
+   `foxglove-lab bootloader`, which sends D7 08: ARM, then TRIGGER with the returned nonce.
+2. It flashes the left, waits for the left's own serial to come back, and asks you to confirm
+   it types (`TYPES`).
+3. It asks the right half to enter its bootloader through the left's relay, retrying for about
+   10 s while the relay reconnects, then flashes it.
+
+Serial identity, the UF2 preflight and the typed confirmations are unchanged. If foxglove-lab
+isn't built (`cargo build --release -p foxglove-lab`), or the firmware lacks bit 9, it falls
+back to double-tap prompts. A settings reset always uses the double tap.
+
+## No prompts: `--yes`
+
+When the user has said go (the user asked for this on 2026-10-24), `--yes` skips the typed
+`FLASH`/`ERASE SETTINGS`/`TYPES` prompts and the terminal requirement:
+
+```powershell
+python scripts/flash/foxglove_flash.py --firmware C:\path	oirmware --half both --yes
+```
+
+Every automatic check still runs:
+- serial identity and the UF2 preflight;
+- the dev/GA mix refusal;
+- the settle wait and one retry;
+- reading back the running build.
+
+Instead of `TYPES`, foxglove-lab types into its own window. For the left half that's INVOKE
+`&kp`; for the right half it's key-position presses over the split link. The flasher never
+touches the right half if the left doesn't type afterwards. A failed right-half typing check
+is reported, with the known fix (one tap on the left reset), rather than treated as fatal.
