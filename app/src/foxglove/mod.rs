@@ -26,6 +26,7 @@ pub mod art_library;
 pub mod lighting_leases;
 pub mod mic_broker;
 pub mod plugin_actions;
+pub mod app_windows;
 pub mod plugin_icons;
 pub mod plugin_install;
 pub mod plugins_ui;

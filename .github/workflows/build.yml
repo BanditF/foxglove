@@ -110,5 +110,18 @@ jobs:
             echo "Tag $tag doesn't match FIRMWARE_VERSION ${{ steps.names.outputs.version }}" >&2
             exit 1
           fi
-          gh release create "$tag" out/*.uf2 --title "Firmware $tag" --notes \
-            "Dev builds have the test hooks (position press, D7 08 bootloader); GA builds don't. Flash the left first, then the right."
+          # Publishing the draft release makes the tag (the release flow), so the release is usually
+          # there already, with its own assets: leave it alone, never replace them.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::notice::Release $tag already exists; its assets are kept and nothing is uploaded. This run's UF2s are in the workflow artifact."
+            exit 0
+          fi
+          # The release notes are docs/release-notes/X.Y.md when there is one.
+          version=${{ steps.names.outputs.version }}
+          notes=docs/release-notes/${version%.*}.md
+          if [ -f "$notes" ]; then
+            gh release create "$tag" out/*.uf2 --title "Firmware $tag" --notes-file "$notes"
+          else
+            gh release create "$tag" out/*.uf2 --title "Firmware $tag" --notes \
+              "Dev builds have the test hooks (position press, bootloader, guard test); GA builds don't. Flash the left first, then the right."
+          fi

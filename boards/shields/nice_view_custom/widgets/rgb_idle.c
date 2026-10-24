@@ -20,6 +20,10 @@
 #include <zmk/activity.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/activity_state_changed.h>
+#include <zmk/events/position_state_changed.h>
+#include <zmk/events/sensor_event.h>
+#include <zmk/keymap.h>
+#include <zmk/sensors.h>
 #include <zmk/rgb_underglow.h>
 
 #include "rgb_idle.h"
@@ -33,8 +37,9 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE),
 #define RELAY_CENTRAL (CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY))
 #define HOST_CENTRAL (CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_HOST_LINK))
 
-// Picks up on/off changes made with the rgb_ug behaviours while active.
-#define POLL K_SECONDS(2)
+// On/off changes made with the rgb_ug behaviours are picked up this long after a key, an encoder
+// step or a PC invoke, once the binding has run (#280: no free-running poll).
+#define CHECK_AFTER K_MSEC(50)
 // Saving waits a little, so a few quick toggles make one flash write.
 #define SAVE_DELAY K_SECONDS(10)
 
@@ -140,13 +145,7 @@ static void apply_cb(struct k_work *work) {
 }
 static K_WORK_DEFINE(apply_work, apply_cb);
 
-static void poll_cb(struct k_work *work);
-static K_WORK_DELAYABLE_DEFINE(poll_work, poll_cb);
-
-static void poll_cb(struct k_work *work) {
-    if (!active()) {
-        return; // the activity listener starts polling again
-    }
+static void check_cb(struct k_work *work) {
     bool on;
     if (!following && zmk_rgb_underglow_get_state(&on) == 0 && on != wanted) {
         wanted = on; // toggled with a key
@@ -158,19 +157,30 @@ static void poll_cb(struct k_work *work) {
         art_relay_rgb_kick();
 #endif
     }
-    k_work_schedule(&poll_work, POLL);
 }
+static K_WORK_DELAYABLE_DEFINE(check_work, check_cb);
+
+void rgb_idle_check(void) { k_work_reschedule(&check_work, CHECK_AFTER); }
 
 static int activity_listener(const zmk_event_t *eh) {
     k_work_submit(&apply_work);
-    if (active()) {
-        k_work_reschedule(&poll_work, POLL);
-    }
     return ZMK_EV_EVENT_BUBBLE;
 }
 
 ZMK_LISTENER(rgb_idle, activity_listener);
 ZMK_SUBSCRIPTION(rgb_idle, zmk_activity_state_changed);
+
+// A key or encoder step may have run an rgb_ug binding: look once, shortly after.
+static int binding_listener(const zmk_event_t *eh) {
+    rgb_idle_check();
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(rgb_idle_bindings, binding_listener);
+ZMK_SUBSCRIPTION(rgb_idle_bindings, zmk_position_state_changed);
+#if ZMK_KEYMAP_HAS_SENSORS
+ZMK_SUBSCRIPTION(rgb_idle_bindings, zmk_sensor_event);
+#endif
 
 bool rgb_idle_sync(void) { return sync; }
 
@@ -215,7 +225,7 @@ static int rgb_settings_commit(void) {
         save();
     }
     k_work_submit(&apply_work);
-    k_work_reschedule(&poll_work, POLL);
+    rgb_idle_check();
     k_work_schedule(&speed_ready_work, SPEED_AFTER_BOOT); // never during settings_load
     return 0;
 }

@@ -1,5 +1,11 @@
 # hostpanel
 
+> **Retired as a tray app (#21).** The Foxglove app (`app/`) now draws the left panel, pushes and
+> cycles the right screen's art, and starts with Windows: the installer adds it to the user's
+> Run key. Don't run hostpanel's tray next to Foxglove, because both would drive the panel. The
+> crate stays for its CLI commands that `foxglove-cli` doesn't have yet (`push-art`, `select`,
+> `preview`). Run them with Foxglove quit.
+
 Drives the Eyelash Corne's nice!view screens from the PC over Raw HID (usage page 0xFF60), so new
 screen content is a PC-side change instead of a reflash. Needs the Foxglove firmware from this repo;
 the protocol is in `boards/shields/nice_view_custom/widgets/host_link.h`, and the PC side of it is

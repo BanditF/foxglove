@@ -60,8 +60,10 @@ class App:
         self.env = {**os.environ, 'FOXGLOVE_CONFIG_DIR': str(cfg), **(env or {})}
 
     def __enter__(self):
-        self.previous = ps("Get-Process | ? { $_.ProcessName -like 'foxglove*' -and $_.ProcessName -notin "
-                           "'foxglove-lab','foxglove-cli' } | % { $_.Path; Stop-Process -Id $_.Id -Confirm:$false }").split()
+        # Exactly the app's process name: test binaries such as foxglove_plugin_host-*.exe are other
+        # sessions' work and must never be stopped.
+        self.previous = ps("Get-Process -Name foxglove -ErrorAction SilentlyContinue | "
+                           "% { $_.Path; Stop-Process -Id $_.Id -Confirm:$false }").split()
         time.sleep(2)
         for p in self.plugins:
             kill(p)
@@ -80,7 +82,7 @@ class App:
         for p in self.previous:
             subprocess.Popen([p])
         time.sleep(5)
-        alive = [p for p in self.previous if p.lower() in ps("(Get-Process foxglove* -ErrorAction SilentlyContinue).Path").lower()]
+        alive = [p for p in self.previous if p.lower() in ps("(Get-Process -Name foxglove -ErrorAction SilentlyContinue).Path").lower()]
         print('restored:', alive if alive == self.previous else f'{alive} of {self.previous} (check!)', flush=True)
 
 
