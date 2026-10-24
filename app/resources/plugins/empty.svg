@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160" viewBox="0 0 240 160">
+<g fill="none" stroke="#ffffff" stroke-linecap="square" stroke-linejoin="miter">
+  <path d="M6 16 V6 M6 6 H16 M234 16 V6 M234 6 H224 M6 144 V154 M6 154 H16 M234 144 V154 M234 154 H224" stroke-width="2" stroke-opacity="0.6"/>
+  <path d="M44 130 A76 76 0 0 1 196 130" stroke-width="3"/>
+  <path d="M30 130 A90 90 0 0 1 210 130" stroke-width="1.5" stroke-dasharray="2 7" stroke-opacity="0.6"/>
+  <path d="M114 32 H126 L120 40 Z" stroke-width="2"/>
+  <path d="M16 130 H224" stroke-width="3"/>
+  <path d="M24 137 V144 M36 137 V141 M48 137 V141 M60 137 V141 M72 137 V144 M84 137 V141 M96 137 V141 M108 137 V141 M120 137 V144 M132 137 V141 M144 137 V141 M156 137 V141 M168 137 V144 M180 137 V141 M192 137 V141 M204 137 V141 M216 137 V144" stroke-width="1.5" stroke-opacity="0.6"/>
+  <path d="M92 110 C100 96 150 94 162 122 L164 130" stroke-width="3"/>
+  <path d="M163 129 C150 114 120 115 102 126" stroke-width="3"/>
+  <path d="M106 127 L109 122 M112 124 L115 119.5 M118 122 L120.5 118" stroke-width="2" stroke-opacity="0.7"/>
+  <polygon points="63.2,97.4 72.2,106.4 83,106.4 92,97.4 92,113.6 77.6,129.8 63.2,113.6" stroke-width="3"/>
+  <path d="M68 116 Q71 119 74 117 M87 116 Q84 119 81 117" stroke-width="2.5"/>
+  <path d="M76 124 H79" stroke-width="2.5"/>
+</g>
+</svg>

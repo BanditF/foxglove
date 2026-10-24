@@ -10,15 +10,15 @@
 //! - [`panel`]: the 1-bit panel image and sending it
 //! - [`art`]: pushing art sets to the right half and picking built-in ones
 //! - [`settings`]: keyboard settings saved on the keyboard (RGB sync)
-//! - `palm` (feature `palm`): the keyboard as a Palm device, and a backend that finds it
+//! - `devices` (feature `devices`): the keyboard as a device-layer device, and a backend that finds it
 
 pub mod art;
 #[cfg(feature = "hid")]
 pub mod hid;
 pub mod link;
 pub mod panel;
-#[cfg(feature = "palm")]
-pub mod palm;
+#[cfg(feature = "devices")]
+pub mod devices;
 pub mod protocol;
 pub mod settings;
 

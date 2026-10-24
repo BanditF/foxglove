@@ -1,0 +1,8 @@
+id = "org.foxglove.openrgb"
+name = "OpenRGB (E1.31)"
+version = "1.0.0"
+api = "1.2"
+run = ["openrgb-e131.exe"]
+permissions = ["devices.read", "lighting.write", "net.listen:udp:127.0.0.1:5568"]
+provides = ["lighting-effect"]
+description = "Lets OpenRGB colour your keyboard's lights: add an E1.31 device in OpenRGB pointed at 127.0.0.1, universe 1. Listens on localhost UDP port 5568 only; nothing leaves your PC."

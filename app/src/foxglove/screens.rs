@@ -53,6 +53,8 @@ pub struct Snapshot {
     pub hello: Option<Hello>,
     pub frame: Option<Frame>,
     pub foreground: Option<String>,
+    /// The screens the keyboard describes, when it does (#160).
+    pub screens: Vec<protocol::ScreenDescriptor>,
 }
 
 static SNAPSHOT: Mutex<Snapshot> = Mutex::new(Snapshot {
@@ -60,6 +62,7 @@ static SNAPSHOT: Mutex<Snapshot> = Mutex::new(Snapshot {
     hello: None,
     frame: None,
     foreground: None,
+    screens: Vec::new(),
 });
 
 pub fn snapshot() -> Snapshot {
@@ -121,11 +124,21 @@ struct Drawing {
 impl Drawing {
     fn new(link: Arc<Link>, hello: Hello) -> Self {
         let generation = link.state().generation;
+        // Keyboards that describe their screens (#160) say where the PC may draw; older ones
+        // have the one panel HELLO reports.
+        let screens = if hello.capabilities & protocol::capabilities::SCREENS != 0 {
+            panel::screens(link.as_ref()).unwrap_or_default()
+        } else {
+            vec![]
+        };
+        let (width, height) = panel::drawable_panel(&screens)
+            .map_or((hello.width, hello.height), |p| (usize::from(p.width), usize::from(p.height)));
+        update_snapshot(|s| s.screens = screens);
         Drawing {
             link,
             hello,
             generation,
-            panel: Panel::new(hello.width, hello.height),
+            panel: Panel::new(width, height),
             last: None,
             last_sent: Instant::now(),
         }
@@ -160,6 +173,98 @@ enum Event {
     Report(usize, u64, digitalis::link::Report),
 }
 static EVENTS: OnceLock<Mutex<Option<mpsc::Sender<Event>>>> = OnceLock::new();
+
+/// What the panel's providers read, as facts for plugins (`facts.read:media.*`,
+/// `facts.read:volume.*`): one reader of the media sessions for the whole app. Plugins can't
+/// read them themselves, as the sandbox denies SMTC (#215). Unchanged values aren't re-sent.
+fn publish_media(view: &render::View) {
+    use foxglove_devices::facts::Value;
+    let facts = super::devices::bus().facts();
+    let text = |key: &str, v: &Option<String>| match v {
+        Some(t) => facts.set(key, Value::Text(t.clone())),
+        None => {
+            facts.remove(key);
+        }
+    };
+    text("media.title", &view.title);
+    text("media.artist", &view.artist);
+    facts.set("media.playing", Value::Bool(view.playing));
+    match view.volume {
+        Some((level, muted)) => {
+            facts.set("volume.level", Value::Int(i64::from(level)));
+            facts.set("volume.muted", Value::Bool(muted));
+        }
+        None => facts.remove_prefix("volume.", &[]),
+    }
+}
+
+static WALLPAPER_CHANGED: AtomicBool = AtomicBool::new(false);
+
+/// Wallpaper Engine shows another wallpaper: reload its frames on the next draw.
+pub fn wallpaper_changed() {
+    WALLPAPER_CHANGED.store(true, Ordering::Relaxed);
+    wake();
+}
+
+/// The current wallpaper's left frames (in playing order) and fps, for a panel of
+/// `frame_bytes`; `None` falls back to the info layout.
+fn load_wallpaper_frames(frame_bytes: usize) -> Option<(Vec<Vec<u8>>, u32)> {
+    let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
+    let w = super::wallpaper::current(monitor.as_deref())?;
+    let left = w.left.as_ref()?;
+    Some((super::wallpaper::left_frames(left, frame_bytes)?, left.fps))
+}
+
+/// A plugin's frame over the left panel (`screens.panel_override`, #209), until `until`.
+struct Override {
+    bits: Vec<u8>,
+    until: Instant,
+    conn: u64,
+}
+
+static OVERRIDE: Mutex<Option<Override>> = Mutex::new(None);
+/// The panel's size, once a keyboard with one has connected.
+static PANEL_SIZE: Mutex<Option<(u16, u16)>> = Mutex::new(None);
+
+/// The longest a plugin's frame stays without being sent again.
+pub const MAX_OVERRIDE: Duration = Duration::from_secs(60);
+
+/// Shows a plugin's frame (1 bpp, rows MSB first, padded to whole bytes) for `ttl`; a plugin
+/// re-sends to keep it, so the panel goes back by itself if the plugin stops.
+pub fn set_override(conn: u64, width: u16, height: u16, bits: Vec<u8>, ttl: Duration) -> Result<(), String> {
+    let size = *PANEL_SIZE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some((w, h)) = size else { return Err("no left panel connected".into()) };
+    if (width, height) != (w, h) {
+        return Err(format!("the panel is {w}x{h}, not {width}x{height}"));
+    }
+    let want = usize::from(w).div_ceil(8) * usize::from(h);
+    if bits.len() != want {
+        return Err(format!("a {w}x{h} frame is {want} bytes, not {}", bits.len()));
+    }
+    let until = Instant::now() + ttl.min(MAX_OVERRIDE);
+    *OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Override { bits, until, conn });
+    wake();
+    Ok(())
+}
+
+/// Drops a connection's frame (the plugin stopped).
+pub fn clear_override(conn: u64) {
+    let mut o = OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
+    if o.as_ref().is_some_and(|o| o.conn == conn) {
+        *o = None;
+        drop(o);
+        wake();
+    }
+}
+
+/// The current plugin frame and when it ends, if one is showing.
+fn current_override(now: Instant) -> Option<(Vec<u8>, Instant)> {
+    let mut o = OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
+    if o.as_ref().is_some_and(|o| o.until <= now) {
+        *o = None;
+    }
+    o.as_ref().map(|o| (o.bits.clone(), o.until))
+}
 
 fn wake() {
     if let Some(tx) = EVENTS.get().and_then(|s| s.lock().ok()) {
@@ -229,6 +334,9 @@ fn run() {
     let mut was_driving = false;
     let mut last_battery = None;
     let mut tick: u32 = 0;
+    let mut wallpaper_frames: Option<Option<(Vec<Vec<u8>>, u32)>> = None;
+    let mut wallpaper_tick: usize = 0;
+    let mut next_wallpaper_frame = Instant::now();
     let mut next_frame = Instant::now();
     let mut wait = None;
 
@@ -389,7 +497,9 @@ fn run() {
             changes.refresh();
             providers_dirty = false;
             note_foreground();
-            sources.update(&mut view, |exe| settings.games.get(exe).cloned())
+            let next = sources.update(&mut view, |exe| settings.games.get(exe).cloned());
+            publish_media(&view);
+            next
         } else {
             Sources::update_clock(&mut view)
         };
@@ -401,6 +511,32 @@ fn run() {
             next_frame = now + period;
         }
         render::draw(&mut d.panel, &view, tick);
+        // The wallpaper's own frames, when that's the layout and the wallpaper has them.
+        let mut animated = animated;
+        if settings.layout == super::screens_settings::Layout::Wallpaper {
+            if wallpaper_frames.is_none() || WALLPAPER_CHANGED.swap(false, Ordering::Relaxed) {
+                wallpaper_frames = Some(load_wallpaper_frames(d.panel.bits.len()));
+            }
+            if let Some(Some((frames, fps))) = &wallpaper_frames {
+                if frames.len() > 1 && *fps > 0 {
+                    animated = true;
+                    if now >= next_wallpaper_frame {
+                        wallpaper_tick = wallpaper_tick.wrapping_add(1);
+                        next_wallpaper_frame = now + Duration::from_millis(1000 / u64::from(*fps));
+                    }
+                }
+                d.panel.bits.clone_from(&frames[wallpaper_tick % frames.len()]);
+            }
+        } else {
+            wallpaper_frames = None;
+        }
+        // A plugin's frame, over everything else, until it lapses.
+        *PANEL_SIZE.lock().unwrap_or_else(|e| e.into_inner()) = Some((d.panel.width as u16, d.panel.height as u16));
+        let overridden = current_override(now).filter(|(bits, _)| bits.len() == d.panel.bits.len());
+        if let Some((bits, _)) = &overridden {
+            d.panel.bits.clone_from(bits);
+        }
+        let clock_at = overridden.as_ref().map_or(clock_at, |(_, until)| clock_at.min(*until));
         let interval = keep_alive(d.hello.panel_timeout_s);
         let result = if changed(d.last.as_deref(), &d.panel.bits) {
             panel::show(
@@ -416,7 +552,7 @@ fn run() {
         } else {
             wait = Some(deadline(
                 clock_at.saturating_duration_since(Instant::now()),
-                animated.then(|| next_frame.saturating_duration_since(Instant::now())),
+                animated.then(|| next_frame.min(next_wallpaper_frame).saturating_duration_since(Instant::now())),
                 interval.map(|i| i.saturating_sub(d.last_sent.elapsed())),
             ));
             continue;

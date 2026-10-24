@@ -64,3 +64,59 @@ hold. ADMIN is conditional on NUMBER+SYMBOL or GAME+ + SYMBOL held together.
 The replay covers both thumb press orders and both release orders, normal and
 GAME, including releasing both keys. This is a small layer model, not a timing
 simulation of the complete ZMK engine.
+
+## Hands-free entry (#111)
+
+When the running firmware advertises HELLO capability bit 9 (test-hooks builds), you don't
+need to double-tap:
+1. After you type `FLASH`, the flasher asks the left half to reboot into its bootloader. It runs
+   `foxglove-lab bootloader`, which sends D7 08: ARM, then TRIGGER with the returned nonce.
+2. It flashes the left, waits for the left's own serial to come back, and asks you to confirm
+   it types (`TYPES`).
+3. It asks the right half to enter its bootloader through the left's relay, retrying for about
+   10 s while the relay reconnects, then flashes it.
+
+Serial identity, the UF2 preflight and the typed confirmations are unchanged. If foxglove-lab
+isn't built (`cargo build --release -p foxglove-lab`), or the firmware lacks bit 9, it falls
+back to double-tap prompts. A settings reset always uses the double tap.
+
+## No prompts: `--yes`
+
+`--yes` is the normal path. The user waived the typed confirmations on 2026-10-24, so On-call
+uses it once the user has said go in chat for that flash. It skips the typed
+`FLASH`/`ERASE SETTINGS`/`TYPES` prompts and the terminal requirement:
+
+```powershell
+python scripts/flash/foxglove_flash.py --firmware C:\path	oirmware --half both --yes
+```
+
+Every automatic check still runs:
+- serial identity and the UF2 preflight;
+- the dev/GA mix refusal;
+- the settle wait and one retry;
+- reading back the running build.
+
+Instead of `TYPES`, foxglove-lab types into its own window. For the left half that's INVOKE
+`&kp`; for the right half it's key-position presses over the split link. The flasher never
+touches the right half if the left doesn't type afterwards. A failed right-half typing check
+is reported, with the known fix (one tap on the left reset), rather than treated as fatal.
+
+## One flasher at a time
+
+A real flash holds `%TEMP%\foxglove-flash.lock`, which contains its PID. A second flasher
+refuses to start while that process is alive, because two writers on one bootloader drive is how
+a UF2 lands on the wrong half. A lock left by a process that's gone is taken over. `--dry-run`
+takes no lock. Older scripts such as `flash_both.py` don't know about the lock, so don't run
+them alongside this one.
+
+## After the write (#176)
+
+When the bootloader has the whole image it reboots, and its drive goes away. Windows then
+answers a stat on that drive with WinError 433 or 55, which Python raises. The flasher treats
+that as "drive gone" in every post-write step, and then reads the half's build back over D7 09:
+the image's SHA running means the flash worked. The 3-second settle before writing stays, since
+writes about 1 s after the drive appears were sometimes ignored.
+
+Every write is recorded in `%LOCALAPPDATA%\Foxglove\flash-history.log` (override with
+`FOXGLOVE_FLASH_HISTORY`), one tab-separated line each: UTC time, half, image SHA, outcome
+(`written`, `written-drive-gone`, `verified`, `unverified`, `verify-failed`), and detail.

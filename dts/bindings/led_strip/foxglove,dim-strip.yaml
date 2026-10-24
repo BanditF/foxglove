@@ -1,0 +1,15 @@
+description: |
+  An LED strip in front of another one that scales every pixel down while the half runs on
+  battery (nice_view_custom's dim_strip.c, #218). Point zmk,underglow at it.
+
+compatible: "foxglove,dim-strip"
+
+properties:
+  led-strip:
+    type: phandle
+    required: true
+    description: The real strip.
+  chain-length:
+    type: int
+    required: true
+    description: Pixels on the real strip (ZMK's underglow reads it from the chosen node).

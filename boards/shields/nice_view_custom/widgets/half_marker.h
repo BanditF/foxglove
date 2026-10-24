@@ -16,3 +16,7 @@ struct foxglove_build_info {
 } __packed;
 
 void foxglove_build_info(struct foxglove_build_info *out);
+
+// Each test hook compiled in leaves "FOXGLOVE_TEST_HOOK=<name>" in the UF2, next to the half
+// marker, so CI can prove a GA build has none (scripts/firmware/check_hooks.py, #81).
+#define FOXGLOVE_TEST_HOOK_MARK(name)                                                                  const char foxglove_test_hook_##name[] __used                                                          __attribute__((section(".foxglove_half"))) = "FOXGLOVE_TEST_HOOK=" #name

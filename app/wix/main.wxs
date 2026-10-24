@@ -16,6 +16,13 @@
             <File Id="FoxgloveExe" Source="$(var.CargoTargetBinDir)\foxglove.exe" KeyPath="yes" />
             <File Id="License" Source="$(var.CargoManifestDir)\LICENSE" />
           </Component>
+<?ifdef SparseIdentity?>
+          <!-- #179 prototype, only with -dSparseIdentity=<signed msix>: the sparse identity
+               package next to the exe; Foxglove registers it per user on first launch. -->
+          <Component Id="IdentityPackage" Guid="*" Win64="yes">
+            <File Id="IdentityMsix" Name="foxglove-identity.msix" Source="$(var.SparseIdentity)" KeyPath="yes" />
+          </Component>
+<?endif?>
           <Component Id="StartMenu" Guid="*" Win64="yes">
             <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Foxglove"
                       Target="[#FoxgloveExe]" WorkingDirectory="INSTALLFOLDER" Icon="FoxgloveIcon" />
@@ -38,11 +45,23 @@
              Level="1" Absent="disallow" Display="expand">
       <ComponentRef Id="Application" />
       <ComponentRef Id="StartMenu" />
+<?ifdef SparseIdentity?>
+      <ComponentRef Id="IdentityPackage" />
+<?endif?>
       <Feature Id="StartWithWindows" Title="Start with Windows"
                Description="Start Foxglove when the installing user signs in." Level="2">
         <ComponentRef Id="Autostart" />
       </Feature>
     </Feature>
+<?ifdef SparseIdentity?>
+    <!-- Uninstall (not a major upgrade, which keeps the registration): remove the identity
+         package for every user. Elevated, so it can reach other users' registrations. -->
+    <CustomAction Id="UnregisterIdentity" FileKey="FoxgloveExe" ExeCommand="--unregister-identity"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="UnregisterIdentity" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
+<?endif?>
     <UIRef Id="WixUI_FeatureTree" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.CargoManifestDir)\wix\license.rtf" />
   </Product>

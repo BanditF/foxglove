@@ -28,6 +28,8 @@ pub struct OverlayApp {
     connect: ConnectDraftState,
     serial_watch: foxglove_connect::SerialWatch,
     pub(crate) editor: crate::keymap_editor::EditorState,
+    /// Foxglove: the last profile switch the overlay applied.
+    profile_seen: u64,
 }
 
 impl OverlayApp {
@@ -73,6 +75,7 @@ impl OverlayApp {
             },
             editor: crate::keymap_editor::EditorState::new(),
             serial_watch: foxglove_connect::SerialWatch::default(),
+            profile_seen: 0,
         }
     }
 
@@ -178,6 +181,12 @@ impl OverlayApp {
         self.apply_live_layout_settings();
         self.ui.file_dialog.update(ctx);
         crate::foxglove::art_ui::update(ctx);
+        // Foxglove: a profile switch reloads the overlay's settings.
+        if crate::foxglove::overlay_profile::switched(ctx, &mut self.profile_seen) {
+            let s = crate::foxglove::overlay_profile::effective(crate::settings::Settings::load().unwrap_or_default());
+            self.settings.active = s.clone();
+            self.settings.draft = s;
+        }
         self._tray.update();
 
         if let Some(path) = self.ui.file_dialog.take_picked() {

@@ -126,8 +126,20 @@ fn parses_seed_suites_and_all_step_kinds() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil");
     assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 7);
     assert_eq!(
+        spec::load(&root.join("app-actions.toml"))
+            .unwrap()
+            .cases
+            .len(),
+        1
+    );
+    assert!(spec::non_typing_key(0x0007_0068) && spec::non_typing_key(0x0007_0073));
+    // F12, F13 with left shift, and A all type or change typing.
+    assert!(![0x0007_0045, 0x0207_0068, 0x0007_0004]
+        .into_iter()
+        .any(spec::non_typing_key));
+    assert_eq!(
         spec::load(&root.join("release.toml")).unwrap().cases.len(),
-        21
+        23
     );
     for text in [
         "[{press_position={pos=12,state='down'}}]",
@@ -298,25 +310,45 @@ fn reports_escape_markup_embed_images_and_apply_release_gate() {
             .unwrap(),
     )
     .unwrap();
-    let mut report = Report {
-        schema: 1,
-        environment: BTreeMap::from([("runner_version".into(), "test".into())]),
-        firmware: serde_json::json!({"hello_version":1}),
-        cases: vec![blocked],
-    };
+    let mut report = Report::new(
+        "release",
+        "2026-10-24T00:00:00Z".into(),
+        BTreeMap::from([("runner_version".into(), "test".into())]),
+    );
+    report.firmware.hello = serde_json::json!({"hello_version":1});
+    report.cases.push(blocked);
     assert!(!report.overall_pass());
     assert!(!report.exit_success());
     report.write(&dir.0).unwrap();
     let json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.0.join("report.json")).unwrap()).unwrap();
     assert_eq!(json["cases"][0]["status"], "BLOCKED");
+    // Stable v2 shape (docs/test-lab/report.schema.json lists these as required).
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/test-lab/report.schema.json")).unwrap();
+    for key in schema["required"].as_array().unwrap() {
+        assert!(
+            json.get(key.as_str().unwrap()).is_some(),
+            "report.json lacks {key}"
+        );
+    }
+    assert_eq!(json["schema"], "foxglove-lab-report");
+    assert_eq!(json["version"], 2);
+    assert_eq!(json["verdict"], "FAIL");
+    assert_eq!(json["areas"][0]["name"], "general");
+    assert_eq!(json["areas"][0]["verdict"], "BLOCKED");
+    assert_eq!(json["cases"][0]["area"], "general");
+    assert!(json["firmware"]["left"].is_null());
     let junit = std::fs::read_to_string(dir.0.join("junit.xml")).unwrap();
     assert!(junit.contains("<skipped message="));
+    assert!(junit.contains("<testsuites name=\"foxglove-lab\""));
+    assert!(junit.contains("classname=\"foxglove-lab.general\""));
+    assert!(junit.contains("<property name=\"verdict\" value=\"FAIL\"/>"));
     assert!(junit.contains("&lt;script&gt;&quot;&amp;"));
     let html = std::fs::read_to_string(dir.0.join("report.html")).unwrap();
     assert!(html.contains("data:image/png;base64,"));
     assert!(!html.contains("<script>"));
-    assert!(html.find("<table>").unwrap() < html.find("<article>").unwrap());
+    assert!(html.find("<table>").unwrap() < html.find("<article").unwrap());
     report.cases[0].tags.clear();
     assert!(report.overall_pass());
     report.cases[0].manual = false;
@@ -594,7 +626,7 @@ fn screen_without_golden_is_blocked_with_a_candidate() {
     assert!(result.message.contains("no golden"));
     assert_eq!(
         result.steps[0].attachments,
-        ["does-not-exist.candidate.png"]
+        ["test-does-not-exist.candidate.png"]
     );
 }
 
@@ -629,4 +661,79 @@ fn right_half_steps_wait_for_a_fully_up_relay() {
     let tap = "[{press_position={pos=1,state='tap',hold_ms=5}}]";
     assert_eq!(run_with(&fake, &case(tap), TEST_HOOKS).status, Status::Pass);
     assert!(foxglove_lab::runner::is_right(23) && !foxglove_lab::runner::is_right(17));
+}
+
+fn hello_caps(caps: u32) -> [u8; REPORT] {
+    let mut r = hello(2, 4);
+    r[21..25].copy_from_slice(&caps.to_le_bytes());
+    r
+}
+fn build_reply(half: u8, profile: u8, sha: &[u8]) -> [u8; REPORT] {
+    let mut r = vec![0xd7, 0x89, 0, half, 0, 1, 0, profile];
+    r.extend(sha);
+    reply(&r)
+}
+
+#[test]
+fn ga_gate_steps() {
+    // HELLO bits: GA clears 5 and 9, keeps 7 and 12.
+    let ga = (1u32 << 7) | (1 << 12) | (1 << 6);
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(hello_caps(ga));
+    let hello = "[{expect_hello={caps_clear=[5,9],caps_set=[7,12]}}]";
+    assert_eq!(run(&fake, &case(hello)).status, Status::Pass);
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .push_back(hello_caps(ga | (1 << 5)));
+    let r = run(&fake, &case(hello));
+    assert_eq!(r.status, Status::Fail);
+    assert!(r.message.contains("bit 5 set"));
+    // Test hooks answer 4; ARM only, never TRIGGER; POSITION is a release.
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([reply(&[0xd7, 0x85, 4, 1]), reply(&[0xd7, 0x88, 4])]);
+    let steps =
+        "[{expect_not_built_in={command='position'}},{expect_not_built_in={command='bootloader'}}]";
+    assert_eq!(run(&fake, &case(steps)).status, Status::Pass);
+    assert_eq!(fake.requests.borrow()[0], vec![0xd7, 0x05, 1, 0]);
+    assert_eq!(fake.requests.borrow()[1], vec![0xd7, 0x08, 0]);
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .push_back(reply(&[0xd7, 0x85, 0, 1]));
+    assert_eq!(
+        run(&fake, &case("[{expect_not_built_in={command='position'}}]")).status,
+        Status::Fail
+    );
+    // BUILD_INFO profile.
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([build_reply(0, 1, b"abc1234"), build_reply(1, 0, b"abc1234")]);
+    let r = run(
+        &fake,
+        &case("[{expect_build={half='left',profile='ga',sha='abc1234'}},{expect_build={half='right',profile='ga'}}]"),
+    );
+    assert_eq!(r.status, Status::Fail);
+    assert!(r.message.contains("right 0.1.0 dev"), "{}", r.message);
+}
+
+#[test]
+fn hello_profile_and_split_guard_drops() {
+    let mut r = hello_caps((1 << 7) | (1 << 12));
+    r[27..31].copy_from_slice(&[0, 1, 0, 1]); // 0.1.0, profile 1 = GA
+    r[31] = 0;
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(r);
+    let steps = "[{expect_hello={profile='ga',guard_drops_max=0}}]";
+    assert_eq!(run(&fake, &case(steps)).status, Status::Pass);
+    r[30] = 0; // dev
+    r[31] = 2;
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(r);
+    let result = run(&fake, &case(steps));
+    assert_eq!(result.status, Status::Fail);
+    assert!(result.message.contains("expected ga") && result.message.contains("2 times"));
 }

@@ -12,12 +12,19 @@ edition = "2021"
 foxglove-update = { path = "../crates/foxglove-update" }
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 # Foxglove: the shared link to the keyboard (MIT).
-digitalis = { path = "../crates/digitalis", features = ["palm"] }
+digitalis = { path = "../crates/digitalis", features = ["devices"] }
 # Foxglove: the device layer (MIT).
-palm = { path = "../crates/palm" }
+foxglove-devices = { path = "../crates/devices" }
+# Foxglove: QMK keyboards over VIA, read-only (MIT).
+foxglove-via = { path = "../crates/via" }
 # Foxglove: the local API host and its protocol (MIT).
-den = { path = "../crates/den" }
-foxglove-kit-api = { path = "../crates/kit-api" }
+foxglove-plugin-host = { path = "../crates/plugin-host" }
+foxglove-plugin-api = { path = "../crates/plugin-api" }
+foxglove-plugin-trust = { path = "../crates/plugin-trust" }
+# Foxglove: unpacking plugins in the Plugins tab.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Foxglove: plugins' panel frames arrive as base64.
+base64 = "0.22"
 foxglove-panel = { path = "../crates/panel" }
 toml = "0.9"
 prost = "0.14"
@@ -63,6 +70,9 @@ windows = { version = "0.62.2", features = [
     "Devices_Enumeration",
     "Win32_Devices_Properties",
     "Devices_Radios",
+    # Foxglove: the sparse identity package (#179).
+    "ApplicationModel",
+    "Management_Deployment",
     "Foundation",
     "UI",
     "UI_ViewManagement",
@@ -117,3 +127,7 @@ auto_link_exclude_list = [
     "libseccomp.so*", "libexpat.so*", "libjson-glib*.so*", "libxml2.so*",
     "libsqlite3.so*", "liblcms2.so*", "libicu*.so*",
 ]
+
+[dev-dependencies]
+# Foxglove: checks that the built-in plugin icons render (the resvg egui_extras uses).
+resvg = { version = "0.45", default-features = false }

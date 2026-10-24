@@ -26,9 +26,10 @@ use settings::Settings;
 
 fn main() {
     if foxglove::update::helper_entry() { return; }
+    if foxglove::identity::entry() { return; }
     foxglove::update::start();
     os_layout::init();
-    let settings = Settings::load().unwrap_or_default();
+    let settings = foxglove::overlay_profile::effective(Settings::load().unwrap_or_default());
     let available_devices = discover_devices();
     if !foxglove::repaint_trace::disabled("screens") {
         foxglove::screens::start();
@@ -36,7 +37,17 @@ fn main() {
     if !foxglove::repaint_trace::disabled("art") {
         foxglove::art_service::start();
     }
+    foxglove::store::init_profiles();
+    foxglove::foreground::start();
     foxglove::accent::start();
+    foxglove::wallpaper::start();
     foxglove::api::start();
+    foxglove::via_host::start();
+    foxglove::plugin_install::autoinstall();
+    foxglove::plugin_runner::sync();
+    foxglove::plugin_actions::start();
+    foxglove::mic_broker::start();
+    foxglove::catalog_refresh::start();
+    foxglove::identity::start();
     foxglove::startup::finish(platform::run(settings, available_devices))
 }

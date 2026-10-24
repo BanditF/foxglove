@@ -208,6 +208,9 @@ static void drop_peer(void) {
     memset(&dbg, 0, sizeof(dbg));
 }
 
+static void guard_arm(void);
+static void guard_cancel(bool encrypted);
+
 static bool still_connected(struct bt_conn *conn) {
     struct bt_conn_info info;
     return bt_conn_get_info(conn, &info) == 0 && info.state == BT_CONN_STATE_CONNECTED;
@@ -226,6 +229,7 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     bool was_ready = art_relay_link() == 2;
     drop_peer();
     peer = bt_conn_ref(conn);
+    guard_arm();
     if (bt_conn_get_security(conn) >= BT_SECURITY_L2) { // already encrypted: no security_changed
         k_work_reschedule(&discover_work, DISCOVER_DELAY);
     }
@@ -235,8 +239,11 @@ static void connected(struct bt_conn *conn, uint8_t err) {
 }
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err) {
-    if (conn == peer && !err && level >= BT_SECURITY_L2 && !(data_handle && status_handle)) {
-        k_work_reschedule(&discover_work, DISCOVER_DELAY);
+    if (conn == peer && !err && level >= BT_SECURITY_L2) {
+        guard_cancel(true);
+        if (!(data_handle && status_handle)) {
+            k_work_reschedule(&discover_work, DISCOVER_DELAY);
+        }
     }
 }
 
@@ -245,6 +252,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
         return;
     }
     bool was_ready = art_relay_link() == 2;
+    guard_cancel(false);
     drop_peer();
     if (was_ready) {
         host_link_art_status();
@@ -763,6 +771,80 @@ void art_relay_discovery(int8_t *result, uint8_t *tries) {
                   : discovery;
     *tries = discovery_tries;
 }
+
+/* #122 guard: a split link stuck below encryption gets dropped so ZMK reconnects */
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_SPLIT_GUARD)
+#define GUARD_AFTER K_SECONDS(20)
+#define GUARD_MAX_IN_ROW 3
+
+static uint8_t guard_drops;  // since boot, for HELLO
+static uint8_t guard_in_row; // drops since the last link that encrypted
+static atomic_t guard_forced; // D7 0B: treat the next check's link as stuck (dev builds)
+
+static void guard_cb(struct k_work *work) {
+    struct bt_conn *conn = NULL;
+    unsigned int key = irq_lock();
+    if (peer != NULL) {
+        conn = bt_conn_ref(peer);
+    }
+    irq_unlock(key);
+    if (conn == NULL) {
+        return;
+    }
+    bool forced = atomic_cas(&guard_forced, 1, 0);
+    if (still_connected(conn) && (bt_conn_get_security(conn) < BT_SECURITY_L2 || forced)) {
+        if (guard_in_row < GUARD_MAX_IN_ROW) {
+            guard_in_row++;
+            guard_drops = MIN(guard_drops + 1, UINT8_MAX);
+            LOG_WRN("split: link to the right not encrypted after 20 s (security %d, MTU %d), "
+                    "dropping it (%d in a row)",
+                    bt_conn_get_security(conn), bt_gatt_get_mtu(conn), guard_in_row);
+            bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+        } else {
+            LOG_WRN("split: link to the right still not encrypted; leaving it (re-pair?)");
+        }
+    }
+    bt_conn_unref(conn);
+}
+// On relay_q: bt_conn_disconnect waits for the controller, which the system queue mustn't.
+static K_WORK_DELAYABLE_DEFINE(guard_work, guard_cb);
+
+static void guard_arm(void) { k_work_reschedule_for_queue(&relay_q, &guard_work, GUARD_AFTER); }
+
+static void guard_cancel(bool encrypted) {
+    k_work_cancel_delayable(&guard_work);
+    if (encrypted) {
+        guard_in_row = 0;
+    }
+}
+
+uint8_t art_relay_guard_drops(void) { return guard_drops; }
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+FOXGLOVE_TEST_HOOK_MARK(guard_test);
+#endif
+
+int art_relay_guard_test(void) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+    if (peer == NULL) {
+        return -ENOTCONN;
+    }
+    // The real recovery path (drop, ZMK reconnects) on a link that's actually fine; a genuine
+    // stuck-before-encryption link can't be made on purpose without deleting the bond.
+    atomic_set(&guard_forced, 1);
+    k_work_reschedule_for_queue(&relay_q, &guard_work, K_SECONDS(2));
+    return 0;
+#else
+    return -ENOTSUP;
+#endif
+}
+#else
+int art_relay_guard_test(void) { return -ENOTSUP; }
+static void guard_arm(void) {}
+static void guard_cancel(bool encrypted) {}
+uint8_t art_relay_guard_drops(void) { return 0; }
+#endif
 
 void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]) {
     out[0] = dbg.chrcs;

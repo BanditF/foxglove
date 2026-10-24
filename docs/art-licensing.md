@@ -15,7 +15,7 @@ Local sources live in `C:\Users\fuchs\splitkeeb\art-src` (not in any repo) unles
 |---|---|---|---|---|---|---|
 | ZMK nice!view balloon and mountain (art by Hammerbeam) | firmware built-ins `ZMK_1`, `ZMK_2` | [zmkfirmware/zmk `app/boards/shields/nice_view/widgets/art.c`](https://github.com/zmkfirmware/zmk/blob/v0.3.0/app/boards/shields/nice_view/widgets/art.c) | MIT (ZMK) | ZMK contributors; credit Hammerbeam | **OK to ship** (shipping) | Part of ZMK under its MIT licence. |
 | Corro the urchin animation | firmware built-in `Corro_urchin`; `untrusted/GPeye_urchin-peripheral-animation` | [GPeye/urchin-peripheral-animation](https://github.com/GPeye/urchin-peripheral-animation) | MIT (repo) | GPeye | **OK with conditions** (shipping) | The animation is GPeye's own pixel work under MIT. Corro is the unofficial Rust "unsafe" mascot, a community character with no stated licence. See flag F4. |
-| Gem crystal (art by Trixelized) | firmware built-in `Gem_crystal`; `untrusted/M165437_nice-view-gem` | [M165437/nice-view-gem](https://github.com/M165437/nice-view-gem) | MIT (repo) | M165437; credit Trixelized | **OK with conditions** (shipping) | The README says the crystal art was "lent" to the project by Trixelized. It is distributed inside the MIT repo, but there's no separate grant from the artist. See flag F3. |
+| Gem crystal (art by Trixelized) | firmware built-in `Gem_crystal`; `untrusted/M165437_nice-view-gem` | [M165437/nice-view-gem](https://github.com/M165437/nice-view-gem) | MIT (repo) | M165437; credit Trixelized | **Not shipped** (replaced by our own Bandit_Gem, #110) | The README says the crystal art was "lent" to the project by Trixelized. It is distributed inside the MIT repo, but there's no separate grant from the artist. See flag F3. |
 | Hammerbeam slideshow (30 signed pieces) | `untrusted/GPeye_hammerbeam-slideshow` | [GPeye/hammerbeam-slideshow](https://github.com/GPeye/hammerbeam-slideshow) | MIT (repo); art used with the artist's consent | Hammerbeam (signature in each image must stay) | **DO NOT SHIP** (removed 2026-10-21) | Removed by the owner's choice. The signature is the attribution, so the art may only be used as-is, never edited. |
 | Flipper Zero dolphin animations | `official/` (folders like `L1_Doom_128x64`); `flipper/` (PNG stills of the same) | [flipperdevices/flipperzero-firmware `assets/dolphin/external`](https://github.com/flipperdevices/flipperzero-firmware/tree/dev/assets/dolphin/external) | GPL-3.0 | Flipper Devices | **OK with conditions** (not shipping today) | Copyleft: see the notes below. They were removed from firmware because 128x64 art reads sideways on the portrait screens. |
 | kainsamara animations (Garage, Soulout) | `licensed/kainsamara` | [kainsamara/Flipper-Zero-Animations](https://github.com/kainsamara/Flipper-Zero-Animations) | MPL-2.0 | kainsamara | **OK with conditions** (not shipping) | File-level copyleft: see the notes below. |
@@ -28,15 +28,16 @@ Local sources live in `C:\Users\fuchs\splitkeeb\art-src` (not in any repo) unles
 | Bandit fox motif and the Bandit HUD library | `art-src/bandit`; `BanditF/bandit-wallpapers` `library/bandit` | the repo owner | © the owner, all rights reserved | the owner | **OK to ship** (owner's; the 13 scenes are firmware built-ins since 2026-10-23) | See F5. |
 | FURY linocut prints | `BanditF/bandit-wallpapers` `input_media/FURY prints` (private repo) | the repo owner | © the owner, all rights reserved | the owner | **OK to ship** (owner's) | Traced vector and keyboard derivatives live in the private wallpaper repo. See flag F5. |
 | Wallpaper keyboard art (12 sets) | `BanditF/bandit-wallpapers` → `dist/keyboard/<name>/right.bin` | generated from the two sources above | owner's own work | the owner | **OK to ship** (owner's) | Mostly the owner's art, plus procedural scenes made in this project. |
+| Plugin icons and the Plugins-tab empty state | `app/resources/plugins/` (generator `scripts/plugin_icons.py`) | drawn in this project from the Bandit fox motif | © the owner, all rights reserved | the owner | **OK to ship** (owner's) | Generic glyphs, no vendor logos: see [plugin-icons.md](plugin-icons.md) and F5. |
+| Plugin screen assets (Pomodoro, mic-mute panels; Bandit_Focus right art) | `assets/plugins/` (generator `scripts/plugin_panels.py`; right art from `art-src/bandit`) | drawn in this project in the Bandit style | © the owner, all rights reserved | the owner | **OK to ship** (owner's) | Not covered by the plugin crates' MIT licence: see [plugin-screens.md](plugin-screens.md) and F5. |
 
 ## Flags
 
 - **F1, bip3r (UNCLEAR / DO NOT SHIP):** no known source or licence. Owner decision (2026-10-23):
   keep them in art-src, but never ship them or copy them into a repo.
 - **F2, community-test (UNCLEAR / DO NOT SHIP):** same as F1 and the same decision.
-- **F3, Gem crystal (shipping, OK with conditions):** the art is "lent" by Trixelized inside an MIT
-  repo. Owner decision (2026-10-23): keep it for now and replace it with our own art the next time
-  the built-ins change (#110).
+- **F3, Gem crystal (resolved):** the art was "lent" by Trixelized inside an MIT repo. It was replaced
+  by our own `Bandit_Gem` at the same index (#110), so it no longer ships.
 - **F4, Corro (shipping, OK with conditions):** GPeye's animation is MIT, but Corro is a community
   mascot character. Low risk; same remedy as F3 if we want a fully clean set.
 - **F5, the owner's own art (decided):** the Bandit and FURY art is **all rights reserved**

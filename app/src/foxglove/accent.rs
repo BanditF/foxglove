@@ -1,20 +1,23 @@
 //! Follow the Windows accent colour on the keyboard's underglow (#93), as an option in Settings.
 //!
-//! Event-driven: Windows' UISettings.ColorValuesChanged (accent or theme changed) and Palm's
+//! Event-driven: Windows' UISettings.ColorValuesChanged (accent or theme changed) and the device layer's
 //! Connected event (a keyboard came, so it gets the current colour). Only the hue and
-//! saturation follow the accent; the board keeps its own brightness. Saved in `lighting.ini`.
+//! saturation follow the accent; the board keeps its own brightness. Saved in the store's `[lighting]`.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 
-use palm::{DeviceEvent, Device as _};
+use foxglove_devices::{DeviceEvent, Device as _};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static WAKE: OnceLock<Mutex<mpsc::Sender<()>>> = OnceLock::new();
 
-fn settings_path() -> Option<std::path::PathBuf> {
-    crate::settings::Settings::config_file_path().map(|p| p.with_file_name("lighting.ini"))
+/// The `[lighting]` section of the settings store.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct LightingSettings {
+    follow_accent: bool,
 }
 
 pub fn enabled() -> bool {
@@ -24,12 +27,8 @@ pub fn enabled() -> bool {
 /// Turns following on or off, saves it, and applies the colour now when turned on.
 pub fn set_enabled(on: bool) {
     ENABLED.store(on, Ordering::Relaxed);
-    if let Some(path) = settings_path() {
-        let mut conf = ini::Ini::load_from_file(&path).unwrap_or_default();
-        conf.with_section(Some("lighting")).set("follow_accent", on.to_string());
-        if let Err(e) = conf.write_to_file(&path) {
-            eprintln!("Foxglove: can't save {}: {e}", path.display());
-        }
+    if let Err(e) = super::store::save("lighting", &LightingSettings { follow_accent: on }) {
+        eprintln!("Foxglove: can't save the lighting settings: {e}");
     }
     if on {
         wake();
@@ -61,15 +60,27 @@ pub fn hue_sat(r: u8, g: u8, b: u8) -> (u16, u8) {
     ((hue.round() as u16) % 360, (delta / max * 100.0).round() as u8)
 }
 
+/// The effective setting (the active profile's, else the base).
+fn load_enabled() -> bool {
+    super::store::load_or_migrate::<LightingSettings>("lighting", || {
+        // The old lighting.ini, from before the store.
+        let ini = crate::settings::Settings::config_file_path()?.with_file_name("lighting.ini");
+        let on = ini::Ini::load_from_file(&ini)
+            .ok()?
+            .section(Some("lighting"))?
+            .get("follow_accent")?
+            == "true";
+        Some((LightingSettings { follow_accent: on }, vec![ini]))
+    })
+    .follow_accent
+}
+
 /// Starts following (Windows): loads the setting, watches the accent and keyboard arrivals.
 pub fn start() {
     if super::repaint_trace::disabled("accent") {
         return;
     }
-    let on = settings_path()
-        .and_then(|p| ini::Ini::load_from_file(p).ok())
-        .and_then(|c| c.section(Some("lighting")).and_then(|s| s.get("follow_accent")).map(|v| v == "true"))
-        .unwrap_or(false);
+    let on = load_enabled();
     ENABLED.store(on, Ordering::Relaxed);
     #[cfg(windows)]
     windows_impl::start();
@@ -84,9 +95,20 @@ mod windows_impl {
     pub fn start() {
         let (tx, rx) = mpsc::channel::<()>();
         let _ = WAKE.set(Mutex::new(tx.clone()));
+        // A profile switch can change the setting: re-read it, then apply.
+        let switched = tx.clone();
+        let profile = crate::foxglove::devices::bus().facts().subscribe("profile.active");
+        crate::foxglove::services::spawn_named("accent-profile", move || {
+            for _ in profile {
+                ENABLED.store(load_enabled(), Ordering::Relaxed);
+                if switched.send(()).is_err() {
+                    break;
+                }
+            }
+        });
         // Keyboard arrivals: apply the current colour to a newly connected board.
         let arrivals = tx.clone();
-        let events = crate::foxglove::palm_host::bus().subscribe(false);
+        let events = crate::foxglove::devices::bus().subscribe(false);
         crate::foxglove::services::spawn_named("accent-arrivals", move || {
             for e in events {
                 if e.event == DeviceEvent::Connected && arrivals.send(()).is_err() {
@@ -115,12 +137,12 @@ mod windows_impl {
                     continue;
                 }
                 // device() may discover a keyboard; this thread can wait for it.
-                let Some(d) = crate::foxglove::palm_host::device() else { continue };
+                let Some(d) = crate::foxglove::devices::device() else { continue };
                 let Some(lighting) = d.lighting() else { continue };
                 let brightness = lighting.state().map_or(100, |s| s.brightness);
                 match lighting.set_color(hue, sat, brightness.max(1)) {
                     Ok(()) => applied = Some((hue, sat)),
-                    Err(e) => eprintln!("Foxglove accent: {}", crate::foxglove::palm_host::describe(&e)),
+                    Err(e) => eprintln!("Foxglove accent: {}", crate::foxglove::devices::describe(&e)),
                 }
             }
         });
