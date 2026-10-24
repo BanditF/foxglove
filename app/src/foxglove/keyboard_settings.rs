@@ -1,13 +1,13 @@
-//! Talking to the keyboard's settings and actions off the UI thread, through its Palm device:
+//! Talking to the keyboard's settings and actions off the UI thread, through its device-layer device:
 //! the RGB sync switch, both halves' lights, and invoking any action from the keymap.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use digitalis::protocol::RgbState;
-use palm::{Device, Value};
+use foxglove_devices::{Device, Value};
 
-use super::palm_host::{describe, device};
+use super::devices::{describe, device};
 
 /// What Foxglove knows about "right half's lights follow the left".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,7 +38,7 @@ pub fn ask_rgb_sync(set: Option<bool>, ctx: egui::Context) {
         let state = match device() {
             None => RgbSync::NoKeyboard,
             Some(d) => {
-                let reply = d.settings().ok_or(palm::PalmError::Unsupported).and_then(|s| {
+                let reply = d.settings().ok_or(foxglove_devices::DeviceError::Unsupported).and_then(|s| {
                     if let Some(on) = set {
                         s.set("rgb_sync", Value::Bool(on))?;
                     }
@@ -77,7 +77,7 @@ pub fn invoke(label: String, binding: (u16, u32, u32), ctx: egui::Context) {
     }
     let (id, p1, p2) = binding;
     run(label, ctx, move |d| {
-        let behaviors = d.behaviors().ok_or(palm::PalmError::Unsupported)?;
+        let behaviors = d.behaviors().ok_or(foxglove_devices::DeviceError::Unsupported)?;
         behaviors.invoke(id.into(), p1, p2, true)
     });
 }
@@ -86,7 +86,7 @@ pub fn invoke(label: String, binding: (u16, u32, u32), ctx: egui::Context) {
 fn run(
     label: String,
     ctx: egui::Context,
-    command: impl FnOnce(&digitalis::palm::DigitalisDevice) -> palm::Result<()> + Send + 'static,
+    command: impl FnOnce(&digitalis::devices::DigitalisDevice) -> foxglove_devices::Result<()> + Send + 'static,
 ) {
     if INVOKING.swap(true, Ordering::Relaxed) {
         return;
@@ -122,7 +122,7 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
         RGB_REFRESH.store(false, Ordering::Relaxed);
         let ctx = ctx.clone();
         super::services::spawn_named("rgb-state", move || {
-            // Read from the link: Palm's lighting state has no per-half age yet.
+            // Read from the link: the device layer's lighting state has no per-half age yet.
             let state = device().and_then(|d| digitalis::settings::rgb_state(d.link().as_ref()).ok());
             *RGB_STATE.lock().unwrap() = state;
             RGB_POLLING.store(false, Ordering::Relaxed);
@@ -135,10 +135,10 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
 fn lighting(
     label: &str,
     ctx: egui::Context,
-    change: impl FnOnce(&dyn palm::Lighting) -> palm::Result<()> + Send + 'static,
+    change: impl FnOnce(&dyn foxglove_devices::Lighting) -> foxglove_devices::Result<()> + Send + 'static,
 ) {
     run(label.into(), ctx, move |d| {
-        change(d.lighting().ok_or(palm::PalmError::Unsupported)?)
+        change(d.lighting().ok_or(foxglove_devices::DeviceError::Unsupported)?)
     });
 }
 
@@ -156,7 +156,7 @@ pub fn set_color(hue: u16, sat: u8, brightness: u8, ctx: egui::Context) {
 /// Effect: 0 solid, 1 breathe, 2 spectrum, 3 swirl.
 pub fn set_effect(effect: u8, ctx: egui::Context) {
     lighting("Set effect", ctx, move |l| {
-        l.set_effect(palm::Effect {
+        l.set_effect(foxglove_devices::Effect {
             id: effect.to_string(),
             params: vec![],
         })
@@ -182,7 +182,7 @@ static FIRMWARE: Mutex<(Option<u64>, Firmware)> = Mutex::new((None, Firmware::Un
 
 /// The cached builds; reads them in the background when there's a new connection.
 pub fn firmware(ctx: &egui::Context) -> Firmware {
-    let generation = super::palm_host::generation();
+    let generation = super::devices::generation();
     let mut cached = FIRMWARE.lock().unwrap_or_else(|e| e.into_inner());
     let stale = cached.0 != generation || cached.1 == Firmware::Unknown;
     if stale && cached.1 != Firmware::Reading {

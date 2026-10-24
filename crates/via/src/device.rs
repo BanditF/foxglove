@@ -1,12 +1,12 @@
-//! A VIA keyboard as a Palm device: its keymap (read; written only when opened with writes)
+//! A VIA keyboard as a device-layer device: its keymap (read; written only when opened with writes)
 //! and, when the definition has it, RGB Matrix lighting through VIA's custom values.
 //!
 //! Lighting changes are not saved to the keyboard's EEPROM (no CUSTOM_SAVE): they last until
 //! the keyboard restarts, so experiments can't wear or overwrite the stored settings.
 
-use palm::{
+use foxglove_devices::{
     Binding, Caps, Device, DeviceInfo, Effect, Keymap, LayerInfo, Layout, Led, Lighting, LightingState,
-    PalmError, Result, WriteSupport, Zone,
+    DeviceError, Result, WriteSupport, Zone,
 };
 
 use crate::definition::Definition;
@@ -43,7 +43,7 @@ impl<T: Transport> ViaDevice<T> {
     }
 }
 
-/// 0-255 (QMK) to 0-100 (Palm) and back.
+/// 0-255 (QMK) to 0-100 (the device layer) and back.
 fn to_percent(v: u8) -> u8 {
     ((u16::from(v) * 100 + 127) / 255) as u8
 }
@@ -103,11 +103,11 @@ impl<T: Transport> Keymap for ViaDevice<T> {
 
     fn set_binding(&self, layer: u32, row: u16, col: u16, binding: Binding) -> Result<()> {
         if !self.link.writes() {
-            return Err(PalmError::Unsupported);
+            return Err(DeviceError::Unsupported);
         }
         let code = match (binding.kind.as_str(), binding.params.as_slice()) {
-            ("qmk", [code]) => u16::try_from(*code).map_err(|_| PalmError::Unsupported)?,
-            _ => return Err(PalmError::Unsupported),
+            ("qmk", [code]) => u16::try_from(*code).map_err(|_| DeviceError::Unsupported)?,
+            _ => return Err(DeviceError::Unsupported),
         };
         let [hi, lo] = code.to_be_bytes();
         let (layer, row, col) = (byte(layer)?, byte(row.into())?, byte(col.into())?);
@@ -116,7 +116,7 @@ impl<T: Transport> Keymap for ViaDevice<T> {
 }
 
 fn byte(v: u32) -> Result<u8> {
-    u8::try_from(v).map_err(|_| PalmError::Unsupported)
+    u8::try_from(v).map_err(|_| DeviceError::Unsupported)
 }
 
 impl<T: Transport> Lighting for ViaDevice<T> {
@@ -141,7 +141,7 @@ impl<T: Transport> Lighting for ViaDevice<T> {
 
     /// RGB Matrix effects by QMK number (0 = off).
     fn set_effect(&self, effect: Effect) -> Result<()> {
-        let n: u8 = effect.id.parse().map_err(|_| PalmError::Unsupported)?;
+        let n: u8 = effect.id.parse().map_err(|_| DeviceError::Unsupported)?;
         self.custom_set(rgb_matrix::EFFECT, &[n])
     }
 
@@ -161,7 +161,7 @@ mod tests {
     use super::*;
     use crate::definition::SAMPLE;
     use crate::protocol::{Report, REPORT};
-    use palm::{BackendId, DeviceId, DeviceKind};
+    use foxglove_devices::{BackendId, DeviceId, DeviceKind};
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -215,7 +215,7 @@ mod tests {
     fn read_only_device_passes_the_contract_and_never_writes() {
         let (dev, fake) = open(false);
         assert_eq!((dev.protocol_version, dev.layers), (12, 4));
-        palm::contract::check_device(&dev).unwrap();
+        foxglove_devices::contract::check_device(&dev).unwrap();
         assert_eq!(dev.binding(0, 0, 0).unwrap().params, vec![0x29]);
         assert!(dev.lighting().unwrap().set_effect(Effect { id: "3".into(), params: vec![] }).is_err());
         let sent = fake.sent.lock().unwrap();
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn writable_device_writes_keycodes_and_lighting_without_saving() {
         let (dev, fake) = open(true);
-        palm::contract::check_binding(&dev, 1, 1, 2, Binding { kind: "qmk".into(), params: vec![0x0004], label: None }).unwrap();
+        foxglove_devices::contract::check_binding(&dev, 1, 1, 2, Binding { kind: "qmk".into(), params: vec![0x0004], label: None }).unwrap();
         let lighting = dev.lighting().unwrap();
         lighting.set_color(180, 50, 100).unwrap();
         lighting.set_effect(Effect { id: "4".into(), params: vec![] }).unwrap();

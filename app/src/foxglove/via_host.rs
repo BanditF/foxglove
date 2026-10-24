@@ -1,6 +1,6 @@
 //! Other keyboards over VIA (#74), read-only, off by default: QMK keyboards such as the
-//! Keychron K5 Pro, found by the VIA JSON definitions the user loads. They join Palm (facts,
-//! the local API, Kits) next to the host-link keyboard. Nothing is written to them: the VIA
+//! Keychron K5 Pro, found by the VIA JSON definitions the user loads. They join the device layer (facts,
+//! the local API, plugins) next to the host-link keyboard. Nothing is written to them: the VIA
 //! backend opens devices read-only, and reset/bootloader/factory commands never go out.
 //!
 //! Settings in the store's `[via]`; scanning happens on demand (Rescan, turning it on, adding a
@@ -11,7 +11,7 @@ use std::sync::Mutex;
 
 use foxglove_via::hid::ViaBackend;
 use foxglove_via::Definition;
-use palm::{Device, Registry};
+use foxglove_devices::{Device, Registry};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -72,7 +72,7 @@ pub fn rescan() {
             return;
         }
         let (defs, errors) = definitions(&s);
-        let mut registry = Registry::new(super::palm_host::bus().clone());
+        let mut registry = Registry::new(super::devices::bus().clone());
         let _ = registry.add_backend(Box::new(ViaBackend::new(defs)));
         let report = registry.discover();
         let mut found: Vec<Found> = errors
@@ -83,8 +83,8 @@ pub fn rescan() {
         for entry in report.devices {
             let opened = registry
                 .open(&entry.info.id)
-                .and_then(|d| d.keymap().ok_or(palm::PalmError::Unsupported)?.layers().map(|l| l.len()))
-                .map_err(|e| super::palm_host::describe(&e));
+                .and_then(|d| d.keymap().ok_or(foxglove_devices::DeviceError::Unsupported)?.layers().map(|l| l.len()))
+                .map_err(|e| super::devices::describe(&e));
             found.push(Found { name: entry.info.name.clone(), opened });
         }
         *STATUS.lock().unwrap_or_else(|e| e.into_inner()) = found;
@@ -101,7 +101,7 @@ pub fn with_device<R>(id: &str, f: impl FnOnce(&dyn Device) -> R) -> Option<R> {
 }
 
 /// The open VIA keyboards, for `devices.list`.
-pub fn devices() -> Vec<(palm::DeviceInfo, palm::Caps)> {
+pub fn devices() -> Vec<(foxglove_devices::DeviceInfo, foxglove_devices::Caps)> {
     let guard = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
     let Some(registry) = guard.as_ref() else { return vec![] };
     registry

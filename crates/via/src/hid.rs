@@ -1,4 +1,4 @@
-//! The hidapi transport and the Palm backend: keyboards whose VID/PID matches a loaded VIA
+//! The hidapi transport and the device layer backend: keyboards whose VID/PID matches a loaded VIA
 //! definition, on their Raw HID interface (usage page 0xFF60, usage 0x61), over USB.
 //!
 //! The backend opens devices read-only unless built with [`ViaBackend::allow_writes`].
@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use hidapi::{HidApi, HidDevice};
-use palm::{Backend, BackendId, Device, DeviceId, DeviceInfo, DeviceKind, EventSink, PalmError, Result};
+use foxglove_devices::{Backend, BackendId, Device, DeviceId, DeviceInfo, DeviceKind, EventSink, DeviceError, Result};
 
 use crate::definition::Definition;
 use crate::device::ViaDevice;
@@ -26,17 +26,17 @@ impl Transport for HidTransport {
         let dev = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = [0u8; REPORT + 1]; // byte 0 is the report id
         out[1..].copy_from_slice(report);
-        dev.write(&out).map_err(|e| PalmError::Backend(e.to_string()))?;
+        dev.write(&out).map_err(|e| DeviceError::Backend(e.to_string()))?;
         let end = Instant::now() + REPLY_TIMEOUT;
         loop {
             let left = end.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Err(PalmError::Timeout);
+                return Err(DeviceError::Timeout);
             }
             let mut reply = [0u8; REPORT];
             let n = dev
                 .read_timeout(&mut reply, left.as_millis() as i32)
-                .map_err(|_| PalmError::Disconnected)?;
+                .map_err(|_| DeviceError::Disconnected)?;
             if n > 0 && (reply[0] == report[0] || reply[0] == crate::protocol::UNHANDLED) {
                 return Ok(reply);
             }
@@ -73,7 +73,7 @@ impl Backend for ViaBackend {
     }
 
     fn discover(&self) -> Result<Vec<DeviceInfo>> {
-        let api = HidApi::new().map_err(|e| PalmError::Backend(e.to_string()))?;
+        let api = HidApi::new().map_err(|e| DeviceError::Backend(e.to_string()))?;
         let mut found: Vec<DeviceInfo> = Vec::new();
         for d in api.device_list() {
             if d.usage_page() != USAGE_PAGE || d.usage() != USAGE {
@@ -90,8 +90,8 @@ impl Backend for ViaBackend {
     }
 
     fn open(&self, info: &DeviceInfo, _sink: EventSink) -> Result<Box<dyn Device>> {
-        let def = self.definition(info.id.vid, info.id.pid).cloned().ok_or(PalmError::Unsupported)?;
-        let api = HidApi::new().map_err(|e| PalmError::Backend(e.to_string()))?;
+        let def = self.definition(info.id.vid, info.id.pid).cloned().ok_or(DeviceError::Unsupported)?;
+        let api = HidApi::new().map_err(|e| DeviceError::Backend(e.to_string()))?;
         let path = api
             .device_list()
             .find(|d| {
@@ -100,8 +100,8 @@ impl Backend for ViaBackend {
                     && DeviceId::new(self.id(), d.vendor_id(), d.product_id(), d.serial_number(), &d.path().to_string_lossy()) == info.id
             })
             .map(|d| d.path().to_owned())
-            .ok_or(PalmError::Disconnected)?;
-        let dev = api.open_path(&path).map_err(|e| PalmError::Backend(e.to_string()))?;
+            .ok_or(DeviceError::Disconnected)?;
+        let dev = api.open_path(&path).map_err(|e| DeviceError::Backend(e.to_string()))?;
         let transport = HidTransport(Mutex::new(dev));
         let link = if self.writes { Guarded::with_writes(transport) } else { Guarded::read_only(transport) };
         Ok(Box::new(ViaDevice::open(info.clone(), def, link)?))

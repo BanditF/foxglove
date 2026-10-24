@@ -25,7 +25,7 @@ export.
 
 - **New file:** `%APPDATA%\Foxglove\foxglove.toml`, with `schema = 1` at the top. Each Foxglove
   feature owns one table: `[screens]`, `[art]`, `[art.cycle]`, `[lighting]`, `[updates]`,
-  `[connection]`, `[layers]`, `[kits]`, `[profiles]`.
+  `[connection]`, `[layers]`, `[plugins]`, `[profiles]`.
 - **Module:** `foxglove::store` loads the file once and hands each feature a typed section
   (serde, with defaults).
 - **Writes:** atomic (temp file and rename). External edits are picked up by the existing file
@@ -68,7 +68,7 @@ profile = "Game"
   - screens (drive, fps, game hints);
   - art (pinned choice, hotlist and its mode);
   - lighting (accent follow, or a fixed colour/effect applied on switch);
-  - which Kits are enabled.
+  - which plugins are enabled.
 - **What a profile can't set:** the keyboard connection, update settings, layer names and
   caches, because those describe the machine, not a mood.
 
@@ -83,9 +83,9 @@ profile = "Game"
   - **Manual choice:** a manual pick holds until the next foreground change that matches a rule
     (or until Auto is chosen again), so the user is never fought.
 - **Applying:** the switch sets the `profile.active` fact. Each feature subscribes to it and
-  reloads its effective section. This is the same facts mechanism Kits and the local API use,
+  reloads its effective section. This is the same facts mechanism plugins and the local API use,
   so a Stream Deck button (through the API) can switch profiles too.
-- **What the keyboard sees:** lighting and art changes go through Palm, so a profile switch
+- **What the keyboard sees:** lighting and art changes go through the device layer, so a profile switch
   shows on the board within a second.
 
 ## Export and import

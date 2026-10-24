@@ -2,7 +2,7 @@
 name = "foxglove-via"
 version = "0.1.0"
 edition = "2021"
-description = "A Palm backend for QMK keyboards that speak VIA over Raw HID, with a command allowlist"
+description = "A Devices backend for QMK keyboards that speak VIA over Raw HID, with a command allowlist"
 license = "MIT"
 
 [features]
@@ -11,9 +11,9 @@ hid = ["dep:hidapi"]
 
 [dependencies]
 hidapi = { version = "2.6", optional = true }
-palm = { path = "../palm" }
+foxglove-devices = { path = "../devices" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [dev-dependencies]
-palm = { path = "../palm", features = ["contract"] }
+foxglove-devices = { path = "../devices", features = ["contract"] }
