@@ -31,6 +31,7 @@ pub mod startup;
 pub mod tray;
 pub mod connection;
 pub mod layer_access;
+pub mod foreground;
 
 #[cfg(target_os = "windows")]
 pub(crate) mod device_watch;
