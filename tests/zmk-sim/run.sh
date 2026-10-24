@@ -48,7 +48,11 @@ for keymap in "$suite"/*/native_posix_64.keymap; do
         failed=1
         continue
     fi
-    if ! timeout 60s "$build/zephyr/zmk.exe" 2>"$build/stderr.log" |
+    # The simulator runs in real time; a case that needs longer names its limit in seconds in a
+    # timeout file (panel-stream holds its frame through 70 s of silence).
+    limit=60
+    if [[ -f "$case_dir/timeout" ]]; then limit=$(tr -dc '0-9' <"$case_dir/timeout"); fi
+    if ! timeout "${limit}s" "$build/zephyr/zmk.exe" 2>"$build/stderr.log" |
         sed -e 's/.*> //' |
         tee "$build/keycode_events_full.log" |
         sed -n -f "$case_dir/events.patterns" >"$build/keycode_events.log"; then

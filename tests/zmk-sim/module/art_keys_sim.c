@@ -38,7 +38,6 @@ void art_keys_sim_driver(void) {
     k_msleep(2000);
     put(on, sizeof(on));
     k_msleep(1000);
-    printk("artkeys: the endpoint changes
-");
+    printk("artkeys: the endpoint changes\n");
     raise_zmk_endpoint_changed((struct zmk_endpoint_changed){0});
 }
