@@ -340,28 +340,45 @@ fn real_link_routes_scripted_layer_reports_and_rejects_reconnection() {
     use digitalis::link::{Connected, Link, RawHid};
     use foxglove_lab::runner::Hardware;
     use std::sync::Mutex;
-    struct Wire(Arc<Mutex<VecDeque<[u8; REPORT]>>>);
+    // Blocks like the real reader: waits for a scripted report or for `interrupt`.
+    #[derive(Default)]
+    struct Queue {
+        reports: VecDeque<[u8; REPORT]>,
+        stopped: bool,
+    }
+    struct Wire(Arc<(Mutex<Queue>, std::sync::Condvar)>);
     impl RawHid for Wire {
-        fn read(&mut self, buf: &mut [u8; REPORT], _: i32) -> Result<usize> {
-            let next = self.0.lock().unwrap().pop_front();
-            if let Some(r) = next {
-                *buf = r;
-                Ok(REPORT)
-            } else {
-                std::thread::sleep(Duration::from_millis(1));
-                Ok(0)
+        fn read(&self, buf: &mut [u8; REPORT]) -> Result<usize> {
+            let (lock, ready) = &*self.0;
+            let mut q = lock.lock().unwrap();
+            loop {
+                if let Some(r) = q.reports.pop_front() {
+                    *buf = r;
+                    return Ok(REPORT);
+                }
+                if q.stopped {
+                    return Ok(0);
+                }
+                q = ready.wait(q).unwrap();
             }
         }
-        fn write(&mut self, r: &[u8]) -> Result<()> {
+        fn interrupt(&self) {
+            let (lock, ready) = &*self.0;
+            lock.lock().unwrap().stopped = true;
+            ready.notify_all();
+        }
+        fn write(&self, r: &[u8]) -> Result<()> {
             assert_eq!(&r[..2], &[0xd7, 2]);
-            let mut q = self.0.lock().unwrap();
+            let (lock, ready) = &*self.0;
+            let mut q = lock.lock().unwrap();
             // Four-byte little-endian default and active masks. Layer 17 is active.
-            q.push_back(reply(&[0xff, 4, 1, 0, 0, 0, 0, 0, 2, 0]));
-            q.push_back(reply(&[0xd7, 0x82, 0, 42, 0]));
+            q.reports.push_back(reply(&[0xff, 4, 1, 0, 0, 0, 0, 0, 2, 0]));
+            q.reports.push_back(reply(&[0xd7, 0x82, 0, 42, 0]));
+            ready.notify_all();
             Ok(())
         }
     }
-    let inbox = Arc::new(Mutex::new(VecDeque::new()));
+    let inbox = Arc::new((Mutex::new(Queue::default()), std::sync::Condvar::new()));
     let source = inbox.clone();
     let link = Link::start(Box::new(move || {
         Ok((
@@ -382,7 +399,8 @@ fn real_link_routes_scripted_layer_reports_and_rejects_reconnection() {
         &case("[{invoke={behavior='mo',param1=17}},{expect_layer={active_contains=[17],top=17}}]"),
     );
     assert_eq!(result.status, Status::Pass);
-    inbox.lock().unwrap().push_back(reply(&[0xff, 0]));
+    inbox.0.lock().unwrap().reports.push_back(reply(&[0xff, 0]));
+    inbox.1.notify_all();
     assert!(hardware.layer(Duration::from_secs(1)).is_err());
     let generation = hardware.link.state().generation;
     hardware.link.reconnect();
