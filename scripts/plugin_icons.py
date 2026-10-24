@@ -65,6 +65,12 @@ GLYPHS = {
         ("ink", '<path d="M5.5 10.5 A6.5 6.5 0 0 0 18.5 10.5 M12 17 V20.5 M8.5 21 H15.5"/>'),
         ("r", '<path d="M4 3 L20 19"/>'),
     ],
+    # broadcast status: a mast on air, with the red tally light
+    "org.foxglove.broadcast-status": [
+        ("ink", '<path d="M12 9 L7 21 M12 9 L17 21 M9 16 H15"/>'),
+        ("ink", '<path d="M6.5 3.5 A7 7 0 0 0 6.5 10.5 M17.5 3.5 A7 7 0 0 1 17.5 10.5"/>'),
+        ("r", '<circle cx="12" cy="7" r="1.5"/>'),
+    ],
     # lighting mirrored onto a key: rays over a keycap
     "org.foxglove.icue": [
         ("ink", '<rect x="5" y="10" width="14" height="11" rx="2"/>'),
