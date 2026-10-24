@@ -40,6 +40,17 @@
       ]
     },
     {
+      "id": "org.foxglove.wallpaper-match",
+      "name": "Wallpaper Match",
+      "description": "Your keyboard's underglow takes the Bandit wallpaper's accent colour, and gives the lights back when the wallpaper pauses.",
+      "permissions": [
+        "net.listen:tcp:127.0.0.1:8767",
+        "facts.read:keyboard.connected",
+        "devices.read",
+        "lighting.write"
+      ]
+    },
+    {
       "id": "org.foxglove.signalrgb",
       "name": "SignalRGB",
       "description": "Lets SignalRGB light your Foxglove keyboard along with the rest of your setup.",
