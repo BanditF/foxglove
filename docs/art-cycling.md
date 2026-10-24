@@ -130,3 +130,21 @@ store keeps `position` across restarts, as now.
   - layer art on GAME, including a quick tap that mustn't flash;
   - preset art appearing and being restored;
   - priority order after a manual pick.
+
+## As built (first app PR)
+
+- **Store:** `art_cycle.rs` has `step` (key, lights_wake, minutes), `minutes`, `follow` (nothing,
+  wallpaper) and `layers`. The old `mode` is read once and migrated, and never written back.
+- **Logic:** `art_triggers.rs` holds the layer and preset triggers and their priority. The art
+  service gets the layer changes from the device event bus (`DeviceEvent::LayerChanged`), so
+  `keyboard.rs` is untouched.
+  - Its only clock is the one-shot `LAYER_DELAY` deadline, merged with the minutes deadline into
+    one `recv_timeout`.
+  - Trigger art is shown without pinning (`Command::Show`). The hotlist and the wallpaper match
+    wait while trigger art is on top.
+- **Presets:** the preset code calls `Handle::preset_art(Some(item) / None)`, and only when
+  **Change the right screen with the preset** is on. That toggle belongs to the presets, so
+  there's no "follow the preset" option here.
+- **Layer art** offers built-ins and saved slots (instant). Files wait for the slot cache.
+- **The art key:** the checkbox is there but disabled until firmware ships `&art_next` and its
+  HELLO capability bit.
