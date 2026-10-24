@@ -1,0 +1,3 @@
+# No hold-tap/mod-tap exists. Real td0 position 13: single tap and >200ms hold yield Shift; double tap yields Caps; final Q proves release.
+s/.*hid_listener_keycode/kp/p
+/^SIM_SOFT_OFF$/p

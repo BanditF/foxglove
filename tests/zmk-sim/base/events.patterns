@@ -1,0 +1,3 @@
+# Taps on both halves: Tab Q A Z / Y P H M Enter; verifies sparse transform.
+s/.*hid_listener_keycode/kp/p
+/^SIM_SOFT_OFF$/p

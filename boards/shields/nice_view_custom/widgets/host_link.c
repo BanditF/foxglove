@@ -27,8 +27,13 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/usb.h>
 
 #include "host_link.h"
+#include "screen_snap.h"
 #include "art_relay.h"
 #include "rgb_idle.h"
+#include "behavior_safety.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+#include "test_hooks.h"
+#endif
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
 #include <zmk/rgb_underglow.h>
@@ -36,7 +41,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE };
 enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS };
-enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE };
+enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
+       SETTING_SCREEN_SNAP, SETTING_SCREEN_READ };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -112,6 +118,8 @@ static void reply(const uint8_t *data, int len) {
     }
 }
 
+void host_link_screen_reply(const uint8_t *data, int len) { reply(data, len); }
+
 static uint8_t right_link(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     return art_relay_link();
@@ -132,12 +140,18 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     art_relay_debug(&r[11]);
 #endif
-    uint32_t caps = HOST_LINK_CAP_PANEL | HOST_LINK_CAP_CONN_STATE;
+    uint32_t caps = HOST_LINK_CAP_PANEL | HOST_LINK_CAP_CONN_STATE | HOST_LINK_CAP_SCREEN;
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT;
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
     caps |= HOST_LINK_CAP_SETTINGS_RGB;
+#endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+    caps |= HOST_LINK_CAP_POSITION;
+#endif
+#if IS_ENABLED(CONFIG_ZMK_BEHAVIOR_LOCAL_IDS)
+    caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
 #endif
     sys_put_le32(caps, &r[21]);
     sys_put_le16(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S, &r[25]);
@@ -277,18 +291,9 @@ static uint8_t invoke(const uint8_t *d, int len) {
     if (name == NULL) {
         return INVOKE_UNKNOWN;
     }
-    // Local ids resolve to device names, not keymap labels such as "bt" or "out".
-    // Match every enabled instance of these compatibles, including renamed nodes.
-    // Both &bootloader and &sys_reset use zmk,behavior-reset in ZMK v0.3.
-#define REFUSE_INVOKE_NODE(node_id)                                                                 \
-    if (strcmp(name, DEVICE_DT_NAME(node_id)) == 0) {                                               \
-        return INVOKE_REFUSED;                                                                    \
+    if (foxglove_behavior_refused(name)) {
+        return INVOKE_REFUSED;
     }
-    DT_FOREACH_STATUS_OKAY(zmk_behavior_bluetooth, REFUSE_INVOKE_NODE)
-    DT_FOREACH_STATUS_OKAY(zmk_behavior_outputs, REFUSE_INVOKE_NODE)
-    DT_FOREACH_STATUS_OKAY(zmk_behavior_reset, REFUSE_INVOKE_NODE)
-    DT_FOREACH_STATUS_OKAY(zmk_behavior_soft_off, REFUSE_INVOKE_NODE)
-#undef REFUSE_INVOKE_NODE
     if (!atomic_cas(&invoke_busy, 0, 1)) {
         return INVOKE_BUSY;
     }
@@ -309,8 +314,27 @@ static uint8_t invoke(const uint8_t *d, int len) {
 #endif
 }
 
+void host_link_position_reply(uint8_t status, uint8_t pos) {
+    const uint8_t r[] = {HOST_LINK_SETTINGS, 0x80 | SETTING_POSITION, status, pos};
+    reply(r, sizeof(r));
+}
+
 static void settings_command(const uint8_t *d, int len) {
+    if (d[1] == SETTING_SCREEN_SNAP || d[1] == SETTING_SCREEN_READ) {
+        screen_snap_command(d, len);
+        return;
+    }
     switch (d[1]) {
+    case SETTING_POSITION: {
+        uint8_t status = 4;
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+        status = len < 4 ? 5 : test_hooks_press(d[2], d[3]);
+#endif
+        if (status != 0) {
+            host_link_position_reply(status, d[2]);
+        }
+        break;
+    }
     case SETTING_CONN_STATE: {
         uint8_t r[8] = {HOST_LINK_SETTINGS, 0x80 | SETTING_CONN_STATE};
 #if IS_ENABLED(CONFIG_ZMK_BLE)
@@ -378,6 +402,9 @@ static int raw_hid_received_listener(const zmk_event_t *eh) {
 
     if (d[0] == HOST_LINK_PANEL || d[0] == HOST_LINK_ART || d[0] == HOST_LINK_SETTINGS) {
         atomic_set(&host_seen, 1);
+#if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+        test_hooks_host_seen();
+#endif
     }
     switch (d[0]) {
     case HOST_LINK_PANEL:

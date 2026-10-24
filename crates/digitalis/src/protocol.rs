@@ -17,6 +17,12 @@ pub mod capabilities {
     pub const SETTINGS_RGB: u32 = 1 << 2;
     pub const ART_STATUS_EVENT: u32 = 1 << 3;
     pub const CONN_STATE: u32 = 1 << 4;
+    /// Settings POSITION (D7 05), pre-GA test builds only.
+    pub const POSITION: u32 = 1 << 5;
+    /// Settings SCREEN_SNAP / SCREEN_READ (D7 06 / D7 07).
+    pub const SCREEN: u32 = 1 << 6;
+    /// INVOKE refuses &bt, &out, &bootloader, &sys_reset and &soft_off with status 6.
+    pub const INVOKE_REFUSES: u32 = 1 << 7;
 }
 pub const VERSION: u8 = 1;
 
