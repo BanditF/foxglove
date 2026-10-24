@@ -21,25 +21,25 @@ EFFECTS = ["solid", "breathe", "spectrum", "swirl"]  # index = the keyboard's ef
 PRESETS = [
     {"id": "bandit", "name": "Bandit", "description": "The Bandit orange of the fox and the HUD.",
      "color": {"hue": 22, "saturation": 92, "brightness": 60}, "effect": "solid", "swatch": "#e5732b",
-     "wallpapers": ["hud", "bandit-radar", "bandit-skyline"]},
+     "wallpapers": ["hud", "bandit-radar", "bandit-skyline"], "art": {"builtin": "Bandit_Idle"}},
     {"id": "fury", "name": "Fury", "description": "Linocut red, breathing slowly like ink on a press.",
      "color": {"hue": 2, "saturation": 95, "brightness": 60}, "effect": "breathe", "swatch": "#c8342b",
-     "wallpapers": ["fury-print", "fury-chase", "fury-pattern", "fury-forest"]},
+     "wallpapers": ["fury-print", "fury-chase", "fury-pattern", "fury-forest"], "art": {"file": "fury.bin", "from_wallpaper": "fury-print", "fallback": "Bandit_Emblem"}},
     {"id": "constellations", "name": "Constellations", "description": "Night-sky indigo, breathing like starlight.",
      "color": {"hue": 232, "saturation": 85, "brightness": 50}, "effect": "breathe", "swatch": "#3f4fb0",
-     "wallpapers": ["fury-stars"]},
+     "wallpapers": ["fury-stars"], "art": {"file": "constellations.bin", "from_wallpaper": "fury-stars", "fallback": "Bandit_Emblem"}},
     {"id": "hearth", "name": "Hearth", "description": "Candlelight amber, flickering softly.",
      "color": {"hue": 30, "saturation": 88, "brightness": 45}, "effect": "breathe", "swatch": "#e2a048",
-     "wallpapers": ["hearth-cauldron", "hearth-wheel"]},
+     "wallpapers": ["hearth-cauldron", "hearth-wheel"], "art": {"file": "hearth.bin", "from_wallpaper": "hearth-cauldron", "fallback": "Bandit_Emblem"}},
     {"id": "moon-garden", "name": "Moon Garden", "description": "Night-garden violet, steady.",
      "color": {"hue": 282, "saturation": 70, "brightness": 45}, "effect": "solid", "swatch": "#b98ad0",
-     "wallpapers": ["hearth-moongarden"]},
+     "wallpapers": ["hearth-moongarden"], "art": {"file": "moon-garden.bin", "from_wallpaper": "hearth-moongarden", "fallback": "Bandit_Emblem"}},
     {"id": "courier", "name": "Courier", "description": "Dossier paper: a quiet warm white.",
      "color": {"hue": 35, "saturation": 25, "brightness": 35}, "effect": "solid", "swatch": "#e6e1d6",
-     "wallpapers": ["courier"]},
+     "wallpapers": ["courier"], "art": {"builtin": "Bandit_Uplink"}},
     {"id": "signal", "name": "Signal", "description": "Every colour, swirling: for parties and demos.",
      "color": {"hue": 22, "saturation": 100, "brightness": 50}, "effect": "swirl", "swatch": "#e5732b",
-     "wallpapers": []},
+     "wallpapers": [], "art": {"builtin": "Bandit_Signal"}},
 ]
 
 
@@ -69,6 +69,35 @@ def chip(p):
             '</svg>\n' % (defs, fill))
 
 
+ART_LIMIT = 12 * 1024
+WALLPAPERS = os.environ.get("BANDIT_WALLPAPERS", r"C:\Users\fuchs\bandit-wallpapers")
+BANDIT_GIFS = os.environ.get("BANDIT_GIFS", r"C:\Users\fuchs\splitkeeb\art-src\bandit\gifs")
+
+
+def copy_art(res):
+    """Copies each preset's right-screen set from the wallpaper repo's keyboard build when it's
+    there (the committed copies stay otherwise), plus a preview GIF for the docs."""
+    import shutil
+
+    os.makedirs(os.path.join(res, "lighting", "art"), exist_ok=True)
+    gifs = os.path.join(ROOT, "docs", "lighting-art")
+    os.makedirs(gifs, exist_ok=True)
+    for p in PRESETS:
+        art = p["art"]
+        if "file" in art:
+            src = os.path.join(WALLPAPERS, "dist", "keyboard", art["from_wallpaper"])
+            dst = os.path.join(res, "lighting", "art", art["file"])
+            if os.path.exists(os.path.join(src, "right.bin")):
+                shutil.copy2(os.path.join(src, "right.bin"), dst)
+                shutil.copy2(os.path.join(src, "preview_right.gif"), os.path.join(gifs, p["id"] + ".gif"))
+            blob = open(dst, "rb").read()
+            assert blob[:4] == b"NVA1" and len(blob) <= ART_LIMIT, (p["id"], len(blob))
+        else:
+            gif = os.path.join(BANDIT_GIFS, "Bandit_" + art["builtin"][len("Bandit_"):].lower() + ".gif")
+            if os.path.exists(gif):
+                shutil.copy2(gif, os.path.join(gifs, p["id"] + ".gif"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sheet")
@@ -84,6 +113,7 @@ def main():
     for p in PRESETS:
         with open(os.path.join(res, "lighting", p["id"] + ".svg"), "w", encoding="utf-8", newline="\n") as f:
             f.write(chip(p))
+    copy_art(res)
     print("wrote", len(PRESETS), "presets")
     if a.sheet:
         import resvg_py
