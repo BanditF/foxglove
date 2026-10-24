@@ -357,6 +357,62 @@ mod tests {
         assert!(a.update(low, 2, 60, 100, 80, "0").is_err(), "only its own connection");
     }
 
+    /// The E1.31 receiver (#330) under mic mute (#210): its stream holds a low lease and changes
+    /// it in place; a mute's high lease wins meanwhile; the stream's colour is back on unmute;
+    /// and when the stream ends (terminated, or silent past 2.5 s: both end its lease) the
+    /// lights are as they were before it.
+    #[test]
+    fn an_e131_stream_under_mic_mute_then_its_end_restores_the_lights() {
+        const E131: u64 = 1;
+        const MIC: u64 = 2;
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        let stream = a.add(lease(E131, Priority::Low, 0), &kb).unwrap(); // first frame: red
+        assert_eq!(hue(&kb), (true, 0));
+        for frame_hue in [30, 60] {
+            let shown = a.update(stream, E131, frame_hue, 100, 100, "0").unwrap();
+            a.apply(&shown.unwrap(), &kb).unwrap();
+        }
+        assert_eq!(hue(&kb), (true, 60), "frames change the lease in place");
+        assert_eq!(a.leases.len(), 1);
+        // Muted: the mic's high lease shows over the stream, which keeps changing underneath.
+        let mute = a.add(lease(MIC, Priority::High, 0), &kb).unwrap();
+        assert_eq!(hue(&kb), (true, 0));
+        assert_eq!(a.update(stream, E131, 240, 100, 100, "0").unwrap(), None, "hidden under the mute");
+        assert_eq!(hue(&kb), (true, 0));
+        // Unmuted: the stream's latest colour comes back.
+        for d in a.end(|l| l.id == mute) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(hue(&kb), (true, 240));
+        // The stream ends: the lights before it.
+        for d in a.end(|l| l.conn == E131) {
+            a.apply(&d, &kb).unwrap();
+        }
+        let s = kb.state.borrow().clone();
+        assert_eq!((s.on, s.hue, s.sat, s.brightness, s.effect.id.as_str(), s.speed), (false, 160, 50, 40, "3", 1));
+        assert!(a.leases.is_empty() && a.base.is_empty());
+    }
+
+    #[test]
+    fn a_mute_during_a_stream_that_ends_first_keeps_red_then_restores() {
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        a.add(lease(1, Priority::Low, 120), &kb).unwrap(); // the stream, green
+        let mute = a.add(lease(2, Priority::High, 0), &kb).unwrap();
+        // The stream goes silent while muted: its lease ends, the mute's red stays.
+        for d in a.end(|l| l.conn == 1) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(hue(&kb), (true, 0));
+        // Unmuted: no lease left, so the original lights, not the stream's green.
+        for d in a.end(|l| l.id == mute) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(kb.state.borrow().hue, 160);
+        assert!(!kb.state.borrow().on);
+    }
+
     #[test]
     fn newest_wins_among_equals_and_lost_writes_are_sent_again() {
         let kb = Fake::new();

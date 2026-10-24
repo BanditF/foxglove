@@ -451,6 +451,21 @@ fn load_or_migrate_at<T: DeserializeOwned + Serialize + Default>(
     }
 }
 
+/// One temp settings folder for every test in this process. FOXGLOVE_CONFIG_DIR is
+/// process-wide and tests run in parallel, so they share one folder (each its own sections)
+/// instead of racing to point it elsewhere. Never the user's real settings.
+#[cfg(test)]
+pub fn test_config_dir() -> &'static Path {
+    static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("foxglove-tests-{}", std::process::id())).join("config");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp settings folder");
+        std::env::set_var("FOXGLOVE_CONFIG_DIR", &dir);
+        dir
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

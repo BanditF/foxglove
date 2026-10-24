@@ -16,4 +16,4 @@ Don't run OpenRGB's E1.31 output to the same port at the same time: both would d
 ## Notes
 
 - Our own code, MIT, like the rest of this repository. Not made or endorsed by SignalRGB; no SignalRGB code or assets are included.
-- Untested in SignalRGB itself so far: its plugin calls `device.setName`, `setSize`, `setControllableLeds` and the network discovery service follow published network plugins, but SignalRGB's documentation doesn't cover them all. `node integrations/signalrgb/test.mjs` checks the packets against Foxglove's receiver and the send-on-change behaviour.
+- Untested in SignalRGB itself so far: its plugin calls `device.setName`, `setSize`, `setControllableLeds` and the network discovery service follow published network plugins, but SignalRGB's documentation doesn't cover them all. `node integrations/signalrgb/test.mjs` checks the packets against Foxglove's receiver and the send-on-change behaviour. `record-packets.mjs` records a short session's packets for the receiver's end-to-end test (`crates/plugin-openrgb-e131/tests/signalrgb.rs`); `--check` (run by `scripts/check.ps1`) fails when Foxglove.js no longer matches the recording.

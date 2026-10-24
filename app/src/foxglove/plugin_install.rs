@@ -395,9 +395,7 @@ mod tests {
     /// The whole install flow in a temp settings folder (FOXGLOVE_CONFIG_DIR), never the real one.
     #[test]
     fn stage_commit_list_and_remove() {
-        let root = std::env::temp_dir().join(format!("foxglove-plugin-host-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::env::set_var("FOXGLOVE_CONFIG_DIR", root.join("config"));
+        let root = super::super::store::test_config_dir().parent().unwrap().to_path_buf();
         let manifest = "id = \"com.example.weather\"
 name = \"Weather\"
 version = \"1.0.0\"
@@ -423,7 +421,8 @@ permissions = [\"facts.write:weather.*\", \"key.events\"]
         remove("com.example.weather").unwrap();
         assert!(installed().is_empty());
         assert!(remove("../config").is_err(), "ids can't leave the plugins folder");
-        let _ = std::fs::remove_dir_all(&root);
+        // The settings folder is shared with the other tests: only this test's plugins go.
+        let _ = std::fs::remove_dir_all(root.join("config/plugins"));
         let _ = std::fs::remove_file(archive);
     }
 }
