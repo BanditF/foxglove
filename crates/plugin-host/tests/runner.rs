@@ -49,8 +49,23 @@ fn states(mode: &str, run_for: Duration) -> Vec<PluginState> {
     });
     std::thread::sleep(run_for);
     drop(runner);
-    std::thread::sleep(Duration::from_millis(300));
-    rx.try_iter().collect()
+    stopped(&rx, Vec::new())
+}
+
+/// After dropping a runner: the states until it reports Stopped (up to 10 s; a plugin already
+/// disabled has nothing left to report, so only a short wait for it).
+fn stopped(rx: &mpsc::Receiver<PluginState>, mut seen: Vec<PluginState>) -> Vec<PluginState> {
+    seen.extend(rx.try_iter());
+    let wait = if matches!(seen.last(), Some(PluginState::Disabled(_))) { 300 } else { 10_000 };
+    let until = std::time::Instant::now() + Duration::from_millis(wait);
+    while !matches!(seen.last(), Some(PluginState::Stopped)) {
+        let Some(left) = until.checked_duration_since(std::time::Instant::now()) else { break };
+        match rx.recv_timeout(left) {
+            Ok(s) => seen.push(s),
+            Err(_) => break,
+        }
+    }
+    seen
 }
 
 /// The states until one matches `done` (or `within` runs out), then stopped.
@@ -80,9 +95,7 @@ fn run_until(spec: PluginSpec, within: Duration, done: impl Fn(&PluginState) -> 
         }
     }
     drop(runner);
-    std::thread::sleep(Duration::from_millis(300));
-    seen.extend(rx.try_iter());
-    seen
+    stopped(&rx, seen)
 }
 
 #[test]
@@ -122,8 +135,7 @@ fn a_sandboxed_plugin_runs_but_cannot_read_user_files() {
     });
     std::thread::sleep(Duration::from_millis(2000));
     drop(runner);
-    std::thread::sleep(Duration::from_millis(300));
-    let s: Vec<PluginState> = rx.try_iter().collect();
+    let s = stopped(&rx, Vec::new());
     assert_eq!(s.first(), Some(&PluginState::Running), "{s:?}");
     assert!(!s.iter().any(|s| matches!(s, PluginState::Restarting { .. })), "it keeps pinging from the sandbox: {s:?}");
 
