@@ -407,7 +407,7 @@ permissions = [\"facts.write:weather.*\", \"key.events\"]
         let plugins = installed();
         assert_eq!(plugins.len(), 1);
         assert!(plugins[0].record.enabled && plugins[0].record.approved.len() == 2);
-        assert!(root.join("plugins/com.example.weather/weather.exe").exists());
+        assert!(root.join("config/plugins/com.example.weather/weather.exe").exists(), "inside the config dir");
         let again = stage(&archive).unwrap();
         assert!(again.new_permissions.is_empty(), "same version asks for nothing new");
         discard(again);
