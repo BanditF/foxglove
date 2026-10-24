@@ -1338,7 +1338,13 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 name = "plugin-focus-timer"
 version = "1.0.0"
 dependencies = [
+ "base64",
+ "foxglove-devices",
  "foxglove-plugin",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1350,6 +1356,16 @@ dependencies = [
  "foxglove-plugin-api",
  "foxglove-plugin-host",
  "serde_json",
+]
+
+[[package]]
+name = "plugin-sandbox-probe"
+version = "0.0.0"
+dependencies = [
+ "foxglove-devices",
+ "foxglove-plugin-api",
+ "foxglove-plugin-host",
+ "windows",
 ]
 
 [[package]]

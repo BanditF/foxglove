@@ -126,6 +126,18 @@ fn parses_seed_suites_and_all_step_kinds() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil");
     assert_eq!(spec::load(&root.join("smoke.toml")).unwrap().cases.len(), 7);
     assert_eq!(
+        spec::load(&root.join("app-actions.toml"))
+            .unwrap()
+            .cases
+            .len(),
+        1
+    );
+    assert!(spec::non_typing_key(0x0007_0068) && spec::non_typing_key(0x0007_0073));
+    // F12, F13 with left shift, and A all type or change typing.
+    assert!(![0x0007_0045, 0x0207_0068, 0x0007_0004]
+        .into_iter()
+        .any(spec::non_typing_key));
+    assert_eq!(
         spec::load(&root.join("release.toml")).unwrap().cases.len(),
         23
     );

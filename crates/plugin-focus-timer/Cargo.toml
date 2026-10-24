@@ -2,7 +2,7 @@
 name = "plugin-focus-timer"
 version = "1.0.0"
 edition = "2021"
-description = "Example Foxglove plugin: a focus timer that colours the underglow (red to focus, green to rest)"
+description = "Pomodoro, a Foxglove plugin: a focus timer on the left panel and the underglow"
 license = "MIT"
 
 [[bin]]
@@ -11,3 +11,12 @@ path = "src/main.rs"
 
 [dependencies]
 foxglove-plugin = { path = "../plugin-sdk" }
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+foxglove-plugin-host = { path = "../plugin-host" }
+foxglove-plugin-api = { path = "../plugin-api" }
+foxglove-devices = { path = "../devices" }
+serde_json = "1"

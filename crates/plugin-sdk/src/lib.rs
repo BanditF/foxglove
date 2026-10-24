@@ -23,6 +23,7 @@ pub use foxglove_plugin_api::methods::{
     Device, Devices, Fact, FactChanged, FactList, Hsb, InitializeResult, LightingState, SetLightingParams,
 };
 pub use foxglove_plugin_api::methods::NetKind;
+pub use foxglove_plugin_api::methods::{LeaseParams, LeasePriority};
 use foxglove_plugin_api::rpc::{Error, Id, Outcome, Request, Response};
 
 mod net;
@@ -60,6 +61,8 @@ pub struct Plugin {
     next: AtomicI64,
     pending: Pending,
     events: Mutex<Option<Receiver<FactChanged>>>,
+    actions: Mutex<Option<Receiver<String>>>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
     routes: net::Routes,
     /// What Foxglove granted this plugin.
     pub granted: Vec<String>,
@@ -80,7 +83,10 @@ impl Plugin {
     ) -> Result<Arc<Plugin>> {
         let pending: Pending = Arc::default();
         let (events_tx, events_rx) = mpsc::channel();
+        let (actions_tx, actions_rx) = mpsc::channel::<String>();
         let reader_pending = pending.clone();
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let reader_closed = closed.clone();
         let routes = net::Routes::default();
         let reader_routes = routes.clone();
         std::thread::spawn(move || {
@@ -97,12 +103,17 @@ impl Plugin {
                         if let Ok(ev) = serde_json::from_value(n.params) {
                             let _ = events_tx.send(ev);
                         }
+                    } else if n.method == "action.invoked" {
+                        if let Some(a) = n.params.get("action").and_then(Value::as_str) {
+                            let _ = actions_tx.send(a.to_string());
+                        }
                     } else {
                         reader_routes.handle(&n.method, n.params);
                     }
                 }
             }
             // Fail every waiting call once Foxglove is gone.
+            reader_closed.store(true, Ordering::Relaxed);
             reader_pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
         });
         let mut plugin = Plugin {
@@ -110,6 +121,8 @@ impl Plugin {
             next: AtomicI64::new(0),
             pending,
             events: Mutex::new(Some(events_rx)),
+            actions: Mutex::new(Some(actions_rx)),
+            closed,
             routes,
             granted: vec![],
         };
@@ -171,6 +184,54 @@ impl Plugin {
         self.events.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 
+    /// Holds `device`'s lights at `color` until the returned lease is dropped or released, or
+    /// the plugin stops (#236; needs `lighting.write`). The highest-priority lease shows; when
+    /// the last one ends the lights go back as they were.
+    pub fn lease(self: &Arc<Self>, device: &str, color: Hsb, priority: LeasePriority) -> Result<Lease> {
+        let p = LeaseParams { device: device.into(), color, effect: None, priority };
+        let id: foxglove_plugin_api::methods::Lease = self.call_as("lighting.lease", serde_json::to_value(p).expect("serializable"))?;
+        Ok(Lease { plugin: self.clone(), id: id.lease })
+    }
+
+    /// Shows `frame` (1 bpp, rows MSB first, padded to whole bytes) on a keyboard's left panel
+    /// for `ttl` (60 s at most; send it again to keep it). Needs `screens.write`.
+    pub fn panel_override(&self, device: &str, width: u16, height: u16, frame: &[u8], ttl: Duration) -> Result<()> {
+        use base64::Engine;
+        let bitmap = base64::engine::general_purpose::STANDARD.encode(frame);
+        let ttl_ms = u32::try_from(ttl.as_millis()).unwrap_or(u32::MAX);
+        self.call("screens.panel_override", json!({"device": device, "width": width, "height": height, "bitmap": bitmap, "ttl_ms": ttl_ms}))
+            .map(|_| ())
+    }
+
+    /// One of this plugin's secrets (#213; needs `secrets`): what the user entered in the
+    /// Plugins tab, or what the plugin saved. `None` when it isn't set.
+    pub fn secret(&self, name: &str) -> Result<Option<String>> {
+        Ok(self.call_as::<foxglove_plugin_api::methods::SecretValue>("secrets.get", json!({ "name": name }))?.value)
+    }
+
+    /// Saves (or with `None` removes) one of this plugin's secrets, such as a refreshed token.
+    pub fn set_secret(&self, name: &str, value: Option<&str>) -> Result<()> {
+        self.call("secrets.set", json!({ "name": name, "value": value })).map(|_| ())
+    }
+
+    /// The plugin's own folder for state between runs (`data/` in its folder, writable even in
+    /// the sandbox). Foxglove creates it before starting the plugin.
+    pub fn data_dir() -> std::path::PathBuf {
+        std::env::current_dir().unwrap_or_default().join("data")
+    }
+
+    /// Whether Foxglove has gone (its end of the connection closed): a plugin that holds
+    /// something, such as a port, should stop.
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
+    }
+
+    /// The ids of this plugin's actions (`[[actions]]` in `plugin.toml`) as the user presses
+    /// their keys (#212). Taken once.
+    pub fn actions(&self) -> Option<Receiver<String>> {
+        self.actions.lock().unwrap_or_else(|e| e.into_inner()).take()
+    }
+
     pub fn devices(&self) -> Result<Vec<Device>> {
         Ok(self.call_as::<Devices>("devices.list", json!({}))?.devices)
     }
@@ -183,6 +244,18 @@ impl Plugin {
     /// Changes a device's lights (only what's given). Needs `lighting.write`.
     pub fn set_lighting(&self, params: &SetLightingParams) -> Result<()> {
         self.call("lighting.set", serde_json::to_value(params).expect("serializable")).map(|_| ())
+    }
+}
+
+/// A hold on a device's lights ([`Plugin::lease`]); dropping it gives them back.
+pub struct Lease {
+    plugin: Arc<Plugin>,
+    id: u64,
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let _ = self.plugin.call("lighting.release", json!({ "lease": self.id }));
     }
 }
 

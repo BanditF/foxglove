@@ -27,7 +27,22 @@ pub trait Devices: Send + Sync {
         let _ = params;
         Err(error(code::UNSUPPORTED, format!("{method} is not available yet")))
     }
+
+    /// Like [`Devices::call`], knowing which connection asked (for what ends with it, such as
+    /// lighting leases).
+    fn call_from(&self, conn: u64, method: &str, params: Value) -> Result<Value, Error> {
+        let _ = conn;
+        self.call(method, params)
+    }
+
+    /// A connection ended (the plugin stopped or crashed, the tool quit).
+    fn closed(&self, conn: u64) {
+        let _ = conn;
+    }
 }
+
+/// Each connection's number, for [`Devices::call_from`] and [`Devices::closed`].
+static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// No devices: facts only.
 pub struct NoDevices;
@@ -114,6 +129,10 @@ struct Session {
     subscriptions: Arc<Mutex<HashMap<u64, String>>>,
     next_subscription: u64,
     forwarding: bool,
+    /// Which plugin this connection is (the runner says), for its secrets; `None` for tools.
+    plugin: Option<String>,
+    /// This connection's number (0 until initialized).
+    conn: u64,
     /// Network streams opened for the plugin (#214).
     net: net::Net,
 }
@@ -121,7 +140,21 @@ struct Session {
 /// Serves one connection until the reader ends or a write fails. Messages are lines; events
 /// are written from other threads through the same writer, one whole line at a time.
 pub fn serve(reader: impl BufRead, writer: impl Write + Send + 'static, ctx: Context) -> std::io::Result<()> {
+    serve_with(reader, writer, ctx, None, |_| {})
+}
+
+/// Like [`serve`]; `ready` gets the connection's event channel, through which the app sends
+/// events of its own to this client ([`notify`]).
+pub(crate) fn serve_with(
+    reader: impl BufRead,
+    writer: impl Write + Send + 'static,
+    ctx: Context,
+    plugin: Option<String>,
+    ready: impl FnOnce(Sender<String>),
+) -> std::io::Result<()> {
     let (out, rx) = mpsc::channel::<String>();
+    ready(out.clone());
+    let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let closed = Arc::new(AtomicBool::new(false));
     let writer_closed = closed.clone();
     let writer_thread = std::thread::Builder::new().name("plugin-host-writer".into()).spawn(move || {
@@ -146,7 +179,12 @@ pub fn serve(reader: impl BufRead, writer: impl Write + Send + 'static, ctx: Con
         let reply = if line.len() > MAX_LINE {
             Some(Response::error(Id::Number(0), code::INVALID_REQUEST, "line too long"))
         } else {
-            handle(&line, &ctx, &mut session, &mut bucket, &out, &closed)
+            let reply = handle(&line, &ctx, &mut session, &mut bucket, &out, &closed);
+            if let Some(s) = session.as_mut().filter(|s| s.conn == 0) {
+                s.plugin = plugin.clone();
+                s.conn = conn;
+            }
+            reply
         };
         if let Some(reply) = reply {
             if out.send(serde_json::to_string(&reply).unwrap()).is_err() {
@@ -158,6 +196,7 @@ pub fn serve(reader: impl BufRead, writer: impl Write + Send + 'static, ctx: Con
     if let Some(s) = &session {
         s.net.close_all();
     }
+    ctx.devices.closed(conn);
     let forwarding = session.as_ref().is_some_and(|s| s.forwarding);
     drop(out);
     // The fact forwarder keeps the writer alive until the next fact change, when it notices the
@@ -270,6 +309,18 @@ fn dispatch(
             }
             Ok(json!(methods::Subscription { subscription: id }))
         }
+        "secrets.get" | "secrets.set" => {
+            let plugin = s.plugin.as_deref().ok_or_else(|| denied("a plugin connection"))?;
+            let failed = |e: String| error(code::INVALID_PARAMS, e);
+            if method.name == "secrets.get" {
+                let p: methods::SecretName = params(request.params)?;
+                Ok(json!(methods::SecretValue { value: secrets::get(plugin, &p.name).map_err(failed)? }))
+            } else {
+                let p: methods::SetSecretParams = params(request.params)?;
+                secrets::set(plugin, &p.name, p.value.as_deref()).map_err(failed)?;
+                Ok(json!({}))
+            }
+        }
         "net.open" => {
             let p: methods::NetOpenParams = params(request.params)?;
             if !net::allowed(&s.grant, &p) {
@@ -296,7 +347,7 @@ fn dispatch(
             s.subscriptions.lock().unwrap_or_else(|e| e.into_inner()).remove(&p.subscription);
             Ok(json!({}))
         }
-        name => ctx.devices.call(name, request.params),
+        name => ctx.devices.call_from(s.conn, name, request.params),
     }
 }
 
@@ -319,6 +370,8 @@ fn initialize(p: Value, ctx: &Context, session: &mut Option<Session>) -> Result<
         next_subscription: 0,
         forwarding: false,
         net: net::Net::default(),
+        plugin: None,
+        conn: 0,
     });
     Ok(json!(InitializeResult { api: API_VERSION.to_string(), app: ctx.app_version.clone(), granted }))
 }
@@ -357,7 +410,35 @@ pub const PING_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(windows)]
 mod net;
+pub mod secrets;
 pub mod pipe;
+
+/// Each running plugin's event channel, by plugin id.
+static PLUGINS: Mutex<Option<HashMap<String, Sender<String>>>> = Mutex::new(None);
+
+pub(crate) fn register(id: &str, out: Option<Sender<String>>) {
+    let mut plugins = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
+    let map = plugins.get_or_insert_with(HashMap::new);
+    match out {
+        Some(out) => {
+            map.insert(id.to_string(), out);
+        }
+        None => {
+            map.remove(id);
+        }
+    }
+}
+
+/// Sends an event to a running plugin, such as `action.invoked` when its key is pressed.
+/// Only events in the method table go out; false if the plugin isn't running.
+pub fn notify(plugin: &str, method: &str, params: Value) -> bool {
+    if methods::find(method).is_none_or(|m| m.kind != Kind::Event) {
+        return false;
+    }
+    let plugins = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(out) = plugins.as_ref().and_then(|m| m.get(plugin)) else { return false };
+    out.send(serde_json::to_string(&Request::notification(method, params)).unwrap()).is_ok()
+}
 pub mod runner;
 #[cfg(windows)]
 mod sandbox;

@@ -85,6 +85,21 @@ fn keyboard() -> Option<std::sync::Arc<digitalis::devices::DigitalisDevice>> {
     super::devices::device()
 }
 
+/// Ends the leases `ends` picks and shows what's next on each device they held.
+fn end_leases(ends: impl Fn(&super::lighting_leases::Lease) -> bool) {
+    super::lighting_leases::with(|a| {
+        for device in a.end(ends) {
+            let shown = with_device(&device, |d| {
+                let light = d.lighting().ok_or_else(unsupported)?;
+                a.apply(&device, light).map_err(device_error)
+            });
+            if let Err(e) = shown {
+                eprintln!("Foxglove: giving back {device}'s lights: {}", e.message);
+            }
+        }
+    });
+}
+
 /// Runs `f` on the device a call names: the host-link keyboard or an open VIA keyboard.
 fn with_device<R>(id: &str, f: impl FnOnce(&dyn foxglove_devices::Device) -> Result<R, Error>) -> Result<R, Error> {
     if let Some(d) = keyboard().filter(|d| d.info().id.to_string() == id) {
@@ -95,6 +110,60 @@ fn with_device<R>(id: &str, f: impl FnOnce(&dyn foxglove_devices::Device) -> Res
 }
 
 impl Devices for AppDevices {
+    fn call_from(&self, conn: u64, method: &str, params: Value) -> Result<Value, Error> {
+        use super::lighting_leases::{self as leases, Priority};
+        match method {
+            "lighting.lease" => {
+                let p: methods::LeaseParams = serde_json::from_value(params)
+                    .map_err(|e| Error { code: code::INVALID_PARAMS, message: e.to_string(), data: None })?;
+                let priority = match p.priority {
+                    methods::LeasePriority::Low => Priority::Low,
+                    methods::LeasePriority::Normal => Priority::Normal,
+                    methods::LeasePriority::High => Priority::High,
+                };
+                let lease = leases::Lease {
+                    id: 0,
+                    conn,
+                    device: p.device.clone(),
+                    priority,
+                    hue: p.color.hue % 360,
+                    sat: p.color.saturation.min(100),
+                    brightness: p.color.brightness.min(100),
+                    effect: p.effect.unwrap_or_else(|| "0".into()),
+                };
+                let id = with_device(&p.device, |d| {
+                    let light = d.lighting().ok_or_else(unsupported)?;
+                    leases::with(|a| a.add(lease, light)).map_err(device_error)
+                })?;
+                Ok(json!(methods::Lease { lease: id }))
+            }
+            "lighting.release" => {
+                let p: methods::Lease = serde_json::from_value(params)
+                    .map_err(|e| Error { code: code::INVALID_PARAMS, message: e.to_string(), data: None })?;
+                end_leases(|l| l.id == p.lease && l.conn == conn);
+                Ok(json!({}))
+            }
+            "screens.panel_override" => {
+                use base64::Engine;
+                let p: methods::PanelOverrideParams = serde_json::from_value(params)
+                    .map_err(|e| Error { code: code::INVALID_PARAMS, message: e.to_string(), data: None })?;
+                let bits = base64::engine::general_purpose::STANDARD
+                    .decode(&p.bitmap)
+                    .map_err(|e| Error { code: code::INVALID_PARAMS, message: format!("bad base64: {e}"), data: None })?;
+                let ttl = std::time::Duration::from_millis(u64::from(p.ttl_ms));
+                super::screens::set_override(conn, p.width, p.height, bits, ttl)
+                    .map_err(|e| Error { code: code::INVALID_PARAMS, message: e, data: None })?;
+                Ok(json!({}))
+            }
+            _ => self.call(method, params),
+        }
+    }
+
+    fn closed(&self, conn: u64) {
+        end_leases(|l| l.conn == conn);
+        super::screens::clear_override(conn);
+    }
+
     fn call(&self, method: &str, _params: Value) -> Result<Value, Error> {
         match method {
             "devices.list" => {
@@ -121,6 +190,11 @@ impl Devices for AppDevices {
                     }))
                     .collect();
                 Ok(json!(methods::Devices { devices }))
+            }
+            "audio.inputs.set_mute" => {
+                let p: methods::SetMuteParams = params(_params)?;
+                foxglove_panel::mic::set_mute(p.muted).map_err(|e| Error { code: code::BACKEND, message: e, data: None })?;
+                Ok(json!({}))
             }
             "lighting.state" => {
                 let p: methods::DeviceParams = params(_params)?;
