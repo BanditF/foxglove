@@ -169,7 +169,11 @@ fn send_test(args: &[String], universe: u16) -> std::io::Result<()> {
     let options = if args.iter().any(|a| a == "--stop") { 0x40 } else { 0 };
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     let frame: Vec<u8> = [r, g, b].repeat(8);
-    socket.send_to(&e131::build(universe, seq, options, &frame), (Ipv4Addr::LOCALHOST, e131::PORT))?;
+    // Each test sender is its own source, as separate senders are in E1.31.
+    let mut cid = *b"foxglove-test-00";
+    let unique = std::process::id() ^ std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    cid[12..].copy_from_slice(&unique.to_be_bytes());
+    socket.send_to(&e131::build(cid, universe, seq, options, &frame), (Ipv4Addr::LOCALHOST, e131::PORT))?;
     Ok(())
 }
 
@@ -201,7 +205,8 @@ fn main() {
     let _ = socket.set_read_timeout(Some(Duration::from_millis(250)));
     let period = Duration::from_millis(1000 / u64::from(opts.max_hz));
     let mut buf = [0u8; 1144];
-    let mut last_seq: Option<u8> = None;
+    // The last sequence number per sender (E1.31 numbers frames per source).
+    let mut last_seq: Option<([u8; 16], u8)> = None;
     let mut devices: Option<Vec<(String, Option<LightingState>)>> = None;
     let mut last_data = Instant::now();
     let mut wanted: Option<Hsb> = None;
@@ -216,10 +221,10 @@ fn main() {
         let mut stop = false;
         if let Ok((n, from)) = socket.recv_from(&mut buf) {
             if let Some(p) = e131::parse(&buf[..n]).filter(|p| p.universe == opts.universe && !p.preview) {
-                if last_seq.is_some_and(|last| e131::is_stale(last, p.sequence)) && !p.terminated {
+                if last_seq.is_some_and(|(cid, last)| cid == p.cid && e131::is_stale(last, p.sequence)) && !p.terminated {
                     continue;
                 }
-                last_seq = Some(p.sequence);
+                last_seq = Some((p.cid, p.sequence));
                 last_data = Instant::now();
                 if p.terminated {
                     stop = true;
