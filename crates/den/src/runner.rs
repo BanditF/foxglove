@@ -2,8 +2,8 @@
 //! healthy and contained (docs/local-api.md, "Lifecycle").
 //!
 //! - **Containment (Windows):** each Kit starts suspended, goes into its own Job Object (killed
-//!   with Foxglove or on stop, memory-capped, no breakaway), and only then runs. AppContainer
-//!   isolation for Kits without `net`/`files` comes next.
+//!   with Foxglove or on stop, memory-capped, no breakaway), and only then runs. Kits that
+//!   declare neither `net` nor `files` also run in an AppContainer (see `sandbox`).
 //! - **Health:** a Kit must show it's alive (any call; `ping` is enough) within the ping
 //!   timeout, or it's restarted. Its stderr goes to `kit.log` in its folder.
 //! - **Supervision:** a Kit that exits or hangs is restarted with backoff (1 s doubling to
@@ -11,7 +11,7 @@
 //!   disabled until the user turns it on again.
 
 use std::collections::VecDeque;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,6 +28,9 @@ pub struct KitSpec {
     pub dir: PathBuf,
     /// The manifest's `run`: the program (inside `dir`) and its arguments.
     pub run: Vec<String>,
+    /// Run in an AppContainer (no network, no user files; Windows). For Kits that declare
+    /// neither `net` nor `files`.
+    pub sandbox: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -121,8 +124,14 @@ impl<R: Read> Read for Activity<R> {
     }
 }
 
+enum Proc {
+    Std(Child),
+    #[cfg(windows)]
+    Contained(job::Process),
+}
+
 struct Running {
-    child: Child,
+    proc: Proc,
     #[cfg(windows)]
     _job: job::Job,
 }
@@ -131,14 +140,43 @@ impl Running {
     fn kill(&mut self) {
         #[cfg(windows)]
         self._job.terminate();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        match &mut self.proc {
+            Proc::Std(child) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            #[cfg(windows)]
+            Proc::Contained(p) => p.kill(),
+        }
+    }
+
+    fn exit_code(&mut self) -> Option<i32> {
+        match &mut self.proc {
+            Proc::Std(child) => child.wait().ok().and_then(|s| s.code()),
+            #[cfg(windows)]
+            Proc::Contained(p) => p.wait(),
+        }
     }
 }
 
-fn spawn(spec: &KitSpec, config: &Config) -> std::io::Result<Running> {
+type Io = (Running, Box<dyn Write + Send>, Box<dyn Read + Send>);
+
+fn spawn(spec: &KitSpec, config: &Config) -> std::io::Result<Io> {
     let program = spec.run.first().ok_or_else(|| std::io::Error::other("the manifest's run is empty"))?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(spec.dir.join("kit.log"))?;
+    #[cfg(windows)]
+    if spec.sandbox {
+        let c = crate::sandbox::spawn(&spec.id, &spec.dir, &spec.run, log)?;
+        let process = job::Process(c.process);
+        let job = job::Job::new(config.memory_limit)?;
+        if let Err(e) = job.assign_handle(c.process) {
+            process.kill();
+            return Err(e);
+        }
+        job::resume_thread(c.thread);
+        let running = Running { proc: Proc::Contained(process), _job: job };
+        return Ok((running, Box::new(c.stdin), Box::new(c.stdout)));
+    }
     let mut cmd = Command::new(spec.dir.join(program));
     cmd.args(&spec.run[1..])
         .current_dir(&spec.dir)
@@ -163,12 +201,14 @@ fn spawn(spec: &KitSpec, config: &Config) -> std::io::Result<Running> {
             }
         };
         job::resume(child.id());
-        Ok(Running { child, _job: job })
+        let (stdin, stdout) = (child.stdin.take().expect("piped"), child.stdout.take().expect("piped"));
+        Ok((Running { proc: Proc::Std(child), _job: job }, Box::new(stdin), Box::new(stdout)))
     }
     #[cfg(not(windows))]
     {
         let _ = config;
-        Ok(Running { child })
+        let (stdin, stdout) = (child.stdin.take().expect("piped"), child.stdout.take().expect("piped"));
+        Ok((Running { proc: Proc::Std(child) }, Box::new(stdin), Box::new(stdout)))
     }
 }
 
@@ -188,11 +228,9 @@ fn supervise(
         let started = Instant::now();
         let reason = match spawn(&spec, &config) {
             Err(e) => format!("couldn't start: {e}"),
-            Ok(mut running) => {
+            Ok((mut running, stdin, stdout)) => {
                 status(KitState::Running);
                 let last = Arc::new(AtomicU64::new(now_ms()));
-                let stdout = running.child.stdout.take().expect("piped");
-                let stdin = running.child.stdin.take().expect("piped");
                 let ctx = context();
                 let reader = BufReader::new(Activity { inner: stdout, last: last.clone() });
                 let exited = events.clone();
@@ -207,7 +245,7 @@ fn supervise(
                         // A late notice from an earlier run that was killed.
                         Ok(Event::Exited(n)) if n != run => {}
                         Ok(Event::Exited(_)) => {
-                            let code = running.child.wait().ok().and_then(|s| s.code());
+                            let code = running.exit_code();
                             break format!("exited ({})", code.map_or("no code".into(), |c| c.to_string()));
                         }
                         Ok(Event::Stop) | Err(RecvTimeoutError::Disconnected) => {
@@ -271,7 +309,9 @@ mod job {
         TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
     };
-    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenThread, ResumeThread, TerminateProcess, WaitForSingleObject, THREAD_SUSPEND_RESUME,
+    };
 
     /// A Job Object holding one Kit and everything it starts; closing it kills them all.
     pub struct Job(HANDLE);
@@ -304,7 +344,11 @@ mod job {
         }
 
         pub fn assign(&self, child: &Child) -> std::io::Result<()> {
-            if unsafe { AssignProcessToJobObject(self.0, child.as_raw_handle() as HANDLE) } == 0 {
+            self.assign_handle(child.as_raw_handle() as HANDLE)
+        }
+
+        pub fn assign_handle(&self, process: HANDLE) -> std::io::Result<()> {
+            if unsafe { AssignProcessToJobObject(self.0, process) } == 0 {
                 return Err(std::io::Error::last_os_error());
             }
             Ok(())
@@ -318,6 +362,41 @@ mod job {
     impl Drop for Job {
         fn drop(&mut self) {
             unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// A process started without `std::process` (the AppContainer path).
+    pub struct Process(pub HANDLE);
+    unsafe impl Send for Process {}
+
+    impl Process {
+        pub fn kill(&self) {
+            unsafe {
+                TerminateProcess(self.0, 1);
+                WaitForSingleObject(self.0, 5000);
+            }
+        }
+
+        pub fn wait(&self) -> Option<i32> {
+            let mut code = 0u32;
+            unsafe {
+                WaitForSingleObject(self.0, 5000);
+                (GetExitCodeProcess(self.0, &mut code) != 0).then_some(code as i32)
+            }
+        }
+    }
+
+    impl Drop for Process {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Resumes one suspended thread and closes its handle.
+    pub fn resume_thread(thread: HANDLE) {
+        unsafe {
+            ResumeThread(thread);
+            CloseHandle(thread);
         }
     }
 
