@@ -72,10 +72,13 @@ fn a_frame_colours_the_keyboard_and_losing_the_sender_restores_it() {
         limits: Limits::default(),
     };
     let runner = Runner::start(spec, Config::default(), context, |_| {});
-    // Give it time to connect and bind the port, then send a red frame.
-    std::thread::sleep(Duration::from_millis(800));
-    send(255, 0, 0);
-    let sets = wait_for(&keyboard, 1, Duration::from_secs(3));
+    // Send a red frame until it lands: the plugin may still be starting and binding the port.
+    let until = Instant::now() + Duration::from_secs(10);
+    let mut sets = vec![];
+    while sets.is_empty() && Instant::now() < until {
+        send(255, 0, 0);
+        sets = wait_for(&keyboard, 1, Duration::from_millis(300));
+    }
     assert_eq!(
         sets.first(),
         Some(&json!({"device": "kb", "on": true, "color": {"hue": 0, "saturation": 100, "brightness": 100}, "effect": "0"})),
