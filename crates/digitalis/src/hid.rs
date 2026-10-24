@@ -84,8 +84,14 @@ impl Keyboard {
         while matches!(self.dev.read_timeout(&mut buf, 0), Ok(n) if n > 0) {}
     }
 
-    pub(crate) fn device(&self) -> &HidDevice {
-        &self.dev
+    #[cfg(windows)]
+    pub(crate) fn input(&self) -> Result<Input> {
+        Input::open(self.dev.get_device_info()?.path())
+    }
+
+    #[cfg(not(windows))]
+    pub(crate) fn read_timeout(&self, buf: &mut [u8], timeout: i32) -> Result<usize> {
+        Ok(self.dev.read_timeout(buf, timeout)?)
     }
 
     pub fn say_hello(&self) -> Result<Hello> {
@@ -114,7 +120,7 @@ impl Transport for Keyboard {
         let end = Instant::now() + timeout;
         let mut buf = [0u8; REPORT];
         while Instant::now() < end {
-            let left = end.saturating_duration_since(Instant::now()).as_millis() as i32;
+            let left = end.saturating_duration_since(Instant::now()).as_millis().min(i32::MAX as u128) as i32;
             let n = self.dev.read_timeout(&mut buf, left.max(1))?;
             if protocol::is_reply(&buf[..n], proto, cmd) {
                 return Ok(buf);
@@ -151,3 +157,9 @@ mod tests {
         }
     }
 }
+
+#[cfg(windows)]
+#[path = "hid_input_windows.rs"]
+mod input;
+#[cfg(windows)]
+pub(crate) use input::Input;

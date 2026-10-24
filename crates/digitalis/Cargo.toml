@@ -8,10 +8,13 @@ license = "MIT"
 [features]
 default = ["hid"]
 # The hidapi transport; leave it out to use the protocol with your own transport.
-hid = ["dep:hidapi"]
+hid = ["dep:hidapi", "dep:windows-sys"]
 
 [dependencies]
 anyhow = "1"
 crc32fast = "1.4"
 embedded-graphics = "0.8"
 hidapi = { version = "2.6", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading", "Win32_System_Pipes", "Win32_Devices_HumanInterfaceDevice"] }
