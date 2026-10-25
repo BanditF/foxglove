@@ -11,6 +11,10 @@ mod wayland;
 pub trait OverlayHost {
     fn set_passthrough(&mut self, enabled: bool);
     fn request_close(&mut self);
+    /// Foxglove (#405): limits where the window takes the mouse (and draws) to a rounded
+    /// rectangle in window pixels, `[left, top, right, bottom, corner]`; `None` gives the whole
+    /// window back. Only the Windows host does this.
+    fn set_hit_region(&mut self, _region: Option<[i32; 5]>) {}
 }
 
 /// Registers Phosphor icons into the egui font definitions.

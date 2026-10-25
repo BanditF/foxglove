@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 struct EframeHost<'a> {
     ctx: &'a egui::Context,
+    #[cfg(target_os = "windows")]
+    hwnd: Option<isize>,
 }
 
 impl OverlayHost for EframeHost<'_> {
@@ -18,6 +20,45 @@ impl OverlayHost for EframeHost<'_> {
 
     fn request_close(&mut self) {
         self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn set_hit_region(&mut self, region: Option<[i32; 5]>) {
+        if let Some(hwnd) = self.hwnd {
+            set_window_region(hwnd, region);
+        }
+    }
+}
+
+/// Foxglove (#405): clips the overlay window to a rounded rectangle (window pixels), or gives
+/// it the whole window back. Outside a window's region Windows sends the mouse to whatever is
+/// underneath, so the tray panel takes only the clicks that land on it.
+#[cfg(target_os = "windows")]
+fn set_window_region(hwnd: isize, region: Option<[i32; 5]>) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, DeleteObject, SetWindowRgn, HGDIOBJ};
+
+    let hwnd = HWND(hwnd as *mut core::ffi::c_void);
+    let Some([left, top, right, bottom, corner]) = region else {
+        // SAFETY: `hwnd` is the overlay window, alive while its frames run; a null region
+        // removes the clip and there is nothing to free.
+        unsafe {
+            let _ = SetWindowRgn(hwnd, None, true);
+        }
+        return;
+    };
+    // SAFETY: plain GDI calls on a region this function owns. On success SetWindowRgn takes
+    // the region over (the system frees it); on failure it's still ours, so it's freed here.
+    unsafe {
+        let rgn = CreateRoundRectRgn(left, top, right, bottom, corner, corner);
+        if rgn.is_invalid() {
+            eprintln!("Foxglove: can't make the tray panel's window region");
+            return;
+        }
+        if SetWindowRgn(hwnd, Some(rgn), true) == 0 {
+            eprintln!("Foxglove: can't set the tray panel's window region");
+            let _ = DeleteObject(HGDIOBJ(rgn.0));
+        }
     }
 }
 
@@ -79,7 +120,11 @@ impl eframe::App for EframeApp {
         #[cfg(target_os = "windows")]
         self.keep_on_monitor(&ctx);
 
-        let mut host = EframeHost { ctx: &ctx };
+        let mut host = EframeHost {
+            ctx: &ctx,
+            #[cfg(target_os = "windows")]
+            hwnd: self.hwnd,
+        };
         self.app.ui(&ctx, &mut host);
         crate::foxglove::repaint_trace::frame(&ctx);
     }
