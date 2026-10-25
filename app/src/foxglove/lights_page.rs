@@ -16,10 +16,10 @@ use super::keyboard_settings::{self as ks, RgbSync};
 use super::settings_ui::card;
 use super::theme;
 
-const EFFECTS: [&str; 4] = ["Solid", "Breathe", "Spectrum", "Swirl"];
+pub const EFFECTS: [&str; 4] = ["Solid", "Breathe", "Spectrum", "Swirl"];
 
 /// The canvas's swatches: (name, sRGB).
-const SWATCHES: [(&str, [u8; 3]); 6] = [
+pub const SWATCHES: [(&str, [u8; 3]); 6] = [
     ("Bandit orange", [0xf0, 0x8a, 0x3c]),
     ("Ember", [0xff, 0x5f, 0x3c]),
     ("Amber", [0xf0, 0xd2, 0x3c]),
@@ -151,7 +151,7 @@ fn swatch_hue_sat(rgb: [u8; 3]) -> (u16, u8) {
 }
 
 /// Whether the drafted colour is this swatch (within a few steps, as the keyboard rounds).
-fn is_swatch(color: (u16, u8), rgb: [u8; 3]) -> bool {
+pub fn is_swatch(color: (u16, u8), rgb: [u8; 3]) -> bool {
     let (h, s) = swatch_hue_sat(rgb);
     let dh = (i32::from(color.0) - i32::from(h)).rem_euclid(360);
     let near_hue = dh.min(360 - dh) <= 3 || s < 5;
@@ -376,7 +376,7 @@ fn full_slider(ui: &mut egui::Ui, slider: egui::Slider) -> egui::Response {
 }
 
 /// A round colour swatch; selected ones get a light ring, as drawn.
-fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool) -> egui::Response {
+pub fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool) -> egui::Response {
     let p = theme::palette(ui);
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), Sense::click());
     let painter = ui.painter();
