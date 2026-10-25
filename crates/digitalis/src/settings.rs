@@ -88,7 +88,7 @@ pub fn conn_state(t: &impl Transport) -> Result<protocol::ConnState> {
 /// How long the right half's build may take. It is read over the Bluetooth relay, which queues
 /// it behind whatever the relay is already doing (art slot reads take up to 3 s each), so the
 /// 4 s that suits the left timed out in the app while the lab, on an idle relay, got through.
-const RIGHT_BUILD_WAIT: Duration = Duration::from_secs(15);
+const RIGHT_BUILD_WAIT: Duration = Duration::from_secs(10);
 /// Replies 1 (busy) and 3 (relay error) come at once and usually clear; ask again this many times.
 const BUILD_RETRIES: u32 = 2;
 
