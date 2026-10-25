@@ -285,7 +285,7 @@ pub struct BoardView {
 fn board_view(ctx: &egui::Context) -> BoardView {
     let drawing = super::boards::current().and_then(|b| b.drawing).unwrap_or_default();
     let snap = super::screens::snapshot();
-    let panel = snap.hello.as_ref().and(snap.frame.clone()).filter(|_| !super::screens::paused());
+    let panel = snap.hello.as_ref().and(snap.frame.clone()).filter(|_| !super::screens::paused() && !super::pause::paused());
     let (mut art, mut art_name) = (None, None);
     if let Some(h) = super::art_service::handle() {
         let s = h.snapshot();

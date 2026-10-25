@@ -150,7 +150,8 @@ impl OverlayApp {
 
     /// Wakes the UI up when the overlay is due to appear or disappear on its own.
     fn schedule_overlay_repaint(&self, ctx: &egui::Context) {
-        if self.is_any_window_open() {
+        // Foxglove (#404): paused, the overlay stays hidden, so nothing is due.
+        if self.is_any_window_open() || crate::foxglove::pause::paused() {
             return;
         }
 

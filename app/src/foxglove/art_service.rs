@@ -99,6 +99,22 @@ enum Command {
     Preset(Option<art_cycle::Item>),
     /// Show a trigger's art without pinning it.
     Show(Choice),
+    /// Foxglove resumed (#404): show the art skipped while paused.
+    Resume,
+}
+
+/// Whether the UI may send `command` (#404): while Foxglove is paused only reads go out.
+fn allowed(command: &Command, paused: bool) -> bool {
+    !paused || matches!(command, Command::Status)
+}
+
+/// A trigger changed while Foxglove is paused (#404): nothing shows, and `missed` remembers
+/// that something should once it resumes. True when the change is held back.
+fn held(change: &Change, paused: bool, missed: &mut bool) -> bool {
+    if paused {
+        *missed |= !matches!(change, Change::Nothing);
+    }
+    paused
 }
 
 #[derive(Clone)]
@@ -124,6 +140,10 @@ impl Handle {
     fn submit(&self, command: Command) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.busy || self.stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        if !allowed(&command, super::pause::paused()) {
+            state.error = Some(super::pause::REFUSED.into());
             return false;
         }
         self.cancel.store(false, Ordering::Relaxed);
@@ -180,6 +200,11 @@ impl Handle {
 
     pub fn wallpaper(&self, w: super::wallpaper::Wallpaper) {
         let _ = self.commands.send(Command::Wallpaper(w));
+    }
+
+    /// Foxglove resumed (#404): the art held back while paused shows now.
+    pub fn resumed(&self) {
+        let _ = self.commands.send(Command::Resume);
     }
 
     /// Shows the hotlist's next entry now.
@@ -397,6 +422,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let mut due: Option<Instant> = None;
     // Layer and preset art above the pinned choice (#60).
     let mut triggers = Triggers::default();
+    // Art held back while Foxglove was paused (#404), to show on resume.
+    let mut missed = false;
     while !h.stop.load(Ordering::Relaxed) {
         let next_deadline = match (due, triggers.deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -454,6 +481,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             }
             Command::Layers(active) => {
                 let change = triggers.layers(&active, &h.snapshot().cycle, Instant::now());
+                if held(&change, super::pause::paused(), &mut missed) {
+                    continue;
+                }
                 match shown(change, &triggers) {
                     Some(command) => command,
                     None => continue,
@@ -461,6 +491,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             }
             Command::LayerDue => {
                 let change = triggers.due(&h.snapshot().cycle, Instant::now());
+                if held(&change, super::pause::paused(), &mut missed) {
+                    continue;
+                }
                 match shown(change, &triggers) {
                     Some(command) => command,
                     None => continue,
@@ -468,6 +501,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             }
             Command::Preset(art) => {
                 let change = triggers.preset(art);
+                if held(&change, super::pause::paused(), &mut missed) {
+                    continue;
+                }
                 match shown(change, &triggers) {
                     Some(command) => command,
                     None => continue,
@@ -483,6 +519,10 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 match super::wallpaper::choice(&w, st.right_set_count) {
+                    Some(choice) if snap.pinned.as_ref() != Some(&choice) && super::pause::paused() => {
+                        missed = true;
+                        continue;
+                    }
                     Some(choice) if snap.pinned.as_ref() != Some(&choice) => {
                         h.update(|s| s.busy = true);
                         Command::Choose(choice)
@@ -500,10 +540,33 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 });
                 due = reschedule(current.is_some());
                 match pinned.filter(|_| changed && current.is_some() && !h.snapshot().busy) {
+                    Some(_) if super::pause::paused() => {
+                        missed = true;
+                        continue;
+                    }
                     Some(choice) => {
                         h.update(|s| s.busy = true);
                         Command::Choose(choice)
                     }
+                    None => continue,
+                }
+            }
+            Command::Resume => {
+                due = reschedule(current.is_some());
+                if !std::mem::take(&mut missed) {
+                    continue;
+                }
+                let snap = h.snapshot();
+                // Following the wallpaper: its art, unless layer or preset art is on top.
+                if snap.cycle.follow == art_cycle::Follow::Wallpaper && triggers.top(&snap.cycle).is_none() {
+                    if let Some(w) = super::wallpaper::current(snap.cycle.wallpaper_monitor.as_deref()) {
+                        let _ = h.commands.send(Command::Wallpaper(w));
+                    }
+                    continue;
+                }
+                // Otherwise layer or preset art, or the pin.
+                match shown(Change::Restore, &triggers) {
+                    Some(command) => command,
                     None => continue,
                 }
             }
@@ -526,8 +589,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
                     continue;
                 };
-                // The hotlist waits while layer or preset art is on top.
-                if triggers.top(&snap.cycle).is_some() {
+                // The hotlist waits while layer or preset art is on top, and while paused.
+                if triggers.top(&snap.cycle).is_some() || super::pause::paused() {
                     continue;
                 }
                 let mut cycle = snap.cycle;
@@ -631,6 +694,11 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             }
             _ => false,
         };
+        // Paused (#404): a new connection gets its art back on resume instead.
+        let paused_now = super::pause::paused();
+        if paused_now && connected_now {
+            missed = true;
+        }
         // A UI command already queued owns busy/cancel until that command completes.
         let mut queued_command = false;
         if automatic {
@@ -657,7 +725,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                         if connected_now && !queued_command {
                             read_slots(link, h, &st);
                         }
-                        if !queued_command {
+                        if !queued_command && !paused_now {
                             // Preset art (layers are unknown until the keyboard reports them)
                             // comes back over the pin after a reconnect.
                             let snap = h.snapshot();
@@ -722,6 +790,33 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paused_the_ui_may_only_read() {
+        assert!(allowed(&Command::Status, true));
+        for c in [
+            Command::Choose(Choice::BuiltIn(1)),
+            Command::Save { slot: 0, name: "x".into() },
+            Command::Erase(0),
+            Command::Show(Choice::Slot(0)),
+        ] {
+            assert!(!allowed(&c, true));
+            assert!(allowed(&c, false));
+        }
+    }
+
+    #[test]
+    fn triggers_while_paused_wait_for_the_resume() {
+        let mut missed = false;
+        assert!(!held(&Change::Restore, false, &mut missed));
+        assert!(!missed, "not paused: shown now, nothing missed");
+        assert!(held(&Change::Nothing, true, &mut missed));
+        assert!(!missed, "no change, nothing to catch up");
+        assert!(held(&Change::Restore, true, &mut missed));
+        assert!(missed);
+        assert!(held(&Change::Nothing, true, &mut missed));
+        assert!(missed, "stays missed until the resume takes it");
+    }
 
     #[test]
     fn pinned_choices_round_trip_through_toml() {

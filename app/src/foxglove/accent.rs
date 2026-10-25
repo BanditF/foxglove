@@ -35,7 +35,8 @@ pub fn set_enabled(on: bool) {
     }
 }
 
-fn wake() {
+/// Applies the accent again (turned on, or Foxglove resumed, #404).
+pub(crate) fn wake() {
     if let Some(tx) = WAKE.get() {
         let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(());
     }
@@ -127,7 +128,8 @@ mod windows_impl {
             }));
             let mut applied: Option<(u16, u8)> = None;
             for () in rx {
-                if !enabled() {
+                // Paused (#404): nothing goes out; resuming wakes this again.
+                if !enabled() || crate::foxglove::pause::paused() {
                     applied = None;
                     continue;
                 }

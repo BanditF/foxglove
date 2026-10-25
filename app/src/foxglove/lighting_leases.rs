@@ -10,6 +10,8 @@
 //!   take a half-restored state for the original.
 //! - A plugin's leases end when it releases them or its connection closes (stopped, crashed).
 //! - Every change is read back and sent again if the keyboard didn't take it (a few times).
+//! - While Foxglove is paused (#404) no lease shows: the lights go back as they were, leases
+//!   still come, change and go, and the winner shows again on resume.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -42,6 +44,8 @@ pub struct Arbiter {
     /// Each leased device's lights from before its first lease, until they're shown again.
     base: HashMap<String, LightingState>,
     next: u64,
+    /// Foxglove is paused: no lease shows.
+    paused: bool,
 }
 
 /// What a device's lights should show now.
@@ -59,7 +63,7 @@ impl Arbiter {
 
     /// Takes the lights for `lease` (its `id` is assigned) and shows the winner.
     pub fn add(&mut self, mut lease: Lease, light: &dyn Lighting) -> Result<u64, DeviceError> {
-        if !self.base.contains_key(&lease.device) {
+        if !self.paused && !self.base.contains_key(&lease.device) {
             self.base.insert(lease.device.clone(), settled(light)?);
         }
         self.next += 1;
@@ -76,7 +80,21 @@ impl Arbiter {
         let lease = self.leases.iter_mut().find(|l| l.id == id && l.conn == conn).ok_or("no such lease")?;
         (lease.hue, lease.sat, lease.brightness, lease.effect) = (hue, sat, brightness, effect.to_string());
         let device = lease.device.clone();
-        Ok(self.winner(&device).is_some_and(|w| w.id == id).then_some(device))
+        Ok(self.winner(&device).is_some_and(|w| w.id == id && !self.paused).then_some(device))
+    }
+
+    /// Foxglove paused or resumed (#404); returns the devices whose lights need
+    /// [`Arbiter::apply`]: paused, each leased one gets its lights from before back; resumed,
+    /// the winning lease shows again.
+    pub fn set_paused(&mut self, paused: bool) -> Vec<String> {
+        if self.paused == paused {
+            return Vec::new();
+        }
+        self.paused = paused;
+        let mut devices: Vec<String> = self.leases.iter().map(|l| l.device.clone()).collect();
+        devices.sort();
+        devices.dedup();
+        devices
     }
 
     /// Ends the leases `ends` picks; returns the devices whose lights need [`Arbiter::apply`].
@@ -89,7 +107,7 @@ impl Arbiter {
     }
 
     fn target(&self, device: &str) -> Target<'_> {
-        if let Some(l) = self.winner(device) {
+        if let Some(l) = self.winner(device).filter(|_| !self.paused) {
             return Target::Lease(l);
         }
         match self.base.get(device) {
@@ -101,6 +119,10 @@ impl Arbiter {
     /// Shows the winning lease, or the lights from before the first lease once none is left.
     /// The snapshot goes only once the keyboard shows it.
     pub fn apply(&mut self, device: &str, light: &dyn Lighting) -> Result<(), DeviceError> {
+        // Resumed (or a lease came while paused): keep the lights as they are first.
+        if !self.paused && self.winner(device).is_some() && !self.base.contains_key(device) {
+            self.base.insert(device.to_string(), settled(light)?);
+        }
         match self.target(device) {
             Target::Lease(l) => show(light, &Want::lease(l), false).map(|_| ()),
             // Giving the lights back waits for both halves of a split keyboard.
@@ -119,7 +141,7 @@ impl Arbiter {
     /// The device (re)connected: a restore that didn't take is tried again (#293). Started by
     /// the connection, stopped by the readback or [`RESENDS`].
     pub fn connected(&mut self, device: &str, light: &dyn Lighting) -> Result<(), DeviceError> {
-        if self.winner(device).is_none() && self.base.contains_key(device) {
+        if (self.paused || self.winner(device).is_none()) && self.base.contains_key(device) {
             return self.apply(device, light);
         }
         Ok(())
@@ -290,6 +312,62 @@ mod tests {
     fn hue(f: &Fake) -> (bool, u16) {
         let s = f.state.borrow();
         (s.on, s.hue)
+    }
+
+    fn all(f: &Fake) -> (bool, u16, u8, u8, String, u8) {
+        let s = f.state.borrow();
+        (s.on, s.hue, s.sat, s.brightness, s.effect.id.clone(), s.speed)
+    }
+
+    #[test]
+    fn pausing_gives_the_lights_back_and_resuming_shows_the_lease_again() {
+        let kb = Fake::new();
+        let before = all(&kb);
+        let mut a = Arbiter::default();
+        let mic = a.add(lease(1, Priority::High, 0), &kb).unwrap();
+        assert_eq!(hue(&kb), (true, 0));
+        for d in a.set_paused(true) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(all(&kb), before, "paused: the keyboard's own lights");
+        assert!(a.set_paused(true).is_empty(), "already paused");
+        // While paused, leases come and change without touching the lights.
+        a.add(lease(2, Priority::Normal, 120), &kb).unwrap();
+        assert_eq!(a.update(mic, 1, 30, 100, 80, "0"), Ok(None));
+        assert_eq!(all(&kb), before);
+        // Resumed: the winner (the updated mic lease) shows again.
+        for d in a.set_paused(false) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(hue(&kb), (true, 30));
+        // And when it all ends, the lights from before come back.
+        for d in a.end(|_| true) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(all(&kb), before);
+        assert!(a.base.is_empty());
+    }
+
+    #[test]
+    fn a_lease_taken_while_paused_shows_on_resume_and_gives_back_what_was_there() {
+        let kb = Fake::new();
+        let before = all(&kb);
+        let mut a = Arbiter::default();
+        assert!(a.set_paused(true).is_empty(), "no leases: nothing to give back");
+        a.add(lease(1, Priority::Normal, 200), &kb).unwrap();
+        assert_eq!(all(&kb), before, "nothing sent while paused");
+        assert!(a.base.is_empty(), "no snapshot taken while paused");
+        // A keyboard reconnecting while paused gets nothing either.
+        a.connected("kb", &kb).unwrap();
+        assert_eq!(all(&kb), before);
+        for d in a.set_paused(false) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(hue(&kb), (true, 200));
+        for d in a.end(|_| true) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(all(&kb), before);
     }
 
     #[test]

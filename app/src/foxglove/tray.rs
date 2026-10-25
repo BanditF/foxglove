@@ -75,6 +75,9 @@ pub struct Controls {
     status: MenuItem,
     menu: Menu,
     update_item: Option<MenuItem>,
+    /// Pause Foxglove (#404), and whether it shows paused.
+    pause_all: CheckMenuItem,
+    paused_shown: bool,
     pause: CheckMenuItem,
     art: Submenu,
     profile: Submenu,
@@ -96,10 +99,12 @@ impl Controls {
             screens::paused(),
             None,
         );
+        let pause_all = CheckMenuItem::with_id("fox-pause-all", "Pause Foxglove", true, super::pause::paused(), None);
         let art = Submenu::new("Right art", false);
         let profile = Submenu::new("Profile", true);
         let _ = menu.append(&status);
         let _ = menu.append(&MenuItem::with_id("settings", "Settings...", true, None));
+        let _ = menu.append(&pause_all);
         let _ = menu.append(&pause);
         let _ = menu.append(&art);
         let _ = menu.append(&profile);
@@ -107,6 +112,8 @@ impl Controls {
             status,
             menu: menu.clone(),
             update_item: None,
+            paused_shown: super::pause::paused(),
+            pause_all,
             pause,
             art,
             profile,
@@ -118,7 +125,7 @@ impl Controls {
     }
     /// The tray icon's glyph for what Foxglove knows now.
     pub fn glyph(&self) -> Glyph {
-        Glyph::of(self.connected, false)
+        Glyph::of(self.connected, super::pause::paused())
     }
 
     pub fn update(&mut self) {
@@ -162,6 +169,13 @@ impl Controls {
             self.pause.set_checked(paused);
             self.shown.1 = paused;
         }
+        let all = super::pause::paused();
+        if all != self.paused_shown {
+            self.pause_all.set_checked(all);
+            // Paused, the left panel is already the firmware's.
+            self.pause.set_enabled(!all);
+            self.paused_shown = all;
+        }
         let Some(h) = art_service::handle() else {
             return;
         };
@@ -191,7 +205,7 @@ impl Controls {
                 .map(|e| (&e.path, e.preview.is_ok()))
                 .collect::<Vec<_>>()
         );
-        let enabled = s.connected && !s.busy;
+        let enabled = s.connected && !s.busy && !all;
         if enabled != self.shown.3 {
             self.art.set_enabled(enabled);
             self.shown.3 = enabled;
@@ -239,6 +253,9 @@ pub fn event(id: &str, on_settings: &dyn Fn()) {
     }
     if id == "fox-pause" {
         screens::set_paused(!screens::paused());
+    }
+    if id == "fox-pause-all" {
+        super::pause::set(!super::pause::paused());
     }
     if id == "fox-push" {
         art_library::PICK_FILE.store(true, Ordering::Relaxed);

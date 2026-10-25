@@ -33,6 +33,8 @@ pub fn rgb_sync() -> RgbSync {
 /// Reads the setting (`set` = `None`) or changes it, in the background; `ctx` is asked to
 /// repaint when the answer is in.
 pub fn ask_rgb_sync(set: Option<bool>, ctx: egui::Context) {
+    // Paused (#404): read it, change nothing.
+    let set = set.filter(|_| !super::pause::paused());
     *RGB_SYNC.lock().unwrap_or_else(|e| e.into_inner()) = RgbSync::Asking;
     let _ = super::services::spawn_supervised("keyboard-settings", move || {
         let state = match device() {
@@ -88,6 +90,11 @@ fn run(
     ctx: egui::Context,
     command: impl FnOnce(&digitalis::devices::DigitalisDevice) -> foxglove_devices::Result<()> + Send + 'static,
 ) {
+    if super::pause::paused() {
+        *LAST_ACTION.lock().unwrap() = Some((label, super::pause::REFUSED.into()));
+        ctx.request_repaint();
+        return;
+    }
     if INVOKING.swap(true, Ordering::Relaxed) {
         return;
     }

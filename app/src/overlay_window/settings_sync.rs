@@ -84,7 +84,9 @@ impl OverlayApp {
         match &self.session.connection {
             AppConnectionState::Disconnected | AppConnectionState::Reconnecting { .. } => false,
             AppConnectionState::Connected { keyboard } => {
-                self.is_any_window_open() || keyboard.overlay_is_visible(Instant::now())
+                // Foxglove (#404): no layer overlay while paused.
+                self.is_any_window_open()
+                    || (!crate::foxglove::pause::paused() && keyboard.overlay_is_visible(Instant::now()))
             }
         }
     }

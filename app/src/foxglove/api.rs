@@ -124,6 +124,30 @@ fn end_leases(ends: impl Fn(&super::lighting_leases::Lease) -> bool) {
     });
 }
 
+/// Foxglove paused or resumed (#404): leased lights go back to the keyboard's own, or the
+/// winning lease shows again. On its own thread, since giving lights back waits for both
+/// halves. It takes the pause state when it runs, so a quick pause and resume ends resumed.
+pub fn pause_leases() {
+    super::services::spawn_named("lease-pause", || {
+        super::lighting_leases::with(|a| {
+            for device in a.set_paused(super::pause::paused()) {
+                let shown = with_device(&device, |d| {
+                    let light = d.lighting().ok_or_else(unsupported)?;
+                    a.apply(&device, light).map_err(device_error)
+                });
+                if let Err(e) = shown {
+                    eprintln!("Foxglove: {device}'s lights on pause or resume: {}", e.message);
+                }
+            }
+        });
+    });
+}
+
+/// A write refused because Foxglove is paused (#404).
+fn paused_error() -> Error {
+    Error { code: code::BUSY, message: super::pause::REFUSED.into(), data: None }
+}
+
 /// Runs `f` on the device a call names: the host-link keyboard or an open VIA keyboard.
 fn with_device<R>(id: &str, f: impl FnOnce(&dyn foxglove_devices::Device) -> Result<R, Error>) -> Result<R, Error> {
     if let Some(d) = keyboard().filter(|d| d.info().id.to_string() == id) {
@@ -257,6 +281,9 @@ impl Devices for AppDevices {
             }
             "lighting.set" => {
                 let p: methods::SetLightingParams = params(_params)?;
+                if super::pause::paused() {
+                    return Err(paused_error());
+                }
                 with_device(&p.device, |d| {
                     let lighting = d.lighting().ok_or_else(unsupported)?;
                     if let Some(on) = p.on {
