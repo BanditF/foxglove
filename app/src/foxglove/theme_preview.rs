@@ -512,6 +512,9 @@ fn keyboard_page_renders() {
     let without = shell_preview_with(Page::Keyboard, &Samples::none(), 1060.0);
     keep("ui-386-keyboard.png", &with);
     keep("ui-386-keyboard-none.png", &without);
+    // The same page with the board drawn from its profile (#392).
+    keep("ui-392-board.png", &with);
+    keep("ui-392-board-none.png", &without);
     for img in [&with, &without] {
         // The cards' surface and the board's orange (screen rings, underglow) show up.
         assert!(count(img, DARK.surface) > (img.width() * img.height()) as usize / 20, "cards");
@@ -523,7 +526,7 @@ fn keyboard_page_renders() {
 
 /// The left panel as the preview shows it: a keyboard that answered HELLO, a frame of the
 /// panel drawn from a pattern, and a game in front.
-fn sample_screens() -> crate::foxglove::screens::Snapshot {
+pub(crate) fn sample_screens() -> crate::foxglove::screens::Snapshot {
     let (width, height) = (64, 52);
     let stride = width / 8;
     let mut bits = vec![0u8; stride * height];

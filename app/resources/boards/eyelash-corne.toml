@@ -34,3 +34,11 @@ format = "1bit"
 [lighting]
 lamps = 42
 layout = "underglow, 21 per half"
+
+# How the Keyboard page draws one half (the left; the right mirrors it), in key units: the
+# key grid, each column's drop from the highest (outer column first), and the thumb keys.
+[drawing]
+columns = 6
+rows = 3
+thumbs = 3
+stagger = [0.5, 0.5, 0.25, 0.0, 0.125, 0.25]

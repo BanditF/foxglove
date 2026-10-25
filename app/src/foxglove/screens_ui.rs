@@ -90,7 +90,7 @@ pub fn group(ui: &mut egui::Ui) {
             // The live preview, as the panel shows it, centred in a dark frame.
             ui.vertical_centered(|ui| match snap.frame.as_ref().filter(|_| settings.drive_left) {
                 Some(frame) => {
-                    preview(ui, state_texture(ui.ctx(), &mut state.texture, frame));
+                    preview(ui, frame_texture(ui.ctx(), &mut state.texture, frame));
                     // Repainted when the panel gets a new frame, only while this card is drawn.
                     super::screens::want_preview(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
                 }
@@ -226,7 +226,7 @@ pub fn group(ui: &mut egui::Ui) {
 }
 
 /// The preview texture, rebuilt only when the frame changed.
-fn state_texture<'a>(
+pub(crate) fn frame_texture<'a>(
     ctx: &egui::Context,
     cached: &'a mut Option<(Frame, egui::TextureHandle)>,
     frame: &Frame,
