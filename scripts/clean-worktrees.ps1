@@ -6,13 +6,15 @@
 # For a worktree that is clean, idle for -IdleHours and not in use:
 #   - PR merged: remove the worktree (git worktree remove, never --force). A worktree with no PR
 #     (a detached checkout, or a branch never pushed) counts as merged once its HEAD is on
-#     origin/main or an origin/release/* branch: nothing in it is lost.
+#     origin/main or an origin/release/* branch: nothing in it is lost. Those wait -LandedHours
+#     idle (a fresh worktree has no commits yet either, and its session may still be coming back).
 #   - PR open:   delete only its target\ and app\target\; a review fix costs one rebuild.
 # The main checkout is never removed; its target\ is cleaned once it passes -MainLimitGB.
-# Never touches a dirty worktree, one without a PR, the caller's own worktree, or -Skip.
+# Never touches a dirty worktree, one with unpushed commits, the caller's own worktree, or -Skip.
 param(
     [switch]$Apply,
     [int]$IdleHours = 2,
+    [int]$LandedHours = 24,
     [int]$MainLimitGB = 8,
     # The Planner's merge worktrees, and On-call's sitting worktrees (0.1 re-check; drop them
     # from this list when On-call is done with them).
@@ -78,7 +80,8 @@ foreach ($w in $worktrees) {
     $path = $w.Path
     if ($path -eq $main -or $path -eq $repo) { continue }
     $state = if ($w.Branch) { $prs[$w.Branch] } else { $null }
-    if ($state -notin 'MERGED', 'OPEN' -and (Landed $path)) { $state = 'MERGED' }
+    $landedOnly = $state -notin 'MERGED', 'OPEN' -and (Landed $path)
+    if ($landedOnly) { $state = 'MERGED' }
     $why = $null
     if ((Split-Path $path -Leaf) -in $Skip) { $why = 'skipped' }
     elseif ($state -notin 'MERGED', 'OPEN') { $why = 'no open or merged PR' }
@@ -87,7 +90,8 @@ foreach ($w in $worktrees) {
     elseif ($running -match [regex]::Escape($path)) { $why = 'in use' }
     else {
         $idle = IdleHours $path
-        if ($idle -lt $IdleHours) { $why = ('active {0:N1} h ago' -f $idle) }
+        $limit = if ($landedOnly) { $LandedHours } else { $IdleHours }
+        if ($idle -lt $limit) { $why = ('active {0:N1} h ago' -f $idle) }
     }
     $name = if ($w.Branch) { $w.Branch } else { "(detached) $path" }
     if ($why) { Write-Host "keep    $name ($why)"; continue }

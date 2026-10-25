@@ -5,8 +5,10 @@ call as JSON on stdin. Exit 2 blocks the call and shows the reason to the agent;
 lets it run. It guards against accidents, not against a determined agent: each rule names the
 one deliberate way past it. Any error inside the guard lets the command run (fail open).
 
-Rules:
-  flash      only 7 · On-call runs a flasher (dry runs are fine for everyone).
+Rules look only at what a command runs (its head), never at text it carries: a commit message,
+PR body, heredoc or grep pattern that mentions cargo or the flasher passes.
+  flash      only 7 · On-call runs a flasher or `foxglove-lab bootloader` (dry runs and --help
+             are fine for everyone). The marker is the only proof: an on-call subagent isn't it.
   app        no foxglove.exe launch on the user's desktop unless On-call said so.
   port       no second listener on a port that already has one.
   base       a PR targets the branch its name says (release/0.x for backports, else main),
@@ -30,34 +32,74 @@ APP_OK = re.compile(r'FOXGLOVE_APP_OK\s*=\s*["\']?1\b')
 BASE_OK = re.compile(r'FOXGLOVE_ALLOW_BASE\s*=\s*["\']?1\b')
 LISTEN_OK = re.compile(r'FOXGLOVE_ALLOW_PORT\s*=\s*["\']?1\b')
 
-# Command separators, so a rule can look at each command in a chain on its own.
-SEPARATORS = re.compile(r'\s*(?:&&|\|\||[;|\n])\s*')
+# What may come before the program a command runs: env assignments, `timeout N`, `cmd /c`,
+# PowerShell's call operator.
+HEAD = r'^\s*(?:(?:\$env:)?[A-Za-z_]\w*=\S*\s+|timeout\s+(?:-\S+\s+)*\d+\S*\s+|cmd(?:\.exe)?\s+/c\s+|&\s*)*'
+PROG = r'["\']?(?:[^\s"\';|]*[\\/])?'          # an optional path before the program name
+PYTHON = HEAD + PROG + r'(?:python[\d.]*|py)(?:\.exe)?["\']?\s+(?:-\S+\s+)*'
+POWERSHELL = HEAD + PROG + r'(?:powershell|pwsh)(?:\.exe)?["\']?\s+(?:-(?!File\b)\S+\s+(?:[^-\s]\S*\s+)?)*-File\s+'
+
+
+def strip_bodies(line):
+    """Drops heredoc and here-string bodies: they are text, not commands."""
+    line = re.sub(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2[ \t]*(?=\n|$)", '<<BODY', line, flags=re.S)
+    return re.sub(r"@(['\"])\r?\n.*?\r?\n\1@", "''", line, flags=re.S)
 
 
 def commands(line):
-    return [c for c in SEPARATORS.split(line) if c.strip()]
+    """Splits a shell line on ; | && || and newlines outside quotes."""
+    out, cur, quote, i = [], [], None, 0
+    line = strip_bodies(line)
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            cur.append(ch)
+            if ch == quote:
+                quote = None
+        elif ch in '"\'':
+            quote = ch
+            cur.append(ch)
+        elif line.startswith(('&&', '||'), i):
+            out.append(''.join(cur)); cur = []; i += 1
+        elif ch in ';|\n':
+            out.append(''.join(cur)); cur = []
+        else:
+            cur.append(ch)
+        i += 1
+    out.append(''.join(cur))
+    return [c for c in out if c.strip()]
+
+
+def words(text):
+    return [w.strip('"\'') for w in re.findall(r'"[^"]*"|\'[^\']*\'|\S+', text)]
 
 
 def is_oncall(call, line):
-    return call.get('agent_type') == 'on-call' or bool(ONCALL.search(line))
+    # The marker only: an on-call *subagent* started from another session is not the standing
+    # On-call session, and two flashers on one bootloader drive risk a wrong-half write.
+    return bool(ONCALL.search(line))
 
 
 def check_flash(call, line):
     for cmd in commands(line):
-        flasher = re.search(r'foxglove_flash\.py', cmd) and '--dry-run' not in cmd and not re.search(r'(^|\s)(-h|--help)\b', cmd)
-        if flasher or re.search(r'flash-half\.ps1', cmd):
-            if not is_oncall(call, line):
-                return ('Only 7 · On-call flashes the keyboard (AGENTS-ROSTER.md). '
-                        'Send the flash request to On-call through the Hub; --dry-run is fine here.')
+        flasher = re.match(PYTHON + r'["\']?\S*foxglove_flash\.py\b(.*)', cmd)
+        if flasher and re.search(r'(^|\s)(--dry-run|-h|--help)(\s|$)', flasher.group(1)):
+            flasher = None
+        half = re.match(r'(?:' + POWERSHELL + r'|' + HEAD + r')' + PROG + r'flash-half\.ps1\b', cmd)
+        # Bootloader entry (D7 08) is half a flash: the half stops typing until it gets a UF2.
+        boot = re.match(r'(?:' + HEAD + PROG + r'foxglove-lab(?:\.exe)?["\']?|' + HEAD + PROG +
+                        r'cargo(?:\.exe)?["\']?\s+run\b.*?-p\s+foxglove-lab\b.*?--)\s.*\bbootloader\b', cmd)
+        if (flasher or half or boot) and not is_oncall(call, line):
+            return ('Only 7 · On-call flashes the keyboard (AGENTS-ROSTER.md). '
+                    'Send the flash request to On-call through the Hub; --dry-run is fine here.')
     return None
 
 
 APP_LAUNCH = [
-    re.compile(r'Start-Process\b[^;|&\n]*\bfoxglove(\.exe)?\b(?![-_.]\w)', re.I),
-    # foxglove.exe at the head of a command, after & or a call operator.
-    re.compile(r'^\s*(&\s*)?["\']?[^\s"\']*\bfoxglove\.exe\b', re.I),
-    re.compile(r'--app[\s=]["\']?[^\s"\']*foxglove\.exe', re.I),
-    re.compile(r'\bcargo\s+run\b[^;|&\n]*(--manifest-path\s+["\']?app[\\/]|(-p|--package|--bin)\s+foxglove(\s|$))', re.I),
+    re.compile(HEAD + r'Start-Process\b[^;|\n]*\bfoxglove(\.exe)?\b(?![-_.]\w)', re.I),
+    re.compile(HEAD + PROG + r'foxglove\.exe\b', re.I),
+    re.compile(PYTHON + r'.*--app[\s=]["\']?[^\s"\']*foxglove\.exe', re.I),
+    re.compile(HEAD + PROG + r'cargo(?:\.exe)?["\']?\s+run\b.*(--manifest-path\s+["\']?app[\\/]|(-p|--package|--bin)\s+foxglove(\s|$))', re.I),
 ]
 
 
@@ -65,7 +107,7 @@ def check_app(call, line):
     if is_oncall(call, line) or APP_OK.search(line):
         return None
     for cmd in commands(line):
-        if any(p.search(cmd) for p in APP_LAUNCH):
+        if any(p.match(cmd) for p in APP_LAUNCH):
             return ('No Foxglove launches on the user\'s desktop unless On-call says so. Ask On-call '
                     'through the Hub; once it agrees, prefix the command with FOXGLOVE_APP_OK=1.')
     return None
@@ -83,7 +125,8 @@ def port_busy(port):
         return s.connect_ex(('127.0.0.1', port)) == 0
 
 
-def check_port(call, line, busy=port_busy):
+def check_port(call, line, busy=None):
+    busy = busy or port_busy
     if LISTEN_OK.search(line):
         return None
     for cmd in commands(line):
@@ -134,30 +177,37 @@ def current_branch(cwd):
     return out.stdout.strip()
 
 
-def check_base(call, line, gh=gh_json, branch=current_branch):
+PROTECTED = re.compile(r'\+?(?:[^:\s]*:)?(?:refs/heads/)?(main|release/[\w.]+)')
+GIT = HEAD + PROG + r'git(?:\.exe)?["\']?\s+(?:-C\s+("[^"]*"|\'[^\']*\'|\S+)\s+)?'
+
+
+def check_base(call, line, gh=None, branch=None):
+    gh, branch = gh or gh_json, branch or current_branch
     if BASE_OK.search(line):
         return None
-    cwd = call.get('cwd')
     for cmd in commands(line):
-        push = re.search(r'\bgit\s+push\b(.*)', cmd)
+        push = re.match(GIT + r'push\b(.*)', cmd)
         if push:
-            refs = push.group(1)
-            if re.search(r'(^|\s|:)(refs/heads/)?(main|release/[\w.]+)(\s|$)', refs) and not re.search(r'--delete|\s-d\b', refs):
+            cwd = (push.group(1) or '').strip('"\'') or call.get('cwd')
+            refs = [w for w in words(push.group(2)) if not w.startswith('-')]
+            # refs[0] is the remote; a bare push goes to the current branch's upstream.
+            targets = refs[1:] or [branch(cwd)]
+            if any(PROTECTED.fullmatch(r) for r in targets):
                 return 'No pushes straight to main or release/*: push a branch and open a PR (RESCUE.md).'
-        merge = re.search(r'\bgh\s+pr\s+merge\b\s*(\d+)?', cmd)
+        merge = re.match(r'(?:' + HEAD + PROG + r')gh(?:\.exe)?["\']?\s+pr\s+merge\b(.*)', cmd)
         if merge:
-            args = ['pr', 'view'] + ([merge.group(1)] if merge.group(1) else []) + ['--json', 'headRefName,baseRefName']
-            pr = gh(args, cwd)
+            number = re.search(r'(?:^|\s)["\']?(\d+|https://\S+/pull/\d+)["\']?(?=\s|$)', merge.group(1))
+            pr = gh(['pr', 'view'] + ([number.group(1)] if number else []) + ['--json', 'headRefName,baseRefName'], call.get('cwd'))
             if pr:
                 problem = base_problem(pr['headRefName'], pr['baseRefName'])
                 if problem:
                     return problem + ' Fix the base with gh pr edit --base, or prefix FOXGLOVE_ALLOW_BASE=1 if it is deliberate.'
-        create = re.search(r'\bgh\s+pr\s+create\b(.*)', cmd)
+        create = re.match(r'(?:' + HEAD + PROG + r')gh(?:\.exe)?["\']?\s+pr\s+create\b(.*)', cmd)
         if create:
             opts = create.group(1)
             base = re.search(r'(?:--base|-B)[\s=]["\']?([\w./-]+)', opts)
             head = re.search(r'(?:--head|-H)[\s=]["\']?([\w./-]+)', opts)
-            problem = base_problem(head.group(1) if head else branch(cwd), base.group(1) if base else 'main')
+            problem = base_problem(head.group(1) if head else branch(call.get('cwd')), base.group(1) if base else 'main')
             if problem:
                 return problem + ' Prefix FOXGLOVE_ALLOW_BASE=1 if it is deliberate.'
     return None
@@ -174,31 +224,35 @@ def worktree_root(cwd):
     return Path(out.stdout.strip()).parent.parent / 'worktrees'
 
 
+def windows_path(path):
+    """Git Bash spells C:\\x as /c/x."""
+    return re.sub(r'^/([a-zA-Z])/', r'\1:/', str(path))
+
+
 def inside(path, root):
     try:
-        Path(os.path.abspath(path)).relative_to(os.path.abspath(root))
+        Path(os.path.abspath(windows_path(path))).relative_to(os.path.abspath(windows_path(root)))
         return True
     except ValueError:
         return False
 
 
-def check_worktree(call, line, root=worktree_root):
+def check_worktree(call, line, root=None):
+    root = root or worktree_root
     for cmd in commands(line):
-        m = re.search(r'\bgit\b(.*?)\bworktree\s+add\b(.*)', cmd)
+        m = re.match(GIT + r'worktree\s+add\b(.*)', cmd)
         if not m:
             continue
-        at = re.search(r'-C\s+("[^"]*"|\'[^\']*\'|\S+)', m.group(1))
-        base = at.group(1).strip('"\'') if at else (call.get('cwd') or '.')
+        base = windows_path((m.group(1) or '').strip('"\'') or call.get('cwd') or '.')
         # The first argument that isn't an option (or an option's value) is the path.
-        words = re.findall(r'"[^"]*"|\'[^\']*\'|\S+', m.group(2))
         path, skip = None, False
-        for w in words:
+        for w in words(m.group(2)):
             if skip:
                 skip = False
-            elif w in ('-b', '-B', '--reason'):
+            elif w in ('-b', '-B', '--reason', '--orphan'):
                 skip = True
             elif not w.startswith('-'):
-                path = w.strip('"\'')
+                path = windows_path(w)
                 break
         if not path:
             continue
@@ -209,16 +263,15 @@ def check_worktree(call, line, root=worktree_root):
     return None
 
 
-HEAVY = re.compile(r'\bcargo\s+(\+\S+\s+)?(build|b|test|t|clippy|check|c|run|r|doc|d|bench|install|rustc|nextest|wix)\b')
+HEAVY = re.compile(HEAD + PROG + r'cargo(?:\.exe)?["\']?\s+(?:\+\S+\s+)?(build|b|test|t|clippy|check|c|run|r|doc|d|bench|install|rustc|nextest|wix)\b')
 
 
 def check_cargo(call, line):
-    if re.search(r'check\.ps1|build-slot\.ps1|release-test\.ps1', line):
-        return None
     for cmd in commands(line):
-        if HEAVY.search(cmd):
+        m = HEAVY.match(cmd)
+        if m:
             return ('Cargo builds run in a build slot so at most 2 run at once (#347). Run it as: '
-                    'powershell -File scripts\\build-slot.ps1 ' + HEAVY.search(cmd).group(0) + ' ...')
+                    f'powershell -File scripts\\build-slot.ps1 cargo {m.group(1)} ...')
     return None
 
 
@@ -237,8 +290,10 @@ def evaluate(call):
 
 
 def main():
+    if hasattr(sys.stderr, 'reconfigure'):  # the agent reads the reason as UTF-8
+        sys.stderr.reconfigure(encoding='utf-8')
     try:
-        reason = evaluate(json.load(sys.stdin))
+        reason = evaluate(json.loads(sys.stdin.buffer.read().decode('utf-8-sig')))
     except Exception as e:  # never block work because the guard itself broke
         print(f'guard.py: skipped ({e})', file=sys.stderr)
         return 0

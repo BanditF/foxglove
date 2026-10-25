@@ -30,10 +30,27 @@ class Flash(unittest.TestCase):
     def test_oncall_marker(self):
         self.assertIsNone(blocked("$env:FOXGLOVE_ROLE='oncall'; python scripts/flash/foxglove_flash.py --half left --yes"))
         self.assertIsNone(blocked('FOXGLOVE_ROLE=oncall python scripts/flash/foxglove_flash.py --half left', tool='Bash'))
-        self.assertIsNone(blocked('python scripts/flash/foxglove_flash.py --half left', agent_type='on-call'))
+        # An on-call subagent started by another session is not the standing On-call.
+        self.assertIn('On-call', blocked('python scripts/flash/foxglove_flash.py --half left', agent_type='on-call'))
+
+    def test_bootloader_entry_is_a_flash(self):
+        self.assertIn('On-call', blocked(r'target\release\foxglove-lab.exe bootloader --half left --confirmed FLASH'))
+        self.assertIsNone(blocked(r'target\release\foxglove-lab.exe --allow-app status'))
 
     def test_reading_the_flasher_is_fine(self):
-        self.assertIsNone(blocked('git log -- scripts/flash/test_flash.py'))
+        for cmd in ['git log -- scripts/flash/test_flash.py', 'git diff scripts/flash/foxglove_flash.py',
+                    'git add scripts/flash/foxglove_flash.py scripts/flash/test_flash.py',
+                    r'Get-Content scripts\flash\foxglove_flash.py', 'git log --grep "flash-half.ps1"',
+                    'python -m unittest flash.test_flash']:
+            self.assertIsNone(blocked(cmd), cmd)
+
+    def test_wrapped_flashes_blocked(self):
+        for cmd in ['timeout 600 python scripts/flash/foxglove_flash.py --half left --yes',
+                    'cd foxglove; python -I scripts\\flash\\foxglove_flash.py --half right',
+                    'powershell -ExecutionPolicy Bypass -File C:\\kb\\flash-half.ps1 -Half left',
+                    '.\\flash-half.ps1 -Half left',
+                    'python scripts/flash/foxglove_flash.py --dry-run && python scripts/flash/foxglove_flash.py --yes']:
+            self.assertIn('On-call', blocked(cmd) or '', cmd)
 
 
 class App(unittest.TestCase):
@@ -105,10 +122,23 @@ class Base(unittest.TestCase):
         self.assertIsNone(g.check_base({'cwd': '.'}, 'gh pr create --base release/0.1 --title x', branch=lambda c: 'fix-0.1'))
 
     def test_direct_pushes(self):
-        self.assertIsNotNone(blocked('git push origin main'))
-        self.assertIsNotNone(blocked('git push origin HEAD:release/0.1'))
+        for cmd in ['git push origin main', 'git push origin HEAD:release/0.1', 'git push origin +main',
+                    'git push origin "main"', 'git push origin --delete release/0.1', 'git -C C:/x push origin main']:
+            self.assertIsNotNone(blocked(cmd), cmd)
         self.assertIsNone(blocked('git push -u origin meta/hooks'))
         self.assertIsNone(blocked('git push origin release/0.1-tag-run'))
+        self.assertIsNone(blocked('git push'))  # on feature-x
+
+    def test_bare_push_on_main(self):
+        self.assertIsNotNone(g.check_base({'cwd': '.'}, 'git push', branch=lambda c: 'main'))
+        self.assertIsNotNone(g.check_base({'cwd': '.'}, 'git push origin', branch=lambda c: 'release/0.1'))
+
+    def test_merge_number_anywhere(self):
+        seen = []
+        g.check_base({'cwd': '.'}, 'gh pr merge --merge 351', gh=lambda a, c: seen.append(a))
+        g.check_base({'cwd': '.'}, 'gh pr merge https://github.com/BanditF/foxglove/pull/352 --merge', gh=lambda a, c: seen.append(a))
+        self.assertEqual(seen[0][2], '351')
+        self.assertTrue(seen[1][2].endswith('/352'))
 
 
 class Worktree(unittest.TestCase):
@@ -127,12 +157,25 @@ class Worktree(unittest.TestCase):
         self.assertIsNone(self.check(r'git worktree add C:\kb\worktrees\y main'))
         self.assertIsNone(self.check('git -C C:/kb/foxglove worktree add ../worktrees/z main', cwd='C:/elsewhere'))
         self.assertIsNone(self.check('git worktree remove C:/Temp/x'))
+        self.assertIsNone(self.check('git worktree add -b x /c/kb/worktrees/meta-x origin/main', cwd='/c/kb/foxglove'))
+        self.assertIsNone(self.check('git commit -m "notes: never git worktree add C:/Temp/x"'))
 
 
 class Cargo(unittest.TestCase):
     def test_raw_builds_blocked(self):
-        for cmd in ['cargo build --release', 'cd app; cargo test', 'cargo clippy --workspace', 'cargo run -p foxglove-lab -- usb']:
+        for cmd in ['cargo build --release', 'cd app; cargo test', 'cargo clippy --workspace',
+                    'cargo run -p foxglove-lab -- usb', 'cargo b', 'CARGO_TARGET_DIR=t timeout 3000 cargo test -q',
+                    r'C:\Users\fuchs\.cargo\bin\cargo.exe build', 'cat scripts/check.ps1; cargo build']:
             self.assertIn('build-slot.ps1', blocked(cmd) or '', cmd)
+
+    def test_text_about_cargo_fine(self):
+        for cmd in ['git commit -m "Docs: run cargo test before pushing"',
+                    "git commit -F - <<'EOF'\nTests: x\n\ncargo test --workspace\ncargo build\nEOF",
+                    "git commit -F - <<EOF\ncargo clippy\nEOF\ngit log -1",
+                    '$m = @"\ncargo build --release\n"@; gh pr comment 1 --body $m',
+                    'gh pr create --title t --body "Ran cargo clippy and check"',
+                    "rg 'cargo build' docs", 'grep -n "cargo test" README.md']:
+            self.assertIsNone(blocked(cmd), cmd)
 
     def test_slotted_or_light_fine(self):
         for cmd in ['powershell -File scripts/build-slot.ps1 cargo build --release',
@@ -143,7 +186,7 @@ class Cargo(unittest.TestCase):
 
 class Main(unittest.TestCase):
     def run_main(self, payload):
-        with patch('sys.stdin', io.StringIO(payload)), patch('sys.stderr', io.StringIO()) as err:
+        with patch('sys.stdin', io.TextIOWrapper(io.BytesIO(payload.encode('utf-8')))), patch('sys.stderr', io.StringIO()) as err:
             return g.main(), err.getvalue()
 
     def test_block_exit_2(self):

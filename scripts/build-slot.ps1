@@ -7,6 +7,7 @@
 # CARGO_BUILD_JOBS already set (by .claude/settings.json or the caller) is kept.
 # No param block: every argument, dashes included, belongs to the command.
 $Command = @($args)
+$ErrorActionPreference = 'Stop'
 
 function Enter-BuildSlot {
     if (-not $env:CARGO_BUILD_JOBS) { $env:CARGO_BUILD_JOBS = [math]::Max(1, [int][math]::Floor([Environment]::ProcessorCount / 2)) }
@@ -45,8 +46,13 @@ if ($Command) {
     try {
         # An array even for one argument: splatting a lone string passes its characters.
         $rest = @($Command | Select-Object -Skip 1)
+        $global:LASTEXITCODE = 0
         & $Command[0] @rest
         $code = $LASTEXITCODE
+    } catch {
+        # A command that doesn't exist (or a cmdlet that throws) is a failure, not a pass.
+        Write-Error $_ -ErrorAction Continue
+        $code = 1
     } finally { Exit-BuildSlot $slot }
     exit $code
 }

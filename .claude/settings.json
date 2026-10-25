@@ -9,7 +9,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$CLAUDE_PROJECT_DIR/scripts/hooks/guard.py\"",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard.py\"; [ -f \"$f\" ] || exit 0; python \"$f\"; c=$?; [ $c -eq 2 ] && exit 2; exit 0",
             "timeout": 30
           }
         ]
