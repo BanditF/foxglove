@@ -85,24 +85,41 @@ pub fn conn_state(t: &impl Transport) -> Result<protocol::ConnState> {
     Ok(protocol::ConnState::parse(&r))
 }
 
+/// How long the right half's build may take. It is read over the Bluetooth relay, which queues
+/// it behind whatever the relay is already doing (art slot reads take up to 3 s each), so the
+/// 4 s that suits the left timed out in the app while the lab, on an idle relay, got through.
+const RIGHT_BUILD_WAIT: Duration = Duration::from_secs(10);
+/// Replies 1 (busy) and 3 (relay error) come at once and usually clear; ask again this many times.
+const BUILD_RETRIES: u32 = 2;
+
 /// One half's firmware build (0 = left, 1 = right). The right's comes over the relay, so this
-/// can take a few seconds.
+/// can take several seconds.
 pub fn build_info(t: &impl Transport, half: u8) -> Result<protocol::BuildInfo> {
-    let r = t.request(
-        &protocol::build_info(half),
-        protocol::SETTINGS,
-        protocol::settings::BUILD_INFO,
-        Duration::from_secs(4),
-    )?;
-    protocol::BuildInfo::parse(&r).map_err(|status| {
-        anyhow::anyhow!(match status {
-            1 => "busy".to_string(),
-            2 => "the right half is not connected".to_string(),
-            3 => "relay error".to_string(),
-            4 => "the right half's firmware doesn't report its build".to_string(),
-            n => format!("error {n}"),
-        })
-    })
+    build_info_after(t, half, Duration::from_millis(750))
+}
+
+fn build_info_after(t: &impl Transport, half: u8, retry_wait: Duration) -> Result<protocol::BuildInfo> {
+    let wait = if half == 0 { Duration::from_secs(4) } else { RIGHT_BUILD_WAIT };
+    let mut attempt = 0;
+    loop {
+        let r = t.request(&protocol::build_info(half), protocol::SETTINGS, protocol::settings::BUILD_INFO, wait)?;
+        match protocol::BuildInfo::parse(&r) {
+            Ok(b) => return Ok(b),
+            Err(1 | 3) if attempt < BUILD_RETRIES => {
+                attempt += 1;
+                std::thread::sleep(retry_wait); // the relay is busy: a bounded back-off, not a poll
+            }
+            Err(status) => {
+                anyhow::bail!(match status {
+                    1 => "busy".to_string(),
+                    2 => "the right half is not connected".to_string(),
+                    3 => "relay error".to_string(),
+                    4 => "the right half's firmware doesn't report its build".to_string(),
+                    n => format!("error {n}"),
+                })
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -170,5 +187,43 @@ mod tests {
         let right = Boot(Default::default(), vec![boot_reply(&[0xd7, 0x88, 0, 1, 2, 3, 4])]);
         assert!(enter_bootloader(&right, 1).is_err());
         assert!(enter_bootloader(&right, 2).is_err());
+    }
+
+    /// Scripted BUILD_INFO replies; records the timeout of each request.
+    struct Build(std::cell::RefCell<Vec<Duration>>, Vec<[u8; protocol::REPORT]>);
+    impl Transport for Build {
+        fn send(&self, _: &[u8]) -> Result<()> { panic!("build info uses request") }
+        fn request(&self, _: &[u8], proto: u8, cmd: u8, timeout: Duration)
+            -> Result<[u8; protocol::REPORT]> {
+            assert_eq!((proto, cmd), (0xd7, 9));
+            let mut seen = self.0.borrow_mut();
+            seen.push(timeout);
+            self.1.get(seen.len() - 1).copied().ok_or_else(|| anyhow::anyhow!("no reply from the keyboard"))
+        }
+    }
+
+    #[test]
+    fn right_build_waits_longer_than_the_left_and_retries_a_busy_relay() {
+        let ok = boot_reply(&[0xd7, 0x89, 0, 1, 0, 1, 0, 0, b'a', b'b', b'c']);
+        let busy = boot_reply(&[0xd7, 0x89, 1, 1]);
+        let t = Build(Default::default(), vec![busy, boot_reply(&[0xd7, 0x89, 3, 1]), ok]);
+        let b = build_info_after(&t, 1, Duration::ZERO).unwrap();
+        assert_eq!((b.version.minor, b.sha.as_str()), (1, "abc"));
+        assert_eq!(*t.0.borrow(), [RIGHT_BUILD_WAIT; 3]);
+
+        let left = Build(Default::default(), vec![ok]);
+        build_info_after(&left, 0, Duration::ZERO).unwrap();
+        assert_eq!(*left.0.borrow(), [Duration::from_secs(4)]);
+    }
+
+    #[test]
+    fn build_errors_give_up_after_the_retries_or_at_once() {
+        let busy = boot_reply(&[0xd7, 0x89, 1, 1]);
+        let t = Build(Default::default(), vec![busy; 5]);
+        assert_eq!(build_info_after(&t, 1, Duration::ZERO).unwrap_err().to_string(), "busy");
+        assert_eq!(t.0.borrow().len(), 3, "one try and two retries");
+        let gone = Build(Default::default(), vec![boot_reply(&[0xd7, 0x89, 2, 1])]);
+        assert!(build_info_after(&gone, 1, Duration::ZERO).unwrap_err().to_string().contains("not connected"));
+        assert_eq!(gone.0.borrow().len(), 1, "not connected is final");
     }
 }
