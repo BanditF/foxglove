@@ -1,6 +1,10 @@
 //! Collapsible settings sections, kept apart from KeyPeek's shared widgets.
 
 pub fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
+    // Only the current page's sections show (#385).
+    if !super::shell::shows(title) {
+        return;
+    }
     ui.add_space(6.0);
     #[cfg(test)]
     if super::theme_preview::legacy() {
@@ -30,12 +34,19 @@ pub fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
 }
 
 fn open_by_default(title: &str) -> bool {
-    matches!(title, "Connection" | "Overlay Appearance" | "Keyboard")
+    // A page with one or two sections opens them (#385).
+    matches!(
+        title,
+        "Connection" | "Overlay Appearance" | "Keyboard" | "Lights" | "Screens" | "Right screen art" | "Plugins"
+    )
 }
 
 /// The window's footer: project link and version on one row, then the KeyPeek credit and the
 /// font credits on their own rows, so nothing overlaps at the window's fixed width (#384).
 pub fn footer(ui: &mut egui::Ui) {
+    if !super::shell::shows("About") {
+        return;
+    }
     let link = |ui: &mut egui::Ui, text: String, url: &str| {
         ui.add(egui::Hyperlink::from_label_and_url(egui::RichText::new(text).weak(), url));
     };

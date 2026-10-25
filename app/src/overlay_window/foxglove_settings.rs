@@ -93,17 +93,19 @@ impl OverlayApp {
         titled_group(ui, "Keyboard", |ui| {
             crate::foxglove::connection::row(ui);
             Self::firmware_row(ui);
-            Self::rgb_sync_row(ui);
             ui.add_space(4.0);
-            egui::CollapsingHeader::new("Lights")
-                .default_open(true)
-                .show(ui, Self::lights_section);
             egui::CollapsingHeader::new("Actions")
                 .default_open(false)
                 .show(ui, Self::actions_section);
             if let Some((label, result)) = ks::last_action() {
                 ui.weak(format!("Last: {label} — {result}"));
             }
+        });
+        // Its own page since #385; the controls are as they were.
+        titled_group(ui, "Lights", |ui| {
+            Self::rgb_sync_row(ui);
+            ui.add_space(4.0);
+            Self::lights_section(ui);
         });
     }
 

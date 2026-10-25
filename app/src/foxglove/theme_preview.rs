@@ -2,7 +2,8 @@
 //! rasterizer paints its meshes into a PNG. No window, no GPU.
 //!
 //! Set `FOXGLOVE_UI_PREVIEW_DIR` to a folder before `cargo test` to keep the PNGs
-//! (`ui-384-before.png`, `ui-384-after-dark.png`, `ui-384-after-light.png`).
+//! (`ui-384-before.png`, `ui-384-after-dark.png`, `ui-384-after-light.png`, and one
+//! `ui-385-<page>.png` per page of the #385 shell).
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -141,7 +142,6 @@ fn fill_triangle(px: &mut [[f32; 4]], w: usize, h: usize, clip: Rect, ppp: f32, 
 /// Profile and Updates groups and the footer. The real window needs the app (tray icon,
 /// connection), so this stands in for it.
 fn settings_window(ctx: &egui::Context, legacy: bool) {
-    use crate::foxglove::settings_ui::section;
     egui::Window::new("Foxglove Settings")
         .fixed_pos(egui::pos2(24.0, 24.0))
         .fixed_size(egui::vec2(450.0, 660.0))
@@ -150,92 +150,7 @@ fn settings_window(ctx: &egui::Context, legacy: bool) {
         .open(&mut true)
         .vscroll(true)
         .show(ctx, |ui| {
-            section(ui, "Connection", |ui| {
-                egui::Grid::new("connection_grid").num_columns(2).striped(true).spacing([20.0, 10.0]).show(ui, |ui| {
-                    ui.label("Device");
-                    ui.horizontal(|ui| {
-                        egui::ComboBox::from_id_salt("device_combo")
-                            .width(ui.available_width() - 108.0)
-                            .selected_text("Eyelash Corne (USB)")
-                            .show_ui(ui, |_| {});
-                        ui.add_sized([100.0, 20.0], egui::Button::new("Connect"));
-                    });
-                    ui.end_row();
-                    ui.label("Layout");
-                    ui.add_enabled_ui(false, |ui| {
-                        egui::ComboBox::from_id_salt("layout_combo")
-                            .width(ui.available_width() - 108.0)
-                            .selected_text("Connect to device first")
-                            .show_ui(ui, |_| {});
-                    });
-                    ui.end_row();
-                });
-            });
-            section(ui, "Overlay Appearance", |ui| {
-                egui::Grid::new("appearance_grid").num_columns(2).striped(true).spacing([20.0, 10.0]).show(ui, |ui| {
-                    ui.label("Alignment");
-                    egui::ComboBox::from_id_salt("position_combo")
-                        .width(ui.available_width())
-                        .selected_text(crate::settings::WindowPosition::BottomRight.to_string())
-                        .show_ui(ui, |_| {});
-                    ui.end_row();
-                    for (label, value, suffix) in [
-                        ("Display duration", 2000.0, " ms"),
-                        ("Activation delay", 0.0, " ms"),
-                        ("Distance from screen edge", 10.0, " px"),
-                        ("Key unit size", 60.0, " px"),
-                    ] {
-                        ui.label(label);
-                        let mut v: f64 = value;
-                        ui.add_sized(ui.available_size(), egui::DragValue::new(&mut v).suffix(suffix));
-                        ui.end_row();
-                    }
-                    ui.label("Auto-fit long labels");
-                    ui.checkbox(&mut true, "Fit long labels to available space");
-                    ui.end_row();
-                    ui.label("Legend mode");
-                    egui::ComboBox::from_id_salt("legend_mode_combo")
-                        .width(ui.available_width())
-                        .selected_text(crate::settings::LegendMode::Stacked.to_string())
-                        .show_ui(ui, |_| {});
-                    ui.end_row();
-                });
-            });
-            section(ui, "Theme", |ui| {
-                if !legacy {
-                    crate::foxglove::theme::picker(ui);
-                }
-                let mut white = Color32::WHITE;
-                ui.horizontal(|ui| {
-                    ui.label("Font color");
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.color_edit_button_srgba(&mut white);
-                    });
-                });
-                ui.add_space(4.0);
-                let colors = crate::settings::ThemeSettings::default().layer_colors;
-                ui.columns(2, |cols| {
-                    for (col, layers) in cols.iter_mut().zip([0..4, 4..8]) {
-                        egui::Grid::new(("layers", layers.start)).num_columns(4).spacing([12.0, 6.0]).show(col, |ui| {
-                            ui.weak("Show");
-                            ui.weak("Hold");
-                            ui.weak("Layer");
-                            ui.label("");
-                            ui.end_row();
-                            for layer in layers {
-                                ui.add(egui::Checkbox::without_text(&mut true));
-                                ui.add(egui::Checkbox::without_text(&mut (layer != 3)));
-                                ui.label(if layer == 7 { "Other layers".to_string() } else { format!("Layer {layer}") });
-                                let mut c = crate::key_paint::to_egui_color(colors[layer]);
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                    ui.color_edit_button_srgba(&mut c);
-                                });
-                                ui.end_row();
-                            }
-                        });
-                    }
-                });
-            });
+            keypeek_groups(ui, legacy);
             crate::foxglove::profiles_ui::picker(ui);
             crate::foxglove::update::group(ui);
             if !legacy {
@@ -261,6 +176,97 @@ fn settings_window(ctx: &egui::Context, legacy: bool) {
                 });
             });
         });
+}
+
+/// KeyPeek's Connection, Overlay Appearance and Theme groups, with the same widgets and labels.
+fn keypeek_groups(ui: &mut egui::Ui, legacy: bool) {
+    use crate::foxglove::settings_ui::section;
+    section(ui, "Connection", |ui| {
+        egui::Grid::new("connection_grid").num_columns(2).striped(true).spacing([20.0, 10.0]).show(ui, |ui| {
+            ui.label("Device");
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("device_combo")
+                    .width(ui.available_width() - 108.0)
+                    .selected_text("Eyelash Corne (USB)")
+                    .show_ui(ui, |_| {});
+                ui.add_sized([100.0, 20.0], egui::Button::new("Connect"));
+            });
+            ui.end_row();
+            ui.label("Layout");
+            ui.add_enabled_ui(false, |ui| {
+                egui::ComboBox::from_id_salt("layout_combo")
+                    .width(ui.available_width() - 108.0)
+                    .selected_text("Connect to device first")
+                    .show_ui(ui, |_| {});
+            });
+            ui.end_row();
+        });
+    });
+    section(ui, "Overlay Appearance", |ui| {
+        egui::Grid::new("appearance_grid").num_columns(2).striped(true).spacing([20.0, 10.0]).show(ui, |ui| {
+            ui.label("Alignment");
+            egui::ComboBox::from_id_salt("position_combo")
+                .width(ui.available_width())
+                .selected_text(crate::settings::WindowPosition::BottomRight.to_string())
+                .show_ui(ui, |_| {});
+            ui.end_row();
+            for (label, value, suffix) in [
+                ("Display duration", 2000.0, " ms"),
+                ("Activation delay", 0.0, " ms"),
+                ("Distance from screen edge", 10.0, " px"),
+                ("Key unit size", 60.0, " px"),
+            ] {
+                ui.label(label);
+                let mut v: f64 = value;
+                ui.add_sized(ui.available_size(), egui::DragValue::new(&mut v).suffix(suffix));
+                ui.end_row();
+            }
+            ui.label("Auto-fit long labels");
+            ui.checkbox(&mut true, "Fit long labels to available space");
+            ui.end_row();
+            ui.label("Legend mode");
+            egui::ComboBox::from_id_salt("legend_mode_combo")
+                .width(ui.available_width())
+                .selected_text(crate::settings::LegendMode::Stacked.to_string())
+                .show_ui(ui, |_| {});
+            ui.end_row();
+        });
+    });
+    section(ui, "Theme", |ui| {
+        if !legacy {
+            crate::foxglove::theme::picker(ui);
+        }
+        let mut white = Color32::WHITE;
+        ui.horizontal(|ui| {
+            ui.label("Font color");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.color_edit_button_srgba(&mut white);
+            });
+        });
+        ui.add_space(4.0);
+        let colors = crate::settings::ThemeSettings::default().layer_colors;
+        ui.columns(2, |cols| {
+            for (col, layers) in cols.iter_mut().zip([0..4, 4..8]) {
+                egui::Grid::new(("layers", layers.start)).num_columns(4).spacing([12.0, 6.0]).show(col, |ui| {
+                    ui.weak("Show");
+                    ui.weak("Hold");
+                    ui.weak("Layer");
+                    ui.label("");
+                    ui.end_row();
+                    for layer in layers {
+                        ui.add(egui::Checkbox::without_text(&mut true));
+                        ui.add(egui::Checkbox::without_text(&mut (layer != 3)));
+                        ui.label(if layer == 7 { "Other layers".to_string() } else { format!("Layer {layer}") });
+                        let mut c = crate::key_paint::to_egui_color(colors[layer]);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.color_edit_button_srgba(&mut c);
+                        });
+                        ui.end_row();
+                    }
+                });
+            }
+        });
+    });
 }
 
 /// The theme's widgets in their states, for the review (only drawn on the "after" previews).
@@ -342,11 +348,197 @@ fn preview(legacy: bool, choice: crate::foxglove::theme::Choice) -> image::RgbaI
     img
 }
 
+/// Foxglove's own sections as stand-ins: the real ones need a keyboard (and would talk to it),
+/// so these use the same widgets and labels with sample values.
+fn foxglove_groups(ui: &mut egui::Ui) {
+    use crate::foxglove::settings_ui::section;
+    section(ui, "Keyboard", |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.label("Connection");
+            ui.label("on USB");
+            ui.label("Windows Bluetooth link: connected");
+            ui.label("active profile 1 · connected · endpoint USB");
+            ui.label("this PC: profile 1");
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.weak("Firmware");
+            ui.label("left 0.1.0 (dev) · e255d32 / right unknown (no reply from the keyboard)");
+        });
+        ui.add_space(4.0);
+        egui::CollapsingHeader::new("Actions").default_open(false).show(ui, |_| {});
+        ui.weak("Last: Bluetooth profile 1 — done");
+    });
+    section(ui, "Lights", |ui| {
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut true, "Right half's lights follow the left");
+            let _ = ui.small_button("↻");
+        });
+        ui.add_space(4.0);
+        ui.checkbox(&mut false, "Follow the Windows accent colour");
+        let _ = ui.small_button("Refresh lights");
+        egui::Grid::new("preview-lights").num_columns(3).spacing([10.0, 4.0]).show(ui, |ui| {
+            for name in ["Left", "Right"] {
+                ui.label(name);
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), egui::Sense::hover());
+                ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(0xf0, 0x8a, 0x3c));
+                ui.label("on · Solid · 80% · speed 3");
+                ui.end_row();
+            }
+        });
+        ui.horizontal(|ui| {
+            let _ = ui.button("On");
+            let _ = ui.button("Off");
+            egui::ComboBox::from_id_salt("preview-effect").selected_text("Solid").show_ui(ui, |_| {});
+        });
+        ui.add(egui::Slider::new(&mut 26, 0..=359).text("hue"));
+        ui.add(egui::Slider::new(&mut 76, 0..=100).text("saturation"));
+        ui.add(egui::Slider::new(&mut 80, 0..=100).text("brightness"));
+        let _ = ui.button("Apply colour");
+    });
+    section(ui, "Screens", |ui| {
+        ui.label("Driving the left screen: clock, media and hints");
+        egui::Grid::new("preview-screens").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+            for (k, v) in [("Keyboard", "Eyelash Corne · host link v3"), ("Board profile", "nice_view_custom"), ("Right half", "connected"), ("Right battery", "61%")] {
+                ui.weak(k);
+                ui.label(v);
+                ui.end_row();
+            }
+        });
+        egui::CollapsingHeader::new("Details").show(ui, |_| {});
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut true, "Drive left screen");
+            ui.checkbox(&mut false, "Pause");
+        });
+        ui.horizontal(|ui| {
+            ui.label("Show");
+            egui::ComboBox::from_id_salt("preview-show").selected_text("Clock, media and hints").show_ui(ui, |_| {});
+        });
+        ui.label("Game hints");
+        ui.weak("Shown on the panel while that program is in front.");
+        ui.horizontal(|ui| {
+            ui.label("eldenring.exe · \"Dodge on Space\"");
+            let _ = ui.button("Remove");
+        });
+        let _ = ui.button("Add foreground app");
+    });
+    section(ui, "Right screen art", |ui| {
+        ui.label("Playing: hud");
+        ui.horizontal(|ui| {
+            let _ = ui.button("Push file...");
+            let _ = ui.button("Refresh");
+        });
+        ui.weak("Library: hud, hearth-wheel, fury-stars, courier");
+        ui.label("Saved on the keyboard");
+        ui.label("1. hud");
+        ui.label("Hotlist");
+        ui.horizontal(|ui| {
+            ui.label("Next entry");
+            egui::ComboBox::from_id_salt("preview-next").selected_text("When the lights wake").show_ui(ui, |_| {});
+        });
+        egui::CollapsingHeader::new("Layer art").id_salt("art-layer-art").show(ui, |_| {});
+    });
+    section(ui, "Other keyboards (VIA)", |ui| {
+        ui.weak("QMK keyboards with VIA, like the Keychron K5 Pro, over USB. Foxglove only reads them: the keymap, layers and lights.");
+        ui.checkbox(&mut true, "Use VIA keyboards");
+        ui.horizontal(|ui| {
+            let _ = ui.button("Add VIA definition (JSON)…");
+            let _ = ui.button("Rescan");
+        });
+    });
+    section(ui, "Plugins", |ui| {
+        ui.weak("Plugins add features to Foxglove. Each runs as its own program with only the permissions you approve.");
+        ui.add_space(4.0);
+        ui.label("Installed");
+        ui.vertical_centered(|ui| {
+            ui.weak("No plugins yet. Pick one from the catalog below, or install one from a file.");
+        });
+        ui.label("Catalog");
+        for (name, what) in [
+            ("Pomodoro", "A focus timer on the left panel and the underglow."),
+            ("Mic mute", "Red and MUTED while your microphone is muted."),
+            ("Broadcast Status", "OBS recording or streaming as REC or LIVE."),
+        ] {
+            ui.horizontal(|ui| {
+                let _ = ui.button("Install");
+                ui.label(name);
+                ui.weak(what);
+            });
+        }
+        let _ = ui.button("Install from file…");
+    });
+}
+
+/// The settings window as #385 draws it: the sidebar, the status strip and one page.
+fn shell_window(ctx: &egui::Context) {
+    egui::Window::new("Foxglove Settings")
+        .fixed_pos(egui::pos2(16.0, 16.0))
+        .default_size(egui::vec2(1040.0, 660.0))
+        .min_size(egui::vec2(720.0, 420.0))
+        .frame(crate::foxglove::shell::window_frame(ctx))
+        .collapsible(false)
+        .resizable(true)
+        .open(&mut true)
+        .show(ctx, |ui| {
+            crate::foxglove::shell::frame(ui, |ui| {
+                // In the real window's order (ui_settings.rs).
+                keypeek_groups(ui, false);
+                crate::foxglove::profiles_ui::picker(ui);
+                crate::foxglove::update::group(ui);
+                foxglove_groups(ui);
+                crate::foxglove::settings_ui::footer(ui);
+            })
+        });
+}
+
+fn shell_preview(page: crate::foxglove::shell::Page) -> image::RgbaImage {
+    use crate::foxglove::shell;
+    crate::foxglove::store::test_config_dir();
+    let ctx = egui::Context::default();
+    let mut fonts = egui::FontDefinitions::default();
+    crate::platform::add_phosphor_to_fonts(&mut fonts);
+    crate::foxglove::theme::add_fonts(&mut fonts);
+    ctx.set_fonts(fonts);
+    crate::foxglove::theme::apply_choice(&ctx, crate::foxglove::theme::Choice::Dark);
+    shell::preview_page(page);
+    shell::PREVIEW_STRIP.set(Some(shell::StripState {
+        keyboard: true,
+        usb: Some(true),
+        left_build: Some(Ok("0.1.0 · e255d32".into())),
+        right_build: Some(Err("no reply from the keyboard".into())),
+        right_battery: Some(61),
+        profile: Some(0),
+        this_pc: Some(0),
+        unplug_warning: None,
+    }));
+    let img = render(&ctx, egui::vec2(1072.0, 700.0), Color32::from_rgb(0x09, 0x0a, 0x0c), shell_window);
+    shell::PREVIEW_STRIP.set(None);
+    img
+}
+
 fn keep(name: &str, img: &image::RgbaImage) {
     if let Some(dir) = std::env::var_os("FOXGLOVE_UI_PREVIEW_DIR") {
         let path = std::path::Path::new(&dir).join(name);
         img.save(&path).expect("save the preview");
         eprintln!("Foxglove: preview saved to {}", path.display());
+    }
+}
+
+#[test]
+fn shell_pages_render() {
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let mut seen: Vec<image::RgbaImage> = Vec::new();
+    for page in Page::ALL {
+        let img = shell_preview(page);
+        keep(&format!("ui-385-{}.png", page.label().to_lowercase()), &img);
+        let total = (img.width() * img.height()) as usize;
+        // The sidebar's well, the page's ground and the orange nav dot all show up.
+        assert!(count(&img, DARK.well) > total / 20, "{page:?}: sidebar");
+        assert!(count(&img, DARK.ground) > total / 20, "{page:?}: page");
+        assert!(count(&img, DARK.accent) > 20, "{page:?}: orange");
+        assert!(seen.iter().all(|other| *other != img), "{page:?} looks like another page");
+        seen.push(img);
     }
 }
 
