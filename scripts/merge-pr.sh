@@ -41,7 +41,15 @@ if ! timeout 2400 powershell -ExecutionPolicy Bypass -File scripts/check.ps1 > "
 fi
 
 git push -q origin "HEAD:refs/heads/$br" 2>&1 | grep -v '^remote'
-gh pr merge "$n" --repo $R --merge --match-head-commit "$(git rev-parse HEAD)" 2>&1 | tail -1
+# GitHub computes mergeability after the push; retry a few times on "not mergeable".
+# Started by the push, stops on success, at most 5 tries 3 s apart (no-polling rule, #283).
+head=$(git rev-parse HEAD)
+for try in 1 2 3 4 5; do
+  out=$(gh pr merge "$n" --repo $R --merge --match-head-commit "$head" 2>&1) && break
+  echo "$out" | grep -qi "not mergeable" || break
+  sleep 3
+done
+echo "$out" | tail -1
 st=$(gh pr view "$n" --repo $R --json state --jq .state)
 echo "#$n $st"
 if [ "$st" = MERGED ] && [ -f scripts/clean-worktrees.ps1 ]; then
