@@ -58,11 +58,19 @@ pub const SECTIONS: [(&str, Page); 12] = [
     ("Overlay Appearance", Page::Settings),
     ("Theme", Page::Settings),
     ("Profile", Page::Settings),
-    ("Updates", Page::Settings),
+    ("Theme and updates", Page::Settings),
     ("Other keyboards (VIA)", Page::Settings),
     // The links, credits and version at the end of the window.
     ("About", Page::Settings),
 ];
+
+/// The Settings page's column for each of its sections (#390): the layer overlay's card on the
+/// left, the shorter cards stacked on the right. Unlisted sections go on the right.
+const COLUMNS: [(&str, usize); 2] = [("Overlay Appearance", 0), ("Theme", 0)];
+
+fn column_of(title: &str) -> usize {
+    COLUMNS.iter().find(|(t, _)| *t == title).map_or(1, |(_, c)| *c)
+}
 
 /// The page a section goes on. An unknown title lands on Settings, so it is never lost.
 pub fn page_of(title: &str) -> Page {
@@ -74,13 +82,15 @@ thread_local! {
     static SHOWING: Cell<Option<Page>> = const { Cell::new(None) };
     /// Whether any section drew on the page so far.
     static DREW: Cell<bool> = const { Cell::new(false) };
+    /// The column being drawn on a two-column page; `None` draws both.
+    static COLUMN: Cell<Option<usize>> = const { Cell::new(None) };
     /// The chosen page, loaded from the store on first use.
     static CURRENT: Cell<Option<Page>> = const { Cell::new(None) };
 }
 
 /// Whether the section titled `title` is on the page being drawn.
 pub fn shows(title: &str) -> bool {
-    let shown = SHOWING.get().is_none_or(|page| page_of(title) == page);
+    let shown = SHOWING.get().is_none_or(|page| page_of(title) == page) && COLUMN.get().is_none_or(|c| column_of(title) == c);
     if shown {
         DREW.set(true);
     }
@@ -121,14 +131,15 @@ struct Showing;
 impl Drop for Showing {
     fn drop(&mut self) {
         SHOWING.set(None);
+        COLUMN.set(None);
     }
 }
 
 const SIDEBAR_WIDTH: f32 = 196.0;
 
 /// Draws the sidebar, the status strip and the current page; `add` draws the sections, and only
-/// those of the current page show.
-pub fn frame(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+/// those of the current page show. The Settings page calls it once per column (#390).
+pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
     let p = theme::palette(ui);
     let mut page = current();
     egui::Panel::left("foxglove-sidebar")
@@ -167,7 +178,28 @@ pub fn frame(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
                     // Two cards side by side (#388).
                     super::screens_ui::page(ui);
                 }
-                add(ui);
+                // A grid of cards (#390): each column draws only its own sections. The left one
+                // holds KeyPeek's overlay grid, which needs about 460 points; narrower windows
+                // stack the cards.
+                const GAP: f32 = 16.0;
+                let width = ui.available_width();
+                let left = (width * 0.55).max(460.0);
+                let right = width - left - GAP;
+                if page == Page::Settings && right >= 300.0 {
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = GAP;
+                        for (i, w) in [left, right].into_iter().enumerate() {
+                            ui.allocate_ui_with_layout(egui::vec2(w, 0.0), Layout::top_down(Align::Min), |ui| {
+                                ui.set_width(w);
+                                COLUMN.set(Some(i));
+                                add(ui);
+                            });
+                        }
+                    });
+                    COLUMN.set(None);
+                } else {
+                    add(ui);
+                }
                 if !DREW.get() {
                     ui.add_space(8.0);
                     ui.weak(page.empty_hint());
@@ -438,7 +470,7 @@ mod tests {
             ("Overlay Appearance", Page::Settings),
             ("Theme", Page::Settings),
             ("Profile", Page::Settings),
-            ("Updates", Page::Settings),
+            ("Theme and updates", Page::Settings),
             ("Other keyboards (VIA)", Page::Settings),
         ] {
             assert_eq!(page_of(title), page, "{title}");
@@ -493,6 +525,20 @@ mod tests {
         assert!(shows("Lights"));
         assert!(DREW.get());
         SHOWING.set(None);
+    }
+
+    #[test]
+    fn the_settings_page_splits_into_two_columns() {
+        SHOWING.set(Some(Page::Settings));
+        COLUMN.set(Some(0));
+        assert!(shows("Overlay Appearance") && shows("Theme"));
+        assert!(!shows("Profile") && !shows("Theme and updates") && !shows("About"));
+        COLUMN.set(Some(1));
+        assert!(!shows("Overlay Appearance"));
+        assert!(shows("Profile") && shows("Theme and updates") && shows("Other keyboards (VIA)") && shows("About"));
+        assert!(!shows("Lights"), "still only this page's sections");
+        drop(Showing);
+        assert_eq!((SHOWING.get(), COLUMN.get()), (None, None));
     }
 
     #[test]

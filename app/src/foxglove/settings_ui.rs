@@ -21,6 +21,32 @@ pub fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
         return;
     }
     match style(title) {
+        // The layer overlay's card in two parts (#390): KeyPeek's appearance grid on top, its
+        // colours and layers below the line, drawn as one card.
+        Style::CardTop | Style::CardBottom => {
+            let top = style(title) == Style::CardTop;
+            if !top {
+                // Back over the gap between sections, so the two outlines meet in one line.
+                ui.add_space(-(6.0 + ui.spacing().item_spacing.y + 1.0));
+            }
+            let (r, z) = (8, 0);
+            let corners = if top {
+                egui::CornerRadius { nw: r, ne: r, sw: z, se: z }
+            } else {
+                egui::CornerRadius { nw: z, ne: z, sw: r, se: r }
+            };
+            super::theme::card(ui).corner_radius(corners).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                if top {
+                    ui.label(super::theme::heading(ui, shown_title(title)));
+                } else {
+                    ui.label(super::theme::caps_label(ui, shown_title(title)));
+                }
+                ui.add_space(6.0);
+                add_contents(ui);
+            });
+            return;
+        }
         // The page draws its own cards (#386 on).
         Style::Bare => {
             ui.add_space(4.0);
@@ -28,7 +54,7 @@ pub fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
             return;
         }
         Style::Card => {
-            card(ui, title, add_contents);
+            card(ui, shown_title(title), add_contents);
             return;
         }
         Style::Collapsing => {}
@@ -55,12 +81,29 @@ enum Style {
     Card,
     /// A card with a collapsing header (the pages not redesigned yet).
     Collapsing,
+    /// The top and bottom parts of one card.
+    CardTop,
+    CardBottom,
+}
+
+/// The name a section's card shows, where the canvas names it differently from the section.
+fn shown_title(title: &str) -> &str {
+    match title {
+        "Overlay Appearance" => "Layer overlay",
+        "Theme" => "Colours and layers",
+        "Profile" => "Profiles",
+        other => other,
+    }
 }
 
 fn style(title: &str) -> Style {
     match title {
         "Keyboard" | "Lights" | "Plugins" => Style::Bare,
-        "Connection" | "Left screen · PC panel" | "Right screen art" => Style::Card,
+        "Connection" | "Left screen · PC panel" | "Right screen art" | "Profile" | "Theme and updates" | "Other keyboards (VIA)" => {
+            Style::Card
+        }
+        "Overlay Appearance" => Style::CardTop,
+        "Theme" => Style::CardBottom,
         _ => Style::Collapsing,
     }
 }

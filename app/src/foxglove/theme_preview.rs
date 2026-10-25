@@ -151,7 +151,7 @@ fn settings_window(ctx: &egui::Context, legacy: bool) {
         .open(&mut true)
         .vscroll(true)
         .show(ctx, |ui| {
-            keypeek_groups(ui, legacy);
+            keypeek_groups(ui);
             crate::foxglove::profiles_ui::picker(ui);
             crate::foxglove::update::group(ui);
             if !legacy {
@@ -180,7 +180,7 @@ fn settings_window(ctx: &egui::Context, legacy: bool) {
 }
 
 /// KeyPeek's Connection, Overlay Appearance and Theme groups, with the same widgets and labels.
-fn keypeek_groups(ui: &mut egui::Ui, legacy: bool) {
+fn keypeek_groups(ui: &mut egui::Ui) {
     use crate::foxglove::settings_ui::section;
     section(ui, "Connection", |ui| {
         egui::Grid::new("connection_grid").num_columns(2).striped(true).spacing([20.0, 10.0]).show(ui, |ui| {
@@ -234,9 +234,7 @@ fn keypeek_groups(ui: &mut egui::Ui, legacy: bool) {
         });
     });
     section(ui, "Theme", |ui| {
-        if !legacy {
-            crate::foxglove::theme::picker(ui);
-        }
+        // The window theme is in "Theme and updates" since #390.
         let mut white = Color32::WHITE;
         ui.horizontal(|ui| {
             ui.label("Font color");
@@ -246,8 +244,11 @@ fn keypeek_groups(ui: &mut egui::Ui, legacy: bool) {
         });
         ui.add_space(4.0);
         let colors = crate::settings::ThemeSettings::default().layer_colors;
-        ui.columns(2, |cols| {
-            for (col, layers) in cols.iter_mut().zip([0..4, 4..8]) {
+        // As in ui_settings.rs: one table when the card is too narrow for two (#390).
+        let narrow = ui.available_width() < 560.0;
+        let parts: Vec<std::ops::Range<usize>> = if narrow { std::iter::once(0..8).collect() } else { vec![0..4, 4..8] };
+        ui.columns(parts.len(), |cols| {
+            for (col, layers) in cols.iter_mut().zip(parts) {
                 egui::Grid::new(("layers", layers.start)).num_columns(4).spacing([12.0, 6.0]).show(col, |ui| {
                     ui.weak("Show");
                     ui.weak("Hold");
@@ -380,7 +381,7 @@ fn shell_window(ctx: &egui::Context, height: f32) {
         .show(ctx, |ui| {
             crate::foxglove::shell::frame(ui, |ui| {
                 // In the real window's order (ui_settings.rs).
-                keypeek_groups(ui, false);
+                keypeek_groups(ui);
                 crate::foxglove::profiles_ui::picker(ui);
                 crate::foxglove::update::group(ui);
                 foxglove_groups(ui);
@@ -580,6 +581,19 @@ fn plugins_page_renders() {
     // The cards' surface and their outlines fill the page.
     assert!(count(&img, DARK.surface) > (img.width() * img.height()) as usize / 12, "cards");
     assert!(count(&img, DARK.line) > 2000, "card outlines");
+}
+
+/// The Settings page (#390): the layer overlay's card on the left, the other cards on the right.
+#[test]
+fn settings_page_renders() {
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let img = shell_preview_with(Page::Settings, &Samples::full(), 1000.0);
+    keep("ui-390-settings.png", &img);
+    assert!(count(&img, DARK.surface) > (img.width() * img.height()) as usize / 10, "cards");
+    // The theme picker's selected pill sits in "Theme and updates".
+    assert!(count(&img, DARK.selected_fill) > 100, "the Dark pill");
 }
 
 /// The Lights page (#387) with a keyboard and without one.

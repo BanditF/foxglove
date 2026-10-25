@@ -173,22 +173,33 @@ const RELEASES_PAGE: &str = "https://github.com/BanditF/foxglove/releases";
 
 pub fn group(ui: &mut egui::Ui) {
     let _ = WAKE.set(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
-    super::settings_ui::section(ui, "Updates", |ui| {
-        ui.label(format!("Current version: {}", env!("CARGO_PKG_VERSION")));
+    // The window theme and the version in one card (#390).
+    super::settings_ui::section(ui, "Theme and updates", |ui| {
+        super::theme::picker(ui);
+        let version = format!("Foxglove {}", env!("CARGO_PKG_VERSION"));
         // Builds without the release signing key (0.1) can't verify an update, so they don't
         // offer one: they point at the release page instead.
         if key().is_err() {
-            ui.label("Automatic updates are off in this version. New versions are published on GitHub.");
-            ui.hyperlink_to("Foxglove releases on GitHub", RELEASES_PAGE);
+            ui.horizontal(|ui| {
+                ui.label(version);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.hyperlink_to("Releases on GitHub", RELEASES_PAGE);
+                });
+            });
+            ui.weak("Automatic updates are off in this version. New versions are published on GitHub.");
             return;
         }
         let s = state().clone();
-        ui.label(&s.message);
-        if ui
-            .add_enabled(!s.busy && key().is_ok(), egui::Button::new("Check now"))
-            .clicked()
-        {
-            check();
+        ui.horizontal(|ui| {
+            ui.label(version);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add_enabled(!s.busy, egui::Button::new("Check now")).clicked() {
+                    check();
+                }
+            });
+        });
+        if !s.message.is_empty() {
+            ui.weak(&s.message);
         }
         let mut enabled = startup_enabled();
         if ui
