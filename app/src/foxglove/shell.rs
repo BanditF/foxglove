@@ -136,6 +136,10 @@ pub fn frame(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
         .exact_size(SIDEBAR_WIDTH)
         .frame(egui::Frame::new().fill(p.well).inner_margin(Margin { left: 12, right: 12, top: 16, bottom: 12 }))
         .show(ui, |ui| sidebar(ui, &mut page));
+    if page != current() {
+        set_page(page);
+    }
+    let mut go = None;
     let strip = strip_state(ui.ctx());
     egui::Panel::top("foxglove-status")
         .frame(egui::Frame::new().fill(p.ground).inner_margin(Margin::symmetric(18, 10)))
@@ -145,6 +149,11 @@ pub fn frame(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
         .show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt(("foxglove-page", page)).auto_shrink(false).show(ui, |ui| {
                 ui.label(RichText::new(page.label()).font(theme::hud(24.0)).color(p.text_strong));
+                if page == Page::Keyboard {
+                    // The board and the keyboard's cards lead the page; the device picker
+                    // (KeyPeek's Connection section) follows them (#386).
+                    go = super::keyboard_page::top(ui);
+                }
                 let _showing = Showing;
                 SHOWING.set(Some(page));
                 DREW.set(false);
@@ -156,8 +165,10 @@ pub fn frame(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
                 ui.add_space(8.0);
             });
         });
-    if page != current() {
-        set_page(page);
+    // A click on the page itself (the board's screens and lights) opens another page.
+    if let Some(to) = go.filter(|to| *to != page) {
+        set_page(to);
+        ui.ctx().request_repaint();
     }
 }
 

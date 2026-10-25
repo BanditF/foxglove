@@ -1,10 +1,9 @@
 //! Foxglove's own sections in the settings window.
 
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use super::OverlayApp;
-use crate::foxglove::keyboard_actions::{self, Action};
+use crate::foxglove::keyboard_actions;
 use crate::foxglove::keyboard_settings::{self as ks, RgbSync};
 use crate::foxglove::settings_ui::section as titled_group;
 use digitalis::protocol::RgbHalf;
@@ -13,9 +12,6 @@ const EFFECTS: [&str; 4] = ["Solid", "Breathe", "Spectrum", "Swirl"];
 
 /// The colour being picked (hue, saturation, brightness), seeded from the left half.
 static DRAFT_COLOR: Mutex<Option<(u16, u8, u8)>> = Mutex::new(None);
-/// A risky action clicked once, waiting for the confirming second click.
-static CONFIRMING: Mutex<Option<(String, Instant)>> = Mutex::new(None);
-const CONFIRM_WITHIN: Duration = Duration::from_secs(4);
 
 fn swatch(ui: &mut egui::Ui, half: &RgbHalf) {
     let color: egui::Color32 = egui::ecolor::Hsva::new(
@@ -57,84 +53,18 @@ fn half_row(ui: &mut egui::Ui, name: &str, half: Option<&RgbHalf>, age: Option<u
     ui.end_row();
 }
 
-/// A button for `action`; disruptive ones need a second click within a few seconds.
-fn action_button(ui: &mut egui::Ui, action: &Action) {
-    let ctx = ui.ctx().clone();
-    let mut confirming = CONFIRMING.lock().unwrap();
-    let armed = confirming
-        .as_ref()
-        .is_some_and(|(label, at)| *label == action.label && at.elapsed() < CONFIRM_WITHIN);
-    let text = if armed {
-        format!("Click again: {}", action.label)
-    } else {
-        action.label.clone()
-    };
-    let mut button = egui::Button::new(text);
-    if armed {
-        button = button.fill(ui.visuals().warn_fg_color.linear_multiply(0.35));
-    }
-    let response = ui.add_enabled(!ks::invoking(), button);
-    if !response.clicked() {
-        return;
-    }
-    if action.risky && !armed {
-        *confirming = Some((action.label.clone(), Instant::now()));
-        return;
-    }
-    *confirming = None;
-    ks::invoke(action.label.clone(), action.binding, ctx);
-}
-
 impl OverlayApp {
     /// The keyboard itself: settings saved on it, both halves' lights, and everything its
     /// keys can do, all of which hold without Foxglove running.
     pub(super) fn foxglove_keyboard_group(ui: &mut egui::Ui) {
         crate::foxglove::update::group(ui);
-        titled_group(ui, "Keyboard", |ui| {
-            crate::foxglove::connection::row(ui);
-            Self::firmware_row(ui);
-            ui.add_space(4.0);
-            egui::CollapsingHeader::new("Actions")
-                .default_open(false)
-                .show(ui, Self::actions_section);
-            if let Some((label, result)) = ks::last_action() {
-                ui.weak(format!("Last: {label} — {result}"));
-            }
-        });
+        // The Keyboard page's own cards are drawn at its top by the shell (#386).
         // Its own page since #385; the controls are as they were.
         titled_group(ui, "Lights", |ui| {
             Self::rgb_sync_row(ui);
             ui.add_space(4.0);
             Self::lights_section(ui);
         });
-    }
-
-    /// Both halves' firmware version and build, with a warning when they differ (#132).
-    fn firmware_row(ui: &mut egui::Ui) {
-        let describe = |b: &digitalis::protocol::BuildInfo| format!("{} · {}", b.version, b.sha);
-        match ks::firmware(ui.ctx()) {
-            ks::Firmware::Known { left, right } => {
-                let text = |r: &Result<digitalis::protocol::BuildInfo, String>| {
-                    r.as_ref().map_or_else(|e| format!("unknown ({e})"), describe)
-                };
-                ui.horizontal_wrapped(|ui| {
-                    ui.weak("Firmware");
-                    ui.label(format!("left {} / right {}", text(&left), text(&right)));
-                });
-                if let (Ok(l), Ok(r)) = (&left, &right) {
-                    if l.version != r.version || l.sha != r.sha {
-                        ui.colored_label(
-                            ui.visuals().warn_fg_color,
-                            "The halves run different firmware; flash both from the same build.",
-                        );
-                    }
-                }
-            }
-            ks::Firmware::Reading => {
-                ui.weak("Firmware: reading…");
-            }
-            ks::Firmware::NotReported | ks::Firmware::NoKeyboard | ks::Firmware::Unknown => {}
-        }
     }
 
     fn rgb_sync_row(ui: &mut egui::Ui) {
@@ -261,25 +191,5 @@ impl OverlayApp {
                 }
             });
         });
-    }
-
-    fn actions_section(ui: &mut egui::Ui) {
-        let actions = keyboard_actions::actions();
-        if actions.is_empty() {
-            ui.weak("Connect to the keyboard to list what its keys can do.");
-            return;
-        }
-        for chunk in actions.chunk_by(|a, b| a.group == b.group) {
-            egui::CollapsingHeader::new(chunk[0].group.title())
-                .show(ui, |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for action in chunk {
-                            action_button(ui, action);
-                        }
-                    });
-                });
-            ui.add_space(4.0);
-        }
-        ui.weak("Connection, reset, bootloader and soft-off behaviors are available only on the keyboard.");
     }
 }

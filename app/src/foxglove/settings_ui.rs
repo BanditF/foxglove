@@ -20,6 +20,19 @@ pub fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
             });
         return;
     }
+    match style(title) {
+        // The page draws its own cards (#386 on).
+        Style::Bare => {
+            ui.add_space(4.0);
+            add_contents(ui);
+            return;
+        }
+        Style::Card => {
+            card(ui, title, add_contents);
+            return;
+        }
+        Style::Collapsing => {}
+    }
     // A card on the window's ground, its title in the HUD face (#384).
     super::theme::card(ui)
         .inner_margin(egui::Margin::symmetric(10, 8))
@@ -31,6 +44,47 @@ pub fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
                 .default_open(open_by_default(title))
                 .show(ui, add_contents);
         });
+}
+
+/// How a section draws: redesigned pages (#386 on) drop the collapsing headers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Style {
+    /// No frame of its own: the section lays out its own cards.
+    Bare,
+    /// One card with its title, always open.
+    Card,
+    /// A card with a collapsing header (the pages not redesigned yet).
+    Collapsing,
+}
+
+fn style(title: &str) -> Style {
+    match title {
+        "Keyboard" => Style::Bare,
+        "Connection" => Style::Card,
+        _ => Style::Collapsing,
+    }
+}
+
+/// A card as the canvas draws it: a surface, a line around it, its title in the HUD face.
+pub fn card<R>(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    super::theme::card(ui)
+        .inner_margin(egui::Margin::symmetric(18, 14))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(super::theme::heading(ui, title));
+            ui.add_space(6.0);
+            add_contents(ui)
+        })
+        .inner
+}
+
+/// A card row: the name on the left, the value on the right.
+pub fn row(ui: &mut egui::Ui, name: &str, value: impl Into<egui::WidgetText>) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.label(name);
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(value)).inner
+    })
+    .inner
 }
 
 fn open_by_default(title: &str) -> bool {
