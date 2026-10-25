@@ -16,45 +16,43 @@ pub struct Tray {
     _icon: TrayIcon,
     #[cfg(not(target_os = "linux"))]
     controls: crate::foxglove::tray::Controls,
-    /// Foxglove: the glyph shown, connected (solid fox) or not (outline).
+    /// Foxglove: the glyph shown (#403).
     #[cfg(not(target_os = "linux"))]
-    connected: bool,
+    glyph: crate::foxglove::tray::Glyph,
 }
 
-// Windows convention is a monochrome glyph matching the taskbar theme.
+// Windows convention is a glyph matching the taskbar theme. Foxglove (#403): the mark drawn
+// for the small-icon size at the system's scale, so the shell doesn't shrink a big one.
 #[cfg(target_os = "windows")]
-fn icon_bytes(connected: bool) -> &'static [u8] {
+fn icon_bytes(glyph: crate::foxglove::tray::Glyph) -> &'static [u8] {
     let light_theme = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
         .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
         .and_then(|key| key.get_value::<u32, _>("SystemUsesLightTheme"))
         .map(|value| value != 0)
         .unwrap_or(false);
-    // Foxglove: the outline fox while no keyboard is connected.
-    match (light_theme, connected) {
-        (true, true) => include_bytes!("../resources/tray-icon-black.png"),
-        (true, false) => include_bytes!("../resources/tray-icon-black-off.png"),
-        (false, true) => include_bytes!("../resources/tray-icon-white.png"),
-        (false, false) => include_bytes!("../resources/tray-icon-white-off.png"),
-    }
+    // SAFETY: GetSystemMetrics takes no pointers and only reads a system value; 0 on failure.
+    let metric = unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+            windows::Win32::UI::WindowsAndMessaging::SM_CXSMICON,
+        )
+    };
+    let size = crate::foxglove::tray::size_for(metric);
+    crate::foxglove::tray::png(glyph, light_theme, size)
 }
 
 // Monochrome template image; macOS tints it to match the menu bar.
 #[cfg(target_os = "macos")]
-fn icon_bytes(connected: bool) -> &'static [u8] {
-    if connected {
-        include_bytes!("../resources/tray-icon-template.png")
-    } else {
-        include_bytes!("../resources/tray-icon-template-off.png")
-    }
+fn icon_bytes(glyph: crate::foxglove::tray::Glyph) -> &'static [u8] {
+    crate::foxglove::tray::template_png(glyph)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn icon_bytes(_connected: bool) -> &'static [u8] {
+fn icon_bytes(_glyph: crate::foxglove::tray::Glyph) -> &'static [u8] {
     include_bytes!("../resources/icon.ico")
 }
 
-fn create_icon(connected: bool) -> Icon {
-    let icon = load_from_memory(icon_bytes(connected))
+fn create_icon(glyph: crate::foxglove::tray::Glyph) -> Icon {
+    let icon = load_from_memory(icon_bytes(glyph))
         .expect("Failed to load icon.")
         .into_rgba8();
 
@@ -73,7 +71,7 @@ fn build_tray_icon() -> (TrayIcon, crate::foxglove::tray::Controls) {
 
     let builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
-        .with_icon(create_icon(false))
+        .with_icon(create_icon(crate::foxglove::tray::Glyph::Disconnected))
         .with_tooltip("Foxglove");
 
     // Left click opens the settings instead (see `create_tray_icon`).
@@ -140,7 +138,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
     #[cfg(not(target_os = "linux"))]
     {
         let (_icon, controls) = build_tray_icon();
-        Tray { _icon, controls, connected: false }
+        Tray { _icon, controls, glyph: crate::foxglove::tray::Glyph::Disconnected }
     }
 }
 
@@ -149,11 +147,11 @@ impl Tray {
         #[cfg(not(target_os = "linux"))]
         {
             self.controls.update();
-            // Foxglove: swap the glyph only when the connection changes.
-            let connected = self.controls.connected();
-            if connected != self.connected {
-                self.connected = connected;
-                let _ = self._icon.set_icon(Some(create_icon(connected)));
+            // Foxglove: swap the glyph only when it changes.
+            let glyph = self.controls.glyph();
+            if glyph != self.glyph {
+                self.glyph = glyph;
+                let _ = self._icon.set_icon(Some(create_icon(glyph)));
             }
         }
     }
