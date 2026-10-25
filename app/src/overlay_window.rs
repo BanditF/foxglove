@@ -49,6 +49,7 @@ impl OverlayApp {
                 settings_error: None,
                 settings_warning: None,
                 mouse_passthrough: None,
+                hit_region: None,
                 file_dialog: egui_file_dialog::FileDialog::new(),
             },
             settings: SettingsState {
@@ -88,8 +89,19 @@ impl OverlayApp {
         self.ui.settings_visible || self.editor.target.is_some()
     }
 
-    fn sync_mouse_passthrough(&mut self, host: &mut dyn OverlayHost) {
-        // Foxglove (#391): the tray panel takes the mouse too.
+    fn sync_mouse_passthrough(&mut self, ctx: &egui::Context, host: &mut dyn OverlayHost) {
+        // Foxglove (#391): the tray panel takes the mouse too, but only over itself (#405): a
+        // click anywhere else goes straight to the window underneath, and the panel closes when
+        // the overlay loses the focus to it.
+        let region = if self.is_any_window_open() {
+            None
+        } else {
+            crate::foxglove::tray_panel::hit_region(ctx)
+        };
+        if region != self.ui.hit_region {
+            host.set_hit_region(region);
+            self.ui.hit_region = region;
+        }
         let mouse_passthrough = !self.is_any_window_open() && !crate::foxglove::tray_panel::is_open();
         if self.ui.mouse_passthrough == Some(mouse_passthrough) {
             return;
@@ -201,7 +213,7 @@ impl OverlayApp {
             self.connect_from_ui();
         }
 
-        self.sync_mouse_passthrough(host);
+        self.sync_mouse_passthrough(ctx, host);
         if let AppConnectionState::Connected { keyboard } = &self.session.connection {
             // Clone the shared keyboard so drawing can mutate app state (the
             // editor) without holding a borrow on `self.session`.

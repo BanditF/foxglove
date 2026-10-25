@@ -61,6 +61,8 @@ pub struct UiState {
     pub settings_error: Option<String>,
     pub settings_warning: Option<String>,
     pub mouse_passthrough: Option<bool>,
+    /// Foxglove (#405): the hit region last given to the host while the tray panel is open.
+    pub hit_region: Option<[i32; 5]>,
     pub file_dialog: FileDialog,
 }
 
