@@ -28,6 +28,11 @@ pub fn set_paused(value: bool) {
     wake();
 }
 
+/// Foxglove paused or resumed (#404): the service hands the panel back or draws again.
+pub fn pause_changed() {
+    wake();
+}
+
 static STOP: AtomicBool = AtomicBool::new(false);
 static STOPPED: AtomicBool = AtomicBool::new(false);
 
@@ -477,13 +482,16 @@ fn run() {
                 .unwrap_or_default();
             s.hello = shown.map(|(_, h)| h);
         });
-        if paused() || !settings.drive_left {
+        let foxglove_paused = super::pause::paused();
+        if paused() || foxglove_paused || !settings.drive_left {
             stop_driving(&mut lock, &drawing, &mut was_driving);
             if let Some(d) = drawing.as_mut() {
                 d.last = None;
             }
             lock_watch = None;
-            set_status(if paused() {
+            set_status(if foxglove_paused {
+                "Foxglove paused"
+            } else if paused() {
                 "Left panel paused"
             } else {
                 "Left panel off"

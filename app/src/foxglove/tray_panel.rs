@@ -78,6 +78,13 @@ pub fn set_wake(ctx: &egui::Context) {
     let _ = WAKE.set(crate::ui_wake::UiWake::from_ctx(ctx));
 }
 
+/// Draws a frame from another thread (Foxglove paused or resumed from the tray menu, #404).
+pub fn wake() {
+    if let Some(w) = WAKE.get() {
+        w.request_repaint();
+    }
+}
+
 /// The tray icon was left-clicked: `position` and `size` are its rectangle in physical pixels.
 pub fn clicked(position: [f64; 2], size: [f64; 2]) {
     let min = pos2(position[0] as f32, position[1] as f32);
@@ -132,7 +139,9 @@ pub struct View {
     /// A keyboard with the art relay answers, and no transfer is running.
     pub art_ready: bool,
     pub panel_paused: bool,
-    /// "Update available: v…", when there is one.
+    /// Foxglove is paused (#404).
+    pub paused: bool,
+    /// "Update available": v…", when there is one.
     pub update: Option<String>,
 }
 
@@ -146,7 +155,27 @@ pub enum Intent {
     NextArt,
     PushFile,
     PauseLeftPanel(bool),
+    /// Pause (true) or resume Foxglove (#404).
+    Pause(bool),
     OpenFoxglove,
+}
+
+/// The header's pause button: its label and what a click asks for.
+pub fn pause_button(paused: bool) -> (&'static str, Intent) {
+    if paused {
+        ("Resume Foxglove", Intent::Pause(false))
+    } else {
+        ("Pause Foxglove", Intent::Pause(true))
+    }
+}
+
+/// Paused, the panel's controls that would change the keyboard rest.
+pub fn while_paused(mut v: View) -> View {
+    if v.paused {
+        v.lights_ready = false;
+        v.art_ready = false;
+    }
+    v
 }
 
 /// Both halves in a few words, from the status strip's state.
@@ -185,7 +214,7 @@ fn view(ctx: &egui::Context) -> View {
             });
         }
     }
-    View {
+    while_paused(View {
         halves: halves(&super::shell::strip_state(ctx)),
         profiles,
         active_profile,
@@ -195,8 +224,9 @@ fn view(ctx: &egui::Context) -> View {
         art_image,
         art_ready,
         panel_paused: super::screens::paused(),
+        paused: super::pause::paused(),
         update: super::update::available_version().map(|v| format!("Update available: v{v}")),
-    }
+    })
 }
 
 /// Draws the panel when it's open, opens it on a tray click, and closes it on Esc, a click
@@ -283,6 +313,7 @@ fn act(ctx: &egui::Context, intent: Intent) -> bool {
             return true;
         }
         Intent::PauseLeftPanel(on) => super::screens::set_paused(on),
+        Intent::Pause(on) => super::pause::set(on),
         Intent::OpenFoxglove => return true,
     }
     false
@@ -319,11 +350,20 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("FOXGLOVE").font(theme::hud(17.0)).color(p.text_strong));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Foxglove has no pause of its own yet; the left panel's is below.
-                        ui.add_enabled(false, egui::Button::new("Pause Foxglove"))
-                            .on_disabled_hover_text("Not in this version. Pause the left panel below.");
+                        // #404: paused, the button is the selected pill that resumes.
+                        let (label, intent) = pause_button(v.paused);
+                        if theme::pill(ui, v.paused, label).clicked() {
+                            out.push(intent);
+                        }
                     });
                 });
+                if v.paused {
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Paused. Foxglove leaves the keyboard alone: its own lights, the left panel back to the firmware, no art changes and no layer overlay.")
+                            .color(p.warn),
+                    );
+                }
                 ui.add_space(6.0);
                 ui.columns(2, |cols| {
                     for (col, (name, (tone, text))) in cols.iter_mut().zip(["Left", "Right"].into_iter().zip(&v.halves)) {
@@ -368,7 +408,7 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 "Left panel",
                 |ui| {
                     let text = if v.panel_paused { "Resume left panel" } else { "Pause left panel" };
-                    if ui.button(text).clicked() {
+                    if ui.add_enabled(!v.paused, egui::Button::new(text)).clicked() {
                         out.push(Intent::PauseLeftPanel(!v.panel_paused));
                     }
                 },
@@ -565,6 +605,21 @@ pub mod tests {
     }
 
     #[test]
+    fn the_pause_button_pauses_and_resumes() {
+        assert_eq!(pause_button(false), ("Pause Foxglove", Intent::Pause(true)));
+        assert_eq!(pause_button(true), ("Resume Foxglove", Intent::Pause(false)));
+    }
+
+    #[test]
+    fn paused_the_lights_and_art_rest() {
+        let v = while_paused(sample());
+        assert!(v.lights_ready && v.art_ready, "not paused: as they were");
+        let v = while_paused(View { paused: true, ..sample() });
+        assert!(!v.lights_ready && !v.art_ready);
+        assert_eq!(v.profiles, sample().profiles, "profiles stay");
+    }
+
+    #[test]
     fn halves_in_a_few_words() {
         assert_eq!(halves(&StripState::default()).map(|h| h.1), ["not connected", "not connected"]);
         let s = StripState { keyboard: true, usb: Some(true), right_battery: Some(61), right_build: Some(Ok("x".into())), ..Default::default() };
@@ -589,6 +644,7 @@ pub mod tests {
             art_image: image,
             art_ready: true,
             panel_paused: false,
+            paused: false,
             update: Some("Update available: v0.2.1".into()),
         }
     }

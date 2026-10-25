@@ -623,6 +623,25 @@ fn tray_panel_renders() {
     let total = (img.width() * img.height()) as usize;
     assert!(count(&img, DARK.ground) > total / 4, "the panel's ground");
     assert!(count(&img, DARK.selected_fill) > 200, "the selected pills");
+
+    // Paused (#404): "Resume Foxglove" is a selected pill, with the note under the header.
+    let paused = crate::foxglove::tray_panel::while_paused(crate::foxglove::tray_panel::View { paused: true, ..v.clone() });
+    // A fresh context: `render` keeps the textures it was sent, starting with the fonts.
+    let ctx = egui::Context::default();
+    egui_extras::install_image_loaders(&ctx);
+    let mut fonts = egui::FontDefinitions::default();
+    crate::platform::add_phosphor_to_fonts(&mut fonts);
+    crate::foxglove::theme::add_fonts(&mut fonts);
+    ctx.set_fonts(fonts);
+    crate::foxglove::theme::apply_choice(&ctx, crate::foxglove::theme::Choice::Dark);
+    let img_paused = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
+        egui::Area::new(egui::Id::new("tray-panel-preview")).fixed_pos(egui::pos2(20.0, 20.0)).show(ctx, |ui| {
+            crate::foxglove::tray_panel::panel(ui, &paused, &mut Default::default(), &mut Vec::new());
+        });
+    });
+    keep("tray-panel-paused.png", &img_paused);
+    assert!(count(&img_paused, DARK.warn) > 50, "the paused note");
+    assert!(count(&img_paused, DARK.selected_fill) > count(&img, DARK.selected_fill), "the resume pill");
 }
 
 /// The Lights page (#387) with a keyboard and without one.
