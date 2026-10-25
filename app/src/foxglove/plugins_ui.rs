@@ -1,10 +1,20 @@
-//! The Plugins tab's settings section: installed plugins, the curated catalog, and installing a plugin from
-//! a file after the user approves its permissions.
+//! The Plugins page (#69, redesigned in #389): one card per plugin in a grid (name, one line
+//! about it, CATALOG / INSTALLED / SIDELOADED, and its buttons), "Install from file…" in the
+//! page header, and the catalog's state in plain words. Installing from a file still asks for
+//! the user's approval of the plugin's permissions first.
+//!
+//! [`group`] gathers a [`View`] and acts on its clicks; [`draw`] paints it, so the previews
+//! draw the page with no plugins folder. The installed list is read when the page opens and
+//! after every change, not every frame.
 
 use std::cell::RefCell;
 
+use egui::RichText;
+use foxglove_plugin_api::permission::Permission;
+
 use super::plugin_icons as icons;
-use super::plugin_install::{self, Installed, Staged};
+use super::plugin_install::{self, CatalogEntry, Installed, Staged};
+use super::theme;
 
 #[derive(Default)]
 struct UiState {
@@ -14,6 +24,8 @@ struct UiState {
     /// A Plugin waiting for the user's approval.
     staged: Option<Staged>,
     confirm_remove: Option<String>,
+    /// The installed plugin whose settings are open on its card.
+    open: Option<String>,
     message: Option<String>,
     /// Why no plugin is trusted, if so: checked when the catalog may have changed, not every
     /// frame (it reads and verifies the signed files).
@@ -28,8 +40,153 @@ struct UiState {
 
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
 
+/// A card's status tag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tag {
+    /// In the catalog, not installed.
+    Catalog,
+    /// Installed, and in the catalog.
+    Installed,
+    /// Installed from a file, not in the catalog.
+    Sideloaded,
+}
+
+impl Tag {
+    pub fn label(self) -> &'static str {
+        match self {
+            Tag::Catalog => "CATALOG",
+            Tag::Installed => "INSTALLED",
+            Tag::Sideloaded => "SIDELOADED",
+        }
+    }
+}
+
+/// One plugin's card.
+#[derive(Clone, Debug)]
+pub struct Card {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub tag: Tag,
+    /// It runs outside the sandbox (unrestricted network or the user's files).
+    pub unsandboxed: bool,
+    /// The installed plugin, for its switches and settings.
+    pub installed: Option<Installed>,
+    /// While it's on: running, restarting, stopped.
+    pub state: Option<String>,
+}
+
+/// Whether a plugin with these permissions runs outside the sandbox, as the runner decides it.
+pub fn unsandboxed<'a>(permissions: impl IntoIterator<Item = &'a Permission>) -> bool {
+    permissions.into_iter().any(|p| matches!(p, Permission::Net | Permission::Files))
+}
+
+/// The cards: installed plugins first (by name), then the catalog's others in its order. Each
+/// plugin once; one that isn't in the catalog is sideloaded.
+pub fn cards(installed: &[Installed], catalog: &[CatalogEntry]) -> Vec<Card> {
+    let mut out: Vec<Card> = installed
+        .iter()
+        .map(|p| {
+            let listed = catalog.iter().find(|e| e.id == p.manifest.id);
+            let description = if p.manifest.description.is_empty() {
+                listed.map(|e| e.description.clone()).unwrap_or_default()
+            } else {
+                p.manifest.description.clone()
+            };
+            Card {
+                id: p.manifest.id.clone(),
+                name: format!("{} {}", p.manifest.name, p.manifest.version),
+                description,
+                tag: if listed.is_some() { Tag::Installed } else { Tag::Sideloaded },
+                unsandboxed: unsandboxed(&p.record.approved),
+                installed: Some(p.clone()),
+                state: None,
+            }
+        })
+        .collect();
+    for e in catalog {
+        if out.iter().any(|c| c.id == e.id) {
+            continue;
+        }
+        out.push(Card {
+            id: e.id.clone(),
+            name: e.name.clone(),
+            description: e.description.clone(),
+            tag: Tag::Catalog,
+            unsandboxed: unsandboxed(&e.permissions),
+            installed: None,
+            state: None,
+        });
+    }
+    out
+}
+
+/// What the page shows.
+#[derive(Clone, Debug, Default)]
+pub struct View {
+    pub cards: Vec<Card>,
+    /// The catalog's state in words ("Catalog: up to date."), and whether Check now can run.
+    pub catalog: String,
+    pub can_check: bool,
+    /// One quiet line when installing is off (no signed catalog, or unsigned plugins allowed).
+    pub note: Option<(String, bool)>,
+}
+
+/// What a click asks for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Intent {
+    CheckCatalog,
+    Enable(String, bool),
+    Remove(String),
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The previews' page, so they never read a plugins folder.
+    pub static PREVIEW: RefCell<Option<View>> = const { RefCell::new(None) };
+}
+
+/// "Install from file…", in the page's header (#389).
+pub fn header(ui: &mut egui::Ui) {
+    if ui.button("Install from file…").on_hover_text("Install a plugin package (.zip) you have").clicked() {
+        UI.with_borrow_mut(|state| state.dialog.pick_file());
+    }
+}
+
+/// The catalog's freshness in plain words. Opening the page asks for a check when one is due
+/// (at most every 10 minutes, and never while backing off).
+fn catalog_words(ui: &egui::Ui) -> (String, bool) {
+    use super::catalog_refresh::{self, Status, Trigger};
+    catalog_refresh::set_wake(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
+    catalog_refresh::request(Trigger::TabOpened);
+    let status = catalog_refresh::status();
+    let words = match &status {
+        Status::Idle => "Catalog: not checked yet".to_string(),
+        Status::Checking => "Catalog: checking…".to_string(),
+        Status::UpToDate { .. } => "Catalog: up to date".to_string(),
+        Status::Failed(e) => format!("Catalog: couldn't check ({e})"),
+    };
+    (words, status != Status::Checking)
+}
+
+fn plugin_state(id: &str) -> String {
+    use foxglove_plugin_host::runner::PluginState;
+    match super::plugin_runner::state(id) {
+        Some(PluginState::Running) => "Running".to_string(),
+        Some(PluginState::Restarting { reason, wait }) => format!("Restarting in {} s: {reason}", wait.as_secs()),
+        Some(PluginState::Disabled(reason)) => format!("Stopped after repeated failures ({reason}). Turn it off and on to retry."),
+        Some(PluginState::Stopped) | None => "Starting".to_string(),
+    }
+}
+
+/// The Plugins section: the page, and what its clicks do.
 pub fn group(ui: &mut egui::Ui) {
     super::settings_ui::section(ui, "Plugins", |ui| {
+        #[cfg(test)]
+        if let Some(v) = PREVIEW.with_borrow(|v| v.clone()) {
+            UI.with_borrow_mut(|state| draw(ui, &v, state));
+            return;
+        }
         UI.with_borrow_mut(|state| {
             state.dialog.update(ui.ctx());
             if let Some(path) = state.dialog.take_picked() {
@@ -39,100 +196,180 @@ pub fn group(ui: &mut egui::Ui) {
                 }
             }
             if let Some(staged) = state.staged.take() {
-                state.staged = approval(ui, staged, state);
+                state.staged = super::settings_ui::card(ui, "Install from file", |ui| approval(ui, staged, state));
                 return;
             }
             let installed = state.installed.get_or_insert_with(plugin_install::installed).clone();
-            ui.weak("Plugins add features to Foxglove. Each runs as its own program with only the permissions you approve.");
-            if super::plugin_trust::dev_unsigned() {
-                ui.colored_label(ui.visuals().warn_fg_color, "Developer mode: unsigned plugins are allowed (FOXGLOVE_DEV_UNSIGNED_PLUGINS).");
+            let note = if super::plugin_trust::dev_unsigned() {
+                Some(("Developer mode: unsigned plugins are allowed (FOXGLOVE_DEV_UNSIGNED_PLUGINS).".to_string(), true))
             } else {
                 let status = super::catalog_refresh::status();
                 if state.trust.as_ref().is_none_or(|(s, _)| *s != status) {
                     state.trust = Some((status, super::plugin_trust::catalog().map(|_| ())));
                 }
-                if let Some((_, Err(e))) = &state.trust {
-                    ui.weak(format!("Only signed plugins install and run; {e}."));
+                match &state.trust {
+                    Some((_, Err(e))) => Some((format!("Only signed plugins install and run, and {e}."), false)),
+                    _ => None,
                 }
+            };
+            let (catalog, can_check) = catalog_words(ui);
+            let mut cards = cards(&installed, &plugin_install::catalog());
+            for c in cards.iter_mut().filter(|c| c.installed.as_ref().is_some_and(|p| p.record.enabled)) {
+                c.state = Some(plugin_state(&c.id));
             }
-            catalog_status(ui);
-
-            ui.add_space(4.0);
-            ui.label("Installed");
-            if installed.is_empty() {
-                ui.vertical_centered(|ui| {
-                    ui.add(icons::empty(ui, 120.0));
-                    ui.weak("No plugins yet. Pick one from the catalog below, or install one from a file.");
-                });
-            }
-            let plugins_dir = plugin_install::plugins_dir();
-            for plugin in &installed {
-                let dir = plugins_dir.as_ref().map(|d| d.join(&plugin.manifest.id));
-                ui.horizontal_wrapped(|ui| {
-                    ui.add(icons::glyph(ui, &plugin.manifest.id, dir.as_deref(), 20.0));
-                    let mut enabled = plugin.record.enabled;
-                    if ui.checkbox(&mut enabled, format!("{} {}", plugin.manifest.name, plugin.manifest.version)).changed() {
-                        state.message = plugin_install::set_enabled(&plugin.manifest.id, enabled).err();
+            let view = View { cards, catalog, can_check, note };
+            for intent in draw(ui, &view, state) {
+                match intent {
+                    Intent::CheckCatalog => super::catalog_refresh::request(super::catalog_refresh::Trigger::Manual),
+                    Intent::Enable(id, on) => {
+                        state.message = plugin_install::set_enabled(&id, on).err();
                         state.installed = None;
                         super::plugin_runner::sync();
                     }
-                    let confirming = state.confirm_remove.as_deref() == Some(plugin.manifest.id.as_str());
-                    if ui.small_button(if confirming { "Remove? Click again" } else { "Remove" }).clicked() {
-                        if confirming {
-                            super::plugin_runner::stop(&plugin.manifest.id);
-                            state.message = plugin_install::remove(&plugin.manifest.id).err();
-                            super::plugin_runner::sync();
-                            state.confirm_remove = None;
-                            state.installed = None;
-                        } else {
-                            state.confirm_remove = Some(plugin.manifest.id.clone());
+                    Intent::Remove(id) => {
+                        super::plugin_runner::stop(&id);
+                        state.message = plugin_install::remove(&id).err();
+                        super::plugin_runner::sync();
+                        state.installed = None;
+                        if state.open.as_deref() == Some(id.as_str()) {
+                            state.open = None;
                         }
                     }
-                });
-                if plugin.record.enabled {
-                    use foxglove_plugin_host::runner::PluginState;
-                    let text = match super::plugin_runner::state(&plugin.manifest.id) {
-                        Some(PluginState::Running) => "running".to_string(),
-                        Some(PluginState::Restarting { reason, wait }) => format!("restarting in {} s: {reason}", wait.as_secs()),
-                        Some(PluginState::Disabled(reason)) => format!("stopped after repeated failures ({reason}); turn it off and on to retry"),
-                        Some(PluginState::Stopped) | None => "starting".to_string(),
-                    };
-                    ui.weak(format!("    {text}"));
                 }
-                let perms: Vec<String> = plugin.record.approved.iter().map(|p| p.describe()).collect();
-                ui.weak(format!("    may {}", if perms.is_empty() { "do nothing beyond running".into() } else { perms.join(", ") }));
-                action_keys(ui, plugin, state);
-                secret_fields(ui, plugin, state);
-                setting_fields(ui, plugin, state);
-            }
-
-            ui.add_space(6.0);
-            ui.label("Catalog");
-            for entry in plugin_install::catalog() {
-                if installed.iter().any(|k| k.manifest.id == entry.id) {
-                    continue;
-                }
-                ui.horizontal(|ui| {
-                    ui.add(icons::tile(ui, &entry.id, None, 36.0));
-                    ui.vertical(|ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.strong(&entry.name);
-                            // Downloads come with the first released plugin; until then entries are listed only.
-                            ui.add_enabled(false, egui::Button::new("Coming soon"));
-                        });
-                        ui.weak(&entry.description);
-                    });
-                });
-            }
-            ui.add_space(4.0);
-            if ui.button("Install from file…").clicked() {
-                state.dialog.pick_file();
-            }
-            if let Some(m) = &state.message {
-                ui.colored_label(ui.visuals().error_fg_color, m);
             }
         });
     });
+}
+
+/// Paints the page; returns what was clicked this frame.
+fn draw(ui: &mut egui::Ui, v: &View, state: &mut UiState) -> Vec<Intent> {
+    let mut out = Vec::new();
+    let p = theme::palette(ui);
+    ui.label(RichText::new("Each plugin runs as its own program with only the permissions you approve.").color(p.muted));
+    ui.horizontal_wrapped(|ui| {
+        ui.label(&v.catalog);
+        if ui.add_enabled(v.can_check, egui::Button::new("Check now").small()).clicked() {
+            out.push(Intent::CheckCatalog);
+        }
+    });
+    if let Some((note, warn)) = &v.note {
+        let color = if *warn { p.warn } else { p.muted };
+        ui.label(RichText::new(note).color(color));
+    }
+    ui.add_space(8.0);
+    if v.cards.is_empty() {
+        ui.vertical_centered(|ui| {
+            ui.add(icons::empty(ui, 120.0));
+            ui.weak("No plugins yet. Install one from a file.");
+        });
+    }
+    let columns = if ui.available_width() >= 760.0 { 3 } else { 2 };
+    let gap = 14.0;
+    let width = ((ui.available_width() - gap * (columns - 1) as f32) / columns as f32).floor();
+    for (i, row) in v.cards.chunks(columns).enumerate() {
+        // The cards in a row share the tallest one's height, as drawn; it's measured as they
+        // draw and settles on the next frame, which a change asks for once.
+        let row_id = ui.id().with(("plugin-row", i, columns));
+        let height: f32 = ui.ctx().data(|d| d.get_temp(row_id)).unwrap_or(0.0);
+        let mut tallest = 0.0f32;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for card in row {
+                ui.allocate_ui_with_layout(egui::vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
+                    ui.set_width(width);
+                    tallest = tallest.max(card_ui(ui, card, height, state, &mut out));
+                });
+            }
+        });
+        if (tallest - height).abs() > 0.5 {
+            ui.ctx().data_mut(|d| d.insert_temp(row_id, tallest));
+            ui.ctx().request_repaint();
+        }
+        ui.add_space(gap);
+    }
+    if let Some(m) = &state.message {
+        ui.colored_label(p.danger, m);
+    }
+    out
+}
+
+/// One card: the name and tag, a line about it, and its buttons; an installed plugin's
+/// settings open on the card. At least `height` tall; returns the height its contents need.
+fn card_ui(ui: &mut egui::Ui, c: &Card, height: f32, state: &mut UiState, out: &mut Vec<Intent>) -> f32 {
+    theme::card(ui).inner_margin(egui::Margin::symmetric(18, 16)).show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        let top = ui.cursor().top();
+        card_contents(ui, c, state, out);
+        let natural = ui.cursor().top() - top;
+        ui.add_space((height - natural).max(0.0));
+        natural
+    })
+    .inner
+}
+
+fn card_contents(ui: &mut egui::Ui, c: &Card, state: &mut UiState, out: &mut Vec<Intent>) {
+    let p = theme::palette(ui);
+    let dir = c.installed.as_ref().and_then(|_| plugin_install::plugins_dir()).map(|d| d.join(&c.id));
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let color = match c.tag {
+                Tag::Catalog => p.muted,
+                Tag::Installed => p.ok,
+                Tag::Sideloaded => p.warn,
+            };
+            let tag = ui.label(RichText::new(c.tag.label()).font(theme::mono(11.0)).color(color));
+            if c.tag == Tag::Sideloaded {
+                tag.on_hover_text("Not from the Foxglove catalog");
+            }
+            // The name takes what's left, cut short rather than running into the tag.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(icons::glyph(ui, &c.id, dir.as_deref(), 20.0));
+                ui.add(egui::Label::new(theme::heading(ui, &c.name)).truncate());
+            });
+        });
+    });
+    ui.label(RichText::new(&c.description).color(p.muted));
+    if c.unsandboxed {
+        ui.label(RichText::new("Runs outside the sandbox: it can use your files or the network.").color(p.warn));
+    }
+    let Some(plugin) = &c.installed else {
+        // The catalog lists plugins before their downloads exist; nothing to fetch yet.
+        ui.add_enabled(false, theme::primary_button(ui, "Install"))
+            .on_disabled_hover_text("Not downloadable yet. Install it from a file when you have one.");
+        return;
+    };
+    if let Some(s) = &c.state {
+        ui.label(RichText::new(s).color(p.muted));
+    }
+    let id = &plugin.manifest.id;
+    ui.horizontal_wrapped(|ui| {
+        let mut on = plugin.record.enabled;
+        if ui.checkbox(&mut on, "On").changed() {
+            out.push(Intent::Enable(id.clone(), on));
+        }
+        let open = state.open.as_deref() == Some(id.as_str());
+        if theme::pill(ui, open, "Settings").clicked() {
+            state.open = if open { None } else { Some(id.clone()) };
+        }
+        let confirming = state.confirm_remove.as_deref() == Some(id.as_str());
+        if ui.button(if confirming { "Remove? Click again" } else { "Remove" }).clicked() {
+            if confirming {
+                state.confirm_remove = None;
+                out.push(Intent::Remove(id.clone()));
+            } else {
+                state.confirm_remove = Some(id.clone());
+            }
+        }
+    });
+    if state.open.as_deref() == Some(id.as_str()) {
+        ui.add_space(4.0);
+        ui.separator();
+        let perms: Vec<String> = plugin.record.approved.iter().map(|p| p.describe()).collect();
+        ui.weak(format!("May {}.", if perms.is_empty() { "do nothing beyond running".into() } else { perms.join(", ") }));
+        action_keys(ui, plugin, state);
+        secret_fields(ui, plugin, state);
+        setting_fields(ui, plugin, state);
+    }
 }
 
 /// A control for each setting the plugin declares (#69); a change is saved and sent to the
@@ -240,27 +477,6 @@ fn action_keys(ui: &mut egui::Ui, plugin: &Installed, state: &mut UiState) {
     ui.weak("    Put F13–F24 on a key in ZMK Studio or VIA; it types nothing, and Foxglove passes it to the plugin.");
 }
 
-/// The catalog's freshness, and "Check now". Opening the tab asks for a check when one is due
-/// (at most every 10 minutes, and never while backing off).
-fn catalog_status(ui: &mut egui::Ui) {
-    use super::catalog_refresh::{self, Status, Trigger};
-    catalog_refresh::set_wake(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
-    catalog_refresh::request(Trigger::TabOpened);
-    ui.horizontal_wrapped(|ui| {
-        let status = catalog_refresh::status();
-        match &status {
-            Status::Idle => ui.weak("Catalog: not checked yet this session."),
-            Status::Checking => ui.weak("Catalog: checking…"),
-            Status::UpToDate { sequence: Some(n) } => ui.weak(format!("Catalog: updated (sequence {n}).")),
-            Status::UpToDate { sequence: None } => ui.weak("Catalog: up to date."),
-            Status::Failed(e) => ui.weak(format!("Catalog: couldn't check ({e}).")),
-        };
-        if ui.add_enabled(status != Status::Checking, egui::Button::new("Check now").small()).clicked() {
-            catalog_refresh::request(Trigger::Manual);
-        }
-    });
-}
-
 /// Shows what a staged plugin may do; returns it again while the user hasn't decided.
 fn approval(ui: &mut egui::Ui, staged: Staged, state: &mut UiState) -> Option<Staged> {
     let m = &staged.manifest;
@@ -307,5 +523,67 @@ fn approval(ui: &mut egui::Ui, staged: Staged, state: &mut UiState) -> Option<St
             }
             None
         }
+    }
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use foxglove_plugin_api::manifest::Manifest;
+    use super::super::plugin_install::PluginRecord;
+
+    fn installed(id: &str, name: &str, approved: Vec<Permission>) -> Installed {
+        let toml = format!("id = \"{id}\"
+name = \"{name}\"
+version = \"1.0.0\"
+api = \"1.0\"
+run = [\"p.exe\"]
+");
+        let manifest = Manifest::parse(&toml, foxglove_plugin_api::API_VERSION).expect("a manifest");
+        Installed { manifest, record: PluginRecord { enabled: true, approved } }
+    }
+
+    #[test]
+    fn each_plugin_has_one_card_with_its_tag() {
+        let catalog = plugin_install::catalog();
+        let mic = &catalog.iter().find(|e| e.id == "org.foxglove.mic-mute").expect("mic mute is listed").id;
+        let mine = vec![installed(mic, "Mic mute", vec![Permission::DevicesRead]), installed("org.example.clock", "Clock", vec![Permission::Net])];
+        let cards = cards(&mine, &catalog);
+        assert_eq!(cards.len(), catalog.len() + 1, "the sideloaded one is added, the installed one isn't doubled");
+        assert_eq!((cards[0].tag, cards[0].id.as_str()), (Tag::Installed, mic.as_str()));
+        assert!(!cards[0].description.is_empty(), "an installed plugin with no description of its own takes the catalog's");
+        assert_eq!(cards[1].tag, Tag::Sideloaded);
+        assert!(cards[1].unsandboxed, "unrestricted network runs outside the sandbox");
+        assert!(cards[2..].iter().all(|c| c.tag == Tag::Catalog && c.installed.is_none()));
+        let ids: std::collections::HashSet<_> = cards.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids.len(), cards.len());
+    }
+
+    #[test]
+    fn corsair_says_it_runs_outside_the_sandbox() {
+        let cards = cards(&[], &plugin_install::catalog());
+        let icue = cards.iter().find(|c| c.id == "org.foxglove.icue").expect("iCUE is listed");
+        assert!(icue.unsandboxed, "it loads iCUE's DLL with the files permission");
+        let mic = cards.iter().find(|c| c.id == "org.foxglove.mic-mute").unwrap();
+        assert!(!mic.unsandboxed);
+        // The scoped network forms stay in the sandbox.
+        let obs = cards.iter().find(|c| c.id == "org.foxglove.broadcast-status").unwrap();
+        assert!(!obs.unsandboxed);
+    }
+
+    #[test]
+    fn tags_in_words() {
+        assert_eq!([Tag::Catalog, Tag::Installed, Tag::Sideloaded].map(Tag::label), ["CATALOG", "INSTALLED", "SIDELOADED"]);
+    }
+
+    /// The previews' page: Mic mute installed and running, a sideloaded clock, the catalog.
+    pub fn sample() -> View {
+        let catalog = plugin_install::catalog();
+        let mut cards = cards(
+            &[installed("org.foxglove.mic-mute", "Mic mute", vec![Permission::DevicesRead, Permission::LightingWrite])],
+            &catalog,
+        );
+        cards[0].state = Some("Running".into());
+        View { cards, catalog: "Catalog: up to date".into(), can_check: true, note: None }
     }
 }

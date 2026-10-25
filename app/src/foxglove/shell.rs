@@ -148,7 +148,13 @@ pub fn frame(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
         .frame(egui::Frame::new().fill(p.ground).inner_margin(Margin { left: 22, right: 14, top: 14, bottom: 10 }))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt(("foxglove-page", page)).auto_shrink(false).show(ui, |ui| {
-                ui.label(RichText::new(page.label()).font(theme::hud(24.0)).color(p.text_strong));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(page.label()).font(theme::hud(24.0)).color(p.text_strong));
+                    if page == Page::Plugins {
+                        // "Install from file…" sits in the page's header (#389).
+                        ui.with_layout(Layout::right_to_left(Align::Center), super::plugins_ui::header);
+                    }
+                });
                 let _showing = Showing;
                 SHOWING.set(Some(page));
                 DREW.set(false);
