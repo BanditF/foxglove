@@ -346,7 +346,7 @@ pub fn picker(ui: &mut egui::Ui) {
         egui::ThemePreference::Light => Choice::Light,
         egui::ThemePreference::System => Choice::System,
     };
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Window theme");
         for (choice, label) in [(Choice::Dark, "Dark"), (Choice::Light, "Light"), (Choice::System, "System")] {
             if pill(ui, current == choice, label).clicked() && current != choice {

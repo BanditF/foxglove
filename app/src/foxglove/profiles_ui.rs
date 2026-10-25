@@ -56,12 +56,9 @@ pub fn sidebar_picker(ui: &mut egui::Ui) {
 
 pub fn picker(ui: &mut egui::Ui) {
     let (names, active) = store::cached_profiles();
-    if names.is_empty() {
-        return;
-    }
     super::settings_ui::section(ui, "Profile", |ui| {
         ui.horizontal(|ui| {
-            ui.label("Profile");
+            ui.label("Editing");
             if let Err(e) = combo(ui, "foxglove-profile", None, &names, &active) {
                 ui.colored_label(ui.visuals().error_fg_color, format!("Can't switch: {e}"));
             }
@@ -69,7 +66,12 @@ pub fn picker(ui: &mut egui::Ui) {
                 ui.weak("Changes to screens, lights and art are saved in this profile.");
             }
         });
-        egui::CollapsingHeader::new("Switch profile by program").show(ui, |ui| rules(ui, &names));
+        if names.is_empty() {
+            // A rule switches to a profile, so there's nothing to pick until one exists.
+            ui.weak("Switch profile by program: import a profile below first.");
+        } else {
+            egui::CollapsingHeader::new("Switch profile by program").show(ui, |ui| rules(ui, &names));
+        }
         egui::CollapsingHeader::new("Share profiles").show(ui, |ui| share(ui, &names, active.as_deref()));
     });
 }

@@ -380,7 +380,7 @@ impl OverlayApp {
                             .unwrap_or_else(|| format!("Layer {layer}"))
                     };
 
-                    crate::foxglove::theme::picker(ui); // Foxglove (#384)
+                    // Foxglove (#390): the window theme is in "Theme and updates".
                     let draft = &mut self.settings.draft;
                     Self::theme_color_entry(ui, "Font color", &mut draft.theme.font_color);
 
@@ -411,6 +411,12 @@ impl OverlayApp {
                                 }
                             });
                     };
+                    // Foxglove (#390): one table when the card is too narrow for two.
+                    if ui.available_width() < 560.0 {
+                        let all: Vec<usize> = (0..=LAYERS).collect();
+                        layer_table(ui, "theme_layers_all", &all);
+                        return;
+                    }
                     ui.columns(2, |columns| {
                         let left: Vec<usize> = (0..HALF).collect();
                         let right: Vec<usize> = (HALF..=LAYERS).collect();
