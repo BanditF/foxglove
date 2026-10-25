@@ -3,7 +3,8 @@
 //!
 //! Set `FOXGLOVE_UI_PREVIEW_DIR` to a folder before `cargo test` to keep the PNGs
 //! (`ui-384-before.png`, `ui-384-after-dark.png`, `ui-384-after-light.png`, and one
-//! `ui-385-<page>.png` per page of the #385 shell).
+//! `ui-385-<page>.png` per page of the #385 shell, then each redesigned page's own, such as
+//! `ui-386-keyboard.png`).
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -352,22 +353,6 @@ fn preview(legacy: bool, choice: crate::foxglove::theme::Choice) -> image::RgbaI
 /// so these use the same widgets and labels with sample values.
 fn foxglove_groups(ui: &mut egui::Ui) {
     use crate::foxglove::settings_ui::section;
-    section(ui, "Keyboard", |ui| {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Connection");
-            ui.label("on USB");
-            ui.label("Windows Bluetooth link: connected");
-            ui.label("active profile 1 · connected · endpoint USB");
-            ui.label("this PC: profile 1");
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.weak("Firmware");
-            ui.label("left 0.1.0 (dev) · e255d32 / right unknown (no reply from the keyboard)");
-        });
-        ui.add_space(4.0);
-        egui::CollapsingHeader::new("Actions").default_open(false).show(ui, |_| {});
-        ui.weak("Last: Bluetooth profile 1 — done");
-    });
     section(ui, "Lights", |ui| {
         ui.horizontal(|ui| {
             ui.checkbox(&mut true, "Right half's lights follow the left");
@@ -469,10 +454,10 @@ fn foxglove_groups(ui: &mut egui::Ui) {
 }
 
 /// The settings window as #385 draws it: the sidebar, the status strip and one page.
-fn shell_window(ctx: &egui::Context) {
+fn shell_window(ctx: &egui::Context, height: f32) {
     egui::Window::new("Foxglove Settings")
         .fixed_pos(egui::pos2(16.0, 16.0))
-        .default_size(egui::vec2(1040.0, 660.0))
+        .default_size(egui::vec2(1040.0, height))
         .min_size(egui::vec2(720.0, 420.0))
         .frame(crate::foxglove::shell::window_frame(ctx))
         .collapsible(false)
@@ -491,6 +476,29 @@ fn shell_window(ctx: &egui::Context) {
 }
 
 fn shell_preview(page: crate::foxglove::shell::Page) -> image::RgbaImage {
+    shell_preview_with(page, sample_strip(), crate::foxglove::keyboard_page::tests::sample(), 660.0)
+}
+
+/// The strip the previews show: both halves seen, the right one not answering yet.
+fn sample_strip() -> crate::foxglove::shell::StripState {
+    crate::foxglove::shell::StripState {
+        keyboard: true,
+        usb: Some(true),
+        left_build: Some(Ok("0.1.0 · e255d32".into())),
+        right_build: Some(Err("no reply from the keyboard".into())),
+        right_battery: Some(61),
+        profile: Some(0),
+        this_pc: Some(0),
+        unplug_warning: None,
+    }
+}
+
+fn shell_preview_with(
+    page: crate::foxglove::shell::Page,
+    strip: crate::foxglove::shell::StripState,
+    keyboard: crate::foxglove::keyboard_page::View,
+    height: f32,
+) -> image::RgbaImage {
     use crate::foxglove::shell;
     crate::foxglove::store::test_config_dir();
     let ctx = egui::Context::default();
@@ -500,18 +508,12 @@ fn shell_preview(page: crate::foxglove::shell::Page) -> image::RgbaImage {
     ctx.set_fonts(fonts);
     crate::foxglove::theme::apply_choice(&ctx, crate::foxglove::theme::Choice::Dark);
     shell::preview_page(page);
-    shell::PREVIEW_STRIP.set(Some(shell::StripState {
-        keyboard: true,
-        usb: Some(true),
-        left_build: Some(Ok("0.1.0 · e255d32".into())),
-        right_build: Some(Err("no reply from the keyboard".into())),
-        right_battery: Some(61),
-        profile: Some(0),
-        this_pc: Some(0),
-        unplug_warning: None,
-    }));
-    let img = render(&ctx, egui::vec2(1072.0, 700.0), Color32::from_rgb(0x09, 0x0a, 0x0c), shell_window);
+    shell::PREVIEW_STRIP.set(Some(strip));
+    crate::foxglove::keyboard_page::PREVIEW.set(Some(keyboard));
+    let size = egui::vec2(1072.0, height + 40.0);
+    let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| shell_window(ctx, height));
     shell::PREVIEW_STRIP.set(None);
+    crate::foxglove::keyboard_page::PREVIEW.set(None);
     img
 }
 
@@ -540,6 +542,26 @@ fn shell_pages_render() {
         assert!(seen.iter().all(|other| *other != img), "{page:?} looks like another page");
         seen.push(img);
     }
+}
+
+/// The Keyboard page (#386) with a keyboard and without one.
+#[test]
+fn keyboard_page_renders() {
+    use crate::foxglove::keyboard_page::tests::{sample, sample_none};
+    use crate::foxglove::shell::{Page, StripState};
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let with = shell_preview_with(Page::Keyboard, sample_strip(), sample(), 1060.0);
+    let without = shell_preview_with(Page::Keyboard, StripState::default(), sample_none(), 1060.0);
+    keep("ui-386-keyboard.png", &with);
+    keep("ui-386-keyboard-none.png", &without);
+    for img in [&with, &without] {
+        // The cards' surface and the board's orange (screen rings, underglow) show up.
+        assert!(count(img, DARK.surface) > (img.width() * img.height()) as usize / 20, "cards");
+        assert!(count(img, DARK.accent) > 500, "the board's orange");
+    }
+    // The right half's "no reply yet" is amber on the page as well as in the strip.
+    assert!(count(&with, DARK.warn) > count(&without, DARK.warn));
 }
 
 #[test]

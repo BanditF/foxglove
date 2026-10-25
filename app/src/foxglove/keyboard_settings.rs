@@ -188,6 +188,15 @@ pub fn settings_opened() {
     RETRY_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// "Ask the keyboard again" (#386): forget the builds, so the next look reads them afresh.
+/// A read already under way is left to finish.
+pub fn read_firmware_again() {
+    let mut cached = FIRMWARE.lock().unwrap_or_else(|e| e.into_inner());
+    if cached.1 != Firmware::Reading {
+        cached.1 = Firmware::Unknown;
+    }
+}
+
 impl Firmware {
     fn failed(&self) -> bool {
         matches!(self, Firmware::Known { left, right } if left.is_err() || right.is_err())

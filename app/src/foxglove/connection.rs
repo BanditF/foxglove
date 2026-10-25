@@ -268,40 +268,64 @@ fn unplug_warning(s: &Status) -> Option<String> {
     })
 }
 
-pub fn row(ui: &mut egui::Ui) {
-    start(ui.ctx());
+/// The link to this PC in plain words, for the Keyboard page (#386): no "endpoint" or
+/// "active profile", profiles counted from 1 as the left screen counts them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Plain {
+    /// (what, how it is), top to bottom.
+    pub rows: Vec<(&'static str, String)>,
+    /// When unplugging now leaves the keyboard unable to type: how to fix it.
+    pub unplug_fix: Option<String>,
+}
+
+pub fn plain(ctx: &egui::Context) -> Plain {
+    start(ctx);
     let s = STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Connection");
-        ui.label(match s.usb {
+    plain_words(&s)
+}
+
+fn plain_words(s: &Status) -> Plain {
+    let mut rows = vec![(
+        "Left half",
+        match s.usb {
             Some(true) => "on USB",
             Some(false) => "on Bluetooth",
-            None => "unavailable",
-        });
-        ui.label(match s.windows_ble {
-            Some(true) => "Windows Bluetooth link: connected",
-            Some(false) => "Windows Bluetooth link: not connected",
-            None => "Windows Bluetooth link: unknown",
-        });
-        if let Some(f) = s.firmware {
-            ui.label(format!(
-                "active profile {} · {} · endpoint {}",
-                shown(f.active_profile),
-                if f.connected {
-                    "connected"
-                } else {
-                    "not connected"
-                },
-                if f.endpoint == 0 { "USB" } else { "Bluetooth" }
-            ));
+            None => "not connected",
         }
-        if let Some(p) = s.this_pc {
-            ui.label(format!("this PC: profile {}", shown(p)));
+        .to_string(),
+    )];
+    rows.push((
+        "Bluetooth to this PC",
+        match s.windows_ble {
+            Some(true) => "connected",
+            Some(false) => "not connected",
+            None => "not known yet",
         }
-    });
-    if let Some(warning) = unplug_warning(&s) {
-        ui.colored_label(ui.visuals().warn_fg_color, warning);
+        .to_string(),
+    ));
+    if let Some(f) = s.firmware {
+        let whose = match s.this_pc {
+            Some(p) if p == f.active_profile => " · this PC",
+            Some(_) => " · another PC",
+            None => "",
+        };
+        let waiting = if f.connected { "" } else { " · waiting for its PC" };
+        rows.push(("Bluetooth profile", format!("{}{whose}{waiting}", shown(f.active_profile))));
+        if let Some(p) = s.this_pc.filter(|p| *p != f.active_profile) {
+            rows.push(("This PC's profile", shown(p).to_string()));
+        }
     }
+    let unplug_fix = unsafe_to_unplug(
+        s.usb == Some(true),
+        s.windows_ble,
+        s.firmware.map(|f| f.active_profile),
+        s.this_pc,
+    )
+    .then(|| {
+        let profile = s.this_pc.map_or("for this PC".into(), |p| shown(p).to_string());
+        format!("Select profile {profile} first: {}.", switch_hint(s.this_pc))
+    });
+    Plain { rows, unplug_fix }
 }
 
 #[cfg(any(target_os = "windows", test))]
@@ -637,6 +661,39 @@ mod windows_status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn conn(active_profile: u8, connected: bool) -> ConnState {
+        ConnState { active_profile, connected, bonded: true, endpoint: 0, usb_ready: true, profile_count: 5 }
+    }
+
+    #[test]
+    fn the_link_in_plain_words() {
+        let none = plain_words(&Status::default());
+        assert_eq!(none.rows, vec![("Left half", "not connected".into()), ("Bluetooth to this PC", "not known yet".into())]);
+        assert_eq!(none.unplug_fix, None);
+
+        let ok = plain_words(&Status { usb: Some(true), windows_ble: Some(true), firmware: Some(conn(0, true)), this_pc: Some(0) });
+        assert_eq!(ok.rows[0].1, "on USB");
+        assert_eq!(ok.rows[2], ("Bluetooth profile", "1 · this PC".into()));
+        assert_eq!(ok.rows.len(), 3);
+        assert_eq!(ok.unplug_fix, None);
+
+        let other = plain_words(&Status { usb: Some(true), windows_ble: Some(false), firmware: Some(conn(1, false)), this_pc: Some(0) });
+        assert_eq!(other.rows[2].1, "2 · another PC · waiting for its PC");
+        assert_eq!(other.rows[3], ("This PC's profile", "1".into()));
+        let fix = other.unplug_fix.clone().expect("unsafe to unplug");
+        assert!(fix.starts_with("Select profile 1 first: hold both middle thumbs"), "{fix}");
+
+        // No jargon on the page (#386).
+        for p in [none, ok, other] {
+            for (what, how) in &p.rows {
+                let text = format!("{what} {how}").to_lowercase();
+                for word in ["endpoint", "active profile", "unavailable", "link:"] {
+                    assert!(!text.contains(word), "{text}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn profiles_show_from_one_with_their_switch_key() {
