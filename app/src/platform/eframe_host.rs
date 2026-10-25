@@ -346,7 +346,9 @@ fn run_inner(
 
             let mut fonts = egui::FontDefinitions::default();
             super::add_phosphor_to_fonts(&mut fonts);
+            crate::foxglove::theme::add_fonts(&mut fonts); // Foxglove (#384)
             cc.egui_ctx.set_fonts(fonts);
+            crate::foxglove::theme::apply(&cc.egui_ctx);
 
             let app = OverlayApp::new(tray_icon, settings_requested, ui_wake, settings, devices);
             Ok(Box::new(EframeApp {

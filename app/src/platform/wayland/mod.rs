@@ -163,7 +163,9 @@ pub fn run(
     egui_extras::install_image_loaders(&egui_ctx);
     let mut fonts = egui::FontDefinitions::default();
     super::add_phosphor_to_fonts(&mut fonts);
+    crate::foxglove::theme::add_fonts(&mut fonts); // Foxglove (#384)
     egui_ctx.set_fonts(fonts);
+    crate::foxglove::theme::apply(&egui_ctx);
 
     let ui_wake = UiWake::new(Arc::new(move || ping.ping()));
     let settings_requested = Arc::new(AtomicBool::new(false));

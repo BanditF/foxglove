@@ -378,6 +378,7 @@ impl OverlayApp {
                             .unwrap_or_else(|| format!("Layer {layer}"))
                     };
 
+                    crate::foxglove::theme::picker(ui); // Foxglove (#384)
                     let draft = &mut self.settings.draft;
                     Self::theme_color_entry(ui, "Font color", &mut draft.theme.font_color);
 
@@ -441,6 +442,7 @@ impl OverlayApp {
                         ));
                     });
                 });
+                crate::foxglove::theme::credits(ui); // Foxglove (#384)
             });
 
         if self.ui.settings_visible && !open {
