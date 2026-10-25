@@ -920,7 +920,7 @@ mod slot_tests {
         assert!(std::str::from_utf8(save[3..].split(|&b| b == 0).next().unwrap()).is_ok());
         assert_eq!(art_name_fit("hearth-moongarden"), "hearth-moongarde");
         assert_eq!(art_name_fit("short"), "short");
-        assert_eq!(art_name_fit("fifteen chars!ü"), "fifteen chars!"); // ü would cross byte 16
+        assert_eq!(art_name_fit("fifteen chars!!ü"), "fifteen chars!!"); // ü would cross byte 16
         assert_eq!(art_name_fit("exactly 16 chars"), "exactly 16 chars");
         assert_eq!(art_erase(1), [ART, art::ERASE, 1]);
         let mut r = [0u8; REPORT];
