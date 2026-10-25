@@ -45,6 +45,9 @@ pub mod art_manifest;
 mod art_preview;
 pub mod art_ui;
 pub mod settings_ui;
+pub mod theme;
+#[cfg(test)]
+mod theme_preview;
 pub mod startup;
 pub mod tray;
 pub mod catalog_refresh;
