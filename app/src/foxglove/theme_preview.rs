@@ -355,48 +355,6 @@ fn foxglove_groups(ui: &mut egui::Ui) {
     use crate::foxglove::settings_ui::section;
     // The real Lights page (#387), drawn from its preview sample.
     section(ui, "Lights", crate::foxglove::lights_page::show);
-    section(ui, "Screens", |ui| {
-        ui.label("Driving the left screen: clock, media and hints");
-        egui::Grid::new("preview-screens").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
-            for (k, v) in [("Keyboard", "Eyelash Corne · host link v3"), ("Board profile", "nice_view_custom"), ("Right half", "connected"), ("Right battery", "61%")] {
-                ui.weak(k);
-                ui.label(v);
-                ui.end_row();
-            }
-        });
-        egui::CollapsingHeader::new("Details").show(ui, |_| {});
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut true, "Drive left screen");
-            ui.checkbox(&mut false, "Pause");
-        });
-        ui.horizontal(|ui| {
-            ui.label("Show");
-            egui::ComboBox::from_id_salt("preview-show").selected_text("Clock, media and hints").show_ui(ui, |_| {});
-        });
-        ui.label("Game hints");
-        ui.weak("Shown on the panel while that program is in front.");
-        ui.horizontal(|ui| {
-            ui.label("eldenring.exe · \"Dodge on Space\"");
-            let _ = ui.button("Remove");
-        });
-        let _ = ui.button("Add foreground app");
-    });
-    section(ui, "Right screen art", |ui| {
-        ui.label("Playing: hud");
-        ui.horizontal(|ui| {
-            let _ = ui.button("Push file...");
-            let _ = ui.button("Refresh");
-        });
-        ui.weak("Library: hud, hearth-wheel, fury-stars, courier");
-        ui.label("Saved on the keyboard");
-        ui.label("1. hud");
-        ui.label("Hotlist");
-        ui.horizontal(|ui| {
-            ui.label("Next entry");
-            egui::ComboBox::from_id_salt("preview-next").selected_text("When the lights wake").show_ui(ui, |_| {});
-        });
-        egui::CollapsingHeader::new("Layer art").id_salt("art-layer-art").show(ui, |_| {});
-    });
     section(ui, "Other keyboards (VIA)", |ui| {
         ui.weak("QMK keyboards with VIA, like the Keychron K5 Pro, over USB. Foxglove only reads them: the keymap, layers and lights.");
         ui.checkbox(&mut true, "Use VIA keyboards");
@@ -459,6 +417,8 @@ struct Samples {
     strip: crate::foxglove::shell::StripState,
     keyboard: crate::foxglove::keyboard_page::View,
     lights: crate::foxglove::lights_page::View,
+    screens: Option<crate::foxglove::screens::Snapshot>,
+    art: Option<(crate::foxglove::art_service::Snapshot, crate::foxglove::art_library::Library)>,
 }
 
 impl Samples {
@@ -467,6 +427,8 @@ impl Samples {
             strip: sample_strip(),
             keyboard: crate::foxglove::keyboard_page::tests::sample(),
             lights: crate::foxglove::lights_page::tests::sample(),
+            screens: Some(sample_screens()),
+            art: Some(crate::foxglove::art_ui::tests::sample()),
         }
     }
 
@@ -475,6 +437,8 @@ impl Samples {
             strip: Default::default(),
             keyboard: crate::foxglove::keyboard_page::tests::sample_none(),
             lights: crate::foxglove::lights_page::tests::sample_none(),
+            screens: None,
+            art: None,
         }
     }
 }
@@ -510,11 +474,15 @@ fn shell_preview_with(
     shell::PREVIEW_STRIP.set(Some(samples.strip.clone()));
     crate::foxglove::keyboard_page::PREVIEW.set(Some(samples.keyboard.clone()));
     crate::foxglove::lights_page::PREVIEW.set(Some(samples.lights.clone()));
+    crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
+    crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
     let size = egui::vec2(1072.0, height + 40.0);
     let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| shell_window(ctx, height));
     shell::PREVIEW_STRIP.set(None);
     crate::foxglove::keyboard_page::PREVIEW.set(None);
     crate::foxglove::lights_page::PREVIEW.set(None);
+    crate::foxglove::screens_ui::PREVIEW.set(None);
+    crate::foxglove::art_ui::PREVIEW.set(None);
     img
 }
 
@@ -562,6 +530,55 @@ fn keyboard_page_renders() {
     }
     // The right half's "no reply yet" is amber on the page as well as in the strip.
     assert!(count(&with, DARK.warn) > count(&without, DARK.warn));
+}
+
+/// The left panel as the preview shows it: a keyboard that answered HELLO, a frame of the
+/// panel drawn from a pattern, and a game in front.
+fn sample_screens() -> crate::foxglove::screens::Snapshot {
+    let (width, height) = (64, 52);
+    let stride = width / 8;
+    let mut bits = vec![0u8; stride * height];
+    let mut set = |x: usize, y: usize| bits[y * stride + x / 8] |= 0x80 >> (x % 8);
+    // A frame, a clock-like bar and a progress line, so the preview isn't blank.
+    for x in 0..width {
+        set(x, 0);
+        set(x, height - 1);
+        if x < 40 {
+            set(x, 40);
+        }
+    }
+    for y in 0..height {
+        set(0, y);
+        set(width - 1, y);
+    }
+    for y in 10..26 {
+        for x in (8..56).filter(|x| (x / 6) % 2 == 0) {
+            set(x, y);
+        }
+    }
+    crate::foxglove::screens::Snapshot {
+        product: "Eyelash Corne".into(),
+        hello: Some(digitalis::protocol::Hello { version: 3, right_link: 2, right_battery: Some(61), ..Default::default() }),
+        frame: Some(crate::foxglove::screens::Frame { width, height, stride, bits }),
+        foreground: Some("eldenring.exe".into()),
+        screens: Vec::new(),
+    }
+}
+
+/// The Screens page (#388) with a keyboard and without one.
+#[test]
+fn screens_page_renders() {
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let with = shell_preview_with(Page::Screens, &Samples::full(), 1000.0);
+    let without = shell_preview_with(Page::Screens, &Samples::none(), 660.0);
+    keep("ui-388-screens.png", &with);
+    keep("ui-388-screens-none.png", &without);
+    // The art tiles are drawn in the right screen's two tones.
+    let lit = Color32::from_rgb(0xe8, 0xea, 0xe9);
+    assert!(count(&with, lit) > 300, "art thumbnails");
+    assert!(count(&with, DARK.surface) > count(&without, DARK.surface), "two cards");
 }
 
 /// The Lights page (#387) with a keyboard and without one.
