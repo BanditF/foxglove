@@ -1,15 +1,19 @@
-"""Draws Foxglove's app icon and tray glyphs from the Bandit fox motif (#31).
+"""Draws Foxglove's app icon from the Bandit fox motif (#31) and the tray glyphs from the
+Foxglove mark (#403).
 
   python -I scripts/app_icons.py               rewrite the files in app/resources/ (same names as
                                                KeyPeek's, so upstream syncs don't conflict)
-  python -I scripts/app_icons.py --sheet x.png also a review sheet
+  python -I scripts/app_icons.py --tray        only the tray glyphs
+  python -I scripts/app_icons.py --sheet x.png also a review sheet of the tray glyphs
 
 Writes:
 - icon.svg (the master), icon.png (256), icon.ico (16, 20, 24, 32, 48, 64, 256): a dark tile with
   the low-poly fox. 24 px and below use a simplified fox (silhouette, mask, no inner lines).
-- tray-icon-white.png / tray-icon-black.png (64): the fox as a solid glyph with the mask cut
-  out, for dark / light taskbars, plus *-off.png: the outline only, for "no keyboard connected".
-- tray-icon-template.png (44) and tray-icon-template-off.png: macOS templates (black + alpha).
+- tray-icon-white*.png / tray-icon-black*.png: the sidebar's mark (#395), an orange arrowhead in
+  a ring, for dark / light taskbars. Plain: a keyboard is connected (solid); -off: none is (the
+  outline); -paused: Foxglove is paused (#404; a grey arrowhead with an orange pause badge).
+  Drawn for Windows' small-icon sizes: the plain name is 32 px, -16/-20/-24 the smaller ones.
+- tray-icon-template.png (44), -off and -paused: macOS templates (black + alpha).
 - packaging/identity/Assets/logo44/50/150.png for the sparse package.
 """
 
@@ -112,19 +116,81 @@ def silhouette(S, margin):
     return sil, holes
 
 
-def tray(size, colour, connected):
-    ss = 8
+# The mark in its 30-unit box, as shell.rs `fox_mark` draws it.
+MARK = [(15.0, 3.0), (27.0, 26.0), (15.0, 20.0), (3.0, 26.0)]
+RING = (15.0, 15.0, 13.0)
+
+# Per taskbar: the arrowhead (the theme's oranges, #384), the ring, the paused arrowhead, and what
+# the pause badge sits on (cut out of the mark so the badge reads on any wallpaper behind it).
+TRAY_COLOURS = {
+    "white": {"accent": (0xF0, 0x8A, 0x3C), "ring": (255, 255, 255, 165), "muted": (0x9A, 0xA0, 0xA8)},
+    "black": {"accent": (0xB4, 0x54, 0x0F), "ring": (0, 0, 0, 140), "muted": (0x5F, 0x64, 0x6C)},
+    "template": {"accent": (0, 0, 0), "ring": (0, 0, 0, 150), "muted": (0, 0, 0)},
+}
+TRAY_SIZES = [16, 20, 24, 32]
+TRAY_STATES = ["on", "off", "paused"]
+
+
+def tray(size, variant, state):
+    """One glyph: `state` is "on" (solid), "off" (outline) or "paused"."""
+    c = TRAY_COLOURS[variant]
+    ss = 16
     S = size * ss
-    sil, holes = silhouette(S, margin=S * 0.06)
-    if connected:
-        alpha = ImageChops.subtract(sil, holes)
-    else:  # outline only: the silhouette minus itself eroded by about 1/9 of the icon
-        k = max(3, (S // 9) | 1)
-        alpha = ImageChops.subtract(sil, sil.filter(ImageFilter.MinFilter(k)))
-    a = alpha.resize((size, size), Image.LANCZOS)
-    out = Image.new("RGBA", (size, size), colour)
-    out.putalpha(a)
-    return out
+    u = S / 30.0  # the mark's unit
+    px = ss  # one output pixel, in supersampled pixels
+    im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    d = ImageDraw.Draw(im)
+    # The ring: one pixel up to 24 px, a pixel and a half at 32.
+    rw = round(px * (1.0 if size <= 24 else 1.5))
+    cx, cy, r = (v * u for v in RING)
+    r = min(r, S / 2 - rw / 2)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=c["ring"], width=rw)
+    arrow = [(x * u, y * u) for x, y in MARK]
+    if state == "on":
+        d.polygon(arrow, fill=c["accent"] + (255,))
+    elif state == "off":
+        mask = Image.new("L", (S, S), 0)
+        ImageDraw.Draw(mask).polygon(arrow, fill=255)
+        k = round(px * (1.4 if size <= 20 else 1.6)) * 2 + 1
+        ring = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(k)))
+        layer = Image.new("RGBA", (S, S), c["accent"] + (255,))
+        layer.putalpha(ring)
+        im.alpha_composite(layer)
+    else:
+        d.polygon(arrow, fill=c["muted"] + (255,))
+        # The badge: a disc in the bottom-right corner, cut clear of the mark, with two bars.
+        br = S * 0.235
+        bx, by = S - br, S - br
+        gap = px * (1.0 if size <= 24 else 1.5)
+        cut = Image.new("L", (S, S), 255)
+        ImageDraw.Draw(cut).ellipse([bx - br - gap, by - br - gap, bx + br + gap, by + br + gap], fill=0)
+        im.putalpha(ImageChops.multiply(im.getchannel("A"), cut))
+        d = ImageDraw.Draw(im)
+        d.ellipse([bx - br, by - br, bx + br, by + br], fill=c["accent"] + (255,))
+        # Bars snapped to whole output pixels so they stay sharp.
+        bw = max(1, round(size / 16))
+        bh = max(3, round(size * 0.24))
+        gap_bars = max(1, round(size / 16))
+        left = round(bx / px - (2 * bw + gap_bars) / 2)
+        top = round(by / px - bh / 2)
+        for x0 in (left, left + bw + gap_bars):
+            d.rectangle([x0 * px, top * px, (x0 + bw) * px - 1, (top + bh) * px - 1], fill=(0, 0, 0, 0))
+    return im.reduce(ss)
+
+
+def tray_name(variant, state, size):
+    suffix = {"on": "", "off": "-off", "paused": "-paused"}[state]
+    sized = "" if size in (32, 44) else "-%d" % size
+    return "tray-icon-%s%s%s.png" % (variant, suffix, sized)
+
+
+def write_tray():
+    for variant in ("white", "black"):
+        for state in TRAY_STATES:
+            for size in TRAY_SIZES:
+                tray(size, variant, state).save(os.path.join(RES, tray_name(variant, state, size)))
+    for state in TRAY_STATES:
+        tray(44, "template", state).save(os.path.join(RES, tray_name("template", state, 44)))
 
 
 def svg():
@@ -154,53 +220,76 @@ ICO_SIZES = [16, 20, 24, 32, 48, 64, 256]
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--sheet")
+    ap.add_argument("--tray", action="store_true")
     a = ap.parse_args()
+    if a.tray:
+        write_tray()
+        print("wrote the tray glyphs")
+        if a.sheet:
+            sheet(a.sheet)
+        return
     icons = {s: draw_icon(s) for s in ICO_SIZES}
     icons[256].save(os.path.join(RES, "icon.png"))
     icons[256].save(os.path.join(RES, "icon.ico"), format="ICO", sizes=[(s, s) for s in ICO_SIZES],
                     append_images=[icons[s] for s in ICO_SIZES[:-1]])
     open(os.path.join(RES, "icon.svg"), "w", encoding="utf-8", newline="\n").write(svg())
-    for name, colour in (("white", (255, 255, 255, 255)), ("black", (0, 0, 0, 255))):
-        tray(64, colour, True).save(os.path.join(RES, "tray-icon-%s.png" % name))
-        tray(64, colour, False).save(os.path.join(RES, "tray-icon-%s-off.png" % name))
-    tray(44, (0, 0, 0, 255), True).save(os.path.join(RES, "tray-icon-template.png"))
-    tray(44, (0, 0, 0, 255), False).save(os.path.join(RES, "tray-icon-template-off.png"))
+    write_tray()
     assets = os.path.join(ROOT, "app", "packaging", "identity", "Assets")
     for s in (44, 50, 150):
         draw_icon(s).save(os.path.join(assets, "logo%d.png" % s))
     print("wrote app icon, tray glyphs and identity logos")
     if a.sheet:
-        sheet(a.sheet, icons)
+        sheet(a.sheet)
 
 
-def sheet(path, icons):
-    W = 900
-    im = Image.new("RGBA", (W, 640), "#808080")
+def sheet(path):
+    """Every tray glyph at its real size on a dark and a light taskbar, then at 6x to judge the
+    pixels, and the macOS templates."""
+    from PIL import ImageFont
+
+    try:
+        font = ImageFont.truetype("segoeui.ttf", 15)
+    except OSError:
+        font = ImageFont.load_default()
+    zoom = 6
+    col_w = 16 + sum(s * zoom + 12 for s in TRAY_SIZES)
+    W = 140 + col_w
+    rows = [(v, st) for v in ("white", "black") for st in TRAY_STATES]
+    row_h = 32 * zoom + 24
+    H = 40 + len(rows) * row_h + 150
+    im = Image.new("RGBA", (W, H), "#808080")
     d = ImageDraw.Draw(im)
-    for row, bg in enumerate(("#202020", "#f3f3f3")):  # dark and light taskbar / desktop
-        y0 = row * 320
-        d.rectangle([0, y0, W, y0 + 318], fill=bg)
-        im.alpha_composite(icons[256], (W - 266, y0 + 30))
-        x = 10
-        for s in ICO_SIZES[:-1]:
-            im.alpha_composite(icons[s], (x, y0 + 10))
-            x += s + 12
-        x = 10
-        y = y0 + 100
-        col = (255, 255, 255, 255) if row == 0 else (0, 0, 0, 255)
-        for connected in (True, False):
-            for s in (16, 20, 24, 32, 48):
-                g = tray(64, col, connected).resize((s, s), Image.LANCZOS)
-                im.alpha_composite(g, (x, y + (48 - s) // 2))
-                x += s + 12
-            x += 30
-        # tray glyphs at 4x, to judge the pixels
-        x = 10
-        for connected in (True, False):
-            for s in (16, 24):
-                g = tray(64, col, connected).resize((s, s), Image.LANCZOS).resize((s * 4, s * 4), Image.NEAREST)
-                im.alpha_composite(g, (x, y0 + 170))
-                x += s * 4 + 16
+    d.text((12, 10), "Foxglove tray glyphs (#403): 16 / 20 / 24 / 32 px, actual size then x%d" % zoom,
+           fill="#ffffff", font=font)
+    bgs = {"white": "#202020", "black": "#f3f3f3"}
+    for i, (variant, state) in enumerate(rows):
+        y0 = 40 + i * row_h
+        bg = bgs[variant]
+        fg = "#ffffff" if variant == "white" else "#000000"
+        d.rectangle([0, y0, W, y0 + row_h - 4], fill=bg)
+        label = {"on": "connected", "off": "no keyboard", "paused": "paused"}[state]
+        d.text((12, y0 + 8), "%s taskbar" % ("dark" if variant == "white" else "light"), fill=fg, font=font)
+        d.text((12, y0 + 28), label, fill=fg, font=font)
+        x = 12
+        for s in TRAY_SIZES:
+            g = Image.open(os.path.join(RES, tray_name(variant, state, s)))
+            im.alpha_composite(g, (x, y0 + 60 + (32 - s) // 2))
+            x += s + 6
+        x = 140
+        for s in TRAY_SIZES:
+            g = Image.open(os.path.join(RES, tray_name(variant, state, s)))
+            big = g.resize((s * zoom, s * zoom), Image.NEAREST)
+            im.alpha_composite(big, (x, y0 + 10 + (32 - s) * zoom // 2))
+            x += s * zoom + 12
+    y0 = 40 + len(rows) * row_h
+    d.rectangle([0, y0, W, H], fill="#e8e8e8")
+    d.text((12, y0 + 8), "macOS templates (44 px, tinted by the menu bar)", fill="#000000", font=font)
+    x = 12
+    for state in TRAY_STATES:
+        g = Image.open(os.path.join(RES, tray_name("template", state, 44)))
+        im.alpha_composite(g, (x, y0 + 40))
+        im.alpha_composite(g.resize((88, 88), Image.NEAREST), (x + 56, y0 + 40))
+        x += 180
     im.save(path)
     print("sheet", path)
 
