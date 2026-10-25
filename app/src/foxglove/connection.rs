@@ -26,6 +26,7 @@ static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
 
 pub fn settings_visibility(open: bool) {
     if open && !SETTINGS_OPEN.swap(open, Ordering::Relaxed) {
+        super::keyboard_settings::settings_opened();
         if let Some(tx) = WAKE.get() {
             let _ = tx.send(true);
         }
@@ -88,7 +89,11 @@ pub fn start(ctx: &egui::Context) {
                     }));
                     links.push(link);
                 }
-                let status = read(force, &mut previous_link);
+                #[cfg(target_os = "windows")]
+                let watched_ble = watcher.as_ref().and_then(windows_status::Watch::connected);
+                #[cfg(not(target_os = "windows"))]
+                let watched_ble = None;
+                let status = read(force, &mut previous_link, watched_ble);
                 // Repaint only for news: an unchanged status must not wake an idle UI (#100).
                 let mut current = STATUS.lock().unwrap_or_else(|e| e.into_inner());
                 if *current != status {
@@ -134,7 +139,10 @@ fn profile_path(vid: u16, pid: u16) -> Option<std::path::PathBuf> {
         .map(|p| p.with_file_name(format!("bluetooth-{vid:04x}-{pid:04x}.txt")))
 }
 
-fn read(force: bool, previous_link: &mut Option<(u16, u16, bool, u64)>) -> Status {
+/// `watched_ble`: what the Bluetooth watcher's own events last said (#353). It wins over a fresh
+/// device-property read, which can lag the event that woke us and then stays wrong, since no
+/// further event comes.
+fn read(force: bool, previous_link: &mut Option<(u16, u16, bool, u64)>, watched_ble: Option<bool>) -> Status {
     let Some(ConnectionSpec::Zmk {
         vid,
         pid,
@@ -144,9 +152,9 @@ fn read(force: bool, previous_link: &mut Option<(u16, u16, bool, u64)>) -> Statu
         return Status::default();
     };
     #[cfg(target_os = "windows")]
-    let windows_ble = windows_status::connected(vid, pid).ok();
+    let windows_ble = watched_ble.or_else(|| windows_status::connected(vid, pid).ok());
     #[cfg(not(target_os = "windows"))]
-    let windows_ble = None;
+    let windows_ble = watched_ble;
     let old = STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let link = super::link::cached(vid, pid);
     let state = link.as_ref().map(|l| l.state()).unwrap_or_default();
@@ -300,6 +308,17 @@ impl BleEvents {
     fn removed(&mut self, id: &str) -> bool {
         self.devices.remove(id).is_some() && self.enumerated
     }
+
+    /// Whether the keyboard's Bluetooth endpoint is connected, by the events seen so far: any
+    /// matching endpoint connected wins; nothing known before enumeration completes.
+    fn connected(&self) -> Option<bool> {
+        if !self.enumerated {
+            return None;
+        }
+        let mut known = self.devices.values().flatten().copied();
+        let first = known.next()?;
+        Some(first || known.any(|c| c))
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -315,10 +334,15 @@ mod windows_status {
     use windows::Win32::Foundation::DEVPROPKEY;
 
     // DeviceWatcher includes property changes, unlike arrival/removal-only notifications.
-    pub struct Watch(DeviceWatcher);
+    pub struct Watch(DeviceWatcher, std::sync::Arc<std::sync::Mutex<super::BleEvents>>);
     impl Drop for Watch {
         fn drop(&mut self) {
             let _ = self.0.Stop();
+        }
+    }
+    impl Watch {
+        pub fn connected(&self) -> Option<bool> {
+            self.1.lock().unwrap_or_else(|e| e.into_inner()).connected()
         }
     }
 
@@ -433,16 +457,17 @@ mod windows_status {
                 Ok(())
             }),
         )?;
+        let enumerated = state.clone();
         watcher.EnumerationCompleted(&TypedEventHandler::<
             DeviceWatcher,
             windows::core::IInspectable,
         >::new(move |_, _| {
-            state.lock().unwrap_or_else(|e| e.into_inner()).enumerated = true;
+            enumerated.lock().unwrap_or_else(|e| e.into_inner()).enumerated = true;
             let _ = tx.send(false);
             Ok(())
         }))?;
         watcher.Start()?;
-        Ok(Watch(watcher))
+        Ok(Watch(watcher, state))
     }
 
     fn containers(vid: u16, pid: u16) -> Vec<GUID> {
@@ -610,6 +635,24 @@ mod tests {
         assert!(!events.removed("keyboard"));
         assert!(events.added("keyboard".into(), true, Some(true)));
         assert!(!events.added("keyboard".into(), true, Some(true)));
+    }
+
+    #[test]
+    fn the_watchers_own_events_say_whether_bluetooth_is_connected() {
+        let mut events = BleEvents::default();
+        events.added("keyboard".into(), true, Some(true));
+        assert_eq!(events.connected(), None, "nothing until enumeration completes");
+        events.enumerated = true;
+        assert_eq!(events.connected(), Some(true));
+        events.added("stale pairing".into(), true, Some(false));
+        assert_eq!(events.connected(), Some(true), "one connected endpoint is enough");
+        events.updated("keyboard", Some(false));
+        assert_eq!(events.connected(), Some(false));
+        events.added("mouse".into(), false, Some(true));
+        assert_eq!(events.connected(), Some(false), "other devices don't count");
+        events.removed("keyboard");
+        events.removed("stale pairing");
+        assert_eq!(events.connected(), None, "no endpoint: ask the device instead");
     }
 
     #[test]
