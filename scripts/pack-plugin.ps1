@@ -10,7 +10,7 @@ try {
     $id = [regex]::Match($manifest, '(?m)^id\s*=\s*"([^"]+)"').Groups[1].Value
     $version = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
     $program = [regex]::Match($manifest, '(?m)^run\s*=\s*\[\s*"([^"]+)"').Groups[1].Value
-    cargo build --release -p $Crate
+    & "$PSScriptRoot\build-slot.ps1" cargo build --release -p $Crate
     if ($LASTEXITCODE) { throw "build failed" }
 
     # Honour a shared CARGO_TARGET_DIR (the Test lab uses one).

@@ -27,7 +27,7 @@ try {
     if ($LASTEXITCODE) { $failed += 'preflight' }
     Get-Content (Join-Path $out 'preflight.json')
 
-    cargo build -q --release -p foxglove-lab
+    & "$PSScriptRoot\build-slot.ps1" cargo build -q --release -p foxglove-lab
     if ($LASTEXITCODE) { throw 'foxglove-lab did not build' }
     $lab = 'target/release/foxglove-lab.exe'
     if ($env:CARGO_TARGET_DIR) { $lab = Join-Path $env:CARGO_TARGET_DIR 'release/foxglove-lab.exe' }

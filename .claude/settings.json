@@ -1,0 +1,19 @@
+{
+  "env": {
+    "CARGO_BUILD_JOBS": "12"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"$CLAUDE_PROJECT_DIR/scripts/hooks/guard.py\"; [ -f \"$f\" ] || exit 0; python \"$f\"; c=$?; [ $c -eq 2 ] && exit 2; exit 0",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

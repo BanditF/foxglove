@@ -32,7 +32,7 @@ try {
     New-Item -ItemType Directory -Force $site | Out-Null
     $catalog = Join-Path $site 'catalog.json'
 
-    cargo build -q -p foxglove-plugin-trust --bin plugin-catalog
+    & "$PSScriptRoot\build-slot.ps1" cargo build -q -p foxglove-plugin-trust --bin plugin-catalog
     if ($LASTEXITCODE) { throw 'building plugin-catalog failed' }
     $tool = Join-Path $target 'debug\plugin-catalog.exe'
     function Catalog { & $tool @args; if ($LASTEXITCODE) { throw "plugin-catalog $($args[0]) failed" } }
