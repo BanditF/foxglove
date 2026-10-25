@@ -4,9 +4,11 @@
 //! menu.
 //!
 //! The panel is an egui area on the overlay window, which covers the work area, placed against
-//! the taskbar's edge by [`place`]. It closes on Esc, on a click outside it, and when the window
-//! loses focus (the window's focus event); it opens from the tray icon's click event. Nothing
-//! here repeats or waits: each frame comes from an event.
+//! the taskbar's edge by [`place`]. While it's open the overlay takes the mouse only over the
+//! panel ([`hit_region`], #405), so a click elsewhere reaches the window under it at once. It
+//! closes on Esc, on a click outside it, and when the window loses focus (the window's focus
+//! event); it opens from the tray icon's click event. Nothing here repeats or waits: each
+//! frame comes from an event.
 
 use std::sync::{Arc, Mutex};
 
@@ -102,6 +104,8 @@ struct Open {
     /// The window had focus since the panel opened (so losing it closes the panel).
     focused: bool,
     draft: Draft,
+    /// Where the panel was last drawn, in window points.
+    rect: Option<Rect>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -244,7 +248,7 @@ pub fn show(ctx: &egui::Context) -> bool {
             return false;
         }
         let icon = Rect::from_min_max((icon.min.to_vec2() / ppp).to_pos2(), (icon.max.to_vec2() / ppp).to_pos2());
-        *open = Some(Open { icon, focused: false, draft: Draft::default() });
+        *open = Some(Open { icon, focused: false, draft: Draft::default(), rect: None });
         // Focus, so a click elsewhere (or Alt+Tab) closes the panel through the focus event.
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         ctx.request_repaint();
@@ -275,6 +279,7 @@ pub fn show(ctx: &egui::Context) -> bool {
         .fixed_pos(at)
         .show(ctx, |ui| panel(ui, &v, &mut open.draft, &mut intents))
         .response;
+    open.rect = Some(response.rect);
     let clicked_outside = ctx.input(|i| i.pointer.any_pressed())
         && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !response.rect.contains(p));
     drop(guard);
@@ -287,6 +292,30 @@ pub fn show(ctx: &egui::Context) -> bool {
         ctx.request_repaint();
     }
     open_settings
+}
+
+/// The panel's corner radius, in points.
+const CORNER: u8 = 10;
+
+/// While the panel is open and drawn: the part of the overlay window that takes the mouse, in
+/// window pixels (see [`region`]).
+pub fn hit_region(ctx: &egui::Context) -> Option<[i32; 5]> {
+    let rect = OPEN.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.rect?;
+    Some(region(rect, ctx.pixels_per_point()))
+}
+
+/// A panel rectangle in window points as a window region in pixels: left, top, right, bottom
+/// (right and bottom exclusive, rounded outward so no pixel of the panel falls outside) and
+/// the corner's diameter.
+pub fn region(rect: Rect, ppp: f32) -> [i32; 5] {
+    let px = |v: f32| v * ppp;
+    [
+        px(rect.left()).floor() as i32,
+        px(rect.top()).floor() as i32,
+        px(rect.right()).ceil() as i32,
+        px(rect.bottom()).ceil() as i32,
+        (px(f32::from(CORNER)) * 2.0).round() as i32,
+    ]
 }
 
 /// Carries out a click; true when the settings window should open.
@@ -341,7 +370,7 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
     egui::Frame::new()
         .fill(p.ground)
         .stroke(Stroke::new(1.0, p.line))
-        .corner_radius(CornerRadius::same(10))
+        .corner_radius(CornerRadius::same(CORNER))
         .shadow(ui.visuals().popup_shadow)
         .show(ui, |ui| {
             ui.set_width(WIDTH);
@@ -617,6 +646,23 @@ pub mod tests {
         let v = while_paused(View { paused: true, ..sample() });
         assert!(!v.lights_ready && !v.art_ready);
         assert_eq!(v.profiles, sample().profiles, "profiles stay");
+    }
+
+    #[test]
+    fn the_hit_region_covers_the_panel_in_pixels() {
+        // 100 %: the panel's own rectangle; the corner is the radius doubled.
+        assert_eq!(region(r(1508.0, 420.0, 400.0, 600.0), 1.0), [1508, 420, 1908, 1020, 20]);
+        // 150 %: points become pixels, rounded outward.
+        assert_eq!(region(r(10.3, 20.6, 400.0, 600.0), 1.5), [15, 30, 616, 931, 30]);
+        // 125 % with a fractional size: the right and bottom edges round up.
+        let [l, t, rgt, b, c] = region(r(0.0, 0.0, 400.4, 559.9), 1.25);
+        assert_eq!((l, t, rgt, b, c), (0, 0, 501, 700, 25));
+    }
+
+    #[test]
+    fn no_hit_region_while_the_panel_is_closed() {
+        let ctx = egui::Context::default();
+        assert_eq!(hit_region(&ctx), None);
     }
 
     #[test]
