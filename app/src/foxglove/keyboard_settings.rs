@@ -163,6 +163,11 @@ pub fn set_effect(effect: u8, ctx: egui::Context) {
     });
 }
 
+/// Effect speed 1-5 (#387). ZMK only steps it, so the device steps toward it and reads back.
+pub fn set_speed(speed: u8, ctx: egui::Context) {
+    lighting("Set speed", ctx, move |l| l.set_speed(speed));
+}
+
 /// Both halves' firmware builds (#132), read once per connection.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Firmware {
