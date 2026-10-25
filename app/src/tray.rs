@@ -21,7 +21,7 @@ pub struct Tray {
     glyph: crate::foxglove::tray::Glyph,
 }
 
-// Windows convention is a glyph matching the taskbar theme. Foxglove (#403): the mark drawn
+// Windows convention is a glyph matching the taskbar theme. Foxglove (#403): the fox drawn
 // for the small-icon size at the system's scale, so the shell doesn't shrink a big one.
 #[cfg(target_os = "windows")]
 fn icon_bytes(glyph: crate::foxglove::tray::Glyph) -> &'static [u8] {

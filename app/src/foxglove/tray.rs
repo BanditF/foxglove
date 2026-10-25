@@ -5,8 +5,8 @@ use super::{art_library, art_service, screens};
 use std::sync::atomic::Ordering;
 use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
 
-/// What the tray icon shows (#403): the Foxglove mark, solid while a keyboard is connected, its
-/// outline while none is, and grey with a pause badge while Foxglove is paused.
+/// What the tray icon shows (#403): the Bandit fox, solid while a keyboard is connected, its
+/// outline while none is, and greyed with an orange pause badge while Foxglove is paused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Glyph {
     Connected,
@@ -321,23 +321,49 @@ mod tests {
         }
     }
 
-    /// The orange holds up on its taskbar: the light-taskbar glyph uses the darker orange.
+    fn luminance(c: [u8; 3]) -> f64 {
+        let lin = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
+    }
+
+    fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    /// The fox reads on its taskbar, connected (white on dark, black on light) and paused (grey).
     #[test]
-    fn the_mark_reads_on_both_taskbars() {
-        fn luminance(c: [u8; 3]) -> f64 {
-            let lin = |v: u8| {
-                let v = f64::from(v) / 255.0;
-                if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
-            };
-            0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
-        }
-        let contrast = |a: f64, b: f64| (a.max(b) + 0.05) / (a.min(b) + 0.05);
+    fn the_fox_reads_on_both_taskbars() {
         for (light, taskbar) in [(false, [0x20, 0x20, 0x20]), (true, [0xf3, 0xf3, 0xf3])] {
-            let img = image::load_from_memory(png(Glyph::Connected, light, 32)).expect("decodes").into_rgba8();
-            let centre = img.get_pixel(16, 16);
-            assert_eq!(centre[3], 255);
-            let c = contrast(luminance([centre[0], centre[1], centre[2]]), luminance(taskbar));
-            assert!(c >= 3.0, "light={light}: contrast {c:.2}");
+            for g in [Glyph::Connected, Glyph::Paused] {
+                let img = image::load_from_memory(png(g, light, 32)).expect("decodes").into_rgba8();
+                let face = img.get_pixel(16, 16);
+                assert_eq!(face[3], 255, "{g:?} light={light}");
+                let c = contrast([face[0], face[1], face[2]], taskbar);
+                assert!(c >= 3.0, "{g:?} light={light}: contrast {c:.2}");
+            }
+        }
+    }
+
+    /// The paused fox's badge is the theme's orange (the darker one on a light taskbar), and the
+    /// fox is not: only the paused glyph carries colour.
+    #[test]
+    fn only_the_paused_fox_has_the_orange_badge() {
+        for (light, orange) in [(false, [0xf0, 0x8a, 0x3c]), (true, [0xb4, 0x54, 0x0f])] {
+            let badge = |g| {
+                let img = image::load_from_memory(png(g, light, 32)).expect("decodes").into_rgba8();
+                *img.get_pixel(20, 24)
+            };
+            let p = badge(Glyph::Paused);
+            assert_eq!([p[0], p[1], p[2], p[3]], [orange[0], orange[1], orange[2], 255], "light={light}");
+            assert!(contrast([p[0], p[1], p[2]], if light { [0xf3; 3] } else { [0x20; 3] }) >= 3.0);
+            for g in [Glyph::Connected, Glyph::Disconnected] {
+                let img = image::load_from_memory(png(g, light, 32)).expect("decodes").into_rgba8();
+                assert!(img.pixels().all(|q| q[3] == 0 || q[0] == q[1] && q[1] == q[2]), "{g:?} is grey");
+            }
         }
     }
 }

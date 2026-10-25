@@ -1,5 +1,4 @@
-"""Draws Foxglove's app icon from the Bandit fox motif (#31) and the tray glyphs from the
-Foxglove mark (#403).
+"""Draws Foxglove's app icon and tray glyphs from the Bandit fox motif (#31, #403).
 
   python -I scripts/app_icons.py               rewrite the files in app/resources/ (same names as
                                                KeyPeek's, so upstream syncs don't conflict)
@@ -9,9 +8,9 @@ Foxglove mark (#403).
 Writes:
 - icon.svg (the master), icon.png (256), icon.ico (16, 20, 24, 32, 48, 64, 256): a dark tile with
   the low-poly fox. 24 px and below use a simplified fox (silhouette, mask, no inner lines).
-- tray-icon-white*.png / tray-icon-black*.png: the sidebar's mark (#395), an orange arrowhead in
-  a ring, for dark / light taskbars. Plain: a keyboard is connected (solid); -off: none is (the
-  outline); -paused: Foxglove is paused (#404; a grey arrowhead with an orange pause badge).
+- tray-icon-white*.png / tray-icon-black*.png: the Bandit fox as a glyph, for dark / light
+  taskbars. Plain: a keyboard is connected (solid, the mask cut out); -off: none is (the outline);
+  -paused: Foxglove is paused (#404; the fox greyed, an orange pause badge in the corner).
   Drawn for Windows' small-icon sizes: the plain name is 32 px, -16/-20/-24 the smaller ones.
 - tray-icon-template.png (44), -off and -paused: macOS templates (black + alpha).
 - packaging/identity/Assets/logo44/50/150.png for the sparse package.
@@ -116,57 +115,46 @@ def silhouette(S, margin):
     return sil, holes
 
 
-# The mark in its 30-unit box, as shell.rs `fox_mark` draws it.
-MARK = [(15.0, 3.0), (27.0, 26.0), (15.0, 20.0), (3.0, 26.0)]
-RING = (15.0, 15.0, 13.0)
-
-# Per taskbar: the arrowhead (the theme's oranges, #384), the ring, the paused arrowhead, and what
-# the pause badge sits on (cut out of the mark so the badge reads on any wallpaper behind it).
+# Per taskbar: the fox's colour, the paused fox (greyed) and the orange of the pause badge (the
+# theme's two oranges, #384; the darker one on a light taskbar). The macOS template is black + alpha.
 TRAY_COLOURS = {
-    "white": {"accent": (0xF0, 0x8A, 0x3C), "ring": (255, 255, 255, 165), "muted": (0x9A, 0xA0, 0xA8)},
-    "black": {"accent": (0xB4, 0x54, 0x0F), "ring": (0, 0, 0, 140), "muted": (0x5F, 0x64, 0x6C)},
-    "template": {"accent": (0, 0, 0), "ring": (0, 0, 0, 150), "muted": (0, 0, 0)},
+    "white": {"fox": (255, 255, 255), "muted": (150, 154, 160), "badge": (0xF0, 0x8A, 0x3C)},
+    "black": {"fox": (0, 0, 0), "muted": (120, 124, 130), "badge": (0xB4, 0x54, 0x0F)},
+    "template": {"fox": (0, 0, 0), "muted": (0, 0, 0), "badge": (0, 0, 0)},
 }
 TRAY_SIZES = [16, 20, 24, 32]
 TRAY_STATES = ["on", "off", "paused"]
 
 
 def tray(size, variant, state):
-    """One glyph: `state` is "on" (solid), "off" (outline) or "paused"."""
+    """One glyph: `state` is "on" (solid fox, mask cut out), "off" (its outline) or "paused" (the
+    fox greyed, with an orange pause badge in the corner)."""
     c = TRAY_COLOURS[variant]
     ss = 16
     S = size * ss
-    u = S / 30.0  # the mark's unit
     px = ss  # one output pixel, in supersampled pixels
-    im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    d = ImageDraw.Draw(im)
-    # The ring: one pixel up to 24 px, a pixel and a half at 32.
-    rw = round(px * (1.0 if size <= 24 else 1.5))
-    cx, cy, r = (v * u for v in RING)
-    r = min(r, S / 2 - rw / 2)
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=c["ring"], width=rw)
-    arrow = [(x * u, y * u) for x, y in MARK]
-    if state == "on":
-        d.polygon(arrow, fill=c["accent"] + (255,))
-    elif state == "off":
-        mask = Image.new("L", (S, S), 0)
-        ImageDraw.Draw(mask).polygon(arrow, fill=255)
-        k = round(px * (1.4 if size <= 20 else 1.6)) * 2 + 1
-        ring = ImageChops.subtract(mask, mask.filter(ImageFilter.MinFilter(k)))
-        layer = Image.new("RGBA", (S, S), c["accent"] + (255,))
-        layer.putalpha(ring)
-        im.alpha_composite(layer)
+    sil, holes = silhouette(S, margin=S * 0.06)
+    if state == "off":  # the silhouette minus itself eroded by about 1/9 of the icon
+        k = max(3, (S // 9) | 1)
+        alpha = ImageChops.subtract(sil, sil.filter(ImageFilter.MinFilter(k)))
     else:
-        d.polygon(arrow, fill=c["muted"] + (255,))
-        # The badge: a disc in the bottom-right corner, cut clear of the mark, with two bars.
+        alpha = ImageChops.subtract(sil, holes)
+    if state == "paused":
+        # The badge: a disc in the bottom-right corner, cut clear of the fox, with two bars.
         br = S * 0.235
         bx, by = S - br, S - br
         gap = px * (1.0 if size <= 24 else 1.5)
         cut = Image.new("L", (S, S), 255)
         ImageDraw.Draw(cut).ellipse([bx - br - gap, by - br - gap, bx + br + gap, by + br + gap], fill=0)
-        im.putalpha(ImageChops.multiply(im.getchannel("A"), cut))
+        alpha = ImageChops.multiply(alpha, cut)
+        if variant == "template":  # one tone: the fox faint, the badge solid
+            alpha = alpha.point(lambda v: v * 140 // 255)
+    fill = c["muted"] if state == "paused" else c["fox"]
+    im = Image.new("RGBA", (S, S), fill + (255,))
+    im.putalpha(alpha)
+    if state == "paused":
         d = ImageDraw.Draw(im)
-        d.ellipse([bx - br, by - br, bx + br, by + br], fill=c["accent"] + (255,))
+        d.ellipse([bx - br, by - br, bx + br, by + br], fill=c["badge"] + (255,))
         # Bars snapped to whole output pixels so they stay sharp.
         bw = max(1, round(size / 16))
         bh = max(3, round(size * 0.24))
@@ -259,7 +247,7 @@ def sheet(path):
     H = 40 + len(rows) * row_h + 150
     im = Image.new("RGBA", (W, H), "#808080")
     d = ImageDraw.Draw(im)
-    d.text((12, 10), "Foxglove tray glyphs (#403): 16 / 20 / 24 / 32 px, actual size then x%d" % zoom,
+    d.text((12, 10), "Foxglove tray glyphs (#403, the fox): 16 / 20 / 24 / 32 px, actual size then x%d" % zoom,
            fill="#ffffff", font=font)
     bgs = {"white": "#202020", "black": "#f3f3f3"}
     for i, (variant, state) in enumerate(rows):
