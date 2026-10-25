@@ -34,8 +34,12 @@ LISTEN_OK = re.compile(r'FOXGLOVE_ALLOW_PORT\s*=\s*["\']?1\b')
 
 # What may come before the program a command runs: env assignments, `timeout N`, `cmd /c`,
 # PowerShell's call operator.
-HEAD = r'^\s*(?:(?:\$env:)?[A-Za-z_]\w*=\S*\s+|timeout\s+(?:-\S+\s+)*\d+\S*\s+|cmd(?:\.exe)?\s+/c\s+|&\s*)*'
+PLAIN_HEAD = r'^\s*(?:(?:\$env:)?[A-Za-z_]\w*=\S*\s+|timeout\s+(?:-\S+\s+)*\d+\S*\s+|cmd(?:\.exe)?\s+/c\s+|&\s*)*'
 PROG = r'["\']?(?:[^\s"\';|]*[\\/])?'          # an optional path before the program name
+# A command wrapped in build-slot.ps1 runs all the same, so most rules look through it.
+SLOT = (r'(?:' + PROG + r'(?:powershell|pwsh)(?:\.exe)?["\']?\s+(?:-(?!File\b)\S+\s+(?:[^-\s]\S*\s+)?)*-File\s+)?'
+        r'["\']?[^\s"\']*build-slot\.ps1["\']?\s+')
+HEAD = PLAIN_HEAD + r'(?:' + SLOT + r'\s*)?'
 PYTHON = HEAD + PROG + r'(?:python[\d.]*|py)(?:\.exe)?["\']?\s+(?:-\S+\s+)*'
 POWERSHELL = HEAD + PROG + r'(?:powershell|pwsh)(?:\.exe)?["\']?\s+(?:-(?!File\b)\S+\s+(?:[^-\s]\S*\s+)?)*-File\s+'
 
@@ -82,7 +86,7 @@ def is_oncall(call, line):
 
 def check_flash(call, line):
     for cmd in commands(line):
-        flasher = re.match(PYTHON + r'["\']?\S*foxglove_flash\.py\b(.*)', cmd)
+        flasher = re.match(PYTHON + r'["\']?\S*foxglove_flash(?:\.py)?\b(.*)', cmd)
         if flasher and re.search(r'(^|\s)(--dry-run|-h|--help)(\s|$)', flasher.group(1)):
             flasher = None
         half = re.match(r'(?:' + POWERSHELL + r'|' + HEAD + r')' + PROG + r'flash-half\.ps1\b', cmd)
@@ -178,7 +182,12 @@ def current_branch(cwd):
 
 
 PROTECTED = re.compile(r'\+?(?:[^:\s]*:)?(?:refs/heads/)?(main|release/[\w.]+)')
-GIT = HEAD + PROG + r'git(?:\.exe)?["\']?\s+(?:-C\s+("[^"]*"|\'[^\']*\'|\S+)\s+)?'
+GIT = HEAD + PROG + r'git(?:\.exe)?["\']?\s+((?:(?:-C|-c)\s+(?:"[^"]*"|\'[^\']*\'|\S+)\s+|--[\w-]+(?:=\S+)?\s+)*)'
+
+
+def git_dir(opts, cwd):
+    at = re.search(r'-C\s+("[^"]*"|\'[^\']*\'|\S+)', opts or '')
+    return at.group(1).strip('"\'') if at else cwd
 
 
 def check_base(call, line, gh=None, branch=None):
@@ -188,10 +197,10 @@ def check_base(call, line, gh=None, branch=None):
     for cmd in commands(line):
         push = re.match(GIT + r'push\b(.*)', cmd)
         if push:
-            cwd = (push.group(1) or '').strip('"\'') or call.get('cwd')
+            cwd = git_dir(push.group(1), call.get('cwd'))
             refs = [w for w in words(push.group(2)) if not w.startswith('-')]
             # refs[0] is the remote; a bare push goes to the current branch's upstream.
-            targets = refs[1:] or [branch(cwd)]
+            targets = [branch(cwd) if r in ('HEAD', '@') else r for r in refs[1:]] or [branch(cwd)]
             if any(PROTECTED.fullmatch(r) for r in targets):
                 return 'No pushes straight to main or release/*: push a branch and open a PR (RESCUE.md).'
         merge = re.match(r'(?:' + HEAD + PROG + r')gh(?:\.exe)?["\']?\s+pr\s+merge\b(.*)', cmd)
@@ -243,7 +252,7 @@ def check_worktree(call, line, root=None):
         m = re.match(GIT + r'worktree\s+add\b(.*)', cmd)
         if not m:
             continue
-        base = windows_path((m.group(1) or '').strip('"\'') or call.get('cwd') or '.')
+        base = windows_path(git_dir(m.group(1), call.get('cwd')) or '.')
         # The first argument that isn't an option (or an option's value) is the path.
         path, skip = None, False
         for w in words(m.group(2)):
@@ -263,7 +272,7 @@ def check_worktree(call, line, root=None):
     return None
 
 
-HEAVY = re.compile(HEAD + PROG + r'cargo(?:\.exe)?["\']?\s+(?:\+\S+\s+)?(build|b|test|t|clippy|check|c|run|r|doc|d|bench|install|rustc|nextest|wix)\b')
+HEAVY = re.compile(PLAIN_HEAD + PROG + r'cargo(?:\.exe)?["\']?\s+(?:\+\S+\s+)?(build|b|test|t|clippy|check|c|run|r|doc|d|bench|install|rustc|nextest|wix)\b')
 
 
 def check_cargo(call, line):

@@ -33,6 +33,12 @@ class Flash(unittest.TestCase):
         # An on-call subagent started by another session is not the standing On-call.
         self.assertIn('On-call', blocked('python scripts/flash/foxglove_flash.py --half left', agent_type='on-call'))
 
+    def test_wrapped_in_a_build_slot(self):
+        self.assertIn('On-call', blocked(r'powershell -File scripts\build-slot.ps1 cargo run -p foxglove-lab -- bootloader --half left'))
+        self.assertIn('Foxglove launches', blocked('powershell -File scripts/build-slot.ps1 cargo run --manifest-path app/Cargo.toml --release'))
+        self.assertIn('On-call', blocked('python -m flash.foxglove_flash --half left --yes'))
+        self.assertIsNone(blocked('powershell -File scripts/build-slot.ps1 cargo run -p foxglove-lab -- usb'))
+
     def test_bootloader_entry_is_a_flash(self):
         self.assertIn('On-call', blocked(r'target\release\foxglove-lab.exe bootloader --half left --confirmed FLASH'))
         self.assertIsNone(blocked(r'target\release\foxglove-lab.exe --allow-app status'))
@@ -128,6 +134,12 @@ class Base(unittest.TestCase):
         self.assertIsNone(blocked('git push -u origin meta/hooks'))
         self.assertIsNone(blocked('git push origin release/0.1-tag-run'))
         self.assertIsNone(blocked('git push'))  # on feature-x
+
+    def test_git_options_and_head(self):
+        self.assertIsNotNone(blocked('git -c core.x=y push origin main'))
+        self.assertIsNotNone(blocked('git --no-pager push origin main'))
+        self.assertIsNotNone(g.check_base({'cwd': '.'}, 'git push origin HEAD', branch=lambda c: 'main'))
+        self.assertIsNone(g.check_base({'cwd': '.'}, 'git push -u origin HEAD', branch=lambda c: 'meta/x'))
 
     def test_bare_push_on_main(self):
         self.assertIsNotNone(g.check_base({'cwd': '.'}, 'git push', branch=lambda c: 'main'))
