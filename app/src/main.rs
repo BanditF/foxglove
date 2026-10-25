@@ -27,6 +27,8 @@ use settings::Settings;
 fn main() {
     if foxglove::update::helper_entry() { return; }
     if foxglove::identity::entry() { return; }
+    // Foxglove (#345): one per user; a second launch shows the running one and exits 0.
+    if !foxglove::single_instance::claim() { return; }
     foxglove::update::start();
     os_layout::init();
     let settings = foxglove::overlay_profile::effective(Settings::load().unwrap_or_default());
