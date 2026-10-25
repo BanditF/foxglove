@@ -4,16 +4,21 @@
 #   powershell -File scripts\clean-worktrees.ps1            # list what would go
 #   powershell -File scripts\clean-worktrees.ps1 -Apply     # do it
 # For a worktree that is clean, idle for -IdleHours and not in use:
-#   - PR merged: remove the worktree (git worktree remove, never --force).
+#   - PR merged: remove the worktree (git worktree remove, never --force). A worktree with no PR
+#     (a detached checkout, or a branch never pushed) counts as merged once its HEAD is on
+#     origin/main or an origin/release/* branch: nothing in it is lost. Those wait -LandedHours
+#     idle (a fresh worktree has no commits yet either, and its session may still be coming back).
 #   - PR open:   delete only its target\ and app\target\; a review fix costs one rebuild.
 # The main checkout is never removed; its target\ is cleaned once it passes -MainLimitGB.
-# Never touches a dirty worktree, one without a PR, the caller's own worktree, or -Skip.
+# Never touches a dirty worktree, one with unpushed commits, the caller's own worktree, or -Skip.
 param(
     [switch]$Apply,
     [int]$IdleHours = 2,
+    [int]$LandedHours = 24,
     [int]$MainLimitGB = 8,
-    # The Planner's merge worktrees.
-    [string[]]$Skip = @('fox-mm', 'fox-rm')
+    # The Planner's merge worktrees, and On-call's sitting worktrees (0.1 re-check; drop them
+    # from this list when On-call is done with them).
+    [string[]]$Skip = @('fox-mm', 'fox-rm', 'fmain', 'lamp-lab', 'rel01')
 )
 $ErrorActionPreference = 'Stop'
 
@@ -52,6 +57,17 @@ function IdleHours($path) {
     ((Get-Date) - ($stamps | Measure-Object -Maximum).Maximum).TotalHours
 }
 
+# Branches whose history is safe to drop a worktree for.
+$landed = @(git -C $repo for-each-ref --format='%(refname)' refs/remotes/origin/main 'refs/remotes/origin/release/*')
+function Landed($path) {
+    $head = git -C $path rev-parse HEAD
+    foreach ($ref in $landed) {
+        git -C $repo merge-base --is-ancestor $head $ref
+        if (-not $LASTEXITCODE) { return $true }
+    }
+    $false
+}
+
 $worktrees = @()
 $current = $null
 foreach ($line in git -C $repo worktree list --porcelain) {
@@ -64,6 +80,8 @@ foreach ($w in $worktrees) {
     $path = $w.Path
     if ($path -eq $main -or $path -eq $repo) { continue }
     $state = if ($w.Branch) { $prs[$w.Branch] } else { $null }
+    $landedOnly = $state -notin 'MERGED', 'OPEN' -and (Landed $path)
+    if ($landedOnly) { $state = 'MERGED' }
     $why = $null
     if ((Split-Path $path -Leaf) -in $Skip) { $why = 'skipped' }
     elseif ($state -notin 'MERGED', 'OPEN') { $why = 'no open or merged PR' }
@@ -72,15 +90,17 @@ foreach ($w in $worktrees) {
     elseif ($running -match [regex]::Escape($path)) { $why = 'in use' }
     else {
         $idle = IdleHours $path
-        if ($idle -lt $IdleHours) { $why = ('active {0:N1} h ago' -f $idle) }
+        $limit = if ($landedOnly) { $LandedHours } else { $IdleHours }
+        if ($idle -lt $limit) { $why = ('active {0:N1} h ago' -f $idle) }
     }
-    if ($why) { Write-Host "keep    $($w.Branch) ($why)"; continue }
+    $name = if ($w.Branch) { $w.Branch } else { "(detached) $path" }
+    if ($why) { Write-Host "keep    $name ($why)"; continue }
 
     $size = Size $path
     if ($state -eq 'OPEN' -and $size -eq 0) { continue }
     $freed += $size
     $what = if ($state -eq 'MERGED') { 'remove ' } else { 'targets' }
-    Write-Host ('{0} {1} ({2:N1} GB) {3}' -f $what, $w.Branch, ($size / 1GB), $path)
+    Write-Host ('{0} {1} ({2:N1} GB) {3}' -f $what, $name, ($size / 1GB), $path)
     if ($Apply) {
         DropTargets $path
         if ($state -eq 'MERGED') {

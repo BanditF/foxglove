@@ -9,8 +9,12 @@ function Step($name, [scriptblock]$command) {
     if ($LASTEXITCODE) { throw "$name failed" }
 }
 
+. "$PSScriptRoot\build-slot.ps1"
 Push-Location (Split-Path -Parent $PSScriptRoot)
+# One of the two cargo build slots for the whole gate, at about half the cores (#347).
+$slot = $null
 try {
+    $slot = Enter-BuildSlot
     $start = Get-Date
     Step 'scripts: python tests' { python -m unittest discover -s scripts -p "test_*.py" }
     # The SignalRGB plugin's packets, and the receiver test's recording of them (#331).
@@ -31,5 +35,6 @@ try {
         catch { Write-Warning "clean-worktrees: $_" }
     }
 } finally {
+    Exit-BuildSlot $slot
     Pop-Location
 }
