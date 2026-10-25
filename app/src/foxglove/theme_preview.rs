@@ -144,7 +144,7 @@ fn settings_window(ctx: &egui::Context, legacy: bool) {
     use crate::foxglove::settings_ui::section;
     egui::Window::new("Foxglove Settings")
         .fixed_pos(egui::pos2(24.0, 24.0))
-        .fixed_size(egui::vec2(450.0, 600.0))
+        .fixed_size(egui::vec2(450.0, 660.0))
         .collapsible(false)
         .resizable(false)
         .open(&mut true)
@@ -238,6 +238,11 @@ fn settings_window(ctx: &egui::Context, legacy: bool) {
             });
             crate::foxglove::profiles_ui::picker(ui);
             crate::foxglove::update::group(ui);
+            if !legacy {
+                crate::foxglove::settings_ui::footer(ui);
+                return;
+            }
+            // The footer before #384: one row, where the credit ran into the version.
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.add(egui::Hyperlink::from_label_and_url(
@@ -255,9 +260,6 @@ fn settings_window(ctx: &egui::Context, legacy: bool) {
                     ));
                 });
             });
-            if !legacy {
-                crate::foxglove::theme::credits(ui);
-            }
         });
 }
 
@@ -329,7 +331,7 @@ fn preview(legacy: bool, choice: crate::foxglove::theme::Choice) -> image::RgbaI
     // The desktop behind, dimmed the way the overlay dims it while Settings is open.
     let backdrop = Color32::from_rgb(0x09, 0x0a, 0x0c);
     let mut frame = 0;
-    let img = render(&ctx, egui::vec2(width, 690.0), backdrop, |ctx| {
+    let img = render(&ctx, egui::vec2(width, 750.0), backdrop, |ctx| {
         settings_window(ctx, legacy);
         if !legacy {
             widget_sheet(ctx, frame >= 2);
