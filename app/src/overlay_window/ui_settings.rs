@@ -96,7 +96,7 @@ impl OverlayApp {
             .map(|d| d.display_name())
             .unwrap_or_else(|| "Select device...".to_string());
 
-        let settings_window_size = egui::vec2(450.0, 560.0);
+        let settings_window_size = egui::vec2(1040.0, 660.0); // Foxglove: room for the sidebar (#385)
         let settings_window_pos = ctx.viewport_rect().center() - settings_window_size * 0.5;
 
         Window::new("Foxglove Settings")
@@ -105,8 +105,10 @@ impl OverlayApp {
             .default_pos(settings_window_pos)
             .collapsible(false)
             .resizable(true)
-            .vscroll(true)
-            .show(ctx, |ui| {
+            .min_size(egui::vec2(720.0, 420.0))
+            .frame(crate::foxglove::shell::window_frame(ctx))
+            // Foxglove (#385): the sidebar, status strip and pages; each page scrolls itself.
+            .show(ctx, |ui| crate::foxglove::shell::frame(ui, |ui| {
                 titled_group(ui, "Connection", |ui| {
                     let control_spacing = ui.spacing().item_spacing.x;
                     const RIGHT_COLUMN_WIDTH: f32 = 100.0;
@@ -426,7 +428,7 @@ impl OverlayApp {
 
                 // Foxglove (#384): links, KeyPeek credit and font credits, stacked.
                 crate::foxglove::settings_ui::footer(ui);
-            });
+            }));
 
         if self.ui.settings_visible && !open {
             self.ui.settings_visible = false;

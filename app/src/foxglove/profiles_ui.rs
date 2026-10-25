@@ -22,38 +22,56 @@ struct UiState {
 
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
 
+/// The profile combo box; switches when another profile is picked.
+fn combo(ui: &mut egui::Ui, id: &str, width: Option<f32>, names: &[String], active: &Option<String>) -> Result<(), String> {
+    let shown = active.clone().unwrap_or_else(|| "Base settings".into());
+    let mut chosen = None;
+    let mut combo = egui::ComboBox::from_id_salt(id).selected_text(shown);
+    if let Some(width) = width {
+        combo = combo.width(width);
+    }
+    combo.show_ui(ui, |ui| {
+        if ui.selectable_label(active.is_none(), "Base settings").clicked() {
+            chosen = Some(None);
+        }
+        for name in names {
+            if ui.selectable_label(active.as_deref() == Some(name.as_str()), name).clicked() {
+                chosen = Some(Some(name.clone()));
+            }
+        }
+    });
+    match chosen.filter(|n| n != active) {
+        Some(name) => store::set_active(name.as_deref()).map_err(|e| e.to_string()),
+        None => Ok(()),
+    }
+}
+
+/// The profile picker at the bottom of the sidebar (#385).
+pub fn sidebar_picker(ui: &mut egui::Ui) {
+    let (names, active) = store::cached_profiles();
+    if let Err(e) = combo(ui, "foxglove-profile-sidebar", Some(ui.available_width() - 8.0), &names, &active) {
+        eprintln!("Foxglove: can't switch profile: {e}");
+    }
+}
+
 pub fn picker(ui: &mut egui::Ui) {
     let (names, active) = store::cached_profiles();
     if names.is_empty() {
         return;
     }
-    ui.horizontal(|ui| {
-        ui.label("Profile");
-        let shown = active.clone().unwrap_or_else(|| "Base settings".into());
-        let mut chosen = None;
-        egui::ComboBox::from_id_salt("foxglove-profile")
-            .selected_text(shown)
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(active.is_none(), "Base settings").clicked() {
-                    chosen = Some(None);
-                }
-                for name in &names {
-                    if ui.selectable_label(active.as_deref() == Some(name.as_str()), name).clicked() {
-                        chosen = Some(Some(name.clone()));
-                    }
-                }
-            });
-        if let Some(name) = chosen.filter(|n| *n != active) {
-            if let Err(e) = store::set_active(name.as_deref()) {
+    super::settings_ui::section(ui, "Profile", |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Profile");
+            if let Err(e) = combo(ui, "foxglove-profile", None, &names, &active) {
                 ui.colored_label(ui.visuals().error_fg_color, format!("Can't switch: {e}"));
             }
-        }
-        if active.is_some() {
-            ui.weak("Changes to screens, lights and art are saved in this profile.");
-        }
+            if active.is_some() {
+                ui.weak("Changes to screens, lights and art are saved in this profile.");
+            }
+        });
+        egui::CollapsingHeader::new("Switch profile by program").show(ui, |ui| rules(ui, &names));
+        egui::CollapsingHeader::new("Share profiles").show(ui, |ui| share(ui, &names, active.as_deref()));
     });
-    egui::CollapsingHeader::new("Switch profile by program").show(ui, |ui| rules(ui, &names));
-    egui::CollapsingHeader::new("Share profiles").show(ui, |ui| share(ui, &names, active.as_deref()));
 }
 
 /// Export to a `.foxprofile` file, or import one (asking before replacing a profile).

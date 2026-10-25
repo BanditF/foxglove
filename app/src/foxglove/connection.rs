@@ -233,6 +233,41 @@ fn unsafe_to_unplug(usb: bool, ble: Option<bool>, active: Option<u8>, this_pc: O
     usb && (ble == Some(false) || matches!((active, this_pc), (Some(a), Some(p)) if a != p))
 }
 
+/// The connection as the status strip shows it (#385).
+pub struct Summary {
+    pub usb: Option<bool>,
+    /// The active Bluetooth profile, from 0.
+    pub profile: Option<u8>,
+    /// The profile this PC is paired on, from 0.
+    pub this_pc: Option<u8>,
+    /// Set when unplugging now leaves the keyboard unable to type: how to fix it.
+    pub unplug_warning: Option<String>,
+}
+
+pub fn summary(ctx: &egui::Context) -> Summary {
+    start(ctx);
+    let s = STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    Summary {
+        usb: s.usb,
+        profile: s.firmware.map(|f| f.active_profile),
+        this_pc: s.this_pc,
+        unplug_warning: unplug_warning(&s),
+    }
+}
+
+fn unplug_warning(s: &Status) -> Option<String> {
+    unsafe_to_unplug(
+        s.usb == Some(true),
+        s.windows_ble,
+        s.firmware.map(|f| f.active_profile),
+        s.this_pc,
+    )
+    .then(|| {
+        let profile = s.this_pc.map_or("for this PC".into(), |p| shown(p).to_string());
+        format!("Unplugging now leaves the keyboard unable to type - select profile {profile}: {}", switch_hint(s.this_pc))
+    })
+}
+
 pub fn row(ui: &mut egui::Ui) {
     start(ui.ctx());
     let s = STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -264,15 +299,8 @@ pub fn row(ui: &mut egui::Ui) {
             ui.label(format!("this PC: profile {}", shown(p)));
         }
     });
-    if unsafe_to_unplug(
-        s.usb == Some(true),
-        s.windows_ble,
-        s.firmware.map(|f| f.active_profile),
-        s.this_pc,
-    ) {
-        let profile = s.this_pc.map_or("for this PC".into(), |p| shown(p).to_string());
-        ui.colored_label(ui.visuals().warn_fg_color,
-            format!("Unplugging now leaves the keyboard unable to type - select profile {profile}: {}", switch_hint(s.this_pc)));
+    if let Some(warning) = unplug_warning(&s) {
+        ui.colored_label(ui.visuals().warn_fg_color, warning);
     }
 }
 
