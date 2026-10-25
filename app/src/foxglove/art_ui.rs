@@ -8,6 +8,8 @@ struct UiState {
     textures: Vec<(std::path::PathBuf, egui::TextureHandle)>,
     save_slot: u8,
     save_name: String,
+    /// The file name the Save box started from when it was longer than a slot name holds.
+    save_name_cut: Option<String>,
     /// The slot whose Erase was clicked once and waits for the second click.
     confirm_erase: Option<u8>,
 }
@@ -208,24 +210,51 @@ fn slots_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Sn
                     });
                 if state.save_name.is_empty() {
                     if let Some(art_service::Choice::File(p)) = &s.pinned {
-                        state.save_name = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                        let stem = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                        let (name, cut) = fit_save_name(&stem);
+                        state.save_name = name;
+                        state.save_name_cut = cut;
                     }
                 }
-                ui.add(
+                let edit = ui.add(
                     egui::TextEdit::singleline(&mut state.save_name)
-                        .char_limit(digitalis::protocol::art::NAME_LEN)
                         .hint_text("name")
                         .desired_width(120.0),
                 );
+                if edit.changed() {
+                    state.save_name = fit_save_name(&state.save_name).0;
+                    state.save_name_cut = None;
+                }
+                let used = state.save_name.len();
+                let full = digitalis::protocol::art::NAME_LEN;
+                let counter = format!("{used}/{full}");
+                if used >= full {
+                    ui.colored_label(ui.visuals().warn_fg_color, counter)
+                        .on_hover_text("A slot name holds 16 characters; it can't take more.");
+                } else {
+                    ui.weak(counter);
+                }
                 if ui.button("Save").clicked() {
                     h.save_to_slot(state.save_slot, state.save_name.trim().to_string());
                 }
             });
         });
+        if let Some(from) = &state.save_name_cut {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                format!("\"{from}\" is longer than the 16 characters a slot name holds; edit the name above if you like."),
+            );
+        }
         if !can_save {
             ui.weak("Push a file first; saving copies the set now playing on the right.");
         }
     });
+}
+
+/// `name` cut to what a slot keeps, and the original when something was cut.
+fn fit_save_name(name: &str) -> (String, Option<String>) {
+    let fit = digitalis::protocol::art_name_fit(name);
+    (fit.to_string(), (fit.len() < name.len()).then(|| name.to_string()))
 }
 
 /// The hotlist and how it cycles (#60).
@@ -404,5 +433,17 @@ fn cycle_section(ui: &mut egui::Ui, h: &art_service::Handle, s: &art_service::Sn
         if let Err(e) = h.set_cycle(cycle) {
             ui.colored_label(egui::Color32::RED, e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_save_name;
+
+    #[test]
+    fn long_names_are_cut_visibly_and_short_ones_left_alone() {
+        assert_eq!(fit_save_name("hearth-moongarden"), ("hearth-moongarde".into(), Some("hearth-moongarden".into())));
+        assert_eq!(fit_save_name("fury"), ("fury".into(), None));
+        assert_eq!(fit_save_name("exactly 16 chars"), ("exactly 16 chars".into(), None));
     }
 }

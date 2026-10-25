@@ -262,14 +262,20 @@ pub fn art_status() -> Vec<u8> {
     vec![ART, art::STATUS]
 }
 
-/// SAVE: `name` is cut to 16 bytes (on a character boundary) and zero-padded.
-pub fn art_save(slot: u8, name: &str) -> Vec<u8> {
+/// The part of `name` a flash slot keeps: at most [`art::NAME_LEN`] bytes, cut on a character
+/// boundary. The UI uses this to show the cut before saving rather than after.
+pub fn art_name_fit(name: &str) -> &str {
     let mut end = name.len().min(art::NAME_LEN);
     while !name.is_char_boundary(end) {
         end -= 1;
     }
+    &name[..end]
+}
+
+/// SAVE: `name` is cut with [`art_name_fit`] and zero-padded.
+pub fn art_save(slot: u8, name: &str) -> Vec<u8> {
     let mut r = vec![ART, art::SAVE, slot];
-    r.extend_from_slice(&name.as_bytes()[..end]);
+    r.extend_from_slice(art_name_fit(name).as_bytes());
     r.resize(3 + art::NAME_LEN, 0);
     r
 }
@@ -912,6 +918,10 @@ mod slot_tests {
         assert_eq!(&save[..3], &[ART, art::SAVE, 2]);
         assert_eq!(save.len(), 3 + art::NAME_LEN);
         assert!(std::str::from_utf8(save[3..].split(|&b| b == 0).next().unwrap()).is_ok());
+        assert_eq!(art_name_fit("hearth-moongarden"), "hearth-moongarde");
+        assert_eq!(art_name_fit("short"), "short");
+        assert_eq!(art_name_fit("fifteen chars!!ü"), "fifteen chars!!"); // ü would cross byte 16
+        assert_eq!(art_name_fit("exactly 16 chars"), "exactly 16 chars");
         assert_eq!(art_erase(1), [ART, art::ERASE, 1]);
         let mut r = [0u8; REPORT];
         r[..11].copy_from_slice(&[0xD6, 0x87, 0, 3, 1, 5, 0, 0, 0, 0x10, 0x27]);
