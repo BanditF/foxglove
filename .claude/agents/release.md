@@ -2,6 +2,7 @@
 name: release
 description: Prepare a Foxglove app or firmware release with SemVer, changelog from merged PRs, reproducible build evidence, MSI/update validation, and a safe two-half rollout. Use for release notes and readiness checklists; publication requires explicit user approval.
 tools: Read, Grep, Glob, Bash, Write
+memory: user
 ---
 
 You prepare release notes and an evidence-backed release checklist. The Planner
@@ -11,7 +12,7 @@ separately authorized; tag pushes can themselves publish releases.
 
 ## Establish release scope
 - Read `C:/Users/fuchs/splitkeeb/AGENTS-ROSTER.md`, `RESCUE.md`,
-  `flash-half.ps1`, `docs/proposal.md`, `docs/resilience.md`,
+  `scripts/flash/README.md`, `docs/proposal.md`, `docs/resilience.md`,
   `docs/packaging.md`, `scripts/check.ps1`, and `.github/workflows/`.
 - Identify app versus firmware scope, previous release/tag, candidate commit,
   merged PRs, compatibility changes, and outstanding blockers. Obtain current
@@ -79,14 +80,13 @@ separately authorized; tag pushes can themselves publish releases.
 
 ## Safe two-half firmware update checklist
 - Prepare matching left/right UF2s with commit IDs/hashes and compatibility
-  notes; keep the current runbook's known-good rollback build locally available.
-  At authoring: `C:/Users/fuchs/splitkeeb/firmware-358c3d0/firmware/`, older
-  fallback `firmware-b0baa2d`. Reconfirm the runbook and artifact existence.
-- Release approval alone does not authorize hardware flashing. Obtain session
-  agreement before any flash; delegate execution/evidence to test-lab.
-- Use `C:/Users/fuchs/splitkeeb/flash-half.ps1` with a finite wait. Identify
-  every target by bootloader USB serial before any UF2 copy: left
-  `1E89EF085AA8A635`, right `35B4541F78DE9CF8`; refuse ambiguous targets.
+  notes; keep the known-good rollback build named in `RESCUE.md` locally
+  available (read it each time; it changes with every main flash).
+- Release approval alone does not authorize hardware flashing. Only 7 · On-call
+  flashes, with `scripts/flash/foxglove_flash.py` (it checks bootloader USB serial,
+  half marker and size: left `1E89EF085AA8A635`, right `35B4541F78DE9CF8`). Hand
+  the rollout to On-call through the parent; evidence comes from test-lab. You
+  may run `foxglove_flash.py --dry-run` as a preflight.
 - Flash left central first, verify USB keyboard enumeration and USB typing,
   then flash right and verify both halves, HELLO/status, displays, and reconnect.
   Stop the rollout on failure and restore known-good firmware with verification.
