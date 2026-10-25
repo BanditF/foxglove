@@ -68,6 +68,80 @@ pub struct Lighting {
     pub layout: String,
 }
 
+/// How the Keyboard page draws one half of the board (#392), in key units: a grid of columns
+/// with each column dropped by its stagger, and a row of thumb keys under the inner columns.
+/// The left half is described; the right one is its mirror image.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct Drawing {
+    pub columns: u8,
+    pub rows: u8,
+    #[serde(default)]
+    pub thumbs: u8,
+    /// How far each column sits below the highest one, outer column first; missing ones are 0.
+    #[serde(default)]
+    pub stagger: Vec<f32>,
+}
+
+impl Default for Drawing {
+    /// A Corne-shaped half, for a keyboard without a profile (or a profile without a drawing).
+    fn default() -> Self {
+        Drawing { columns: 6, rows: 3, thumbs: 3, stagger: vec![0.5, 0.5, 0.25, 0.0, 0.125, 0.25] }
+    }
+}
+
+impl Drawing {
+    /// Within reason, so a mistyped profile can't draw a wall of keys.
+    fn bounded(&self) -> (u8, u8, u8) {
+        (self.columns.clamp(1, 10), self.rows.clamp(1, 8), self.thumbs.min(self.columns.clamp(1, 10)))
+    }
+
+    fn drop_of(&self, column: usize) -> f32 {
+        self.stagger.get(column).copied().filter(|d| d.is_finite()).unwrap_or(0.0).clamp(0.0, 2.0)
+    }
+
+    /// One half's keys, each a 1×1 rectangle in key units from the half's top-left corner.
+    pub fn keys(&self, right: bool) -> Vec<egui::Rect> {
+        let (columns, rows, thumbs) = self.bounded();
+        let mut keys = Vec::new();
+        for c in 0..usize::from(columns) {
+            for r in 0..usize::from(rows) {
+                keys.push(egui::Rect::from_min_size(egui::pos2(c as f32, r as f32 + self.drop_of(c)), egui::vec2(1.0, 1.0)));
+            }
+        }
+        // The thumbs sit under the inner columns, a little below the lowest of them.
+        let (first, below) = self.thumb_row();
+        for t in 0..usize::from(thumbs) {
+            keys.push(egui::Rect::from_min_size(egui::pos2((first + t) as f32 + 0.5, below), egui::vec2(1.0, 1.0)));
+        }
+        if right {
+            let (w, _) = self.size();
+            for k in &mut keys {
+                *k = egui::Rect::from_min_size(egui::pos2(w - k.max.x, k.min.y), k.size());
+            }
+        }
+        keys
+    }
+
+    /// Where the thumb row starts and how far down it sits.
+    fn thumb_row(&self) -> (usize, f32) {
+        let (columns, rows, thumbs) = self.bounded();
+        let first = usize::from(columns - thumbs);
+        let below = (first..usize::from(columns)).map(|c| self.drop_of(c)).fold(0.0, f32::max) + f32::from(rows) + 0.25;
+        (first, below)
+    }
+
+    /// The half's width and height in key units.
+    pub fn size(&self) -> (f32, f32) {
+        let (columns, rows, thumbs) = self.bounded();
+        let lowest = (0..usize::from(columns)).map(|c| self.drop_of(c)).fold(0.0, f32::max);
+        let grid = f32::from(rows) + lowest;
+        if thumbs == 0 {
+            return (f32::from(columns), grid);
+        }
+        (f32::from(columns) + 0.5, (self.thumb_row().1 + 1.0).max(grid))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Board {
     pub format: String,
@@ -87,6 +161,9 @@ pub struct Board {
     pub screens: Vec<Screen>,
     #[serde(default)]
     pub lighting: Option<Lighting>,
+    /// How the Keyboard page draws it (#392); a Corne shape when absent.
+    #[serde(default)]
+    pub drawing: Option<Drawing>,
     /// The folder of a user profile, for its keymap file.
     #[serde(skip)]
     pub dir: Option<PathBuf>,
@@ -206,6 +283,33 @@ mod tests {
         // ZMK's shared ids alone match nothing.
         assert!(find_in(&all, 0x1d50, 0x615e, "Some Other Board").is_none());
         assert!(find_in(&all, 0x3434, 0x0250, "Eyelash Corne").is_none());
+    }
+
+    #[test]
+    fn the_corne_draws_from_its_profile() {
+        let all = load(None);
+        let corne = find_in(&all, 0x1d50, 0x615e, "Eyelash Corne").unwrap();
+        let d = corne.drawing.expect("the Corne's profile has a drawing");
+        let left = d.keys(false);
+        let right = d.keys(true);
+        assert_eq!((left.len(), right.len()), (21, 21), "3 rows of 6 and 3 thumbs a half");
+        let (w, h) = d.size();
+        for k in left.iter().chain(&right) {
+            assert!(k.min.x >= 0.0 && k.min.y >= 0.0 && k.max.x <= w && k.max.y <= h, "{k:?} inside {w}x{h}");
+        }
+        // The column stagger: the middle finger's column sits higher than the pinky's.
+        assert!(left[3 * 3].min.y < left[0].min.y);
+        // The thumbs sit under the grid, on the inner side (right of the left half).
+        let thumbs = &left[18..];
+        assert!(thumbs.iter().all(|t| t.min.y >= 3.0 && t.min.x >= 3.0));
+        // The right half is the left one mirrored.
+        for (l, r) in left.iter().zip(&right) {
+            assert_eq!((r.min.y, r.min.x), (l.min.y, w - l.max.x));
+        }
+        // No drawing in a profile: a Corne shape; a mistyped one stays within bounds.
+        assert_eq!(Drawing::default().keys(false).len(), 21);
+        let wild = Drawing { columns: 200, rows: 0, thumbs: 50, stagger: vec![f32::NAN, 99.0] };
+        assert_eq!(wild.keys(false).len(), 10 + 10);
     }
 
     #[test]

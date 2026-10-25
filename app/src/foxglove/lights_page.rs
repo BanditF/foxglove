@@ -159,7 +159,7 @@ pub fn is_swatch(color: (u16, u8), rgb: [u8; 3]) -> bool {
 }
 
 /// The colour an underglow setting shows on screen.
-fn shown_color(hue: u16, sat: u8, brightness: u8) -> Color32 {
+pub(crate) fn shown_color(hue: u16, sat: u8, brightness: u8) -> Color32 {
     // Gamma space, so a swatch looks like the sRGB colour it came from.
     egui::ecolor::HsvaGamma { h: f32::from(hue) / 360.0, s: f32::from(sat) / 100.0, v: f32::from(brightness.max(15)) / 100.0, a: 1.0 }
         .into()
