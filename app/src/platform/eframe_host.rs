@@ -328,6 +328,17 @@ fn run_inner(
                     ui_wake.request_repaint();
                 })
             });
+            // Foxglove (#345): a second launch opens the settings here and focuses this window.
+            crate::foxglove::single_instance::on_show({
+                let settings_requested = settings_requested.clone();
+                let ctx = cc.egui_ctx.clone();
+                let ui_wake = ui_wake.clone();
+                move || {
+                    settings_requested.store(true, Ordering::Relaxed);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ui_wake.request_repaint();
+                }
+            });
 
             let mut fonts = egui::FontDefinitions::default();
             super::add_phosphor_to_fonts(&mut fonts);
