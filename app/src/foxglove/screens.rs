@@ -311,6 +311,14 @@ fn keep_alive(timeout_s: u16) -> Option<Duration> {
     })
 }
 
+/// Replies that mean the keyboard (re)announced itself, after a replug or an endpoint change
+/// (#350): HELLO, or the firmware's unsolicited CONN_STATE. What it shows may be gone or never
+/// have reached the screen, so the whole panel is sent again.
+fn reannounced(r: &[u8]) -> bool {
+    protocol::is_reply(r, protocol::PANEL, protocol::panel::HELLO)
+        || protocol::is_reply(r, protocol::SETTINGS, protocol::settings::CONN_STATE)
+}
+
 fn changed(last: Option<&[u8]>, frame: &[u8]) -> bool {
     last != Some(frame)
 }
@@ -406,7 +414,7 @@ fn run() {
                         layer.set(Some((generation, *r)));
                     }
                     if r[0] == 0xff
-                        || protocol::is_reply(r, protocol::PANEL, protocol::panel::HELLO)
+                        || reannounced(r)
                         || protocol::is_reply(r, protocol::ART, protocol::art::STATUS)
                     {
                         let _ = reports.send(Event::Report(id, generation, *r));
@@ -431,11 +439,20 @@ fn run() {
                         if let Some(d) = drawing.as_mut() {
                             if Arc::ptr_eq(&watched.link, &d.link) && generation == d.generation {
                                 d.hello = hello;
+                                d.last = None; // #350: draw the whole panel again
                                 if was_driving {
                                     battery_log(hello.right_battery, &mut last_battery);
                                 }
                             }
                         }
+                    }
+                }
+            }
+            Some(Event::Report(id, generation, report)) if reannounced(&report) => {
+                // CONN_STATE (HELLO is above): the keyboard changed endpoint or reconnected.
+                if let (Some(watched), Some(d)) = (links.get(id), drawing.as_mut()) {
+                    if Arc::ptr_eq(&watched.link, &d.link) && generation == d.generation {
+                        d.last = None;
                     }
                 }
             }
@@ -669,6 +686,18 @@ mod tests {
         assert!(changed(None, &[1, 2]));
         assert!(!changed(Some(&[1, 2]), &[1, 2]));
         assert!(changed(Some(&[1, 2]), &[1, 3]));
+    }
+    #[test]
+    fn hello_and_conn_state_replies_redraw_the_whole_panel() {
+        let mut hello = [0u8; 32];
+        hello[..2].copy_from_slice(&[protocol::PANEL, 0x80 | protocol::panel::HELLO]);
+        let mut conn = [0u8; 32];
+        conn[..2].copy_from_slice(&[protocol::SETTINGS, 0x80 | protocol::settings::CONN_STATE]);
+        assert!(reannounced(&hello) && reannounced(&conn));
+        let mut layer = [0u8; 32];
+        layer[0] = 0xff;
+        assert!(!reannounced(&layer), "a layer report is not a reannouncement");
+        assert!(!reannounced(&protocol::hello()), "the request itself is not a reply");
     }
     #[test]
     fn sleeps_until_the_first_visible_change_or_firmware_deadline() {

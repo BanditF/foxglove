@@ -38,6 +38,17 @@ static LIBRARY: OnceLock<Arc<Mutex<Library>>> = OnceLock::new();
 static LOADING: AtomicBool = AtomicBool::new(false);
 pub static PICK_FILE: AtomicBool = AtomicBool::new(false);
 
+/// A `.bin` the right screen can play. `<name>.left.bin` is a wallpaper's left-screen companion
+/// (the wallpaper manifest names it): a different size, never right art, so it stays out.
+pub fn is_right_art_file(path: &std::path::Path) -> bool {
+    let is_bin = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("bin"));
+    let left = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.to_ascii_lowercase().ends_with(".left"));
+    is_bin && !left
+}
+
 pub fn folder() -> Option<PathBuf> {
     crate::settings::Settings::config_file_path().map(|p| p.with_file_name("art"))
 }
@@ -68,10 +79,7 @@ fn scan(state: Arc<Mutex<Library>>) {
                 std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
                 for entry in std::fs::read_dir(folder).map_err(|e| e.to_string())? {
                     let path = entry.map_err(|e| e.to_string())?.path();
-                    if !path
-                        .extension()
-                        .is_some_and(|e| e.eq_ignore_ascii_case("bin"))
-                    {
+                    if !is_right_art_file(&path) {
                         continue;
                     }
                     use std::io::Read;
@@ -153,4 +161,21 @@ fn recycle(path: &std::path::Path) -> std::io::Result<()> {
 #[cfg(not(target_os = "windows"))]
 fn recycle(path: &std::path::Path) -> std::io::Result<()> {
     std::fs::remove_file(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_right_art_file;
+    use std::path::Path;
+
+    #[test]
+    fn left_companions_are_not_right_art() {
+        assert!(is_right_art_file(Path::new("hearth-moongarden.bin")));
+        assert!(is_right_art_file(Path::new("HUD.BIN")));
+        assert!(!is_right_art_file(Path::new("hearth-moongarden.left.bin")));
+        assert!(!is_right_art_file(Path::new("Hud.LEFT.BIN")));
+        assert!(!is_right_art_file(Path::new("hud.left"))); // not a .bin at all
+        assert!(!is_right_art_file(Path::new("notes.txt")));
+        assert!(is_right_art_file(Path::new("left.bin")), "a set named left is still right art");
+    }
 }

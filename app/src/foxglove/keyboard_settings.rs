@@ -179,14 +179,31 @@ pub enum Firmware {
 }
 
 static FIRMWARE: Mutex<(Option<u64>, Firmware)> = Mutex::new((None, Firmware::Unknown));
+/// Set when the settings window opens: a half that didn't answer is asked again (#353).
+static RETRY_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The settings window opened. A half whose build read failed (the right one is often still
+/// joining after a connect) is read again on the next look, not on a timer.
+pub fn settings_opened() {
+    RETRY_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+impl Firmware {
+    fn failed(&self) -> bool {
+        matches!(self, Firmware::Known { left, right } if left.is_err() || right.is_err())
+    }
+}
 
 /// The cached builds; reads them in the background when there's a new connection.
 pub fn firmware(ctx: &egui::Context) -> Firmware {
     let generation = super::devices::generation();
     let mut cached = FIRMWARE.lock().unwrap_or_else(|e| e.into_inner());
-    let stale = cached.0 != generation || cached.1 == Firmware::Unknown;
+    let retry = cached.1.failed() && RETRY_FAILED.swap(false, std::sync::atomic::Ordering::Relaxed);
+    let stale = cached.0 != generation || cached.1 == Firmware::Unknown || retry;
     if stale && cached.1 != Firmware::Reading {
         cached.1 = Firmware::Reading;
+        // Only an opening after this read retries what it leaves failed.
+        RETRY_FAILED.store(false, std::sync::atomic::Ordering::Relaxed);
         let ctx = ctx.clone();
         super::services::spawn_named("firmware-info", move || {
             let read = match device() {
@@ -209,4 +226,18 @@ pub fn firmware(ctx: &egui::Context) -> Firmware {
         });
     }
     cached.1.clone()
+}
+
+#[cfg(test)]
+mod firmware_tests {
+    use super::Firmware;
+
+    #[test]
+    fn only_a_failed_half_is_read_again() {
+        let failed = Firmware::Known { left: Err("x".into()), right: Err("no reply from the keyboard".into()) };
+        assert!(failed.failed());
+        assert!(!Firmware::Unknown.failed());
+        assert!(!Firmware::NotReported.failed());
+        assert!(!Firmware::NoKeyboard.failed());
+    }
 }
