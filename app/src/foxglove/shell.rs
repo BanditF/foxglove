@@ -52,7 +52,7 @@ pub const SECTIONS: [(&str, Page); 12] = [
     ("Connection", Page::Keyboard),
     ("Keyboard", Page::Keyboard),
     ("Lights", Page::Lights),
-    ("Screens", Page::Screens),
+    ("Left screen · PC panel", Page::Screens),
     ("Right screen art", Page::Screens),
     ("Plugins", Page::Plugins),
     ("Overlay Appearance", Page::Settings),
@@ -149,14 +149,18 @@ pub fn frame(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
         .show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt(("foxglove-page", page)).auto_shrink(false).show(ui, |ui| {
                 ui.label(RichText::new(page.label()).font(theme::hud(24.0)).color(p.text_strong));
+                let _showing = Showing;
+                SHOWING.set(Some(page));
+                DREW.set(false);
                 if page == Page::Keyboard {
                     // The board and the keyboard's cards lead the page; the device picker
                     // (KeyPeek's Connection section) follows them (#386).
                     go = super::keyboard_page::top(ui);
                 }
-                let _showing = Showing;
-                SHOWING.set(Some(page));
-                DREW.set(false);
+                if page == Page::Screens {
+                    // Two cards side by side (#388).
+                    super::screens_ui::page(ui);
+                }
                 add(ui);
                 if !DREW.get() {
                     ui.add_space(8.0);
@@ -422,7 +426,7 @@ mod tests {
         for (title, page) in [
             ("Keyboard", Page::Keyboard),
             ("Lights", Page::Lights),
-            ("Screens", Page::Screens),
+            ("Left screen · PC panel", Page::Screens),
             ("Right screen art", Page::Screens),
             ("Plugins", Page::Plugins),
             ("Overlay Appearance", Page::Settings),

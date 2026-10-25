@@ -314,18 +314,22 @@ pub fn card(ui: &egui::Ui) -> egui::Frame {
 
 /// A pill: when selected, an orange border on a dark-orange fill.
 pub fn pill(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
+    let pill = pill_button(ui, selected, text);
+    ui.add(pill)
+}
+
+/// The pill as a widget, for `add_enabled` (a disabled pill in a wrapping row, #388).
+pub fn pill_button(ui: &egui::Ui, selected: bool, text: &str) -> egui::Button<'static> {
     let p = palette(ui);
     let (fill, line, color) = if selected {
         (p.selected_fill, p.accent, p.selected_text)
     } else {
         (p.control, p.control_line, p.text)
     };
-    ui.add(
-        egui::Button::new(RichText::new(text).color(color))
-            .fill(fill)
-            .stroke(Stroke::new(1.0, line))
-            .corner_radius(CornerRadius::same(99)),
-    )
+    egui::Button::new(RichText::new(text.to_owned()).color(color))
+        .fill(fill)
+        .stroke(Stroke::new(1.0, line))
+        .corner_radius(CornerRadius::same(99))
 }
 
 /// The main action of a card: an orange button.
