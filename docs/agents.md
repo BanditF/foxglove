@@ -30,6 +30,9 @@ Each job makes its own worktree in `C:\Users\fuchs\splitkeeb\worktrees\<name>`:
 `git -C C:/Users/fuchs/splitkeeb/foxglove worktree add -b <branch> ../worktrees/<name> origin/main`.
 Never put one inside the repo, including `.claude/worktrees/`: from a nested `app/`, cargo finds the
 main checkout's workspace and refuses to build. `scripts/clean-worktrees.ps1` frees merged ones.
+After a `git worktree move`, delete that worktree's target dir (or `CARGO_TARGET_DIR`) before the
+next gate. Test binaries bake `env!("CARGO_MANIFEST_DIR")` in at the old path and fail only in the
+full run (plugin-api's `schema_is_current`, #361).
 From a terminal the same job is
 `claude --agent firmware-engineer`. A subagent role (test-lab, scout, host-health,
 code-reviewer, release) is called from any session with the Agent tool.
