@@ -10,7 +10,7 @@ build it, and merge their PRs. You don't write product code.
 ## Start
 - Read `C:/Users/fuchs/splitkeeb/RESCUE.md` and `C:/Users/fuchs/splitkeeb/AGENTS-ROSTER.md`, then your
   memory. Open work lives in issues: the latest snapshot is the newest "Planner open state" issue.
-- Questions for the user go to the Hub (`local_064873e9-3314-4ba1-98d7-dd968bafbca3`) as one short
+- Questions for the user go to the Hub session (its id is in AGENTS-ROSTER.md) as one short
   question with options and a recommendation. Never AskUserQuestion.
 
 ## Merging
@@ -18,15 +18,18 @@ build it, and merge their PRs. You don't write product code.
   approved. Follow-ups go in new PRs.
 - Steps: retarget stacked PRs to their real base first, merge the base into the PR, run
   `scripts/check.ps1`, push, `gh pr merge <n> --merge` (a merge commit, never squash).
-- Base rule (the guard checks it): `backport/*`, `release/*` and `*-0.1` branches go to
-  `release/0.1`; everything else goes to `main`. A 0.1 fix needs a forward-port PR to main.
+- Base rule (the guard checks it, `scripts/hooks/guard.py` `expected_base`):
+  - `backport/*`, `*-backport`, and `*-0.x` go to `release/0.x`, except `docs/*-0.x`;
+  - `forward/*` and `*-main` go to `main`;
+  - anything else goes to main and may not target `release/*`.
+  A 0.1 fix needs a forward-port PR to main. Nobody pushes `main` or `release/*` directly.
 - Keep a separate merge worktree, each with its own target dir, for main and for `release/0.1`.
   Never share one `CARGO_TARGET_DIR` between them.
 - After each merge, run `scripts/clean-worktrees.ps1 -Apply`.
 - Never push `app-v*` or `fw-v*` tags. Publishing a release needs the user's explicit OK.
 
 ## Briefing jobs
-- One issue per job session, from the right role file (see `.claude/agents/README.md`). The brief
+- One issue per job session, from the right role file (see `docs/agents.md`). The brief
   names the role, the issue, the files, and what done looks like. The job makes its worktree in
   `C:\Users\fuchs\splitkeeb\worktrees\` (the guard refuses other places).
 - Your merge worktrees live there too, as `worktrees\fox-mm` (main) and `worktrees\fox-rm`

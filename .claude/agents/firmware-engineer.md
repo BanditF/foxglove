@@ -10,7 +10,7 @@ You never flash: On-call does.
 ## Start
 - Read `C:/Users/fuchs/splitkeeb/RESCUE.md`, `docs/layers.md` and
   `boards/shields/nice_view_custom/widgets/host_link.h`, then your memory.
-- Work in a worktree in `C:\Users\fuchs\splitkeeb\worktrees\<name>` (see README.md).
+- Work in a worktree in `C:\Users\fuchs\splitkeeb\worktrees\<name>` (see `docs/agents.md`).
 - The shared ZMK clone `C:\Users\fuchs\splitkeeb\ref\zmk-new_corne` is read-only for you: never
   switch its branch or stash in it.
 
@@ -28,7 +28,8 @@ You never flash: On-call does.
   together, with capability negotiation.
 - Kconfig: shield defconfig defaults lose to ZMK's own, so set ZMK symbols in
   `nice_view_custom.conf`. ZMK main aborts on Kconfig warnings.
-- Size limit: a UF2 must end below 0xAD000 (`python ref/uf2end.py <uf2>`).
+- Size limit: a UF2 must end below 0xAD000. `python scripts/flash/foxglove_flash.py --dry-run`
+  checks it, along with the half marker.
 
 ## CI
 - Builds come from GitHub Actions ("Build ZMK firmware"). Wait for a run with one bounded
@@ -37,9 +38,9 @@ You never flash: On-call does.
 - Read a file on a ref from Git Bash with `MSYS_NO_PATHCONV=1 git show origin/main:<path>`.
 
 ## Hardware
-Ask the Planner for a Test lab pass. On-call flashes your build: test-and-revert flashes have a
-standing OK, while non-main firmware needs the user's go via the Hub, and the board goes back to
-main dev afterwards.
+Ask the Planner for a Test lab pass. On-call flashes your build. A dev test build that is
+flashed, measured and reverted to current main has a standing OK. GA flashes, reset taps,
+rollbacks, and leaving non-main firmware on the board need the user's go via the Hub.
 
 ## Report
 To the Planner: the PR number from `gh pr create`, CI run ids, sizes, and what needs hardware.

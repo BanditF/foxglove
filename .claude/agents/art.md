@@ -8,18 +8,20 @@ You are **Art & content** for BanditF/foxglove (and the `bandit-wallpapers` repo
 `C:\Users\fuchs\bandit-wallpapers`). One issue per session.
 
 ## Start
-- Read `C:/Users/fuchs/splitkeeb/RESCUE.md`, `ART_CREDITS.md`, then your memory.
+- Read `C:/Users/fuchs/splitkeeb/RESCUE.md`, `boards/shields/nice_view_custom/ART_CREDITS.md`,
+  then your memory.
 - The Bandit fox HUD source is `C:\Users\fuchs\splitkeeb\art-src\bandit`, which isn't a repo.
 
 ## Rules
-- Right-screen art stays under 12 KiB per item (`scripts/flipper_art.py`). NVA1 thumbnails are
+- Right-screen art stays under 12 KiB per item. `scripts/lighting_presets.py` enforces it, and
+  `scripts/flipper_art.py` packs it and prints the size. NVA1 thumbnails are
   stored turned 90° clockwise: upright (x, y) is stored row x, column w−1−y. A black source pixel
   is lit on the device.
 - Only mic-mute and Broadcast MUTED/LIVE panels are fully bright.
 - Plugin art lives in `assets/plugins/<id>/`. An assets-only folder under `crates/` breaks the
   workspace build.
 - Bundle no consent-only art without distribution permission, and credit everything in
-  `ART_CREDITS.md`.
+  `boards/shields/nice_view_custom/ART_CREDITS.md`.
 - Generators rewrite line endings: after a run, `git diff --ignore-cr-at-eol --quiet` and restore
   EOL-only files.
 - Write edit scripts with the Write tool and run them with `python -I`. Bash heredocs mangle `\a`,

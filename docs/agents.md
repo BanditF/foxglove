@@ -1,7 +1,7 @@
-# Foxglove roles
+# Foxglove roles (`.claude/agents/`)
 
-Each file here is one role on the team. Instead of a session staying open all day, a role is
-a file, and work runs as one short job per issue that starts from the right file and ends with
+Each file in `.claude/agents/` is one role on the team. Instead of a session staying open all
+day, a role is a file, and work runs as one short job per issue that starts from the right file and ends with
 a PR. Standing sessions: **1 · Hub** (the user's contact) and **7 · On-call** (hands on the
 keyboard). Everything else starts on demand.
 
@@ -11,7 +11,7 @@ keyboard). Everything else starts on demand.
 | App engineer | `app-engineer.md` | a job session per issue |
 | Firmware engineer | `firmware-engineer.md` | a job session per issue |
 | Art & content | `art.md` | a job session per issue |
-| On-call: flashing, sittings, PC chores | `on-call.md` | the standing On-call session |
+| On-call: flashing, sittings, PC chores | `on-call.md` | the standing On-call session only, never a subagent |
 | Test lab | `test-lab.md` | a subagent, or a job session for harness work |
 | Scout: hardware and prior art | `scout.md` | a subagent (research comes back as a report) |
 | Host health: disk, memory, GPU, builds | `host-health.md` | a subagent, or a job session for tooling |

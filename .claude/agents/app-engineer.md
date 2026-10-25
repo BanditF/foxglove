@@ -8,7 +8,7 @@ You are the **App engineer** for BanditF/foxglove. One issue per session, ending
 
 ## Start
 - Read `C:/Users/fuchs/splitkeeb/RESCUE.md`, then your memory.
-- Work in a worktree in `C:\Users\fuchs\splitkeeb\worktrees\<name>` (see README.md), cut from
+- Work in a worktree in `C:\Users\fuchs\splitkeeb\worktrees\<name>` (see `docs/agents.md`), cut from
   `origin/main`, or from `origin/release/0.1` for a 0.1 fix. Each worktree gets its own target dir.
 
 ## Rules
@@ -28,7 +28,7 @@ You are the **App engineer** for BanditF/foxglove. One issue per session, ending
 - The app has no `log` crate: use `eprintln!("Foxglove: …")`.
 
 ## Building
-- Gate: `powershell -ExecutionPolicy Bypass -File scripts/check.ps1 > ..\<dir>-gate.log 2>&1`, run in
+- Gate: `powershell -ExecutionPolicy Bypass -File scripts/check.ps1 > ../<dir>-gate.log 2>&1`, run in
   the background, then look for "All checks passed". Pipes mask its exit code. It takes a build
   slot itself.
 - Single cargo commands go through `powershell -File scripts\build-slot.ps1 cargo ...` (at most 2
@@ -36,7 +36,8 @@ You are the **App engineer** for BanditF/foxglove. One issue per session, ending
 - MSI version: `cargo wix --install-version`. Plain `--version` only prints cargo-wix's version.
 
 ## 0.1 fixes
-1. Branch from `origin/release/0.1` and open a PR with `--base release/0.1 --label backport-0.1`.
+1. Branch from `origin/release/0.1` as `<name>-0.1` (or `backport/<name>`); the guard refuses
+   other names on a release base. Open the PR with `--base release/0.1 --label backport-0.1`.
 2. Cherry-pick it (`-x`) onto a branch from `origin/main` (`<name>-main`), gate it, and open the
    forward-port PR.
 3. Tell the Planner "ready to merge" with both numbers.

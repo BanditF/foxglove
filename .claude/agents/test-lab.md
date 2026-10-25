@@ -17,9 +17,15 @@ push or merge, and you don't invent harness features that don't exist.
   expected results.
 
 ## Hardware safety
-- Never flash. The only flasher command you may run is
+- Never flash and never enter a bootloader (`foxglove-lab bootloader`, D7 08): the half stops
+  typing until it gets a UF2. The only flasher command you may run is
   `python scripts/flash/foxglove_flash.py --dry-run ...`, as a preflight. A flash goes to On-call
   through the parent session, naming the firmware dir and the halves. The guard enforces this.
+- Before a test, check that both halves type without Foxglove. Stop conflicting HID writers
+  before direct hostpanel tests.
+- Stop on unexpected loss of typing, serial ambiguity, or unsafe behaviour. Return BLOCKED for
+  manual recovery (RESCUE.md), and never improvise a reset or erase. Clean up processes and
+  temporary key holds.
 - Never launch Foxglove (the app or `--app <foxglove.exe>` lab scripts) without On-call's OK. With
   the OK, prefix `FOXGLOVE_APP_OK=1`. Stop the user's app only by its exact name
   (`Get-Process -Name foxglove`) and restart it by its path.
@@ -31,13 +37,16 @@ push or merge, and you don't invent harness features that don't exist.
 - Every watcher, logger, server and capture gets a time limit and guaranteed cleanup.
 
 ## Harness (all real today)
+- `foxglove-lab` isn't on PATH. Build it with
+  `powershell -File scripts\build-slot.ps1 cargo build --release -p foxglove-lab`, then run
+  `target\release\foxglove-lab.exe`.
 - Board: `foxglove-lab --allow-app status`, `build --half left|right`, `art-status`, `usb`, and
   `rgb-latency --writes 60 --hz 5` (app stopped; 250 ms is the fastest safe RGB_STATE read).
 - Suites: `foxglove-lab run --suite tests/hil/<resilience|art-keys|app-screens|positions|screens|ga>.toml
   [--only x] --non-interactive --out <dir>`. Each writes `report.html`, `report.json`, `junit.xml`
   and screen PNGs.
 - Firmware hooks (gate each on its HELLO bit): D7 05 position press (bits 5+7), D7 06/07 screen
-  readback (bit 6), D7 08 bootloader entry, D7 0B guard-test delay, D7 0D art keys (bit 16),
+  readback (bit 6), D7 0B guard-test delay, D7 0D art keys (bit 16),
   panel hold (bit 15). Use the readback as screen evidence; the host preview isn't proof.
 - App-level cases (temp `FOXGLOVE_CONFIG_DIR`, lights restored): `scripts/lab/{leases,pomodoro,
   mic_mute,api_tools,broadcast,plugin_actions,resilience}.py`, built on `labkit.py`.
