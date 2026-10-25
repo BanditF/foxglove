@@ -353,33 +353,8 @@ fn preview(legacy: bool, choice: crate::foxglove::theme::Choice) -> image::RgbaI
 /// so these use the same widgets and labels with sample values.
 fn foxglove_groups(ui: &mut egui::Ui) {
     use crate::foxglove::settings_ui::section;
-    section(ui, "Lights", |ui| {
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut true, "Right half's lights follow the left");
-            let _ = ui.small_button("↻");
-        });
-        ui.add_space(4.0);
-        ui.checkbox(&mut false, "Follow the Windows accent colour");
-        let _ = ui.small_button("Refresh lights");
-        egui::Grid::new("preview-lights").num_columns(3).spacing([10.0, 4.0]).show(ui, |ui| {
-            for name in ["Left", "Right"] {
-                ui.label(name);
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), egui::Sense::hover());
-                ui.painter().rect_filled(rect, 3.0, Color32::from_rgb(0xf0, 0x8a, 0x3c));
-                ui.label("on · Solid · 80% · speed 3");
-                ui.end_row();
-            }
-        });
-        ui.horizontal(|ui| {
-            let _ = ui.button("On");
-            let _ = ui.button("Off");
-            egui::ComboBox::from_id_salt("preview-effect").selected_text("Solid").show_ui(ui, |_| {});
-        });
-        ui.add(egui::Slider::new(&mut 26, 0..=359).text("hue"));
-        ui.add(egui::Slider::new(&mut 76, 0..=100).text("saturation"));
-        ui.add(egui::Slider::new(&mut 80, 0..=100).text("brightness"));
-        let _ = ui.button("Apply colour");
-    });
+    // The real Lights page (#387), drawn from its preview sample.
+    section(ui, "Lights", crate::foxglove::lights_page::show);
     section(ui, "Screens", |ui| {
         ui.label("Driving the left screen: clock, media and hints");
         egui::Grid::new("preview-screens").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
@@ -476,7 +451,32 @@ fn shell_window(ctx: &egui::Context, height: f32) {
 }
 
 fn shell_preview(page: crate::foxglove::shell::Page) -> image::RgbaImage {
-    shell_preview_with(page, sample_strip(), crate::foxglove::keyboard_page::tests::sample(), 660.0)
+    shell_preview_with(page, &Samples::full(), 660.0)
+}
+
+/// What the previews' live parts show: with a keyboard, or with none.
+struct Samples {
+    strip: crate::foxglove::shell::StripState,
+    keyboard: crate::foxglove::keyboard_page::View,
+    lights: crate::foxglove::lights_page::View,
+}
+
+impl Samples {
+    fn full() -> Samples {
+        Samples {
+            strip: sample_strip(),
+            keyboard: crate::foxglove::keyboard_page::tests::sample(),
+            lights: crate::foxglove::lights_page::tests::sample(),
+        }
+    }
+
+    fn none() -> Samples {
+        Samples {
+            strip: Default::default(),
+            keyboard: crate::foxglove::keyboard_page::tests::sample_none(),
+            lights: crate::foxglove::lights_page::tests::sample_none(),
+        }
+    }
 }
 
 /// The strip the previews show: both halves seen, the right one not answering yet.
@@ -495,8 +495,7 @@ fn sample_strip() -> crate::foxglove::shell::StripState {
 
 fn shell_preview_with(
     page: crate::foxglove::shell::Page,
-    strip: crate::foxglove::shell::StripState,
-    keyboard: crate::foxglove::keyboard_page::View,
+    samples: &Samples,
     height: f32,
 ) -> image::RgbaImage {
     use crate::foxglove::shell;
@@ -508,12 +507,14 @@ fn shell_preview_with(
     ctx.set_fonts(fonts);
     crate::foxglove::theme::apply_choice(&ctx, crate::foxglove::theme::Choice::Dark);
     shell::preview_page(page);
-    shell::PREVIEW_STRIP.set(Some(strip));
-    crate::foxglove::keyboard_page::PREVIEW.set(Some(keyboard));
+    shell::PREVIEW_STRIP.set(Some(samples.strip.clone()));
+    crate::foxglove::keyboard_page::PREVIEW.set(Some(samples.keyboard.clone()));
+    crate::foxglove::lights_page::PREVIEW.set(Some(samples.lights.clone()));
     let size = egui::vec2(1072.0, height + 40.0);
     let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| shell_window(ctx, height));
     shell::PREVIEW_STRIP.set(None);
     crate::foxglove::keyboard_page::PREVIEW.set(None);
+    crate::foxglove::lights_page::PREVIEW.set(None);
     img
 }
 
@@ -547,12 +548,11 @@ fn shell_pages_render() {
 /// The Keyboard page (#386) with a keyboard and without one.
 #[test]
 fn keyboard_page_renders() {
-    use crate::foxglove::keyboard_page::tests::{sample, sample_none};
-    use crate::foxglove::shell::{Page, StripState};
+    use crate::foxglove::shell::Page;
     use crate::foxglove::theme::DARK;
     let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
-    let with = shell_preview_with(Page::Keyboard, sample_strip(), sample(), 1060.0);
-    let without = shell_preview_with(Page::Keyboard, StripState::default(), sample_none(), 1060.0);
+    let with = shell_preview_with(Page::Keyboard, &Samples::full(), 1060.0);
+    let without = shell_preview_with(Page::Keyboard, &Samples::none(), 1060.0);
     keep("ui-386-keyboard.png", &with);
     keep("ui-386-keyboard-none.png", &without);
     for img in [&with, &without] {
@@ -562,6 +562,23 @@ fn keyboard_page_renders() {
     }
     // The right half's "no reply yet" is amber on the page as well as in the strip.
     assert!(count(&with, DARK.warn) > count(&without, DARK.warn));
+}
+
+/// The Lights page (#387) with a keyboard and without one.
+#[test]
+fn lights_page_renders() {
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let with = shell_preview_with(Page::Lights, &Samples::full(), 760.0);
+    let without = shell_preview_with(Page::Lights, &Samples::none(), 760.0);
+    keep("ui-387-lights.png", &with);
+    keep("ui-387-lights-none.png", &without);
+    // The Bandit orange swatch, the selected pill and Apply colour; dimmer with no keyboard.
+    assert!(count(&with, DARK.accent) > 400, "orange");
+    assert!(count(&with, DARK.selected_fill) > 200, "a selected pill");
+    assert!(count(&with, DARK.accent) > count(&without, DARK.accent));
+    assert_ne!(with, without);
 }
 
 #[test]

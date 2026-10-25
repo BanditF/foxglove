@@ -46,6 +46,7 @@ mod art_preview;
 pub mod art_ui;
 pub mod settings_ui;
 pub mod keyboard_page;
+pub mod lights_page;
 pub mod shell;
 pub mod theme;
 #[cfg(test)]
