@@ -9,7 +9,10 @@ function Step($name, [scriptblock]$command) {
     if ($LASTEXITCODE) { throw "$name failed" }
 }
 
+. "$PSScriptRoot\build-slot.ps1"
 Push-Location (Split-Path -Parent $PSScriptRoot)
+# One of the two cargo build slots for the whole gate, at about half the cores (#347).
+$slot = Enter-BuildSlot
 try {
     $start = Get-Date
     Step 'scripts: python tests' { python -m unittest discover -s scripts -p "test_*.py" }
@@ -31,5 +34,6 @@ try {
         catch { Write-Warning "clean-worktrees: $_" }
     }
 } finally {
+    Exit-BuildSlot $slot
     Pop-Location
 }
