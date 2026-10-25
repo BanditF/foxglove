@@ -19,6 +19,7 @@ mod screens_watch;
 mod screens_settings;
 pub mod screens_ui;
 pub mod services;
+pub mod single_instance;
 pub mod art_cycle;
 pub mod boards;
 mod art_triggers;
