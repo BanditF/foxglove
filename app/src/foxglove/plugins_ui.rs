@@ -148,7 +148,10 @@ thread_local! {
 
 /// "Install from file…", in the page's header (#389).
 pub fn header(ui: &mut egui::Ui) {
-    if ui.button("Install from file…").on_hover_text("Install a plugin package (.zip) you have").clicked() {
+    // Not while a plugin waits for approval: one install at a time.
+    let waiting = UI.with_borrow(|state| state.staged.is_some());
+    let button = ui.add_enabled(!waiting, egui::Button::new("Install from file…"));
+    if button.on_hover_text("Install a plugin package (.zip) you have").clicked() {
         UI.with_borrow_mut(|state| state.dialog.pick_file());
     }
 }
