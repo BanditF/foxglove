@@ -53,6 +53,7 @@ pub mod theme;
 mod theme_preview;
 pub mod startup;
 pub mod tray;
+pub mod tray_panel;
 pub mod catalog_refresh;
 pub mod connection;
 pub mod layer_access;

@@ -596,6 +596,32 @@ fn settings_page_renders() {
     assert!(count(&img, DARK.selected_fill) > 100, "the Dark pill");
 }
 
+/// The tray panel (#391), drawn off-screen the way it opens next to the tray icon.
+#[test]
+fn tray_panel_renders() {
+    use crate::foxglove::theme::DARK;
+    crate::foxglove::store::test_config_dir();
+    let ctx = egui::Context::default();
+    egui_extras::install_image_loaders(&ctx);
+    let mut fonts = egui::FontDefinitions::default();
+    crate::platform::add_phosphor_to_fonts(&mut fonts);
+    crate::foxglove::theme::add_fonts(&mut fonts);
+    ctx.set_fonts(fonts);
+    crate::foxglove::theme::apply_choice(&ctx, crate::foxglove::theme::Choice::Dark);
+    let v = crate::foxglove::tray_panel::tests::sample();
+    let size = egui::vec2(crate::foxglove::tray_panel::WIDTH + 40.0, 720.0);
+    let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
+        egui::Area::new(egui::Id::new("tray-panel-preview")).fixed_pos(egui::pos2(20.0, 20.0)).show(ctx, |ui| {
+            crate::foxglove::tray_panel::panel(ui, &v, &mut Default::default(), &mut Vec::new());
+        });
+    });
+    keep("ui-391-tray.png", &img);
+    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let total = (img.width() * img.height()) as usize;
+    assert!(count(&img, DARK.ground) > total / 4, "the panel's ground");
+    assert!(count(&img, DARK.selected_fill) > 200, "the selected pills");
+}
+
 /// The Lights page (#387) with a keyboard and without one.
 #[test]
 fn lights_page_renders() {

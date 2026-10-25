@@ -89,7 +89,8 @@ impl OverlayApp {
     }
 
     fn sync_mouse_passthrough(&mut self, host: &mut dyn OverlayHost) {
-        let mouse_passthrough = !self.is_any_window_open();
+        // Foxglove (#391): the tray panel takes the mouse too.
+        let mouse_passthrough = !self.is_any_window_open() && !crate::foxglove::tray_panel::is_open();
         if self.ui.mouse_passthrough == Some(mouse_passthrough) {
             return;
         }
@@ -188,6 +189,10 @@ impl OverlayApp {
             self.settings.draft = s;
         }
         self._tray.update();
+        // Foxglove (#391): the tray panel; its "Open Foxglove" opens the settings.
+        if crate::foxglove::tray_panel::show(ctx) {
+            self.ui.settings_visible = true;
+        }
 
         if let Some(path) = self.ui.file_dialog.take_picked() {
             if let ConnectionDraft::Via { json_path } = &mut self.connect.draft {

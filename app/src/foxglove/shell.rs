@@ -363,7 +363,7 @@ thread_local! {
     pub static PREVIEW_STRIP: std::cell::RefCell<Option<StripState>> = const { std::cell::RefCell::new(None) };
 }
 
-fn strip_state(ctx: &egui::Context) -> StripState {
+pub fn strip_state(ctx: &egui::Context) -> StripState {
     #[cfg(test)]
     if let Some(s) = PREVIEW_STRIP.with_borrow(|s| s.clone()) {
         return s;

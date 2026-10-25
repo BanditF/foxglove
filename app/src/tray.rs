@@ -105,7 +105,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
         }
     });
 
-    // Left-clicking the icon opens the settings, as is conventional on Windows.
+    // Foxglove (#391): left-clicking the icon opens the tray panel next to it.
     #[cfg(target_os = "windows")]
     crate::foxglove::services::spawn_named("tray-click", move || {
         use tray_icon::{MouseButton, MouseButtonState, TrayIconEvent};
@@ -113,10 +113,12 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
+                rect,
                 ..
             } = event
             {
-                on_settings();
+                let size = [f64::from(rect.size.width), f64::from(rect.size.height)];
+                crate::foxglove::tray_panel::clicked([rect.position.x, rect.position.y], size);
             }
         }
     });
