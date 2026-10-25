@@ -363,27 +363,8 @@ fn foxglove_groups(ui: &mut egui::Ui) {
             let _ = ui.button("Rescan");
         });
     });
-    section(ui, "Plugins", |ui| {
-        ui.weak("Plugins add features to Foxglove. Each runs as its own program with only the permissions you approve.");
-        ui.add_space(4.0);
-        ui.label("Installed");
-        ui.vertical_centered(|ui| {
-            ui.weak("No plugins yet. Pick one from the catalog below, or install one from a file.");
-        });
-        ui.label("Catalog");
-        for (name, what) in [
-            ("Pomodoro", "A focus timer on the left panel and the underglow."),
-            ("Mic mute", "Red and MUTED while your microphone is muted."),
-            ("Broadcast Status", "OBS recording or streaming as REC or LIVE."),
-        ] {
-            ui.horizontal(|ui| {
-                let _ = ui.button("Install");
-                ui.label(name);
-                ui.weak(what);
-            });
-        }
-        let _ = ui.button("Install from file…");
-    });
+    // The real Plugins page (#389), drawn from its preview sample.
+    crate::foxglove::plugins_ui::group(ui);
 }
 
 /// The settings window as #385 draws it: the sidebar, the status strip and one page.
@@ -419,6 +400,7 @@ struct Samples {
     lights: crate::foxglove::lights_page::View,
     screens: Option<crate::foxglove::screens::Snapshot>,
     art: Option<(crate::foxglove::art_service::Snapshot, crate::foxglove::art_library::Library)>,
+    plugins: crate::foxglove::plugins_ui::View,
 }
 
 impl Samples {
@@ -429,6 +411,7 @@ impl Samples {
             lights: crate::foxglove::lights_page::tests::sample(),
             screens: Some(sample_screens()),
             art: Some(crate::foxglove::art_ui::tests::sample()),
+            plugins: crate::foxglove::plugins_ui::tests::sample(),
         }
     }
 
@@ -439,6 +422,7 @@ impl Samples {
             lights: crate::foxglove::lights_page::tests::sample_none(),
             screens: None,
             art: None,
+            plugins: crate::foxglove::plugins_ui::tests::sample(),
         }
     }
 }
@@ -465,6 +449,8 @@ fn shell_preview_with(
     use crate::foxglove::shell;
     crate::foxglove::store::test_config_dir();
     let ctx = egui::Context::default();
+    // The plugin icons are SVGs, as in the app.
+    egui_extras::install_image_loaders(&ctx);
     let mut fonts = egui::FontDefinitions::default();
     crate::platform::add_phosphor_to_fonts(&mut fonts);
     crate::foxglove::theme::add_fonts(&mut fonts);
@@ -476,6 +462,7 @@ fn shell_preview_with(
     crate::foxglove::lights_page::PREVIEW.set(Some(samples.lights.clone()));
     crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
     crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
+    crate::foxglove::plugins_ui::PREVIEW.set(Some(samples.plugins.clone()));
     let size = egui::vec2(1072.0, height + 40.0);
     let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| shell_window(ctx, height));
     shell::PREVIEW_STRIP.set(None);
@@ -483,6 +470,7 @@ fn shell_preview_with(
     crate::foxglove::lights_page::PREVIEW.set(None);
     crate::foxglove::screens_ui::PREVIEW.set(None);
     crate::foxglove::art_ui::PREVIEW.set(None);
+    crate::foxglove::plugins_ui::PREVIEW.set(None);
     img
 }
 
@@ -579,6 +567,19 @@ fn screens_page_renders() {
     let lit = Color32::from_rgb(0xe8, 0xea, 0xe9);
     assert!(count(&with, lit) > 300, "art thumbnails");
     assert!(count(&with, DARK.surface) > count(&without, DARK.surface), "two cards");
+}
+
+/// The Plugins page (#389): the installed and catalog cards, three to a row.
+#[test]
+fn plugins_page_renders() {
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let img = shell_preview_with(Page::Plugins, &Samples::full(), 900.0);
+    keep("ui-389-plugins.png", &img);
+    // The cards' surface and their outlines fill the page.
+    assert!(count(&img, DARK.surface) > (img.width() * img.height()) as usize / 12, "cards");
+    assert!(count(&img, DARK.line) > 2000, "card outlines");
 }
 
 /// The Lights page (#387) with a keyboard and without one.

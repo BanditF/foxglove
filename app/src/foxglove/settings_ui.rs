@@ -59,7 +59,7 @@ enum Style {
 
 fn style(title: &str) -> Style {
     match title {
-        "Keyboard" | "Lights" => Style::Bare,
+        "Keyboard" | "Lights" | "Plugins" => Style::Bare,
         "Connection" | "Left screen · PC panel" | "Right screen art" => Style::Card,
         _ => Style::Collapsing,
     }
