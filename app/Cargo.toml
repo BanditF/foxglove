@@ -82,6 +82,8 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Registry",
     # Foxglove (#410): lock/unlock and display on/off.
     "Win32_System_Power",
+    # Foxglove (#346): the GPU-reset watch.
+    "Win32_System_EventLog",
     "Win32_System_RemoteDesktop",
     "Win32_System_Threading",
     "Win32_Graphics_Gdi",

@@ -25,7 +25,7 @@ mod imp {
     use std::sync::OnceLock;
 
     use windows::core::HSTRING;
-    use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0};
+    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0};
     use windows::Win32::System::Threading::{CreateEventW, CreateMutexW, SetEvent, WaitForSingleObject, INFINITE};
     use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
 
@@ -34,6 +34,8 @@ mod imp {
     unsafe impl Send for Show {}
     unsafe impl Sync for Show {}
     static SHOW: OnceLock<Show> = OnceLock::new();
+    /// The guard itself, kept so a restart after a GPU reset (#346) can hand it to the copy.
+    static MUTEX: OnceLock<Show> = OnceLock::new();
 
     pub fn claim(config_dir: Option<&std::ffi::OsStr>) -> bool {
         let (mutex_name, event_name) = super::names(config_dir);
@@ -58,7 +60,20 @@ mod imp {
         }
         // Both handles stay open until the process exits, which releases the guard.
         let _ = SHOW.set(Show(event));
+        if let Ok(mutex) = mutex {
+            let _ = MUTEX.set(Show(mutex));
+        }
         true
+    }
+
+    pub fn release() {
+        if let Some(m) = MUTEX.get() {
+            // SAFETY: the guard's handle, opened in `claim` and closed only here; the process
+            // ends right after, so nothing uses it again.
+            unsafe {
+                let _ = CloseHandle(m.0);
+            }
+        }
     }
 
     pub fn on_show(show: impl Fn() + Send + 'static) {
@@ -83,12 +98,19 @@ mod imp {
     }
 
     pub fn on_show(_show: impl Fn() + Send + 'static) {}
+
+    pub fn release() {}
 }
 
 /// Takes the guard at startup. False when another Foxglove already holds it; that one has been
 /// asked to show itself, and this process should exit 0.
 pub fn claim() -> bool {
     imp::claim(std::env::var_os("FOXGLOVE_CONFIG_DIR").as_deref())
+}
+
+/// Lets go of the guard just before this process hands over to a fresh copy (#346).
+pub fn release() {
+    imp::release()
 }
 
 /// Calls `show` whenever a second launch asks this instance to show itself.
