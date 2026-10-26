@@ -101,8 +101,9 @@ impl OverlayApp {
         let builder = crate::foxglove::settings_window::builder();
         ctx.show_viewport_immediate(crate::foxglove::settings_window::id(), builder, |ui, class| {
             let ctx = ui.ctx().clone();
-            self.ui.settings_window.frame(&ctx, &overlay_monitor);
-            if ctx.input(|i| i.viewport().close_requested()) {
+            // Foxglove: minimized is closed (the app lives in the tray).
+            let minimized = self.ui.settings_window.frame(&ctx, &overlay_monitor);
+            if minimized || ctx.input(|i| i.viewport().close_requested()) {
                 open = false;
             }
             if class == egui::ViewportClass::EmbeddedWindow && ui.button("Close").clicked() {
@@ -473,6 +474,8 @@ impl OverlayApp {
         if self.ui.settings_visible && !open {
             self.ui.settings_visible = false;
             self.ui.settings_window.closed();
+            // Foxglove: the overlay's preview goes with Settings; so does a drag of it.
+            self.ui.overlay_drag = None;
             self.persist_settings();
             if !self.session.ever_connected {
                 self.request_close_editor();
