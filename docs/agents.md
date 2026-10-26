@@ -50,6 +50,9 @@ The PC is shared with the user, and every gate is minutes of full CPU (the PC im
 - **Reuse one warm worktree** (and its target dir) for a series of small fixes: branch each fix
   from `origin/main` inside it (`git switch -c <branch> origin/main`) instead of adding a fresh
   worktree per tiny change.
+- **Builds run at BelowNormal priority:** `scripts/build-slot.ps1` (and so `check.ps1` and
+  `merge-pr.sh`) drops the slot's process to it and cargo inherits it, so the desktop stays
+  smooth during a gate. Jobs and the two slots are unchanged.
 - **Remove a finished worktree on merge:** `git worktree remove <dir>` plus its target dir, or
   `scripts/clean-worktrees.ps1 -Apply`.
 
