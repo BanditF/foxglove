@@ -2,6 +2,8 @@
 
 pub mod actor;
 
+pub mod calibration;
+
 mod capabilities;
 
 mod events;

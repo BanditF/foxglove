@@ -21,6 +21,7 @@ pub mod omen_tracer;
 
 use std::time::Duration;
 
+use crate::calibration::Calibration;
 use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
 pub use catalog::{Catalog, CatalogDevice, Protocol, ZoneSpec};
@@ -55,7 +56,7 @@ pub struct HidEntry {
 }
 
 /// A lighting device found by [`discover`].
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Found {
     /// Stable across restarts: `vvvv:pppp`, plus the serial when the board has one.
     pub key: String,
@@ -70,6 +71,8 @@ pub struct Found {
     pub caps: LightCaps,
     /// Its catalog entry is the user's own (added by hand).
     pub local: bool,
+    /// The model's default colour calibration, from the catalog.
+    pub calibration: Option<Calibration>,
 }
 
 /// A HID device the catalog doesn't know and that isn't a LampArray: a candidate for "Add a
@@ -170,6 +173,7 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
                 zones: known.zones.clone(),
                 caps: known.caps(),
                 local: known.local,
+                calibration: known.calibration.clone(),
             });
         }
     }
@@ -204,17 +208,14 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
                 ..Default::default()
             },
             local: false,
+            calibration: None,
         });
     }
     found
 }
 
 fn device_key(entry: &HidEntry) -> String {
-    let base = format!("{:04x}:{:04x}", entry.vid, entry.pid);
-    match entry.serial.as_deref().filter(|s| crate::trusted_serial(s)) {
-        Some(serial) => format!("{base}:{}", serial.trim()),
-        None => base,
-    }
+    crate::calibration::device_key(entry.vid, entry.pid, entry.serial.as_deref())
 }
 
 /// Sends whole output reports to one device, opened for that call only.

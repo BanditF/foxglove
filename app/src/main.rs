@@ -36,6 +36,7 @@ fn main() {
     os_layout::init();
     foxglove::gpu_reset::start(); // Foxglove (#346): a fresh copy after a GPU reset
     foxglove::away::start(); // Foxglove (#410): locked or display off stops background clocks
+    foxglove::calibrate::load(); // Foxglove: each device's colour calibration, before any write
     let settings = foxglove::overlay_profile::effective(Settings::load().unwrap_or_default());
     let available_devices = discover_devices();
     if !foxglove::repaint_trace::disabled("screens") {

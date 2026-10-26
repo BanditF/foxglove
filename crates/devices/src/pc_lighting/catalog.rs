@@ -6,6 +6,7 @@
 use serde::Deserialize;
 
 use super::caps::{Color, LightCaps, Screen};
+use crate::calibration::Calibration;
 
 /// The driver a catalog board needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
@@ -55,7 +56,7 @@ pub struct ZoneSpec {
 }
 
 /// One known board.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogDevice {
     pub name: String,
@@ -74,6 +75,9 @@ pub struct CatalogDevice {
     pub brightness: bool,
     #[serde(default)]
     pub screen: Vec<Screen>,
+    /// The model's default colour calibration, until the user calibrates their own unit.
+    #[serde(default)]
+    pub calibration: Option<Calibration>,
     /// From the user's own catalog (added by hand), not the bundled one.
     #[serde(skip)]
     pub local: bool,
@@ -107,6 +111,7 @@ impl CatalogDevice {
             effects: Vec::new(),
             brightness: false,
             screen: Vec::new(),
+            calibration: None,
             local: true,
         }
     }
@@ -158,7 +163,7 @@ impl CatalogDevice {
 }
 
 /// Every known board.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Catalog {
     #[serde(default, rename = "device")]
@@ -255,6 +260,12 @@ mod tests {
             c.find(0x03f0, 0x7397).map(|d| d.protocol),
             Some(Protocol::None)
         );
+        let cal = case
+            .calibration
+            .as_ref()
+            .expect("the 45L's default calibration");
+        assert!(cal.is_neutral(), "the 45L starts neutral");
+        assert!(c.find(0x03f0, 0x7397).unwrap().calibration.is_none());
     }
 
     #[test]
