@@ -204,11 +204,7 @@ pub fn halves(s: &StripState) -> [(Tone, String); 2] {
             (Tone::Off, "not connected".into()),
         ];
     }
-    let left = match s.usb {
-        Some(true) => "on USB",
-        Some(false) => "on Bluetooth",
-        None => "connected",
-    };
+    let left = super::shell::left_link(s.usb, s.host_link);
     let battery = s.right_battery.map(|b| format!("battery {b}%"));
     let right = match (&s.right_build, battery) {
         (Some(Err(_)), _) => (Tone::Warn, "no reply yet".to_string()),
@@ -216,7 +212,7 @@ pub fn halves(s: &StripState) -> [(Tone, String); 2] {
         (_, Some(b)) => (Tone::Ok, b),
         (Some(Ok(_)), None) => (Tone::Ok, "linked".to_string()),
     };
-    [(Tone::Ok, left.to_string()), right]
+    [(Tone::Ok, left), right]
 }
 
 fn view(ctx: &egui::Context) -> View {

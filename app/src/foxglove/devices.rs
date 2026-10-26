@@ -65,14 +65,22 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
     // Nothing learned from the keymap yet (the overlay hasn't opened it): use the cached one,
     // so plugins can change the lights without the UI. Outside the lock: learning sets it.
     if let Some((vid, pid)) = found {
+        let transport = super::link::transport(vid, pid);
+        *HOST_LINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(transport);
         // Foxglove: the log said only "Waiting for a keyboard"; now it says when one arrives.
-        eprintln!(
-            "{}",
-            connected_line(super::link::transport(vid, pid), &name)
-        );
+        eprintln!("{}", connected_line(transport, &name));
         super::keyboard_actions::learn_cached(vid, pid);
     }
     out
+}
+
+/// How Foxglove's host link reaches the keyboard found last (`USB` or `BLE`), which can differ
+/// from how it types to this PC (USB Raw HID stays silent before firmware #434).
+static HOST_LINK: Mutex<Option<&'static str>> = Mutex::new(None);
+
+/// The host link's transport, once a keyboard with it was found (`USB` or `BLE`).
+pub fn host_link() -> Option<&'static str> {
+    *HOST_LINK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// The log line for a keyboard that just connected: `Keyboard connected (USB): Eyelash Corne`.
