@@ -663,6 +663,13 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
 /// Whether OMEN Light Studio runs now: one process snapshot, taken only with a scan.
 #[cfg(target_os = "windows")]
 pub fn light_studio_running() -> bool {
+    any_process_running(&LIGHT_STUDIO)
+}
+
+/// Whether a process with one of `names` (exe file names, any case) runs now: one snapshot,
+/// taken when a caller asks (a scan, a Refresh or a change event), never on a timer.
+#[cfg(target_os = "windows")]
+pub(crate) fn any_process_running(names: &[&str]) -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -686,7 +693,7 @@ pub fn light_studio_running() -> bool {
             .position(|&c| c == 0)
             .unwrap_or(entry.szExeFile.len());
         let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
-        if LIGHT_STUDIO.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+        if names.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
             found = true;
             break;
         }

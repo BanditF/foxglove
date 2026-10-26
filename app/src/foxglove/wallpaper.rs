@@ -1,9 +1,15 @@
-//! "Match the wallpaper" for the right art (#60, #39): when Wallpaper Engine shows a wallpaper
-//! that the art index knows, the right half shows its art.
+//! "Match the wallpaper" for the right art (#60, #39): when the wallpaper on screen is one the
+//! art index knows, the right half shows its art.
 //!
-//! - Wallpaper Engine records each monitor's wallpaper in its `config.json`
-//!   (`<user>.general.wallpaperconfig.selectedwallpapers.<monitor>.file`); a folder watch on it
-//!   wakes us, so nothing polls.
+//! - Wallpaper Engine is optional (#446, `wallpaper_engine.rs`). While it runs, it records each
+//!   monitor's wallpaper in its `config.json`
+//!   (`<user>.general.wallpaperconfig.selectedwallpapers.<monitor>.file`). Without it, or while
+//!   it isn't running, the Windows desktop wallpaper stands in: its file
+//!   (`HKCU\Control Panel\Desktop` › `WallPaper`) matches a wallpaper whose id is the file's
+//!   name or whose `match` text is in its path.
+//! - Folder watches wake us, so nothing polls: Wallpaper Engine's folder, and
+//!   `%APPDATA%\Microsoft\Windows\Themes`, where Windows rewrites `TranscodedWallpaper` on each
+//!   desktop wallpaper change.
 //! - The index is `art\wallpapers.json` (format `foxglove-wallpaper-art` v1, from
 //!   bandit-wallpapers): each wallpaper has path substrings to match and its right art, either
 //!   a built-in set by name (selected, no push) or a library blob.
@@ -119,7 +125,9 @@ pub fn selected(config: &str) -> Vec<(String, String)> {
     out
 }
 
-/// The indexed wallpaper on `monitor` (or the first monitor with a match when `None`).
+/// The indexed wallpaper on `monitor` (or the first monitor with a match when `None`). A
+/// wallpaper matches by id (the whole entry, or the file's name without its extension) or by a
+/// `match` text in the path.
 pub fn find<'a>(
     index: &'a [Wallpaper],
     selected: &[(String, String)],
@@ -130,8 +138,13 @@ pub fn find<'a>(
         .filter(|(m, _)| monitor.is_none_or(|want| want == m))
         .find_map(|(_, file)| {
             let file = file.to_lowercase();
+            let stem = std::path::Path::new(file.trim())
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
             index.iter().find(|w| {
                 w.id.eq_ignore_ascii_case(file.trim())
+                    || w.id.eq_ignore_ascii_case(stem)
                     || w.matches.iter().any(|m| file.contains(&m.to_lowercase()))
             })
         })
@@ -151,18 +164,10 @@ pub fn choice(w: &Wallpaper, set_count: u8) -> Option<Choice> {
     })
 }
 
-/// Wallpaper Engine's config.json, from Steam's install folder.
+/// Wallpaper Engine's config.json, when Wallpaper Engine is installed (in any Steam library or
+/// a custom folder, #446).
 pub fn config_path() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let steam = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
-        .open_subkey(r"Software\Valve\Steam")
-        .and_then(|k| k.get_value::<String, _>("SteamPath"))
-        .ok()
-        .map(PathBuf::from);
-    #[cfg(not(windows))]
-    let steam: Option<PathBuf> = None;
-    let path = steam?.join("steamapps/common/wallpaper_engine/config.json");
-    path.exists().then_some(path)
+    super::wallpaper_engine::presence().config()
 }
 
 /// The test hook's file, when `FOXGLOVE_WALLPAPER_OVERRIDE` is set.
@@ -172,49 +177,101 @@ fn override_path() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// The file to watch and read: the test hook's, or Wallpaper Engine's config.
-fn source() -> Option<(PathBuf, bool)> {
-    override_path()
-        .map(|p| (p, true))
-        .or_else(|| config_path().map(|p| (p, false)))
+/// Where the wallpaper on screen is read from.
+#[derive(Clone, Debug, PartialEq)]
+enum Source {
+    /// The test hook's file: one wallpaper id or path.
+    Override(PathBuf),
+    /// Wallpaper Engine's config.json, while Wallpaper Engine runs.
+    Engine(PathBuf),
+    /// The Windows desktop wallpaper: without Wallpaper Engine, or while it isn't running.
+    Desktop,
 }
 
-/// Each monitor's wallpaper from `text`; the override file is one entry with no monitor.
-fn on_screen(text: &str, overridden: bool) -> Vec<(String, String)> {
-    if overridden {
+/// Where to read the wallpaper on screen: the test hook, Wallpaper Engine while it runs, or
+/// the Windows desktop wallpaper.
+fn source(engine: &super::wallpaper_engine::Presence) -> Source {
+    source_with(engine, override_path())
+}
+
+fn source_with(engine: &super::wallpaper_engine::Presence, over: Option<PathBuf>) -> Source {
+    if let Some(p) = over {
+        return Source::Override(p);
+    }
+    match engine.config() {
+        Some(config) if engine.running() => Source::Engine(config),
+        _ => Source::Desktop,
+    }
+}
+
+/// The file Windows rewrites when the desktop wallpaper changes; watching its folder is the
+/// change event.
+fn desktop_marker() -> Option<PathBuf> {
+    let appdata = std::env::var_os("APPDATA").filter(|v| !v.is_empty())?;
+    Some(PathBuf::from(appdata).join(r"Microsoft\Windows\Themes\TranscodedWallpaper"))
+}
+
+/// The desktop wallpaper's file, as Windows records it.
+#[cfg(windows)]
+fn desktop_wallpaper() -> Option<String> {
+    winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+        .open_subkey(r"Control Panel\Desktop")
+        .and_then(|k| k.get_value::<String, _>("WallPaper"))
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+}
+
+#[cfg(not(windows))]
+fn desktop_wallpaper() -> Option<String> {
+    None
+}
+
+/// The text the source holds: a file's contents, or the desktop wallpaper's path.
+fn read(source: &Source) -> Option<String> {
+    match source {
+        Source::Override(p) | Source::Engine(p) => std::fs::read_to_string(p).ok(),
+        Source::Desktop => desktop_wallpaper(),
+    }
+}
+
+/// Each monitor's wallpaper from `text`. The override file and the desktop wallpaper are one
+/// entry with no monitor.
+fn on_screen(text: &str, source: &Source) -> Vec<(String, String)> {
+    let one = |name: &str| {
         let w = text.trim_start_matches('\u{feff}').trim();
-        return if w.is_empty() {
+        if w.is_empty() {
             vec![]
         } else {
-            vec![("override".into(), w.replace('\\', "/"))]
-        };
+            vec![(name.to_string(), w.replace('\\', "/"))]
+        }
+    };
+    match source {
+        Source::Override(_) => one("override"),
+        Source::Desktop => one("desktop"),
+        Source::Engine(_) => selected(text),
     }
-    selected(text)
 }
 
-/// The indexed wallpaper in `text` for the monitor setting.
+/// The indexed wallpaper in `text` for the monitor setting, which names a Wallpaper Engine
+/// monitor and so applies only to its config.
 fn find_in(
     index: &[Wallpaper],
     text: &str,
-    overridden: bool,
+    source: &Source,
     monitor: Option<&str>,
 ) -> Option<Wallpaper> {
-    find(
-        index,
-        &on_screen(text, overridden),
-        if overridden { None } else { monitor },
-    )
-    .cloned()
+    let monitor = monitor.filter(|_| matches!(source, Source::Engine(_)));
+    find(index, &on_screen(text, source), monitor).cloned()
 }
 
 /// The indexed wallpaper on screen now, if any.
 pub fn current(monitor: Option<&str>) -> Option<Wallpaper> {
-    let (path, overridden) = source()?;
-    let text = std::fs::read_to_string(path).ok()?;
-    find_in(&index(), &text, overridden, monitor)
+    let source = source(&super::wallpaper_engine::presence());
+    let text = read(&source)?;
+    find_in(&index(), &text, &source, monitor)
 }
 
-/// The monitors Wallpaper Engine has wallpapers on, for the setting.
+/// The monitors Wallpaper Engine has wallpapers on, for the setting; none without it.
 pub fn monitors() -> Vec<String> {
     config_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
@@ -222,31 +279,90 @@ pub fn monitors() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Watches Wallpaper Engine's config and tells the art service about the wallpaper on screen.
+/// The folders to watch: the test hook's alone, or Wallpaper Engine's (when installed) and the
+/// desktop wallpaper's.
+fn watched(engine: &super::wallpaper_engine::Presence) -> Vec<PathBuf> {
+    watched_with(engine, override_path(), desktop_marker())
+}
+
+fn watched_with(
+    engine: &super::wallpaper_engine::Presence,
+    over: Option<PathBuf>,
+    desktop: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    match over {
+        Some(p) => vec![p],
+        None => [engine.config(), desktop].into_iter().flatten().collect(),
+    }
+}
+
+/// Wakes the wallpaper service: a watched folder changed, or the user pressed Refresh.
+static WAKE: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> = std::sync::Mutex::new(None);
+
+/// Refresh (#446): look for Wallpaper Engine again, on the wallpaper service's thread, which
+/// also watches its folder from now on if it was installed or moved. Without the service,
+/// just look again.
+pub fn refresh() {
+    let sent = WAKE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|tx| tx.send(()).is_ok());
+    if !sent {
+        super::wallpaper_engine::refresh();
+    }
+}
+
+/// Watches the wallpaper sources and tells the art service about the wallpaper on screen. Each
+/// change (or Refresh) looks for Wallpaper Engine again: whether it's running now, and where
+/// it is, so its folder is watched once it's installed or moved. Without Wallpaper Engine this
+/// watches only the desktop wallpaper, quietly.
 pub fn start() {
     if super::repaint_trace::disabled("wallpaper") {
         return;
     }
-    let Some((config, overridden)) = source() else {
-        return;
-    };
     super::services::spawn_named("wallpaper", move || {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let _watch = super::screens_watch::settings(
-            &config,
-            std::sync::Arc::new(move || {
-                let _ = tx.send(());
-            }),
-        );
+        *WAKE.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
+        let watch = |paths: &[PathBuf]| -> Vec<_> {
+            paths
+                .iter()
+                .filter_map(|p| {
+                    let tx = tx.clone();
+                    super::screens_watch::settings(
+                        p,
+                        std::sync::Arc::new(move || {
+                            let _ = tx.send(());
+                        }),
+                    )
+                })
+                .collect()
+        };
+        let engine = super::wallpaper_engine::presence();
+        let mut paths = watched(&engine);
+        let mut watches = watch(&paths);
         let mut last: Option<String> = None;
-        // Check once at start, then on each change in Wallpaper Engine's folder.
-        for () in std::iter::once(()).chain(rx) {
-            let Ok(text) = std::fs::read_to_string(&config) else {
+        // Check once at start, then on each change in a watched folder or Refresh.
+        for (n, ()) in std::iter::once(()).chain(rx.iter()).enumerate() {
+            let engine = if n == 0 {
+                engine.clone()
+            } else {
+                super::wallpaper_engine::refresh()
+            };
+            let now = watched(&engine);
+            if now != paths {
+                // Stop the old watches before starting the new ones.
+                watches.clear();
+                watches = watch(&now);
+                paths = now;
+            }
+            let source = source(&engine);
+            let Some(text) = read(&source) else {
                 continue;
             };
             let index = index();
             let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
-            let Some(w) = find_in(&index, &text, overridden, monitor.as_deref()) else {
+            let Some(w) = find_in(&index, &text, &source, monitor.as_deref()) else {
                 continue;
             };
             if last.as_deref() == Some(w.id.as_str()) {
@@ -258,6 +374,7 @@ pub fn start() {
             }
             super::screens::wallpaper_changed();
         }
+        drop(watches);
     });
 }
 
@@ -274,7 +391,8 @@ mod tests {
     #[test]
     fn override_file_names_a_wallpaper_by_id_or_path() {
         let index = parse_index(INDEX).unwrap();
-        let id = |text: &str| find_in(&index, text, true, Some("Monitor9")).map(|w| w.id);
+        let o = Source::Override(PathBuf::new());
+        let id = |text: &str| find_in(&index, text, &o, Some("Monitor9")).map(|w| w.id);
         assert_eq!(id("fury-stars\r\n").as_deref(), Some("fury-stars"));
         assert_eq!(id("\u{feff}HUD").as_deref(), Some("hud"));
         assert_eq!(
@@ -351,5 +469,52 @@ mod tests {
             "a workshop wallpaper not in the index"
         );
         assert!(parse_index(r#"{"format":"other","version":1,"wallpapers":[]}"#).is_err());
+    }
+
+    /// Without Wallpaper Engine, or while it isn't running, the Windows desktop wallpaper
+    /// stands in. It matches by the file's name or a `match` text, and the monitor setting (a
+    /// Wallpaper Engine monitor) doesn't apply.
+    #[test]
+    fn the_desktop_wallpaper_stands_in() {
+        use super::super::wallpaper_engine::Presence;
+        let index = parse_index(INDEX).unwrap();
+        let desktop = Some(PathBuf::from(r"C:\AppData\Themes\TranscodedWallpaper"));
+        let source = |p: &Presence| source_with(p, None);
+        let watched = |p: &Presence| watched_with(p, None, desktop.clone());
+        assert_eq!(source(&Presence::Missing), Source::Desktop);
+        assert_eq!(watched(&Presence::Missing).len(), 1, "the desktop only");
+        let o = PathBuf::from("override.txt");
+        assert_eq!(
+            source_with(&Presence::Missing, Some(o.clone())),
+            Source::Override(o.clone())
+        );
+        assert_eq!(
+            watched_with(&Presence::Missing, Some(o.clone()), desktop.clone()),
+            vec![o]
+        );
+        let we = PathBuf::from(r"D:\SteamLibrary\steamapps\common\wallpaper_engine");
+        let stopped = Presence::Installed {
+            dir: we.clone(),
+            running: false,
+        };
+        assert_eq!(source(&stopped), Source::Desktop);
+        assert_eq!(watched(&stopped).len(), 2, "its folder and the desktop");
+        let running = Presence::Installed {
+            dir: we.clone(),
+            running: true,
+        };
+        assert_eq!(source(&running), Source::Engine(we.join("config.json")));
+        let d = Source::Desktop;
+        let id = |text: &str| find_in(&index, text, &d, Some("Monitor0")).map(|w| w.id);
+        assert_eq!(
+            id(r"C:\Users\me\Pictures\Fury-Stars.png").as_deref(),
+            Some("fury-stars")
+        );
+        assert_eq!(
+            id(r"D:\WE\projects\myprojects\bandit-hud\preview.jpg").as_deref(),
+            Some("hud")
+        );
+        assert_eq!(id(r"C:\Windows\Web\Wallpaper\Windows\img0.jpg"), None);
+        assert_eq!(id(""), None);
     }
 }

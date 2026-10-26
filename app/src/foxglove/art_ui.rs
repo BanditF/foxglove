@@ -94,6 +94,9 @@ pub fn group(ui: &mut egui::Ui) {
             Act::Delete(p) => art_library::delete(p),
             Act::Refresh => {
                 h.refresh();
+                // Wallpaper Engine may have been installed, moved or started (#446): looked
+                // for on the wallpaper service's thread, not this one.
+                super::wallpaper::refresh();
                 art_library::refresh();
                 UI.with_borrow_mut(|s| s.textures.clear());
             }
@@ -652,8 +655,14 @@ fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &
             cycle.set_step(Step::Minutes, !lit[1]);
             changed = true;
         }
+        let engine = super::wallpaper_engine::presence();
+        let hover = if engine.installed() {
+            "Shows the art that goes with the Wallpaper Engine wallpaper on screen (from the art folder's wallpapers.json)."
+        } else {
+            "Shows the art that goes with your Windows desktop wallpaper, when its file is named after a wallpaper in the art folder's wallpapers.json. Works best with Wallpaper Engine."
+        };
         if super::theme::pill(ui, lit[2], "Match the wallpaper")
-            .on_hover_text("Shows the art that goes with the Wallpaper Engine wallpaper on screen (from the art folder's wallpapers.json).")
+            .on_hover_text(hover)
             .clicked()
         {
             cycle.follow = if lit[2] { Follow::Nothing } else { Follow::Wallpaper };
@@ -679,8 +688,13 @@ fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &
                 .changed();
         });
     }
-    if cycle.follow == Follow::Wallpaper {
-        let monitors = super::wallpaper::monitors();
+    // Wallpaper Engine's monitors, only when it's here; otherwise one short hint (#446).
+    let monitors = if cycle.follow == Follow::Wallpaper {
+        super::wallpaper::monitors()
+    } else {
+        Vec::new()
+    };
+    if cycle.follow == Follow::Wallpaper && !monitors.is_empty() {
         ui.horizontal(|ui| {
             ui.label("Wallpaper of");
             // "//?/DISPLAY#DEL40EA#..." -> "DEL40EA" (the monitor's model).
@@ -703,8 +717,10 @@ fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &
                     }
                 });
         });
-        if super::wallpaper::config_path().is_none() {
-            ui.weak("Wallpaper Engine isn't installed (no config.json under Steam).");
+    }
+    if cycle.follow == Follow::Wallpaper {
+        if let Some(hint) = super::wallpaper_engine::presence().hint() {
+            ui.weak(hint);
         }
     }
 

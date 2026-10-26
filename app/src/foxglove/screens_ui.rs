@@ -131,7 +131,7 @@ pub fn group(ui: &mut egui::Ui) {
                             changed |= ui
                                 .selectable_value(&mut settings.layout, Layout::Wallpaper, "Wallpaper animation")
                                 .on_hover_text(
-                                    "The left frames of the Wallpaper Engine wallpaper on screen (wallpapers.json in the art folder); the clock when it has none.",
+                                    "The left frames of the wallpaper on screen (wallpapers.json in the art folder); the clock when it has none. Works best with Wallpaper Engine; without it, the Windows desktop wallpaper stands in.",
                                 )
                                 .changed();
                         });

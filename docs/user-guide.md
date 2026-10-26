@@ -138,8 +138,8 @@ Open it from the tray: **Settings...**. From the top:
 - **Screens.** The left screen's PC panel:
   - **Drive left screen** turns the panel on or off, and **Pause** freezes it.
   - **frames per second** sets how often it redraws.
-  - **Show** picks the clock, media and hints, or the current Wallpaper Engine wallpaper's
-    animation.
+  - **Show** picks the clock, media and hints, or the current wallpaper's animation (works
+    best with Wallpaper Engine).
   - **Game hints** show a short note while a given program is in front.
   - The panel status shows the right half's link and battery.
 - **Right screen art.** What plays on the right:
@@ -283,8 +283,12 @@ performance modes, not the case lights. The pump's LCD screen is separate and ke
     name for a second.
   - **when the lights wake**: the next entry each time the underglow comes back on.
   - **every N minutes**.
-- **Follow the wallpaper:** with Wallpaper Engine, the right screen shows the art that goes with
-  the wallpaper on screen.
+- **Follow the wallpaper:** the right screen shows the art that goes with the wallpaper on
+  screen. It works best with Wallpaper Engine, found in any Steam library. Without it, or while
+  it isn't running, your Windows desktop wallpaper counts: name the image after a wallpaper in
+  the art folder's `wallpapers.json` (for example `fury-stars.png`). If Wallpaper Engine is
+  installed somewhere Steam doesn't know, set `FOXGLOVE_WALLPAPER_ENGINE_DIR` to its folder.
+  Press **Refresh** after installing or moving it.
 - **Layer art:** give a layer its own art, for example Bandit Radar for GAME. It shows while you
   hold the layer (after 0.4 s, so a quick tap doesn't flash it), then the art before comes back.
 - **Priority:** your own pick (or an art-key press) wins, then layer art, then preset art, then
