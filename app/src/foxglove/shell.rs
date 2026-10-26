@@ -202,7 +202,7 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
                 .show(ui, |ui| {
                     // A gutter for the scroll bar, which floats over the page's right edge:
                     // without it the bar covers the cards' edge and the controls there.
-                    ui.set_max_width(ui.available_width() - SCROLL_GUTTER);
+                    ui.set_max_width((ui.available_width() - SCROLL_GUTTER).max(0.0));
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(page.label())

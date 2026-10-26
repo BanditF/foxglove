@@ -419,15 +419,15 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
         |ui| {
             ui.add_enabled_ui(!busy, |ui| {
                 if ui
-                .checkbox(&mut matching, "Match keyboard")
-                .on_hover_text(
-                    "Follow the keyboard's underglow colour when Foxglove sets it, or the Windows \
-                     accent colour when the keyboard follows that. Picking a colour here stops it.",
-                )
-                .changed()
-            {
-                out.push(Intent::Match(row.key.clone(), matching));
-            }
+                    .checkbox(&mut matching, "Match keyboard")
+                    .on_hover_text(
+                        "Follow the keyboard's underglow colour when Foxglove sets it, or the Windows \
+                         accent colour when the keyboard follows that. Picking a colour here stops it.",
+                    )
+                    .changed()
+                {
+                    out.push(Intent::Match(row.key.clone(), matching));
+                }
             });
         },
     );
