@@ -16,6 +16,7 @@
 //! brightness stay put when gamma changes. The neutral calibration changes nothing.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, RwLock};
 
 use serde::{Deserialize, Serialize};
@@ -266,6 +267,47 @@ impl Calibration {
     }
 }
 
+impl Calibration {
+    /// The colour that calibrates to `c`, near enough (sRGB-encoded, each channel 0-1): what
+    /// the palette asked for, from what a device shows. Colours the calibration can't reach
+    /// (brighter than its white) come back as the nearest it can.
+    pub fn invert(&self, c: [f32; 3]) -> [f32; 3] {
+        let target = c.map(clamp01);
+        if self.is_neutral() {
+            return target;
+        }
+        // Damped fixed-point steps: the transform rises in each channel, so this settles.
+        let mut x = target;
+        for _ in 0..80 {
+            let y = self.apply(x);
+            for i in 0..3 {
+                x[i] = clamp01(x[i] + 0.8 * (target[i] - y[i]));
+            }
+        }
+        x
+    }
+
+    /// [`Self::invert`] for a hue, saturation and brightness; a grey keeps its hue.
+    pub fn invert_hsb(&self, (hue, sat, brightness): Hsb) -> Hsb {
+        if self.is_neutral() {
+            return (hue, sat, brightness);
+        }
+        let rgb = hsv_to_rgb(
+            f32::from(hue.min(359)),
+            f32::from(sat.min(100)) / 100.0,
+            f32::from(brightness.min(100)) / 100.0,
+        );
+        let (h, s, v) = rgb_to_hsv(self.invert(rgb));
+        let s = ((s * 100.0).round() as u8).min(100);
+        let h = if s == 0 {
+            hue
+        } else {
+            (h.round() as u16) % 360
+        };
+        (h, s, ((v * 100.0).round() as u8).min(100))
+    }
+}
+
 /// A piecewise-linear curve through evenly spaced points.
 fn interpolate(points: &[f32], x: f32) -> f32 {
     if points.len() < 2 {
@@ -419,50 +461,56 @@ pub fn key_for(id: &crate::DeviceId) -> String {
 /// Hue (0-359), saturation and brightness (0-100).
 pub type Hsb = (u16, u8, u8);
 
-/// The calibration boundary for drivers that take hue, saturation and brightness (a keyboard's
-/// underglow): [`HsbBoundary::send`] calibrates the colour Foxglove asks for and remembers what
-/// it sent, and [`HsbBoundary::asked`] turns what the device reports back into the colour that
-/// was asked for, so the app never calibrates the same colour twice.
-#[derive(Debug, Default)]
-pub struct HsbBoundary {
-    last: Mutex<Option<(Hsb, Hsb)>>,
+/// What a hue/saturation/brightness device was last asked for and sent, by device key. Kept for
+/// the whole process, not in the device object: that is rebuilt on every reconnect, while the
+/// keyboard keeps showing its colour.
+#[derive(Clone, Copy, Debug)]
+struct LastHsb {
+    seq: u64,
+    asked: Hsb,
+    sent: Hsb,
 }
 
-impl HsbBoundary {
-    /// Calibrates `asked` for the device `key` and writes it with `write`.
-    pub fn send(
-        &self,
-        key: &str,
-        asked: Hsb,
-        write: impl FnOnce(Hsb) -> crate::Result<()>,
-    ) -> crate::Result<()> {
-        let asked = (asked.0.min(359), asked.1.min(100), asked.2.min(100));
-        let sent = global().hsb(key, None, None, asked);
-        write(sent)?;
-        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((asked, sent));
-        Ok(())
-    }
+static LAST_HSB: Mutex<BTreeMap<String, LastHsb>> = Mutex::new(BTreeMap::new());
+static HSB_SEQ: AtomicU64 = AtomicU64::new(0);
 
-    /// The colour a device reports, in Foxglove's palette: the asked hue and saturation while
-    /// it still shows what was sent for them, and the asked brightness while that is
-    /// unchanged too (a half dimmed on battery, or brightness changed on the keyboard, reports
-    /// its own).
-    pub fn asked(&self, reported: Hsb) -> Hsb {
-        let Some((asked, sent)) = *self.last.lock().unwrap_or_else(|e| e.into_inner()) else {
-            return reported;
-        };
-        let hue = reported.0.abs_diff(sent.0);
-        let same_hue = hue.min(360u16.saturating_sub(hue)) <= 2 || sent.1 == 0;
-        if !same_hue || reported.1.abs_diff(sent.1) > 1 {
-            return reported;
-        }
-        let brightness = if reported.2.abs_diff(sent.2) <= 1 {
-            asked.2
-        } else {
-            reported.2
-        };
-        (asked.0, asked.1, brightness)
+/// The calibration boundary for drivers that take hue, saturation and brightness (a keyboard's
+/// underglow): calibrates the colour Foxglove asks for, writes it with `write`, and remembers
+/// both, so [`asked_hsb`] can turn what the device reports back into the asked colour. No lock
+/// is held while `write` runs; of two writes at once, the one that started last is remembered.
+pub fn send_hsb(
+    key: &str,
+    asked: Hsb,
+    write: impl FnOnce(Hsb) -> crate::Result<()>,
+) -> crate::Result<()> {
+    let asked = (asked.0.min(359), asked.1.min(100), asked.2.min(100));
+    let sent = global().hsb(key, None, None, asked);
+    let seq = HSB_SEQ.fetch_add(1, Ordering::Relaxed);
+    write(sent)?;
+    let mut last = LAST_HSB.lock().unwrap_or_else(|e| e.into_inner());
+    if last.get(key).is_none_or(|l| l.seq < seq) {
+        last.insert(key.to_string(), LastHsb { seq, asked, sent });
     }
+    Ok(())
+}
+
+/// The colour a hue/saturation/brightness device reports, in Foxglove's palette: what was asked
+/// for while it still shows what was sent for it; otherwise (a colour from before this start,
+/// brightness changed on the keyboard, a half dimmed on battery) the calibration's inverse.
+pub fn asked_hsb(key: &str, reported: Hsb) -> Hsb {
+    let last = LAST_HSB
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(key)
+        .copied();
+    if let Some(l) = last {
+        let hue = reported.0.abs_diff(l.sent.0);
+        let same_hue = hue.min(360u16.saturating_sub(hue)) <= 2 || l.sent.1 == 0;
+        if same_hue && reported.1.abs_diff(l.sent.1) <= 1 && reported.2.abs_diff(l.sent.2) <= 1 {
+            return l.asked;
+        }
+    }
+    global().get(key, None, None).invert_hsb(reported)
 }
 
 /// One device's calibration as a file, to export and import.
@@ -933,43 +981,82 @@ mod tests {
     #[test]
     fn an_hsb_driver_reports_the_colour_it_was_asked_for() {
         let key = "hsb-boundary-test";
+        let cal = Calibration {
+            gain: [1.0, 0.7, 0.5],
+            brightness: 0.8,
+            ..Default::default()
+        };
         global().set_device(
             key,
             Some(DeviceCalibration {
-                device: Calibration {
-                    gain: [1.0, 0.7, 0.5],
-                    brightness: 0.8,
-                    ..Default::default()
-                },
+                device: cal.clone(),
                 ..Default::default()
             }),
         );
-        let b = HsbBoundary::default();
-        assert_eq!(b.asked((10, 20, 30)), (10, 20, 30), "nothing sent yet");
         let mut sent = None;
-        b.send(key, (200, 40, 90), |hsb| {
+        send_hsb(key, (200, 40, 90), |hsb| {
             sent = Some(hsb);
             Ok(())
         })
         .unwrap();
         let sent = sent.unwrap();
         assert_ne!(sent, (200, 40, 90), "calibrated on the way out");
-        assert_eq!(b.asked(sent), (200, 40, 90));
-        assert_eq!(
-            b.asked((sent.0, sent.1, 20)),
-            (200, 40, 20),
-            "dimmed on its own"
-        );
-        assert_eq!(
-            b.asked((5, 100, sent.2)),
-            (5, 100, sent.2),
-            "a colour set elsewhere"
-        );
+        // Any device object for this key (a reconnect makes a new one) reads it back.
+        assert_eq!(asked_hsb(key, sent), (200, 40, 90));
+        // Something else: the inverse, never the calibrated colour taken as the palette's.
+        let dimmed = asked_hsb(key, (sent.0, sent.1, 20));
+        assert!(dimmed.2 > 20, "{dimmed:?}");
         // A failed write remembers nothing new.
-        let failed = b.send(key, (0, 100, 100), |_| Err(crate::DeviceError::Timeout));
+        let failed = send_hsb(key, (0, 100, 100), |_| Err(crate::DeviceError::Timeout));
         assert!(failed.is_err());
-        assert_eq!(b.asked(sent), (200, 40, 90));
+        assert_eq!(asked_hsb(key, sent), (200, 40, 90));
+        // Nothing sent this run (the colour is from before a restart): the inverse too.
+        let other = "hsb-boundary-test-2";
+        global().set_device(
+            other,
+            Some(DeviceCalibration {
+                device: cal.clone(),
+                ..Default::default()
+            }),
+        );
+        let back = asked_hsb(other, cal.apply_hsb(30, 80, 70));
+        assert!(
+            back.0.abs_diff(30) <= 2 && back.1.abs_diff(80) <= 2 && back.2.abs_diff(70) <= 2,
+            "{back:?}"
+        );
+        assert_eq!(asked_hsb("never-calibrated", (5, 6, 7)), (5, 6, 7));
         global().set_device(key, None);
+        global().set_device(other, None);
+    }
+
+    #[test]
+    fn the_inverse_undoes_the_calibration() {
+        let cals = [
+            Calibration {
+                gain: [1.0, 0.8, 0.6],
+                brightness: 0.9,
+                gamma: [1.2, 1.0, 0.8],
+                ..Default::default()
+            },
+            Calibration {
+                matrix: Some([[0.9, 0.0, 0.0], [0.08, 0.85, 0.0], [0.0, 0.1, 1.0]]),
+                ..Default::default()
+            },
+        ];
+        for cal in &cals {
+            for c in every_byte().step_by(7) {
+                let f = [c.r, c.g, c.b].map(|v| f32::from(v) / 255.0);
+                let back = cal.invert(cal.apply(f));
+                let again = cal.apply(back);
+                for (a, b) in cal.apply(f).iter().zip(again) {
+                    assert!((a - b).abs() < 2e-3, "{cal:?} {f:?} -> {back:?}");
+                }
+            }
+        }
+        assert_eq!(
+            Calibration::default().invert([0.2, 0.4, 0.6]),
+            [0.2, 0.4, 0.6]
+        );
     }
 
     #[test]

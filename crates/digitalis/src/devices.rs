@@ -14,7 +14,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use foxglove_devices::calibration::{self, HsbBoundary};
+use foxglove_devices::calibration;
 use foxglove_devices::{
     ArtStatus as DeviceArt, BehaviorInfo, Behaviors, Caps, Checked, DevSettings, Device,
     DeviceError, DeviceEvent, DeviceInfo, Effect, EventSink, Layers, Led, Lighting, LightingState,
@@ -185,10 +185,9 @@ pub struct DigitalisDevice {
     layers: Arc<Mutex<Vec<u8>>>,
     behaviors: Mutex<Vec<BehaviorInfo>>,
     underglow: Mutex<Option<u16>>,
-    /// Its key in the colour calibration registry.
+    /// Its key in the colour calibration registry: underglow colours go through that
+    /// calibration (`calibration::send_hsb`).
     calibration_key: Mutex<String>,
-    /// Underglow colours go through the keyboard's calibration here.
-    calibration: HsbBoundary,
     _events: EventSubscription,
     _reports: EventSubscription,
 }
@@ -254,7 +253,6 @@ impl DigitalisDevice {
         }
         DigitalisDevice {
             calibration_key: Mutex::new(calibration::key_for(&info.id)),
-            calibration: HsbBoundary::default(),
             info,
             link,
             caps: caps(&hello),
@@ -294,9 +292,10 @@ impl DigitalisDevice {
     /// A half's colour as the keyboard reports it, turned back into the colour Foxglove asked
     /// for (before calibration), so the app shows and resends the palette's colour.
     pub fn asked_half(&self, half: &mut RgbHalf) {
-        (half.hue, half.sat, half.brightness) =
-            self.calibration
-                .asked((half.hue, half.sat, half.brightness));
+        (half.hue, half.sat, half.brightness) = calibration::asked_hsb(
+            &self.calibration_key(),
+            (half.hue, half.sat, half.brightness),
+        );
     }
 
     /// Both halves' state as [`Self::asked_half`] reports them.
@@ -500,11 +499,10 @@ impl Lighting for DigitalisDevice {
     /// Through the keyboard's colour calibration: the firmware gets the calibrated colour.
     fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> PResult<()> {
         let key = self.calibration_key();
-        self.calibration
-            .send(&key, (hue, sat, brightness), |(hue, sat, brightness)| {
-                let hsb = (u32::from(hue) << 16) | (u32::from(sat) << 8) | u32::from(brightness);
-                self.underglow(RGB_COLOR_HSB, hsb)
-            })
+        calibration::send_hsb(&key, (hue, sat, brightness), |(hue, sat, brightness)| {
+            let hsb = (u32::from(hue) << 16) | (u32::from(sat) << 8) | u32::from(brightness);
+            self.underglow(RGB_COLOR_HSB, hsb)
+        })
     }
 
     /// ZMK has no "set speed", only one step up or down: steps toward `speed`, reading it back
@@ -1048,8 +1046,13 @@ mod tests {
                 0
             )[..12]
         );
-        // The fake reports hue 0x168, sat 1, brightness 80: not what was sent, so as is.
-        assert_eq!(lighting.state().unwrap().hue, 0x168);
+        // The fake reports hue 0x168, sat 80, brightness 50, not what was sent: it reads back
+        // through the calibration's inverse, never as if it were the palette's colour.
+        let shown = lighting.state().unwrap();
+        assert_eq!(
+            (shown.hue, shown.sat, shown.brightness),
+            warm.invert_hsb((0x168, 80, 50))
+        );
         let mut state = RgbState {
             left: RgbHalf {
                 on: true,

@@ -14,11 +14,15 @@ pub const SECTION: &str = "calibration";
 /// writes a colour. A section this Foxglove can't read (a newer version, an unknown field) is
 /// logged and left as it is: the devices run uncalibrated rather than half calibrated.
 pub fn load() {
+    load_into(calibration::global());
+}
+
+fn load_into(registry: &calibration::Registry) {
     let Some(section) = super::store::try_load::<toml::Table>(SECTION) else {
         return;
     };
     match read(section) {
-        Ok(all) => calibration::global().replace(all),
+        Ok(all) => registry.replace(all),
         Err(e) => eprintln!("Foxglove: [{SECTION}]: {e}; colours go out uncalibrated"),
     }
 }
@@ -84,10 +88,11 @@ mod tests {
         colours.devices.entry(key.into()).or_default().colors =
             [("1".to_string(), "#5fc48e".to_string())].into();
         super::super::store::save("pc_lighting", &colours).unwrap();
-        // Read back from the file, as the next start does.
-        calibration::global().set_device(key, None);
-        load();
-        assert_eq!(calibration::global().device(key), Some(cal));
+        // Read back from the file, as the next start does (into a registry of its own, so
+        // the process's, which other tests use, isn't replaced).
+        let registry = calibration::Registry::default();
+        load_into(&registry);
+        assert_eq!(registry.device(key), Some(cal));
         let saved: Calibrations = super::super::store::try_load(SECTION).unwrap();
         assert_eq!(saved.version, calibration::VERSION);
     }

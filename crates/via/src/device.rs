@@ -4,7 +4,7 @@
 //! Lighting changes are not saved to the keyboard's EEPROM (no CUSTOM_SAVE): they last until
 //! the keyboard restarts, so experiments can't wear or overwrite the stored settings.
 
-use foxglove_devices::calibration::{self, HsbBoundary};
+use foxglove_devices::calibration;
 use foxglove_devices::{
     Binding, Caps, Device, DeviceError, DeviceInfo, Effect, Keymap, LayerInfo, Layout, Led,
     Lighting, LightingState, Result, WriteSupport, Zone,
@@ -15,8 +15,6 @@ use crate::protocol::{self, rgb_matrix, Guarded, Transport};
 
 pub struct ViaDevice<T: Transport> {
     info: DeviceInfo,
-    /// Colours go through the keyboard's calibration here.
-    calibration: HsbBoundary,
     def: Definition,
     link: Guarded<T>,
     /// VIA protocol version, from the keyboard.
@@ -32,7 +30,6 @@ impl<T: Transport> ViaDevice<T> {
         let protocol_version = u16::from_be_bytes([v[1], v[2]]);
         let layers = link.send(&[protocol::DYNAMIC_KEYMAP_GET_LAYER_COUNT])?[1];
         Ok(ViaDevice {
-            calibration: HsbBoundary::default(),
             info,
             def,
             link,
@@ -165,11 +162,15 @@ impl<T: Transport> Lighting for ViaDevice<T> {
         let speed = self.custom_get(rgb_matrix::EFFECT_SPEED)?[0];
         let [hue, sat] = self.custom_get(rgb_matrix::COLOR)?;
         // In Foxglove's palette: the colour asked for, not its calibrated form.
-        let (hue, sat, shown) = self.calibration.asked((
-            ((u32::from(hue) * 360 + 128) / 256) as u16 % 360,
-            to_percent(sat),
-            to_percent(brightness),
-        ));
+        let key = calibration::key_for(&self.info.id);
+        let (hue, sat, shown) = calibration::asked_hsb(
+            &key,
+            (
+                ((u32::from(hue) * 360 + 128) / 256) as u16 % 360,
+                to_percent(sat),
+                to_percent(brightness),
+            ),
+        );
         Ok(LightingState {
             on: brightness > 0 && effect > 0,
             hue,
@@ -193,12 +194,11 @@ impl<T: Transport> Lighting for ViaDevice<T> {
     /// Through the keyboard's colour calibration.
     fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> Result<()> {
         let key = calibration::key_for(&self.info.id);
-        self.calibration
-            .send(&key, (hue, sat, brightness), |(hue, sat, brightness)| {
-                let h = ((u32::from(hue) * 256) / 360) as u8;
-                self.custom_set(rgb_matrix::COLOR, &[h, from_percent(sat)])?;
-                self.custom_set(rgb_matrix::BRIGHTNESS, &[from_percent(brightness)])
-            })
+        calibration::send_hsb(&key, (hue, sat, brightness), |(hue, sat, brightness)| {
+            let h = ((u32::from(hue) * 256) / 360) as u8;
+            self.custom_set(rgb_matrix::COLOR, &[h, from_percent(sat)])?;
+            self.custom_set(rgb_matrix::BRIGHTNESS, &[from_percent(brightness)])
+        })
     }
 
     fn release(&self) -> Result<()> {
