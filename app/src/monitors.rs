@@ -8,6 +8,19 @@ pub struct Monitor {
     pub primary: bool,
     /// Work area (excluding the taskbar) in physical pixels: left, top, right, bottom.
     pub work_area: [i32; 4],
+    /// Its scaling as a DPI (96 = 100 %, 144 = 150 %).
+    pub dpi: u32,
+}
+
+impl Monitor {
+    /// Physical pixels per point (logical pixel) on this display.
+    pub fn scale(&self) -> f32 {
+        if self.dpi == 0 {
+            1.0
+        } else {
+            self.dpi as f32 / 96.0
+        }
+    }
 }
 
 /// Lists the connected displays. Empty on platforms where moving the overlay
@@ -59,9 +72,22 @@ pub fn list() -> Vec<Monitor> {
                 label,
                 primary,
                 work_area: [work.left, work.top, work.right, work.bottom],
+                dpi: dpi_of(monitor),
             });
         }
         BOOL(1)
+    }
+
+    // The effective DPI (the scaling set in Windows), 96 when it can't be read. The process is
+    // per-monitor DPI aware (winit), so this is the display's own.
+    fn dpi_of(monitor: HMONITOR) -> u32 {
+        use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+        let (mut x, mut y) = (0u32, 0u32);
+        // SAFETY: `monitor` comes from the enumeration; the outputs are ours.
+        match unsafe { GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut x, &mut y) } {
+            Ok(()) if x > 0 => x,
+            _ => 96,
+        }
     }
 
     let mut monitors: Vec<Monitor> = Vec::new();

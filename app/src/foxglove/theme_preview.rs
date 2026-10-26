@@ -945,7 +945,9 @@ fn settings_window_placement_renders() {
     let displays = two_displays();
     let saved = Saved {
         monitor: displays[1].id.clone(),
-        rect: Some([3000, 200, 4560, 1190]),
+        // In points of the 150 % display: 1560 x 990 pixels there, 1040 x 660 on the main one.
+        place: Some([293.0, 134.0, 1040.0, 660.0]),
+        rect: None,
     };
     let scale = 0.12;
     let panel_h = 2088.0 * scale + 56.0;
@@ -997,7 +999,7 @@ fn settings_window_placement_renders() {
                     DARK.muted,
                 );
             }
-            if let Some(r) = restore(&saved, monitors, [1560, 990], "") {
+            if let Some(r) = restore(&saved, monitors, [1040.0, 660.0], "") {
                 let rect = to_rect(r);
                 painter.rect(
                     rect,
