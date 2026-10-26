@@ -153,6 +153,14 @@ impl OverlayApp {
                 (hovered_key, overlay_response.clicked())
             });
 
+        // Foxglove: where the overlay is, for its hit region while Settings is open.
+        if let Some(response) = overlay_response.as_ref() {
+            self.ui.overlay_rect = Some(response.response.rect);
+            self.ui.overlay_hovered = response
+                .inner
+                .is_some_and(|(hovered, _)| hovered.is_some());
+        }
+
         // Handle a click after the closure so editor state can be mutated.
         if hit_test_enabled {
             if let Some(response) = overlay_response.as_ref() {

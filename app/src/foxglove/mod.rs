@@ -57,6 +57,7 @@ pub mod screens_ui;
 mod screens_watch;
 pub mod services;
 pub mod settings_ui;
+pub mod settings_window;
 pub mod shell;
 pub mod single_instance;
 pub mod startup;

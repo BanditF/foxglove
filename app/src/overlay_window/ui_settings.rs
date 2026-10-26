@@ -2,7 +2,6 @@ use super::state::AppConnectionState;
 use super::OverlayApp;
 use crate::settings::{LayerMask, LegendMode, Settings, ThemeColor, ThemeSettings, WindowPosition};
 use crate::foxglove::settings_ui::section as titled_group;
-use egui::Window;
 
 impl OverlayApp {
     /// The color button that ends every theme row, right-aligned in the row.
@@ -96,19 +95,27 @@ impl OverlayApp {
             .map(|d| d.display_name())
             .unwrap_or_else(|| "Select device...".to_string());
 
-        let settings_window_size = egui::vec2(1040.0, 660.0); // Foxglove: room for the sidebar (#385)
-        let settings_window_pos = ctx.viewport_rect().center() - settings_window_size * 0.5;
-
-        Window::new("Foxglove Settings")
-            .open(&mut open)
-            .default_size(settings_window_size)
-            .default_pos(settings_window_pos)
-            .collapsible(false)
-            .resizable(true)
-            .min_size(egui::vec2(720.0, 420.0))
-            .frame(crate::foxglove::shell::window_frame(ctx))
+        // Foxglove: Settings is a native window of its own (an immediate viewport), so it can be
+        // dragged to any display and dims nothing behind it.
+        let overlay_monitor = self.settings.active.monitor.clone();
+        let builder = crate::foxglove::settings_window::builder();
+        ctx.show_viewport_immediate(crate::foxglove::settings_window::id(), builder, |ui, class| {
+            let ctx = ui.ctx().clone();
+            self.ui.settings_window.frame(&ctx, &overlay_monitor);
+            if ctx.input(|i| i.viewport().close_requested()) {
+                open = false;
+            }
+            if class == egui::ViewportClass::EmbeddedWindow && ui.button("Close").clicked() {
+                // A host without native windows (Wayland) draws it inside the overlay instead.
+                open = false;
+            }
+            // The dialogs and messages it opens show in its window too.
+            self.ui.file_dialog.update(&ctx);
+            crate::foxglove::art_ui::update(&ctx);
+            Self::message_window(&ctx, "Error", &mut self.ui.settings_error);
+            Self::message_window(&ctx, "Notice", &mut self.ui.settings_warning);
             // Foxglove (#385): the sidebar, status strip and pages; each page scrolls itself.
-            .show(ctx, |ui| crate::foxglove::shell::frame(ui, |ui| {
+            crate::foxglove::shell::frame(ui, |ui| {
                 titled_group(ui, "Connection", |ui| {
                     let control_spacing = ui.spacing().item_spacing.x;
                     const RIGHT_COLUMN_WIDTH: f32 = 100.0;
@@ -445,10 +452,12 @@ impl OverlayApp {
 
                 // Foxglove (#384): links, KeyPeek credit and font credits, stacked.
                 crate::foxglove::settings_ui::footer(ui);
-            }));
+            });
+        });
 
         if self.ui.settings_visible && !open {
             self.ui.settings_visible = false;
+            self.ui.settings_window.closed();
             self.persist_settings();
             if !self.session.ever_connected {
                 self.request_close_editor();

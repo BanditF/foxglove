@@ -33,6 +33,16 @@ fn render(
     backdrop: Color32,
     mut draw: impl FnMut(&egui::Context),
 ) -> image::RgbaImage {
+    render_ui(ctx, size, backdrop, |ui| draw(&ui.ctx().clone()))
+}
+
+/// [`render`] with the frame's root `Ui`, as a native window's viewport gets it.
+fn render_ui(
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    backdrop: Color32,
+    mut draw: impl FnMut(&mut egui::Ui),
+) -> image::RgbaImage {
     let mut textures: HashMap<TextureId, Texture> = HashMap::new();
     let mut last = None;
     for frame in 0..8 {
@@ -47,7 +57,7 @@ fn render(
             .entry(egui::ViewportId::ROOT)
             .or_default()
             .native_pixels_per_point = Some(PPP);
-        let mut out = ctx.run_ui(raw, |ui| draw(&ui.ctx().clone()));
+        let mut out = ctx.run_ui(raw, &mut draw);
         for (id, delta) in out
             .textures_delta
             .set
@@ -478,7 +488,7 @@ fn shell_window(ctx: &egui::Context, size: egui::Vec2) -> Option<Rect> {
         .fixed_pos(egui::pos2(16.0, 16.0))
         .default_size(size)
         .min_size(egui::vec2(720.0, 420.0))
-        .frame(crate::foxglove::shell::window_frame(ctx))
+        .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::ZERO))
         .collapsible(false)
         .resizable(true)
         .open(&mut true)
@@ -844,6 +854,159 @@ fn settings_page_renders() {
     );
     // The theme picker's selected pill sits in "Theme and updates".
     assert!(count(&img, DARK.selected_fill) > 100, "the Dark pill");
+}
+
+/// The Settings window as a native window of its own shows it: the shell edge to edge in the
+/// client area. Windows draws the real title bar (dark with the dark theme); a stand-in sits
+/// above the client area here, so the review sees the whole window.
+#[test]
+fn settings_window_renders_as_a_native_window() {
+    use crate::foxglove::settings_window::{DEFAULT_SIZE, TITLE};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let ctx = preview_ctx();
+    show_samples(Page::Settings, &Samples::full());
+    const TITLE_BAR: f32 = 32.0;
+    let bar = Color32::from_rgb(0x20, 0x20, 0x20);
+    let size = DEFAULT_SIZE + egui::vec2(0.0, TITLE_BAR);
+    let img = render_ui(&ctx, size, bar, |ui| {
+        egui::Panel::top("native-title-bar")
+            .exact_size(TITLE_BAR)
+            .frame(
+                egui::Frame::new()
+                    .fill(bar)
+                    .inner_margin(egui::Margin::symmetric(12, 0)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.label(egui::RichText::new(TITLE).color(Color32::from_gray(0xd0)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 28.0;
+                        for glyph in [
+                            egui_phosphor::regular::X,
+                            egui_phosphor::regular::SQUARE,
+                            egui_phosphor::regular::MINUS,
+                        ] {
+                            ui.label(egui::RichText::new(glyph).color(Color32::from_gray(0xd0)));
+                        }
+                    });
+                });
+            });
+        crate::foxglove::shell::frame(ui, |ui| {
+            keypeek_groups(ui);
+            crate::foxglove::profiles_ui::picker(ui);
+            crate::foxglove::update::group(ui);
+            foxglove_groups(ui);
+            crate::foxglove::settings_ui::footer(ui);
+        });
+    });
+    clear_samples();
+    keep("ui-settings-native-window.png", &img);
+    let count = |c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    let total = (img.width() * img.height()) as usize;
+    // The shell reaches the window's edges: sidebar well and page ground, no egui window frame.
+    assert!(count(DARK.well) > total / 20, "sidebar");
+    assert!(count(DARK.ground) > total / 20, "page");
+    let left_edge = img.get_pixel(0, img.height() / 2).0;
+    assert_eq!(
+        left_edge[..3],
+        [DARK.well.r(), DARK.well.g(), DARK.well.b()],
+        "the sidebar starts at the window's left edge"
+    );
+}
+
+/// Where the Settings window opens, drawn from the real placement logic on this PC's two
+/// displays: where it was closed while both are there, and centred on the main display once the
+/// second one is gone.
+#[test]
+fn settings_window_placement_renders() {
+    use crate::foxglove::settings_window::{restore, tests::two_displays, Saved};
+    use crate::foxglove::theme::DARK;
+    let ctx = preview_ctx();
+    let displays = two_displays();
+    let saved = Saved {
+        monitor: displays[1].id.clone(),
+        rect: Some([3000, 200, 4560, 1190]),
+    };
+    let scale = 0.12;
+    let panel_h = 2088.0 * scale + 56.0;
+    let size = egui::vec2(6400.0 * scale + 48.0, panel_h * 2.0 + 16.0);
+    let cases: [(&str, &[crate::monitors::Monitor]); 2] = [
+        ("Both displays: it opens where it was closed", &displays[..]),
+        (
+            "Display 2 unplugged: centred on the main display",
+            &displays[..1],
+        ),
+    ];
+    let img = render_ui(&ctx, size, DARK.ground, |ui| {
+        let painter = ui.painter().clone();
+        for (i, (caption, monitors)) in cases.iter().enumerate() {
+            let top = 12.0 + i as f32 * panel_h;
+            painter.text(
+                egui::pos2(24.0, top),
+                egui::Align2::LEFT_TOP,
+                *caption,
+                crate::foxglove::theme::body(15.0),
+                DARK.text_strong,
+            );
+            let origin = egui::pos2(24.0, top + 32.0);
+            let to_rect = |r: [i32; 4]| {
+                Rect::from_min_max(
+                    origin + egui::vec2(r[0] as f32, r[1] as f32) * scale,
+                    origin + egui::vec2(r[2] as f32, r[3] as f32) * scale,
+                )
+            };
+            for (n, m) in displays.iter().enumerate() {
+                let here = monitors.iter().any(|x| x.id == m.id);
+                let rect = to_rect(m.work_area);
+                painter.rect(
+                    rect,
+                    4.0,
+                    if here { DARK.surface } else { DARK.ground },
+                    egui::Stroke::new(1.0, if here { DARK.muted } else { DARK.well }),
+                    egui::StrokeKind::Inside,
+                );
+                painter.text(
+                    rect.left_bottom() + egui::vec2(8.0, -8.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    if here {
+                        format!("Display {}", n + 1)
+                    } else {
+                        format!("Display {} (gone)", n + 1)
+                    },
+                    crate::foxglove::theme::mono(12.0),
+                    DARK.muted,
+                );
+            }
+            if let Some(r) = restore(&saved, monitors, [1560, 990], "") {
+                let rect = to_rect(r);
+                painter.rect(
+                    rect,
+                    3.0,
+                    DARK.accent.gamma_multiply(0.35),
+                    egui::Stroke::new(2.0, DARK.accent),
+                    egui::StrokeKind::Inside,
+                );
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Settings",
+                    crate::foxglove::theme::body(13.0),
+                    DARK.text_strong,
+                );
+            }
+        }
+    });
+    keep("ui-settings-window-placement.png", &img);
+    assert!(
+        img.pixels()
+            .any(|p| p.0[..3] == [DARK.accent.r(), DARK.accent.g(), DARK.accent.b()]),
+        "the window's outline"
+    );
 }
 
 /// The layer overlay at three opacity settings, over a wallpaper-like backdrop: 100% (the look
