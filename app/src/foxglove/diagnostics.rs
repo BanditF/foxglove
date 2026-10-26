@@ -250,17 +250,13 @@ pub fn collect(ctx: &egui::Context) -> Facts {
         _ => String::new(),
     };
     let summary = super::connection::summary(ctx);
-    let connection = match (summary.usb, link.as_str()) {
-        (Some(true), _) | (None, "usb") => "USB".to_string(),
-        (Some(false), _) | (None, "ble") => format!(
-            "Bluetooth{}",
-            summary
-                .profile
-                .map(|p| format!(", profile {}", p + 1))
-                .unwrap_or_default()
-        ),
-        _ => "unknown".into(),
-    };
+    let connected = facts.get("keyboard.connected") == Some(Value::Bool(true));
+    let connection = connection_line(
+        summary.usb,
+        &link,
+        summary.profile,
+        super::devices::host_link().filter(|_| connected),
+    );
     let (left_firmware, right_firmware) = match super::keyboard_settings::firmware(ctx) {
         super::keyboard_settings::Firmware::Known { left, right } => {
             let text = |r: Result<digitalis::protocol::BuildInfo, String>| match r {
@@ -317,6 +313,31 @@ pub fn collect(ctx: &egui::Context) -> Facts {
     }
 }
 
+/// The "Connection" line: how the keyboard types to this PC (USB, or Bluetooth with its profile)
+/// and how Foxglove's host link reaches it, which can differ (USB Raw HID is silent before
+/// firmware #434, so the link runs over BLE): `USB (typing) · host link BLE`.
+fn connection_line(
+    usb: Option<bool>,
+    link_fact: &str,
+    profile: Option<u8>,
+    host_link: Option<&str>,
+) -> String {
+    let typing = match (usb, link_fact) {
+        (Some(true), _) | (None, "usb") => "USB".to_string(),
+        (Some(false), _) | (None, "ble") => format!(
+            "Bluetooth{}",
+            profile
+                .map(|p| format!(", profile {}", p + 1))
+                .unwrap_or_default()
+        ),
+        _ => "unknown".into(),
+    };
+    match host_link {
+        Some(link) => format!("{typing} (typing) · host link {link}"),
+        None => typing,
+    }
+}
+
 /// Collects, writes and copies the report to the clipboard.
 pub fn copy(ctx: &egui::Context) {
     let text = report(&collect(ctx), &Personal::from_env());
@@ -342,7 +363,7 @@ pub(crate) fn sample() -> Facts {
         gpu: Some("NVIDIA GeForce RTX/PCIe/SSE2 (OpenGL 4.6.0 NVIDIA 581.57)".into()),
         keyboard: Some("Eyelash Corne".into()),
         board: Some("Eyelash Corne (eyelash_corne)".into()),
-        connection: "USB".into(),
+        connection: "USB (typing) · host link BLE".into(),
         left_firmware: "0.1.0 dev · 2ae9522".into(),
         right_firmware: "0.1.0 dev · 2ae9522".into(),
         right_battery: Some(61),
@@ -369,6 +390,24 @@ pub(crate) fn sample() -> Facts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_connection_names_typing_and_the_host_link() {
+        assert_eq!(
+            connection_line(Some(true), "usb", Some(0), Some("BLE")),
+            "USB (typing) · host link BLE"
+        );
+        assert_eq!(
+            connection_line(Some(false), "ble", Some(1), Some("BLE")),
+            "Bluetooth, profile 2 (typing) · host link BLE"
+        );
+        assert_eq!(
+            connection_line(None, "usb", None, None),
+            "USB",
+            "no host link"
+        );
+        assert_eq!(connection_line(None, "", None, None), "unknown");
+    }
 
     fn personal() -> Personal {
         Personal::new(vec![
