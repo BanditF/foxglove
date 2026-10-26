@@ -143,6 +143,8 @@ pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
         }
         // Firmware new enough to report its build (#133); the &bt refusal fix (#142) landed
         // with it, so the &bt cases also only send BT_SEL to the profile already in use.
+        // The PC's lock state, checked when the case starts (Runner::locked).
+        "unlocked" => return None,
         "build_info" if has(caps::BUILD_INFO) => return None,
         "build_info" => "firmware doesn't report its build (HELLO bit 12)",
         "screen_readback" if has(caps::SCREEN) => return None,
@@ -184,6 +186,8 @@ pub struct Runner<'a, D> {
     case_name: String,
     /// The last capture_screen per half in this case: expect_screen_change compares with it.
     baselines: std::collections::HashMap<String, image::GrayImage>,
+    /// Whether the PC is locked, for cases that require "unlocked" (tests swap it out).
+    pub locked: fn() -> bool,
 }
 impl<'a, D: Device> Runner<'a, D> {
     pub fn new(
@@ -208,6 +212,7 @@ impl<'a, D: Device> Runner<'a, D> {
             baselines: Default::default(),
             case_name: String::new(),
             screens_ini: None,
+            locked: crate::platform::locked,
         }
     }
     fn check(&self) -> Result<()> {
@@ -1080,6 +1085,12 @@ impl<'a, D: Device> Runner<'a, D> {
                 _ => None,
             }))
             .collect::<Vec<_>>();
+        // Checked as the case starts, not in unsupported(): it's the PC, not the firmware.
+        if c.requires.iter().any(|r| r == "unlocked") && (self.locked)() {
+            blocked.push(
+                "the PC is locked: Foxglove hands the left panel back while away (#410)".into(),
+            );
+        }
         if c.manual && self.non_interactive {
             blocked.push("manual case requires interactive confirmation".into());
         }

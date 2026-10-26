@@ -130,7 +130,7 @@ fn parses_seed_suites_and_all_step_kinds() {
             .unwrap()
             .cases
             .len(),
-        9
+        10
     );
     assert_eq!(
         spec::load(&root.join("app-actions.toml"))
@@ -743,4 +743,222 @@ fn hello_profile_and_split_guard_drops() {
     let result = run(&fake, &case(steps));
     assert_eq!(result.status, Status::Fail);
     assert!(result.message.contains("expected ga") && result.message.contains("2 times"));
+}
+
+/// The left half in memory for the replug case (#374): it answers HELLO and the screen readback
+/// (D7 06/07) from `screen`, and its cable can be pulled and plugged back in.
+mod left_half {
+    use super::*;
+    use digitalis::link::{Connected, Link, RawHid};
+    use std::sync::{Condvar, Mutex};
+
+    #[derive(Default)]
+    pub struct Board {
+        /// The native 160x68 screen, 1 bpp, 20 bytes a row, MSB first, 1 = ink.
+        pub screen: Mutex<Vec<u8>>,
+        plugged: AtomicBool,
+        /// The open connection's input.
+        wire: Mutex<Option<Arc<Line>>>,
+    }
+    #[derive(Default)]
+    struct Queue {
+        reports: VecDeque<[u8; REPORT]>,
+        stopped: bool,
+        gone: bool,
+    }
+    type Line = (Mutex<Queue>, Condvar);
+    /// One USB connection; a replug makes a new one.
+    struct Wire {
+        board: Arc<Board>,
+        queue: Arc<Line>,
+    }
+    impl RawHid for Wire {
+        fn read(&self, buf: &mut [u8; REPORT]) -> Result<usize> {
+            let (lock, ready) = &*self.queue;
+            let mut q = lock.lock().unwrap();
+            loop {
+                if let Some(r) = q.reports.pop_front() {
+                    *buf = r;
+                    return Ok(REPORT);
+                }
+                if q.stopped {
+                    return Ok(0);
+                }
+                if q.gone {
+                    anyhow::bail!("device gone");
+                }
+                q = ready.wait(q).unwrap();
+            }
+        }
+        fn interrupt(&self) {
+            let (lock, ready) = &*self.queue;
+            lock.lock().unwrap().stopped = true;
+            ready.notify_all();
+        }
+        fn write(&self, r: &[u8]) -> Result<()> {
+            let (lock, ready) = &*self.queue;
+            let mut q = lock.lock().unwrap();
+            anyhow::ensure!(!q.gone, "device gone");
+            let screen = self.board.screen.lock().unwrap().clone();
+            let answer = match (r[0], r[1]) {
+                (0xd5, 0x01) => hello_caps(1 << 6),
+                (0xd7, 0x06) => {
+                    let mut meta = vec![0xd7, 0x86, 0, r[2], 1, 0, 160, 68];
+                    meta.extend(1360u16.to_le_bytes());
+                    meta.extend(crc32fast::hash(&screen).to_le_bytes());
+                    reply(&meta)
+                }
+                (0xd7, 0x07) => {
+                    let at = usize::from(u16::from_le_bytes([r[3], r[4]]));
+                    let chunk = &screen[at..(at + REPORT - 7).min(screen.len())];
+                    let mut out = vec![0xd7, 0x87, 0, r[2], r[3], r[4], chunk.len() as u8];
+                    out.extend(chunk);
+                    reply(&out)
+                }
+                other => panic!("the replug case sent {other:x?}"),
+            };
+            q.reports.push_back(answer);
+            ready.notify_all();
+            Ok(())
+        }
+    }
+
+    impl Board {
+        /// A link to this half, as `foxglove-lab run` opens one.
+        pub fn connect(self: &Arc<Self>) -> Link {
+            self.plugged.store(true, Ordering::Relaxed);
+            let board = self.clone();
+            let link = Link::start(Box::new(move || {
+                anyhow::ensure!(board.plugged.load(Ordering::Relaxed), "no keyboard");
+                let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
+                *board.wire.lock().unwrap() = Some(queue.clone());
+                Ok((
+                    Box::new(Wire { board: board.clone(), queue }) as Box<dyn RawHid>,
+                    Connected {
+                        product: "left half".into(),
+                        hello: Some(Hello { version: 1, capabilities: 1 << 6, ..Default::default() }),
+                    },
+                ))
+            }));
+            link.wait_connected(Duration::from_secs(2)).unwrap();
+            link
+        }
+
+        /// Pulls the cable: the open connection fails its reads and writes, and opening fails.
+        pub fn unplug(&self) {
+            self.plugged.store(false, Ordering::Relaxed);
+            if let Some(queue) = self.wire.lock().unwrap().as_ref() {
+                queue.0.lock().unwrap().gone = true;
+                queue.1.notify_all();
+            }
+        }
+
+        /// Plugs it back in; the device-arrival event is `Link::reconnect`.
+        pub fn plug(&self, link: &Link) {
+            self.plugged.store(true, Ordering::Relaxed);
+            link.reconnect();
+        }
+    }
+}
+
+/// #374, the Test lab case for #350: `replug-hello` in resilience.toml, run against a simulated
+/// left half over a real link. The cable is pulled and plugged back in (no key pressed); the run
+/// that saw the replug refuses to go on, and a fresh run reads HELLO and must find Foxglove's
+/// last frame on the left screen. A screen left blank after the replug (#350) fails.
+#[test]
+fn replug_hello_case_finds_the_redrawn_left_panel_after_a_replug() {
+    use foxglove_lab::runner::Hardware;
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil");
+    let mut suite = spec::load(&root.join("resilience.toml")).unwrap();
+    let at = suite.cases.iter().position(|c| c.name == "replug-hello").unwrap();
+    let case = suite.cases.swap_remove(at);
+    assert!(case.manual && matches!(case.steps[0], Step::Prompt(_)), "the replug is a human step");
+    assert!(case.requires.iter().any(|r| r == "unlocked"));
+    assert!(case.requires.iter().any(|r| r == "screen_readback"));
+
+    // Locked PC, or no human to confirm the replug: BLOCKED before anything is sent.
+    let fake = Fake::default();
+    let cat = catalog();
+    let dir = Temp::new();
+    let hello = Hello { version: 1, capabilities: TEST_HOOKS, ..Default::default() };
+    let mut runner = Runner::new(&fake, &cat, hello, Arc::new(AtomicBool::new(false)), false, &dir.0);
+    runner.locked = || true;
+    let r = runner.case(&case, true);
+    assert_eq!(r.status, Status::Blocked);
+    assert!(r.message.contains("locked"), "{}", r.message);
+    runner.locked = || false;
+    runner.non_interactive = true;
+    let r = runner.case(&case, true);
+    assert_eq!(r.status, Status::Blocked);
+    assert!(r.message.contains("manual"), "{}", r.message);
+    assert!(fake.requests.borrow().is_empty());
+
+    // The steps after the human's "y": the scripted replug below stands in for it.
+    drop(runner);
+    let mut steps = case;
+    steps.manual = false;
+    steps.steps.retain(|s| !matches!(s, Step::Prompt(_)));
+    let dump = dir.0.join("foxglove-replug-panel.pbm");
+    for s in &mut steps.steps {
+        if let Step::PanelDump(d) = s {
+            d.path = dump.to_string_lossy().into_owned();
+            d.within_ms = 400;
+        }
+    }
+    // Foxglove's last frame, as FOXGLOVE_DUMP_PANEL writes it: the portrait panel, 1 = ink.
+    let frame = foxglove_lab::resilience::test_frame(160, 68, 1);
+    let portrait = foxglove_lab::screen::portrait(&frame).unwrap();
+    let (w, h) = portrait.dimensions();
+    let mut bits = vec![0u8; w.div_ceil(8) as usize * h as usize];
+    for (x, y, p) in portrait.enumerate_pixels() {
+        if p[0] == 0 {
+            bits[(y * w.div_ceil(8) + x / 8) as usize] |= 0x80 >> (x % 8);
+        }
+    }
+    std::fs::write(&dump, foxglove_lab::resilience::pbm(w as usize, h as usize, &bits)).unwrap();
+
+    let board = Arc::new(left_half::Board::default());
+    *board.screen.lock().unwrap() = frame.clone();
+    let link = board.connect();
+    let mut hw = Hardware::new(link);
+    let run_on = |device: &Hardware| {
+        let out = Temp::new();
+        let mut r = Runner::new(device, &cat, hello, Arc::new(AtomicBool::new(false)), true, &out.0);
+        r.locked = || false;
+        r.case(&steps, true)
+    };
+    assert_eq!(run_on(&hw).status, Status::Pass, "the frame shows before the replug");
+
+    for redrawn in [true, false] {
+        // Replug: the panel comes back blank; Foxglove (#354) draws its frame again, or not.
+        let generation = hw.link.state().generation;
+        board.unplug();
+        let end = std::time::Instant::now() + Duration::from_secs(2);
+        while hw.link.state().connected.is_some() && std::time::Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        *board.screen.lock().unwrap() = if redrawn { frame.clone() } else { vec![0; 1360] };
+        board.plug(&hw.link);
+        let end = std::time::Instant::now() + Duration::from_secs(2);
+        while hw.link.state().generation == generation && std::time::Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        hw.link.wait_connected(Duration::from_secs(2)).unwrap();
+        // The run that saw the replug can't go on; the case runs in a fresh run.
+        let stale = run_on(&hw);
+        assert_eq!(stale.status, Status::Fail);
+        assert!(stale.message.contains("start a new run"), "{}", stale.message);
+        let link = hw.link;
+        hw = Hardware::new(link);
+        let r = run_on(&hw);
+        if redrawn {
+            assert_eq!(r.status, Status::Pass, "{}", r.message);
+            assert!(r.steps[0].actual.starts_with("HELLO caps"), "{}", r.steps[0].actual);
+            assert!(r.steps[1].actual.contains("frame shown"), "{}", r.steps[1].actual);
+            assert_eq!(r.steps[1].attachments, ["replug-hello-left-panel.png"]);
+        } else {
+            assert_eq!(r.status, Status::Fail, "a blank panel after the replug is #350");
+            assert!(r.message.contains("not found on the left screen"), "{}", r.message);
+        }
+    }
 }

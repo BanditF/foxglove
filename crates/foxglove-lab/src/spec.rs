@@ -579,7 +579,8 @@ pub fn load(path: &Path) -> Result<Suite> {
                     "art_keys",
                     "screen_readback",
                     "invoke_refusal",
-                    "build_info"
+                    "build_info",
+                    "unlocked"
                 ]
                 .contains(&r.as_str())
                     || r.strip_prefix("host_link>=")

@@ -45,6 +45,28 @@ pub fn cancellation() -> Result<Arc<AtomicBool>> {
     Ok(flag)
 }
 
+/// The PC is locked (or on the secure desktop): the input desktop can't be opened for
+/// switching. Foxglove hands the left panel back while away (#410), and typing goes nowhere.
+#[cfg(windows)]
+pub fn locked() -> bool {
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_SWITCHDESKTOP,
+    };
+    // SAFETY: plain Win32 call with no pointers; the handle it returns is closed right here.
+    match unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_SWITCHDESKTOP) } {
+        Ok(desk) => {
+            // SAFETY: `desk` came from OpenInputDesktop above and is closed exactly once.
+            let _ = unsafe { CloseDesktop(desk) };
+            false
+        }
+        Err(_) => true,
+    }
+}
+#[cfg(not(windows))]
+pub fn locked() -> bool {
+    false
+}
+
 pub fn prompt(ask: &str, cancelled: &Arc<AtomicBool>) -> Result<String> {
     ensure!(
         io::stdin().is_terminal(),

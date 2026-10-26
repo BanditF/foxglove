@@ -3,7 +3,8 @@ schema = 1
 # Keyboard first (docs/resilience.md, #25): what the keyboard does when the PC side dies or
 # misbehaves mid-push or mid-frame. Quit Foxglove first (it would fight the pushes and the panel).
 # Rows 1 and 2a need the app or a fresh boot: scripts/lab/resilience.py. Rows 3, 4 and 5b are
-# human (#90). Row 5a needs a dev build (D7 0B); it is BLOCKED on GA. Pushes leave test art on the
+# human (#90). Row 5a needs a dev build (D7 0B); it is BLOCKED on GA.
+# replug-hello (#374) is the exception: it needs Foxglove running and a fresh run after a human replug. Pushes leave test art on the
 # right; the last case puts a built-in set back (Foxglove re-pushes its own art when it starts).
 
 [[cases]]
@@ -84,6 +85,17 @@ steps = [
   { panel_dump = { path = "%TEMP%/foxglove-resilience-frame.pbm", shown = false, within_ms = 3000 } },
 ]
 
+[[cases]]
+name = "replug-hello"
+description = "#350/#374: right after the left half's cable is unplugged and plugged back in (a human step, #90), with no key pressed: the left answers HELLO, and its screen (D7 06/07 readback) shows the frame Foxglove last sent, so the app redrew the panel. A replug ends a lab run, so run this case on its own after the replug, with Foxglove started with FOXGLOVE_DUMP_PANEL=%TEMP%/foxglove-replug-panel.pbm: foxglove-lab --allow-app run --suite tests/hil/resilience.toml --only replug-hello. BLOCKED while the PC is locked (the app hands the panel back while away, #410)"
+tags = ["resilience"]
+manual = true
+requires = ["screen_readback", "unlocked"]
+steps = [
+  { prompt = { ask = "Was the left half's cable unplugged and plugged back in just before this run, with no key pressed since? (y/n)" } },
+  { expect_hello = { caps_set = [6] } },
+  { panel_dump = { path = "%TEMP%/foxglove-replug-panel.pbm", within_ms = 4000 } },
+]
 [[cases]]
 name = "r-cleanup-built-in-art"
 description = "Puts a built-in set back on the right (the pushes left test art)"
