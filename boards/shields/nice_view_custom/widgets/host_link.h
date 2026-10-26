@@ -23,7 +23,8 @@
  *                    8 unsolicited CONN_STATE (D7 84) on connection changes,
  *                    9 BOOTLOADER (D7 08; only when test hooks are built),
  *                    10 flash art slots (D6 06/07/08), 11 unsolicited RGB_STATE (D7 83),
- *                    12 BUILD_INFO (D7 09; HELLO bytes 27-30), 13 SCREENS (D5 06).
+ *                    12 BUILD_INFO (D7 09; HELLO bytes 27-30), 13 SCREENS (D5 06),
+ *                    17 LEFT_BATTERY (CONN_STATE byte 8 is the left's battery %).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -95,12 +96,15 @@
  *   04 CONN_STATE  no payload (request D7 04)          reply: D7 84, active BLE profile index u8,
  *                                                     connected (0/1), bonded (0/1),
  *                                                     selected endpoint (0 USB, 1 BLE),
- *                                                     USB HID ready (0/1), BLE profile count u8
+ *                                                     USB HID ready (0/1), BLE profile count u8,
+ *                                                     the left's battery % (byte 8; only with
+ *                                                     capability bit 17, else 0)
  *      Bonded means the active profile is not open. Endpoint is the currently selected transport,
  *      not the preferred transport. Without BLE, index/connected/bonded/count are zero; without
  *      USB, ready is zero. No boot work. After host traffic, a change of the active profile (or
  *      its connection or bond), the endpoint or USB also sends D7 84 unsolicited, ~50 ms after it
  *      settles and only if the payload differs from the last one sent that way (capability bit 8).
+ *      A change of the left's battery level is such a change too (bit 17, #373).
  *   05 POSITION  byte 0 D7, byte 1 05, byte 2 pos u8, byte 3 state u8 (1 down, 0 up)
  *                reply: byte 0 D7, byte 1 85, byte 2 status u8, byte 3 pos u8
  *      Positions are keymap indices 0..ZMK_KEYMAP_LEN-1 (48). Remaining report bytes are padding.
@@ -190,6 +194,8 @@
 #define HOST_LINK_CAP_PANEL_HOLD (1U << 15)
 // The keymap has &art_next / &art_prev, and D7 0D ART_KEYS hands them to the PC (#60).
 #define HOST_LINK_CAP_ART_KEYS (1U << 16)
+// CONN_STATE byte 8 carries the left half's own battery % (#373); set with battery reporting.
+#define HOST_LINK_CAP_LEFT_BATTERY (1U << 17)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);

@@ -139,6 +139,7 @@ impl DigitalisDevice {
         });
         let layers = Arc::new(Mutex::new(vec![0]));
         let (report_sink, report_layers) = (sink.clone(), layers.clone());
+        let capabilities = hello.capabilities;
         // Runs on the link's reader thread: emitting only updates facts and queues events.
         let reports = link.subscribe_reports(move |_, r| {
             if r[0] == KEY_EVENT {
@@ -160,6 +161,13 @@ impl DigitalisDevice {
                     profile: c.active_profile,
                     connected: c.connected,
                 });
+                // The left's own battery rides on CONN_STATE (#373).
+                if let Some(percent) = crate::protocol::left_battery(r, capabilities) {
+                    report_sink.emit(DeviceEvent::Battery {
+                        part: "left".into(),
+                        percent,
+                    });
+                }
             } else if let Some(active) = parse_layers(r) {
                 let mut current = report_layers.lock().unwrap_or_else(|e| e.into_inner());
                 if *current != active {
@@ -868,6 +876,41 @@ mod tests {
         assert!(screens.send_panel(&[0; 8 * 52], 64, 52).is_ok());
         assert!(screens.send_panel(&[0; 10], 64, 52).is_err());
         assert!(screens.send_panel(&[0; 8 * 50], 64, 50).is_err());
+    }
+
+    /// #373: the left's own battery rides on CONN_STATE, only with the capability bit.
+    #[test]
+    fn conn_state_carries_the_left_battery_when_the_firmware_says_so() {
+        let left = |caps: u32| {
+            let (_dev, fake, bus) = device(capabilities::PANEL | caps);
+            let events = bus.subscribe(false);
+            fake.push(&[0xD7, 0x84, 0, 1, 1, 0, 1, 3, 72]);
+            let end = Instant::now() + WAIT;
+            let mut seen = None;
+            while Instant::now() < end {
+                match events.recv_timeout(Duration::from_millis(50)) {
+                    Ok(e) => match e.event {
+                        DeviceEvent::Battery { part, percent } if part == "left" => {
+                            seen = Some(percent)
+                        }
+                        DeviceEvent::Link { .. } => {}
+                        _ => continue,
+                    },
+                    Err(_) => continue,
+                }
+                if seen.is_some() || caps == 0 {
+                    // Without the bit, the Link event is the last one this report gives.
+                    break;
+                }
+            }
+            seen
+        };
+        assert_eq!(left(capabilities::LEFT_BATTERY), Some(72));
+        assert_eq!(
+            left(0),
+            None,
+            "older firmware: byte 8 isn't a battery level"
+        );
     }
 
     #[test]

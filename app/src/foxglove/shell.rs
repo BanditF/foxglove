@@ -436,6 +436,8 @@ pub struct StripState {
     pub left_build: Option<Result<String, String>>,
     pub right_build: Option<Result<String, String>>,
     pub right_battery: Option<i64>,
+    /// The left half's own battery, once its firmware reports it (#373).
+    pub left_battery: Option<i64>,
     /// The active Bluetooth profile, from 0.
     pub profile: Option<u8>,
     /// The profile this PC is paired on, from 0.
@@ -481,13 +483,21 @@ pub fn chips(s: &StripState) -> Vec<Chip> {
         Some(false) => "on Bluetooth",
         None => "connected",
     };
+    let left_battery = s
+        .left_battery
+        .map(|b| format!(" · battery {b}%"))
+        .unwrap_or_default();
     out.push(match &s.left_build {
-        Some(Ok(build)) => chip(Tone::Ok, "Left", format!("{on} · {build}")),
+        Some(Ok(build)) => chip(Tone::Ok, "Left", format!("{on} · {build}{left_battery}")),
         Some(Err(e)) => Chip {
             hover: Some(e.clone()),
-            ..chip(Tone::Warn, "Left", format!("{on} · firmware unknown"))
+            ..chip(
+                Tone::Warn,
+                "Left",
+                format!("{on} · firmware unknown{left_battery}"),
+            )
         },
-        None => chip(Tone::Ok, "Left", on.to_string()),
+        None => chip(Tone::Ok, "Left", format!("{on}{left_battery}")),
     });
     let battery = s
         .right_battery
@@ -546,6 +556,10 @@ pub fn strip_state(ctx: &egui::Context) -> StripState {
         Some(Value::Int(b)) => Some(b),
         _ => None,
     };
+    let left_battery = match facts.get("keyboard.left.battery") {
+        Some(Value::Int(b)) => Some(b),
+        _ => None,
+    };
     let link = super::connection::summary(ctx);
     let (left_build, right_build) = match super::keyboard_settings::firmware(ctx) {
         super::keyboard_settings::Firmware::Known { left, right } => {
@@ -562,6 +576,7 @@ pub fn strip_state(ctx: &egui::Context) -> StripState {
         left_build,
         right_build,
         right_battery: battery,
+        left_battery,
         profile: link.profile,
         this_pc: link.this_pc,
         unplug_warning: link.unplug_warning,
@@ -837,12 +852,13 @@ mod tests {
             left_build: Some(Ok("0.1.0 · e255d32".into())),
             right_build: Some(Err("no reply from the keyboard".into())),
             right_battery: Some(61),
+            left_battery: Some(95),
             profile: Some(0),
             this_pc: Some(0),
             unplug_warning: None,
         };
         let c = chips(&s);
-        assert_eq!(c[0].text, "on USB · 0.1.0 · e255d32");
+        assert_eq!(c[0].text, "on USB · 0.1.0 · e255d32 · battery 95%");
         assert_eq!(
             (c[1].tone, c[1].text.as_str()),
             (Some(Tone::Warn), "no reply yet · battery 61%")

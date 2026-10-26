@@ -16,6 +16,7 @@
 LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include <raw_hid/events.h>
+#include <zmk/battery.h>
 #include <zmk/behavior.h>
 #include <zmk/ble.h>
 #include <zmk/display.h>
@@ -208,6 +209,9 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_INVOKE_REFUSES; // INVOKE exists, with the refuse list
 #endif
     caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO | HOST_LINK_CAP_SCREENS;
+#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
+    caps |= HOST_LINK_CAP_LEFT_BATTERY;
+#endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) && DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_art_step)
     caps |= HOST_LINK_CAP_ART_KEYS;
 #endif
@@ -464,7 +468,7 @@ void host_link_position_reply(uint8_t status, uint8_t pos) {
     reply(r, sizeof(r));
 }
 
-#define CONN_STATE_SIZE 8
+#define CONN_STATE_SIZE 9
 
 static void conn_state(uint8_t r[CONN_STATE_SIZE]) {
     memset(r, 0, CONN_STATE_SIZE);
@@ -480,10 +484,15 @@ static void conn_state(uint8_t r[CONN_STATE_SIZE]) {
 #if IS_ENABLED(CONFIG_ZMK_USB)
     r[6] = zmk_usb_is_hid_ready() ? 1 : 0;
 #endif
+#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
+    // The left's own level (#373): ZMK's last reading, no I/O here.
+    r[8] = zmk_battery_state_of_charge();
+#endif
 }
 
 // Unsolicited CONN_STATE: after host traffic, a change of the active BLE profile, its connection
-// or bond, the endpoint or USB sends the same reply on its own, once things have settled.
+// or bond, the endpoint, USB or the left's battery level sends the same reply on its own, once
+// things have settled; an unchanged payload isn't sent again.
 #define CONN_STATE_SETTLE K_MSEC(50)
 
 static uint8_t conn_state_sent[CONN_STATE_SIZE];
@@ -534,6 +543,9 @@ ZMK_SUBSCRIPTION(host_link_conn, zmk_ble_active_profile_changed);
 #endif
 #if IS_ENABLED(CONFIG_ZMK_USB)
 ZMK_SUBSCRIPTION(host_link_conn, zmk_usb_conn_state_changed);
+#endif
+#if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
+ZMK_SUBSCRIPTION(host_link_conn, zmk_battery_state_changed);
 #endif
 
 #define RGB_STATE_SIZE (2 + 2 * sizeof(struct rgb_idle_wire) + 1)

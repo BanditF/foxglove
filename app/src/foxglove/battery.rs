@@ -8,8 +8,8 @@
 //! - **Tray tooltip:** `Right 61%` (and the left once it's reported) under the status line,
 //!   `Right —` while the right half isn't reporting.
 //!
-//! Today only the right half's level is reported (HELLO byte `right_battery`); the left needs
-//! firmware that reports it, and then shows up here with no app change.
+//! The right half's level comes from HELLO (`right_battery`); the left's own, from firmware with
+//! the LEFT_BATTERY bit, rides on CONN_STATE (byte 8) and shows up here the same way.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
