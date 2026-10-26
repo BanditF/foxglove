@@ -263,3 +263,135 @@ fn arrow_keys_step_one_past_the_detent() {
     slider_frame(&ctx, &mut value, vec![key(egui::Key::ArrowRight)], 10.2);
     assert_eq!(value, 21);
 }
+
+/// A drag of the layer overlay from the 100% display onto the 150% one, drawn from the real
+/// hand-off logic (`overlay_place::dragged` / `dropped`): (1) dragged on Display 1, hanging over
+/// its edge; (2) the pointer crosses, the overlay window moves to Display 2 and draws it at that
+/// scaling, the same point under the pointer; (3) let go just past the border, it's pulled
+/// whole onto Display 2.
+#[test]
+fn overlay_drag_across_displays_renders() {
+    use crate::foxglove::overlay_place::{dragged, dropped};
+    use crate::foxglove::settings_window::tests::two_displays;
+    use crate::foxglove::theme::DARK;
+    let ctx = preview_ctx();
+    let displays = two_displays();
+    let size = egui::vec2(480.0, 160.0);
+    let grab = egui::vec2(400.0, 80.0);
+    // (pointer, let go, caption)
+    let steps = [
+        ([2540, 500], false, "1 dragging"),
+        ([2700, 1000], false, "2 crossed: on Display 2"),
+        ([2600, 1650], true, "3 let go"),
+    ];
+    let placed: Vec<_> = steps
+        .iter()
+        .map(|(cursor, drop, _)| {
+            let place = if *drop {
+                dropped(*cursor, grab, size, &displays)
+            } else {
+                dragged(*cursor, grab, &displays)
+            }
+            .expect("a display");
+            let m = displays.iter().find(|m| m.id == place.monitor).unwrap();
+            let [x, y] = place.pt.unwrap();
+            let s = m.scale();
+            let min = [m.work_area[0] as f32 + x * s, m.work_area[1] as f32 + y * s];
+            (
+                place,
+                m.work_area,
+                [min[0], min[1], min[0] + size.x * s, min[1] + size.y * s],
+            )
+        })
+        .collect();
+    let scale = 0.15;
+    let view = egui::vec2(4200.0 * scale + 48.0, 2088.0 * scale + 72.0);
+    let img = render_ui(&ctx, view, DARK.ground, |ui| {
+        let painter = ui.painter().clone();
+        painter.text(
+            egui::pos2(24.0, 12.0),
+            egui::Align2::LEFT_TOP,
+            "Dragged across the border: the overlay follows onto Display 2 (150%)",
+            crate::foxglove::theme::body(15.0),
+            DARK.text_strong,
+        );
+        // Display 1 whole, the left part of Display 2.
+        let origin = egui::pos2(24.0, 44.0) - egui::vec2(800.0 * scale, 0.0);
+        let to_rect = |r: [f32; 4]| {
+            Rect::from_min_max(
+                origin + egui::vec2(r[0], r[1]) * scale,
+                origin + egui::vec2(r[2], r[3]) * scale,
+            )
+        };
+        let px = |r: [i32; 4]| r.map(|v| v as f32);
+        let clip = Rect::from_min_size(egui::pos2(24.0, 44.0), view - egui::vec2(48.0, 72.0));
+        let painter = painter.with_clip_rect(clip);
+        for (n, m) in displays.iter().enumerate() {
+            let rect = to_rect(px(m.work_area));
+            painter.rect(
+                rect,
+                4.0,
+                DARK.surface,
+                egui::Stroke::new(1.0, DARK.muted),
+                egui::StrokeKind::Inside,
+            );
+            // Display 1's name at its right end, which is in view.
+            let (at, align) = if n == 0 {
+                (
+                    rect.right_bottom() + egui::vec2(-8.0, -8.0),
+                    egui::Align2::RIGHT_BOTTOM,
+                )
+            } else {
+                (
+                    rect.left_bottom() + egui::vec2(8.0, -8.0),
+                    egui::Align2::LEFT_BOTTOM,
+                )
+            };
+            painter.text(
+                at,
+                align,
+                format!("Display {} ({}%)", n + 1, m.dpi * 100 / 96),
+                crate::foxglove::theme::mono(12.0),
+                DARK.muted,
+            );
+        }
+        for ((place, area, rect), (cursor, drop, caption)) in placed.iter().zip(&steps) {
+            let whole = to_rect(*rect);
+            // The window covers its display only: the part past the edge isn't drawn.
+            let shown = whole.intersect(to_rect(px(*area)));
+            painter.rect_stroke(
+                whole,
+                3.0,
+                egui::Stroke::new(1.0, DARK.muted.gamma_multiply(0.6)),
+                egui::StrokeKind::Inside,
+            );
+            let fill = if *drop { 0.45 } else { 0.25 };
+            painter.rect(
+                shown,
+                3.0,
+                DARK.accent.gamma_multiply(fill),
+                egui::Stroke::new(if *drop { 2.0 } else { 1.0 }, DARK.accent),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                whole.center_top() + egui::vec2(0.0, -3.0),
+                egui::Align2::CENTER_BOTTOM,
+                *caption,
+                crate::foxglove::theme::body(11.0),
+                DARK.text_strong,
+            );
+            let p = to_rect([cursor[0] as f32, cursor[1] as f32, 0.0, 0.0]).min;
+            painter.circle_filled(p, 3.0, DARK.text_strong);
+            let _ = place;
+        }
+    });
+    keep("ui-overlay-drag.png", &img);
+    let ids: Vec<_> = placed.iter().map(|(p, ..)| p.monitor.as_str()).collect();
+    assert_eq!(
+        ids,
+        [displays[0].id.as_str(), &displays[1].id, &displays[1].id]
+    );
+    // Let go: whole on Display 2's work area.
+    let (_, area, r) = placed[2];
+    assert!(r[0] >= area[0] as f32 && r[2] <= area[2] as f32, "{r:?}");
+}

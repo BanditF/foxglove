@@ -465,7 +465,7 @@ impl OverlayApp {
             self.ui.settings_visible = false;
             self.ui.settings_window.closed();
             // Foxglove: the overlay's preview goes with Settings; so does a drag of it.
-            self.ui.overlay_drag = None;
+            self.cancel_overlay_drag();
             self.persist_settings();
             if !self.session.ever_connected {
                 self.request_close_editor();

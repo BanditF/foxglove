@@ -39,7 +39,10 @@ impl OverlayApp {
             .title_bar(false);
         // Foxglove: where it was dragged (overlay_place), else its anchor.
         let overlay_window = match self.overlay_position(ctx) {
-            Some(at) => overlay_window.fixed_pos(at),
+            // While dragged it may hang over the display's edge, toward the next one.
+            Some(at) => overlay_window
+                .fixed_pos(at)
+                .constrain(self.ui.overlay_drag.is_none()),
             None => overlay_window.anchor(anchor_params.0, anchor_params.1),
         };
         let overlay_response = overlay_window.show(ctx, |ui| {
@@ -166,7 +169,7 @@ impl OverlayApp {
                 (
                     hovered_key,
                     overlay_response.clicked(),
-                    overlay_response.drag_delta(),
+                    overlay_response.dragged(),
                     overlay_response.drag_stopped(),
                 )
             });
@@ -179,8 +182,8 @@ impl OverlayApp {
                 .inner
                 .is_some_and(|(hovered, ..)| hovered.is_some());
             if hit_test_enabled {
-                if let Some((_, _, delta, stopped)) = response.inner {
-                    self.overlay_dragged(ctx, response.response.rect, delta, stopped);
+                if let Some((_, _, dragging, stopped)) = response.inner {
+                    self.overlay_dragged(ctx, response.response.rect, dragging, stopped);
                 }
             }
         }
