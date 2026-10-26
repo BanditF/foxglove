@@ -27,6 +27,8 @@ pub struct View {
     pub pc: Snapshot,
     /// The keyboard's name and what it said it can do (HELLO and its screens).
     pub keyboard: Option<(String, LightCaps)>,
+    /// The keyboard can be calibrated (it's connected), and whether it has been.
+    pub keyboard_calibration: Option<bool>,
 }
 
 /// What a click asks for.
@@ -52,6 +54,10 @@ pub enum Intent {
     Remove(u16, u16),
     /// Put text on the clipboard (a catalog entry to share).
     Copy(String),
+    /// Open the colour calibrator on a device (by key).
+    Calibrate(String),
+    /// Open the colour calibrator on the keyboard.
+    CalibrateKeyboard,
 }
 
 /// The colours being picked per device (by key), until Apply.
@@ -91,9 +97,12 @@ pub fn show(ui: &mut egui::Ui) {
         return;
     }
     pc_lights::page_shown(ui.ctx());
+    let keyboard_key = super::devices::keyboard_key();
     let view = View {
         pc: pc_lights::snapshot(),
         keyboard: keyboard_caps(),
+        keyboard_calibration: keyboard_key
+            .map(|k| foxglove_devices::calibration::global().device(&k).is_some()),
     };
     let mut guard = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let (draft, wizard) = guard.get_or_insert_with(Default::default);
@@ -132,6 +141,16 @@ pub fn show(ui: &mut egui::Ui) {
             Intent::Save(device) => pc_lights::send(Msg::SaveLocal(device)),
             Intent::Remove(vid, pid) => pc_lights::send(Msg::RemoveLocal(vid, pid)),
             Intent::Copy(text) => ui.ctx().copy_text(text),
+            Intent::Calibrate(key) => {
+                if let Some(row) = view.pc.devices.iter().find(|r| r.key == key) {
+                    super::calibrate_ui::open(super::calibrate_ui::lights_target(row));
+                }
+            }
+            Intent::CalibrateKeyboard => {
+                if let Some(t) = super::calibrate_ui::keyboard_target() {
+                    super::calibrate_ui::open(t);
+                }
+            }
         }
     }
 }
@@ -198,6 +217,16 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
             ui.horizontal(|ui| {
                 ui.label(RichText::new(name).color(p.text_strong).strong());
                 ui.label(RichText::new("Foxglove firmware").color(p.muted));
+                if v.keyboard_calibration == Some(true) {
+                    ui.label(RichText::new("· calibrated").color(p.muted));
+                }
+                if v.keyboard_calibration.is_some() {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if calibrate_button(ui).clicked() {
+                            out.push(Intent::CalibrateKeyboard);
+                        }
+                    });
+                }
             });
             chips(ui, &caps.chips(true));
             ui.weak("Its underglow is in the card above; its screens are on the Screens page.");
@@ -249,9 +278,15 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
         if row.entry.is_some() {
             ui.label(RichText::new("· added by you").color(p.muted));
         }
+        if row.calibrated {
+            ui.label(RichText::new("· calibrated").color(p.muted));
+        }
         if driven && row.caps.switchable() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled_ui(!busy, |ui| {
+                    if row.caps.takes_color() && calibrate_button(ui).clicked() {
+                        out.push(Intent::Calibrate(row.key.clone()));
+                    }
                     if ui
                         .button("Off")
                         .on_hover_text("Turn every zone dark")
@@ -393,6 +428,14 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
     });
 }
 
+/// "Calibrate…": opens the colour calibrator on a device.
+fn calibrate_button(ui: &mut egui::Ui) -> egui::Response {
+    ui.button("Calibrate…").on_hover_text(
+        "Match how this device shows colours to your screen or another device: white, red, \
+         green, blue and grey, about a minute",
+    )
+}
+
 /// A small round colour swatch, ringed when every zone has it.
 fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool) -> egui::Response {
     let p = theme::palette(ui);
@@ -441,6 +484,9 @@ pub mod tests {
                 ..Default::default()
             },
             entry: None,
+            zone_ids: ["1", "2", "5", "6", "7"].map(String::from).to_vec(),
+            calibration: Some(Default::default()),
+            calibrated: false,
         }
     }
 
@@ -501,6 +547,9 @@ pub mod tests {
                             ..Default::default()
                         },
                         entry: None,
+                        zone_ids: vec![],
+                        calibration: None,
+                        calibrated: false,
                     },
                     Row {
                         key: "046d:c332".into(),
@@ -515,6 +564,9 @@ pub mod tests {
                             kind: 2,
                         }),
                         entry: None,
+                        zone_ids: vec![],
+                        calibration: None,
+                        calibrated: false,
                     },
                 ],
                 light_studio: true,
@@ -535,6 +587,7 @@ pub mod tests {
                 ),
             },
             keyboard: Some(corne()),
+            keyboard_calibration: Some(true),
         }
     }
 
@@ -546,6 +599,7 @@ pub mod tests {
                 ..Default::default()
             },
             keyboard: None,
+            keyboard_calibration: None,
         }
     }
 
@@ -627,6 +681,10 @@ pub mod tests {
         let text = shown(&v);
         assert!(text.contains("Apply colours") && text.contains("Front top fan"));
         assert!(text.contains("Identify") && text.contains("Match keyboard"));
+        assert!(
+            text.contains("Calibrate…"),
+            "a driven colour device can be calibrated"
+        );
         // The same board, said to take only one colour: no zone pickers, still a colour.
         v.pc.devices[0].caps.color = Color::Single;
         let text = shown(&v);
@@ -636,6 +694,7 @@ pub mod tests {
         v.pc.devices[0].caps = LightCaps::default();
         let text = shown(&v);
         assert!(!text.contains("Match keyboard") && !text.contains("Identify"));
+        assert!(!text.contains("Calibrate…"));
         assert!(text.contains("No lights Foxglove knows of"));
     }
 }

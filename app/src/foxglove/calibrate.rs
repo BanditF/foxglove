@@ -4,11 +4,181 @@
 //!
 //! Calibration belongs to the device, never to a colour or a profile: it isn't in
 //! `store::PROFILED`, and changing a palette or a profile leaves it alone.
+//!
+//! The calibrator (`calibrate_ui`) writes through here: [`show`] puts a colour on a device
+//! without saving it as the user's (the PC lights' worker coalesces a burst; the keyboard has
+//! a one-slot writer here), [`restore`] puts back what a device showed before, and [`commit`]
+//! saves a calibration. Every write follows a slider move or a click; nothing waits on a timer.
 
-use foxglove_devices::calibration::{self, Calibrations};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Mutex, OnceLock};
+
+use foxglove_devices::calibration::{self, Calibration, Calibrations, DeviceCalibration, Hsb};
+
+use super::pc_lights::{self, Msg};
 
 /// The store section.
 pub const SECTION: &str = "calibration";
+
+/// The saved section couldn't be read: saving would overwrite it, so saving is refused.
+static UNREADABLE: AtomicBool = AtomicBool::new(false);
+
+/// A device the calibrator can calibrate or compare with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    /// Its key in the calibration registry.
+    pub key: String,
+    pub name: String,
+    pub kind: Kind,
+    /// The model's default calibration, from the catalog.
+    pub default: Option<Calibration>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Kind {
+    /// The keyboard with Foxglove's firmware: one colour (hue, saturation, brightness).
+    Keyboard,
+    /// A PC light Foxglove drives, with its zones (id, name).
+    Lights { zones: Vec<(String, String)> },
+}
+
+/// What a device showed before the calibrator took it over, to put back.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Before {
+    #[default]
+    Unknown,
+    Keyboard(Hsb),
+    Lights(Vec<Option<[u8; 3]>>),
+}
+
+/// An sRGB colour as the keyboard's hue, saturation and brightness.
+pub fn hsb(c: [u8; 3]) -> Hsb {
+    let (h, s, v) = calibration::rgb_to_hsv(c.map(|v| f32::from(v) / 255.0));
+    (
+        (h.round() as u16) % 360,
+        (s * 100.0).round() as u8,
+        (v * 100.0).round() as u8,
+    )
+}
+
+/// What a device shows now, from what Foxglove last set (the palette's colours).
+pub fn capture(t: &Target) -> Before {
+    match &t.kind {
+        Kind::Keyboard => super::keyboard_settings::cached_rgb_state()
+            .map_or(Before::Unknown, |s| {
+                Before::Keyboard((s.left.hue, s.left.sat, s.left.brightness))
+            }),
+        Kind::Lights { .. } => pc_lights::snapshot()
+            .devices
+            .iter()
+            .find(|r| r.key == t.key)
+            .map_or(Before::Unknown, |r| {
+                Before::Lights(r.zones.iter().map(|(_, c)| *c).collect())
+            }),
+    }
+}
+
+/// Shows one colour on every zone of a device, through its calibration as the registry holds
+/// it now, without saving the colour.
+pub fn show(t: &Target, color: [u8; 3]) {
+    match &t.kind {
+        Kind::Keyboard => keyboard(hsb(color)),
+        Kind::Lights { zones } => pc_lights::send(Msg::Show {
+            key: t.key.clone(),
+            colors: (0..zones.len()).map(|i| (i, color)).collect(),
+        }),
+    }
+}
+
+/// Puts back what a device showed before; zones Foxglove never set end white, as after
+/// Identify.
+pub fn restore(t: &Target, before: &Before) {
+    match (&t.kind, before) {
+        (Kind::Keyboard, Before::Keyboard(c)) => {
+            keyboard(*c);
+        }
+        (Kind::Lights { zones }, Before::Lights(colors)) => pc_lights::send(Msg::Show {
+            key: t.key.clone(),
+            colors: (0..zones.len())
+                .map(|i| (i, colors.get(i).copied().flatten().unwrap_or([255; 3])))
+                .collect(),
+        }),
+        (Kind::Lights { .. }, Before::Unknown) => pc_lights::send(Msg::Recalibrate(t.key.clone())),
+        _ => {}
+    }
+}
+
+/// The colour the keyboard's calibrator writer sends next; `None` once it's taken.
+static KEYBOARD_NEXT: Mutex<Option<Hsb>> = Mutex::new(None);
+static KEYBOARD_WAKE: OnceLock<Mutex<mpsc::Sender<()>>> = OnceLock::new();
+
+/// Sets the keyboard's colour from the calibrator. One slot: while a write is on its way, a
+/// newer colour replaces the waiting one, so sliders never queue up writes. The writer thread
+/// blocks on its channel between colours.
+fn keyboard(c: Hsb) {
+    let idle = KEYBOARD_NEXT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .replace(c)
+        .is_none();
+    if !idle {
+        return;
+    }
+    let wake = KEYBOARD_WAKE.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<()>();
+        super::services::spawn_named("calibrate-keyboard", move || {
+            for () in rx {
+                // The slot's lock is let go before each write (a helper, not a `while let`
+                // temporary, which would hold it through the write).
+                while let Some(c) = next_keyboard() {
+                    write_keyboard(c);
+                }
+            }
+        });
+        Mutex::new(tx)
+    });
+    let _ = wake.lock().unwrap_or_else(|e| e.into_inner()).send(());
+}
+
+fn next_keyboard() -> Option<Hsb> {
+    KEYBOARD_NEXT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+}
+
+fn write_keyboard((hue, sat, brightness): Hsb) {
+    if super::pause::paused() {
+        return;
+    }
+    let Some(d) = super::devices::device() else {
+        return;
+    };
+    let Some(lighting) = foxglove_devices::Device::lighting(d.as_ref()) else {
+        return;
+    };
+    if let Err(e) = lighting.set_color(hue, sat, brightness) {
+        eprintln!("Foxglove: calibrate: {}", super::devices::describe(&e));
+    }
+    super::keyboard_settings::refresh_rgb_state();
+}
+
+/// Saves every calibration the registry holds, unless the saved section couldn't be read at
+/// startup (saving would overwrite it).
+pub fn save() -> std::io::Result<()> {
+    if UNREADABLE.load(Ordering::Relaxed) {
+        return Err(std::io::Error::other(
+            "the saved calibration is from a newer Foxglove or damaged, so it isn't overwritten",
+        ));
+    }
+    super::store::save(SECTION, &calibration::global().all())
+}
+
+/// Sets (or forgets) one device's calibration and saves it.
+pub fn commit(key: &str, cal: Option<DeviceCalibration>) -> std::io::Result<()> {
+    calibration::global().set_device(key, cal);
+    save()
+}
 
 /// Reads the saved calibrations into the registry. Call once at startup, before anything
 /// writes a colour. A section this Foxglove can't read (a newer version, an unknown field) is
@@ -23,7 +193,10 @@ fn load_into(registry: &calibration::Registry) {
     };
     match read(section) {
         Ok(all) => registry.replace(all),
-        Err(e) => eprintln!("Foxglove: [{SECTION}]: {e}; colours go out uncalibrated"),
+        Err(e) => {
+            UNREADABLE.store(true, Ordering::Relaxed);
+            eprintln!("Foxglove: [{SECTION}]: {e}; colours go out uncalibrated");
+        }
     }
 }
 
@@ -61,6 +234,15 @@ mod tests {
             [1.0, 0.9, 0.8]
         );
         assert!(parse("").unwrap().devices.is_empty());
+    }
+
+    #[test]
+    fn colours_become_the_keyboards_hue_saturation_and_brightness() {
+        assert_eq!(hsb([255, 255, 255]), (0, 0, 100));
+        assert_eq!(hsb([255, 0, 0]), (0, 100, 100));
+        assert_eq!(hsb([0, 255, 0]), (120, 100, 100));
+        assert_eq!(hsb([0, 0, 255]), (240, 100, 100));
+        assert_eq!(hsb([128, 128, 128]), (0, 0, 50));
     }
 
     #[test]

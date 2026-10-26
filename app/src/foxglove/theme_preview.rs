@@ -523,6 +523,11 @@ struct Samples {
     lights: crate::foxglove::lights_page::View,
     pc: crate::foxglove::pc_lights_ui::View,
     wizard: crate::foxglove::pc_lights_add::Wizard,
+    /// The colour calibrator, open in place of the PC card.
+    calibrate: Option<(
+        crate::foxglove::calibrate_ui::View,
+        crate::foxglove::calibrate_ui::Wizard,
+    )>,
     screens: Option<crate::foxglove::screens::Snapshot>,
     art: Option<(
         crate::foxglove::art_service::Snapshot,
@@ -539,6 +544,7 @@ impl Samples {
             lights: crate::foxglove::lights_page::tests::sample(),
             pc: crate::foxglove::pc_lights_ui::tests::sample(),
             wizard: Default::default(),
+            calibrate: None,
             screens: Some(sample_screens()),
             art: Some(crate::foxglove::art_ui::tests::sample()),
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -552,6 +558,7 @@ impl Samples {
             lights: crate::foxglove::lights_page::tests::sample_none(),
             pc: Default::default(),
             wizard: Default::default(),
+            calibrate: None,
             screens: None,
             art: None,
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -611,6 +618,7 @@ fn show_samples(page: crate::foxglove::shell::Page, samples: &Samples) {
     crate::foxglove::keyboard_page::PREVIEW.set(Some(samples.keyboard.clone()));
     crate::foxglove::lights_page::PREVIEW.set(Some(samples.lights.clone()));
     crate::foxglove::pc_lights_ui::PREVIEW.set(Some((samples.pc.clone(), samples.wizard.clone())));
+    crate::foxglove::calibrate_ui::PREVIEW.set(samples.calibrate.clone());
     crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
     crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
     crate::foxglove::plugins_ui::PREVIEW.set(Some(samples.plugins.clone()));
@@ -621,6 +629,7 @@ fn clear_samples() {
     crate::foxglove::keyboard_page::PREVIEW.set(None);
     crate::foxglove::lights_page::PREVIEW.set(None);
     crate::foxglove::pc_lights_ui::PREVIEW.set(None);
+    crate::foxglove::calibrate_ui::PREVIEW.set(None);
     crate::foxglove::screens_ui::PREVIEW.set(None);
     crate::foxglove::art_ui::PREVIEW.set(None);
     crate::foxglove::plugins_ui::PREVIEW.set(None);
@@ -1317,6 +1326,46 @@ fn pc_lights_render() {
     assert!(count(&fresh, DARK.warn) < count(&with, DARK.warn));
     assert_ne!(with, fresh);
     assert_ne!(fresh, none);
+}
+
+/// The colour calibrator on the Lights page: the device list with "Calibrate…", then each of
+/// the five steps on the 45L (against the screen, and the blue step against the keyboard).
+#[test]
+fn calibrate_renders() {
+    use crate::foxglove::calibrate_ui::{tests::sample, Step};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: [u8; 3]| img.pixels().filter(|p| p.0[..3] == c).count();
+    let list = shell_preview_with(Page::Lights, &Samples::full(), 1180.0);
+    keep("ui-calibrate-devices.png", &list);
+    let mut shots = Vec::new();
+    for step in Step::ALL {
+        let mut s = Samples::full();
+        s.calibrate = Some(sample(step, false));
+        let img = shell_preview_with(Page::Lights, &s, 1180.0);
+        keep(
+            &format!("ui-calibrate-{}.png", step.name().to_lowercase()),
+            &img,
+        );
+        // The screen's swatch is the step's own colour, large.
+        assert!(count(&img, step.color()) > 5000, "{step:?} swatch");
+        shots.push(img);
+    }
+    let mut master = Samples::full();
+    master.calibrate = Some(sample(Step::Blue, true));
+    let master = shell_preview_with(Page::Lights, &master, 1180.0);
+    keep("ui-calibrate-master.png", &master);
+    // Next/Save is the orange primary button; every step looks different.
+    assert!(
+        count(
+            &shots[0],
+            [DARK.accent.r(), DARK.accent.g(), DARK.accent.b()]
+        ) > 200
+    );
+    for pair in shots.windows(2) {
+        assert_ne!(pair[0], pair[1]);
+    }
+    assert_ne!(master, shots[3]);
 }
 
 /// What each device can do, as chips (the keyboard from HELLO, the case and cooler from the

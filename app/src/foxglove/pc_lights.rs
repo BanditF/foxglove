@@ -55,6 +55,12 @@ pub struct Row {
     pub caps: LightCaps,
     /// The user's own catalog entry as TOML, to copy and share; `None` for bundled ones.
     pub entry: Option<String>,
+    /// Each zone's id (the board's number), in the order of [`Self::zones`].
+    pub zone_ids: Vec<String>,
+    /// The model's default colour calibration, from the catalog.
+    pub calibration: Option<foxglove_devices::calibration::Calibration>,
+    /// The user calibrated this device.
+    pub calibrated: bool,
 }
 
 /// What the page shows.
@@ -98,6 +104,14 @@ pub enum Msg {
     SaveLocal(CatalogDevice),
     /// Remove the user's own entry for this VID/PID.
     RemoveLocal(u16, u16),
+    /// Shows colours without saving them as the user's (the calibrator's steps, and putting
+    /// the colours back after it). A burst for one device writes only the last.
+    Show {
+        key: String,
+        colors: Vec<(usize, [u8; 3])>,
+    },
+    /// The device's calibration changed: its colours again, through the new calibration.
+    Recalibrate(String),
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -394,6 +408,24 @@ impl Worker {
                 self.write(&key, "Colours set", |d| d.set_zones(&colors), true);
             }
             Msg::Off(key) => self.write(&key, "Lights off", |d| d.off(), true),
+            Msg::Show { key, colors } => {
+                let colors: Vec<_> = colors.into_iter().map(|(i, c)| (i, rgb(c))).collect();
+                self.write(&key, "Showing", |d| d.set_zones(&colors), false);
+            }
+            Msg::Recalibrate(key) => {
+                // The palette again: known colours, else saved ones, else white (never dark).
+                let Some(d) = self.drivers.get(&key) else {
+                    return;
+                };
+                let saved = self
+                    .found
+                    .iter()
+                    .find(|f| f.key == key)
+                    .map(|f| self.saved_colors(f))
+                    .unwrap_or_default();
+                let colors = pcl::restore_colors(&d.colors(), &saved);
+                self.write(&key, "Calibration applied", |d| d.set_zones(&colors), false);
+            }
             Msg::Identify(key) => {
                 // A write-only board Foxglove hasn't set yet goes back to the saved colours.
                 let fallback = self
@@ -547,6 +579,11 @@ impl Worker {
                         .local
                         .then(|| self.local.find(f.vid, f.pid).map(CatalogDevice::to_toml))
                         .flatten(),
+                    zone_ids: f.zones.iter().map(|z| z.id.to_string()).collect(),
+                    calibration: f.calibration.clone(),
+                    calibrated: foxglove_devices::calibration::global()
+                        .device(&f.key)
+                        .is_some(),
                 }
             })
             .collect();
@@ -602,6 +639,7 @@ pub fn start() {
             // A burst of arrivals (a hub with several interfaces) scans once.
             let mut batch = vec![first];
             batch.extend(rx.try_iter());
+            let batch = latest_shows(batch);
             let mut scanned = false;
             for msg in batch {
                 if msg == Msg::Scan {
@@ -627,6 +665,22 @@ pub fn start() {
             }
         }
     });
+}
+
+/// Drops every [`Msg::Show`] a later one for the same device replaces: the calibrator's
+/// sliders can ask faster than a board writes, and only the newest colour matters.
+pub fn latest_shows(batch: Vec<Msg>) -> Vec<Msg> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out: Vec<Msg> = batch
+        .into_iter()
+        .rev()
+        .filter(|m| match m {
+            Msg::Show { key, .. } => seen.insert(key.clone()),
+            _ => true,
+        })
+        .collect();
+    out.reverse();
+    out
 }
 
 fn scan(worker: &mut Worker, restore: bool) {
@@ -1060,6 +1114,47 @@ mod tests {
         // Saved and shown: the palette's colours, not the calibrated ones.
         assert_eq!(w.settings.devices[key].colors["1"], "#5fc48e");
         assert_eq!(w.snapshot().devices[0].zones[0].1, Some(pine));
+        // A new calibration: Recalibrate sends the same palette through it, saving nothing;
+        // zones never set go white, never dark.
+        sent.lock().unwrap().clear();
+        w.dirty = false;
+        calibration::global().set_device(key, None);
+        w.handle(Msg::Recalibrate(key.into()), false, &mut no_wait());
+        let white = [255, 255, 255];
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec![
+                report(1, pine),
+                report(2, white),
+                report(5, white),
+                report(6, white),
+                report(7, pine)
+            ]
+        );
+        assert!(!w.dirty);
+    }
+
+    #[test]
+    fn show_writes_without_saving_and_only_the_latest_of_a_burst() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), false, false, true);
+        let key = "103c:84fd".to_string();
+        let show = |c: u8| Msg::Show {
+            key: key.clone(),
+            colors: vec![(0, [c, c, c])],
+        };
+        let batch = latest_shows(vec![show(1), Msg::Scan, show(2), show(3)]);
+        assert_eq!(batch, vec![Msg::Scan, show(3)]);
+        for m in batch.into_iter().filter(|m| *m != Msg::Scan) {
+            w.handle(m, false, &mut no_wait());
+        }
+        assert_eq!(*sent.lock().unwrap(), vec![report(1, [3, 3, 3])]);
+        assert!(
+            !w.dirty && !w.settings.devices.contains_key(&key),
+            "not saved"
+        );
+        w.handle(show(9), true, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 1, "paused: refused");
     }
 
     #[test]
