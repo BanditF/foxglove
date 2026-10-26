@@ -137,12 +137,14 @@ pub fn card<R>(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
         .inner
 }
 
-/// A card row: the name on the left, the value on the right.
+/// A card row: the name on the left, the value on the right. A value longer than the room
+/// beside the name wraps: in a horizontal row a plain label would stretch the card, and with it
+/// the settings window (it grew on each reconnect, when the rows fill in).
 pub fn row(ui: &mut egui::Ui, name: &str, value: impl Into<egui::WidgetText>) -> egui::Response {
     ui.horizontal(|ui| {
         ui.label(name);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(value)
+            ui.add(egui::Label::new(value).wrap())
         })
         .inner
     })
