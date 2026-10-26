@@ -178,6 +178,9 @@ pub enum Intent {
     OpenFoxglove,
 }
 
+/// Next to the title while Foxglove is paused.
+pub const PAUSED_BADGE: &str = "PAUSED";
+
 /// The header's pause button: its label and what a click asks for.
 pub fn pause_button(paused: bool) -> (&'static str, Intent) {
     if paused {
@@ -215,27 +218,36 @@ pub fn halves(s: &StripState) -> [(Tone, String); 2] {
     [(Tone::Ok, left), right]
 }
 
+/// The right art part from the art service's snapshot, read afresh each frame: its name, its
+/// picture (a library file) and whether Next and Send take a click. Each snapshot change draws a
+/// frame (the art service's wake), so the panel follows the keyboard.
+fn art(
+    s: &super::art_service::Snapshot,
+    library: &[super::art_library::Entry],
+) -> (String, Option<Arc<egui::ColorImage>>, bool) {
+    let ready = s.connected && !s.busy;
+    if !s.connected {
+        return ("…".to_string(), None, ready);
+    }
+    let image = s.showing_file().and_then(|path| {
+        super::art_ui::tiles(library)
+            .0
+            .into_iter()
+            .find(|t| t.path == *path)
+            .map(|t| t.image)
+    });
+    (super::art_ui::playing(s).0, image, ready)
+}
+
 fn view(ctx: &egui::Context) -> View {
     let (profiles, active_profile) = super::store::cached_profiles();
     let lights = super::keyboard_settings::rgb_state(ctx).map(|s| s.left);
     let lights_ready = super::keyboard_actions::underglow_behavior().is_some()
         && !super::keyboard_settings::invoking();
-    let (mut art_name, mut art_image, mut art_ready) = ("…".to_string(), None, false);
-    if let Some(h) = super::art_service::handle() {
-        let s = h.snapshot();
-        art_ready = s.connected && !s.busy;
-        if s.connected {
-            art_name = super::art_ui::playing(&s).0;
-            let library = super::art_library::snapshot();
-            art_image = s.showing_file().and_then(|path| {
-                super::art_ui::tiles(&library.entries)
-                    .0
-                    .into_iter()
-                    .find(|t| t.path == *path)
-                    .map(|t| t.image)
-            });
-        }
-    }
+    let (art_name, art_image, art_ready) = match super::art_service::handle() {
+        Some(h) => art(&h.snapshot(), &super::art_library::snapshot().entries),
+        None => ("…".to_string(), None, false),
+    };
     while_paused(View {
         halves: halves(&super::shell::strip_state(ctx)),
         profiles,
@@ -432,7 +444,12 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("FOXGLOVE").font(theme::hud(17.0)).color(p.text_strong));
+                    // #404: paused, the title dims and says so.
+                    let title = if v.paused { p.muted } else { p.text_strong };
+                    ui.label(RichText::new("FOXGLOVE").font(theme::hud(17.0)).color(title));
+                    if v.paused {
+                        ui.label(RichText::new(PAUSED_BADGE).font(theme::hud(13.0)).color(p.warn));
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // #404: paused, the button is the selected pill that resumes.
                         let (label, intent) = pause_button(v.paused);
@@ -471,7 +488,7 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             lights(ui, v, draft, out);
             part(ui, "Right art", |_| {}, |ui| {
                 ui.horizontal(|ui| {
-                    art_thumb(ui, v.art_image.as_deref());
+                    art_thumb(ui, v.art_image.as_ref());
                     ui.vertical(|ui| {
                         ui.label(RichText::new(&v.art_name).font(theme::hud(15.0)).color(p.text_strong));
                         ui.add_enabled_ui(v.art_ready, |ui| {
@@ -618,19 +635,19 @@ fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>)
 
 thread_local! {
     /// The art thumbnail's texture, by the picture it was made from.
-    static ART: std::cell::RefCell<Option<(usize, egui::TextureHandle)>> = const { std::cell::RefCell::new(None) };
+    /// Kept with the picture itself, so a freed picture's address can't pass for a new one.
+    static ART: std::cell::RefCell<Option<(Arc<egui::ColorImage>, egui::TextureHandle)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The art playing on the right, drawn in the screen's two tones; a dark box when unknown.
-fn art_thumb(ui: &mut egui::Ui, image: Option<&egui::ColorImage>) {
+fn art_thumb(ui: &mut egui::Ui, image: Option<&Arc<egui::ColorImage>>) {
     let p = theme::palette(ui);
     let size = egui::vec2(54.0, 112.0);
     match image {
         Some(stored) => {
             // Made once per picture, not every frame.
-            let key = stored as *const egui::ColorImage as usize;
             let t = ART.with_borrow_mut(|cache| match cache {
-                Some((k, t)) if *k == key => t.clone(),
+                Some((k, t)) if Arc::ptr_eq(k, stored) => t.clone(),
                 _ => {
                     let half = super::art_ui::thumbnail(stored, true);
                     let t = ui.ctx().load_texture(
@@ -638,7 +655,7 @@ fn art_thumb(ui: &mut egui::Ui, image: Option<&egui::ColorImage>) {
                         half,
                         egui::TextureOptions::NEAREST,
                     );
-                    *cache = Some((key, t.clone()));
+                    *cache = Some((stored.clone(), t.clone()));
                     t
                 }
             });
@@ -735,6 +752,34 @@ pub mod tests {
             pause_button(true),
             ("Resume Foxglove", Intent::Pause(false))
         );
+    }
+
+    /// The right art part names what the snapshot says plays now: after Next (a new status)
+    /// it names the new set, not the one the panel opened with.
+    #[test]
+    fn the_art_part_follows_the_art_snapshot() {
+        use digitalis::protocol::ArtStatus;
+        let status = |set| ArtStatus {
+            link: 2,
+            right_state: 0,
+            right_set: set,
+            right_set_count: 12,
+            ..ArtStatus::default()
+        };
+        let mut s = crate::foxglove::art_service::Snapshot {
+            connected: true,
+            status: Some(status(1)),
+            ..Default::default()
+        };
+        let before = art(&s, &[]).0;
+        s.status = Some(status(4));
+        let after = art(&s, &[]).0;
+        assert_ne!(before, after);
+        assert_eq!(after, crate::foxglove::art_ui::playing(&s).0);
+        s.busy = true;
+        assert!(!art(&s, &[]).2, "no clicks while the art is being sent");
+        s.connected = false;
+        assert_eq!(art(&s, &[]).0, "…");
     }
 
     #[test]
