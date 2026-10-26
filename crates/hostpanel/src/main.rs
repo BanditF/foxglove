@@ -153,6 +153,7 @@ fn sample_view() -> View {
         artist: Some("Some Artist".into()),
         playing: true,
         hint: Some("GAME: WASD".into()),
+        ..View::default()
     }
 }
 

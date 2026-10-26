@@ -12,7 +12,7 @@ mod imp {
         GlobalSystemMediaTransportControlsSession as Session,
         GlobalSystemMediaTransportControlsSessionManager as Manager,
     };
-    use windows::Win32::Foundation::{HWND, PROPERTYKEY};
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, PROPERTYKEY, WPARAM};
     use windows::Win32::Media::Audio::Endpoints::*;
     use windows::Win32::Media::Audio::*;
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
@@ -53,6 +53,69 @@ mod imp {
     }
 
     thread_local! { static FOREGROUND: std::cell::RefCell<Option<Wake>> = const { std::cell::RefCell::new(None) }; }
+
+    fn wake_foreground_thread() {
+        FOREGROUND.with(|w| {
+            if let Some(w) = w.borrow().as_ref() {
+                w();
+            }
+        });
+    }
+
+    /// The hidden window's procedure: region settings ("intl", #445) and clock changes wake the
+    /// panel, which re-reads the formats. Everything else goes to Windows.
+    unsafe extern "system" fn settings_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        let intl = msg == WM_SETTINGCHANGE
+            && lparam.0 != 0
+            // SAFETY: for WM_SETTINGCHANGE a non-zero lParam is a NUL-terminated string that
+            // lives for the duration of the message.
+            && unsafe { PCWSTR(lparam.0 as *const u16).to_string() }.is_ok_and(|s| s == "intl");
+        if intl || msg == WM_TIMECHANGE {
+            crate::clock::invalidate();
+            wake_foreground_thread();
+        }
+        // SAFETY: the default procedure, with the arguments Windows gave us.
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    /// A hidden top-level window on this thread, so WM_SETTINGCHANGE broadcasts reach it
+    /// (message-only windows don't get broadcasts). Destroyed with the thread.
+    unsafe fn settings_window() -> Option<HWND> {
+        let class = windows::core::w!("FoxglovePanelSettings");
+        // SAFETY: plain Win32 calls on this thread; the class name is a static string and the
+        // procedure lives for the program. A second registration (another Changes) fails with
+        // "class exists", which is fine.
+        unsafe {
+            let instance = windows::Win32::System::LibraryLoader::GetModuleHandleW(None).ok()?;
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(settings_proc),
+                hInstance: instance.into(),
+                lpszClassName: class,
+                ..Default::default()
+            };
+            RegisterClassW(&wc);
+            CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                class,
+                windows::core::w!(""),
+                WINDOW_STYLE::default(),
+                0,
+                0,
+                0,
+                0,
+                None,
+                None,
+                Some(instance.into()),
+                None,
+            )
+            .ok()
+        }
+    }
     unsafe extern "system" fn foreground(
         _: HWINEVENTHOOK,
         _: u32,
@@ -62,11 +125,7 @@ mod imp {
         _: u32,
         _: u32,
     ) {
-        FOREGROUND.with(|w| {
-            if let Some(w) = w.borrow().as_ref() {
-                w();
-            }
-        });
+        wake_foreground_thread();
     }
 
     pub struct Changes {
@@ -119,10 +178,14 @@ mod imp {
                         0,
                         WINEVENT_OUTOFCONTEXT,
                     );
+                    let settings = settings_window();
                     if tx.send(id).is_ok() {
                         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
                             let _ = DispatchMessageW(&msg);
                         }
+                    }
+                    if let Some(w) = settings {
+                        let _ = DestroyWindow(w);
                     }
                     let _ = UnhookWinEvent(hook);
                     FOREGROUND.with(|w| *w.borrow_mut() = None);
