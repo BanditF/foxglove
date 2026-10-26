@@ -701,3 +701,18 @@ fn battery_notice_switch_renders() {
     let img = shell_preview_with(Page::Keyboard, &Samples::full(), 1060.0);
     keep("ui-372-battery-notice.png", &img);
 }
+
+/// The sidebar's Bandit fox mark, whole and enlarged (it matches the tray glyph).
+#[test]
+fn sidebar_fox_renders() {
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let img = shell_preview_with(Page::Keyboard, &Samples::full(), 660.0);
+    keep("ui-sidebar-fox.png", &img);
+    let top = image::imageops::crop_imm(&img, 0, 0, 480, 270).to_image();
+    let zoom = image::imageops::resize(&top, 480 * 3, 270 * 3, image::imageops::FilterType::Nearest);
+    keep("ui-sidebar-fox-zoom.png", &zoom);
+    // The fox's orange fills more than the old arrowhead's outline did.
+    let orange = top.pixels().filter(|p| p.0[..3] == [DARK.accent.r(), DARK.accent.g(), DARK.accent.b()]).count();
+    assert!(orange > 250, "{orange}");
+}

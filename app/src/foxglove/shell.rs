@@ -237,17 +237,64 @@ fn sidebar(ui: &mut egui::Ui, page: &mut Page) {
     });
 }
 
-/// The fox mark: an orange arrowhead in a ring.
+/// The Bandit fox, in its 680 x 760 crop: the shapes `scripts/app_icons.py` draws the app icon
+/// and the tray glyphs from (#299, #403). The sidebar's mark is the tray's solid glyph.
+mod fox {
+    pub const W: f32 = 680.0;
+    pub const H: f32 = 760.0;
+    pub const EAR: [(f32, f32); 3] = [(20.0, 80.0), (245.0, 300.0), (115.0, 430.0)];
+    pub const FACE: [(f32, f32); 6] = [(238.0, 296.0), (442.0, 296.0), (608.0, 462.0), (402.0, 724.0), (278.0, 724.0), (72.0, 462.0)];
+    pub const CHEEK: [(f32, f32); 4] = [(8.0, 466.0), (170.0, 494.0), (310.0, 748.0), (250.0, 748.0)];
+    pub const MASK: [(f32, f32); 4] = [(70.0, 456.0), (268.0, 500.0), (300.0, 700.0), (180.0, 572.0)];
+    pub const NOSE: [(f32, f32); 3] = [(300.0, 704.0), (380.0, 704.0), (340.0, 752.0)];
+
+    /// One convex piece of the fox, in crop coordinates.
+    pub type Piece = Vec<(f32, f32)>;
+
+    pub fn mirror(p: &[(f32, f32)]) -> Piece {
+        p.iter().map(|&(x, y)| (W - x, y)).collect()
+    }
+
+    /// The solid fox as convex pieces (ears, cheeks, face), then the holes (mask, nose).
+    pub fn pieces() -> (Vec<Piece>, Vec<Piece>) {
+        let solid = vec![EAR.to_vec(), mirror(&EAR), CHEEK.to_vec(), mirror(&CHEEK), FACE.to_vec()];
+        let holes = vec![MASK.to_vec(), mirror(&MASK), NOSE.to_vec()];
+        (solid, holes)
+    }
+
+    /// The points in clockwise order on screen (y down), as egui's convex fill wants them.
+    pub fn clockwise(mut p: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
+        let n = p.len();
+        let twice_area: f32 = (0..n).map(|i| p[i].0 * p[(i + 1) % n].1 - p[(i + 1) % n].0 * p[i].1).sum();
+        if twice_area < 0.0 {
+            p.reverse();
+        }
+        p
+    }
+}
+
+/// The fox mark: the Bandit fox as the tray shows it (solid, the mask cut out), in orange.
 fn fox_mark(ui: &mut egui::Ui, size: f32) {
     let p = theme::palette(ui);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
-    let at = |x: f32, y: f32| rect.min + egui::vec2(x, y) * (size / 30.0);
+    // The tray glyph's framing: 6% margin top and bottom, centred across.
+    let margin = size * 0.06;
+    let scale = (size - 2.0 * margin) / fox::H;
+    let origin = rect.min + egui::vec2((size - fox::W * scale) / 2.0, margin);
+    // A hairline in the fill's own colour closes the anti-aliased seams where pieces meet.
+    let shape = |points: Vec<(f32, f32)>, fill: egui::Color32| {
+        let pts = fox::clockwise(points).into_iter().map(|(x, y)| origin + egui::vec2(x, y) * scale).collect();
+        egui::Shape::convex_polygon(pts, fill, Stroke::new(0.6, fill))
+    };
+    let (solid, holes) = fox::pieces();
     let painter = ui.painter();
-    painter.circle_stroke(at(15.0, 15.0), 13.0 * size / 30.0, Stroke::new(1.0, p.control_line));
-    painter.add(egui::Shape::closed_line(
-        vec![at(15.0, 3.0), at(27.0, 26.0), at(15.0, 20.0), at(3.0, 26.0)],
-        Stroke::new(2.0, p.accent),
-    ));
+    for piece in solid {
+        painter.add(shape(piece, p.accent));
+    }
+    // Cut out in the sidebar's own colour, like the glyph's transparent mask.
+    for hole in holes {
+        painter.add(shape(hole, p.well));
+    }
 }
 
 /// A sidebar entry: a square dot and the page's name; the current page sits on a raised fill.
@@ -466,6 +513,32 @@ pub fn window_frame(ctx: &egui::Context) -> egui::Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sidebar's fox is the one the app icon and tray glyphs are drawn from.
+    #[test]
+    fn the_fox_matches_app_icons_py() {
+        let py = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/app_icons.py")).expect("app_icons.py");
+        let fmt = |name: &str, pts: &[(f32, f32)]| {
+            let inner: Vec<String> = pts.iter().map(|(x, y)| format!("({x}, {y})")).collect();
+            format!("{name} = [{}]", inner.join(", "))
+        };
+        for (name, pts) in [("EAR", &fox::EAR[..]), ("FACE", &fox::FACE[..]), ("CHEEK", &fox::CHEEK[..]), ("MASK", &fox::MASK[..]), ("NOSE", &fox::NOSE[..])] {
+            let line = fmt(name, pts);
+            assert!(py.lines().any(|l| l.trim() == line), "{line} not in app_icons.py");
+        }
+        assert!(py.contains("FW, FH = 680.0, 760.0"));
+    }
+
+    #[test]
+    fn fox_pieces_are_clockwise() {
+        let (solid, holes) = fox::pieces();
+        for piece in solid.into_iter().chain(holes) {
+            let cw = fox::clockwise(piece.clone());
+            let n = cw.len();
+            let area: f32 = (0..n).map(|i| cw[i].0 * cw[(i + 1) % n].1 - cw[(i + 1) % n].0 * cw[i].1).sum();
+            assert!(area > 0.0, "{piece:?}");
+        }
+    }
 
     #[test]
     fn sections_land_on_their_pages() {
