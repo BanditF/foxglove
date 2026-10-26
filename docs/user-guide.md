@@ -239,6 +239,25 @@ Bandit wallpaper family:
   two would fight over the colour.
 - **Profiles:** each profile can have its own preset, and switching profile switches the look.
 
+### The PC's case lights (HP OMEN 45L)
+
+**Settings → Lights → PC & peripherals** lists the lighting devices on this PC and how
+Foxglove controls them:
+- **Foxglove driver:** the OMEN 45L case. Pick a colour per zone (diamond display, interior
+  light, the three front fans) or one of the swatches for all zones, then **Apply colours**.
+  **Identify** blinks the case for a moment; **Off** turns it dark. **Match keyboard** makes
+  the case follow the underglow colour you set in Foxglove, or the Windows accent colour when
+  the keyboard follows that. Foxglove puts your colours back when the PC starts.
+- **Standard LampArray device**, such as a Logitech G502: Windows' Dynamic Lighting settings
+  control it for now.
+- **Not controllable yet**, such as the OMEN liquid cooler: listed so you know it was seen.
+
+**Retiring OMEN Light Studio.** While Light Studio runs, the page says so: it may put its own
+colours back over Foxglove's. Once the case looks right from Foxglove, remove it in
+**Settings → Apps → Installed apps → OMEN Light Studio → Uninstall** (or set its
+**Background app permissions** to **Never**). Keep **OMEN Command Center**: it runs the fans and
+performance modes, not the case lights. The pump's LCD screen is separate and keeps working.
+
 ### Cycling the right screen's art
 
 **Settings → Right screen art → Hotlist** is your list of favourites.

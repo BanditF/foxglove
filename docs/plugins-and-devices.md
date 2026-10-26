@@ -102,6 +102,32 @@ Lighting is three separate capabilities (decided on #73):
   Foxglove has nothing to say it **releases** control, so iCUE/Synapse/G HUB get their devices
   back instead of freezing on our last frame.
 
+### PC and peripheral lighting (`pc_lighting`, #423)
+
+Lights that aren't a keyboard (case boards, coolers, mice) go through `pc_lighting` in
+`crates/devices`, a smaller model than `Device`: such a board has zones and colours, nothing else.
+
+- **Discovery:** `pc_lighting::discover` matches one HID enumeration against
+  `crates/devices/lighting-catalog.toml` (VID/PID, protocol, zone names) and against the HID
+  LampArray usage (page 0x59, usage 1). The app enumerates at startup, on HID interface arrival
+  or removal (`device_watch`), and when the Lights page opens: never on a timer.
+- **Control:** each found device is one of `Driver(protocol)` (a Foxglove driver),
+  `LampArray` (a standard Dynamic Lighting device; listed, support comes with #72) or
+  `NotYet` (recognised, no driver).
+- **Drivers** implement `LightingDevice`: name, named zones, static colour per zone, off, and
+  identify (a bounded blink, then the colours back). A driver writes through a `HidWriter`,
+  which opens the device shared only while it sends; tests use a recording writer.
+- **First driver:** `omen_tracer`, the HP OMEN case board (TracerLED, `103C:84FD`), from the
+  59-byte static report layout in #423 (written from those facts, not from OpenRGB's GPL code).
+  The 45L's zones: diamond display, interior light, front bottom, middle and top fans
+  (3 and 4 aren't connected). The board can't be read back, so the app saves the colours it
+  set (`[pc_lighting]`) and puts them back when the board arrives, unless Light Studio runs.
+- **Adding a board** that speaks a known protocol is a catalog entry. A new protocol is a new
+  driver module and a `Protocol` variant.
+
+Not yet: lighting leases (#73) for case boards, the board's own effects (breathing, colour
+cycle, themes), and the OMEN liquid cooler (`03F0:7397`), which is listed as found only.
+
 ### Backends and where they live
 
 | Backend | Capabilities | In-process or plugin | Notes |

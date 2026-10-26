@@ -1,0 +1,700 @@
+//! PC & peripherals lighting (#423): the OMEN 45L case and other lights that aren't the
+//! keyboard, through the device layer's `pc_lighting` discovery and drivers.
+//!
+//! One worker thread owns the drivers and blocks on its queue. It scans when the app starts,
+//! when a HID interface arrives or goes (`device_watch`), and when the Lights page opens; it
+//! writes only for a click on the page or a colour the case follows ("Match keyboard": the
+//! keyboard's colour as Foxglove sets it, or the Windows accent). Nothing streams or polls.
+//! The colours the user picks are saved in the store's `[pc_lighting]` and put back when the
+//! board arrives (at startup too), unless OMEN Light Studio is running.
+
+use std::collections::BTreeMap;
+use std::sync::{mpsc, Mutex, OnceLock};
+
+use foxglove_devices::pc_lighting::{self as pcl, Catalog, Control, Found, LightingDevice};
+use foxglove_devices::{DeviceError, Rgb};
+use serde::{Deserialize, Serialize};
+
+/// The `[pc_lighting]` section: per device (by [`Found::key`]), what the user chose.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub devices: BTreeMap<String, Saved>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Saved {
+    /// Zone id (the board's number) to `#rrggbb`.
+    pub colors: BTreeMap<String, String>,
+    pub match_keyboard: bool,
+}
+
+/// One device as the page shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Row {
+    pub key: String,
+    pub name: String,
+    pub control: Control,
+    /// Zone names and their colours as Foxglove last set (or saved) them.
+    pub zones: Vec<(String, Option<[u8; 3]>)>,
+    pub match_keyboard: bool,
+}
+
+/// What the page shows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Snapshot {
+    pub devices: Vec<Row>,
+    /// OMEN Light Studio is running and may put its own colours back.
+    pub light_studio: bool,
+    /// The last action's result, for the status line.
+    pub status: Option<String>,
+    pub busy: bool,
+}
+
+/// A request to the worker.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Msg {
+    Scan,
+    /// Zone index (into the device's zones) and colour.
+    Set {
+        key: String,
+        colors: Vec<(usize, [u8; 3])>,
+    },
+    Off(String),
+    Identify(String),
+    Match(String, bool),
+    /// The colour "Match keyboard" follows changed.
+    Follow([u8; 3]),
+}
+
+static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
+static QUEUE: OnceLock<Mutex<mpsc::Sender<Msg>>> = OnceLock::new();
+static LAST_FRAME: Mutex<Option<u64>> = Mutex::new(None);
+/// The settings window's context, to repaint it when the worker has news.
+static CTX: OnceLock<egui::Context> = OnceLock::new();
+
+/// What the page shows now (empty before the first scan).
+pub fn snapshot() -> Snapshot {
+    SNAPSHOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_default()
+}
+
+/// Queues a request; a no-op before [`start`].
+pub fn send(msg: Msg) {
+    if let Some(q) = QUEUE.get() {
+        if matches!(msg, Msg::Set { .. } | Msg::Off(_) | Msg::Identify(_)) {
+            if let Some(s) = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                s.busy = true;
+            }
+        }
+        let _ = q.lock().unwrap_or_else(|e| e.into_inner()).send(msg);
+    }
+}
+
+/// Called each frame the Lights page draws: the first frame after it wasn't shown scans again
+/// (and checks for Light Studio), so the page is current whenever it's opened.
+pub fn page_shown(ctx: &egui::Context) {
+    let _ = CTX.set(ctx.clone());
+    let frame = ctx.cumulative_frame_nr();
+    let mut last = LAST_FRAME.lock().unwrap_or_else(|e| e.into_inner());
+    if last.is_none_or(|l| frame > l + 1) {
+        send(Msg::Scan);
+    }
+    *last = Some(frame);
+}
+
+/// The keyboard's colour as Foxglove just set it (hue 0-359, saturation and brightness 0-100).
+pub fn keyboard_color(hue: u16, sat: u8, brightness: u8) {
+    send(Msg::Follow(hsv_rgb(hue, sat, brightness)));
+}
+
+/// An HSV colour (hue 0-359, saturation and value 0-100) as sRGB bytes.
+pub fn hsv_rgb(hue: u16, sat: u8, value: u8) -> [u8; 3] {
+    let h = f32::from(hue % 360) / 60.0;
+    let s = f32::from(sat.min(100)) / 100.0;
+    let v = f32::from(value.min(100)) / 100.0;
+    let c = v * s;
+    let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+    let (r, g, b) = match h as u8 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = v - c;
+    let byte = |f: f32| ((f + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    [byte(r), byte(g), byte(b)]
+}
+
+pub fn hex(c: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
+}
+
+pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
+    let s = s.strip_prefix('#')?;
+    if s.len() != 6 {
+        return None;
+    }
+    let n = u32::from_str_radix(s, 16).ok()?;
+    Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])
+}
+
+fn rgb(c: [u8; 3]) -> Rgb {
+    Rgb {
+        r: c[0],
+        g: c[1],
+        b: c[2],
+    }
+}
+
+/// Opens a driver for a found device.
+pub type Opener = Box<dyn Fn(&Found) -> foxglove_devices::Result<Box<dyn LightingDevice>> + Send>;
+
+/// The worker's state, apart from the OS: tests drive it with a mocked HID writer.
+pub struct Worker {
+    catalog: Catalog,
+    open: Opener,
+    found: Vec<Found>,
+    drivers: BTreeMap<String, Box<dyn LightingDevice>>,
+    pub settings: Settings,
+    follow: Option<[u8; 3]>,
+    light_studio: bool,
+    status: Option<String>,
+    /// Settings changed and need saving.
+    pub dirty: bool,
+}
+
+impl Worker {
+    pub fn new(catalog: Catalog, settings: Settings, open: Opener) -> Self {
+        Self {
+            catalog,
+            open,
+            found: Vec::new(),
+            drivers: BTreeMap::new(),
+            settings,
+            follow: None,
+            light_studio: false,
+            status: None,
+            dirty: false,
+        }
+    }
+
+    /// A new enumeration: opens drivers for arrivals and puts their saved colours back (unless
+    /// Light Studio is running), and drops the ones that went.
+    pub fn scan(&mut self, hid: &[pcl::HidEntry], light_studio: bool, paused: bool) {
+        self.light_studio = light_studio;
+        let now = pcl::discover(&self.catalog, hid);
+        self.drivers
+            .retain(|key, _| now.iter().any(|f| &f.key == key));
+        for f in &now {
+            let arrived = !self
+                .found
+                .iter()
+                .any(|o| o.key == f.key && o.path == f.path);
+            if !arrived || !matches!(f.control, Control::Driver(_)) {
+                continue;
+            }
+            match (self.open)(f) {
+                Ok(driver) => {
+                    self.drivers.insert(f.key.clone(), driver);
+                    if !light_studio && !paused {
+                        self.restore(f);
+                    }
+                }
+                Err(e) => eprintln!("Foxglove: can't open {}: {e}", f.name),
+            }
+        }
+        self.found = now;
+    }
+
+    /// Saved colours (or the followed colour) back on a board that just arrived.
+    fn restore(&mut self, f: &Found) {
+        let saved = self
+            .settings
+            .devices
+            .get(&f.key)
+            .cloned()
+            .unwrap_or_default();
+        let colors: Vec<(usize, Rgb)> = match (saved.match_keyboard, self.follow) {
+            (true, Some(c)) => (0..f.zones.len()).map(|i| (i, rgb(c))).collect(),
+            _ => f
+                .zones
+                .iter()
+                .enumerate()
+                .filter_map(|(i, z)| {
+                    let c = parse_hex(saved.colors.get(&z.id.to_string())?)?;
+                    Some((i, rgb(c)))
+                })
+                .collect(),
+        };
+        if colors.is_empty() {
+            return;
+        }
+        if let Some(d) = self.drivers.get_mut(&f.key) {
+            if let Err(e) = d.set_zones(&colors) {
+                eprintln!("Foxglove: {}: {e}", f.name);
+            }
+        }
+    }
+
+    /// Handles one request. `paused` refuses writes (#404); `wait` sleeps between identify
+    /// steps.
+    pub fn handle(&mut self, msg: Msg, paused: bool, wait: &mut dyn FnMut(std::time::Duration)) {
+        let writes = !matches!(msg, Msg::Scan | Msg::Follow(_) | Msg::Match(_, false));
+        if paused && writes {
+            self.status = Some(super::pause::REFUSED.replace("the keyboard", "the lights"));
+            return;
+        }
+        match msg {
+            Msg::Scan => {}
+            Msg::Set { key, colors } => {
+                let colors: Vec<_> = colors.into_iter().map(|(i, c)| (i, rgb(c))).collect();
+                self.write(&key, "Colours set", |d| d.set_zones(&colors), true);
+            }
+            Msg::Off(key) => self.write(&key, "Lights off", |d| d.off(), true),
+            Msg::Identify(key) => self.write(&key, "Identified", |d| d.identify(wait), false),
+            Msg::Match(key, on) => {
+                self.settings
+                    .devices
+                    .entry(key.clone())
+                    .or_default()
+                    .match_keyboard = on;
+                self.dirty = true;
+                if let (true, Some(c)) = (on, self.follow) {
+                    self.write(&key, "Matching the keyboard", |d| d.set_all(rgb(c)), false);
+                }
+            }
+            Msg::Follow(c) => {
+                // Paused: not taken, so the same colour applies once Foxglove resumes.
+                if paused || self.follow == Some(c) {
+                    return;
+                }
+                self.follow = Some(c);
+                let keys: Vec<String> = self
+                    .settings
+                    .devices
+                    .iter()
+                    .filter(|(k, s)| s.match_keyboard && self.drivers.contains_key(*k))
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for key in keys {
+                    self.write(&key, "Matching the keyboard", |d| d.set_all(rgb(c)), false);
+                }
+            }
+        }
+    }
+
+    /// Runs one driver call; `manual` saves the colours and stops matching the keyboard.
+    fn write(
+        &mut self,
+        key: &str,
+        done: &str,
+        call: impl FnOnce(&mut dyn LightingDevice) -> foxglove_devices::Result<()>,
+        manual: bool,
+    ) {
+        let Some(d) = self.drivers.get_mut(key) else {
+            self.status = Some("That device isn't connected now".into());
+            return;
+        };
+        let result = call(d.as_mut());
+        let colors = d.colors();
+        let name = d.name().to_string();
+        self.status = Some(match &result {
+            Ok(()) => format!("{name}: {}", done.to_lowercase()),
+            Err(DeviceError::Disconnected) => format!("{name}: not connected"),
+            Err(e) => format!("{name}: {e}"),
+        });
+        if result.is_err() || !manual {
+            return;
+        }
+        let Some(found) = self.found.iter().find(|f| f.key == key) else {
+            return;
+        };
+        let saved = self.settings.devices.entry(key.to_string()).or_default();
+        saved.match_keyboard = false;
+        for (zone, c) in found.zones.iter().zip(colors) {
+            if let Some(c) = c {
+                saved
+                    .colors
+                    .insert(zone.id.to_string(), hex([c.r, c.g, c.b]));
+            }
+        }
+        self.dirty = true;
+    }
+
+    pub fn snapshot(&self) -> Snapshot {
+        let devices = self
+            .found
+            .iter()
+            .map(|f| {
+                let saved = self.settings.devices.get(&f.key);
+                let known = self.drivers.get(&f.key).map(|d| d.colors());
+                let zones = f
+                    .zones
+                    .iter()
+                    .enumerate()
+                    .map(|(i, z)| {
+                        let set = known
+                            .as_ref()
+                            .and_then(|k| k.get(i).copied().flatten())
+                            .map(|c| [c.r, c.g, c.b]);
+                        let saved = saved
+                            .and_then(|s| s.colors.get(&z.id.to_string()))
+                            .and_then(|h| parse_hex(h));
+                        (z.name.clone(), set.or(saved))
+                    })
+                    .collect();
+                Row {
+                    key: f.key.clone(),
+                    name: f.name.clone(),
+                    control: f.control,
+                    zones,
+                    match_keyboard: saved.is_some_and(|s| s.match_keyboard),
+                }
+            })
+            .collect();
+        Snapshot {
+            devices,
+            light_studio: self.light_studio,
+            status: self.status.clone(),
+            busy: false,
+        }
+    }
+}
+
+/// OMEN Light Studio's processes, matched exactly (case-insensitive).
+pub const LIGHT_STUDIO: [&str; 2] = ["LightStudio-background.exe", "LightStudio.exe"];
+
+/// Starts the worker, the HID arrival watch and the first scan.
+pub fn start() {
+    if super::repaint_trace::disabled("pc-lights") {
+        return;
+    }
+    let (tx, rx) = mpsc::channel::<Msg>();
+    if QUEUE.set(Mutex::new(tx.clone())).is_err() {
+        return;
+    }
+    let settings = super::store::try_load::<Settings>("pc_lighting").unwrap_or_default();
+    super::services::spawn_named("pc-lights", move || {
+        #[cfg(target_os = "windows")]
+        let _watch = {
+            let tx = tx.clone();
+            super::device_watch::DeviceWatch::interfaces(
+                true,
+                Box::new(move |_path| {
+                    let _ = tx.send(Msg::Scan);
+                }),
+            )
+        };
+        let open: Opener = Box::new(|f: &Found| {
+            let writer = pcl::hid::PathWriter::new(&f.path)?;
+            pcl::open(f, Box::new(writer))
+        });
+        let mut worker = Worker::new(Catalog::bundled(), settings, open);
+        let _ = tx.send(Msg::Scan);
+        while let Ok(first) = rx.recv() {
+            // A burst of arrivals (a hub with several interfaces) scans once.
+            let mut batch = vec![first];
+            batch.extend(rx.try_iter());
+            let mut scanned = false;
+            for msg in batch {
+                if msg == Msg::Scan {
+                    if !scanned {
+                        scanned = true;
+                        match pcl::hid::enumerate() {
+                            Ok(hid) => {
+                                worker.scan(&hid, light_studio_running(), super::pause::paused())
+                            }
+                            Err(e) => eprintln!("Foxglove: lighting scan: {e}"),
+                        }
+                    }
+                    continue;
+                }
+                worker.handle(msg, super::pause::paused(), &mut std::thread::sleep);
+            }
+            if std::mem::take(&mut worker.dirty) {
+                if let Err(e) = super::store::save("pc_lighting", &worker.settings) {
+                    eprintln!("Foxglove: can't save the PC lighting settings: {e}");
+                }
+            }
+            *SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(worker.snapshot());
+            if let Some(ctx) = CTX.get() {
+                ctx.request_repaint();
+            }
+        }
+    });
+}
+
+/// Whether OMEN Light Studio runs now: one process snapshot, taken only with a scan.
+#[cfg(target_os = "windows")]
+pub fn light_studio_running() -> bool {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+    // SAFETY: a process snapshot handle, closed below on every path.
+    let Ok(snap) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }) else {
+        return false;
+    };
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    let mut found = false;
+    // SAFETY: `entry` is a valid PROCESSENTRY32W with dwSize set; `snap` is open.
+    let mut more = unsafe { Process32FirstW(snap, &mut entry) }.is_ok();
+    while more {
+        let end = entry
+            .szExeFile
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(entry.szExeFile.len());
+        let name = String::from_utf16_lossy(&entry.szExeFile[..end]);
+        if LIGHT_STUDIO.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+            found = true;
+            break;
+        }
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snap, &mut entry) }.is_ok();
+    }
+    // SAFETY: closes the snapshot opened above, once.
+    let _ = unsafe { CloseHandle(snap) };
+    found
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn light_studio_running() -> bool {
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use foxglove_devices::pc_lighting::{HidEntry, HidWriter};
+    use std::sync::Arc;
+
+    type Sent = Arc<Mutex<Vec<Vec<u8>>>>;
+
+    /// The mocked HID writer: every report, in order.
+    struct Recorder(Sent);
+
+    impl HidWriter for Recorder {
+        fn send(&mut self, reports: &[Vec<u8>]) -> foxglove_devices::Result<()> {
+            self.0.lock().unwrap().extend(reports.iter().cloned());
+            Ok(())
+        }
+    }
+
+    fn worker(settings: Settings) -> (Worker, Sent) {
+        let sent: Sent = Arc::default();
+        let s = sent.clone();
+        let open: Opener = Box::new(move |f: &Found| pcl::open(f, Box::new(Recorder(s.clone()))));
+        (Worker::new(Catalog::bundled(), settings, open), sent)
+    }
+
+    fn case_hid() -> Vec<HidEntry> {
+        vec![
+            HidEntry {
+                vid: 0x103c,
+                pid: 0x84fd,
+                usage_page: 1,
+                path: "tracer".into(),
+                ..Default::default()
+            },
+            HidEntry {
+                vid: 0x03f0,
+                pid: 0x7397,
+                usage_page: 1,
+                path: "pump".into(),
+                ..Default::default()
+            },
+            HidEntry {
+                vid: 0x046d,
+                pid: 0xc332,
+                usage_page: 0x59,
+                usage: 1,
+                path: "vhf".into(),
+                product: Some("G502 Proteus Spectrum".into()),
+                ..Default::default()
+            },
+        ]
+    }
+
+    /// The 45L's report for one zone, built from #423's layout.
+    fn report(zone: u8, c: [u8; 3]) -> Vec<u8> {
+        let mut b = vec![0u8; 59];
+        b[2] = 0x12;
+        b[3] = 0x01;
+        b[4] = 1;
+        b[5] = 1;
+        let at = 0x08 + 3 * usize::from(zone - 1);
+        b[at..at + 3].copy_from_slice(&c);
+        b[0x30] = 0x64;
+        b[0x31] = 0x02;
+        b[0x36] = zone;
+        b[0x37] = 0x01;
+        b
+    }
+
+    fn no_wait() -> impl FnMut(std::time::Duration) {
+        |_| {}
+    }
+
+    #[test]
+    fn the_page_lists_each_device_and_how_it_is_controlled() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), true, false);
+        let s = w.snapshot();
+        let rows: Vec<_> = s
+            .devices
+            .iter()
+            .map(|r| (r.name.as_str(), r.control, r.zones.len()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "HP OMEN 45L case lights",
+                    Control::Driver(pcl::Protocol::OmenTracer),
+                    5
+                ),
+                ("HP OMEN liquid cooler", Control::NotYet, 0),
+                ("G502 Proteus Spectrum", Control::LampArray, 0),
+            ]
+        );
+        assert!(s.light_studio);
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "a scan alone writes nothing"
+        );
+    }
+
+    #[test]
+    fn a_colour_pick_writes_its_zones_and_is_saved() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), false, false);
+        w.handle(
+            Msg::Set {
+                key: "103c:84fd".into(),
+                colors: vec![(0, [0xf0, 0x8a, 0x3c]), (4, [0, 0x80, 0x80])],
+            },
+            false,
+            &mut no_wait(),
+        );
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec![report(1, [0xf0, 0x8a, 0x3c]), report(7, [0, 0x80, 0x80])]
+        );
+        assert!(w.dirty);
+        let saved = &w.settings.devices["103c:84fd"];
+        assert_eq!(saved.colors["1"], "#f08a3c");
+        assert_eq!(saved.colors["7"], "#008080");
+        let row = &w.snapshot().devices[0];
+        assert_eq!(
+            row.zones[0],
+            ("Diamond display".into(), Some([0xf0, 0x8a, 0x3c]))
+        );
+        assert_eq!(row.zones[1].1, None, "never set");
+    }
+
+    #[test]
+    fn saved_colours_come_back_on_arrival_unless_light_studio_runs() {
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            "103c:84fd".into(),
+            Saved {
+                colors: [("2".to_string(), "#112233".to_string())].into(),
+                match_keyboard: false,
+            },
+        );
+        let (mut w, sent) = worker(settings.clone());
+        w.scan(&case_hid(), true, false);
+        assert!(sent.lock().unwrap().is_empty(), "Light Studio is running");
+        let (mut w, sent) = worker(settings);
+        w.scan(&case_hid(), false, false);
+        assert_eq!(*sent.lock().unwrap(), vec![report(2, [0x11, 0x22, 0x33])]);
+        w.scan(&case_hid(), false, false);
+        assert_eq!(
+            sent.lock().unwrap().len(),
+            1,
+            "still there: no second write"
+        );
+        w.scan(&[], false, false);
+        w.scan(&case_hid(), false, false);
+        assert_eq!(sent.lock().unwrap().len(), 2, "replugged: put back again");
+    }
+
+    #[test]
+    fn match_keyboard_follows_colour_changes_only() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), false, false);
+        let key = "103c:84fd".to_string();
+        w.handle(Msg::Follow([255, 0, 0]), false, &mut no_wait());
+        assert!(sent.lock().unwrap().is_empty(), "not matching yet");
+        w.handle(Msg::Match(key.clone(), true), false, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 5, "the current colour, once");
+        assert_eq!(sent.lock().unwrap()[4], report(7, [255, 0, 0]));
+        w.handle(Msg::Follow([255, 0, 0]), false, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 5, "same colour: nothing");
+        w.handle(Msg::Follow([0, 0, 255]), false, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 10);
+        // A manual pick stops matching.
+        w.handle(
+            Msg::Set {
+                key: key.clone(),
+                colors: vec![(0, [1, 2, 3])],
+            },
+            false,
+            &mut no_wait(),
+        );
+        assert!(!w.settings.devices[&key].match_keyboard);
+        w.handle(Msg::Follow([0, 255, 0]), false, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 11);
+        // Paused: the colour waits, and comes through once resumed.
+        w.handle(Msg::Match(key.clone(), true), false, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 16);
+        w.handle(Msg::Follow([9, 9, 9]), true, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 16);
+        w.handle(Msg::Follow([9, 9, 9]), false, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 21);
+    }
+
+    #[test]
+    fn off_identify_and_pause() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), false, false);
+        let key = "103c:84fd".to_string();
+        w.handle(Msg::Off(key.clone()), true, &mut no_wait());
+        assert!(sent.lock().unwrap().is_empty(), "paused: refused");
+        assert!(w.snapshot().status.unwrap().contains("paused"));
+        w.handle(Msg::Off(key.clone()), false, &mut no_wait());
+        assert_eq!(sent.lock().unwrap()[0], report(1, [0, 0, 0]));
+        sent.lock().unwrap().clear();
+        let mut waits = 0;
+        w.handle(Msg::Identify(key.clone()), false, &mut |_| waits += 1);
+        assert_eq!(waits, pcl::IDENTIFY_STEPS);
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 5 * pcl::IDENTIFY_STEPS + 5);
+        assert_eq!(sent[sent.len() - 1], report(7, [0, 0, 0]), "back to off");
+        w.handle(Msg::Off("gone".into()), false, &mut no_wait());
+        assert!(w.snapshot().status.unwrap().contains("isn't connected"));
+    }
+
+    #[test]
+    fn colours_convert() {
+        assert_eq!(hsv_rgb(0, 100, 100), [255, 0, 0]);
+        assert_eq!(hsv_rgb(120, 100, 100), [0, 255, 0]);
+        assert_eq!(hsv_rgb(240, 100, 50), [0, 0, 128]);
+        assert_eq!(hsv_rgb(26, 0, 100), [255, 255, 255]);
+        assert_eq!(parse_hex(&hex([1, 0xab, 0xff])), Some([1, 0xab, 0xff]));
+        assert_eq!(parse_hex("f08a3c"), None);
+        assert_eq!(parse_hex("#f08a3"), None);
+    }
+}

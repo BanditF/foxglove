@@ -13,3 +13,9 @@ to verify that writes take effect. It restores the original binding afterward.
 
 Facts and events use unbounded receiver queues; consumers should drain or drop subscriptions.
 Only `subscribe(true)` receives typed key events. Key events never become facts.
+
+`pc_lighting` covers lighting that isn't a keyboard: case boards, coolers and Windows Dynamic
+Lighting devices. `pc_lighting::discover` matches a HID enumeration against
+`lighting-catalog.toml` (VID/PID, protocol, zone names) and the LampArray usage; drivers implement
+`LightingDevice` (named zones, static colour, off, identify). The `hid` feature adds the hidapi
+enumeration and a writer that opens the device only while it sends.

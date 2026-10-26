@@ -6,6 +6,8 @@ mod capabilities;
 
 mod events;
 
+pub mod pc_lighting;
+
 pub mod facts;
 
 mod registry;

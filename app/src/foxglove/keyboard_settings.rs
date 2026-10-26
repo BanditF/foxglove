@@ -126,6 +126,11 @@ static RGB_STATE: Mutex<Option<RgbState>> = Mutex::new(None);
 static RGB_REFRESH: AtomicBool = AtomicBool::new(true);
 static RGB_POLLING: AtomicBool = AtomicBool::new(false);
 
+/// Both halves' lights as last read, without asking the keyboard.
+pub fn cached_rgb_state() -> Option<RgbState> {
+    *RGB_STATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub fn refresh_rgb_state() {
     RGB_REFRESH.store(true, Ordering::Relaxed);
 }
@@ -171,7 +176,10 @@ pub fn set_lights(on: bool, ctx: egui::Context) {
 /// Colour: hue 0-359, saturation and brightness 0-100.
 pub fn set_color(hue: u16, sat: u8, brightness: u8, ctx: egui::Context) {
     lighting("Set colour", ctx, move |l| {
-        l.set_color(hue, sat, brightness)
+        l.set_color(hue, sat, brightness)?;
+        // The case's "Match keyboard" follows (#423).
+        super::pc_lights::keyboard_color(hue, sat, brightness);
+        Ok(())
     });
 }
 
