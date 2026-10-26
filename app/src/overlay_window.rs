@@ -98,7 +98,10 @@ impl OverlayApp {
         // the overlay loses the focus to it. The Settings window is a window of its own; while
         // it's open the overlay takes the mouse only over the keys (to open the editor), and over
         // the whole display only while a key's tooltip shows or the editor is open.
-        let editor = self.editor.target.is_some();
+        // A host without native windows (Wayland) draws Settings inside the overlay: the whole
+        // overlay takes the mouse then, as the editor does.
+        let editor = self.editor.target.is_some()
+            || (self.ui.settings_visible && ctx.embed_viewports());
         let tray = crate::foxglove::tray_panel::is_open();
         let keys = self
             .ui
