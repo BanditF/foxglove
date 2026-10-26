@@ -130,6 +130,18 @@ pub fn generation() -> Option<u64> {
     state.connected.is_some().then_some(state.generation)
 }
 
+/// The connected keyboard's key in the colour calibration registry, without blocking or
+/// discovery (for the UI).
+pub fn keyboard_key() -> Option<String> {
+    let cached = DEVICE.try_lock().ok()?;
+    let d = cached.as_ref()?;
+    d.link()
+        .state()
+        .connected
+        .is_some()
+        .then(|| d.calibration_key())
+}
+
 /// What the keymap lets the app invoke (the allowlist) and its `&rgb_ug` behavior.
 pub fn set_actions(actions: Vec<BehaviorInfo>, underglow: Option<u16>) {
     if let Some(d) = DEVICE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
