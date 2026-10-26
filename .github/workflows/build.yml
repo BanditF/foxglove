@@ -24,8 +24,10 @@ jobs:
   build:
     uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@v0.3.0
 
-  # Names the UF2s by version, half and profile (foxglove-fw-v0.1.0-1a2b3c4-left-dev.uf2), and on a
-  # fw-vX.Y.Z tag checks it against FIRMWARE_VERSION and attaches them to a GitHub release.
+  # Names the UF2s by version, half and profile (foxglove-fw-v0.1.0-1a2b3c4-left-dev.uf2), gathers
+  # the release's assets (foxglove-0.1.0-left.uf2, -right.uf2, -settings-reset.uf2, SHA256SUMS,
+  # #378), and on a fw-vX.Y.Z tag checks it against FIRMWARE_VERSION and attaches those to a
+  # GitHub release.
   package:
     needs: build
     runs-on: ubuntu-latest
@@ -99,6 +101,18 @@ jobs:
         with:
           name: ${{ steps.names.outputs.prefix }}
           path: out/*.uf2
+      # #378: what a firmware release ships, under the release's names: the GA halves, the
+      # settings-reset UF2 (RESCUE.md's last resort), and SHA256SUMS over them. Every run makes
+      # them, so a draft release can be filled from this artifact.
+      - name: Release assets
+        run: |
+          set -eu
+          python scripts/firmware/release_assets.py --version "${{ steps.names.outputs.version }}" --src out --dest release
+          cat release/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foxglove-${{ steps.names.outputs.version }}-release-${{ github.sha }}
+          path: release/*
       - name: Release
         if: startsWith(github.ref, 'refs/tags/fw-v')
         env:
@@ -120,8 +134,8 @@ jobs:
           version=${{ steps.names.outputs.version }}
           notes=docs/release-notes/${version%.*}.md
           if [ -f "$notes" ]; then
-            gh release create "$tag" out/*.uf2 --title "Firmware $tag" --notes-file "$notes"
+            gh release create "$tag" release/* --title "Firmware $tag" --notes-file "$notes"
           else
-            gh release create "$tag" out/*.uf2 --title "Firmware $tag" --notes \
-              "Dev builds have the test hooks (position press, bootloader, guard test); GA builds don't. Flash the left first, then the right."
+            gh release create "$tag" release/* --title "Firmware $tag" --notes \
+              "GA builds of both halves: flash the left first, then the right. foxglove-$version-settings-reset.uf2 is the last resort for a half that hangs: it erases that half's settings and Bluetooth pairings; flash the half's own UF2 again after it and pair again (RESCUE.md). SHA256SUMS covers every file."
           fi
