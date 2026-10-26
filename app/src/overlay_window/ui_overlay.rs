@@ -24,15 +24,19 @@ impl OverlayApp {
         // in `key_paint` so pickers render identically.
         let style = self.paint_style(size);
 
-        let overlay_response = Window::new("Foxglove")
+        let overlay_window = Window::new("Foxglove")
             .open(&mut window_open)
             .auto_sized()
             .interactable(hit_test_enabled)
-            .anchor(anchor_params.0, anchor_params.1)
             .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
             .fade_out(true)
-            .title_bar(false)
-            .show(ctx, |ui| {
+            .title_bar(false);
+        // Foxglove: where it was dragged (overlay_place), else its anchor.
+        let overlay_window = match self.overlay_position(ctx) {
+            Some(at) => overlay_window.fixed_pos(at),
+            None => overlay_window.anchor(anchor_params.0, anchor_params.1),
+        };
+        let overlay_response = overlay_window.show(ctx, |ui| {
                 // Foxglove: the overlay's opacity setting, on top of its fade.
                 ui.multiply_opacity(opacity(self.settings.active.opacity));
                 let layout = keyboard.layout();
@@ -47,7 +51,7 @@ impl OverlayApp {
                 let overlay_response = ui.interact(
                     overlay_rect,
                     ui.id().with("overlay_keys"),
-                    egui::Sense::click(),
+                    egui::Sense::click_and_drag(), // Foxglove: drag to move it
                 );
 
                 let mut hovered_key: Option<(usize, usize, usize)> = None;
@@ -150,21 +154,32 @@ impl OverlayApp {
                     );
                 }
 
-                (hovered_key, overlay_response.clicked())
+                (
+                    hovered_key,
+                    overlay_response.clicked(),
+                    overlay_response.drag_delta(),
+                    overlay_response.drag_stopped(),
+                )
             });
 
         // Foxglove: where the overlay is, for its hit region while Settings is open.
         if let Some(response) = overlay_response.as_ref() {
             self.ui.overlay_rect = Some(response.response.rect);
+            self.ui.overlay_size = response.response.rect.size();
             self.ui.overlay_hovered = response
                 .inner
-                .is_some_and(|(hovered, _)| hovered.is_some());
+                .is_some_and(|(hovered, ..)| hovered.is_some());
+            if hit_test_enabled {
+                if let Some((_, _, delta, stopped)) = response.inner {
+                    self.overlay_dragged(ctx, response.response.rect, delta, stopped);
+                }
+            }
         }
 
         // Handle a click after the closure so editor state can be mutated.
         if hit_test_enabled {
             if let Some(response) = overlay_response.as_ref() {
-                if let Some((hovered, clicked)) = response.inner {
+                if let Some((hovered, clicked, ..)) = response.inner {
                     // A closing editor is saving; it must not be retargeted.
                     if clicked && !self.editor.closing {
                         if let Some((row, col, target_layer)) = hovered {

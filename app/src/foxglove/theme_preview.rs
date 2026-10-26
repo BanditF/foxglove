@@ -302,6 +302,13 @@ fn keypeek_groups(ui: &mut egui::Ui) {
                     .selected_text(crate::settings::WindowPosition::BottomRight.to_string())
                     .show_ui(ui, |_| {});
                 ui.end_row();
+                // As overlay_window/foxglove_place.rs draws it, with a dragged place.
+                ui.label("Position");
+                ui.horizontal(|ui| {
+                    ui.label("Where you dragged it");
+                    let _ = ui.small_button("Reset");
+                });
+                ui.end_row();
                 for (label, value, suffix) in [
                     ("Display duration", 2000.0, " ms"),
                     ("Activation delay", 0.0, " ms"),
@@ -1007,6 +1014,99 @@ fn settings_window_placement_renders() {
             .any(|p| p.0[..3] == [DARK.accent.r(), DARK.accent.g(), DARK.accent.b()]),
         "the window's outline"
     );
+}
+
+/// A drag of the layer overlay across the display edge, drawn from the real drop logic: let go
+/// with its middle past the edge, it lands whole on the second display, which Settings' Display
+/// then shows.
+#[test]
+fn overlay_drag_renders() {
+    use crate::foxglove::overlay_place::dropped;
+    use crate::foxglove::settings_window::tests::two_displays;
+    use crate::foxglove::theme::DARK;
+    let ctx = preview_ctx();
+    let displays = two_displays();
+    let let_go = [2300, 600, 3020, 840];
+    let place = dropped(let_go, &displays).expect("a display");
+    let target = displays
+        .iter()
+        .find(|m| m.id == place.monitor)
+        .expect("that display");
+    let [x, y] = place.at.expect("a corner");
+    let landed = [
+        target.work_area[0] + x,
+        target.work_area[1] + y,
+        target.work_area[0] + x + 720,
+        target.work_area[1] + y + 240,
+    ];
+    let scale = 0.12;
+    let size = egui::vec2(6400.0 * scale + 48.0, 2088.0 * scale + 72.0);
+    let img = render_ui(&ctx, size, DARK.ground, |ui| {
+        let painter = ui.painter().clone();
+        painter.text(
+            egui::pos2(24.0, 12.0),
+            egui::Align2::LEFT_TOP,
+            "Dropped across the edge: the overlay lands on Display 2",
+            crate::foxglove::theme::body(15.0),
+            DARK.text_strong,
+        );
+        let origin = egui::pos2(24.0, 44.0);
+        let to_rect = |r: [i32; 4]| {
+            Rect::from_min_max(
+                origin + egui::vec2(r[0] as f32, r[1] as f32) * scale,
+                origin + egui::vec2(r[2] as f32, r[3] as f32) * scale,
+            )
+        };
+        for (n, m) in displays.iter().enumerate() {
+            let rect = to_rect(m.work_area);
+            painter.rect(
+                rect,
+                4.0,
+                DARK.surface,
+                egui::Stroke::new(1.0, DARK.muted),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                rect.left_bottom() + egui::vec2(8.0, -8.0),
+                egui::Align2::LEFT_BOTTOM,
+                format!("Display {}", n + 1),
+                crate::foxglove::theme::mono(12.0),
+                DARK.muted,
+            );
+        }
+        let from = to_rect(let_go);
+        painter.rect(
+            from,
+            3.0,
+            Color32::TRANSPARENT,
+            egui::Stroke::new(1.0, DARK.muted),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            from.center_bottom() + egui::vec2(0.0, 4.0),
+            egui::Align2::CENTER_TOP,
+            "let go here",
+            crate::foxglove::theme::body(12.0),
+            DARK.muted,
+        );
+        let to = to_rect(landed);
+        painter.rect(
+            to,
+            3.0,
+            DARK.accent.gamma_multiply(0.35),
+            egui::Stroke::new(2.0, DARK.accent),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            to.center(),
+            egui::Align2::CENTER_CENTER,
+            "overlay",
+            crate::foxglove::theme::body(12.0),
+            DARK.text_strong,
+        );
+    });
+    keep("ui-overlay-drag.png", &img);
+    assert_eq!(place.monitor, displays[1].id);
 }
 
 /// The layer overlay at three opacity settings, over a wallpaper-like backdrop: 100% (the look

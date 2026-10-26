@@ -235,11 +235,17 @@ impl OverlayApp {
                                     .selected_text(current.map(|m| m.label).unwrap_or_default())
                                     .show_ui(ui, |ui| {
                                         for monitor in &monitors {
-                                            ui.selectable_value(
-                                                &mut self.settings.draft.monitor,
-                                                monitor.id.clone(),
-                                                &monitor.label,
-                                            );
+                                            if ui
+                                                .selectable_value(
+                                                    &mut self.settings.draft.monitor,
+                                                    monitor.id.clone(),
+                                                    &monitor.label,
+                                                )
+                                                .clicked()
+                                            {
+                                                // Foxglove: back to that display's anchor.
+                                                self.reset_overlay_place();
+                                            }
                                         }
                                     });
                                 ui.end_row();
@@ -258,14 +264,23 @@ impl OverlayApp {
                                         WindowPosition::Top,
                                         WindowPosition::Bottom,
                                     ] {
-                                        ui.selectable_value(
-                                            &mut self.settings.draft.position,
-                                            pos,
-                                            pos.to_string(),
-                                        );
+                                        if ui
+                                            .selectable_value(
+                                                &mut self.settings.draft.position,
+                                                pos,
+                                                pos.to_string(),
+                                            )
+                                            .clicked()
+                                        {
+                                            // Foxglove: an alignment drops a dragged place.
+                                            self.reset_overlay_place();
+                                        }
                                     }
                                 });
                             ui.end_row();
+
+                            // Foxglove: the overlay can be dragged; this says so and undoes it.
+                            self.overlay_place_row(ui);
 
                             ui.label("Display duration");
                             let mut timeout_ui =

@@ -9,6 +9,7 @@ use std::time::Instant;
 
 mod connection_flow;
 mod foxglove_connect;
+mod foxglove_place;
 mod foxglove_settings;
 mod settings_sync;
 mod state;
@@ -54,6 +55,9 @@ impl OverlayApp {
                 settings_window: Default::default(),
                 overlay_rect: None,
                 overlay_hovered: false,
+                overlay_size: egui::Vec2::ZERO,
+                overlay_place: crate::foxglove::overlay_place::load(),
+                overlay_drag: None,
             },
             settings: SettingsState {
                 active: base_settings.clone(),
@@ -103,11 +107,13 @@ impl OverlayApp {
         let editor = self.editor.target.is_some()
             || (self.ui.settings_visible && ctx.embed_viewports());
         let tray = crate::foxglove::tray_panel::is_open();
+        // A drag (of the overlay) takes the whole display, so the overlay never draws clipped.
+        let busy = self.ui.overlay_hovered || self.ui.overlay_drag.is_some();
         let keys = self
             .ui
             .overlay_rect
-            .filter(|_| self.ui.settings_visible && !self.ui.overlay_hovered);
-        let region = if editor || (self.ui.settings_visible && self.ui.overlay_hovered) {
+            .filter(|_| self.ui.settings_visible && !busy);
+        let region = if editor || (self.ui.settings_visible && busy) {
             None
         } else if tray {
             crate::foxglove::tray_panel::hit_region(ctx)
