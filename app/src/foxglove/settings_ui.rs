@@ -137,16 +137,57 @@ pub fn card<R>(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
         .inner
 }
 
-/// A card row: the name on the left, the value on the right.
+/// A card row: the name on the left, the value on the right. A value longer than the room
+/// beside the name wraps: in a horizontal row a plain label would stretch the card, and with it
+/// the settings window (it grew on each reconnect, when the rows fill in).
 pub fn row(ui: &mut egui::Ui, name: &str, value: impl Into<egui::WidgetText>) -> egui::Response {
     ui.horizontal(|ui| {
         ui.label(name);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(value)
+            ui.add(egui::Label::new(value).wrap())
         })
         .inner
     })
     .inner
+}
+
+/// A row with `right` against the right edge and `left` in the room left of it, where text
+/// wraps. `right` is laid out first, so a narrow card squeezes `left`, never the other way round
+/// (a right-to-left part after a label runs back over the label when the card is too narrow).
+pub fn split_row(
+    ui: &mut egui::Ui,
+    right: impl FnOnce(&mut egui::Ui),
+    left: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            right(ui);
+            ui.with_layout(
+                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                left,
+            );
+        });
+    });
+}
+
+/// A label and its value in two columns: the label in a column `name_width` wide (cut with an
+/// ellipsis if longer), the value in the rest, wrapping there.
+pub fn pair(ui: &mut egui::Ui, name_width: f32, name: &str, value: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(name_width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(name_width);
+                ui.add(egui::Label::new(name).truncate());
+            },
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 0.0),
+            egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+            value,
+        );
+    });
 }
 
 fn open_by_default(title: &str) -> bool {

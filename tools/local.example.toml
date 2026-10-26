@@ -1,0 +1,28 @@
+# Machine-specific values for Foxglove's dev tooling (not the app). Copy this file to
+# tools/local.toml (in the workspace folder that holds the main checkout, e.g.
+# C:\Users\fuchs\splitkeeb\tools\local.toml, or in a checkout's tools\) and change what differs
+# on your PC. tools/local.toml is never committed. Without it, the values below are used: they
+# are the original PC's. An environment variable beats both (named next to each key).
+#
+# Read by scripts/local_config.py (python scripts/local_config.py show), and for the serials
+# by foxglove-lab (crates/foxglove-lab/src/host.rs).
+
+[keyboard]
+# The halves' USB serials (Device Manager: the device's instance path ends with it).
+# Used by scripts/flash/foxglove_flash.py and foxglove-lab. FOXGLOVE_LEFT_SERIAL / _RIGHT_SERIAL.
+left_serial = "1E89EF085AA8A635"
+right_serial = "35B4541F78DE9CF8"
+
+[flash]
+# Known-good firmware folder the flasher names for a rollback (see RESCUE.md). FOXGLOVE_ROLLBACK.
+rollback = 'C:\Users\fuchs\splitkeeb\firmware-358c3d0\firmware'
+
+[workspace]
+# The folder holding the main checkout, RESCUE.md and tools\. Scheduled-task prompts and
+# personal scripts read it with: python scripts/local_config.py get workspace.root
+# FOXGLOVE_WORKSPACE.
+root = 'C:\Users\fuchs\splitkeeb'
+
+[worktrees]
+# Where job worktrees live (scripts/merge-pr.sh, docs/agents.md). FOXGLOVE_WORKTREES.
+root = 'C:\Users\fuchs\splitkeeb\worktrees'

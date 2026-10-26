@@ -64,6 +64,20 @@ pub struct UiState {
     /// Foxglove (#405): the hit region last given to the host while the tray panel is open.
     pub hit_region: Option<[i32; 5]>,
     pub file_dialog: FileDialog,
+    /// Foxglove: the Settings window, a native window of its own.
+    pub settings_window: crate::foxglove::settings_window::SettingsWindow,
+    /// Foxglove: where the layer overlay was drawn last frame (window points) and whether a key
+    /// under the pointer shows its tooltip; while Settings is open the overlay takes the mouse
+    /// only there.
+    pub overlay_rect: Option<egui::Rect>,
+    pub overlay_hovered: bool,
+    /// Foxglove: the overlay's last size, its dragged place, and its top-left while a drag is
+    /// under way (window points).
+    pub overlay_size: egui::Vec2,
+    pub overlay_place: crate::foxglove::overlay_place::Place,
+    pub overlay_drag: Option<egui::Pos2>,
+    /// Foxglove: the drag under way, followed across displays (foxglove_place.rs).
+    pub overlay_grab: Option<super::foxglove_place::Drag>,
 }
 
 pub struct SettingsState {

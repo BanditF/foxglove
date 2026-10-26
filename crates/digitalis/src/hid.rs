@@ -60,34 +60,34 @@ impl Keyboard {
 
     pub fn open_matching(api: &mut HidApi, m: &Match) -> Result<Keyboard> {
         api.refresh_devices()?;
-        let mut tried = 0;
-        let mut devices: Vec<_> = api.device_list().collect();
+        let api: &HidApi = api;
+        let mut devices: Vec<_> = api
+            .device_list()
+            .filter(|info| {
+                info.usage_page() == protocol::USAGE_PAGE
+                    && info.usage() == protocol::USAGE
+                    && m.accepts(info)
+            })
+            .collect();
         devices.sort_by_key(|info| prefer_usb(info.bus_type()));
-        for info in devices {
-            if info.usage_page() != protocol::USAGE_PAGE || info.usage() != protocol::USAGE {
-                continue;
-            }
-            if !m.accepts(info) {
-                continue;
-            }
-            let name = info.product_string().unwrap_or("").to_string();
-            tried += 1;
-            let Ok(dev) = info.open_device(api) else {
-                continue;
-            };
-            let mut kb = Keyboard {
-                dev,
+        let tried = devices.len();
+        let opened = devices.into_iter().filter_map(|info| {
+            Some(Keyboard {
+                dev: info.open_device(api).ok()?,
                 bus_type: info.bus_type(),
-                product: name,
+                product: info.product_string().unwrap_or("").to_string(),
                 hello: None,
-            };
-            // A reply now and then goes missing while other reports are in flight, so ask again;
-            // a keyboard that may lack the host link gets one try, to connect quickly.
-            let tries = if m.without_host_link { 1 } else { 3 };
-            kb.hello = (0..tries).find_map(|_| kb.say_hello().ok());
-            if kb.hello.is_some() || m.without_host_link {
-                return Ok(kb);
-            }
+            })
+        });
+        // A reply now and then goes missing while other reports are in flight, so ask again;
+        // a keyboard that may lack the host link gets one try per interface, to connect quickly.
+        let tries = if m.without_host_link { 1 } else { 3 };
+        let picked = pick(opened, m.without_host_link, |kb| {
+            (0..tries).find_map(|_| kb.say_hello().ok())
+        });
+        if let Some((mut kb, hello)) = picked {
+            kb.hello = hello;
+            return Ok(kb);
         }
         if tried == 0 {
             bail!("no Raw HID keyboard (usage page 0xFF60) found");
@@ -163,6 +163,31 @@ impl Transport for Keyboard {
     }
 }
 
+/// The interface to use, from `candidates` in preference order (USB first): the first that
+/// answers HELLO, else (`without_host_link`) the first one at all, with no HELLO.
+///
+/// The first answer wins over the first interface: a keyboard on USB and Bluetooth at once can
+/// answer on only one of them. Firmware up to 0.1 sends Raw HID replies over every transport,
+/// and its USB side drops them for good once one USB transfer is lost (a PC restart or sleep
+/// while a reply is in flight), so HELLO goes unanswered on USB and is answered on Bluetooth.
+/// Taking the silent USB interface left the app with "no host link".
+fn pick<K>(
+    candidates: impl IntoIterator<Item = K>,
+    without_host_link: bool,
+    mut hello: impl FnMut(&K) -> Option<Hello>,
+) -> Option<(K, Option<Hello>)> {
+    let mut silent = None;
+    for kb in candidates {
+        if let Some(h) = hello(&kb) {
+            return Some((kb, Some(h)));
+        }
+        if without_host_link && silent.is_none() {
+            silent = Some(kb);
+        }
+    }
+    silent.map(|kb| (kb, None))
+}
+
 fn prefer_usb(bus: BusType) -> bool {
     !matches!(bus, BusType::Usb)
 }
@@ -174,6 +199,89 @@ fn use_output_report(bus_type: BusType, windows: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HELLO from the 0.1 release firmware (e255d32, dev profile) on the left half: bytes 0-15
+    /// as the keyboard sent them on 2026-10-26, the rest as its `hello_reply` builds them
+    /// (capabilities 0x3FFF, panel timeout 0, version 0.1.0 dev).
+    const HELLO_FW_0_1_0: [u8; REPORT] = [
+        0xd5, 0x81, 0x01, 0x40, 0x34, 0x02, 0x6a, 0x02, 0x64, 0x04, 0x01, 0x03, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00,
+        0x00, 0x00,
+    ];
+
+    /// An interface for [`pick`]: its bus, and whether it answers HELLO.
+    #[derive(Clone, Copy)]
+    struct Iface {
+        bus: BusType,
+        answers: bool,
+    }
+
+    fn hello_0_1(i: &Iface) -> Option<Hello> {
+        i.answers.then(|| Hello::parse(&HELLO_FW_0_1_0))
+    }
+
+    fn ifaces(usb: bool, ble: bool) -> [Iface; 2] {
+        [
+            Iface {
+                bus: BusType::Usb,
+                answers: usb,
+            },
+            Iface {
+                bus: BusType::Bluetooth,
+                answers: ble,
+            },
+        ]
+    }
+
+    #[test]
+    fn hello_from_0_1_firmware_parses_to_a_usable_panel() {
+        let h = Hello::parse(&HELLO_FW_0_1_0);
+        assert!(protocol::is_reply(
+            &HELLO_FW_0_1_0,
+            protocol::PANEL,
+            protocol::panel::HELLO
+        ));
+        assert_eq!(h.version, protocol::VERSION);
+        assert_eq!((h.width, h.height), (64, 52));
+        assert_eq!(h.right_link, 2);
+        assert_eq!(h.right_battery, Some(100));
+        for cap in [
+            protocol::capabilities::PANEL,
+            protocol::capabilities::CONN_STATE,
+            protocol::capabilities::BUILD_INFO,
+            protocol::capabilities::SCREENS,
+        ] {
+            assert_ne!(h.capabilities & cap, 0, "capability {cap:#x}");
+        }
+        // Bits added after 0.1 are clear: nothing may depend on them to connect.
+        assert_eq!(h.capabilities & protocol::capabilities::PANEL_HOLD, 0);
+        assert_eq!(h.capabilities & protocol::capabilities::LEFT_BATTERY, 0);
+        let fw = h.firmware.expect("0.1 reports its version");
+        assert_eq!((fw.major, fw.minor, fw.patch, fw.profile), (0, 1, 0, 0));
+    }
+
+    #[test]
+    fn a_silent_usb_interface_loses_to_bluetooth_that_answers() {
+        // 0.1 firmware on USB and Bluetooth at once, its USB replies stuck (2026-10-26).
+        for without_host_link in [true, false] {
+            let (kb, hello) = pick(ifaces(false, true), without_host_link, hello_0_1)
+                .expect("the Bluetooth interface answers");
+            assert!(matches!(kb.bus, BusType::Bluetooth));
+            assert_eq!(hello.map(|h| (h.width, h.height)), Some((64, 52)));
+        }
+    }
+
+    #[test]
+    fn usb_still_wins_when_it_answers_and_silence_falls_back_to_the_first() {
+        let (kb, _) = pick(ifaces(true, true), true, hello_0_1).unwrap();
+        assert!(matches!(kb.bus, BusType::Usb));
+        // No host link anywhere (a plain ZMK board, or a stale Bluetooth interface): the
+        // overlay still gets the first interface, without HELLO.
+        let (kb, hello) = pick(ifaces(false, false), true, hello_0_1).unwrap();
+        assert!(matches!(kb.bus, BusType::Usb));
+        assert!(hello.is_none());
+        assert!(pick(ifaces(false, false), false, hello_0_1).is_none());
+    }
 
     #[test]
     fn usb_precedes_stale_bluetooth_interfaces() {

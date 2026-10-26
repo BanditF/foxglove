@@ -1,10 +1,12 @@
 //! The left screen's host panel, shared by Foxglove and the standalone hostpanel:
 //! - [`render`]: the layout, drawn onto a `digitalis` panel image
+//! - [`clock`]: the time and date in the user's region formats
 //! - [`providers`]: clock, volume, media and the foreground program, read from Windows
 //! - [`Sources`]: keeps a [`render::View`] up to date from the providers
 //! - [`panel_lock`]: only one app draws the panel at a time
 
 pub mod changes;
+pub mod clock;
 pub mod mic;
 pub mod panel_lock;
 pub mod providers;
@@ -33,8 +35,13 @@ impl Sources {
     pub fn update_clock(view: &mut View) -> Instant {
         let start = Instant::now();
         let now = chrono::Local::now();
-        view.time = now.format("%H:%M").to_string();
-        view.date = now.format("%a %d %b").to_string();
+        // The user's region formats (#445), re-read only after WM_SETTINGCHANGE "intl".
+        let t = clock::texts(&now);
+        view.time = t.time;
+        view.time_mark = t.mark;
+        view.time_mark_first = t.mark_first;
+        view.date = t.date;
+        view.date_short = t.date_short;
         start + until_minute(now.second(), now.nanosecond())
     }
 

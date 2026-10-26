@@ -242,6 +242,10 @@ pub struct Settings {
     pub held_layers: LayerMask,
     pub theme: ThemeSettings,
     pub legend_mode: LegendMode,
+    /// Foxglove: how opaque the layer overlay is drawn, in percent ([`Self::OPACITY_RANGE`]).
+    pub opacity: u8,
+    /// Foxglove: the key labels' own opacity in percent; `None` follows `opacity`.
+    pub label_opacity: Option<u8>,
 }
 
 impl Default for Settings {
@@ -259,6 +263,8 @@ impl Default for Settings {
             held_layers: LayerMask::ALL,
             theme: ThemeSettings::default(),
             legend_mode: LegendMode::Stacked,
+            opacity: 100,
+            label_opacity: None,
         }
     }
 }
@@ -266,6 +272,9 @@ impl Default for Settings {
 impl Settings {
     /// Upper bound for `activation_delay`, shared with the settings UI.
     pub const MAX_ACTIVATION_DELAY_MS: u32 = 3_000;
+    /// Foxglove: the overlay's opacity in percent. At 0 it's hidden (still draggable with
+    /// Settings open); the slider rests at 20 (`foxglove::overlay_opacity`).
+    pub const OPACITY_RANGE: std::ops::RangeInclusive<u8> = 0..=100;
 
     pub fn config_file_path() -> Option<PathBuf> {
         // Foxglove: FOXGLOVE_CONFIG_DIR points every settings file elsewhere (tests, the Test
@@ -334,6 +343,12 @@ impl Settings {
         }
         section.set("font_color", self.theme.font_color.to_string());
         section.set("legend_mode", self.legend_mode.to_string());
+        section.set("opacity", self.opacity.to_string());
+        section.set(
+            "label_opacity",
+            self.label_opacity
+                .map_or_else(|| "follow".to_string(), |v| v.to_string()),
+        );
         conf.write_to_file(path)
     }
 
@@ -396,6 +411,14 @@ impl Settings {
             if let Ok(parsed) = val.parse() {
                 s.legend_mode = parsed;
             }
+        }
+        if let Some(val) = section.get("opacity") {
+            let parsed = val.parse::<u8>().unwrap_or(s.opacity);
+            s.opacity = parsed.clamp(*Self::OPACITY_RANGE.start(), *Self::OPACITY_RANGE.end());
+        }
+        if let Some(val) = section.get("label_opacity") {
+            // "follow" (or anything else that isn't a number) follows the overlay's opacity.
+            s.label_opacity = val.parse::<u8>().ok().map(|v| v.min(*Self::OPACITY_RANGE.end()));
         }
         Some(s)
     }

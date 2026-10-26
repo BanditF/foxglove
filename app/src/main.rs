@@ -29,12 +29,14 @@ fn main() {
     foxglove::app_log::start();
     if foxglove::update::helper_entry() { return; }
     if foxglove::identity::entry() { return; }
+    if foxglove::autostart::uninstall_entry() { return; } // Foxglove (#444): MSI uninstall
     // Foxglove (#345): one per user; a second launch shows the running one and exits 0.
     if !foxglove::single_instance::claim() { return; }
     foxglove::update::start();
     os_layout::init();
     foxglove::gpu_reset::start(); // Foxglove (#346): a fresh copy after a GPU reset
     foxglove::away::start(); // Foxglove (#410): locked or display off stops background clocks
+    foxglove::calibrate::load(); // Foxglove: each device's colour calibration, before any write
     let settings = foxglove::overlay_profile::effective(Settings::load().unwrap_or_default());
     let available_devices = discover_devices();
     if !foxglove::repaint_trace::disabled("screens") {
@@ -48,9 +50,11 @@ fn main() {
     foxglove::accent::start();
     foxglove::wallpaper::start();
     foxglove::api::start();
+    foxglove::devices::start(); // Foxglove: find the host-link keyboard whenever a link connects
     foxglove::keyboard_facts::start();
     foxglove::battery::start(); // Foxglove (#372, #373)
     foxglove::via_host::start();
+    foxglove::pc_lights::start(); // Foxglove (#423): case and peripheral lights
     foxglove::plugin_install::autoinstall();
     foxglove::plugin_runner::sync();
     foxglove::plugin_actions::start();
@@ -60,5 +64,7 @@ fn main() {
     foxglove::catalog_refresh::start();
     foxglove::identity::start();
     foxglove::autostart::start(); // Foxglove: Start with Windows
-    foxglove::startup::finish(platform::run(settings, available_devices))
+    let result = platform::run(settings, available_devices);
+    foxglove::calibrate_ui::cancel(); // Foxglove: quitting mid-calibration puts the colours back
+    foxglove::startup::finish(result)
 }

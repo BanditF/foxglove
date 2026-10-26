@@ -14,6 +14,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use foxglove_devices::calibration;
 use foxglove_devices::{
     ArtStatus as DeviceArt, BehaviorInfo, Behaviors, Caps, Checked, DevSettings, Device,
     DeviceError, DeviceEvent, DeviceInfo, Effect, EventSink, Layers, Led, Lighting, LightingState,
@@ -59,6 +60,71 @@ pub fn caps(hello: &Hello) -> Caps {
         caps |= Caps::LIGHTING | Caps::SETTINGS | Caps::BEHAVIORS;
     }
     caps
+}
+
+/// What the keyboard can do with light and pictures (#423), for the Lights page's chips: the
+/// underglow from HELLO's RGB bit (one colour at a time, ZMK's four effects, brightness), and a
+/// screen per display the keyboard describes (D5 06), or the HELLO panel on older firmware.
+pub fn light_caps(
+    hello: &Hello,
+    screens: &[crate::protocol::ScreenDescriptor],
+) -> foxglove_devices::pc_lighting::LightCaps {
+    use crate::protocol::{ScreenDescriptor as D, ScreenKind};
+    use foxglove_devices::pc_lighting::{Color, LightCaps, Screen};
+    let bits = hello.capabilities;
+    let rgb = bits & capabilities::SETTINGS_RGB != 0;
+    let mut out = LightCaps {
+        color: if rgb { Color::Single } else { Color::None },
+        effects: if rgb {
+            ["Solid", "Breathe", "Spectrum", "Swirl"]
+                .map(String::from)
+                .to_vec()
+        } else {
+            Vec::new()
+        },
+        brightness: rgb,
+        ..Default::default()
+    };
+    let displays: Vec<&D> = screens
+        .iter()
+        .filter(|s| s.kind == ScreenKind::Display)
+        .collect();
+    for d in &displays {
+        // The display's own ops and those of the regions on it.
+        let ops = screens
+            .iter()
+            .filter(|s| s.id == d.id || s.parent == Some(d.id))
+            .fold(0, |ops, s| ops | s.ops);
+        out.screens.push(Screen {
+            width: Some(d.width),
+            height: Some(d.height),
+            depth: match d.format {
+                D::FORMAT_1BIT => Some(1),
+                D::FORMAT_GREY2 => Some(2),
+                D::FORMAT_RGB565 => Some(16),
+                _ => None,
+            },
+            fps: None,
+            // Art is a set of frames with a rate: still pictures and animations.
+            images: ops & D::OP_ART != 0,
+            animations: ops & D::OP_ART != 0,
+            stream: ops & (D::OP_ROWS | D::OP_ROWS_AT) != 0,
+        });
+    }
+    let legacy = bits == 0 || bits & (capabilities::PANEL | capabilities::ART_RELAY) != 0;
+    if displays.is_empty() && legacy && hello.width > 0 && hello.height > 0 {
+        let art = bits == 0 || bits & capabilities::ART_RELAY != 0;
+        out.screens.push(Screen {
+            width: u16::try_from(hello.width).ok(),
+            height: u16::try_from(hello.height).ok(),
+            depth: Some(1),
+            fps: None,
+            images: art,
+            animations: art,
+            stream: bits == 0 || bits & capabilities::PANEL != 0,
+        });
+    }
+    out
 }
 
 fn err(e: anyhow::Error) -> DeviceError {
@@ -119,6 +185,9 @@ pub struct DigitalisDevice {
     layers: Arc<Mutex<Vec<u8>>>,
     behaviors: Mutex<Vec<BehaviorInfo>>,
     underglow: Mutex<Option<u16>>,
+    /// Its key in the colour calibration registry: underglow colours go through that
+    /// calibration (`calibration::send_hsb`).
+    calibration_key: Mutex<String>,
     _events: EventSubscription,
     _reports: EventSubscription,
 }
@@ -183,6 +252,7 @@ impl DigitalisDevice {
             });
         }
         DigitalisDevice {
+            calibration_key: Mutex::new(calibration::key_for(&info.id)),
             info,
             link,
             caps: caps(&hello),
@@ -200,6 +270,40 @@ impl DigitalisDevice {
     /// The behaviors [`Behaviors::list`] offers; the app fills it from the keymap it reads.
     pub fn set_behaviors(&self, list: Vec<BehaviorInfo>) {
         *self.behaviors.lock().unwrap_or_else(|e| e.into_inner()) = list;
+    }
+
+    /// Its key in the colour calibration registry (from its id: VID:PID, plus a trusted
+    /// serial).
+    pub fn calibration_key(&self) -> String {
+        self.calibration_key
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Stores its calibration under another key.
+    pub fn set_calibration_key(&self, key: String) {
+        *self
+            .calibration_key
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = key;
+    }
+
+    /// A half's colour as the keyboard reports it, turned back into the colour Foxglove asked
+    /// for (before calibration), so the app shows and resends the palette's colour.
+    pub fn asked_half(&self, half: &mut RgbHalf) {
+        (half.hue, half.sat, half.brightness) = calibration::asked_hsb(
+            &self.calibration_key(),
+            (half.hue, half.sat, half.brightness),
+        );
+    }
+
+    /// Both halves' state as [`Self::asked_half`] reports them.
+    pub fn asked_state(&self, state: &mut RgbState) {
+        self.asked_half(&mut state.left);
+        if let Some((right, _)) = &mut state.right {
+            self.asked_half(right);
+        }
     }
 
     /// The keymap's `&rgb_ug` behavior id, which lighting changes go through (the firmware has
@@ -370,7 +474,8 @@ impl Lighting for DigitalisDevice {
     }
 
     fn state(&self) -> PResult<LightingState> {
-        let rgb = settings::rgb_state(&*self.link).map_err(err)?;
+        let mut rgb = settings::rgb_state(&*self.link).map_err(err)?;
+        self.asked_state(&mut rgb);
         let state = LightingState {
             settled: halves_agree(&rgb),
             ..lighting_state(&rgb.left)
@@ -391,11 +496,13 @@ impl Lighting for DigitalisDevice {
         self.underglow(if on { RGB_ON } else { RGB_OFF }, 0)
     }
 
+    /// Through the keyboard's colour calibration: the firmware gets the calibrated colour.
     fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> PResult<()> {
-        let hsb = (u32::from(hue.min(359)) << 16)
-            | (u32::from(sat.min(100)) << 8)
-            | u32::from(brightness.min(100));
-        self.underglow(RGB_COLOR_HSB, hsb)
+        let key = self.calibration_key();
+        calibration::send_hsb(&key, (hue, sat, brightness), |(hue, sat, brightness)| {
+            let hsb = (u32::from(hue) << 16) | (u32::from(sat) << 8) | u32::from(brightness);
+            self.underglow(RGB_COLOR_HSB, hsb)
+        })
     }
 
     /// ZMK has no "set speed", only one step up or down: steps toward `speed`, reading it back
@@ -739,6 +846,63 @@ mod tests {
     }
 
     #[test]
+    fn light_caps_from_hello_and_screens() {
+        use crate::protocol::{ScreenDescriptor as D, ScreenKind};
+        let screen = |id, kind, parent, ops| D {
+            count: 2,
+            index: 0,
+            id,
+            kind,
+            half: 0,
+            parent,
+            width: 160,
+            height: 68,
+            x: 0,
+            y: 0,
+            rotation: 0,
+            format: D::FORMAT_1BIT,
+            ops,
+            stride: 20,
+            rows_per_report: 1,
+            readback_half: None,
+            version: 1,
+        };
+        let h = Hello {
+            width: 160,
+            height: 68,
+            capabilities: capabilities::SETTINGS_RGB | capabilities::SCREENS,
+            ..Hello::default()
+        };
+        let caps = light_caps(
+            &h,
+            &[
+                screen(0, ScreenKind::Display, None, 0),
+                screen(1, ScreenKind::Art, Some(0), D::OP_ART | D::OP_SLOTS),
+            ],
+        );
+        assert_eq!(
+            caps.chips(true),
+            vec![
+                "Single-colour RGB",
+                "4 onboard effects",
+                "Brightness",
+                "Screen 160×68 · 1-bit · images & animations"
+            ]
+        );
+        // Older firmware: the HELLO panel, live frames only.
+        let old = Hello {
+            width: 160,
+            height: 68,
+            capabilities: capabilities::PANEL,
+            ..Hello::default()
+        };
+        assert_eq!(
+            light_caps(&old, &[]).chips(true),
+            vec!["Screen 160×68 · 1-bit · live"]
+        );
+    }
+
+    #[test]
     fn layer_reports_parse_like_the_overlay() {
         // size 4, default layer 0, layers 2 and 3 active
         assert_eq!(
@@ -844,6 +1008,69 @@ mod tests {
             left,
             right: Some((RgbHalf { effect: 3, ..left }, 0))
         }));
+    }
+
+    #[test]
+    fn underglow_colours_go_through_the_keyboards_calibration() {
+        use foxglove_devices::calibration::{Calibration, DeviceCalibration};
+        let (dev, fake, _bus) = device(capabilities::PANEL | capabilities::SETTINGS_RGB);
+        assert_eq!(
+            dev.calibration_key(),
+            "1d50:615e",
+            "an untrusted serial isn't used"
+        );
+        let key = "digitalis-calibration-test".to_string();
+        dev.set_calibration_key(key.clone());
+        dev.set_underglow(Some(7));
+        let warm = Calibration {
+            gain: [1.0, 1.0, 0.5],
+            ..Default::default()
+        };
+        calibration::global().set_device(
+            &key,
+            Some(DeviceCalibration {
+                device: warm.clone(),
+                ..Default::default()
+            }),
+        );
+        let lighting = dev.lighting().unwrap();
+        lighting.set_color(200, 40, 80).unwrap();
+        let (h, s, b) = warm.apply_hsb(200, 40, 80);
+        let sent = fake.written.lock().unwrap().last().unwrap().clone();
+        assert_eq!(
+            &sent[..12],
+            &protocol::invoke(
+                7,
+                RGB_COLOR_HSB,
+                (u32::from(h) << 16) | (u32::from(s) << 8) | u32::from(b),
+                0
+            )[..12]
+        );
+        // The fake reports hue 0x168, sat 80, brightness 50, not what was sent: it reads back
+        // through the calibration's inverse, never as if it were the palette's colour.
+        let shown = lighting.state().unwrap();
+        assert_eq!(
+            (shown.hue, shown.sat, shown.brightness),
+            warm.invert_hsb((0x168, 80, 50))
+        );
+        let mut state = RgbState {
+            left: RgbHalf {
+                on: true,
+                hue: h,
+                sat: s,
+                brightness: b,
+                effect: 0,
+                speed: 1,
+            },
+            right: None,
+        };
+        dev.asked_state(&mut state);
+        assert_eq!(
+            (state.left.hue, state.left.sat, state.left.brightness),
+            (200, 40, 80),
+            "the keyboard's calibrated colour reads back as the palette's"
+        );
+        calibration::global().set_device(&key, None);
     }
 
     #[test]

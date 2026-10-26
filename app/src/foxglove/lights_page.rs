@@ -18,6 +18,9 @@ use super::theme;
 
 pub const EFFECTS: [&str; 4] = ["Solid", "Breathe", "Spectrum", "Swirl"];
 
+/// The page's width, in points, from which the cards sit in two columns.
+pub const TWO_COLUMNS: f32 = 760.0;
+
 /// The canvas's swatches: (name, sRGB).
 pub const SWATCHES: [(&str, [u8; 3]); 6] = [
     ("Bandit orange", [0xf0, 0x8a, 0x3c]),
@@ -98,6 +101,9 @@ pub fn show(ui: &mut egui::Ui) {
         let mut draft = Draft::default();
         draft.settle(v.state.as_ref());
         draw(ui, &v, &mut draft);
+        if !super::calibrate_ui::show(ui) {
+            super::pc_lights_ui::show(ui);
+        }
         return;
     }
     let ctx = ui.ctx().clone();
@@ -135,6 +141,11 @@ pub fn show(ui: &mut egui::Ui) {
                 ctx.request_repaint();
             }
         }
+    }
+    drop(draft);
+    // The case and other lights (#423), or the colour calibrator while it's open.
+    if !super::calibrate_ui::show(ui) {
+        super::pc_lights_ui::show(ui);
     }
 }
 
@@ -188,7 +199,9 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     let mut out = Vec::new();
     let gap = 16.0;
     let width = ui.available_width();
-    let wide = width >= 640.0;
+    // Side by side only when both columns have room for their rows: the Underglow card's
+    // colour row and the halves' longest line. Narrower, the cards stack.
+    let wide = width >= TWO_COLUMNS;
     let left_w = if wide {
         ((width - gap) * 0.6).floor()
     } else {
@@ -241,21 +254,17 @@ fn side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
             ("Left", v.state.map(|s| s.left), None),
             ("Right", right.map(|(h, _)| h), right.map(|(_, a)| a)),
         ] {
-            ui.horizontal(|ui| {
-                ui.label(name);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(h) = half {
-                        let color = if h.on {
-                            shown_color(h.hue, h.sat, h.brightness)
-                        } else {
-                            Color32::from_gray(20)
-                        };
-                        let (rect, _) =
-                            ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
-                        ui.painter().rect_filled(rect, 3.0, color);
-                    }
-                    ui.label(half_text(half.as_ref(), age));
-                });
+            super::settings_ui::pair(ui, 52.0, name, |ui| {
+                if let Some(h) = half {
+                    let color = if h.on {
+                        shown_color(h.hue, h.sat, h.brightness)
+                    } else {
+                        Color32::from_gray(20)
+                    };
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
+                    ui.painter().rect_filled(rect, 3.0, color);
+                }
+                ui.add(egui::Label::new(half_text(half.as_ref(), age)).wrap());
             });
         }
         ui.add_space(2.0);
@@ -272,18 +281,21 @@ fn side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
 fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>) {
     let left = v.state.map(|s| s.left);
     ui.add_enabled_ui(v.controls && !v.busy, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(theme::caps_label(ui, "Effect"));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let on = left.map(|l| l.on);
+        let on = left.map(|l| l.on);
+        super::settings_ui::split_row(
+            ui,
+            |ui| {
                 if theme::pill(ui, on == Some(false), "Off").clicked() {
                     out.push(Intent::Lights(false));
                 }
                 if theme::pill(ui, on == Some(true), "On").clicked() {
                     out.push(Intent::Lights(true));
                 }
-            });
-        });
+            },
+            |ui| {
+                ui.label(theme::caps_label(ui, "Effect"));
+            },
+        );
         ui.horizontal_wrapped(|ui| {
             let current = left.map(|l| l.effect);
             for (i, name) in (0u8..).zip(EFFECTS) {
@@ -298,7 +310,7 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             ui.weak("Waiting for the keyboard's colour…");
             return;
         };
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 10.0;
             for (name, rgb) in SWATCHES {
                 let selected = is_swatch((*hue, *sat), rgb);
@@ -335,8 +347,16 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             out.push(Intent::Speed(speed));
         }
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let mut accent = v.accent;
+        let mut accent = v.accent;
+        let mut apply = false;
+        super::settings_ui::split_row(
+            ui,
+            |ui| {
+                apply = ui.add(theme::primary_button(ui, "Apply colour")).clicked();
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
+                ui.painter().rect_filled(rect, 3.0, shown_color(*hue, *sat, *brightness));
+            },
+            |ui| {
             if ui
                 .checkbox(&mut accent, "Follow the Windows accent colour")
                 .on_hover_text(
@@ -347,14 +367,11 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             {
                 out.push(Intent::Accent(accent));
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(theme::primary_button(ui, "Apply colour")).clicked() {
-                    out.push(Intent::Apply { hue: *hue, sat: *sat, brightness: *brightness });
-                }
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
-                ui.painter().rect_filled(rect, 3.0, shown_color(*hue, *sat, *brightness));
-            });
-        });
+            },
+        );
+        if apply {
+            out.push(Intent::Apply { hue: *hue, sat: *sat, brightness: *brightness });
+        }
     });
     follow_row(ui, v, out);
     if !v.controls {
@@ -402,12 +419,15 @@ fn follow_row(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
 
 /// A label with its value on the right, above a slider.
 fn value_row(ui: &mut egui::Ui, name: &str, value: String) {
-    ui.horizontal(|ui| {
-        ui.label(name);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    super::settings_ui::split_row(
+        ui,
+        |ui| {
             ui.label(RichText::new(value).font(theme::mono(12.5)));
-        });
-    });
+        },
+        |ui| {
+            ui.add(egui::Label::new(name).truncate());
+        },
+    );
 }
 
 /// A slider across the card, its value shown in the row above.

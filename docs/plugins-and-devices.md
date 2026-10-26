@@ -102,6 +102,50 @@ Lighting is three separate capabilities (decided on #73):
   Foxglove has nothing to say it **releases** control, so iCUE/Synapse/G HUB get their devices
   back instead of freezing on our last frame.
 
+### PC and peripheral lighting (`pc_lighting`, #423)
+
+Lights that aren't a keyboard (case boards, coolers, mice) go through `pc_lighting` in
+`crates/devices`, a smaller model than `Device`: such a board has zones and colours, nothing else.
+
+- **Discovery:** `pc_lighting::discover` matches one HID enumeration against
+  `crates/devices/lighting-catalog.toml` (VID/PID, protocol, zone names) and against the HID
+  LampArray usage (page 0x59, usage 1). The app enumerates at startup, on HID interface arrival
+  or removal (`device_watch`), and when the Lights page opens: never on a timer.
+- **Control:** each found device is one of `Driver(protocol)` (a Foxglove driver),
+  `LampArray` (a standard Dynamic Lighting device; listed, support comes with #72) or
+  `NotYet` (recognised, no driver).
+- **Drivers** implement `LightingDevice`: name, named zones, static colour per zone, off, and
+  identify (a bounded blink, then the colours back). A driver writes through a `HidWriter`,
+  which opens the device shared only while it sends; tests use a recording writer.
+- **First driver:** `omen_tracer`, the HP OMEN case board (TracerLED, `103C:84FD`), from the
+  59-byte static report layout in #423 (written from those facts, not from OpenRGB's GPL code).
+  The 45L's zones: diamond display, interior light, front bottom, middle and top fans
+  (3 and 4 aren't connected). The board can't be read back, so the app saves the colours it
+  set (`[pc_lighting]`) and puts them back when the board arrives, unless Light Studio runs.
+- **Adding a board** that speaks a known protocol is a catalog entry. A new protocol is a new
+  driver module and a `Protocol` variant.
+- **Capabilities** (`pc_lighting::caps::LightCaps`): every found device says how sophisticated
+  it is: colour addressing (none, on/off, single, per-zone, per-LED with lamp count and
+  positions), onboard effects, brightness, an update-rate limit, and screens (size, colour
+  depth, frame-rate limit, still images, animation sets, a live stream). Sources: the catalog
+  (`color`, `effects`, `brightness`, `[[device.screen]]`), a LampArray's own attributes (read
+  through Windows' `LampArray` API when one arrives: lamp count, positions, update interval,
+  kind; nothing is written), and the keyboard's HELLO and screen descriptors
+  (`digitalis::devices::light_caps`). The Lights page shows them as chips
+  ("Per-zone RGB · 5 zones", "Screen 160×68 · 1-bit · images, animations & live"), and the
+  controls follow them: zone pickers only for per-zone or per-LED colour, a colour only where
+  the device takes one, Off and Identify only where the lights switch.
+- **Bespoke gear (manual add):** "Add a device…" lists the HID devices nothing recognises
+  (`pc_lighting::unknown`: name, VID:PID, usage pages, vendor-defined first). The user picks
+  one, names it, picks a known protocol to try or "unknown", and names the zones: "Light zone
+  N" (`pc_lighting::test_zone`) blinks that one zone and puts it back (the colour Foxglove knows,
+  else dark), only on that click and never while paused. The entry goes into the user's
+  `lighting-catalog.local.toml` next to the settings (same format, wins over the bundled entry
+  for the same VID/PID); "Copy entry" puts it on the clipboard to share or contribute.
+
+Not yet: lighting leases (#73) for case boards, the board's own effects (breathing, colour
+cycle, themes), and the OMEN liquid cooler (`03F0:7397`), which is listed as found only.
+
 ### Backends and where they live
 
 | Backend | Capabilities | In-process or plugin | Notes |
@@ -142,6 +186,58 @@ screens) are Foxglove code in `crates/devices` and `app/src/foxglove`.
   ZMK reports physical layouts over Studio. Unknown boards fall back to a grid from rows × cols.
 - **Corne-only features** (screens, art) appear only when `Caps::SCREENS` is set, so another
   board sees a clean app, not greyed-out Corne controls.
+
+## Optional integrations (Wallpaper Engine, and the pattern for the rest)
+
+Foxglove works on a PC that has none of the other programs it can work with. Wallpaper Engine,
+OpenRGB, SignalRGB, OBS, iCUE and the like make it richer, but none of them is ever needed.
+Wallpaper Engine (#446, `app/src/foxglove/wallpaper_engine.rs`) is the reference. A new
+integration follows the same rules:
+
+1. **Find it the system way.** Use the program's own records, not one path that works on one
+   PC. Wallpaper Engine is looked for in this order:
+   - a custom folder (`FOXGLOVE_WALLPAPER_ENGINE_DIR`, or `folder` in the store's
+     `[wallpaper_engine]` section);
+   - Steam's own library;
+   - every library in Steam's `libraryfolders.vdf` (the ones listing app 431960 first, at the
+     `installdir` from `appmanifest_431960.acf`);
+   - Steam's `Steam App 431960` uninstall entry.
+2. **Look at start and on Refresh, never on a timer.** Its watcher's change events may look
+   again (Wallpaper Engine's running check rides on a wallpaper change), and a Refresh that
+   finds it somewhere new moves the folder watch there. Cache the answer as
+   one `Presence`-style value that the UI reads every frame for free.
+3. **Absent is normal, not an error.**
+   - Features that need it hide, or show one short line: "Works best with Wallpaper Engine."
+     (`Presence::hint`).
+   - No error dialogs, no `eprintln!` about it, and no retries or reconnect loops waiting for
+     it to appear.
+   - Installed but not running is a third state with its own hint, not a failure.
+4. **Fall back to Windows where a feature can.**
+   - "Match the wallpaper" (right art) and the left panel's wallpaper frames use the Windows
+     desktop wallpaper. Its file (`HKCU\Control Panel\Desktop` › `WallPaper`) matches a
+     `wallpapers.json` entry whose id is the file's name, or whose `match` text is in its path. Its change event is the folder watch
+     on `%APPDATA%\Microsoft\Windows\Themes` (Windows rewrites `TranscodedWallpaper`).
+   - A colour match taken from the wallpaper (the Wallpaper Match plugin, #335, not merged yet)
+     should fall back to Windows' accent colour, which Foxglove already follows on its own
+     change event (`accent.rs`).
+   - When no fallback makes sense, hide the feature.
+5. **Test the three states window-free:**
+   - not installed;
+   - installed somewhere unusual (for Wallpaper Engine, a second Steam library);
+   - installed but not running.
+
+   `wallpaper_engine.rs` and `wallpaper.rs` have these tests.
+
+| Integration | Found by | Without it |
+|---|---|---|
+| Wallpaper Engine | Steam libraries, uninstall entry, custom folder | desktop wallpaper; hint |
+| OpenRGB (#244) | its SDK server answering on the configured port when the user turns it on | the plugin stays off; hint in its settings |
+| SignalRGB (#331) | SignalRGB loading the Foxglove plugin (it connects to us) | nothing to show; the receiver idles |
+| OBS (Broadcast Status) | obs-websocket answering when the plugin starts | the plugin shows nothing; one line in its settings |
+
+Plugins (including the Wallpaper Match plugin, #335, and the wallpaper-sees-the-layer work, #377)
+follow the same rules. A plugin whose program is missing starts, reports "not found" once in
+its settings, and waits for the next start or Refresh.
 
 ## Plugins: the plugin system
 

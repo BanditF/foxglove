@@ -28,6 +28,7 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
         return Some(d.clone());
     }
     let mut found = None;
+    let mut name = String::new();
     *cached = super::link::host_keyboard().map(|((vid, pid), link, hello)| {
         found = Some((vid, pid));
         let backend = BackendId("zmk".into());
@@ -36,6 +37,7 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
             .connected
             .map(|c| c.product)
             .unwrap_or_default();
+        name.clone_from(&product);
         // Its board profile, read once now it's connected (#75).
         super::boards::connected(vid, pid, &product);
         let id = DeviceId::new(
@@ -63,9 +65,70 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
     // Nothing learned from the keymap yet (the overlay hasn't opened it): use the cached one,
     // so plugins can change the lights without the UI. Outside the lock: learning sets it.
     if let Some((vid, pid)) = found {
+        let transport = super::link::transport(vid, pid);
+        *HOST_LINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(transport);
+        // Foxglove: the log said only "Waiting for a keyboard"; now it says when one arrives.
+        eprintln!("{}", connected_line(transport, &name));
         super::keyboard_actions::learn_cached(vid, pid);
     }
     out
+}
+
+/// How Foxglove's host link reaches the keyboard found last (`USB` or `BLE`), which can differ
+/// from how it types to this PC (USB Raw HID stays silent before firmware #434).
+static HOST_LINK: Mutex<Option<&'static str>> = Mutex::new(None);
+
+/// The host link's transport, once a keyboard with it was found (`USB` or `BLE`).
+pub fn host_link() -> Option<&'static str> {
+    *HOST_LINK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The log line for a keyboard that just connected: `Keyboard connected (USB): Eyelash Corne`.
+fn connected_line(transport: &str, product: &str) -> String {
+    if product.is_empty() {
+        format!("Foxglove: Keyboard connected ({transport})")
+    } else {
+        format!("Foxglove: Keyboard connected ({transport}): {product}")
+    }
+}
+
+/// Finds the keyboard with the host link each time a shared link connects, so the status strip,
+/// the Keyboard page and plugins see a keyboard that connects after startup (or answers only
+/// after a reconnect). Before, [`device`] ran only when something asked, and a "no keyboard"
+/// from before the connection stayed until the next ask. Start: a link's State event with a
+/// connection. Stop: none needed; the worker blocks on its channel, so an idle keyboard costs
+/// no wake-ups.
+pub fn start() {
+    enum Msg {
+        Link(Arc<digitalis::link::Link>),
+        Connected,
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let links_tx = tx.clone();
+    super::services::spawn_named("keyboard-discovery", move || {
+        // Listeners only enqueue: the worker subscribes and discovers.
+        let _links = super::link::subscribe_links(move |link| {
+            let _ = links_tx.send(Msg::Link(link));
+        });
+        let mut subscriptions = Vec::new();
+        for msg in rx {
+            match msg {
+                Msg::Link(link) => {
+                    let tx = tx.clone();
+                    subscriptions.push(link.subscribe_events(move |event| {
+                        if let digitalis::link::Event::State(s) = event {
+                            if s.connected.is_some() {
+                                let _ = tx.send(Msg::Connected);
+                            }
+                        }
+                    }));
+                }
+                Msg::Connected => {
+                    let _ = device();
+                }
+            }
+        }
+    });
 }
 
 /// The current device's connection generation, without blocking or discovery (for the UI).
@@ -73,6 +136,18 @@ pub fn generation() -> Option<u64> {
     let cached = DEVICE.try_lock().ok()?;
     let state = cached.as_ref()?.link().state();
     state.connected.is_some().then_some(state.generation)
+}
+
+/// The connected keyboard's key in the colour calibration registry, without blocking or
+/// discovery (for the UI).
+pub fn keyboard_key() -> Option<String> {
+    let cached = DEVICE.try_lock().ok()?;
+    let d = cached.as_ref()?;
+    d.link()
+        .state()
+        .connected
+        .is_some()
+        .then(|| d.calibration_key())
 }
 
 /// What the keymap lets the app invoke (the allowlist) and its `&rgb_ug` behavior.
@@ -97,5 +172,20 @@ pub fn describe(e: &foxglove_devices::DeviceError) -> String {
         foxglove_devices::DeviceError::Busy(why)
         | foxglove_devices::DeviceError::Denied(why)
         | foxglove_devices::DeviceError::Backend(why) => why.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_connect_is_logged_with_its_transport() {
+        assert_eq!(
+            super::connected_line("USB", "Eyelash Corne"),
+            "Foxglove: Keyboard connected (USB): Eyelash Corne"
+        );
+        assert_eq!(
+            super::connected_line("BLE", ""),
+            "Foxglove: Keyboard connected (BLE)"
+        );
     }
 }

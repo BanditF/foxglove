@@ -3,8 +3,10 @@
 pub use digitalis::panel::Panel;
 use embedded_graphics::{
     mono_font::{
-        ascii::{FONT_4X6, FONT_5X8, FONT_9X18_BOLD},
-        MonoFont, MonoTextStyle,
+        // Latin-1, so region formats and titles with accents draw (#445).
+        iso_8859_1::{FONT_4X6, FONT_5X8, FONT_9X18_BOLD},
+        MonoFont,
+        MonoTextStyle,
     },
     pixelcolor::BinaryColor,
     prelude::*,
@@ -15,8 +17,13 @@ use embedded_graphics::{
 /// Everything the panel shows; the providers fill it in.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct View {
+    /// The time without its AM/PM mark; `time_mark` is "" on a 24-hour clock (#445).
     pub time: String,
+    pub time_mark: String,
+    pub time_mark_first: bool,
     pub date: String,
+    /// A shorter date for when `date` doesn't fit.
+    pub date_short: String,
     pub volume: Option<(u8, bool)>, // percent, muted
     pub title: Option<String>,
     pub artist: Option<String>,
@@ -61,6 +68,66 @@ pub fn animated(v: &View, width: usize) -> bool {
         || v.hint.as_deref().is_some_and(|s| over(&FONT_5X8, s))
 }
 
+/// The date, or its shorter form when the full one doesn't fit `width`.
+pub fn date_for(v: &View, width: i32) -> &str {
+    if text_width(&FONT_5X8, &v.date) <= width || v.date_short.is_empty() {
+        &v.date
+    } else {
+        &v.date_short
+    }
+}
+
+/// Whether the clock, with its mark as drawn, fits `width` without clipping.
+pub fn clock_fits(v: &View, width: i32) -> bool {
+    width_with(&v.time, &fitting_mark(&v.time, &v.time_mark, width)) <= width
+}
+
+const MARK_GAP: i32 = 2;
+
+fn width_with(time: &str, mark: &str) -> i32 {
+    let digits = text_width(&FONT_9X18_BOLD, time);
+    if mark.is_empty() {
+        digits
+    } else {
+        digits + MARK_GAP + text_width(&FONT_5X8, mark)
+    }
+}
+
+/// The AM/PM mark as drawn: as the region writes it if it fits, else without spaces and dots
+/// ("p. m." -> "pm"), else its first letter.
+pub fn fitting_mark(time: &str, mark: &str, width: i32) -> String {
+    let compact: String = mark
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '.')
+        .collect();
+    let first: String = compact.chars().take(1).collect();
+    [mark.to_string(), compact, first]
+        .into_iter()
+        .find(|m| width_with(time, m) <= width)
+        .unwrap_or_default()
+}
+
+fn draw_clock_with_mark(p: &mut Panel, v: &View) {
+    let mark_text = fitting_mark(&v.time, &v.time_mark, p.width as i32);
+    let x = ((p.width as i32 - width_with(&v.time, &mark_text)) / 2).max(0);
+    let digits = text_width(&FONT_9X18_BOLD, &v.time);
+    let mark = text_width(&FONT_5X8, &mark_text);
+    let (time_x, mark_x) = if v.time_mark_first {
+        (x + mark + MARK_GAP, x)
+    } else {
+        (x, x + digits + MARK_GAP)
+    };
+    let big = MonoTextStyle::new(&FONT_9X18_BOLD, BinaryColor::On);
+    let small = MonoTextStyle::new(&FONT_5X8, BinaryColor::On);
+    Text::with_baseline(&v.time, Point::new(time_x, 0), big, Baseline::Top)
+        .draw(p)
+        .ok();
+    // Level with the bottom of the digits.
+    Text::with_baseline(&mark_text, Point::new(mark_x, 7), small, Baseline::Top)
+        .draw(p)
+        .ok();
+}
+
 pub fn draw(p: &mut Panel, v: &View, tick: u32) {
     p.clear();
     let on = BinaryColor::On;
@@ -68,8 +135,12 @@ pub fn draw(p: &mut Panel, v: &View, tick: u32) {
     let fill = PrimitiveStyle::with_fill(on);
     let line = PrimitiveStyle::with_stroke(on, 1);
 
-    // Clock
-    band_text(p, &FONT_9X18_BOLD, &v.time, 0, on, 0);
+    // Clock, with a small AM/PM mark beside it on a 12-hour clock
+    if v.time_mark.is_empty() {
+        band_text(p, &FONT_9X18_BOLD, &v.time, 0, on, 0);
+    } else {
+        draw_clock_with_mark(p, v);
+    }
 
     // Volume: speaker and a bar, crossed out when muted
     if let Some((vol, muted)) = v.volume {
@@ -121,7 +192,7 @@ pub fn draw(p: &mut Panel, v: &View, tick: u32) {
                 }
             }
         }
-        None => band_text(p, &FONT_5X8, &v.date, 30, on, 0),
+        None => band_text(p, &FONT_5X8, date_for(v, w), 30, on, 0),
     }
 
     // Game hint: inverted strip along the bottom
@@ -176,9 +247,49 @@ mod tests {
             artist: Some("Artist".into()),
             playing: true,
             hint: Some("GAME: WASD".into()),
+            ..View::default()
         };
         draw(&mut p, &v, 3);
         assert_eq!(p.bits.len(), 8 * 52);
         assert!(p.bits.iter().any(|&b| b != 0));
+    }
+
+    /// 12-hour, 24-hour and German-style clocks all fit the Corne's 64-pixel panel (#445).
+    #[test]
+    fn region_formats_fit_the_panel() {
+        let cases = [
+            ("12:59", "PM", false, "Wed, Sep 30", "Sep 30"),
+            ("23:59", "", false, "Wed 30 Sep", "30 Sep"),
+            ("23:59", "", false, "Mi., 30. Sep.", "30. Sep."),
+            ("12:59", "PM", true, "09/30", "09/30"),
+            // en-CA and es-MX marks, too wide as written (#449 review)
+            ("12:59", "p.m.", false, "Wed, Sep 30", "Sep 30"),
+            ("12:59", "p.\u{a0}m.", false, "mié, 30 sep", "30 sep"),
+        ];
+        for (time, mark, first, date, short) in cases {
+            let v = View {
+                time: time.into(),
+                time_mark: mark.into(),
+                time_mark_first: first,
+                date: date.into(),
+                date_short: short.into(),
+                ..View::default()
+            };
+            assert!(clock_fits(&v, 64), "{time} {mark}");
+            assert!(text_width(&FONT_5X8, date_for(&v, 64)) <= 64, "{date}");
+            let mut p = Panel::new(64, 52);
+            draw(&mut p, &v, 0);
+            assert!(p.bits.iter().any(|&b| b != 0));
+        }
+        let de = View {
+            date: "Mi., 30. Sep.".into(),
+            date_short: "30. Sep.".into(),
+            ..View::default()
+        };
+        assert_eq!(date_for(&de, 64), "30. Sep.", "13 characters are 65 pixels");
+        assert_eq!(date_for(&de, 160), "Mi., 30. Sep.");
+        assert_eq!(fitting_mark("12:59", "p.m.", 64), "pm");
+        assert_eq!(fitting_mark("2:05", "p.m.", 64), "p.m.");
+        assert_eq!(fitting_mark("12:59", "nachm.", 64), "n");
     }
 }

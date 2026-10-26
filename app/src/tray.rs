@@ -100,6 +100,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
                         // Foxglove: hand the left screen's panel back before going.
                         crate::foxglove::screens::stop();
                         crate::foxglove::art_service::stop();
+                        crate::foxglove::calibrate_ui::cancel(); // Foxglove: mid-calibration
                         process::exit(0)
                     }
                     _ => crate::foxglove::tray::event(event.id.0.as_str(), on_settings.as_ref()),
@@ -168,9 +169,9 @@ impl Tray {
                 let _ = icon.set_icon(Some(create_icon(glyph)));
             }
             // Foxglove (#373): the tooltip only when it changes.
+            // Kept only once Windows took it, so a failed set is tried again next frame.
             let tooltip = controls.tooltip();
-            if tooltip != self.tooltip {
-                let _ = icon.set_tooltip(Some(&tooltip));
+            if tooltip != self.tooltip && icon.set_tooltip(Some(&tooltip)).is_ok() {
                 self.tooltip = tooltip;
             }
         }

@@ -6,7 +6,9 @@
   <?endif?>
   <Product Id="*" Name="Foxglove" Language="1033" Version="$(var.Version)"
            Manufacturer="BanditF" UpgradeCode="40F2C6EE-F034-4FE5-91BC-65F1E74F7D24">
-    <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+    <!-- Per user (#444): %LOCALAPPDATA%\Programs\Foxglove, no UAC, so updates install
+         silently. Every registry value is HKCU and the Start menu entry is the user's own. -->
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser" InstallPrivileges="limited" Platform="x64" />
     <!-- AllowSameVersionUpgrades: a rebuilt MSI of the same version replaces the installed one
          instead of installing next to it (the product code changes with every build). Light's
          ICE61 warning about it is expected: Foxglove has one product line, so a same-version
@@ -17,63 +19,86 @@
     <Icon Id="FoxgloveIcon" SourceFile="$(var.CargoManifestDir)\resources\icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="FoxgloveIcon" />
 
+    <!-- 0.1.0 was a per-machine package in Program Files. Windows Installer can't upgrade
+         across install scopes, so a per-user 0.2 would land next to it (two apps, two Start
+         menu entries). Stop with a clear message instead; docs/packaging.md "Moving from 0.1". -->
+    <Property Id="OLDMACHINEFOXGLOVE">
+      <DirectorySearch Id="OldMachineFolder" Path="[ProgramFiles64Folder]Foxglove" Depth="0">
+        <FileSearch Id="OldMachineExe" Name="foxglove.exe" />
+      </DirectorySearch>
+    </Property>
+    <Condition Message="Foxglove 0.1 is installed for all users. Uninstall it first in Settings &gt; Apps &gt; Installed apps (your settings and keymaps are kept), then run this installer again.">
+      <![CDATA[Installed OR NOT OLDMACHINEFOXGLOVE]]>
+    </Condition>
+
     <Directory Id="TARGETDIR" Name="SourceDir">
-      <Directory Id="ProgramFiles64Folder">
-        <Directory Id="INSTALLFOLDER" Name="Foxglove">
-          <Component Id="Application" Guid="*" Win64="yes">
-            <File Id="FoxgloveExe" Source="$(var.CargoTargetBinDir)\foxglove.exe" KeyPath="yes" />
-            <File Id="License" Source="$(var.CargoManifestDir)\LICENSE" />
-          </Component>
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="UserPrograms" Name="Programs">
+          <Directory Id="INSTALLFOLDER" Name="Foxglove">
+            <!-- Files in the user's profile take an HKCU key path (ICE38) and remove their
+                 folders on uninstall (ICE64). A component with files and a registry key path
+                 needs a fixed GUID (candle CNDL0230); new ones, as the key path changed in 0.2. -->
+            <Component Id="Application" Guid="04BA2608-5441-40E0-AA6D-09A71C09BA42" Win64="yes">
+              <File Id="FoxgloveExe" Source="$(var.CargoTargetBinDir)\foxglove.exe" />
+              <File Id="License" Source="$(var.CargoManifestDir)\LICENSE" />
+              <RegistryValue Root="HKCU" Key="Software\Foxglove\Installer" Name="App"
+                             Type="string" Value="[INSTALLFOLDER]" KeyPath="yes" />
+              <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+              <RemoveFolder Id="RemoveUserPrograms" Directory="UserPrograms" On="uninstall" />
+            </Component>
 <?ifdef SparseIdentity?>
-          <!-- #179 prototype, only with -dSparseIdentity=<signed msix>: the sparse identity
-               package next to the exe; Foxglove registers it per user on first launch. -->
-          <Component Id="IdentityPackage" Guid="*" Win64="yes">
-            <File Id="IdentityMsix" Name="foxglove-identity.msix" Source="$(var.SparseIdentity)" KeyPath="yes" />
-          </Component>
+            <!-- #179 prototype, only with -dSparseIdentity=<signed msix>: the sparse identity
+                 package next to the exe; Foxglove registers it for the user on first launch. -->
+            <Component Id="IdentityPackage" Guid="32B618B1-51A0-4865-8FA0-0FBFC5BB577D" Win64="yes">
+              <File Id="IdentityMsix" Name="foxglove-identity.msix" Source="$(var.SparseIdentity)" />
+              <RegistryValue Root="HKCU" Key="Software\Foxglove\Installer" Name="Identity"
+                             Type="integer" Value="1" KeyPath="yes" />
+            </Component>
 <?endif?>
-          <Component Id="StartMenu" Guid="*" Win64="yes">
-            <Shortcut Id="StartMenuShortcut" Directory="ProgramMenuFolder" Name="Foxglove"
-                      Target="[INSTALLFOLDER]foxglove.exe" WorkingDirectory="INSTALLFOLDER" Icon="FoxgloveIcon" />
-            <!-- The Start menu is a per-user folder to the ICE checks (ICE43, ICE57), so the
-                 key path is per-user too; the exe is named by path, not by another
-                 component's file (ICE69). -->
-            <RegistryValue Root="HKCU" Key="Software\Foxglove\Installer" Name="StartMenu"
-                           Type="integer" Value="1" KeyPath="yes" />
-          </Component>
+          </Directory>
         </Directory>
       </Directory>
-      <Directory Id="ProgramMenuFolder" />
-      <Directory Id="AppDataFolder">
-        <!-- Per-user opt-in: owned and removed by MSI, never touches app settings. -->
-        <Component Id="Autostart" Guid="*" Win64="yes">
-          <RegistryValue Root="HKCU" Key="Software\Microsoft\Windows\CurrentVersion\Run"
-                         Name="Foxglove" Type="string" Value="&quot;[INSTALLFOLDER]foxglove.exe&quot;" KeyPath="yes" />
+      <Directory Id="ProgramMenuFolder">
+        <Component Id="StartMenu" Guid="*" Win64="yes">
+          <Shortcut Id="StartMenuShortcut" Name="Foxglove"
+                    Target="[INSTALLFOLDER]foxglove.exe" WorkingDirectory="INSTALLFOLDER" Icon="FoxgloveIcon" />
+          <!-- The exe is named by path, not by another component's file (ICE69). -->
+          <RegistryValue Root="HKCU" Key="Software\Foxglove\Installer" Name="Shortcut"
+                         Type="integer" Value="1" KeyPath="yes" />
         </Component>
       </Directory>
     </Directory>
 
-    <Feature Id="App" Title="Foxglove" Description="The app and Start menu shortcut."
+    <!-- "Start with Windows" belongs to the app alone (#444): Settings has the switch, on by
+         default, and the app writes HKCU\...\Run\Foxglove at its first start. The MSI writes no
+         Run value; uninstall asks the app to remove the one it wrote. -->
+    <Feature Id="App" Title="Foxglove" Description="The app and its Start menu entry."
              Level="1" Absent="disallow" Display="expand">
       <ComponentRef Id="Application" />
       <ComponentRef Id="StartMenu" />
 <?ifdef SparseIdentity?>
       <ComponentRef Id="IdentityPackage" />
 <?endif?>
-      <Feature Id="StartWithWindows" Title="Start with Windows"
-               Description="Start Foxglove when the installing user signs in." Level="2">
-        <ComponentRef Id="Autostart" />
-      </Feature>
     </Feature>
+
+    <!-- Uninstall (not a major upgrade, where the new version keeps the value): remove the
+         app's Run value if it starts this exe. As the user, before the exe is removed. -->
+    <CustomAction Id="RemoveAutostart" FileKey="FoxgloveExe" ExeCommand="--uninstall-cleanup"
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
 <?ifdef SparseIdentity?>
     <!-- Uninstall (not a major upgrade, which keeps the registration): remove the identity
-         package for every user. Elevated, so it can reach other users' registrations. -->
+         package for this user. -->
     <CustomAction Id="UnregisterIdentity" FileKey="FoxgloveExe" ExeCommand="--unregister-identity"
-                  Execute="deferred" Impersonate="no" Return="ignore" />
-    <InstallExecuteSequence>
-      <Custom Action="UnregisterIdentity" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
-    </InstallExecuteSequence>
+                  Execute="deferred" Impersonate="yes" Return="ignore" />
 <?endif?>
-    <UIRef Id="WixUI_FeatureTree" />
+    <InstallExecuteSequence>
+      <Custom Action="RemoveAutostart" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+<?ifdef SparseIdentity?>
+      <Custom Action="UnregisterIdentity" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+<?endif?>
+    </InstallExecuteSequence>
+    <!-- One feature with nothing to choose: the licence, then Install. -->
+    <UIRef Id="WixUI_Minimal" />
     <WixVariable Id="WixUILicenseRtf" Value="$(var.CargoManifestDir)\wix\license.rtf" />
   </Product>
 </Wix>

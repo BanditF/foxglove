@@ -11,6 +11,9 @@ use std::collections::HashMap;
 
 use egui::{Color32, Pos2, Rect, TextureId};
 
+mod layout;
+mod overlay;
+
 thread_local! { static LEGACY: Cell<bool> = const { Cell::new(false) }; }
 
 /// True while a "before #384" preview is drawn on this thread.
@@ -33,7 +36,30 @@ fn render(
     backdrop: Color32,
     mut draw: impl FnMut(&egui::Context),
 ) -> image::RgbaImage {
-    let mut textures: HashMap<TextureId, Texture> = HashMap::new();
+    render_ui(ctx, size, backdrop, |ui| draw(&ui.ctx().clone()))
+}
+
+/// [`render`] with the frame's root `Ui`, as a native window's viewport gets it.
+fn render_ui(
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    backdrop: Color32,
+    draw: impl FnMut(&mut egui::Ui),
+) -> image::RgbaImage {
+    let mut textures = HashMap::new();
+    let (shapes, ppp) = run_frames(ctx, size, PPP, Some(&mut textures), draw);
+    paint(ctx, size, backdrop, shapes, ppp, &textures)
+}
+
+/// Runs `draw` for a few frames at `ppp` pixels per point and returns the last frame's shapes.
+/// With `textures`, keeps what egui sends for [`paint`]; without, drops it (a layout check).
+fn run_frames(
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    ppp: f32,
+    mut textures: Option<&mut HashMap<TextureId, Texture>>,
+    mut draw: impl FnMut(&mut egui::Ui),
+) -> (Vec<egui::epaint::ClippedShape>, f32) {
     let mut last = None;
     for frame in 0..8 {
         let mut raw = egui::RawInput {
@@ -46,8 +72,13 @@ fn render(
         raw.viewports
             .entry(egui::ViewportId::ROOT)
             .or_default()
-            .native_pixels_per_point = Some(PPP);
-        let mut out = ctx.run_ui(raw, |ui| draw(&ui.ctx().clone()));
+            .native_pixels_per_point = Some(ppp);
+        let mut out = ctx.run_ui(raw, &mut draw);
+        let Some(textures) = textures.as_deref_mut() else {
+            out.textures_delta.clear();
+            last = Some((out.shapes, out.pixels_per_point));
+            continue;
+        };
         for (id, delta) in out
             .textures_delta
             .set
@@ -83,7 +114,18 @@ fn render(
         out.textures_delta.clear();
         last = Some((out.shapes, out.pixels_per_point));
     }
-    let (shapes, ppp) = last.expect("frames ran");
+    last.expect("frames ran")
+}
+
+/// Paints `shapes` over `backdrop` with the CPU rasterizer.
+fn paint(
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    backdrop: Color32,
+    shapes: Vec<egui::epaint::ClippedShape>,
+    ppp: f32,
+    textures: &HashMap<TextureId, Texture>,
+) -> image::RgbaImage {
     let primitives = ctx.tessellate(shapes, ppp);
 
     let (w, h) = ((size.x * ppp) as usize, (size.y * ppp) as usize);
@@ -292,6 +334,13 @@ fn keypeek_groups(ui: &mut egui::Ui) {
                     .selected_text(crate::settings::WindowPosition::BottomRight.to_string())
                     .show_ui(ui, |_| {});
                 ui.end_row();
+                // As overlay_window/foxglove_place.rs draws it, with a dragged place.
+                ui.label("Position");
+                ui.horizontal(|ui| {
+                    ui.label("Where you dragged it");
+                    let _ = ui.small_button("Reset");
+                });
+                ui.end_row();
                 for (label, value, suffix) in [
                     ("Display duration", 2000.0, " ms"),
                     ("Activation delay", 0.0, " ms"),
@@ -306,6 +355,16 @@ fn keypeek_groups(ui: &mut egui::Ui) {
                     );
                     ui.end_row();
                 }
+                // As overlay_window/ui_settings.rs draws them: the HUD at its 20% detent, the
+                // key labels unlinked at 80%.
+                crate::foxglove::overlay_opacity::rows(
+                    ui,
+                    &mut crate::settings::Settings {
+                        opacity: 20,
+                        label_opacity: Some(80),
+                        ..Default::default()
+                    },
+                );
                 ui.label("Auto-fit long labels");
                 ui.checkbox(&mut true, "Fit long labels to available space");
                 ui.end_row();
@@ -467,25 +526,26 @@ fn foxglove_groups(ui: &mut egui::Ui) {
 }
 
 /// The settings window as #385 draws it: the sidebar, the status strip and one page.
-fn shell_window(ctx: &egui::Context, height: f32) {
+fn shell_window(ctx: &egui::Context, size: egui::Vec2) -> Option<Rect> {
     egui::Window::new("Foxglove Settings")
         .fixed_pos(egui::pos2(16.0, 16.0))
-        .default_size(egui::vec2(1040.0, height))
+        .default_size(size)
         .min_size(egui::vec2(720.0, 420.0))
-        .frame(crate::foxglove::shell::window_frame(ctx))
+        .frame(egui::Frame::window(&ctx.global_style()).inner_margin(egui::Margin::ZERO))
         .collapsible(false)
         .resizable(true)
         .open(&mut true)
-        .show(ctx, |ui| {
-            crate::foxglove::shell::frame(ui, |ui| {
-                // In the real window's order (ui_settings.rs).
-                keypeek_groups(ui);
-                crate::foxglove::profiles_ui::picker(ui);
-                crate::foxglove::update::group(ui);
-                foxglove_groups(ui);
-                crate::foxglove::settings_ui::footer(ui);
-            })
-        });
+        .show(ctx, |ui| crate::foxglove::shell::frame(ui, sections))
+        .map(|r| r.response.rect)
+}
+
+/// The settings window's sections, in the real window's order (ui_settings.rs).
+fn sections(ui: &mut egui::Ui) {
+    keypeek_groups(ui);
+    crate::foxglove::profiles_ui::picker(ui);
+    crate::foxglove::update::group(ui);
+    foxglove_groups(ui);
+    crate::foxglove::settings_ui::footer(ui);
 }
 
 fn shell_preview(page: crate::foxglove::shell::Page) -> image::RgbaImage {
@@ -497,6 +557,13 @@ struct Samples {
     strip: crate::foxglove::shell::StripState,
     keyboard: crate::foxglove::keyboard_page::View,
     lights: crate::foxglove::lights_page::View,
+    pc: crate::foxglove::pc_lights_ui::View,
+    wizard: crate::foxglove::pc_lights_add::Wizard,
+    /// The colour calibrator, open in place of the PC card.
+    calibrate: Option<(
+        crate::foxglove::calibrate_ui::View,
+        crate::foxglove::calibrate_ui::Wizard,
+    )>,
     screens: Option<crate::foxglove::screens::Snapshot>,
     art: Option<(
         crate::foxglove::art_service::Snapshot,
@@ -511,6 +578,9 @@ impl Samples {
             strip: sample_strip(),
             keyboard: crate::foxglove::keyboard_page::tests::sample(),
             lights: crate::foxglove::lights_page::tests::sample(),
+            pc: crate::foxglove::pc_lights_ui::tests::sample(),
+            wizard: Default::default(),
+            calibrate: None,
             screens: Some(sample_screens()),
             art: Some(crate::foxglove::art_ui::tests::sample()),
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -522,6 +592,9 @@ impl Samples {
             strip: Default::default(),
             keyboard: crate::foxglove::keyboard_page::tests::sample_none(),
             lights: crate::foxglove::lights_page::tests::sample_none(),
+            pc: Default::default(),
+            wizard: Default::default(),
+            calibrate: None,
             screens: None,
             art: None,
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -541,6 +614,7 @@ fn sample_strip() -> crate::foxglove::shell::StripState {
         profile: Some(0),
         this_pc: Some(0),
         unplug_warning: None,
+        host_link: Some("USB"),
     }
 }
 
@@ -549,7 +623,18 @@ fn shell_preview_with(
     samples: &Samples,
     height: f32,
 ) -> image::RgbaImage {
-    use crate::foxglove::shell;
+    let ctx = preview_ctx();
+    show_samples(page, samples);
+    let size = egui::vec2(1072.0, height + 40.0);
+    let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
+        shell_window(ctx, egui::vec2(1040.0, height));
+    });
+    clear_samples();
+    img
+}
+
+/// A headless context with the app's fonts and the dark theme.
+fn preview_ctx() -> egui::Context {
     crate::foxglove::store::test_config_dir();
     let ctx = egui::Context::default();
     // The plugin icons are SVGs, as in the app.
@@ -559,24 +644,109 @@ fn shell_preview_with(
     crate::foxglove::theme::add_fonts(&mut fonts);
     ctx.set_fonts(fonts);
     crate::foxglove::theme::apply_choice(&ctx, crate::foxglove::theme::Choice::Dark);
+    ctx
+}
+
+/// The pages' live parts show `samples` on this thread, on `page`.
+fn show_samples(page: crate::foxglove::shell::Page, samples: &Samples) {
+    use crate::foxglove::shell;
     shell::preview_page(page);
     shell::PREVIEW_STRIP.set(Some(samples.strip.clone()));
     crate::foxglove::keyboard_page::PREVIEW.set(Some(samples.keyboard.clone()));
     crate::foxglove::lights_page::PREVIEW.set(Some(samples.lights.clone()));
+    crate::foxglove::pc_lights_ui::PREVIEW.set(Some((samples.pc.clone(), samples.wizard.clone())));
+    crate::foxglove::calibrate_ui::PREVIEW.set(samples.calibrate.clone());
     crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
     crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
     crate::foxglove::plugins_ui::PREVIEW.set(Some(samples.plugins.clone()));
-    let size = egui::vec2(1072.0, height + 40.0);
-    let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
-        shell_window(ctx, height)
-    });
-    shell::PREVIEW_STRIP.set(None);
+}
+
+fn clear_samples() {
+    crate::foxglove::shell::PREVIEW_STRIP.set(None);
     crate::foxglove::keyboard_page::PREVIEW.set(None);
     crate::foxglove::lights_page::PREVIEW.set(None);
+    crate::foxglove::pc_lights_ui::PREVIEW.set(None);
+    crate::foxglove::calibrate_ui::PREVIEW.set(None);
     crate::foxglove::screens_ui::PREVIEW.set(None);
     crate::foxglove::art_ui::PREVIEW.set(None);
     crate::foxglove::plugins_ui::PREVIEW.set(None);
-    img
+}
+
+/// The settings window's width after a few frames of `samples`, at the window's minimum size.
+fn window_width(ctx: &egui::Context, page: crate::foxglove::shell::Page, samples: &Samples) -> f32 {
+    show_samples(page, samples);
+    let mut rect = None;
+    for frame in 0..6 {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1600.0, 900.0))),
+            time: Some(frame as f64),
+            predicted_dt: 1.0,
+            focused: true,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| {
+            rect = shell_window(ui.ctx(), egui::vec2(720.0, 600.0));
+        });
+        out.textures_delta.clear(); // nothing is painted here
+    }
+    clear_samples();
+    rect.expect("the window was drawn").width()
+}
+
+/// What a keyboard on USB and Bluetooth at once shows, worded as long as it gets: every chip
+/// of the strip, the unplug warning, and long rows on the Keyboard page.
+fn long_samples() -> Samples {
+    let mut s = Samples::full();
+    s.strip = crate::foxglove::shell::StripState {
+        keyboard: true,
+        usb: Some(false),
+        left_build: Some(Ok("0.1.0 (dev) · e255d32".into())),
+        right_build: Some(Err("no reply from the keyboard".into())),
+        right_battery: Some(100),
+        left_battery: Some(100),
+        profile: Some(3),
+        this_pc: Some(1),
+        unplug_warning: Some("Unplugging now leaves the keyboard unable to type".into()),
+        host_link: Some("USB"),
+    };
+    for h in &mut s.keyboard.halves {
+        h.text = format!(
+            "{} · e255d32 · built for the Eyelash Corne, dev profile",
+            h.text
+        );
+    }
+    s.keyboard.link.rows = vec![
+        (
+            "Left half",
+            "on USB and on Bluetooth profile 4 (another PC) at the same time".into(),
+        ),
+        (
+            "Bluetooth to this PC",
+            "connected, but this PC is paired on profile 2 of 5".into(),
+        ),
+    ];
+    s.keyboard.link.unplug_fix = Some(
+        "Unplugging now leaves the keyboard unable to type - select profile 2: hold SYSTEM \
+         (both middle thumbs) and Tab, then press the profile's key on the number row"
+            .into(),
+    );
+    s
+}
+
+/// A keyboard connecting (or replugged) must not widen the settings window: long chips and rows
+/// wrap or are cut inside it. Before the fix the window grew by the overflow on reconnect.
+#[test]
+fn a_reconnect_does_not_widen_the_window() {
+    use crate::foxglove::shell::Page;
+    for page in [Page::Keyboard, Page::Settings, Page::Screens] {
+        let ctx = preview_ctx();
+        let before = window_width(&ctx, page, &Samples::none());
+        let after = window_width(&ctx, page, &long_samples());
+        assert!(
+            after <= before + 0.5,
+            "{page:?}: the window grew from {before} to {after} points when the keyboard connected"
+        );
+    }
 }
 
 fn keep(name: &str, img: &image::RgbaImage) {
@@ -748,6 +918,155 @@ fn settings_page_renders() {
     assert!(count(&img, DARK.selected_fill) > 100, "the Dark pill");
 }
 
+/// The Settings window as a native window of its own shows it: the shell edge to edge in the
+/// client area. Windows draws the real title bar (dark with the dark theme); a stand-in sits
+/// above the client area here, so the review sees the whole window.
+#[test]
+fn settings_window_renders_as_a_native_window() {
+    use crate::foxglove::settings_window::{DEFAULT_SIZE, TITLE};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let ctx = preview_ctx();
+    show_samples(Page::Settings, &Samples::full());
+    const TITLE_BAR: f32 = 32.0;
+    let bar = Color32::from_rgb(0x20, 0x20, 0x20);
+    let size = DEFAULT_SIZE + egui::vec2(0.0, TITLE_BAR);
+    let img = render_ui(&ctx, size, bar, |ui| {
+        egui::Panel::top("native-title-bar")
+            .exact_size(TITLE_BAR)
+            .frame(
+                egui::Frame::new()
+                    .fill(bar)
+                    .inner_margin(egui::Margin::symmetric(12, 0)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.label(egui::RichText::new(TITLE).color(Color32::from_gray(0xd0)));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 28.0;
+                        for glyph in [
+                            egui_phosphor::regular::X,
+                            egui_phosphor::regular::SQUARE,
+                            egui_phosphor::regular::MINUS,
+                        ] {
+                            ui.label(egui::RichText::new(glyph).color(Color32::from_gray(0xd0)));
+                        }
+                    });
+                });
+            });
+        crate::foxglove::shell::frame(ui, sections);
+    });
+    clear_samples();
+    keep("ui-settings-native-window.png", &img);
+    let count = |c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    let total = (img.width() * img.height()) as usize;
+    // The shell reaches the window's edges: sidebar well and page ground, no egui window frame.
+    assert!(count(DARK.well) > total / 20, "sidebar");
+    assert!(count(DARK.ground) > total / 20, "page");
+    let left_edge = img.get_pixel(0, img.height() / 2).0;
+    assert_eq!(
+        left_edge[..3],
+        [DARK.well.r(), DARK.well.g(), DARK.well.b()],
+        "the sidebar starts at the window's left edge"
+    );
+}
+
+/// Where the Settings window opens, drawn from the real placement logic on this PC's two
+/// displays: where it was closed while both are there, and centred on the main display once the
+/// second one is gone.
+#[test]
+fn settings_window_placement_renders() {
+    use crate::foxglove::settings_window::{restore, tests::two_displays, Saved};
+    use crate::foxglove::theme::DARK;
+    let ctx = preview_ctx();
+    let displays = two_displays();
+    let saved = Saved {
+        monitor: displays[1].id.clone(),
+        // In points of the 150 % display: 1560 x 990 pixels there, 1040 x 660 on the main one.
+        place: Some([293.0, 134.0, 1040.0, 660.0]),
+        rect: None,
+    };
+    let scale = 0.12;
+    let panel_h = 2088.0 * scale + 56.0;
+    let size = egui::vec2(6400.0 * scale + 48.0, panel_h * 2.0 + 16.0);
+    let cases: [(&str, &[crate::monitors::Monitor]); 2] = [
+        ("Both displays: it opens where it was closed", &displays[..]),
+        (
+            "Display 2 unplugged: centred on the main display",
+            &displays[..1],
+        ),
+    ];
+    let img = render_ui(&ctx, size, DARK.ground, |ui| {
+        let painter = ui.painter().clone();
+        for (i, (caption, monitors)) in cases.iter().enumerate() {
+            let top = 12.0 + i as f32 * panel_h;
+            painter.text(
+                egui::pos2(24.0, top),
+                egui::Align2::LEFT_TOP,
+                *caption,
+                crate::foxglove::theme::body(15.0),
+                DARK.text_strong,
+            );
+            let origin = egui::pos2(24.0, top + 32.0);
+            let to_rect = |r: [i32; 4]| {
+                Rect::from_min_max(
+                    origin + egui::vec2(r[0] as f32, r[1] as f32) * scale,
+                    origin + egui::vec2(r[2] as f32, r[3] as f32) * scale,
+                )
+            };
+            for (n, m) in displays.iter().enumerate() {
+                let here = monitors.iter().any(|x| x.id == m.id);
+                let rect = to_rect(m.work_area);
+                painter.rect(
+                    rect,
+                    4.0,
+                    if here { DARK.surface } else { DARK.ground },
+                    egui::Stroke::new(1.0, if here { DARK.muted } else { DARK.well }),
+                    egui::StrokeKind::Inside,
+                );
+                painter.text(
+                    rect.left_bottom() + egui::vec2(8.0, -8.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    if here {
+                        format!("Display {}", n + 1)
+                    } else {
+                        format!("Display {} (gone)", n + 1)
+                    },
+                    crate::foxglove::theme::mono(12.0),
+                    DARK.muted,
+                );
+            }
+            if let Some(r) = restore(&saved, monitors, [1040.0, 660.0], "") {
+                let rect = to_rect(r);
+                painter.rect(
+                    rect,
+                    3.0,
+                    DARK.accent.gamma_multiply(0.35),
+                    egui::Stroke::new(2.0, DARK.accent),
+                    egui::StrokeKind::Inside,
+                );
+                painter.text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "Settings",
+                    crate::foxglove::theme::body(13.0),
+                    DARK.text_strong,
+                );
+            }
+        }
+    });
+    keep("ui-settings-window-placement.png", &img);
+    assert!(
+        img.pixels()
+            .any(|p| p.0[..3] == [DARK.accent.r(), DARK.accent.g(), DARK.accent.b()]),
+        "the window's outline"
+    );
+}
+
 /// The tray panel (#391), drawn off-screen the way it opens next to the tray icon.
 #[test]
 fn tray_panel_renders() {
@@ -836,6 +1155,96 @@ fn lights_page_renders() {
     assert!(count(&with, DARK.selected_fill) > 200, "a selected pill");
     assert!(count(&with, DARK.accent) > count(&without, DARK.accent));
     assert_ne!(with, without);
+}
+
+/// The Lights page's "PC & peripherals" card (#423): the 45L with colours, the cooler and the
+/// G502 with Light Studio running; then a fresh 45L matching the keyboard; then none found.
+#[test]
+fn pc_lights_render() {
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    let mut fresh = Samples::full();
+    fresh.pc = crate::foxglove::pc_lights_ui::tests::sample_fresh();
+    let with = shell_preview_with(Page::Lights, &Samples::full(), 1180.0);
+    let fresh = shell_preview_with(Page::Lights, &fresh, 1180.0);
+    let none = shell_preview_with(Page::Lights, &Samples::none(), 1180.0);
+    keep("ui-423-pc-lights.png", &with);
+    keep("ui-423-pc-lights-fresh.png", &fresh);
+    keep("ui-423-pc-lights-none.png", &none);
+    // Light Studio's note is in the warning colour; the fresh card has none.
+    assert!(count(&with, DARK.warn) > 100, "the Light Studio note");
+    assert!(count(&fresh, DARK.warn) < count(&with, DARK.warn));
+    assert_ne!(with, fresh);
+    assert_ne!(fresh, none);
+}
+
+/// The colour calibrator on the Lights page: the device list with "Calibrate…", then each of
+/// the five steps on the 45L (against the screen, and the blue step against the keyboard).
+#[test]
+fn calibrate_renders() {
+    use crate::foxglove::calibrate_ui::{tests::sample, Step};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: [u8; 3]| img.pixels().filter(|p| p.0[..3] == c).count();
+    let list = shell_preview_with(Page::Lights, &Samples::full(), 1180.0);
+    keep("ui-calibrate-devices.png", &list);
+    let mut shots = Vec::new();
+    for step in Step::ALL {
+        let mut s = Samples::full();
+        s.calibrate = Some(sample(step, false));
+        let img = shell_preview_with(Page::Lights, &s, 1180.0);
+        keep(
+            &format!("ui-calibrate-{}.png", step.name().to_lowercase()),
+            &img,
+        );
+        // The screen's swatch is the step's own colour, large.
+        assert!(count(&img, step.color()) > 5000, "{step:?} swatch");
+        shots.push(img);
+    }
+    let mut master = Samples::full();
+    master.calibrate = Some(sample(Step::Blue, true));
+    let master = shell_preview_with(Page::Lights, &master, 1180.0);
+    keep("ui-calibrate-master.png", &master);
+    // Next/Save is the orange primary button; every step looks different.
+    assert!(
+        count(
+            &shots[0],
+            [DARK.accent.r(), DARK.accent.g(), DARK.accent.b()]
+        ) > 200
+    );
+    for pair in shots.windows(2) {
+        assert_ne!(pair[0], pair[1]);
+    }
+    assert_ne!(master, shots[3]);
+}
+
+/// What each device can do, as chips (the keyboard from HELLO, the case and cooler from the
+/// catalog, the mouse from its LampArray attributes), and "Add a device…": picking an unknown
+/// device, then naming its zones.
+#[test]
+fn pc_lights_caps_and_add_render() {
+    use crate::foxglove::pc_lights_add::{tests::sample_zones, Step, Wizard};
+    use crate::foxglove::shell::Page;
+    let mut pick = Samples::full();
+    pick.wizard = Wizard {
+        step: Step::Pick,
+        ..Wizard::default()
+    };
+    let mut zones = Samples::full();
+    zones.wizard = sample_zones();
+    let caps = shell_preview_with(Page::Lights, &Samples::full(), 1400.0);
+    let pick = shell_preview_with(Page::Lights, &pick, 1400.0);
+    let zones = shell_preview_with(Page::Lights, &zones, 1400.0);
+    keep("ui-423-caps.png", &caps);
+    keep("ui-423-add-pick.png", &pick);
+    keep("ui-423-add-zones.png", &zones);
+    assert_ne!(caps, pick);
+    assert_ne!(pick, zones);
 }
 
 #[test]

@@ -9,6 +9,7 @@ use std::time::Instant;
 
 mod connection_flow;
 mod foxglove_connect;
+mod foxglove_place;
 mod foxglove_settings;
 mod settings_sync;
 mod state;
@@ -51,6 +52,13 @@ impl OverlayApp {
                 mouse_passthrough: None,
                 hit_region: None,
                 file_dialog: egui_file_dialog::FileDialog::new(),
+                settings_window: Default::default(),
+                overlay_rect: None,
+                overlay_hovered: false,
+                overlay_size: egui::Vec2::ZERO,
+                overlay_place: crate::foxglove::overlay_place::load(),
+                overlay_drag: None,
+                overlay_grab: None,
             },
             settings: SettingsState {
                 active: base_settings.clone(),
@@ -92,17 +100,35 @@ impl OverlayApp {
     fn sync_mouse_passthrough(&mut self, ctx: &egui::Context, host: &mut dyn OverlayHost) {
         // Foxglove (#391): the tray panel takes the mouse too, but only over itself (#405): a
         // click anywhere else goes straight to the window underneath, and the panel closes when
-        // the overlay loses the focus to it.
-        let region = if self.is_any_window_open() {
+        // the overlay loses the focus to it. The Settings window is a window of its own; while
+        // it's open the overlay takes the mouse only over the keys (to open the editor), and over
+        // the whole display only while a key's tooltip shows or the editor is open.
+        // A host without native windows (Wayland) draws Settings inside the overlay: the whole
+        // overlay takes the mouse then, as the editor does.
+        let editor = self.editor.target.is_some()
+            || (self.ui.settings_visible && ctx.embed_viewports());
+        let tray = crate::foxglove::tray_panel::is_open();
+        // A drag (of the overlay) takes the whole display, so the overlay never draws clipped.
+        let busy = self.ui.overlay_hovered || self.ui.overlay_drag.is_some();
+        let keys = self
+            .ui
+            .overlay_rect
+            .filter(|_| self.ui.settings_visible && !busy);
+        let region = if editor || (self.ui.settings_visible && busy) {
             None
-        } else {
+        } else if tray {
             crate::foxglove::tray_panel::hit_region(ctx)
+        } else {
+            keys.map(|r| crate::foxglove::settings_window::keys_region(r, ctx.pixels_per_point()))
         };
         if region != self.ui.hit_region {
             host.set_hit_region(region);
             self.ui.hit_region = region;
         }
-        let mouse_passthrough = !self.is_any_window_open() && !crate::foxglove::tray_panel::is_open();
+        let takes_mouse = editor
+            || tray
+            || (self.ui.settings_visible && self.ui.overlay_rect.is_some());
+        let mouse_passthrough = !takes_mouse;
         if self.ui.mouse_passthrough == Some(mouse_passthrough) {
             return;
         }
@@ -166,11 +192,11 @@ impl OverlayApp {
 }
 
 impl OverlayApp {
-    /// Backdrop color the host clears to before egui paints: dimmed while either
-    /// the settings or keymap editor window is open, otherwise transparent so only
-    /// the overlay is visible.
+    /// Backdrop color the host clears to before egui paints: dimmed while the keymap editor is
+    /// open, otherwise transparent so only the overlay is visible. Foxglove: the Settings window
+    /// is a window of its own and dims nothing.
     pub fn clear_color(&self) -> egui::Rgba {
-        if self.is_any_window_open() {
+        if self.editor.target.is_some() {
             egui::Rgba::from_black_alpha(0.65)
         } else {
             egui::Rgba::TRANSPARENT
@@ -185,6 +211,13 @@ impl OverlayApp {
 
     pub fn ui(&mut self, ctx: &egui::Context, host: &mut dyn OverlayHost) {
         if self.settings_requested.swap(false, Ordering::Relaxed) {
+            if self.ui.settings_visible {
+                // Foxglove: already open, maybe minimized, behind other windows or on another
+                // display.
+                let id = crate::foxglove::settings_window::id();
+                ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+            }
             self.ui.settings_visible = true;
         }
 
@@ -193,8 +226,11 @@ impl OverlayApp {
         self.maintain_connection(ctx);
         self.apply_live_visual_settings();
         self.apply_live_layout_settings();
-        self.ui.file_dialog.update(ctx);
-        crate::foxglove::art_ui::update(ctx);
+        if !self.ui.settings_visible {
+            // Foxglove: with Settings open these draw in its window (ui_settings.rs).
+            self.ui.file_dialog.update(ctx);
+            crate::foxglove::art_ui::update(ctx);
+        }
         // Foxglove: a profile switch reloads the overlay's settings.
         if crate::foxglove::overlay_profile::switched(ctx, &mut self.profile_seen) {
             let s = crate::foxglove::overlay_profile::effective(crate::settings::Settings::load().unwrap_or_default());
@@ -215,6 +251,9 @@ impl OverlayApp {
         }
 
         self.sync_mouse_passthrough(ctx, host);
+        let drawn = (self.ui.overlay_rect, self.ui.overlay_hovered);
+        self.ui.overlay_rect = None;
+        self.ui.overlay_hovered = false;
         if let AppConnectionState::Connected { keyboard } = &self.session.connection {
             // Clone the shared keyboard so drawing can mutate app state (the
             // editor) without holding a borrow on `self.session`.
@@ -230,12 +269,19 @@ impl OverlayApp {
             self.close_editor();
         }
 
+        if (self.ui.overlay_rect, self.ui.overlay_hovered) != drawn {
+            // The overlay's hit region follows it on the next frame.
+            ctx.request_repaint();
+        }
+
         if self.ui.settings_visible {
             self.draw_settings_window(ctx, host);
         }
 
-        Self::message_window(ctx, "Error", &mut self.ui.settings_error);
-        Self::message_window(ctx, "Notice", &mut self.ui.settings_warning);
+        if !self.ui.settings_visible {
+            Self::message_window(ctx, "Error", &mut self.ui.settings_error);
+            Self::message_window(ctx, "Notice", &mut self.ui.settings_warning);
+        }
 
         self.schedule_overlay_repaint(ctx);
     }

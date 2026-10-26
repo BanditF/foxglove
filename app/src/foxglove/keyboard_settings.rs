@@ -126,6 +126,11 @@ static RGB_STATE: Mutex<Option<RgbState>> = Mutex::new(None);
 static RGB_REFRESH: AtomicBool = AtomicBool::new(true);
 static RGB_POLLING: AtomicBool = AtomicBool::new(false);
 
+/// Both halves' lights as last read, without asking the keyboard.
+pub fn cached_rgb_state() -> Option<RgbState> {
+    *RGB_STATE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub fn refresh_rgb_state() {
     RGB_REFRESH.store(true, Ordering::Relaxed);
 }
@@ -137,8 +142,12 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
         let ctx = ctx.clone();
         super::services::spawn_named("rgb-state", move || {
             // Read from the link: the device layer's lighting state has no per-half age yet.
-            let state =
-                device().and_then(|d| digitalis::settings::rgb_state(d.link().as_ref()).ok());
+            // In the palette's colours: what Foxglove asked for, not its calibrated form.
+            let state = device().and_then(|d| {
+                let mut s = digitalis::settings::rgb_state(d.link().as_ref()).ok()?;
+                d.asked_state(&mut s);
+                Some(s)
+            });
             *RGB_STATE.lock().unwrap() = state;
             RGB_POLLING.store(false, Ordering::Relaxed);
             ctx.request_repaint();
@@ -171,7 +180,10 @@ pub fn set_lights(on: bool, ctx: egui::Context) {
 /// Colour: hue 0-359, saturation and brightness 0-100.
 pub fn set_color(hue: u16, sat: u8, brightness: u8, ctx: egui::Context) {
     lighting("Set colour", ctx, move |l| {
-        l.set_color(hue, sat, brightness)
+        l.set_color(hue, sat, brightness)?;
+        // The case's "Match keyboard" follows (#423).
+        super::pc_lights::keyboard_color(hue, sat, brightness);
+        Ok(())
     });
 }
 

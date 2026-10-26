@@ -107,7 +107,9 @@ From top to bottom:
   profile change, so you can see which profile you just picked. This is the quickest way to
   catch a wrong-profile mix-up.
 - **The PC panel** at the bottom: the clock, what's playing and the volume. Foxglove draws it.
-  If the app closes, the last picture stays.
+  If the app closes, the last picture stays. The clock and date follow Windows' region settings
+  (Settings › Time & language › Language & region): 12- or 24-hour, the date order and the
+  language of day and month names. A change there shows on the panel right away.
 
 ### Right screen
 
@@ -136,8 +138,8 @@ Open it from the tray: **Settings...**. From the top:
 - **Screens.** The left screen's PC panel:
   - **Drive left screen** turns the panel on or off, and **Pause** freezes it.
   - **frames per second** sets how often it redraws.
-  - **Show** picks the clock, media and hints, or the current Wallpaper Engine wallpaper's
-    animation.
+  - **Show** picks the clock, media and hints, or the current wallpaper's animation (works
+    best with Wallpaper Engine).
   - **Game hints** show a short note while a given program is in front.
   - The panel status shows the right half's link and battery.
 - **Right screen art.** What plays on the right:
@@ -239,6 +241,38 @@ Bandit wallpaper family:
   two would fight over the colour.
 - **Profiles:** each profile can have its own preset, and switching profile switches the look.
 
+### The PC's case lights (HP OMEN 45L)
+
+**Settings → Lights → PC & peripherals** lists the lighting devices on this PC and how
+Foxglove controls them:
+- **Foxglove driver:** the OMEN 45L case. Pick a colour per zone (diamond display, interior
+  light, the three front fans) or one of the swatches for all zones, then **Apply colours**.
+  **Identify** blinks the case for a moment; **Off** turns it dark. **Match keyboard** makes
+  the case follow the underglow colour you set in Foxglove, or the Windows accent colour when
+  the keyboard follows that. Foxglove puts your colours back when the PC starts.
+- **Standard LampArray device**, such as a Logitech G502: Windows' Dynamic Lighting settings
+  control it for now.
+- **Not controllable yet**, such as the OMEN liquid cooler: listed so you know it was seen.
+
+Each device shows what it can do as small chips, such as **Per-zone RGB · 5 zones**,
+**Per-LED RGB · 2 lamps**, or **Screen 160×68 · 1-bit · images & animations**. The controls
+follow them: a device with one colour has no zone pickers, and one without lights has none.
+
+**Gear Foxglove doesn't know.** **Add a device…** lists the devices it doesn't recognise. Pick
+yours, give it a name, and pick the protocol it speaks if it's one Foxglove knows (or
+**Unknown**, which only lists it). Then for each zone, click **Light zone N**, look at the
+device, and type what lit up (leave it empty if nothing did). Each zone blinks for a moment
+and goes back to how it was (dark if Foxglove never set it). Nothing is sent to the device
+until you click. **Save** keeps the entry in `lighting-catalog.local.toml` next to your
+settings; **Copy entry** on the device copies it to share, or to send to Foxglove so everyone
+gets it.
+
+**Retiring OMEN Light Studio.** While Light Studio runs, the page says so: it may put its own
+colours back over Foxglove's. Once the case looks right from Foxglove, remove it in
+**Settings → Apps → Installed apps → OMEN Light Studio → Uninstall** (or set its
+**Background app permissions** to **Never**). Keep **OMEN Command Center**: it runs the fans and
+performance modes, not the case lights. The pump's LCD screen is separate and keeps working.
+
 ### Cycling the right screen's art
 
 **Settings → Right screen art → Hotlist** is your list of favourites.
@@ -249,8 +283,12 @@ Bandit wallpaper family:
     name for a second.
   - **when the lights wake**: the next entry each time the underglow comes back on.
   - **every N minutes**.
-- **Follow the wallpaper:** with Wallpaper Engine, the right screen shows the art that goes with
-  the wallpaper on screen.
+- **Follow the wallpaper:** the right screen shows the art that goes with the wallpaper on
+  screen. It works best with Wallpaper Engine, found in any Steam library. Without it, or while
+  it isn't running, your Windows desktop wallpaper counts: name the image after a wallpaper in
+  the art folder's `wallpapers.json` (for example `fury-stars.png`). If Wallpaper Engine is
+  installed somewhere Steam doesn't know, set `FOXGLOVE_WALLPAPER_ENGINE_DIR` to its folder.
+  Press **Refresh** after installing or moving it.
 - **Layer art:** give a layer its own art, for example Bandit Radar for GAME. It shows while you
   hold the layer (after 0.4 s, so a quick tap doesn't flash it), then the art before comes back.
 - **Priority:** your own pick (or an art-key press) wins, then layer art, then preset art, then

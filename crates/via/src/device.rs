@@ -4,6 +4,7 @@
 //! Lighting changes are not saved to the keyboard's EEPROM (no CUSTOM_SAVE): they last until
 //! the keyboard restarts, so experiments can't wear or overwrite the stored settings.
 
+use foxglove_devices::calibration;
 use foxglove_devices::{
     Binding, Caps, Device, DeviceError, DeviceInfo, Effect, Keymap, LayerInfo, Layout, Led,
     Lighting, LightingState, Result, WriteSupport, Zone,
@@ -160,11 +161,21 @@ impl<T: Transport> Lighting for ViaDevice<T> {
         let effect = self.custom_get(rgb_matrix::EFFECT)?[0];
         let speed = self.custom_get(rgb_matrix::EFFECT_SPEED)?[0];
         let [hue, sat] = self.custom_get(rgb_matrix::COLOR)?;
+        // In Foxglove's palette: the colour asked for, not its calibrated form.
+        let key = calibration::key_for(&self.info.id);
+        let (hue, sat, shown) = calibration::asked_hsb(
+            &key,
+            (
+                ((u32::from(hue) * 360 + 128) / 256) as u16 % 360,
+                to_percent(sat),
+                to_percent(brightness),
+            ),
+        );
         Ok(LightingState {
             on: brightness > 0 && effect > 0,
-            hue: ((u32::from(hue) * 360 + 128) / 256) as u16 % 360,
-            sat: to_percent(sat),
-            brightness: to_percent(brightness),
+            hue,
+            sat,
+            brightness: shown,
             effect: Effect {
                 id: effect.to_string(),
                 params: vec![],
@@ -180,10 +191,14 @@ impl<T: Transport> Lighting for ViaDevice<T> {
         self.custom_set(rgb_matrix::EFFECT, &[n])
     }
 
+    /// Through the keyboard's colour calibration.
     fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> Result<()> {
-        let h = ((u32::from(hue.min(359)) * 256) / 360) as u8;
-        self.custom_set(rgb_matrix::COLOR, &[h, from_percent(sat)])?;
-        self.custom_set(rgb_matrix::BRIGHTNESS, &[from_percent(brightness)])
+        let key = calibration::key_for(&self.info.id);
+        calibration::send_hsb(&key, (hue, sat, brightness), |(hue, sat, brightness)| {
+            let h = ((u32::from(hue) * 256) / 360) as u8;
+            self.custom_set(rgb_matrix::COLOR, &[h, from_percent(sat)])?;
+            self.custom_set(rgb_matrix::BRIGHTNESS, &[from_percent(brightness)])
+        })
     }
 
     fn release(&self) -> Result<()> {

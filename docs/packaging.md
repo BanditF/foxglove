@@ -20,29 +20,53 @@ environment; an actual MSI build and Windows install/uninstall smoke test remain
 
 ## Installed files and startup
 
-The elevated, per-machine MSI installs `foxglove.exe` and `LICENSE` to
-`%ProgramFiles%\Foxglove`, with an all-users Start menu entry. It reuses
-`app/resources/icon.ico`, also embedded in the exe by `app/build.rs` (#31 will
-replace the artwork). There are no bundled firmware or art assets.
+The MSI installs **per user** (#444): `foxglove.exe` and `LICENSE` go to
+`%LOCALAPPDATA%\Programs\Foxglove`, with a Start menu entry for the installing user. Everything
+it writes is under `HKCU` (`Software\Foxglove\Installer`). It needs no UAC, so installs and
+updates run without elevation. Another Windows user installs their own copy. It reuses
+`app/resources/icon.ico`, which `app/build.rs` also embeds in the exe. No firmware or art is
+bundled.
 
-In the feature selection dialog, **Start with Windows** is optional and off by
-default. It writes a quoted executable path to the installing user's
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Foxglove` value.
-For a silent install, add `ADDLOCAL=App,StartWithWindows` to `msiexec /i ... /qn`.
-This option affects only the account running installation/maintenance; when
-elevating with another account's credentials, it applies to that account.
-It does not configure startup for every user. Maintain/uninstall with the same
-account to remove its Run entry. Quit the running app before upgrading/uninstalling.
+**Start with Windows** belongs to the app alone. The switch is in **Settings -> Theme and
+updates -> Start with Windows** and is on by default.
+- It writes and removes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Foxglove`, the
+  quoted exe path. Windows' Settings › Apps › Startup lists it with its own toggle.
+- At startup, with the switch on, it fixes a missing value or one naming another exe. Turned off,
+  the value is removed and never added back.
+- The MSI writes no Run value. On uninstall (not on an upgrade), it runs
+  `foxglove.exe --uninstall-cleanup` as the user, which removes the value if it starts that exe.
 
-The app has the same switch: **Settings -> Theme and updates -> Start with Windows**, on by default.
-It writes and removes that same `Foxglove` value (never a second one); at startup, with the switch
-on, it fixes a missing value or one naming another exe. Turned off, it is removed and never added
-back. An entry the app wrote outlives an uninstall (MSI removes only the value it owns); turn the
-switch off first, or delete the value.
+Uninstall removes the installed files, the shortcut, the installer's registry values and the
+app's Run value. It never removes user settings or cached keymaps. Major upgrades replace the
+previous package and reject downgrades. Quit the running app before upgrading or uninstalling;
+the in-app updater does this for you.
 
-Uninstall removes the installed files, shortcut and installer-owned registry
-values. It never removes user settings or cached keymaps. Major upgrades replace
-the previous package and reject downgrades.
+### Moving from 0.1 (per machine) to the per-user MSI
+
+0.1.0 was a per-machine MSI in `%ProgramFiles%\Foxglove`. Windows Installer can't upgrade a
+product from one install scope to the other: a per-user MSI doesn't see the per-machine one, so
+it would install next to it (two apps, two Start menu entries, both competing for the keyboard).
+So the per-user MSI checks for `%ProgramFiles%\Foxglove\foxglove.exe`. When it finds it, it stops
+before changing anything, with this message:
+
+> Foxglove 0.1 is installed for all users. Uninstall it first in Settings > Apps > Installed apps
+> (your settings and keymaps are kept), then run this installer again.
+
+The clean migration:
+1. Quit Foxglove from the tray.
+2. Uninstall **Foxglove** in Settings › Apps › Installed apps. This takes one UAC prompt, as it
+   is the old per-machine package. Settings and keymaps in `%APPDATA%\Foxglove\config` stay.
+   If 0.1's "Start with Windows" option was on, its Run value goes with it.
+3. Run the new MSI. No UAC. Start Foxglove; with the switch on (the default, or as you left it),
+   it writes the Run value for its new path.
+
+If the message still appears right after uninstalling 0.1, the old exe was still running and
+Windows removes it at the next restart: restart, then run the MSI again.
+
+0.1 never installs an update by itself: its build has the placeholder update key, so it only
+says automatic updates are off and links to the releases page. So users meet this message only
+when they run the new MSI themselves. Nothing is half-installed. After step 2 every update is
+per user and silent.
 
 ## Current settings paths
 
@@ -76,9 +100,14 @@ GitHub release and uploads the MSI and exe. Manual runs retain both as workflow
 artifacts without publishing a release. Firmware workflows are unchanged.
 
 Before release, run `powershell -ExecutionPolicy Bypass -File scripts/check.ps1`.
-On a Windows test account, also verify default install, optional startup and sign-in,
-silent install, upgrade/downgrade handling, and uninstall with settings/cache files
-present. Check that the Run entry and shortcut disappear while those files survive.
+On a Windows test account, also verify:
+- a default install with no UAC prompt, the Start menu entry, and startup at sign-in (the app's
+  switch);
+- a silent install (`msiexec /i foxglove-x64.msi /qn`, no elevation);
+- upgrade and downgrade handling;
+- the 0.1 per-machine guard message;
+- uninstall with settings and cache files present: the Run entry and the shortcut go, and those
+  files stay.
 
 ## Auto-update
 
@@ -115,8 +144,8 @@ binary with `manifest --version 1.2.3 --msi <path> --url <https-url>
 The manifest command calculates SHA-256, size and the current RFC3339 timestamp.
 The app verifies the signature before trusting metadata, then verifies the MSI
 size and hash in `%LOCALAPPDATA%\Foxglove\updates`. A copied, non-elevated app
-helper waits for the app to exit and requests UAC for `msiexec /i ... /passive
-/norestart`. It waits for installation and restarts the installed app without
+helper waits for the app to exit and runs `msiexec /i ... /passive /norestart`
+without elevation (the MSI is per user, #444). It waits for installation and restarts the installed app without
 elevation. Cancellation or installation failure leaves `error.txt` for the next
 startup and restarts the old install. Windows Installer handles upgrades;
 settings under `%APPDATA%\Foxglove\config` are preserved. The startup preference
@@ -137,8 +166,8 @@ None of this is on by default. Ordinary builds and MSIs don't change.
 - **`app/packaging/identity/`:**
   - `AppxManifest.xml`: `AllowExternalContent`, mediumIL, `win32App`, the lighting app extension, `AppListEntry="none"`.
   - Logos.
-  - `foxglove.exe.manifest`: the `<msix>` element tying the exe to the package.
-- **Build:** `FOXGLOVE_SPARSE_IDENTITY=1 cargo build --release --manifest-path app/Cargo.toml` embeds that manifest (`app/build.rs`) and turns on registration (`app/src/foxglove/identity.rs`).
+  - `msix.xml`: the `<msix>` element tying the exe to the package.
+- **Build:** `FOXGLOVE_SPARSE_IDENTITY=1 cargo build --release --manifest-path app/Cargo.toml` adds that element to the application manifest (`app/build.rs`) and turns on registration (`app/src/foxglove/identity.rs`).
 - **Package:** `scripts\pack-identity.ps1` builds `target\identity\foxglove-identity.msix`. `-Thumbprint <sha1>` signs it.
 - **Installer:** `cargo wix -C -dSparseIdentity=<path to signed msix>` installs it next to the exe. It also adds an uninstall step, `foxglove.exe --unregister-identity`, which runs elevated and removes the package for every user. A major upgrade doesn't run that step, so the registration survives. In-place auto-updates keep the same folder and the same embedded manifest, so they keep the identity.
 - **Registration:**

@@ -9,7 +9,11 @@ readme = "README.md"
 [features]
 mock = []
 contract = []
+# The hidapi enumeration and writer for PC and peripheral lighting (pc_lighting::hid).
+hid = ["dep:hidapi"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+toml = "0.9"
+hidapi = { version = "2.6", optional = true }
