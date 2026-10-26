@@ -107,6 +107,8 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
     # Foxglove: display scaling, for the Settings window's place across displays.
     "Win32_UI_HiDpi",
+    # Foxglove (#447): the test that reads back the embedded manifest.
+    "Win32_System_LibraryLoader",
 ] }
 winreg = "0.56.0"
 
