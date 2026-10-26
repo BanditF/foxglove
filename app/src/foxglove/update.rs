@@ -1,5 +1,5 @@
 //! Auto-update (#65): a check at startup and on demand, a signed manifest, a verified MSI
-//! download, and a copied helper that runs the elevated upgrade after the app exits.
+//! download, and a copied helper that runs the (per-user, no UAC) upgrade after the app exits.
 use foxglove_update::{Manifest, Release, Result, Transport};
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 #[derive(Clone, Default)]
@@ -307,7 +307,9 @@ pub fn helper_entry() -> bool {
             let mut info = SHELLEXECUTEINFOW {
                 cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
                 fMask: SEE_MASK_NOCLOSEPROCESS,
-                lpVerb: w!("runas"),
+                // Foxglove (#444): the MSI is per user, so no UAC. (A per-machine MSI would
+                // still ask for it itself.)
+                lpVerb: w!("open"),
                 lpFile: w!("msiexec.exe"),
                 lpParameters: PCWSTR(params.as_ptr()),
                 nShow: 1,

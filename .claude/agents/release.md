@@ -65,10 +65,11 @@ separately authorized; tag pushes can themselves publish releases.
   `--locked`, then `cargo wix --no-build --output target/wix/foxglove-x64.msi`.
 - Check increasing MSI versions (major/minor <=255, patch <=65535), consistent
   app/tag/MSI versions, fixed UpgradeCode, and x64 artifact contents.
-- Validate clean install, optional startup (off by default), silent install,
-  upgrade, downgrade rejection, and uninstall. Quit the app before maintenance.
-  Verify shortcut/Run entry removal and preservation of settings/keymap caches
-  under `%APPDATA%\Foxglove\config`; startup applies to the installing account.
+- Validate a clean per-user install (no UAC), startup (the app's switch, on by
+  default), silent install, upgrade, downgrade rejection, the 0.1 per-machine guard,
+  and uninstall. Quit the app before maintenance. Verify that the shortcut and Run
+  entry are removed and that settings/keymap caches under `%APPDATA%\Foxglove\config`
+  are preserved; everything applies to the installing user (#444).
 - For an implemented updater, verify trusted metadata/artifacts and integrity,
   version selection, user consent/elevation, app shutdown, failed/interrupted
   download/install recovery, settings preservation, and rollback constraints.
