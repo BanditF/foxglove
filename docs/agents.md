@@ -39,6 +39,20 @@ From a terminal the same job is
 `claude --agent firmware-engineer`. A subagent role (test-lab, scout, host-health,
 code-reviewer, release) is called from any session with the Agent tool.
 
+## Build cost
+
+The PC is shared with the user, and every gate is minutes of full CPU (the PC impact report,
+2026-10-26). So:
+- **Iterate with fast checks only:** `cargo check` or `cargo clippy` on the crate you changed
+  (`-p <crate>`, or `--manifest-path app/Cargo.toml`), through `scripts/build-slot.ps1`.
+- **Run the full `scripts/check.ps1` once**, just before opening the PR. Run it again only after
+  a code change, never for a PR description, docs or comment edit.
+- **Reuse one warm worktree** (and its target dir) for a series of small fixes: branch each fix
+  from `origin/main` inside it (`git switch -c <branch> origin/main`) instead of adding a fresh
+  worktree per tiny change.
+- **Remove a finished worktree on merge:** `git worktree remove <dir>` plus its target dir, or
+  `scripts/clean-worktrees.ps1 -Apply`.
+
 ## Memory
 
 Every role keeps `memory: user`: `~/.claude/agent-memory/<role>/MEMORY.md` on this PC, shared by

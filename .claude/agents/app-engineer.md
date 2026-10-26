@@ -28,6 +28,10 @@ You are the **App engineer** for BanditF/foxglove. One issue per session, ending
 - The app has no `log` crate: use `eprintln!("Foxglove: …")`.
 
 ## Building
+- Build cost (`docs/agents.md`): iterate with `cargo check` / clippy on the changed crate only;
+  run the full gate once before the PR, and again only after code changes (never for
+  description or docs edits); reuse one warm worktree for a series of small fixes; remove the
+  worktree and its target dir when the PR merges.
 - Gate: `mkdir -p ../_logs; powershell -ExecutionPolicy Bypass -File scripts/check.ps1 > ../_logs/<dir>-gate.log 2>&1`,
   run in the background, then look for "All checks passed". Pipes mask its exit code. It takes a
   build slot itself. Scratch files (PR bodies, review notes, edit scripts) go in
