@@ -60,6 +60,17 @@ The PC is shared with the user, and every gate is minutes of full CPU (the PC im
 - **Remove a finished worktree on merge:** `git worktree remove <dir>` plus its target dir, or
   `scripts/clean-worktrees.ps1 -Apply`.
 
+## This PC's values (`tools/local.toml`)
+
+The dev tooling's machine-specific values live in one place, `scripts/local_config.py`: the
+halves' USB serials (`foxglove_flash.py`, foxglove-lab), the flasher's rollback folder, the
+workspace folder (for scheduled-task prompts and personal scripts) and the worktree root
+(`merge-pr.sh`). Its defaults are this PC's, so nothing changes here. On another PC, copy
+`tools/local.example.toml` to `tools/local.toml` in the workspace folder (next to the main
+checkout) and edit it, or set the environment variable named next to each key.
+`python scripts/local_config.py show` prints what the tools will use. A scheduled-task prompt
+can start with `python <repo>\scripts\local_config.py get workspace.root` instead of a fixed path.
+
 ## Memory
 
 Every role keeps `memory: user`: `~/.claude/agent-memory/<role>/MEMORY.md` on this PC, shared by
