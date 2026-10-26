@@ -466,11 +466,14 @@ fn tray_panel_lays_out_without_overlaps() {
     report(&found);
 }
 
+/// A probe's drawing.
+type Draw<'a> = dyn Fn(&mut egui::Ui) + 'a;
+
 /// The guard itself catches each kind of problem, starting with what the user saw: two cards on
 /// top of each other, and a label and its value drawn in the same place.
 #[test]
 fn the_guard_catches_overlaps() {
-    let probe = |draw: &dyn Fn(&mut egui::Ui)| {
+    let probe = |draw: &Draw<'_>| {
         check("probe", egui::vec2(400.0, 300.0), 1.0, false, None, |ui| {
             draw(ui)
         })
@@ -487,7 +490,7 @@ fn the_guard_catches_overlaps() {
                 .response
         });
     };
-    let cases: [(&str, &dyn Fn(&mut egui::Ui)); 8] = [
+    let cases: [(&str, &Draw<'_>); 8] = [
         ("card over a card", &|ui| {
             card(ui, at(20.0, 20.0, 200.0, 80.0), "A card");
             card(ui, at(140.0, 60.0, 200.0, 80.0), "Another");
