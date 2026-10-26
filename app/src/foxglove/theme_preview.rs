@@ -693,3 +693,11 @@ fn copy_diagnostics_renders() {
         std::fs::write(std::path::Path::new(&dir).join("ui-371-diagnostics-sample.txt"), text).expect("save the sample");
     }
 }
+
+/// The Keyboard page's Firmware card with the low-battery switch (#372).
+#[test]
+fn battery_notice_switch_renders() {
+    use crate::foxglove::shell::Page;
+    let img = shell_preview_with(Page::Keyboard, &Samples::full(), 1060.0);
+    keep("ui-372-battery-notice.png", &img);
+}

@@ -52,6 +52,8 @@ pub struct View {
     pub last: Option<(String, String)>,
     /// The board drawing at the top (#392).
     pub board: BoardView,
+    /// The low-battery heads-up is on (#372).
+    pub low_battery_notice: bool,
 }
 
 /// What a click on the page asks for.
@@ -59,6 +61,8 @@ pub struct View {
 pub enum Intent {
     AskFirmwareAgain,
     Action(Action),
+    /// Turns the low-battery heads-up on or off (#372).
+    LowBatteryNotice(bool),
 }
 
 /// The firmware card's lines for the cached builds.
@@ -109,6 +113,7 @@ pub fn view(ctx: &egui::Context) -> View {
         busy: ks::invoking(),
         last: ks::last_action(),
         board: BoardView::default(),
+        low_battery_notice: super::battery::notices_on(),
     }
 }
 
@@ -154,6 +159,11 @@ fn show(ui: &mut egui::Ui) {
             *confirming = None;
             ks::invoke(action.label.clone(), action.binding, ui.ctx().clone());
         }
+        Some(Intent::LowBatteryNotice(on)) => {
+            if let Err(e) = super::battery::set_notices(on) {
+                eprintln!("Foxglove: can't save the battery setting: {e}");
+            }
+        }
         None => {}
     }
 }
@@ -194,6 +204,15 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
                         intent = Some(Intent::AskFirmwareAgain);
                     }
                 });
+            }
+            // #372: a Windows notification below 15% and 5%, once each until it charges.
+            let mut on = v.low_battery_notice;
+            if ui
+                .checkbox(&mut on, "Tell me when a half's battery runs low")
+                .on_hover_text("One notification below 15% and one below 5%. They come back after the half charges past 20%.")
+                .changed()
+            {
+                intent = Some(Intent::LowBatteryNotice(on));
             }
         });
         card(&mut cols[1], "Actions", |ui| {
@@ -524,6 +543,7 @@ pub mod tests {
             busy: false,
             last: Some(("Lights: Toggle".into(), "done".into())),
             board: sample_board(),
+            low_battery_notice: true,
         }
     }
 

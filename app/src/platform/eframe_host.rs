@@ -377,6 +377,7 @@ fn run_inner(
 
             let ui_wake = UiWake::from_ctx(&cc.egui_ctx);
             let settings_requested = Arc::new(AtomicBool::new(false));
+            crate::foxglove::battery::set_wake(ui_wake.clone()); // Foxglove (#373): tray tooltip
             let tray_icon = crate::tray::create_tray_icon({
                 let settings_requested = settings_requested.clone();
                 let ui_wake = ui_wake.clone();
