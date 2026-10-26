@@ -58,6 +58,7 @@ impl OverlayApp {
                 overlay_size: egui::Vec2::ZERO,
                 overlay_place: crate::foxglove::overlay_place::load(),
                 overlay_drag: None,
+                overlay_grab: None,
             },
             settings: SettingsState {
                 active: base_settings.clone(),

@@ -108,6 +108,25 @@ pub fn list() -> Vec<Monitor> {
     Vec::new()
 }
 
+/// Foxglove: the pointer in physical desktop pixels, read while the overlay is dragged.
+#[cfg(target_os = "windows")]
+pub fn cursor() -> Option<[i32; 2]> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+    let mut p = POINT::default();
+    // SAFETY: fills a POINT this function owns; the process is per-monitor DPI aware (winit),
+    // so the position is in physical pixels.
+    unsafe { GetCursorPos(&mut p) }.ok()?;
+    Some([p.x, p.y])
+}
+
+/// Foxglove: elsewhere the overlay uses egui's pointer.
+#[cfg(not(target_os = "windows"))]
+pub fn cursor() -> Option<[i32; 2]> {
+    None
+}
+
 /// The display matching `id`, falling back to the main display when `id` is
 /// empty or that display is no longer connected.
 pub fn find(monitors: &[Monitor], id: &str) -> Option<Monitor> {

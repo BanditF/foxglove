@@ -104,6 +104,10 @@ pub struct KeyPaintStyle {
     pub auto_fit_before_ellipsis: bool,
     /// Color theme settings.
     pub theme: ThemeSettings,
+    /// Foxglove: opacity factors for the key faces (fill, strips, border) and for the labels,
+    /// on top of the `Ui`'s own (`foxglove::overlay_opacity`). 1.0 outside the overlay.
+    pub face_opacity: f32,
+    pub label_opacity: f32,
 }
 
 impl KeyPaintStyle {
@@ -115,7 +119,16 @@ impl KeyPaintStyle {
             live_legends: settings.legend_mode == LegendMode::SingleLive,
             auto_fit_before_ellipsis: settings.auto_fit_before_ellipsis,
             theme: settings.theme.clone(),
+            face_opacity: 1.0,
+            label_opacity: 1.0,
         }
+    }
+
+    /// Foxglove: draws the faces and the labels at these factors (0..1) of the `Ui`'s opacity.
+    pub fn with_opacity(mut self, face: f32, label: f32) -> Self {
+        self.face_opacity = face;
+        self.label_opacity = label;
+        self
     }
 
     /// Sets the key unit size in pixels.
@@ -199,15 +212,18 @@ pub fn paint(
     let center = rect.center();
     let corner_radius = 0.1 * unit;
     let key = display.key;
+    // Foxglove: the faces and the labels each at their own opacity.
+    let face = faded(ui, style.face_opacity);
+    let text = faded(ui, style.label_opacity);
 
     // 1. Base key background fill
-    ui.painter().add(
+    face.add(
         egui::epaint::RectShape::filled(rect, corner_radius, display.colors.fill).with_angle(angle),
     );
 
     // 2. Diagonal warning hatching for invalid key selections
     if display.colors.invalid {
-        paint_hatching(ui, rect, corner_radius, unit, center, angle);
+        paint_hatching(&face, rect, corner_radius, unit, center, angle);
     }
 
     if display.hovered {
@@ -228,7 +244,7 @@ pub fn paint(
             egui::pos2(rect.right(), rect.top() + strip_height),
         );
         paint_strip(
-            ui,
+            [&face, &text],
             strip,
             galleys.behavior,
             true,
@@ -246,7 +262,7 @@ pub fn paint(
             rect.max,
         );
         paint_strip(
-            ui,
+            [&face, &text],
             strip,
             galleys.argument,
             false,
@@ -260,7 +276,7 @@ pub fn paint(
 
     // 4. Primary key label / symbol text
     let draw_text = |pos, galley| {
-        ui.painter().add(rotated_text_shape(
+        text.add(rotated_text_shape(
             pos,
             galley,
             display.colors.font,
@@ -297,7 +313,7 @@ pub fn paint(
             .colors
             .border_stroke(key.border, display.pressed, display.hovered, unit);
     paint_border(
-        ui,
+        &face,
         rect,
         corner_radius,
         border_stroke,
@@ -306,6 +322,15 @@ pub fn paint(
         center,
         angle,
     );
+}
+
+/// Foxglove: the `Ui`'s painter with its opacity multiplied by `factor`.
+fn faded(ui: &egui::Ui, factor: f32) -> egui::Painter {
+    let mut painter = ui.painter().clone();
+    if factor < 1.0 {
+        painter.multiply_opacity(factor);
+    }
+    painter
 }
 
 struct LabelGalleys {
@@ -611,7 +636,7 @@ fn rotated_text_shape(
 /// Paints a behavior or argument strip along a key edge.
 #[allow(clippy::too_many_arguments)]
 fn paint_strip(
-    ui: &egui::Ui,
+    [face, text]: [&egui::Painter; 2],
     strip: egui::Rect,
     galley: Option<std::sync::Arc<egui::Galley>>,
     top: bool,
@@ -639,7 +664,7 @@ fn paint_strip(
             se: radius,
         }
     };
-    ui.painter().add(
+    face.add(
         egui::epaint::RectShape::new(
             strip_rect,
             corners,
@@ -651,7 +676,7 @@ fn paint_strip(
     );
     if let Some(galley) = galley {
         let pos = strip.center() - galley.rect.center().to_vec2();
-        ui.painter().add(rotated_text_shape(
+        text.add(rotated_text_shape(
             pos,
             galley,
             colors.strip_font(pressed),
@@ -663,7 +688,7 @@ fn paint_strip(
 
 /// Paints diagonal hatching across a key for invalid selections.
 fn paint_hatching(
-    ui: &egui::Ui,
+    painter: &egui::Painter,
     rect: egui::Rect,
     corner_radius: f32,
     unit: f32,
@@ -696,8 +721,7 @@ fn paint_hatching(
             let p1_rot = rotate_point(p1, center, angle);
             let p2_rot = rotate_point(p2, center, angle);
 
-            ui.painter()
-                .add(egui::Shape::line_segment([p1_rot, p2_rot], stroke));
+            painter.add(egui::Shape::line_segment([p1_rot, p2_rot], stroke));
         }
         c += step;
     }
@@ -706,7 +730,7 @@ fn paint_hatching(
 /// Paints a key border with rotation.
 #[allow(clippy::too_many_arguments)]
 fn paint_border(
-    ui: &egui::Ui,
+    painter: &egui::Painter,
     rect: egui::Rect,
     corner_radius: f32,
     stroke: egui::Stroke,
@@ -717,7 +741,7 @@ fn paint_border(
 ) {
     match style {
         BorderStyle::None | BorderStyle::Solid => {
-            ui.painter().add(
+            painter.add(
                 egui::epaint::RectShape::stroke(
                     rect,
                     corner_radius,
@@ -730,7 +754,7 @@ fn paint_border(
         BorderStyle::Dashed => {
             let points = rounded_rect_outline(rect, corner_radius, center, angle);
             for shape in egui::Shape::dashed_line(&points, stroke, 0.09 * unit, 0.06 * unit) {
-                ui.painter().add(shape);
+                painter.add(shape);
             }
         }
     }
