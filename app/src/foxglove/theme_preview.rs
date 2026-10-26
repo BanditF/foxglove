@@ -11,6 +11,8 @@ use std::collections::HashMap;
 
 use egui::{Color32, Pos2, Rect, TextureId};
 
+mod overlay;
+
 thread_local! { static LEGACY: Cell<bool> = const { Cell::new(false) }; }
 
 /// True while a "before #384" preview is drawn on this thread.
@@ -323,12 +325,16 @@ fn keypeek_groups(ui: &mut egui::Ui) {
                     );
                     ui.end_row();
                 }
-                ui.label("Opacity");
-                ui.add(
-                    egui::Slider::new(&mut 100u8, crate::settings::Settings::OPACITY_RANGE)
-                        .suffix("%"),
+                // As overlay_window/ui_settings.rs draws them: the HUD at its 20% detent, the
+                // key labels unlinked at 80%.
+                crate::foxglove::overlay_opacity::rows(
+                    ui,
+                    &mut crate::settings::Settings {
+                        opacity: 20,
+                        label_opacity: Some(80),
+                        ..Default::default()
+                    },
                 );
-                ui.end_row();
                 ui.label("Auto-fit long labels");
                 ui.checkbox(&mut true, "Fit long labels to available space");
                 ui.end_row();
@@ -523,6 +529,11 @@ struct Samples {
     lights: crate::foxglove::lights_page::View,
     pc: crate::foxglove::pc_lights_ui::View,
     wizard: crate::foxglove::pc_lights_add::Wizard,
+    /// The colour calibrator, open in place of the PC card.
+    calibrate: Option<(
+        crate::foxglove::calibrate_ui::View,
+        crate::foxglove::calibrate_ui::Wizard,
+    )>,
     screens: Option<crate::foxglove::screens::Snapshot>,
     art: Option<(
         crate::foxglove::art_service::Snapshot,
@@ -539,6 +550,7 @@ impl Samples {
             lights: crate::foxglove::lights_page::tests::sample(),
             pc: crate::foxglove::pc_lights_ui::tests::sample(),
             wizard: Default::default(),
+            calibrate: None,
             screens: Some(sample_screens()),
             art: Some(crate::foxglove::art_ui::tests::sample()),
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -552,6 +564,7 @@ impl Samples {
             lights: crate::foxglove::lights_page::tests::sample_none(),
             pc: Default::default(),
             wizard: Default::default(),
+            calibrate: None,
             screens: None,
             art: None,
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -611,6 +624,7 @@ fn show_samples(page: crate::foxglove::shell::Page, samples: &Samples) {
     crate::foxglove::keyboard_page::PREVIEW.set(Some(samples.keyboard.clone()));
     crate::foxglove::lights_page::PREVIEW.set(Some(samples.lights.clone()));
     crate::foxglove::pc_lights_ui::PREVIEW.set(Some((samples.pc.clone(), samples.wizard.clone())));
+    crate::foxglove::calibrate_ui::PREVIEW.set(samples.calibrate.clone());
     crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
     crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
     crate::foxglove::plugins_ui::PREVIEW.set(Some(samples.plugins.clone()));
@@ -621,6 +635,7 @@ fn clear_samples() {
     crate::foxglove::keyboard_page::PREVIEW.set(None);
     crate::foxglove::lights_page::PREVIEW.set(None);
     crate::foxglove::pc_lights_ui::PREVIEW.set(None);
+    crate::foxglove::calibrate_ui::PREVIEW.set(None);
     crate::foxglove::screens_ui::PREVIEW.set(None);
     crate::foxglove::art_ui::PREVIEW.set(None);
     crate::foxglove::plugins_ui::PREVIEW.set(None);
@@ -1026,183 +1041,6 @@ fn settings_window_placement_renders() {
     );
 }
 
-/// A drag of the layer overlay across the display edge, drawn from the real drop logic: let go
-/// with its middle past the edge, it lands whole on the second display, which Settings' Display
-/// then shows.
-#[test]
-fn overlay_drag_renders() {
-    use crate::foxglove::overlay_place::dropped;
-    use crate::foxglove::settings_window::tests::two_displays;
-    use crate::foxglove::theme::DARK;
-    let ctx = preview_ctx();
-    let displays = two_displays();
-    let let_go = [2300, 600, 3020, 840];
-    let place = dropped(let_go, &displays).expect("a display");
-    let target = displays
-        .iter()
-        .find(|m| m.id == place.monitor)
-        .expect("that display");
-    let [x, y] = place.at.expect("a corner");
-    let landed = [
-        target.work_area[0] + x,
-        target.work_area[1] + y,
-        target.work_area[0] + x + 720,
-        target.work_area[1] + y + 240,
-    ];
-    let scale = 0.12;
-    let size = egui::vec2(6400.0 * scale + 48.0, 2088.0 * scale + 72.0);
-    let img = render_ui(&ctx, size, DARK.ground, |ui| {
-        let painter = ui.painter().clone();
-        painter.text(
-            egui::pos2(24.0, 12.0),
-            egui::Align2::LEFT_TOP,
-            "Dropped across the edge: the overlay lands on Display 2",
-            crate::foxglove::theme::body(15.0),
-            DARK.text_strong,
-        );
-        let origin = egui::pos2(24.0, 44.0);
-        let to_rect = |r: [i32; 4]| {
-            Rect::from_min_max(
-                origin + egui::vec2(r[0] as f32, r[1] as f32) * scale,
-                origin + egui::vec2(r[2] as f32, r[3] as f32) * scale,
-            )
-        };
-        for (n, m) in displays.iter().enumerate() {
-            let rect = to_rect(m.work_area);
-            painter.rect(
-                rect,
-                4.0,
-                DARK.surface,
-                egui::Stroke::new(1.0, DARK.muted),
-                egui::StrokeKind::Inside,
-            );
-            painter.text(
-                rect.left_bottom() + egui::vec2(8.0, -8.0),
-                egui::Align2::LEFT_BOTTOM,
-                format!("Display {}", n + 1),
-                crate::foxglove::theme::mono(12.0),
-                DARK.muted,
-            );
-        }
-        let from = to_rect(let_go);
-        painter.rect(
-            from,
-            3.0,
-            Color32::TRANSPARENT,
-            egui::Stroke::new(1.0, DARK.muted),
-            egui::StrokeKind::Inside,
-        );
-        painter.text(
-            from.center_bottom() + egui::vec2(0.0, 4.0),
-            egui::Align2::CENTER_TOP,
-            "let go here",
-            crate::foxglove::theme::body(12.0),
-            DARK.muted,
-        );
-        let to = to_rect(landed);
-        painter.rect(
-            to,
-            3.0,
-            DARK.accent.gamma_multiply(0.35),
-            egui::Stroke::new(2.0, DARK.accent),
-            egui::StrokeKind::Inside,
-        );
-        painter.text(
-            to.center(),
-            egui::Align2::CENTER_CENTER,
-            "overlay",
-            crate::foxglove::theme::body(12.0),
-            DARK.text_strong,
-        );
-    });
-    keep("ui-overlay-drag.png", &img);
-    assert_eq!(place.monitor, displays[1].id);
-}
-
-/// The layer overlay at three opacity settings, over a wallpaper-like backdrop: 100% (the look
-/// it always had), 60% and the lowest, 20%.
-#[test]
-fn overlay_opacity_renders() {
-    use crate::layout_key::{KeycodeKind, Label, LayoutKey};
-    let ctx = preview_ctx();
-    let settings = crate::settings::Settings::default();
-    let unit = 48.0;
-    let style = crate::key_paint::KeyPaintStyle::from_settings(&settings).with_unit(unit);
-    let labels = ["Q", "W", "E", "R", "T", "Esc"];
-    let percents = [100u8, 60, 20];
-    let size = egui::vec2(
-        labels.len() as f32 * unit + 140.0,
-        percents.len() as f32 * (unit + 16.0) + 16.0,
-    );
-    let img = render(&ctx, size, Color32::from_rgb(0x2a, 0x4a, 0x6a), |ctx| {
-        egui::Area::new(egui::Id::new("opacity-preview"))
-            .fixed_pos(Pos2::ZERO)
-            .show(ctx, |ui| {
-                // Stripes behind the keys, so the see-through shows.
-                let full = Rect::from_min_size(Pos2::ZERO, size);
-                for i in 0..((full.width() / 24.0) as usize + 1) {
-                    if i % 2 == 0 {
-                        let x = full.left() + i as f32 * 24.0;
-                        ui.painter().rect_filled(
-                            Rect::from_min_max(
-                                egui::pos2(x, full.top()),
-                                egui::pos2(x + 12.0, full.bottom()),
-                            ),
-                            0.0,
-                            Color32::from_rgb(0xd8, 0xc0, 0x90),
-                        );
-                    }
-                }
-                for (row, percent) in percents.iter().enumerate() {
-                    let top = full.top() + 16.0 + row as f32 * (unit + 16.0);
-                    ui.painter().text(
-                        egui::pos2(full.left() + 12.0, top + unit / 2.0),
-                        egui::Align2::LEFT_CENTER,
-                        format!("{percent}%"),
-                        egui::FontId::proportional(18.0),
-                        Color32::WHITE,
-                    );
-                    let mut keys = ui.new_child(egui::UiBuilder::new().max_rect(full));
-                    keys.multiply_opacity(f32::from(*percent) / 100.0);
-                    for (col, label) in labels.iter().enumerate() {
-                        let rect = Rect::from_min_size(
-                            egui::pos2(full.left() + 100.0 + col as f32 * unit, top),
-                            egui::vec2(unit, unit),
-                        );
-                        let key = LayoutKey {
-                            tap: Label::new(*label),
-                            kind: KeycodeKind::Basic,
-                            ..LayoutKey::default()
-                        };
-                        crate::key_paint::paint(
-                            &keys,
-                            rect,
-                            0.0,
-                            &crate::key_paint::KeyDisplay {
-                                key: &key,
-                                colors: style.colors_for(0, KeycodeKind::Basic, false, false),
-                                hovered: false,
-                                pressed: false,
-                                shift_held: false,
-                                ralt_held: false,
-                            },
-                            &style,
-                        );
-                    }
-                }
-            });
-    });
-    keep("ui-overlay-opacity.png", &img);
-    // A key's middle at 100% differs from the same pixel at 20%.
-    let ppp = PPP;
-    let at = |row: f32| {
-        let x = ((100.0 + unit * 0.5) * ppp) as u32;
-        let y = ((16.0 + row * (unit + 16.0) + unit * 0.8) * ppp) as u32;
-        img.get_pixel(x, y).0
-    };
-    assert_ne!(at(0.0), at(2.0), "20% looks like 100%");
-}
-
 /// The tray panel (#391), drawn off-screen the way it opens next to the tray icon.
 #[test]
 fn tray_panel_renders() {
@@ -1317,6 +1155,46 @@ fn pc_lights_render() {
     assert!(count(&fresh, DARK.warn) < count(&with, DARK.warn));
     assert_ne!(with, fresh);
     assert_ne!(fresh, none);
+}
+
+/// The colour calibrator on the Lights page: the device list with "Calibrate…", then each of
+/// the five steps on the 45L (against the screen, and the blue step against the keyboard).
+#[test]
+fn calibrate_renders() {
+    use crate::foxglove::calibrate_ui::{tests::sample, Step};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: [u8; 3]| img.pixels().filter(|p| p.0[..3] == c).count();
+    let list = shell_preview_with(Page::Lights, &Samples::full(), 1180.0);
+    keep("ui-calibrate-devices.png", &list);
+    let mut shots = Vec::new();
+    for step in Step::ALL {
+        let mut s = Samples::full();
+        s.calibrate = Some(sample(step, false));
+        let img = shell_preview_with(Page::Lights, &s, 1180.0);
+        keep(
+            &format!("ui-calibrate-{}.png", step.name().to_lowercase()),
+            &img,
+        );
+        // The screen's swatch is the step's own colour, large.
+        assert!(count(&img, step.color()) > 5000, "{step:?} swatch");
+        shots.push(img);
+    }
+    let mut master = Samples::full();
+    master.calibrate = Some(sample(Step::Blue, true));
+    let master = shell_preview_with(Page::Lights, &master, 1180.0);
+    keep("ui-calibrate-master.png", &master);
+    // Next/Save is the orange primary button; every step looks different.
+    assert!(
+        count(
+            &shots[0],
+            [DARK.accent.r(), DARK.accent.g(), DARK.accent.b()]
+        ) > 200
+    );
+    for pair in shots.windows(2) {
+        assert_ne!(pair[0], pair[1]);
+    }
+    assert_ne!(master, shots[3]);
 }
 
 /// What each device can do, as chips (the keyboard from HELLO, the case and cooler from the

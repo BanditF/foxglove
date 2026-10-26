@@ -64,5 +64,7 @@ fn main() {
     foxglove::catalog_refresh::start();
     foxglove::identity::start();
     foxglove::autostart::start(); // Foxglove: Start with Windows
-    foxglove::startup::finish(platform::run(settings, available_devices))
+    let result = platform::run(settings, available_devices);
+    foxglove::calibrate_ui::cancel(); // Foxglove: quitting mid-calibration puts the colours back
+    foxglove::startup::finish(result)
 }
