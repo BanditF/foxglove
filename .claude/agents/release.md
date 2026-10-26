@@ -90,6 +90,10 @@ separately authorized; tag pushes can themselves publish releases.
 - Flash left central first, verify USB keyboard enumeration and USB typing,
   then flash right and verify both halves, HELLO/status, displays, and reconnect.
   Stop the rollout on failure and restore known-good firmware with verification.
+- A firmware release carries `foxglove-<version>-left.uf2`, `-right.uf2` (GA),
+  `-settings-reset.uf2` and `SHA256SUMS` covering them (#378): build.yml's
+  `foxglove-<version>-release-<sha>` artifact. Check all four are on the release, the sums match
+  the downloads, and the notes say the settings reset erases settings and Bluetooth pairings.
 - Use `settings_reset` only as a last resort with explicit agreement about
   erased settings/BLE bonds; follow RESCUE.md for rebuilding pairings.
 - Keep keyboard-first behavior verified without the app. Bound all background
