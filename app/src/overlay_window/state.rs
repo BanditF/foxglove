@@ -76,6 +76,8 @@ pub struct UiState {
     pub overlay_size: egui::Vec2,
     pub overlay_place: crate::foxglove::overlay_place::Place,
     pub overlay_drag: Option<egui::Pos2>,
+    /// Foxglove: the drag under way, followed across displays (foxglove_place.rs).
+    pub overlay_grab: Option<super::foxglove_place::Drag>,
 }
 
 pub struct SettingsState {

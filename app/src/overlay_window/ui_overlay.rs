@@ -22,7 +22,13 @@ impl OverlayApp {
 
         // One shared painter for every key this frame; painting itself lives
         // in `key_paint` so pickers render identically.
-        let style = self.paint_style(size);
+        // Foxglove: the HUD's and the key labels' opacity (overlay_opacity).
+        let hud = self.settings.active.opacity;
+        let labels = crate::foxglove::overlay_opacity::label(hud, self.settings.active.label_opacity);
+        let (whole, face, text) = crate::foxglove::overlay_opacity::factors(hud, labels);
+        let style = self.paint_style(size).with_opacity(face, text);
+        // While it's dragged and can't be seen, a faint outline shows where it is.
+        let outline = self.ui.overlay_drag.is_some() && hud == 0;
 
         let overlay_window = Window::new("Foxglove")
             .open(&mut window_open)
@@ -33,17 +39,23 @@ impl OverlayApp {
             .title_bar(false);
         // Foxglove: where it was dragged (overlay_place), else its anchor.
         let overlay_window = match self.overlay_position(ctx) {
-            Some(at) => overlay_window.fixed_pos(at),
+            // While dragged it may hang over the display's edge, toward the next one.
+            Some(at) => overlay_window
+                .fixed_pos(at)
+                .constrain(self.ui.overlay_drag.is_none()),
             None => overlay_window.anchor(anchor_params.0, anchor_params.1),
         };
         let overlay_response = overlay_window.show(ctx, |ui| {
-                // Foxglove: the overlay's opacity setting, on top of its fade.
-                ui.multiply_opacity(opacity(self.settings.active.opacity));
                 let layout = keyboard.layout();
                 let layout_size = layout.get_dimensions();
                 let overlay_space =
                     ui.allocate_space(egui::vec2(layout_size.0 * size, layout_size.1 * size));
                 let overlay_rect = overlay_space.1;
+                if outline {
+                    crate::foxglove::overlay_opacity::paint_outline(ui, overlay_rect);
+                }
+                // Foxglove: the overlay's opacity settings, on top of its fade.
+                ui.multiply_opacity(whole);
                 let window_pos = overlay_rect.min;
 
                 // Route pointer input through egui so a click on a key under an
@@ -157,7 +169,7 @@ impl OverlayApp {
                 (
                     hovered_key,
                     overlay_response.clicked(),
-                    overlay_response.drag_delta(),
+                    overlay_response.dragged(),
                     overlay_response.drag_stopped(),
                 )
             });
@@ -170,8 +182,8 @@ impl OverlayApp {
                 .inner
                 .is_some_and(|(hovered, ..)| hovered.is_some());
             if hit_test_enabled {
-                if let Some((_, _, delta, stopped)) = response.inner {
-                    self.overlay_dragged(ctx, response.response.rect, delta, stopped);
+                if let Some((_, _, dragging, stopped)) = response.inner {
+                    self.overlay_dragged(ctx, response.response.rect, dragging, stopped);
                 }
             }
         }
@@ -197,12 +209,6 @@ impl OverlayApp {
             }
         }
     }
-}
-
-/// The overlay's opacity setting (percent) as egui's 0..1 factor, clamped to the allowed range.
-fn opacity(percent: u8) -> f32 {
-    let range = crate::settings::Settings::OPACITY_RANGE;
-    f32::from(percent.clamp(*range.start(), *range.end())) / 100.0
 }
 
 fn key_tooltip(key: &crate::layout_key::LayoutKey, transparent: bool) -> Option<String> {
