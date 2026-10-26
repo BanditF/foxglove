@@ -521,6 +521,7 @@ struct Samples {
     strip: crate::foxglove::shell::StripState,
     keyboard: crate::foxglove::keyboard_page::View,
     lights: crate::foxglove::lights_page::View,
+    pc: crate::foxglove::pc_lights::Snapshot,
     screens: Option<crate::foxglove::screens::Snapshot>,
     art: Option<(
         crate::foxglove::art_service::Snapshot,
@@ -535,6 +536,7 @@ impl Samples {
             strip: sample_strip(),
             keyboard: crate::foxglove::keyboard_page::tests::sample(),
             lights: crate::foxglove::lights_page::tests::sample(),
+            pc: crate::foxglove::pc_lights_ui::tests::sample(),
             screens: Some(sample_screens()),
             art: Some(crate::foxglove::art_ui::tests::sample()),
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -546,6 +548,7 @@ impl Samples {
             strip: Default::default(),
             keyboard: crate::foxglove::keyboard_page::tests::sample_none(),
             lights: crate::foxglove::lights_page::tests::sample_none(),
+            pc: Default::default(),
             screens: None,
             art: None,
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -604,6 +607,7 @@ fn show_samples(page: crate::foxglove::shell::Page, samples: &Samples) {
     shell::PREVIEW_STRIP.set(Some(samples.strip.clone()));
     crate::foxglove::keyboard_page::PREVIEW.set(Some(samples.keyboard.clone()));
     crate::foxglove::lights_page::PREVIEW.set(Some(samples.lights.clone()));
+    crate::foxglove::pc_lights_ui::PREVIEW.set(Some(samples.pc.clone()));
     crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
     crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
     crate::foxglove::plugins_ui::PREVIEW.set(Some(samples.plugins.clone()));
@@ -613,6 +617,7 @@ fn clear_samples() {
     crate::foxglove::shell::PREVIEW_STRIP.set(None);
     crate::foxglove::keyboard_page::PREVIEW.set(None);
     crate::foxglove::lights_page::PREVIEW.set(None);
+    crate::foxglove::pc_lights_ui::PREVIEW.set(None);
     crate::foxglove::screens_ui::PREVIEW.set(None);
     crate::foxglove::art_ui::PREVIEW.set(None);
     crate::foxglove::plugins_ui::PREVIEW.set(None);
@@ -1281,6 +1286,32 @@ fn lights_page_renders() {
     assert!(count(&with, DARK.selected_fill) > 200, "a selected pill");
     assert!(count(&with, DARK.accent) > count(&without, DARK.accent));
     assert_ne!(with, without);
+}
+
+/// The Lights page's "PC & peripherals" card (#423): the 45L with colours, the cooler and the
+/// G502 with Light Studio running; then a fresh 45L matching the keyboard; then none found.
+#[test]
+fn pc_lights_render() {
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    let mut fresh = Samples::full();
+    fresh.pc = crate::foxglove::pc_lights_ui::tests::sample_fresh();
+    let with = shell_preview_with(Page::Lights, &Samples::full(), 1180.0);
+    let fresh = shell_preview_with(Page::Lights, &fresh, 1180.0);
+    let none = shell_preview_with(Page::Lights, &Samples::none(), 1180.0);
+    keep("ui-423-pc-lights.png", &with);
+    keep("ui-423-pc-lights-fresh.png", &fresh);
+    keep("ui-423-pc-lights-none.png", &none);
+    // Light Studio's note is in the warning colour; the fresh card has none.
+    assert!(count(&with, DARK.warn) > 100, "the Light Studio note");
+    assert!(count(&fresh, DARK.warn) < count(&with, DARK.warn));
+    assert_ne!(with, fresh);
+    assert_ne!(fresh, none);
 }
 
 #[test]

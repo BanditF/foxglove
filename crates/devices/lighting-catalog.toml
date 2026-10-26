@@ -1,0 +1,29 @@
+# PC and peripheral lighting that Foxglove recognises by USB VID/PID (#423).
+#
+# One [[device]] per board. `protocol` names the driver in crates/devices/src/pc_lighting:
+#   "omen-tracer"  HP OMEN case lighting board (TracerLED), static colour per zone
+#   "none"         recognised, listed as "found, not controllable yet"
+# Zones list only the parts that light up; `id` is the board's own zone number.
+# Windows Dynamic Lighting (HID LampArray) devices need no entry: they're found by their
+# usage page.
+
+[[device]]
+name = "HP OMEN 45L case lights"
+vid = 0x103C
+pid = 0x84FD
+protocol = "omen-tracer"
+# Mapped in a sitting with the user on 2026-10-26 (#423). Zones 3 and 4 aren't connected on
+# the 45L.
+zones = [
+    { id = 1, name = "Diamond display" },
+    { id = 2, name = "Interior light" },
+    { id = 5, name = "Front bottom fan" },
+    { id = 6, name = "Front middle fan" },
+    { id = 7, name = "Front top fan" },
+]
+
+[[device]]
+name = "HP OMEN liquid cooler"
+vid = 0x03F0
+pid = 0x7397
+protocol = "none"

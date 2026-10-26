@@ -94,6 +94,22 @@ pub fn start() {
     windows_impl::start();
 }
 
+/// The Windows accent colour now, as sRGB.
+#[cfg(windows)]
+pub fn current() -> Option<[u8; 3]> {
+    use windows::UI::ViewManagement::{UIColorType, UISettings};
+    let c = UISettings::new()
+        .ok()?
+        .GetColorValue(UIColorType::Accent)
+        .ok()?;
+    Some([c.R, c.G, c.B])
+}
+
+#[cfg(not(windows))]
+pub fn current() -> Option<[u8; 3]> {
+    None
+}
+
 #[cfg(windows)]
 mod windows_impl {
     use super::*;
@@ -146,6 +162,10 @@ mod windows_impl {
                     continue;
                 };
                 let (hue, sat) = hue_sat(c.R, c.G, c.B);
+                // The case's "Match keyboard" follows the accent too (#423).
+                crate::foxglove::pc_lights::send(crate::foxglove::pc_lights::Msg::Follow([
+                    c.R, c.G, c.B,
+                ]));
                 if applied == Some((hue, sat)) {
                     continue;
                 }
