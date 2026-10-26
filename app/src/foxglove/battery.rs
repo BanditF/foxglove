@@ -5,15 +5,17 @@
 //! - **Heads-up:** one Windows notification when a half drops below 15%, and one more below 5%.
 //!   Each fires once per crossing; a half has to charge above 20% before it can fire again. On by
 //!   default, with a switch on the Keyboard page.
-//! - **Tray tooltip:** `Right 61%` (and the left once it's reported) under the status line,
-//!   `Right —` while the right half isn't reporting.
+//! - **Tray tooltip:** `Right 61% · Left —` under the status line, `—` for a half that isn't
+//!   reporting (the left needs firmware with LEFT_BATTERY). It reads the same keyboard facts as
+//!   the tray panel (`keyboard.<part>.battery`) and is refreshed on each change of them.
 //!
 //! The right half's level comes from HELLO (`right_battery`); the left's own, from firmware with
 //! the LEFT_BATTERY bit, rides on CONN_STATE (byte 8) and shows up here the same way.
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
+use foxglove_devices::facts::{Facts, Value};
 use foxglove_devices::DeviceEvent;
 use serde::{Deserialize, Serialize};
 
@@ -69,18 +71,19 @@ fn capitalised(part: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The battery line for the tray tooltip: the right always (`—` when not reporting), the left
-/// and any other part only once reported.
+/// The battery line for the tray tooltip: the right, then the left (`—` for a half not
+/// reporting), then any other part that reported.
 pub fn tooltip_line(levels: &BTreeMap<String, u8>) -> String {
-    let mut parts = vec![format!(
-        "Right {}",
-        levels.get("right").map_or("—".into(), |p| format!("{p}%"))
-    )];
-    for (part, p) in levels.iter().filter(|(k, _)| k.as_str() != "right") {
-        parts.insert(
-            if part == "left" { 0 } else { parts.len() },
-            format!("{} {p}%", capitalised(part)),
-        );
+    let level = |part: &str| levels.get(part).map_or("—".into(), |p| format!("{p}%"));
+    let mut parts = vec![
+        format!("Right {}", level("right")),
+        format!("Left {}", level("left")),
+    ];
+    for (part, p) in levels
+        .iter()
+        .filter(|(k, _)| k.as_str() != "right" && k.as_str() != "left")
+    {
+        parts.push(format!("{} {p}%", capitalised(part)));
     }
     parts.join(" · ")
 }
@@ -138,8 +141,6 @@ pub fn set_notices(on: bool) -> std::io::Result<()> {
     )
 }
 
-/// The latest level per half, for the tooltip; cleared when the keyboard goes.
-static LEVELS: Mutex<BTreeMap<String, u8>> = Mutex::new(BTreeMap::new());
 static WAKE: OnceLock<crate::ui_wake::UiWake> = OnceLock::new();
 
 /// The UI's wake, so a new level reaches the tray tooltip at once.
@@ -147,15 +148,52 @@ pub fn set_wake(wake: crate::ui_wake::UiWake) {
     let _ = WAKE.set(wake);
 }
 
+/// The latest level per half, from the keyboard facts the tray panel shows too; gone when the
+/// keyboard goes.
 pub fn levels() -> BTreeMap<String, u8> {
-    LEVELS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    levels_in(super::devices::bus().facts())
+}
+
+/// The `keyboard.<part>.battery` facts as levels per part.
+fn levels_in(facts: &Facts) -> BTreeMap<String, u8> {
+    facts
+        .list("keyboard.*")
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let part = key.strip_prefix("keyboard.")?.strip_suffix(".battery")?;
+            match value {
+                Value::Int(p) if !part.contains('.') => {
+                    Some((part.to_string(), p.clamp(0, 100) as u8))
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// True for a fact the tooltip shows.
+fn is_level(key: &str) -> bool {
+    key.starts_with("keyboard.") && key.ends_with(".battery")
 }
 
 /// The backend of the keyboard with Foxglove's host link.
 const HOST_KEYBOARD: &str = "zmk";
 
-/// Follows the battery events. Blocks on the device bus; ends with the process.
+/// Follows the battery events (heads-ups) and the battery facts (the tooltip). Blocks on the
+/// device bus; ends with the process.
 pub fn start() {
+    // The tooltip: a repaint on each battery fact that changes (set from the first reading
+    // after a connect, cleared on a disconnect), so the tray reads it at once.
+    let changes = super::devices::bus().facts().subscribe("keyboard.*");
+    super::services::spawn_named("battery-tooltip", move || {
+        for change in changes {
+            if is_level(&change.key) {
+                if let Some(w) = WAKE.get() {
+                    w.request_repaint();
+                }
+            }
+        }
+    });
     let events = super::devices::bus().subscribe(false);
     super::services::spawn_named("battery", move || {
         let mut alerts = Alerts::default();
@@ -163,31 +201,12 @@ pub fn start() {
             if e.device.backend.0 != HOST_KEYBOARD {
                 continue;
             }
-            let changed = match &e.event {
-                DeviceEvent::Battery { part, percent } => {
-                    if let Some(threshold) = alerts.level(part, *percent) {
-                        if notices_on() {
-                            let (title, text) = notice(part, threshold, *percent);
-                            imp::show(&title, &text);
-                        }
+            if let DeviceEvent::Battery { part, percent } = &e.event {
+                if let Some(threshold) = alerts.level(part, *percent) {
+                    if notices_on() {
+                        let (title, text) = notice(part, threshold, *percent);
+                        imp::show(&title, &text);
                     }
-                    LEVELS
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(part.clone(), *percent)
-                        != Some(*percent)
-                }
-                DeviceEvent::Disconnected { .. } => {
-                    let mut levels = LEVELS.lock().unwrap_or_else(|e| e.into_inner());
-                    let had = !levels.is_empty();
-                    levels.clear();
-                    had
-                }
-                _ => false,
-            };
-            if changed {
-                if let Some(w) = WAKE.get() {
-                    w.request_repaint();
                 }
             }
         }
@@ -324,16 +343,38 @@ mod tests {
         let mut levels = BTreeMap::new();
         assert_eq!(
             tooltip("Disconnected", &levels),
-            "Foxglove\nDisconnected\nRight —"
+            "Foxglove\nDisconnected\nRight — · Left —"
         );
         levels.insert("right".to_string(), 61);
-        assert_eq!(tooltip_line(&levels), "Right 61%");
+        assert_eq!(tooltip_line(&levels), "Right 61% · Left —");
         levels.insert("left".to_string(), 80);
-        assert_eq!(tooltip_line(&levels), "Left 80% · Right 61%");
+        assert_eq!(tooltip_line(&levels), "Right 61% · Left 80%");
         let long = "x".repeat(200);
         let t = tooltip(&long, &levels);
         assert_eq!(t.chars().count(), 127);
         assert!(t.ends_with('…'));
+    }
+
+    /// The tooltip reads the keyboard facts the tray panel shows: the first reading after a
+    /// connect (HELLO's right level, here over BLE) shows at once, a new reading replaces it, and
+    /// a disconnect clears it.
+    #[test]
+    fn the_tooltip_reads_the_panels_battery_facts() {
+        let facts = Facts::default();
+        let changes = facts.subscribe("keyboard.*");
+        assert_eq!(tooltip_line(&levels_in(&facts)), "Right — · Left —");
+        facts.set("keyboard.connected", Value::Bool(true));
+        facts.set("keyboard.link", Value::Text("ble".into()));
+        facts.set("keyboard.right.battery", Value::Int(91));
+        assert_eq!(tooltip_line(&levels_in(&facts)), "Right 91% · Left —");
+        facts.set("keyboard.right.battery", Value::Int(90));
+        facts.set("keyboard.left.battery", Value::Int(77));
+        assert_eq!(tooltip_line(&levels_in(&facts)), "Right 90% · Left 77%");
+        facts.remove_prefix("keyboard.", &["keyboard.connected"]);
+        assert_eq!(tooltip_line(&levels_in(&facts)), "Right — · Left —");
+        // Each battery change wakes the tray; the other keyboard facts don't.
+        let woken = changes.try_iter().filter(|c| is_level(&c.key)).count();
+        assert_eq!(woken, 5, "3 readings and 2 cleared halves");
     }
 
     #[test]
