@@ -20,7 +20,7 @@ shown disabled with the reason, as **When the lights wake** is today.
 | Don't cycle | none | the pinned choice stays |
 | Every N minutes | one deadline, re-armed on each change | next entry |
 | When the lights wake | firmware RGB wake event (`wake_events`) | next entry |
-| Match the wallpaper | Wallpaper Engine `config.json` change (file watcher) | the wallpaper's art |
+| Match the wallpaper | Wallpaper Engine `config.json` change, or without it the Windows desktop wallpaper's change (file watchers) | the wallpaper's art |
 | **On a key** (new) | the `&art_next` / `&art_prev` behaviour, pressed | next / previous entry |
 | **On a layer** (new) | a layer change from the layer notifier | the layer's art while it's active |
 | **On a preset** (new) | a lighting preset or profile being applied | the preset's art |
