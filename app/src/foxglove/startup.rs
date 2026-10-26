@@ -2,7 +2,14 @@
 
 pub fn finish(result: Result<(), Box<dyn std::error::Error>>) {
     if let Err(error) = result {
-        let message = failure_message(&error.to_string(), cfg!(target_os = "windows"));
+        // Foxglove (#346): a window lost to a GPU reset starts a fresh copy instead.
+        super::gpu_reset::window_failed(&error.to_string());
+        let mut message = failure_message(&error.to_string(), cfg!(target_os = "windows"));
+        if let Some(note) = super::gpu_reset::failure_note() {
+            message = format!("{note}
+
+{error}");
+        }
         eprintln!("{message}");
         #[cfg(target_os = "windows")]
         show_message(&message);

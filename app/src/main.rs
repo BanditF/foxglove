@@ -31,6 +31,7 @@ fn main() {
     if !foxglove::single_instance::claim() { return; }
     foxglove::update::start();
     os_layout::init();
+    foxglove::gpu_reset::start(); // Foxglove (#346): a fresh copy after a GPU reset
     foxglove::away::start(); // Foxglove (#410): locked or display off stops background clocks
     let settings = foxglove::overlay_profile::effective(Settings::load().unwrap_or_default());
     let available_devices = discover_devices();

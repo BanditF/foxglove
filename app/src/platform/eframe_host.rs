@@ -127,6 +127,7 @@ impl eframe::App for EframeApp {
         };
         self.app.ui(&ctx, &mut host);
         crate::foxglove::repaint_trace::frame(&ctx);
+        crate::foxglove::gpu_reset::frame_drawn(); // Foxglove (#346)
     }
 }
 

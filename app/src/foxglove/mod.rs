@@ -54,6 +54,7 @@ pub mod theme;
 #[cfg(test)]
 mod theme_preview;
 pub mod startup;
+pub mod gpu_reset;
 pub mod tray;
 pub mod tray_panel;
 pub mod catalog_refresh;
