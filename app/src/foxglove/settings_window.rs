@@ -208,6 +208,9 @@ pub struct SettingsWindow {
     theme: Option<egui::Theme>,
     #[cfg(target_os = "windows")]
     hwnd: Option<isize>,
+    /// The handle wasn't found this opening (said once in the log).
+    #[cfg(target_os = "windows")]
+    lost: bool,
 }
 
 impl Default for SettingsWindow {
@@ -218,6 +221,8 @@ impl Default for SettingsWindow {
             theme: None,
             #[cfg(target_os = "windows")]
             hwnd: None,
+            #[cfg(target_os = "windows")]
+            lost: false,
         }
     }
 }
@@ -257,7 +262,10 @@ impl SettingsWindow {
                 }
                 None => {
                     // Not found (it should be): show it where Windows put it.
-                    eprintln!("Foxglove: can't find the Settings window to place it");
+                    if !self.lost {
+                        self.lost = true;
+                        eprintln!("Foxglove: can't find the Settings window to place it");
+                    }
                     self.memory
                         .frame(&mut Shown(ctx), &monitors, overlay_monitor);
                 }
@@ -280,6 +288,7 @@ impl SettingsWindow {
         #[cfg(target_os = "windows")]
         {
             self.hwnd = None;
+            self.lost = false;
         }
     }
 }

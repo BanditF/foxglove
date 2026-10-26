@@ -205,11 +205,11 @@ impl OverlayApp {
     pub fn ui(&mut self, ctx: &egui::Context, host: &mut dyn OverlayHost) {
         if self.settings_requested.swap(false, Ordering::Relaxed) {
             if self.ui.settings_visible {
-                // Foxglove: already open, maybe behind other windows or on another display.
-                ctx.send_viewport_cmd_to(
-                    crate::foxglove::settings_window::id(),
-                    egui::ViewportCommand::Focus,
-                );
+                // Foxglove: already open, maybe minimized, behind other windows or on another
+                // display.
+                let id = crate::foxglove::settings_window::id();
+                ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
             }
             self.ui.settings_visible = true;
         }
