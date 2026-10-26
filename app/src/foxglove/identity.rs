@@ -11,7 +11,7 @@
 //! embeds the `<msix>` manifest; without a Windows-trusted signature whose subject matches
 //! [`PUBLISHER`], registration fails and Foxglove carries on without identity.
 
-/// Must match `AppxManifest.xml` and `foxglove.exe.manifest`.
+/// Must match `AppxManifest.xml` and `msix.xml`.
 pub const NAME: &str = "BanditF.Foxglove";
 pub const PUBLISHER: &str = "CN=Foxglove Placeholder";
 /// The package file the installer puts next to the exe.
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn manifests_agree() {
         let appx = include_str!("../../packaging/identity/AppxManifest.xml");
-        let exe = include_str!("../../packaging/identity/foxglove.exe.manifest");
+        let exe = include_str!("../../packaging/identity/msix.xml");
         assert!(appx.contains(&format!("Name=\"{NAME}\" Publisher=\"{PUBLISHER}\"")));
         assert!(exe.contains(&format!("publisher=\"{PUBLISHER}\"")));
         assert!(exe.contains(&format!("packageName=\"{NAME}\"")));

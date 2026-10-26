@@ -137,8 +137,8 @@ None of this is on by default. Ordinary builds and MSIs don't change.
 - **`app/packaging/identity/`:**
   - `AppxManifest.xml`: `AllowExternalContent`, mediumIL, `win32App`, the lighting app extension, `AppListEntry="none"`.
   - Logos.
-  - `foxglove.exe.manifest`: the `<msix>` element tying the exe to the package.
-- **Build:** `FOXGLOVE_SPARSE_IDENTITY=1 cargo build --release --manifest-path app/Cargo.toml` embeds that manifest (`app/build.rs`) and turns on registration (`app/src/foxglove/identity.rs`).
+  - `msix.xml`: the `<msix>` element tying the exe to the package.
+- **Build:** `FOXGLOVE_SPARSE_IDENTITY=1 cargo build --release --manifest-path app/Cargo.toml` adds that element to the application manifest (`app/build.rs`) and turns on registration (`app/src/foxglove/identity.rs`).
 - **Package:** `scripts\pack-identity.ps1` builds `target\identity\foxglove-identity.msix`. `-Thumbprint <sha1>` signs it.
 - **Installer:** `cargo wix -C -dSparseIdentity=<path to signed msix>` installs it next to the exe. It also adds an uninstall step, `foxglove.exe --unregister-identity`, which runs elevated and removes the package for every user. A major upgrade doesn't run that step, so the registration survives. In-place auto-updates keep the same folder and the same embedded manifest, so they keep the identity.
 - **Registration:**

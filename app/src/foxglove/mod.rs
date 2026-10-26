@@ -4,6 +4,8 @@
 pub mod accent;
 pub mod api;
 pub mod app_log;
+#[cfg(target_os = "windows")]
+mod app_manifest;
 pub mod app_windows;
 pub mod art_cycle;
 mod art_encode;

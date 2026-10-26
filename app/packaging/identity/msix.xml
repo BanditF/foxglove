@@ -1,0 +1,7 @@
+  <!-- Sparse identity (#179): ties foxglove.exe to the package. build.rs puts this into
+       ../foxglove.exe.manifest only when FOXGLOVE_SPARSE_IDENTITY=1. publisher/packageName must
+       match AppxManifest.xml. -->
+  <msix xmlns="urn:schemas-microsoft-com:msix.v1"
+        publisher="CN=Foxglove Placeholder"
+        packageName="BanditF.Foxglove"
+        applicationId="Foxglove" />
