@@ -107,7 +107,9 @@ From top to bottom:
   profile change, so you can see which profile you just picked. This is the quickest way to
   catch a wrong-profile mix-up.
 - **The PC panel** at the bottom: the clock, what's playing and the volume. Foxglove draws it.
-  If the app closes, the last picture stays.
+  If the app closes, the last picture stays. The clock and date follow Windows' region settings
+  (Settings › Time & language › Language & region): 12- or 24-hour, the date order and the
+  language of day and month names. A change there shows on the panel right away.
 
 ### Right screen
 
