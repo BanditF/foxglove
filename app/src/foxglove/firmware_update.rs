@@ -225,7 +225,6 @@ fn check(_dir: PathBuf) {
 }
 
 #[cfg(not(windows))]
-#[cfg(windows)]
 fn start_update() {}
 
 #[cfg(windows)]
