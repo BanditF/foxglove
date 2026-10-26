@@ -47,6 +47,7 @@ fn main() {
     foxglove::accent::start();
     foxglove::wallpaper::start();
     foxglove::api::start();
+    foxglove::devices::start(); // Foxglove: find the host-link keyboard whenever a link connects
     foxglove::keyboard_facts::start();
     foxglove::battery::start(); // Foxglove (#372, #373)
     foxglove::via_host::start();
