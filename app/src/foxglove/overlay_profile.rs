@@ -86,7 +86,14 @@ pub fn save(active: &Settings) -> std::io::Result<()> {
     if super::store::cached_profiles().1.is_none() {
         return active.save();
     }
-    let base = pairs(&Settings::load().unwrap_or_default());
+    // The display belongs to the machine, not the profile: it goes to settings.ini (where
+    // `effective` reads it) even with a profile active, so a chosen or dragged-to display stays.
+    let mut base_settings = Settings::load().unwrap_or_default();
+    if base_settings.monitor != active.monitor {
+        base_settings.monitor = active.monitor.clone();
+        base_settings.save()?;
+    }
+    let base = pairs(&base_settings);
     let values = pairs(active)
         .into_iter()
         .filter(|(k, v)| !MACHINE.contains(&k.as_str()) && base.get(k) != Some(v))
