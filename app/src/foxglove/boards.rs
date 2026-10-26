@@ -232,9 +232,7 @@ impl Board {
     fn matches(&self, vid: u16, pid: u16, product: &str) -> bool {
         self.matches.iter().any(|m| {
             (m.vid, m.pid) == (vid, pid)
-                && m.product
-                    .as_deref()
-                    .is_none_or(|p| p.eq_ignore_ascii_case(product.trim()))
+                && m.product.as_deref().is_none_or(|p| same_name(p, product))
         })
     }
 
@@ -254,6 +252,18 @@ impl Board {
         let file = self.dir.as_ref()?.join(format!("{name}.keymap"));
         std::fs::read_to_string(file).ok()
     }
+}
+
+/// Product names compare by their letters and digits only, in any case: over BLE ZMK reports
+/// `Eyelash_Corne` for the `Eyelash Corne` it names over USB.
+fn same_name(a: &str, b: &str) -> bool {
+    let key = |s: &str| {
+        s.chars()
+            .filter(char::is_ascii_alphanumeric)
+            .map(|c| c.to_ascii_lowercase())
+            .collect::<String>()
+    };
+    key(a) == key(b)
 }
 
 /// The built-in profiles, then the user's (from `dir`), a user one replacing a built-in one
@@ -361,6 +371,16 @@ mod tests {
             halcyon.keymap_source().is_none(),
             "no keymap source: no hints"
         );
+        // The name as ZMK reports it over BLE, and in other spellings.
+        for name in [
+            "Eyelash_Corne",
+            "eyelash-corne",
+            " EYELASH CORNE ",
+            "EyelashCorne",
+        ] {
+            let b = find_in(&all, 0x1d50, 0x615e, name);
+            assert_eq!(b.map(|b| b.id), Some(corne.id.clone()), "{name}");
+        }
         // ZMK's shared ids alone match nothing.
         assert!(find_in(&all, 0x1d50, 0x615e, "Some Other Board").is_none());
         assert!(find_in(&all, 0x3434, 0x0250, "Eyelash Corne").is_none());
