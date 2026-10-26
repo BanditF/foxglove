@@ -678,7 +678,8 @@ impl Hello {
             width: r[3] as usize,
             height: r[4] as usize,
             right_link: r[7],
-            right_battery: (r[8] != 0xff).then_some(r[8]),
+            // 0xff: no level yet; 0: ZMK's value before the right's first reading.
+            right_battery: (1..=100).contains(&r[8]).then_some(r[8]),
             discovery: r[9] as i8,
             discovery_tries: r[10],
             debug: r[11..21].try_into().unwrap(),
@@ -1118,9 +1119,10 @@ pub struct ConnState {
 }
 
 /// The left half's battery % from a CONN_STATE reply, when the firmware sends it
-/// ([`capabilities::LEFT_BATTERY`]; older firmware pads that byte with zero).
+/// ([`capabilities::LEFT_BATTERY`]; older firmware pads that byte with zero). 0 is "no reading
+/// yet": ZMK reports 0 until its first battery sample, right after a boot or a flash.
 pub fn left_battery(r: &[u8; REPORT], capabilities: u32) -> Option<u8> {
-    (capabilities & capabilities::LEFT_BATTERY != 0 && r[8] <= 100).then_some(r[8])
+    (capabilities & capabilities::LEFT_BATTERY != 0 && (1..=100).contains(&r[8])).then_some(r[8])
 }
 
 impl ConnState {
@@ -1166,6 +1168,12 @@ mod connection_tests {
         );
         r[8] = 0xff;
         assert_eq!(left_battery(&r, capabilities::LEFT_BATTERY), None);
+        r[8] = 0;
+        assert_eq!(
+            left_battery(&r, capabilities::LEFT_BATTERY),
+            None,
+            "0 is ZMK's value before its first battery reading"
+        );
         r[8] = 0;
         r[21..25].copy_from_slice(&0x12345610u32.to_le_bytes());
         assert_eq!(Hello::parse(&r).capabilities, 0x12345610);

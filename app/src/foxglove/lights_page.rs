@@ -374,6 +374,9 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         }
     });
     follow_row(ui, v, out);
+    // Dimming on battery (firmware D7 0E), kept apart so the page stays as it was.
+    ui.add_space(4.0);
+    super::battery_dim_ui::show(ui);
     if !v.controls {
         ui.add_space(2.0);
         ui.weak("The controls need an RGB key (&rgb_ug) somewhere in the keymap.");

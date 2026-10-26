@@ -209,6 +209,8 @@ impl DigitalisDevice {
         let layers = Arc::new(Mutex::new(vec![0]));
         let (report_sink, report_layers) = (sink.clone(), layers.clone());
         let capabilities = hello.capabilities;
+        // The right's level from the last HELLO seen, so a repeat isn't news.
+        let right_seen = Mutex::new(hello.right_battery);
         // Runs on the link's reader thread: emitting only updates facts and queues events.
         let reports = link.subscribe_reports(move |_, r| {
             if r[0] == KEY_EVENT {
@@ -236,6 +238,25 @@ impl DigitalisDevice {
                         part: "left".into(),
                         percent,
                     });
+                }
+            } else if crate::protocol::is_reply(
+                r,
+                crate::protocol::PANEL,
+                crate::protocol::panel::HELLO,
+            ) {
+                // The firmware sends HELLO again when the right's battery changes (after host
+                // traffic), and its first reading only comes once the right has joined, often
+                // after the connect-time HELLO: without this the right's level never showed.
+                let right = crate::protocol::Hello::parse(r).right_battery;
+                let mut seen = right_seen.lock().unwrap_or_else(|e| e.into_inner());
+                if right != *seen {
+                    *seen = right;
+                    if let Some(percent) = right {
+                        report_sink.emit(DeviceEvent::Battery {
+                            part: "right".into(),
+                            percent,
+                        });
+                    }
                 }
             } else if let Some(active) = parse_layers(r) {
                 let mut current = report_layers.lock().unwrap_or_else(|e| e.into_inner());
@@ -1157,6 +1178,30 @@ mod tests {
             None,
             "older firmware: byte 8 isn't a battery level"
         );
+    }
+
+    /// The right's level arrives in later HELLOs (its first reading comes once it has joined,
+    /// and each change sends HELLO again): each new level is a battery event, a repeat or "no
+    /// reading" (0xff, or 0 after the right drops) isn't.
+    #[test]
+    fn unsolicited_hellos_carry_the_right_battery() {
+        let (_dev, fake, bus) = device(capabilities::PANEL);
+        let events = bus.subscribe(false);
+        for level in [80, 0xff, 66, 66, 0, 55] {
+            fake.push(&[0xD5, 0x81, 1, 64, 52, 0, 0, 2, level]);
+        }
+        let mut seen = Vec::new();
+        let end = Instant::now() + WAIT;
+        while seen.len() < 2 && Instant::now() < end {
+            if let Ok(e) = events.recv_timeout(Duration::from_millis(50)) {
+                if let DeviceEvent::Battery { part, percent } = e.event {
+                    if part == "right" {
+                        seen.push(percent);
+                    }
+                }
+            }
+        }
+        assert_eq!(seen, vec![66, 55], "80 was already known from the connect");
     }
 
     #[test]
