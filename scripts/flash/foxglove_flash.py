@@ -21,13 +21,18 @@ import subprocess
 import sys
 import time
 
-SERIALS = {'1E89EF085AA8A635': 'left', '35B4541F78DE9CF8': 'right'}
+# This PC's halves and rollback folder unless tools/local.toml or the environment say otherwise
+# (scripts/local_config.py; tools/local.example.toml lists the keys).
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import local_config  # noqa: E402
+
+SERIALS = local_config.serials()
 LIMIT = 0xAD000
 LATE_ENTRY_SECONDS = 15  # after an unanswered hands-free request, before prompting a double tap
 RELAY_WAIT_SECONDS = 60  # before the right's D7 08, for the relay to come back
 SETTLE_SECONDS = 3  # after the bootloader drive appears, before writing
 START = 0x26000  # All inspected real builds, including settings reset, start here.
-ROLLBACK = r'C:\Users\fuchs\splitkeeb\firmware-358c3d0\firmware'
+ROLLBACK = local_config.get('flash.rollback')
 MARKER = re.compile(rb'FOXGLOVE_HALF=(?P<half>left|right)'
                     rb'(?:;VER=(?P<ver>[0-9A-Za-z.+-]{1,32}))?'
                     rb'(?:;PROFILE=(?P<profile>dev|ga))?'

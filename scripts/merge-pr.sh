@@ -16,7 +16,11 @@ set -u
 
 wt=${1:?worktree}; n=${2:?PR}; base=${3:?base}
 R=BanditF/foxglove
-WT_ROOT=/c/Users/fuchs/splitkeeb/worktrees
+# Where the worktrees are: FOXGLOVE_WORKTREES, else tools/local.toml (scripts/local_config.py),
+# else this PC's folder.
+WT_ROOT=${FOXGLOVE_WORKTREES:-$(python "$(dirname "$0")/local_config.py" get worktrees.root 2>/dev/null)}
+WT_ROOT=${WT_ROOT:-/c/Users/fuchs/splitkeeb/worktrees}
+WT_ROOT=$(cygpath -u "$WT_ROOT" 2>/dev/null || echo "$WT_ROOT")
 LOGS=${MERGE_PR_LOGS:-$WT_ROOT/.merge-logs}
 mkdir -p "$LOGS"
 cd "$WT_ROOT/$wt" || { echo "no worktree $WT_ROOT/$wt"; exit 1; }
