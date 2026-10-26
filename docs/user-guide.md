@@ -313,6 +313,67 @@ changes them.
 - **Active layer:** stock firmware doesn't report it, so it shows as unknown.
 - **The same keyboard on another port:** Foxglove asks whether it's the one you used before.
 
+## 11. If something goes wrong
+
+The keyboard types without the app, so first quit Foxglove (tray icon → **Quit**) and check
+that typing works. Then find your case below.
+
+### The left half stops typing after an update
+
+1. Double-tap the left half's reset button. A USB drive appears.
+2. Copy the release's **left** file, `eyelash_corne_studio_left.uf2`, onto it. The half restarts
+   by itself.
+3. Check that it types over the cable before you touch the right half.
+
+### The right half doesn't talk (right screen frozen, right-hand keys dead)
+
+1. Switch both halves off and on again.
+2. Still dead: flash the right half again with the same release as the left
+   ([section 7](#7-updating-the-keyboards-firmware)).
+
+### Last resort: reset the saved settings
+
+This wipes the halves' saved settings and every Bluetooth pairing.
+
+1. Double-tap a half's reset button and copy `settings_reset-nice_nano_v2-zmk.uf2` from the
+   firmware release onto the drive. Do the same for the other half.
+2. Flash each half's normal file again, left first. The halves find each other on their own.
+3. Pair the keyboard with Windows again (Settings → Bluetooth & devices → Add device →
+   "Eyelash Corne"), on profile 1 ([section 6](#6-it-types-on-the-cable-but-not-on-bluetooth)).
+
+### The keyboard went dark and won't wake (soft off)
+
+**SYSTEM + M**, held for 2 seconds, switches both halves off. Keys can't wake them.
+
+1. Press each half's reset button once (once, not twice, or you get the USB drive).
+
+### The lights stay stuck after Foxglove closes
+
+A plugin or Foxglove set the colour and nothing changed it back.
+
+1. Open Foxglove again and set the colour on the **Lights** page.
+2. Or set them from the keyboard: hold the middle left thumb (NUMBER), then **X** on, **Z** off,
+   **B** next effect, **comma** / **period** brighter or dimmer.
+
+### The screen flickers black, or the PC is slow after sleep
+
+On this kind of PC, the NVIDIA graphics driver sometimes resets (Windows logs "display driver
+stopped responding"). It also misbehaves while the screen is off in Modern Standby. Foxglove
+notices a reset and starts a fresh copy of itself, at most 3 times in 10 minutes. If the PC is
+sluggish after sleep:
+
+1. Update the NVIDIA driver and the NVIDIA app, and turn off the NVIDIA overlay.
+2. If it's still slow, restart the PC. Restarting Foxglove alone doesn't fix it, since the
+   problem is outside the app.
+
+### Reporting a problem
+
+1. Open Foxglove's settings and click **Copy diagnostics** at the top right. It copies the app
+   and firmware versions, the connection, plugins, Windows and the graphics card, and the last
+   200 log lines. Your user name, PC name and passwords are left out.
+2. Paste it into the issue or message.
+3. The full log is in `%APPDATA%\Foxglove\logs\foxglove.log` (tray menu → **Open log folder**).
+
 ## Where things are kept
 
 | what | where |
@@ -325,6 +386,7 @@ changes them.
 | plugin passwords and tokens | Windows Credential Manager (`Foxglove/plugin/<id>/<name>`), never in a file |
 | updates downloaded | `%LOCALAPPDATA%\Foxglove\updates\` |
 | firmware flash history | `%LOCALAPPDATA%\Foxglove\flash-history.log` |
+| Foxglove's log (two files, about 2 MB at most) | `%APPDATA%\Foxglove\logs\foxglove.log` and `foxglove.1.log` |
 
 To try things without touching your real settings, start Foxglove with `FOXGLOVE_CONFIG_DIR`
 set to another folder: every settings file goes there instead.
