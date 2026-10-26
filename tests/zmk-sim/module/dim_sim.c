@@ -53,6 +53,7 @@ static void draw(const char *label) {
     struct led_rgb copy[ARRAY_SIZE(frame)];
     memcpy(copy, frame, sizeof(frame));
     printk("dim: %s\n", label);
+    printk("dim: level %u\n", battery_dim_level());
     int err = led_strip_update_rgb(dim, frame, ARRAY_SIZE(frame));
     printk("dim: err %d, caller's frame %s\n", err,
            memcmp(copy, frame, sizeof(frame)) == 0 ? "unchanged" : "CHANGED");
@@ -66,14 +67,12 @@ static void event(bool usb, uint8_t soc, const char *label) {
 static void config(uint8_t enabled, uint8_t power, uint8_t battery, uint8_t low, uint8_t below,
                    const char *label) {
     struct battery_dim_config c = {enabled, power, battery, low, below};
-    printk("dim: config %s: %d
-", label, battery_dim_set_config(&c));
+    printk("dim: config %s: %d\n", label, battery_dim_set_config(&c));
     draw(label);
 }
 
 static void run_cb(struct k_work *work) {
-    printk("dim: ready %d
-", device_is_ready(dim));
+    printk("dim: ready %d\n", device_is_ready(dim));
     draw("first frame, no event yet");
     event(true, 25, "usb at 25%");
     event(false, 25, "battery 25%");
