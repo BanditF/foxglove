@@ -16,7 +16,7 @@
 //! brightness stay put when gamma changes. The neutral calibration changes nothing.
 
 use std::collections::BTreeMap;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -404,6 +404,64 @@ pub fn device_key(vid: u16, pid: u16, serial: Option<&str>) -> String {
     match serial.filter(|s| crate::trusted_serial(s)) {
         Some(serial) => format!("{base}:{}", serial.trim()),
         None => base,
+    }
+}
+
+/// A device's key from its device-layer id: its trusted serial when it has one.
+pub fn key_for(id: &crate::DeviceId) -> String {
+    let serial = match &id.identity {
+        crate::DeviceIdentity::Serial(s) => Some(s.as_str()),
+        crate::DeviceIdentity::Path(_) => None,
+    };
+    device_key(id.vid, id.pid, serial)
+}
+
+/// Hue (0-359), saturation and brightness (0-100).
+pub type Hsb = (u16, u8, u8);
+
+/// The calibration boundary for drivers that take hue, saturation and brightness (a keyboard's
+/// underglow): [`HsbBoundary::send`] calibrates the colour Foxglove asks for and remembers what
+/// it sent, and [`HsbBoundary::asked`] turns what the device reports back into the colour that
+/// was asked for, so the app never calibrates the same colour twice.
+#[derive(Debug, Default)]
+pub struct HsbBoundary {
+    last: Mutex<Option<(Hsb, Hsb)>>,
+}
+
+impl HsbBoundary {
+    /// Calibrates `asked` for the device `key` and writes it with `write`.
+    pub fn send(
+        &self,
+        key: &str,
+        asked: Hsb,
+        write: impl FnOnce(Hsb) -> crate::Result<()>,
+    ) -> crate::Result<()> {
+        let asked = (asked.0.min(359), asked.1.min(100), asked.2.min(100));
+        let sent = global().hsb(key, None, None, asked);
+        write(sent)?;
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some((asked, sent));
+        Ok(())
+    }
+
+    /// The colour a device reports, in Foxglove's palette: the asked hue and saturation while
+    /// it still shows what was sent for them, and the asked brightness while that is
+    /// unchanged too (a half dimmed on battery, or brightness changed on the keyboard, reports
+    /// its own).
+    pub fn asked(&self, reported: Hsb) -> Hsb {
+        let Some((asked, sent)) = *self.last.lock().unwrap_or_else(|e| e.into_inner()) else {
+            return reported;
+        };
+        let hue = reported.0.abs_diff(sent.0);
+        let same_hue = hue.min(360u16.saturating_sub(hue)) <= 2 || sent.1 == 0;
+        if !same_hue || reported.1.abs_diff(sent.1) > 1 {
+            return reported;
+        }
+        let brightness = if reported.2.abs_diff(sent.2) <= 1 {
+            asked.2
+        } else {
+            reported.2
+        };
+        (asked.0, asked.1, brightness)
     }
 }
 
@@ -870,6 +928,58 @@ mod tests {
         assert_eq!(r.device("k"), Some(dim));
         r.set_device("k", None);
         assert_eq!(r.rgb("k", None, None, ORANGE), ORANGE);
+    }
+
+    #[test]
+    fn an_hsb_driver_reports_the_colour_it_was_asked_for() {
+        let key = "hsb-boundary-test";
+        global().set_device(
+            key,
+            Some(DeviceCalibration {
+                device: Calibration {
+                    gain: [1.0, 0.7, 0.5],
+                    brightness: 0.8,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+        );
+        let b = HsbBoundary::default();
+        assert_eq!(b.asked((10, 20, 30)), (10, 20, 30), "nothing sent yet");
+        let mut sent = None;
+        b.send(key, (200, 40, 90), |hsb| {
+            sent = Some(hsb);
+            Ok(())
+        })
+        .unwrap();
+        let sent = sent.unwrap();
+        assert_ne!(sent, (200, 40, 90), "calibrated on the way out");
+        assert_eq!(b.asked(sent), (200, 40, 90));
+        assert_eq!(
+            b.asked((sent.0, sent.1, 20)),
+            (200, 40, 20),
+            "dimmed on its own"
+        );
+        assert_eq!(
+            b.asked((5, 100, sent.2)),
+            (5, 100, sent.2),
+            "a colour set elsewhere"
+        );
+        // A failed write remembers nothing new.
+        let failed = b.send(key, (0, 100, 100), |_| Err(crate::DeviceError::Timeout));
+        assert!(failed.is_err());
+        assert_eq!(b.asked(sent), (200, 40, 90));
+        global().set_device(key, None);
+    }
+
+    #[test]
+    fn device_ids_give_the_same_keys() {
+        use crate::{BackendId, DeviceId};
+        let zmk = BackendId("zmk".into());
+        let path = DeviceId::new(zmk.clone(), 0x1d50, 0x615e, None, "1d50:615e");
+        assert_eq!(key_for(&path), "1d50:615e");
+        let serial = DeviceId::new(zmk, 0x1d50, 0x615e, Some("E1A5C0DE"), "x");
+        assert_eq!(key_for(&serial), "1d50:615e:E1A5C0DE");
     }
 
     #[test]

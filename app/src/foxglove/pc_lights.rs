@@ -12,6 +12,9 @@
 //! attributes, read through Windows when one arrives. Boards the catalog doesn't know can be
 //! added by hand: the page lists them, a zone test lights one zone only on a click and puts it
 //! back, and the entry goes into the user's `lighting-catalog.local.toml`.
+//!
+//! Every driver writes through its device's colour calibration (`pc_lighting::open` wraps it);
+//! the colours here, saved and shown, are the palette's, before calibration.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -300,16 +303,23 @@ impl Worker {
         self.found = now;
     }
 
-    /// The colour Foxglove knows for a board's zone (by VID/PID and zone number), else the
-    /// one the user saved for it.
+    /// The colour a board's zone shows now (by VID/PID and zone number), as sent: what
+    /// Foxglove knows, else what the user saved for it, through the zone's calibration (the
+    /// zone test writes it back raw).
     fn known_color(&self, vid: u16, pid: u16, zone: u8) -> Option<Rgb> {
         self.found
             .iter()
             .filter(|f| (f.vid, f.pid) == (vid, pid))
             .find_map(|f| {
                 let i = f.zones.iter().position(|z| z.id == zone)?;
-                let known = self.drivers.get(&f.key)?.colors().get(i).copied().flatten();
-                known.or_else(|| self.saved_colors(f).get(i).copied().flatten())
+                let asked = self.drivers.get(&f.key)?.colors().get(i).copied().flatten();
+                let asked = asked.or_else(|| self.saved_colors(f).get(i).copied().flatten())?;
+                Some(foxglove_devices::calibration::global().rgb(
+                    &f.key,
+                    Some(&zone.to_string()),
+                    f.calibration.as_ref(),
+                    asked,
+                ))
             })
     }
 
@@ -987,6 +997,69 @@ mod tests {
             report(2, [255, 255, 255]),
             "nothing saved: white, not dark"
         );
+    }
+
+    #[test]
+    fn colours_go_through_the_calibration_and_a_palette_change_keeps_it() {
+        use foxglove_devices::calibration::{self, Calibration, DeviceCalibration};
+        let key = "103c:84fd:PCLIGHTS1";
+        let mut hid = case_hid();
+        hid[0].serial = Some("PCLIGHTS1".into());
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&hid, false, false, true);
+        let warm = DeviceCalibration {
+            device: Calibration {
+                gain: [1.0, 0.8, 0.5],
+                ..Default::default()
+            },
+            zones: [(
+                "7".to_string(),
+                Calibration {
+                    brightness: 0.5,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            ..Default::default()
+        };
+        calibration::global().set_device(key, Some(warm.clone()));
+        let cal = |zone: &str, c: [u8; 3]| {
+            let out = warm.zone(Some(zone)).apply_rgb(rgb(c));
+            [out.r, out.g, out.b]
+        };
+        let orange = [0xf0, 0x8a, 0x3c];
+        let pine = [0x5f, 0xc4, 0x8e];
+        w.handle(
+            Msg::Set {
+                key: key.into(),
+                colors: vec![(0, orange), (4, orange)],
+            },
+            false,
+            &mut no_wait(),
+        );
+        // A new palette: other colours, the same calibration.
+        w.handle(
+            Msg::Set {
+                key: key.into(),
+                colors: vec![(0, pine), (4, pine)],
+            },
+            false,
+            &mut no_wait(),
+        );
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec![
+                report(1, cal("1", orange)),
+                report(7, cal("7", orange)),
+                report(1, cal("1", pine)),
+                report(7, cal("7", pine)),
+            ],
+            "zone 7 has its own calibration"
+        );
+        assert_eq!(calibration::global().device(key), Some(warm));
+        // Saved and shown: the palette's colours, not the calibrated ones.
+        assert_eq!(w.settings.devices[key].colors["1"], "#5fc48e");
+        assert_eq!(w.snapshot().devices[0].zones[0].1, Some(pine));
     }
 
     #[test]
