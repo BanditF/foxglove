@@ -126,7 +126,7 @@ fn restart(reason: &str) {
     if RESTARTING.swap(true, Ordering::SeqCst) {
         return;
     }
-    eprintln!("Foxglove: GPU reset ({reason})");
+    super::app_log::early(&format!("Foxglove: GPU reset ({reason})"));
     let Some(next) = next_history(&history(), now()) else {
         eprintln!(
             "Foxglove: restarted {BUDGET} times in {} minutes after GPU resets; not again",
@@ -243,7 +243,8 @@ mod imp {
             eprintln!("Foxglove: can't restart after the GPU reset: {e}");
             return;
         }
-        eprintln!("Foxglove: started a fresh copy after the GPU reset");
+        // Written at once: TerminateProcess below ends the stderr pipe's reader too.
+        crate::foxglove::app_log::early("Foxglove: started a fresh copy after the GPU reset");
         // Ends without unloading DLLs: after a reset the GL driver may hold a lock on the UI
         // thread, and a normal exit would wait on it in its detach.
         // SAFETY: the pseudo-handle for this process needs no closing.

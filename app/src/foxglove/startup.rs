@@ -12,7 +12,8 @@ pub fn finish(result: Result<(), Box<dyn std::error::Error>>) {
 {error}"
             );
         }
-        eprintln!("{message}");
+        // Written at once: the process exits below, before the stderr pipe's reader may run.
+        super::app_log::early(&format!("Foxglove: could not start: {message}"));
         #[cfg(target_os = "windows")]
         show_message(&message);
         std::process::exit(1);

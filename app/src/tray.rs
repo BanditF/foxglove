@@ -12,10 +12,9 @@ use tray_icon::{
 /// registers the StatusNotifierItem over DBus via the glib main loop, so the
 /// tray only works if `gtk::main()` runs on the thread that created it.
 pub struct Tray {
+    /// Foxglove: the icon and its menu, or nothing until the taskbar exists (sign-in).
     #[cfg(not(target_os = "linux"))]
-    _icon: TrayIcon,
-    #[cfg(not(target_os = "linux"))]
-    controls: crate::foxglove::tray::Controls,
+    icon: crate::foxglove::taskbar::Slot<(TrayIcon, crate::foxglove::tray::Controls)>,
     /// Foxglove: the glyph shown (#403).
     #[cfg(not(target_os = "linux"))]
     glyph: crate::foxglove::tray::Glyph,
@@ -63,14 +62,15 @@ fn create_icon(glyph: crate::foxglove::tray::Glyph) -> Icon {
     Icon::from_rgba(icon.into_raw(), width, height).expect("Failed to create icon.")
 }
 
-fn build_tray_icon() -> (TrayIcon, crate::foxglove::tray::Controls) {
+// Foxglove: an error instead of a panic, so a missing taskbar can't end the app.
+fn build_tray_icon() -> Result<(TrayIcon, crate::foxglove::tray::Controls), String> {
     let menu = Menu::new();
     let controls = crate::foxglove::tray::Controls::new(&menu);
     menu.append_items(&[
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("quit", "Quit", true, None),
     ])
-    .expect("Failed to append menu items.");
+    .map_err(|e| format!("tray menu: {e}"))?;
 
     let builder = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
@@ -84,7 +84,8 @@ fn build_tray_icon() -> (TrayIcon, crate::foxglove::tray::Controls) {
     #[cfg(target_os = "macos")]
     let builder = builder.with_icon_as_template(true);
 
-    (builder.build().unwrap(), controls)
+    let icon = builder.build().map_err(|e| format!("tray icon: {e}"))?;
+    Ok((icon, controls))
 }
 
 pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
@@ -95,6 +96,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
                 match event.id.0.as_str() {
                     "settings" => on_settings(),
                     "quit" => {
+                        crate::foxglove::app_log::line("Foxglove: Quit from the tray menu");
                         // Foxglove: hand the left screen's panel back before going.
                         crate::foxglove::screens::stop();
                         crate::foxglove::art_service::stop();
@@ -128,7 +130,10 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
     {
         std::thread::spawn(|| {
             gtk::init().expect("Failed to initialize GTK. Is a display available?");
-            let (_icon, mut controls) = build_tray_icon();
+            let (_icon, mut controls) = match build_tray_icon() {
+                Ok(tray) => tray,
+                Err(e) => return eprintln!("Foxglove: no tray icon ({e})"),
+            };
             gtk::glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
                 controls.update();
                 gtk::glib::ControlFlow::Continue
@@ -140,8 +145,8 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
 
     #[cfg(not(target_os = "linux"))]
     {
-        let (_icon, controls) = build_tray_icon();
-        Tray { _icon, controls, glyph: crate::foxglove::tray::Glyph::Disconnected, tooltip: "Foxglove".into() }
+        let icon = crate::foxglove::taskbar::Slot::new(build_tray_icon);
+        Tray { icon, glyph: crate::foxglove::tray::Glyph::Disconnected, tooltip: "Foxglove".into() }
     }
 }
 
@@ -149,17 +154,23 @@ impl Tray {
     pub fn update(&mut self) {
         #[cfg(not(target_os = "linux"))]
         {
-            self.controls.update();
+            // Foxglove: the taskbar started (sign-in, Explorer restart): make a missing icon.
+            if crate::foxglove::taskbar::take() && self.icon.taskbar_created(build_tray_icon) {
+                self.glyph = crate::foxglove::tray::Glyph::Disconnected;
+                self.tooltip = "Foxglove".into();
+            }
+            let Some((icon, controls)) = self.icon.get_mut() else { return };
+            controls.update();
             // Foxglove: swap the glyph only when it changes.
-            let glyph = self.controls.glyph();
+            let glyph = controls.glyph();
             if glyph != self.glyph {
                 self.glyph = glyph;
-                let _ = self._icon.set_icon(Some(create_icon(glyph)));
+                let _ = icon.set_icon(Some(create_icon(glyph)));
             }
             // Foxglove (#373): the tooltip only when it changes.
-            let tooltip = self.controls.tooltip();
+            let tooltip = controls.tooltip();
             if tooltip != self.tooltip {
-                let _ = self._icon.set_tooltip(Some(&tooltip));
+                let _ = icon.set_tooltip(Some(&tooltip));
                 self.tooltip = tooltip;
             }
         }

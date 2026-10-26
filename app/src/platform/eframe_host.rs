@@ -386,6 +386,11 @@ fn run_inner(
                     ui_wake.request_repaint();
                 })
             });
+            // Foxglove: a frame when the taskbar starts, to add a tray icon missing at sign-in.
+            crate::foxglove::taskbar::watch({
+                let ui_wake = ui_wake.clone();
+                move || ui_wake.request_repaint()
+            });
             // Foxglove (#345): a second launch opens the settings here and focuses this window.
             crate::foxglove::single_instance::on_show({
                 let settings_requested = settings_requested.clone();
