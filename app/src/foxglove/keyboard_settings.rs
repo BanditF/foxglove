@@ -135,6 +135,13 @@ pub fn refresh_rgb_state() {
     RGB_REFRESH.store(true, Ordering::Relaxed);
 }
 
+/// The keyboard reported its lights switching (an RGB_STATE report): read them again on the
+/// next frame, and draw one so whatever shows them (the tray panel, the Lights page) follows.
+pub fn lights_changed() {
+    refresh_rgb_state();
+    super::tray_panel::wake();
+}
+
 /// Returns the cached state and reads it in the background when requested.
 pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
     if RGB_REFRESH.load(Ordering::Relaxed) && !RGB_POLLING.swap(true, Ordering::Relaxed) {

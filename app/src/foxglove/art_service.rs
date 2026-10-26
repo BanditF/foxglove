@@ -327,12 +327,19 @@ fn fresh_status(link: &Link, h: &Handle) -> Result<ArtStatus, String> {
     art::status(link).map_err(|e| e.to_string())
 }
 
+/// How long after a SELECT the right half has switched sets (its display queue runs it).
+const SELECT_SETTLE: Duration = Duration::from_millis(300);
+
 fn choose(link: &Link, h: &Handle, choice: &Choice) -> Result<ArtStatus, String> {
     if h.cancelled() {
         return Err("cancelled".into());
     }
     match choice {
-        Choice::BuiltIn(set) => art::select(link, *set).map_err(|e| e.to_string()),
+        // Settled: the select's own reply names the set from before it, which left the
+        // tray panel and the Screens page showing the old art.
+        Choice::BuiltIn(set) => {
+            art::select_settled(link, *set, SELECT_SETTLE).map_err(|e| e.to_string())
+        }
         Choice::Slot(slot) => {
             let count = h
                 .snapshot()
@@ -501,7 +508,12 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 if !is_current {
                     continue;
                 }
-                let woke = lights_on.replace(on) == Some(false) && on;
+                let was = lights_on.replace(on);
+                // Switched on the keyboard too: the tray panel and Lights page read them again.
+                if was != Some(on) {
+                    super::keyboard_settings::lights_changed();
+                }
+                let woke = was == Some(false) && on;
                 if !(woke && h.snapshot().cycle.steps_on(art_cycle::Step::LightsWake)) {
                     continue;
                 }
