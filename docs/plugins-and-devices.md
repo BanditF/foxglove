@@ -203,7 +203,8 @@ integration follows the same rules:
      `installdir` from `appmanifest_431960.acf`);
    - Steam's `Steam App 431960` uninstall entry.
 2. **Look at start and on Refresh, never on a timer.** Its watcher's change events may look
-   again (Wallpaper Engine's running check rides on a wallpaper change). Cache the answer as
+   again (Wallpaper Engine's running check rides on a wallpaper change), and a Refresh that
+   finds it somewhere new moves the folder watch there. Cache the answer as
    one `Presence`-style value that the UI reads every frame for free.
 3. **Absent is normal, not an error.**
    - Features that need it hide, or show one short line: "Works best with Wallpaper Engine."
@@ -214,10 +215,11 @@ integration follows the same rules:
 4. **Fall back to Windows where a feature can.**
    - "Match the wallpaper" (right art) and the left panel's wallpaper frames use the Windows
      desktop wallpaper. Its file (`HKCU\Control Panel\Desktop` › `WallPaper`) matches a
-     `wallpapers.json` entry whose id is the file's name. Its change event is the folder watch
+     `wallpapers.json` entry whose id is the file's name, or whose `match` text is in its path. Its change event is the folder watch
      on `%APPDATA%\Microsoft\Windows\Themes` (Windows rewrites `TranscodedWallpaper`).
-   - The underglow's colour match falls back to Windows' accent colour (`accent.rs`), which
-     follows its own change event.
+   - A colour match taken from the wallpaper (the Wallpaper Match plugin, #335, not merged yet)
+     should fall back to Windows' accent colour, which Foxglove already follows on its own
+     change event (`accent.rs`).
    - When no fallback makes sense, hide the feature.
 5. **Test the three states window-free:**
    - not installed;
@@ -228,7 +230,7 @@ integration follows the same rules:
 
 | Integration | Found by | Without it |
 |---|---|---|
-| Wallpaper Engine | Steam libraries, uninstall entry, custom folder | desktop wallpaper, accent colour; hint |
+| Wallpaper Engine | Steam libraries, uninstall entry, custom folder | desktop wallpaper; hint |
 | OpenRGB (#244) | its SDK server answering on the configured port when the user turns it on | the plugin stays off; hint in its settings |
 | SignalRGB (#331) | SignalRGB loading the Foxglove plugin (it connects to us) | nothing to show; the receiver idles |
 | OBS (Broadcast Status) | obs-websocket answering when the plugin starts | the plugin shows nothing; one line in its settings |

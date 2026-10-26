@@ -191,7 +191,11 @@ enum Source {
 /// Where to read the wallpaper on screen: the test hook, Wallpaper Engine while it runs, or
 /// the Windows desktop wallpaper.
 fn source(engine: &super::wallpaper_engine::Presence) -> Source {
-    if let Some(p) = override_path() {
+    source_with(engine, override_path())
+}
+
+fn source_with(engine: &super::wallpaper_engine::Presence, over: Option<PathBuf>) -> Source {
+    if let Some(p) = over {
         return Source::Override(p);
     }
     match engine.config() {
@@ -278,47 +282,80 @@ pub fn monitors() -> Vec<String> {
 /// The folders to watch: the test hook's alone, or Wallpaper Engine's (when installed) and the
 /// desktop wallpaper's.
 fn watched(engine: &super::wallpaper_engine::Presence) -> Vec<PathBuf> {
-    match override_path() {
+    watched_with(engine, override_path(), desktop_marker())
+}
+
+fn watched_with(
+    engine: &super::wallpaper_engine::Presence,
+    over: Option<PathBuf>,
+    desktop: Option<PathBuf>,
+) -> Vec<PathBuf> {
+    match over {
         Some(p) => vec![p],
-        None => [engine.config(), desktop_marker()]
-            .into_iter()
-            .flatten()
-            .collect(),
+        None => [engine.config(), desktop].into_iter().flatten().collect(),
+    }
+}
+
+/// Wakes the wallpaper service: a watched folder changed, or the user pressed Refresh.
+static WAKE: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> = std::sync::Mutex::new(None);
+
+/// Refresh (#446): look for Wallpaper Engine again, on the wallpaper service's thread, which
+/// also watches its folder from now on if it was installed or moved. Without the service,
+/// just look again.
+pub fn refresh() {
+    let sent = WAKE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .is_some_and(|tx| tx.send(()).is_ok());
+    if !sent {
+        super::wallpaper_engine::refresh();
     }
 }
 
 /// Watches the wallpaper sources and tells the art service about the wallpaper on screen. Each
-/// change looks for Wallpaper Engine again (is it running now?), so starting or quitting it
-/// counts from the next wallpaper change. Without Wallpaper Engine this watches only the
-/// desktop wallpaper, quietly.
+/// change (or Refresh) looks for Wallpaper Engine again: whether it's running now, and where
+/// it is, so its folder is watched once it's installed or moved. Without Wallpaper Engine this
+/// watches only the desktop wallpaper, quietly.
 pub fn start() {
     if super::repaint_trace::disabled("wallpaper") {
         return;
     }
     super::services::spawn_named("wallpaper", move || {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
+        *WAKE.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
+        let watch = |paths: &[PathBuf]| -> Vec<_> {
+            paths
+                .iter()
+                .filter_map(|p| {
+                    let tx = tx.clone();
+                    super::screens_watch::settings(
+                        p,
+                        std::sync::Arc::new(move || {
+                            let _ = tx.send(());
+                        }),
+                    )
+                })
+                .collect()
+        };
         let engine = super::wallpaper_engine::presence();
-        let _watches: Vec<_> = watched(&engine)
-            .iter()
-            .filter_map(|p| {
-                let tx = tx.clone();
-                super::screens_watch::settings(
-                    p,
-                    std::sync::Arc::new(move || {
-                        let _ = tx.send(());
-                    }),
-                )
-            })
-            .collect();
-        drop(tx);
+        let mut paths = watched(&engine);
+        let mut watches = watch(&paths);
         let mut last: Option<String> = None;
-        // Check once at start, then on each change in a watched folder.
-        for (n, ()) in std::iter::once(()).chain(rx).enumerate() {
+        // Check once at start, then on each change in a watched folder or Refresh.
+        for (n, ()) in std::iter::once(()).chain(rx.iter()).enumerate() {
             let engine = if n == 0 {
                 engine.clone()
             } else {
                 super::wallpaper_engine::refresh()
             };
+            let now = watched(&engine);
+            if now != paths {
+                // Stop the old watches before starting the new ones.
+                watches.clear();
+                watches = watch(&now);
+                paths = now;
+            }
             let source = source(&engine);
             let Some(text) = read(&source) else {
                 continue;
@@ -337,6 +374,7 @@ pub fn start() {
             }
             super::screens::wallpaper_changed();
         }
+        drop(watches);
     });
 }
 
@@ -440,9 +478,20 @@ mod tests {
     fn the_desktop_wallpaper_stands_in() {
         use super::super::wallpaper_engine::Presence;
         let index = parse_index(INDEX).unwrap();
-        // The override hook isn't set in tests.
+        let desktop = Some(PathBuf::from(r"C:\AppData\Themes\TranscodedWallpaper"));
+        let source = |p: &Presence| source_with(p, None);
+        let watched = |p: &Presence| watched_with(p, None, desktop.clone());
         assert_eq!(source(&Presence::Missing), Source::Desktop);
         assert_eq!(watched(&Presence::Missing).len(), 1, "the desktop only");
+        let o = PathBuf::from("override.txt");
+        assert_eq!(
+            source_with(&Presence::Missing, Some(o.clone())),
+            Source::Override(o.clone())
+        );
+        assert_eq!(
+            watched_with(&Presence::Missing, Some(o.clone()), desktop.clone()),
+            vec![o]
+        );
         let we = PathBuf::from(r"D:\SteamLibrary\steamapps\common\wallpaper_engine");
         let stopped = Presence::Installed {
             dir: we.clone(),

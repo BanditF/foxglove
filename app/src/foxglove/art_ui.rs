@@ -94,8 +94,9 @@ pub fn group(ui: &mut egui::Ui) {
             Act::Delete(p) => art_library::delete(p),
             Act::Refresh => {
                 h.refresh();
-                // Wallpaper Engine may have been installed, moved or started (#446).
-                super::wallpaper_engine::refresh();
+                // Wallpaper Engine may have been installed, moved or started (#446): looked
+                // for on the wallpaper service's thread, not this one.
+                super::wallpaper::refresh();
                 art_library::refresh();
                 UI.with_borrow_mut(|s| s.textures.clear());
             }
