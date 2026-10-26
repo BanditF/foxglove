@@ -23,6 +23,7 @@ pub mod catalog_refresh;
 pub mod connection;
 pub mod devices;
 pub mod diagnostics;
+pub mod firmware_update;
 pub mod foreground;
 pub mod gpu_reset;
 pub mod identity;

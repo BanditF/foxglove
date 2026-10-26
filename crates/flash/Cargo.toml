@@ -1,0 +1,8 @@
+[package]
+name = "foxglove-flash"
+version = "0.2.0"
+edition = "2021"
+description = "Updates both halves of a nice!nano keyboard safely: UF2 checks, half identity, order and read-back (the rules of scripts/flash/foxglove_flash.py)"
+license = "MIT"
+
+[dependencies]

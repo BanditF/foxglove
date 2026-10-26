@@ -54,6 +54,8 @@ pub struct View {
     pub board: BoardView,
     /// The low-battery heads-up is on (#372).
     pub low_battery_notice: bool,
+    /// "Update keyboard" and its steps (#382).
+    pub update: super::firmware_update::View,
 }
 
 /// What a click on the page asks for.
@@ -63,6 +65,8 @@ pub enum Intent {
     Action(Action),
     /// Turns the low-battery heads-up on or off (#372).
     LowBatteryNotice(bool),
+    /// A click in "Update keyboard" (#382).
+    Update(super::firmware_update::Intent),
 }
 
 /// The firmware card's lines for the cached builds.
@@ -142,6 +146,7 @@ pub fn view(ctx: &egui::Context) -> View {
         last: ks::last_action(),
         board: BoardView::default(),
         low_battery_notice: super::battery::notices_on(),
+        update: super::firmware_update::view(),
     }
 }
 
@@ -172,6 +177,7 @@ pub fn top(ui: &mut egui::Ui) -> Option<Page> {
 
 /// The keyboard's cards, acting on their clicks.
 fn show(ui: &mut egui::Ui) {
+    super::firmware_update::update_dialog(ui.ctx());
     let view = view(ui.ctx());
     match draw(ui, &view) {
         Some(Intent::AskFirmwareAgain) => {
@@ -192,6 +198,7 @@ fn show(ui: &mut egui::Ui) {
                 eprintln!("Foxglove: can't save the battery setting: {e}");
             }
         }
+        Some(Intent::Update(i)) => super::firmware_update::act(i, ui.ctx()),
         None => {}
     }
 }
@@ -225,13 +232,16 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
                 ui.label(RichText::new(note).color(tone_color(ui, *tone)));
             }
             ui.add_space(4.0);
-            // "Update keyboard" joins this row with #382.
             if v.can_ask_again {
                 ui.horizontal(|ui| {
                     if ui.button("Ask the keyboard again").clicked() {
                         intent = Some(Intent::AskFirmwareAgain);
                     }
                 });
+            }
+            // #382: "Update keyboard…", then its confirm step and progress, in this card.
+            if let Some(i) = super::firmware_update::draw(ui, &v.update) {
+                intent = Some(Intent::Update(i));
             }
             // #372: a Windows notification below 15% and 5%, once each until it charges.
             let mut on = v.low_battery_notice;
@@ -716,6 +726,7 @@ pub mod tests {
             last: Some(("Lights: Toggle".into(), "done".into())),
             board: sample_board(),
             low_battery_notice: true,
+            update: super::super::firmware_update::tests::sample(),
         }
     }
 
