@@ -166,29 +166,36 @@ fn slider_frame(ctx: &egui::Context, value: &mut u8, events: Vec<egui::Event>, t
             .show(ui.ctx(), |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 ui.spacing_mut().window_margin = egui::Margin::ZERO;
-                overlay_opacity::slider(ui, value, "test");
+                overlay_opacity::slider(ui, value, "test", |_| {});
             });
     });
     out.textures_delta.clear();
 }
 
-/// The slider's x for `percent`, as egui lays out its rail.
+/// The slider's x for `percent`, as egui lays out its rail (where the last frame put it).
 fn slider_x(ctx: &egui::Context, percent: f32) -> f32 {
     let style = ctx.global_style();
-    let width = style.spacing.slider_width;
+    let rail = overlay_opacity::RAIL.get().expect("a slider was drawn");
+    let width = rail.width();
     let radius = style.spacing.interact_size.y / 2.5;
     let radius = match style.visuals.handle_shape {
         egui::style::HandleShape::Circle => radius,
         egui::style::HandleShape::Rect { aspect_ratio } => radius * aspect_ratio,
     };
-    radius + (width - 2.0 * radius) * percent / 100.0
+    rail.min.x + radius + (width - 2.0 * radius) * percent / 100.0
 }
 
 /// A press, a move to `to` percent, and a release on the slider, with `modifiers` held.
 fn drag_slider(ctx: &egui::Context, value: &mut u8, from: f32, to: f32, alt: bool) -> u8 {
     // egui's clock only goes forward, across the drags of one test.
     let t = ctx.input(|i| i.time) + 1.0;
-    let y = ctx.global_style().spacing.interact_size.y / 2.0;
+    // A new area lays itself out unseen first.
+    slider_frame(ctx, value, vec![], t - 0.5);
+    let y = overlay_opacity::RAIL
+        .get()
+        .expect("a slider was drawn")
+        .center()
+        .y;
     let modifiers = egui::Modifiers {
         alt,
         ..Default::default()
@@ -219,8 +226,36 @@ fn drag_slider(ctx: &egui::Context, value: &mut u8, from: f32, to: f32, alt: boo
         t + 0.2,
     );
     let during = *value;
+    PREVIEWED.set(overlay_opacity::previewing());
     slider_frame(ctx, value, vec![button(to, false)], t + 0.3);
     during
+}
+
+thread_local! {
+    /// Whether the last drag held the overlay's preview while the button was down.
+    static PREVIEWED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Dragging a slider previews the overlay; letting go releases it, with no timer.
+#[test]
+fn a_slider_drag_previews_the_overlay_until_let_go() {
+    let ctx = preview_ctx();
+    overlay_opacity::release_preview();
+    let mut value = 60u8;
+    drag_slider(&ctx, &mut value, 60.0, 40.0, false);
+    assert!(PREVIEWED.get(), "held during the drag");
+    assert!(!overlay_opacity::previewing(), "released when let go");
+}
+
+/// The slider runs the row: most of a 400-point area, not egui's default 100 points.
+#[test]
+fn the_slider_runs_the_row() {
+    let ctx = preview_ctx();
+    let mut value = 60u8;
+    slider_frame(&ctx, &mut value, vec![], 1.0);
+    slider_frame(&ctx, &mut value, vec![], 2.0);
+    let rail = overlay_opacity::RAIL.get().expect("a slider was drawn");
+    assert!(rail.width() > 300.0, "{rail:?}");
 }
 
 #[test]

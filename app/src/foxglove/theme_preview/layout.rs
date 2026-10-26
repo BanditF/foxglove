@@ -123,10 +123,10 @@ fn inside(inner: Rect, outer: Rect) -> bool {
     outer.expand(SLACK).contains_rect(inner)
 }
 
-/// `a` and `b` are the same box, give or take a few points each way (a label's widget rect
-/// around its glyphs).
+/// `a` and `b` are the same box, give or take two points each way (a label's widget rect
+/// around its glyphs); a control the size of a short word drawn over it is not.
 fn same(a: Rect, b: Rect) -> bool {
-    inside(a, b.expand(4.0)) && inside(b, a.expand(4.0))
+    inside(a, b.expand(2.0)) && inside(b, a.expand(2.0))
 }
 
 fn fmt(r: Rect) -> String {
@@ -538,6 +538,14 @@ fn the_guard_catches_overlaps() {
         let found = probe(draw);
         assert!(found.iter().any(|p| p.contains(want)), "{want}: {found:#?}");
     }
+    // A page whose cards aren't recognised fails, rather than passing every card check.
+    let blind = check("probe", egui::vec2(400.0, 300.0), 1.0, true, None, |ui| {
+        ui.label("No card here");
+    });
+    assert!(
+        blind.iter().any(|p| p.contains("no cards found")),
+        "{blind:#?}"
+    );
     // And a clean layout passes: a card with a row of controls inside it.
     let clean = probe(&|ui| {
         ui.put(at(20.0, 20.0, 300.0, 120.0), |ui: &mut egui::Ui| {

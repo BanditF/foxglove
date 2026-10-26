@@ -1,11 +1,18 @@
 //! The layer overlay's two opacities: the HUD (key faces, strips, borders) and the key labels.
-//! Both run 0–100%. The slider has a detent at 20%: dragging near it rests there (hold Alt to
-//! pass it), the arrow keys step 1%. The key labels follow the HUD until their own slider is
-//! touched; "Follow HUD" links them again. The logic is plain functions, tested without a window.
+//! Both run 0–100%. The slider runs the row's width and has a detent at 20%, marked by a tick:
+//! dragging within 4% of it snaps there (hold Alt to pass it), the arrow keys step 1%. The key
+//! labels follow the HUD until their own slider is touched; "Follow HUD" links them again.
+//!
+//! While a slider is dragged it holds the overlay on screen as a live preview ([`previewing`]).
+//! The hold starts with the press and ends with the drag's end or Settings closing (minimizing
+//! closes it too): events, no timer. At 0% the shown overlay is a faint outline ([`outline`]).
+//! The logic is plain functions, tested without a window.
+
+use std::cell::Cell;
 
 /// Where the slider rests, and how close (in percent) a drag has to come to rest there.
 pub const DETENT: u8 = 20;
-pub const SNAP: u8 = 3;
+pub const SNAP: u8 = 4;
 
 /// A dragged value, pulled onto the detent when it's within [`SNAP`] of it, unless `free` (Alt).
 pub fn snap(value: u8, free: bool) -> u8 {
@@ -52,25 +59,64 @@ pub fn rows(ui: &mut egui::Ui, settings: &mut crate::settings::Settings) {
         ui,
         &mut settings.opacity,
         "How see-through the layer overlay is",
+        |_| {},
     );
     ui.end_row();
 
     ui.label("Key labels");
-    ui.horizontal(|ui| {
-        let shown = label(settings.opacity, settings.label_opacity);
-        let mut now = shown;
-        slider(ui, &mut now, "How see-through the key labels are");
-        settings.label_opacity = touched(settings.label_opacity, shown, now);
-        let mut follow = settings.label_opacity.is_none();
-        if ui
+    let shown = label(settings.opacity, settings.label_opacity);
+    let mut now = shown;
+    let mut follow = settings.label_opacity.is_none();
+    let mut follow_changed = false;
+    slider(ui, &mut now, "How see-through the key labels are", |ui| {
+        follow_changed = ui
             .checkbox(&mut follow, "Follow HUD")
             .on_hover_text("The labels move with Opacity; moving their slider unlinks them")
-            .changed()
-        {
-            settings.label_opacity = linked(follow, now);
-        }
+            .changed();
     });
+    settings.label_opacity = touched(settings.label_opacity, shown, now);
+    if follow_changed {
+        settings.label_opacity = linked(follow, now);
+    }
     ui.end_row();
+}
+
+/// Whether the overlay at opacities `hud` and `label` can't be seen, so it shows as a faint
+/// outline instead: while it's dragged, previewed, or shown when a layer comes on.
+pub fn outline(hud: u8, label: u8) -> bool {
+    factors(hud, label).0 <= 0.0
+}
+
+thread_local! {
+    /// The slider holding the overlay on screen as a preview, by its id. Settings and the
+    /// overlay are drawn on the UI thread (Settings is an immediate viewport).
+    static PREVIEW: Cell<Option<egui::Id>> = const { Cell::new(None) };
+}
+
+/// The overlay is held on screen by an opacity slider being dragged.
+pub fn previewing() -> bool {
+    PREVIEW.get().is_some()
+}
+
+/// The slider `id` is (or isn't) being dragged this frame: a press starts the hold, the drag's
+/// end releases it. Returns whether the hold changed.
+fn hold(id: egui::Id, dragging: bool) -> bool {
+    match (dragging, PREVIEW.get()) {
+        (true, None) => {
+            PREVIEW.set(Some(id));
+            true
+        }
+        (false, Some(h)) if h == id => {
+            PREVIEW.set(None);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Settings closed (or was minimized, which closes it): no slider is dragged any more.
+pub fn release_preview() {
+    PREVIEW.set(None);
 }
 
 /// The labels' setting after "Follow HUD" was set to `follow`, their slider showing `shown`.
@@ -89,35 +135,72 @@ pub fn paint_outline(ui: &egui::Ui, rect: egui::Rect) {
     );
 }
 
-/// An opacity slider (percent) with a tick at the detent, a value box beside it and a hover
-/// text. Returns true when the value changed.
-pub fn slider(ui: &mut egui::Ui, value: &mut u8, hover: &str) -> bool {
+/// An opacity slider (percent) across the row, with a tick at the detent, a value box at the
+/// right, `trailing` right of that, and a hover text. Returns true when the value changed.
+pub fn slider(
+    ui: &mut egui::Ui,
+    value: &mut u8,
+    hover: &str,
+    trailing: impl FnOnce(&mut egui::Ui),
+) -> bool {
     let before = *value;
-    ui.horizontal(|ui| {
-        let response = ui
-            .add(
-                egui::Slider::new(value, 0..=100)
-                    .step_by(1.0)
-                    .show_value(false),
-            )
-            .on_hover_text(format!(
-                "{hover}. It rests at {DETENT}% when dragged near it; hold Alt to pass it"
-            ));
-        // A press focuses it, so the arrow keys fine-tune from there.
-        if response.drag_started() {
-            response.request_focus();
-        }
-        let dragging = response.dragged() || response.drag_stopped() || response.clicked();
-        if dragging && *value != before {
-            *value = snap(*value, ui.input(|i| i.modifiers.alt));
-        }
-        paint_detent(ui, &response);
-        ui.add(egui::DragValue::new(value).range(0..=100).suffix("%"));
-    });
+    // The value box is laid out first (at the right), so it edits a copy.
+    let mut typed = *value;
+    super::settings_ui::split_row(
+        ui,
+        |ui| {
+            trailing(ui);
+            ui.add(egui::DragValue::new(&mut typed).range(0..=100).suffix("%"));
+        },
+        |ui| {
+            ui.spacing_mut().slider_width = ui.available_width().max(MIN_RAIL);
+            let response = ui
+                .add(
+                    egui::Slider::new(value, 0..=100)
+                        .step_by(1.0)
+                        .show_value(false),
+                )
+                .on_hover_text(format!(
+                    "{hover}. It snaps to {DETENT}% when dragged near it; hold Alt to pass it"
+                ));
+            #[cfg(test)]
+            RAIL.set(Some(response.rect));
+            // A press focuses it, so the arrow keys fine-tune from there.
+            if response.drag_started() {
+                response.request_focus();
+            }
+            // Pointer-driven changes snap; the arrow keys step through the detent.
+            let pointer = response.is_pointer_button_down_on()
+                || response.dragged()
+                || response.drag_stopped()
+                || response.clicked();
+            if pointer && *value != before {
+                *value = snap(*value, ui.input(|i| i.modifiers.alt));
+            }
+            let dragging = response.is_pointer_button_down_on() || response.dragged();
+            if hold(response.id, dragging) || (dragging && *value != before) {
+                // The overlay lives in the main viewport: draw it now, at the new value.
+                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+            }
+            paint_detent(ui, &response);
+        },
+    );
+    if typed != before {
+        *value = typed;
+    }
     *value != before
 }
 
-/// A small nub under the slider's rail at the detent.
+/// The narrowest the rail gets, in points.
+const MIN_RAIL: f32 = 120.0;
+
+#[cfg(test)]
+thread_local! {
+    /// The last slider's rail, for the tests' pointer.
+    pub static RAIL: Cell<Option<egui::Rect>> = const { Cell::new(None) };
+}
+
+/// A tick across the slider's rail at the detent, above and below it.
 fn paint_detent(ui: &egui::Ui, response: &egui::Response) {
     let rect = response.rect;
     let radius = rect.height() / 2.5;
@@ -126,10 +209,13 @@ fn paint_detent(ui: &egui::Ui, response: &egui::Response) {
         egui::style::HandleShape::Rect { aspect_ratio } => radius * aspect_ratio,
     };
     let x = detent_x(rect.x_range(), radius);
-    let colour = ui.visuals().weak_text_color();
-    let y = rect.center().y + rect.height() * 0.22;
+    let colour = ui.visuals().text_color().gamma_multiply(0.6);
+    let half = rect.height() * 0.42;
     ui.painter().line_segment(
-        [egui::pos2(x, y), egui::pos2(x, rect.bottom())],
+        [
+            egui::pos2(x, rect.center().y - half),
+            egui::pos2(x, rect.center().y + half),
+        ],
         egui::Stroke::new(2.0, colour),
     );
 }
@@ -146,11 +232,11 @@ mod tests {
 
     #[test]
     fn a_drag_near_twenty_rests_on_it() {
-        for v in 17..=23 {
+        for v in 16..=24 {
             assert_eq!(snap(v, false), 20, "{v}");
         }
-        assert_eq!(snap(16, false), 16);
-        assert_eq!(snap(24, false), 24);
+        assert_eq!(snap(15, false), 15);
+        assert_eq!(snap(25, false), 25);
         assert_eq!(snap(0, false), 0, "zero is reachable");
         assert_eq!(snap(100, false), 100);
     }
@@ -193,6 +279,31 @@ mod tests {
         // Both off: hidden, without dividing by zero.
         assert_eq!(factors(0, 0), (0.0, 1.0, 1.0));
         assert_eq!(factors(0, 50).1, 0.0, "faces off, labels on");
+    }
+
+    #[test]
+    fn zero_shows_as_an_outline() {
+        assert!(outline(0, 0));
+        assert!(!outline(0, 30), "the labels still show");
+        assert!(!outline(20, 0));
+    }
+
+    #[test]
+    fn a_drag_holds_the_preview_until_it_ends() {
+        let (a, b) = (egui::Id::new("hud"), egui::Id::new("labels"));
+        release_preview();
+        assert!(!previewing());
+        assert!(hold(a, true), "the press starts it");
+        assert!(previewing());
+        assert!(!hold(a, true), "held while dragged");
+        assert!(!hold(b, false), "another slider, not dragged, leaves it");
+        assert!(previewing());
+        assert!(hold(a, false), "the drag's end releases it");
+        assert!(!previewing());
+        // Settings closes (or is minimized) mid-drag: released with no drag end.
+        hold(b, true);
+        release_preview();
+        assert!(!previewing());
     }
 
     #[test]

@@ -27,8 +27,9 @@ impl OverlayApp {
         let labels = crate::foxglove::overlay_opacity::label(hud, self.settings.active.label_opacity);
         let (whole, face, text) = crate::foxglove::overlay_opacity::factors(hud, labels);
         let style = self.paint_style(size).with_opacity(face, text);
-        // While it's dragged and can't be seen, a faint outline shows where it is.
-        let outline = self.ui.overlay_drag.is_some() && hud == 0;
+        // Foxglove: when it can't be seen (0%), a faint outline shows where it is, whether it's
+        // dragged, previewed from Settings or shown for a layer.
+        let outline = crate::foxglove::overlay_opacity::outline(hud, labels);
 
         let overlay_window = Window::new("Foxglove")
             .open(&mut window_open)
