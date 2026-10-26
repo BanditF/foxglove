@@ -18,6 +18,8 @@ manifest:
       remote: zmkfirmware
       revision: v0.3.0
       import: app/west.yml
+    # nonblocking includes the USB reply recovery (zmk-raw-hid#1, foxglove #434): Raw HID replies
+    # come back after a PC restart.
     - name: zmk-raw-hid
       url: https://github.com/BanditF/zmk-raw-hid
       revision: nonblocking
