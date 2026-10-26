@@ -306,6 +306,12 @@ fn keypeek_groups(ui: &mut egui::Ui) {
                     );
                     ui.end_row();
                 }
+                ui.label("Opacity");
+                ui.add(
+                    egui::Slider::new(&mut 100u8, crate::settings::Settings::OPACITY_RANGE)
+                        .suffix("%"),
+                );
+                ui.end_row();
                 ui.label("Auto-fit long labels");
                 ui.checkbox(&mut true, "Fit long labels to available space");
                 ui.end_row();
@@ -838,6 +844,90 @@ fn settings_page_renders() {
     );
     // The theme picker's selected pill sits in "Theme and updates".
     assert!(count(&img, DARK.selected_fill) > 100, "the Dark pill");
+}
+
+/// The layer overlay at three opacity settings, over a wallpaper-like backdrop: 100% (the look
+/// it always had), 60% and the lowest, 20%.
+#[test]
+fn overlay_opacity_renders() {
+    use crate::layout_key::{KeycodeKind, Label, LayoutKey};
+    let ctx = preview_ctx();
+    let settings = crate::settings::Settings::default();
+    let unit = 48.0;
+    let style = crate::key_paint::KeyPaintStyle::from_settings(&settings).with_unit(unit);
+    let labels = ["Q", "W", "E", "R", "T", "Esc"];
+    let percents = [100u8, 60, 20];
+    let size = egui::vec2(
+        labels.len() as f32 * unit + 140.0,
+        percents.len() as f32 * (unit + 16.0) + 16.0,
+    );
+    let img = render(&ctx, size, Color32::from_rgb(0x2a, 0x4a, 0x6a), |ctx| {
+        egui::Area::new(egui::Id::new("opacity-preview"))
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                // Stripes behind the keys, so the see-through shows.
+                let full = Rect::from_min_size(Pos2::ZERO, size);
+                for i in 0..((full.width() / 24.0) as usize + 1) {
+                    if i % 2 == 0 {
+                        let x = full.left() + i as f32 * 24.0;
+                        ui.painter().rect_filled(
+                            Rect::from_min_max(
+                                egui::pos2(x, full.top()),
+                                egui::pos2(x + 12.0, full.bottom()),
+                            ),
+                            0.0,
+                            Color32::from_rgb(0xd8, 0xc0, 0x90),
+                        );
+                    }
+                }
+                for (row, percent) in percents.iter().enumerate() {
+                    let top = full.top() + 16.0 + row as f32 * (unit + 16.0);
+                    ui.painter().text(
+                        egui::pos2(full.left() + 12.0, top + unit / 2.0),
+                        egui::Align2::LEFT_CENTER,
+                        format!("{percent}%"),
+                        egui::FontId::proportional(18.0),
+                        Color32::WHITE,
+                    );
+                    let mut keys = ui.new_child(egui::UiBuilder::new().max_rect(full));
+                    keys.multiply_opacity(f32::from(*percent) / 100.0);
+                    for (col, label) in labels.iter().enumerate() {
+                        let rect = Rect::from_min_size(
+                            egui::pos2(full.left() + 100.0 + col as f32 * unit, top),
+                            egui::vec2(unit, unit),
+                        );
+                        let key = LayoutKey {
+                            tap: Label::new(*label),
+                            kind: KeycodeKind::Basic,
+                            ..LayoutKey::default()
+                        };
+                        crate::key_paint::paint(
+                            &keys,
+                            rect,
+                            0.0,
+                            &crate::key_paint::KeyDisplay {
+                                key: &key,
+                                colors: style.colors_for(0, KeycodeKind::Basic, false, false),
+                                hovered: false,
+                                pressed: false,
+                                shift_held: false,
+                                ralt_held: false,
+                            },
+                            &style,
+                        );
+                    }
+                }
+            });
+    });
+    keep("ui-overlay-opacity.png", &img);
+    // A key's middle at 100% differs from the same pixel at 20%.
+    let ppp = PPP;
+    let at = |row: f32| {
+        let x = ((100.0 + unit * 0.5) * ppp) as u32;
+        let y = ((16.0 + row * (unit + 16.0) + unit * 0.8) * ppp) as u32;
+        img.get_pixel(x, y).0
+    };
+    assert_ne!(at(0.0), at(2.0), "20% looks like 100%");
 }
 
 /// The tray panel (#391), drawn off-screen the way it opens next to the tray icon.
