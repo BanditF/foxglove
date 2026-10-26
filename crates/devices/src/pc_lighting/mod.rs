@@ -332,7 +332,11 @@ pub fn test_zone(
         Ok(())
     };
     let blinked = blink();
-    let restored = d.set_all(restore.unwrap_or(WHITE));
+    let back = restore.unwrap_or(WHITE);
+    let restored = d.set_all(back).or_else(|_| {
+        wait(IDENTIFY_STEP);
+        d.set_all(back)
+    });
     blinked.and(restored)
 }
 
