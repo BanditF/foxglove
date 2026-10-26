@@ -635,9 +635,18 @@ fn chip(ui: &mut egui::Ui, c: &Chip) {
         if c.name.is_empty() { 0.0 } else { 6.0 },
         egui::TextFormat::simple(font, color),
     );
-    let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
     let pad = egui::vec2(10.0, 6.0);
     let dot = if c.tone.is_some() { 14.0 } else { 0.0 };
+    // One row, cut with "…" at the strip's width: a chip wider than the strip would widen the
+    // settings window when the keyboard connects. The hover then gives the whole text.
+    job.wrap = egui::text::TextWrapping {
+        max_width: (ui.max_rect().width() - pad.x * 2.0 - dot).max(40.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
+    let elided = galley.elided;
     let size = egui::vec2(dot + galley.size().x, galley.size().y) + pad * 2.0;
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     let line = if warn {
@@ -666,8 +675,18 @@ fn chip(ui: &mut egui::Ui, c: &Chip) {
         );
     }
     painter.galley(rect.min + pad + egui::vec2(dot, 0.0), galley, p.text);
-    if let Some(h) = &c.hover {
-        response.on_hover_text(h);
+    let hover = match (&c.hover, elided) {
+        (Some(h), true) => Some(format!(
+            "{} {}
+{h}",
+            c.name, c.text
+        )),
+        (Some(h), false) => Some(h.clone()),
+        (None, true) => Some(format!("{} {}", c.name, c.text)),
+        (None, false) => None,
+    };
+    if let Some(h) = hover {
+        response.on_hover_text(h.trim_start());
     }
 }
 

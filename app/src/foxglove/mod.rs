@@ -61,6 +61,7 @@ pub mod shell;
 pub mod single_instance;
 pub mod startup;
 pub mod store;
+pub mod taskbar;
 pub mod theme;
 #[cfg(test)]
 mod theme_preview;

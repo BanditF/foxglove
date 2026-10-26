@@ -467,10 +467,10 @@ fn foxglove_groups(ui: &mut egui::Ui) {
 }
 
 /// The settings window as #385 draws it: the sidebar, the status strip and one page.
-fn shell_window(ctx: &egui::Context, height: f32) {
+fn shell_window(ctx: &egui::Context, size: egui::Vec2) -> Option<Rect> {
     egui::Window::new("Foxglove Settings")
         .fixed_pos(egui::pos2(16.0, 16.0))
-        .default_size(egui::vec2(1040.0, height))
+        .default_size(size)
         .min_size(egui::vec2(720.0, 420.0))
         .frame(crate::foxglove::shell::window_frame(ctx))
         .collapsible(false)
@@ -485,7 +485,8 @@ fn shell_window(ctx: &egui::Context, height: f32) {
                 foxglove_groups(ui);
                 crate::foxglove::settings_ui::footer(ui);
             })
-        });
+        })
+        .map(|r| r.response.rect)
 }
 
 fn shell_preview(page: crate::foxglove::shell::Page) -> image::RgbaImage {
@@ -549,7 +550,18 @@ fn shell_preview_with(
     samples: &Samples,
     height: f32,
 ) -> image::RgbaImage {
-    use crate::foxglove::shell;
+    let ctx = preview_ctx();
+    show_samples(page, samples);
+    let size = egui::vec2(1072.0, height + 40.0);
+    let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
+        shell_window(ctx, egui::vec2(1040.0, height));
+    });
+    clear_samples();
+    img
+}
+
+/// A headless context with the app's fonts and the dark theme.
+fn preview_ctx() -> egui::Context {
     crate::foxglove::store::test_config_dir();
     let ctx = egui::Context::default();
     // The plugin icons are SVGs, as in the app.
@@ -559,6 +571,12 @@ fn shell_preview_with(
     crate::foxglove::theme::add_fonts(&mut fonts);
     ctx.set_fonts(fonts);
     crate::foxglove::theme::apply_choice(&ctx, crate::foxglove::theme::Choice::Dark);
+    ctx
+}
+
+/// The pages' live parts show `samples` on this thread, on `page`.
+fn show_samples(page: crate::foxglove::shell::Page, samples: &Samples) {
+    use crate::foxglove::shell;
     shell::preview_page(page);
     shell::PREVIEW_STRIP.set(Some(samples.strip.clone()));
     crate::foxglove::keyboard_page::PREVIEW.set(Some(samples.keyboard.clone()));
@@ -566,17 +584,91 @@ fn shell_preview_with(
     crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
     crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
     crate::foxglove::plugins_ui::PREVIEW.set(Some(samples.plugins.clone()));
-    let size = egui::vec2(1072.0, height + 40.0);
-    let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
-        shell_window(ctx, height)
-    });
-    shell::PREVIEW_STRIP.set(None);
+}
+
+fn clear_samples() {
+    crate::foxglove::shell::PREVIEW_STRIP.set(None);
     crate::foxglove::keyboard_page::PREVIEW.set(None);
     crate::foxglove::lights_page::PREVIEW.set(None);
     crate::foxglove::screens_ui::PREVIEW.set(None);
     crate::foxglove::art_ui::PREVIEW.set(None);
     crate::foxglove::plugins_ui::PREVIEW.set(None);
-    img
+}
+
+/// The settings window's width after a few frames of `samples`, at the window's minimum size.
+fn window_width(ctx: &egui::Context, page: crate::foxglove::shell::Page, samples: &Samples) -> f32 {
+    show_samples(page, samples);
+    let mut rect = None;
+    for frame in 0..6 {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(1600.0, 900.0))),
+            time: Some(frame as f64),
+            predicted_dt: 1.0,
+            focused: true,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| {
+            rect = shell_window(ui.ctx(), egui::vec2(720.0, 600.0));
+        });
+        out.textures_delta.clear(); // nothing is painted here
+    }
+    clear_samples();
+    rect.expect("the window was drawn").width()
+}
+
+/// What a keyboard on USB and Bluetooth at once shows, worded as long as it gets: every chip
+/// of the strip, the unplug warning, and long rows on the Keyboard page.
+fn long_samples() -> Samples {
+    let mut s = Samples::full();
+    s.strip = crate::foxglove::shell::StripState {
+        keyboard: true,
+        usb: Some(false),
+        left_build: Some(Ok("0.1.0 (dev) · e255d32".into())),
+        right_build: Some(Err("no reply from the keyboard".into())),
+        right_battery: Some(100),
+        left_battery: Some(100),
+        profile: Some(3),
+        this_pc: Some(1),
+        unplug_warning: Some("Unplugging now leaves the keyboard unable to type".into()),
+    };
+    for h in &mut s.keyboard.halves {
+        h.text = format!(
+            "{} · e255d32 · built for the Eyelash Corne, dev profile",
+            h.text
+        );
+    }
+    s.keyboard.link.rows = vec![
+        (
+            "Left half",
+            "on USB and on Bluetooth profile 4 (another PC) at the same time".into(),
+        ),
+        (
+            "Bluetooth to this PC",
+            "connected, but this PC is paired on profile 2 of 5".into(),
+        ),
+    ];
+    s.keyboard.link.unplug_fix = Some(
+        "Unplugging now leaves the keyboard unable to type - select profile 2: hold SYSTEM \
+         (both middle thumbs) and Tab, then press the profile's key on the number row"
+            .into(),
+    );
+    s
+}
+
+/// A keyboard connecting (or replugged) must not widen the settings window: long chips and rows
+/// wrap or are cut inside it. Before the fix the window grew by the overflow on reconnect.
+#[test]
+fn a_reconnect_does_not_widen_the_window() {
+    use crate::foxglove::shell::Page;
+    for page in [Page::Keyboard, Page::Settings, Page::Screens] {
+        let ctx = preview_ctx();
+        let before = window_width(&ctx, page, &Samples::none());
+        let after = window_width(&ctx, page, &long_samples());
+        assert!(
+            after <= before + 0.5,
+            "{page:?}: the window grew from {before} to {after} points when the keyboard connected"
+        );
+    }
 }
 
 fn keep(name: &str, img: &image::RgbaImage) {

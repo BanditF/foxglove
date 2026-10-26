@@ -25,11 +25,12 @@ use device_discovery::discover_devices;
 use settings::Settings;
 
 fn main() {
+    // Foxglove (#370): stderr and panics to logs\foxglove.log, first, so an early exit is seen.
+    foxglove::app_log::start();
     if foxglove::update::helper_entry() { return; }
     if foxglove::identity::entry() { return; }
     // Foxglove (#345): one per user; a second launch shows the running one and exits 0.
     if !foxglove::single_instance::claim() { return; }
-    foxglove::app_log::start(); // Foxglove (#370): stderr and panics to logs\foxglove.log
     foxglove::update::start();
     os_layout::init();
     foxglove::gpu_reset::start(); // Foxglove (#346): a fresh copy after a GPU reset

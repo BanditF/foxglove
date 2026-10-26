@@ -53,13 +53,22 @@ mod imp {
         let (mutex_name, event_name) = super::names(config_dir);
         // The event first (auto-reset, opened if it exists), so a second launch can always signal
         // it, even while the first instance is still starting: the signal waits for its waiter.
-        let Ok(event) = (unsafe { CreateEventW(None, false, false, &HSTRING::from(event_name)) })
-        else {
-            return true; // no guard rather than no Foxglove
+        let event = match unsafe { CreateEventW(None, false, false, &HSTRING::from(event_name)) } {
+            Ok(event) => event,
+            Err(e) => {
+                // No guard rather than no Foxglove.
+                crate::foxglove::app_log::early(&format!(
+                    "Foxglove: no single-instance guard (show event: {e}); starting anyway"
+                ));
+                return true;
+            }
         };
         let mutex = unsafe { CreateMutexW(None, false, &HSTRING::from(mutex_name)) };
         let already = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
-        if mutex.is_err() {
+        if let Err(e) = &mutex {
+            crate::foxglove::app_log::early(&format!(
+                "Foxglove: no single-instance guard (mutex: {e}); starting anyway"
+            ));
             return true;
         }
         if already {
@@ -68,7 +77,8 @@ mod imp {
                 let _ = AllowSetForegroundWindow(ASFW_ANY);
                 let _ = SetEvent(event);
             }
-            eprintln!("Foxglove: already running; showing that one");
+            // Written at once: this process exits right after.
+            crate::foxglove::app_log::early("Foxglove: already running; showing that one");
             return false;
         }
         // Both handles stay open until the process exits, which releases the guard.
