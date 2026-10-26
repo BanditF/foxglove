@@ -68,6 +68,45 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
     out
 }
 
+/// Finds the keyboard with the host link each time a shared link connects, so the status strip,
+/// the Keyboard page and plugins see a keyboard that connects after startup (or answers only
+/// after a reconnect). Before, [`device`] ran only when something asked, and a "no keyboard"
+/// from before the connection stayed until the next ask. Start: a link's State event with a
+/// connection. Stop: none needed; the worker blocks on its channel, so an idle keyboard costs
+/// no wake-ups.
+pub fn start() {
+    enum Msg {
+        Link(Arc<digitalis::link::Link>),
+        Connected,
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let links_tx = tx.clone();
+    super::services::spawn_named("keyboard-discovery", move || {
+        // Listeners only enqueue: the worker subscribes and discovers.
+        let _links = super::link::subscribe_links(move |link| {
+            let _ = links_tx.send(Msg::Link(link));
+        });
+        let mut subscriptions = Vec::new();
+        for msg in rx {
+            match msg {
+                Msg::Link(link) => {
+                    let tx = tx.clone();
+                    subscriptions.push(link.subscribe_events(move |event| {
+                        if let digitalis::link::Event::State(s) = event {
+                            if s.connected.is_some() {
+                                let _ = tx.send(Msg::Connected);
+                            }
+                        }
+                    }));
+                }
+                Msg::Connected => {
+                    let _ = device();
+                }
+            }
+        }
+    });
+}
+
 /// The current device's connection generation, without blocking or discovery (for the UI).
 pub fn generation() -> Option<u64> {
     let cached = DEVICE.try_lock().ok()?;
