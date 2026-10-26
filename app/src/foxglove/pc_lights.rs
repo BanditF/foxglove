@@ -300,15 +300,33 @@ impl Worker {
         self.found = now;
     }
 
-    /// The colour Foxglove knows for a board's zone (by VID/PID and zone number).
+    /// The colour Foxglove knows for a board's zone (by VID/PID and zone number), else the
+    /// one the user saved for it.
     fn known_color(&self, vid: u16, pid: u16, zone: u8) -> Option<Rgb> {
         self.found
             .iter()
             .filter(|f| (f.vid, f.pid) == (vid, pid))
             .find_map(|f| {
                 let i = f.zones.iter().position(|z| z.id == zone)?;
-                self.drivers.get(&f.key)?.colors().get(i).copied().flatten()
+                let known = self.drivers.get(&f.key)?.colors().get(i).copied().flatten();
+                known.or_else(|| self.saved_colors(f).get(i).copied().flatten())
             })
+    }
+
+    /// The colours the user chose for a device, per zone: the followed colour while it matches
+    /// the keyboard, else the saved ones (`None` where nothing was saved).
+    fn saved_colors(&self, f: &Found) -> Vec<Option<Rgb>> {
+        let saved = self.settings.devices.get(&f.key);
+        if let (Some(true), Some(c)) = (saved.map(|s| s.match_keyboard), self.follow) {
+            return vec![Some(rgb(c)); f.zones.len()];
+        }
+        f.zones
+            .iter()
+            .map(|z| {
+                let hex = saved?.colors.get(&z.id.to_string())?;
+                parse_hex(hex).map(rgb)
+            })
+            .collect()
     }
 
     /// Writes the user's own catalog and rebuilds the merged one.
@@ -328,24 +346,12 @@ impl Worker {
 
     /// Saved colours (or the followed colour) back on a board that just arrived.
     fn restore(&mut self, f: &Found) {
-        let saved = self
-            .settings
-            .devices
-            .get(&f.key)
-            .cloned()
-            .unwrap_or_default();
-        let colors: Vec<(usize, Rgb)> = match (saved.match_keyboard, self.follow) {
-            (true, Some(c)) => (0..f.zones.len()).map(|i| (i, rgb(c))).collect(),
-            _ => f
-                .zones
-                .iter()
-                .enumerate()
-                .filter_map(|(i, z)| {
-                    let c = parse_hex(saved.colors.get(&z.id.to_string())?)?;
-                    Some((i, rgb(c)))
-                })
-                .collect(),
-        };
+        let colors: Vec<(usize, Rgb)> = self
+            .saved_colors(f)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, c)| Some((i, c?)))
+            .collect();
         if colors.is_empty() {
             return;
         }
@@ -378,7 +384,21 @@ impl Worker {
                 self.write(&key, "Colours set", |d| d.set_zones(&colors), true);
             }
             Msg::Off(key) => self.write(&key, "Lights off", |d| d.off(), true),
-            Msg::Identify(key) => self.write(&key, "Identified", |d| d.identify(wait), false),
+            Msg::Identify(key) => {
+                // A write-only board Foxglove hasn't set yet goes back to the saved colours.
+                let fallback = self
+                    .found
+                    .iter()
+                    .find(|f| f.key == key)
+                    .map(|f| self.saved_colors(f))
+                    .unwrap_or_default();
+                self.write(
+                    &key,
+                    "Identified",
+                    |d| d.identify_restoring(&fallback, wait),
+                    false,
+                );
+            }
             Msg::Match(key, on) => {
                 self.settings
                     .devices
@@ -420,7 +440,7 @@ impl Worker {
                 let back = if restore.is_some() {
                     "back to its colour"
                 } else {
-                    "left dark"
+                    "left white (no colour known for it)"
                 };
                 self.status = Some(match result {
                     Ok(()) => format!("Zone {zone}: blinked, {back}"),
@@ -944,6 +964,32 @@ mod tests {
     }
 
     #[test]
+    fn identify_with_no_prior_state_restores_the_saved_colours() {
+        // Saved colours, but the board arrived while Light Studio ran: nothing was written,
+        // so Foxglove knows no colours for it.
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            "103c:84fd".into(),
+            Saved {
+                colors: [("1".to_string(), "#112233".to_string())].into(),
+                match_keyboard: false,
+            },
+        );
+        let (mut w, sent) = worker(settings);
+        w.scan(&case_hid(), true, false, true);
+        assert!(sent.lock().unwrap().is_empty());
+        w.handle(Msg::Identify("103c:84fd".into()), false, &mut no_wait());
+        let sent = sent.lock().unwrap().clone();
+        let back = &sent[sent.len() - 5..];
+        assert_eq!(back[0], report(1, [0x11, 0x22, 0x33]), "the saved colour");
+        assert_eq!(
+            back[1],
+            report(2, [255, 255, 255]),
+            "nothing saved: white, not dark"
+        );
+    }
+
+    #[test]
     fn colours_convert() {
         assert_eq!(hsv_rgb(0, 100, 100), [255, 0, 0]);
         assert_eq!(hsv_rgb(120, 100, 100), [0, 255, 0]);
@@ -997,7 +1043,7 @@ mod tests {
         assert_eq!(s.unknown[0].name, "Desk strip");
         assert!(sent.lock().unwrap().is_empty(), "listing writes nothing");
 
-        // A zone test: one zone blinks, then goes dark (nothing known for it).
+        // A zone test: one zone blinks, then goes white (nothing known for it), never dark.
         w.handle(
             Msg::TestZone {
                 vid: 0x1209,
@@ -1012,9 +1058,9 @@ mod tests {
         {
             let sent = sent.lock().unwrap();
             assert_eq!(sent.len(), pcl::IDENTIFY_STEPS + 1);
-            assert_eq!(*sent.last().unwrap(), report(2, [0, 0, 0]));
+            assert_eq!(*sent.last().unwrap(), report(2, [255, 255, 255]));
         }
-        assert!(w.snapshot().status.unwrap().contains("left dark"));
+        assert!(w.snapshot().status.unwrap().contains("left white"));
         // Paused: refused.
         w.handle(
             Msg::TestZone {
