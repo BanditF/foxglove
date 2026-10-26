@@ -157,6 +157,8 @@ impl Drop for Showing {
 }
 
 const SIDEBAR_WIDTH: f32 = 196.0;
+/// Room at the page's right for its scroll bar (10 points wide while the pointer is on it).
+const SCROLL_GUTTER: f32 = 12.0;
 
 /// Draws the sidebar, the status strip and the current page; `add` draws the sections, and only
 /// those of the current page show. The Settings page calls it once per column (#390).
@@ -188,7 +190,8 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(p.ground).inner_margin(Margin {
             left: 22,
-            right: 14,
+            // The rest of the right margin is the scroll bar's gutter, below.
+            right: 2,
             top: 14,
             bottom: 10,
         }))
@@ -197,6 +200,9 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
                 .id_salt(("foxglove-page", page))
                 .auto_shrink(false)
                 .show(ui, |ui| {
+                    // A gutter for the scroll bar, which floats over the page's right edge:
+                    // without it the bar covers the cards' edge and the controls there.
+                    ui.set_max_width(ui.available_width() - SCROLL_GUTTER);
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(page.label())

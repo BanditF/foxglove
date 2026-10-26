@@ -214,20 +214,21 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
         if let Some((name, caps)) = &v.keyboard {
             ui.add_space(8.0);
             ui.separator();
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(name).color(p.text_strong).strong());
-                ui.label(RichText::new("Foxglove firmware").color(p.muted));
-                if v.keyboard_calibration == Some(true) {
-                    ui.label(RichText::new("· calibrated").color(p.muted));
-                }
-                if v.keyboard_calibration.is_some() {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if calibrate_button(ui).clicked() {
-                            out.push(Intent::CalibrateKeyboard);
-                        }
-                    });
-                }
-            });
+            super::settings_ui::split_row(
+                ui,
+                |ui| {
+                    if v.keyboard_calibration.is_some() && calibrate_button(ui).clicked() {
+                        out.push(Intent::CalibrateKeyboard);
+                    }
+                },
+                |ui| {
+                    ui.label(RichText::new(name).color(p.text_strong).strong());
+                    ui.label(RichText::new("Foxglove firmware").color(p.muted));
+                    if v.keyboard_calibration == Some(true) {
+                        ui.label(RichText::new("· calibrated").color(p.muted));
+                    }
+                },
+            );
             chips(ui, &caps.chips(true));
             ui.weak("Its underglow is in the card above; its screens are on the Screens page.");
         }
@@ -272,17 +273,11 @@ pub fn chips(ui: &mut egui::Ui, chips: &[String]) {
 fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut Vec<Intent>) {
     let p = theme::palette(ui);
     let driven = matches!(row.control, Control::Driver(_));
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(&row.name).color(p.text_strong).strong());
-        ui.label(RichText::new(control_text(row.control)).color(p.muted));
-        if row.entry.is_some() {
-            ui.label(RichText::new("· added by you").color(p.muted));
-        }
-        if row.calibrated {
-            ui.label(RichText::new("· calibrated").color(p.muted));
-        }
-        if driven && row.caps.switchable() {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    // The buttons at the right; the name and its notes wrap in the room left of them.
+    super::settings_ui::split_row(
+        ui,
+        |ui| {
+            if driven && row.caps.switchable() {
                 ui.add_enabled_ui(!busy, |ui| {
                     if row.caps.takes_color() && calibrate_button(ui).clicked() {
                         out.push(Intent::Calibrate(row.key.clone()));
@@ -302,9 +297,19 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
                         out.push(Intent::Identify(row.key.clone()));
                     }
                 });
-            });
-        }
-    });
+            }
+        },
+        |ui| {
+            ui.label(RichText::new(&row.name).color(p.text_strong).strong());
+            ui.label(RichText::new(control_text(row.control)).color(p.muted));
+            if row.entry.is_some() {
+                ui.label(RichText::new("· added by you").color(p.muted));
+            }
+            if row.calibrated {
+                ui.label(RichText::new("· calibrated").color(p.muted));
+            }
+        },
+    );
     chips(ui, &row.caps.chips(false));
     match row.control {
         Control::Driver(_) if row.caps.takes_color() => zones(ui, row, busy, draft, out),
@@ -400,9 +405,20 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
     });
     let mut matching = row.match_keyboard;
     let changes = draft.changes(row);
-    ui.horizontal(|ui| {
-        ui.add_enabled_ui(!busy, |ui| {
-            if ui
+    let mut apply = false;
+    super::settings_ui::split_row(
+        ui,
+        |ui| {
+            apply = ui
+                .add_enabled(
+                    !busy && !changes.is_empty(),
+                    theme::primary_button(ui, "Apply colours"),
+                )
+                .clicked();
+        },
+        |ui| {
+            ui.add_enabled_ui(!busy, |ui| {
+                if ui
                 .checkbox(&mut matching, "Match keyboard")
                 .on_hover_text(
                     "Follow the keyboard's underglow colour when Foxglove sets it, or the Windows \
@@ -412,20 +428,15 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
             {
                 out.push(Intent::Match(row.key.clone(), matching));
             }
+            });
+        },
+    );
+    if apply {
+        out.push(Intent::Apply {
+            key: row.key.clone(),
+            colors: changes,
         });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let apply = ui.add_enabled(
-                !busy && !changes.is_empty(),
-                theme::primary_button(ui, "Apply colours"),
-            );
-            if apply.clicked() {
-                out.push(Intent::Apply {
-                    key: row.key.clone(),
-                    colors: changes,
-                });
-            }
-        });
-    });
+    }
 }
 
 /// "Calibrate…": opens the colour calibrator on a device.

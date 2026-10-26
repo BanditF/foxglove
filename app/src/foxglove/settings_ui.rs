@@ -151,6 +151,45 @@ pub fn row(ui: &mut egui::Ui, name: &str, value: impl Into<egui::WidgetText>) ->
     .inner
 }
 
+/// A row with `right` against the right edge and `left` in the room left of it, where text
+/// wraps. `right` is laid out first, so a narrow card squeezes `left`, never the other way round
+/// (a right-to-left part after a label runs back over the label when the card is too narrow).
+pub fn split_row(
+    ui: &mut egui::Ui,
+    right: impl FnOnce(&mut egui::Ui),
+    left: impl FnOnce(&mut egui::Ui),
+) {
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            right(ui);
+            ui.with_layout(
+                egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                left,
+            );
+        });
+    });
+}
+
+/// A label and its value in two columns: the label in a column `name_width` wide (cut with an
+/// ellipsis if longer), the value in the rest, wrapping there.
+pub fn pair(ui: &mut egui::Ui, name_width: f32, name: &str, value: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal_top(|ui| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(name_width, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(name_width);
+                ui.add(egui::Label::new(name).truncate());
+            },
+        );
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), 0.0),
+            egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+            value,
+        );
+    });
+}
+
 fn open_by_default(title: &str) -> bool {
     // A page with one or two sections opens them (#385).
     matches!(

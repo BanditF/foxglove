@@ -829,7 +829,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
             }
         }
         View::Checking => {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.spinner();
                 ui.label("Checking the firmware and the keyboard…");
             });
@@ -875,7 +875,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
             }
         }
         View::Running(steps) => {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.spinner();
                 ui.label(RichText::new("Updating the keyboard").strong());
             });

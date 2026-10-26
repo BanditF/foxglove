@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use egui::{Color32, Pos2, Rect, TextureId};
 
+mod layout;
 mod overlay;
 
 thread_local! { static LEGACY: Cell<bool> = const { Cell::new(false) }; }
@@ -43,9 +44,22 @@ fn render_ui(
     ctx: &egui::Context,
     size: egui::Vec2,
     backdrop: Color32,
-    mut draw: impl FnMut(&mut egui::Ui),
+    draw: impl FnMut(&mut egui::Ui),
 ) -> image::RgbaImage {
-    let mut textures: HashMap<TextureId, Texture> = HashMap::new();
+    let mut textures = HashMap::new();
+    let (shapes, ppp) = run_frames(ctx, size, PPP, Some(&mut textures), draw);
+    paint(ctx, size, backdrop, shapes, ppp, &textures)
+}
+
+/// Runs `draw` for a few frames at `ppp` pixels per point and returns the last frame's shapes.
+/// With `textures`, keeps what egui sends for [`paint`]; without, drops it (a layout check).
+fn run_frames(
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    ppp: f32,
+    mut textures: Option<&mut HashMap<TextureId, Texture>>,
+    mut draw: impl FnMut(&mut egui::Ui),
+) -> (Vec<egui::epaint::ClippedShape>, f32) {
     let mut last = None;
     for frame in 0..8 {
         let mut raw = egui::RawInput {
@@ -58,8 +72,13 @@ fn render_ui(
         raw.viewports
             .entry(egui::ViewportId::ROOT)
             .or_default()
-            .native_pixels_per_point = Some(PPP);
+            .native_pixels_per_point = Some(ppp);
         let mut out = ctx.run_ui(raw, &mut draw);
+        let Some(textures) = textures.as_deref_mut() else {
+            out.textures_delta.clear();
+            last = Some((out.shapes, out.pixels_per_point));
+            continue;
+        };
         for (id, delta) in out
             .textures_delta
             .set
@@ -95,7 +114,18 @@ fn render_ui(
         out.textures_delta.clear();
         last = Some((out.shapes, out.pixels_per_point));
     }
-    let (shapes, ppp) = last.expect("frames ran");
+    last.expect("frames ran")
+}
+
+/// Paints `shapes` over `backdrop` with the CPU rasterizer.
+fn paint(
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    backdrop: Color32,
+    shapes: Vec<egui::epaint::ClippedShape>,
+    ppp: f32,
+    textures: &HashMap<TextureId, Texture>,
+) -> image::RgbaImage {
     let primitives = ctx.tessellate(shapes, ppp);
 
     let (w, h) = ((size.x * ppp) as usize, (size.y * ppp) as usize);
@@ -506,16 +536,18 @@ fn shell_window(ctx: &egui::Context, size: egui::Vec2) -> Option<Rect> {
         .resizable(true)
         .open(&mut true)
         .show(ctx, |ui| {
-            crate::foxglove::shell::frame(ui, |ui| {
-                // In the real window's order (ui_settings.rs).
-                keypeek_groups(ui);
-                crate::foxglove::profiles_ui::picker(ui);
-                crate::foxglove::update::group(ui);
-                foxglove_groups(ui);
-                crate::foxglove::settings_ui::footer(ui);
-            })
+            crate::foxglove::shell::frame(ui, sections)
         })
         .map(|r| r.response.rect)
+}
+
+/// The settings window's sections, in the real window's order (ui_settings.rs).
+fn sections(ui: &mut egui::Ui) {
+    keypeek_groups(ui);
+    crate::foxglove::profiles_ui::picker(ui);
+    crate::foxglove::update::group(ui);
+    foxglove_groups(ui);
+    crate::foxglove::settings_ui::footer(ui);
 }
 
 fn shell_preview(page: crate::foxglove::shell::Page) -> image::RgbaImage {
@@ -922,13 +954,7 @@ fn settings_window_renders_as_a_native_window() {
                     });
                 });
             });
-        crate::foxglove::shell::frame(ui, |ui| {
-            keypeek_groups(ui);
-            crate::foxglove::profiles_ui::picker(ui);
-            crate::foxglove::update::group(ui);
-            foxglove_groups(ui);
-            crate::foxglove::settings_ui::footer(ui);
-        });
+        crate::foxglove::shell::frame(ui, sections);
     });
     clear_samples();
     keep("ui-settings-native-window.png", &img);
