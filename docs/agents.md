@@ -53,6 +53,10 @@ The PC is shared with the user, and every gate is minutes of full CPU (the PC im
 - **Builds run at BelowNormal priority:** `scripts/build-slot.ps1` (and so `check.ps1` and
   `merge-pr.sh`) drops the slot's process to it and cargo inherits it, so the desktop stays
   smooth during a gate. Jobs and the two slots are unchanged.
+- **Guards in the gate** (code governor): `cargo fmt --check` (crates and `app/src/foxglove`),
+  `cargo deny` (licences, advisories; `deny.toml`, `app/deny.toml`), and a size budget that lists
+  functions over 120 lines and files over 1,500 (warnings only). PRs use
+  `.github/pull_request_template.md`.
 - **Remove a finished worktree on merge:** `git worktree remove <dir>` plus its target dir, or
   `scripts/clean-worktrees.ps1 -Apply`.
 

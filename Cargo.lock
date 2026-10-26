@@ -536,7 +536,6 @@ dependencies = [
  "embedded-graphics",
  "windows",
  "windows-core",
- "windows-future",
 ]
 
 [[package]]
@@ -938,14 +937,12 @@ dependencies = [
  "clap",
  "digitalis",
  "dirs",
- "embedded-graphics",
  "foxglove-panel",
  "hidapi",
  "serde",
  "toml 0.9.12+spec-1.1.0",
  "tray-icon",
  "windows",
- "windows-future",
 ]
 
 [[package]]
@@ -1400,7 +1397,6 @@ name = "plugin-sandbox-probe"
 version = "0.0.0"
 dependencies = [
  "foxglove-devices",
- "foxglove-plugin-api",
  "foxglove-plugin-host",
  "windows",
 ]
