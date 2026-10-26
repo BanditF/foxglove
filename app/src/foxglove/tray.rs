@@ -123,19 +123,30 @@ pub fn status_line(connected: bool, name: &str, paused: bool) -> String {
 impl Controls {
     pub fn new(menu: &Menu) -> Self {
         let paused = super::pause::paused();
-        let pause = MenuItem::with_id(
-            "fox-pause-all",
-            super::tray_panel::pause_button(paused).0,
-            true,
-            None,
-        );
-        let profile = Submenu::new(PROFILE, true);
-        let _ = menu.append(&MenuItem::with_id("settings", OPEN, true, None));
-        let _ = menu.append(&PredefinedMenuItem::separator());
-        let _ = menu.append(&pause);
-        let _ = menu.append(&profile);
-        let _ = menu.append(&PredefinedMenuItem::separator());
-        let _ = menu.append(&MenuItem::with_id("fox-logs", LOGS, true, None));
+        // Built from `labels`, so the menu is the one its test pins.
+        let mut pause = None;
+        let mut profile = None;
+        for (i, label) in labels(paused).into_iter().enumerate() {
+            let _ = match (i, label) {
+                (_, None) => menu.append(&PredefinedMenuItem::separator()),
+                (0, Some(text)) => menu.append(&MenuItem::with_id("settings", text, true, None)),
+                (2, Some(text)) => {
+                    let item = MenuItem::with_id("fox-pause-all", text, true, None);
+                    let added = menu.append(&item);
+                    pause = Some(item);
+                    added
+                }
+                (3, Some(text)) => {
+                    let item = Submenu::new(text, true);
+                    let added = menu.append(&item);
+                    profile = Some(item);
+                    added
+                }
+                (_, Some(text)) => menu.append(&MenuItem::with_id("fox-logs", text, true, None)),
+            };
+        }
+        let pause = pause.unwrap_or_else(|| MenuItem::new("", false, None));
+        let profile = profile.unwrap_or_else(|| Submenu::new(PROFILE, false));
         Self {
             pause,
             paused_shown: paused,
