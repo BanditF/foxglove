@@ -26,7 +26,8 @@ pub struct ScreensSettings {
 pub enum Layout {
     #[default]
     Info,
-    /// The Wallpaper Engine wallpaper's left frames (art/wallpapers.json); Info when it has none.
+    /// The wallpaper's left frames (art/wallpapers.json): Wallpaper Engine's, or the Windows
+    /// desktop wallpaper's without it (#446); Info when it has none.
     Wallpaper,
 }
 

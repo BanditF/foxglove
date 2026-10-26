@@ -187,6 +187,56 @@ screens) are Foxglove code in `crates/devices` and `app/src/foxglove`.
 - **Corne-only features** (screens, art) appear only when `Caps::SCREENS` is set, so another
   board sees a clean app, not greyed-out Corne controls.
 
+## Optional integrations (Wallpaper Engine, and the pattern for the rest)
+
+Foxglove works on a PC that has none of the other programs it can work with. Wallpaper Engine,
+OpenRGB, SignalRGB, OBS, iCUE and the like make it richer, but none of them is ever needed.
+Wallpaper Engine (#446, `app/src/foxglove/wallpaper_engine.rs`) is the reference. A new
+integration follows the same rules:
+
+1. **Find it the system way.** Use the program's own records, not one path that works on one
+   PC. Wallpaper Engine is looked for in this order:
+   - a custom folder (`FOXGLOVE_WALLPAPER_ENGINE_DIR`, or `folder` in the store's
+     `[wallpaper_engine]` section);
+   - Steam's own library;
+   - every library in Steam's `libraryfolders.vdf` (the ones listing app 431960 first, at the
+     `installdir` from `appmanifest_431960.acf`);
+   - Steam's `Steam App 431960` uninstall entry.
+2. **Look at start and on Refresh, never on a timer.** Its watcher's change events may look
+   again (Wallpaper Engine's running check rides on a wallpaper change). Cache the answer as
+   one `Presence`-style value that the UI reads every frame for free.
+3. **Absent is normal, not an error.**
+   - Features that need it hide, or show one short line: "Works best with Wallpaper Engine."
+     (`Presence::hint`).
+   - No error dialogs, no `eprintln!` about it, and no retries or reconnect loops waiting for
+     it to appear.
+   - Installed but not running is a third state with its own hint, not a failure.
+4. **Fall back to Windows where a feature can.**
+   - "Match the wallpaper" (right art) and the left panel's wallpaper frames use the Windows
+     desktop wallpaper. Its file (`HKCU\Control Panel\Desktop` › `WallPaper`) matches a
+     `wallpapers.json` entry whose id is the file's name. Its change event is the folder watch
+     on `%APPDATA%\Microsoft\Windows\Themes` (Windows rewrites `TranscodedWallpaper`).
+   - The underglow's colour match falls back to Windows' accent colour (`accent.rs`), which
+     follows its own change event.
+   - When no fallback makes sense, hide the feature.
+5. **Test the three states window-free:**
+   - not installed;
+   - installed somewhere unusual (for Wallpaper Engine, a second Steam library);
+   - installed but not running.
+
+   `wallpaper_engine.rs` and `wallpaper.rs` have these tests.
+
+| Integration | Found by | Without it |
+|---|---|---|
+| Wallpaper Engine | Steam libraries, uninstall entry, custom folder | desktop wallpaper, accent colour; hint |
+| OpenRGB (#244) | its SDK server answering on the configured port when the user turns it on | the plugin stays off; hint in its settings |
+| SignalRGB (#331) | SignalRGB loading the Foxglove plugin (it connects to us) | nothing to show; the receiver idles |
+| OBS (Broadcast Status) | obs-websocket answering when the plugin starts | the plugin shows nothing; one line in its settings |
+
+Plugins (including the Wallpaper Match plugin, #335, and the wallpaper-sees-the-layer work, #377)
+follow the same rules. A plugin whose program is missing starts, reports "not found" once in
+its settings, and waits for the next start or Refresh.
+
 ## Plugins: the plugin system
 
 ### Decision: out-of-process, JSON-RPC, any language
