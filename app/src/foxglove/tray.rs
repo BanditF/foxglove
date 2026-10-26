@@ -104,6 +104,7 @@ impl Controls {
         let profile = Submenu::new("Profile", true);
         let _ = menu.append(&status);
         let _ = menu.append(&MenuItem::with_id("settings", "Settings...", true, None));
+        let _ = menu.append(&MenuItem::with_id("fox-logs", "Open log folder", true, None));
         let _ = menu.append(&pause_all);
         let _ = menu.append(&pause);
         let _ = menu.append(&art);
@@ -250,6 +251,9 @@ pub fn event(id: &str, on_settings: &dyn Fn()) {
     }
     if id == "fox-update" {
         on_settings();
+    }
+    if id == "fox-logs" {
+        super::app_log::open_folder();
     }
     if id == "fox-pause" {
         screens::set_paused(!screens::paused());
