@@ -199,7 +199,7 @@ fn remove_fields(toks: &mut Vec<Tok>, drop: impl Fn(char, usize) -> bool) {
         toks.remove(i);
         if year && wordy(toks.get(i)) {
             toks.remove(i);
-        } else if i > 0 && plain(toks.get(i - 1)) {
+        } else if i > 0 && (year || plain(toks.get(i - 1))) {
             toks.remove(i - 1);
         } else if plain(toks.get(i)) {
             toks.remove(i);
@@ -428,6 +428,10 @@ mod tests {
         let p = Pictures::new("HH:mm", "dddd, yyyy. 'gada' d. MMMM", "dd.MM.yyyy");
         assert_eq!(p.date, "ddd, d. MMM");
         assert_eq!(p.date_short, "d. MMM");
+        // es-ES / pt-BR: the " de " before the year goes with it
+        let p = Pictures::new("H:mm", "dddd, d' de 'MMMM' de 'yyyy", "dd/MM/yyyy");
+        assert_eq!(p.date, "ddd, d' de 'MMM");
+        assert_eq!(p.date_short, "d' de 'MMM");
     }
 
     #[test]
