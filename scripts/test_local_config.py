@@ -34,9 +34,15 @@ class LocalConfigTest(unittest.TestCase):
             self.assertEqual(c['keyboard']['left_serial'], 'BBBB')
             self.assertEqual(c['worktrees']['root'], 'E:/wt')
 
+    def test_bad_serials_are_refused(self):
+        for env in ({'FOXGLOVE_LEFT_SERIAL': 'x|.*'},
+                    {'FOXGLOVE_LEFT_SERIAL': '35B4541F78DE9CF8'}):
+            with self.assertRaises(ValueError):
+                lc.serials(env=env, files=[])
+
     def test_where_local_toml_is_looked_for(self):
-        found = lc.candidates(env={'FOXGLOVE_LOCAL_TOML': 'X:/mine.toml'},
-                              repo=Path('R:/repo'), workspace=Path('W:/ws'))
+        found = list(lc.candidates(env={'FOXGLOVE_LOCAL_TOML': 'X:/mine.toml'},
+                                   repo=Path('R:/repo'), workspace=Path('W:/ws')))
         self.assertEqual(found, [Path('X:/mine.toml'), Path('R:/repo/tools/local.toml'),
                                  Path('W:/ws/tools/local.toml')])
 

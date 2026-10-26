@@ -61,15 +61,14 @@ def workspace_of(repo=REPO):
 
 
 def candidates(env=os.environ, repo=REPO, workspace=None):
-    """Where tools/local.toml may be, in order."""
-    out = []
+    """Where tools/local.toml may be, in order. Lazy: git is asked for the workspace only when
+    the earlier places have no file."""
     if env.get('FOXGLOVE_LOCAL_TOML'):
-        out.append(Path(env['FOXGLOVE_LOCAL_TOML']))
-    out.append(repo / 'tools' / 'local.toml')
+        yield Path(env['FOXGLOVE_LOCAL_TOML'])
+    yield repo / 'tools' / 'local.toml'
     ws = workspace if workspace is not None else workspace_of(repo)
     if ws:
-        out.append(Path(ws) / 'tools' / 'local.toml')
-    return out
+        yield Path(ws) / 'tools' / 'local.toml'
 
 
 def merge(base, over):
@@ -100,9 +99,16 @@ def get(dotted, env=os.environ, files=None):
 
 
 def serials(env=os.environ, files=None):
-    """{serial: half}, as the flasher wants them."""
+    """{serial: half}, as the flasher wants them. Refuses serials that aren't plain letters
+    and digits, or the same for both halves (as foxglove-lab ignores them)."""
     k = load(env, files)['keyboard']
-    return {k['left_serial']: 'left', k['right_serial']: 'right'}
+    left, right = str(k['left_serial']), str(k['right_serial'])
+    for name, value in (('left_serial', left), ('right_serial', right)):
+        if not value or not value.isascii() or not value.isalnum():
+            raise ValueError(f'keyboard.{name} must be letters and digits, not {value!r}')
+    if left.upper() == right.upper():
+        raise ValueError('keyboard.left_serial and right_serial are the same')
+    return {left: 'left', right: 'right'}
 
 
 def main(argv):
