@@ -43,12 +43,14 @@ fn band_text(p: &mut Panel, font: &'static MonoFont, s: &str, y: i32, ink: Binar
     Text::with_baseline(s, Point::new(x + tw + gap, y), style, Baseline::Top).draw(p).ok();
 }
 
-/// Only visible overflowing text needs animation frames.
+/// Only visible overflowing text needs animation frames, and media text only while it plays:
+/// a paused title stands still, so a paused session costs no frames (#410).
 pub fn animated(v: &View, width: usize) -> bool {
     let over = |font, text: &str| text_width(font, text) > width as i32;
-    v.title.as_deref().is_some_and(|s| over(&FONT_5X8, s))
-        || (v.title.is_some() && v.hint.is_none()
-            && v.artist.as_deref().is_some_and(|s| over(&FONT_4X6, s)))
+    (v.playing
+        && (v.title.as_deref().is_some_and(|s| over(&FONT_5X8, s))
+            || (v.title.is_some() && v.hint.is_none()
+                && v.artist.as_deref().is_some_and(|s| over(&FONT_4X6, s)))))
         || v.hint.as_deref().is_some_and(|s| over(&FONT_5X8, s))
 }
 
@@ -85,10 +87,12 @@ pub fn draw(p: &mut Panel, v: &View, tick: u32) {
     // Media, or the date when nothing is playing
     match &v.title {
         Some(title) => {
-            band_text(p, &FONT_5X8, title, 30, on, tick);
+            // Paused: the start of the title, still (see `animated`).
+            let media_tick = if v.playing { tick } else { 0 };
+            band_text(p, &FONT_5X8, title, 30, on, media_tick);
             if v.hint.is_none() {
                 if let Some(artist) = &v.artist {
-                    band_text(p, &FONT_4X6, artist, 41, on, tick);
+                    band_text(p, &FONT_4X6, artist, 41, on, media_tick);
                 }
             }
             if !v.playing {
@@ -115,7 +119,7 @@ mod tests {
 
     #[test]
     fn only_visible_overflowing_bands_animate() {
-        let mut v = View { time: "12:34".into(), date: "Fri 23 Oct".into(), ..View::default() };
+        let mut v = View { time: "12:34".into(), date: "Fri 23 Oct".into(), playing: true, ..View::default() };
         assert!(!animated(&v, 64));
         v.artist = Some("An artist with a very long name".into());
         assert!(!animated(&v, 64)); // artist is hidden without a title
@@ -125,6 +129,9 @@ mod tests {
         assert!(!animated(&v, 64)); // hint replaces artist
         v.title = Some("A title that needs to scroll".into());
         assert!(animated(&v, 64));
+        v.hint = None;
+        v.playing = false;
+        assert!(!animated(&v, 64), "a paused title doesn't scroll");
         v.title = None;
         v.hint = Some("A hint that needs to scroll".into());
         assert!(animated(&v, 64));

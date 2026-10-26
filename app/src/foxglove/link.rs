@@ -108,6 +108,7 @@ pub fn shared(vid: u16, pid: u16) -> Result<Arc<Link>, String> {
     };
     let link = Arc::new(Link::hid(m).map_err(|e| e.to_string())?);
     links.insert((vid, pid), Arc::downgrade(&link));
+    watch_arrivals();
     LISTENERS
         .get_or_init(Default::default)
         .lock()
@@ -131,6 +132,31 @@ pub fn connected_name() -> Option<String> {
         .values()
         .filter_map(Weak::upgrade)
         .find_map(|link| link.state().connected.map(|c| c.product))
+}
+
+/// A link gives up retrying on a timer after a few failed opens (#410) and waits for this:
+/// a HID interface of one of its keyboards arriving. Registered once, with the first link, and
+/// kept for the life of the process; the callback runs on a system thread and only flags links.
+fn watch_arrivals() {
+    #[cfg(target_os = "windows")]
+    {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let watch = super::device_watch::DeviceWatch::interfaces(
+                true,
+                Box::new(|path| {
+                    let ours = LINKS.get().and_then(|links| links.try_lock().ok()).is_some_and(|links| {
+                        links.keys().any(|(vid, pid)| super::connection::matches_interface(path, *vid, *pid))
+                    });
+                    if ours {
+                        reconnect();
+                    }
+                }),
+            );
+            // Process-lifetime registration: unregistering would only happen at exit.
+            std::mem::forget(watch);
+        });
+    }
 }
 
 /// Device notifications only wake existing workers; enumeration stays off the UI thread.

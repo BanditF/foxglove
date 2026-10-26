@@ -15,6 +15,13 @@ pub type Lister = fn() -> Vec<(isize, String)>;
 
 static LISTER: OnceLock<Lister> = OnceLock::new();
 
+/// Told `true` when a watch starts and `false` when the last one ends, so the app keeps its
+/// window hook only while a plugin waits for an app (#410). On `false`, check [`watching`]:
+/// a watch may have started since.
+pub type OnWatching = fn(bool);
+
+static ON_WATCHING: OnceLock<OnWatching> = OnceLock::new();
+
 #[derive(Default)]
 struct State {
     /// Plugin id → the programs it waits for.
@@ -34,9 +41,24 @@ pub fn set_lister(f: Lister) {
     let _ = LISTER.set(f);
 }
 
+/// How the app hears that watching starts or stops (once, at start).
+pub fn set_on_watching(f: OnWatching) {
+    let _ = ON_WATCHING.set(f);
+}
+
 /// Whether any plugin waits for an app, so the app can skip looking up new windows.
 pub fn watching() -> bool {
-    with(|s| s.watches.values().any(|w| !w.is_empty()))
+    with(|s| any_watch(s))
+}
+
+fn any_watch(s: &State) -> bool {
+    s.watches.values().any(|w| !w.is_empty())
+}
+
+fn watching_changed(now: bool) {
+    if let Some(f) = ON_WATCHING.get() {
+        f(now);
+    }
 }
 
 fn watched(s: &State, exe: &str) -> bool {
@@ -49,10 +71,14 @@ fn open(s: &State, exe: &str) -> u32 {
 
 /// A plugin starts waiting for `exe`: how many of its windows are open now.
 pub(crate) fn watch(plugin: &str, exe: &str) -> u32 {
+    // The hook goes on first, then the windows already open are listed, so a window shown in
+    // between is reported by one or the other. Told again once the watch is in, in case the
+    // last other watch ended meanwhile and turned the hook off.
+    watching_changed(true);
     // Listed outside the lock: the hook thread may be reporting a window meanwhile, and the
     // window map takes each window once either way.
     let listed = LISTER.get().map(|l| l()).unwrap_or_default();
-    with(|s| {
+    let count = with(|s| {
         s.watches.entry(plugin.to_string()).or_default().insert(exe.to_string());
         for (window, e) in listed {
             if e.eq_ignore_ascii_case(exe) {
@@ -60,17 +86,24 @@ pub(crate) fn watch(plugin: &str, exe: &str) -> u32 {
             }
         }
         open(s, exe)
-    })
+    });
+    watching_changed(true);
+    count
 }
 
 /// A plugin's connection closed: its watches end, and windows nobody waits for are forgotten.
 pub(crate) fn unwatch(plugin: &str) {
-    with(|s| {
+    let ended = with(|s| {
+        let before = any_watch(s);
         s.watches.remove(plugin);
         let watches = std::mem::take(&mut s.watches);
         s.windows.retain(|_, e| watches.values().any(|w| w.contains(e)));
         s.watches = watches;
+        before && !any_watch(s)
     });
+    if ended {
+        watching_changed(false);
+    }
 }
 
 /// Tells the plugins waiting for `exe`; how many were told.
@@ -105,9 +138,12 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
+    static WATCHING_LOG: Mutex<Vec<bool>> = Mutex::new(Vec::new());
+
     #[test]
     fn windows_of_watched_apps_are_counted_and_told() {
         set_lister(|| vec![(1, "OBS64.exe".into()), (2, "notepad.exe".into())]);
+        set_on_watching(|now| WATCHING_LOG.lock().unwrap().push(now));
         let (tx, rx) = mpsc::channel();
         crate::register("test.apps", Some(tx));
         assert_eq!(shown(7, "obs64.exe"), 0, "nobody waits yet");
@@ -122,7 +158,11 @@ mod tests {
         let got: Vec<serde_json::Value> = rx.try_iter().map(|l| serde_json::from_str(&l).unwrap()).collect();
         let seen: Vec<(String, u64)> = got.iter().map(|v| (v["method"].as_str().unwrap().to_string(), v["params"]["open"].as_u64().unwrap())).collect();
         assert_eq!(seen, [("app.window.appeared".into(), 2), ("app.window.closed".into(), 1), ("app.window.closed".into(), 0)]);
+        assert!(WATCHING_LOG.lock().unwrap().contains(&true), "the first watch turns the hook on");
         unwatch("test.apps");
+        if !watching() {
+            assert_eq!(WATCHING_LOG.lock().unwrap().last(), Some(&false), "the last watch turns it off");
+        }
         assert_eq!(shown(5, "obs64.exe"), 0);
         crate::register("test.apps", None);
     }
