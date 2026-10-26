@@ -1,0 +1,67 @@
+# cargo-deny for the app (GPL-3.0-only, the KeyPeek subtree): licences, advisories, bans, sources.
+# The crates/ workspace (MIT) has its own, stricter deny.toml at the root. Run by scripts/check.ps1.
+#   cargo deny --manifest-path app/Cargo.toml check
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+# The licences the app's dependencies use today, accepted explicitly; all are compatible with a
+# GPL-3.0 program. GPL-3.0 itself: the app, qmk-via-api and unescaper. MPL-2.0: option-ext and
+# serialport (file-level copyleft, unmodified). OFL-1.1 and Ubuntu-font-1.0: egui's bundled fonts.
+# GPL-2.0-only (self_cell) and LGPL-2.1 (r-efi) are offered as alternatives to MIT/Apache, which
+# cargo-deny picks, so they aren't listed.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+    "BSD-2-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "MIT-0",
+    "NCSA",
+    "OFL-1.1",
+    "Ubuntu-font-1.0",
+]
+
+[advisories]
+version = 2
+# GitHub's 2 moderate Dependabot alerts (#1 Cargo.lock, #2 app/Cargo.lock) are GHSA-wrw7-89jp-8q8g,
+# glib 0.18 VariantStrIter unsoundness. glib comes only through tray-icon -> gtk 0.18, which is
+# Linux-only: Windows builds never compile it, and no Foxglove code uses VariantStrIter. The fix
+# (glib 0.20) needs gtk4, and tray-icon is still on gtk 0.18. RustSec has no entry for it, so
+# cargo-deny doesn't flag it; the same chain's RustSec notices are ignored below with that reason.
+ignore = [
+    # quick-xml 0.39 (RUSTSEC-2026-0194, -0195): only wayland-scanner, a Linux build-time macro that
+    # parses Wayland's own bundled protocol XML, never input from users or the network.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml only in wayland-scanner at build time (Linux), on bundled XML" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml only in wayland-scanner at build time (Linux), on bundled XML" },
+    # Unmaintained, no fixed release; nothing known to be wrong with them. core2 and paste come with
+    # image's AVIF encoder (rav1e via ravif), ttf-parser with Linux window decorations (sctk-adwaita).
+    { id = "RUSTSEC-2026-0105", reason = "core2: unmaintained, via image -> ravif -> rav1e; no replacement upstream yet" },
+    { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained macro crate, via image -> ravif -> rav1e" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained, Linux-only via sctk-adwaita window decorations" },
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, unmaintained: only via glib-macros in Linux-only gtk 0.18 (tray-icon)" },
+]
+
+[bans]
+# Duplicate versions are reported, not failed: they come from upstream crates' own pins.
+multiple-versions = "warn"
+# Path dependencies between our own crates have no version; none is published to crates.io.
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
