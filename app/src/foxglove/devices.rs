@@ -68,7 +68,14 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
         let transport = super::link::transport(vid, pid);
         *HOST_LINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(transport);
         // Foxglove: the log said only "Waiting for a keyboard"; now it says when one arrives.
-        eprintln!("{}", connected_line(transport, &name));
+        let line = connected_line(transport, &name);
+        if !LOGGED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .repeats(&line, std::time::Instant::now())
+        {
+            eprintln!("{line}");
+        }
         super::keyboard_actions::learn_cached(vid, pid);
     }
     out
@@ -82,6 +89,29 @@ static HOST_LINK: Mutex<Option<&'static str>> = Mutex::new(None);
 pub fn host_link() -> Option<&'static str> {
     *HOST_LINK.lock().unwrap_or_else(|e| e.into_inner())
 }
+
+/// The last "Keyboard connected" line: two links answering for one connect logged it twice.
+static LOGGED: Mutex<Logged> = Mutex::new(Logged(None));
+
+struct Logged(Option<(String, std::time::Instant)>);
+
+impl Logged {
+    /// True when `line` was logged under [`SAME_CONNECT`] ago; records it otherwise.
+    fn repeats(&mut self, line: &str, now: std::time::Instant) -> bool {
+        if self
+            .0
+            .as_ref()
+            .is_some_and(|(l, at)| l == line && now.duration_since(*at) < SAME_CONNECT)
+        {
+            return true;
+        }
+        self.0 = Some((line.to_string(), now));
+        false
+    }
+}
+
+/// How close together two finds count as the same connect.
+const SAME_CONNECT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The log line for a keyboard that just connected: `Keyboard connected (USB): Eyelash Corne`.
 fn connected_line(transport: &str, product: &str) -> String {
@@ -177,6 +207,20 @@ pub fn describe(e: &foxglove_devices::DeviceError) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// One connect found twice is logged once; a later reconnect or another transport is not
+    /// a repeat.
+    #[test]
+    fn a_connect_found_twice_is_logged_once() {
+        let mut logged = super::Logged(None);
+        let t = std::time::Instant::now();
+        let usb = super::connected_line("USB", "Eyelash Corne");
+        assert!(!logged.repeats(&usb, t));
+        assert!(logged.repeats(&usb, t + std::time::Duration::from_millis(300)));
+        assert!(!logged.repeats(&usb, t + super::SAME_CONNECT * 2));
+        let ble = super::connected_line("BLE", "Eyelash_Corne");
+        assert!(!logged.repeats(&ble, t + super::SAME_CONNECT * 2));
+    }
+
     #[test]
     fn a_connect_is_logged_with_its_transport() {
         assert_eq!(

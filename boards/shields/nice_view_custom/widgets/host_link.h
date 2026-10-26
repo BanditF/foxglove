@@ -24,7 +24,8 @@
  *                    9 BOOTLOADER (D7 08; only when test hooks are built),
  *                    10 flash art slots (D6 06/07/08), 11 unsolicited RGB_STATE (D7 83),
  *                    12 BUILD_INFO (D7 09; HELLO bytes 27-30), 13 SCREENS (D5 06),
- *                    17 LEFT_BATTERY (CONN_STATE byte 8 is the left's battery %).
+ *                    17 LEFT_BATTERY (CONN_STATE byte 8 is the left's battery %),
+ *                    18 BATTERY_DIM (D7 0E).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -157,6 +158,20 @@
  *      sends D7 8D, 01, dir (i8: 1 next, -1 previous) and the PC steps its hotlist. Off, or after
  *      a USB disconnect or an endpoint change, the board steps the right's built-ins and saved
  *      slots itself. No keep-alive: subscribe again after HELLO.
+ *   0E BATTERY_DIM  op u8 (0 read, 1 write), then for a write struct battery_dim_config (5 B):
+ *                   enabled (0/1), on power %, on battery %, low battery %, low below charge %
+ *      reply: D7 8E, status (0 ok, 4 not built in, 5 bad values: levels 1-100, threshold 0-100),
+ *             config (5 B, bytes 3-7, as in force on the left), the left's state (bytes 8-10:
+ *             flags (bit 0 on USB, bit 1 at the low level), level % now, charge % (0 unknown)),
+ *             right age s (byte 11; 0xff = none), the right's state (bytes 12-14, as the left's),
+ *             the right's config matches the left's (byte 15: 0/1)
+ *      Each half caps its own underglow from its own cable and charge (battery_dim.c): on USB at
+ *      the on-power level, on battery at the on-battery level, below the threshold at the low
+ *      level. Saved on both halves; the left sends its config to the right with the underglow
+ *      state, so a write on the left reaches the right whenever the split link is up. No boot
+ *      work, no timer: the levels move on ZMK's USB and battery events.
+ *      After host traffic, D7 8E also comes unsolicited when the left's level or cable changes,
+ *      or a read of the right (each request starts one) shows its state changed.
  *   0B GUARD_TEST [delay_ms u16] (test hooks + split guard only)        reply: D7 8B, status
  *      The #122 split guard treats the current split link as stuck once, delay_ms from now (2000
  *      when left out; 0 = at once, even mid-relay, e.g. during an art push): it drops it, ZMK
@@ -196,6 +211,8 @@
 #define HOST_LINK_CAP_ART_KEYS (1U << 16)
 // CONN_STATE byte 8 carries the left half's own battery % (#373); set with battery reporting.
 #define HOST_LINK_CAP_LEFT_BATTERY (1U << 17)
+// D7 0E BATTERY_DIM: the underglow's levels by power state, per half.
+#define HOST_LINK_CAP_BATTERY_DIM (1U << 18)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
@@ -212,6 +229,10 @@ void host_link_build_info_reply(uint8_t status, uint8_t half,
 
 // rgb_idle.c, on the left: the underglow went on or off.
 void host_link_rgb_changed(void);
+
+// battery_dim.c / art_relay_central.c: a half's battery dim state changed. Sends D7 8E after
+// host traffic. Any thread.
+void host_link_battery_dim_changed(void);
 
 // &art_next / &art_prev (art_keys.c): sends D7 8D 01 dir to the PC and returns 0 while it's
 // subscribed (D7 0D), -ENOTCONN otherwise (the board steps the art itself).

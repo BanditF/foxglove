@@ -39,7 +39,7 @@ if(CONFIG_NICE_VIEW_RGB_IDLE)
   zephyr_library_sources(widgets/rgb_idle.c)
 endif()
 if(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
-  zephyr_library_sources(widgets/dim_strip.c)
+  zephyr_library_sources(widgets/dim_strip.c widgets/battery_dim.c)
 endif()
 
 # Version, SHA and half marker, shared with the foxglove_link shield.

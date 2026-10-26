@@ -1,4 +1,6 @@
-# On battery each channel is scaled to 30% (integer division); on USB power the frame passes
-# unchanged; the caller's buffer is never written.
+# The underglow's levels by power state: 80% on battery (also before any event), 100% on USB, 12%
+# below 20% charge, leaving the low level only at 22% (hysteresis), off = 100% everywhere, a bad
+# config refused, the app's own levels; integer division, a lit channel stays >= 1, and the
+# caller's buffer is never written.
 /^dim: /p
 s/.*hid_listener_keycode/kp/p

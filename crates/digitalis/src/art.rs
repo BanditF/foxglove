@@ -101,6 +101,17 @@ pub fn select(t: &impl Transport, set: i8) -> Result<ArtStatus> {
     }
 }
 
+/// Selects `set` and returns the right half's state once it plays it. The right acknowledges
+/// SELECT and only then switches sets on its display queue, so the select's own reply still
+/// names the old set (and for -1 not the one it drew). Each reply also has the left read the
+/// right again (see [`status`]), so one status `settle` later names the set now on screen. The
+/// select stands if that status goes unanswered: its own reply comes back instead.
+pub fn select_settled(t: &impl Transport, set: i8, settle: Duration) -> Result<ArtStatus> {
+    let selected = select(t, set)?;
+    std::thread::sleep(settle);
+    Ok(status(t).unwrap_or(selected))
+}
+
 /// Saves the pushed set now playing on the right into flash slot `slot`, under `name`, and
 /// waits for the right half to finish writing (a few seconds at most).
 pub fn save(t: &impl Transport, slot: u8, name: &str) -> Result<ArtStatus> {
@@ -249,6 +260,29 @@ mod tests {
             push_cancellable(&t, b"NVA1", |_| cancelled.set(true), || cancelled.get()).is_err()
         );
         assert_eq!(t.sent.borrow().last().unwrap()[1], art::COMMIT);
+    }
+
+    /// The select's reply still names the old set; the status after it names the new one.
+    #[test]
+    fn a_settled_select_reads_the_set_now_on_screen() {
+        let with_set = |cmd, set: i8| {
+            let mut r = reply(cmd, left_state::DONE);
+            r[2 + 13] = set as u8;
+            r
+        };
+        let t = Mock::default();
+        t.replies
+            .borrow_mut()
+            .extend([with_set(art::SELECT, 1), with_set(art::STATUS, 4)]);
+        let st = select_settled(&t, 4, Duration::ZERO).unwrap();
+        assert_eq!(st.right_set, 4);
+        let sent = t.sent.borrow();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1], protocol::art_status());
+        drop(sent);
+        // No answer to the status: the select still succeeded.
+        t.replies.borrow_mut().push_back(with_set(art::SELECT, 2));
+        assert_eq!(select_settled(&t, 5, Duration::ZERO).unwrap().right_set, 2);
     }
 
     #[test]

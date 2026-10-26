@@ -1,9 +1,8 @@
-//! Foxglove's tray controls. Native menus are updated on their owning UI thread, and only when
+//! Foxglove's tray controls: the right-click menu, the tooltip and the glyph. Native menus are updated on their owning UI thread, and only when
 //! something changed: this runs every frame, and touching a native menu can wake the window
 //! again, which kept an idle app drawing (#100).
-use super::{art_library, art_service, screens};
-use std::sync::atomic::Ordering;
-use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, Submenu};
+use super::art_service;
+use tray_icon::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 /// What the tray icon shows (#403): the Bandit fox, solid while a keyboard is connected, its
 /// outline while none is, and greyed with an orange pause badge while Foxglove is paused.
@@ -77,73 +76,90 @@ pub fn template_png(glyph: Glyph) -> &'static [u8] {
     }
 }
 
+/// The right-click menu: only what's wanted without opening anything. Everything else (the
+/// right art, the left screen's pause, updates) lives in the tray panel or the window.
+///
+/// Open Foxglove · Pause Foxglove / Resume Foxglove · Profile ▸ · Open log folder · Quit
 pub struct Controls {
-    status: MenuItem,
-    menu: Menu,
-    update_item: Option<MenuItem>,
-    /// Pause Foxglove (#404), and whether it shows paused.
-    pause_all: CheckMenuItem,
+    /// Pause Foxglove (#404); reads Resume Foxglove while paused, as the tray panel's button.
+    pause: MenuItem,
     paused_shown: bool,
-    pause: CheckMenuItem,
-    art: Submenu,
     profile: Submenu,
     /// The profile names and active one the submenu shows.
     profiles_shown: (Vec<String>, Option<String>),
-    signature: String,
-    /// What the items show now: update text, paused, status text, art menu enabled.
-    shown: (Option<String>, bool, String, bool),
+    /// The tooltip's status line.
+    status: String,
     /// Whether a keyboard is connected, for the tray icon's connected/disconnected glyph.
     connected: bool,
 }
+
+/// The menu's labels, in order (`None` = a separator); Quit is added by `tray.rs`.
+pub fn labels(paused: bool) -> [Option<&'static str>; 6] {
+    [
+        Some(OPEN),
+        None,
+        Some(super::tray_panel::pause_button(paused).0),
+        Some(PROFILE),
+        None,
+        Some(LOGS),
+    ]
+}
+
+const OPEN: &str = "Open Foxglove";
+const PROFILE: &str = "Profile";
+const LOGS: &str = "Open log folder";
+
+/// The tooltip's status line: paused, or whether (and which) keyboard is connected. Short, so
+/// the battery line under it always fits Windows' 127 characters (#373).
+pub fn status_line(connected: bool, name: &str, paused: bool) -> String {
+    match (paused, connected, name.is_empty()) {
+        (true, _, _) => "Paused".into(),
+        (false, true, true) => "Connected".into(),
+        (false, true, false) => format!("Connected: {name}"),
+        (false, false, _) => "Disconnected".into(),
+    }
+}
+
 impl Controls {
     pub fn new(menu: &Menu) -> Self {
-        let status = MenuItem::new("Disconnected", false, None);
-        let pause = CheckMenuItem::with_id(
-            "fox-pause",
-            "Pause left panel",
-            true,
-            screens::paused(),
-            None,
-        );
-        let pause_all = CheckMenuItem::with_id(
-            "fox-pause-all",
-            "Pause Foxglove",
-            true,
-            super::pause::paused(),
-            None,
-        );
-        let art = Submenu::new("Right art", false);
-        let profile = Submenu::new("Profile", true);
-        let _ = menu.append(&status);
-        let _ = menu.append(&MenuItem::with_id("settings", "Settings...", true, None));
-        let _ = menu.append(&MenuItem::with_id(
-            "fox-logs",
-            "Open log folder",
-            true,
-            None,
-        ));
-        let _ = menu.append(&pause_all);
-        let _ = menu.append(&pause);
-        let _ = menu.append(&art);
-        let _ = menu.append(&profile);
+        let paused = super::pause::paused();
+        // Built from `labels`, so the menu is the one its test pins.
+        let mut pause = None;
+        let mut profile = None;
+        for (i, label) in labels(paused).into_iter().enumerate() {
+            let _ = match (i, label) {
+                (_, None) => menu.append(&PredefinedMenuItem::separator()),
+                (0, Some(text)) => menu.append(&MenuItem::with_id("settings", text, true, None)),
+                (2, Some(text)) => {
+                    let item = MenuItem::with_id("fox-pause-all", text, true, None);
+                    let added = menu.append(&item);
+                    pause = Some(item);
+                    added
+                }
+                (3, Some(text)) => {
+                    let item = Submenu::new(text, true);
+                    let added = menu.append(&item);
+                    profile = Some(item);
+                    added
+                }
+                (_, Some(text)) => menu.append(&MenuItem::with_id("fox-logs", text, true, None)),
+            };
+        }
+        let pause = pause.unwrap_or_else(|| MenuItem::new("", false, None));
+        let profile = profile.unwrap_or_else(|| Submenu::new(PROFILE, false));
         Self {
-            status,
-            menu: menu.clone(),
-            update_item: None,
-            paused_shown: super::pause::paused(),
-            pause_all,
             pause,
-            art,
+            paused_shown: paused,
             profile,
             profiles_shown: (vec!["-".into()], None),
-            signature: String::new(),
-            shown: (None, screens::paused(), "Disconnected".into(), false),
+            status: status_line(false, "", paused),
             connected: false,
         }
     }
+
     /// The tray icon's tooltip: the status line and each half's battery (#373).
     pub fn tooltip(&self) -> String {
-        super::battery::tooltip(&self.shown.2, &super::battery::levels())
+        super::battery::tooltip(&self.status, &super::battery::levels())
     }
 
     /// The tray icon's glyph for what Foxglove knows now.
@@ -176,133 +192,72 @@ impl Controls {
             }
             self.profiles_shown = profiles;
         }
-        let update = super::update::available_version().map(|v| format!("Update available: v{v}"));
-        if update != self.shown.0 {
-            match (&update, &self.update_item) {
-                (Some(text), Some(item)) => item.set_text(text),
-                (Some(text), None) => {
-                    let item = MenuItem::with_id("fox-update", text, true, None);
-                    let _ = self.menu.append(&item);
-                    self.update_item = Some(item);
-                }
-                (None, _) => {
-                    if let Some(item) = self.update_item.take() {
-                        let _ = self.menu.remove(&item);
-                    }
-                }
-            }
-            self.shown.0 = update;
+        let paused = super::pause::paused();
+        if paused != self.paused_shown {
+            self.pause
+                .set_text(super::tray_panel::pause_button(paused).0);
+            self.paused_shown = paused;
         }
-        let paused = screens::paused();
-        if paused != self.shown.1 {
-            self.pause.set_checked(paused);
-            self.shown.1 = paused;
-        }
-        let all = super::pause::paused();
-        if all != self.paused_shown {
-            self.pause_all.set_checked(all);
-            // Paused, the left panel is already the firmware's.
-            self.pause.set_enabled(!all);
-            self.paused_shown = all;
-        }
-        let Some(h) = art_service::handle() else {
-            return;
-        };
-        let s = h.snapshot();
-        self.connected = s.connected;
-        let library = art_library::snapshot();
+        self.connected = art_service::handle().is_some_and(|h| h.snapshot().connected);
         let name = super::link::connected_name().unwrap_or_default();
-        let status = format!(
-            "{} {name} / right art: {}",
-            if s.connected {
-                "Connected"
-            } else {
-                "Disconnected"
-            },
-            s.status.map_or_else(|| "unknown".into(), |s| s.to_string())
-        );
-        if status != self.shown.2 {
-            self.status.set_text(&status);
-            self.shown.2 = status;
-        }
-        let signature = format!(
-            "{:?}{:?}",
-            s.built_ins(),
-            library
-                .entries
-                .iter()
-                .map(|e| (&e.path, e.preview.is_ok()))
-                .collect::<Vec<_>>()
-        );
-        let enabled = s.connected && !s.busy && !all;
-        if enabled != self.shown.3 {
-            self.art.set_enabled(enabled);
-            self.shown.3 = enabled;
-        }
-        if signature == self.signature {
-            return;
-        }
-        self.signature = signature;
-        while self.art.remove_at(0).is_some() {}
-        let _ = self
-            .art
-            .append(&MenuItem::with_id("fox-set--1", "Random", true, None));
-        for (n, name) in s.built_ins() {
-            let _ = self
-                .art
-                .append(&MenuItem::with_id(format!("fox-set-{n}"), name, true, None));
-        }
-        for entry in library.entries {
-            if entry.preview.is_ok() {
-                let _ = self.art.append(&MenuItem::with_id(
-                    format!("fox-file-{}", entry.path.display()),
-                    entry.path.file_stem().unwrap_or_default().to_string_lossy(),
-                    true,
-                    None,
-                ));
-            }
-        }
-        let _ = self
-            .art
-            .append(&MenuItem::with_id("fox-push", "Push file...", true, None));
+        self.status = status_line(self.connected, &name, paused);
     }
 }
-pub fn event(id: &str, on_settings: &dyn Fn()) {
+
+pub fn event(id: &str) {
     if let Some(name) = id.strip_prefix("fox-profile:") {
         let name = (!name.is_empty()).then_some(name);
         if let Err(e) = super::store::set_active(name) {
             eprintln!("Foxglove: can't switch profile: {e}");
         }
     }
-    if id == "fox-update" {
-        on_settings();
-    }
     if id == "fox-logs" {
         super::app_log::open_folder();
     }
-    if id == "fox-pause" {
-        screens::set_paused(!screens::paused());
-    }
     if id == "fox-pause-all" {
         super::pause::set(!super::pause::paused());
-    }
-    if id == "fox-push" {
-        art_library::PICK_FILE.store(true, Ordering::Relaxed);
-        on_settings();
-    }
-    if let Some(h) = art_service::handle() {
-        if let Some(n) = id.strip_prefix("fox-set-").and_then(|n| n.parse().ok()) {
-            h.select(n);
-        }
-        if let Some(path) = id.strip_prefix("fox-file-") {
-            h.push(path.into());
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The right-click menu holds only Open Foxglove, Pause/Resume, Profile and the log
+    /// folder (Quit follows), and its pause item reads Resume while paused, as the panel's does.
+    #[test]
+    fn the_menu_is_short_and_its_pause_flips_to_resume() {
+        let running = labels(false);
+        assert_eq!(
+            running,
+            [
+                Some("Open Foxglove"),
+                None,
+                Some("Pause Foxglove"),
+                Some("Profile"),
+                None,
+                Some("Open log folder"),
+            ]
+        );
+        let paused = labels(true);
+        assert_eq!(paused[2], Some("Resume Foxglove"));
+        assert_eq!(
+            paused[2],
+            Some(crate::foxglove::tray_panel::pause_button(true).0)
+        );
+    }
+
+    /// The tooltip's status line is short: the battery line under it always fits.
+    #[test]
+    fn the_status_line_is_short() {
+        assert_eq!(status_line(false, "", false), "Disconnected");
+        assert_eq!(status_line(true, "", false), "Connected");
+        assert_eq!(
+            status_line(true, "Eyelash_Corne", false),
+            "Connected: Eyelash_Corne"
+        );
+        assert_eq!(status_line(true, "Eyelash_Corne", true), "Paused");
+    }
 
     #[test]
     fn paused_wins_over_the_connection() {

@@ -637,6 +637,53 @@ int art_relay_build_info(void) {
     return 0;
 }
 
+/* D7 0E for the right: its battery dim state, by an offset read past the build info (status
+ * version >= 6). Started by a PC request or a new config reaching the right; one read, no retry. */
+
+static struct battery_dim_wire right_dim;
+static int64_t right_dim_at; // uptime of the last good read, 0 = never
+static atomic_t dim_busy;
+
+static void dim_read_job(struct k_work *work) {
+    static struct bt_gatt_read_params params;
+    static struct battery_dim_wire got;
+    int err = -ENOTSUP;
+    struct bt_conn *conn = job_conn();
+    if (conn != NULL) {
+        if (right.version >= 6 && !atomic_get(&in_flight)) {
+            slot_got = 0;
+            ofs_buf = (uint8_t *)&got;
+            ofs_len = sizeof(got);
+            params.func = slot_read_cb;
+            params.handle_count = 1;
+            params.single.handle = status_handle;
+            params.single.offset = sizeof(struct art_relay_status) +
+                                   ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info) +
+                                   sizeof(struct foxglove_build_info);
+            k_sem_reset(&gatt_done);
+            atomic_set(&in_flight, 1);
+            err = wait_done(bt_gatt_read(conn, &params));
+        }
+        bt_conn_unref(conn);
+    }
+    if (err == 0) {
+        bool differs = right_dim_at == 0 || memcmp(&got, &right_dim, sizeof(got)) != 0;
+        right_dim = got;
+        right_dim_at = k_uptime_get();
+        if (differs) {
+            host_link_battery_dim_changed();
+        }
+    }
+    atomic_clear(&dim_busy);
+}
+static K_WORK_DEFINE(dim_read_work, dim_read_job);
+
+static void dim_read(void) {
+    if (state != ART_LEFT_PUSHING && atomic_cas(&dim_busy, 0, 1)) {
+        k_work_submit_to_queue(&relay_q, &dim_read_work);
+    }
+}
+
 int art_relay_slot(uint8_t slot) {
     if (!atomic_cas(&slot_busy, 0, 1)) {
         return -EBUSY;
@@ -863,6 +910,21 @@ uint8_t art_relay_link(void) {
     return data_handle && status_handle ? 2 : 1;
 }
 
+uint8_t art_relay_right_dim(struct battery_dim_wire *out, bool refresh) {
+    if (refresh && state != ART_LEFT_PUSHING && right_read_at == 0) {
+        k_work_submit_to_queue(&relay_q, &status_work); // the version, before the dim read
+    }
+    if (refresh) {
+        dim_read();
+    }
+    if (art_relay_link() < 2 || right_dim_at == 0) {
+        memset(out, 0, sizeof(*out));
+        return 0xff;
+    }
+    *out = right_dim;
+    return MIN((k_uptime_get() - right_dim_at) / 1000, 254);
+}
+
 uint8_t art_relay_right_rgb(struct rgb_idle_wire *out) {
     if (state != ART_LEFT_PUSHING) {
         k_work_submit_to_queue(&relay_q, &status_work);
@@ -905,7 +967,9 @@ SYS_INIT(art_relay_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 #define RGB_RETRY K_SECONDS(1)
 #define RGB_RETRIES 10
 
-static int16_t rgb_sent = -1; // last on | follow << 1 the right half confirmed, -1 = unknown
+// The last RGB op the right half confirmed: on, follow and the battery dim config.
+static uint8_t rgb_sent[3 + sizeof(struct battery_dim_config)];
+static bool rgb_sent_valid;
 static uint8_t rgb_retries;
 static atomic_t hsb_sent = ATOMIC_INIT(-1); // the PC colour the right last acknowledged (#266)
 
@@ -914,19 +978,29 @@ static void rgb_sync_cb(struct k_work *work) {
     bool on;
     bool synced = true;
     if (zmk_rgb_underglow_get_state(&on) == 0) {
-        bool follow = rgb_idle_sync();
-        int16_t now = on | follow << 1;
-        if (now != rgb_sent) {
+        uint8_t buf[sizeof(rgb_sent)] = {ART_RELAY_RGB, on, rgb_idle_sync()};
+        uint8_t len = 3;
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
+        struct battery_dim_config dim;
+        battery_dim_get_config(&dim);
+        memcpy(&buf[3], &dim, sizeof(dim)); // the right takes the left's levels (status v6)
+        len = sizeof(buf);
+#endif
+        if (!rgb_sent_valid || memcmp(buf, rgb_sent, sizeof(buf)) != 0) {
             // A write request, so the right's answer confirms it applied the state: one small
             // request per change, with write_req's timeout.
             struct bt_conn *conn = job_conn();
-            uint8_t buf[] = {ART_RELAY_RGB, on, follow};
-            synced = conn != NULL && write_req(conn, buf, sizeof(buf)) == 0;
+            synced = conn != NULL && write_req(conn, buf, len) == 0;
             if (conn != NULL) {
                 bt_conn_unref(conn);
             }
             if (synced) {
-                rgb_sent = now;
+                bool dim_changed = !rgb_sent_valid || memcmp(&buf[3], &rgb_sent[3], 5) != 0;
+                memcpy(rgb_sent, buf, sizeof(buf));
+                rgb_sent_valid = true;
+                if (dim_changed && IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)) {
+                    dim_read(); // the PC hears once the right has the new levels
+                }
             }
         }
     }
@@ -946,7 +1020,7 @@ static void rgb_sync_cb(struct k_work *work) {
 static K_WORK_DELAYABLE_DEFINE(rgb_sync_work, rgb_sync_cb);
 
 static void rgb_sync_link_up(void) {
-    rgb_sent = -1;
+    rgb_sent_valid = false;
     rgb_retries = 0;
     atomic_set(&hsb_sent, -1); // a new link: the right may have rebooted
     k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, RGB_SETTLE);

@@ -9,15 +9,17 @@
  *      until ready. Long reads use offsets into the frozen image; CRC excludes the 6-byte header.
  *   status (read)                            struct art_relay_status
  * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set |
- *      RGB on u8, follow u8 [, more] | PRESS position u8, state u8
+ *      RGB on u8, follow u8 [, battery dim config (5 B)] | PRESS position u8, state u8
  * PRESS is exactly three bytes: 06, global keymap position, state (1 down, 0 up).
  * It uses a write request on relay_q with a job_conn() reference and a 3 s timeout.
  * The peripheral queues an event on the system queue; acceptance is the ATT reply.
  * Application ATT errors: 82 busy, 84 hooks not built in, 85 invalid length/position/state.
  * These map to POSITION statuses 2, 4, 5; ATT success maps to 0 and timeout to 3.
  * RGB (write request, so the left knows it arrived) is the left's underglow on/off; with follow = 1 the right shows
- * the same, with 0 it goes by its own activity (rgb_idle.c). Bytes after follow are reserved for
- * colour and effect; the right ignores bytes it doesn't know, so the op can grow.
+ * the same, with 0 it goes by its own activity (rgb_idle.c). Bytes 3-7 (status version >= 6) are
+ * the left's struct battery_dim_config, which the right takes and saves as its own levels (each
+ * half still goes by its own cable and charge). The right ignores bytes it doesn't know, so the op
+ * can grow.
  * The right half receives into a spare slot and keeps playing what it shows until a blob passes
  * its CRC and header checks; a failed or abandoned push leaves the screen alone.
  *
@@ -30,11 +32,13 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/toolchain.h>
 
+#include "battery_dim.h"
 #include "rgb_idle.h"
 
 #define ART_RELAY_SERVICE_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7400, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
@@ -87,6 +91,7 @@ struct art_relay_status {
     uint8_t flash_slots;
     uint8_t flash_used; // bit n: slot n holds a set
     // version >= 4: struct foxglove_build_info comes after the slot table (D7 09 for half 1)
+    // version >= 6: struct battery_dim_wire comes after the build info (D7 0E for the right)
 } __packed;
 
 // The status characteristic carries ART_RELAY_FLASH_SLOTS of these after struct art_relay_status;
@@ -172,6 +177,11 @@ int art_relay_erase(uint8_t slot);
 int art_relay_slot(uint8_t slot);
 // D7 09 for the right: its build info, by an offset read; replies D7 89 later.
 int art_relay_build_info(void);
+// D7 0E for the right: its battery dim state from the last read; returns its age in seconds
+// (capped at 254), or 0xff if there is none (no link, or right firmware without it). With
+// refresh, asks for a fresher read, which sends D7 8E unsolicited (host_link_battery_dim_changed)
+// if it differs.
+uint8_t art_relay_right_dim(struct battery_dim_wire *out, bool refresh);
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 void art_relay_press(uint8_t pos, uint8_t state);

@@ -103,7 +103,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
                         crate::foxglove::calibrate_ui::cancel(); // Foxglove: mid-calibration
                         process::exit(0)
                     }
-                    _ => crate::foxglove::tray::event(event.id.0.as_str(), on_settings.as_ref()),
+                    _ => crate::foxglove::tray::event(event.id.0.as_str()),
                 }
             }
         }
