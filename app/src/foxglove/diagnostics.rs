@@ -41,6 +41,8 @@ pub struct Facts {
     pub left_firmware: String,
     pub right_firmware: String,
     pub right_battery: Option<i64>,
+    /// The left's own level (firmware with LEFT_BATTERY).
+    pub left_battery: Option<i64>,
     pub hello: Option<digitalis::protocol::Hello>,
     pub plugins: Vec<Plugin>,
     /// Who holds each device's lights: `device: plugin (priority)`.
@@ -157,11 +159,9 @@ pub fn report(f: &Facts, personal: &Personal) -> String {
     line("Connection", &f.connection);
     line("Left firmware", &f.left_firmware);
     line("Right firmware", &f.right_firmware);
-    line(
-        "Right battery",
-        &f.right_battery
-            .map_or("not reported".into(), |b| format!("{b}%")),
-    );
+    let level = |b: Option<i64>| b.map_or("not reported".into(), |b| format!("{b}%"));
+    line("Left battery", &level(f.left_battery));
+    line("Right battery", &level(f.right_battery));
     match &f.hello {
         Some(h) => {
             line(
@@ -241,10 +241,11 @@ fn os() -> String {
 pub fn collect(ctx: &egui::Context) -> Facts {
     use foxglove_devices::facts::Value;
     let facts = super::devices::bus().facts();
-    let battery = match facts.get("keyboard.right.battery") {
+    let level = |part: &str| match facts.get(&format!("keyboard.{part}.battery")) {
         Some(Value::Int(b)) => Some(b),
         _ => None,
     };
+    let (battery, left_battery) = (level("right"), level("left"));
     let link = match facts.get("keyboard.link") {
         Some(Value::Text(t)) => t,
         _ => String::new(),
@@ -306,6 +307,7 @@ pub fn collect(ctx: &egui::Context) -> Facts {
         left_firmware,
         right_firmware,
         right_battery: battery,
+        left_battery,
         hello: snapshot.hello,
         plugins,
         lights,
@@ -367,6 +369,7 @@ pub(crate) fn sample() -> Facts {
         left_firmware: "0.1.0 dev · 2ae9522".into(),
         right_firmware: "0.1.0 dev · 2ae9522".into(),
         right_battery: Some(61),
+        left_battery: Some(95),
         hello: Some(digitalis::protocol::Hello {
             version: 3,
             width: 64,
@@ -426,6 +429,7 @@ mod tests {
             "NVIDIA GeForce",
             "Left firmware   0.1.0 dev · 2ae9522",
             "Connection      USB",
+            "Left battery    95%",
             "Right battery   61%",
             "PANEL BUILD_INFO other 0x40000000",
             "pomodoro 1.2.0",
