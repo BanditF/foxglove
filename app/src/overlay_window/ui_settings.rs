@@ -97,12 +97,11 @@ impl OverlayApp {
 
         // Foxglove: Settings is a native window of its own (an immediate viewport), so it can be
         // dragged to any display and dims nothing behind it.
-        let overlay_monitor = self.settings.active.monitor.clone();
         let builder = crate::foxglove::settings_window::builder();
         ctx.show_viewport_immediate(crate::foxglove::settings_window::id(), builder, |ui, class| {
             let ctx = ui.ctx().clone();
             // Foxglove: minimized is closed (the app lives in the tray).
-            let minimized = self.ui.settings_window.frame(&ctx, &overlay_monitor);
+            let minimized = self.ui.settings_window.frame(&ctx);
             if minimized || ctx.input(|i| i.viewport().close_requested()) {
                 open = false;
             }
