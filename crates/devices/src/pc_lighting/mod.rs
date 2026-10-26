@@ -8,11 +8,13 @@
 //! - [`discover`]: matches a HID enumeration against the catalog and the LampArray usage;
 //!   [`unknown`] lists the rest for "Add a device", and [`test_zone`] lights one zone of it
 //! - [`omen_tracer`]: the HP OMEN case lighting board (TracerLED)
+//! - [`calibrated`]: every opened driver's colours go through the device's colour calibration
 //! - `hid` (feature `hid`): the hidapi enumeration and report writer
 //!
 //! Discovery is caller-driven: the host calls it on device-arrival events, never on a timer.
 //! Nothing streams: every write follows a call.
 
+pub mod calibrated;
 pub mod caps;
 pub mod catalog;
 #[cfg(feature = "hid")]
@@ -340,16 +342,23 @@ pub fn test_zone(
     blinked.and(restored)
 }
 
-/// Opens the driver for a found device, writing through `writer`.
+/// Opens the driver for a found device, writing through `writer`. Every driver comes wrapped
+/// in [`calibrated::Calibrated`], so its colours pass through the device's calibration.
 pub fn open(found: &Found, writer: Box<dyn HidWriter>) -> Result<Box<dyn LightingDevice>> {
-    match found.control {
-        Control::Driver(Protocol::OmenTracer) => Ok(Box::new(omen_tracer::OmenTracer::new(
+    let driver: Box<dyn LightingDevice> = match found.control {
+        Control::Driver(Protocol::OmenTracer) => Box::new(omen_tracer::OmenTracer::new(
             found.name.clone(),
             found.zones.clone(),
             writer,
-        )?)),
-        _ => Err(DeviceError::Unsupported),
-    }
+        )?),
+        _ => return Err(DeviceError::Unsupported),
+    };
+    Ok(Box::new(calibrated::Calibrated::new(
+        driver,
+        found.key.clone(),
+        &found.zones,
+        found.calibration.clone(),
+    )))
 }
 
 #[cfg(test)]

@@ -142,8 +142,12 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
         let ctx = ctx.clone();
         super::services::spawn_named("rgb-state", move || {
             // Read from the link: the device layer's lighting state has no per-half age yet.
-            let state =
-                device().and_then(|d| digitalis::settings::rgb_state(d.link().as_ref()).ok());
+            // In the palette's colours: what Foxglove asked for, not its calibrated form.
+            let state = device().and_then(|d| {
+                let mut s = digitalis::settings::rgb_state(d.link().as_ref()).ok()?;
+                d.asked_state(&mut s);
+                Some(s)
+            });
             *RGB_STATE.lock().unwrap() = state;
             RGB_POLLING.store(false, Ordering::Relaxed);
             ctx.request_repaint();

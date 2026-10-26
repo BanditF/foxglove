@@ -14,6 +14,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use foxglove_devices::calibration;
 use foxglove_devices::{
     ArtStatus as DeviceArt, BehaviorInfo, Behaviors, Caps, Checked, DevSettings, Device,
     DeviceError, DeviceEvent, DeviceInfo, Effect, EventSink, Layers, Led, Lighting, LightingState,
@@ -184,6 +185,9 @@ pub struct DigitalisDevice {
     layers: Arc<Mutex<Vec<u8>>>,
     behaviors: Mutex<Vec<BehaviorInfo>>,
     underglow: Mutex<Option<u16>>,
+    /// Its key in the colour calibration registry: underglow colours go through that
+    /// calibration (`calibration::send_hsb`).
+    calibration_key: Mutex<String>,
     _events: EventSubscription,
     _reports: EventSubscription,
 }
@@ -248,6 +252,7 @@ impl DigitalisDevice {
             });
         }
         DigitalisDevice {
+            calibration_key: Mutex::new(calibration::key_for(&info.id)),
             info,
             link,
             caps: caps(&hello),
@@ -265,6 +270,40 @@ impl DigitalisDevice {
     /// The behaviors [`Behaviors::list`] offers; the app fills it from the keymap it reads.
     pub fn set_behaviors(&self, list: Vec<BehaviorInfo>) {
         *self.behaviors.lock().unwrap_or_else(|e| e.into_inner()) = list;
+    }
+
+    /// Its key in the colour calibration registry (from its id: VID:PID, plus a trusted
+    /// serial).
+    pub fn calibration_key(&self) -> String {
+        self.calibration_key
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Stores its calibration under another key.
+    pub fn set_calibration_key(&self, key: String) {
+        *self
+            .calibration_key
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = key;
+    }
+
+    /// A half's colour as the keyboard reports it, turned back into the colour Foxglove asked
+    /// for (before calibration), so the app shows and resends the palette's colour.
+    pub fn asked_half(&self, half: &mut RgbHalf) {
+        (half.hue, half.sat, half.brightness) = calibration::asked_hsb(
+            &self.calibration_key(),
+            (half.hue, half.sat, half.brightness),
+        );
+    }
+
+    /// Both halves' state as [`Self::asked_half`] reports them.
+    pub fn asked_state(&self, state: &mut RgbState) {
+        self.asked_half(&mut state.left);
+        if let Some((right, _)) = &mut state.right {
+            self.asked_half(right);
+        }
     }
 
     /// The keymap's `&rgb_ug` behavior id, which lighting changes go through (the firmware has
@@ -435,7 +474,8 @@ impl Lighting for DigitalisDevice {
     }
 
     fn state(&self) -> PResult<LightingState> {
-        let rgb = settings::rgb_state(&*self.link).map_err(err)?;
+        let mut rgb = settings::rgb_state(&*self.link).map_err(err)?;
+        self.asked_state(&mut rgb);
         let state = LightingState {
             settled: halves_agree(&rgb),
             ..lighting_state(&rgb.left)
@@ -456,11 +496,13 @@ impl Lighting for DigitalisDevice {
         self.underglow(if on { RGB_ON } else { RGB_OFF }, 0)
     }
 
+    /// Through the keyboard's colour calibration: the firmware gets the calibrated colour.
     fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> PResult<()> {
-        let hsb = (u32::from(hue.min(359)) << 16)
-            | (u32::from(sat.min(100)) << 8)
-            | u32::from(brightness.min(100));
-        self.underglow(RGB_COLOR_HSB, hsb)
+        let key = self.calibration_key();
+        calibration::send_hsb(&key, (hue, sat, brightness), |(hue, sat, brightness)| {
+            let hsb = (u32::from(hue) << 16) | (u32::from(sat) << 8) | u32::from(brightness);
+            self.underglow(RGB_COLOR_HSB, hsb)
+        })
     }
 
     /// ZMK has no "set speed", only one step up or down: steps toward `speed`, reading it back
@@ -966,6 +1008,69 @@ mod tests {
             left,
             right: Some((RgbHalf { effect: 3, ..left }, 0))
         }));
+    }
+
+    #[test]
+    fn underglow_colours_go_through_the_keyboards_calibration() {
+        use foxglove_devices::calibration::{Calibration, DeviceCalibration};
+        let (dev, fake, _bus) = device(capabilities::PANEL | capabilities::SETTINGS_RGB);
+        assert_eq!(
+            dev.calibration_key(),
+            "1d50:615e",
+            "an untrusted serial isn't used"
+        );
+        let key = "digitalis-calibration-test".to_string();
+        dev.set_calibration_key(key.clone());
+        dev.set_underglow(Some(7));
+        let warm = Calibration {
+            gain: [1.0, 1.0, 0.5],
+            ..Default::default()
+        };
+        calibration::global().set_device(
+            &key,
+            Some(DeviceCalibration {
+                device: warm.clone(),
+                ..Default::default()
+            }),
+        );
+        let lighting = dev.lighting().unwrap();
+        lighting.set_color(200, 40, 80).unwrap();
+        let (h, s, b) = warm.apply_hsb(200, 40, 80);
+        let sent = fake.written.lock().unwrap().last().unwrap().clone();
+        assert_eq!(
+            &sent[..12],
+            &protocol::invoke(
+                7,
+                RGB_COLOR_HSB,
+                (u32::from(h) << 16) | (u32::from(s) << 8) | u32::from(b),
+                0
+            )[..12]
+        );
+        // The fake reports hue 0x168, sat 80, brightness 50, not what was sent: it reads back
+        // through the calibration's inverse, never as if it were the palette's colour.
+        let shown = lighting.state().unwrap();
+        assert_eq!(
+            (shown.hue, shown.sat, shown.brightness),
+            warm.invert_hsb((0x168, 80, 50))
+        );
+        let mut state = RgbState {
+            left: RgbHalf {
+                on: true,
+                hue: h,
+                sat: s,
+                brightness: b,
+                effect: 0,
+                speed: 1,
+            },
+            right: None,
+        };
+        dev.asked_state(&mut state);
+        assert_eq!(
+            (state.left.hue, state.left.sat, state.left.brightness),
+            (200, 40, 80),
+            "the keyboard's calibrated colour reads back as the palette's"
+        );
+        calibration::global().set_device(&key, None);
     }
 
     #[test]
