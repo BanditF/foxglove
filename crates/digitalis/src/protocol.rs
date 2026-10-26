@@ -38,6 +38,8 @@ pub mod capabilities {
     /// The panel stays as drawn until RELEASE, and keeps its last frame on link loss: the host
     /// sends no keep-alive (#279, #280).
     pub const PANEL_HOLD: u32 = 1 << 15;
+    /// CONN_STATE (D7 84) byte 8 is the left half's own battery % (#373).
+    pub const LEFT_BATTERY: u32 = 1 << 17;
 }
 pub const VERSION: u8 = 1;
 
@@ -928,6 +930,12 @@ pub struct ConnState {
     pub profile_count: u8,
 }
 
+/// The left half's battery % from a CONN_STATE reply, when the firmware sends it
+/// ([`capabilities::LEFT_BATTERY`]; older firmware pads that byte with zero).
+pub fn left_battery(r: &[u8; REPORT], capabilities: u32) -> Option<u8> {
+    (capabilities & capabilities::LEFT_BATTERY != 0 && r[8] <= 100).then_some(r[8])
+}
+
 impl ConnState {
     pub fn parse(r: &[u8; REPORT]) -> Self {
         Self {
@@ -961,6 +969,17 @@ mod connection_tests {
                 profile_count: 5,
             }
         );
+        assert_eq!(left_battery(&r, 0), None, "old firmware: no left level");
+        r[8] = 87;
+        assert_eq!(left_battery(&r, capabilities::LEFT_BATTERY), Some(87));
+        assert_eq!(
+            left_battery(&r, 0),
+            None,
+            "without the bit, byte 8 means nothing"
+        );
+        r[8] = 0xff;
+        assert_eq!(left_battery(&r, capabilities::LEFT_BATTERY), None);
+        r[8] = 0;
         r[21..25].copy_from_slice(&0x12345610u32.to_le_bytes());
         assert_eq!(Hello::parse(&r).capabilities, 0x12345610);
         assert_ne!(Hello::parse(&r).capabilities & CAP_CONN_STATE, 0);

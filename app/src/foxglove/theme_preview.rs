@@ -537,6 +537,7 @@ fn sample_strip() -> crate::foxglove::shell::StripState {
         left_build: Some(Ok("0.1.0 · e255d32".into())),
         right_build: Some(Err("no reply from the keyboard".into())),
         right_battery: Some(61),
+        left_battery: Some(95),
         profile: Some(0),
         this_pc: Some(0),
         unplug_warning: None,
