@@ -48,6 +48,7 @@ fn main() {
     foxglove::wallpaper::start();
     foxglove::api::start();
     foxglove::keyboard_facts::start();
+    foxglove::battery::start(); // Foxglove (#372, #373)
     foxglove::via_host::start();
     foxglove::plugin_install::autoinstall();
     foxglove::plugin_runner::sync();

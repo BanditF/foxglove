@@ -124,6 +124,11 @@ impl Controls {
             connected: false,
         }
     }
+    /// The tray icon's tooltip: the status line and each half's battery (#373).
+    pub fn tooltip(&self) -> String {
+        super::battery::tooltip(&self.shown.2, &super::battery::levels())
+    }
+
     /// The tray icon's glyph for what Foxglove knows now.
     pub fn glyph(&self) -> Glyph {
         Glyph::of(self.connected, super::pause::paused())

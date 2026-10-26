@@ -19,6 +19,9 @@ pub struct Tray {
     /// Foxglove: the glyph shown (#403).
     #[cfg(not(target_os = "linux"))]
     glyph: crate::foxglove::tray::Glyph,
+    /// Foxglove: the tooltip shown, with the battery (#373).
+    #[cfg(not(target_os = "linux"))]
+    tooltip: String,
 }
 
 // Windows convention is a glyph matching the taskbar theme. Foxglove (#403): the fox drawn
@@ -138,7 +141,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
     #[cfg(not(target_os = "linux"))]
     {
         let (_icon, controls) = build_tray_icon();
-        Tray { _icon, controls, glyph: crate::foxglove::tray::Glyph::Disconnected }
+        Tray { _icon, controls, glyph: crate::foxglove::tray::Glyph::Disconnected, tooltip: "Foxglove".into() }
     }
 }
 
@@ -152,6 +155,12 @@ impl Tray {
             if glyph != self.glyph {
                 self.glyph = glyph;
                 let _ = self._icon.set_icon(Some(create_icon(glyph)));
+            }
+            // Foxglove (#373): the tooltip only when it changes.
+            let tooltip = self.controls.tooltip();
+            if tooltip != self.tooltip {
+                let _ = self._icon.set_tooltip(Some(&tooltip));
+                self.tooltip = tooltip;
             }
         }
     }
