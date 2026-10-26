@@ -11,7 +11,7 @@ digitalis = { path = "../digitalis", default-features = false }
 embedded-graphics = "0.8"
 
 [target.'cfg(windows)'.dependencies]
-windows-future = "0.3"
+# The #[implement] macro (COM callbacks) names windows_core directly.
 windows-core = "0.62"
 windows = { version = "0.62", features = [
     "Foundation",

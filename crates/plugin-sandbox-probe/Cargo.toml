@@ -24,5 +24,4 @@ windows = { version = "0.62", features = [
 
 [dev-dependencies]
 foxglove-plugin-host = { path = "../plugin-host" }
-foxglove-plugin-api = { path = "../plugin-api" }
 foxglove-devices = { path = "../devices" }

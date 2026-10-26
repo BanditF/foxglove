@@ -17,6 +17,8 @@ try {
     $slot = Enter-BuildSlot
     $start = Get-Date
     Step 'scripts: python tests' { python -m unittest discover -s scripts -p "test_*.py" }
+    # Functions over 120 lines and files over 1,500 lines, listed as warnings; never fails.
+    Step 'size budget' { python scripts/size_budget.py }
     # The SignalRGB plugin's packets, and the receiver test's recording of them (#331).
     if (Get-Command node -ErrorAction SilentlyContinue) {
         Step 'signalrgb: packets' { node integrations/signalrgb/test.mjs; if (!$LASTEXITCODE) { node integrations/signalrgb/record-packets.mjs --check } }

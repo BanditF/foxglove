@@ -1652,7 +1652,6 @@ dependencies = [
  "embedded-graphics",
  "windows 0.62.2",
  "windows-core",
- "windows-future",
 ]
 
 [[package]]
