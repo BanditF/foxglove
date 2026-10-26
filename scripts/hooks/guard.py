@@ -19,6 +19,7 @@ PR body, heredoc or grep pattern that mentions cargo or the flasher passes.
     python scripts/hooks/guard.py < call.json
 """
 import json
+import ntpath
 import os
 from pathlib import Path
 import re
@@ -239,11 +240,11 @@ def windows_path(path):
 
 
 def inside(path, root):
-    try:
-        Path(os.path.abspath(windows_path(path))).relative_to(os.path.abspath(windows_path(root)))
-        return True
-    except ValueError:
-        return False
+    """Compare as Windows paths (ntpath) so the rule reads the same wherever the tests run."""
+    def norm(p):
+        return ntpath.normcase(ntpath.normpath(windows_path(p)))
+    a, b = norm(path), norm(root)
+    return a == b or a.startswith(b.rstrip('\\') + '\\')
 
 
 def check_worktree(call, line, root=None):
@@ -266,7 +267,7 @@ def check_worktree(call, line, root=None):
         if not path:
             continue
         want = root(base)
-        if not inside(os.path.join(base, path), want):
+        if not inside(ntpath.join(base, path), want):
             return (f'Worktrees go in {want}\\<name>: there clean-worktrees.ps1 finds them, and the app '
                     'still builds (inside the repo, cargo picks up the main checkout\'s workspace).')
     return None
