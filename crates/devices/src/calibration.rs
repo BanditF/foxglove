@@ -10,9 +10,10 @@
 //! Calibration belongs to the device (and, where a zone renders differently, the zone), never to
 //! a colour or a profile: changing the palette keeps each device's calibration.
 //!
-//! The pipeline, per colour: sRGB → linear → 3×3 matrix (optional) → white balance gain ×
-//! relative brightness → clamp → per-channel gamma → sRGB → 1D curve (optional). The neutral
-//! calibration changes nothing.
+//! The pipeline, per colour: sRGB → linear → 3×3 matrix (optional) → clamp → per-channel gamma
+//! → white balance gain × relative brightness → clamp → sRGB → 1D curve (optional). Gamma
+//! comes before the gains, so it bends the mid-tones without moving white: white balance and
+//! brightness stay put when gamma changes. The neutral calibration changes nothing.
 
 use std::collections::BTreeMap;
 use std::sync::{OnceLock, RwLock};
@@ -66,20 +67,64 @@ fn near(a: f32, b: f32) -> bool {
 #[serde(default, deny_unknown_fields)]
 pub struct Calibration {
     /// White balance: each channel's gain in linear light (1 = unchanged).
+    #[serde(serialize_with = "tidy::three")]
     pub gain: [f32; 3],
-    /// Each channel's gamma, applied to linear light (1 = unchanged; above 1 darkens the
-    /// mid-tones).
+    /// Each channel's gamma, applied to linear light before the gains (1 = unchanged; above 1
+    /// darkens the mid-tones, never white).
+    #[serde(serialize_with = "tidy::three")]
     pub gamma: [f32; 3],
     /// Relative brightness in linear light, to match devices to each other (1 = unchanged).
+    #[serde(serialize_with = "tidy::one")]
     pub brightness: f32,
     /// A 3×3 colour matrix in linear light, rows = output channel (red, green, blue), columns
     /// = input channel. `None` is the identity.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "tidy::matrix"
+    )]
     pub matrix: Option<[[f32; 3]; 3]>,
-    /// A small 1D curve per channel, after gamma: outputs (0-1) at evenly spaced sRGB inputs
-    /// from 0 to 1, joined by straight lines. `None` is a straight line.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// A small 1D curve per channel, last in the pipeline: outputs (0-1) at evenly spaced
+    /// sRGB inputs from 0 to 1, joined by straight lines. `None` is a straight line.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "tidy::curve"
+    )]
     pub curve: Option<[Vec<f32>; 3]>,
+}
+
+/// Settings and exports write values short (0.85, not 0.8500000238418579): four decimals is
+/// finer than any device shows.
+mod tidy {
+    use serde::Serializer;
+
+    fn short(v: f32) -> f64 {
+        (f64::from(v) * 1e4).round() / 1e4
+    }
+
+    pub fn one<S: Serializer>(v: &f32, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_f64(short(*v))
+    }
+
+    pub fn three<S: Serializer>(v: &[f32; 3], s: S) -> Result<S::Ok, S::Error> {
+        s.collect_seq(v.map(short))
+    }
+
+    pub fn matrix<S: Serializer>(v: &Option<[[f32; 3]; 3]>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(m) => s.collect_seq(m.map(|row| row.map(short))),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn curve<S: Serializer>(v: &Option<[Vec<f32>; 3]>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(c) => s.collect_seq(
+                c.iter()
+                    .map(|points| points.iter().map(|p| short(*p)).collect::<Vec<_>>()),
+            ),
+            None => s.serialize_none(),
+        }
+    }
 }
 
 impl Default for Calibration {
@@ -140,14 +185,14 @@ impl Calibration {
             }
         }
         if let Some(c) = &mut self.curve {
-            if c.iter().any(|p| p.len() < 2) {
-                self.curve = None;
-            } else {
-                for points in c.iter_mut() {
-                    points.truncate(MAX_CURVE_POINTS);
-                    for p in points.iter_mut() {
-                        *p = fix(*p, 0.0, 1.0, 0.0);
-                    }
+            for points in c.iter_mut() {
+                // Too short to be a curve: that channel stays a straight line.
+                if points.len() < 2 {
+                    *points = vec![0.0, 1.0];
+                }
+                points.truncate(MAX_CURVE_POINTS);
+                for p in points.iter_mut() {
+                    *p = fix(*p, 0.0, 1.0, 0.0);
                 }
             }
         }
@@ -173,8 +218,8 @@ impl Calibration {
         };
         let mut out = [0.0; 3];
         for i in 0..3 {
-            let v = clamp01(lin[i] * self.gain[i] * self.brightness);
-            let v = v.powf(self.gamma[i].max(0.01));
+            let v = clamp01(lin[i]).powf(self.gamma[i].max(0.01));
+            let v = clamp01(v * self.gain[i] * self.brightness);
             let e = linear_to_srgb(v);
             out[i] = match &self.curve {
                 Some(curve) => interpolate(&curve[i], e),
@@ -345,7 +390,10 @@ impl Calibrations {
     ) -> Calibration {
         match self.devices.get(key) {
             Some(d) => d.zone(zone).clone(),
-            None => default.cloned().unwrap_or_default(),
+            None => default
+                .cloned()
+                .map(Calibration::sanitized)
+                .unwrap_or_default(),
         }
     }
 }
@@ -375,7 +423,7 @@ struct Export {
 }
 
 /// A device's calibration as TOML, to save or share.
-pub fn export(key: &str, cal: &DeviceCalibration) -> String {
+pub fn export(key: &str, cal: &DeviceCalibration) -> Result<String, String> {
     let file = Export {
         version: VERSION,
         key: key.to_string(),
@@ -383,8 +431,8 @@ pub fn export(key: &str, cal: &DeviceCalibration) -> String {
         device: cal.device.clone(),
         zones: cal.zones.clone(),
     };
-    let body = toml::to_string(&file).unwrap_or_default();
-    format!("# Foxglove colour calibration\n{body}")
+    let body = toml::to_string(&file).map_err(|e| e.to_string())?;
+    Ok(format!("# Foxglove colour calibration\n{body}"))
 }
 
 /// Reads an exported calibration: the key it was made on, and the calibration. A file from a
@@ -466,8 +514,14 @@ impl Registry {
     }
 
     /// The driver boundary for hue/saturation/brightness drivers (a keyboard's underglow).
-    pub fn hsb(&self, key: &str, hue: u16, sat: u8, brightness: u8) -> (u16, u8, u8) {
-        self.get(key, None, None).apply_hsb(hue, sat, brightness)
+    pub fn hsb(
+        &self,
+        key: &str,
+        zone: Option<&str>,
+        default: Option<&Calibration>,
+        (hue, sat, brightness): (u16, u8, u8),
+    ) -> (u16, u8, u8) {
+        self.get(key, zone, default).apply_hsb(hue, sat, brightness)
     }
 }
 
@@ -580,6 +634,18 @@ mod tests {
             g: 128,
             b: 128,
         });
+        // Gamma doesn't move white, so white balance and brightness stay where they were set.
+        let balanced = Calibration {
+            gain: [1.0, 0.8, 0.6],
+            brightness: 0.9,
+            ..Default::default()
+        };
+        let curved = Calibration {
+            gamma: [1.8, 0.6, 1.3],
+            ..balanced.clone()
+        };
+        assert_eq!(curved.apply([1.0; 3]), balanced.apply([1.0; 3]));
+        assert_ne!(curved.apply([0.5; 3]), balanced.apply([0.5; 3]));
         assert!(grey.r < 128 && grey.g < 128 && grey.b > 128);
         let white = Rgb {
             r: 255,
@@ -613,7 +679,13 @@ mod tests {
         assert_eq!(wild.brightness, 0.0);
         assert_eq!(wild.matrix.unwrap()[0][0], 1.0);
         assert_eq!(wild.matrix.unwrap()[1][1], 2.0);
-        assert!(wild.curve.is_none(), "a one-point curve isn't a curve");
+        let curve = wild.curve.clone().unwrap();
+        assert_eq!(curve[0], vec![0.0, 1.0], "clamped");
+        assert_eq!(
+            curve[1],
+            vec![0.0, 1.0],
+            "a one-point curve is a straight line"
+        );
         assert_eq!(
             wild.apply_rgb(ORANGE),
             Rgb { r: 0, g: 0, b: 0 },
@@ -700,6 +772,15 @@ mod tests {
             model,
             "model default"
         );
+        let wild = Calibration {
+            gain: [9.0, 1.0, 1.0],
+            ..Default::default()
+        };
+        assert_eq!(
+            all.lookup("x", None, Some(&wild)).gain[0],
+            2.0,
+            "a catalog default is kept in range too"
+        );
         assert!(
             all.lookup("103c:84fd", None, None).is_neutral(),
             "else neutral"
@@ -745,10 +826,14 @@ mod tests {
             )]
             .into(),
         };
-        let text = export("103c:84fd", &cal);
+        let text = export("103c:84fd", &cal).unwrap();
         assert!(
             text.starts_with("# Foxglove colour calibration\nversion = 1\n"),
             "{text}"
+        );
+        assert!(
+            text.contains("gain = [1.0, 0.85, 0.7]"),
+            "written short: {text}"
         );
         let (key, back) = import(&text).unwrap();
         assert_eq!(key, "103c:84fd");
@@ -781,7 +866,7 @@ mod tests {
             ORANGE,
             "only that device"
         );
-        assert_ne!(r.hsb("k", 30, 80, 100), (30, 80, 100));
+        assert_ne!(r.hsb("k", None, None, (30, 80, 100)), (30, 80, 100));
         assert_eq!(r.device("k"), Some(dim));
         r.set_device("k", None);
         assert_eq!(r.rgb("k", None, None, ORANGE), ORANGE);

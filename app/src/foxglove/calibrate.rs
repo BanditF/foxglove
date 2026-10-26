@@ -11,17 +11,53 @@ use foxglove_devices::calibration::{self, Calibrations};
 pub const SECTION: &str = "calibration";
 
 /// Reads the saved calibrations into the registry. Call once at startup, before anything
-/// writes a colour.
+/// writes a colour. A section this Foxglove can't read (a newer version, an unknown field) is
+/// logged and left as it is: the devices run uncalibrated rather than half calibrated.
 pub fn load() {
-    if let Some(all) = super::store::try_load::<Calibrations>(SECTION) {
-        calibration::global().replace(all);
+    let Some(section) = super::store::try_load::<toml::Table>(SECTION) else {
+        return;
+    };
+    match read(section) {
+        Ok(all) => calibration::global().replace(all),
+        Err(e) => eprintln!("Foxglove: [{SECTION}]: {e}; colours go out uncalibrated"),
     }
+}
+
+/// The section's calibrations, refusing a version newer than this Foxglove reads.
+fn read(section: toml::Table) -> Result<Calibrations, String> {
+    let version = section
+        .get("version")
+        .and_then(toml::Value::as_integer)
+        .unwrap_or(i64::from(calibration::VERSION));
+    if version > i64::from(calibration::VERSION) {
+        return Err(format!(
+            "version {version} is newer than this Foxglove reads ({})",
+            calibration::VERSION
+        ));
+    }
+    toml::Value::Table(section)
+        .try_into::<Calibrations>()
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use foxglove_devices::calibration::{Calibration, DeviceCalibration};
+
+    #[test]
+    fn a_section_from_a_newer_foxglove_or_with_unknown_fields_is_not_read() {
+        let parse = |text: &str| read(toml::from_str::<toml::Table>(text).unwrap());
+        assert!(parse("version = 2\n").unwrap_err().contains("version 2"));
+        let unknown = "version = 1\n[devices.\"1d50:615e\".device]\nsparkle = 1.0\n";
+        assert!(parse(unknown).is_err());
+        let ok = "version = 1\n[devices.\"1d50:615e\".device]\ngain = [1.0, 0.9, 0.8]\n";
+        assert_eq!(
+            parse(ok).unwrap().devices["1d50:615e"].device.gain,
+            [1.0, 0.9, 0.8]
+        );
+        assert!(parse("").unwrap().devices.is_empty());
+    }
 
     #[test]
     fn calibration_is_not_part_of_a_profile() {
