@@ -408,9 +408,18 @@ fn status_strip(ui: &mut egui::Ui, s: &StripState) {
             }
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            // Wired once the diagnostics report lands (#371).
-            ui.add_enabled(false, egui::Button::new("Copy diagnostics"))
-                .on_disabled_hover_text("Copies a report for bug reports. Coming in a later update.");
+            // #371: copies the report; it reads "Copied" until the pointer leaves the button.
+            let id = ui.id().with("diagnostics-copied");
+            let copied = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+            let response = ui
+                .button(if copied { "Copied" } else { "Copy diagnostics" })
+                .on_hover_text("Copies a report for bug reports: versions, the connection, the GPU and the last log lines. No names, paths or passwords.");
+            if response.clicked() {
+                super::diagnostics::copy(ui.ctx());
+                ui.data_mut(|d| d.insert_temp(id, true));
+            } else if copied && !response.hovered() {
+                ui.data_mut(|d| d.remove::<bool>(id));
+            }
         });
     });
 }

@@ -367,6 +367,13 @@ fn run_inner(
             let hwnd = window_hwnd(cc);
 
             egui_extras::install_image_loaders(&cc.egui_ctx);
+            // Foxglove (#371): the GPU for "Copy diagnostics".
+            if let Some(gl) = &cc.gl {
+                use eframe::glow::HasContext;
+                // SAFETY: plain string queries on the context eframe just made current.
+                let (renderer, version) = unsafe { (gl.get_parameter_string(eframe::glow::RENDERER), gl.get_parameter_string(eframe::glow::VERSION)) };
+                crate::foxglove::diagnostics::set_gpu(&renderer, &version);
+            }
 
             let ui_wake = UiWake::from_ctx(&cc.egui_ctx);
             let settings_requested = Arc::new(AtomicBool::new(false));
