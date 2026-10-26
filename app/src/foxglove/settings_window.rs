@@ -418,8 +418,9 @@ impl SettingsWindow {
         ctx.input(|i| i.viewport().minimized) == Some(true)
     }
 
-    /// The window closed: remember where it was.
+    /// The window closed: remember where it was, and end an open colour calibrator.
     pub fn closed(&mut self) {
+        super::calibrate_ui::cancel();
         save(self.memory.closed(&crate::monitors::list()));
         self.focused = false;
         self.theme = None;

@@ -98,7 +98,9 @@ pub fn show(ui: &mut egui::Ui) {
         let mut draft = Draft::default();
         draft.settle(v.state.as_ref());
         draw(ui, &v, &mut draft);
-        super::pc_lights_ui::show(ui);
+        if !super::calibrate_ui::show(ui) {
+            super::pc_lights_ui::show(ui);
+        }
         return;
     }
     let ctx = ui.ctx().clone();
@@ -138,8 +140,10 @@ pub fn show(ui: &mut egui::Ui) {
         }
     }
     drop(draft);
-    // The case and other lights (#423).
-    super::pc_lights_ui::show(ui);
+    // The case and other lights (#423), or the colour calibrator while it's open.
+    if !super::calibrate_ui::show(ui) {
+        super::pc_lights_ui::show(ui);
+    }
 }
 
 /// A half's lights in words: "on · Solid · 80% · speed 3", "off", or "no data yet".
