@@ -130,6 +130,47 @@ pub struct View {
     pub can_check: bool,
     /// One quiet line when installing is off (no signed catalog, or unsigned plugins allowed).
     pub note: Option<(String, bool)>,
+    /// Who holds the lights (#376): "Lights: Mic mute (high), under OpenRGB (low)".
+    pub lights: String,
+}
+
+fn priority_word(p: super::lighting_leases::Priority) -> &'static str {
+    use super::lighting_leases::Priority;
+    match p {
+        Priority::Low => "low",
+        Priority::Normal => "normal",
+        Priority::High => "high",
+    }
+}
+
+/// Who holds the lights, in words (#376): the lease showing first, then the ones under it;
+/// "yours" when none is held. `name` says whose a connection is. More than one leased device
+/// names each device.
+pub fn lights_line(h: &super::lighting_leases::Holders, name: impl Fn(u64) -> String) -> String {
+    let stack = |leases: &[(u64, super::lighting_leases::Priority)]| {
+        let mut words = leases.iter().map(|(conn, p)| format!("{} ({})", name(*conn), priority_word(*p)));
+        let top = words.next().unwrap_or_default();
+        let under: Vec<String> = words.collect();
+        if under.is_empty() { top } else { format!("{top}, under {}", under.join(", ")) }
+    };
+    let held = match h.devices.as_slice() {
+        [] => return "Lights: yours".into(),
+        [one] => stack(&one.leases),
+        many => many.iter().map(|d| format!("{}: {}", d.device, stack(&d.leases))).collect::<Vec<_>>().join("; "),
+    };
+    if h.paused {
+        format!("Lights: yours while Foxglove is paused, then {held}")
+    } else {
+        format!("Lights: {held}")
+    }
+}
+
+/// A connection's plugin by its name in its manifest, or "a tool" for the local API's clients.
+fn holder_name(conn: u64, installed: &[Installed]) -> String {
+    match foxglove_plugin_host::plugin_of(conn) {
+        Some(id) => installed.iter().find(|p| p.manifest.id == id).map_or(id, |p| p.manifest.name.clone()),
+        None => "a tool".into(),
+    }
 }
 
 /// What a click asks for.
@@ -220,7 +261,9 @@ pub fn group(ui: &mut egui::Ui) {
             for c in cards.iter_mut().filter(|c| c.installed.as_ref().is_some_and(|p| p.record.enabled)) {
                 c.state = Some(plugin_state(&c.id));
             }
-            let view = View { cards, catalog, can_check, note };
+            super::lighting_leases::set_wake(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
+            let lights = lights_line(&super::lighting_leases::holding(), |conn| holder_name(conn, &installed));
+            let view = View { cards, catalog, can_check, note, lights };
             for intent in draw(ui, &view, state) {
                 match intent {
                     Intent::CheckCatalog => super::catalog_refresh::request(super::catalog_refresh::Trigger::Manual),
@@ -248,6 +291,7 @@ pub fn group(ui: &mut egui::Ui) {
 fn draw(ui: &mut egui::Ui, v: &View, state: &mut UiState) -> Vec<Intent> {
     let mut out = Vec::new();
     let p = theme::palette(ui);
+    ui.label(RichText::new(&v.lights).strong()).on_hover_text("Which plugin is driving the underglow now, and which wait under it");
     ui.label(RichText::new("Each plugin runs as its own program with only the permissions you approve.").color(p.muted));
     ui.horizontal_wrapped(|ui| {
         ui.label(&v.catalog);
@@ -574,6 +618,59 @@ run = [\"p.exe\"]
         assert!(!obs.unsandboxed);
     }
 
+    /// #376: the Plugins tab's line, from no lease to several stacked ones.
+    #[test]
+    fn lights_line_names_who_holds_the_lights() {
+        use crate::foxglove::lighting_leases::{Holders, Holding, Priority};
+        let name = |conn: u64| ["", "Mic mute", "OpenRGB", "Pomodoro"].get(conn as usize).map_or("a tool".to_string(), |s| s.to_string());
+        let kb = |leases: Vec<(u64, Priority)>| Holding { device: "kb".into(), leases };
+        assert_eq!(lights_line(&Holders::default(), name), "Lights: yours");
+        let one = Holders { devices: vec![kb(vec![(2, Priority::Low)])], paused: false };
+        assert_eq!(lights_line(&one, name), "Lights: OpenRGB (low)");
+        let stacked = Holders { devices: vec![kb(vec![(1, Priority::High), (3, Priority::Normal), (2, Priority::Low)])], paused: false };
+        assert_eq!(lights_line(&stacked, name), "Lights: Mic mute (high), under Pomodoro (normal), OpenRGB (low)");
+        let paused = Holders { paused: true, ..stacked.clone() };
+        assert_eq!(lights_line(&paused, name), "Lights: yours while Foxglove is paused, then Mic mute (high), under Pomodoro (normal), OpenRGB (low)");
+        let two = Holders { devices: vec![kb(vec![(1, Priority::High)]), Holding { device: "via:4653:0001".into(), leases: vec![(9, Priority::Normal)] }], paused: false };
+        assert_eq!(lights_line(&two, name), "Lights: kb: Mic mute (high); via:4653:0001: a tool (normal)");
+    }
+
+    /// The same line from a real arbiter: a grant changes it, a release changes it back.
+    #[test]
+    fn granting_and_releasing_a_lease_changes_the_line() {
+        use crate::foxglove::lighting_leases::{Arbiter, Lease, Priority};
+        use foxglove_devices::{Effect, Lighting, LightingState};
+        struct Lights(std::cell::RefCell<LightingState>);
+        impl Lighting for Lights {
+            fn layout(&self) -> foxglove_devices::Result<Vec<foxglove_devices::Zone>> { Ok(vec![]) }
+            fn state(&self) -> foxglove_devices::Result<LightingState> { Ok(self.0.borrow().clone()) }
+            fn set_on(&self, on: bool) -> foxglove_devices::Result<()> { self.0.borrow_mut().on = on; Ok(()) }
+            fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> foxglove_devices::Result<()> {
+                let mut s = self.0.borrow_mut();
+                (s.hue, s.sat, s.brightness) = (hue, sat, brightness);
+                Ok(())
+            }
+            fn set_effect(&self, effect: Effect) -> foxglove_devices::Result<()> { self.0.borrow_mut().effect = effect; Ok(()) }
+            fn set_speed(&self, speed: u8) -> foxglove_devices::Result<()> { self.0.borrow_mut().speed = speed; Ok(()) }
+        }
+        let kb = Lights(std::cell::RefCell::new(LightingState { on: true, hue: 30, sat: 100, brightness: 80, effect: Effect { id: "0".into(), params: vec![] }, speed: 1, settled: true }));
+        let lease = |conn, priority| Lease { id: 0, conn, device: "kb".into(), priority, hue: 0, sat: 100, brightness: 80, effect: "0".into() };
+        let name = |conn: u64| if conn == 1 { "Mic mute".to_string() } else { "OpenRGB".to_string() };
+        let mut a = Arbiter::default();
+        assert_eq!(lights_line(&a.holders(), name), "Lights: yours");
+        a.add(lease(2, Priority::Low), &kb).unwrap();
+        let mute = a.add(lease(1, Priority::High), &kb).unwrap();
+        assert_eq!(lights_line(&a.holders(), name), "Lights: Mic mute (high), under OpenRGB (low)");
+        for d in a.end(|l| l.id == mute) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(lights_line(&a.holders(), name), "Lights: OpenRGB (low)");
+        for d in a.end(|_| true) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(lights_line(&a.holders(), name), "Lights: yours");
+    }
+
     #[test]
     fn tags_in_words() {
         assert_eq!([Tag::Catalog, Tag::Installed, Tag::Sideloaded].map(Tag::label), ["CATALOG", "INSTALLED", "SIDELOADED"]);
@@ -587,6 +684,7 @@ run = [\"p.exe\"]
             &catalog,
         );
         cards[0].state = Some("Running".into());
-        View { cards, catalog: "Catalog: up to date".into(), can_check: true, note: None }
+        let lights = "Lights: Mic mute (high), under OpenRGB (low)".into();
+        View { cards, catalog: "Catalog: up to date".into(), can_check: true, note: None, lights }
     }
 }

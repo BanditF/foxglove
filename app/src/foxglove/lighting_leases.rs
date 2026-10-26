@@ -243,7 +243,75 @@ fn show(light: &dyn Lighting, want: &Want, settle: bool) -> Result<bool, DeviceE
 pub static ARBITER: Mutex<Option<Arbiter>> = Mutex::new(None);
 
 pub fn with<R>(f: impl FnOnce(&mut Arbiter) -> R) -> R {
-    f(ARBITER.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Arbiter::default))
+    let mut guard = ARBITER.lock().unwrap_or_else(|e| e.into_inner());
+    let a = guard.get_or_insert_with(Arbiter::default);
+    let r = f(a);
+    // Every lease grant, release and pause passes through here: that's the event (#376).
+    publish(a, &HOLDING, WAKE.get());
+    r
+}
+
+/// One device's leases, the one showing first: each one's connection and priority (#376).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Holding {
+    pub device: String,
+    pub leases: Vec<(u64, Priority)>,
+}
+
+/// Who holds the lights, and whether Foxglove is paused, as of the last lease change. The
+/// Plugins tab reads this instead of the arbiter, whose lock a lease keeps while the keyboard
+/// settles (seconds).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Holders {
+    pub devices: Vec<Holding>,
+    pub paused: bool,
+}
+
+static HOLDING: Mutex<Holders> = Mutex::new(Holders { devices: Vec::new(), paused: false });
+/// Repaints the Plugins tab when the holders change. Set by the tab.
+static WAKE: std::sync::OnceLock<crate::ui_wake::UiWake> = std::sync::OnceLock::new();
+
+pub fn set_wake(wake: crate::ui_wake::UiWake) {
+    let _ = WAKE.set(wake);
+}
+
+/// The lights' holders as of the last lease change (#376).
+pub fn holding() -> Holders {
+    HOLDING.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+impl Arbiter {
+    /// Each leased device's leases, highest priority first and the newest first among equals,
+    /// so the first one is the one showing (unless paused).
+    pub fn holders(&self) -> Holders {
+        let mut devices: Vec<String> = self.leases.iter().map(|l| l.device.clone()).collect();
+        devices.sort();
+        devices.dedup();
+        let devices = devices
+            .into_iter()
+            .map(|device| {
+                let mut leases: Vec<&Lease> = self.leases.iter().filter(|l| l.device == device).collect();
+                leases.sort_by_key(|l| std::cmp::Reverse((l.priority, l.id)));
+                Holding { leases: leases.iter().map(|l| (l.conn, l.priority)).collect(), device }
+            })
+            .collect();
+        Holders { devices, paused: self.paused }
+    }
+}
+
+/// Stores `a`'s holders in `slot` and wakes the tab, if they changed. True when they did.
+fn publish(a: &Arbiter, slot: &Mutex<Holders>, wake: Option<&crate::ui_wake::UiWake>) -> bool {
+    let now = a.holders();
+    let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if *held == now {
+        return false;
+    }
+    *held = now;
+    drop(held);
+    if let Some(w) = wake {
+        w.request_repaint();
+    }
+    true
 }
 
 /// Each leased device's winning lease: device, connection and priority (#371, diagnostics).
@@ -499,6 +567,48 @@ mod tests {
         }
         assert_eq!(kb.state.borrow().hue, 160);
         assert!(!kb.state.borrow().on);
+    }
+
+    /// #376: a lease's grant and release change who the Plugins tab says holds the lights, and
+    /// only a change wakes the tab.
+    #[test]
+    fn grants_and_releases_publish_who_holds_the_lights() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        let slot = Mutex::new(Holders::default());
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let w = wakes.clone();
+        let wake = crate::ui_wake::UiWake::new(Arc::new(move || {
+            w.fetch_add(1, Ordering::Relaxed);
+        }));
+        assert!(!publish(&a, &slot, Some(&wake)), "nothing held, nothing changed");
+        let stream = a.add(lease(1, Priority::Low, 120), &kb).unwrap(); // OpenRGB
+        assert!(publish(&a, &slot, Some(&wake)));
+        a.add(lease(2, Priority::High, 0), &kb).unwrap(); // Mic mute
+        a.add(lease(3, Priority::Low, 30), &kb).unwrap(); // Pomodoro, newer than the stream
+        assert!(publish(&a, &slot, Some(&wake)));
+        let held = slot.lock().unwrap().clone();
+        assert_eq!(held.devices.len(), 1);
+        assert_eq!(held.devices[0].leases, [(2, Priority::High), (3, Priority::Low), (1, Priority::Low)], "the one showing first");
+        // A colour change in place isn't a change of holder.
+        a.update(stream, 1, 60, 100, 80, "0").unwrap();
+        assert!(!publish(&a, &slot, Some(&wake)));
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
+        for d in a.end(|l| l.conn == 2) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert!(publish(&a, &slot, Some(&wake)));
+        assert_eq!(slot.lock().unwrap().devices[0].leases[0], (3, Priority::Low));
+        a.set_paused(true);
+        assert!(publish(&a, &slot, Some(&wake)), "paused is part of it");
+        a.set_paused(false);
+        for d in a.end(|_| true) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert!(publish(&a, &slot, None));
+        assert_eq!(*slot.lock().unwrap(), Holders::default(), "nobody: the lights are the user's");
     }
 
     #[test]
