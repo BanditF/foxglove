@@ -28,6 +28,7 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
         return Some(d.clone());
     }
     let mut found = None;
+    let mut name = String::new();
     *cached = super::link::host_keyboard().map(|((vid, pid), link, hello)| {
         found = Some((vid, pid));
         let backend = BackendId("zmk".into());
@@ -36,6 +37,7 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
             .connected
             .map(|c| c.product)
             .unwrap_or_default();
+        name.clone_from(&product);
         // Its board profile, read once now it's connected (#75).
         super::boards::connected(vid, pid, &product);
         let id = DeviceId::new(
@@ -63,9 +65,23 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
     // Nothing learned from the keymap yet (the overlay hasn't opened it): use the cached one,
     // so plugins can change the lights without the UI. Outside the lock: learning sets it.
     if let Some((vid, pid)) = found {
+        // Foxglove: the log said only "Waiting for a keyboard"; now it says when one arrives.
+        eprintln!(
+            "{}",
+            connected_line(super::link::transport(vid, pid), &name)
+        );
         super::keyboard_actions::learn_cached(vid, pid);
     }
     out
+}
+
+/// The log line for a keyboard that just connected: `Keyboard connected (USB): Eyelash Corne`.
+fn connected_line(transport: &str, product: &str) -> String {
+    if product.is_empty() {
+        format!("Foxglove: Keyboard connected ({transport})")
+    } else {
+        format!("Foxglove: Keyboard connected ({transport}): {product}")
+    }
 }
 
 /// Finds the keyboard with the host link each time a shared link connects, so the status strip,
@@ -136,5 +152,20 @@ pub fn describe(e: &foxglove_devices::DeviceError) -> String {
         foxglove_devices::DeviceError::Busy(why)
         | foxglove_devices::DeviceError::Denied(why)
         | foxglove_devices::DeviceError::Backend(why) => why.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_connect_is_logged_with_its_transport() {
+        assert_eq!(
+            super::connected_line("USB", "Eyelash Corne"),
+            "Foxglove: Keyboard connected (USB): Eyelash Corne"
+        );
+        assert_eq!(
+            super::connected_line("BLE", ""),
+            "Foxglove: Keyboard connected (BLE)"
+        );
     }
 }
