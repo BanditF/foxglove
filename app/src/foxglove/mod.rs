@@ -21,6 +21,7 @@ pub mod autostart;
 pub mod away;
 pub mod battery;
 pub mod boards;
+pub mod calibrate;
 pub mod catalog_refresh;
 pub mod connection;
 pub mod devices;

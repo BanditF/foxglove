@@ -8,6 +8,9 @@
 # (per-zone when zones are listed), `effects` (onboard effect names), `brightness`, and
 # [[device.screen]] tables: width, height, depth (bits per pixel), fps, images, animations,
 # stream (live frames from the PC).
+# [device.calibration]: the model's default colour calibration (white-balance `gain`, `gamma`,
+# `brightness`, optional `matrix` and `curve`), until the user calibrates their own unit on
+# the Lights page. Neutral values change nothing.
 # Entries the user adds on the Lights page go to lighting-catalog.local.toml next to the
 # settings, in this same format.
 # Windows Dynamic Lighting (HID LampArray) devices need no entry: they're found by their
@@ -30,6 +33,11 @@ zones = [
 # The board's own modes and brightness byte (#423); Foxglove's driver sets static colours only.
 effects = ["breathing", "colour cycle", "blinking", "wave", "radial"]
 brightness = true
+# Neutral to start: each 45L is calibrated on the Lights page ("Calibrate…").
+[device.calibration]
+gain = [1.0, 1.0, 1.0]
+gamma = [1.0, 1.0, 1.0]
+brightness = 1.0
 
 [[device]]
 name = "HP OMEN liquid cooler"
