@@ -31,20 +31,33 @@ pub fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
             }
             let (r, z) = (8, 0);
             let corners = if top {
-                egui::CornerRadius { nw: r, ne: r, sw: z, se: z }
-            } else {
-                egui::CornerRadius { nw: z, ne: z, sw: r, se: r }
-            };
-            super::theme::card(ui).corner_radius(corners).inner_margin(egui::Margin::symmetric(18, 14)).show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
-                if top {
-                    ui.label(super::theme::heading(ui, shown_title(title)));
-                } else {
-                    ui.label(super::theme::caps_label(ui, shown_title(title)));
+                egui::CornerRadius {
+                    nw: r,
+                    ne: r,
+                    sw: z,
+                    se: z,
                 }
-                ui.add_space(6.0);
-                add_contents(ui);
-            });
+            } else {
+                egui::CornerRadius {
+                    nw: z,
+                    ne: z,
+                    sw: r,
+                    se: r,
+                }
+            };
+            super::theme::card(ui)
+                .corner_radius(corners)
+                .inner_margin(egui::Margin::symmetric(18, 14))
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    if top {
+                        ui.label(super::theme::heading(ui, shown_title(title)));
+                    } else {
+                        ui.label(super::theme::caps_label(ui, shown_title(title)));
+                    }
+                    ui.add_space(6.0);
+                    add_contents(ui);
+                });
             return;
         }
         // The page draws its own cards (#386 on).
@@ -99,9 +112,12 @@ fn shown_title(title: &str) -> &str {
 fn style(title: &str) -> Style {
     match title {
         "Keyboard" | "Lights" | "Plugins" => Style::Bare,
-        "Connection" | "Left screen · PC panel" | "Right screen art" | "Profile" | "Theme and updates" | "Other keyboards (VIA)" => {
-            Style::Card
-        }
+        "Connection"
+        | "Left screen · PC panel"
+        | "Right screen art"
+        | "Profile"
+        | "Theme and updates"
+        | "Other keyboards (VIA)" => Style::Card,
         "Overlay Appearance" => Style::CardTop,
         "Theme" => Style::CardBottom,
         _ => Style::Collapsing,
@@ -125,7 +141,10 @@ pub fn card<R>(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
 pub fn row(ui: &mut egui::Ui, name: &str, value: impl Into<egui::WidgetText>) -> egui::Response {
     ui.horizontal(|ui| {
         ui.label(name);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.label(value)).inner
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(value)
+        })
+        .inner
     })
     .inner
 }
@@ -134,7 +153,13 @@ fn open_by_default(title: &str) -> bool {
     // A page with one or two sections opens them (#385).
     matches!(
         title,
-        "Connection" | "Overlay Appearance" | "Keyboard" | "Lights" | "Screens" | "Right screen art" | "Plugins"
+        "Connection"
+            | "Overlay Appearance"
+            | "Keyboard"
+            | "Lights"
+            | "Screens"
+            | "Right screen art"
+            | "Plugins"
     )
 }
 
@@ -145,15 +170,30 @@ pub fn footer(ui: &mut egui::Ui) {
         return;
     }
     let link = |ui: &mut egui::Ui, text: String, url: &str| {
-        ui.add(egui::Hyperlink::from_label_and_url(egui::RichText::new(text).weak(), url));
+        ui.add(egui::Hyperlink::from_label_and_url(
+            egui::RichText::new(text).weak(),
+            url,
+        ));
     };
     ui.add_space(8.0);
     ui.horizontal(|ui| {
-        link(ui, "github.com/BanditF/foxglove".into(), "https://github.com/BanditF/foxglove");
+        link(
+            ui,
+            "github.com/BanditF/foxglove".into(),
+            "https://github.com/BanditF/foxglove",
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            link(ui, format!("Version {}", env!("CARGO_PKG_VERSION")), "https://github.com/BanditF/foxglove/releases");
+            link(
+                ui,
+                format!("Version {}", env!("CARGO_PKG_VERSION")),
+                "https://github.com/BanditF/foxglove/releases",
+            );
         });
     });
-    link(ui, "based on KeyPeek by Stephan Rumswinkel".into(), "https://github.com/srwi/keypeek");
+    link(
+        ui,
+        "based on KeyPeek by Stephan Rumswinkel".into(),
+        "https://github.com/srwi/keypeek",
+    );
     super::theme::credits(ui);
 }

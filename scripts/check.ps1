@@ -21,7 +21,13 @@ try {
     if (Get-Command node -ErrorAction SilentlyContinue) {
         Step 'signalrgb: packets' { node integrations/signalrgb/test.mjs; if (!$LASTEXITCODE) { node integrations/signalrgb/record-packets.mjs --check } }
     } else { Write-Warning 'signalrgb: node not found, skipped' }
-    Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
+    # rustfmt (default style) on the crates and Foxglove's app code. KeyPeek's upstream files in
+    # app/ are left as upstream has them, so subtree syncs stay clean. Fix with the same commands
+    # without --check.
+    Step 'format' {
+        cargo fmt --all --check
+        if (!$LASTEXITCODE) { rustfmt --check --edition 2021 (Get-ChildItem -Recurse app/src/foxglove -Filter *.rs).FullName }
+    }    Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
     Step 'crates: tests' { cargo test --workspace }
     Step 'digitalis without hidapi' { cargo build -p digitalis --no-default-features }
     Step 'digitalis Devices device' { cargo clippy -p digitalis --features devices --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p digitalis --features devices } }

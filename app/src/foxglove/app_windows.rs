@@ -16,20 +16,27 @@ pub fn start() {
 
 /// The file name of a program's path, lower case: `C:\...\OBS64.exe` → `obs64.exe`.
 fn exe_name(path: &str) -> String {
-    path.rsplit(['\\', '/']).next().unwrap_or(path).to_ascii_lowercase()
+    path.rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase()
 }
 
 #[cfg(windows)]
 mod imp {
+    use std::sync::atomic::{AtomicU32, Ordering};
     use windows::core::{BOOL, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
-    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
-    use std::sync::atomic::{AtomicU32, Ordering};
     use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetAncestor, GetMessageW, GetWindowThreadProcessId, IsWindowVisible, PostThreadMessageW, CHILDID_SELF, EVENT_OBJECT_DESTROY,
-        EVENT_OBJECT_SHOW, GA_ROOT, MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
+        EnumWindows, GetAncestor, GetMessageW, GetWindowThreadProcessId, IsWindowVisible,
+        PostThreadMessageW, CHILDID_SELF, EVENT_OBJECT_DESTROY, EVENT_OBJECT_SHOW, GA_ROOT, MSG,
+        OBJID_WINDOW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
     };
 
     /// The hook thread, told when watching starts or stops.
@@ -41,7 +48,12 @@ mod imp {
         if thread != 0 {
             // SAFETY: posting a plain thread message carries no pointers.
             unsafe {
-                let _ = PostThreadMessageW(thread, WATCHING, windows::Win32::Foundation::WPARAM(usize::from(now)), LPARAM(0));
+                let _ = PostThreadMessageW(
+                    thread,
+                    WATCHING,
+                    windows::Win32::Foundation::WPARAM(usize::from(now)),
+                    LPARAM(0),
+                );
             }
         }
     }
@@ -53,10 +65,17 @@ mod imp {
             let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
             let mut buf = [0u16; 1024];
             let mut len = buf.len() as u32;
-            let got = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len);
+            let got = QueryFullProcessImageNameW(
+                process,
+                PROCESS_NAME_WIN32,
+                PWSTR(buf.as_mut_ptr()),
+                &mut len,
+            );
             let _ = CloseHandle(process);
             got.ok()?;
-            Some(super::exe_name(&String::from_utf16_lossy(&buf[..len as usize])))
+            Some(super::exe_name(&String::from_utf16_lossy(
+                &buf[..len as usize],
+            )))
         }
     }
 
@@ -64,7 +83,15 @@ mod imp {
         unsafe { GetAncestor(window, GA_ROOT) == window && IsWindowVisible(window).as_bool() }
     }
 
-    unsafe extern "system" fn event(_: HWINEVENTHOOK, event: u32, window: HWND, object: i32, child: i32, _: u32, _: u32) {
+    unsafe extern "system" fn event(
+        _: HWINEVENTHOOK,
+        event: u32,
+        window: HWND,
+        object: i32,
+        child: i32,
+        _: u32,
+        _: u32,
+    ) {
         // Child windows and accessibility objects come through too: drop them first.
         if object != OBJID_WINDOW.0 || child != CHILDID_SELF as i32 {
             return;
@@ -108,13 +135,27 @@ mod imp {
         super::super::services::spawn_named("apps-watch", || unsafe {
             let mut msg = MSG::default();
             // Make the queue before anyone can post to it.
-            let _ = windows::Win32::UI::WindowsAndMessaging::PeekMessageW(&mut msg, None, 0, 0, windows::Win32::UI::WindowsAndMessaging::PM_NOREMOVE);
+            let _ = windows::Win32::UI::WindowsAndMessaging::PeekMessageW(
+                &mut msg,
+                None,
+                0,
+                0,
+                windows::Win32::UI::WindowsAndMessaging::PM_NOREMOVE,
+            );
             THREAD.store(GetCurrentThreadId(), Ordering::SeqCst);
             let mut hook: Option<HWINEVENTHOOK> = None;
             let set = |want: bool, hook: &mut Option<HWINEVENTHOOK>| match (want, hook.is_some()) {
                 (true, false) => {
                     // DESTROY sits between CREATE and SHOW; CREATE is dropped (not shown yet).
-                    let h = SetWinEventHook(EVENT_OBJECT_DESTROY, EVENT_OBJECT_SHOW, None, Some(event), 0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+                    let h = SetWinEventHook(
+                        EVENT_OBJECT_DESTROY,
+                        EVENT_OBJECT_SHOW,
+                        None,
+                        Some(event),
+                        0,
+                        0,
+                        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                    );
                     if h.is_invalid() {
                         eprintln!("foxglove: apps watch: the window hook was refused");
                     } else {
@@ -134,7 +175,10 @@ mod imp {
             while GetMessageW(&mut msg, None, 0, 0).as_bool() {
                 if msg.hwnd.0.is_null() && msg.message == WATCHING {
                     // A start always turns it on; a stop only if no watch started since.
-                    set(msg.wParam.0 != 0 || foxglove_plugin_host::apps::watching(), &mut hook);
+                    set(
+                        msg.wParam.0 != 0 || foxglove_plugin_host::apps::watching(),
+                        &mut hook,
+                    );
                 }
             }
         });
@@ -150,7 +194,10 @@ mod imp {
 mod tests {
     #[test]
     fn a_path_becomes_its_file_name() {
-        assert_eq!(super::exe_name(r"C:\Program Files\obs-studio\bin\64bit\OBS64.exe"), "obs64.exe");
+        assert_eq!(
+            super::exe_name(r"C:\Program Files\obs-studio\bin\64bit\OBS64.exe"),
+            "obs64.exe"
+        );
         assert_eq!(super::exe_name("obs64.exe"), "obs64.exe");
     }
 }

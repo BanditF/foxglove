@@ -46,7 +46,8 @@ struct Layouts {
 }
 
 fn hex(s: &str) -> Result<u16, String> {
-    u16::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16).map_err(|_| format!("bad id {s:?}"))
+    u16::from_str_radix(s.trim_start_matches("0x").trim_start_matches("0X"), 16)
+        .map_err(|_| format!("bad id {s:?}"))
 }
 
 impl Definition {
@@ -55,18 +56,25 @@ impl Definition {
         let keys = kle_keys(&raw.layouts.keymap)?;
         for k in &keys {
             if k.row >= raw.matrix.rows || k.col >= raw.matrix.cols {
-                return Err(format!("key {},{} is outside the {}x{} matrix", k.row, k.col, raw.matrix.rows, raw.matrix.cols));
+                return Err(format!(
+                    "key {},{} is outside the {}x{} matrix",
+                    k.row, k.col, raw.matrix.rows, raw.matrix.cols
+                ));
             }
         }
         let mentions_rgb_matrix = |v: &Value| v.to_string().contains("qmk_rgb_matrix");
         Ok(Definition {
-            rgb_matrix: raw.menus.iter().any(mentions_rgb_matrix) || raw.lighting.as_ref().is_some_and(mentions_rgb_matrix),
+            rgb_matrix: raw.menus.iter().any(mentions_rgb_matrix)
+                || raw.lighting.as_ref().is_some_and(mentions_rgb_matrix),
             name: raw.name.clone(),
             vendor_id: hex(&raw.vendor_id)?,
             product_id: hex(&raw.product_id)?,
             rows: raw.matrix.rows,
             cols: raw.matrix.cols,
-            layout: Layout { name: raw.name, keys },
+            layout: Layout {
+                name: raw.name,
+                keys,
+            },
         })
     }
 }
@@ -96,9 +104,19 @@ fn kle_keys(rows: &[Value]) -> Result<Vec<Key>, String> {
                 }
                 Value::String(label) => {
                     let first = label.split('\n').next().unwrap_or("");
-                    let pos = first.split_once(',').and_then(|(r, c)| Some((r.trim().parse().ok()?, c.trim().parse().ok()?)));
+                    let pos = first
+                        .split_once(',')
+                        .and_then(|(r, c)| Some((r.trim().parse().ok()?, c.trim().parse().ok()?)));
                     if let (Some((row, col)), false) = (pos, decal) {
-                        keys.push(Key { row, col, x, y, w, h, r: 0.0 });
+                        keys.push(Key {
+                            row,
+                            col,
+                            x,
+                            y,
+                            w,
+                            h,
+                            r: 0.0,
+                        });
                     }
                     x += w;
                     (w, h, decal) = (1.0, 1.0, false);
@@ -132,9 +150,19 @@ mod tests {
     #[test]
     fn parses_ids_matrix_layout_and_lighting() {
         let d = Definition::parse(SAMPLE).unwrap();
-        assert_eq!((d.vendor_id, d.product_id, d.rows, d.cols), (0x3434, 0x0250, 2, 4));
+        assert_eq!(
+            (d.vendor_id, d.product_id, d.rows, d.cols),
+            (0x3434, 0x0250, 2, 4)
+        );
         assert!(d.rgb_matrix);
-        let k = |r, c| d.layout.keys.iter().find(|k| k.row == r && k.col == c).cloned().unwrap();
+        let k = |r, c| {
+            d.layout
+                .keys
+                .iter()
+                .find(|k| k.row == r && k.col == c)
+                .cloned()
+                .unwrap()
+        };
         assert_eq!((k(0, 1).x, k(0, 1).w), (1.0, 1.5));
         assert_eq!(k(0, 3).x, 3.75);
         assert_eq!((k(1, 0).y, k(1, 0).w), (1.5, 2.25));

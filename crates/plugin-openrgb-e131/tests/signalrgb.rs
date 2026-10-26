@@ -42,14 +42,35 @@ fn signalrgb_packets_take_change_and_give_back_the_lease() {
     let calls = keyboard.wait("a lease", |c| !c.is_empty());
     assert_eq!(
         calls[0],
-        ("lighting.lease".into(), json!({"device": "kb", "color": {"hue": 0, "saturation": 100, "brightness": 100}, "effect": null, "priority": "low"}))
+        (
+            "lighting.lease".into(),
+            json!({"device": "kb", "color": {"hue": 0, "saturation": 100, "brightness": 100}, "effect": null, "priority": "low"})
+        )
     );
     send(&packets[1]);
-    let calls = keyboard.wait("the green update", |c| c.iter().any(|(m, _)| m == "lighting.update"));
+    let calls = keyboard.wait("the green update", |c| {
+        c.iter().any(|(m, _)| m == "lighting.update")
+    });
     let update = calls.iter().find(|(m, _)| m == "lighting.update").unwrap();
-    assert_eq!(update.1, json!({"lease": 7, "color": {"hue": 120, "saturation": 100, "brightness": 100}}));
+    assert_eq!(
+        update.1,
+        json!({"lease": 7, "color": {"hue": 120, "saturation": 100, "brightness": 100}})
+    );
     send(&packets[2]);
-    let calls = keyboard.wait("the release", |c| c.iter().any(|(m, _)| m == "lighting.release"));
-    assert_eq!(calls.iter().find(|(m, _)| m == "lighting.release").unwrap().1, json!({"lease": 7}));
-    assert_eq!(calls.iter().filter(|(m, _)| m == "lighting.lease").count(), 1, "one lease for the session: {calls:?}");
+    let calls = keyboard.wait("the release", |c| {
+        c.iter().any(|(m, _)| m == "lighting.release")
+    });
+    assert_eq!(
+        calls
+            .iter()
+            .find(|(m, _)| m == "lighting.release")
+            .unwrap()
+            .1,
+        json!({"lease": 7})
+    );
+    assert_eq!(
+        calls.iter().filter(|(m, _)| m == "lighting.lease").count(),
+        1,
+        "one lease for the session: {calls:?}"
+    );
 }

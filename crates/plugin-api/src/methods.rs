@@ -284,7 +284,9 @@ pub struct SetMuteParams {
 }
 
 /// How much a lease matters against others on the same lights (#236).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum LeasePriority {
     /// Ambient light (a colour sync).
@@ -432,54 +434,288 @@ macro_rules! schema {
 }
 
 pub const METHODS: &[Method] = &[
-    Method { name: "initialize", kind: Kind::Call, permission: None, params: schema!(InitializeParams), result: Some(schema!(InitializeResult)) },
-    Method { name: "ping", kind: Kind::Call, permission: None, params: schema!(Empty), result: Some(schema!(Empty)) },
-    Method { name: "facts.get", kind: Kind::Call, permission: None, params: schema!(KeyParams), result: Some(schema!(FactResult)) },
-    Method { name: "facts.list", kind: Kind::Call, permission: None, params: schema!(SubscribeParams), result: Some(schema!(FactList)) },
-    Method { name: "facts.set", kind: Kind::Call, permission: None, params: schema!(SetFactParams), result: Some(schema!(Empty)) },
-    Method { name: "facts.subscribe", kind: Kind::Call, permission: None, params: schema!(SubscribeParams), result: Some(schema!(Subscription)) },
-    Method { name: "facts.unsubscribe", kind: Kind::Call, permission: None, params: schema!(Subscription), result: Some(schema!(Empty)) },
-    Method { name: "facts.changed", kind: Kind::Event, permission: None, params: schema!(FactChanged), result: None },
-    Method { name: "devices.list", kind: Kind::Call, permission: Some("devices.read"), params: schema!(Empty), result: Some(schema!(Devices)) },
-    Method { name: "devices.changed", kind: Kind::Event, permission: Some("devices.read"), params: schema!(Devices), result: None },
-    Method { name: "lighting.state", kind: Kind::Call, permission: Some("devices.read"), params: schema!(DeviceParams), result: Some(schema!(LightingState)) },
-    Method { name: "lighting.set", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(SetLightingParams), result: Some(schema!(Empty)) },
-    Method { name: "behaviors.list", kind: Kind::Call, permission: Some("devices.read"), params: schema!(DeviceParams), result: Some(schema!(Behaviors)) },
-    Method { name: "behaviors.invoke", kind: Kind::Call, permission: Some("behaviors.invoke"), params: schema!(InvokeParams), result: Some(schema!(Empty)) },
-    Method { name: "screens.panel_override", kind: Kind::Call, permission: Some("screens.write"), params: schema!(PanelOverrideParams), result: Some(schema!(Empty)) },
+    Method {
+        name: "initialize",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(InitializeParams),
+        result: Some(schema!(InitializeResult)),
+    },
+    Method {
+        name: "ping",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(Empty),
+        result: Some(schema!(Empty)),
+    },
+    Method {
+        name: "facts.get",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(KeyParams),
+        result: Some(schema!(FactResult)),
+    },
+    Method {
+        name: "facts.list",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(SubscribeParams),
+        result: Some(schema!(FactList)),
+    },
+    Method {
+        name: "facts.set",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(SetFactParams),
+        result: Some(schema!(Empty)),
+    },
+    Method {
+        name: "facts.subscribe",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(SubscribeParams),
+        result: Some(schema!(Subscription)),
+    },
+    Method {
+        name: "facts.unsubscribe",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(Subscription),
+        result: Some(schema!(Empty)),
+    },
+    Method {
+        name: "facts.changed",
+        kind: Kind::Event,
+        permission: None,
+        params: schema!(FactChanged),
+        result: None,
+    },
+    Method {
+        name: "devices.list",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(Empty),
+        result: Some(schema!(Devices)),
+    },
+    Method {
+        name: "devices.changed",
+        kind: Kind::Event,
+        permission: Some("devices.read"),
+        params: schema!(Devices),
+        result: None,
+    },
+    Method {
+        name: "lighting.state",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(DeviceParams),
+        result: Some(schema!(LightingState)),
+    },
+    Method {
+        name: "lighting.set",
+        kind: Kind::Call,
+        permission: Some("lighting.write"),
+        params: schema!(SetLightingParams),
+        result: Some(schema!(Empty)),
+    },
+    Method {
+        name: "behaviors.list",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(DeviceParams),
+        result: Some(schema!(Behaviors)),
+    },
+    Method {
+        name: "behaviors.invoke",
+        kind: Kind::Call,
+        permission: Some("behaviors.invoke"),
+        params: schema!(InvokeParams),
+        result: Some(schema!(Empty)),
+    },
+    Method {
+        name: "screens.panel_override",
+        kind: Kind::Call,
+        permission: Some("screens.write"),
+        params: schema!(PanelOverrideParams),
+        result: Some(schema!(Empty)),
+    },
     // Gives the panel back after a held override (API 1.3).
-    Method { name: "screens.panel_release", kind: Kind::Call, permission: Some("screens.write"), params: schema!(DeviceParams), result: Some(schema!(Empty)) },
-    Method { name: "art.status", kind: Kind::Call, permission: Some("devices.read"), params: schema!(DeviceParams), result: Some(schema!(ArtStatus)) },
-    Method { name: "art.select", kind: Kind::Call, permission: Some("art.write"), params: schema!(ArtSelectParams), result: Some(schema!(ArtStatus)) },
-    Method { name: "profiles.list", kind: Kind::Call, permission: None, params: schema!(Empty), result: Some(schema!(Profiles)) },
-    Method { name: "profiles.activate", kind: Kind::Call, permission: Some("profiles.write"), params: schema!(ActivateProfileParams), result: Some(schema!(Profiles)) },
-    Method { name: "key.event", kind: Kind::Event, permission: Some("key.events"), params: schema!(KeyEvent), result: None },
+    Method {
+        name: "screens.panel_release",
+        kind: Kind::Call,
+        permission: Some("screens.write"),
+        params: schema!(DeviceParams),
+        result: Some(schema!(Empty)),
+    },
+    Method {
+        name: "art.status",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(DeviceParams),
+        result: Some(schema!(ArtStatus)),
+    },
+    Method {
+        name: "art.select",
+        kind: Kind::Call,
+        permission: Some("art.write"),
+        params: schema!(ArtSelectParams),
+        result: Some(schema!(ArtStatus)),
+    },
+    Method {
+        name: "profiles.list",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(Empty),
+        result: Some(schema!(Profiles)),
+    },
+    Method {
+        name: "profiles.activate",
+        kind: Kind::Call,
+        permission: Some("profiles.write"),
+        params: schema!(ActivateProfileParams),
+        result: Some(schema!(Profiles)),
+    },
+    Method {
+        name: "key.event",
+        kind: Kind::Event,
+        permission: Some("key.events"),
+        params: schema!(KeyEvent),
+        result: None,
+    },
     // Checked against the scoped net permissions by the host (API 1.2).
-    Method { name: "net.open", kind: Kind::Call, permission: None, params: schema!(NetOpenParams), result: Some(schema!(NetStream)) },
-    Method { name: "net.send", kind: Kind::Call, permission: None, params: schema!(NetSendParams), result: Some(schema!(Empty)) },
-    Method { name: "net.close", kind: Kind::Call, permission: None, params: schema!(NetStream), result: Some(schema!(Empty)) },
-    Method { name: "net.data", kind: Kind::Event, permission: None, params: schema!(NetData), result: None },
-    Method { name: "net.closed", kind: Kind::Event, permission: None, params: schema!(NetClosed), result: None },
-    Method { name: "net.accepted", kind: Kind::Event, permission: None, params: schema!(NetAccepted), result: None },
+    Method {
+        name: "net.open",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(NetOpenParams),
+        result: Some(schema!(NetStream)),
+    },
+    Method {
+        name: "net.send",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(NetSendParams),
+        result: Some(schema!(Empty)),
+    },
+    Method {
+        name: "net.close",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(NetStream),
+        result: Some(schema!(Empty)),
+    },
+    Method {
+        name: "net.data",
+        kind: Kind::Event,
+        permission: None,
+        params: schema!(NetData),
+        result: None,
+    },
+    Method {
+        name: "net.closed",
+        kind: Kind::Event,
+        permission: None,
+        params: schema!(NetClosed),
+        result: None,
+    },
+    Method {
+        name: "net.accepted",
+        kind: Kind::Event,
+        permission: None,
+        params: schema!(NetAccepted),
+        result: None,
+    },
     // The microphone, through Foxglove (#237); its state is the `mic.*` facts.
-    Method { name: "audio.inputs.set_mute", kind: Kind::Call, permission: Some("audio.inputs.mute"), params: schema!(SetMuteParams), result: Some(schema!(Empty)) },
+    Method {
+        name: "audio.inputs.set_mute",
+        kind: Kind::Call,
+        permission: Some("audio.inputs.mute"),
+        params: schema!(SetMuteParams),
+        result: Some(schema!(Empty)),
+    },
     // Hold and give back the lights (#236).
-    Method { name: "lighting.lease", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(LeaseParams), result: Some(schema!(Lease)) },
-    Method { name: "lighting.release", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(Lease), result: Some(schema!(Empty)) },
-    Method { name: "lighting.update", kind: Kind::Call, permission: Some("lighting.write"), params: schema!(LeaseUpdate), result: Some(schema!(Empty)) },
+    Method {
+        name: "lighting.lease",
+        kind: Kind::Call,
+        permission: Some("lighting.write"),
+        params: schema!(LeaseParams),
+        result: Some(schema!(Lease)),
+    },
+    Method {
+        name: "lighting.release",
+        kind: Kind::Call,
+        permission: Some("lighting.write"),
+        params: schema!(Lease),
+        result: Some(schema!(Empty)),
+    },
+    Method {
+        name: "lighting.update",
+        kind: Kind::Call,
+        permission: Some("lighting.write"),
+        params: schema!(LeaseUpdate),
+        result: Some(schema!(Empty)),
+    },
     // A plugin's own secrets; outside tools get none (#213).
-    Method { name: "secrets.get", kind: Kind::Call, permission: Some("secrets"), params: schema!(SecretName), result: Some(schema!(SecretValue)) },
-    Method { name: "secrets.set", kind: Kind::Call, permission: Some("secrets"), params: schema!(SetSecretParams), result: Some(schema!(Empty)) },
+    Method {
+        name: "secrets.get",
+        kind: Kind::Call,
+        permission: Some("secrets"),
+        params: schema!(SecretName),
+        result: Some(schema!(SecretValue)),
+    },
+    Method {
+        name: "secrets.set",
+        kind: Kind::Call,
+        permission: Some("secrets"),
+        params: schema!(SetSecretParams),
+        result: Some(schema!(Empty)),
+    },
     // Sent to one plugin when the key bound to its action is pressed (#212).
-    Method { name: "action.invoked", kind: Kind::Event, permission: None, params: schema!(ActionInvoked), result: None },
+    Method {
+        name: "action.invoked",
+        kind: Kind::Event,
+        permission: None,
+        params: schema!(ActionInvoked),
+        result: None,
+    },
     // A plugin's own settings (#69): no permission, plugins only (API 1.3).
-    Method { name: "settings.get", kind: Kind::Call, permission: None, params: schema!(Empty), result: Some(schema!(SettingValues)) },
-    Method { name: "settings.changed", kind: Kind::Event, permission: None, params: schema!(SettingValues), result: None },
+    Method {
+        name: "settings.get",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(Empty),
+        result: Some(schema!(SettingValues)),
+    },
+    Method {
+        name: "settings.changed",
+        kind: Kind::Event,
+        permission: None,
+        params: schema!(SettingValues),
+        result: None,
+    },
     // Waiting for an app's windows instead of polling for it (#277); checked against the
     // scoped apps.watch permissions by the host (API 1.3).
-    Method { name: "apps.watch", kind: Kind::Call, permission: None, params: schema!(AppsWatchParams), result: Some(schema!(AppWindows)) },
-    Method { name: "app.window.appeared", kind: Kind::Event, permission: None, params: schema!(AppWindows), result: None },
-    Method { name: "app.window.closed", kind: Kind::Event, permission: None, params: schema!(AppWindows), result: None },
+    Method {
+        name: "apps.watch",
+        kind: Kind::Call,
+        permission: None,
+        params: schema!(AppsWatchParams),
+        result: Some(schema!(AppWindows)),
+    },
+    Method {
+        name: "app.window.appeared",
+        kind: Kind::Event,
+        permission: None,
+        params: schema!(AppWindows),
+        result: None,
+    },
+    Method {
+        name: "app.window.closed",
+        kind: Kind::Event,
+        permission: None,
+        params: schema!(AppWindows),
+        result: None,
+    },
 ];
 
 pub fn find(name: &str) -> Option<&'static Method> {
@@ -522,9 +758,18 @@ mod tests {
         assert_eq!(names.len(), METHODS.len(), "duplicate method names");
         for m in METHODS {
             if let Some(p) = m.permission {
-                assert!(Permission::try_from(p.to_string()).is_ok(), "{}: bad permission {p}", m.name);
+                assert!(
+                    Permission::try_from(p.to_string()).is_ok(),
+                    "{}: bad permission {p}",
+                    m.name
+                );
             }
-            assert_eq!(m.kind == Kind::Event, m.result.is_none(), "{}: events have no result", m.name);
+            assert_eq!(
+                m.kind == Kind::Event,
+                m.result.is_none(),
+                "{}: events have no result",
+                m.name
+            );
         }
     }
 
@@ -532,9 +777,17 @@ mod tests {
     fn facts_carry_bytes_as_base64() {
         assert_eq!(serde_json::to_value(Fact::Int(3)).unwrap(), json!(3));
         let b: Fact = serde_json::from_value(json!({"base64": "AAE="})).unwrap();
-        assert_eq!(b, Fact::Bytes { base64: "AAE=".into() });
+        assert_eq!(
+            b,
+            Fact::Bytes {
+                base64: "AAE=".into()
+            }
+        );
         let t: ArtTarget = serde_json::from_value(json!({"built_in": "ZMK_1"})).unwrap();
         assert_eq!(t, ArtTarget::BuiltIn("ZMK_1".into()));
-        assert_eq!(serde_json::to_value(ArtTarget::Random).unwrap(), json!("random"));
+        assert_eq!(
+            serde_json::to_value(ArtTarget::Random).unwrap(),
+            json!("random")
+        );
     }
 }

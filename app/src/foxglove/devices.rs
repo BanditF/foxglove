@@ -21,17 +21,30 @@ pub fn bus() -> &'static EventBus {
 /// block on discovery: call it off the UI thread.
 pub fn device() -> Option<Arc<DigitalisDevice>> {
     let mut cached = DEVICE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(d) = cached.as_ref().filter(|d| d.link().state().connected.is_some()) {
+    if let Some(d) = cached
+        .as_ref()
+        .filter(|d| d.link().state().connected.is_some())
+    {
         return Some(d.clone());
     }
     let mut found = None;
     *cached = super::link::host_keyboard().map(|((vid, pid), link, hello)| {
         found = Some((vid, pid));
         let backend = BackendId("zmk".into());
-        let product = link.state().connected.map(|c| c.product).unwrap_or_default();
+        let product = link
+            .state()
+            .connected
+            .map(|c| c.product)
+            .unwrap_or_default();
         // Its board profile, read once now it's connected (#75).
         super::boards::connected(vid, pid, &product);
-        let id = DeviceId::new(backend.clone(), vid, pid, None, &format!("{vid:04x}:{pid:04x}"));
+        let id = DeviceId::new(
+            backend.clone(),
+            vid,
+            pid,
+            None,
+            &format!("{vid:04x}:{pid:04x}"),
+        );
         let info = DeviceInfo {
             id: id.clone(),
             backend,
@@ -74,11 +87,15 @@ pub fn set_actions(actions: Vec<BehaviorInfo>, underglow: Option<u16>) {
 /// A device-layer error in the words the Keyboard panel uses.
 pub fn describe(e: &foxglove_devices::DeviceError) -> String {
     match e {
-        foxglove_devices::DeviceError::Unsupported => "not supported by this keyboard or keymap".into(),
-        foxglove_devices::DeviceError::Disconnected => "the keyboard is not connected".into(),
-        foxglove_devices::DeviceError::Timeout => "no answer; newer keyboard firmware needed?".into(),
-        foxglove_devices::DeviceError::Busy(why) | foxglove_devices::DeviceError::Denied(why) | foxglove_devices::DeviceError::Backend(why) => {
-            why.clone()
+        foxglove_devices::DeviceError::Unsupported => {
+            "not supported by this keyboard or keymap".into()
         }
+        foxglove_devices::DeviceError::Disconnected => "the keyboard is not connected".into(),
+        foxglove_devices::DeviceError::Timeout => {
+            "no answer; newer keyboard firmware needed?".into()
+        }
+        foxglove_devices::DeviceError::Busy(why)
+        | foxglove_devices::DeviceError::Denied(why)
+        | foxglove_devices::DeviceError::Backend(why) => why.clone(),
     }
 }

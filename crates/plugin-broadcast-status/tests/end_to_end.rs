@@ -23,10 +23,15 @@ struct Mock {
 
 impl Devices for Mock {
     fn call_from(&self, _conn: u64, method: &str, params: Value) -> Result<Value, Error> {
-        self.calls.lock().unwrap().push((method.to_string(), params));
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params));
         Ok(match method {
-            "devices.list" => json!({"devices": [{"id": "kb", "name": "Test board", "kind": "keyboard",
-                "backend": "mock", "connected": true, "caps": ["lighting", "screens"]}]}),
+            "devices.list" => {
+                json!({"devices": [{"id": "kb", "name": "Test board", "kind": "keyboard",
+                "backend": "mock", "connected": true, "caps": ["lighting", "screens"]}]})
+            }
             "lighting.lease" => json!({"lease": self.calls.lock().unwrap().len()}),
             _ => json!({}),
         })
@@ -43,8 +48,17 @@ fn soon(what: &str, f: impl Fn() -> bool) {
 
 impl Mock {
     fn wait(&self, what: &str, f: impl Fn(&str, &Value) -> bool) -> Value {
-        soon(what, || self.calls.lock().unwrap().iter().any(|(m, p)| f(m, p)));
-        self.calls.lock().unwrap().iter().find(|(m, p)| f(m, p)).unwrap().1.clone()
+        soon(what, || {
+            self.calls.lock().unwrap().iter().any(|(m, p)| f(m, p))
+        });
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(m, p)| f(m, p))
+            .unwrap()
+            .1
+            .clone()
     }
 
     fn clear(&self) {
@@ -66,7 +80,11 @@ impl Obs {
             head.push(b[0]);
         }
         let head = String::from_utf8(head).unwrap();
-        assert!(head.starts_with("GET / HTTP/1.1") && head.contains("Sec-WebSocket-Protocol: obswebsocket.json"), "{head}");
+        assert!(
+            head.starts_with("GET / HTTP/1.1")
+                && head.contains("Sec-WebSocket-Protocol: obswebsocket.json"),
+            "{head}"
+        );
         s.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
         Obs(s)
     }
@@ -87,7 +105,11 @@ impl Obs {
     fn recv(&mut self) -> Value {
         let mut h = [0u8; 2];
         self.0.read_exact(&mut h).unwrap();
-        assert_eq!((h[0], h[1] & 0x80), (0x81, 0x80), "a final, masked text frame");
+        assert_eq!(
+            (h[0], h[1] & 0x80),
+            (0x81, 0x80),
+            "a final, masked text frame"
+        );
         let len = match h[1] & 0x7F {
             126 => {
                 let mut l = [0u8; 2];
@@ -100,7 +122,9 @@ impl Obs {
         self.0.read_exact(&mut mask).unwrap();
         let mut body = vec![0u8; len];
         self.0.read_exact(&mut body).unwrap();
-        body.iter_mut().enumerate().for_each(|(i, b)| *b ^= mask[i % 4]);
+        body.iter_mut()
+            .enumerate()
+            .for_each(|(i, b)| *b ^= mask[i % 4]);
         serde_json::from_slice(&body).unwrap()
     }
 }
@@ -117,22 +141,45 @@ fn streaming_is_red_and_live_and_a_lost_obs_lets_go() {
 
     // A mock OBS on a free port, so tests and a real OBS on the machine don't meet. It isn't
     // running yet when the plugin starts.
-    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
     let spec = PluginSpec {
         id: id.into(),
         dir: dir.clone(),
-        run: vec![exe.file_name().unwrap().to_string_lossy().into(), "--port".into(), port.to_string()],
+        run: vec![
+            exe.file_name().unwrap().to_string_lossy().into(),
+            "--port".into(),
+            port.to_string(),
+        ],
         sandbox: cfg!(windows),
     };
     let mock = Arc::new(Mock::default());
     let facts = Facts::default();
     let (m, f) = (mock.clone(), facts.clone());
-    let mut perms: Vec<Permission> = ["secrets", "facts.write:broadcast.*", "devices.read", "lighting.write", "screens.write"]
-        .map(|p| Permission::try_from(p.to_string()).unwrap())
-        .to_vec();
-    perms.push(Permission::NetConnect { host: "127.0.0.1".into(), port: Some(port) });
+    let mut perms: Vec<Permission> = [
+        "secrets",
+        "facts.write:broadcast.*",
+        "devices.read",
+        "lighting.write",
+        "screens.write",
+    ]
+    .map(|p| Permission::try_from(p.to_string()).unwrap())
+    .to_vec();
+    perms.push(Permission::NetConnect {
+        host: "127.0.0.1".into(),
+        port: Some(port),
+    });
     perms.push(Permission::AppsWatch("obs64.exe".into()));
-    let context = move || Context { facts: f.clone(), devices: m.clone(), client: Client::Plugin(perms.clone()), app_version: "test".into(), limits: Limits::default() };
+    let context = move || Context {
+        facts: f.clone(),
+        devices: m.clone(),
+        client: Client::Plugin(perms.clone()),
+        app_version: "test".into(),
+        limits: Limits::default(),
+    };
     let runner = Runner::start(spec, Config::default(), context, |_| {});
 
     // No OBS window is open, so it doesn't try; it waits for one.
@@ -172,12 +219,19 @@ fn streaming_is_red_and_live_and_a_lost_obs_lets_go() {
         };
         obs.send(json!({"op": 7, "d": {"requestType": t, "requestId": ask["d"]["requestId"], "requestStatus": {"result": true, "code": 100}, "responseData": data}}));
     }
-    let lease = mock.wait("a red lease", |m, p| m == "lighting.lease" && p["color"]["hue"] == 0 && p["color"]["saturation"] == 100);
+    let lease = mock.wait("a red lease", |m, p| {
+        m == "lighting.lease" && p["color"]["hue"] == 0 && p["color"]["saturation"] == 100
+    });
     assert_eq!(lease["priority"], "high");
     let live = mock.wait("the LIVE screen", |m, _| m == "screens.panel_override");
-    assert_eq!((live["width"].clone(), live["ttl_ms"].clone()), (json!(64), json!(0)), "held, not timed");
+    assert_eq!(
+        (live["width"].clone(), live["ttl_ms"].clone()),
+        (json!(64), json!(0)),
+        "held, not timed"
+    );
     soon("the facts", || {
-        facts.get("broadcast.streaming") == Some(DeviceValue::Bool(true)) && facts.get("broadcast.scene") == Some(DeviceValue::Text("Gameplay".into()))
+        facts.get("broadcast.streaming") == Some(DeviceValue::Bool(true))
+            && facts.get("broadcast.scene") == Some(DeviceValue::Text("Gameplay".into()))
     });
 
     // The stream stops: the red goes and READY shows briefly.
@@ -186,14 +240,20 @@ fn streaming_is_red_and_live_and_a_lost_obs_lets_go() {
     mock.wait("the red given back", |m, _| m == "lighting.release");
     let ready = mock.wait("the READY screen", |m, _| m == "screens.panel_override");
     assert_eq!(ready["ttl_ms"], json!(3000));
-    soon("streaming off", || facts.get("broadcast.streaming") == Some(DeviceValue::Bool(false)));
+    soon("streaming off", || {
+        facts.get("broadcast.streaming") == Some(DeviceValue::Bool(false))
+    });
 
     // OBS quits: NOT CONNECTED briefly, and a burst of tries reconnects.
     mock.clear();
     drop(obs);
-    let gone = mock.wait("the NOT CONNECTED screen", |m, _| m == "screens.panel_override");
+    let gone = mock.wait("the NOT CONNECTED screen", |m, _| {
+        m == "screens.panel_override"
+    });
     assert_eq!(gone["ttl_ms"], json!(3000));
-    soon("connected off", || facts.get("broadcast.connected") == Some(DeviceValue::Bool(false)));
+    soon("connected off", || {
+        facts.get("broadcast.connected") == Some(DeviceValue::Bool(false))
+    });
     let again = Obs::accept(&listener);
 
     // OBS quits for good: its window closes, so after the connection drops it doesn't retry.

@@ -13,12 +13,30 @@ use super::{art_library, art_preview};
 
 /// Sets that ship with the app: the lighting presets' art (#273) and the plugins' (#238, #259).
 const BUNDLED: &[(&str, &[u8])] = &[
-    ("fury.bin", include_bytes!("../../resources/lighting/art/fury.bin")),
-    ("constellations.bin", include_bytes!("../../resources/lighting/art/constellations.bin")),
-    ("hearth.bin", include_bytes!("../../resources/lighting/art/hearth.bin")),
-    ("moon-garden.bin", include_bytes!("../../resources/lighting/art/moon-garden.bin")),
-    ("bandit-focus.bin", include_bytes!("../../../assets/plugins/org.foxglove.focus-timer/focus.bin")),
-    ("bandit-onair.bin", include_bytes!("../../../assets/plugins/org.foxglove.broadcast-status/onair.bin")),
+    (
+        "fury.bin",
+        include_bytes!("../../resources/lighting/art/fury.bin"),
+    ),
+    (
+        "constellations.bin",
+        include_bytes!("../../resources/lighting/art/constellations.bin"),
+    ),
+    (
+        "hearth.bin",
+        include_bytes!("../../resources/lighting/art/hearth.bin"),
+    ),
+    (
+        "moon-garden.bin",
+        include_bytes!("../../resources/lighting/art/moon-garden.bin"),
+    ),
+    (
+        "bandit-focus.bin",
+        include_bytes!("../../../assets/plugins/org.foxglove.focus-timer/focus.bin"),
+    ),
+    (
+        "bandit-onair.bin",
+        include_bytes!("../../../assets/plugins/org.foxglove.broadcast-status/onair.bin"),
+    ),
 ];
 
 /// Where a piece lives. A piece can be in several places.
@@ -101,7 +119,11 @@ pub struct Blob {
 
 /// Every piece, merged. A library or bundled blob joins a built-in when the wallpaper index says
 /// it is that built-in (`right.builtin`), and blobs with equal bytes join each other.
-pub fn pieces(s: &Snapshot, blobs: Vec<Blob>, builtin_of: &dyn Fn(&str) -> Option<String>) -> Vec<Piece> {
+pub fn pieces(
+    s: &Snapshot,
+    blobs: Vec<Blob>,
+    builtin_of: &dyn Fn(&str) -> Option<String>,
+) -> Vec<Piece> {
     let count = s.status.map_or(0, |st| st.right_set_count).min(128);
     let names = super::art_manifest::sets(count);
     let mut out: Vec<Piece> = (0..count)
@@ -136,7 +158,9 @@ pub fn pieces(s: &Snapshot, blobs: Vec<Blob>, builtin_of: &dyn Fn(&str) -> Optio
         let same = out.iter().position(|p| {
             p.hash == Some(blob.hash)
                 || builtin.as_ref().is_some_and(|b| {
-                    p.places.iter().any(|pl| matches!(pl, Place::BuiltIn(_, Some(n)) if n == b))
+                    p.places
+                        .iter()
+                        .any(|pl| matches!(pl, Place::BuiltIn(_, Some(n)) if n == b))
                 })
         });
         match same {
@@ -197,7 +221,9 @@ fn bundled_blobs() -> Vec<Blob> {
         .map(|(i, (name, bytes))| Blob {
             place: Place::Bundled(i),
             label: name.trim_end_matches(".bin").replace('-', " "),
-            preview: art_preview::first_frame(bytes).ok().map(|img| Arc::new(upright(&img))),
+            preview: art_preview::first_frame(bytes)
+                .ok()
+                .map(|img| Arc::new(upright(&img))),
             bytes: bytes.len(),
             hash: art_library::blob_hash(bytes),
         })
@@ -229,7 +255,12 @@ pub fn window(ctx: &egui::Context, h: &Handle, s: &Snapshot) {
         .iter()
         .map(|e| Blob {
             place: Place::Library(e.path.clone()),
-            label: e.path.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
+            label: e
+                .path
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
             preview: e.preview.as_ref().ok().map(|img| Arc::new(upright(img))),
             bytes: e.bytes,
             hash: e.hash,
@@ -240,7 +271,12 @@ pub fn window(ctx: &egui::Context, h: &Handle, s: &Snapshot) {
         let bytes = src.blob.as_ref().ok()?;
         Some(Blob {
             place: Place::Source(src.folder.clone()),
-            label: src.folder.file_name().unwrap_or_default().to_string_lossy().replace('_', " "),
+            label: src
+                .folder
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .replace('_', " "),
             preview: src.preview.as_ref().map(|img| Arc::new(upright(img))),
             bytes: bytes.len(),
             hash: art_library::blob_hash(bytes),
@@ -289,7 +325,8 @@ fn on_screen(s: &Snapshot, place: &Place) -> bool {
         // A slot plays like a pushed set; the pin says which.
         Place::Slot(n) => {
             s.pinned == Some(Choice::Slot(*n))
-                && s.status.is_some_and(|st| st.right_state == digitalis::protocol::right_state::PLAYING)
+                && s.status
+                    .is_some_and(|st| st.right_state == digitalis::protocol::right_state::PLAYING)
         }
         Place::Bundled(_) | Place::Source(_) => false,
     }
@@ -336,7 +373,11 @@ fn contents(
         ] {
             ui.selectable_value(&mut v.filter, f, text);
         }
-        ui.add(egui::TextEdit::singleline(&mut v.search).hint_text("Search").desired_width(140.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut v.search)
+                .hint_text("Search")
+                .desired_width(140.0),
+        );
         if ui.button("Rescan").clicked() {
             art_library::refresh();
             v.textures.clear();
@@ -348,25 +389,34 @@ fn contents(
     if let Some(m) = &v.message {
         ui.colored_label(ui.visuals().warn_fg_color, m);
     }
-    let in_hotlist = |p: &Piece| p.places.iter().filter_map(Place::item).any(|i| s.cycle.items.contains(&i));
+    let in_hotlist = |p: &Piece| {
+        p.places
+            .iter()
+            .filter_map(Place::item)
+            .any(|i| s.cycle.items.contains(&i))
+    };
     let search = v.search.to_lowercase();
-    let shown: Vec<&Piece> = all
-        .iter()
-        .filter(|p| match v.filter {
-            Filter::All => true,
-            Filter::OnKeyboard => {
-                p.places.iter().any(|pl| matches!(pl, Place::BuiltIn(..) | Place::Slot(_)))
-                    || p.places.iter().any(|pl| on_screen(s, pl))
-            }
-            Filter::Library => {
-                p.places.iter().any(|pl| matches!(pl, Place::Library(_) | Place::Bundled(_) | Place::Source(_)))
-            }
-            Filter::Hotlist => in_hotlist(p),
-        })
-        .filter(|p| search.is_empty() || p.label.to_lowercase().contains(&search))
-        .collect();
+    let shown: Vec<&Piece> =
+        all.iter()
+            .filter(|p| match v.filter {
+                Filter::All => true,
+                Filter::OnKeyboard => {
+                    p.places
+                        .iter()
+                        .any(|pl| matches!(pl, Place::BuiltIn(..) | Place::Slot(_)))
+                        || p.places.iter().any(|pl| on_screen(s, pl))
+                }
+                Filter::Library => p.places.iter().any(|pl| {
+                    matches!(pl, Place::Library(_) | Place::Bundled(_) | Place::Source(_))
+                }),
+                Filter::Hotlist => in_hotlist(p),
+            })
+            .filter(|p| search.is_empty() || p.label.to_lowercase().contains(&search))
+            .collect();
     if shown.is_empty() {
-        ui.weak("No art here yet: add .bin files to the library folder, or save a set to the keyboard.");
+        ui.weak(
+            "No art here yet: add .bin files to the library folder, or save a set to the keyboard.",
+        );
     }
     egui::ScrollArea::vertical().show(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
@@ -396,7 +446,11 @@ fn card(
         .and_then(super::art_sources::stand_in)
         .filter(|n| s.slots.iter().any(|i| i.slot == *n && i.used));
     let showing = piece.places.iter().any(|pl| on_screen(s, pl));
-    let pinned = piece.places.iter().filter_map(Place::choice).any(|c| s.pinned.as_ref() == Some(&c));
+    let pinned = piece
+        .places
+        .iter()
+        .filter_map(Place::choice)
+        .any(|c| s.pinned.as_ref() == Some(&c));
     let layer = piece
         .places
         .iter()
@@ -408,17 +462,37 @@ fn card(
             match &piece.preview {
                 Some(img) => {
                     let id = piece.hash.unwrap_or(0);
-                    let index = v.textures.iter().position(|(h, _)| *h == id).unwrap_or_else(|| {
-                        let t = ui.ctx().load_texture(format!("art-lib-{id}"), (**img).clone(), egui::TextureOptions::NEAREST);
-                        v.textures.push((id, t));
-                        v.textures.len() - 1
-                    });
+                    let index = v
+                        .textures
+                        .iter()
+                        .position(|(h, _)| *h == id)
+                        .unwrap_or_else(|| {
+                            let t = ui.ctx().load_texture(
+                                format!("art-lib-{id}"),
+                                (**img).clone(),
+                                egui::TextureOptions::NEAREST,
+                            );
+                            v.textures.push((id, t));
+                            v.textures.len() - 1
+                        });
                     ui.image((v.textures[index].1.id(), egui::vec2(68.0, 140.0)));
                 }
                 None => {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(68.0, 140.0), egui::Sense::hover());
-                    ui.painter().rect_stroke(rect, 2.0, ui.visuals().widgets.noninteractive.bg_stroke, egui::StrokeKind::Inside);
-                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "no preview", egui::FontId::proportional(10.0), ui.visuals().weak_text_color());
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(68.0, 140.0), egui::Sense::hover());
+                    ui.painter().rect_stroke(
+                        rect,
+                        2.0,
+                        ui.visuals().widgets.noninteractive.bg_stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "no preview",
+                        egui::FontId::proportional(10.0),
+                        ui.visuals().weak_text_color(),
+                    );
                 }
             }
             ui.strong(&piece.label);
@@ -462,7 +536,10 @@ fn card(
             ui.horizontal_wrapped(|ui| {
                 let best = stand_in.map(Place::Slot).or_else(|| piece.best().cloned());
                 if ui
-                    .add_enabled(!s.busy && !too_big && best.is_some(), egui::Button::new("Show"))
+                    .add_enabled(
+                        !s.busy && !too_big && best.is_some(),
+                        egui::Button::new("Show"),
+                    )
                     .clicked()
                 {
                     match best {
@@ -492,12 +569,19 @@ fn card(
                 }
                 let item = piece.places.iter().find_map(Place::item);
                 if let Some(item) = item {
-                    let text = if hotlisted { "★ hotlist" } else { "☆ hotlist" };
+                    let text = if hotlisted {
+                        "★ hotlist"
+                    } else {
+                        "☆ hotlist"
+                    };
                     if ui.small_button(text).clicked() {
                         let mut cycle = s.cycle.clone();
                         if hotlisted {
-                            cycle.items.retain(|i| piece.places.iter().filter_map(Place::item).all(|p| &p != i));
-                            cycle.position = cycle.position.min(cycle.items.len().saturating_sub(1));
+                            cycle.items.retain(|i| {
+                                piece.places.iter().filter_map(Place::item).all(|p| &p != i)
+                            });
+                            cycle.position =
+                                cycle.position.min(cycle.items.len().saturating_sub(1));
                         } else {
                             cycle.items.push(item);
                         }
@@ -510,7 +594,14 @@ fn card(
                     match pl {
                         Place::Slot(n) => {
                             let armed = v.confirm_clear == Some(*n);
-                            if ui.small_button(if armed { "Clear? Click again" } else { "Clear slot" }).clicked() {
+                            if ui
+                                .small_button(if armed {
+                                    "Clear? Click again"
+                                } else {
+                                    "Clear slot"
+                                })
+                                .clicked()
+                            {
                                 if armed {
                                     h.erase_slot(*n);
                                     v.confirm_clear = None;
@@ -520,13 +611,18 @@ fn card(
                             }
                             if builtin_name.is_none() {
                                 // Stand in for a built-in (app-side; undo it on the built-in's card).
-                                let names = super::art_manifest::sets(s.status.map_or(0, |st| st.right_set_count));
+                                let names = super::art_manifest::sets(
+                                    s.status.map_or(0, |st| st.right_set_count),
+                                );
                                 egui::ComboBox::from_id_salt(("art-lib-stand-in", *n))
                                     .selected_text("Stand in for…")
                                     .show_ui(ui, |ui| {
                                         for set in names.unwrap_or_default() {
                                             if ui.selectable_label(false, &set.label).clicked() {
-                                                super::art_sources::set_stand_in(&set.name, Some(*n));
+                                                super::art_sources::set_stand_in(
+                                                    &set.name,
+                                                    Some(*n),
+                                                );
                                             }
                                         }
                                     });
@@ -546,7 +642,11 @@ fn card(
                             }
                         }
                         Place::Library(p) => {
-                            if ui.small_button("Recycle").on_hover_text("Moves the file to the Recycle Bin").clicked() {
+                            if ui
+                                .small_button("Recycle")
+                                .on_hover_text("Moves the file to the Recycle Bin")
+                                .clicked()
+                            {
                                 art_library::delete(p.clone());
                             }
                         }
@@ -567,9 +667,20 @@ fn card(
 }
 
 /// Writes a source folder's converted set into the library as `<folder name>.bin`.
-fn source_to_library(folder: &std::path::Path, sources: &[(PathBuf, Arc<Vec<u8>>)]) -> Result<PathBuf, String> {
-    let (_, blob) = sources.iter().find(|(f, _)| f == folder).ok_or("that source isn't converted yet")?;
-    let name = folder.file_name().ok_or("no folder name")?.to_string_lossy().into_owned() + ".bin";
+fn source_to_library(
+    folder: &std::path::Path,
+    sources: &[(PathBuf, Arc<Vec<u8>>)],
+) -> Result<PathBuf, String> {
+    let (_, blob) = sources
+        .iter()
+        .find(|(f, _)| f == folder)
+        .ok_or("that source isn't converted yet")?;
+    let name = folder
+        .file_name()
+        .ok_or("no folder name")?
+        .to_string_lossy()
+        .into_owned()
+        + ".bin";
     write_to_library(&name, blob)
 }
 
@@ -596,17 +707,35 @@ mod tests {
     use super::*;
 
     fn blob(place: Place, hash: u64) -> Blob {
-        Blob { place, label: "x".into(), preview: None, bytes: 100, hash }
+        Blob {
+            place,
+            label: "x".into(),
+            preview: None,
+            bytes: 100,
+            hash,
+        }
     }
 
     #[test]
     fn same_bytes_merge_and_wallpaper_builtins_join() {
         let s = Snapshot::default(); // no status: no built-ins listed
         let lib = |n: &str| Place::Library(PathBuf::from(n));
-        let all = pieces(&s, vec![blob(lib("a.bin"), 1), blob(Place::Bundled(0), 1), blob(lib("b.bin"), 2)], &|_| None);
+        let all = pieces(
+            &s,
+            vec![
+                blob(lib("a.bin"), 1),
+                blob(Place::Bundled(0), 1),
+                blob(lib("b.bin"), 2),
+            ],
+            &|_| None,
+        );
         assert_eq!(all.len(), 2, "a.bin and the bundled copy are one piece");
         assert_eq!(all[0].places, vec![lib("a.bin"), Place::Bundled(0)]);
-        assert_eq!(all[0].best(), Some(&lib("a.bin")), "a library file pushes; bundled needs a copy");
+        assert_eq!(
+            all[0].best(),
+            Some(&lib("a.bin")),
+            "a library file pushes; bundled needs a copy"
+        );
     }
 
     #[test]
@@ -614,7 +743,11 @@ mod tests {
         for b in bundled_blobs() {
             let img = b.preview.unwrap_or_else(|| panic!("{} decodes", b.label));
             assert_eq!(img.size, [68, 140], "{} is portrait", b.label);
-            assert!(b.bytes <= 12 * 1024, "{} stays under the library target", b.label);
+            assert!(
+                b.bytes <= 12 * 1024,
+                "{} stays under the library target",
+                b.label
+            );
         }
     }
 

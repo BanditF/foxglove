@@ -8,10 +8,12 @@
 #[cfg(windows)]
 pub fn of(hid_path: &str) -> Option<String> {
     use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
-        CM_Get_DevNode_PropertyW, CM_Get_Device_IDW, CM_Get_Device_Interface_PropertyW, CM_Get_Parent, CM_Locate_DevNodeW, CM_LOCATE_DEVNODE_NORMAL,
-        CR_SUCCESS,
+        CM_Get_DevNode_PropertyW, CM_Get_Device_IDW, CM_Get_Device_Interface_PropertyW,
+        CM_Get_Parent, CM_Locate_DevNodeW, CM_LOCATE_DEVNODE_NORMAL, CR_SUCCESS,
     };
-    use windows_sys::Win32::Devices::Properties::{DEVPKEY_Device_ContainerId, DEVPKEY_Device_InstanceId, DEVPKEY_Device_LocationPaths};
+    use windows_sys::Win32::Devices::Properties::{
+        DEVPKEY_Device_ContainerId, DEVPKEY_Device_InstanceId, DEVPKEY_Device_LocationPaths,
+    };
     use windows_sys::Win32::Foundation::DEVPROPKEY;
 
     fn wide(s: &str) -> Vec<u16> {
@@ -29,7 +31,13 @@ pub fn of(hid_path: &str) -> Option<String> {
     }
     /// The first string of a UTF-16 string or string list.
     fn text(bytes: &[u8]) -> String {
-        let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).take_while(|u| *u != 0).collect();
+        let units: Vec<u16> = bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| u16::from_le_bytes(*c))
+            .take_while(|u| *u != 0)
+            .collect();
         String::from_utf16_lossy(&units)
     }
     let node_property = |node: u32, key: &DEVPROPKEY| {
@@ -42,11 +50,22 @@ pub fn of(hid_path: &str) -> Option<String> {
     let path = wide(hid_path);
     let instance = property(|buf, size| {
         let mut kind = 0;
-        unsafe { CM_Get_Device_Interface_PropertyW(path.as_ptr(), &DEVPKEY_Device_InstanceId, &mut kind, buf, size, 0) }
+        unsafe {
+            CM_Get_Device_Interface_PropertyW(
+                path.as_ptr(),
+                &DEVPKEY_Device_InstanceId,
+                &mut kind,
+                buf,
+                size,
+                0,
+            )
+        }
     })?;
     let instance = wide(&text(&instance));
     let mut node = 0u32;
-    if unsafe { CM_Locate_DevNodeW(&mut node, instance.as_ptr(), CM_LOCATE_DEVNODE_NORMAL) } != CR_SUCCESS {
+    if unsafe { CM_Locate_DevNodeW(&mut node, instance.as_ptr(), CM_LOCATE_DEVNODE_NORMAL) }
+        != CR_SUCCESS
+    {
         return None;
     }
     // Up from the HID interface to the USB device it belongs to.
@@ -55,8 +74,10 @@ pub fn of(hid_path: &str) -> Option<String> {
         if unsafe { CM_Get_Device_IDW(node, id.as_mut_ptr(), id.len() as u32, 0) } != CR_SUCCESS {
             return None;
         }
-        let id = String::from_utf16_lossy(&id[..id.iter().position(|u| *u == 0).unwrap_or(id.len())]);
-        if id.to_ascii_uppercase().starts_with("USB\\") && !id.to_ascii_uppercase().contains("&MI_") {
+        let id =
+            String::from_utf16_lossy(&id[..id.iter().position(|u| *u == 0).unwrap_or(id.len())]);
+        if id.to_ascii_uppercase().starts_with("USB\\") && !id.to_ascii_uppercase().contains("&MI_")
+        {
             let location = text(&node_property(node, &DEVPKEY_Device_LocationPaths)?);
             let container = node_property(node, &DEVPKEY_Device_ContainerId)
                 .filter(|b| b.len() == 16)
@@ -86,9 +107,14 @@ mod tests {
     #[ignore]
     fn locates_connected_hid_devices() {
         let api = hidapi::HidApi::new().unwrap();
-        let found: Vec<String> = api.device_list().filter_map(|d| super::of(&d.path().to_string_lossy())).collect();
+        let found: Vec<String> = api
+            .device_list()
+            .filter_map(|d| super::of(&d.path().to_string_lossy()))
+            .collect();
         println!("{found:#?}");
-        assert!(found.iter().all(|f| f.starts_with("usb:") && f.contains('@')));
+        assert!(found
+            .iter()
+            .all(|f| f.starts_with("usb:") && f.contains('@')));
         assert!(!found.is_empty(), "no USB HID device located");
     }
 }

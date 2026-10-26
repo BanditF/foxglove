@@ -125,9 +125,9 @@ fn matches(pattern: &str, key: &str) -> bool {
 }
 
 fn notify(inner: &mut Inner, change: Change) {
-    inner.subscribers.retain(|(pattern, tx)| {
-        !matches(pattern, &change.key) || tx.send(change.clone()).is_ok()
-    });
+    inner
+        .subscribers
+        .retain(|(pattern, tx)| !matches(pattern, &change.key) || tx.send(change.clone()).is_ok());
 }
 
 #[cfg(test)]

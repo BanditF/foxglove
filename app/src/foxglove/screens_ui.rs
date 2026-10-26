@@ -54,14 +54,18 @@ pub fn page(ui: &mut egui::Ui) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
         for i in 0..2 {
-            ui.allocate_ui_with_layout(egui::vec2(half, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.set_width(half);
-                if i == 0 {
-                    group(ui);
-                } else {
-                    super::art_ui::group(ui);
-                }
-            });
+            ui.allocate_ui_with_layout(
+                egui::vec2(half, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(half);
+                    if i == 0 {
+                        group(ui);
+                    } else {
+                        super::art_ui::group(ui);
+                    }
+                },
+            );
         }
     });
 }

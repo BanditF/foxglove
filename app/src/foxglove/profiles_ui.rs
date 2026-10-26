@@ -23,7 +23,13 @@ struct UiState {
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
 
 /// The profile combo box; switches when another profile is picked.
-fn combo(ui: &mut egui::Ui, id: &str, width: Option<f32>, names: &[String], active: &Option<String>) -> Result<(), String> {
+fn combo(
+    ui: &mut egui::Ui,
+    id: &str,
+    width: Option<f32>,
+    names: &[String],
+    active: &Option<String>,
+) -> Result<(), String> {
     let shown = active.clone().unwrap_or_else(|| "Base settings".into());
     let mut chosen = None;
     let mut combo = egui::ComboBox::from_id_salt(id).selected_text(shown);
@@ -31,11 +37,17 @@ fn combo(ui: &mut egui::Ui, id: &str, width: Option<f32>, names: &[String], acti
         combo = combo.width(width);
     }
     combo.show_ui(ui, |ui| {
-        if ui.selectable_label(active.is_none(), "Base settings").clicked() {
+        if ui
+            .selectable_label(active.is_none(), "Base settings")
+            .clicked()
+        {
             chosen = Some(None);
         }
         for name in names {
-            if ui.selectable_label(active.as_deref() == Some(name.as_str()), name).clicked() {
+            if ui
+                .selectable_label(active.as_deref() == Some(name.as_str()), name)
+                .clicked()
+            {
                 chosen = Some(Some(name.clone()));
             }
         }
@@ -49,7 +61,13 @@ fn combo(ui: &mut egui::Ui, id: &str, width: Option<f32>, names: &[String], acti
 /// The profile picker at the bottom of the sidebar (#385).
 pub fn sidebar_picker(ui: &mut egui::Ui) {
     let (names, active) = store::cached_profiles();
-    if let Err(e) = combo(ui, "foxglove-profile-sidebar", Some(ui.available_width() - 8.0), &names, &active) {
+    if let Err(e) = combo(
+        ui,
+        "foxglove-profile-sidebar",
+        Some(ui.available_width() - 8.0),
+        &names,
+        &active,
+    ) {
         eprintln!("Foxglove: can't switch profile: {e}");
     }
 }
@@ -70,9 +88,11 @@ pub fn picker(ui: &mut egui::Ui) {
             // A rule switches to a profile, so there's nothing to pick until one exists.
             ui.weak("Switch profile by program: import a profile below first.");
         } else {
-            egui::CollapsingHeader::new("Switch profile by program").show(ui, |ui| rules(ui, &names));
+            egui::CollapsingHeader::new("Switch profile by program")
+                .show(ui, |ui| rules(ui, &names));
         }
-        egui::CollapsingHeader::new("Share profiles").show(ui, |ui| share(ui, &names, active.as_deref()));
+        egui::CollapsingHeader::new("Share profiles")
+            .show(ui, |ui| share(ui, &names, active.as_deref()));
     });
 }
 
@@ -144,32 +164,51 @@ fn share(ui: &mut egui::Ui, names: &[String], active: Option<&str>) {
 fn rules(ui: &mut egui::Ui, names: &[String]) {
     UI.with_borrow_mut(|state| {
         let (mut auto, mut rules) = state.rules.get_or_insert_with(store::rules).clone();
-        let mut changed = ui.checkbox(&mut auto, "Switch automatically when a listed program comes to the front").changed();
+        let mut changed = ui
+            .checkbox(
+                &mut auto,
+                "Switch automatically when a listed program comes to the front",
+            )
+            .changed();
         let mut remove = None;
-        egui::Grid::new("profile-rules").num_columns(3).show(ui, |ui| {
-            for (i, rule) in rules.iter_mut().enumerate() {
-                ui.label(&rule.program);
-                egui::ComboBox::from_id_salt(("profile-rule", i))
-                    .selected_text(rule.profile.clone())
-                    .show_ui(ui, |ui| {
-                        for name in names {
-                            changed |= ui.selectable_value(&mut rule.profile, name.clone(), name).changed();
-                        }
-                    });
-                if ui.small_button("Remove").clicked() {
-                    remove = Some(i);
+        egui::Grid::new("profile-rules")
+            .num_columns(3)
+            .show(ui, |ui| {
+                for (i, rule) in rules.iter_mut().enumerate() {
+                    ui.label(&rule.program);
+                    egui::ComboBox::from_id_salt(("profile-rule", i))
+                        .selected_text(rule.profile.clone())
+                        .show_ui(ui, |ui| {
+                            for name in names {
+                                changed |= ui
+                                    .selectable_value(&mut rule.profile, name.clone(), name)
+                                    .changed();
+                            }
+                        });
+                    if ui.small_button("Remove").clicked() {
+                        remove = Some(i);
+                    }
+                    ui.end_row();
                 }
-                ui.end_row();
-            }
-        });
+            });
         if let Some(i) = remove {
             rules.remove(i);
             changed = true;
         }
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut state.new_program).hint_text("game.exe").desired_width(140.0));
-            if let Some(foxglove_devices::facts::Value::Text(front)) = super::devices::bus().facts().get("app.foreground") {
-                if ui.small_button("Program in front").on_hover_text(&front).clicked() {
+            ui.add(
+                egui::TextEdit::singleline(&mut state.new_program)
+                    .hint_text("game.exe")
+                    .desired_width(140.0),
+            );
+            if let Some(foxglove_devices::facts::Value::Text(front)) =
+                super::devices::bus().facts().get("app.foreground")
+            {
+                if ui
+                    .small_button("Program in front")
+                    .on_hover_text(&front)
+                    .clicked()
+                {
                     state.new_program = front;
                 }
             }
@@ -184,9 +223,15 @@ fn rules(ui: &mut egui::Ui, names: &[String]) {
                     }
                 });
             let program = state.new_program.trim().to_lowercase();
-            if ui.add_enabled(!program.is_empty(), egui::Button::new("Add")).clicked() {
+            if ui
+                .add_enabled(!program.is_empty(), egui::Button::new("Add"))
+                .clicked()
+            {
                 rules.retain(|r| r.program != program);
-                rules.push(Rule { program, profile: state.new_profile.clone() });
+                rules.push(Rule {
+                    program,
+                    profile: state.new_profile.clone(),
+                });
                 state.new_program.clear();
                 changed = true;
             }

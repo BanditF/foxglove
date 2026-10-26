@@ -145,7 +145,10 @@ pub fn learn(layers: &[ResolvedLayer]) {
     let profile = super::boards::current().and_then(|b| b.keymap_source());
     let rules = match profile {
         Some(source) => configured_rules(layers, &source),
-        None => super::boards::built_in_keymaps().map(|s| configured_rules(layers, s)).find(|r| !r.is_empty()).unwrap_or_default(),
+        None => super::boards::built_in_keymaps()
+            .map(|s| configured_rules(layers, s))
+            .find(|r| !r.is_empty())
+            .unwrap_or_default(),
     };
     if let Ok(mut hints) = HINTS.lock() {
         *hints = derive(layers, &rules);

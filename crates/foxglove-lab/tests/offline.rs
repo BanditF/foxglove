@@ -833,10 +833,17 @@ mod left_half {
                 let queue = Arc::new((Mutex::new(Queue::default()), Condvar::new()));
                 *board.wire.lock().unwrap() = Some(queue.clone());
                 Ok((
-                    Box::new(Wire { board: board.clone(), queue }) as Box<dyn RawHid>,
+                    Box::new(Wire {
+                        board: board.clone(),
+                        queue,
+                    }) as Box<dyn RawHid>,
                     Connected {
                         product: "left half".into(),
-                        hello: Some(Hello { version: 1, capabilities: 1 << 6, ..Default::default() }),
+                        hello: Some(Hello {
+                            version: 1,
+                            capabilities: 1 << 6,
+                            ..Default::default()
+                        }),
                     },
                 ))
             }));
@@ -870,9 +877,16 @@ fn replug_hello_case_finds_the_redrawn_left_panel_after_a_replug() {
     use foxglove_lab::runner::Hardware;
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil");
     let mut suite = spec::load(&root.join("resilience.toml")).unwrap();
-    let at = suite.cases.iter().position(|c| c.name == "replug-hello").unwrap();
+    let at = suite
+        .cases
+        .iter()
+        .position(|c| c.name == "replug-hello")
+        .unwrap();
     let case = suite.cases.swap_remove(at);
-    assert!(case.manual && matches!(case.steps[0], Step::Prompt(_)), "the replug is a human step");
+    assert!(
+        case.manual && matches!(case.steps[0], Step::Prompt(_)),
+        "the replug is a human step"
+    );
     assert!(case.requires.iter().any(|r| r == "unlocked"));
     assert!(case.requires.iter().any(|r| r == "screen_readback"));
 
@@ -880,8 +894,19 @@ fn replug_hello_case_finds_the_redrawn_left_panel_after_a_replug() {
     let fake = Fake::default();
     let cat = catalog();
     let dir = Temp::new();
-    let hello = Hello { version: 1, capabilities: TEST_HOOKS, ..Default::default() };
-    let mut runner = Runner::new(&fake, &cat, hello, Arc::new(AtomicBool::new(false)), false, &dir.0);
+    let hello = Hello {
+        version: 1,
+        capabilities: TEST_HOOKS,
+        ..Default::default()
+    };
+    let mut runner = Runner::new(
+        &fake,
+        &cat,
+        hello,
+        Arc::new(AtomicBool::new(false)),
+        false,
+        &dir.0,
+    );
     runner.locked = || true;
     let r = runner.case(&case, true);
     assert_eq!(r.status, Status::Blocked);
@@ -915,7 +940,11 @@ fn replug_hello_case_finds_the_redrawn_left_panel_after_a_replug() {
             bits[(y * w.div_ceil(8) + x / 8) as usize] |= 0x80 >> (x % 8);
         }
     }
-    std::fs::write(&dump, foxglove_lab::resilience::pbm(w as usize, h as usize, &bits)).unwrap();
+    std::fs::write(
+        &dump,
+        foxglove_lab::resilience::pbm(w as usize, h as usize, &bits),
+    )
+    .unwrap();
 
     let board = Arc::new(left_half::Board::default());
     *board.screen.lock().unwrap() = frame.clone();
@@ -923,11 +952,22 @@ fn replug_hello_case_finds_the_redrawn_left_panel_after_a_replug() {
     let mut hw = Hardware::new(link);
     let run_on = |device: &Hardware| {
         let out = Temp::new();
-        let mut r = Runner::new(device, &cat, hello, Arc::new(AtomicBool::new(false)), true, &out.0);
+        let mut r = Runner::new(
+            device,
+            &cat,
+            hello,
+            Arc::new(AtomicBool::new(false)),
+            true,
+            &out.0,
+        );
         r.locked = || false;
         r.case(&steps, true)
     };
-    assert_eq!(run_on(&hw).status, Status::Pass, "the frame shows before the replug");
+    assert_eq!(
+        run_on(&hw).status,
+        Status::Pass,
+        "the frame shows before the replug"
+    );
 
     for redrawn in [true, false] {
         // Replug: the panel comes back blank; Foxglove (#354) draws its frame again, or not.
@@ -937,7 +977,11 @@ fn replug_hello_case_finds_the_redrawn_left_panel_after_a_replug() {
         while hw.link.state().connected.is_some() && std::time::Instant::now() < end {
             std::thread::sleep(Duration::from_millis(5));
         }
-        *board.screen.lock().unwrap() = if redrawn { frame.clone() } else { vec![0; 1360] };
+        *board.screen.lock().unwrap() = if redrawn {
+            frame.clone()
+        } else {
+            vec![0; 1360]
+        };
         board.plug(&hw.link);
         let end = std::time::Instant::now() + Duration::from_secs(2);
         while hw.link.state().generation == generation && std::time::Instant::now() < end {
@@ -947,18 +991,38 @@ fn replug_hello_case_finds_the_redrawn_left_panel_after_a_replug() {
         // The run that saw the replug can't go on; the case runs in a fresh run.
         let stale = run_on(&hw);
         assert_eq!(stale.status, Status::Fail);
-        assert!(stale.message.contains("start a new run"), "{}", stale.message);
+        assert!(
+            stale.message.contains("start a new run"),
+            "{}",
+            stale.message
+        );
         let link = hw.link;
         hw = Hardware::new(link);
         let r = run_on(&hw);
         if redrawn {
             assert_eq!(r.status, Status::Pass, "{}", r.message);
-            assert!(r.steps[0].actual.starts_with("HELLO caps"), "{}", r.steps[0].actual);
-            assert!(r.steps[1].actual.contains("frame shown"), "{}", r.steps[1].actual);
+            assert!(
+                r.steps[0].actual.starts_with("HELLO caps"),
+                "{}",
+                r.steps[0].actual
+            );
+            assert!(
+                r.steps[1].actual.contains("frame shown"),
+                "{}",
+                r.steps[1].actual
+            );
             assert_eq!(r.steps[1].attachments, ["replug-hello-left-panel.png"]);
         } else {
-            assert_eq!(r.status, Status::Fail, "a blank panel after the replug is #350");
-            assert!(r.message.contains("not found on the left screen"), "{}", r.message);
+            assert_eq!(
+                r.status,
+                Status::Fail,
+                "a blank panel after the replug is #350"
+            );
+            assert!(
+                r.message.contains("not found on the left screen"),
+                "{}",
+                r.message
+            );
         }
     }
 }

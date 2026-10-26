@@ -28,7 +28,9 @@ impl<S: BufRead, W: Write> Api<S, W> {
                 return Err("Foxglove closed the connection".into());
             }
             // Events can arrive between replies; skip them.
-            let Ok(response) = serde_json::from_str::<Response>(&reply) else { continue };
+            let Ok(response) = serde_json::from_str::<Response>(&reply) else {
+                continue;
+            };
             return match response.outcome {
                 Outcome::Result(v) => Ok(v),
                 Outcome::Error(e) => Err(format!("{method}: {} (code {})", e.message, e.code)),
@@ -48,13 +50,18 @@ fn fact_text(v: &Value) -> String {
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.first().map(String::as_str).unwrap_or("status");
     #[cfg(windows)]
-    let pipe = foxglove_plugin_host::pipe::connect().map_err(|e| format!("Foxglove isn't running (or its API is off): {e}"))?;
+    let pipe = foxglove_plugin_host::pipe::connect()
+        .map_err(|e| format!("Foxglove isn't running (or its API is off): {e}"))?;
     #[cfg(not(windows))]
     return Err("the local API is Windows-only for now".into());
     #[cfg(windows)]
     {
         let read = BufReader::new(pipe.try_clone().map_err(|e| e.to_string())?);
-        let mut api = Api { read, write: pipe, next: 0 };
+        let mut api = Api {
+            read,
+            write: pipe,
+            next: 0,
+        };
         let init: InitializeResult = serde_json::from_value(api.call(
             "initialize",
             json!({
@@ -67,8 +74,8 @@ fn run(args: &[String]) -> Result<(), String> {
         match command {
             "status" => {
                 println!("Foxglove {} (API {})", init.app, init.api);
-                let devices: Devices =
-                    serde_json::from_value(api.call("devices.list", json!({}))?).map_err(|e| e.to_string())?;
+                let devices: Devices = serde_json::from_value(api.call("devices.list", json!({}))?)
+                    .map_err(|e| e.to_string())?;
                 if devices.devices.is_empty() {
                     println!("No keyboard with Foxglove's host link yet.");
                 }
@@ -77,26 +84,40 @@ fn run(args: &[String]) -> Result<(), String> {
                         "{} [{}] {}: {}",
                         d.name,
                         d.backend,
-                        if d.connected { "connected" } else { "disconnected" },
+                        if d.connected {
+                            "connected"
+                        } else {
+                            "disconnected"
+                        },
                         d.caps.join(", ")
                     );
-                    let facts: FactList = serde_json::from_value(
-                        api.call("facts.list", json!({"pattern": format!("device.{}.*", d.id)}))?,
-                    )
+                    let facts: FactList = serde_json::from_value(api.call(
+                        "facts.list",
+                        json!({"pattern": format!("device.{}.*", d.id)}),
+                    )?)
                     .map_err(|e| e.to_string())?;
                     let prefix = format!("device.{}.", d.id);
                     for f in facts.facts {
                         let value = serde_json::to_value(&f.value).unwrap();
-                        println!("  {} = {}", f.key.trim_start_matches(&prefix), fact_text(&value));
+                        println!(
+                            "  {} = {}",
+                            f.key.trim_start_matches(&prefix),
+                            fact_text(&value)
+                        );
                     }
                 }
             }
             "facts" => {
                 let pattern = args.get(1).map_or("*", String::as_str);
-                let facts: FactList = serde_json::from_value(api.call("facts.list", json!({"pattern": pattern}))?)
-                    .map_err(|e| e.to_string())?;
+                let facts: FactList =
+                    serde_json::from_value(api.call("facts.list", json!({"pattern": pattern}))?)
+                        .map_err(|e| e.to_string())?;
                 for f in facts.facts {
-                    println!("{} = {}", f.key, fact_text(&serde_json::to_value(&f.value).unwrap()));
+                    println!(
+                        "{} = {}",
+                        f.key,
+                        fact_text(&serde_json::to_value(&f.value).unwrap())
+                    );
                 }
             }
             "profile" => {
@@ -104,7 +125,9 @@ fn run(args: &[String]) -> Result<(), String> {
                     None => serde_json::from_value(api.call("profiles.list", json!({}))?),
                     Some(name) => {
                         let name = (!name.eq_ignore_ascii_case("base")).then_some(name);
-                        serde_json::from_value(api.call("profiles.activate", json!({"name": name}))?)
+                        serde_json::from_value(
+                            api.call("profiles.activate", json!({"name": name}))?,
+                        )
                     }
                 }
                 .map_err(|e| e.to_string())?;
@@ -114,7 +137,11 @@ fn run(args: &[String]) -> Result<(), String> {
                     println!("{} {n}", if active == Some(n.as_str()) { "*" } else { " " });
                 }
             }
-            other => return Err(format!("unknown command {other:?}; try status, facts [pattern] or profile [name|base]")),
+            other => {
+                return Err(format!(
+                    "unknown command {other:?}; try status, facts [pattern] or profile [name|base]"
+                ))
+            }
         }
         Ok(())
     }

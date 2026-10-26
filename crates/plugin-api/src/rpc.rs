@@ -85,24 +85,42 @@ pub mod code {
 
 impl Request {
     pub fn call(id: i64, method: &str, params: Value) -> Request {
-        Request { jsonrpc: JsonRpc::V2, method: method.into(), params, id: Some(Id::Number(id)) }
+        Request {
+            jsonrpc: JsonRpc::V2,
+            method: method.into(),
+            params,
+            id: Some(Id::Number(id)),
+        }
     }
 
     pub fn notification(method: &str, params: Value) -> Request {
-        Request { jsonrpc: JsonRpc::V2, method: method.into(), params, id: None }
+        Request {
+            jsonrpc: JsonRpc::V2,
+            method: method.into(),
+            params,
+            id: None,
+        }
     }
 }
 
 impl Response {
     pub fn ok(id: Id, result: Value) -> Response {
-        Response { jsonrpc: JsonRpc::V2, id, outcome: Outcome::Result(result) }
+        Response {
+            jsonrpc: JsonRpc::V2,
+            id,
+            outcome: Outcome::Result(result),
+        }
     }
 
     pub fn error(id: Id, code: i32, message: impl Into<String>) -> Response {
         Response {
             jsonrpc: JsonRpc::V2,
             id,
-            outcome: Outcome::Error(Error { code, message: message.into(), data: None }),
+            outcome: Outcome::Error(Error {
+                code,
+                message: message.into(),
+                data: None,
+            }),
         }
     }
 }
@@ -119,14 +137,17 @@ mod tests {
             serde_json::to_value(&r).unwrap(),
             json!({"jsonrpc": "2.0", "method": "facts.get", "params": {"key": "clock.time"}, "id": 1})
         );
-        let n: Request = serde_json::from_str(r#"{"jsonrpc":"2.0","method":"facts.changed","params":{}}"#).unwrap();
+        let n: Request =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"facts.changed","params":{}}"#)
+                .unwrap();
         assert_eq!(n.id, None);
         let e = Response::error(Id::Text("a".into()), code::DENIED, "needs lighting.write");
         assert_eq!(
             serde_json::to_value(&e).unwrap(),
             json!({"jsonrpc": "2.0", "id": "a", "error": {"code": 5, "message": "needs lighting.write"}})
         );
-        let ok: Response = serde_json::from_str(r#"{"jsonrpc":"2.0","id":2,"result":null}"#).unwrap();
+        let ok: Response =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":2,"result":null}"#).unwrap();
         assert_eq!(ok.outcome, Outcome::Result(Value::Null));
         assert!(serde_json::from_str::<Request>(r#"{"jsonrpc":"1.0","method":"x"}"#).is_err());
     }

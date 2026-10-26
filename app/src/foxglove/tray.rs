@@ -31,7 +31,10 @@ pub const SIZES: [u32; 4] = [16, 20, 24, 32];
 /// shell shrinks it, which stays sharp), or the largest above 32 px.
 pub fn size_for(metric: i32) -> u32 {
     let metric = u32::try_from(metric).unwrap_or(0);
-    SIZES.into_iter().find(|&s| s >= metric).unwrap_or(SIZES[SIZES.len() - 1])
+    SIZES
+        .into_iter()
+        .find(|&s| s >= metric)
+        .unwrap_or(SIZES[SIZES.len() - 1])
 }
 
 macro_rules! sized {
@@ -57,7 +60,10 @@ pub fn png(glyph: Glyph, light_taskbar: bool, size: u32) -> &'static [u8] {
         Glyph::Disconnected => 1,
         Glyph::Paused => 2,
     };
-    let col = SIZES.iter().position(|&s| s == size).unwrap_or(SIZES.len() - 1);
+    let col = SIZES
+        .iter()
+        .position(|&s| s == size)
+        .unwrap_or(SIZES.len() - 1);
     set[row][col]
 }
 
@@ -99,12 +105,23 @@ impl Controls {
             screens::paused(),
             None,
         );
-        let pause_all = CheckMenuItem::with_id("fox-pause-all", "Pause Foxglove", true, super::pause::paused(), None);
+        let pause_all = CheckMenuItem::with_id(
+            "fox-pause-all",
+            "Pause Foxglove",
+            true,
+            super::pause::paused(),
+            None,
+        );
         let art = Submenu::new("Right art", false);
         let profile = Submenu::new("Profile", true);
         let _ = menu.append(&status);
         let _ = menu.append(&MenuItem::with_id("settings", "Settings...", true, None));
-        let _ = menu.append(&MenuItem::with_id("fox-logs", "Open log folder", true, None));
+        let _ = menu.append(&MenuItem::with_id(
+            "fox-logs",
+            "Open log folder",
+            true,
+            None,
+        ));
         let _ = menu.append(&pause_all);
         let _ = menu.append(&pause);
         let _ = menu.append(&art);
@@ -139,7 +156,13 @@ impl Controls {
         if profiles != self.profiles_shown {
             while self.profile.remove_at(0).is_some() {}
             let (names, active) = &profiles;
-            let base = CheckMenuItem::with_id("fox-profile:", "Base settings", true, active.is_none(), None);
+            let base = CheckMenuItem::with_id(
+                "fox-profile:",
+                "Base settings",
+                true,
+                active.is_none(),
+                None,
+            );
             let _ = self.profile.append(&base);
             for name in names {
                 let item = CheckMenuItem::with_id(
@@ -225,12 +248,9 @@ impl Controls {
             .art
             .append(&MenuItem::with_id("fox-set--1", "Random", true, None));
         for (n, name) in s.built_ins() {
-            let _ = self.art.append(&MenuItem::with_id(
-                format!("fox-set-{n}"),
-                name,
-                true,
-                None,
-            ));
+            let _ = self
+                .art
+                .append(&MenuItem::with_id(format!("fox-set-{n}"), name, true, None));
         }
         for entry in library.entries {
             if entry.preview.is_ok() {
@@ -314,18 +334,35 @@ mod tests {
             for size in SIZES {
                 let mut seen = Vec::new();
                 for g in glyphs {
-                    let img = image::load_from_memory(png(g, light, size)).expect("decodes").into_rgba8();
-                    assert_eq!(img.dimensions(), (size, size), "{g:?} light={light} {size}px");
+                    let img = image::load_from_memory(png(g, light, size))
+                        .expect("decodes")
+                        .into_rgba8();
+                    assert_eq!(
+                        img.dimensions(),
+                        (size, size),
+                        "{g:?} light={light} {size}px"
+                    );
                     let drawn = img.pixels().filter(|p| p[3] > 128).count();
-                    assert!(drawn > (size * size / 8) as usize, "{g:?} {size}px is nearly empty");
-                    assert!(!seen.contains(&img), "{g:?} {size}px looks like another state");
+                    assert!(
+                        drawn > (size * size / 8) as usize,
+                        "{g:?} {size}px is nearly empty"
+                    );
+                    assert!(
+                        !seen.contains(&img),
+                        "{g:?} {size}px looks like another state"
+                    );
                     seen.push(img);
                 }
             }
-            assert_eq!(png(Glyph::Connected, light, 40), png(Glyph::Connected, light, 32));
+            assert_eq!(
+                png(Glyph::Connected, light, 40),
+                png(Glyph::Connected, light, 32)
+            );
         }
         for g in glyphs {
-            let img = image::load_from_memory(template_png(g)).expect("decodes").into_rgba8();
+            let img = image::load_from_memory(template_png(g))
+                .expect("decodes")
+                .into_rgba8();
             assert_eq!(img.dimensions(), (44, 44));
         }
     }
@@ -333,7 +370,11 @@ mod tests {
     fn luminance(c: [u8; 3]) -> f64 {
         let lin = |v: u8| {
             let v = f64::from(v) / 255.0;
-            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
         };
         0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2])
     }
@@ -348,7 +389,9 @@ mod tests {
     fn the_fox_reads_on_both_taskbars() {
         for (light, taskbar) in [(false, [0x20, 0x20, 0x20]), (true, [0xf3, 0xf3, 0xf3])] {
             for g in [Glyph::Connected, Glyph::Paused] {
-                let img = image::load_from_memory(png(g, light, 32)).expect("decodes").into_rgba8();
+                let img = image::load_from_memory(png(g, light, 32))
+                    .expect("decodes")
+                    .into_rgba8();
                 let face = img.get_pixel(16, 16);
                 assert_eq!(face[3], 255, "{g:?} light={light}");
                 let c = contrast([face[0], face[1], face[2]], taskbar);
@@ -363,15 +406,32 @@ mod tests {
     fn only_the_paused_fox_has_the_orange_badge() {
         for (light, orange) in [(false, [0xf0, 0x8a, 0x3c]), (true, [0xb4, 0x54, 0x0f])] {
             let badge = |g| {
-                let img = image::load_from_memory(png(g, light, 32)).expect("decodes").into_rgba8();
+                let img = image::load_from_memory(png(g, light, 32))
+                    .expect("decodes")
+                    .into_rgba8();
                 *img.get_pixel(20, 24)
             };
             let p = badge(Glyph::Paused);
-            assert_eq!([p[0], p[1], p[2], p[3]], [orange[0], orange[1], orange[2], 255], "light={light}");
-            assert!(contrast([p[0], p[1], p[2]], if light { [0xf3; 3] } else { [0x20; 3] }) >= 3.0);
+            assert_eq!(
+                [p[0], p[1], p[2], p[3]],
+                [orange[0], orange[1], orange[2], 255],
+                "light={light}"
+            );
+            assert!(
+                contrast(
+                    [p[0], p[1], p[2]],
+                    if light { [0xf3; 3] } else { [0x20; 3] }
+                ) >= 3.0
+            );
             for g in [Glyph::Connected, Glyph::Disconnected] {
-                let img = image::load_from_memory(png(g, light, 32)).expect("decodes").into_rgba8();
-                assert!(img.pixels().all(|q| q[3] == 0 || q[0] == q[1] && q[1] == q[2]), "{g:?} is grey");
+                let img = image::load_from_memory(png(g, light, 32))
+                    .expect("decodes")
+                    .into_rgba8();
+                assert!(
+                    img.pixels()
+                        .all(|q| q[3] == 0 || q[0] == q[1] && q[1] == q[2]),
+                    "{g:?} is grey"
+                );
             }
         }
     }

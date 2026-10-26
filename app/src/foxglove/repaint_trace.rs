@@ -55,7 +55,9 @@ pub fn disabled(part: &str) -> bool {
 pub fn wake(at: &'static Location<'static>) {
     if let Some(t) = trace() {
         let mut t = t.lock().unwrap_or_else(|e| e.into_inner());
-        *t.wakes.entry(format!("{}:{}", at.file(), at.line())).or_default() += 1;
+        *t.wakes
+            .entry(format!("{}:{}", at.file(), at.line()))
+            .or_default() += 1;
     }
 }
 
@@ -76,7 +78,10 @@ pub fn frame(ctx: &egui::Context) {
             v
         };
         let (causes, wakes) = (sorted(&mut t.causes), sorted(&mut t.wakes));
-        eprintln!("repaint trace: {} frames in 5 s; causes: {causes:?}; wakes: {wakes:?}", t.frames);
+        eprintln!(
+            "repaint trace: {} frames in 5 s; causes: {causes:?}; wakes: {wakes:?}",
+            t.frames
+        );
         t.frames = 0;
         t.since = Instant::now();
     }

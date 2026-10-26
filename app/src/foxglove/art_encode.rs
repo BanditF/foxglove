@@ -21,7 +21,8 @@ pub fn is_set(folder: &Path) -> bool {
 
 /// The folder's frames encoded as one pushable blob.
 pub fn encode_folder(folder: &Path) -> Result<Vec<u8>, String> {
-    let meta = std::fs::read_to_string(folder.join("meta.txt")).map_err(|e| format!("meta.txt: {e}"))?;
+    let meta =
+        std::fs::read_to_string(folder.join("meta.txt")).map_err(|e| format!("meta.txt: {e}"))?;
     let value = |key: &str| {
         meta.lines()
             .filter_map(|l| l.split_once(':'))
@@ -29,10 +30,16 @@ pub fn encode_folder(folder: &Path) -> Result<Vec<u8>, String> {
             .map(|(_, v)| v.trim().to_owned())
     };
     let order: Vec<usize> = value("Frames order")
-        .map(|v| v.split_whitespace().filter_map(|n| n.parse().ok()).collect())
+        .map(|v| {
+            v.split_whitespace()
+                .filter_map(|n| n.parse().ok())
+                .collect()
+        })
         .filter(|o: &Vec<usize>| !o.is_empty())
         .unwrap_or_else(|| vec![0]);
-    let fps: u8 = value("Frame rate").and_then(|v| v.parse().ok()).unwrap_or(2);
+    let fps: u8 = value("Frame rate")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
     let mut cache: Vec<(usize, Vec<u8>)> = Vec::new();
     let mut frames = Vec::with_capacity(order.len());
     for &i in &order {
@@ -41,7 +48,9 @@ pub fn encode_folder(folder: &Path) -> Result<Vec<u8>, String> {
             continue;
         }
         let path = folder.join(format!("frame_{i}.png"));
-        let img = image::open(&path).map_err(|e| format!("{}: {e}", path.display()))?.to_luma8();
+        let img = image::open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .to_luma8();
         let stored = to_bytes(&stored(&img));
         cache.push((i, stored.clone()));
         frames.push(stored);
@@ -55,13 +64,21 @@ fn stored(img: &GrayImage) -> GrayImage {
     let (uw, uh) = (ART_H, ART_W);
     let mut img = img.clone();
     if img.width() > uw || img.height() > uh {
-        let scale = f64::min(f64::from(uw) / f64::from(img.width()), f64::from(uh) / f64::from(img.height()));
+        let scale = f64::min(
+            f64::from(uw) / f64::from(img.width()),
+            f64::from(uh) / f64::from(img.height()),
+        );
         let w = ((f64::from(img.width()) * scale) as u32).max(1);
         let h = ((f64::from(img.height()) * scale) as u32).max(1);
         img = imageops::resize(&img, w, h, imageops::FilterType::Triangle);
     }
     let mut canvas = GrayImage::from_pixel(uw, uh, Luma([255]));
-    imageops::overlay(&mut canvas, &img, i64::from((uw - img.width()) / 2), i64::from((uh - img.height()) / 2));
+    imageops::overlay(
+        &mut canvas,
+        &img,
+        i64::from((uw - img.width()) / 2),
+        i64::from((uh - img.height()) / 2),
+    );
     for p in canvas.pixels_mut() {
         p.0[0] = if p.0[0] >= 128 { 255 } else { 0 };
     }
@@ -146,7 +163,11 @@ pub fn encode(frames: &[Vec<u8>], fps: u8) -> Result<Vec<u8>, String> {
     blob.extend_from_slice(&order);
     let mut at = blob.len() + 2 * deltas.len();
     for d in &deltas {
-        blob.extend_from_slice(&u16::try_from(at).map_err(|_| "too big for a blob")?.to_le_bytes());
+        blob.extend_from_slice(
+            &u16::try_from(at)
+                .map_err(|_| "too big for a blob")?
+                .to_le_bytes(),
+        );
         at += d.len();
     }
     for d in &deltas {
@@ -183,7 +204,11 @@ mod tests {
         let f = to_bytes(&stored(&up));
         let blob = encode(&[f.clone(), f], 4).unwrap();
         assert_eq!(&blob[..8], b"NVA1\x8c\x44\x04\x00");
-        assert_eq!(u16::from_le_bytes([blob[8], blob[9]]), 1, "one unique frame");
+        assert_eq!(
+            u16::from_le_bytes([blob[8], blob[9]]),
+            1,
+            "one unique frame"
+        );
         assert_eq!(u16::from_le_bytes([blob[10], blob[11]]), 2, "played twice");
         let img = super::super::art_preview::first_frame(&blob).unwrap();
         assert_eq!(img.size, [140, 68]);

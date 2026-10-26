@@ -6,9 +6,11 @@ pub fn finish(result: Result<(), Box<dyn std::error::Error>>) {
         super::gpu_reset::window_failed(&error.to_string());
         let mut message = failure_message(&error.to_string(), cfg!(target_os = "windows"));
         if let Some(note) = super::gpu_reset::failure_note() {
-            message = format!("{note}
+            message = format!(
+                "{note}
 
-{error}");
+{error}"
+            );
         }
         eprintln!("{message}");
         #[cfg(target_os = "windows")]

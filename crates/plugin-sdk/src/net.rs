@@ -10,7 +10,9 @@ use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use foxglove_plugin_api::methods::{NetAccepted, NetClosed, NetData, NetKind, NetOpenParams, NetStream as NetStreamId};
+use foxglove_plugin_api::methods::{
+    NetAccepted, NetClosed, NetData, NetKind, NetOpenParams, NetStream as NetStreamId,
+};
 use serde_json::{json, Value};
 
 use crate::{Plugin, PluginError, Result};
@@ -58,7 +60,10 @@ impl Routes {
     fn accepted(&self, a: NetAccepted) {
         let rx = self.register(a.stream);
         let mut routes = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        match routes.entry(a.listener).or_insert_with(|| Route::EarlyAccepts(vec![])) {
+        match routes
+            .entry(a.listener)
+            .or_insert_with(|| Route::EarlyAccepts(vec![]))
+        {
             Route::EarlyAccepts(early) => early.push((a.stream, a.from, rx)),
             Route::Listener(tx) => {
                 if tx.send((a.stream, a.from, rx)).is_err() {
@@ -132,39 +137,70 @@ impl Routes {
 
 impl Plugin {
     /// Opens a stream through Foxglove; what arrives comes on the receiver.
-    pub fn net_open(&self, kind: NetKind, host: &str, port: u16) -> Result<(u64, Receiver<NetEvent>)> {
-        let p = NetOpenParams { kind, host: host.into(), port };
-        let id: NetStreamId = self.call_as("net.open", serde_json::to_value(p).expect("serializable"))?;
+    pub fn net_open(
+        &self,
+        kind: NetKind,
+        host: &str,
+        port: u16,
+    ) -> Result<(u64, Receiver<NetEvent>)> {
+        let p = NetOpenParams {
+            kind,
+            host: host.into(),
+            port,
+        };
+        let id: NetStreamId =
+            self.call_as("net.open", serde_json::to_value(p).expect("serializable"))?;
         Ok((id.stream, self.routes.register(id.stream)))
     }
 
     pub fn net_send(&self, stream: u64, bytes: &[u8]) -> Result<()> {
-        self.call("net.send", json!({"stream": stream, "data": STANDARD.encode(bytes)})).map(|_| ())
+        self.call(
+            "net.send",
+            json!({"stream": stream, "data": STANDARD.encode(bytes)}),
+        )
+        .map(|_| ())
     }
 
     pub fn net_close(&self, stream: u64) -> Result<()> {
-        self.call("net.close", json!({"stream": stream})).map(|_| ())
+        self.call("net.close", json!({"stream": stream}))
+            .map(|_| ())
     }
 
     /// Datagrams sent to 127.0.0.1:`port` (needs `net.listen:udp:127.0.0.1:<port>`).
     pub fn listen_udp(&self, port: u16) -> Result<Receiver<NetEvent>> {
-        self.net_open(NetKind::Udp, "127.0.0.1", port).map(|(_, rx)| rx)
+        self.net_open(NetKind::Udp, "127.0.0.1", port)
+            .map(|(_, rx)| rx)
     }
 
     /// A TCP connection as a byte stream (needs `net.connect:<host>:<port>`): wrap it in TLS
     /// or a WebSocket like any other stream.
     pub fn connect_tcp(self: &Arc<Self>, host: &str, port: u16) -> Result<TcpStream> {
         let (id, rx) = self.net_open(NetKind::Tcp, host, port)?;
-        Ok(TcpStream { plugin: self.clone(), id, rx, buf: vec![], closed: false })
+        Ok(TcpStream {
+            plugin: self.clone(),
+            id,
+            rx,
+            buf: vec![],
+            closed: false,
+        })
     }
 
     /// Accepts TCP connections on 127.0.0.1:`port` (needs `net.listen:tcp:127.0.0.1:<port>`,
     /// API 1.3): for a local page or tool to reach the plugin. See [`crate::ws`] for WebSocket
     /// clients.
     pub fn listen_tcp(self: &Arc<Self>, port: u16) -> Result<TcpListener> {
-        let p = NetOpenParams { kind: NetKind::TcpListen, host: "127.0.0.1".into(), port };
-        let id: NetStreamId = self.call_as("net.open", serde_json::to_value(p).expect("serializable"))?;
-        Ok(TcpListener { plugin: self.clone(), id: id.stream, rx: self.routes.register_listener(id.stream) })
+        let p = NetOpenParams {
+            kind: NetKind::TcpListen,
+            host: "127.0.0.1".into(),
+            port,
+        };
+        let id: NetStreamId =
+            self.call_as("net.open", serde_json::to_value(p).expect("serializable"))?;
+        Ok(TcpListener {
+            plugin: self.clone(),
+            id: id.stream,
+            rx: self.routes.register_listener(id.stream),
+        })
     }
 }
 
@@ -180,7 +216,16 @@ impl TcpListener {
     /// gone.
     pub fn accept(&self) -> Option<(TcpStream, String)> {
         let (id, from, rx) = self.rx.recv().ok()?;
-        Some((TcpStream { plugin: self.plugin.clone(), id, rx, buf: vec![], closed: false }, from))
+        Some((
+            TcpStream {
+                plugin: self.plugin.clone(),
+                id,
+                rx,
+                buf: vec![],
+                closed: false,
+            },
+            from,
+        ))
     }
 }
 
@@ -241,9 +286,15 @@ mod tests {
     #[test]
     fn events_before_the_id_is_known_are_kept() {
         let routes = Routes::default();
-        assert!(routes.handle("net.data", json!({"stream": 4, "data": STANDARD.encode(b"early")})));
+        assert!(routes.handle(
+            "net.data",
+            json!({"stream": 4, "data": STANDARD.encode(b"early")})
+        ));
         let rx = routes.register(4);
-        routes.handle("net.data", json!({"stream": 4, "data": STANDARD.encode(b"late"), "from": "127.0.0.1:9"}));
+        routes.handle(
+            "net.data",
+            json!({"stream": 4, "data": STANDARD.encode(b"late"), "from": "127.0.0.1:9"}),
+        );
         routes.handle("net.closed", json!({"stream": 4, "reason": "bye"}));
         let got: Vec<NetEvent> = rx.try_iter().collect();
         assert_eq!(

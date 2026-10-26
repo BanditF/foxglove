@@ -70,24 +70,49 @@ pub fn firmware_lines(f: &Firmware) -> (Vec<Half>, Option<(String, Tone)>, bool)
     match f {
         Firmware::Known { left, right } => {
             let half = |name, r: &Result<digitalis::protocol::BuildInfo, String>| match r {
-                Ok(b) => Half { name, text: format!("{} · {}", b.version, b.sha), tone: Tone::Plain, hover: None },
-                Err(e) => Half { name, text: "no reply yet".into(), tone: Tone::Warn, hover: Some(e.clone()) },
+                Ok(b) => Half {
+                    name,
+                    text: format!("{} · {}", b.version, b.sha),
+                    tone: Tone::Plain,
+                    hover: None,
+                },
+                Err(e) => Half {
+                    name,
+                    text: "no reply yet".into(),
+                    tone: Tone::Warn,
+                    hover: Some(e.clone()),
+                },
             };
             let note = match (left, right) {
-                (Ok(l), Ok(r)) if l.version != r.version || l.sha != r.sha => {
-                    Some(("The halves run different firmware. Flash both from the same build.".into(), Tone::Warn))
-                }
+                (Ok(l), Ok(r)) if l.version != r.version || l.sha != r.sha => Some((
+                    "The halves run different firmware. Flash both from the same build.".into(),
+                    Tone::Warn,
+                )),
                 _ => None,
             };
             (vec![half("Left", left), half("Right", right)], note, true)
         }
-        Firmware::Unknown | Firmware::Reading => (Vec::new(), Some(("Asking the keyboard…".into(), Tone::Muted)), false),
-        Firmware::NoKeyboard => {
-            (Vec::new(), Some(("No keyboard with Foxglove's firmware is connected.".into(), Tone::Muted)), false)
-        }
-        Firmware::NotReported => {
-            (Vec::new(), Some(("This keyboard's firmware doesn't report its version.".into(), Tone::Muted)), false)
-        }
+        Firmware::Unknown | Firmware::Reading => (
+            Vec::new(),
+            Some(("Asking the keyboard…".into(), Tone::Muted)),
+            false,
+        ),
+        Firmware::NoKeyboard => (
+            Vec::new(),
+            Some((
+                "No keyboard with Foxglove's firmware is connected.".into(),
+                Tone::Muted,
+            )),
+            false,
+        ),
+        Firmware::NotReported => (
+            Vec::new(),
+            Some((
+                "This keyboard's firmware doesn't report its version.".into(),
+                Tone::Muted,
+            )),
+            false,
+        ),
     }
 }
 
@@ -97,7 +122,10 @@ const CONFIRM_WITHIN: Duration = Duration::from_secs(4);
 
 fn armed() -> Option<String> {
     let confirming = CONFIRMING.lock().unwrap_or_else(|e| e.into_inner());
-    confirming.as_ref().filter(|(_, at)| at.elapsed() < CONFIRM_WITHIN).map(|(label, _)| label.clone())
+    confirming
+        .as_ref()
+        .filter(|(_, at)| at.elapsed() < CONFIRM_WITHIN)
+        .map(|(label, _)| label.clone())
 }
 
 /// The page's state from the cached keyboard state (the services keep it current).
@@ -251,11 +279,17 @@ fn actions(ui: &mut egui::Ui, v: &View) -> Option<Action> {
                 let armed = v.armed.as_deref() == Some(action.label.as_str());
                 // "Lights: Toggle" under LIGHTS reads "Toggle".
                 let name = short_label(action);
-                let text = if armed { format!("Click again: {name}") } else { name.to_string() };
+                let text = if armed {
+                    format!("Click again: {name}")
+                } else {
+                    name.to_string()
+                };
                 let p = theme::palette(ui);
                 let mut button = egui::Button::new(text);
                 if armed {
-                    button = button.fill(p.selected_fill).stroke(Stroke::new(1.0, p.warn));
+                    button = button
+                        .fill(p.selected_fill)
+                        .stroke(Stroke::new(1.0, p.warn));
                 } else if action.risky {
                     button = button.stroke(Stroke::new(1.0, p.danger.gamma_multiply(0.6)));
                 }
@@ -282,7 +316,10 @@ fn group_label(g: Group) -> &'static str {
 
 /// An action's label without its group's name in front.
 fn short_label(a: &Action) -> &str {
-    a.label.strip_prefix(a.group.title()).and_then(|rest| rest.strip_prefix(": ")).unwrap_or(&a.label)
+    a.label
+        .strip_prefix(a.group.title())
+        .and_then(|rest| rest.strip_prefix(": "))
+        .unwrap_or(&a.label)
 }
 
 /// What the board drawing shows (#392): the board's shape from its profile, the left panel's
@@ -302,9 +339,15 @@ pub struct BoardView {
 
 /// The board drawing's state from the cached keyboard state; nothing here asks the keyboard.
 fn board_view(ctx: &egui::Context) -> BoardView {
-    let drawing = super::boards::current().and_then(|b| b.drawing).unwrap_or_default();
+    let drawing = super::boards::current()
+        .and_then(|b| b.drawing)
+        .unwrap_or_default();
     let snap = super::screens::snapshot();
-    let panel = snap.hello.as_ref().and(snap.frame.clone()).filter(|_| !super::screens::paused() && !super::pause::paused());
+    let panel = snap
+        .hello
+        .as_ref()
+        .and(snap.frame.clone())
+        .filter(|_| !super::screens::paused() && !super::pause::paused());
     let (mut art, mut art_name) = (None, None);
     if let Some(h) = super::art_service::handle() {
         let s = h.snapshot();
@@ -312,19 +355,36 @@ fn board_view(ctx: &egui::Context) -> BoardView {
             art_name = Some(super::art_ui::playing(&s).0);
             let library = super::art_library::snapshot();
             art = s.showing_file().and_then(|path| {
-                super::art_ui::tiles(&library.entries).0.into_iter().find(|t| t.path == *path).map(|t| t.image)
+                super::art_ui::tiles(&library.entries)
+                    .0
+                    .into_iter()
+                    .find(|t| t.path == *path)
+                    .map(|t| t.image)
             });
         }
     }
-    let glow = ks::rgb_state(ctx).map(|s| s.left).filter(|l| l.on).map(|l| super::lights_page::shown_color(l.hue, l.sat, l.brightness));
+    let glow = ks::rgb_state(ctx)
+        .map(|s| s.left)
+        .filter(|l| l.on)
+        .map(|l| super::lights_page::shown_color(l.hue, l.sat, l.brightness));
     let link = super::connection::summary(ctx);
     let left_label = match link.usb {
         Some(true) => "LEFT · USB".to_string(),
         Some(false) => "LEFT · BLUETOOTH".to_string(),
         None => "LEFT".to_string(),
     };
-    let right_label = art_name.map_or_else(|| "RIGHT".to_string(), |n| format!("RIGHT · {}", n.to_uppercase()));
-    BoardView { drawing, panel, art, glow, left_label, right_label }
+    let right_label = art_name.map_or_else(
+        || "RIGHT".to_string(),
+        |n| format!("RIGHT · {}", n.to_uppercase()),
+    );
+    BoardView {
+        drawing,
+        panel,
+        art,
+        glow,
+        left_label,
+        right_label,
+    }
 }
 
 /// Where the board's clickable parts landed, for the click tests.
@@ -360,105 +420,188 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
     let mut go = None;
     #[cfg(test)]
     let mut hits = Hits::default();
-    theme::card(ui).inner_margin(egui::Margin::same(20)).show(ui, |ui| {
-        ui.set_min_width(ui.available_width());
-        let d = &v.drawing;
-        let unit = KEY_UNIT;
-        let (w, h) = d.size();
-        let half = egui::vec2(w * unit, h * unit);
-        let between = 56.0;
-        let height = SCREEN_HEIGHT + 12.0 + half.y + 14.0 + 8.0 + 10.0 + 12.0;
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::hover());
-        let left_x = rect.center().x - between / 2.0 - half.x;
-        for (i, x) in [left_x, rect.center().x + between / 2.0].into_iter().enumerate() {
-            let right = i == 1;
-            let top = rect.top();
-            // The screen sits over the inner columns, as on the Corne, shaped like what it shows.
-            let shape = if right { ART_SHAPE } else { PANEL_SHAPE };
-            let screen = egui::vec2((SCREEN_HEIGHT - 6.0) * shape.x / shape.y + 6.0, SCREEN_HEIGHT);
-            let screen_x = if right { x + half.x * 0.25 } else { x + half.x * 0.75 };
-            let screen_rect = egui::Rect::from_center_size(egui::pos2(screen_x, top + screen.y / 2.0), screen);
-            #[cfg(test)]
-            hits.screens.push(screen_rect);
-            let click = ui.interact(screen_rect, ui.id().with(("board-screen", i)), Sense::click());
-            ui.painter().rect_filled(screen_rect, CornerRadius::same(4), Color32::from_rgb(0x05, 0x07, 0x06));
-            let inner = screen_rect.shrink(3.0);
-            if right {
-                match &v.art {
-                    Some(stored) => {
-                        let key = std::sync::Arc::as_ptr(stored) as usize;
-                        let t = ART_TEXTURE.with_borrow_mut(|cache| match cache {
-                            Some((k, t)) if *k == key => t.clone(),
-                            _ => {
-                                let image = super::art_ui::thumbnail(stored, false);
-                                let t = ui.ctx().load_texture("board-art", image, egui::TextureOptions::NEAREST);
-                                *cache = Some((key, t.clone()));
-                                t
-                            }
-                        });
-                        paint_fitted(ui.painter(), &t, inner);
-                    }
-                    // Nothing known: a dark screen, not a made-up picture.
-                    None => {
-                        ui.painter().text(inner.center(), egui::Align2::CENTER_CENTER, "ART", theme::mono(10.0), p.muted);
-                    }
-                }
-            } else {
-                match &v.panel {
-                    Some(frame) => {
-                        let t = PANEL_TEXTURE.with_borrow_mut(|cache| super::screens_ui::frame_texture(ui.ctx(), cache, frame).clone());
-                        paint_fitted(ui.painter(), &t, inner);
-                    }
-                    None => {
-                        ui.painter().text(inner.center(), egui::Align2::CENTER_CENTER, "PANEL", theme::mono(11.0), p.accent);
-                    }
-                }
-            }
-            let ring = if click.hovered() || click.has_focus() { 2.0 } else { 1.0 };
-            ui.painter().rect_stroke(screen_rect, CornerRadius::same(4), Stroke::new(ring, p.accent), egui::StrokeKind::Inside);
-            if click.on_hover_text("Open Screens").clicked() {
-                go = Some(Page::Screens);
-            }
-            let keys_top = screen_rect.bottom() + 12.0;
-            for k in d.keys(right) {
-                let key = egui::Rect::from_min_size(
-                    egui::pos2(x + k.min.x * unit, keys_top + k.min.y * unit),
-                    k.size() * unit - egui::vec2(GAP, GAP),
+    theme::card(ui)
+        .inner_margin(egui::Margin::same(20))
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            let d = &v.drawing;
+            let unit = KEY_UNIT;
+            let (w, h) = d.size();
+            let half = egui::vec2(w * unit, h * unit);
+            let between = 56.0;
+            let height = SCREEN_HEIGHT + 12.0 + half.y + 14.0 + 8.0 + 10.0 + 12.0;
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::hover());
+            let left_x = rect.center().x - between / 2.0 - half.x;
+            for (i, x) in [left_x, rect.center().x + between / 2.0]
+                .into_iter()
+                .enumerate()
+            {
+                let right = i == 1;
+                let top = rect.top();
+                // The screen sits over the inner columns, as on the Corne, shaped like what it shows.
+                let shape = if right { ART_SHAPE } else { PANEL_SHAPE };
+                let screen = egui::vec2(
+                    (SCREEN_HEIGHT - 6.0) * shape.x / shape.y + 6.0,
+                    SCREEN_HEIGHT,
                 );
-                ui.painter().rect(key, CornerRadius::same(4), p.control, Stroke::new(1.0, p.control_line), egui::StrokeKind::Inside);
+                let screen_x = if right {
+                    x + half.x * 0.25
+                } else {
+                    x + half.x * 0.75
+                };
+                let screen_rect = egui::Rect::from_center_size(
+                    egui::pos2(screen_x, top + screen.y / 2.0),
+                    screen,
+                );
                 #[cfg(test)]
-                hits.keys.push(key);
-            }
-            let glow_top = keys_top + half.y + 14.0;
-            let glow = egui::Rect::from_center_size(egui::pos2(x + half.x / 2.0, glow_top + 4.0), egui::vec2(half.x + 20.0, 8.0));
-            let glow_click = ui.interact(glow.expand2(egui::vec2(0.0, 6.0)), ui.id().with(("board-glow", i)), Sense::click());
-            #[cfg(test)]
-            hits.glows.push(glow);
-            match v.glow {
-                Some(c) => {
-                    ui.painter().rect_filled(glow.expand(3.0), CornerRadius::same(6), c.gamma_multiply(0.25));
-                    ui.painter().rect_filled(glow, CornerRadius::same(4), c);
+                hits.screens.push(screen_rect);
+                let click = ui.interact(
+                    screen_rect,
+                    ui.id().with(("board-screen", i)),
+                    Sense::click(),
+                );
+                ui.painter().rect_filled(
+                    screen_rect,
+                    CornerRadius::same(4),
+                    Color32::from_rgb(0x05, 0x07, 0x06),
+                );
+                let inner = screen_rect.shrink(3.0);
+                if right {
+                    match &v.art {
+                        Some(stored) => {
+                            let key = std::sync::Arc::as_ptr(stored) as usize;
+                            let t = ART_TEXTURE.with_borrow_mut(|cache| match cache {
+                                Some((k, t)) if *k == key => t.clone(),
+                                _ => {
+                                    let image = super::art_ui::thumbnail(stored, false);
+                                    let t = ui.ctx().load_texture(
+                                        "board-art",
+                                        image,
+                                        egui::TextureOptions::NEAREST,
+                                    );
+                                    *cache = Some((key, t.clone()));
+                                    t
+                                }
+                            });
+                            paint_fitted(ui.painter(), &t, inner);
+                        }
+                        // Nothing known: a dark screen, not a made-up picture.
+                        None => {
+                            ui.painter().text(
+                                inner.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "ART",
+                                theme::mono(10.0),
+                                p.muted,
+                            );
+                        }
+                    }
+                } else {
+                    match &v.panel {
+                        Some(frame) => {
+                            let t = PANEL_TEXTURE.with_borrow_mut(|cache| {
+                                super::screens_ui::frame_texture(ui.ctx(), cache, frame).clone()
+                            });
+                            paint_fitted(ui.painter(), &t, inner);
+                        }
+                        None => {
+                            ui.painter().text(
+                                inner.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "PANEL",
+                                theme::mono(11.0),
+                                p.accent,
+                            );
+                        }
+                    }
                 }
-                None => {
-                    ui.painter().rect(glow, CornerRadius::same(4), p.well, Stroke::new(1.0, p.control_line), egui::StrokeKind::Inside);
+                let ring = if click.hovered() || click.has_focus() {
+                    2.0
+                } else {
+                    1.0
+                };
+                ui.painter().rect_stroke(
+                    screen_rect,
+                    CornerRadius::same(4),
+                    Stroke::new(ring, p.accent),
+                    egui::StrokeKind::Inside,
+                );
+                if click.on_hover_text("Open Screens").clicked() {
+                    go = Some(Page::Screens);
                 }
+                let keys_top = screen_rect.bottom() + 12.0;
+                for k in d.keys(right) {
+                    let key = egui::Rect::from_min_size(
+                        egui::pos2(x + k.min.x * unit, keys_top + k.min.y * unit),
+                        k.size() * unit - egui::vec2(GAP, GAP),
+                    );
+                    ui.painter().rect(
+                        key,
+                        CornerRadius::same(4),
+                        p.control,
+                        Stroke::new(1.0, p.control_line),
+                        egui::StrokeKind::Inside,
+                    );
+                    #[cfg(test)]
+                    hits.keys.push(key);
+                }
+                let glow_top = keys_top + half.y + 14.0;
+                let glow = egui::Rect::from_center_size(
+                    egui::pos2(x + half.x / 2.0, glow_top + 4.0),
+                    egui::vec2(half.x + 20.0, 8.0),
+                );
+                let glow_click = ui.interact(
+                    glow.expand2(egui::vec2(0.0, 6.0)),
+                    ui.id().with(("board-glow", i)),
+                    Sense::click(),
+                );
+                #[cfg(test)]
+                hits.glows.push(glow);
+                match v.glow {
+                    Some(c) => {
+                        ui.painter().rect_filled(
+                            glow.expand(3.0),
+                            CornerRadius::same(6),
+                            c.gamma_multiply(0.25),
+                        );
+                        ui.painter().rect_filled(glow, CornerRadius::same(4), c);
+                    }
+                    None => {
+                        ui.painter().rect(
+                            glow,
+                            CornerRadius::same(4),
+                            p.well,
+                            Stroke::new(1.0, p.control_line),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                }
+                if glow_click.hovered() || glow_click.has_focus() {
+                    ui.painter().rect_stroke(
+                        glow.expand(2.0),
+                        CornerRadius::same(5),
+                        Stroke::new(1.5, p.text_strong),
+                        egui::StrokeKind::Outside,
+                    );
+                }
+                let hover = if v.glow.is_some() {
+                    "Open Lights"
+                } else {
+                    "Lights off or not known yet. Open Lights"
+                };
+                if glow_click.on_hover_text(hover).clicked() {
+                    go = Some(Page::Lights);
+                }
+                ui.painter().text(
+                    egui::pos2(x + half.x / 2.0, glow.bottom() + 10.0),
+                    egui::Align2::CENTER_TOP,
+                    if right { &v.right_label } else { &v.left_label },
+                    theme::mono(11.0),
+                    p.muted,
+                );
             }
-            if glow_click.hovered() || glow_click.has_focus() {
-                ui.painter().rect_stroke(glow.expand(2.0), CornerRadius::same(5), Stroke::new(1.5, p.text_strong), egui::StrokeKind::Outside);
-            }
-            let hover = if v.glow.is_some() { "Open Lights" } else { "Lights off or not known yet. Open Lights" };
-            if glow_click.on_hover_text(hover).clicked() {
-                go = Some(Page::Lights);
-            }
-            ui.painter().text(
-                egui::pos2(x + half.x / 2.0, glow.bottom() + 10.0),
-                egui::Align2::CENTER_TOP,
-                if right { &v.right_label } else { &v.left_label },
-                theme::mono(11.0),
-                p.muted,
-            );
-        }
-    });
+        });
     #[cfg(test)]
     LAST_HITS.set(Some(hits));
     ui.add_space(2.0);
@@ -486,8 +629,17 @@ pub mod tests {
     use digitalis::protocol::BuildInfo;
 
     fn build(half: u8, sha: &str) -> BuildInfo {
-        let version = digitalis::protocol::FirmwareVersion { major: 0, minor: 1, patch: 0, profile: 0 };
-        BuildInfo { half, version, sha: sha.into() }
+        let version = digitalis::protocol::FirmwareVersion {
+            major: 0,
+            minor: 1,
+            patch: 0,
+            profile: 0,
+        };
+        BuildInfo {
+            half,
+            version,
+            sha: sha.into(),
+        }
     }
 
     #[test]
@@ -498,15 +650,29 @@ pub mod tests {
         });
         assert_eq!(halves[0].name, "Left");
         assert!(halves[0].text.ends_with("· e255d32"), "{}", halves[0].text);
-        assert_eq!((halves[1].text.as_str(), halves[1].tone), ("no reply yet", Tone::Warn));
-        assert_eq!(halves[1].hover.as_deref(), Some("no reply from the keyboard"));
+        assert_eq!(
+            (halves[1].text.as_str(), halves[1].tone),
+            ("no reply yet", Tone::Warn)
+        );
+        assert_eq!(
+            halves[1].hover.as_deref(),
+            Some("no reply from the keyboard")
+        );
         assert_eq!(note, None);
         assert!(ask);
 
-        let (_, note, _) = firmware_lines(&Firmware::Known { left: Ok(build(0, "aaaaaaa")), right: Ok(build(1, "bbbbbbb")) });
+        let (_, note, _) = firmware_lines(&Firmware::Known {
+            left: Ok(build(0, "aaaaaaa")),
+            right: Ok(build(1, "bbbbbbb")),
+        });
         assert_eq!(note.map(|n| n.1), Some(Tone::Warn), "the halves differ");
 
-        for f in [Firmware::Unknown, Firmware::Reading, Firmware::NoKeyboard, Firmware::NotReported] {
+        for f in [
+            Firmware::Unknown,
+            Firmware::Reading,
+            Firmware::NoKeyboard,
+            Firmware::NotReported,
+        ] {
             let (halves, note, ask) = firmware_lines(&f);
             assert!(halves.is_empty() && note.is_some() && !ask, "{f:?}");
         }
@@ -518,7 +684,13 @@ pub mod tests {
             left: Ok(build(0, "e255d32")),
             right: Err("no reply from the keyboard".into()),
         });
-        let action = |label: &str, group| Action { label: label.into(), group, binding: (0, 0, 0), hold_ms: 0, risky: false };
+        let action = |label: &str, group| Action {
+            label: label.into(),
+            group,
+            binding: (0, 0, 0),
+            hold_ms: 0,
+            risky: false,
+        };
         View {
             halves,
             firmware_note,
@@ -549,10 +721,15 @@ pub mod tests {
 
     /// The board as the previews draw it: the Corne's profile, a panel frame, art, orange lights.
     pub fn sample_board() -> BoardView {
-        let corne = super::super::boards::find(0x1d50, 0x615e, "Eyelash Corne").and_then(|b| b.drawing);
+        let corne =
+            super::super::boards::find(0x1d50, 0x615e, "Eyelash Corne").and_then(|b| b.drawing);
         let (art, library) = super::super::art_ui::tests::sample();
         let image = art.showing_file().and_then(|p| {
-            super::super::art_ui::tiles(&library.entries).0.into_iter().find(|t| t.path == *p).map(|t| t.image)
+            super::super::art_ui::tiles(&library.entries)
+                .0
+                .into_iter()
+                .find(|t| t.path == *p)
+                .map(|t| t.image)
         });
         BoardView {
             drawing: corne.unwrap_or_default(),
@@ -572,10 +749,17 @@ pub mod tests {
             firmware_note,
             can_ask_again,
             link: super::super::connection::Plain {
-                rows: vec![("Left half", "not connected".into()), ("Bluetooth to this PC", "not known yet".into())],
+                rows: vec![
+                    ("Left half", "not connected".into()),
+                    ("Bluetooth to this PC", "not known yet".into()),
+                ],
                 unplug_fix: None,
             },
-            board: BoardView { left_label: "LEFT".into(), right_label: "RIGHT".into(), ..Default::default() },
+            board: BoardView {
+                left_label: "LEFT".into(),
+                right_label: "RIGHT".into(),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -583,7 +767,10 @@ pub mod tests {
     /// A frame of the board drawing with `events`; returns the page a click asked for.
     fn board_frame(ctx: &egui::Context, v: &BoardView, events: Vec<egui::Event>) -> Option<Page> {
         let raw = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 500.0))),
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(900.0, 500.0),
+            )),
             events,
             ..Default::default()
         };
@@ -614,12 +801,22 @@ pub mod tests {
         theme::apply_choice(&ctx, theme::Choice::Dark);
         let v = sample_board();
         assert_eq!(board_frame(&ctx, &v, vec![]), None);
-        let hits = LAST_HITS.with_borrow(|h| h.clone()).expect("the board was laid out");
+        let hits = LAST_HITS
+            .with_borrow(|h| h.clone())
+            .expect("the board was laid out");
         for (i, screen) in hits.screens.iter().enumerate() {
-            assert_eq!(click(&ctx, &v, screen.center()), Some(Page::Screens), "screen {i}");
+            assert_eq!(
+                click(&ctx, &v, screen.center()),
+                Some(Page::Screens),
+                "screen {i}"
+            );
         }
         for (i, glow) in hits.glows.iter().enumerate() {
-            assert_eq!(click(&ctx, &v, glow.center()), Some(Page::Lights), "underglow {i}");
+            assert_eq!(
+                click(&ctx, &v, glow.center()),
+                Some(Page::Lights),
+                "underglow {i}"
+            );
         }
         // A key opens nothing.
         assert_eq!(click(&ctx, &v, hits.keys[0].center()), None);
@@ -627,9 +824,18 @@ pub mod tests {
 
     #[test]
     fn actions_drop_their_group_name() {
-        let a = |label: &str, group| Action { label: label.into(), group, binding: (0, 0, 0), hold_ms: 0, risky: false };
+        let a = |label: &str, group| Action {
+            label: label.into(),
+            group,
+            binding: (0, 0, 0),
+            hold_ms: 0,
+            risky: false,
+        };
         assert_eq!(short_label(&a("Lights: Toggle", Group::Lights)), "Toggle");
-        assert_eq!(short_label(&a("Toggle NUMBER", Group::Layers)), "Toggle NUMBER");
+        assert_eq!(
+            short_label(&a("Toggle NUMBER", Group::Layers)),
+            "Toggle NUMBER"
+        );
         assert_eq!(short_label(&a("Lightsaber", Group::Lights)), "Lightsaber");
     }
 

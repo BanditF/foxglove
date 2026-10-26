@@ -29,11 +29,20 @@ enum In {
 }
 
 fn text(values: &serde_json::Map<String, serde_json::Value>, key: &str) -> String {
-    values.get(key).and_then(|v| v.as_str()).unwrap_or_default().trim().to_string()
+    values
+        .get(key)
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
 }
 
 fn period(values: &serde_json::Map<String, serde_json::Value>) -> Duration {
-    let hz = values.get("max-hz").and_then(|v| v.as_u64()).unwrap_or(10).clamp(1, 30);
+    let hz = values
+        .get("max-hz")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10)
+        .clamp(1, 30);
     Duration::from_millis(1000 / hz)
 }
 
@@ -43,7 +52,12 @@ fn lease_all(plugin: &Arc<Plugin>, color: Hsb) -> Vec<Lease> {
         .unwrap_or_default()
         .into_iter()
         .filter(|d| d.connected && d.caps.iter().any(|c| c == "lighting"))
-        .filter_map(|d| plugin.lease(&d.id, color, LeasePriority::Low).map_err(|e| eprintln!("icue-mirror: lighting: {e}")).ok())
+        .filter_map(|d| {
+            plugin
+                .lease(&d.id, color, LeasePriority::Low)
+                .map_err(|e| eprintln!("icue-mirror: lighting: {e}"))
+                .ok()
+        })
         .collect()
 }
 
@@ -65,7 +79,9 @@ fn main() {
         eprintln!("icue-mirror: set the path to Corsair's iCUESDK.x64_2019.dll in the Plugins tab, then turn the plugin off and on");
         None
     } else {
-        Icue::load(&dll, notice_tx).map_err(|e| eprintln!("icue-mirror: {e}")).ok()
+        Icue::load(&dll, notice_tx)
+            .map_err(|e| eprintln!("icue-mirror: {e}"))
+            .ok()
     };
     let forward = tx.clone();
     std::thread::spawn(move || {
@@ -119,7 +135,9 @@ fn main() {
                     follow.want(&wanted, sdk);
                 }
                 if text(&values, "sdk-dll") != dll {
-                    eprintln!("icue-mirror: a new SDK path is used after turning the plugin off and on");
+                    eprintln!(
+                        "icue-mirror: a new SDK path is used after turning the plugin off and on"
+                    );
                 }
             }
             (None, Some(sdk)) => {

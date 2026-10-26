@@ -56,7 +56,12 @@ fn lease_all(plugin: &Arc<Plugin>, color: Hsb, priority: LeasePriority) -> Vec<L
     keyboards(plugin)
         .into_iter()
         .filter(|k| k.1)
-        .filter_map(|(id, _, _)| plugin.lease(&id, color, priority).map_err(|e| eprintln!("broadcast-status: lighting: {e}")).ok())
+        .filter_map(|(id, _, _)| {
+            plugin
+                .lease(&id, color, priority)
+                .map_err(|e| eprintln!("broadcast-status: lighting: {e}"))
+                .ok()
+        })
         .collect()
 }
 
@@ -85,7 +90,8 @@ impl Out {
             }
         }
         // NOT CONNECTED shows only when a connection is lost, not while OBS isn't running.
-        let lost = state == State::Disconnected && before.is_some_and(|b| b.0 != State::Disconnected);
+        let lost =
+            state == State::Disconnected && before.is_some_and(|b| b.0 != State::Disconnected);
         if state != State::Disconnected || lost {
             self.send_screen(plugin);
         }
@@ -94,7 +100,9 @@ impl Out {
     /// A held screen stays until the next one replaces it or the plugin stops (#281); READY
     /// and NOT CONNECTED last a few seconds.
     fn send_screen(&self, plugin: &Arc<Plugin>) {
-        let (Some(art), Some((state, scene))) = (&self.art, &self.shown) else { return };
+        let (Some(art), Some((state, scene))) = (&self.art, &self.shown) else {
+            return;
+        };
         let frame = art.frame(*state, scene.as_deref());
         for (id, _, _) in keyboards(plugin).into_iter().filter(|k| k.2) {
             let sent = if state.hold() {
@@ -111,25 +119,46 @@ impl Out {
 
 fn publish(plugin: &Plugin, connected: bool, s: &Status) {
     let _ = plugin.set_fact("broadcast.connected", Some(Fact::Bool(connected)));
-    let _ = plugin.set_fact("broadcast.streaming", Some(Fact::Bool(connected && s.streaming)));
-    let _ = plugin.set_fact("broadcast.recording", Some(Fact::Bool(connected && s.recording)));
+    let _ = plugin.set_fact(
+        "broadcast.streaming",
+        Some(Fact::Bool(connected && s.streaming)),
+    );
+    let _ = plugin.set_fact(
+        "broadcast.recording",
+        Some(Fact::Bool(connected && s.recording)),
+    );
     let _ = plugin.set_fact("broadcast.paused", Some(Fact::Bool(connected && s.paused)));
-    let _ = plugin.set_fact("broadcast.scene", s.scene.clone().filter(|_| connected).map(Fact::Text));
+    let _ = plugin.set_fact(
+        "broadcast.scene",
+        s.scene.clone().filter(|_| connected).map(Fact::Text),
+    );
 }
 
 /// One connection, until it ends: why it ended, and whether it got as far as OBS's status.
-fn session(plugin: &Arc<Plugin>, out: &mut Out, stream: u64, rx: Receiver<NetEvent>, port: u16) -> (String, bool) {
+fn session(
+    plugin: &Arc<Plugin>,
+    out: &mut Out,
+    stream: u64,
+    rx: Receiver<NetEvent>,
+    port: u16,
+) -> (String, bool) {
     let send = |bytes: Vec<u8>| plugin.net_send(stream, &bytes).map_err(|e| e.to_string());
     if let Err(e) = send(ws::upgrade_request(HOST, port).into_bytes()) {
         return (e, false);
     }
-    let password = plugin.secret("obs-password").map_err(|e| eprintln!("broadcast-status: the password: {e}")).ok().flatten();
+    let password = plugin
+        .secret("obs-password")
+        .map_err(|e| eprintln!("broadcast-status: the password: {e}"))
+        .ok()
+        .flatten();
     let mut obs = obs::Session::new(password);
     let mut decoder = ws::Decoder::default();
     loop {
         let bytes = match rx.recv() {
             Ok(NetEvent::Data(bytes, _)) => bytes,
-            Ok(NetEvent::Closed(why)) => return (format!("the connection closed: {why}"), obs.ready()),
+            Ok(NetEvent::Closed(why)) => {
+                return (format!("the connection closed: {why}"), obs.ready())
+            }
             Err(_) => return ("Foxglove went away".into(), obs.ready()),
         };
         let messages = match decoder.feed(&bytes) {
@@ -139,7 +168,9 @@ fn session(plugin: &Arc<Plugin>, out: &mut Out, stream: u64, rx: Receiver<NetEve
         for m in messages {
             let sent = match m {
                 ws::Msg::Text(text) => match obs.on_message(&text) {
-                    Ok(replies) => replies.iter().try_for_each(|r| send(ws::frame(ws::TEXT, r.to_string().as_bytes()))),
+                    Ok(replies) => replies
+                        .iter()
+                        .try_for_each(|r| send(ws::frame(ws::TEXT, r.to_string().as_bytes()))),
                     Err(e) => return (e, obs.ready()),
                 },
                 ws::Msg::Ping(p) => send(ws::frame(ws::PONG, &p)),
@@ -160,7 +191,11 @@ fn session(plugin: &Arc<Plugin>, out: &mut Out, stream: u64, rx: Receiver<NetEve
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let port = args.windows(2).find(|w| w[0] == "--port").and_then(|w| w[1].parse().ok()).unwrap_or(4455);
+    let port = args
+        .windows(2)
+        .find(|w| w[0] == "--port")
+        .and_then(|w| w[1].parse().ok())
+        .unwrap_or(4455);
     let lights = !args.iter().any(|a| a == "--no-lights");
     let panel = !args.iter().any(|a| a == "--no-panel");
     let plugin: Arc<Plugin> = match Plugin::connect("broadcast-status", env!("CARGO_PKG_VERSION")) {
@@ -170,15 +205,28 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let art = if panel { screens::Art::load().map_err(|e| eprintln!("broadcast-status: panel art: {e}")).ok() } else { None };
-    let mut out = Out { lights, art, leases: Vec::new(), shown: None };
+    let art = if panel {
+        screens::Art::load()
+            .map_err(|e| eprintln!("broadcast-status: panel art: {e}"))
+            .ok()
+    } else {
+        None
+    };
+    let mut out = Out {
+        lights,
+        art,
+        leases: Vec::new(),
+        shown: None,
+    };
     out.show(&plugin, false, &Status::default());
 
     // Tries start when OBS's window appears, at start if it's open, and when a connection
     // drops; they stop on connecting or when OBS's last window closes.
     let mut last_error = String::new();
     // Ends when Foxglove goes away.
-    let Some(events) = plugin.app_windows() else { return };
+    let Some(events) = plugin.app_windows() else {
+        return;
+    };
     let mut tries = match plugin.watch_app(OBS_EXE) {
         Ok(0) => 0,
         Ok(_) => TRIES,
@@ -211,7 +259,14 @@ fn quit(e: &AppWindowEvent) -> bool {
 
 /// Tries to connect up to `tries` times, `TRY_GAP` apart, and stops early if OBS's windows
 /// close. True once a connection got through to OBS's status (and has since ended).
-fn burst(plugin: &Arc<Plugin>, out: &mut Out, port: u16, tries: usize, events: &Receiver<AppWindowEvent>, last_error: &mut String) -> bool {
+fn burst(
+    plugin: &Arc<Plugin>,
+    out: &mut Out,
+    port: u16,
+    tries: usize,
+    events: &Receiver<AppWindowEvent>,
+    last_error: &mut String,
+) -> bool {
     for i in 0..tries {
         if plugin.is_closed() {
             return false;
@@ -219,7 +274,9 @@ fn burst(plugin: &Arc<Plugin>, out: &mut Out, port: u16, tries: usize, events: &
         if i > 0 {
             let until = std::time::Instant::now() + TRY_GAP;
             loop {
-                match events.recv_timeout(until.saturating_duration_since(std::time::Instant::now())) {
+                match events
+                    .recv_timeout(until.saturating_duration_since(std::time::Instant::now()))
+                {
                     Ok(e) if quit(&e) => return false,
                     Err(RecvTimeoutError::Disconnected) => return false,
                     Ok(_) => {}

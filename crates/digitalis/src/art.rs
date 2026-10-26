@@ -134,7 +134,12 @@ fn finish_slot_op(t: &impl Transport, mut st: ArtStatus, what: &str) -> Result<A
 
 /// What flash slot `slot` holds. The left asks the right, so this can take a moment.
 pub fn slot(t: &impl Transport, slot: u8) -> Result<SlotInfo> {
-    let r = t.request(&protocol::art_slot(slot), protocol::ART, art::SLOT, Duration::from_secs(3))?;
+    let r = t.request(
+        &protocol::art_slot(slot),
+        protocol::ART,
+        art::SLOT,
+        Duration::from_secs(3),
+    )?;
     SlotInfo::parse(&r).map_err(|status| {
         anyhow::anyhow!(match status {
             1 => "the relay is busy".to_string(),
@@ -212,12 +217,19 @@ mod tests {
         assert!(push_cancellable(&t, b"NVA1", |_| {}, || true).is_err());
         assert!(t.sent.borrow().is_empty());
 
-        t.replies.borrow_mut().push_back(reply(art::BEGIN, left_state::RECEIVING));
+        t.replies
+            .borrow_mut()
+            .push_back(reply(art::BEGIN, left_state::RECEIVING));
         let checks = Cell::new(0);
-        let result = push_cancellable(&t, b"NVA1", |_| {}, || {
-            checks.set(checks.get() + 1);
-            checks.get() == 3
-        });
+        let result = push_cancellable(
+            &t,
+            b"NVA1",
+            |_| {},
+            || {
+                checks.set(checks.get() + 1);
+                checks.get() == 3
+            },
+        );
         assert!(result.unwrap_err().to_string().contains("cancelled"));
         let sent = t.sent.borrow();
         assert_eq!(sent.len(), 2);
@@ -233,7 +245,9 @@ mod tests {
             reply(art::COMMIT, left_state::PUSHING),
         ]);
         let cancelled = std::cell::Cell::new(false);
-        assert!(push_cancellable(&t, b"NVA1", |_| cancelled.set(true), || cancelled.get()).is_err());
+        assert!(
+            push_cancellable(&t, b"NVA1", |_| cancelled.set(true), || cancelled.get()).is_err()
+        );
         assert_eq!(t.sent.borrow().last().unwrap()[1], art::COMMIT);
     }
 

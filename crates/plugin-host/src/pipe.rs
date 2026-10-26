@@ -11,25 +11,28 @@ use std::io::{self, BufReader, Read, Write};
 use std::sync::Arc;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, LocalFree, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, GetLastError,
-    HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, LocalFree, ERROR_BROKEN_PIPE, ERROR_IO_PENDING,
+    ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Security::Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW;
 use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
 use windows_sys::Win32::Storage::FileSystem::{
     ReadFile, WriteFile, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, PIPE_ACCESS_DUPLEX,
 };
-use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 use windows_sys::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE,
-    PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
+    PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Threading::CreateEventW;
+use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
 /// The pipe's name for the current user.
 pub fn name() -> String {
     let user = std::env::var("USERNAME").unwrap_or_default();
-    let user: String = user.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    let user: String = user
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
     format!(r"\\.\pipe\foxglove-{user}")
 }
 
@@ -54,7 +57,14 @@ impl Descriptor {
     fn owner_only() -> io::Result<Descriptor> {
         let sddl = wide("D:P(A;;GA;;;OW)(A;;GA;;;SY)");
         let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        let ok = unsafe { ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), 1, &mut sd, std::ptr::null_mut()) };
+        let ok = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                1,
+                &mut sd,
+                std::ptr::null_mut(),
+            )
+        };
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
@@ -74,7 +84,13 @@ fn create(name: &[u16], first: bool, sd: &Descriptor) -> io::Result<Handle> {
         lpSecurityDescriptor: sd.0,
         bInheritHandle: 0,
     };
-    let flags = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | if first { FILE_FLAG_FIRST_PIPE_INSTANCE } else { 0 };
+    let flags = PIPE_ACCESS_DUPLEX
+        | FILE_FLAG_OVERLAPPED
+        | if first {
+            FILE_FLAG_FIRST_PIPE_INSTANCE
+        } else {
+            0
+        };
     let h = unsafe {
         CreateNamedPipeW(
             name.as_ptr(),
@@ -121,7 +137,9 @@ struct Conn(Arc<Handle>);
 impl Read for Conn {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let len = buf.len().min(u32::MAX as usize) as u32;
-        match overlapped(&self.0, |ov| unsafe { ReadFile(self.0 .0, buf.as_mut_ptr(), len, std::ptr::null_mut(), ov) }) {
+        match overlapped(&self.0, |ov| unsafe {
+            ReadFile(self.0 .0, buf.as_mut_ptr(), len, std::ptr::null_mut(), ov)
+        }) {
             Ok(n) => Ok(n as usize),
             Err(e) if e.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) => Ok(0),
             Err(e) => Err(e),
@@ -132,8 +150,10 @@ impl Read for Conn {
 impl Write for Conn {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let len = buf.len().min(u32::MAX as usize) as u32;
-        overlapped(&self.0, |ov| unsafe { WriteFile(self.0 .0, buf.as_ptr(), len, std::ptr::null_mut(), ov) })
-            .map(|n| n as usize)
+        overlapped(&self.0, |ov| unsafe {
+            WriteFile(self.0 .0, buf.as_ptr(), len, std::ptr::null_mut(), ov)
+        })
+        .map(|n| n as usize)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -148,7 +168,10 @@ pub fn listen(context: impl Fn() -> crate::Context + Send + Sync + 'static) -> i
     listen_on(&name(), context)
 }
 
-fn listen_on(name: &str, context: impl Fn() -> crate::Context + Send + Sync + 'static) -> io::Result<()> {
+fn listen_on(
+    name: &str,
+    context: impl Fn() -> crate::Context + Send + Sync + 'static,
+) -> io::Result<()> {
     let name = wide(name);
     let sd = Descriptor::owner_only()?;
     let context = Arc::new(context);
@@ -165,16 +188,21 @@ fn listen_on(name: &str, context: impl Fn() -> crate::Context + Send + Sync + 's
         }
         let conn = Conn(Arc::new(pipe));
         let ctx = context();
-        let _ = std::thread::Builder::new().name("plugin-host-client".into()).spawn(move || {
-            let _ = crate::serve(BufReader::new(conn.clone()), conn, ctx);
-        });
+        let _ = std::thread::Builder::new()
+            .name("plugin-host-client".into())
+            .spawn(move || {
+                let _ = crate::serve(BufReader::new(conn.clone()), conn, ctx);
+            });
     }
 }
 
 /// Opens the pipe as a client (foxglove-cli, tests). Plain synchronous I/O is enough for
 /// request-then-response use.
 pub fn connect() -> io::Result<std::fs::File> {
-    std::fs::OpenOptions::new().read(true).write(true).open(name())
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(name())
 }
 
 #[cfg(test)]
@@ -198,7 +226,11 @@ mod tests {
         });
         let mut client = None;
         for _ in 0..200 {
-            if let Ok(c) = std::fs::OpenOptions::new().read(true).write(true).open(&name) {
+            if let Ok(c) = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&name)
+            {
                 client = Some(c);
                 break;
             }
@@ -208,10 +240,15 @@ mod tests {
         writeln!(client, r#"{{"jsonrpc":"2.0","id":1,"method":"initialize","params":{{"api":"1.0","client":{{"name":"t","version":"1"}}}}}}"#).unwrap();
         writeln!(client, r#"{{"jsonrpc":"2.0","id":2,"method":"ping"}}"#).unwrap();
         let mut lines = io::BufReader::new(client).lines();
-        let first: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        let first: serde_json::Value =
+            serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
         assert_eq!(first["result"]["app"], "test");
-        let second: serde_json::Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+        let second: serde_json::Value =
+            serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
         assert_eq!(second["id"], 2);
-        assert!(listen_on(&name, || unreachable!()).is_err(), "a squatted name is refused");
+        assert!(
+            listen_on(&name, || unreachable!()).is_err(),
+            "a squatted name is refused"
+        );
     }
 }

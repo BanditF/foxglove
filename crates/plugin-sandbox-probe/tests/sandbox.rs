@@ -13,14 +13,20 @@ use foxglove_plugin_host::{Client, Context, Limits, NoDevices};
 /// Runs `sandbox-probe <mode>` and returns its exit code.
 fn probe(mode: &str, sandbox: bool) -> i32 {
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_sandbox-probe"));
-    let dir = std::env::temp_dir().join(format!("sandbox-probe-{mode}-{sandbox}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "sandbox-probe-{mode}-{sandbox}-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::copy(&exe, dir.join(exe.file_name().unwrap())).unwrap();
     let id = format!("test.probe-{mode}");
     let spec = PluginSpec {
         id: id.clone(),
         dir: dir.clone(),
-        run: vec![exe.file_name().unwrap().to_string_lossy().into(), mode.into()],
+        run: vec![
+            exe.file_name().unwrap().to_string_lossy().into(),
+            mode.into(),
+        ],
         sandbox,
     };
     let context = || Context {
@@ -37,9 +43,16 @@ fn probe(mode: &str, sandbox: bool) -> i32 {
     // The probe exits at once; the runner reports how.
     let until = Instant::now() + Duration::from_secs(30);
     let code = loop {
-        let left = until.checked_duration_since(Instant::now()).expect("the probe never exited");
+        let left = until
+            .checked_duration_since(Instant::now())
+            .expect("the probe never exited");
         if let Ok(PluginState::Restarting { reason, .. }) = rx.recv_timeout(left) {
-            let code = reason.trim_start_matches("exited (").split(')').next().unwrap_or("").parse();
+            let code = reason
+                .trim_start_matches("exited (")
+                .split(')')
+                .next()
+                .unwrap_or("")
+                .parse();
             break code.unwrap_or_else(|_| panic!("unexpected: {reason}"));
         }
     };

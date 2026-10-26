@@ -58,7 +58,10 @@ impl Default for Config {
 pub enum PluginState {
     Running,
     /// Restarting after `reason`, in `wait`.
-    Restarting { reason: String, wait: Duration },
+    Restarting {
+        reason: String,
+        wait: Duration,
+    },
     /// Too many crashes; stays off until started again.
     Disabled(String),
     Stopped,
@@ -146,9 +149,15 @@ type Io = (Running, Box<dyn Write + Send>, Box<dyn Read + Send>);
 pub const DATA_DIR: &str = "data";
 
 fn spawn(spec: &PluginSpec, config: &Config) -> std::io::Result<Io> {
-    let program = spec.run.first().ok_or_else(|| std::io::Error::other("the manifest's run is empty"))?;
+    let program = spec
+        .run
+        .first()
+        .ok_or_else(|| std::io::Error::other("the manifest's run is empty"))?;
     std::fs::create_dir_all(spec.dir.join(DATA_DIR))?;
-    let log = std::fs::OpenOptions::new().create(true).append(true).open(spec.dir.join("plugin.log"))?;
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(spec.dir.join("plugin.log"))?;
     // On Windows the plugin is started with only its own pipe ends inheritable (a handle list),
     // in its AppContainer or not; std::process would let a child started at the same moment
     // inherit them too, which keeps a plugin's stdout open after it exits.
@@ -163,21 +172,33 @@ fn spawn(spec: &PluginSpec, config: &Config) -> std::io::Result<Io> {
             return Err(e);
         }
         job::resume_thread(c.thread);
-        let running = Running { proc: Proc::Contained(process), _job: job };
+        let running = Running {
+            proc: Proc::Contained(process),
+            _job: job,
+        };
         Ok((running, Box::new(c.stdin), Box::new(c.stdout)))
     }
     #[cfg(not(windows))]
     {
-    let mut cmd = Command::new(spec.dir.join(program));
-    cmd.args(&spec.run[1..])
-        .current_dir(&spec.dir)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::from(log));
-    let mut child = cmd.spawn()?;
-    let _ = config;
-    let (stdin, stdout) = (child.stdin.take().expect("piped"), child.stdout.take().expect("piped"));
-    Ok((Running { proc: Proc::Std(child) }, Box::new(stdin), Box::new(stdout)))
+        let mut cmd = Command::new(spec.dir.join(program));
+        cmd.args(&spec.run[1..])
+            .current_dir(&spec.dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::from(log));
+        let mut child = cmd.spawn()?;
+        let _ = config;
+        let (stdin, stdout) = (
+            child.stdin.take().expect("piped"),
+            child.stdout.take().expect("piped"),
+        );
+        Ok((
+            Running {
+                proc: Proc::Std(child),
+            },
+            Box::new(stdin),
+            Box::new(stdout),
+        ))
     }
 }
 
@@ -211,11 +232,15 @@ fn supervise(
                     p.on_exit(events.clone(), this_run);
                 }
                 let id = spec.id.clone();
-                let _ = std::thread::Builder::new().name(format!("plugin-{}-io", spec.id)).spawn(move || {
-                    let _ = crate::serve_with(reader, stdin, ctx, Some(id.clone()), |out| crate::register(&id, Some(out)));
-                    crate::register(&id, None);
-                    let _ = exited.send(Event::Exited(this_run));
-                });
+                let _ = std::thread::Builder::new()
+                    .name(format!("plugin-{}-io", spec.id))
+                    .spawn(move || {
+                        let _ = crate::serve_with(reader, stdin, ctx, Some(id.clone()), |out| {
+                            crate::register(&id, Some(out))
+                        });
+                        crate::register(&id, None);
+                        let _ = exited.send(Event::Exited(this_run));
+                    });
                 // Wait for an exit or a stop. No watchdog: an exit is seen at once (the process
                 // handle on Windows, the pipe's end elsewhere), and a plugin that hangs only
                 // stops itself working; its calls to Foxglove time out on its side (#281).
@@ -225,7 +250,10 @@ fn supervise(
                         Ok(Event::Exited(n)) if n != run => {}
                         Ok(Event::Exited(_)) => {
                             let code = running.exit_code();
-                            break format!("exited ({})", code.map_or("no code".into(), |c| c.to_string()));
+                            break format!(
+                                "exited ({})",
+                                code.map_or("no code".into(), |c| c.to_string())
+                            );
                         }
                         Ok(Event::Stop) | Err(_) => {
                             running.kill();
@@ -242,16 +270,25 @@ fn supervise(
         }
         let now = Instant::now();
         crashes.push_back(now);
-        while crashes.front().is_some_and(|t| now.duration_since(*t) > config.crash_window) {
+        while crashes
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > config.crash_window)
+        {
             crashes.pop_front();
         }
         if crashes.len() >= config.max_crashes {
-            status(PluginState::Disabled(format!("{reason}; {} failures in a row", crashes.len())));
+            status(PluginState::Disabled(format!(
+                "{reason}; {} failures in a row",
+                crashes.len()
+            )));
             // Wait for the stop that comes with dropping the runner.
             while let Ok(Event::Exited(_)) = rx.recv() {}
             return;
         }
-        status(PluginState::Restarting { reason, wait: backoff });
+        status(PluginState::Restarting {
+            reason,
+            wait: backoff,
+        });
         let until = Instant::now() + backoff;
         loop {
             match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
@@ -271,13 +308,14 @@ fn supervise(
 mod job {
     use windows_sys::Win32::Foundation::{CloseHandle, DuplicateHandle, HANDLE};
     use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
-        TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION,
-        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOB_OBJECT_LIMIT_PROCESS_MEMORY,
     };
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject, INFINITE,
-        PROCESS_SYNCHRONIZE,
+        GetCurrentProcess, GetExitCodeProcess, ResumeThread, TerminateProcess, WaitForSingleObject,
+        INFINITE, PROCESS_SYNCHRONIZE,
     };
 
     /// A Job Object holding one plugin and everything it starts; closing it kills them all.
@@ -352,11 +390,13 @@ mod job {
                 return;
             }
             let copy = Process(copy);
-            let _ = std::thread::Builder::new().name("plugin-exit".into()).spawn(move || {
-                let process = copy;
-                unsafe { WaitForSingleObject(process.0, INFINITE) };
-                let _ = events.send(super::Event::Exited(run));
-            });
+            let _ = std::thread::Builder::new()
+                .name("plugin-exit".into())
+                .spawn(move || {
+                    let process = copy;
+                    unsafe { WaitForSingleObject(process.0, INFINITE) };
+                    let _ = events.send(super::Event::Exited(run));
+                });
         }
 
         pub fn wait(&self) -> Option<i32> {
@@ -381,5 +421,4 @@ mod job {
             CloseHandle(thread);
         }
     }
-
 }

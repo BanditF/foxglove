@@ -22,7 +22,9 @@ pub trait Store: Send + Sync {
 static STORE: OnceLock<Box<dyn Store>> = OnceLock::new();
 
 fn store() -> &'static dyn Store {
-    STORE.get_or_init(|| Box::new(imp::CredentialManager)).as_ref()
+    STORE
+        .get_or_init(|| Box::new(imp::CredentialManager))
+        .as_ref()
 }
 
 /// Uses another store (tests); only before the first use.
@@ -35,8 +37,11 @@ const MAX_VALUE: usize = 2048;
 fn check_name(name: &str) -> Result<(), String> {
     let ok = !name.is_empty()
         && name.len() <= 64
-        && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'));
-    ok.then_some(()).ok_or_else(|| format!("secret names are 1-64 of a-z, 0-9, - _ . (got {name:?})"))
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'));
+    ok.then_some(())
+        .ok_or_else(|| format!("secret names are 1-64 of a-z, 0-9, - _ . (got {name:?})"))
 }
 
 fn prefix(plugin: &str) -> String {
@@ -66,8 +71,8 @@ pub fn delete_all(plugin: &str) -> Result<(), String> {
 mod imp {
     use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
     use windows_sys::Win32::Security::Credentials::{
-        CredDeleteW, CredEnumerateW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
-        CRED_TYPE_GENERIC,
+        CredDeleteW, CredEnumerateW, CredFree, CredReadW, CredWriteW, CREDENTIALW,
+        CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC,
     };
 
     pub struct CredentialManager;
@@ -90,12 +95,20 @@ mod imp {
             let mut cred: *mut CREDENTIALW = std::ptr::null_mut();
             unsafe {
                 if CredReadW(name.as_ptr(), CRED_TYPE_GENERIC, 0, &mut cred) == 0 {
-                    return if GetLastError() == ERROR_NOT_FOUND { Ok(None) } else { Err(os("reading a secret")) };
+                    return if GetLastError() == ERROR_NOT_FOUND {
+                        Ok(None)
+                    } else {
+                        Err(os("reading a secret"))
+                    };
                 }
                 let c = &*cred;
-                let bytes = std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize).to_vec();
+                let bytes =
+                    std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize)
+                        .to_vec();
                 CredFree(cred as _);
-                String::from_utf8(bytes).map(Some).map_err(|_| "a secret isn't text".into())
+                String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|_| "a secret isn't text".into())
             }
         }
 
@@ -103,7 +116,9 @@ mod imp {
             let name = target(key);
             unsafe {
                 let Some(value) = value else {
-                    if CredDeleteW(name.as_ptr(), CRED_TYPE_GENERIC, 0) == 0 && GetLastError() != ERROR_NOT_FOUND {
+                    if CredDeleteW(name.as_ptr(), CRED_TYPE_GENERIC, 0) == 0
+                        && GetLastError() != ERROR_NOT_FOUND
+                    {
                         return Err(os("removing a secret"));
                     }
                     return Ok(());
@@ -130,7 +145,11 @@ mod imp {
             let mut list: *mut *mut CREDENTIALW = std::ptr::null_mut();
             unsafe {
                 if CredEnumerateW(filter.as_ptr(), 0, &mut count, &mut list) == 0 {
-                    return if GetLastError() == ERROR_NOT_FOUND { Ok(()) } else { Err(os("listing secrets")) };
+                    return if GetLastError() == ERROR_NOT_FOUND {
+                        Ok(())
+                    } else {
+                        Err(os("listing secrets"))
+                    };
                 }
                 for i in 0..count as usize {
                     let c = &**list.add(i);
@@ -166,7 +185,12 @@ pub struct Memory(std::sync::Mutex<std::collections::BTreeMap<String, String>>);
 
 impl Store for Memory {
     fn get(&self, key: &str) -> Result<Option<String>, String> {
-        Ok(self.0.lock().unwrap_or_else(|e| e.into_inner()).get(key).cloned())
+        Ok(self
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(key)
+            .cloned())
     }
     fn set(&self, key: &str, value: Option<&str>) -> Result<(), String> {
         let mut m = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -177,7 +201,10 @@ impl Store for Memory {
         Ok(())
     }
     fn delete_prefix(&self, prefix: &str) -> Result<(), String> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).retain(|k, _| !k.starts_with(prefix));
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|k, _| !k.starts_with(prefix));
         Ok(())
     }
 }
@@ -205,7 +232,9 @@ mod tests {
         let key = format!("plugin/test.secrets-{}/token", std::process::id());
         store.set(&key, Some("s3cret")).unwrap();
         assert_eq!(store.get(&key).unwrap().as_deref(), Some("s3cret"));
-        store.delete_prefix(&key[..key.rfind('/').unwrap() + 1]).unwrap();
+        store
+            .delete_prefix(&key[..key.rfind('/').unwrap() + 1])
+            .unwrap();
         assert_eq!(store.get(&key).unwrap(), None);
         store.set(&key, None).unwrap();
     }

@@ -40,12 +40,15 @@ pub fn ask_rgb_sync(set: Option<bool>, ctx: egui::Context) {
         let state = match device() {
             None => RgbSync::NoKeyboard,
             Some(d) => {
-                let reply = d.settings().ok_or(foxglove_devices::DeviceError::Unsupported).and_then(|s| {
-                    if let Some(on) = set {
-                        s.set("rgb_sync", Value::Bool(on))?;
-                    }
-                    s.get("rgb_sync")
-                });
+                let reply = d
+                    .settings()
+                    .ok_or(foxglove_devices::DeviceError::Unsupported)
+                    .and_then(|s| {
+                        if let Some(on) = set {
+                            s.set("rgb_sync", Value::Bool(on))?;
+                        }
+                        s.get("rgb_sync")
+                    });
                 match reply {
                     Ok(Some(Value::Bool(on))) => RgbSync::Known { on },
                     _ => RgbSync::NotSupported,
@@ -79,7 +82,9 @@ pub fn invoke(label: String, binding: (u16, u32, u32), ctx: egui::Context) {
     }
     let (id, p1, p2) = binding;
     run(label, ctx, move |d| {
-        let behaviors = d.behaviors().ok_or(foxglove_devices::DeviceError::Unsupported)?;
+        let behaviors = d
+            .behaviors()
+            .ok_or(foxglove_devices::DeviceError::Unsupported)?;
         behaviors.invoke(id.into(), p1, p2, true)
     });
 }
@@ -88,7 +93,9 @@ pub fn invoke(label: String, binding: (u16, u32, u32), ctx: egui::Context) {
 fn run(
     label: String,
     ctx: egui::Context,
-    command: impl FnOnce(&digitalis::devices::DigitalisDevice) -> foxglove_devices::Result<()> + Send + 'static,
+    command: impl FnOnce(&digitalis::devices::DigitalisDevice) -> foxglove_devices::Result<()>
+        + Send
+        + 'static,
 ) {
     if super::pause::paused() {
         *LAST_ACTION.lock().unwrap() = Some((label, super::pause::REFUSED.into()));
@@ -130,7 +137,8 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
         let ctx = ctx.clone();
         super::services::spawn_named("rgb-state", move || {
             // Read from the link: the device layer's lighting state has no per-half age yet.
-            let state = device().and_then(|d| digitalis::settings::rgb_state(d.link().as_ref()).ok());
+            let state =
+                device().and_then(|d| digitalis::settings::rgb_state(d.link().as_ref()).ok());
             *RGB_STATE.lock().unwrap() = state;
             RGB_POLLING.store(false, Ordering::Relaxed);
             ctx.request_repaint();
@@ -142,10 +150,15 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
 fn lighting(
     label: &str,
     ctx: egui::Context,
-    change: impl FnOnce(&dyn foxglove_devices::Lighting) -> foxglove_devices::Result<()> + Send + 'static,
+    change: impl FnOnce(&dyn foxglove_devices::Lighting) -> foxglove_devices::Result<()>
+        + Send
+        + 'static,
 ) {
     run(label.into(), ctx, move |d| {
-        change(d.lighting().ok_or(foxglove_devices::DeviceError::Unsupported)?)
+        change(
+            d.lighting()
+                .ok_or(foxglove_devices::DeviceError::Unsupported)?,
+        )
     });
 }
 
@@ -157,7 +170,9 @@ pub fn set_lights(on: bool, ctx: egui::Context) {
 
 /// Colour: hue 0-359, saturation and brightness 0-100.
 pub fn set_color(hue: u16, sat: u8, brightness: u8, ctx: egui::Context) {
-    lighting("Set colour", ctx, move |l| l.set_color(hue, sat, brightness));
+    lighting("Set colour", ctx, move |l| {
+        l.set_color(hue, sat, brightness)
+    });
 }
 
 /// Effect: 0 solid, 1 breathe, 2 spectrum, 3 swirl.
@@ -232,12 +247,21 @@ pub fn firmware(ctx: &egui::Context) -> Firmware {
                 Some(d) => {
                     let link = d.link();
                     let state = link.state();
-                    let caps = state.connected.and_then(|c| c.hello).map_or(0, |h| h.capabilities);
+                    let caps = state
+                        .connected
+                        .and_then(|c| c.hello)
+                        .map_or(0, |h| h.capabilities);
                     let firmware = if caps & digitalis::protocol::capabilities::BUILD_INFO == 0 {
                         Firmware::NotReported
                     } else {
-                        let half = |n| digitalis::settings::build_info(link.as_ref(), n).map_err(|e| e.to_string());
-                        Firmware::Known { left: half(0), right: half(1) }
+                        let half = |n| {
+                            digitalis::settings::build_info(link.as_ref(), n)
+                                .map_err(|e| e.to_string())
+                        };
+                        Firmware::Known {
+                            left: half(0),
+                            right: half(1),
+                        }
                     };
                     (Some(state.generation), firmware)
                 }
@@ -255,7 +279,10 @@ mod firmware_tests {
 
     #[test]
     fn only_a_failed_half_is_read_again() {
-        let failed = Firmware::Known { left: Err("x".into()), right: Err("no reply from the keyboard".into()) };
+        let failed = Firmware::Known {
+            left: Err("x".into()),
+            right: Err("no reply from the keyboard".into()),
+        };
         assert!(failed.failed());
         assert!(!Firmware::Unknown.failed());
         assert!(!Firmware::NotReported.failed());

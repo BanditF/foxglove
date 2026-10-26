@@ -27,7 +27,12 @@ struct Texture {
 
 /// Runs `draw` for a few frames (so windows finish fading in and sizes settle) and paints the
 /// last one over `backdrop`.
-fn render(ctx: &egui::Context, size: egui::Vec2, backdrop: Color32, mut draw: impl FnMut(&egui::Context)) -> image::RgbaImage {
+fn render(
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    backdrop: Color32,
+    mut draw: impl FnMut(&egui::Context),
+) -> image::RgbaImage {
     let mut textures: HashMap<TextureId, Texture> = HashMap::new();
     let mut last = None;
     for frame in 0..8 {
@@ -38,19 +43,34 @@ fn render(ctx: &egui::Context, size: egui::Vec2, backdrop: Color32, mut draw: im
             focused: true,
             ..Default::default()
         };
-        raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(PPP);
+        raw.viewports
+            .entry(egui::ViewportId::ROOT)
+            .or_default()
+            .native_pixels_per_point = Some(PPP);
         let mut out = ctx.run_ui(raw, |ui| draw(&ui.ctx().clone()));
-        for (id, delta) in out.textures_delta.set.iter().flat_map(|(id, deltas)| deltas.iter().map(move |d| (id, d))) {
+        for (id, delta) in out
+            .textures_delta
+            .set
+            .iter()
+            .flat_map(|(id, deltas)| deltas.iter().map(move |d| (id, d)))
+        {
             let egui::ImageData::Color(image) = &delta.image;
             match delta.pos {
                 None => {
-                    textures.insert(*id, Texture { size: image.size, pixels: image.pixels.clone() });
+                    textures.insert(
+                        *id,
+                        Texture {
+                            size: image.size,
+                            pixels: image.pixels.clone(),
+                        },
+                    );
                 }
                 Some([x0, y0]) => {
                     let t = textures.get_mut(id).expect("a patch for a known texture");
                     for y in 0..image.size[1] {
                         for x in 0..image.size[0] {
-                            t.pixels[(y0 + y) * t.size[0] + x0 + x] = image.pixels[y * image.size[0] + x];
+                            t.pixels[(y0 + y) * t.size[0] + x0 + x] =
+                                image.pixels[y * image.size[0] + x];
                         }
                     }
                 }
@@ -67,10 +87,22 @@ fn render(ctx: &egui::Context, size: egui::Vec2, backdrop: Color32, mut draw: im
     let primitives = ctx.tessellate(shapes, ppp);
 
     let (w, h) = ((size.x * ppp) as usize, (size.y * ppp) as usize);
-    let mut px = vec![[backdrop.r() as f32, backdrop.g() as f32, backdrop.b() as f32, 255.0]; w * h];
+    let mut px = vec![
+        [
+            backdrop.r() as f32,
+            backdrop.g() as f32,
+            backdrop.b() as f32,
+            255.0
+        ];
+        w * h
+    ];
     for prim in primitives {
-        let egui::epaint::Primitive::Mesh(mesh) = prim.primitive else { continue };
-        let Some(tex) = textures.get(&mesh.texture_id) else { continue };
+        let egui::epaint::Primitive::Mesh(mesh) = prim.primitive else {
+            continue;
+        };
+        let Some(tex) = textures.get(&mesh.texture_id) else {
+            continue;
+        };
         let clip = Rect::from_min_max(
             (prim.clip_rect.min.to_vec2() * ppp).to_pos2(),
             (prim.clip_rect.max.to_vec2() * ppp).to_pos2(),
@@ -82,7 +114,11 @@ fn render(ctx: &egui::Context, size: egui::Vec2, backdrop: Color32, mut draw: im
     }
     let mut img = image::RgbaImage::new(w as u32, h as u32);
     for (i, p) in px.iter().enumerate() {
-        img.put_pixel((i % w) as u32, (i / w) as u32, image::Rgba([p[0] as u8, p[1] as u8, p[2] as u8, 255]));
+        img.put_pixel(
+            (i % w) as u32,
+            (i / w) as u32,
+            image::Rgba([p[0] as u8, p[1] as u8, p[2] as u8, 255]),
+        );
     }
     img
 }
@@ -97,19 +133,53 @@ fn sample(tex: &Texture, u: f32, v: f32) -> [f32; 4] {
     let (fx, fy) = (x - x0 as f32, y - y0 as f32);
     let at = |x: usize, y: usize| tex.pixels[y * tex.size[0] + x].to_array().map(|c| c as f32);
     let (a, b, c, d) = (at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1));
-    std::array::from_fn(|i| (a[i] * (1.0 - fx) + b[i] * fx) * (1.0 - fy) + (c[i] * (1.0 - fx) + d[i] * fx) * fy)
+    std::array::from_fn(|i| {
+        (a[i] * (1.0 - fx) + b[i] * fx) * (1.0 - fy) + (c[i] * (1.0 - fx) + d[i] * fx) * fy
+    })
 }
 
-fn fill_triangle(px: &mut [[f32; 4]], w: usize, h: usize, clip: Rect, ppp: f32, v: &[egui::epaint::Vertex; 3], tex: &Texture) {
+fn fill_triangle(
+    px: &mut [[f32; 4]],
+    w: usize,
+    h: usize,
+    clip: Rect,
+    ppp: f32,
+    v: &[egui::epaint::Vertex; 3],
+    tex: &Texture,
+) {
     let p = v.map(|v| (v.pos.x * ppp, v.pos.y * ppp));
     let area = (p[1].0 - p[0].0) * (p[2].1 - p[0].1) - (p[2].0 - p[0].0) * (p[1].1 - p[0].1);
     if area.abs() < 1e-6 {
         return;
     }
-    let min_x = p.iter().map(|q| q.0).fold(f32::MAX, f32::min).max(clip.min.x).max(0.0).floor() as usize;
-    let max_x = p.iter().map(|q| q.0).fold(f32::MIN, f32::max).min(clip.max.x).min(w as f32).ceil() as usize;
-    let min_y = p.iter().map(|q| q.1).fold(f32::MAX, f32::min).max(clip.min.y).max(0.0).floor() as usize;
-    let max_y = p.iter().map(|q| q.1).fold(f32::MIN, f32::max).min(clip.max.y).min(h as f32).ceil() as usize;
+    let min_x = p
+        .iter()
+        .map(|q| q.0)
+        .fold(f32::MAX, f32::min)
+        .max(clip.min.x)
+        .max(0.0)
+        .floor() as usize;
+    let max_x = p
+        .iter()
+        .map(|q| q.0)
+        .fold(f32::MIN, f32::max)
+        .min(clip.max.x)
+        .min(w as f32)
+        .ceil() as usize;
+    let min_y = p
+        .iter()
+        .map(|q| q.1)
+        .fold(f32::MAX, f32::min)
+        .max(clip.min.y)
+        .max(0.0)
+        .floor() as usize;
+    let max_y = p
+        .iter()
+        .map(|q| q.1)
+        .fold(f32::MIN, f32::max)
+        .min(clip.max.y)
+        .min(h as f32)
+        .ceil() as usize;
     let colors = v.map(|v| v.color.to_array().map(|c| c as f32 / 255.0));
     for y in min_y..max_y {
         for x in min_x..max_x {
@@ -117,7 +187,8 @@ fn fill_triangle(px: &mut [[f32; 4]], w: usize, h: usize, clip: Rect, ppp: f32, 
             if cx < clip.min.x || cx >= clip.max.x || cy < clip.min.y || cy >= clip.max.y {
                 continue;
             }
-            let edge = |a: (f32, f32), b: (f32, f32)| (b.0 - a.0) * (cy - a.1) - (b.1 - a.1) * (cx - a.0);
+            let edge =
+                |a: (f32, f32), b: (f32, f32)| (b.0 - a.0) * (cy - a.1) - (b.1 - a.1) * (cx - a.0);
             let w0 = edge(p[1], p[2]) / area;
             let w1 = edge(p[2], p[0]) / area;
             let w2 = edge(p[0], p[1]) / area;
@@ -127,8 +198,9 @@ fn fill_triangle(px: &mut [[f32; 4]], w: usize, h: usize, clip: Rect, ppp: f32, 
             let u = w0 * v[0].uv.x + w1 * v[1].uv.x + w2 * v[2].uv.x;
             let t = w0 * v[0].uv.y + w1 * v[1].uv.y + w2 * v[2].uv.y;
             let texel = sample(tex, u, t);
-            let src: [f32; 4] =
-                std::array::from_fn(|i| (w0 * colors[0][i] + w1 * colors[1][i] + w2 * colors[2][i]) * texel[i]);
+            let src: [f32; 4] = std::array::from_fn(|i| {
+                (w0 * colors[0][i] + w1 * colors[1][i] + w2 * colors[2][i]) * texel[i]
+            });
             let dst = &mut px[y * w + x];
             let keep = 1.0 - src[3] / 255.0;
             for (d, s) in dst.iter_mut().zip(src).take(3) {
@@ -171,7 +243,8 @@ fn settings_window(ctx: &egui::Context, legacy: bool) {
                 ));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add(egui::Hyperlink::from_label_and_url(
-                        egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).weak(),
+                        egui::RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION")))
+                            .weak(),
                         "https://github.com/BanditF/foxglove/releases",
                     ));
                 });
@@ -183,55 +256,66 @@ fn settings_window(ctx: &egui::Context, legacy: bool) {
 fn keypeek_groups(ui: &mut egui::Ui) {
     use crate::foxglove::settings_ui::section;
     section(ui, "Connection", |ui| {
-        egui::Grid::new("connection_grid").num_columns(2).striped(true).spacing([20.0, 10.0]).show(ui, |ui| {
-            ui.label("Device");
-            ui.horizontal(|ui| {
-                egui::ComboBox::from_id_salt("device_combo")
-                    .width(ui.available_width() - 108.0)
-                    .selected_text("Eyelash Corne (USB)")
-                    .show_ui(ui, |_| {});
-                ui.add_sized([100.0, 20.0], egui::Button::new("Connect"));
+        egui::Grid::new("connection_grid")
+            .num_columns(2)
+            .striped(true)
+            .spacing([20.0, 10.0])
+            .show(ui, |ui| {
+                ui.label("Device");
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("device_combo")
+                        .width(ui.available_width() - 108.0)
+                        .selected_text("Eyelash Corne (USB)")
+                        .show_ui(ui, |_| {});
+                    ui.add_sized([100.0, 20.0], egui::Button::new("Connect"));
+                });
+                ui.end_row();
+                ui.label("Layout");
+                ui.add_enabled_ui(false, |ui| {
+                    egui::ComboBox::from_id_salt("layout_combo")
+                        .width(ui.available_width() - 108.0)
+                        .selected_text("Connect to device first")
+                        .show_ui(ui, |_| {});
+                });
+                ui.end_row();
             });
-            ui.end_row();
-            ui.label("Layout");
-            ui.add_enabled_ui(false, |ui| {
-                egui::ComboBox::from_id_salt("layout_combo")
-                    .width(ui.available_width() - 108.0)
-                    .selected_text("Connect to device first")
-                    .show_ui(ui, |_| {});
-            });
-            ui.end_row();
-        });
     });
     section(ui, "Overlay Appearance", |ui| {
-        egui::Grid::new("appearance_grid").num_columns(2).striped(true).spacing([20.0, 10.0]).show(ui, |ui| {
-            ui.label("Alignment");
-            egui::ComboBox::from_id_salt("position_combo")
-                .width(ui.available_width())
-                .selected_text(crate::settings::WindowPosition::BottomRight.to_string())
-                .show_ui(ui, |_| {});
-            ui.end_row();
-            for (label, value, suffix) in [
-                ("Display duration", 2000.0, " ms"),
-                ("Activation delay", 0.0, " ms"),
-                ("Distance from screen edge", 10.0, " px"),
-                ("Key unit size", 60.0, " px"),
-            ] {
-                ui.label(label);
-                let mut v: f64 = value;
-                ui.add_sized(ui.available_size(), egui::DragValue::new(&mut v).suffix(suffix));
+        egui::Grid::new("appearance_grid")
+            .num_columns(2)
+            .striped(true)
+            .spacing([20.0, 10.0])
+            .show(ui, |ui| {
+                ui.label("Alignment");
+                egui::ComboBox::from_id_salt("position_combo")
+                    .width(ui.available_width())
+                    .selected_text(crate::settings::WindowPosition::BottomRight.to_string())
+                    .show_ui(ui, |_| {});
                 ui.end_row();
-            }
-            ui.label("Auto-fit long labels");
-            ui.checkbox(&mut true, "Fit long labels to available space");
-            ui.end_row();
-            ui.label("Legend mode");
-            egui::ComboBox::from_id_salt("legend_mode_combo")
-                .width(ui.available_width())
-                .selected_text(crate::settings::LegendMode::Stacked.to_string())
-                .show_ui(ui, |_| {});
-            ui.end_row();
-        });
+                for (label, value, suffix) in [
+                    ("Display duration", 2000.0, " ms"),
+                    ("Activation delay", 0.0, " ms"),
+                    ("Distance from screen edge", 10.0, " px"),
+                    ("Key unit size", 60.0, " px"),
+                ] {
+                    ui.label(label);
+                    let mut v: f64 = value;
+                    ui.add_sized(
+                        ui.available_size(),
+                        egui::DragValue::new(&mut v).suffix(suffix),
+                    );
+                    ui.end_row();
+                }
+                ui.label("Auto-fit long labels");
+                ui.checkbox(&mut true, "Fit long labels to available space");
+                ui.end_row();
+                ui.label("Legend mode");
+                egui::ComboBox::from_id_salt("legend_mode_combo")
+                    .width(ui.available_width())
+                    .selected_text(crate::settings::LegendMode::Stacked.to_string())
+                    .show_ui(ui, |_| {});
+                ui.end_row();
+            });
     });
     section(ui, "Theme", |ui| {
         // The window theme is in "Theme and updates" since #390.
@@ -246,26 +330,40 @@ fn keypeek_groups(ui: &mut egui::Ui) {
         let colors = crate::settings::ThemeSettings::default().layer_colors;
         // As in ui_settings.rs: one table when the card is too narrow for two (#390).
         let narrow = ui.available_width() < 560.0;
-        let parts: Vec<std::ops::Range<usize>> = if narrow { std::iter::once(0..8).collect() } else { vec![0..4, 4..8] };
+        let parts: Vec<std::ops::Range<usize>> = if narrow {
+            std::iter::once(0..8).collect()
+        } else {
+            vec![0..4, 4..8]
+        };
         ui.columns(parts.len(), |cols| {
             for (col, layers) in cols.iter_mut().zip(parts) {
-                egui::Grid::new(("layers", layers.start)).num_columns(4).spacing([12.0, 6.0]).show(col, |ui| {
-                    ui.weak("Show");
-                    ui.weak("Hold");
-                    ui.weak("Layer");
-                    ui.label("");
-                    ui.end_row();
-                    for layer in layers {
-                        ui.add(egui::Checkbox::without_text(&mut true));
-                        ui.add(egui::Checkbox::without_text(&mut (layer != 3)));
-                        ui.label(if layer == 7 { "Other layers".to_string() } else { format!("Layer {layer}") });
-                        let mut c = crate::key_paint::to_egui_color(colors[layer]);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.color_edit_button_srgba(&mut c);
-                        });
+                egui::Grid::new(("layers", layers.start))
+                    .num_columns(4)
+                    .spacing([12.0, 6.0])
+                    .show(col, |ui| {
+                        ui.weak("Show");
+                        ui.weak("Hold");
+                        ui.weak("Layer");
+                        ui.label("");
                         ui.end_row();
-                    }
-                });
+                        for layer in layers {
+                            ui.add(egui::Checkbox::without_text(&mut true));
+                            ui.add(egui::Checkbox::without_text(&mut (layer != 3)));
+                            ui.label(if layer == 7 {
+                                "Other layers".to_string()
+                            } else {
+                                format!("Layer {layer}")
+                            });
+                            let mut c = crate::key_paint::to_egui_color(colors[layer]);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.color_edit_button_srgba(&mut c);
+                                },
+                            );
+                            ui.end_row();
+                        }
+                    });
             }
         });
     });
@@ -400,7 +498,10 @@ struct Samples {
     keyboard: crate::foxglove::keyboard_page::View,
     lights: crate::foxglove::lights_page::View,
     screens: Option<crate::foxglove::screens::Snapshot>,
-    art: Option<(crate::foxglove::art_service::Snapshot, crate::foxglove::art_library::Library)>,
+    art: Option<(
+        crate::foxglove::art_service::Snapshot,
+        crate::foxglove::art_library::Library,
+    )>,
     plugins: crate::foxglove::plugins_ui::View,
 }
 
@@ -465,7 +566,9 @@ fn shell_preview_with(
     crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
     crate::foxglove::plugins_ui::PREVIEW.set(Some(samples.plugins.clone()));
     let size = egui::vec2(1072.0, height + 40.0);
-    let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| shell_window(ctx, height));
+    let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
+        shell_window(ctx, height)
+    });
     shell::PREVIEW_STRIP.set(None);
     crate::foxglove::keyboard_page::PREVIEW.set(None);
     crate::foxglove::lights_page::PREVIEW.set(None);
@@ -487,7 +590,11 @@ fn keep(name: &str, img: &image::RgbaImage) {
 fn shell_pages_render() {
     use crate::foxglove::shell::Page;
     use crate::foxglove::theme::DARK;
-    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
     let mut seen: Vec<image::RgbaImage> = Vec::new();
     for page in Page::ALL {
         let img = shell_preview(page);
@@ -497,7 +604,10 @@ fn shell_pages_render() {
         assert!(count(&img, DARK.well) > total / 20, "{page:?}: sidebar");
         assert!(count(&img, DARK.ground) > total / 20, "{page:?}: page");
         assert!(count(&img, DARK.accent) > 20, "{page:?}: orange");
-        assert!(seen.iter().all(|other| *other != img), "{page:?} looks like another page");
+        assert!(
+            seen.iter().all(|other| *other != img),
+            "{page:?} looks like another page"
+        );
         seen.push(img);
     }
 }
@@ -507,7 +617,11 @@ fn shell_pages_render() {
 fn keyboard_page_renders() {
     use crate::foxglove::shell::Page;
     use crate::foxglove::theme::DARK;
-    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
     let with = shell_preview_with(Page::Keyboard, &Samples::full(), 1060.0);
     let without = shell_preview_with(Page::Keyboard, &Samples::none(), 1060.0);
     keep("ui-386-keyboard.png", &with);
@@ -517,7 +631,10 @@ fn keyboard_page_renders() {
     keep("ui-392-board-none.png", &without);
     for img in [&with, &without] {
         // The cards' surface and the board's orange (screen rings, underglow) show up.
-        assert!(count(img, DARK.surface) > (img.width() * img.height()) as usize / 20, "cards");
+        assert!(
+            count(img, DARK.surface) > (img.width() * img.height()) as usize / 20,
+            "cards"
+        );
         assert!(count(img, DARK.accent) > 500, "the board's orange");
     }
     // The right half's "no reply yet" is amber on the page as well as in the strip.
@@ -550,8 +667,18 @@ pub(crate) fn sample_screens() -> crate::foxglove::screens::Snapshot {
     }
     crate::foxglove::screens::Snapshot {
         product: "Eyelash Corne".into(),
-        hello: Some(digitalis::protocol::Hello { version: 3, right_link: 2, right_battery: Some(61), ..Default::default() }),
-        frame: Some(crate::foxglove::screens::Frame { width, height, stride, bits }),
+        hello: Some(digitalis::protocol::Hello {
+            version: 3,
+            right_link: 2,
+            right_battery: Some(61),
+            ..Default::default()
+        }),
+        frame: Some(crate::foxglove::screens::Frame {
+            width,
+            height,
+            stride,
+            bits,
+        }),
         foreground: Some("eldenring.exe".into()),
         screens: Vec::new(),
     }
@@ -562,7 +689,11 @@ pub(crate) fn sample_screens() -> crate::foxglove::screens::Snapshot {
 fn screens_page_renders() {
     use crate::foxglove::shell::Page;
     use crate::foxglove::theme::DARK;
-    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
     let with = shell_preview_with(Page::Screens, &Samples::full(), 1000.0);
     let without = shell_preview_with(Page::Screens, &Samples::none(), 660.0);
     keep("ui-388-screens.png", &with);
@@ -570,7 +701,10 @@ fn screens_page_renders() {
     // The art tiles are drawn in the right screen's two tones.
     let lit = Color32::from_rgb(0xe8, 0xea, 0xe9);
     assert!(count(&with, lit) > 300, "art thumbnails");
-    assert!(count(&with, DARK.surface) > count(&without, DARK.surface), "two cards");
+    assert!(
+        count(&with, DARK.surface) > count(&without, DARK.surface),
+        "two cards"
+    );
 }
 
 /// The Plugins page (#389): the installed and catalog cards, three to a row.
@@ -578,11 +712,18 @@ fn screens_page_renders() {
 fn plugins_page_renders() {
     use crate::foxglove::shell::Page;
     use crate::foxglove::theme::DARK;
-    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
     let img = shell_preview_with(Page::Plugins, &Samples::full(), 900.0);
     keep("ui-389-plugins.png", &img);
     // The cards' surface and their outlines fill the page.
-    assert!(count(&img, DARK.surface) > (img.width() * img.height()) as usize / 12, "cards");
+    assert!(
+        count(&img, DARK.surface) > (img.width() * img.height()) as usize / 12,
+        "cards"
+    );
     assert!(count(&img, DARK.line) > 2000, "card outlines");
 }
 
@@ -591,10 +732,17 @@ fn plugins_page_renders() {
 fn settings_page_renders() {
     use crate::foxglove::shell::Page;
     use crate::foxglove::theme::DARK;
-    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
     let img = shell_preview_with(Page::Settings, &Samples::full(), 1000.0);
     keep("ui-390-settings.png", &img);
-    assert!(count(&img, DARK.surface) > (img.width() * img.height()) as usize / 10, "cards");
+    assert!(
+        count(&img, DARK.surface) > (img.width() * img.height()) as usize / 10,
+        "cards"
+    );
     // The theme picker's selected pill sits in "Theme and updates".
     assert!(count(&img, DARK.selected_fill) > 100, "the Dark pill");
 }
@@ -614,18 +762,32 @@ fn tray_panel_renders() {
     let v = crate::foxglove::tray_panel::tests::sample();
     let size = egui::vec2(crate::foxglove::tray_panel::WIDTH + 40.0, 720.0);
     let img = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
-        egui::Area::new(egui::Id::new("tray-panel-preview")).fixed_pos(egui::pos2(20.0, 20.0)).show(ctx, |ui| {
-            crate::foxglove::tray_panel::panel(ui, &v, &mut Default::default(), &mut Vec::new());
-        });
+        egui::Area::new(egui::Id::new("tray-panel-preview"))
+            .fixed_pos(egui::pos2(20.0, 20.0))
+            .show(ctx, |ui| {
+                crate::foxglove::tray_panel::panel(
+                    ui,
+                    &v,
+                    &mut Default::default(),
+                    &mut Vec::new(),
+                );
+            });
     });
     keep("ui-391-tray.png", &img);
-    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
     let total = (img.width() * img.height()) as usize;
     assert!(count(&img, DARK.ground) > total / 4, "the panel's ground");
     assert!(count(&img, DARK.selected_fill) > 200, "the selected pills");
 
     // Paused (#404): "Resume Foxglove" is a selected pill, with the note under the header.
-    let paused = crate::foxglove::tray_panel::while_paused(crate::foxglove::tray_panel::View { paused: true, ..v.clone() });
+    let paused = crate::foxglove::tray_panel::while_paused(crate::foxglove::tray_panel::View {
+        paused: true,
+        ..v.clone()
+    });
     // A fresh context: `render` keeps the textures it was sent, starting with the fonts.
     let ctx = egui::Context::default();
     egui_extras::install_image_loaders(&ctx);
@@ -635,13 +797,23 @@ fn tray_panel_renders() {
     ctx.set_fonts(fonts);
     crate::foxglove::theme::apply_choice(&ctx, crate::foxglove::theme::Choice::Dark);
     let img_paused = render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
-        egui::Area::new(egui::Id::new("tray-panel-preview")).fixed_pos(egui::pos2(20.0, 20.0)).show(ctx, |ui| {
-            crate::foxglove::tray_panel::panel(ui, &paused, &mut Default::default(), &mut Vec::new());
-        });
+        egui::Area::new(egui::Id::new("tray-panel-preview"))
+            .fixed_pos(egui::pos2(20.0, 20.0))
+            .show(ctx, |ui| {
+                crate::foxglove::tray_panel::panel(
+                    ui,
+                    &paused,
+                    &mut Default::default(),
+                    &mut Vec::new(),
+                );
+            });
     });
     keep("tray-panel-paused.png", &img_paused);
     assert!(count(&img_paused, DARK.warn) > 50, "the paused note");
-    assert!(count(&img_paused, DARK.selected_fill) > count(&img, DARK.selected_fill), "the resume pill");
+    assert!(
+        count(&img_paused, DARK.selected_fill) > count(&img, DARK.selected_fill),
+        "the resume pill"
+    );
 }
 
 /// The Lights page (#387) with a keyboard and without one.
@@ -649,7 +821,11 @@ fn tray_panel_renders() {
 fn lights_page_renders() {
     use crate::foxglove::shell::Page;
     use crate::foxglove::theme::DARK;
-    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
     let with = shell_preview_with(Page::Lights, &Samples::full(), 760.0);
     let without = shell_preview_with(Page::Lights, &Samples::none(), 760.0);
     keep("ui-387-lights.png", &with);
@@ -671,7 +847,11 @@ fn settings_preview_renders_in_the_theme() {
     keep("ui-384-after-dark.png", &dark);
     keep("ui-384-after-light.png", &light);
 
-    let count = |img: &image::RgbaImage, c: Color32| img.pixels().filter(|p| p.0[..3] == [c.r(), c.g(), c.b()]).count();
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
     let total = (dark.width() * dark.height()) as usize;
     // The window's ground, the cards and the orange all show up; before, none of them did.
     assert!(count(&dark, DARK.ground) > total / 50, "dark ground");
@@ -689,8 +869,13 @@ fn copy_diagnostics_renders() {
     keep("ui-371-copy-diagnostics.png", &img);
     if let Some(dir) = std::env::var_os("FOXGLOVE_UI_PREVIEW_DIR") {
         let p = crate::foxglove::diagnostics::sample_personal();
-        let text = crate::foxglove::diagnostics::report(&crate::foxglove::diagnostics::sample(), &p);
-        std::fs::write(std::path::Path::new(&dir).join("ui-371-diagnostics-sample.txt"), text).expect("save the sample");
+        let text =
+            crate::foxglove::diagnostics::report(&crate::foxglove::diagnostics::sample(), &p);
+        std::fs::write(
+            std::path::Path::new(&dir).join("ui-371-diagnostics-sample.txt"),
+            text,
+        )
+        .expect("save the sample");
     }
 }
 
@@ -710,9 +895,13 @@ fn sidebar_fox_renders() {
     let img = shell_preview_with(Page::Keyboard, &Samples::full(), 660.0);
     keep("ui-sidebar-fox.png", &img);
     let top = image::imageops::crop_imm(&img, 0, 0, 480, 270).to_image();
-    let zoom = image::imageops::resize(&top, 480 * 3, 270 * 3, image::imageops::FilterType::Nearest);
+    let zoom =
+        image::imageops::resize(&top, 480 * 3, 270 * 3, image::imageops::FilterType::Nearest);
     keep("ui-sidebar-fox-zoom.png", &zoom);
     // The fox's orange fills more than the old arrowhead's outline did.
-    let orange = top.pixels().filter(|p| p.0[..3] == [DARK.accent.r(), DARK.accent.g(), DARK.accent.b()]).count();
+    let orange = top
+        .pixels()
+        .filter(|p| p.0[..3] == [DARK.accent.r(), DARK.accent.g(), DARK.accent.b()])
+        .count();
     assert!(orange > 250, "{orange}");
 }

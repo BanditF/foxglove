@@ -79,7 +79,11 @@ pub enum Intent {
     Refresh,
 }
 
-static DRAFT: Mutex<Draft> = Mutex::new(Draft { color: None, speed: None, custom_open: false });
+static DRAFT: Mutex<Draft> = Mutex::new(Draft {
+    color: None,
+    speed: None,
+    custom_open: false,
+});
 
 #[cfg(test)]
 thread_local! {
@@ -115,7 +119,11 @@ pub fn show(ui: &mut egui::Ui) {
             Intent::Lights(on) => ks::set_lights(on, ctx.clone()),
             Intent::Effect(e) => ks::set_effect(e, ctx.clone()),
             Intent::Speed(s) => ks::set_speed(s, ctx.clone()),
-            Intent::Apply { hue, sat, brightness } => ks::set_color(hue, sat, brightness, ctx.clone()),
+            Intent::Apply {
+                hue,
+                sat,
+                brightness,
+            } => ks::set_color(hue, sat, brightness, ctx.clone()),
             Intent::Accent(on) => {
                 super::accent::set_enabled(on);
                 ks::refresh_rgb_state();
@@ -132,9 +140,14 @@ pub fn show(ui: &mut egui::Ui) {
 
 /// A half's lights in words: "on · Solid · 80% · speed 3", "off", or "no data yet".
 pub fn half_text(half: Option<&RgbHalf>, age: Option<u8>) -> String {
-    let Some(h) = half else { return "no data yet".into() };
+    let Some(h) = half else {
+        return "no data yet".into();
+    };
     let mut text = if h.on {
-        let effect = EFFECTS.get(usize::from(h.effect)).copied().unwrap_or("other effect");
+        let effect = EFFECTS
+            .get(usize::from(h.effect))
+            .copied()
+            .unwrap_or("other effect");
         format!("on · {effect} · {}% · speed {}", h.brightness, h.speed)
     } else {
         "off".to_string()
@@ -161,8 +174,13 @@ pub fn is_swatch(color: (u16, u8), rgb: [u8; 3]) -> bool {
 /// The colour an underglow setting shows on screen.
 pub(crate) fn shown_color(hue: u16, sat: u8, brightness: u8) -> Color32 {
     // Gamma space, so a swatch looks like the sRGB colour it came from.
-    egui::ecolor::HsvaGamma { h: f32::from(hue) / 360.0, s: f32::from(sat) / 100.0, v: f32::from(brightness.max(15)) / 100.0, a: 1.0 }
-        .into()
+    egui::ecolor::HsvaGamma {
+        h: f32::from(hue) / 360.0,
+        s: f32::from(sat) / 100.0,
+        v: f32::from(brightness.max(15)) / 100.0,
+        a: 1.0,
+    }
+    .into()
 }
 
 /// Paints the page; returns what was asked for this frame.
@@ -171,19 +189,31 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     let gap = 16.0;
     let width = ui.available_width();
     let wide = width >= 640.0;
-    let left_w = if wide { ((width - gap) * 0.6).floor() } else { width };
+    let left_w = if wide {
+        ((width - gap) * 0.6).floor()
+    } else {
+        width
+    };
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = gap;
-        ui.allocate_ui_with_layout(egui::vec2(left_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-            ui.set_width(left_w);
-            card(ui, "Underglow", |ui| underglow(ui, v, draft, &mut out));
-        });
+        ui.allocate_ui_with_layout(
+            egui::vec2(left_w, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(left_w);
+                card(ui, "Underglow", |ui| underglow(ui, v, draft, &mut out));
+            },
+        );
         if wide {
             let right_w = width - left_w - gap;
-            ui.allocate_ui_with_layout(egui::vec2(right_w, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.set_width(right_w);
-                side(ui, v, &mut out);
-            });
+            ui.allocate_ui_with_layout(
+                egui::vec2(right_w, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(right_w);
+                    side(ui, v, &mut out);
+                },
+            );
         }
     });
     if !wide {
@@ -197,7 +227,9 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
 /// The right-hand column: presets, then both halves as the keyboard reports them.
 fn side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     card(ui, "Lighting presets", |ui| {
-        ui.weak("Looks that match the Bandit wallpapers, with their right-screen art if you want it.");
+        ui.weak(
+            "Looks that match the Bandit wallpapers, with their right-screen art if you want it.",
+        );
         ui.add_space(2.0);
         // The presets' apply path is #306; until it lands there are none to list.
         ui.label(RichText::new("No presets in this version yet.").color(theme::palette(ui).muted));
@@ -213,8 +245,13 @@ fn side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
                 ui.label(name);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(h) = half {
-                        let color = if h.on { shown_color(h.hue, h.sat, h.brightness) } else { Color32::from_gray(20) };
-                        let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
+                        let color = if h.on {
+                            shown_color(h.hue, h.sat, h.brightness)
+                        } else {
+                            Color32::from_gray(20)
+                        };
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
                         ui.painter().rect_filled(rect, 3.0, color);
                     }
                     ui.label(half_text(half.as_ref(), age));
@@ -222,7 +259,11 @@ fn side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
             });
         }
         ui.add_space(2.0);
-        if ui.button("Refresh lights").on_hover_text("Ask both halves for their lights again").clicked() {
+        if ui
+            .button("Refresh lights")
+            .on_hover_text("Ask both halves for their lights again")
+            .clicked()
+        {
             out.push(Intent::Refresh);
         }
     });
@@ -396,16 +437,32 @@ pub mod tests {
     use super::*;
 
     fn half(on: bool, hue: u16, speed: u8) -> RgbHalf {
-        RgbHalf { on, hue, sat: 76, brightness: 80, effect: 0, speed }
+        RgbHalf {
+            on,
+            hue,
+            sat: 76,
+            brightness: 80,
+            effect: 0,
+            speed,
+        }
     }
 
     #[test]
     fn halves_in_words() {
         assert_eq!(half_text(None, None), "no data yet");
-        assert_eq!(half_text(Some(&half(true, 26, 3)), None), "on · Solid · 80% · speed 3");
+        assert_eq!(
+            half_text(Some(&half(true, 26, 3)), None),
+            "on · Solid · 80% · speed 3"
+        );
         assert_eq!(half_text(Some(&half(false, 26, 3)), Some(2)), "off");
-        assert_eq!(half_text(Some(&half(false, 26, 3)), Some(12)), "off · 12 s ago");
-        let odd = RgbHalf { effect: 9, ..half(true, 0, 1) };
+        assert_eq!(
+            half_text(Some(&half(false, 26, 3)), Some(12)),
+            "off · 12 s ago"
+        );
+        let odd = RgbHalf {
+            effect: 9,
+            ..half(true, 0, 1)
+        };
         assert!(half_text(Some(&odd), None).contains("other effect"));
     }
 
@@ -413,15 +470,25 @@ pub mod tests {
     fn swatches_match_their_own_colour_only() {
         for (name, rgb) in SWATCHES {
             let hs = swatch_hue_sat(rgb);
-            let matching: Vec<_> = SWATCHES.iter().filter(|(_, other)| is_swatch(hs, *other)).map(|(n, _)| *n).collect();
+            let matching: Vec<_> = SWATCHES
+                .iter()
+                .filter(|(_, other)| is_swatch(hs, *other))
+                .map(|(n, _)| *n)
+                .collect();
             assert_eq!(matching, vec![name], "{name}");
         }
-        assert!(is_swatch((358, 1), [0xe6, 0xe6, 0xe6]), "white has no hue to match");
+        assert!(
+            is_swatch((358, 1), [0xe6, 0xe6, 0xe6]),
+            "white has no hue to match"
+        );
     }
 
     #[test]
     fn the_draft_seeds_once_and_lets_the_speed_catch_up() {
-        let state = RgbState { left: half(true, 26, 3), right: None };
+        let state = RgbState {
+            left: half(true, 26, 3),
+            right: None,
+        };
         let mut d = Draft::default();
         d.settle(None);
         assert_eq!(d, Draft::default());
@@ -430,16 +497,26 @@ pub mod tests {
         d.color = Some((200, 50, 40));
         d.speed = Some(5);
         d.settle(Some(&state));
-        assert_eq!(d.color, Some((200, 50, 40)), "the user's pick stays until Apply");
+        assert_eq!(
+            d.color,
+            Some((200, 50, 40)),
+            "the user's pick stays until Apply"
+        );
         assert_eq!(d.speed, Some(5), "ZMK still reports the old speed");
-        d.settle(Some(&RgbState { left: half(true, 26, 5), right: None }));
+        d.settle(Some(&RgbState {
+            left: half(true, 26, 5),
+            right: None,
+        }));
         assert_eq!(d.speed, None, "the keyboard caught up");
     }
 
     /// The previews' sample: both halves on, the right one reporting a few seconds late.
     pub fn sample() -> View {
         View {
-            state: Some(RgbState { left: half(true, 26, 3), right: Some((half(true, 26, 3), 1)) }),
+            state: Some(RgbState {
+                left: half(true, 26, 3),
+                right: Some((half(true, 26, 3), 1)),
+            }),
             sync: RgbSync::Known { on: true },
             accent: false,
             controls: true,
@@ -449,6 +526,12 @@ pub mod tests {
 
     /// No keyboard: nothing read, no RGB key known.
     pub fn sample_none() -> View {
-        View { state: None, sync: RgbSync::NoKeyboard, accent: false, controls: false, busy: false }
+        View {
+            state: None,
+            sync: RgbSync::NoKeyboard,
+            accent: false,
+            controls: false,
+            busy: false,
+        }
     }
 }

@@ -10,10 +10,15 @@ mod imp {
     };
     use windows::Win32::Foundation::{CloseHandle, MAX_PATH};
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-    use windows::Win32::Media::Audio::{eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator};
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
+    use windows::Win32::Media::Audio::{
+        eConsole, eRender, IMMDeviceEnumerator, MMDeviceEnumerator,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
@@ -28,7 +33,8 @@ mod imp {
     pub fn volume() -> Option<(u8, bool)> {
         let get = || -> Result<(u8, bool)> {
             unsafe {
-                let en: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
+                let en: IMMDeviceEnumerator =
+                    CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
                 let dev = en.GetDefaultAudioEndpoint(eRender, eConsole)?;
                 let vol: IAudioEndpointVolume = dev.Activate(CLSCTX_ALL, None)?;
                 let level = vol.GetMasterVolumeLevelScalar()?;
@@ -58,8 +64,13 @@ mod imp {
             let get = || -> Result<(String, String, bool)> {
                 let session = manager.GetCurrentSession()?;
                 let props = session.TryGetMediaPropertiesAsync()?.join()?;
-                let playing = session.GetPlaybackInfo()?.PlaybackStatus()? == PlaybackStatus::Playing;
-                Ok((props.Title()?.to_string(), props.Artist()?.to_string(), playing))
+                let playing =
+                    session.GetPlaybackInfo()?.PlaybackStatus()? == PlaybackStatus::Playing;
+                Ok((
+                    props.Title()?.to_string(),
+                    props.Artist()?.to_string(),
+                    playing,
+                ))
             };
             get().ok().filter(|(title, _, _)| !title.is_empty())
         }

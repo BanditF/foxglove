@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 
-use foxglove_devices::{DeviceEvent, Device as _};
+use foxglove_devices::{Device as _, DeviceEvent};
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static WAKE: OnceLock<Mutex<mpsc::Sender<()>>> = OnceLock::new();
@@ -44,7 +44,11 @@ pub(crate) fn wake() {
 
 /// An sRGB colour as the underglow's hue (0-359) and saturation (0-100).
 pub fn hue_sat(r: u8, g: u8, b: u8) -> (u16, u8) {
-    let (r, g, b) = (f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0);
+    let (r, g, b) = (
+        f32::from(r) / 255.0,
+        f32::from(g) / 255.0,
+        f32::from(b) / 255.0,
+    );
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let delta = max - min;
@@ -58,7 +62,10 @@ pub fn hue_sat(r: u8, g: u8, b: u8) -> (u16, u8) {
     } else {
         60.0 * ((r - g) / delta + 4.0)
     };
-    ((hue.round() as u16) % 360, (delta / max * 100.0).round() as u8)
+    (
+        (hue.round() as u16) % 360,
+        (delta / max * 100.0).round() as u8,
+    )
 }
 
 /// The effective setting (the active profile's, else the base).
@@ -98,7 +105,9 @@ mod windows_impl {
         let _ = WAKE.set(Mutex::new(tx.clone()));
         // A profile switch can change the setting: re-read it, then apply.
         let switched = tx.clone();
-        let profile = crate::foxglove::devices::bus().facts().subscribe("profile.active");
+        let profile = crate::foxglove::devices::bus()
+            .facts()
+            .subscribe("profile.active");
         crate::foxglove::services::spawn_named("accent-profile", move || {
             for _ in profile {
                 ENABLED.store(load_enabled(), Ordering::Relaxed);
@@ -133,18 +142,27 @@ mod windows_impl {
                     applied = None;
                     continue;
                 }
-                let Ok(c) = ui.GetColorValue(UIColorType::Accent) else { continue };
+                let Ok(c) = ui.GetColorValue(UIColorType::Accent) else {
+                    continue;
+                };
                 let (hue, sat) = hue_sat(c.R, c.G, c.B);
                 if applied == Some((hue, sat)) {
                     continue;
                 }
                 // device() may discover a keyboard; this thread can wait for it.
-                let Some(d) = crate::foxglove::devices::device() else { continue };
-                let Some(lighting) = d.lighting() else { continue };
+                let Some(d) = crate::foxglove::devices::device() else {
+                    continue;
+                };
+                let Some(lighting) = d.lighting() else {
+                    continue;
+                };
                 let brightness = lighting.state().map_or(100, |s| s.brightness);
                 match lighting.set_color(hue, sat, brightness.max(1)) {
                     Ok(()) => applied = Some((hue, sat)),
-                    Err(e) => eprintln!("Foxglove accent: {}", crate::foxglove::devices::describe(&e)),
+                    Err(e) => eprintln!(
+                        "Foxglove accent: {}",
+                        crate::foxglove::devices::describe(&e)
+                    ),
                 }
             }
         });

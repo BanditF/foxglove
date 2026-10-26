@@ -68,7 +68,10 @@ mod tests {
     fn bundled_manifest_parses_in_order() {
         let bundled = parse(BUNDLED).expect("bundled custom_art.json is valid");
         assert!(!bundled.is_empty());
-        assert_eq!(sets(bundled.len() as u8).map(<[Set]>::len), Some(bundled.len()));
+        assert_eq!(
+            sets(bundled.len() as u8).map(<[Set]>::len),
+            Some(bundled.len())
+        );
         assert_eq!(
             sets(bundled.len() as u8 + 1),
             None,

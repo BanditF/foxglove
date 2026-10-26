@@ -18,8 +18,16 @@ pub const H: u16 = 52;
 pub const BRIEF: Duration = Duration::from_secs(3);
 /// The scene name's length on the panel.
 const LABEL_MAX: usize = 15;
-const RED: Hsb = Hsb { hue: 0, saturation: 100, brightness: 80 };
-const AMBER: Hsb = Hsb { hue: 35, saturation: 100, brightness: 60 };
+const RED: Hsb = Hsb {
+    hue: 0,
+    saturation: 100,
+    brightness: 80,
+};
+const AMBER: Hsb = Hsb {
+    hue: 35,
+    saturation: 100,
+    brightness: 60,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -120,7 +128,11 @@ impl Bits {
         if bits.len() != s.w.div_ceil(8) * s.h {
             return Err(format!("a {}x{} bitmap of {} bytes", s.w, s.h, bits.len()));
         }
-        Ok(Bits { w: s.w, h: s.h, bits })
+        Ok(Bits {
+            w: s.w,
+            h: s.h,
+            bits,
+        })
     }
 
     fn get(&self, x: usize, y: usize) -> bool {
@@ -143,22 +155,46 @@ impl Art {
             return Err("not panel assets".into());
         }
         let mut frames = BTreeMap::new();
-        for s in [State::Disconnected, State::Idle, State::Recording, State::Paused, State::Streaming, State::Both] {
-            let sprite = a.frames.get(s.frame()).ok_or(format!("no {} frame", s.frame()))?;
+        for s in [
+            State::Disconnected,
+            State::Idle,
+            State::Recording,
+            State::Paused,
+            State::Streaming,
+            State::Both,
+        ] {
+            let sprite = a
+                .frames
+                .get(s.frame())
+                .ok_or(format!("no {} frame", s.frame()))?;
             let b = Bits::decode(sprite)?;
             if (b.w, b.h) != (W as usize, H as usize) {
                 return Err(format!("the {} frame isn't {W}x{H}", s.frame()));
             }
             frames.insert(s.frame().to_string(), b.bits);
         }
-        let glyphs = a.font.glyphs.iter().map(|(c, s)| Ok((*c, Bits::decode(s)?))).collect::<Result<_, String>>()?;
-        Ok(Art { frames, glyphs, advance: a.font.advance, label: (a.layout.label.x, a.layout.label.y), ink: a.layout.label.ink })
+        let glyphs = a
+            .font
+            .glyphs
+            .iter()
+            .map(|(c, s)| Ok((*c, Bits::decode(s)?)))
+            .collect::<Result<_, String>>()?;
+        Ok(Art {
+            frames,
+            glyphs,
+            advance: a.font.advance,
+            label: (a.layout.label.x, a.layout.label.y),
+            ink: a.layout.label.ink,
+        })
     }
 
     /// The state's frame, with the scene name centred at the label (not on NOT CONNECTED).
     pub fn frame(&self, state: State, scene: Option<&str>) -> Vec<u8> {
         let mut out = self.frames[state.frame()].clone();
-        let (Some(scene), Some(&ink)) = (scene.filter(|_| state != State::Disconnected), self.ink.get(state.frame())) else {
+        let (Some(scene), Some(&ink)) = (
+            scene.filter(|_| state != State::Disconnected),
+            self.ink.get(state.frame()),
+        ) else {
             return out;
         };
         let text: Vec<char> = scene
@@ -172,14 +208,22 @@ impl Art {
         let (mut x, y) = (self.label.0 - width / 2, self.label.1);
         let stride = (W as usize).div_ceil(8);
         for c in text {
-            let Some(g) = self.glyphs.get(&c) else { continue };
+            let Some(g) = self.glyphs.get(&c) else {
+                continue;
+            };
             for gy in 0..g.h {
                 for gx in 0..g.w {
                     let (px, py) = (x + gx as i32, y + gy as i32);
-                    if !g.get(gx, gy) || !(0..W as i32).contains(&px) || !(0..H as i32).contains(&py) {
+                    if !g.get(gx, gy)
+                        || !(0..W as i32).contains(&px)
+                        || !(0..H as i32).contains(&py)
+                    {
                         continue;
                     }
-                    let (i, bit) = (py as usize * stride + px as usize / 8, 0x80 >> (px as usize % 8));
+                    let (i, bit) = (
+                        py as usize * stride + px as usize / 8,
+                        0x80 >> (px as usize % 8),
+                    );
                     if ink == 1 {
                         out[i] |= bit;
                     } else {
@@ -198,12 +242,20 @@ mod tests {
     use super::*;
 
     fn st(streaming: bool, recording: bool, paused: bool) -> Status {
-        Status { streaming, recording, paused, scene: None }
+        Status {
+            streaming,
+            recording,
+            paused,
+            scene: None,
+        }
     }
 
     #[test]
     fn each_state_and_its_cue() {
-        assert_eq!(State::of(false, &st(true, true, false)), State::Disconnected);
+        assert_eq!(
+            State::of(false, &st(true, true, false)),
+            State::Disconnected
+        );
         assert_eq!(State::of(true, &st(false, false, false)), State::Idle);
         assert_eq!(State::of(true, &st(false, true, false)), State::Recording);
         assert_eq!(State::of(true, &st(false, true, true)), State::Paused);
@@ -232,8 +284,17 @@ mod tests {
         let named = art.frame(State::Recording, Some("Gameplay"));
         assert_eq!(named[..47 * 8], rec[..47 * 8]);
         // Long names are cut; unknown characters become ?; NOT CONNECTED has no label.
-        assert_eq!(art.frame(State::Idle, Some("A VERY LONG SCENE NAME")), art.frame(State::Idle, Some("A VERY LONG SCENE")));
-        assert_ne!(art.frame(State::Idle, Some("é")), art.frame(State::Idle, None));
-        assert_eq!(art.frame(State::Disconnected, Some("Gameplay")), art.frame(State::Disconnected, None));
+        assert_eq!(
+            art.frame(State::Idle, Some("A VERY LONG SCENE NAME")),
+            art.frame(State::Idle, Some("A VERY LONG SCENE"))
+        );
+        assert_ne!(
+            art.frame(State::Idle, Some("é")),
+            art.frame(State::Idle, None)
+        );
+        assert_eq!(
+            art.frame(State::Disconnected, Some("Gameplay")),
+            art.frame(State::Disconnected, None)
+        );
     }
 }

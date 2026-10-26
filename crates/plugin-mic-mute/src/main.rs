@@ -55,7 +55,12 @@ fn lease_all(plugin: &Arc<Plugin>, color: Hsb, priority: LeasePriority) -> Vec<L
     keyboards(plugin)
         .into_iter()
         .filter(|k| k.1)
-        .filter_map(|(id, _, _)| plugin.lease(&id, color, priority).map_err(|e| eprintln!("mic-mute: lighting: {e}")).ok())
+        .filter_map(|(id, _, _)| {
+            plugin
+                .lease(&id, color, priority)
+                .map_err(|e| eprintln!("mic-mute: lighting: {e}"))
+                .ok()
+        })
         .collect()
 }
 
@@ -87,8 +92,16 @@ impl Out {
         // `?` last a few seconds; nothing gives the panel back.
         for (id, _, _) in keyboards(plugin).into_iter().filter(|k| k.2) {
             let sent = match shown.frame {
-                Some(frame) if shown.hold => plugin.panel_hold(&id, screens::W, screens::H, art.frame(frame)),
-                Some(frame) => plugin.panel_override(&id, screens::W, screens::H, art.frame(frame), screens::BRIEF),
+                Some(frame) if shown.hold => {
+                    plugin.panel_hold(&id, screens::W, screens::H, art.frame(frame))
+                }
+                Some(frame) => plugin.panel_override(
+                    &id,
+                    screens::W,
+                    screens::H,
+                    art.frame(frame),
+                    screens::BRIEF,
+                ),
                 None if self.held => plugin.panel_release(&id),
                 None => Ok(()),
             };
@@ -111,7 +124,13 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let art = if panel { screens::Art::load().map_err(|e| eprintln!("mic-mute: panel art: {e}")).ok() } else { None };
+    let art = if panel {
+        screens::Art::load()
+            .map_err(|e| eprintln!("mic-mute: panel art: {e}"))
+            .ok()
+    } else {
+        None
+    };
 
     // Fact changes and keys, into one queue; nothing polls.
     let (tx, rx) = mpsc::channel::<In>();
@@ -139,7 +158,13 @@ fn main() {
     }
 
     let mut mic = parse(plugin.fact("mic.state").ok().flatten().as_ref());
-    let mut out = Out { lights, art, leases: Vec::new(), held: false, flash_until: None };
+    let mut out = Out {
+        lights,
+        art,
+        leases: Vec::new(),
+        held: false,
+        flash_until: None,
+    };
     out.show(&plugin, mic, false);
 
     loop {
@@ -172,7 +197,10 @@ fn main() {
                     "unmute" => false,
                     _ => continue,
                 };
-                if let Err(e) = plugin.call("audio.inputs.set_mute", serde_json::json!({ "muted": muted })) {
+                if let Err(e) = plugin.call(
+                    "audio.inputs.set_mute",
+                    serde_json::json!({ "muted": muted }),
+                ) {
                     eprintln!("mic-mute: {e}");
                 }
                 // The new state arrives as a fact change.

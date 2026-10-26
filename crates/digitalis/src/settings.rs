@@ -27,7 +27,8 @@ pub fn invoke(
     param2: u32,
     hold_ms: u16,
 ) -> Result<InvokeStatus> {
-    let wait = Duration::from_millis(1500 + u64::from(hold_ms.min(protocol::settings::MAX_HOLD_MS)));
+    let wait =
+        Duration::from_millis(1500 + u64::from(hold_ms.min(protocol::settings::MAX_HOLD_MS)));
     let r = t.request(
         &protocol::invoke(local_id, param1, param2, hold_ms),
         protocol::SETTINGS,
@@ -64,12 +65,22 @@ pub fn enter_bootloader(t: &impl Transport, half: u8) -> Result<()> {
         s => anyhow::bail!("bootloader command failed with status {s}"),
     };
     let wait = Duration::from_millis(1500);
-    let armed = t.request(&protocol::bootloader_arm(), protocol::SETTINGS, protocol::settings::BOOTLOADER, wait)?;
+    let armed = t.request(
+        &protocol::bootloader_arm(),
+        protocol::SETTINGS,
+        protocol::settings::BOOTLOADER,
+        wait,
+    )?;
     status(&armed)?;
     let nonce = u32::from_le_bytes([armed[3], armed[4], armed[5], armed[6]]);
     // The right needs the relay round trip; the left may reboot before its reply goes out.
     let wait = Duration::from_secs(4);
-    match t.request(&protocol::bootloader_trigger(half, nonce), protocol::SETTINGS, protocol::settings::BOOTLOADER, wait) {
+    match t.request(
+        &protocol::bootloader_trigger(half, nonce),
+        protocol::SETTINGS,
+        protocol::settings::BOOTLOADER,
+        wait,
+    ) {
         Ok(r) => status(&r),
         Err(_) if half == 0 => Ok(()), // the caller confirms by the bootloader drive appearing
         Err(e) => Err(e),
@@ -79,7 +90,9 @@ pub fn enter_bootloader(t: &impl Transport, half: u8) -> Result<()> {
 /// Reads the active Bluetooth profile and selected typing endpoint.
 pub fn conn_state(t: &impl Transport) -> Result<protocol::ConnState> {
     let r = t.request(
-        &protocol::conn_state(), protocol::SETTINGS, protocol::settings::CONN_STATE,
+        &protocol::conn_state(),
+        protocol::SETTINGS,
+        protocol::settings::CONN_STATE,
         Duration::from_millis(500),
     )?;
     Ok(protocol::ConnState::parse(&r))
@@ -98,11 +111,24 @@ pub fn build_info(t: &impl Transport, half: u8) -> Result<protocol::BuildInfo> {
     build_info_after(t, half, Duration::from_millis(750))
 }
 
-fn build_info_after(t: &impl Transport, half: u8, retry_wait: Duration) -> Result<protocol::BuildInfo> {
-    let wait = if half == 0 { Duration::from_secs(4) } else { RIGHT_BUILD_WAIT };
+fn build_info_after(
+    t: &impl Transport,
+    half: u8,
+    retry_wait: Duration,
+) -> Result<protocol::BuildInfo> {
+    let wait = if half == 0 {
+        Duration::from_secs(4)
+    } else {
+        RIGHT_BUILD_WAIT
+    };
     let mut attempt = 0;
     loop {
-        let r = t.request(&protocol::build_info(half), protocol::SETTINGS, protocol::settings::BUILD_INFO, wait)?;
+        let r = t.request(
+            &protocol::build_info(half),
+            protocol::SETTINGS,
+            protocol::settings::BUILD_INFO,
+            wait,
+        )?;
         match protocol::BuildInfo::parse(&r) {
             Ok(b) => return Ok(b),
             Err(1 | 3) if attempt < BUILD_RETRIES => {
@@ -128,9 +154,16 @@ mod tests {
 
     struct Connection;
     impl Transport for Connection {
-        fn send(&self, _: &[u8]) -> Result<()> { panic!("connection state uses request") }
-        fn request(&self, report: &[u8], proto: u8, cmd: u8, timeout: Duration)
-            -> Result<[u8; protocol::REPORT]> {
+        fn send(&self, _: &[u8]) -> Result<()> {
+            panic!("connection state uses request")
+        }
+        fn request(
+            &self,
+            report: &[u8],
+            proto: u8,
+            cmd: u8,
+            timeout: Duration,
+        ) -> Result<[u8; protocol::REPORT]> {
             assert_eq!(report, [0xd7, 4]);
             assert_eq!((proto, cmd), (0xd7, 4));
             assert_eq!(timeout, Duration::from_millis(500));
@@ -149,15 +182,28 @@ mod tests {
     }
 
     /// Scripted BOOTLOADER replies; records requests.
-    struct Boot(std::cell::RefCell<Vec<Vec<u8>>>, Vec<[u8; protocol::REPORT]>);
+    struct Boot(
+        std::cell::RefCell<Vec<Vec<u8>>>,
+        Vec<[u8; protocol::REPORT]>,
+    );
     impl Transport for Boot {
-        fn send(&self, _: &[u8]) -> Result<()> { panic!("bootloader uses request") }
-        fn request(&self, report: &[u8], proto: u8, cmd: u8, _: Duration)
-            -> Result<[u8; protocol::REPORT]> {
+        fn send(&self, _: &[u8]) -> Result<()> {
+            panic!("bootloader uses request")
+        }
+        fn request(
+            &self,
+            report: &[u8],
+            proto: u8,
+            cmd: u8,
+            _: Duration,
+        ) -> Result<[u8; protocol::REPORT]> {
             assert_eq!((proto, cmd), (0xd7, 8));
             let mut sent = self.0.borrow_mut();
             sent.push(report.to_vec());
-            self.1.get(sent.len() - 1).copied().ok_or_else(|| anyhow::anyhow!("timeout"))
+            self.1
+                .get(sent.len() - 1)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("timeout"))
         }
     }
     fn boot_reply(bytes: &[u8]) -> [u8; protocol::REPORT] {
@@ -168,37 +214,72 @@ mod tests {
 
     #[test]
     fn bootloader_arms_then_triggers_with_the_nonce() {
-        let t = Boot(Default::default(), vec![
-            boot_reply(&[0xd7, 0x88, 0, 0x78, 0x56, 0x34, 0x12]),
-            boot_reply(&[0xd7, 0x88, 0, 1]),
-        ]);
+        let t = Boot(
+            Default::default(),
+            vec![
+                boot_reply(&[0xd7, 0x88, 0, 0x78, 0x56, 0x34, 0x12]),
+                boot_reply(&[0xd7, 0x88, 0, 1]),
+            ],
+        );
         enter_bootloader(&t, 1).unwrap();
-        assert_eq!(*t.0.borrow(), [vec![0xd7, 8, 0], vec![0xd7, 8, 1, 1, 0x78, 0x56, 0x34, 0x12]]);
+        assert_eq!(
+            *t.0.borrow(),
+            [
+                vec![0xd7, 8, 0],
+                vec![0xd7, 8, 1, 1, 0x78, 0x56, 0x34, 0x12]
+            ]
+        );
     }
 
     #[test]
     fn bootloader_errors_and_left_reboot_before_reply() {
         let unsupported = Boot(Default::default(), vec![boot_reply(&[0xd7, 0x88, 4])]);
-        assert!(enter_bootloader(&unsupported, 0).unwrap_err().to_string().contains("not built"));
-        assert_eq!(unsupported.0.borrow().len(), 1, "no TRIGGER without a nonce");
+        assert!(enter_bootloader(&unsupported, 0)
+            .unwrap_err()
+            .to_string()
+            .contains("not built"));
+        assert_eq!(
+            unsupported.0.borrow().len(),
+            1,
+            "no TRIGGER without a nonce"
+        );
         // The left can reboot before replying to TRIGGER: fine, the drive appearing confirms it.
-        let left = Boot(Default::default(), vec![boot_reply(&[0xd7, 0x88, 0, 1, 2, 3, 4])]);
+        let left = Boot(
+            Default::default(),
+            vec![boot_reply(&[0xd7, 0x88, 0, 1, 2, 3, 4])],
+        );
         enter_bootloader(&left, 0).unwrap();
-        let right = Boot(Default::default(), vec![boot_reply(&[0xd7, 0x88, 0, 1, 2, 3, 4])]);
+        let right = Boot(
+            Default::default(),
+            vec![boot_reply(&[0xd7, 0x88, 0, 1, 2, 3, 4])],
+        );
         assert!(enter_bootloader(&right, 1).is_err());
         assert!(enter_bootloader(&right, 2).is_err());
     }
 
     /// Scripted BUILD_INFO replies; records the timeout of each request.
-    struct Build(std::cell::RefCell<Vec<Duration>>, Vec<[u8; protocol::REPORT]>);
+    struct Build(
+        std::cell::RefCell<Vec<Duration>>,
+        Vec<[u8; protocol::REPORT]>,
+    );
     impl Transport for Build {
-        fn send(&self, _: &[u8]) -> Result<()> { panic!("build info uses request") }
-        fn request(&self, _: &[u8], proto: u8, cmd: u8, timeout: Duration)
-            -> Result<[u8; protocol::REPORT]> {
+        fn send(&self, _: &[u8]) -> Result<()> {
+            panic!("build info uses request")
+        }
+        fn request(
+            &self,
+            _: &[u8],
+            proto: u8,
+            cmd: u8,
+            timeout: Duration,
+        ) -> Result<[u8; protocol::REPORT]> {
             assert_eq!((proto, cmd), (0xd7, 9));
             let mut seen = self.0.borrow_mut();
             seen.push(timeout);
-            self.1.get(seen.len() - 1).copied().ok_or_else(|| anyhow::anyhow!("no reply from the keyboard"))
+            self.1
+                .get(seen.len() - 1)
+                .copied()
+                .ok_or_else(|| anyhow::anyhow!("no reply from the keyboard"))
         }
     }
 
@@ -206,7 +287,10 @@ mod tests {
     fn right_build_waits_longer_than_the_left_and_retries_a_busy_relay() {
         let ok = boot_reply(&[0xd7, 0x89, 0, 1, 0, 1, 0, 0, b'a', b'b', b'c']);
         let busy = boot_reply(&[0xd7, 0x89, 1, 1]);
-        let t = Build(Default::default(), vec![busy, boot_reply(&[0xd7, 0x89, 3, 1]), ok]);
+        let t = Build(
+            Default::default(),
+            vec![busy, boot_reply(&[0xd7, 0x89, 3, 1]), ok],
+        );
         let b = build_info_after(&t, 1, Duration::ZERO).unwrap();
         assert_eq!((b.version.minor, b.sha.as_str()), (1, "abc"));
         assert_eq!(*t.0.borrow(), [RIGHT_BUILD_WAIT; 3]);
@@ -220,10 +304,18 @@ mod tests {
     fn build_errors_give_up_after_the_retries_or_at_once() {
         let busy = boot_reply(&[0xd7, 0x89, 1, 1]);
         let t = Build(Default::default(), vec![busy; 5]);
-        assert_eq!(build_info_after(&t, 1, Duration::ZERO).unwrap_err().to_string(), "busy");
+        assert_eq!(
+            build_info_after(&t, 1, Duration::ZERO)
+                .unwrap_err()
+                .to_string(),
+            "busy"
+        );
         assert_eq!(t.0.borrow().len(), 3, "one try and two retries");
         let gone = Build(Default::default(), vec![boot_reply(&[0xd7, 0x89, 2, 1])]);
-        assert!(build_info_after(&gone, 1, Duration::ZERO).unwrap_err().to_string().contains("not connected"));
+        assert!(build_info_after(&gone, 1, Duration::ZERO)
+            .unwrap_err()
+            .to_string()
+            .contains("not connected"));
         assert_eq!(gone.0.borrow().len(), 1, "not connected is final");
     }
 }

@@ -33,7 +33,9 @@ mod imp {
     use windows::Win32::Foundation::PROPERTYKEY;
     use windows::Win32::Media::Audio::Endpoints::*;
     use windows::Win32::Media::Audio::*;
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED, STGM_READ,
+    };
 
     use super::{Mic, MicState};
 
@@ -77,7 +79,8 @@ mod imp {
     fn enumerator() -> std::result::Result<IMMDeviceEnumerator, String> {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| format!("Core Audio: {e}"))
+            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                .map_err(|e| format!("Core Audio: {e}"))
         }
     }
 
@@ -92,68 +95,94 @@ mod imp {
     }
 
     /// The default communications microphone and its volume control, if there is one.
-    fn current(devices: &IMMDeviceEnumerator) -> std::result::Result<Option<(IMMDevice, IAudioEndpointVolume)>, String> {
+    fn current(
+        devices: &IMMDeviceEnumerator,
+    ) -> std::result::Result<Option<(IMMDevice, IAudioEndpointVolume)>, String> {
         unsafe {
             let Ok(device) = devices.GetDefaultAudioEndpoint(eCapture, eCommunications) else {
                 return Ok(None);
             };
-            let volume: IAudioEndpointVolume = device.Activate(CLSCTX_ALL, None).map_err(|e| format!("endpoint: {e}"))?;
+            let volume: IAudioEndpointVolume = device
+                .Activate(CLSCTX_ALL, None)
+                .map_err(|e| format!("endpoint: {e}"))?;
             Ok(Some((device, volume)))
         }
     }
 
     fn read(found: &Option<(IMMDevice, IAudioEndpointVolume)>) -> Mic {
         let Some((device, volume)) = found else {
-            return Mic { state: MicState::Unavailable, id: String::new(), name: String::new() };
+            return Mic {
+                state: MicState::Unavailable,
+                id: String::new(),
+                name: String::new(),
+            };
         };
-        let id = unsafe { device.GetId().ok().and_then(|p| p.to_string().ok()).unwrap_or_default() };
+        let id = unsafe {
+            device
+                .GetId()
+                .ok()
+                .and_then(|p| p.to_string().ok())
+                .unwrap_or_default()
+        };
         let state = match unsafe { volume.GetMute() } {
             Ok(m) if m.as_bool() => MicState::Muted,
             Ok(_) => MicState::Unmuted,
             Err(e) => MicState::Unknown(e.to_string()),
         };
-        Mic { state, id, name: name(device) }
+        Mic {
+            state,
+            id,
+            name: name(device),
+        }
     }
 
     /// Calls `on_change` with the microphone's state now and after every change, from a thread
     /// of its own that sleeps between callbacks.
     pub fn watch(on_change: impl Fn(Mic) + Send + 'static) {
-        let _ = std::thread::Builder::new().name("mic-watch".into()).spawn(move || {
-            let devices = match enumerator() {
-                Ok(d) => d,
-                Err(e) => return on_change(Mic { state: MicState::Unknown(e), id: String::new(), name: String::new() }),
-            };
-            let (tx, rx) = mpsc::channel();
-            let device_events: IMMNotificationClient = Devices(tx.clone()).into();
-            let volume_events: IAudioEndpointVolumeCallback = Volume(tx).into();
-            unsafe {
-                let _ = devices.RegisterEndpointNotificationCallback(&device_events);
-            }
-            let mut last: Option<Mic> = None;
-            loop {
-                // Re-bind on every wake: the default microphone may have changed.
-                let found = current(&devices).unwrap_or(None);
-                if let Some((_, v)) = &found {
-                    unsafe {
-                        let _ = v.RegisterControlChangeNotify(&volume_events);
+        let _ = std::thread::Builder::new()
+            .name("mic-watch".into())
+            .spawn(move || {
+                let devices = match enumerator() {
+                    Ok(d) => d,
+                    Err(e) => {
+                        return on_change(Mic {
+                            state: MicState::Unknown(e),
+                            id: String::new(),
+                            name: String::new(),
+                        })
+                    }
+                };
+                let (tx, rx) = mpsc::channel();
+                let device_events: IMMNotificationClient = Devices(tx.clone()).into();
+                let volume_events: IAudioEndpointVolumeCallback = Volume(tx).into();
+                unsafe {
+                    let _ = devices.RegisterEndpointNotificationCallback(&device_events);
+                }
+                let mut last: Option<Mic> = None;
+                loop {
+                    // Re-bind on every wake: the default microphone may have changed.
+                    let found = current(&devices).unwrap_or(None);
+                    if let Some((_, v)) = &found {
+                        unsafe {
+                            let _ = v.RegisterControlChangeNotify(&volume_events);
+                        }
+                    }
+                    let mic = read(&found);
+                    if last.as_ref() != Some(&mic) {
+                        on_change(mic.clone());
+                        last = Some(mic);
+                    }
+                    if rx.recv().is_err() {
+                        break;
+                    }
+                    while rx.try_recv().is_ok() {}
+                    if let Some((_, v)) = &found {
+                        unsafe {
+                            let _ = v.UnregisterControlChangeNotify(&volume_events);
+                        }
                     }
                 }
-                let mic = read(&found);
-                if last.as_ref() != Some(&mic) {
-                    on_change(mic.clone());
-                    last = Some(mic);
-                }
-                if rx.recv().is_err() {
-                    break;
-                }
-                while rx.try_recv().is_ok() {}
-                if let Some((_, v)) = &found {
-                    unsafe {
-                        let _ = v.UnregisterControlChangeNotify(&volume_events);
-                    }
-                }
-            }
-        });
+            });
     }
 
     /// Mutes or unmutes the default communications microphone, now.
@@ -162,7 +191,11 @@ mod imp {
         let Some((_, volume)) = current(&devices)? else {
             return Err("no microphone".into());
         };
-        unsafe { volume.SetMute(muted, &OWN_CHANGES).map_err(|e| format!("mute: {e}")) }
+        unsafe {
+            volume
+                .SetMute(muted, &OWN_CHANGES)
+                .map_err(|e| format!("mute: {e}"))
+        }
     }
 }
 
@@ -171,7 +204,11 @@ mod imp {
     use super::{Mic, MicState};
 
     pub fn watch(on_change: impl Fn(Mic) + Send + 'static) {
-        on_change(Mic { state: MicState::Unavailable, id: String::new(), name: String::new() });
+        on_change(Mic {
+            state: MicState::Unavailable,
+            id: String::new(),
+            name: String::new(),
+        });
     }
 
     pub fn set_mute(_: bool) -> Result<(), String> {
@@ -193,7 +230,9 @@ mod tests {
         watch(move |m| {
             let _ = tx.send(m);
         });
-        let mic = rx.recv_timeout(std::time::Duration::from_secs(10)).expect("a first state");
+        let mic = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("a first state");
         eprintln!("{mic:?}");
         assert!(!matches!(mic.state, MicState::Unknown(_)), "{mic:?}");
     }

@@ -6,8 +6,10 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use foxglove_devices::{
+    Backend, BackendId, Device, DeviceError, DeviceId, DeviceInfo, DeviceKind, EventSink, Result,
+};
 use hidapi::{HidApi, HidDevice};
-use foxglove_devices::{Backend, BackendId, Device, DeviceId, DeviceInfo, DeviceKind, EventSink, DeviceError, Result};
 
 use crate::definition::Definition;
 use crate::device::ViaDevice;
@@ -32,7 +34,8 @@ impl Transport for HidTransport {
         let dev = self.0.lock().unwrap_or_else(|e| e.into_inner());
         let mut out = [0u8; REPORT + 1]; // byte 0 is the report id
         out[1..].copy_from_slice(report);
-        dev.write(&out).map_err(|e| DeviceError::Backend(e.to_string()))?;
+        dev.write(&out)
+            .map_err(|e| DeviceError::Backend(e.to_string()))?;
         let end = Instant::now() + REPLY_TIMEOUT;
         loop {
             let left = end.saturating_duration_since(Instant::now());
@@ -58,7 +61,10 @@ pub struct ViaBackend {
 
 impl ViaBackend {
     pub fn new(definitions: Vec<Definition>) -> Self {
-        ViaBackend { definitions, writes: false }
+        ViaBackend {
+            definitions,
+            writes: false,
+        }
     }
 
     /// Opens devices with keycode and lighting writes allowed. Off by default: turn on only
@@ -69,7 +75,9 @@ impl ViaBackend {
     }
 
     fn definition(&self, vid: u16, pid: u16) -> Option<&Definition> {
-        self.definitions.iter().find(|d| (d.vendor_id, d.product_id) == (vid, pid))
+        self.definitions
+            .iter()
+            .find(|d| (d.vendor_id, d.product_id) == (vid, pid))
     }
 }
 
@@ -86,9 +94,20 @@ impl Backend for ViaBackend {
             if d.usage_page() != USAGE_PAGE || d.usage() != USAGE {
                 continue;
             }
-            let Some(def) = self.definition(d.vendor_id(), d.product_id()) else { continue };
+            let Some(def) = self.definition(d.vendor_id(), d.product_id()) else {
+                continue;
+            };
             let path = stable_path(&d.path().to_string_lossy());
-            seen.push((DeviceId::new(self.id(), d.vendor_id(), d.product_id(), d.serial_number(), &path), path));
+            seen.push((
+                DeviceId::new(
+                    self.id(),
+                    d.vendor_id(),
+                    d.product_id(),
+                    d.serial_number(),
+                    &path,
+                ),
+                path,
+            ));
             names.push(def.name.clone());
         }
         // Two identical boards with the same serial are told apart by their paths (#292).
@@ -96,14 +115,23 @@ impl Backend for ViaBackend {
         let mut found: Vec<DeviceInfo> = Vec::new();
         for ((id, _), name) in seen.into_iter().zip(names) {
             if found.iter().all(|f| f.id != id) {
-                found.push(DeviceInfo { id, backend: self.id(), name, kind: DeviceKind::Keyboard, firmware: None });
+                found.push(DeviceInfo {
+                    id,
+                    backend: self.id(),
+                    name,
+                    kind: DeviceKind::Keyboard,
+                    firmware: None,
+                });
             }
         }
         Ok(found)
     }
 
     fn open(&self, info: &DeviceInfo, _sink: EventSink) -> Result<Box<dyn Device>> {
-        let def = self.definition(info.id.vid, info.id.pid).cloned().ok_or(DeviceError::Unsupported)?;
+        let def = self
+            .definition(info.id.vid, info.id.pid)
+            .cloned()
+            .ok_or(DeviceError::Unsupported)?;
         let api = HidApi::new().map_err(|e| DeviceError::Backend(e.to_string()))?;
         let path = api
             .device_list()
@@ -112,14 +140,27 @@ impl Backend for ViaBackend {
                 // By serial, or by where it's plugged in when its serial was shared (#292).
                 d.usage_page() == USAGE_PAGE
                     && d.usage() == USAGE
-                    && (DeviceId::new(self.id(), d.vendor_id(), d.product_id(), d.serial_number(), &stable) == info.id
-                        || DeviceId::new(self.id(), d.vendor_id(), d.product_id(), None, &stable) == info.id)
+                    && (DeviceId::new(
+                        self.id(),
+                        d.vendor_id(),
+                        d.product_id(),
+                        d.serial_number(),
+                        &stable,
+                    ) == info.id
+                        || DeviceId::new(self.id(), d.vendor_id(), d.product_id(), None, &stable)
+                            == info.id)
             })
             .map(|d| d.path().to_owned())
             .ok_or(DeviceError::Disconnected)?;
-        let dev = api.open_path(&path).map_err(|e| DeviceError::Backend(e.to_string()))?;
+        let dev = api
+            .open_path(&path)
+            .map_err(|e| DeviceError::Backend(e.to_string()))?;
         let transport = HidTransport(Mutex::new(dev));
-        let link = if self.writes { Guarded::with_writes(transport) } else { Guarded::read_only(transport) };
+        let link = if self.writes {
+            Guarded::with_writes(transport)
+        } else {
+            Guarded::read_only(transport)
+        };
         Ok(Box::new(ViaDevice::open(info.clone(), def, link)?))
     }
 }

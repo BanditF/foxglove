@@ -24,7 +24,9 @@ impl Sources {
     /// Call on the thread that will use it (COM is set up there).
     pub fn new() -> Self {
         providers::init_thread();
-        Sources { media: providers::Media::new() }
+        Sources {
+            media: providers::Media::new(),
+        }
     }
 
     /// Update time-based content and return its next deadline, using the same time sample.
@@ -37,7 +39,11 @@ impl Sources {
     }
 
     /// `hint_for` gives the hint for a lower-case exe name while that program is in front.
-    pub fn update(&mut self, view: &mut View, hint_for: impl Fn(&str) -> Option<String>) -> Instant {
+    pub fn update(
+        &mut self,
+        view: &mut View,
+        hint_for: impl Fn(&str) -> Option<String>,
+    ) -> Instant {
         let clock_at = Self::update_clock(view);
         view.volume = providers::volume();
         match self.media.now_playing() {

@@ -58,7 +58,10 @@ enum Target<'a> {
 
 impl Arbiter {
     fn winner(&self, device: &str) -> Option<&Lease> {
-        self.leases.iter().filter(|l| l.device == device).max_by_key(|l| (l.priority, l.id))
+        self.leases
+            .iter()
+            .filter(|l| l.device == device)
+            .max_by_key(|l| (l.priority, l.id))
     }
 
     /// Takes the lights for `lease` (its `id` is assigned) and shows the winner.
@@ -76,11 +79,27 @@ impl Arbiter {
 
     /// Changes a lease's colour and effect; returns its device when the lights need
     /// [`Arbiter::apply`] (it's the one showing), or an error if `conn` holds no such lease.
-    pub fn update(&mut self, id: u64, conn: u64, hue: u16, sat: u8, brightness: u8, effect: &str) -> Result<Option<String>, String> {
-        let lease = self.leases.iter_mut().find(|l| l.id == id && l.conn == conn).ok_or("no such lease")?;
-        (lease.hue, lease.sat, lease.brightness, lease.effect) = (hue, sat, brightness, effect.to_string());
+    pub fn update(
+        &mut self,
+        id: u64,
+        conn: u64,
+        hue: u16,
+        sat: u8,
+        brightness: u8,
+        effect: &str,
+    ) -> Result<Option<String>, String> {
+        let lease = self
+            .leases
+            .iter_mut()
+            .find(|l| l.id == id && l.conn == conn)
+            .ok_or("no such lease")?;
+        (lease.hue, lease.sat, lease.brightness, lease.effect) =
+            (hue, sat, brightness, effect.to_string());
         let device = lease.device.clone();
-        Ok(self.winner(&device).is_some_and(|w| w.id == id && !self.paused).then_some(device))
+        Ok(self
+            .winner(&device)
+            .is_some_and(|w| w.id == id && !self.paused)
+            .then_some(device))
     }
 
     /// Foxglove paused or resumed (#404); returns the devices whose lights need
@@ -99,7 +118,12 @@ impl Arbiter {
 
     /// Ends the leases `ends` picks; returns the devices whose lights need [`Arbiter::apply`].
     pub fn end(&mut self, ends: impl Fn(&Lease) -> bool) -> Vec<String> {
-        let mut devices: Vec<String> = self.leases.iter().filter(|l| ends(l)).map(|l| l.device.clone()).collect();
+        let mut devices: Vec<String> = self
+            .leases
+            .iter()
+            .filter(|l| ends(l))
+            .map(|l| l.device.clone())
+            .collect();
         self.leases.retain(|l| !ends(l));
         devices.sort();
         devices.dedup();
@@ -161,11 +185,25 @@ struct Want<'a> {
 
 impl<'a> Want<'a> {
     fn lease(l: &'a Lease) -> Self {
-        Want { on: true, hue: l.hue, sat: l.sat, brightness: l.brightness, effect: &l.effect, speed: None }
+        Want {
+            on: true,
+            hue: l.hue,
+            sat: l.sat,
+            brightness: l.brightness,
+            effect: &l.effect,
+            speed: None,
+        }
     }
 
     fn restore(s: &'a LightingState) -> Self {
-        Want { on: s.on, hue: s.hue, sat: s.sat, brightness: s.brightness, effect: &s.effect.id, speed: Some(s.speed) }
+        Want {
+            on: s.on,
+            hue: s.hue,
+            sat: s.sat,
+            brightness: s.brightness,
+            effect: &s.effect.id,
+            speed: Some(s.speed),
+        }
     }
 }
 
@@ -209,7 +247,10 @@ fn show(light: &dyn Lighting, want: &Want, settle: bool) -> Result<bool, DeviceE
     let send = || -> Result<(), DeviceError> {
         light.set_on(want.on)?;
         light.set_color(want.hue, want.sat, want.brightness)?;
-        light.set_effect(Effect { id: want.effect.into(), params: vec![] })?;
+        light.set_effect(Effect {
+            id: want.effect.into(),
+            params: vec![],
+        })?;
         match want.speed.map(|s| light.set_speed(s)) {
             // Lights without a speed control have nothing to put back.
             Some(Err(DeviceError::Unsupported)) | None => Ok(()),
@@ -220,7 +261,9 @@ fn show(light: &dyn Lighting, want: &Want, settle: bool) -> Result<bool, DeviceE
     let start = std::time::Instant::now();
     let mut resent = 0;
     loop {
-        let Ok(s) = light.state() else { return Ok(false) };
+        let Ok(s) = light.state() else {
+            return Ok(false);
+        };
         let left_ok = shows(&s, want);
         if left_ok && (!settle || s.settled) {
             return Ok(true);
@@ -267,7 +310,10 @@ pub struct Holders {
     pub paused: bool,
 }
 
-static HOLDING: Mutex<Holders> = Mutex::new(Holders { devices: Vec::new(), paused: false });
+static HOLDING: Mutex<Holders> = Mutex::new(Holders {
+    devices: Vec::new(),
+    paused: false,
+});
 /// Repaints the Plugins tab when the holders change. Set by the tab.
 static WAKE: std::sync::OnceLock<crate::ui_wake::UiWake> = std::sync::OnceLock::new();
 
@@ -290,12 +336,19 @@ impl Arbiter {
         let devices = devices
             .into_iter()
             .map(|device| {
-                let mut leases: Vec<&Lease> = self.leases.iter().filter(|l| l.device == device).collect();
+                let mut leases: Vec<&Lease> =
+                    self.leases.iter().filter(|l| l.device == device).collect();
                 leases.sort_by_key(|l| std::cmp::Reverse((l.priority, l.id)));
-                Holding { leases: leases.iter().map(|l| (l.conn, l.priority)).collect(), device }
+                Holding {
+                    leases: leases.iter().map(|l| (l.conn, l.priority)).collect(),
+                    device,
+                }
             })
             .collect();
-        Holders { devices, paused: self.paused }
+        Holders {
+            devices,
+            paused: self.paused,
+        }
     }
 }
 
@@ -320,7 +373,11 @@ pub fn holders() -> Vec<(String, u64, Priority)> {
         let mut devices: Vec<String> = a.leases.iter().map(|l| l.device.clone()).collect();
         devices.sort();
         devices.dedup();
-        devices.iter().filter_map(|d| a.winner(d)).map(|l| (l.device.clone(), l.conn, l.priority)).collect()
+        devices
+            .iter()
+            .filter_map(|d| a.winner(d))
+            .map(|l| (l.device.clone(), l.conn, l.priority))
+            .collect()
     })
 }
 
@@ -340,7 +397,18 @@ mod tests {
     impl Fake {
         fn new() -> Fake {
             Fake {
-                state: RefCell::new(LightingState { on: false, hue: 160, sat: 50, brightness: 40, effect: Effect { id: "3".into(), params: vec![] }, speed: 1, settled: true }),
+                state: RefCell::new(LightingState {
+                    on: false,
+                    hue: 160,
+                    sat: 50,
+                    brightness: 40,
+                    effect: Effect {
+                        id: "3".into(),
+                        params: vec![],
+                    },
+                    speed: 1,
+                    settled: true,
+                }),
                 lose: RefCell::new(0),
                 stuck_effect: RefCell::new(false),
             }
@@ -384,7 +452,16 @@ mod tests {
     }
 
     fn lease(conn: u64, priority: Priority, hue: u16) -> Lease {
-        Lease { id: 0, conn, device: "kb".into(), priority, hue, sat: 100, brightness: 80, effect: "0".into() }
+        Lease {
+            id: 0,
+            conn,
+            device: "kb".into(),
+            priority,
+            hue,
+            sat: 100,
+            brightness: 80,
+            effect: "0".into(),
+        }
     }
 
     fn hue(f: &Fake) -> (bool, u16) {
@@ -394,7 +471,14 @@ mod tests {
 
     fn all(f: &Fake) -> (bool, u16, u8, u8, String, u8) {
         let s = f.state.borrow();
-        (s.on, s.hue, s.sat, s.brightness, s.effect.id.clone(), s.speed)
+        (
+            s.on,
+            s.hue,
+            s.sat,
+            s.brightness,
+            s.effect.id.clone(),
+            s.speed,
+        )
     }
 
     #[test]
@@ -431,7 +515,10 @@ mod tests {
         let kb = Fake::new();
         let before = all(&kb);
         let mut a = Arbiter::default();
-        assert!(a.set_paused(true).is_empty(), "no leases: nothing to give back");
+        assert!(
+            a.set_paused(true).is_empty(),
+            "no leases: nothing to give back"
+        );
         a.add(lease(1, Priority::Normal, 200), &kb).unwrap();
         assert_eq!(all(&kb), before, "nothing sent while paused");
         assert!(a.base.is_empty(), "no snapshot taken while paused");
@@ -465,7 +552,17 @@ mod tests {
             a.apply(&d, &kb).unwrap();
         }
         let s = kb.state.borrow().clone();
-        assert_eq!((s.on, s.hue, s.sat, s.brightness, s.effect.id.as_str(), s.speed), (false, 160, 50, 40, "3", 1));
+        assert_eq!(
+            (
+                s.on,
+                s.hue,
+                s.sat,
+                s.brightness,
+                s.effect.id.as_str(),
+                s.speed
+            ),
+            (false, 160, 50, 40, "3", 1)
+        );
         assert!(a.leases.is_empty() && a.base.is_empty());
     }
 
@@ -475,13 +572,16 @@ mod tests {
         let mut a = Arbiter::default();
         a.add(lease(1, Priority::Normal, 0), &kb).unwrap();
         kb.state.borrow_mut().speed = 4; // someone changed it meanwhile
-        // The keyboard won't take the effect: the snapshot stays.
+                                         // The keyboard won't take the effect: the snapshot stays.
         *kb.stuck_effect.borrow_mut() = true;
         for d in a.end(|_| true) {
             a.apply(&d, &kb).unwrap();
         }
         assert_eq!(kb.state.borrow().speed, 1, "speed restored");
-        assert!(a.base.contains_key("kb"), "kept: the effect didn't come back");
+        assert!(
+            a.base.contains_key("kb"),
+            "kept: the effect didn't come back"
+        );
         // A new lease meanwhile keeps the original, not the half-restored state.
         a.add(lease(2, Priority::Normal, 120), &kb).unwrap();
         assert_eq!(a.base["kb"].effect.id, "3");
@@ -502,7 +602,10 @@ mod tests {
         let kb = Fake::new();
         let mut a = Arbiter::default();
         let low = a.add(lease(1, Priority::Low, 0), &kb).unwrap();
-        assert_eq!(a.update(low, 1, 120, 100, 80, "0").unwrap().as_deref(), Some("kb"));
+        assert_eq!(
+            a.update(low, 1, 120, 100, 80, "0").unwrap().as_deref(),
+            Some("kb")
+        );
         a.apply("kb", &kb).unwrap();
         assert_eq!(hue(&kb), (true, 120));
         assert_eq!(a.leases.len(), 1, "no new lease");
@@ -510,7 +613,10 @@ mod tests {
         a.add(lease(2, Priority::High, 300), &kb).unwrap();
         assert_eq!(a.update(low, 1, 60, 100, 80, "0").unwrap(), None);
         assert_eq!(hue(&kb), (true, 300));
-        assert!(a.update(low, 2, 60, 100, 80, "0").is_err(), "only its own connection");
+        assert!(
+            a.update(low, 2, 60, 100, 80, "0").is_err(),
+            "only its own connection"
+        );
     }
 
     /// The E1.31 receiver (#330) under mic mute (#210): its stream holds a low lease and changes
@@ -534,7 +640,11 @@ mod tests {
         // Muted: the mic's high lease shows over the stream, which keeps changing underneath.
         let mute = a.add(lease(MIC, Priority::High, 0), &kb).unwrap();
         assert_eq!(hue(&kb), (true, 0));
-        assert_eq!(a.update(stream, E131, 240, 100, 100, "0").unwrap(), None, "hidden under the mute");
+        assert_eq!(
+            a.update(stream, E131, 240, 100, 100, "0").unwrap(),
+            None,
+            "hidden under the mute"
+        );
         assert_eq!(hue(&kb), (true, 0));
         // Unmuted: the stream's latest colour comes back.
         for d in a.end(|l| l.id == mute) {
@@ -546,7 +656,17 @@ mod tests {
             a.apply(&d, &kb).unwrap();
         }
         let s = kb.state.borrow().clone();
-        assert_eq!((s.on, s.hue, s.sat, s.brightness, s.effect.id.as_str(), s.speed), (false, 160, 50, 40, "3", 1));
+        assert_eq!(
+            (
+                s.on,
+                s.hue,
+                s.sat,
+                s.brightness,
+                s.effect.id.as_str(),
+                s.speed
+            ),
+            (false, 160, 50, 40, "3", 1)
+        );
         assert!(a.leases.is_empty() && a.base.is_empty());
     }
 
@@ -583,7 +703,10 @@ mod tests {
         let wake = crate::ui_wake::UiWake::new(Arc::new(move || {
             w.fetch_add(1, Ordering::Relaxed);
         }));
-        assert!(!publish(&a, &slot, Some(&wake)), "nothing held, nothing changed");
+        assert!(
+            !publish(&a, &slot, Some(&wake)),
+            "nothing held, nothing changed"
+        );
         let stream = a.add(lease(1, Priority::Low, 120), &kb).unwrap(); // OpenRGB
         assert!(publish(&a, &slot, Some(&wake)));
         a.add(lease(2, Priority::High, 0), &kb).unwrap(); // Mic mute
@@ -591,7 +714,11 @@ mod tests {
         assert!(publish(&a, &slot, Some(&wake)));
         let held = slot.lock().unwrap().clone();
         assert_eq!(held.devices.len(), 1);
-        assert_eq!(held.devices[0].leases, [(2, Priority::High), (3, Priority::Low), (1, Priority::Low)], "the one showing first");
+        assert_eq!(
+            held.devices[0].leases,
+            [(2, Priority::High), (3, Priority::Low), (1, Priority::Low)],
+            "the one showing first"
+        );
         // A colour change in place isn't a change of holder.
         a.update(stream, 1, 60, 100, 80, "0").unwrap();
         assert!(!publish(&a, &slot, Some(&wake)));
@@ -600,7 +727,10 @@ mod tests {
             a.apply(&d, &kb).unwrap();
         }
         assert!(publish(&a, &slot, Some(&wake)));
-        assert_eq!(slot.lock().unwrap().devices[0].leases[0], (3, Priority::Low));
+        assert_eq!(
+            slot.lock().unwrap().devices[0].leases[0],
+            (3, Priority::Low)
+        );
         a.set_paused(true);
         assert!(publish(&a, &slot, Some(&wake)), "paused is part of it");
         a.set_paused(false);
@@ -608,7 +738,11 @@ mod tests {
             a.apply(&d, &kb).unwrap();
         }
         assert!(publish(&a, &slot, None));
-        assert_eq!(*slot.lock().unwrap(), Holders::default(), "nobody: the lights are the user's");
+        assert_eq!(
+            *slot.lock().unwrap(),
+            Holders::default(),
+            "nobody: the lights are the user's"
+        );
     }
 
     #[test]

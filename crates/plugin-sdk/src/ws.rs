@@ -25,7 +25,10 @@ pub struct Handshake {
 
 impl Handshake {
     pub fn header(&self, name: &str) -> Option<&str> {
-        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
     }
 
     /// `Origin`, as the browser sent it (`null` from a `file://` page).
@@ -36,7 +39,10 @@ impl Handshake {
     /// A query parameter of the path (`/?token=abc` → `token` = `abc`), undecoded.
     pub fn query(&self, name: &str) -> Option<&str> {
         let (_, q) = self.path.split_once('?')?;
-        q.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| *k == name).map(|(_, v)| v)
+        q.split('&')
+            .filter_map(|kv| kv.split_once('='))
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v)
     }
 
     /// Accepts only `origins` (when any are given) and, with `token`, a client that presents it
@@ -46,7 +52,9 @@ impl Handshake {
             return Err(format!("origin {:?} isn't allowed", self.origin()));
         }
         if let Some(token) = token {
-            let given = self.query("token").or(self.header("sec-websocket-protocol").map(str::trim));
+            let given = self
+                .query("token")
+                .or(self.header("sec-websocket-protocol").map(str::trim));
             if !given.is_some_and(|g| same(g.as_bytes(), token.as_bytes())) {
                 return Err("wrong or missing token".into());
             }
@@ -66,7 +74,10 @@ pub fn read_handshake(r: &mut impl Read) -> io::Result<Handshake> {
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
         if head.len() > 16 * 1024 || r.read(&mut byte)? == 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "no complete upgrade request"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "no complete upgrade request",
+            ));
         }
         head.push(byte[0]);
     }
@@ -75,10 +86,16 @@ pub fn read_handshake(r: &mut impl Read) -> io::Result<Handshake> {
     let request = lines.next().unwrap_or_default();
     let mut parts = request.split(' ');
     if parts.next() != Some("GET") {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("not a WebSocket upgrade: {request}")));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("not a WebSocket upgrade: {request}"),
+        ));
     }
     let path = parts.next().unwrap_or("/").to_string();
-    let headers = lines.filter_map(|l| l.split_once(':')).map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string())).collect();
+    let headers = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
     Ok(Handshake { path, headers })
 }
 
@@ -90,15 +107,22 @@ pub fn accept_key(key: &str) -> String {
 /// Answers the upgrade (101); `protocol` echoes the sub-protocol the client offered, which a
 /// browser requires when it sent one (as a token, say).
 pub fn accept(w: &mut impl Write, h: &Handshake, protocol: Option<&str>) -> io::Result<()> {
-    let key = h.header("sec-websocket-key").ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no Sec-WebSocket-Key"))?;
-    let protocol = protocol.map(|p| format!("Sec-WebSocket-Protocol: {p}\r\n")).unwrap_or_default();
+    let key = h
+        .header("sec-websocket-key")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "no Sec-WebSocket-Key"))?;
+    let protocol = protocol
+        .map(|p| format!("Sec-WebSocket-Protocol: {p}\r\n"))
+        .unwrap_or_default();
     write!(w, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n{protocol}\r\n", accept_key(key))?;
     w.flush()
 }
 
 /// Refuses the upgrade with an HTTP status.
 pub fn reject(w: &mut impl Write, status: u16, reason: &str) -> io::Result<()> {
-    write!(w, "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+    write!(
+        w,
+        "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+    )?;
     w.flush()
 }
 
@@ -155,13 +179,20 @@ impl Reader {
     }
 }
 
-fn read_message(r: &mut impl Read, data: &mut Vec<u8>, first_op: &mut Option<u8>) -> io::Result<Message> {
+fn read_message(
+    r: &mut impl Read,
+    data: &mut Vec<u8>,
+    first_op: &mut Option<u8>,
+) -> io::Result<Message> {
     loop {
         let mut head = [0u8; 2];
         r.read_exact(&mut head)?;
         let (fin, op, masked) = (head[0] & 0x80 != 0, head[0] & 0x0F, head[1] & 0x80 != 0);
         if !masked {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "a client frame without a mask"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a client frame without a mask",
+            ));
         }
         let len = match head[1] & 0x7F {
             126 => {
@@ -177,16 +208,26 @@ fn read_message(r: &mut impl Read, data: &mut Vec<u8>, first_op: &mut Option<u8>
             n => u64::from(n),
         };
         if len > MAX_MESSAGE as u64 || data.len() + len as usize > MAX_MESSAGE {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "a message too large"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a message too large",
+            ));
         }
         let mut mask = [0u8; 4];
         r.read_exact(&mut mask)?;
         let mut payload = vec![0u8; len as usize];
         r.read_exact(&mut payload)?;
-        payload.iter_mut().enumerate().for_each(|(i, b)| *b ^= mask[i % 4]);
+        payload
+            .iter_mut()
+            .enumerate()
+            .for_each(|(i, b)| *b ^= mask[i % 4]);
         match op {
             // Control frames come whole, even between fragments.
-            CLOSE => return Ok(Message::Close((payload.len() >= 2).then(|| u16::from_be_bytes([payload[0], payload[1]])))),
+            CLOSE => {
+                return Ok(Message::Close(
+                    (payload.len() >= 2).then(|| u16::from_be_bytes([payload[0], payload[1]])),
+                ))
+            }
             PING => return Ok(Message::Ping(payload)),
             PONG => return Ok(Message::Pong(payload)),
             _ => {
@@ -206,7 +247,13 @@ fn read_message(r: &mut impl Read, data: &mut Vec<u8>, first_op: &mut Option<u8>
 
 /// SHA-1, for the handshake's accept key only (RFC 3174).
 fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut h: [u32; 5] = [0x6745_2301, 0xEFCD_AB89, 0x98BA_DCFE, 0x1032_5476, 0xC3D2_E1F0];
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
     let mut msg = data.to_vec();
     let bits = (data.len() as u64) * 8;
     msg.push(0x80);
@@ -217,7 +264,12 @@ fn sha1(data: &[u8]) -> [u8; 20] {
     for chunk in msg.chunks(64) {
         let mut w = [0u32; 80];
         for i in 0..16 {
-            w[i] = u32::from_be_bytes([chunk[4 * i], chunk[4 * i + 1], chunk[4 * i + 2], chunk[4 * i + 3]]);
+            w[i] = u32::from_be_bytes([
+                chunk[4 * i],
+                chunk[4 * i + 1],
+                chunk[4 * i + 2],
+                chunk[4 * i + 3],
+            ]);
         }
         for i in 16..80 {
             w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
@@ -230,7 +282,12 @@ fn sha1(data: &[u8]) -> [u8; 20] {
                 40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
                 _ => (b ^ c ^ d, 0xCA62_C1D6),
             };
-            let t = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(*wi);
+            let t = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*wi);
             (e, d, c, b, a) = (d, c, b.rotate_left(30), a, t);
         }
         for (hi, v) in h.iter_mut().zip([a, b, c, d, e]) {
@@ -254,14 +311,20 @@ mod tests {
         assert_eq!(hex, "a9993e364706816aba3e25717850c26c9cd0d89d");
         assert_eq!(sha1(&[b'a'; 1000]).len(), 20);
         // RFC 6455's example.
-        assert_eq!(accept_key("dGhlIHNhbXBsZSBub25jZQ=="), "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+        assert_eq!(
+            accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
     }
 
     #[test]
     fn a_handshake_is_read_checked_and_answered() {
         let req = b"GET /match?token=s3cret HTTP/1.1\r\nHost: 127.0.0.1:47911\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: null\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
         let h = read_handshake(&mut &req[..]).unwrap();
-        assert_eq!((h.path.as_str(), h.origin(), h.query("token")), ("/match?token=s3cret", Some("null"), Some("s3cret")));
+        assert_eq!(
+            (h.path.as_str(), h.origin(), h.query("token")),
+            ("/match?token=s3cret", Some("null"), Some("s3cret"))
+        );
         assert!(h.check(&["null"], Some("s3cret")).is_ok());
         assert!(h.check(&["file://"], None).is_err(), "another origin");
         assert!(h.check(&[], Some("wrong")).is_err(), "a wrong token");
@@ -269,7 +332,10 @@ mod tests {
         let mut out = Vec::new();
         accept(&mut out, &h, None).unwrap();
         let out = String::from_utf8(out).unwrap();
-        assert!(out.starts_with("HTTP/1.1 101") && out.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
+        assert!(
+            out.starts_with("HTTP/1.1 101")
+                && out.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
+        );
         assert!(read_handshake(&mut &b"POST / HTTP/1.1\r\n\r\n"[..]).is_err());
     }
 
@@ -289,11 +355,21 @@ mod tests {
         stream.extend(client(0, true, b"lo"));
         stream.extend(client(CLOSE, true, &1000u16.to_be_bytes()));
         let (mut r, mut reader) = (&stream[..], Reader::default());
-        assert_eq!(reader.read(&mut r).unwrap(), Message::Ping(b"p".to_vec()), "a control frame between fragments");
-        assert_eq!(reader.read(&mut r).unwrap(), Message::Text("hello".into()), "the message isn't lost");
+        assert_eq!(
+            reader.read(&mut r).unwrap(),
+            Message::Ping(b"p".to_vec()),
+            "a control frame between fragments"
+        );
+        assert_eq!(
+            reader.read(&mut r).unwrap(),
+            Message::Text("hello".into()),
+            "the message isn't lost"
+        );
         assert_eq!(reader.read(&mut r).unwrap(), Message::Close(Some(1000)));
         // Unmasked client frames are refused.
-        assert!(Reader::default().read(&mut &[0x81u8, 0x01, b'x'][..]).is_err());
+        assert!(Reader::default()
+            .read(&mut &[0x81u8, 0x01, b'x'][..])
+            .is_err());
         let mut out = Vec::new();
         write_text(&mut out, "hi").unwrap();
         assert_eq!(out, [0x81, 2, b'h', b'i']);

@@ -25,7 +25,10 @@ static LOCK: Mutex<()> = Mutex::new(());
 /// `FOXGLOVE_CONFIG_DIR` when that's set, so a test run never shares or touches a store
 /// outside its own folder.
 pub fn path() -> Option<PathBuf> {
-    path_for(std::env::var_os("FOXGLOVE_CONFIG_DIR").map(PathBuf::from), crate::settings::Settings::config_file_path())
+    path_for(
+        std::env::var_os("FOXGLOVE_CONFIG_DIR").map(PathBuf::from),
+        crate::settings::Settings::config_file_path(),
+    )
 }
 
 fn path_for(config_dir: Option<PathBuf>, settings_ini: Option<PathBuf>) -> Option<PathBuf> {
@@ -52,7 +55,10 @@ fn renamed(mut table: Table) -> Table {
 
 fn read(path: &Path) -> Result<Table, String> {
     match std::fs::read_to_string(path) {
-        Ok(text) => text.parse::<Table>().map(renamed).map_err(|e| format!("{}: {e}", path.display())),
+        Ok(text) => text
+            .parse::<Table>()
+            .map(renamed)
+            .map_err(|e| format!("{}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Table::new()),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
@@ -103,7 +109,10 @@ fn set(table: &mut Table, section: &str, value: Value) {
 fn try_load_at<T: DeserializeOwned>(path: &Path, section: &str) -> Result<Option<T>, String> {
     let table = read(path)?;
     effective(&table, section)
-        .map(|v| v.try_into().map_err(|e: toml::de::Error| format!("[{section}]: {e}")))
+        .map(|v| {
+            v.try_into()
+                .map_err(|e: toml::de::Error| format!("[{section}]: {e}"))
+        })
         .transpose()
 }
 
@@ -172,16 +181,30 @@ fn diff(base: &Table, new: &Table) -> Table {
 /// Saves a section. While a profile is active, a profiled section's changes go into that
 /// profile (only what differs from the base), so editing settings edits the profile in use.
 /// Migrations always write the base (`to_base`).
-fn save_at<T: Serialize>(path: &Path, section: &str, value: &T, to_base: bool) -> std::io::Result<()> {
+fn save_at<T: Serialize>(
+    path: &Path,
+    section: &str,
+    value: &T,
+    to_base: bool,
+) -> std::io::Result<()> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let table = read(path).map_err(std::io::Error::other)?;
     let mut table = upgrade(table);
     let value = Value::try_from(value).map_err(std::io::Error::other)?;
     match active_profile(&table).filter(|_| !to_base && PROFILED.contains(&section)) {
         Some(name) => {
-            let base = get(&table, section).and_then(Value::as_table).cloned().unwrap_or_default();
-            let changes = value.as_table().map_or_else(Table::new, |new| diff(&base, new));
-            set(&mut table, &format!("profiles.list.{name}.{section}"), Value::Table(changes));
+            let base = get(&table, section)
+                .and_then(Value::as_table)
+                .cloned()
+                .unwrap_or_default();
+            let changes = value
+                .as_table()
+                .map_or_else(Table::new, |new| diff(&base, new));
+            set(
+                &mut table,
+                &format!("profiles.list.{name}.{section}"),
+                Value::Table(changes),
+            );
         }
         None => set(&mut table, section, value),
     }
@@ -231,9 +254,10 @@ pub fn cached_profiles() -> (Vec<String>, Option<String>) {
 
 fn announce(name: Option<&str>) {
     *PROFILES.lock().unwrap_or_else(|e| e.into_inner()) = profiles();
-    super::devices::bus()
-        .facts()
-        .set("profile.active", foxglove_devices::facts::Value::Text(name.unwrap_or("").into()));
+    super::devices::bus().facts().set(
+        "profile.active",
+        foxglove_devices::facts::Value::Text(name.unwrap_or("").into()),
+    );
 }
 
 /// One "switch to this profile while this program is in front" rule.
@@ -254,7 +278,10 @@ struct RuleSettings {
 
 impl Default for RuleSettings {
     fn default() -> Self {
-        RuleSettings { auto: true, rules: vec![] }
+        RuleSettings {
+            auto: true,
+            rules: vec![],
+        }
     }
 }
 
@@ -303,9 +330,16 @@ fn export_from(table: &Table, names: &[String]) -> Result<String, String> {
         let p = get(table, &format!("profiles.list.{name}")).ok_or(format!("no profile {name}"))?;
         set(&mut out, &format!("profiles.{name}"), keep_profiled(p));
     }
-    let rules: Vec<Rule> = rules_in(table).1.into_iter().filter(|r| names.contains(&r.profile)).collect();
+    let rules: Vec<Rule> = rules_in(table)
+        .1
+        .into_iter()
+        .filter(|r| names.contains(&r.profile))
+        .collect();
     if !rules.is_empty() {
-        out.insert("rules".into(), Value::try_from(rules).map_err(|e| e.to_string())?);
+        out.insert(
+            "rules".into(),
+            Value::try_from(rules).map_err(|e| e.to_string())?,
+        );
     }
     toml::to_string_pretty(&out).map_err(|e| e.to_string())
 }
@@ -328,20 +362,34 @@ pub fn import_names(text: &str) -> Result<(Vec<String>, Vec<String>), String> {
     let (incoming, _) = parse_export(text)?;
     let existing = profiles().0;
     let names: Vec<String> = incoming.keys().cloned().collect();
-    let clashes = names.iter().filter(|n| existing.contains(n)).cloned().collect();
+    let clashes = names
+        .iter()
+        .filter(|n| existing.contains(n))
+        .cloned()
+        .collect();
     Ok((names, clashes))
 }
 
 fn parse_export(text: &str) -> Result<(Table, Vec<Rule>), String> {
-    let t: Table = text.parse().map_err(|e| format!("not a profile file: {e}"))?;
+    let t: Table = text
+        .parse()
+        .map_err(|e| format!("not a profile file: {e}"))?;
     if get(&t, "format").and_then(Value::as_str) != Some("foxglove-profile") {
         return Err("not a Foxglove profile file".into());
     }
     if get(&t, "version").and_then(Value::as_integer) != Some(1) {
         return Err("made by a newer Foxglove".into());
     }
-    let profiles = get(&t, "profiles").and_then(Value::as_table).cloned().unwrap_or_default();
-    let rules: Vec<Rule> = get(&t, "rules").cloned().map(Value::try_into).transpose().map_err(|e| e.to_string())?.unwrap_or_default();
+    let profiles = get(&t, "profiles")
+        .and_then(Value::as_table)
+        .cloned()
+        .unwrap_or_default();
+    let rules: Vec<Rule> = get(&t, "rules")
+        .cloned()
+        .map(Value::try_into)
+        .transpose()
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
     Ok((profiles, rules))
 }
 
@@ -364,14 +412,22 @@ fn import_into(table: &mut Table, text: &str) -> Result<Vec<String>, String> {
         if name.is_empty() || name.contains('.') {
             return Err(format!("bad profile name {name:?}"));
         }
-        set(table, &format!("profiles.list.{name}"), keep_profiled(&profile));
+        set(
+            table,
+            &format!("profiles.list.{name}"),
+            keep_profiled(&profile),
+        );
         names.push(name);
     }
     let (auto, mut existing) = rules_in(table);
     existing.retain(|r| !rules.iter().any(|n| n.program == r.program));
     existing.extend(rules);
     set(table, "profiles.auto", Value::Boolean(auto));
-    set(table, "profiles.rules", Value::try_from(existing).map_err(|e| e.to_string())?);
+    set(
+        table,
+        "profiles.rules",
+        Value::try_from(existing).map_err(|e| e.to_string())?,
+    );
     Ok(names)
 }
 
@@ -385,7 +441,11 @@ pub fn init_profiles() {
             if get(&table, "profiles").is_none() {
                 let mut table = upgrade(table);
                 for name in STARTERS {
-                    set(&mut table, &format!("profiles.list.{name}"), Value::Table(Table::new()));
+                    set(
+                        &mut table,
+                        &format!("profiles.list.{name}"),
+                        Value::Table(Table::new()),
+                    );
                 }
                 if let Err(e) = write(&path, &table) {
                     eprintln!("Foxglove: can't create the starter profiles: {e}");
@@ -437,7 +497,10 @@ fn load_or_migrate_at<T: DeserializeOwned + Serialize + Default>(
                             let _ = std::fs::rename(&f, done);
                         }
                     }
-                    Err(e) => eprintln!("Foxglove: can't save [{section}] to {}: {e}", path.display()),
+                    Err(e) => eprintln!(
+                        "Foxglove: can't save [{section}] to {}: {e}",
+                        path.display()
+                    ),
                 }
                 v
             }
@@ -458,7 +521,9 @@ fn load_or_migrate_at<T: DeserializeOwned + Serialize + Default>(
 pub fn test_config_dir() -> &'static Path {
     static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(format!("foxglove-tests-{}", std::process::id())).join("config");
+        let dir = std::env::temp_dir()
+            .join(format!("foxglove-tests-{}", std::process::id()))
+            .join("config");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("a temp settings folder");
         std::env::set_var("FOXGLOVE_CONFIG_DIR", &dir);
@@ -479,7 +544,8 @@ mod tests {
     }
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("foxglove-store-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("foxglove-store-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -491,8 +557,14 @@ mod tests {
         let path = dir.join("foxglove.toml");
         save_at(&path, "screens", &Demo { on: true, n: 4 }, false).unwrap();
         save_at(&path, "art.cycle", &Demo { on: false, n: 2 }, false).unwrap();
-        assert_eq!(try_load_at::<Demo>(&path, "screens").unwrap(), Some(Demo { on: true, n: 4 }));
-        assert_eq!(try_load_at::<Demo>(&path, "art.cycle").unwrap(), Some(Demo { on: false, n: 2 }));
+        assert_eq!(
+            try_load_at::<Demo>(&path, "screens").unwrap(),
+            Some(Demo { on: true, n: 4 })
+        );
+        assert_eq!(
+            try_load_at::<Demo>(&path, "art.cycle").unwrap(),
+            Some(Demo { on: false, n: 2 })
+        );
         assert_eq!(try_load_at::<Demo>(&path, "updates").unwrap(), None);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("schema = 1"));
@@ -502,25 +574,43 @@ mod tests {
     #[test]
     fn store_stays_inside_the_config_dir() {
         let tmp = std::env::temp_dir().join("foxglove-run-1");
-        assert_eq!(path_for(Some(tmp.clone()), Some(tmp.join("settings.ini"))), Some(tmp.join("foxglove.toml")));
+        assert_eq!(
+            path_for(Some(tmp.clone()), Some(tmp.join("settings.ini"))),
+            Some(tmp.join("foxglove.toml"))
+        );
         // Built with joins, so the paths are real ones on Linux too (CI).
-        let foxglove = PathBuf::from(if cfg!(windows) { r"C:\Users\u\AppData\Roaming" } else { "/home/u/.config" }).join("Foxglove");
+        let foxglove = PathBuf::from(if cfg!(windows) {
+            r"C:\Users\u\AppData\Roaming"
+        } else {
+            "/home/u/.config"
+        })
+        .join("Foxglove");
         let real = foxglove.join("config").join("settings.ini");
-        assert_eq!(path_for(None, Some(real)), Some(foxglove.join("foxglove.toml")));
+        assert_eq!(
+            path_for(None, Some(real)),
+            Some(foxglove.join("foxglove.toml"))
+        );
         assert_eq!(path_for(None, None), None);
     }
 
     #[test]
     fn kits_section_reads_as_plugins() {
-        let dir = std::env::temp_dir().join(format!("foxglove-store-rename-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("foxglove-store-rename-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("foxglove.toml");
         std::fs::write(&path, "schema = 1\n[kits.installed.\"com.example.a\"]\nenabled = true\n[kits.trust]\nsequence = 3\n").unwrap();
         let v: Option<toml::Value> = try_load_at(&path, "plugins.trust").unwrap();
-        assert_eq!(v.and_then(|v| v.get("sequence").and_then(toml::Value::as_integer)), Some(3));
+        assert_eq!(
+            v.and_then(|v| v.get("sequence").and_then(toml::Value::as_integer)),
+            Some(3)
+        );
         save_at(&path, "screens", &toml::Table::new(), true).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(text.contains("[plugins.installed") && !text.contains("[kits"), "{text}");
+        assert!(
+            text.contains("[plugins.installed") && !text.contains("[kits"),
+            "{text}"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -530,7 +620,9 @@ mod tests {
         let path = dir.join("foxglove.toml");
         let old = dir.join("screens.ini");
         std::fs::write(&old, "[screens]\nfps=7\n").unwrap();
-        let v: Demo = load_or_migrate_at(&path, "screens", || Some((Demo { on: true, n: 7 }, vec![old.clone()])));
+        let v: Demo = load_or_migrate_at(&path, "screens", || {
+            Some((Demo { on: true, n: 7 }, vec![old.clone()]))
+        });
         assert_eq!(v, Demo { on: true, n: 7 });
         assert!(!old.exists() && dir.join("screens.ini.migrated").exists());
         let again: Demo = load_or_migrate_at(&path, "screens", || unreachable!("already migrated"));
@@ -543,12 +635,20 @@ mod tests {
         let dir = temp("broken");
         let path = dir.join("foxglove.toml");
         std::fs::write(&path, "schema = 1\n[screens]\non = true\n").unwrap();
-        assert_eq!(try_load_at::<Demo>(&path, "screens").unwrap(), Some(Demo { on: true, n: 0 }));
+        assert_eq!(
+            try_load_at::<Demo>(&path, "screens").unwrap(),
+            Some(Demo { on: true, n: 0 })
+        );
         std::fs::write(&path, "this is = = not toml").unwrap();
         assert!(try_load_at::<Demo>(&path, "screens").is_err());
-        let v: Demo = load_or_migrate_at(&path, "screens", || unreachable!("never migrate over a broken store"));
+        let v: Demo = load_or_migrate_at(&path, "screens", || {
+            unreachable!("never migrate over a broken store")
+        });
         assert_eq!(v, Demo::default());
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "this is = = not toml");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "this is = = not toml"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -564,18 +664,33 @@ mod tests {
         write(&path, &t).unwrap();
         save_at(&path, "screens", &Demo { on: true, n: 10 }, false).unwrap();
         let t = read(&path).unwrap();
-        assert_eq!(get(&t, "screens.n").and_then(Value::as_integer), Some(4), "base kept");
-        let over = get(&t, "profiles.list.Game.screens").and_then(Value::as_table).unwrap();
+        assert_eq!(
+            get(&t, "screens.n").and_then(Value::as_integer),
+            Some(4),
+            "base kept"
+        );
+        let over = get(&t, "profiles.list.Game.screens")
+            .and_then(Value::as_table)
+            .unwrap();
         assert_eq!(over.len(), 1, "only the changed key: {over:?}");
-        assert_eq!(try_load_at::<Demo>(&path, "screens").unwrap(), Some(Demo { on: true, n: 10 }));
+        assert_eq!(
+            try_load_at::<Demo>(&path, "screens").unwrap(),
+            Some(Demo { on: true, n: 10 })
+        );
         // Not profiled: always the base.
         save_at(&path, "connection", &Demo { on: true, n: 1 }, false).unwrap();
         assert!(get(&read(&path).unwrap(), "profiles.list.Game.connection").is_none());
         // Back to the base settings.
         let mut t = read(&path).unwrap();
-        t.get_mut("profiles").and_then(Value::as_table_mut).unwrap().remove("active");
+        t.get_mut("profiles")
+            .and_then(Value::as_table_mut)
+            .unwrap()
+            .remove("active");
         write(&path, &t).unwrap();
-        assert_eq!(try_load_at::<Demo>(&path, "screens").unwrap(), Some(Demo { on: true, n: 4 }));
+        assert_eq!(
+            try_load_at::<Demo>(&path, "screens").unwrap(),
+            Some(Demo { on: true, n: 4 })
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -594,9 +709,16 @@ mod tests {
     fn rules_round_trip_and_default_to_on() {
         let mut t = Table::new();
         assert_eq!(rules_in(&t), (true, vec![]));
-        let rules = vec![Rule { program: "eldenring.exe".into(), profile: "Game".into() }];
+        let rules = vec![Rule {
+            program: "eldenring.exe".into(),
+            profile: "Game".into(),
+        }];
         set(&mut t, "profiles.auto", Value::Boolean(false));
-        set(&mut t, "profiles.rules", Value::try_from(rules.clone()).unwrap());
+        set(
+            &mut t,
+            "profiles.rules",
+            Value::try_from(rules.clone()).unwrap(),
+        );
         let text = toml::to_string(&t).unwrap();
         assert_eq!(rules_in(&text.parse().unwrap()), (false, rules));
     }
@@ -609,10 +731,19 @@ mod tests {
         .unwrap();
         let text = export_from(&t, &["Game".into()]).unwrap();
         assert!(text.contains("fps = 10") && text.contains("eldenring.exe"));
-        assert!(!text.contains("COM4") && !text.contains("leak"), "machine settings stay home: {text}");
+        assert!(
+            !text.contains("COM4") && !text.contains("leak"),
+            "machine settings stay home: {text}"
+        );
         let mut fresh = Table::new();
-        assert_eq!(import_into(&mut fresh, &text).unwrap(), vec!["Game".to_string()]);
-        assert_eq!(get(&fresh, "profiles.list.Game.screens.fps").and_then(Value::as_integer), Some(10));
+        assert_eq!(
+            import_into(&mut fresh, &text).unwrap(),
+            vec!["Game".to_string()]
+        );
+        assert_eq!(
+            get(&fresh, "profiles.list.Game.screens.fps").and_then(Value::as_integer),
+            Some(10)
+        );
         assert_eq!(rules_in(&fresh).1.len(), 1);
         assert!(import_into(&mut t, "format = \"other\"").is_err());
         assert!(import_into(&mut t, "format = \"foxglove-profile\"\nversion = 2").is_err());

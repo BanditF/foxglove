@@ -28,7 +28,10 @@ fn main() {
 #[cfg(windows)]
 fn smtc() -> Result<bool, String> {
     use windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager as Manager;
-    let manager = Manager::RequestAsync().map_err(|e| e.to_string())?.join().map_err(|e| e.to_string())?;
+    let manager = Manager::RequestAsync()
+        .map_err(|e| e.to_string())?
+        .join()
+        .map_err(|e| e.to_string())?;
     // Reading the current session (or none) is what the media provider does.
     let _ = manager.GetCurrentSession();
     Ok(true)
@@ -37,16 +40,22 @@ fn smtc() -> Result<bool, String> {
 #[cfg(windows)]
 fn mic() -> Result<bool, String> {
     use windows::Win32::Media::Audio::Endpoints::IAudioEndpointVolume;
-    use windows::Win32::Media::Audio::{eCapture, eCommunications, IMMDeviceEnumerator, MMDeviceEnumerator};
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED};
+    use windows::Win32::Media::Audio::{
+        eCapture, eCommunications, IMMDeviceEnumerator, MMDeviceEnumerator,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        let devices: IMMDeviceEnumerator =
-            CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).map_err(|e| format!("enumerator: {e}"))?;
+        let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+            .map_err(|e| format!("enumerator: {e}"))?;
         let Ok(mic) = devices.GetDefaultAudioEndpoint(eCapture, eCommunications) else {
             return Ok(false);
         };
-        let volume: IAudioEndpointVolume = mic.Activate(CLSCTX_ALL, None).map_err(|e| format!("activate: {e}"))?;
+        let volume: IAudioEndpointVolume = mic
+            .Activate(CLSCTX_ALL, None)
+            .map_err(|e| format!("activate: {e}"))?;
         let _muted = volume.GetMute().map_err(|e| format!("mute state: {e}"))?;
         Ok(true)
     }

@@ -151,7 +151,10 @@ impl Drawing {
             vec![]
         };
         // Its own descriptors first, then its board profile (#75), then HELLO.
-        let profile = super::boards::current().and_then(|b| b.panel().map(|p| (usize::from(p.width), usize::from(p.height))));
+        let profile = super::boards::current().and_then(|b| {
+            b.panel()
+                .map(|p| (usize::from(p.width), usize::from(p.height)))
+        });
         let (width, height) = panel::drawable_panel(&screens)
             .map(|p| (usize::from(p.width), usize::from(p.height)))
             .or(profile.filter(|_| hello.width == 0 || hello.height == 0))
@@ -255,15 +258,26 @@ pub const MAX_OVERRIDE: Duration = Duration::from_secs(60);
 
 /// Shows a plugin's frame (1 bpp, rows MSB first, padded to whole bytes) for `ttl`, or with no
 /// `ttl` until it's replaced, released or the plugin's connection closes (#281).
-pub fn set_override(conn: u64, width: u16, height: u16, bits: Vec<u8>, ttl: Option<Duration>) -> Result<(), String> {
+pub fn set_override(
+    conn: u64,
+    width: u16,
+    height: u16,
+    bits: Vec<u8>,
+    ttl: Option<Duration>,
+) -> Result<(), String> {
     let size = *PANEL_SIZE.lock().unwrap_or_else(|e| e.into_inner());
-    let Some((w, h)) = size else { return Err("no left panel connected".into()) };
+    let Some((w, h)) = size else {
+        return Err("no left panel connected".into());
+    };
     if (width, height) != (w, h) {
         return Err(format!("the panel is {w}x{h}, not {width}x{height}"));
     }
     let want = usize::from(w).div_ceil(8) * usize::from(h);
     if bits.len() != want {
-        return Err(format!("a {w}x{h} frame is {want} bytes, not {}", bits.len()));
+        return Err(format!(
+            "a {w}x{h} frame is {want} bytes, not {}",
+            bits.len()
+        ));
     }
     let until = ttl.map(|t| Instant::now() + t.min(MAX_OVERRIDE));
     *OVERRIDE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Override { bits, until, conn });
@@ -284,7 +298,9 @@ pub fn clear_override(conn: u64) {
 /// The current plugin frame and when it ends (`None`: held), if one is showing.
 fn current_override(now: Instant) -> Option<(Vec<u8>, Option<Instant>)> {
     let mut o = OVERRIDE.lock().unwrap_or_else(|e| e.into_inner());
-    if o.as_ref().is_some_and(|o| o.until.is_some_and(|u| u <= now)) {
+    if o.as_ref()
+        .is_some_and(|o| o.until.is_some_and(|u| u <= now))
+    {
         *o = None;
     }
     o.as_ref().map(|o| (o.bits.clone(), o.until))
@@ -587,18 +603,24 @@ fn run() {
                         next_wallpaper_frame = now + Duration::from_millis(1000 / u64::from(*fps));
                     }
                 }
-                d.panel.bits.clone_from(&frames[wallpaper_tick % frames.len()]);
+                d.panel
+                    .bits
+                    .clone_from(&frames[wallpaper_tick % frames.len()]);
             }
         } else {
             wallpaper_frames = None;
         }
         // A plugin's frame, over everything else, until it lapses.
-        *PANEL_SIZE.lock().unwrap_or_else(|e| e.into_inner()) = Some((d.panel.width as u16, d.panel.height as u16));
+        *PANEL_SIZE.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((d.panel.width as u16, d.panel.height as u16));
         let overridden = current_override(now).filter(|(bits, _)| bits.len() == d.panel.bits.len());
         if let Some((bits, _)) = &overridden {
             d.panel.bits.clone_from(bits);
         }
-        let clock_at = overridden.as_ref().and_then(|(_, until)| *until).map_or(clock_at, |until| clock_at.min(until));
+        let clock_at = overridden
+            .as_ref()
+            .and_then(|(_, until)| *until)
+            .map_or(clock_at, |until| clock_at.min(until));
         let interval = keep_alive_for(&d.hello);
         let result = if changed(d.last.as_deref(), &d.panel.bits) {
             panel::show(
@@ -614,7 +636,11 @@ fn run() {
         } else {
             wait = Some(deadline(
                 clock_at.saturating_duration_since(Instant::now()),
-                animated.then(|| next_frame.min(next_wallpaper_frame).saturating_duration_since(Instant::now())),
+                animated.then(|| {
+                    next_frame
+                        .min(next_wallpaper_frame)
+                        .saturating_duration_since(Instant::now())
+                }),
                 interval.map(|i| i.saturating_sub(d.last_sent.elapsed())),
             ));
             continue;
@@ -659,13 +685,17 @@ fn run() {
 /// lab can compare it with the keyboard's screen readback. Replaced atomically.
 fn dump_panel(frame: &Frame) {
     static PATH: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
-    let Some(path) = PATH.get_or_init(|| std::env::var_os("FOXGLOVE_DUMP_PANEL").map(Into::into)) else {
+    let Some(path) = PATH.get_or_init(|| std::env::var_os("FOXGLOVE_DUMP_PANEL").map(Into::into))
+    else {
         return;
     };
     let tmp = path.with_extension("tmp");
     let mut bytes = format!("P4\n{} {}\n", frame.width, frame.height).into_bytes();
     bytes.extend_from_slice(&frame.bits);
-    if std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)).is_err() {
+    if std::fs::write(&tmp, bytes)
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .is_err()
+    {
         eprintln!("Foxglove screens: can't write {}", path.display());
     }
 }
@@ -677,7 +707,9 @@ fn battery_log(battery: Option<u8>, last: &mut Option<u8>) {
     let Some(percent) = battery.filter(|_| battery != *last) else {
         return;
     };
-    let Some(path) = crate::settings::Settings::config_file_path().map(|p| p.with_file_name("right-battery.csv")) else {
+    let Some(path) = crate::settings::Settings::config_file_path()
+        .map(|p| p.with_file_name("right-battery.csv"))
+    else {
         return;
     };
     let new = !path.exists();
@@ -712,15 +744,28 @@ mod tests {
         assert!(reannounced(&hello) && reannounced(&conn));
         let mut layer = [0u8; 32];
         layer[0] = 0xff;
-        assert!(!reannounced(&layer), "a layer report is not a reannouncement");
-        assert!(!reannounced(&protocol::hello()), "the request itself is not a reply");
+        assert!(
+            !reannounced(&layer),
+            "a layer report is not a reannouncement"
+        );
+        assert!(
+            !reannounced(&protocol::hello()),
+            "the request itself is not a reply"
+        );
     }
     #[test]
     fn sleeps_until_the_first_visible_change_or_firmware_deadline() {
         let minute = Duration::from_secs(47);
         assert_eq!(keep_alive(0), None);
-        let mut hello = Hello { panel_timeout_s: 10, ..Hello::default() };
-        assert_eq!(keep_alive_for(&hello), Some(Duration::from_secs(9)), "older firmware");
+        let mut hello = Hello {
+            panel_timeout_s: 10,
+            ..Hello::default()
+        };
+        assert_eq!(
+            keep_alive_for(&hello),
+            Some(Duration::from_secs(9)),
+            "older firmware"
+        );
         hello.capabilities |= protocol::capabilities::PANEL_HOLD;
         assert_eq!(keep_alive_for(&hello), None, "the firmware holds the panel");
         assert_eq!(deadline(minute, None, None), minute);

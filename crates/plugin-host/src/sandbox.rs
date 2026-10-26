@@ -10,24 +10,27 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::path::Path;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, LocalFree, SetHandleInformation, ERROR_SUCCESS, HANDLE, HANDLE_FLAG_INHERIT,
+    CloseHandle, GetLastError, LocalFree, SetHandleInformation, ERROR_SUCCESS, HANDLE,
+    HANDLE_FLAG_INHERIT,
 };
 use windows_sys::Win32::Security::Authorization::{
-    GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W, GRANT_ACCESS, NO_MULTIPLE_TRUSTEE,
-    SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP, TRUSTEE_W,
+    GetNamedSecurityInfoW, SetEntriesInAclW, SetNamedSecurityInfoW, EXPLICIT_ACCESS_W,
+    GRANT_ACCESS, NO_MULTIPLE_TRUSTEE, SE_FILE_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP,
+    TRUSTEE_W,
 };
 use windows_sys::Win32::Security::Isolation::{
     CreateAppContainerProfile, DeleteAppContainerProfile, DeriveAppContainerSidFromAppContainerName,
 };
 use windows_sys::Win32::Security::{
-    FreeSid, ACL, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, SECURITY_CAPABILITIES,
-    SUB_CONTAINERS_AND_OBJECTS_INHERIT,
+    FreeSid, ACL, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES,
+    SECURITY_CAPABILITIES, SUB_CONTAINERS_AND_OBJECTS_INHERIT,
 };
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{
-    CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
-    CREATE_NO_WINDOW, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT, LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION,
-    PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    CreateProcessW, DeleteProcThreadAttributeList, InitializeProcThreadAttributeList,
+    UpdateProcThreadAttribute, CREATE_NO_WINDOW, CREATE_SUSPENDED, EXTENDED_STARTUPINFO_PRESENT,
+    LPPROC_THREAD_ATTRIBUTE_LIST, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+    PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
 
 const GENERIC_READ: u32 = 0x8000_0000;
@@ -47,7 +50,11 @@ fn os_err() -> std::io::Error {
 struct ContainerSid(PSID);
 
 fn container_name(id: &str) -> Vec<u16> {
-    let name: String = format!("foxglove.plugin.{id}").chars().filter(|c| c.is_ascii_alphanumeric() || ".-_".contains(*c)).take(64).collect();
+    let name: String = format!("foxglove.plugin.{id}")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || ".-_".contains(*c))
+        .take(64)
+        .collect();
     wide(&name)
 }
 
@@ -62,12 +69,23 @@ impl ContainerSid {
         let name = container_name(id);
         let mut sid: PSID = std::ptr::null_mut();
         let display = wide("Foxglove plugin");
-        let hr = unsafe { CreateAppContainerProfile(name.as_ptr(), display.as_ptr(), display.as_ptr(), std::ptr::null(), 0, &mut sid) };
+        let hr = unsafe {
+            CreateAppContainerProfile(
+                name.as_ptr(),
+                display.as_ptr(),
+                display.as_ptr(),
+                std::ptr::null(),
+                0,
+                &mut sid,
+            )
+        };
         if hr < 0 {
             // Already made by an earlier run: look it up instead.
             let hr = unsafe { DeriveAppContainerSidFromAppContainerName(name.as_ptr(), &mut sid) };
             if hr < 0 {
-                return Err(std::io::Error::other(format!("AppContainer profile: HRESULT {hr:#x}")));
+                return Err(std::io::Error::other(format!(
+                    "AppContainer profile: HRESULT {hr:#x}"
+                )));
             }
         }
         Ok(ContainerSid(sid))
@@ -95,7 +113,16 @@ fn grant(dir: &Path, sid: &ContainerSid, permissions: u32) -> std::io::Result<()
     unsafe {
         let mut old: *mut ACL = std::ptr::null_mut();
         let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-        let e = GetNamedSecurityInfoW(path.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, std::ptr::null_mut(), std::ptr::null_mut(), &mut old, std::ptr::null_mut(), &mut sd);
+        let e = GetNamedSecurityInfoW(
+            path.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut old,
+            std::ptr::null_mut(),
+            &mut sd,
+        );
         if e != ERROR_SUCCESS {
             return Err(std::io::Error::from_raw_os_error(e as i32));
         }
@@ -117,7 +144,15 @@ fn grant(dir: &Path, sid: &ContainerSid, permissions: u32) -> std::io::Result<()
         if e != ERROR_SUCCESS {
             return Err(std::io::Error::from_raw_os_error(e as i32));
         }
-        let e = SetNamedSecurityInfoW(path.as_ptr(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, std::ptr::null_mut(), std::ptr::null_mut(), new, std::ptr::null());
+        let e = SetNamedSecurityInfoW(
+            path.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            new,
+            std::ptr::null(),
+        );
         LocalFree(new as _);
         if e != ERROR_SUCCESS {
             return Err(std::io::Error::from_raw_os_error(e as i32));
@@ -129,12 +164,20 @@ fn grant(dir: &Path, sid: &ContainerSid, permissions: u32) -> std::io::Result<()
 /// A pipe, neither end inheritable yet: the child's end becomes so only for the moment the
 /// process is created, and only that process gets it (the handle list).
 fn pipe(child_reads: bool) -> std::io::Result<(HANDLE, File)> {
-    let sa = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: std::ptr::null_mut(), bInheritHandle: 0 };
+    let sa = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: std::ptr::null_mut(),
+        bInheritHandle: 0,
+    };
     let (mut read, mut write): (HANDLE, HANDLE) = (std::ptr::null_mut(), std::ptr::null_mut());
     if unsafe { CreatePipe(&mut read, &mut write, &sa, 0) } == 0 {
         return Err(os_err());
     }
-    let (child, parent) = if child_reads { (read, write) } else { (write, read) };
+    let (child, parent) = if child_reads {
+        (read, write)
+    } else {
+        (write, read)
+    };
     Ok((child, unsafe { File::from_raw_handle(parent as _) }))
 }
 
@@ -150,7 +193,13 @@ unsafe impl Send for Contained {}
 
 /// Starts `program args` from `dir`, suspended: in the plugin's AppContainer when `contained`.
 /// Either way the process inherits only its own pipe ends and log.
-pub fn spawn(id: &str, dir: &Path, run: &[String], log: File, contained: bool) -> std::io::Result<Contained> {
+pub fn spawn(
+    id: &str,
+    dir: &Path,
+    run: &[String],
+    log: File,
+    contained: bool,
+) -> std::io::Result<Contained> {
     let sid = if contained {
         let sid = ContainerSid::for_plugin(id)?;
         grant_folder(dir, &sid)?;
@@ -159,7 +208,10 @@ pub fn spawn(id: &str, dir: &Path, run: &[String], log: File, contained: bool) -
     } else {
         None
     };
-    let program = dir.join(run.first().ok_or_else(|| std::io::Error::other("the manifest's run is empty"))?);
+    let program = dir.join(
+        run.first()
+            .ok_or_else(|| std::io::Error::other("the manifest's run is empty"))?,
+    );
     let mut cmdline = format!("\"{}\"", program.display());
     for a in &run[1..] {
         cmdline.push_str(&format!(" \"{}\"", a.replace('"', "\\\"")));
@@ -182,10 +234,31 @@ pub fn spawn(id: &str, dir: &Path, run: &[String], log: File, contained: bool) -
         if InitializeProcThreadAttributeList(attrs, attributes, 0, &mut size) == 0 {
             return Err(os_err());
         }
-        let caps = sid.as_ref().map(|sid| SECURITY_CAPABILITIES { AppContainerSid: sid.0, Capabilities: std::ptr::null_mut(), CapabilityCount: 0, Reserved: 0 });
-        let ok = caps.as_ref().is_none_or(|caps| UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize, caps as *const _ as *const _, std::mem::size_of::<SECURITY_CAPABILITIES>(), std::ptr::null_mut(), std::ptr::null())
-            != 0)
-            && UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize, inherit.as_ptr() as *const _, std::mem::size_of_val(&inherit), std::ptr::null_mut(), std::ptr::null()) != 0;
+        let caps = sid.as_ref().map(|sid| SECURITY_CAPABILITIES {
+            AppContainerSid: sid.0,
+            Capabilities: std::ptr::null_mut(),
+            CapabilityCount: 0,
+            Reserved: 0,
+        });
+        let ok = caps.as_ref().is_none_or(|caps| {
+            UpdateProcThreadAttribute(
+                attrs,
+                0,
+                PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+                caps as *const _ as *const _,
+                std::mem::size_of::<SECURITY_CAPABILITIES>(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            ) != 0
+        }) && UpdateProcThreadAttribute(
+            attrs,
+            0,
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+            inherit.as_ptr() as *const _,
+            std::mem::size_of_val(&inherit),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        ) != 0;
         if !ok {
             let e = os_err();
             DeleteProcThreadAttributeList(attrs);
@@ -220,6 +293,11 @@ pub fn spawn(id: &str, dir: &Path, run: &[String], log: File, contained: bool) -
         if created == 0 {
             return Err(std::io::Error::from_raw_os_error(err as i32));
         }
-        Ok(Contained { process: pi.hProcess, thread: pi.hThread, stdin, stdout })
+        Ok(Contained {
+            process: pi.hProcess,
+            thread: pi.hThread,
+            stdin,
+            stdout,
+        })
     }
 }

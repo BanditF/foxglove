@@ -44,7 +44,11 @@ struct Catalog {
 
 fn parse_catalog(text: &str) -> Result<Vec<CatalogEntry>, String> {
     let c: Catalog = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    if !matches!(c.format.as_str(), "foxglove-plugin-catalog" | "foxglove-kit-catalog") || c.version != 1 {
+    if !matches!(
+        c.format.as_str(),
+        "foxglove-plugin-catalog" | "foxglove-kit-catalog"
+    ) || c.version != 1
+    {
         return Err("unknown catalog format".into());
     }
     Ok(c.plugins)
@@ -88,9 +92,15 @@ pub struct Installed {
 
 /// The plugins in the plugins folder whose manifest this app accepts, with their records.
 pub fn installed() -> Vec<Installed> {
-    let Some(dir) = plugins_dir() else { return vec![] };
-    let records = super::store::try_load::<Plugins>("plugins").unwrap_or_default().installed;
-    let Ok(entries) = std::fs::read_dir(&dir) else { return vec![] };
+    let Some(dir) = plugins_dir() else {
+        return vec![];
+    };
+    let records = super::store::try_load::<Plugins>("plugins")
+        .unwrap_or_default()
+        .installed;
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return vec![];
+    };
     let mut plugins: Vec<Installed> = entries
         .flatten()
         .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
@@ -130,11 +140,17 @@ pub fn stage(archive: &Path) -> Result<Staged, String> {
         Err(e) => return Err(e),
     };
     unpack(archive, &staging)?;
-    let text = manifest::read_in(&staging).map_err(|_| "the archive has no plugin.toml at its top".to_string())?;
+    let text = manifest::read_in(&staging)
+        .map_err(|_| "the archive has no plugin.toml at its top".to_string())?;
     let manifest = Manifest::parse(&text, API_VERSION)?;
     if let Some(entry) = &signed {
-        let checked = if (entry.id.as_str(), entry.version.as_str()) != (manifest.id.as_str(), manifest.version.as_str()) {
-            Err(format!("the archive says {} {}, the catalog {} {}", manifest.id, manifest.version, entry.id, entry.version))
+        let checked = if (entry.id.as_str(), entry.version.as_str())
+            != (manifest.id.as_str(), manifest.version.as_str())
+        {
+            Err(format!(
+                "the archive says {} {}, the catalog {} {}",
+                manifest.id, manifest.version, entry.id, entry.version
+            ))
         } else {
             foxglove_plugin_trust::check_files(&staging, entry, super::plugin_trust::RUNTIME_FILES)
         };
@@ -150,7 +166,11 @@ pub fn stage(archive: &Path) -> Result<Staged, String> {
         Some(old) => manifest.added_permissions(old),
         None => manifest.permissions.clone(),
     };
-    Ok(Staged { manifest, dir: staging, new_permissions })
+    Ok(Staged {
+        manifest,
+        dir: staging,
+        new_permissions,
+    })
 }
 
 /// Unzips `archive` into `into`, refusing paths that leave it and archives that are too big.
@@ -175,7 +195,11 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let mut bytes = Vec::new();
-        entry.by_ref().take(MAX_UNPACKED - total + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        entry
+            .by_ref()
+            .take(MAX_UNPACKED - total + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
         total += bytes.len() as u64;
         if total > MAX_UNPACKED {
             return Err("the archive unpacks to more than 64 MiB".into());
@@ -194,7 +218,13 @@ pub fn commit(staged: Staged, enabled: bool) -> Result<(), String> {
     }
     std::fs::rename(&staged.dir, &target).map_err(|e| e.to_string())?;
     let mut all = super::store::try_load::<Plugins>("plugins").unwrap_or_default();
-    all.installed.insert(staged.manifest.id.clone(), PluginRecord { enabled, approved: staged.manifest.permissions.clone() });
+    all.installed.insert(
+        staged.manifest.id.clone(),
+        PluginRecord {
+            enabled,
+            approved: staged.manifest.permissions.clone(),
+        },
+    );
     super::store::save("plugins", &all).map_err(|e| e.to_string())
 }
 
@@ -204,13 +234,19 @@ pub fn commit(staged: Staged, enabled: bool) -> Result<(), String> {
 /// isn't the real settings folder, so it can never reach a user's install. What happened goes
 /// to stderr and `autoinstall.log` in the config dir.
 pub fn autoinstall() {
-    let Some(source) = std::env::var_os("FOXGLOVE_PLUGINS_AUTOINSTALL").filter(|v| !v.is_empty()) else {
+    let Some(source) = std::env::var_os("FOXGLOVE_PLUGINS_AUTOINSTALL").filter(|v| !v.is_empty())
+    else {
         return;
     };
     let config_dir = std::env::var_os("FOXGLOVE_CONFIG_DIR").map(PathBuf::from);
-    let real = directories::ProjectDirs::from("", "", "Foxglove").map(|d| d.config_dir().to_path_buf());
-    let result = autoinstall_allowed(super::plugin_trust::dev_unsigned(), config_dir.as_deref(), real.as_deref())
-        .and_then(|()| autoinstall_from(Path::new(&source)));
+    let real =
+        directories::ProjectDirs::from("", "", "Foxglove").map(|d| d.config_dir().to_path_buf());
+    let result = autoinstall_allowed(
+        super::plugin_trust::dev_unsigned(),
+        config_dir.as_deref(),
+        real.as_deref(),
+    )
+    .and_then(|()| autoinstall_from(Path::new(&source)));
     let line = match &result {
         Ok(id) => format!(
             "WARNING: FOXGLOVE_PLUGINS_AUTOINSTALL installed {id} with all its declared permissions, unsigned and unasked (test hook)"
@@ -220,21 +256,31 @@ pub fn autoinstall() {
     eprintln!("foxglove: {line}");
     if let Some(dir) = config_dir {
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("autoinstall.log")) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("autoinstall.log"))
+        {
             let _ = writeln!(f, "{line}");
         }
     }
 }
 
 /// The hook's guard: developer mode, and a config dir that's set and not the real one.
-fn autoinstall_allowed(dev_unsigned: bool, config_dir: Option<&Path>, real: Option<&Path>) -> Result<(), String> {
+fn autoinstall_allowed(
+    dev_unsigned: bool,
+    config_dir: Option<&Path>,
+    real: Option<&Path>,
+) -> Result<(), String> {
     if !dev_unsigned {
         return Err("needs FOXGLOVE_DEV_UNSIGNED_PLUGINS=1".into());
     }
     let dir = config_dir.ok_or("needs FOXGLOVE_CONFIG_DIR")?;
     let same = |a: &Path, b: &Path| {
         let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-        canon(a) == canon(b) || a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
+        canon(a) == canon(b)
+            || a.to_string_lossy()
+                .eq_ignore_ascii_case(&b.to_string_lossy())
     };
     if real.is_some_and(|real| same(dir, real) || real.parent().is_some_and(|p| same(dir, p))) {
         return Err("FOXGLOVE_CONFIG_DIR is the real settings folder".into());
@@ -268,9 +314,18 @@ fn zip_dir(dir: &Path) -> Result<PathBuf, String> {
             if path.is_dir() {
                 add(z, root, &path)?;
             } else {
-                let name = path.strip_prefix(root).map_err(|e| e.to_string())?.to_string_lossy().replace('\\', "/");
-                z.start_file(name, zip::write::SimpleFileOptions::default()).map_err(|e| e.to_string())?;
-                std::io::copy(&mut std::fs::File::open(&path).map_err(|e| e.to_string())?, z).map_err(|e| e.to_string())?;
+                let name = path
+                    .strip_prefix(root)
+                    .map_err(|e| e.to_string())?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                z.start_file(name, zip::write::SimpleFileOptions::default())
+                    .map_err(|e| e.to_string())?;
+                std::io::copy(
+                    &mut std::fs::File::open(&path).map_err(|e| e.to_string())?,
+                    z,
+                )
+                .map_err(|e| e.to_string())?;
             }
         }
         Ok(())
@@ -328,17 +383,26 @@ mod tests {
     #[test]
     fn shipped_catalog_parses_with_valid_permissions() {
         let plugins = parse_catalog(include_str!("../../resources/plugin-catalog.json")).unwrap();
-        assert!(plugins.iter().all(|k| k.id.contains('.') && !k.permissions.is_empty()));
-        assert!(plugins.iter().all(|k| k.url.is_none() || k.sha256.is_some()), "downloads are pinned");
+        assert!(plugins
+            .iter()
+            .all(|k| k.id.contains('.') && !k.permissions.is_empty()));
+        assert!(
+            plugins
+                .iter()
+                .all(|k| k.url.is_none() || k.sha256.is_some()),
+            "downloads are pinned"
+        );
     }
 
     fn zip_with(entries: &[(&str, &[u8])]) -> PathBuf {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("foxglove-plugin-{}-{n}.zip", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("foxglove-plugin-{}-{n}.zip", std::process::id()));
         let mut z = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
         for (name, bytes) in entries {
-            z.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            z.start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
             z.write_all(bytes).unwrap();
         }
         z.finish().unwrap();
@@ -348,18 +412,39 @@ mod tests {
     #[test]
     fn autoinstall_only_in_dev_mode_and_a_test_config_dir() {
         // Built with joins, so the paths are real ones on Linux too (CI).
-        let roaming = PathBuf::from(if cfg!(windows) { r"C:\Users\u\AppData\Roaming" } else { "/home/u/.config" });
+        let roaming = PathBuf::from(if cfg!(windows) {
+            r"C:\Users\u\AppData\Roaming"
+        } else {
+            "/home/u/.config"
+        });
         let real = roaming.join("Foxglove").join("config");
         let real = real.as_path();
         let test = std::env::temp_dir().join("foxglove-lab-1");
         assert!(autoinstall_allowed(true, Some(&test), Some(real)).is_ok());
-        assert!(autoinstall_allowed(false, Some(&test), Some(real)).is_err(), "needs developer mode");
-        assert!(autoinstall_allowed(true, None, Some(real)).is_err(), "needs a config dir");
-        assert!(autoinstall_allowed(true, Some(real), Some(real)).is_err(), "never the real folder");
-        assert!(autoinstall_allowed(true, Some(&roaming.join("Foxglove")), Some(real)).is_err(), "nor the folder above it");
+        assert!(
+            autoinstall_allowed(false, Some(&test), Some(real)).is_err(),
+            "needs developer mode"
+        );
+        assert!(
+            autoinstall_allowed(true, None, Some(real)).is_err(),
+            "needs a config dir"
+        );
+        assert!(
+            autoinstall_allowed(true, Some(real), Some(real)).is_err(),
+            "never the real folder"
+        );
+        assert!(
+            autoinstall_allowed(true, Some(&roaming.join("Foxglove")), Some(real)).is_err(),
+            "nor the folder above it"
+        );
         // Windows paths ignore case.
         #[cfg(windows)]
-        assert!(autoinstall_allowed(true, Some(Path::new(r"c:\users\u\appdata\roaming\foxglove")), Some(real)).is_err());
+        assert!(autoinstall_allowed(
+            true,
+            Some(Path::new(r"c:\users\u\appdata\roaming\foxglove")),
+            Some(real)
+        )
+        .is_err());
     }
 
     #[test]
@@ -379,13 +464,16 @@ mod tests {
 
     #[test]
     fn unpacks_safely() {
-        let dir = std::env::temp_dir().join(format!("foxglove-plugin-unpack-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("foxglove-plugin-unpack-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let good = zip_with(&[("plugin.toml", b"id = 1"), ("bin/run.exe", b"x")]);
         unpack(&good, &dir).unwrap();
         assert!(dir.join("bin/run.exe").exists());
         let evil = zip_with(&[("../escape.txt", b"x"), ("a", b""), ("b", b"")]);
-        assert!(unpack(&evil, &dir.join("evil")).unwrap_err().contains("unsafe path"));
+        assert!(unpack(&evil, &dir.join("evil"))
+            .unwrap_err()
+            .contains("unsafe path"));
         assert!(!dir.join("escape.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(good);
@@ -395,7 +483,10 @@ mod tests {
     /// The whole install flow in a temp settings folder (FOXGLOVE_CONFIG_DIR), never the real one.
     #[test]
     fn stage_commit_list_and_remove() {
-        let root = super::super::store::test_config_dir().parent().unwrap().to_path_buf();
+        let root = super::super::store::test_config_dir()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let manifest = "id = \"com.example.weather\"
 name = \"Weather\"
 version = \"1.0.0\"
@@ -414,13 +505,23 @@ permissions = [\"facts.write:weather.*\", \"key.events\"]
         let plugins = installed();
         assert_eq!(plugins.len(), 1);
         assert!(plugins[0].record.enabled && plugins[0].record.approved.len() == 2);
-        assert!(root.join("config/plugins/com.example.weather/weather.exe").exists(), "inside the config dir");
+        assert!(
+            root.join("config/plugins/com.example.weather/weather.exe")
+                .exists(),
+            "inside the config dir"
+        );
         let again = stage(&archive).unwrap();
-        assert!(again.new_permissions.is_empty(), "same version asks for nothing new");
+        assert!(
+            again.new_permissions.is_empty(),
+            "same version asks for nothing new"
+        );
         discard(again);
         remove("com.example.weather").unwrap();
         assert!(installed().is_empty());
-        assert!(remove("../config").is_err(), "ids can't leave the plugins folder");
+        assert!(
+            remove("../config").is_err(),
+            "ids can't leave the plugins folder"
+        );
         // The settings folder is shared with the other tests: only this test's plugins go.
         let _ = std::fs::remove_dir_all(root.join("config/plugins"));
         let _ = std::fs::remove_file(archive);

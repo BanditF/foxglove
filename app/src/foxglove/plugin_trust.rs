@@ -20,13 +20,20 @@ use foxglove_plugin_trust::{Catalog, Entry, Root, Seen};
 const ROOT_KEY: &str = include_str!("../../resources/plugin-trust/root.pub");
 
 /// Files the runner writes into a plugin's folder itself.
-pub const RUNTIME_FILES: &[&str] = &["plugin.log", "kit.log", foxglove_plugin_host::runner::DATA_DIR];
+pub const RUNTIME_FILES: &[&str] = &[
+    "plugin.log",
+    "kit.log",
+    foxglove_plugin_host::runner::DATA_DIR,
+];
 
 /// Whether unsigned plugins are allowed (developers only).
 pub fn dev_unsigned() -> bool {
-    ["FOXGLOVE_DEV_UNSIGNED_PLUGINS", "FOXGLOVE_DEV_UNSIGNED_KITS"]
-        .iter()
-        .any(|k| std::env::var_os(k).is_some_and(|v| v == "1"))
+    [
+        "FOXGLOVE_DEV_UNSIGNED_PLUGINS",
+        "FOXGLOVE_DEV_UNSIGNED_KITS",
+    ]
+    .iter()
+    .any(|k| std::env::var_os(k).is_some_and(|v| v == "1"))
 }
 
 /// A root and catalog with their signatures, as published.
@@ -39,7 +46,12 @@ pub struct Signed {
 }
 
 /// The published file names, in [`Signed`]'s order.
-pub const FILES: [&str; 4] = ["root.json", "root.json.minisig", "catalog.json", "catalog.json.minisig"];
+pub const FILES: [&str; 4] = [
+    "root.json",
+    "root.json.minisig",
+    "catalog.json",
+    "catalog.json.minisig",
+];
 
 impl Signed {
     pub fn from_files(files: [Vec<u8>; 4]) -> Signed {
@@ -53,7 +65,12 @@ impl Signed {
     }
 
     fn files(&self) -> [&[u8]; 4] {
-        [&self.root_json, self.root_sig.as_bytes(), &self.catalog_json, self.catalog_sig.as_bytes()]
+        [
+            &self.root_json,
+            self.root_sig.as_bytes(),
+            &self.catalog_json,
+            self.catalog_sig.as_bytes(),
+        ]
     }
 }
 
@@ -74,20 +91,40 @@ pub fn cache_dir() -> Option<PathBuf> {
 fn cached() -> Option<Signed> {
     let dir = cache_dir()?;
     let read = |name: &str| std::fs::read(dir.join(name)).ok();
-    Some(Signed::from_files([read(FILES[0])?, read(FILES[1])?, read(FILES[2])?, read(FILES[3])?]))
+    Some(Signed::from_files([
+        read(FILES[0])?,
+        read(FILES[1])?,
+        read(FILES[2])?,
+        read(FILES[3])?,
+    ]))
 }
 
 fn verify(set: &Signed, root_key: &str, now: &str, seen: &Seen) -> Result<(Root, Catalog), String> {
-    if root_key.starts_with("PLACEHOLDER") || set.root_json.is_empty() || set.catalog_json.is_empty() {
+    if root_key.starts_with("PLACEHOLDER")
+        || set.root_json.is_empty()
+        || set.catalog_json.is_empty()
+    {
         return Err("this build has no signed plugin catalog yet".into());
     }
-    let root = foxglove_plugin_trust::verify_root(&set.root_json, &set.root_sig, root_key, now, seen)?;
-    let catalog = foxglove_plugin_trust::verify_catalog(&set.catalog_json, &set.catalog_sig, &root, now, seen)?;
+    let root =
+        foxglove_plugin_trust::verify_root(&set.root_json, &set.root_sig, root_key, now, seen)?;
+    let catalog = foxglove_plugin_trust::verify_catalog(
+        &set.catalog_json,
+        &set.catalog_sig,
+        &root,
+        now,
+        seen,
+    )?;
     Ok((root, catalog))
 }
 
 /// The newest of the sets that verify, or the last error.
-fn newest(sets: &[Signed], root_key: &str, now: &str, seen: &Seen) -> Result<(Root, Catalog), String> {
+fn newest(
+    sets: &[Signed],
+    root_key: &str,
+    now: &str,
+    seen: &Seen,
+) -> Result<(Root, Catalog), String> {
     let mut best: Option<(Root, Catalog)> = None;
     let mut error = "no plugin catalog".to_string();
     for set in sets {
@@ -114,8 +151,9 @@ fn record(seen: &Seen, root: &Root, catalog: &Catalog) -> Result<(), String> {
     if next == *seen {
         return Ok(());
     }
-    super::store::save("plugins.trust", &next)
-        .map_err(|e| format!("can't record the plugin catalog's sequence, so no plugin is trusted: {e}"))
+    super::store::save("plugins.trust", &next).map_err(|e| {
+        format!("can't record the plugin catalog's sequence, so no plugin is trusted: {e}")
+    })
 }
 
 /// The signed catalog, verified through the pinned root key.
@@ -136,7 +174,10 @@ pub fn accept_download(set: &Signed) -> Result<u64, String> {
     let (root, catalog) = verify(set, ROOT_KEY, &now, &seen)?;
     if let Some((_, current)) = cached().and_then(|c| verify(&c, ROOT_KEY, &now, &seen).ok()) {
         if (catalog.epoch, catalog.sequence) < (current.epoch, current.sequence) {
-            return Err(format!("the server sent an older catalog (sequence {} < {})", catalog.sequence, current.sequence));
+            return Err(format!(
+                "the server sent an older catalog (sequence {} < {})",
+                catalog.sequence, current.sequence
+            ));
         }
     }
     let dir = cache_dir().ok_or("no settings folder")?;
@@ -191,7 +232,8 @@ mod tests {
 
     #[test]
     fn cache_is_swapped_in_whole() {
-        let dir = std::env::temp_dir().join(format!("foxglove-catalog-cache-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("foxglove-catalog-cache-{}", std::process::id()));
         let set = |n: u8| Signed::from_files([vec![n], vec![n], vec![n], vec![n]]);
         write_all(&dir, &set(1)).unwrap();
         write_all(&dir, &set(2)).unwrap();

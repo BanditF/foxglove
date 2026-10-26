@@ -33,7 +33,8 @@ fn positional(args: &[String]) -> Vec<String> {
 }
 
 fn load(path: &Path) -> Result<Catalog, String> {
-    serde_json::from_slice(&std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?).map_err(|e| e.to_string())
+    serde_json::from_slice(&std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?)
+        .map_err(|e| e.to_string())
 }
 
 fn save(path: &Path, c: &Catalog) -> Result<(), String> {
@@ -48,7 +49,11 @@ fn run(args: &[String]) -> Result<(), String> {
         return Err("usage: plugin-catalog new|add|yank|revoke|bump <catalog.json> ...".into());
     };
     let path = PathBuf::from(file);
-    let num = |name: &str, default: u64| flag(args, name).map_or(Ok(default), |v| v.parse().map_err(|_| format!("{name} must be a number")));
+    let num = |name: &str, default: u64| {
+        flag(args, name).map_or(Ok(default), |v| {
+            v.parse().map_err(|_| format!("{name} must be a number"))
+        })
+    };
     match cmd.as_str() {
         "new" => {
             if path.exists() {
@@ -71,9 +76,19 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         "yank" | "revoke" => {
             let id = pos.get(2).ok_or("which plugin id?")?;
-            let action = if cmd == "yank" { Action::Yank } else { Action::Revoke };
+            let action = if cmd == "yank" {
+                Action::Yank
+            } else {
+                Action::Revoke
+            };
             let mut c = load(&path)?;
-            publish::withdraw(&mut c, id, pos[3..].to_vec(), action, &flag(args, "--reason").unwrap_or_default());
+            publish::withdraw(
+                &mut c,
+                id,
+                pos[3..].to_vec(),
+                action,
+                &flag(args, "--reason").unwrap_or_default(),
+            );
             save(&path, &c)
         }
         "bump" => {

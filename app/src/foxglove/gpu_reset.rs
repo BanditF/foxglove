@@ -57,12 +57,20 @@ fn parse_history(value: Option<&str>) -> Vec<u64> {
 }
 
 fn format_history(history: &[u64]) -> String {
-    history.iter().map(u64::to_string).collect::<Vec<_>>().join(",")
+    history
+        .iter()
+        .map(u64::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// The history to hand to the next copy, or `None` when the budget is spent.
 fn next_history(previous: &[u64], now: u64) -> Option<Vec<u64>> {
-    let mut recent: Vec<u64> = previous.iter().copied().filter(|&t| t <= now && now - t < WINDOW_SECS).collect();
+    let mut recent: Vec<u64> = previous
+        .iter()
+        .copied()
+        .filter(|&t| t <= now && now - t < WINDOW_SECS)
+        .collect();
     if recent.len() >= BUDGET {
         return None;
     }
@@ -120,7 +128,10 @@ fn restart(reason: &str) {
     }
     eprintln!("Foxglove: GPU reset ({reason})");
     let Some(next) = next_history(&history(), now()) else {
-        eprintln!("Foxglove: restarted {BUDGET} times in {} minutes after GPU resets; not again", WINDOW_SECS / 60);
+        eprintln!(
+            "Foxglove: restarted {BUDGET} times in {} minutes after GPU resets; not again",
+            WINDOW_SECS / 60
+        );
         return;
     };
     imp::restart(&format_history(&next));
@@ -165,7 +176,10 @@ mod imp {
     unsafe impl Sync for Subscription {}
     static SUBSCRIPTION: OnceLock<Subscription> = OnceLock::new();
 
-    pub(super) fn subscribe(query: &str, callback: windows::Win32::System::EventLog::EVT_SUBSCRIBE_CALLBACK) -> windows::core::Result<EVT_HANDLE> {
+    pub(super) fn subscribe(
+        query: &str,
+        callback: windows::Win32::System::EventLog::EVT_SUBSCRIBE_CALLBACK,
+    ) -> windows::core::Result<EVT_HANDLE> {
         // SAFETY: a structured XML query takes no channel path; no signal event, bookmark or
         // context pointer is passed, and `callback` is a plain function that lives forever.
         unsafe {
@@ -182,7 +196,11 @@ mod imp {
         }
     }
 
-    unsafe extern "system" fn on_event(action: EVT_SUBSCRIBE_NOTIFY_ACTION, _context: *const core::ffi::c_void, _event: EVT_HANDLE) -> u32 {
+    unsafe extern "system" fn on_event(
+        action: EVT_SUBSCRIBE_NOTIFY_ACTION,
+        _context: *const core::ffi::c_void,
+        _event: EVT_HANDLE,
+    ) -> u32 {
         if action == EvtSubscribeActionDeliver {
             super::restart("the graphics driver reported it");
         } else {
@@ -215,7 +233,12 @@ mod imp {
         };
         // No stdio handed down: the copy sets up its own.
         let null = std::process::Stdio::null;
-        let spawned = std::process::Command::new(exe).env(super::ENV, history).stdin(null()).stdout(null()).stderr(null()).spawn();
+        let spawned = std::process::Command::new(exe)
+            .env(super::ENV, history)
+            .stdin(null())
+            .stdout(null())
+            .stderr(null())
+            .spawn();
         if let Err(e) = spawned {
             eprintln!("Foxglove: can't restart after the GPU reset: {e}");
             return;
@@ -256,7 +279,11 @@ mod tests {
         let two = next_history(&one, now + 5).unwrap();
         let three = next_history(&two, now + 10).unwrap();
         assert_eq!(three, vec![now, now + 5, now + 10]);
-        assert_eq!(next_history(&three, now + 15), None, "a fourth within ten minutes is refused");
+        assert_eq!(
+            next_history(&three, now + 15),
+            None,
+            "a fourth within ten minutes is refused"
+        );
     }
 
     #[test]
@@ -265,15 +292,26 @@ mod tests {
         let three = vec![now - 700, now - 650, now - 100];
         assert_eq!(next_history(&three, now), Some(vec![now - 100, now]));
         // A clock that went backwards doesn't count as recent.
-        assert_eq!(next_history(&[now + 50, now + 60, now + 70], now), Some(vec![now]));
+        assert_eq!(
+            next_history(&[now + 50, now + 60, now + 70], now),
+            Some(vec![now])
+        );
     }
 
     #[test]
     fn a_lost_window_restarts_and_a_failed_start_is_reported() {
         assert_eq!(failure_plan(true, false), Some(Duration::ZERO));
         assert_eq!(failure_plan(true, true), Some(Duration::ZERO));
-        assert_eq!(failure_plan(false, true), Some(SETTLE), "a copy after a reset tries again once settled");
-        assert_eq!(failure_plan(false, false), None, "a first start that fails is reported as before");
+        assert_eq!(
+            failure_plan(false, true),
+            Some(SETTLE),
+            "a copy after a reset tries again once settled"
+        );
+        assert_eq!(
+            failure_plan(false, false),
+            None,
+            "a first start that fails is reported as before"
+        );
     }
 
     #[test]
@@ -291,7 +329,11 @@ mod tests {
     #[test]
     fn the_event_log_accepts_the_query() {
         use windows::Win32::System::EventLog::{EvtClose, EVT_HANDLE, EVT_SUBSCRIBE_NOTIFY_ACTION};
-        unsafe extern "system" fn never(_: EVT_SUBSCRIBE_NOTIFY_ACTION, _: *const core::ffi::c_void, _: EVT_HANDLE) -> u32 {
+        unsafe extern "system" fn never(
+            _: EVT_SUBSCRIBE_NOTIFY_ACTION,
+            _: *const core::ffi::c_void,
+            _: EVT_HANDLE,
+        ) -> u32 {
             0
         }
         let handle = imp::subscribe(&query(u32::MAX - 7), Some(never)).expect("query accepted");

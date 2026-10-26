@@ -44,7 +44,12 @@ impl Durations {
 impl Timer {
     /// A first focus period, starting now.
     pub fn start(now: u64, d: &Durations) -> Timer {
-        Timer { phase: Phase::Focus, round: 1, deadline: Some(now + d.focus), paused_left: None }
+        Timer {
+            phase: Phase::Focus,
+            round: 1,
+            deadline: Some(now + d.focus),
+            paused_left: None,
+        }
     }
 
     pub fn paused(&self) -> bool {
@@ -53,7 +58,9 @@ impl Timer {
 
     /// Seconds left in the phase.
     pub fn left(&self, now: u64) -> u64 {
-        self.paused_left.or(self.deadline.map(|d| d.saturating_sub(now))).unwrap_or(0)
+        self.paused_left
+            .or(self.deadline.map(|d| d.saturating_sub(now)))
+            .unwrap_or(0)
     }
 
     /// How far through the phase, 0.0 to 1.0.
@@ -75,11 +82,15 @@ impl Timer {
     /// from the previous deadline, so time keeps counting while nothing watched; after a long
     /// absence (more than a whole cycle) it starts a fresh focus period instead.
     pub fn tick(&mut self, now: u64, d: &Durations) -> bool {
-        let Some(mut deadline) = self.deadline else { return false };
+        let Some(mut deadline) = self.deadline else {
+            return false;
+        };
         if deadline > now {
             return false;
         }
-        let cycle = d.focus * u64::from(d.rounds) + d.rest * u64::from(d.rounds.saturating_sub(1)) + d.long_rest;
+        let cycle = d.focus * u64::from(d.rounds)
+            + d.rest * u64::from(d.rounds.saturating_sub(1))
+            + d.long_rest;
         if now - deadline > cycle {
             *self = Timer::start(now, d);
             return true;
@@ -110,7 +121,12 @@ impl Timer {
 mod tests {
     use super::*;
 
-    const D: Durations = Durations { focus: 1500, rest: 300, long_rest: 900, rounds: 4 };
+    const D: Durations = Durations {
+        focus: 1500,
+        rest: 300,
+        long_rest: 900,
+        rounds: 4,
+    };
 
     #[test]
     fn rounds_rests_and_the_long_rest() {

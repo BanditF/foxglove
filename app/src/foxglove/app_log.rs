@@ -35,9 +35,16 @@ pub struct Log {
 impl Log {
     pub fn open(dir: &Path) -> std::io::Result<Log> {
         std::fs::create_dir_all(dir)?;
-        let file = OpenOptions::new().create(true).append(true).open(dir.join(FILE))?;
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(FILE))?;
         let size = file.metadata().map(|m| m.len()).unwrap_or(0);
-        Ok(Log { dir: dir.to_path_buf(), file: Some(file), size })
+        Ok(Log {
+            dir: dir.to_path_buf(),
+            file: Some(file),
+            size,
+        })
     }
 
     /// Writes one line, masked and timestamped, rolling the file first if it would pass
@@ -59,7 +66,11 @@ impl Log {
         self.file = None; // closed before the rename
         let _ = std::fs::remove_file(self.dir.join(OLD));
         let _ = std::fs::rename(self.dir.join(FILE), self.dir.join(OLD));
-        self.file = OpenOptions::new().create(true).append(true).open(self.dir.join(FILE)).ok();
+        self.file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.dir.join(FILE))
+            .ok();
         self.size = 0;
     }
 }
@@ -110,11 +121,26 @@ fn timestamp(secs: u64) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = yoe + era * 400 + i64::from(m <= 2);
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 /// Words that name a secret; the value after one (`=`, `:` or a space) is masked.
-const SECRET_WORDS: &[&str] = &["token", "password", "passwd", "secret", "api_key", "apikey", "authorization", "bearer", "credential"];
+const SECRET_WORDS: &[&str] = &[
+    "token",
+    "password",
+    "passwd",
+    "secret",
+    "api_key",
+    "apikey",
+    "authorization",
+    "bearer",
+    "credential",
+];
 
 /// Masks the value after a secret word and its `=` or `:` (`Bearer` takes a space), up to the
 /// next space, comma or quote. `Authorization` masks the rest of the line.
@@ -124,7 +150,9 @@ pub fn redact(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < text.len() {
-        let hit = SECRET_WORDS.iter().find(|w| lower[i..].starts_with(*w) && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric()));
+        let hit = SECRET_WORDS.iter().find(|w| {
+            lower[i..].starts_with(*w) && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
+        });
         let Some(word) = hit else {
             let c = text[i..].chars().next().expect("in bounds");
             out.push(c);
@@ -139,7 +167,8 @@ pub fn redact(text: &str) -> String {
         while j < text.len() && matches!(bytes[j], b'"' | b'\'') {
             j += 1;
         }
-        let separated = j < text.len() && (matches!(bytes[j], b'=' | b':') || (*word == "bearer" && bytes[j] == b' '));
+        let separated = j < text.len()
+            && (matches!(bytes[j], b'=' | b':') || (*word == "bearer" && bytes[j] == b' '));
         if !separated {
             out.push_str(&text[i..j]);
             i = j;
@@ -171,7 +200,11 @@ pub fn start() {
         Ok(log) => *LOG.lock().unwrap_or_else(|e| e.into_inner()) = Some(log),
         Err(_) => return, // no log rather than no Foxglove
     }
-    line(&format!("Foxglove {} started (pid {})", env!("CARGO_PKG_VERSION"), std::process::id()));
+    line(&format!(
+        "Foxglove {} started (pid {})",
+        env!("CARGO_PKG_VERSION"),
+        std::process::id()
+    ));
     let console = imp::capture_stderr();
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -182,8 +215,14 @@ pub fn start() {
             .map(|s| (*s).to_string())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
             .unwrap_or_else(|| "(no message)".into());
-        let at = info.location().map(|l| format!(" at {}:{}", l.file(), l.line())).unwrap_or_default();
-        let text = format!("Foxglove: panic in {}: {payload}{at}", thread.name().unwrap_or("a thread"));
+        let at = info
+            .location()
+            .map(|l| format!(" at {}:{}", l.file(), l.line()))
+            .unwrap_or_default();
+        let text = format!(
+            "Foxglove: panic in {}: {payload}{at}",
+            thread.name().unwrap_or("a thread")
+        );
         // try_lock: a panic inside a log write must not deadlock on the log's own lock.
         match LOG.try_lock() {
             Ok(mut guard) => {
@@ -216,7 +255,13 @@ pub fn open_folder() {
     let opener = "open";
     #[cfg(all(unix, not(target_os = "macos")))]
     let opener = "xdg-open";
-    if let Err(e) = std::process::Command::new(opener).arg(&dir).stdin(null()).stdout(null()).stderr(null()).spawn() {
+    if let Err(e) = std::process::Command::new(opener)
+        .arg(&dir)
+        .stdin(null())
+        .stdout(null())
+        .stderr(null())
+        .spawn()
+    {
         eprintln!("Foxglove: can't open the log folder: {e}");
     }
 }
@@ -255,31 +300,39 @@ mod imp {
         }
         CAPTURING.store(true, Ordering::Relaxed);
         let (read, original) = (read.0 as isize, original.0 as isize);
-        let spawned = std::thread::Builder::new().name("app-log".into()).spawn(move || {
-            // SAFETY: the read end is owned by this thread from here on.
-            let pipe = unsafe { std::fs::File::from_raw_handle(read as *mut core::ffi::c_void) };
-            // Borrowed, never closed: the console's handle belongs to the console.
-            let console_out = console.then(|| ManuallyDrop::new(unsafe { std::fs::File::from_raw_handle(original as *mut core::ffi::c_void) }));
-            let mut console_out = console_out;
-            // Blocks until a line arrives; ends when every write end is gone (process exit).
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                for line in BufReader::new(pipe).split(b'\n').map_while(Result::ok) {
-                    let text = String::from_utf8_lossy(&line);
-                    super::line(&text);
-                    if let Some(out) = console_out.as_mut() {
-                        let _ = out.write_all(&line);
-                        let _ = out.write_all(b"\n");
+        let spawned = std::thread::Builder::new()
+            .name("app-log".into())
+            .spawn(move || {
+                // SAFETY: the read end is owned by this thread from here on.
+                let pipe =
+                    unsafe { std::fs::File::from_raw_handle(read as *mut core::ffi::c_void) };
+                // Borrowed, never closed: the console's handle belongs to the console.
+                let console_out = console.then(|| {
+                    ManuallyDrop::new(unsafe {
+                        std::fs::File::from_raw_handle(original as *mut core::ffi::c_void)
+                    })
+                });
+                let mut console_out = console_out;
+                // Blocks until a line arrives; ends when every write end is gone (process exit).
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    for line in BufReader::new(pipe).split(b'\n').map_while(Result::ok) {
+                        let text = String::from_utf8_lossy(&line);
+                        super::line(&text);
+                        if let Some(out) = console_out.as_mut() {
+                            let _ = out.write_all(&line);
+                            let _ = out.write_all(b"\n");
+                        }
                     }
+                }));
+                // The reader is gone: give stderr back, so a write can't fail on a closed pipe.
+                CAPTURING.store(false, Ordering::Relaxed);
+                // SAFETY: restores the handle stderr had before `capture_stderr`.
+                unsafe {
+                    let _ =
+                        SetStdHandle(STD_ERROR_HANDLE, HANDLE(original as *mut core::ffi::c_void));
                 }
-            }));
-            // The reader is gone: give stderr back, so a write can't fail on a closed pipe.
-            CAPTURING.store(false, Ordering::Relaxed);
-            // SAFETY: restores the handle stderr had before `capture_stderr`.
-            unsafe {
-                let _ = SetStdHandle(STD_ERROR_HANDLE, HANDLE(original as *mut core::ffi::c_void));
-            }
-            let _ = result;
-        });
+                let _ = result;
+            });
         if spawned.is_err() {
             // SAFETY: as above; no reader, so stderr goes back at once.
             unsafe {
@@ -325,8 +378,17 @@ mod tests {
         let mut log = Log::open(&d).unwrap();
         log.write_line(0, "Foxglove: hello\r\n");
         log.write_line(1, "Foxglove: again");
-        assert_eq!(recent_in(&d, 10), vec!["1970-01-01 00:00:00Z Foxglove: hello", "1970-01-01 00:00:01Z Foxglove: again"]);
-        assert_eq!(recent_in(&d, 1), vec!["1970-01-01 00:00:01Z Foxglove: again"]);
+        assert_eq!(
+            recent_in(&d, 10),
+            vec![
+                "1970-01-01 00:00:00Z Foxglove: hello",
+                "1970-01-01 00:00:01Z Foxglove: again"
+            ]
+        );
+        assert_eq!(
+            recent_in(&d, 1),
+            vec!["1970-01-01 00:00:01Z Foxglove: again"]
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -339,7 +401,12 @@ mod tests {
             log.write_line(0, &text);
         }
         let size = |n: &str| std::fs::metadata(d.join(n)).map(|m| m.len()).unwrap_or(0);
-        assert!(size(FILE) <= MAX_BYTES && size(OLD) <= MAX_BYTES, "{} {}", size(FILE), size(OLD));
+        assert!(
+            size(FILE) <= MAX_BYTES && size(OLD) <= MAX_BYTES,
+            "{} {}",
+            size(FILE),
+            size(OLD)
+        );
         assert!(size(OLD) > MAX_BYTES / 2, "rolled at least once");
         let files = std::fs::read_dir(&d).unwrap().count();
         assert_eq!(files, 2, "never more than two files");
@@ -355,17 +422,32 @@ mod tests {
 
     #[test]
     fn secrets_are_masked() {
-        assert_eq!(redact("Foxglove obs: token=abc123 sent"), "Foxglove obs: token=*** sent");
-        assert_eq!(redact("password: hunter2, user bob"), "password: ***, user bob");
+        assert_eq!(
+            redact("Foxglove obs: token=abc123 sent"),
+            "Foxglove obs: token=*** sent"
+        );
+        assert_eq!(
+            redact("password: hunter2, user bob"),
+            "password: ***, user bob"
+        );
         assert_eq!(redact("Authorization: Bearer xyz"), "Authorization: ***");
         assert_eq!(redact("sent Bearer xyz to obs"), "sent Bearer *** to obs");
         assert_eq!(redact("\"api_key\":\"k-1\""), "\"api_key\":\"***\"");
         assert_eq!(redact("secret_key=s3"), "secret_key=***");
         // Words that only contain a secret word, and ones without a value, are left alone.
-        assert_eq!(redact("Foxglove: removing obs's secrets"), "Foxglove: removing obs's secrets");
+        assert_eq!(
+            redact("Foxglove: removing obs's secrets"),
+            "Foxglove: removing obs's secrets"
+        );
         assert_eq!(redact("tokenizer ready"), "tokenizer ready");
-        assert_eq!(redact("no secrets here: just text"), "no secrets here: just text");
-        assert_eq!(redact("left · battery 61% — ünïcode"), "left · battery 61% — ünïcode");
+        assert_eq!(
+            redact("no secrets here: just text"),
+            "no secrets here: just text"
+        );
+        assert_eq!(
+            redact("left · battery 61% — ünïcode"),
+            "left · battery 61% — ünïcode"
+        );
     }
 
     #[test]

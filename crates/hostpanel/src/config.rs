@@ -31,12 +31,19 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { product: None, fps: 4, games: HashMap::new() }
+        Config {
+            product: None,
+            fps: 4,
+            games: HashMap::new(),
+        }
     }
 }
 
 pub fn path() -> PathBuf {
-    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("hostpanel").join("config.toml")
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("hostpanel")
+        .join("config.toml")
 }
 
 /// Reads the config, writing the commented default first if there is none.
@@ -54,7 +61,11 @@ pub fn load() -> Config {
         Config::default()
     });
     cfg.fps = cfg.fps.clamp(1, 10);
-    cfg.games = cfg.games.into_iter().map(|(k, v)| (k.to_lowercase(), v)).collect();
+    cfg.games = cfg
+        .games
+        .into_iter()
+        .map(|(k, v)| (k.to_lowercase(), v))
+        .collect();
     cfg
 }
 

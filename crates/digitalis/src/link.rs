@@ -173,7 +173,13 @@ pub struct Link {
 impl Link {
     /// Starts the link thread; it connects with `open` and keeps reconnecting.
     pub fn start(open: Opener) -> Link {
-        Self::start_with(open, Retry { delay: RETRY, tries: RETRIES })
+        Self::start_with(
+            open,
+            Retry {
+                delay: RETRY,
+                tries: RETRIES,
+            },
+        )
     }
 
     fn start_with(open: Opener, retry: Retry) -> Link {
@@ -194,7 +200,11 @@ impl Link {
                 move || run(open, rx, tx, &thread_shared, retry)
             })
             .expect("link thread");
-        Link { commands: Mutex::new(tx), shared, thread: Some(thread) }
+        Link {
+            commands: Mutex::new(tx),
+            shared,
+            thread: Some(thread),
+        }
     }
 
     /// Re-enumerate after a device-interface change, preferring the current transport. No I/O on the caller.
@@ -219,7 +229,9 @@ impl Link {
                 return Ok(c);
             }
             if Instant::now() >= end {
-                return Err(anyhow!(s.error.unwrap_or_else(|| "keyboard not connected".into())));
+                return Err(anyhow!(s
+                    .error
+                    .unwrap_or_else(|| "keyboard not connected".into())));
             }
             std::thread::sleep(Duration::from_millis(50));
         }
@@ -245,15 +257,25 @@ impl Link {
         let mut events = self.shared.events.lock().unwrap();
         let alive = Arc::new(AtomicBool::new(true));
         notify(Event::State(state.clone()));
-        events.push(EventSubscriber { notify: Box::new(notify), alive: alive.clone() });
+        events.push(EventSubscriber {
+            notify: Box::new(notify),
+            alive: alive.clone(),
+        });
         EventSubscription(alive)
     }
 
     /// Observes incoming reports, including HELLO/STATUS replies, without consuming them.
     /// The callback runs on the reader thread and must only enqueue work.
-    pub fn subscribe_reports(&self, notify: impl Fn(u64, &Report) + Send + 'static) -> EventSubscription {
+    pub fn subscribe_reports(
+        &self,
+        notify: impl Fn(u64, &Report) + Send + 'static,
+    ) -> EventSubscription {
         let alive = Arc::new(AtomicBool::new(true));
-        self.shared.reports.lock().unwrap().push((Box::new(notify), alive.clone()));
+        self.shared
+            .reports
+            .lock()
+            .unwrap()
+            .push((Box::new(notify), alive.clone()));
         EventSubscription(alive)
     }
 
@@ -261,22 +283,38 @@ impl Link {
         if self.shared.state.lock().unwrap().connected.is_none() {
             return Err(anyhow!("keyboard not connected"));
         }
-        self.commands.lock().unwrap().send(Message::Command(command)).map_err(|_| anyhow!("link stopped"))
+        self.commands
+            .lock()
+            .unwrap()
+            .send(Message::Command(command))
+            .map_err(|_| anyhow!("link stopped"))
     }
 }
 
 impl Transport for Link {
     fn send(&self, report: &[u8]) -> Result<()> {
-        self.queue(Command { report: report.to_vec(), reply: None })
+        self.queue(Command {
+            report: report.to_vec(),
+            reply: None,
+        })
     }
 
     fn request(&self, report: &[u8], proto: u8, cmd: u8, timeout: Duration) -> Result<Report> {
         let (tx, rx) = mpsc::channel();
         let deadline = Instant::now() + timeout;
-        self.queue(Command { report: report.to_vec(), reply: Some(Request { key: (proto, cmd), tx, deadline }) })?;
+        self.queue(Command {
+            report: report.to_vec(),
+            reply: Some(Request {
+                key: (proto, cmd),
+                tx,
+                deadline,
+            }),
+        })?;
         rx.recv_timeout(timeout).map_err(|e| match e {
             // The link drops a request at its deadline, which can beat our own timeout.
-            RecvTimeoutError::Disconnected if Instant::now() < deadline => anyhow!("keyboard disconnected"),
+            RecvTimeoutError::Disconnected if Instant::now() < deadline => {
+                anyhow!("keyboard disconnected")
+            }
             _ => anyhow!("no reply from the keyboard"),
         })
     }
@@ -317,7 +355,13 @@ fn discard(commands: &Receiver<Message>) {
     while commands.try_recv().is_ok() {}
 }
 
-fn run(mut open: Opener, commands: Receiver<Message>, tx: Sender<Message>, shared: &Shared, retry: Retry) {
+fn run(
+    mut open: Opener,
+    commands: Receiver<Message>,
+    tx: Sender<Message>,
+    shared: &Shared,
+    retry: Retry,
+) {
     // Failed opens since the last success or reconnect request.
     let mut failures = 0;
     while !shared.stop.load(Ordering::Relaxed) {
@@ -332,11 +376,15 @@ fn run(mut open: Opener, commands: Receiver<Message>, tx: Sender<Message>, share
                 // Start: the failed open. Stop: reconnect, Drop, or (for the first few
                 // failures only) the retry delay. Past those, no timer: it waits for an event.
                 let end = (failures <= retry.tries).then(|| Instant::now() + retry.delay);
-                while end.is_none_or(|end| Instant::now() < end) && !shared.stop.load(Ordering::Relaxed)
-                    && !shared.reconnect.load(Ordering::Relaxed) {
+                while end.is_none_or(|end| Instant::now() < end)
+                    && !shared.stop.load(Ordering::Relaxed)
+                    && !shared.reconnect.load(Ordering::Relaxed)
+                {
                     discard(&commands);
                     match end {
-                        Some(end) => std::thread::park_timeout(end.saturating_duration_since(Instant::now())),
+                        Some(end) => {
+                            std::thread::park_timeout(end.saturating_duration_since(Instant::now()))
+                        }
                         None => std::thread::park(),
                     }
                 }
@@ -370,7 +418,12 @@ struct Requests {
 }
 
 /// Talks to one connection until it fails (returns why) or the link stops (returns None).
-fn serve(dev: Arc<dyn RawHid>, commands: &Receiver<Message>, tx: &Sender<Message>, shared: &Shared) -> Option<String> {
+fn serve(
+    dev: Arc<dyn RawHid>,
+    commands: &Receiver<Message>,
+    tx: &Sender<Message>,
+    shared: &Shared,
+) -> Option<String> {
     let finished = AtomicBool::new(false);
     std::thread::scope(|scope| {
         let finished_ref = &finished;
@@ -380,7 +433,8 @@ fn serve(dev: Arc<dyn RawHid>, commands: &Receiver<Message>, tx: &Sender<Message
             let mut buf = [0; REPORT];
             while !finished_ref.load(Ordering::Relaxed)
                 && !shared.stop.load(Ordering::Relaxed)
-                && !shared.reconnect.load(Ordering::Relaxed) {
+                && !shared.reconnect.load(Ordering::Relaxed)
+            {
                 match reading.read(&mut buf) {
                     Ok(n) => {
                         errors = 0;
@@ -418,13 +472,18 @@ impl Requests {
             false
         });
         self.held.retain(|_, until| *until > now);
-        self.waiting.retain(|c| c.reply.as_ref().is_none_or(|r| r.deadline > now));
+        self.waiting
+            .retain(|c| c.reply.as_ref().is_none_or(|r| r.deadline > now));
     }
 
     fn next_deadline(&self) -> Option<Instant> {
         let waiting = self.waiting.iter().filter_map(|c| c.reply.as_ref());
-        let held = waiting.clone().filter_map(|r| self.held.get(&r.key).copied());
-        self.in_flight.values().map(|r| r.deadline)
+        let held = waiting
+            .clone()
+            .filter_map(|r| self.held.get(&r.key).copied());
+        self.in_flight
+            .values()
+            .map(|r| r.deadline)
             .chain(waiting.map(|r| r.deadline))
             .chain(held)
             .min()
@@ -468,11 +527,13 @@ fn write_loop(dev: &dyn RawHid, commands: &Receiver<Message>, shared: &Shared) -
             }
         }
         let message = match requests.next_deadline() {
-            Some(deadline) => match commands.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-                Ok(m) => m,
-                Err(RecvTimeoutError::Timeout) => continue,
-                Err(RecvTimeoutError::Disconnected) => return None,
-            },
+            Some(deadline) => {
+                match commands.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(m) => m,
+                    Err(RecvTimeoutError::Timeout) => continue,
+                    Err(RecvTimeoutError::Disconnected) => return None,
+                }
+            }
             None => match commands.recv() {
                 Ok(m) => m,
                 Err(_) => return None,
@@ -491,7 +552,9 @@ fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
     requests.expire(Instant::now());
     let generation = shared.state.lock().unwrap().generation;
     shared.reports.lock().unwrap().retain(|(notify, alive)| {
-        if !alive.load(Ordering::Relaxed) { return false; }
+        if !alive.load(Ordering::Relaxed) {
+            return false;
+        }
         notify(generation, r);
         true
     });
@@ -512,7 +575,13 @@ fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
     }
     if r[0] == protocol::ART && r[1] & 0x7f == protocol::art::STATUS {
         let generation = shared.state.lock().unwrap().generation;
-        publish(shared, Event::ArtStatus { generation, report: *r });
+        publish(
+            shared,
+            Event::ArtStatus {
+                generation,
+                report: *r,
+            },
+        );
     }
     shared.subscribers.lock().unwrap().retain(|s| {
         if !s.alive.load(Ordering::Relaxed) {
@@ -563,7 +632,9 @@ mod hid_open {
     #[cfg(not(windows))]
     impl RawHid for Device {
         fn read(&self, buf: &mut Report) -> Result<usize> {
-            if self.interrupted.load(Ordering::Relaxed) { return Ok(0); }
+            if self.interrupted.load(Ordering::Relaxed) {
+                return Ok(0);
+            }
             self.keyboard.lock().unwrap().read_timeout(buf, 10)
         }
 
@@ -582,17 +653,25 @@ mod hid_open {
             let mut api = hidapi::HidApi::new()?;
             Ok(Link::start(Box::new(move || {
                 let kb = Keyboard::open_matching(&mut api, &m)?;
-                let connected = Connected { product: kb.product.clone(), hello: kb.hello };
+                let connected = Connected {
+                    product: kb.product.clone(),
+                    hello: kb.hello,
+                };
                 #[cfg(windows)]
-                let device = Device { reader: kb.input()?, writer: Mutex::new(kb) };
+                let device = Device {
+                    reader: kb.input()?,
+                    writer: Mutex::new(kb),
+                };
                 #[cfg(not(windows))]
-                let device = Device { keyboard: Mutex::new(kb), interrupted: AtomicBool::new(false) };
+                let device = Device {
+                    keyboard: Mutex::new(kb),
+                    interrupted: AtomicBool::new(false),
+                };
                 Ok((Box::new(device) as Box<dyn RawHid>, connected))
             })))
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -657,9 +736,16 @@ mod tests {
             self.reads.fetch_add(1, Ordering::Relaxed);
             let mut inbox = self.inbox.0.lock().unwrap();
             loop {
-                if self.interrupted.load(Ordering::Relaxed) { return Ok(0); }
-                if self.dead.load(Ordering::Relaxed) { return Err(anyhow!("device gone")); }
-                if let Some(r) = inbox.pop_front() { *buf = r; return Ok(REPORT); }
+                if self.interrupted.load(Ordering::Relaxed) {
+                    return Ok(0);
+                }
+                if self.dead.load(Ordering::Relaxed) {
+                    return Err(anyhow!("device gone"));
+                }
+                if let Some(r) = inbox.pop_front() {
+                    *buf = r;
+                    return Ok(REPORT);
+                }
                 inbox = self.inbox.1.wait(inbox).unwrap();
             }
         }
@@ -696,7 +782,10 @@ mod tests {
             if fake.dead.load(Ordering::Relaxed) {
                 return Err(anyhow!("no keyboard"));
             }
-            let c = Connected { product: "Fake".into(), hello: None };
+            let c = Connected {
+                product: "Fake".into(),
+                hello: None,
+            };
             let mut connection = fake.clone();
             connection.interrupted = Arc::new(AtomicBool::new(false));
             Ok((Box::new(connection) as Box<dyn RawHid>, c))
@@ -707,7 +796,13 @@ mod tests {
 
     /// An art STATUS request tagged with `id` (the firmware ignores byte 2).
     fn status(l: &Link, id: u8, timeout: Duration) -> Result<u8> {
-        l.request(&[protocol::ART, art::STATUS, id], protocol::ART, art::STATUS, timeout).map(|r| r[2])
+        l.request(
+            &[protocol::ART, art::STATUS, id],
+            protocol::ART,
+            art::STATUS,
+            timeout,
+        )
+        .map(|r| r[2])
     }
 
     #[test]
@@ -720,10 +815,18 @@ mod tests {
         }
         assert_eq!(fake.reads.load(Ordering::Relaxed), 1);
         std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(fake.reads.load(Ordering::Relaxed), 1, "idle input must not poll");
+        assert_eq!(
+            fake.reads.load(Ordering::Relaxed),
+            1,
+            "idle input must not poll"
+        );
         let (tx, rx) = mpsc::channel();
-        let dropping = std::thread::spawn(move || { drop(l); tx.send(()).unwrap(); });
-        rx.recv_timeout(WAIT).expect("Drop must wake the blocked reader");
+        let dropping = std::thread::spawn(move || {
+            drop(l);
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(WAIT)
+            .expect("Drop must wake the blocked reader");
         dropping.join().unwrap();
     }
 
@@ -739,7 +842,10 @@ mod tests {
         });
         fake.wait_written(1);
         l.reconnect();
-        assert_eq!(pending.join().unwrap().unwrap_err().to_string(), "keyboard disconnected");
+        assert_eq!(
+            pending.join().unwrap().unwrap_err().to_string(),
+            "keyboard disconnected"
+        );
         let end = Instant::now() + WAIT;
         while l.state().generation == first && Instant::now() < end {
             std::thread::sleep(Duration::from_millis(5));
@@ -759,7 +865,11 @@ mod tests {
             move || status(&l, 2, WAIT)
         });
         std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(fake.written().len(), 1, "the timed-out key stays quarantined");
+        assert_eq!(
+            fake.written().len(),
+            1,
+            "the timed-out key stays quarantined"
+        );
         fake.wait_written(2);
         assert_eq!(fake.written().len(), 2, "grace expiry must wake the writer");
         fake.push(&[protocol::ART, 0x80 | art::STATUS, 2]);
@@ -772,11 +882,22 @@ mod tests {
         let key = (protocol::ART, art::STATUS);
         let (tx, _rx) = mpsc::channel();
         let mut requests = Requests::default();
-        requests.in_flight.insert(key, Request { key, tx, deadline: now });
+        requests.in_flight.insert(
+            key,
+            Request {
+                key,
+                tx,
+                deadline: now,
+            },
+        );
         requests.expire(now + Duration::from_millis(100));
         assert!(requests.in_flight.is_empty());
         assert_eq!(requests.held[&key], now + LATE_REPLY_GRACE);
-        assert_eq!(requests.next_deadline(), None, "an idle held key needs no timer");
+        assert_eq!(
+            requests.next_deadline(),
+            None,
+            "an idle held key needs no timer"
+        );
         requests.expire(now + LATE_REPLY_GRACE);
         assert!(requests.held.is_empty());
     }
@@ -787,7 +908,9 @@ mod tests {
         let l = link(&fake);
         let (tx, rx) = mpsc::channel();
         let subscription = l.subscribe_reports(move |generation, r| {
-            if r[0] == protocol::ART { let _ = tx.send((generation, *r)); }
+            if r[0] == protocol::ART {
+                let _ = tx.send((generation, *r));
+            }
         });
         assert_eq!(status(&l, 42, WAIT).unwrap(), 42);
         let (generation, reply) = rx.recv_timeout(WAIT).unwrap();
@@ -810,7 +933,13 @@ mod tests {
                 release_rx.recv().unwrap();
                 return Err(anyhow!("not present"));
             }
-            Ok((Box::new(Fake::default()), Connected { product: "USB".into(), hello: None }))
+            Ok((
+                Box::new(Fake::default()),
+                Connected {
+                    product: "USB".into(),
+                    hello: None,
+                },
+            ))
         }));
         entered_rx.recv_timeout(WAIT).unwrap();
         l.reconnect();
@@ -829,9 +958,18 @@ mod tests {
                 if !p.load(Ordering::Relaxed) {
                     return Err(anyhow!("not present"));
                 }
-                Ok((Box::new(Fake::default()) as Box<dyn RawHid>, Connected { product: "Back".into(), hello: None }))
+                Ok((
+                    Box::new(Fake::default()) as Box<dyn RawHid>,
+                    Connected {
+                        product: "Back".into(),
+                        hello: None,
+                    },
+                ))
             }),
-            Retry { delay: Duration::from_millis(20), tries: 2 },
+            Retry {
+                delay: Duration::from_millis(20),
+                tries: 2,
+            },
         );
         // The first open and two timed retries, then nothing: no timer while it stays gone.
         let end = Instant::now() + WAIT;
@@ -839,18 +977,32 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         std::thread::sleep(Duration::from_millis(300));
-        assert_eq!(opens.load(Ordering::Relaxed), 3, "no retries past the burst");
+        assert_eq!(
+            opens.load(Ordering::Relaxed),
+            3,
+            "no retries past the burst"
+        );
         // The keyboard arrives: the app's arrival event reconnects it at once.
         present.store(true, Ordering::Relaxed);
         l.reconnect();
         assert_eq!(l.wait_connected(WAIT).unwrap().product, "Back");
         assert_eq!(opens.load(Ordering::Relaxed), 4);
         // Drop still wakes a link that is waiting with no timer.
-        let gone = Link::start_with(Box::new(|| Err(anyhow!("never"))), Retry { delay: Duration::ZERO, tries: 0 });
+        let gone = Link::start_with(
+            Box::new(|| Err(anyhow!("never"))),
+            Retry {
+                delay: Duration::ZERO,
+                tries: 0,
+            },
+        );
         std::thread::sleep(Duration::from_millis(50));
         let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || { drop(gone); tx.send(()).unwrap(); });
-        rx.recv_timeout(WAIT).expect("Drop must wake a link waiting for an arrival");
+        std::thread::spawn(move || {
+            drop(gone);
+            tx.send(()).unwrap();
+        });
+        rx.recv_timeout(WAIT)
+            .expect("Drop must wake a link waiting for an arrival");
     }
 
     #[test]
@@ -859,12 +1011,18 @@ mod tests {
         let l = link(&fake);
         let first = l.state().generation;
         let (tx, rx) = mpsc::channel();
-        let _subscription = l.subscribe_events(move |event| { let _ = tx.send(event); });
+        let _subscription = l.subscribe_events(move |event| {
+            let _ = tx.send(event);
+        });
         rx.recv_timeout(WAIT).unwrap();
         l.reconnect();
-        let Event::State(away) = rx.recv_timeout(WAIT).unwrap() else { panic!("state") };
+        let Event::State(away) = rx.recv_timeout(WAIT).unwrap() else {
+            panic!("state")
+        };
         assert!(away.connected.is_none());
-        let Event::State(back) = rx.recv_timeout(WAIT).unwrap() else { panic!("state") };
+        let Event::State(back) = rx.recv_timeout(WAIT).unwrap() else {
+            panic!("state")
+        };
         assert!(back.connected.is_some());
         assert_eq!(back.generation, first + 1);
     }
@@ -875,7 +1033,14 @@ mod tests {
         let l = link(&fake);
         let layers = l.subscribe(|r| r[0] == 0xFF);
         let everything = l.subscribe(|_| true);
-        let r = l.request(&[0xD5, panel::HELLO, 42], protocol::PANEL, panel::HELLO, WAIT).unwrap();
+        let r = l
+            .request(
+                &[0xD5, panel::HELLO, 42],
+                protocol::PANEL,
+                panel::HELLO,
+                WAIT,
+            )
+            .unwrap();
         assert_eq!((r[0], r[1], r[2]), (0xD5, 0x81, 42));
         assert_eq!(&layers.recv_timeout(WAIT).unwrap()[..4], &[0xFF, 1, 0, 2]);
         // The catch-all saw the layer report but not the reply.
@@ -891,8 +1056,14 @@ mod tests {
         fake.push(&[0xD5, 0x81, 9]); // an unasked HELLO stays private
         fake.push(&[0xD6, 0x85, 9]); // future firmware may announce art STATUS
         fake.push(&[0x01, 0x81, 7]); // someone else's protocol with the high bit set
-        assert_eq!(&everything.recv_timeout(WAIT).unwrap()[..3], &[0xD6, 0x85, 9]);
-        assert_eq!(&everything.recv_timeout(WAIT).unwrap()[..3], &[0x01, 0x81, 7]);
+        assert_eq!(
+            &everything.recv_timeout(WAIT).unwrap()[..3],
+            &[0xD6, 0x85, 9]
+        );
+        assert_eq!(
+            &everything.recv_timeout(WAIT).unwrap()[..3],
+            &[0x01, 0x81, 7]
+        );
         assert!(everything.recv_timeout(Duration::from_millis(100)).is_err());
     }
 
@@ -901,17 +1072,23 @@ mod tests {
         let fake = Fake::default();
         let l = link(&fake);
         let (tx, rx) = mpsc::channel();
-        let subscription = l.subscribe_events(move |event| { let _ = tx.send(event); });
+        let subscription = l.subscribe_events(move |event| {
+            let _ = tx.send(event);
+        });
         let first = l.state();
         assert_eq!(rx.recv_timeout(WAIT).unwrap(), Event::State(first.clone()));
         set_state(&l.shared, |s| s.connected = None);
-        let Event::State(away) = rx.recv_timeout(WAIT).unwrap() else { panic!("state") };
+        let Event::State(away) = rx.recv_timeout(WAIT).unwrap() else {
+            panic!("state")
+        };
         assert!(away.connected.is_none());
         set_state(&l.shared, |s| {
             s.generation += 1;
             s.connected = first.connected;
         });
-        let Event::State(back) = rx.recv_timeout(WAIT).unwrap() else { panic!("state") };
+        let Event::State(back) = rx.recv_timeout(WAIT).unwrap() else {
+            panic!("state")
+        };
         assert_eq!(back.generation, first.generation + 1);
         assert!(back.connected.is_some());
         drop(subscription);
@@ -925,20 +1102,36 @@ mod tests {
         let fake = Fake::default();
         let l = link(&fake);
         let (tx, rx) = mpsc::channel();
-        let _subscription = l.subscribe_events(move |event| { let _ = tx.send(event); });
+        let _subscription = l.subscribe_events(move |event| {
+            let _ = tx.send(event);
+        });
         assert!(matches!(rx.recv_timeout(WAIT).unwrap(), Event::State(_)));
         assert_eq!(status(&l, 7, WAIT).unwrap(), 7);
         assert!(rx.try_recv().is_err());
         let report = report(&[protocol::ART, 0x80 | art::STATUS, 9]);
         let mut requests = Requests::default();
-        requests.held.insert((protocol::ART, art::STATUS), Instant::now() + WAIT);
+        requests
+            .held
+            .insert((protocol::ART, art::STATUS), Instant::now() + WAIT);
         dispatch(&report, &mut requests, &l.shared);
         assert!(rx.try_recv().is_err());
         dispatch(&report, &mut requests, &l.shared);
-        assert_eq!(rx.recv_timeout(WAIT).unwrap(), Event::ArtStatus { generation: l.state().generation, report });
+        assert_eq!(
+            rx.recv_timeout(WAIT).unwrap(),
+            Event::ArtStatus {
+                generation: l.state().generation,
+                report
+            }
+        );
         let report = self::report(&[protocol::ART, art::STATUS, 0]);
         dispatch(&report, &mut requests, &l.shared);
-        assert_eq!(rx.recv_timeout(WAIT).unwrap(), Event::ArtStatus { generation: l.state().generation, report });
+        assert_eq!(
+            rx.recv_timeout(WAIT).unwrap(),
+            Event::ArtStatus {
+                generation: l.state().generation,
+                report
+            }
+        );
     }
 
     #[test]
@@ -956,7 +1149,11 @@ mod tests {
             move || status(&l, 2, WAIT)
         });
         std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(fake.written().len(), 1, "the second waits until the first is answered");
+        assert_eq!(
+            fake.written().len(),
+            1,
+            "the second waits until the first is answered"
+        );
 
         fake.release_one();
         assert_eq!(first.join().unwrap().unwrap(), 1);
@@ -975,7 +1172,12 @@ mod tests {
             move || status(&l, 1, WAIT)
         });
         fake.wait_written(1);
-        assert_eq!(status(&l, 2, Duration::from_millis(100)).unwrap_err().to_string(), "no reply from the keyboard");
+        assert_eq!(
+            status(&l, 2, Duration::from_millis(100))
+                .unwrap_err()
+                .to_string(),
+            "no reply from the keyboard"
+        );
         fake.release_one();
         assert_eq!(first.join().unwrap().unwrap(), 1);
         std::thread::sleep(Duration::from_millis(100));
@@ -1050,17 +1252,26 @@ mod tests {
         let l = link(&fake);
         let first = l.state().generation;
         let (tx, rx) = mpsc::channel();
-        let _subscription = l.subscribe_events(move |event| { let _ = tx.send(event); });
+        let _subscription = l.subscribe_events(move |event| {
+            let _ = tx.send(event);
+        });
         assert!(matches!(rx.recv_timeout(WAIT).unwrap(), Event::State(_)));
 
         fake.disconnect();
-        let Event::State(s) = rx.recv_timeout(WAIT).unwrap() else { panic!("state") };
+        let Event::State(s) = rx.recv_timeout(WAIT).unwrap() else {
+            panic!("state")
+        };
         assert!(s.connected.is_none());
         assert!(s.error.is_some());
-        assert!(l.send(&protocol::present()).is_err(), "sends fail fast while away");
+        assert!(
+            l.send(&protocol::present()).is_err(),
+            "sends fail fast while away"
+        );
 
         fake.dead.store(false, Ordering::Relaxed);
-        let Event::State(s) = rx.recv_timeout(Duration::from_secs(5)).unwrap() else { panic!("state") };
+        let Event::State(s) = rx.recv_timeout(Duration::from_secs(5)).unwrap() else {
+            panic!("state")
+        };
         assert!(s.connected.is_some());
         assert_eq!(s.generation, first + 1);
     }

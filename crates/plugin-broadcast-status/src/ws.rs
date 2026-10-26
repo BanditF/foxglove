@@ -78,7 +78,11 @@ impl Decoder {
         let mut out = vec![];
         if !self.upgraded {
             let Some(end) = self.buf.windows(4).position(|w| w == b"\r\n\r\n") else {
-                return if self.buf.len() > 16 * 1024 { Err("no reply to the WebSocket upgrade".into()) } else { Ok(out) };
+                return if self.buf.len() > 16 * 1024 {
+                    Err("no reply to the WebSocket upgrade".into())
+                } else {
+                    Ok(out)
+                };
             };
             let head = String::from_utf8_lossy(&self.buf[..end]).into_owned();
             let status = head.lines().next().unwrap_or_default();
@@ -118,7 +122,10 @@ impl Decoder {
             }
             let mut payload = b[at..at + len].to_vec();
             if let Some(m) = mask {
-                payload.iter_mut().enumerate().for_each(|(i, x)| *x ^= m[i % 4]);
+                payload
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(i, x)| *x ^= m[i % 4]);
             }
             self.buf.drain(..at + len);
             match op {
@@ -126,10 +133,15 @@ impl Decoder {
                 0x0..=0x2 => {
                     self.partial.extend_from_slice(&payload);
                     if fin {
-                        out.push(Msg::Text(String::from_utf8_lossy(&std::mem::take(&mut self.partial)).into_owned()));
+                        out.push(Msg::Text(
+                            String::from_utf8_lossy(&std::mem::take(&mut self.partial))
+                                .into_owned(),
+                        ));
                     }
                 }
-                CLOSE => out.push(Msg::Close((payload.len() >= 2).then(|| u16::from_be_bytes([payload[0], payload[1]])))),
+                CLOSE => out.push(Msg::Close(
+                    (payload.len() >= 2).then(|| u16::from_be_bytes([payload[0], payload[1]])),
+                )),
                 PING => out.push(Msg::Ping(payload)),
                 _ => {}
             }
@@ -171,7 +183,16 @@ mod tests {
         for b in &bytes {
             got.extend(d.feed(&[*b]).unwrap());
         }
-        assert_eq!(got, [Msg::Text("{\"op\":0}".into()), Msg::Text("hello".into()), Msg::Ping(b"p".to_vec()), Msg::Text(long), Msg::Close(Some(4009))]);
+        assert_eq!(
+            got,
+            [
+                Msg::Text("{\"op\":0}".into()),
+                Msg::Text("hello".into()),
+                Msg::Ping(b"p".to_vec()),
+                Msg::Text(long),
+                Msg::Close(Some(4009))
+            ]
+        );
     }
 
     #[test]
@@ -185,9 +206,16 @@ mod tests {
         let f = frame(TEXT, b"hello");
         assert_eq!((f[0], f[1]), (0x81, 0x85));
         let mask = &f[2..6];
-        let plain: Vec<u8> = f[6..].iter().enumerate().map(|(i, b)| b ^ mask[i % 4]).collect();
+        let plain: Vec<u8> = f[6..]
+            .iter()
+            .enumerate()
+            .map(|(i, b)| b ^ mask[i % 4])
+            .collect();
         assert_eq!(plain, b"hello");
         let big = frame(TEXT, &[0; 300]);
-        assert_eq!((big[1], u16::from_be_bytes([big[2], big[3]])), (0x80 | 126, 300));
+        assert_eq!(
+            (big[1], u16::from_be_bytes([big[2], big[3]])),
+            (0x80 | 126, 300)
+        );
     }
 }

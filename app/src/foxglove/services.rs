@@ -116,11 +116,20 @@ fn supervise(
         };
         let now = Instant::now();
         crashes.push_back(now);
-        while crashes.front().is_some_and(|t| now.duration_since(*t) > CRASH_WINDOW) {
+        while crashes
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > CRASH_WINDOW)
+        {
             crashes.pop_front();
         }
         if crashes.len() >= MAX_CRASHES {
-            record(name, false, Some(format!("{failure}; stopped after {MAX_CRASHES} failures in ten minutes")));
+            record(
+                name,
+                false,
+                Some(format!(
+                    "{failure}; stopped after {MAX_CRASHES} failures in ten minutes"
+                )),
+            );
             return;
         }
         record(name, false, Some(failure));
@@ -164,7 +173,10 @@ mod tests {
         );
         assert_eq!(attempts.load(Ordering::SeqCst), MAX_CRASHES);
         let snapshot = status();
-        assert!(snapshot["crash-cap-test"].last_failure.as_deref().is_some_and(|f| f.contains("stopped after")));
+        assert!(snapshot["crash-cap-test"]
+            .last_failure
+            .as_deref()
+            .is_some_and(|f| f.contains("stopped after")));
     }
 
     #[test]

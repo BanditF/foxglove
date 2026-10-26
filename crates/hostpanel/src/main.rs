@@ -89,14 +89,25 @@ fn open() -> Result<Keyboard> {
 
 fn status() -> Result<()> {
     let kb = open()?;
-    let h = kb.hello.expect("open() only returns keyboards that answered HELLO");
-    println!("{}: host link v{}, panel {}x{}", kb.product, h.version, h.width, h.height);
+    let h = kb
+        .hello
+        .expect("open() only returns keyboards that answered HELLO");
+    println!(
+        "{}: host link v{}, panel {}x{}",
+        kb.product, h.version, h.width, h.height
+    );
     println!(
         "right half: {}, battery {}",
         ["not connected", "connected (no art relay)", "connected"][h.right_link.min(2) as usize],
-        h.right_battery.map(|b| format!("{b}%")).unwrap_or("unknown".into())
+        h.right_battery
+            .map(|b| format!("{b}%"))
+            .unwrap_or("unknown".into())
     );
-    println!("relay discovery: {} after {} tries", h.discovery_text(), h.discovery_tries);
+    println!(
+        "relay discovery: {} after {} tries",
+        h.discovery_text(),
+        h.discovery_tries
+    );
     let d = h.debug;
     println!(
         "relay debug: chrcs {} ends {} last ret {} att err {} timeouts {} answered {} in flight {} security {} mtu {}",
@@ -116,7 +127,10 @@ fn push_art(path: &PathBuf) -> Result<()> {
     let start = Instant::now();
     println!("sending {} bytes to {}", blob.len(), kb.product);
     let st = art::push(&kb, &blob, |s| {
-        eprint!("\rpushing to the right half: {}/{} bytes", s.pushed, s.length);
+        eprint!(
+            "\rpushing to the right half: {}/{} bytes",
+            s.pushed, s.length
+        );
     })?;
     eprintln!();
     println!("done in {:.1} s: {st}", start.elapsed().as_secs_f32());
@@ -179,12 +193,21 @@ fn battery_log(battery: Option<u8>, last: &mut Option<u8>) {
     *last = battery;
     let p = config::path().with_file_name("right-battery.csv");
     let new = !p.exists();
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&p)
+    {
         use std::io::Write;
         if new {
             let _ = writeln!(f, "time,right_battery_percent");
         }
-        let _ = writeln!(f, "{},{}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), battery.unwrap());
+        let _ = writeln!(
+            f,
+            "{},{}",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
+            battery.unwrap()
+        );
     }
 }
 
@@ -213,8 +236,14 @@ fn worker(shared: Shared) {
             cfg_checked = Instant::now();
         }
 
-        if link.as_ref().is_none_or(|(product, _)| *product != cfg.product) {
-            let m = Match { product: cfg.product.clone(), ..Match::default() };
+        if link
+            .as_ref()
+            .is_none_or(|(product, _)| *product != cfg.product)
+        {
+            let m = Match {
+                product: cfg.product.clone(),
+                ..Match::default()
+            };
             match Link::hid(m) {
                 Ok(l) => link = Some((cfg.product.clone(), l)),
                 Err(e) => {
@@ -277,7 +306,11 @@ fn worker(shared: Shared) {
             }
             // Only after RELEASE went out, so it can't blank the next owner's first frame.
             lock.release();
-            shared.set_status(if paused { "Paused".to_string() } else { "Panel driven by another app".to_string() });
+            shared.set_status(if paused {
+                "Paused".to_string()
+            } else {
+                "Panel driven by another app".to_string()
+            });
         }
         was_driving = driving;
 
@@ -322,7 +355,8 @@ mod tray {
         let mut rgba = vec![0u8; N * N * 4];
         for y in 0..N {
             for x in 0..N {
-                let border = (6..=25).contains(&x) && (2..=29).contains(&y)
+                let border = (6..=25).contains(&x)
+                    && (2..=29).contains(&y)
                     && (x <= 7 || x >= 24 || y <= 3 || y >= 28);
                 let line = (10..=21).contains(&x) && [8, 9, 14, 15, 20, 21].contains(&y);
                 if border || line {
@@ -343,7 +377,13 @@ mod tray {
         let edit = MenuItem::new("Open config", true, None);
         let quit = MenuItem::new("Quit", true, None);
         let menu = Menu::new();
-        menu.append_items(&[&status, &PredefinedMenuItem::separator(), &pause, &edit, &quit])?;
+        menu.append_items(&[
+            &status,
+            &PredefinedMenuItem::separator(),
+            &pause,
+            &edit,
+            &quit,
+        ])?;
         let tray = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("hostpanel")
@@ -365,7 +405,9 @@ mod tray {
                 } else if ev.id == pause.id() {
                     shared.paused.store(pause.is_checked(), Ordering::Relaxed);
                 } else if ev.id == edit.id() {
-                    let _ = std::process::Command::new("notepad").arg(config::path()).spawn();
+                    let _ = std::process::Command::new("notepad")
+                        .arg(config::path())
+                        .spawn();
                 }
             }
             if shared.quit.load(Ordering::Relaxed) {
@@ -375,7 +417,10 @@ mod tray {
             if s != shown {
                 let short: String = s.chars().take(100).collect();
                 status.set_text(&short);
-                let _ = tray.set_tooltip(Some(format!("hostpanel - {}", short.chars().take(60).collect::<String>())));
+                let _ = tray.set_tooltip(Some(format!(
+                    "hostpanel - {}",
+                    short.chars().take(60).collect::<String>()
+                )));
                 shown = s;
             }
             std::thread::sleep(Duration::from_millis(50));

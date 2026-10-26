@@ -5,8 +5,8 @@
 //! the keyboard restarts, so experiments can't wear or overwrite the stored settings.
 
 use foxglove_devices::{
-    Binding, Caps, Device, DeviceInfo, Effect, Keymap, LayerInfo, Layout, Led, Lighting, LightingState,
-    DeviceError, Result, WriteSupport, Zone,
+    Binding, Caps, Device, DeviceError, DeviceInfo, Effect, Keymap, LayerInfo, Layout, Led,
+    Lighting, LightingState, Result, WriteSupport, Zone,
 };
 
 use crate::definition::Definition;
@@ -28,11 +28,19 @@ impl<T: Transport> ViaDevice<T> {
         let v = link.send(&[protocol::GET_PROTOCOL_VERSION])?;
         let protocol_version = u16::from_be_bytes([v[1], v[2]]);
         let layers = link.send(&[protocol::DYNAMIC_KEYMAP_GET_LAYER_COUNT])?[1];
-        Ok(ViaDevice { info, def, link, protocol_version, layers })
+        Ok(ViaDevice {
+            info,
+            def,
+            link,
+            protocol_version,
+            layers,
+        })
     }
 
     fn custom_get(&self, id: u8) -> Result<[u8; 2]> {
-        let r = self.link.send(&[protocol::CUSTOM_GET_VALUE, rgb_matrix::CHANNEL, id])?;
+        let r = self
+            .link
+            .send(&[protocol::CUSTOM_GET_VALUE, rgb_matrix::CHANNEL, id])?;
         Ok([r[3], r[4]])
     }
 
@@ -83,14 +91,22 @@ impl<T: Transport> Keymap for ViaDevice<T> {
     }
 
     fn layers(&self) -> Result<Vec<LayerInfo>> {
-        Ok((0..u32::from(self.layers)).map(|id| LayerInfo { id, name: None }).collect())
+        Ok((0..u32::from(self.layers))
+            .map(|id| LayerInfo { id, name: None })
+            .collect())
     }
 
     /// The QMK keycode, as `kind = "qmk"` with the 16-bit code as the only parameter.
     fn binding(&self, layer: u32, row: u16, col: u16) -> Result<Binding> {
         let (layer, row, col) = (byte(layer)?, byte(row.into())?, byte(col.into())?);
-        let r = self.link.send(&[protocol::DYNAMIC_KEYMAP_GET_KEYCODE, layer, row, col])?;
-        Ok(Binding { kind: "qmk".into(), params: vec![u32::from(u16::from_be_bytes([r[4], r[5]]))], label: None })
+        let r = self
+            .link
+            .send(&[protocol::DYNAMIC_KEYMAP_GET_KEYCODE, layer, row, col])?;
+        Ok(Binding {
+            kind: "qmk".into(),
+            params: vec![u32::from(u16::from_be_bytes([r[4], r[5]]))],
+            label: None,
+        })
     }
 
     fn write_support(&self) -> WriteSupport {
@@ -111,7 +127,16 @@ impl<T: Transport> Keymap for ViaDevice<T> {
         };
         let [hi, lo] = code.to_be_bytes();
         let (layer, row, col) = (byte(layer)?, byte(row.into())?, byte(col.into())?);
-        self.link.send(&[protocol::DYNAMIC_KEYMAP_SET_KEYCODE, layer, row, col, hi, lo]).map(|_| ())
+        self.link
+            .send(&[
+                protocol::DYNAMIC_KEYMAP_SET_KEYCODE,
+                layer,
+                row,
+                col,
+                hi,
+                lo,
+            ])
+            .map(|_| ())
     }
 }
 
@@ -121,7 +146,13 @@ fn byte(v: u32) -> Result<u8> {
 
 impl<T: Transport> Lighting for ViaDevice<T> {
     fn layout(&self) -> Result<Vec<Zone>> {
-        Ok(vec![Zone { name: "keys".into(), leds: vec![Led { id: 0, position: None }] }])
+        Ok(vec![Zone {
+            name: "keys".into(),
+            leds: vec![Led {
+                id: 0,
+                position: None,
+            }],
+        }])
     }
 
     fn state(&self) -> Result<LightingState> {
@@ -134,7 +165,10 @@ impl<T: Transport> Lighting for ViaDevice<T> {
             hue: ((u32::from(hue) * 360 + 128) / 256) as u16 % 360,
             sat: to_percent(sat),
             brightness: to_percent(brightness),
-            effect: Effect { id: effect.to_string(), params: vec![] },
+            effect: Effect {
+                id: effect.to_string(),
+                params: vec![],
+            },
             speed,
             settled: true,
         })
@@ -183,14 +217,29 @@ mod tests {
                 protocol::GET_PROTOCOL_VERSION => out[1..3].copy_from_slice(&12u16.to_be_bytes()),
                 protocol::DYNAMIC_KEYMAP_GET_LAYER_COUNT => out[1] = 4,
                 protocol::DYNAMIC_KEYMAP_GET_KEYCODE => {
-                    let kc = self.keymap.lock().unwrap().get(&(r[1], r[2], r[3])).copied().unwrap_or(0);
+                    let kc = self
+                        .keymap
+                        .lock()
+                        .unwrap()
+                        .get(&(r[1], r[2], r[3]))
+                        .copied()
+                        .unwrap_or(0);
                     out[4..6].copy_from_slice(&kc.to_be_bytes());
                 }
                 protocol::DYNAMIC_KEYMAP_SET_KEYCODE => {
-                    self.keymap.lock().unwrap().insert((r[1], r[2], r[3]), u16::from_be_bytes([r[4], r[5]]));
+                    self.keymap
+                        .lock()
+                        .unwrap()
+                        .insert((r[1], r[2], r[3]), u16::from_be_bytes([r[4], r[5]]));
                 }
                 protocol::CUSTOM_GET_VALUE => {
-                    let v = self.custom.lock().unwrap().get(&r[2]).copied().unwrap_or([0, 0]);
+                    let v = self
+                        .custom
+                        .lock()
+                        .unwrap()
+                        .get(&r[2])
+                        .copied()
+                        .unwrap_or([0, 0]);
                     out[3..5].copy_from_slice(&v);
                 }
                 protocol::CUSTOM_SET_VALUE => {
@@ -206,9 +255,25 @@ mod tests {
         let fake: &'static FakeVia = Box::leak(Box::default());
         fake.keymap.lock().unwrap().insert((0, 0, 0), 0x0029); // KC_ESC
         let def = Definition::parse(SAMPLE).unwrap();
-        let id = DeviceId::new(BackendId("via".into()), def.vendor_id, def.product_id, None, "p");
-        let info = DeviceInfo { id: id.clone(), backend: id.backend.clone(), name: def.name.clone(), kind: DeviceKind::Keyboard, firmware: None };
-        let link = if writes { Guarded::with_writes(fake) } else { Guarded::read_only(fake) };
+        let id = DeviceId::new(
+            BackendId("via".into()),
+            def.vendor_id,
+            def.product_id,
+            None,
+            "p",
+        );
+        let info = DeviceInfo {
+            id: id.clone(),
+            backend: id.backend.clone(),
+            name: def.name.clone(),
+            kind: DeviceKind::Keyboard,
+            firmware: None,
+        };
+        let link = if writes {
+            Guarded::with_writes(fake)
+        } else {
+            Guarded::read_only(fake)
+        };
         (ViaDevice::open(info, def, link).unwrap(), fake)
     }
 
@@ -218,20 +283,54 @@ mod tests {
         assert_eq!((dev.protocol_version, dev.layers), (12, 4));
         foxglove_devices::contract::check_device(&dev).unwrap();
         assert_eq!(dev.binding(0, 0, 0).unwrap().params, vec![0x29]);
-        assert!(dev.lighting().unwrap().set_effect(Effect { id: "3".into(), params: vec![] }).is_err());
+        assert!(dev
+            .lighting()
+            .unwrap()
+            .set_effect(Effect {
+                id: "3".into(),
+                params: vec![]
+            })
+            .is_err());
         let sent = fake.sent.lock().unwrap();
-        assert!(!sent.iter().any(|c| [protocol::DYNAMIC_KEYMAP_SET_KEYCODE, protocol::CUSTOM_SET_VALUE, protocol::CUSTOM_SAVE].contains(c)));
+        assert!(!sent.iter().any(|c| [
+            protocol::DYNAMIC_KEYMAP_SET_KEYCODE,
+            protocol::CUSTOM_SET_VALUE,
+            protocol::CUSTOM_SAVE
+        ]
+        .contains(c)));
     }
 
     #[test]
     fn writable_device_writes_keycodes_and_lighting_without_saving() {
         let (dev, fake) = open(true);
-        foxglove_devices::contract::check_binding(&dev, 1, 1, 2, Binding { kind: "qmk".into(), params: vec![0x0004], label: None }).unwrap();
+        foxglove_devices::contract::check_binding(
+            &dev,
+            1,
+            1,
+            2,
+            Binding {
+                kind: "qmk".into(),
+                params: vec![0x0004],
+                label: None,
+            },
+        )
+        .unwrap();
         let lighting = dev.lighting().unwrap();
         lighting.set_color(180, 50, 100).unwrap();
-        lighting.set_effect(Effect { id: "4".into(), params: vec![] }).unwrap();
+        lighting
+            .set_effect(Effect {
+                id: "4".into(),
+                params: vec![],
+            })
+            .unwrap();
         let s = lighting.state().unwrap();
-        assert_eq!((s.hue, s.sat, s.brightness, s.effect.id.as_str(), s.on), (180, 50, 100, "4", true));
-        assert!(!fake.sent.lock().unwrap().contains(&protocol::CUSTOM_SAVE), "nothing persisted");
+        assert_eq!(
+            (s.hue, s.sat, s.brightness, s.effect.id.as_str(), s.on),
+            (180, 50, 100, "4", true)
+        );
+        assert!(
+            !fake.sent.lock().unwrap().contains(&protocol::CUSTOM_SAVE),
+            "nothing persisted"
+        );
     }
 }
