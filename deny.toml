@@ -1,0 +1,46 @@
+# cargo-deny for the crates/ workspace (MIT): licences, advisories, bans, sources.
+# The app (GPL-3.0, KeyPeek) has its own app/deny.toml. Run by scripts/check.ps1.
+#   cargo deny check
+
+[graph]
+all-features = true
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+# The licences the crates use today, accepted explicitly. All are permissive, so MIT crates can
+# ship them; copyleft (GPL, LGPL, AGPL) is not on the list and fails the gate. MPL-2.0 is
+# file-level copyleft (option-ext, via dirs): fine to link from MIT code, unmodified.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+]
+
+[advisories]
+version = 2
+# GitHub's 2 moderate Dependabot alerts (#1 Cargo.lock, #2 app/Cargo.lock) are GHSA-wrw7-89jp-8q8g,
+# glib 0.18 VariantStrIter unsoundness. glib comes only through tray-icon -> gtk 0.18, which is
+# Linux-only: Windows builds never compile it, and no Foxglove code uses VariantStrIter. The fix
+# (glib 0.20) needs gtk4, and tray-icon is still on gtk 0.18. RustSec has no entry for it, so
+# cargo-deny doesn't flag it; the same chain's RustSec notices are ignored below with that reason.
+ignore = [
+    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error, unmaintained: only via glib-macros in Linux-only gtk 0.18 (tray-icon)" },
+]
+
+[bans]
+# Duplicate versions are reported, not failed: they come from upstream crates' own pins.
+multiple-versions = "warn"
+# Path dependencies between our own crates have no version; none is published to crates.io.
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -184,7 +184,11 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
         let Some(name) = entry.enclosed_name() else {
-            return Err(format!("the archive has an unsafe path: {}", entry.name()));
+            let name = entry
+                .name()
+                .map(|n| n.into_owned())
+                .unwrap_or_else(|e| format!("({e})"));
+            return Err(format!("the archive has an unsafe path: {name}"));
         };
         let out = into.join(name);
         if entry.is_dir() {
