@@ -246,6 +246,16 @@ pub fn with<R>(f: impl FnOnce(&mut Arbiter) -> R) -> R {
     f(ARBITER.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Arbiter::default))
 }
 
+/// Each leased device's winning lease: device, connection and priority (#371, diagnostics).
+pub fn holders() -> Vec<(String, u64, Priority)> {
+    with(|a| {
+        let mut devices: Vec<String> = a.leases.iter().map(|l| l.device.clone()).collect();
+        devices.sort();
+        devices.dedup();
+        devices.iter().filter_map(|d| a.winner(d)).map(|l| (l.device.clone(), l.conn, l.priority)).collect()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

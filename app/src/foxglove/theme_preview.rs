@@ -680,3 +680,16 @@ fn settings_preview_renders_in_the_theme() {
     assert!(count(&light, LIGHT.ground) > total / 50, "light ground");
     assert_eq!(count(&before, DARK.ground), 0);
 }
+
+/// The status strip with "Copy diagnostics" live (#371), and the report it copies.
+#[test]
+fn copy_diagnostics_renders() {
+    use crate::foxglove::shell::Page;
+    let img = shell_preview_with(Page::Keyboard, &Samples::full(), 660.0);
+    keep("ui-371-copy-diagnostics.png", &img);
+    if let Some(dir) = std::env::var_os("FOXGLOVE_UI_PREVIEW_DIR") {
+        let p = crate::foxglove::diagnostics::sample_personal();
+        let text = crate::foxglove::diagnostics::report(&crate::foxglove::diagnostics::sample(), &p);
+        std::fs::write(std::path::Path::new(&dir).join("ui-371-diagnostics-sample.txt"), text).expect("save the sample");
+    }
+}

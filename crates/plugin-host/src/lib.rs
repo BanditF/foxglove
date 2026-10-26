@@ -41,6 +41,15 @@ pub trait Devices: Send + Sync {
     }
 }
 
+/// Which plugin each open connection is, by connection number (tools aren't listed).
+static CONN_PLUGINS: Mutex<std::collections::BTreeMap<u64, String>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// The plugin an open connection belongs to, for the app's diagnostics; `None` for a tool or a
+/// closed connection.
+pub fn plugin_of(conn: u64) -> Option<String> {
+    CONN_PLUGINS.lock().unwrap_or_else(|e| e.into_inner()).get(&conn).cloned()
+}
+
 /// Each connection's number, for [`Devices::call_from`] and [`Devices::closed`].
 static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -188,6 +197,9 @@ pub(crate) fn serve_with(
             if let Some(s) = session.as_mut().filter(|s| s.conn == 0) {
                 s.plugin = plugin.clone();
                 s.conn = conn;
+                if let Some(id) = &plugin {
+                    CONN_PLUGINS.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, id.clone());
+                }
             }
             reply
         };
@@ -205,6 +217,7 @@ pub(crate) fn serve_with(
         }
     }
     ctx.devices.closed(conn);
+    CONN_PLUGINS.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
     let forwarding = session.as_ref().is_some_and(|s| s.forwarding);
     let _ = out.send(String::new());
     drop(out);

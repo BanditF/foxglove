@@ -55,6 +55,7 @@ pub mod theme;
 mod theme_preview;
 pub mod startup;
 pub mod app_log;
+pub mod diagnostics;
 pub mod gpu_reset;
 pub mod tray;
 pub mod tray_panel;
