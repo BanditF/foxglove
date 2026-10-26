@@ -29,6 +29,7 @@ fn main() {
     foxglove::app_log::start();
     if foxglove::update::helper_entry() { return; }
     if foxglove::identity::entry() { return; }
+    if foxglove::autostart::uninstall_entry() { return; } // Foxglove (#444): MSI uninstall
     // Foxglove (#345): one per user; a second launch shows the running one and exits 0.
     if !foxglove::single_instance::claim() { return; }
     foxglove::update::start();
