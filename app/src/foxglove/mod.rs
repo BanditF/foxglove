@@ -20,6 +20,7 @@ pub mod art_ui;
 pub mod autostart;
 pub mod away;
 pub mod battery;
+pub mod battery_dim_ui;
 pub mod boards;
 pub mod calibrate;
 pub mod calibrate_ui;

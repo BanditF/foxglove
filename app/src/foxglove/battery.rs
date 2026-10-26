@@ -32,8 +32,13 @@ pub struct Alerts {
 
 impl Alerts {
     /// A new level for `part`: the threshold to tell the user about, if this crossed one. A drop
-    /// past both at once tells only the lower one.
+    /// past both at once tells only the lower one. Only real readings count: 0 is what ZMK
+    /// reports before its first battery sample (right after a boot, a flash or a reconnect), and
+    /// anything over 100 isn't a level, so neither can raise a notice or re-arm one.
     pub fn level(&mut self, part: &str, percent: u8) -> Option<u8> {
+        if !(1..=100).contains(&percent) {
+            return None;
+        }
         let fired = self.fired.entry(part.to_string()).or_default();
         if percent > RESET_ABOVE {
             fired.clear();
@@ -325,6 +330,18 @@ mod tests {
         assert_eq!(run(&[3, 3, 2]), vec![(3, 5)]);
         // After that, only a charge past 20 starts over.
         assert_eq!(run(&[3, 12, 3, 30, 12, 4]), vec![(3, 5), (12, 15), (4, 5)]);
+    }
+
+    /// After a flash the left reported 0 (no reading yet) and then its real 100: the app said
+    /// "Left half battery very low". Unknown readings tell nothing and change nothing.
+    #[test]
+    fn a_reading_before_the_first_sample_is_not_low() {
+        assert_eq!(run(&[0, 100, 0, 100]), vec![]);
+        assert_eq!(run(&[0, 0, 255]), vec![]);
+        // A real low level after an unknown one still tells, once.
+        assert_eq!(run(&[0, 14, 0, 14, 13]), vec![(14, 15)]);
+        // An unknown reading doesn't re-arm a notice that fired: only a charge past 20 does.
+        assert_eq!(run(&[14, 0, 14]), vec![(14, 15)]);
     }
 
     #[test]

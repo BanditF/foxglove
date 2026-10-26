@@ -557,6 +557,11 @@ struct Samples {
     strip: crate::foxglove::shell::StripState,
     keyboard: crate::foxglove::keyboard_page::View,
     lights: crate::foxglove::lights_page::View,
+    /// "Save battery" under the underglow controls.
+    battery_dim: (
+        crate::foxglove::battery_dim_ui::DimState,
+        crate::foxglove::battery_dim_ui::Draft,
+    ),
     pc: crate::foxglove::pc_lights_ui::View,
     wizard: crate::foxglove::pc_lights_add::Wizard,
     /// The colour calibrator, open in place of the PC card.
@@ -578,6 +583,10 @@ impl Samples {
             strip: sample_strip(),
             keyboard: crate::foxglove::keyboard_page::tests::sample(),
             lights: crate::foxglove::lights_page::tests::sample(),
+            battery_dim: (
+                crate::foxglove::battery_dim_ui::tests::sample(),
+                Default::default(),
+            ),
             pc: crate::foxglove::pc_lights_ui::tests::sample(),
             wizard: Default::default(),
             calibrate: None,
@@ -592,6 +601,10 @@ impl Samples {
             strip: Default::default(),
             keyboard: crate::foxglove::keyboard_page::tests::sample_none(),
             lights: crate::foxglove::lights_page::tests::sample_none(),
+            battery_dim: (
+                crate::foxglove::battery_dim_ui::DimState::NoKeyboard,
+                Default::default(),
+            ),
             pc: Default::default(),
             wizard: Default::default(),
             calibrate: None,
@@ -654,6 +667,7 @@ fn show_samples(page: crate::foxglove::shell::Page, samples: &Samples) {
     shell::PREVIEW_STRIP.set(Some(samples.strip.clone()));
     crate::foxglove::keyboard_page::PREVIEW.set(Some(samples.keyboard.clone()));
     crate::foxglove::lights_page::PREVIEW.set(Some(samples.lights.clone()));
+    crate::foxglove::battery_dim_ui::PREVIEW.set(Some(samples.battery_dim));
     crate::foxglove::pc_lights_ui::PREVIEW.set(Some((samples.pc.clone(), samples.wizard.clone())));
     crate::foxglove::calibrate_ui::PREVIEW.set(samples.calibrate.clone());
     crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
@@ -665,6 +679,7 @@ fn clear_samples() {
     crate::foxglove::shell::PREVIEW_STRIP.set(None);
     crate::foxglove::keyboard_page::PREVIEW.set(None);
     crate::foxglove::lights_page::PREVIEW.set(None);
+    crate::foxglove::battery_dim_ui::PREVIEW.set(None);
     crate::foxglove::pc_lights_ui::PREVIEW.set(None);
     crate::foxglove::calibrate_ui::PREVIEW.set(None);
     crate::foxglove::screens_ui::PREVIEW.set(None);
@@ -1155,6 +1170,52 @@ fn lights_page_renders() {
     assert!(count(&with, DARK.selected_fill) > 200, "a selected pill");
     assert!(count(&with, DARK.accent) > count(&without, DARK.accent));
     assert_ne!(with, without);
+}
+
+/// "Save battery: dim lights on battery" on the Lights page: closed (the default), with the
+/// levels open, with the right half low, and switched off.
+#[test]
+fn battery_dim_renders() {
+    use crate::foxglove::battery_dim_ui::{tests, DimState, Draft};
+    use crate::foxglove::shell::Page;
+    use digitalis::protocol::BatteryDimConfig;
+    let open = Draft {
+        config: None,
+        open: true,
+    };
+    let off = Draft {
+        config: Some(BatteryDimConfig {
+            enabled: false,
+            ..Default::default()
+        }),
+        open: false,
+    };
+    let mut seen: Vec<image::RgbaImage> = Vec::new();
+    for (name, state, draft) in [
+        ("ui-battery-dim.png", tests::sample(), Draft::default()),
+        ("ui-battery-dim-adjust.png", tests::sample(), open),
+        (
+            "ui-battery-dim-low.png",
+            tests::sample_low(),
+            Draft::default(),
+        ),
+        ("ui-battery-dim-off.png", tests::sample(), off),
+        (
+            "ui-battery-dim-old-firmware.png",
+            DimState::NotSupported,
+            Draft::default(),
+        ),
+    ] {
+        let mut samples = Samples::full();
+        samples.battery_dim = (state, draft);
+        let img = shell_preview_with(Page::Lights, &samples, 980.0);
+        keep(name, &img);
+        assert!(
+            seen.iter().all(|other| *other != img),
+            "{name} looks like another"
+        );
+        seen.push(img);
+    }
 }
 
 /// The Lights page's "PC & peripherals" card (#423): the 45L with colours, the cooler and the
