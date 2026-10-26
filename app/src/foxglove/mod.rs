@@ -11,6 +11,7 @@ pub mod layer_names;
 pub mod link;
 pub mod overlay_profile;
 pub mod pause;
+pub mod away;
 pub mod devices;
 pub mod profiles_ui;
 pub mod reconnect;

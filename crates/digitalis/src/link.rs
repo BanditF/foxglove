@@ -7,6 +7,9 @@
 //! no read cancellation, so input uses the same Win32 overlapped read with an extra stop event;
 //! Drop/reconnect signal it, cancel and finish the pending I/O, then join before closing handles.
 //! Other platforms retain bounded hidapi reads until they have a cancellable input backend.
+//! A failed open is retried a few times ([`RETRIES`], [`RETRY`] apart), then the link waits for
+//! [`Link::reconnect`] (a device arrival or a Bluetooth connect, from the app) or for Drop: a
+//! keyboard that is gone costs no wake-ups and no HID enumeration while it stays gone.
 //! Reports are dispatched on the writer thread:
 //! - replies to our protocols (0xD5-0xD7 with byte 1 = command | 0x80) complete the request
 //!   waiting for that (proto, command); unsolicited art STATUS also reaches subscribers;
@@ -34,6 +37,17 @@ use crate::Transport;
 /// Consecutive read errors, or consecutive write errors, that count as the keyboard being gone.
 const MAX_ERRORS: u32 = 5;
 const RETRY: Duration = Duration::from_secs(3);
+/// Failed opens retried on a timer before the link waits for [`Link::reconnect`] alone. The
+/// timer only covers a keyboard that is present but not answering yet; a keyboard that is
+/// gone comes back with an arrival event.
+const RETRIES: u32 = 3;
+
+/// How a failed open is retried: `tries` times, `delay` apart, then only on [`Link::reconnect`].
+#[derive(Clone, Copy, Debug)]
+struct Retry {
+    delay: Duration,
+    tries: u32,
+}
 /// Reports a subscriber may fall behind by; past that, new ones are dropped for it.
 const SUBSCRIBER_BUFFER: usize = 1024;
 /// After a request times out, its (proto, command) is held this long: a late reply in that
@@ -159,6 +173,10 @@ pub struct Link {
 impl Link {
     /// Starts the link thread; it connects with `open` and keeps reconnecting.
     pub fn start(open: Opener) -> Link {
+        Self::start_with(open, Retry { delay: RETRY, tries: RETRIES })
+    }
+
+    fn start_with(open: Opener, retry: Retry) -> Link {
         let (tx, rx) = mpsc::channel();
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
@@ -173,7 +191,7 @@ impl Link {
             .name("digitalis-link".into())
             .spawn({
                 let tx = tx.clone();
-                move || run(open, rx, tx, &thread_shared)
+                move || run(open, rx, tx, &thread_shared, retry)
             })
             .expect("link thread");
         Link { commands: Mutex::new(tx), shared, thread: Some(thread) }
@@ -299,22 +317,33 @@ fn discard(commands: &Receiver<Message>) {
     while commands.try_recv().is_ok() {}
 }
 
-fn run(mut open: Opener, commands: Receiver<Message>, tx: Sender<Message>, shared: &Shared) {
+fn run(mut open: Opener, commands: Receiver<Message>, tx: Sender<Message>, shared: &Shared, retry: Retry) {
+    // Failed opens since the last success or reconnect request.
+    let mut failures = 0;
     while !shared.stop.load(Ordering::Relaxed) {
-        shared.reconnect.store(false, Ordering::Relaxed);
+        if shared.reconnect.swap(false, Ordering::Relaxed) {
+            failures = 0; // an arrival starts a fresh burst of tries
+        }
         let (dev, connected) = match open() {
             Ok(c) => c,
             Err(e) => {
                 set_state(shared, |s| s.error = Some(e.to_string()));
-                let end = Instant::now() + RETRY;
-                while Instant::now() < end && !shared.stop.load(Ordering::Relaxed)
+                failures += 1;
+                // Start: the failed open. Stop: reconnect, Drop, or (for the first few
+                // failures only) the retry delay. Past those, no timer: it waits for an event.
+                let end = (failures <= retry.tries).then(|| Instant::now() + retry.delay);
+                while end.is_none_or(|end| Instant::now() < end) && !shared.stop.load(Ordering::Relaxed)
                     && !shared.reconnect.load(Ordering::Relaxed) {
                     discard(&commands);
-                    std::thread::park_timeout(end.saturating_duration_since(Instant::now()));
+                    match end {
+                        Some(end) => std::thread::park_timeout(end.saturating_duration_since(Instant::now())),
+                        None => std::thread::park(),
+                    }
                 }
                 continue;
             }
         };
+        failures = 0;
         set_state(shared, |s| {
             s.generation += 1;
             s.connected = Some(connected);
@@ -787,6 +816,41 @@ mod tests {
         l.reconnect();
         release_tx.send(()).unwrap();
         assert_eq!(l.wait_connected(WAIT).unwrap().product, "USB");
+    }
+
+    #[test]
+    fn a_keyboard_that_stays_gone_is_retried_a_few_times_then_only_on_reconnect() {
+        let opens = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let present = Arc::new(AtomicBool::new(false));
+        let (o, p) = (opens.clone(), present.clone());
+        let l = Link::start_with(
+            Box::new(move || {
+                o.fetch_add(1, Ordering::Relaxed);
+                if !p.load(Ordering::Relaxed) {
+                    return Err(anyhow!("not present"));
+                }
+                Ok((Box::new(Fake::default()) as Box<dyn RawHid>, Connected { product: "Back".into(), hello: None }))
+            }),
+            Retry { delay: Duration::from_millis(20), tries: 2 },
+        );
+        // The first open and two timed retries, then nothing: no timer while it stays gone.
+        let end = Instant::now() + WAIT;
+        while opens.load(Ordering::Relaxed) < 3 && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(opens.load(Ordering::Relaxed), 3, "no retries past the burst");
+        // The keyboard arrives: the app's arrival event reconnects it at once.
+        present.store(true, Ordering::Relaxed);
+        l.reconnect();
+        assert_eq!(l.wait_connected(WAIT).unwrap().product, "Back");
+        assert_eq!(opens.load(Ordering::Relaxed), 4);
+        // Drop still wakes a link that is waiting with no timer.
+        let gone = Link::start_with(Box::new(|| Err(anyhow!("never"))), Retry { delay: Duration::ZERO, tries: 0 });
+        std::thread::sleep(Duration::from_millis(50));
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || { drop(gone); tx.send(()).unwrap(); });
+        rx.recv_timeout(WAIT).expect("Drop must wake a link waiting for an arrival");
     }
 
     #[test]
