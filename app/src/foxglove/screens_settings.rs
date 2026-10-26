@@ -54,7 +54,11 @@ impl ScreensSettings {
 
     fn normalized(mut self) -> Self {
         self.fps = self.fps.clamp(1, 10);
-        self.games = self.games.into_iter().map(|(exe, hint)| (exe.to_lowercase(), hint)).collect();
+        self.games = self
+            .games
+            .into_iter()
+            .map(|(exe, hint)| (exe.to_lowercase(), hint))
+            .collect();
         self
     }
 
@@ -153,16 +157,24 @@ mod tests {
 
     #[test]
     fn reads_the_old_ini_and_round_trips_through_toml() {
-        let path = std::env::temp_dir().join(format!("foxglove-screens-{}.ini", std::process::id()));
-        std::fs::write(&path, "[screens]
+        let path =
+            std::env::temp_dir().join(format!("foxglove-screens-{}.ini", std::process::id()));
+        std::fs::write(
+            &path,
+            "[screens]
 drive_left=false
 fps=7
 [games]
 Factorio.exe=L2 = BUILD
-").unwrap();
+",
+        )
+        .unwrap();
         let s = ScreensSettings::load_from_file(&path).unwrap();
         assert_eq!((s.drive_left, s.fps), (false, 7));
-        assert_eq!(s.games.get("factorio.exe").map(String::as_str), Some("L2 = BUILD"));
+        assert_eq!(
+            s.games.get("factorio.exe").map(String::as_str),
+            Some("L2 = BUILD")
+        );
         let text = toml::to_string(&s).unwrap();
         assert_eq!(toml::from_str::<ScreensSettings>(&text).unwrap(), s);
         let partial: ScreensSettings = toml::from_str("fps = 30").unwrap();

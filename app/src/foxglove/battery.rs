@@ -37,7 +37,10 @@ impl Alerts {
             fired.clear();
             return None;
         }
-        let crossed: Vec<u8> = THRESHOLDS.into_iter().filter(|t| percent < *t && !fired.contains(t)).collect();
+        let crossed: Vec<u8> = THRESHOLDS
+            .into_iter()
+            .filter(|t| percent < *t && !fired.contains(t))
+            .collect();
         fired.extend(&crossed);
         crossed.into_iter().min()
     }
@@ -47,23 +50,37 @@ impl Alerts {
 pub fn notice(part: &str, threshold: u8, percent: u8) -> (String, String) {
     let half = capitalised(part);
     if threshold <= THRESHOLDS[THRESHOLDS.len() - 1] {
-        (format!("{half} half battery very low"), format!("{percent}% left. It will switch off soon: plug it in to charge."))
+        (
+            format!("{half} half battery very low"),
+            format!("{percent}% left. It will switch off soon: plug it in to charge."),
+        )
     } else {
-        (format!("{half} half battery low"), format!("{percent}% left. Charge it soon so it doesn't stop typing."))
+        (
+            format!("{half} half battery low"),
+            format!("{percent}% left. Charge it soon so it doesn't stop typing."),
+        )
     }
 }
 
 fn capitalised(part: &str) -> String {
     let mut c = part.chars();
-    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 /// The battery line for the tray tooltip: the right always (`—` when not reporting), the left
 /// and any other part only once reported.
 pub fn tooltip_line(levels: &BTreeMap<String, u8>) -> String {
-    let mut parts = vec![format!("Right {}", levels.get("right").map_or("—".into(), |p| format!("{p}%")))];
+    let mut parts = vec![format!(
+        "Right {}",
+        levels.get("right").map_or("—".into(), |p| format!("{p}%"))
+    )];
     for (part, p) in levels.iter().filter(|(k, _)| k.as_str() != "right") {
-        parts.insert(if part == "left" { 0 } else { parts.len() }, format!("{} {p}%", capitalised(part)));
+        parts.insert(
+            if part == "left" { 0 } else { parts.len() },
+            format!("{} {p}%", capitalised(part)),
+        );
     }
     parts.join(" · ")
 }
@@ -88,7 +105,9 @@ pub struct BatterySettings {
 
 impl Default for BatterySettings {
     fn default() -> Self {
-        Self { low_battery_notice: true }
+        Self {
+            low_battery_notice: true,
+        }
     }
 }
 
@@ -99,7 +118,9 @@ pub fn notices_on() -> bool {
     use std::sync::atomic::Ordering;
     match NOTICES.load(Ordering::Relaxed) {
         0 => {
-            let on = super::store::try_load::<BatterySettings>("battery").unwrap_or_default().low_battery_notice;
+            let on = super::store::try_load::<BatterySettings>("battery")
+                .unwrap_or_default()
+                .low_battery_notice;
             NOTICES.store(if on { 2 } else { 1 }, Ordering::Relaxed);
             on
         }
@@ -109,7 +130,12 @@ pub fn notices_on() -> bool {
 
 pub fn set_notices(on: bool) -> std::io::Result<()> {
     NOTICES.store(if on { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
-    super::store::save("battery", &BatterySettings { low_battery_notice: on })
+    super::store::save(
+        "battery",
+        &BatterySettings {
+            low_battery_notice: on,
+        },
+    )
 }
 
 /// The latest level per half, for the tooltip; cleared when the keyboard goes.
@@ -145,7 +171,11 @@ pub fn start() {
                             imp::show(&title, &text);
                         }
                     }
-                    LEVELS.lock().unwrap_or_else(|e| e.into_inner()).insert(part.clone(), *percent) != Some(*percent)
+                    LEVELS
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(part.clone(), *percent)
+                        != Some(*percent)
                 }
                 DeviceEvent::Disconnected { .. } => {
                     let mut levels = LEVELS.lock().unwrap_or_else(|e| e.into_inner());
@@ -167,7 +197,11 @@ pub fn start() {
 /// The XML-escaped text for a toast.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn escape(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -193,7 +227,9 @@ mod imp {
         let (key, _) = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
             .create_subkey(format!(r"Software\Classes\AppUserModelId\{APP_ID}"))?;
         key.set_value("DisplayName", &"Foxglove")?;
-        if let Some(dir) = super::super::store::path().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+        if let Some(dir) =
+            super::super::store::path().and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        {
             let icon = dir.join("notification-icon.png");
             if !icon.exists() {
                 std::fs::create_dir_all(&dir)?;
@@ -212,7 +248,8 @@ mod imp {
             let xml = XmlDocument::new()?;
             xml.LoadXml(&HSTRING::from(super::toast_xml(title, text)))?;
             let toast = ToastNotification::CreateToastNotification(&xml)?;
-            ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_ID))?.Show(&toast)
+            ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_ID))?
+                .Show(&toast)
         })();
         match shown {
             Ok(()) => eprintln!("Foxglove: battery notice: {title}"),
@@ -235,13 +272,19 @@ mod tests {
     /// The notices a sequence of levels gives.
     fn run(levels: &[u8]) -> Vec<(u8, u8)> {
         let mut a = Alerts::default();
-        levels.iter().filter_map(|&p| a.level("right", p).map(|t| (p, t))).collect()
+        levels
+            .iter()
+            .filter_map(|&p| a.level("right", p).map(|t| (p, t)))
+            .collect()
     }
 
     #[test]
     fn one_notice_per_threshold_crossing() {
         // Draining slowly, with repeats (a reconnect resends the level): 15% once, then 5% once.
-        assert_eq!(run(&[40, 20, 16, 15, 14, 14, 13, 10, 10, 6, 5, 4, 4, 3, 1]), vec![(14, 15), (4, 5)]);
+        assert_eq!(
+            run(&[40, 20, 16, 15, 14, 14, 13, 10, 10, 6, 5, 4, 4, 3, 1]),
+            vec![(14, 15), (4, 5)]
+        );
     }
 
     #[test]
@@ -279,7 +322,10 @@ mod tests {
     #[test]
     fn the_tooltip_follows_the_levels() {
         let mut levels = BTreeMap::new();
-        assert_eq!(tooltip("Disconnected", &levels), "Foxglove\nDisconnected\nRight —");
+        assert_eq!(
+            tooltip("Disconnected", &levels),
+            "Foxglove\nDisconnected\nRight —"
+        );
         levels.insert("right".to_string(), 61);
         assert_eq!(tooltip_line(&levels), "Right 61%");
         levels.insert("left".to_string(), 80);
@@ -301,6 +347,9 @@ mod tests {
         crate::foxglove::store::test_config_dir();
         assert!(BatterySettings::default().low_battery_notice);
         let parsed: BatterySettings = toml::from_str("").unwrap();
-        assert!(parsed.low_battery_notice, "a store without the section keeps it on");
+        assert!(
+            parsed.low_battery_notice,
+            "a store without the section keeps it on"
+        );
     }
 }

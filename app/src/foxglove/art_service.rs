@@ -49,7 +49,8 @@ impl Snapshot {
         let names = super::art_manifest::sets(count);
         (0..count)
             .map(|n| {
-                let label = names.map_or_else(|| format!("Set {n}"), |s| s[usize::from(n)].label.clone());
+                let label =
+                    names.map_or_else(|| format!("Set {n}"), |s| s[usize::from(n)].label.clone());
                 (n as i8, label)
             })
             .collect()
@@ -57,7 +58,9 @@ impl Snapshot {
 
     /// The built-in set the right half shows now, if it's playing one.
     pub fn showing_built_in(&self) -> Option<i8> {
-        self.status.filter(|s| s.right_state == 0).map(|s| s.right_set)
+        self.status
+            .filter(|s| s.right_state == 0)
+            .map(|s| s.right_set)
     }
 
     /// The library file the right half plays now: the pinned file, while it plays a pushed set.
@@ -83,14 +86,21 @@ enum Command {
     Link(Weak<Link>, LinkEvent),
     Status,
     Choose(Choice),
-    Save { slot: u8, name: String },
+    Save {
+        slot: u8,
+        name: String,
+    },
     Erase(u8),
     /// Show the hotlist's next entry (timer, lights wake, or the UI's "Next").
     Next,
     /// The hotlist or its mode changed: reschedule.
     CycleChanged,
     /// The left's underglow is on or off (an RGB_STATE report, firmware #130).
-    Lights { source: Weak<Link>, generation: u64, on: bool },
+    Lights {
+        source: Weak<Link>,
+        generation: u64,
+        on: bool,
+    },
     /// The keyboard's active layers changed (the device event bus).
     Layers(Vec<u8>),
     /// A layer's art delay ran out (art_triggers::LAYER_DELAY).
@@ -438,7 +448,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         };
         let received = match next_deadline {
             Some(at) => receiver.recv_timeout(at.saturating_duration_since(Instant::now())),
-            None => receiver.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+            None => receiver
+                .recv()
+                .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
         };
         let command = match received {
             Ok(command) => command,
@@ -457,11 +469,16 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
                 return None;
             };
-            let resolve = |item: &art_cycle::Item| art_cycle::resolve(item, st.right_set_count, st.flash_used);
+            let resolve = |item: &art_cycle::Item| {
+                art_cycle::resolve(item, st.right_set_count, st.flash_used)
+            };
             let choice = match change {
                 Change::Nothing => return None,
                 Change::Show(item) => resolve(&item)?,
-                Change::Restore => triggers.top(&snap.cycle).and_then(|i| resolve(&i)).or(snap.pinned)?,
+                Change::Restore => triggers
+                    .top(&snap.cycle)
+                    .and_then(|i| resolve(&i))
+                    .or(snap.pinned)?,
             };
             h.update(|s| s.busy = true);
             Some(Command::Show(choice))
@@ -473,7 +490,11 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 .map(|p| Instant::now() + p)
         };
         let command = match command {
-            Command::Lights { source, generation, on } => {
+            Command::Lights {
+                source,
+                generation,
+                on,
+            } => {
                 let is_current = current.is_some_and(|(id, g)| {
                     g == generation && Weak::ptr_eq(&Arc::downgrade(&links[id].0), &source)
                 });
@@ -522,11 +543,15 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 };
                 // Layer or preset art is on top; the wallpaper's art shows when it ends.
-                if snap.cycle.follow != art_cycle::Follow::Wallpaper || triggers.top(&snap.cycle).is_some() {
+                if snap.cycle.follow != art_cycle::Follow::Wallpaper
+                    || triggers.top(&snap.cycle).is_some()
+                {
                     continue;
                 }
                 match super::wallpaper::choice(&w, st.right_set_count) {
-                    Some(choice) if snap.pinned.as_ref() != Some(&choice) && super::pause::paused() => {
+                    Some(choice)
+                        if snap.pinned.as_ref() != Some(&choice) && super::pause::paused() =>
+                    {
                         missed = true;
                         continue;
                     }
@@ -565,8 +590,12 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 }
                 let snap = h.snapshot();
                 // Following the wallpaper: its art, unless layer or preset art is on top.
-                if snap.cycle.follow == art_cycle::Follow::Wallpaper && triggers.top(&snap.cycle).is_none() {
-                    if let Some(w) = super::wallpaper::current(snap.cycle.wallpaper_monitor.as_deref()) {
+                if snap.cycle.follow == art_cycle::Follow::Wallpaper
+                    && triggers.top(&snap.cycle).is_none()
+                {
+                    if let Some(w) =
+                        super::wallpaper::current(snap.cycle.wallpaper_monitor.as_deref())
+                    {
                         let _ = h.commands.send(Command::Wallpaper(w));
                     }
                     continue;
@@ -584,7 +613,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 due = reschedule(current.is_some());
                 // Turning on "match the wallpaper" shows the current wallpaper's art right away.
                 if h.snapshot().cycle.follow == art_cycle::Follow::Wallpaper {
-                    if let Some(w) = super::wallpaper::current(h.snapshot().cycle.wallpaper_monitor.as_deref()) {
+                    if let Some(w) =
+                        super::wallpaper::current(h.snapshot().cycle.wallpaper_monitor.as_deref())
+                    {
                         let _ = h.commands.send(Command::Wallpaper(w));
                     }
                 }
@@ -607,9 +638,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 let mut cycle = snap.cycle;
-                let Some(choice) = cycle.advance(|item| {
-                    art_cycle::resolve(item, st.right_set_count, st.flash_used)
-                }) else {
+                let Some(choice) = cycle
+                    .advance(|item| art_cycle::resolve(item, st.right_set_count, st.flash_used))
+                else {
                     continue;
                 };
                 let _ = cycle.save();
@@ -643,7 +674,11 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 light_taps.push(link.subscribe_reports(move |generation, r| {
                     if protocol::is_reply(r, protocol::SETTINGS, protocol::settings::RGB_STATE) {
                         let on = protocol::RgbState::parse(r).left.on;
-                        let _ = tx.send(Command::Lights { source: source.clone(), generation, on });
+                        let _ = tx.send(Command::Lights {
+                            source: source.clone(),
+                            generation,
+                            on,
+                        });
                     }
                 }));
                 links.push((link.clone(), subscription));
@@ -678,8 +713,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 current = Some((id, state.generation));
-                let wake_events = super::link::ask_hello(link)
-                    .is_some_and(|hello| hello.capabilities & protocol::capabilities::RGB_STATE_EVENT != 0);
+                let wake_events = super::link::ask_hello(link).is_some_and(|hello| {
+                    hello.capabilities & protocol::capabilities::RGB_STATE_EVENT != 0
+                });
                 h.update(|s| {
                     s.connected = true;
                     s.wake_events = wake_events;
@@ -744,7 +780,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                             let snap = h.snapshot();
                             let wanted = triggers
                                 .top(&snap.cycle)
-                                .and_then(|i| art_cycle::resolve(&i, st.right_set_count, st.flash_used))
+                                .and_then(|i| {
+                                    art_cycle::resolve(&i, st.right_set_count, st.flash_used)
+                                })
                                 .or(snap.pinned);
                             if let Some(choice) = restore(&wanted, st) {
                                 return choose(link, h, &choice);
@@ -809,7 +847,10 @@ mod tests {
         assert!(allowed(&Command::Status, true));
         for c in [
             Command::Choose(Choice::BuiltIn(1)),
-            Command::Save { slot: 0, name: "x".into() },
+            Command::Save {
+                slot: 0,
+                name: "x".into(),
+            },
             Command::Erase(0),
             Command::Show(Choice::Slot(0)),
         ] {

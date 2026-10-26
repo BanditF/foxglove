@@ -54,7 +54,13 @@ pub struct Personal(Vec<(String, &'static str)>);
 impl Personal {
     pub fn from_env() -> Personal {
         let mut v = Vec::new();
-        for (var, placeholder) in [("USERPROFILE", "%USERPROFILE%"), ("HOME", "~"), ("COMPUTERNAME", "<pc>"), ("USERNAME", "<user>"), ("USER", "<user>")] {
+        for (var, placeholder) in [
+            ("USERPROFILE", "%USERPROFILE%"),
+            ("HOME", "~"),
+            ("COMPUTERNAME", "<pc>"),
+            ("USERNAME", "<user>"),
+            ("USER", "<user>"),
+        ] {
             if let Some(value) = std::env::var(var).ok().filter(|v| v.len() >= 2) {
                 v.push((value, placeholder));
             }
@@ -117,7 +123,11 @@ fn capability_names(bits: u32) -> String {
         (c::SCREENS, "SCREENS"),
         (c::PANEL_HOLD, "PANEL_HOLD"),
     ];
-    let mut names: Vec<String> = named.iter().filter(|(b, _)| bits & b != 0).map(|(_, n)| (*n).to_string()).collect();
+    let mut names: Vec<String> = named
+        .iter()
+        .filter(|(b, _)| bits & b != 0)
+        .map(|(_, n)| (*n).to_string())
+        .collect();
     let rest = named.iter().fold(bits, |acc, (b, _)| acc & !b);
     if rest != 0 {
         names.push(format!("other 0x{rest:x}"));
@@ -139,16 +149,36 @@ pub fn report(f: &Facts, personal: &Personal) -> String {
     line("Foxglove", &format!("{} ({})", f.app_version, f.app_build));
     line("OS", &f.os);
     line("GPU", f.gpu.as_deref().unwrap_or("not known yet"));
-    line("Keyboard", f.keyboard.as_deref().unwrap_or("none connected"));
+    line(
+        "Keyboard",
+        f.keyboard.as_deref().unwrap_or("none connected"),
+    );
     line("Board profile", f.board.as_deref().unwrap_or("none"));
     line("Connection", &f.connection);
     line("Left firmware", &f.left_firmware);
     line("Right firmware", &f.right_firmware);
-    line("Right battery", &f.right_battery.map_or("not reported".into(), |b| format!("{b}%")));
+    line(
+        "Right battery",
+        &f.right_battery
+            .map_or("not reported".into(), |b| format!("{b}%")),
+    );
     match &f.hello {
         Some(h) => {
-            line("HELLO", &format!("v{} · panel {}×{} · right link {} · panel timeout {} s", h.version, h.width, h.height, h.right_link, h.panel_timeout_s));
-            line("Capabilities", &format!("0x{:08x} {}", h.capabilities, capability_names(h.capabilities)));
+            line(
+                "HELLO",
+                &format!(
+                    "v{} · panel {}×{} · right link {} · panel timeout {} s",
+                    h.version, h.width, h.height, h.right_link, h.panel_timeout_s
+                ),
+            );
+            line(
+                "Capabilities",
+                &format!(
+                    "0x{:08x} {}",
+                    h.capabilities,
+                    capability_names(h.capabilities)
+                ),
+            );
         }
         None => line("HELLO", "no reply"),
     }
@@ -156,9 +186,24 @@ pub fn report(f: &Facts, personal: &Personal) -> String {
         line("Plugins", "none");
     }
     for (i, p) in f.plugins.iter().enumerate() {
-        line(if i == 0 { "Plugins" } else { "" }, &format!("{} {}{}", p.id, p.version, if p.enabled { "" } else { " (off)" }));
+        line(
+            if i == 0 { "Plugins" } else { "" },
+            &format!(
+                "{} {}{}",
+                p.id,
+                p.version,
+                if p.enabled { "" } else { " (off)" }
+            ),
+        );
     }
-    line("Lights held by", &if f.lights.is_empty() { "nobody (the keyboard's own)".into() } else { f.lights.join("; ") });
+    line(
+        "Lights held by",
+        &if f.lights.is_empty() {
+            "nobody (the keyboard's own)".into()
+        } else {
+            f.lights.join("; ")
+        },
+    );
     let _ = writeln!(s, "\nLast {} log lines:", f.log.len());
     for l in &f.log {
         let _ = writeln!(s, "{}", super::app_log::redact(l));
@@ -171,13 +216,21 @@ fn os() -> String {
     #[cfg(windows)]
     {
         use winreg::enums::HKEY_LOCAL_MACHINE;
-        let key = winreg::RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+        let key = winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
+            .open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
         if let Ok(k) = key {
             let get = |n: &str| k.get_value::<String, _>(n).unwrap_or_default();
-            let ubr = k.get_value::<u32, _>("UBR").map(|u| format!(".{u}")).unwrap_or_default();
+            let ubr = k
+                .get_value::<u32, _>("UBR")
+                .map(|u| format!(".{u}"))
+                .unwrap_or_default();
             // ProductName still says "Windows 10" on Windows 11; the build tells them apart.
             let build: u32 = get("CurrentBuild").parse().unwrap_or(0);
-            let name = if build >= 22000 { get("ProductName").replace("Windows 10", "Windows 11") } else { get("ProductName") };
+            let name = if build >= 22000 {
+                get("ProductName").replace("Windows 10", "Windows 11")
+            } else {
+                get("ProductName")
+            };
             return format!("{name} {} (build {build}{ubr})", get("DisplayVersion"));
         }
     }
@@ -201,7 +254,10 @@ pub fn collect(ctx: &egui::Context) -> Facts {
         (Some(true), _) | (None, "usb") => "USB".to_string(),
         (Some(false), _) | (None, "ble") => format!(
             "Bluetooth{}",
-            summary.profile.map(|p| format!(", profile {}", p + 1)).unwrap_or_default()
+            summary
+                .profile
+                .map(|p| format!(", profile {}", p + 1))
+                .unwrap_or_default()
         ),
         _ => "unknown".into(),
     };
@@ -221,12 +277,17 @@ pub fn collect(ctx: &egui::Context) -> Facts {
     let snapshot = super::screens::snapshot();
     let plugins = super::plugin_install::installed()
         .into_iter()
-        .map(|p| Plugin { id: p.manifest.id, version: p.manifest.version, enabled: p.record.enabled })
+        .map(|p| Plugin {
+            id: p.manifest.id,
+            version: p.manifest.version,
+            enabled: p.record.enabled,
+        })
         .collect();
     let lights = super::lighting_leases::holders()
         .into_iter()
         .map(|(device, conn, priority)| {
-            let who = foxglove_plugin_host::plugin_of(conn).unwrap_or_else(|| format!("a tool (connection {conn})"));
+            let who = foxglove_plugin_host::plugin_of(conn)
+                .unwrap_or_else(|| format!("a tool (connection {conn})"));
             format!("{device}: {who} ({priority:?})")
         })
         .collect();
@@ -235,7 +296,11 @@ pub fn collect(ctx: &egui::Context) -> Facts {
         app_build: format!(
             "{}, {}",
             option_env!("FOXGLOVE_GIT_SHA").unwrap_or("build unknown"),
-            if cfg!(debug_assertions) { "debug" } else { "release" }
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
         ),
         os: os(),
         gpu: GPU.lock().unwrap_or_else(|e| e.into_inner()).clone(),
@@ -346,14 +411,23 @@ mod tests {
     #[test]
     fn scrubbing_ignores_case_and_keeps_the_rest() {
         let p = personal();
-        assert_eq!(p.scrub("c:\\users\\bandit\\x and BANDIT"), "%USERPROFILE%\\x and <user>");
+        assert_eq!(
+            p.scrub("c:\\users\\bandit\\x and BANDIT"),
+            "%USERPROFILE%\\x and <user>"
+        );
         assert_eq!(p.scrub("nothing here · ünï"), "nothing here · ünï");
         assert_eq!(replace_ignore_case("aXa", "x", "-"), "a-a");
     }
 
     #[test]
     fn no_keyboard_reads_plainly() {
-        let text = report(&Facts { connection: "unknown".into(), ..Default::default() }, &personal());
+        let text = report(
+            &Facts {
+                connection: "unknown".into(),
+                ..Default::default()
+            },
+            &personal(),
+        );
         assert!(text.contains("Keyboard        none connected"));
         assert!(text.contains("HELLO           no reply"));
         assert!(text.contains("Plugins         none"));
@@ -364,6 +438,9 @@ mod tests {
     fn capability_bits_are_named() {
         use digitalis::protocol::capabilities as c;
         assert_eq!(capability_names(0), "none");
-        assert_eq!(capability_names(c::PANEL | c::PANEL_HOLD), "PANEL PANEL_HOLD");
+        assert_eq!(
+            capability_names(c::PANEL | c::PANEL_HOLD),
+            "PANEL PANEL_HOLD"
+        );
     }
 }

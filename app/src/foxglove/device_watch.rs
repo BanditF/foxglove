@@ -44,7 +44,11 @@ impl DeviceWatch {
             Box::new(move |path| {
                 let identity = seen.identity.load(Ordering::Relaxed);
                 if identity == 0
-                    || !super::connection::matches_interface(path, (identity >> 16) as u16, identity as u16)
+                    || !super::connection::matches_interface(
+                        path,
+                        (identity >> 16) as u16,
+                        identity as u16,
+                    )
                 {
                     return;
                 }
@@ -89,7 +93,11 @@ impl DeviceWatch {
         if result != CR_SUCCESS {
             return None;
         }
-        Some(Self { handle, _context: context, overlay })
+        Some(Self {
+            handle,
+            _context: context,
+            overlay,
+        })
     }
 
     pub(crate) fn set_identity(&self, identity: Option<(u16, u16)>) {

@@ -36,7 +36,11 @@ pub struct Triggers {
 impl Triggers {
     /// The highest active layer that has art.
     fn top_layer(active: &[u8], cycle: &Cycle) -> Option<u8> {
-        active.iter().copied().filter(|l| cycle.layer_art(*l).is_some()).max()
+        active
+            .iter()
+            .copied()
+            .filter(|l| cycle.layer_art(*l).is_some())
+            .max()
     }
 
     /// The keyboard's active layers changed.
@@ -134,14 +138,28 @@ mod tests {
         let mut t = Triggers::default();
         assert_eq!(t.layers(&[0, 3], &c, t0), Change::Nothing);
         assert_eq!(t.deadline(), Some(t0 + LAYER_DELAY));
-        assert_eq!(t.due(&c, t0 + Duration::from_millis(100)), Change::Nothing, "not yet");
+        assert_eq!(
+            t.due(&c, t0 + Duration::from_millis(100)),
+            Change::Nothing,
+            "not yet"
+        );
         // released before the delay: the pending art is dropped, nothing to restore
-        assert_eq!(t.layers(&[0], &c, t0 + Duration::from_millis(200)), Change::Nothing);
+        assert_eq!(
+            t.layers(&[0], &c, t0 + Duration::from_millis(200)),
+            Change::Nothing
+        );
         assert_eq!(t.deadline(), None);
         // held: shows, then restores on release
         assert_eq!(t.layers(&[0, 3], &c, t0), Change::Nothing);
-        assert_eq!(t.due(&c, t0 + LAYER_DELAY), Change::Show(Item::BuiltIn("Bandit_Radar".into())));
-        assert_eq!(t.layers(&[0, 3, 1], &c, t0), Change::Nothing, "layer 1 has no art");
+        assert_eq!(
+            t.due(&c, t0 + LAYER_DELAY),
+            Change::Show(Item::BuiltIn("Bandit_Radar".into()))
+        );
+        assert_eq!(
+            t.layers(&[0, 3, 1], &c, t0),
+            Change::Nothing,
+            "layer 1 has no art"
+        );
         assert_eq!(t.layers(&[0], &c, t0), Change::Restore);
     }
 
@@ -152,7 +170,10 @@ mod tests {
         t.layers(&[0, 3, 5], &c, t0);
         assert_eq!(t.due(&c, t0 + LAYER_DELAY), Change::Show(Item::Slot(1)));
         t.layers(&[0, 3], &c, t0 + LAYER_DELAY);
-        assert_eq!(t.due(&c, t0 + 2 * LAYER_DELAY), Change::Show(Item::BuiltIn("Bandit_Radar".into())));
+        assert_eq!(
+            t.due(&c, t0 + 2 * LAYER_DELAY),
+            Change::Show(Item::BuiltIn("Bandit_Radar".into()))
+        );
     }
 
     #[test]
@@ -161,7 +182,11 @@ mod tests {
         let mut t = Triggers::default();
         let fury = Item::File("fury.bin".into());
         assert_eq!(t.preset(Some(fury.clone())), Change::Show(fury.clone()));
-        assert_eq!(t.preset(Some(fury.clone())), Change::Nothing, "same preset again");
+        assert_eq!(
+            t.preset(Some(fury.clone())),
+            Change::Nothing,
+            "same preset again"
+        );
         t.layers(&[3], &c, t0);
         t.due(&c, t0 + LAYER_DELAY);
         assert_eq!(t.top(&c), Some(Item::BuiltIn("Bandit_Radar".into())));

@@ -14,8 +14,16 @@ use super::store::{self, Rule};
 
 /// What the rules decide for a newly focused `program`, given who chose the current profile.
 /// `Some(choice)` switches (`choice` = `None` means the base settings).
-pub fn decide(rules: &[Rule], program: &str, active: Option<&str>, by_rule: bool) -> Option<Option<String>> {
-    match rules.iter().find(|r| r.program.eq_ignore_ascii_case(program)) {
+pub fn decide(
+    rules: &[Rule],
+    program: &str,
+    active: Option<&str>,
+    by_rule: bool,
+) -> Option<Option<String>> {
+    match rules
+        .iter()
+        .find(|r| r.program.eq_ignore_ascii_case(program))
+    {
         Some(rule) if active != Some(rule.profile.as_str()) => Some(Some(rule.profile.clone())),
         Some(_) => None,
         None if by_rule && active.is_some() => Some(None),
@@ -24,7 +32,10 @@ pub fn decide(rules: &[Rule], program: &str, active: Option<&str>, by_rule: bool
 }
 
 fn own_exe() -> Option<String> {
-    std::env::current_exe().ok()?.file_name().map(|n| n.to_string_lossy().to_lowercase())
+    std::env::current_exe()
+        .ok()?
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
 }
 
 /// Starts watching the foreground program (Windows). `FOXGLOVE_DISABLE=foreground` leaves it out.
@@ -42,16 +53,19 @@ pub fn start() {
         // Whether the active profile came from a rule (so leaving its program reverts).
         let mut by_rule = false;
         for () in rx {
-            let Some(program) = foxglove_panel::providers::foreground_exe().map(|e| e.to_lowercase()) else {
+            let Some(program) =
+                foxglove_panel::providers::foreground_exe().map(|e| e.to_lowercase())
+            else {
                 continue;
             };
             if Some(&program) == own.as_ref() || last.as_ref() == Some(&program) {
                 continue;
             }
             last = Some(program.clone());
-            super::devices::bus()
-                .facts()
-                .set("app.foreground", foxglove_devices::facts::Value::Text(program.clone()));
+            super::devices::bus().facts().set(
+                "app.foreground",
+                foxglove_devices::facts::Value::Text(program.clone()),
+            );
             let (auto, rules) = store::rules();
             if !auto {
                 continue;
@@ -74,17 +88,39 @@ mod tests {
     use super::*;
 
     fn rule(program: &str, profile: &str) -> Rule {
-        Rule { program: program.into(), profile: profile.into() }
+        Rule {
+            program: program.into(),
+            profile: profile.into(),
+        }
     }
 
     #[test]
     fn rules_switch_and_leaving_reverts_only_what_a_rule_chose() {
         let rules = [rule("eldenring.exe", "Game"), rule("code.exe", "Work")];
-        assert_eq!(decide(&rules, "EldenRing.exe", None, false), Some(Some("Game".into())));
-        assert_eq!(decide(&rules, "eldenring.exe", Some("Game"), true), None, "already there");
-        assert_eq!(decide(&rules, "explorer.exe", Some("Game"), true), Some(None), "left the game");
-        assert_eq!(decide(&rules, "explorer.exe", Some("Game"), false), None, "a hand pick holds");
-        assert_eq!(decide(&rules, "code.exe", Some("Game"), false), Some(Some("Work".into())), "until a rule matches");
+        assert_eq!(
+            decide(&rules, "EldenRing.exe", None, false),
+            Some(Some("Game".into()))
+        );
+        assert_eq!(
+            decide(&rules, "eldenring.exe", Some("Game"), true),
+            None,
+            "already there"
+        );
+        assert_eq!(
+            decide(&rules, "explorer.exe", Some("Game"), true),
+            Some(None),
+            "left the game"
+        );
+        assert_eq!(
+            decide(&rules, "explorer.exe", Some("Game"), false),
+            None,
+            "a hand pick holds"
+        );
+        assert_eq!(
+            decide(&rules, "code.exe", Some("Game"), false),
+            Some(Some("Work".into())),
+            "until a rule matches"
+        );
         assert_eq!(decide(&rules, "explorer.exe", None, false), None);
     }
 }

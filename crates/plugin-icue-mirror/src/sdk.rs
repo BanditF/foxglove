@@ -3,7 +3,6 @@
 //! devices, read LED colours, and the session and device-connection events. Nothing here
 //! sets colours or requests control.
 
-
 /// What iCUE says, from its own threads.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Notice {
@@ -31,7 +30,8 @@ pub trait Sdk {
 
 /// A device id or name from the SDK's fixed, NUL-terminated byte arrays.
 fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(&bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len())]).into_owned()
+    String::from_utf8_lossy(&bytes[..bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len())])
+        .into_owned()
 }
 
 #[cfg(windows)]
@@ -119,7 +119,8 @@ mod real {
     type EventHandler = unsafe extern "C" fn(*mut c_void, *const Event);
     type Connect = unsafe extern "C" fn(SessionHandler, *mut c_void) -> i32;
     type Subscribe = unsafe extern "C" fn(EventHandler, *mut c_void) -> i32;
-    type GetDevices = unsafe extern "C" fn(*const DeviceFilter, i32, *mut DeviceInfo, *mut i32) -> i32;
+    type GetDevices =
+        unsafe extern "C" fn(*const DeviceFilter, i32, *mut DeviceInfo, *mut i32) -> i32;
     type GetLedPositions = unsafe extern "C" fn(*const u8, i32, *mut LedPosition, *mut i32) -> i32;
     type GetLedColors = unsafe extern "C" fn(*const u8, i32, *mut LedColor) -> i32;
 
@@ -134,18 +135,29 @@ mod real {
     unsafe impl Send for Icue {}
 
     unsafe extern "C" fn on_session(context: *mut c_void, e: *const SessionStateChanged) {
-        if let (Some(tx), Some(e)) = (unsafe { (context as *const Sender<Notice>).as_ref() }, unsafe { e.as_ref() }) {
+        if let (Some(tx), Some(e)) = (
+            unsafe { (context as *const Sender<Notice>).as_ref() },
+            unsafe { e.as_ref() },
+        ) {
             let _ = tx.send(Notice::Session(e.state == SESSION_CONNECTED));
         }
     }
 
     unsafe extern "C" fn on_event(context: *mut c_void, e: *const Event) {
-        let (Some(tx), Some(e)) = (unsafe { (context as *const Sender<Notice>).as_ref() }, unsafe { e.as_ref() }) else { return };
+        let (Some(tx), Some(e)) = (
+            unsafe { (context as *const Sender<Notice>).as_ref() },
+            unsafe { e.as_ref() },
+        ) else {
+            return;
+        };
         if e.id != EVENT_DEVICE_CONNECTION {
             return;
         }
         if let Some(d) = unsafe { (e.data as *const DeviceConnectionStatus).as_ref() } {
-            let _ = tx.send(Notice::Device { id: text(&d.device_id), connected: d.is_connected });
+            let _ = tx.send(Notice::Device {
+                id: text(&d.device_id),
+                connected: d.is_connected,
+            });
         }
     }
 
@@ -162,18 +174,37 @@ mod real {
             let wide: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
             let dll = unsafe { LoadLibraryW(wide.as_ptr()) };
             if dll.is_null() {
-                return Err(format!("can't load {path}: {}", std::io::Error::last_os_error()));
+                return Err(format!(
+                    "can't load {path}: {}",
+                    std::io::Error::last_os_error()
+                ));
             }
-            let get = |name: &[u8]| unsafe { GetProcAddress(dll, name.as_ptr()) }.ok_or_else(|| format!("{path} has no {}", String::from_utf8_lossy(&name[..name.len() - 1])));
+            let get = |name: &[u8]| {
+                unsafe { GetProcAddress(dll, name.as_ptr()) }.ok_or_else(|| {
+                    format!(
+                        "{path} has no {}",
+                        String::from_utf8_lossy(&name[..name.len() - 1])
+                    )
+                })
+            };
             // SAFETY: each pointer comes from the SDK's export of that name, whose C signature
             // the type above declares (iCUESDK.h, v4).
-            let connect = unsafe { std::mem::transmute::<Proc, Connect>(get(b"CorsairConnect\0")?) };
-            let subscribe = unsafe { std::mem::transmute::<Proc, Subscribe>(get(b"CorsairSubscribeForEvents\0")?) };
+            let connect =
+                unsafe { std::mem::transmute::<Proc, Connect>(get(b"CorsairConnect\0")?) };
+            let subscribe = unsafe {
+                std::mem::transmute::<Proc, Subscribe>(get(b"CorsairSubscribeForEvents\0")?)
+            };
             let icue = Icue {
                 _dll: dll,
-                get_devices: unsafe { std::mem::transmute::<Proc, GetDevices>(get(b"CorsairGetDevices\0")?) },
-                get_led_positions: unsafe { std::mem::transmute::<Proc, GetLedPositions>(get(b"CorsairGetLedPositions\0")?) },
-                get_led_colors: unsafe { std::mem::transmute::<Proc, GetLedColors>(get(b"CorsairGetLedColors\0")?) },
+                get_devices: unsafe {
+                    std::mem::transmute::<Proc, GetDevices>(get(b"CorsairGetDevices\0")?)
+                },
+                get_led_positions: unsafe {
+                    std::mem::transmute::<Proc, GetLedPositions>(get(b"CorsairGetLedPositions\0")?)
+                },
+                get_led_colors: unsafe {
+                    std::mem::transmute::<Proc, GetLedColors>(get(b"CorsairGetLedColors\0")?)
+                },
             };
             // The context lives as long as the process: the SDK may call back at any time.
             let context = Box::into_raw(Box::new(tx)) as *mut c_void;
@@ -191,23 +222,56 @@ mod real {
 
     impl Sdk for Icue {
         fn devices(&self) -> Result<Vec<Device>, String> {
-            let filter = DeviceFilter { device_type_mask: -1 };
+            let filter = DeviceFilter {
+                device_type_mask: -1,
+            };
             let mut out: Vec<DeviceInfo> = (0..DEVICE_COUNT_MAX)
-                .map(|_| DeviceInfo { kind: 0, id: [0; STRING_M], serial: [0; STRING_M], model: [0; STRING_M], led_count: 0, channel_count: 0 })
+                .map(|_| DeviceInfo {
+                    kind: 0,
+                    id: [0; STRING_M],
+                    serial: [0; STRING_M],
+                    model: [0; STRING_M],
+                    led_count: 0,
+                    channel_count: 0,
+                })
                 .collect();
             let mut n = 0i32;
-            let e = unsafe { (self.get_devices)(&filter, DEVICE_COUNT_MAX as i32, out.as_mut_ptr(), &mut n) };
+            let e = unsafe {
+                (self.get_devices)(&filter, DEVICE_COUNT_MAX as i32, out.as_mut_ptr(), &mut n)
+            };
             if e != 0 {
                 return Err(format!("CorsairGetDevices failed ({e})"));
             }
-            Ok(out.iter().take(n.max(0) as usize).map(|d| Device { id: text(&d.id), model: text(&d.model), leds: d.led_count }).collect())
+            Ok(out
+                .iter()
+                .take(n.max(0) as usize)
+                .map(|d| Device {
+                    id: text(&d.id),
+                    model: text(&d.model),
+                    leds: d.led_count,
+                })
+                .collect())
         }
 
         fn leds(&self, device: &str) -> Result<Vec<u32>, String> {
             let id = device_id(device);
-            let mut out = vec![LedPosition { id: 0, cx: 0.0, cy: 0.0 }; LED_COUNT_MAX];
+            let mut out = vec![
+                LedPosition {
+                    id: 0,
+                    cx: 0.0,
+                    cy: 0.0
+                };
+                LED_COUNT_MAX
+            ];
             let mut n = 0i32;
-            let e = unsafe { (self.get_led_positions)(id.as_ptr(), LED_COUNT_MAX as i32, out.as_mut_ptr(), &mut n) };
+            let e = unsafe {
+                (self.get_led_positions)(
+                    id.as_ptr(),
+                    LED_COUNT_MAX as i32,
+                    out.as_mut_ptr(),
+                    &mut n,
+                )
+            };
             if e != 0 {
                 return Err(format!("CorsairGetLedPositions failed ({e})"));
             }
@@ -216,8 +280,18 @@ mod real {
 
         fn colors(&self, device: &str, leds: &[u32]) -> Result<Vec<(u8, u8, u8, u8)>, String> {
             let id = device_id(device);
-            let mut out: Vec<LedColor> = leds.iter().map(|l| LedColor { id: *l, r: 0, g: 0, b: 0, a: 0 }).collect();
-            let e = unsafe { (self.get_led_colors)(id.as_ptr(), out.len() as i32, out.as_mut_ptr()) };
+            let mut out: Vec<LedColor> = leds
+                .iter()
+                .map(|l| LedColor {
+                    id: *l,
+                    r: 0,
+                    g: 0,
+                    b: 0,
+                    a: 0,
+                })
+                .collect();
+            let e =
+                unsafe { (self.get_led_colors)(id.as_ptr(), out.len() as i32, out.as_mut_ptr()) };
             if e != 0 {
                 return Err(format!("CorsairGetLedColors failed ({e})"));
             }

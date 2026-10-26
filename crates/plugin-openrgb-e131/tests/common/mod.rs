@@ -19,13 +19,22 @@ pub struct Keyboard {
 
 impl Devices for Keyboard {
     fn call(&self, method: &str, params: Value) -> Result<Value, Error> {
-        self.calls.lock().unwrap().push((method.to_string(), params));
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params));
         match method {
-            "devices.list" => Ok(json!({"devices": [{"id": "kb", "name": "Test board", "kind": "keyboard",
-                "backend": "mock", "connected": true, "caps": ["lighting"]}]})),
+            "devices.list" => Ok(
+                json!({"devices": [{"id": "kb", "name": "Test board", "kind": "keyboard",
+                "backend": "mock", "connected": true, "caps": ["lighting"]}]}),
+            ),
             "lighting.lease" => Ok(json!({"lease": 7})),
             "lighting.update" | "lighting.release" => Ok(json!({})),
-            _ => Err(Error { code: -32601, message: method.into(), data: None }),
+            _ => Err(Error {
+                code: -32601,
+                message: method.into(),
+                data: None,
+            }),
         }
     }
 }
@@ -33,7 +42,13 @@ impl Devices for Keyboard {
 impl Keyboard {
     /// The lease calls so far.
     pub fn leases(&self) -> Vec<(String, Value)> {
-        self.calls.lock().unwrap().iter().filter(|(m, _)| m.starts_with("lighting.")).cloned().collect()
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(m, _)| m.starts_with("lighting."))
+            .cloned()
+            .collect()
     }
 
     pub fn wait(&self, what: &str, f: impl Fn(&[(String, Value)]) -> bool) -> Vec<(String, Value)> {
@@ -51,7 +66,11 @@ impl Keyboard {
 
 /// A free UDP port for this run, so tests and other runs on the machine don't share E1.31's.
 pub fn free_port() -> u16 {
-    std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    std::net::UdpSocket::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 /// The plugin running as Foxglove runs it, listening on `port`; cleaned up on drop.
@@ -81,16 +100,28 @@ pub fn start(id: &str, port: u16, keyboard: Arc<Keyboard>) -> Plugin {
     let spec = PluginSpec {
         id: id.into(),
         dir: dir.clone(),
-        run: vec![exe.file_name().unwrap().to_string_lossy().into(), "--port".into(), port.to_string()],
+        run: vec![
+            exe.file_name().unwrap().to_string_lossy().into(),
+            "--port".into(),
+            port.to_string(),
+        ],
         sandbox: cfg!(windows),
     };
     let context = move || Context {
         facts: foxglove_devices::facts::Facts::default(),
         devices: keyboard.clone(),
-        client: Client::Plugin(vec![Permission::DevicesRead, Permission::LightingWrite, Permission::NetListenUdp(port)]),
+        client: Client::Plugin(vec![
+            Permission::DevicesRead,
+            Permission::LightingWrite,
+            Permission::NetListenUdp(port),
+        ]),
         app_version: "test".into(),
         limits: Limits::default(),
     };
     let runner = Runner::start(spec, Config::default(), context, |_| {});
-    Plugin { runner: Some(runner), id: id.into(), dir }
+    Plugin {
+        runner: Some(runner),
+        id: id.into(),
+        dir,
+    }
 }

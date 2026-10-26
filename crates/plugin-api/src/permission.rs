@@ -5,7 +5,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(try_from = "String", into = "String")]
 pub enum Permission {
     /// Read facts whose key matches the pattern (`*` alone, or a trailing `.*`).
@@ -57,7 +59,10 @@ pub enum Permission {
 impl Permission {
     /// Whether the user gets a warning before granting it.
     pub fn sensitive(&self) -> bool {
-        matches!(self, Permission::KeyEvents | Permission::HidRaw | Permission::Net)
+        matches!(
+            self,
+            Permission::KeyEvents | Permission::HidRaw | Permission::Net
+        )
     }
 
     /// Plain words for the Plugins tab's install dialog.
@@ -78,12 +83,18 @@ impl Permission {
                 Some(port) => format!("connect to {host} port {port}"),
                 None => format!("connect to {host}"),
             },
-            Permission::NetListenUdp(port) => format!("receive network messages from this PC on port {port}"),
-            Permission::NetListenTcp(port) => format!("accept connections from this PC on port {port}"),
+            Permission::NetListenUdp(port) => {
+                format!("receive network messages from this PC on port {port}")
+            }
+            Permission::NetListenTcp(port) => {
+                format!("accept connections from this PC on port {port}")
+            }
             Permission::Files => "read and write your files".into(),
             Permission::AudioInputsRead => "see whether your microphone is muted".into(),
             Permission::AudioInputsMute => "mute and unmute your microphone".into(),
-            Permission::Secrets => "keep its passwords or tokens in Windows' credential store".into(),
+            Permission::Secrets => {
+                "keep its passwords or tokens in Windows' credential store".into()
+            }
             Permission::AppsWatch(exe) => format!("notice when {exe} opens or closes its windows"),
         }
     }
@@ -98,10 +109,13 @@ impl TryFrom<String> for Permission {
                 || (!p.is_empty()
                     && p.split('.').enumerate().all(|(i, part)| {
                         !part.is_empty()
-                            && (part.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                            && (part
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
                                 || (part == "*" && i == p.split('.').count() - 1))
                     }));
-            ok.then(|| p.to_string()).ok_or_else(|| format!("bad fact pattern {p:?}"))
+            ok.then(|| p.to_string())
+                .ok_or_else(|| format!("bad fact pattern {p:?}"))
         };
         Ok(match text.split_once(':') {
             Some(("facts.read", p)) => Permission::FactsRead(pattern(p)?),
@@ -113,17 +127,36 @@ impl TryFrom<String> for Permission {
                 Permission::FactsWrite(p)
             }
             Some(("net.connect", target)) => {
-                let (host, port) = target.rsplit_once(':').ok_or_else(|| format!("{text:?}: write net.connect:<host>:<port>"))?;
-                let port = if port == "*" { None } else { Some(port.parse().map_err(|_| format!("{text:?}: bad port"))?) };
-                let label = |l: &str| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-                let ok = host.split('.').enumerate().all(|(i, l)| label(l) || (i == 0 && l == "*" && host.contains('.')));
+                let (host, port) = target
+                    .rsplit_once(':')
+                    .ok_or_else(|| format!("{text:?}: write net.connect:<host>:<port>"))?;
+                let port = if port == "*" {
+                    None
+                } else {
+                    Some(port.parse().map_err(|_| format!("{text:?}: bad port"))?)
+                };
+                let label = |l: &str| {
+                    !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                };
+                let ok = host
+                    .split('.')
+                    .enumerate()
+                    .all(|(i, l)| label(l) || (i == 0 && l == "*" && host.contains('.')));
                 if !ok || host == "*" {
                     return Err(format!("{text:?}: name one host"));
                 }
-                Permission::NetConnect { host: host.to_ascii_lowercase(), port }
+                Permission::NetConnect {
+                    host: host.to_ascii_lowercase(),
+                    port,
+                }
             }
             Some(("net.listen", target)) => {
-                let port = |prefix: &str| target.strip_prefix(prefix).and_then(|p| p.parse::<u16>().ok()).filter(|p| *p != 0);
+                let port = |prefix: &str| {
+                    target
+                        .strip_prefix(prefix)
+                        .and_then(|p| p.parse::<u16>().ok())
+                        .filter(|p| *p != 0)
+                };
                 match (port("udp:127.0.0.1:"), port("tcp:127.0.0.1:")) {
                     (Some(p), _) => Permission::NetListenUdp(p),
                     (_, Some(p)) => Permission::NetListenTcp(p),
@@ -133,7 +166,12 @@ impl TryFrom<String> for Permission {
             Some(("apps.watch", exe)) => {
                 let exe = exe.to_ascii_lowercase();
                 let name = exe.strip_suffix(".exe").unwrap_or_default();
-                if name.is_empty() || exe.len() > 64 || !name.chars().all(|c| c.is_ascii_alphanumeric() || "._- ".contains(c)) {
+                if name.is_empty()
+                    || exe.len() > 64
+                    || !name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "._- ".contains(c))
+                {
                     return Err(format!("{text:?}: write apps.watch:<name>.exe"));
                 }
                 Permission::AppsWatch(exe)
@@ -174,7 +212,10 @@ impl From<Permission> for String {
             Permission::ProfilesWrite => "profiles.write".into(),
             Permission::Net => "net".into(),
             Permission::NetConnect { host, port } => {
-                format!("net.connect:{host}:{}", port.map_or("*".to_string(), |p| p.to_string()))
+                format!(
+                    "net.connect:{host}:{}",
+                    port.map_or("*".to_string(), |p| p.to_string())
+                )
             }
             Permission::NetListenUdp(port) => format!("net.listen:udp:127.0.0.1:{port}"),
             Permission::NetListenTcp(port) => format!("net.listen:tcp:127.0.0.1:{port}"),
@@ -211,7 +252,10 @@ impl Grant {
     pub fn can_connect(&self, host: &str, port: u16) -> bool {
         let host = host.to_ascii_lowercase();
         self.0.iter().any(|p| match p {
-            Permission::NetConnect { host: h, port: allowed } => {
+            Permission::NetConnect {
+                host: h,
+                port: allowed,
+            } => {
                 allowed.is_none_or(|a| a == port)
                     && match h.strip_prefix("*.") {
                         Some(domain) => host.ends_with(&format!(".{domain}")),
@@ -232,7 +276,9 @@ impl Grant {
 
     /// Whether the plugin needs to run outside the sandbox (unrestricted network or files).
     pub fn unsandboxed(&self) -> bool {
-        self.0.iter().any(|p| matches!(p, Permission::Net | Permission::Files))
+        self.0
+            .iter()
+            .any(|p| matches!(p, Permission::Net | Permission::Files))
     }
 
     pub fn can_read_fact(&self, key: &str) -> bool {
@@ -245,14 +291,19 @@ impl Grant {
 
     pub fn can_write_fact(&self, key: &str) -> bool {
         !key.starts_with("device.")
-            && self.0.iter().any(|p| matches!(p, Permission::FactsWrite(pat) if key_matches(pat, key)))
+            && self
+                .0
+                .iter()
+                .any(|p| matches!(p, Permission::FactsWrite(pat) if key_matches(pat, key)))
     }
 
     /// Whether a subscription pattern stays inside what may be read: the pattern itself must be
     /// covered by one granted read pattern.
     pub fn can_subscribe(&self, pattern: &str) -> bool {
         self.0.iter().any(|p| match p {
-            Permission::AudioInputsRead => pattern == "mic.*" || (pattern.starts_with("mic.") && !pattern.contains('*')),
+            Permission::AudioInputsRead => {
+                pattern == "mic.*" || (pattern.starts_with("mic.") && !pattern.contains('*'))
+            }
             Permission::FactsRead(granted) => {
                 granted == "*"
                     || granted == pattern
@@ -275,10 +326,22 @@ mod tests {
 
     #[test]
     fn parses_round_trips_and_refuses_bad_ones() {
-        for s in ["facts.read:clock.*", "facts.write:weather.temp", "lighting.write", "key.events", "facts.read:*", "audio.inputs.read", "audio.inputs.mute", "apps.watch:obs64.exe"] {
+        for s in [
+            "facts.read:clock.*",
+            "facts.write:weather.temp",
+            "lighting.write",
+            "key.events",
+            "facts.read:*",
+            "audio.inputs.read",
+            "audio.inputs.mute",
+            "apps.watch:obs64.exe",
+        ] {
             assert_eq!(String::from(p(s).unwrap()), s);
         }
-        assert!(p("facts.write:device.x").is_err(), "device facts are the app's");
+        assert!(
+            p("facts.write:device.x").is_err(),
+            "device facts are the app's"
+        );
         assert!(p("facts.write:*").is_err());
         assert!(p("facts.read:a.*.b").is_err());
         assert!(p("facts.read:").is_err());
@@ -288,22 +351,50 @@ mod tests {
 
     #[test]
     fn scoped_network_permissions() {
-        for s in ["net.connect:127.0.0.1:4455", "net.connect:*.example.com:443", "net.connect:api.example.com:*", "net.listen:udp:127.0.0.1:5568", "net.listen:tcp:127.0.0.1:47911"] {
+        for s in [
+            "net.connect:127.0.0.1:4455",
+            "net.connect:*.example.com:443",
+            "net.connect:api.example.com:*",
+            "net.listen:udp:127.0.0.1:5568",
+            "net.listen:tcp:127.0.0.1:47911",
+        ] {
             assert_eq!(String::from(p(s).unwrap()), s);
         }
-        for bad in ["net.connect:*:80", "net.connect:example.com", "net.connect:a b:1", "net.connect:*:*", "net.listen:udp:0.0.0.0:5568", "net.listen:tcp:0.0.0.0:1", "net.listen:tcp:127.0.0.1:0", "net.listen:udp:127.0.0.1:0"] {
+        for bad in [
+            "net.connect:*:80",
+            "net.connect:example.com",
+            "net.connect:a b:1",
+            "net.connect:*:*",
+            "net.listen:udp:0.0.0.0:5568",
+            "net.listen:tcp:0.0.0.0:1",
+            "net.listen:tcp:127.0.0.1:0",
+            "net.listen:udp:127.0.0.1:0",
+        ] {
             assert!(p(bad).is_err(), "{bad}");
         }
-        let g = Grant(vec![p("net.connect:*.example.com:443").unwrap(), p("net.connect:127.0.0.1:*").unwrap(), p("net.listen:udp:127.0.0.1:5568").unwrap()]);
+        let g = Grant(vec![
+            p("net.connect:*.example.com:443").unwrap(),
+            p("net.connect:127.0.0.1:*").unwrap(),
+            p("net.listen:udp:127.0.0.1:5568").unwrap(),
+        ]);
         assert!(g.can_connect("API.example.com", 443));
-        assert!(!g.can_connect("example.com", 443), "a wildcard covers subdomains only");
+        assert!(
+            !g.can_connect("example.com", 443),
+            "a wildcard covers subdomains only"
+        );
         assert!(!g.can_connect("evil-example.com", 443));
         assert!(!g.can_connect("api.example.com", 80));
         assert!(g.can_connect("127.0.0.1", 4455));
         assert!(g.can_listen_udp(5568) && !g.can_listen_udp(5569));
-        let t = Grant(vec![Permission::try_from("net.listen:tcp:127.0.0.1:47911".to_string()).unwrap()]);
+        let t = Grant(vec![Permission::try_from(
+            "net.listen:tcp:127.0.0.1:47911".to_string(),
+        )
+        .unwrap()]);
         assert!(t.can_listen_tcp(47911) && !t.can_listen_udp(47911) && !t.unsandboxed());
-        assert!(Permission::try_from("net.listen:tcp:0.0.0.0:47911".to_string()).is_err(), "loopback only");
+        assert!(
+            Permission::try_from("net.listen:tcp:0.0.0.0:47911".to_string()).is_err(),
+            "loopback only"
+        );
         assert!(!g.unsandboxed(), "scoped network keeps the sandbox");
         assert!(Grant(vec![Permission::Net]).unsandboxed() && Permission::Net.sensitive());
     }
@@ -311,13 +402,24 @@ mod tests {
     #[test]
     fn audio_inputs_read_covers_the_mic_facts_only() {
         let g = Grant(vec![p("audio.inputs.read").unwrap()]);
-        assert!(g.can_read_fact("mic.state") && g.can_subscribe("mic.*") && g.can_subscribe("mic.state"));
-        assert!(!g.can_read_fact("media.title") && !g.can_subscribe("*") && !g.can_subscribe("mic.state.*x"));
+        assert!(
+            g.can_read_fact("mic.state")
+                && g.can_subscribe("mic.*")
+                && g.can_subscribe("mic.state")
+        );
+        assert!(
+            !g.can_read_fact("media.title")
+                && !g.can_subscribe("*")
+                && !g.can_subscribe("mic.state.*x")
+        );
     }
 
     #[test]
     fn grants_match_keys_and_subscriptions() {
-        let g = Grant(vec![p("facts.read:media.*").unwrap(), p("facts.write:weather.*").unwrap()]);
+        let g = Grant(vec![
+            p("facts.read:media.*").unwrap(),
+            p("facts.write:weather.*").unwrap(),
+        ]);
         assert!(g.can_read_fact("media.title"));
         assert!(!g.can_read_fact("mediaplayer.title"));
         assert!(!g.can_read_fact("clock.time"));

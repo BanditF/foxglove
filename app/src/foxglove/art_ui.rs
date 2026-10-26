@@ -144,18 +144,31 @@ pub fn tiles(entries: &[art_library::Entry]) -> (Vec<Tile>, Vec<String>) {
     let mut unreadable = Vec::new();
     let mut hashes = std::collections::HashSet::new();
     let mut sorted: Vec<&art_library::Entry> = entries.iter().collect();
-    sorted.sort_by_key(|e| e.path.file_stem().map(|n| n.to_string_lossy().to_lowercase()));
+    sorted.sort_by_key(|e| {
+        e.path
+            .file_stem()
+            .map(|n| n.to_string_lossy().to_lowercase())
+    });
     for e in sorted {
         if !art_library::is_right_art_file(&e.path) {
             continue;
         }
-        let name = e.path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        let name = e
+            .path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         match &e.preview {
             Err(_) => unreadable.push(name),
             Ok(image) => {
                 let same_name = out.iter().any(|t| t.name.eq_ignore_ascii_case(&name));
                 if hashes.insert(e.hash) && !same_name {
-                    out.push(Tile { path: e.path.clone(), name, image: image.clone() });
+                    out.push(Tile {
+                        path: e.path.clone(),
+                        name,
+                        image: image.clone(),
+                    });
                 }
             }
         }
@@ -181,7 +194,9 @@ pub fn thumbnail(stored: &egui::ColorImage, half: bool) -> egui::ColorImage {
     };
     let (w, h) = (sh, sw);
     if !half {
-        let pixels = (0..h).flat_map(|y| (0..w).map(move |x| (x, y))).map(|(x, y)| if lit(x, y) >= 0.5 { LIT } else { OFF });
+        let pixels = (0..h)
+            .flat_map(|y| (0..w).map(move |x| (x, y)))
+            .map(|(x, y)| if lit(x, y) >= 0.5 { LIT } else { OFF });
         return egui::ColorImage::new([w, h], pixels.collect());
     }
     const BAYER: [[f32; 2]; 2] = [[0.125, 0.625], [0.875, 0.375]];
@@ -189,8 +204,16 @@ pub fn thumbnail(stored: &egui::ColorImage, half: bool) -> egui::ColorImage {
     let mut pixels = Vec::with_capacity(tw * th);
     for y in 0..th {
         for x in 0..tw {
-            let level = (lit(2 * x, 2 * y) + lit(2 * x + 1, 2 * y) + lit(2 * x, 2 * y + 1) + lit(2 * x + 1, 2 * y + 1)) / 4.0;
-            pixels.push(if level > BAYER[y % 2][x % 2] { LIT } else { OFF });
+            let level = (lit(2 * x, 2 * y)
+                + lit(2 * x + 1, 2 * y)
+                + lit(2 * x, 2 * y + 1)
+                + lit(2 * x + 1, 2 * y + 1))
+                / 4.0;
+            pixels.push(if level > BAYER[y % 2][x % 2] {
+                LIT
+            } else {
+                OFF
+            });
         }
     }
     egui::ColorImage::new([tw, th], pixels)
@@ -205,31 +228,62 @@ pub fn playing(s: &art_service::Snapshot) -> (String, String) {
     let set = i16::from(st.right_set);
     if st.flash_slots > 0 && set >= count && set < count + i16::from(st.flash_slots) {
         let slot = (set - count) as u8;
-        let name = s.slots.iter().find(|i| i.slot == slot && i.used).map_or_else(|| format!("slot {}", slot + 1), |i| i.name.clone());
+        let name = s
+            .slots
+            .iter()
+            .find(|i| i.slot == slot && i.used)
+            .map_or_else(|| format!("slot {}", slot + 1), |i| i.name.clone());
         return (name, format!("Saved on the keyboard · slot {}", slot + 1));
     }
     if let Some(n) = s.showing_built_in() {
-        let name = s.built_ins().into_iter().find(|(i, _)| *i == n).map_or_else(|| format!("Set {n}"), |(_, name)| name);
+        let name = s
+            .built_ins()
+            .into_iter()
+            .find(|(i, _)| *i == n)
+            .map_or_else(|| format!("Set {n}"), |(_, name)| name);
         return (name, "Built in".into());
     }
     if let Some(p) = s.showing_file() {
-        return (p.file_stem().unwrap_or_default().to_string_lossy().into_owned(), "Pushed from this PC".into());
+        return (
+            p.file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            "Pushed from this PC".into(),
+        );
     }
-    let state = digitalis::protocol::RIGHT_STATES.get(usize::from(st.right_state)).copied().unwrap_or("busy");
+    let state = digitalis::protocol::RIGHT_STATES
+        .get(usize::from(st.right_state))
+        .copied()
+        .unwrap_or("busy");
     ("…".into(), format!("The right half is {state}"))
 }
 
 fn texture(ui: &egui::Ui, state: &mut UiState, tile: &Tile, half: bool) -> egui::TextureHandle {
-    let key = if half { tile.path.with_extension("thumb") } else { tile.path.clone() };
+    let key = if half {
+        tile.path.with_extension("thumb")
+    } else {
+        tile.path.clone()
+    };
     if let Some((_, t)) = state.textures.iter().find(|(p, _)| *p == key) {
         return t.clone();
     }
-    let t = ui.ctx().load_texture(format!("art-{}", key.display()), thumbnail(&tile.image, half), egui::TextureOptions::NEAREST);
+    let t = ui.ctx().load_texture(
+        format!("art-{}", key.display()),
+        thumbnail(&tile.image, half),
+        egui::TextureOptions::NEAREST,
+    );
     state.textures.push((key, t.clone()));
     t
 }
 
-fn draw(ui: &mut egui::Ui, s: &art_service::Snapshot, library: &art_library::Library, state: &mut UiState, acts: &mut Vec<Act>) {
+fn draw(
+    ui: &mut egui::Ui,
+    s: &art_service::Snapshot,
+    library: &art_library::Library,
+    state: &mut UiState,
+    acts: &mut Vec<Act>,
+) {
     let p = super::theme::palette(ui);
     let (tiles, unreadable) = tiles(&library.entries);
     let showing = s.showing_file().cloned();
@@ -237,7 +291,9 @@ fn draw(ui: &mut egui::Ui, s: &art_service::Snapshot, library: &art_library::Lib
     // Playing now: the picture, its name and where it comes from.
     let (name, from) = playing(s);
     ui.horizontal(|ui| {
-        let playing_tile = showing.as_ref().and_then(|path| tiles.iter().find(|t| t.path == *path));
+        let playing_tile = showing
+            .as_ref()
+            .and_then(|path| tiles.iter().find(|t| t.path == *path));
         match playing_tile {
             Some(tile) => {
                 let t = texture(ui, state, tile, false);
@@ -245,13 +301,29 @@ fn draw(ui: &mut egui::Ui, s: &art_service::Snapshot, library: &art_library::Lib
             }
             None => {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(68.0, 140.0), Sense::hover());
-                ui.painter().rect(rect, CornerRadius::same(3), OFF, Stroke::new(1.0, p.control_line), egui::StrokeKind::Inside);
-                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "ART", super::theme::mono(11.0), p.muted);
+                ui.painter().rect(
+                    rect,
+                    CornerRadius::same(3),
+                    OFF,
+                    Stroke::new(1.0, p.control_line),
+                    egui::StrokeKind::Inside,
+                );
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "ART",
+                    super::theme::mono(11.0),
+                    p.muted,
+                );
             }
         }
         ui.vertical(|ui| {
             ui.label(super::theme::caps_label(ui, "Playing"));
-            ui.label(RichText::new(name).font(super::theme::hud(16.0)).color(p.text_strong));
+            ui.label(
+                RichText::new(name)
+                    .font(super::theme::hud(16.0))
+                    .color(p.text_strong),
+            );
             ui.weak(from);
             if s.pinned.is_some() {
                 ui.weak("Comes back after the keyboard restarts.");
@@ -275,7 +347,12 @@ fn draw(ui: &mut egui::Ui, s: &art_service::Snapshot, library: &art_library::Lib
             if r.clicked() && !on && !s.busy {
                 acts.push(Act::Push(tile.path.clone()));
             }
-            r.on_hover_text(if on { "On the keyboard now" } else { "Click to show it on the right screen" }).context_menu(|ui| {
+            r.on_hover_text(if on {
+                "On the keyboard now"
+            } else {
+                "Click to show it on the right screen"
+            })
+            .context_menu(|ui| {
                 if ui.button("Move to the Recycle Bin").clicked() {
                     acts.push(Act::Delete(tile.path.clone()));
                     ui.close();
@@ -284,8 +361,11 @@ fn draw(ui: &mut egui::Ui, s: &art_service::Snapshot, library: &art_library::Lib
         }
     });
     if !unreadable.is_empty() {
-        ui.weak(format!("{} file(s) in the art folder couldn't be read.", unreadable.len()))
-            .on_hover_text(unreadable.join(", "));
+        ui.weak(format!(
+            "{} file(s) in the art folder couldn't be read.",
+            unreadable.len()
+        ))
+        .on_hover_text(unreadable.join(", "));
     }
     if let Some(error) = &library.error {
         ui.colored_label(p.danger, error);
@@ -317,8 +397,16 @@ fn draw(ui: &mut egui::Ui, s: &art_service::Snapshot, library: &art_library::Lib
         ui.horizontal(|ui| {
             match s.progress() {
                 Some((done, total)) => {
-                    let f = if total == 0 { 0.0 } else { f32::from(done) / f32::from(total) };
-                    ui.add(egui::ProgressBar::new(f).desired_width(180.0).text(format!("{done} / {total} bytes")));
+                    let f = if total == 0 {
+                        0.0
+                    } else {
+                        f32::from(done) / f32::from(total)
+                    };
+                    ui.add(
+                        egui::ProgressBar::new(f)
+                            .desired_width(180.0)
+                            .text(format!("{done} / {total} bytes")),
+                    );
                 }
                 None => {
                     ui.spinner();
@@ -338,17 +426,52 @@ fn draw(ui: &mut egui::Ui, s: &art_service::Snapshot, library: &art_library::Lib
 }
 
 /// A library tile: the half-size picture over its name; an orange ring when it's on the keyboard.
-fn library_tile(ui: &mut egui::Ui, t: &egui::TextureHandle, name: &str, on: bool) -> egui::Response {
+fn library_tile(
+    ui: &mut egui::Ui,
+    t: &egui::TextureHandle,
+    name: &str,
+    on: bool,
+) -> egui::Response {
     let p = super::theme::palette(ui);
     let size = egui::vec2(t.size_vec2().x.max(64.0) + 12.0, t.size_vec2().y + 30.0);
     let (rect, r) = ui.allocate_exact_size(size, Sense::click());
-    let line = if on { p.accent } else if r.hovered() || r.has_focus() { p.control_line.gamma_multiply(1.6) } else { p.line };
+    let line = if on {
+        p.accent
+    } else if r.hovered() || r.has_focus() {
+        p.control_line.gamma_multiply(1.6)
+    } else {
+        p.line
+    };
     let painter = ui.painter();
-    painter.rect(rect, CornerRadius::same(6), p.control, Stroke::new(if on { 2.0 } else { 1.0 }, line), egui::StrokeKind::Inside);
-    let img = egui::Rect::from_min_size(egui::pos2(rect.center().x - t.size_vec2().x / 2.0, rect.top() + 6.0), t.size_vec2());
-    painter.image(t.id(), img, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
-    let shown: String = if name.chars().count() > 11 { name.chars().take(10).chain(['…']).collect() } else { name.to_string() };
-    painter.text(egui::pos2(rect.center().x, rect.bottom() - 7.0), egui::Align2::CENTER_BOTTOM, shown, super::theme::body(11.5), p.text);
+    painter.rect(
+        rect,
+        CornerRadius::same(6),
+        p.control,
+        Stroke::new(if on { 2.0 } else { 1.0 }, line),
+        egui::StrokeKind::Inside,
+    );
+    let img = egui::Rect::from_min_size(
+        egui::pos2(rect.center().x - t.size_vec2().x / 2.0, rect.top() + 6.0),
+        t.size_vec2(),
+    );
+    painter.image(
+        t.id(),
+        img,
+        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+        Color32::WHITE,
+    );
+    let shown: String = if name.chars().count() > 11 {
+        name.chars().take(10).chain(['…']).collect()
+    } else {
+        name.to_string()
+    };
+    painter.text(
+        egui::pos2(rect.center().x, rect.bottom() - 7.0),
+        egui::Align2::CENTER_BOTTOM,
+        shown,
+        super::theme::body(11.5),
+        p.text,
+    );
     r
 }
 
@@ -386,8 +509,15 @@ fn slots(ui: &mut egui::Ui, s: &art_service::Snapshot, state: &mut UiState, acts
     let used = s.slots.iter().filter(|i| i.used).count();
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        ui.label(format!("Saved on the keyboard: {used} of {}", st.flash_slots));
-        let text = if state.slots_open { "Hide slots" } else { "Show slots" };
+        ui.label(format!(
+            "Saved on the keyboard: {used} of {}",
+            st.flash_slots
+        ));
+        let text = if state.slots_open {
+            "Hide slots"
+        } else {
+            "Show slots"
+        };
         if ui.small_button(text).clicked() {
             state.slots_open = !state.slots_open;
         }
@@ -477,13 +607,25 @@ fn slots(ui: &mut egui::Ui, s: &art_service::Snapshot, state: &mut UiState, acts
 /// `name` cut to what a slot keeps, and the original when something was cut.
 fn fit_save_name(name: &str) -> (String, Option<String>) {
     let fit = digitalis::protocol::art_name_fit(name);
-    (fit.to_string(), (fit.len() < name.len()).then(|| name.to_string()))
+    (
+        fit.to_string(),
+        (fit.len() < name.len()).then(|| name.to_string()),
+    )
 }
 
 /// Which hotlist pills are lit, from the cycle settings.
 pub fn hotlist_pills(c: &Cycle) -> [bool; 5] {
-    let cycles = c.steps_on(Step::Minutes) || c.steps_on(Step::LightsWake) || c.steps_on(Step::Key) || c.follow == Follow::Wallpaper;
-    [!cycles, c.steps_on(Step::Minutes), c.follow == Follow::Wallpaper, c.steps_on(Step::LightsWake), c.steps_on(Step::Key)]
+    let cycles = c.steps_on(Step::Minutes)
+        || c.steps_on(Step::LightsWake)
+        || c.steps_on(Step::Key)
+        || c.follow == Follow::Wallpaper;
+    [
+        !cycles,
+        c.steps_on(Step::Minutes),
+        c.follow == Follow::Wallpaper,
+        c.steps_on(Step::LightsWake),
+        c.steps_on(Step::Key),
+    ]
 }
 
 /// The hotlist (#60) as the canvas draws it: what moves it on as pills, then the list and Next.
@@ -528,7 +670,13 @@ fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &
     if lit[1] {
         ui.horizontal(|ui| {
             ui.label("Every");
-            changed |= ui.add(egui::DragValue::new(&mut cycle.minutes).range(1..=1440).suffix(" min")).changed();
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut cycle.minutes)
+                        .range(1..=1440)
+                        .suffix(" min"),
+                )
+                .changed();
         });
     }
     if cycle.follow == Follow::Wallpaper {
@@ -537,14 +685,23 @@ fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &
             ui.label("Wallpaper of");
             // "//?/DISPLAY#DEL40EA#..." -> "DEL40EA" (the monitor's model).
             let short = |m: &str| m.split('#').nth(1).unwrap_or(m).to_string();
-            let shown = cycle.wallpaper_monitor.as_deref().map_or_else(|| "any monitor".into(), short);
-            egui::ComboBox::from_id_salt("art-wallpaper-monitor").selected_text(shown).show_ui(ui, |ui| {
-                changed |= ui.selectable_value(&mut cycle.wallpaper_monitor, None, "any monitor").changed();
-                for m in monitors {
-                    let label = short(&m);
-                    changed |= ui.selectable_value(&mut cycle.wallpaper_monitor, Some(m), label).changed();
-                }
-            });
+            let shown = cycle
+                .wallpaper_monitor
+                .as_deref()
+                .map_or_else(|| "any monitor".into(), short);
+            egui::ComboBox::from_id_salt("art-wallpaper-monitor")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    changed |= ui
+                        .selectable_value(&mut cycle.wallpaper_monitor, None, "any monitor")
+                        .changed();
+                    for m in monitors {
+                        let label = short(&m);
+                        changed |= ui
+                            .selectable_value(&mut cycle.wallpaper_monitor, Some(m), label)
+                            .changed();
+                    }
+                });
         });
         if super::wallpaper::config_path().is_none() {
             ui.weak("Wallpaper Engine isn't installed (no config.json under Steam).");
@@ -556,19 +713,28 @@ fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &
         Item::BuiltIn(name) => names
             .and_then(|sets| sets.iter().find(|set| &set.name == name))
             .map_or_else(|| name.clone(), |set| set.label.clone()),
-        Item::Slot(n) => s
-            .slots
-            .iter()
-            .find(|i| i.slot == *n && i.used)
-            .map_or_else(|| format!("slot {} (empty)", n + 1), |i| format!("saved \"{}\"", i.name)),
-        Item::File(p) => p.file_stem().unwrap_or_default().to_string_lossy().into_owned(),
+        Item::Slot(n) => s.slots.iter().find(|i| i.slot == *n && i.used).map_or_else(
+            || format!("slot {} (empty)", n + 1),
+            |i| format!("saved \"{}\"", i.name),
+        ),
+        Item::File(p) => p
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
     };
     let mut remove = None;
     ui.add_space(2.0);
     ui.horizontal_wrapped(|ui| {
         for (i, item) in cycle.items.iter().enumerate() {
-            let text = if i == cycle.position { format!("▶ {}", label(item)) } else { label(item) };
-            let r = ui.add(egui::Button::new(text).small()).on_hover_text("Click to take it off the hotlist");
+            let text = if i == cycle.position {
+                format!("▶ {}", label(item))
+            } else {
+                label(item)
+            };
+            let r = ui
+                .add(egui::Button::new(text).small())
+                .on_hover_text("Click to take it off the hotlist");
             if r.clicked() {
                 remove = Some(i);
             }
@@ -584,28 +750,39 @@ fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &
     }
     ui.horizontal(|ui| {
         let mut add = None;
-        egui::ComboBox::from_id_salt("art-hotlist-add").selected_text("Add to hotlist").show_ui(ui, |ui| {
-            for set in names.unwrap_or_default() {
-                if ui.selectable_label(false, &set.label).clicked() {
-                    add = Some(Item::BuiltIn(set.name.clone()));
+        egui::ComboBox::from_id_salt("art-hotlist-add")
+            .selected_text("Add to hotlist")
+            .show_ui(ui, |ui| {
+                for set in names.unwrap_or_default() {
+                    if ui.selectable_label(false, &set.label).clicked() {
+                        add = Some(Item::BuiltIn(set.name.clone()));
+                    }
                 }
-            }
-            for info in s.slots.iter().filter(|i| i.used) {
-                if ui.selectable_label(false, format!("saved \"{}\"", info.name)).clicked() {
-                    add = Some(Item::Slot(info.slot));
+                for info in s.slots.iter().filter(|i| i.used) {
+                    if ui
+                        .selectable_label(false, format!("saved \"{}\"", info.name))
+                        .clicked()
+                    {
+                        add = Some(Item::Slot(info.slot));
+                    }
                 }
-            }
-            for tile in tiles {
-                if ui.selectable_label(false, &tile.name).clicked() {
-                    add = Some(Item::File(tile.path.clone()));
+                for tile in tiles {
+                    if ui.selectable_label(false, &tile.name).clicked() {
+                        add = Some(Item::File(tile.path.clone()));
+                    }
                 }
-            }
-        });
+            });
         if let Some(item) = add.filter(|i| !cycle.items.contains(i)) {
             cycle.items.push(item);
             changed = true;
         }
-        if ui.add_enabled(!cycle.items.is_empty() && !s.busy, egui::Button::new("Next")).clicked() {
+        if ui
+            .add_enabled(
+                !cycle.items.is_empty() && !s.busy,
+                egui::Button::new("Next"),
+            )
+            .clicked()
+        {
             acts.push(Act::Next);
         }
     });
@@ -663,16 +840,26 @@ pub mod tests {
 
     #[test]
     fn long_names_are_cut_visibly_and_short_ones_left_alone() {
-        assert_eq!(fit_save_name("hearth-moongarden"), ("hearth-moongarde".into(), Some("hearth-moongarden".into())));
+        assert_eq!(
+            fit_save_name("hearth-moongarden"),
+            ("hearth-moongarde".into(), Some("hearth-moongarden".into()))
+        );
         assert_eq!(fit_save_name("fury"), ("fury".into(), None));
-        assert_eq!(fit_save_name("exactly 16 chars"), ("exactly 16 chars".into(), None));
+        assert_eq!(
+            fit_save_name("exactly 16 chars"),
+            ("exactly 16 chars".into(), None)
+        );
     }
 
     fn entry(path: &str, hash: u64, ok: bool) -> art_library::Entry {
         let image = Arc::new(egui::ColorImage::new([4, 2], vec![Color32::WHITE; 8]));
         art_library::Entry {
             path: PathBuf::from(path),
-            preview: if ok { Ok(image) } else { Err("Invalid NVA1 art blob".into()) },
+            preview: if ok {
+                Ok(image)
+            } else {
+                Err("Invalid NVA1 art blob".into())
+            },
             bytes: 10,
             hash,
         }
@@ -692,7 +879,11 @@ pub mod tests {
         ]);
         let names: Vec<_> = tiles.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["courier", "hud"]);
-        assert_eq!(unreadable, ["broken"], "the .left companion never shows, even as unreadable");
+        assert_eq!(
+            unreadable,
+            ["broken"],
+            "the .left companion never shows, even as unreadable"
+        );
     }
 
     #[test]
@@ -707,15 +898,32 @@ pub mod tests {
         assert_eq!(full.pixels[0], LIT);
         assert_eq!(full.pixels.iter().filter(|p| **p == LIT).count(), 1);
 
-        let grey = egui::ColorImage::new([8, 8], (0..64).map(|i| if (i + i / 8) % 2 == 0 { Color32::WHITE } else { Color32::BLACK }).collect());
+        let grey = egui::ColorImage::new(
+            [8, 8],
+            (0..64)
+                .map(|i| {
+                    if (i + i / 8) % 2 == 0 {
+                        Color32::WHITE
+                    } else {
+                        Color32::BLACK
+                    }
+                })
+                .collect(),
+        );
         let half = thumbnail(&grey, true);
         assert_eq!(half.size, [4, 4]);
         assert!(half.pixels.iter().all(|p| *p == LIT || *p == OFF), "1-bit");
         let lit = half.pixels.iter().filter(|p| **p == LIT).count();
         assert_eq!(lit, 8, "a 50% grey dithers to half lit");
-        let ink = thumbnail(&egui::ColorImage::new([4, 4], vec![Color32::BLACK; 16]), true);
+        let ink = thumbnail(
+            &egui::ColorImage::new([4, 4], vec![Color32::BLACK; 16]),
+            true,
+        );
         assert!(ink.pixels.iter().all(|p| *p == LIT));
-        let background = thumbnail(&egui::ColorImage::new([4, 4], vec![Color32::WHITE; 16]), true);
+        let background = thumbnail(
+            &egui::ColorImage::new([4, 4], vec![Color32::WHITE; 16]),
+            true,
+        );
         assert!(background.pixels.iter().all(|p| *p == OFF));
     }
 
@@ -731,20 +939,32 @@ pub mod tests {
     /// The previews' art state: the right half playing "hearth" from the library; "fury" saved in slot 1.
     pub fn sample() -> (art_service::Snapshot, art_library::Library) {
         let blob = |name: &str| -> Vec<u8> {
-            std::fs::read(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/lighting/art").join(name)).expect("bundled art")
+            std::fs::read(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("resources/lighting/art")
+                    .join(name),
+            )
+            .expect("bundled art")
         };
-        let entries = ["constellations.bin", "fury.bin", "hearth.bin", "moon-garden.bin"]
-            .into_iter()
-            .map(|name| {
-                let bytes = blob(name);
-                art_library::Entry {
-                    path: PathBuf::from("art").join(name),
-                    preview: super::super::art_preview::first_frame(&bytes).map(Arc::new).map_err(str::to_owned),
-                    bytes: bytes.len(),
-                    hash: art_library::blob_hash(&bytes),
-                }
-            })
-            .collect();
+        let entries = [
+            "constellations.bin",
+            "fury.bin",
+            "hearth.bin",
+            "moon-garden.bin",
+        ]
+        .into_iter()
+        .map(|name| {
+            let bytes = blob(name);
+            art_library::Entry {
+                path: PathBuf::from("art").join(name),
+                preview: super::super::art_preview::first_frame(&bytes)
+                    .map(Arc::new)
+                    .map_err(str::to_owned),
+                bytes: bytes.len(),
+                hash: art_library::blob_hash(&bytes),
+            }
+        })
+        .collect();
         let status = digitalis::protocol::ArtStatus {
             link: 2,
             right_state: digitalis::protocol::right_state::PLAYING,
@@ -756,17 +976,32 @@ pub mod tests {
         };
         let mut cycle = Cycle::default();
         cycle.set_step(Step::LightsWake, true);
-        cycle.items = vec![Item::File(PathBuf::from("art/fury.bin")), Item::File(PathBuf::from("art/hearth.bin"))];
+        cycle.items = vec![
+            Item::File(PathBuf::from("art/fury.bin")),
+            Item::File(PathBuf::from("art/hearth.bin")),
+        ];
         cycle.position = 1;
         let snapshot = art_service::Snapshot {
             connected: true,
             status: Some(status),
             pinned: Some(art_service::Choice::File(PathBuf::from("art/hearth.bin"))),
-            slots: vec![digitalis::protocol::SlotInfo { slot: 0, used: true, writes: 1, len: 3599, name: "fury".into() }],
+            slots: vec![digitalis::protocol::SlotInfo {
+                slot: 0,
+                used: true,
+                writes: 1,
+                len: 3599,
+                name: "fury".into(),
+            }],
             cycle,
             wake_events: true,
             ..Default::default()
         };
-        (snapshot, art_library::Library { entries, ..Default::default() })
+        (
+            snapshot,
+            art_library::Library {
+                entries,
+                ..Default::default()
+            },
+        )
     }
 }

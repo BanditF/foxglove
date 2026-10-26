@@ -149,7 +149,11 @@ fn profile_path(vid: u16, pid: u16) -> Option<std::path::PathBuf> {
 /// `watched_ble`: what the Bluetooth watcher's own events last said (#353). It wins over a fresh
 /// device-property read, which can lag the event that woke us and then stays wrong, since no
 /// further event comes.
-fn read(force: bool, previous_link: &mut Option<(u16, u16, bool, u64)>, watched_ble: Option<bool>) -> Status {
+fn read(
+    force: bool,
+    previous_link: &mut Option<(u16, u16, bool, u64)>,
+    watched_ble: Option<bool>,
+) -> Status {
     let Some(ConnectionSpec::Zmk {
         vid,
         pid,
@@ -232,7 +236,10 @@ fn shown(profile: u8) -> u8 {
 /// Q, W, E, R or T for profiles 1 to 5 (#94).
 fn switch_hint(profile: Option<u8>) -> String {
     const KEYS: [&str; 5] = ["Q", "W", "E", "R", "T"];
-    let key = profile.and_then(|p| KEYS.get(usize::from(p))).copied().unwrap_or("Q/W/E/R/T");
+    let key = profile
+        .and_then(|p| KEYS.get(usize::from(p)))
+        .copied()
+        .unwrap_or("Q/W/E/R/T");
     format!("hold both middle thumbs and Tab (SYSTEM), then press {key}")
 }
 
@@ -270,8 +277,13 @@ fn unplug_warning(s: &Status) -> Option<String> {
         s.this_pc,
     )
     .then(|| {
-        let profile = s.this_pc.map_or("for this PC".into(), |p| shown(p).to_string());
-        format!("Unplugging now leaves the keyboard unable to type - select profile {profile}: {}", switch_hint(s.this_pc))
+        let profile = s
+            .this_pc
+            .map_or("for this PC".into(), |p| shown(p).to_string());
+        format!(
+            "Unplugging now leaves the keyboard unable to type - select profile {profile}: {}",
+            switch_hint(s.this_pc)
+        )
     })
 }
 
@@ -316,8 +328,15 @@ fn plain_words(s: &Status) -> Plain {
             Some(_) => " · another PC",
             None => "",
         };
-        let waiting = if f.connected { "" } else { " · waiting for its PC" };
-        rows.push(("Bluetooth profile", format!("{}{whose}{waiting}", shown(f.active_profile))));
+        let waiting = if f.connected {
+            ""
+        } else {
+            " · waiting for its PC"
+        };
+        rows.push((
+            "Bluetooth profile",
+            format!("{}{whose}{waiting}", shown(f.active_profile)),
+        ));
         if let Some(p) = s.this_pc.filter(|p| *p != f.active_profile) {
             rows.push(("This PC's profile", shown(p).to_string()));
         }
@@ -329,8 +348,13 @@ fn plain_words(s: &Status) -> Plain {
         s.this_pc,
     )
     .then(|| {
-        let profile = s.this_pc.map_or("for this PC".into(), |p| shown(p).to_string());
-        format!("Select profile {profile} first: {}.", switch_hint(s.this_pc))
+        let profile = s
+            .this_pc
+            .map_or("for this PC".into(), |p| shown(p).to_string());
+        format!(
+            "Select profile {profile} first: {}.",
+            switch_hint(s.this_pc)
+        )
     });
     Plain { rows, unplug_fix }
 }
@@ -393,7 +417,10 @@ mod windows_status {
     use windows::Win32::Foundation::DEVPROPKEY;
 
     // DeviceWatcher includes property changes, unlike arrival/removal-only notifications.
-    pub struct Watch(DeviceWatcher, std::sync::Arc<std::sync::Mutex<super::BleEvents>>);
+    pub struct Watch(
+        DeviceWatcher,
+        std::sync::Arc<std::sync::Mutex<super::BleEvents>>,
+    );
     impl Drop for Watch {
         fn drop(&mut self) {
             let _ = self.0.Stop();
@@ -521,7 +548,10 @@ mod windows_status {
             DeviceWatcher,
             windows::core::IInspectable,
         >::new(move |_, _| {
-            enumerated.lock().unwrap_or_else(|e| e.into_inner()).enumerated = true;
+            enumerated
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .enumerated = true;
             let _ = tx.send(false);
             Ok(())
         }))?;
@@ -670,26 +700,52 @@ mod tests {
     use super::*;
 
     fn conn(active_profile: u8, connected: bool) -> ConnState {
-        ConnState { active_profile, connected, bonded: true, endpoint: 0, usb_ready: true, profile_count: 5 }
+        ConnState {
+            active_profile,
+            connected,
+            bonded: true,
+            endpoint: 0,
+            usb_ready: true,
+            profile_count: 5,
+        }
     }
 
     #[test]
     fn the_link_in_plain_words() {
         let none = plain_words(&Status::default());
-        assert_eq!(none.rows, vec![("Left half", "not connected".into()), ("Bluetooth to this PC", "not known yet".into())]);
+        assert_eq!(
+            none.rows,
+            vec![
+                ("Left half", "not connected".into()),
+                ("Bluetooth to this PC", "not known yet".into())
+            ]
+        );
         assert_eq!(none.unplug_fix, None);
 
-        let ok = plain_words(&Status { usb: Some(true), windows_ble: Some(true), firmware: Some(conn(0, true)), this_pc: Some(0) });
+        let ok = plain_words(&Status {
+            usb: Some(true),
+            windows_ble: Some(true),
+            firmware: Some(conn(0, true)),
+            this_pc: Some(0),
+        });
         assert_eq!(ok.rows[0].1, "on USB");
         assert_eq!(ok.rows[2], ("Bluetooth profile", "1 · this PC".into()));
         assert_eq!(ok.rows.len(), 3);
         assert_eq!(ok.unplug_fix, None);
 
-        let other = plain_words(&Status { usb: Some(true), windows_ble: Some(false), firmware: Some(conn(1, false)), this_pc: Some(0) });
+        let other = plain_words(&Status {
+            usb: Some(true),
+            windows_ble: Some(false),
+            firmware: Some(conn(1, false)),
+            this_pc: Some(0),
+        });
         assert_eq!(other.rows[2].1, "2 · another PC · waiting for its PC");
         assert_eq!(other.rows[3], ("This PC's profile", "1".into()));
         let fix = other.unplug_fix.clone().expect("unsafe to unplug");
-        assert!(fix.starts_with("Select profile 1 first: hold both middle thumbs"), "{fix}");
+        assert!(
+            fix.starts_with("Select profile 1 first: hold both middle thumbs"),
+            "{fix}"
+        );
 
         // No jargon on the page (#386).
         for p in [none, ok, other] {
@@ -705,7 +761,10 @@ mod tests {
     #[test]
     fn profiles_show_from_one_with_their_switch_key() {
         assert_eq!(shown(0), 1);
-        assert_eq!(switch_hint(Some(0)), "hold both middle thumbs and Tab (SYSTEM), then press Q");
+        assert_eq!(
+            switch_hint(Some(0)),
+            "hold both middle thumbs and Tab (SYSTEM), then press Q"
+        );
         assert!(switch_hint(Some(4)).ends_with("press T"));
         assert!(switch_hint(None).ends_with("press Q/W/E/R/T"));
         assert!(switch_hint(Some(9)).ends_with("press Q/W/E/R/T"));
@@ -733,18 +792,30 @@ mod tests {
     fn the_watchers_own_events_say_whether_bluetooth_is_connected() {
         let mut events = BleEvents::default();
         events.added("keyboard".into(), true, Some(true));
-        assert_eq!(events.connected(), None, "nothing until enumeration completes");
+        assert_eq!(
+            events.connected(),
+            None,
+            "nothing until enumeration completes"
+        );
         events.enumerated = true;
         assert_eq!(events.connected(), Some(true));
         events.added("stale pairing".into(), true, Some(false));
-        assert_eq!(events.connected(), Some(true), "one connected endpoint is enough");
+        assert_eq!(
+            events.connected(),
+            Some(true),
+            "one connected endpoint is enough"
+        );
         events.updated("keyboard", Some(false));
         assert_eq!(events.connected(), Some(false));
         events.added("mouse".into(), false, Some(true));
         assert_eq!(events.connected(), Some(false), "other devices don't count");
         events.removed("keyboard");
         events.removed("stale pairing");
-        assert_eq!(events.connected(), None, "no endpoint: ask the device instead");
+        assert_eq!(
+            events.connected(),
+            None,
+            "no endpoint: ask the device instead"
+        );
     }
 
     #[test]

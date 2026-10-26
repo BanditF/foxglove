@@ -17,7 +17,10 @@ pub struct Follow {
 
 impl Follow {
     pub fn new(wanted: &str) -> Follow {
-        Follow { wanted: wanted.trim().to_ascii_lowercase(), ..Follow::default() }
+        Follow {
+            wanted: wanted.trim().to_ascii_lowercase(),
+            ..Follow::default()
+        }
     }
 
     /// Whether colours are read now.
@@ -35,7 +38,10 @@ impl Follow {
             return;
         }
         let devices = sdk.devices().unwrap_or_default();
-        let chosen = devices.iter().find(|d| d.leds > 0 && (self.wanted.is_empty() || d.model.to_ascii_lowercase().contains(&self.wanted)));
+        let chosen = devices.iter().find(|d| {
+            d.leds > 0
+                && (self.wanted.is_empty() || d.model.to_ascii_lowercase().contains(&self.wanted))
+        });
         if let Some(d) = chosen {
             match sdk.leds(&d.id) {
                 Ok(leds) if !leds.is_empty() => self.device = Some((d.id.clone(), leds)),
@@ -61,12 +67,17 @@ impl Follow {
                     self.device = None;
                 }
             }
-            Notice::Device { id, connected: false } => {
+            Notice::Device {
+                id,
+                connected: false,
+            } => {
                 if self.device() == Some(id.as_str()) {
                     self.device = None;
                 }
             }
-            Notice::Device { connected: true, .. } => {}
+            Notice::Device {
+                connected: true, ..
+            } => {}
         }
         self.pick(sdk);
     }
@@ -74,7 +85,10 @@ impl Follow {
     /// The device's colour now: the average of its lit LEDs, weighted by opacity.
     pub fn read(&self, sdk: &dyn Sdk) -> Option<Hsb> {
         let (id, leds) = self.device.as_ref().filter(|_| self.session)?;
-        let colors = sdk.colors(id, leds).map_err(|e| eprintln!("icue-mirror: {e}")).ok()?;
+        let colors = sdk
+            .colors(id, leds)
+            .map_err(|e| eprintln!("icue-mirror: {e}"))
+            .ok()?;
         average(&colors)
     }
 }
@@ -85,7 +99,14 @@ pub fn average(colors: &[(u8, u8, u8, u8)]) -> Option<Hsb> {
     if total == 0 {
         return None;
     }
-    let channel = |f: fn(&(u8, u8, u8, u8)) -> u8| colors.iter().map(|c| u32::from(f(c)) * u32::from(c.3)).sum::<u32>() as f32 / total as f32 / 255.0;
+    let channel = |f: fn(&(u8, u8, u8, u8)) -> u8| {
+        colors
+            .iter()
+            .map(|c| u32::from(f(c)) * u32::from(c.3))
+            .sum::<u32>() as f32
+            / total as f32
+            / 255.0
+    };
     let (r, g, b) = (channel(|c| c.0), channel(|c| c.1), channel(|c| c.2));
     let max = r.max(g).max(b);
     let delta = max - r.min(g).min(b);
@@ -99,7 +120,11 @@ pub fn average(colors: &[(u8, u8, u8, u8)]) -> Option<Hsb> {
         60.0 * ((r - g) / delta + 4.0)
     };
     let saturation = if max == 0.0 { 0.0 } else { delta / max };
-    Some(Hsb { hue: (hue.round() as u16) % 360, saturation: (saturation * 100.0).round() as u8, brightness: (max * 100.0).round() as u8 })
+    Some(Hsb {
+        hue: (hue.round() as u16) % 360,
+        saturation: (saturation * 100.0).round() as u8,
+        brightness: (max * 100.0).round() as u8,
+    })
 }
 
 #[cfg(test)]
@@ -127,8 +152,19 @@ mod tests {
     }
 
     fn fake() -> Fake {
-        let dev = |id: &str, model: &str, leds| Device { id: id.into(), model: model.into(), leds };
-        Fake { devices: vec![dev("{fan}", "LL120", 0), dev("{kb}", "K70 RGB PRO", 120), dev("{mouse}", "DARK CORE", 3)], reads: Cell::new(0) }
+        let dev = |id: &str, model: &str, leds| Device {
+            id: id.into(),
+            model: model.into(),
+            leds,
+        };
+        Fake {
+            devices: vec![
+                dev("{fan}", "LL120", 0),
+                dev("{kb}", "K70 RGB PRO", 120),
+                dev("{mouse}", "DARK CORE", 3),
+            ],
+            reads: Cell::new(0),
+        }
     }
 
     #[test]
@@ -140,14 +176,42 @@ mod tests {
         assert_eq!(sdk.reads.get(), 0, "no reads without a session");
         f.notice(&Notice::Session(true), &sdk);
         assert_eq!(f.device(), Some("{kb}"), "the first device with lights");
-        assert_eq!(f.read(&sdk), Some(Hsb { hue: 0, saturation: 100, brightness: 100 }));
+        assert_eq!(
+            f.read(&sdk),
+            Some(Hsb {
+                hue: 0,
+                saturation: 100,
+                brightness: 100
+            })
+        );
         // Another device going changes nothing; ours going stops it.
-        f.notice(&Notice::Device { id: "{mouse}".into(), connected: false }, &sdk);
+        f.notice(
+            &Notice::Device {
+                id: "{mouse}".into(),
+                connected: false,
+            },
+            &sdk,
+        );
         assert!(f.following());
-        f.notice(&Notice::Device { id: "{kb}".into(), connected: false }, &sdk);
+        f.notice(
+            &Notice::Device {
+                id: "{kb}".into(),
+                connected: false,
+            },
+            &sdk,
+        );
         // It's picked again at once if iCUE still lists it; a fake that lists nothing stops.
-        let empty = Fake { devices: vec![], reads: Cell::new(0) };
-        f.notice(&Notice::Device { id: "{kb}".into(), connected: false }, &empty);
+        let empty = Fake {
+            devices: vec![],
+            reads: Cell::new(0),
+        };
+        f.notice(
+            &Notice::Device {
+                id: "{kb}".into(),
+                connected: false,
+            },
+            &empty,
+        );
         let mut g = Follow::new("");
         g.notice(&Notice::Session(true), &empty);
         assert!(!g.following(), "no device, no reads");
@@ -179,7 +243,11 @@ mod tests {
 
     #[test]
     fn colours_average_by_opacity() {
-        assert_eq!(average(&[(255, 0, 0, 255), (0, 0, 255, 0)]).map(|c| c.hue), Some(0), "a transparent LED doesn't count");
+        assert_eq!(
+            average(&[(255, 0, 0, 255), (0, 0, 255, 0)]).map(|c| c.hue),
+            Some(0),
+            "a transparent LED doesn't count"
+        );
         assert_eq!(average(&[(0, 0, 0, 0)]), None);
         assert_eq!(average(&[]), None);
     }

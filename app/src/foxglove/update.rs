@@ -64,7 +64,9 @@ struct UpdateSettings {
 
 impl Default for UpdateSettings {
     fn default() -> Self {
-        UpdateSettings { check_at_startup: true }
+        UpdateSettings {
+            check_at_startup: true,
+        }
     }
 }
 
@@ -78,7 +80,12 @@ fn startup_enabled() -> bool {
             .get("check_at_startup")?
             .parse()
             .ok()?;
-        Some((UpdateSettings { check_at_startup: on }, vec![ini]))
+        Some((
+            UpdateSettings {
+                check_at_startup: on,
+            },
+            vec![ini],
+        ))
     })
     .check_at_startup
 }
@@ -186,14 +193,19 @@ pub fn group(ui: &mut egui::Ui) {
                     ui.hyperlink_to("Releases on GitHub", RELEASES_PAGE);
                 });
             });
-            ui.weak("Automatic updates are off in this version. New versions are published on GitHub.");
+            ui.weak(
+                "Automatic updates are off in this version. New versions are published on GitHub.",
+            );
             return;
         }
         let s = state().clone();
         ui.horizontal(|ui| {
             ui.label(version);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_enabled(!s.busy, egui::Button::new("Check now")).clicked() {
+                if ui
+                    .add_enabled(!s.busy, egui::Button::new("Check now"))
+                    .clicked()
+                {
                     check();
                 }
             });
@@ -206,7 +218,12 @@ pub fn group(ui: &mut egui::Ui) {
             .checkbox(&mut enabled, "Check for updates at startup")
             .changed()
         {
-            let result = super::store::save("updates", &UpdateSettings { check_at_startup: enabled });
+            let result = super::store::save(
+                "updates",
+                &UpdateSettings {
+                    check_at_startup: enabled,
+                },
+            );
             if let Err(e) = result {
                 state().message = e.to_string();
             }

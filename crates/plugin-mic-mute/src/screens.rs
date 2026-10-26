@@ -14,9 +14,21 @@ pub const H: u16 = 52;
 pub const BRIEF: Duration = Duration::from_secs(3);
 /// The white acknowledgement on unmute.
 pub const FLASH: Duration = Duration::from_millis(600);
-pub const WHITE: Hsb = Hsb { hue: 0, saturation: 0, brightness: 60 };
-const RED: Hsb = Hsb { hue: 0, saturation: 100, brightness: 80 };
-const AMBER: Hsb = Hsb { hue: 35, saturation: 100, brightness: 60 };
+pub const WHITE: Hsb = Hsb {
+    hue: 0,
+    saturation: 0,
+    brightness: 60,
+};
+const RED: Hsb = Hsb {
+    hue: 0,
+    saturation: 100,
+    brightness: 80,
+};
+const AMBER: Hsb = Hsb {
+    hue: 35,
+    saturation: 100,
+    brightness: 60,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mic {
@@ -58,10 +70,26 @@ pub struct Shown {
 impl Shown {
     pub fn of(mic: Mic) -> Shown {
         match mic {
-            Mic::Muted => Shown { light: Some((RED, LeasePriority::High)), frame: Some(Frame::Muted), hold: true },
-            Mic::Unmuted => Shown { light: None, frame: Some(Frame::Live), hold: false },
-            Mic::Unknown => Shown { light: Some((AMBER, LeasePriority::Normal)), frame: Some(Frame::Unknown), hold: false },
-            Mic::Unavailable => Shown { light: None, frame: None, hold: false },
+            Mic::Muted => Shown {
+                light: Some((RED, LeasePriority::High)),
+                frame: Some(Frame::Muted),
+                hold: true,
+            },
+            Mic::Unmuted => Shown {
+                light: None,
+                frame: Some(Frame::Live),
+                hold: false,
+            },
+            Mic::Unknown => Shown {
+                light: Some((AMBER, LeasePriority::Normal)),
+                frame: Some(Frame::Unknown),
+                hold: false,
+            },
+            Mic::Unavailable => Shown {
+                light: None,
+                frame: None,
+                hold: false,
+            },
         }
     }
 }
@@ -97,13 +125,19 @@ impl Art {
         }
         let frame = |name: &str| -> Result<Vec<u8>, String> {
             let s = a.frames.get(name).ok_or(format!("no {name} frame"))?;
-            let b = base64::engine::general_purpose::STANDARD.decode(&s.bitmap).map_err(|e| e.to_string())?;
+            let b = base64::engine::general_purpose::STANDARD
+                .decode(&s.bitmap)
+                .map_err(|e| e.to_string())?;
             if (s.w, s.h) != (W as usize, H as usize) || b.len() != s.w.div_ceil(8) * s.h {
                 return Err(format!("the {name} frame isn't {W}x{H}"));
             }
             Ok(b)
         };
-        Ok(Art { muted: frame("muted")?, live: frame("live")?, unknown: frame("unknown")? })
+        Ok(Art {
+            muted: frame("muted")?,
+            live: frame("live")?,
+            unknown: frame("unknown")?,
+        })
     }
 
     pub fn frame(&self, f: Frame) -> &[u8] {
@@ -129,10 +163,20 @@ mod tests {
 
     #[test]
     fn each_state_has_its_cue() {
-        assert_eq!(Shown::of(Mic::Muted).light, Some((RED, LeasePriority::High)));
+        assert_eq!(
+            Shown::of(Mic::Muted).light,
+            Some((RED, LeasePriority::High))
+        );
         assert!(Shown::of(Mic::Muted).hold);
         assert_eq!(Shown::of(Mic::Unknown).light.map(|l| l.0), Some(AMBER));
-        assert_eq!(Shown::of(Mic::Unavailable), Shown { light: None, frame: None, hold: false });
+        assert_eq!(
+            Shown::of(Mic::Unavailable),
+            Shown {
+                light: None,
+                frame: None,
+                hold: false
+            }
+        );
         assert!(Shown::of(Mic::Unmuted).light.is_none() && !Shown::of(Mic::Unmuted).hold);
     }
 

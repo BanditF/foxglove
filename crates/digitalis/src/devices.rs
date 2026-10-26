@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use foxglove_devices::{
-    ArtStatus as DeviceArt, BehaviorInfo, Behaviors, Caps, Checked, DevSettings, Device, DeviceEvent,
-    DeviceInfo, Effect, EventSink, Layers, Led, Lighting, LightingState, DeviceError,
+    ArtStatus as DeviceArt, BehaviorInfo, Behaviors, Caps, Checked, DevSettings, Device,
+    DeviceError, DeviceEvent, DeviceInfo, Effect, EventSink, Layers, Led, Lighting, LightingState,
     Power, PowerInfo, Screens, Value, Zone,
 };
 
@@ -63,7 +63,10 @@ pub fn caps(hello: &Hello) -> Caps {
 
 fn err(e: anyhow::Error) -> DeviceError {
     let text = e.to_string();
-    if text.contains("not connected") || text.contains("disconnected") || text.contains("link stopped") {
+    if text.contains("not connected")
+        || text.contains("disconnected")
+        || text.contains("link stopped")
+    {
         DeviceError::Disconnected
     } else if text.contains("no reply") {
         DeviceError::Timeout
@@ -78,7 +81,10 @@ fn lighting_state(h: &RgbHalf) -> LightingState {
         hue: h.hue,
         sat: h.sat,
         brightness: h.brightness,
-        effect: Effect { id: h.effect.to_string(), params: vec![] },
+        effect: Effect {
+            id: h.effect.to_string(),
+            params: vec![],
+        },
         speed: h.speed,
         settled: true,
     }
@@ -87,13 +93,18 @@ fn lighting_state(h: &RgbHalf) -> LightingState {
 /// Whether the right half (as it last reported) shows what the left does; brightness aside,
 /// since each half dims on its own battery.
 fn halves_agree(rgb: &RgbState) -> bool {
-    let Some((r, _age)) = &rgb.right else { return true };
+    let Some((r, _age)) = &rgb.right else {
+        return true;
+    };
     let l = &rgb.left;
     let near = |a: u16, b: u16, wrap: u16| {
         let d = a.abs_diff(b);
         d.min(wrap.saturating_sub(d)) <= 2
     };
-    l.on == r.on && near(l.hue, r.hue, 360) && near(l.sat.into(), r.sat.into(), 1000) && l.effect == r.effect
+    l.on == r.on
+        && near(l.hue, r.hue, 360)
+        && near(l.sat.into(), r.sat.into(), 1000)
+        && l.effect == r.effect
 }
 
 /// A Digitalis keyboard as a device-layer device. Events reach the sink for as long as it lives.
@@ -131,8 +142,16 @@ impl DigitalisDevice {
         // Runs on the link's reader thread: emitting only updates facts and queues events.
         let reports = link.subscribe_reports(move |_, r| {
             if r[0] == KEY_EVENT {
-                report_sink.emit(DeviceEvent::Key { row: r[1].into(), col: r[2].into(), pressed: r[3] != 0 });
-            } else if crate::protocol::is_reply(r, crate::protocol::SETTINGS, crate::protocol::settings::CONN_STATE) {
+                report_sink.emit(DeviceEvent::Key {
+                    row: r[1].into(),
+                    col: r[2].into(),
+                    pressed: r[3] != 0,
+                });
+            } else if crate::protocol::is_reply(
+                r,
+                crate::protocol::SETTINGS,
+                crate::protocol::settings::CONN_STATE,
+            ) {
                 // The firmware says when the connection changes (CONN_STATE_EVENT), and answers
                 // a read the same way (#17).
                 let c = crate::protocol::ConnState::parse(r);
@@ -150,7 +169,10 @@ impl DigitalisDevice {
             }
         });
         if let Some(percent) = hello.right_battery {
-            sink.emit(DeviceEvent::Battery { part: "right".into(), percent });
+            sink.emit(DeviceEvent::Battery {
+                part: "right".into(),
+                percent,
+            });
         }
         DigitalisDevice {
             info,
@@ -185,7 +207,11 @@ impl DigitalisDevice {
     /// run of changes (a plugin streaming colours) waits briefly and tries again instead of
     /// dropping them.
     fn underglow(&self, command: u32, param: u32) -> PResult<()> {
-        let id = self.underglow.lock().unwrap_or_else(|e| e.into_inner()).ok_or(DeviceError::Unsupported)?;
+        let id = self
+            .underglow
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .ok_or(DeviceError::Unsupported)?;
         let mut tries = 0;
         loop {
             match status(settings::invoke(&*self.link, id, command, param, 0).map_err(err)?) {
@@ -208,13 +234,24 @@ impl DigitalisDevice {
         let hello = *self.hello.lock().unwrap_or_else(|e| e.into_inner());
         let mut cached = self.panel_size.lock().unwrap_or_else(|e| e.into_inner());
         *cached.get_or_insert_with(|| {
-            let screens = if hello.capabilities & capabilities::SCREENS != 0 { panel::screens(&*self.link).unwrap_or_default() } else { vec![] };
-            panel::drawable_panel(&screens).map_or((hello.width, hello.height), |p| (usize::from(p.width), usize::from(p.height)))
+            let screens = if hello.capabilities & capabilities::SCREENS != 0 {
+                panel::screens(&*self.link).unwrap_or_default()
+            } else {
+                vec![]
+            };
+            panel::drawable_panel(&screens).map_or((hello.width, hello.height), |p| {
+                (usize::from(p.width), usize::from(p.height))
+            })
         })
     }
 
     fn has(&self, bit: u32) -> bool {
-        self.hello.lock().unwrap_or_else(|e| e.into_inner()).capabilities & bit != 0
+        self.hello
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .capabilities
+            & bit
+            != 0
     }
 }
 
@@ -232,15 +269,21 @@ impl Device for DigitalisDevice {
     }
 
     fn behaviors(&self) -> Option<&dyn Behaviors> {
-        self.caps.contains(Caps::BEHAVIORS).then_some(self as &dyn Behaviors)
+        self.caps
+            .contains(Caps::BEHAVIORS)
+            .then_some(self as &dyn Behaviors)
     }
 
     fn lighting(&self) -> Option<&dyn Lighting> {
-        self.caps.contains(Caps::LIGHTING).then_some(self as &dyn Lighting)
+        self.caps
+            .contains(Caps::LIGHTING)
+            .then_some(self as &dyn Lighting)
     }
 
     fn screens(&self) -> Option<&dyn Screens> {
-        self.caps.contains(Caps::SCREENS).then_some(self as &dyn Screens)
+        self.caps
+            .contains(Caps::SCREENS)
+            .then_some(self as &dyn Screens)
     }
 
     fn power(&self) -> Option<&dyn Power> {
@@ -248,19 +291,29 @@ impl Device for DigitalisDevice {
     }
 
     fn settings(&self) -> Option<&dyn DevSettings> {
-        self.caps.contains(Caps::SETTINGS).then_some(self as &dyn DevSettings)
+        self.caps
+            .contains(Caps::SETTINGS)
+            .then_some(self as &dyn DevSettings)
     }
 }
 
 impl Layers for DigitalisDevice {
     fn active(&self) -> PResult<Vec<u8>> {
-        Ok(self.layers.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        Ok(self
+            .layers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone())
     }
 }
 
 impl Behaviors for DigitalisDevice {
     fn list(&self) -> PResult<Vec<BehaviorInfo>> {
-        Ok(self.behaviors.lock().unwrap_or_else(|e| e.into_inner()).clone())
+        Ok(self
+            .behaviors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone())
     }
 
     fn invoke_checked(&self, checked: Checked) -> PResult<()> {
@@ -297,7 +350,10 @@ const RGB_COLOR_HSB: u32 = 14;
 impl Lighting for DigitalisDevice {
     fn layout(&self) -> PResult<Vec<Zone>> {
         let rgb = settings::rgb_state(&*self.link).map_err(err)?;
-        let zone = |name: &str, id| Zone { name: name.into(), leds: vec![Led { id, position: None }] };
+        let zone = |name: &str, id| Zone {
+            name: name.into(),
+            leds: vec![Led { id, position: None }],
+        };
         let mut zones = vec![zone("left", 0)];
         if rgb.right.is_some() {
             zones.push(zone("right", 1));
@@ -307,8 +363,13 @@ impl Lighting for DigitalisDevice {
 
     fn state(&self) -> PResult<LightingState> {
         let rgb = settings::rgb_state(&*self.link).map_err(err)?;
-        let state = LightingState { settled: halves_agree(&rgb), ..lighting_state(&rgb.left) };
-        self.sink.emit(DeviceEvent::LightingChanged { state: state.clone() });
+        let state = LightingState {
+            settled: halves_agree(&rgb),
+            ..lighting_state(&rgb.left)
+        };
+        self.sink.emit(DeviceEvent::LightingChanged {
+            state: state.clone(),
+        });
         Ok(state)
     }
 
@@ -323,7 +384,9 @@ impl Lighting for DigitalisDevice {
     }
 
     fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> PResult<()> {
-        let hsb = (u32::from(hue.min(359)) << 16) | (u32::from(sat.min(100)) << 8) | u32::from(brightness.min(100));
+        let hsb = (u32::from(hue.min(359)) << 16)
+            | (u32::from(sat.min(100)) << 8)
+            | u32::from(brightness.min(100));
         self.underglow(RGB_COLOR_HSB, hsb)
     }
 
@@ -335,7 +398,14 @@ impl Lighting for DigitalisDevice {
             if now == speed {
                 return Ok(());
             }
-            self.underglow(if now < speed { RGB_SPEED_UP } else { RGB_SPEED_DOWN }, 0)?;
+            self.underglow(
+                if now < speed {
+                    RGB_SPEED_UP
+                } else {
+                    RGB_SPEED_DOWN
+                },
+                0,
+            )?;
         }
         Ok(())
     }
@@ -351,9 +421,14 @@ impl Screens for DigitalisDevice {
         let (width, height) = self.panel_size();
         let stride = (w as usize).div_ceil(8);
         if (w as usize, h as usize) != (width, height) || bitmap.len() != stride * h as usize {
-            return Err(DeviceError::Backend(format!("the panel is {width}x{height}; got {w}x{h} with {} bytes", bitmap.len())));
+            return Err(DeviceError::Backend(format!(
+                "the panel is {width}x{height}; got {w}x{h} with {} bytes",
+                bitmap.len()
+            )));
         }
-        panel::show(&*self.link, bitmap, None, stride).map(|_| ()).map_err(err)
+        panel::show(&*self.link, bitmap, None, stride)
+            .map(|_| ())
+            .map_err(err)
     }
 
     fn art_status(&self) -> PResult<DeviceArt> {
@@ -365,7 +440,12 @@ impl Screens for DigitalisDevice {
         })
     }
 
-    fn push_art(&self, bytes: &[u8], progress: &mut dyn FnMut(usize, usize), cancel: &AtomicBool) -> PResult<()> {
+    fn push_art(
+        &self,
+        bytes: &[u8],
+        progress: &mut dyn FnMut(usize, usize),
+        cancel: &AtomicBool,
+    ) -> PResult<()> {
         art::push_cancellable(
             &*self.link,
             bytes,
@@ -391,11 +471,18 @@ impl Power for DigitalisDevice {
         let mut hello = self.hello.lock().unwrap_or_else(|e| e.into_inner());
         if fresh.right_battery != hello.right_battery {
             if let Some(percent) = fresh.right_battery {
-                self.sink.emit(DeviceEvent::Battery { part: "right".into(), percent });
+                self.sink.emit(DeviceEvent::Battery {
+                    part: "right".into(),
+                    percent,
+                });
             }
         }
         *hello = fresh;
-        Ok(fresh.right_battery.map(|p| ("right".to_string(), p)).into_iter().collect())
+        Ok(fresh
+            .right_battery
+            .map(|p| ("right".to_string(), p))
+            .into_iter()
+            .collect())
     }
 
     fn info(&self) -> PResult<PowerInfo> {
@@ -414,14 +501,19 @@ impl Power for DigitalisDevice {
 impl DevSettings for DigitalisDevice {
     fn get(&self, key: &str) -> PResult<Option<Value>> {
         match key {
-            "rgb_sync" => Ok(settings::rgb_sync(&*self.link, None).map_err(err)?.sync.map(Value::Bool)),
+            "rgb_sync" => Ok(settings::rgb_sync(&*self.link, None)
+                .map_err(err)?
+                .sync
+                .map(Value::Bool)),
             _ => Ok(None),
         }
     }
 
     fn set(&self, key: &str, value: Value) -> PResult<()> {
         match (key, value) {
-            ("rgb_sync", Value::Bool(on)) => settings::rgb_sync(&*self.link, Some(on)).map(|_| ()).map_err(err),
+            ("rgb_sync", Value::Bool(on)) => settings::rgb_sync(&*self.link, Some(on))
+                .map(|_| ())
+                .map_err(err),
             _ => Err(DeviceError::Unsupported),
         }
     }
@@ -451,11 +543,20 @@ mod backend {
             let api = hidapi::HidApi::new().map_err(|e| DeviceError::Backend(e.to_string()))?;
             let mut found: Vec<DeviceInfo> = Vec::new();
             for d in api.device_list() {
-                if d.usage_page() != protocol::USAGE_PAGE || d.usage() != protocol::USAGE || !self.filter.accepts(d) {
+                if d.usage_page() != protocol::USAGE_PAGE
+                    || d.usage() != protocol::USAGE
+                    || !self.filter.accepts(d)
+                {
                     continue;
                 }
                 let path = d.path().to_string_lossy();
-                let id = DeviceId::new(self.id(), d.vendor_id(), d.product_id(), d.serial_number(), &path);
+                let id = DeviceId::new(
+                    self.id(),
+                    d.vendor_id(),
+                    d.product_id(),
+                    d.serial_number(),
+                    &path,
+                );
                 // A keyboard on USB and Bluetooth at once shows up twice; keep the first.
                 if found.iter().all(|f| f.id != id) {
                     found.push(DeviceInfo {
@@ -473,11 +574,19 @@ mod backend {
         /// Opens the first interface with this VID/PID that answers HELLO; two identical
         /// keyboards at once can't be told apart yet.
         fn open(&self, info: &DeviceInfo, sink: EventSink) -> PResult<Box<dyn Device>> {
-            let m = Match { vid_pid: Some((info.id.vid, info.id.pid)), ..Match::default() };
+            let m = Match {
+                vid_pid: Some((info.id.vid, info.id.pid)),
+                ..Match::default()
+            };
             let link = Arc::new(Link::hid(m).map_err(err)?);
             let connected = link.wait_connected(Duration::from_secs(3)).map_err(err)?;
             let hello = connected.hello.ok_or(DeviceError::Unsupported)?;
-            Ok(Box::new(DigitalisDevice::new(info.clone(), link, hello, sink)))
+            Ok(Box::new(DigitalisDevice::new(
+                info.clone(),
+                link,
+                hello,
+                sink,
+            )))
         }
     }
 }
@@ -547,11 +656,18 @@ mod tests {
                     report(&[0xD7, 0x83, 1, 0x68, 0x01, 80, 50, 3, 2, 0xff])
                 }
                 (protocol::SETTINGS, protocol::settings::INVOKE) => {
-                    let busy = self.busy.try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1)).is_ok();
+                    let busy = self
+                        .busy
+                        .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1))
+                        .is_ok();
                     report(&[0xD7, 0x82, if busy { 2 } else { 0 }])
                 }
-                (protocol::SETTINGS, protocol::settings::RGB_SYNC) => report(&[0xD7, 0x81, 1, 1, 2]),
-                (protocol::PANEL, protocol::panel::HELLO) => report(&[0xD5, 0x81, 1, 64, 52, 0, 0, 1, 55]),
+                (protocol::SETTINGS, protocol::settings::RGB_SYNC) => {
+                    report(&[0xD7, 0x81, 1, 1, 2])
+                }
+                (protocol::PANEL, protocol::panel::HELLO) => {
+                    report(&[0xD5, 0x81, 1, 64, 52, 0, 0, 1, 55])
+                }
                 _ => return Ok(()),
             };
             self.push(&reply);
@@ -560,19 +676,36 @@ mod tests {
     }
 
     fn hello(capabilities: u32) -> Hello {
-        Hello { version: 1, width: 64, height: 52, right_link: 1, right_battery: Some(80), capabilities, ..Hello::default() }
+        Hello {
+            version: 1,
+            width: 64,
+            height: 52,
+            right_link: 1,
+            right_battery: Some(80),
+            capabilities,
+            ..Hello::default()
+        }
     }
 
     fn device(capabilities: u32) -> (DigitalisDevice, Fake, EventBus) {
         let fake = Fake::default();
         let opener_fake = fake.clone();
         let link = Arc::new(Link::start(Box::new(move || {
-            let connected = Connected { product: "Fake".into(), hello: Some(hello(capabilities)) };
+            let connected = Connected {
+                product: "Fake".into(),
+                hello: Some(hello(capabilities)),
+            };
             Ok((Box::new(opener_fake.clone()) as Box<dyn RawHid>, connected))
         })));
         link.wait_connected(WAIT).unwrap();
         let id = DeviceId::new(BackendId("zmk".into()), 0x1d50, 0x615e, Some("1"), "p");
-        let info = DeviceInfo { id: id.clone(), backend: id.backend.clone(), name: "Fake".into(), kind: DeviceKind::Keyboard, firmware: None };
+        let info = DeviceInfo {
+            id: id.clone(),
+            backend: id.backend.clone(),
+            name: "Fake".into(),
+            kind: DeviceKind::Keyboard,
+            firmware: None,
+        };
         let bus = EventBus::default();
         let dev = DigitalisDevice::new(info, link, hello(capabilities), bus.sink(id));
         (dev, fake, bus)
@@ -592,13 +725,18 @@ mod tests {
         let rgb_only = caps(&hello(capabilities::SETTINGS_RGB));
         assert!(rgb_only.contains(Caps::LIGHTING | Caps::SETTINGS | Caps::BEHAVIORS));
         assert!(!rgb_only.contains(Caps::SCREENS));
-        assert!(caps(&hello(capabilities::PANEL)).contains(Caps::SCREENS | Caps::POWER | Caps::LAYERS));
+        assert!(
+            caps(&hello(capabilities::PANEL)).contains(Caps::SCREENS | Caps::POWER | Caps::LAYERS)
+        );
     }
 
     #[test]
     fn layer_reports_parse_like_the_overlay() {
         // size 4, default layer 0, layers 2 and 3 active
-        assert_eq!(parse_layers(&report(&[0xFF, 4, 1, 0, 0, 0, 0b1100, 0, 0, 0])), Some(vec![0, 2, 3]));
+        assert_eq!(
+            parse_layers(&report(&[0xFF, 4, 1, 0, 0, 0, 0b1100, 0, 0, 0])),
+            Some(vec![0, 2, 3])
+        );
         assert_eq!(parse_layers(&report(&[0xFF, 0])), None);
         assert_eq!(parse_layers(&report(&[0xFF, 9])), None);
     }
@@ -608,35 +746,96 @@ mod tests {
         let all = capabilities::PANEL | capabilities::ART_RELAY | capabilities::SETTINGS_RGB;
         let (dev, fake, _bus) = device(all);
         dev.set_behaviors(vec![
-            BehaviorInfo { id: 3, param1: 0, param2: 0, name: "Bootloader".into(), hold_ms: 0, risk: Risk::Confirm },
-            BehaviorInfo { id: 4, param1: 1, param2: 0, name: "RGB on".into(), hold_ms: 0, risk: Risk::Safe },
+            BehaviorInfo {
+                id: 3,
+                param1: 0,
+                param2: 0,
+                name: "Bootloader".into(),
+                hold_ms: 0,
+                risk: Risk::Confirm,
+            },
+            BehaviorInfo {
+                id: 4,
+                param1: 1,
+                param2: 0,
+                name: "RGB on".into(),
+                hold_ms: 0,
+                risk: Risk::Safe,
+            },
         ]);
         foxglove_devices::contract::check_device(&dev).unwrap();
         let behaviors = dev.behaviors().unwrap();
-        assert!(matches!(behaviors.invoke(3, 0, 0, false), Err(DeviceError::Denied(_))));
+        assert!(matches!(
+            behaviors.invoke(3, 0, 0, false),
+            Err(DeviceError::Denied(_))
+        ));
         behaviors.invoke(4, 1, 0, false).unwrap();
-        assert_eq!(behaviors.invoke(4, 2, 0, false), Err(DeviceError::Unsupported));
+        assert_eq!(
+            behaviors.invoke(4, 2, 0, false),
+            Err(DeviceError::Unsupported)
+        );
         let lighting = dev.lighting().unwrap();
         assert_eq!(lighting.state().unwrap().hue, 0x168);
-        assert_eq!(lighting.set_on(true), Err(DeviceError::Unsupported), "no &rgb_ug known yet");
+        assert_eq!(
+            lighting.set_on(true),
+            Err(DeviceError::Unsupported),
+            "no &rgb_ug known yet"
+        );
         dev.set_underglow(Some(7));
         lighting.set_color(400, 50, 100).unwrap();
         let sent = fake.written.lock().unwrap().last().unwrap().clone();
-        assert_eq!(&sent[..12], &protocol::invoke(7, RGB_COLOR_HSB, (359 << 16) | (50 << 8) | 100, 0)[..12]);
-        assert_eq!(dev.settings().unwrap().get("rgb_sync").unwrap(), Some(Value::Bool(true)));
-        assert_eq!(dev.power().unwrap().batteries().unwrap(), vec![("right".to_string(), 55)]);
+        assert_eq!(
+            &sent[..12],
+            &protocol::invoke(7, RGB_COLOR_HSB, (359 << 16) | (50 << 8) | 100, 0)[..12]
+        );
+        assert_eq!(
+            dev.settings().unwrap().get("rgb_sync").unwrap(),
+            Some(Value::Bool(true))
+        );
+        assert_eq!(
+            dev.power().unwrap().batteries().unwrap(),
+            vec![("right".to_string(), 55)]
+        );
     }
 
     #[test]
     fn halves_agree_on_all_but_brightness() {
-        let left = RgbHalf { on: true, hue: 0, sat: 100, brightness: 80, effect: 0, speed: 1 };
-        assert!(halves_agree(&RgbState { left, right: None }), "no right half: nothing to wait for");
-        let dim = RgbHalf { brightness: 30, ..left };
-        assert!(halves_agree(&RgbState { left, right: Some((dim, 1)) }), "a half dimmed on battery still agrees");
+        let left = RgbHalf {
+            on: true,
+            hue: 0,
+            sat: 100,
+            brightness: 80,
+            effect: 0,
+            speed: 1,
+        };
+        assert!(
+            halves_agree(&RgbState { left, right: None }),
+            "no right half: nothing to wait for"
+        );
+        let dim = RgbHalf {
+            brightness: 30,
+            ..left
+        };
+        assert!(
+            halves_agree(&RgbState {
+                left,
+                right: Some((dim, 1))
+            }),
+            "a half dimmed on battery still agrees"
+        );
         let behind = RgbHalf { hue: 240, ..left };
-        assert!(!halves_agree(&RgbState { left, right: Some((behind, 2)) }));
-        assert!(!halves_agree(&RgbState { left, right: Some((RgbHalf { on: false, ..left }, 0)) }));
-        assert!(!halves_agree(&RgbState { left, right: Some((RgbHalf { effect: 3, ..left }, 0)) }));
+        assert!(!halves_agree(&RgbState {
+            left,
+            right: Some((behind, 2))
+        }));
+        assert!(!halves_agree(&RgbState {
+            left,
+            right: Some((RgbHalf { on: false, ..left }, 0))
+        }));
+        assert!(!halves_agree(&RgbState {
+            left,
+            right: Some((RgbHalf { effect: 3, ..left }, 0))
+        }));
     }
 
     #[test]
@@ -646,10 +845,20 @@ mod tests {
         let lighting = dev.lighting().unwrap();
         fake.busy.store(3, Ordering::Relaxed);
         lighting.set_on(true).unwrap();
-        let invokes = |f: &Fake| f.written.lock().unwrap().iter().filter(|w| w[1] == protocol::settings::INVOKE).count();
+        let invokes = |f: &Fake| {
+            f.written
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|w| w[1] == protocol::settings::INVOKE)
+                .count()
+        };
         assert_eq!(invokes(&fake), 4, "three busy answers, then OK");
         fake.busy.store(UNDERGLOW_BUSY_TRIES + 1, Ordering::Relaxed);
-        assert!(matches!(lighting.set_on(false), Err(DeviceError::Busy(_))), "gives up after the retries");
+        assert!(
+            matches!(lighting.set_on(false), Err(DeviceError::Busy(_))),
+            "gives up after the retries"
+        );
     }
 
     #[test]
@@ -674,11 +883,18 @@ mod tests {
         let end = Instant::now() + WAIT;
         while !saw_key && Instant::now() < end {
             if let Ok(e) = keys.recv_timeout(Duration::from_millis(50)) {
-                saw_key = e.event == DeviceEvent::Key { row: 2, col: 3, pressed: true };
+                saw_key = e.event
+                    == DeviceEvent::Key {
+                        row: 2,
+                        col: 3,
+                        pressed: true,
+                    };
             }
         }
         assert!(saw_key);
-        assert!(plain.try_iter().all(|e| !matches!(e.event, DeviceEvent::Key { .. })));
+        assert!(plain
+            .try_iter()
+            .all(|e| !matches!(e.event, DeviceEvent::Key { .. })));
         let fact = format!("device.{}.layers", Device::info(&dev).id);
         assert_eq!(bus.facts().get(&fact), Some(Value::Bytes(vec![0, 1])));
     }

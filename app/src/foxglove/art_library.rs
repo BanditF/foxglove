@@ -41,7 +41,9 @@ pub static PICK_FILE: AtomicBool = AtomicBool::new(false);
 /// A `.bin` the right screen can play. `<name>.left.bin` is a wallpaper's left-screen companion
 /// (the wallpaper manifest names it): a different size, never right art, so it stays out.
 pub fn is_right_art_file(path: &std::path::Path) -> bool {
-    let is_bin = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("bin"));
+    let is_bin = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("bin"));
     let left = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -94,7 +96,12 @@ fn scan(state: Arc<Mutex<Library>>) {
                             .map(Arc::new)
                             .map_err(str::to_owned)
                     });
-                    library.entries.push(Entry { path, preview, bytes, hash });
+                    library.entries.push(Entry {
+                        path,
+                        preview,
+                        bytes,
+                        hash,
+                    });
                 }
                 library.entries.sort_by(|a, b| a.path.cmp(&b.path));
                 // Source folders (#59): every set folder under them, converted for the view.
@@ -106,7 +113,11 @@ fn scan(state: Arc<Mutex<Library>>) {
                             .ok()
                             .and_then(|b| super::art_preview::first_frame(b).ok())
                             .map(Arc::new);
-                        library.sources.push(Source { folder, blob: blob.map(Arc::new), preview });
+                        library.sources.push(Source {
+                            folder,
+                            blob: blob.map(Arc::new),
+                            preview,
+                        });
                     }
                 }
                 Ok(())
@@ -139,7 +150,8 @@ pub fn delete(path: PathBuf) {
 fn recycle(path: &std::path::Path) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use windows::Win32::UI::Shell::{
-        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE, SHFILEOPSTRUCTW,
+        SHFileOperationW, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT, FO_DELETE,
+        SHFILEOPSTRUCTW,
     };
     // A double-NUL-terminated list of one path.
     let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
@@ -153,7 +165,9 @@ fn recycle(path: &std::path::Path) -> std::io::Result<()> {
     // SAFETY: `from` outlives the call and is double-NUL terminated, as the API requires.
     let code = unsafe { SHFileOperationW(&mut op) };
     if code != 0 || op.fAnyOperationsAborted.as_bool() {
-        return Err(std::io::Error::other(format!("couldn't move it to the Recycle Bin (code {code})")));
+        return Err(std::io::Error::other(format!(
+            "couldn't move it to the Recycle Bin (code {code})"
+        )));
     }
     Ok(())
 }
@@ -176,6 +190,9 @@ mod tests {
         assert!(!is_right_art_file(Path::new("Hud.LEFT.BIN")));
         assert!(!is_right_art_file(Path::new("hud.left"))); // not a .bin at all
         assert!(!is_right_art_file(Path::new("notes.txt")));
-        assert!(is_right_art_file(Path::new("left.bin")), "a set named left is still right art");
+        assert!(
+            is_right_art_file(Path::new("left.bin")),
+            "a set named left is still right art"
+        );
     }
 }

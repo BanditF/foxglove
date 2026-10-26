@@ -4,9 +4,7 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 
 use zmk_studio_api::proto::zmk::keymap::Keymap;
-use zmk_studio_api::{
-    Behavior, ExternalPowerCommand, ResolvedLayer, UnderglowCommand,
-};
+use zmk_studio_api::{Behavior, ExternalPowerCommand, ResolvedLayer, UnderglowCommand};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Group {
@@ -243,8 +241,7 @@ mod tests {
 /// Only bindings learned as safe actions (or direct RGB commands) may be sent.
 pub fn permitted(binding: (u16, u32, u32)) -> bool {
     let known = KNOWN.lock().unwrap();
-    known.actions.iter().any(|a| a.binding == binding)
-        || known.underglow == Some(binding.0)
+    known.actions.iter().any(|a| a.binding == binding) || known.underglow == Some(binding.0)
 }
 
 #[cfg(test)]
@@ -257,13 +254,19 @@ mod safety_tests {
     #[test]
     #[ignore]
     fn learns_underglow_from_a_cached_keymap() {
-        let Some(src) = std::env::var_os("FOXGLOVE_TEST_STUDIO").map(std::path::PathBuf::from) else {
+        let Some(src) = std::env::var_os("FOXGLOVE_TEST_STUDIO").map(std::path::PathBuf::from)
+        else {
             return;
         };
         let name = src.file_name().unwrap().to_string_lossy().to_string();
-        let ids = name.trim_start_matches("keymap-").trim_end_matches(".studio");
+        let ids = name
+            .trim_start_matches("keymap-")
+            .trim_end_matches(".studio");
         let (vid, pid) = ids.split_once('-').unwrap();
-        let (vid, pid) = (u16::from_str_radix(vid, 16).unwrap(), u16::from_str_radix(pid, 16).unwrap());
+        let (vid, pid) = (
+            u16::from_str_radix(vid, 16).unwrap(),
+            u16::from_str_radix(pid, 16).unwrap(),
+        );
         let dir = std::env::temp_dir().join(format!("foxglove-learn-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::copy(&src, dir.join(&name)).unwrap();
@@ -276,9 +279,13 @@ mod safety_tests {
 
     #[test]
     fn disruptive_behaviors_are_never_actions() {
-        for b in [Behavior::Bluetooth(BluetoothCommand::Next),
-            Behavior::OutputSelection(OutputSelection::Usb), Behavior::Bootloader,
-            Behavior::Reset, Behavior::SoftOff] {
+        for b in [
+            Behavior::Bluetooth(BluetoothCommand::Next),
+            Behavior::OutputSelection(OutputSelection::Usb),
+            Behavior::Bootloader,
+            Behavior::Reset,
+            Behavior::SoftOff,
+        ] {
             assert!(describe(&b, &|_| String::new()).is_none());
         }
     }

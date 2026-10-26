@@ -29,9 +29,20 @@ pub fn start() {
             publish(facts, &e.event);
             if connected {
                 // One read when it connects; the firmware reports changes after that.
-                if let Some(info) = super::devices::device().and_then(|d| foxglove_devices::Device::power(&*d).and_then(|p| p.info().ok())) {
-                    if let (Some(output), Some(profile), Some(connected)) = (info.output, info.profile, info.profile_connected) {
-                        publish(facts, &DeviceEvent::Link { output, profile, connected });
+                if let Some(info) = super::devices::device()
+                    .and_then(|d| foxglove_devices::Device::power(&*d).and_then(|p| p.info().ok()))
+                {
+                    if let (Some(output), Some(profile), Some(connected)) =
+                        (info.output, info.profile, info.profile_connected)
+                    {
+                        publish(
+                            facts,
+                            &DeviceEvent::Link {
+                                output,
+                                profile,
+                                connected,
+                            },
+                        );
                     }
                 }
             }
@@ -48,10 +59,20 @@ fn publish(facts: &Facts, event: &DeviceEvent) {
         }
         DeviceEvent::LayerChanged { active } => {
             facts.set("keyboard.layers", Value::Bytes(active.clone()));
-            facts.set("keyboard.layer", Value::Int(active.iter().copied().max().unwrap_or(0).into()));
+            facts.set(
+                "keyboard.layer",
+                Value::Int(active.iter().copied().max().unwrap_or(0).into()),
+            );
         }
-        DeviceEvent::Battery { part, percent } => facts.set(format!("keyboard.{part}.battery"), Value::Int((*percent).into())),
-        DeviceEvent::Link { output, profile, connected } => {
+        DeviceEvent::Battery { part, percent } => facts.set(
+            format!("keyboard.{part}.battery"),
+            Value::Int((*percent).into()),
+        ),
+        DeviceEvent::Link {
+            output,
+            profile,
+            connected,
+        } => {
             facts.set("keyboard.link", Value::Text(output.to_ascii_lowercase()));
             facts.set("keyboard.profile", Value::Int(i64::from(*profile) + 1));
             facts.set("keyboard.profile_connected", Value::Bool(*connected));
@@ -68,15 +89,45 @@ mod tests {
     fn events_become_keyboard_facts_and_a_disconnect_clears_them() {
         let facts = Facts::default();
         publish(&facts, &DeviceEvent::Connected);
-        publish(&facts, &DeviceEvent::LayerChanged { active: vec![0, 2, 3] });
-        publish(&facts, &DeviceEvent::Battery { part: "right".into(), percent: 61 });
-        publish(&facts, &DeviceEvent::Link { output: "BLE".into(), profile: 1, connected: true });
+        publish(
+            &facts,
+            &DeviceEvent::LayerChanged {
+                active: vec![0, 2, 3],
+            },
+        );
+        publish(
+            &facts,
+            &DeviceEvent::Battery {
+                part: "right".into(),
+                percent: 61,
+            },
+        );
+        publish(
+            &facts,
+            &DeviceEvent::Link {
+                output: "BLE".into(),
+                profile: 1,
+                connected: true,
+            },
+        );
         assert_eq!(facts.get("keyboard.layer"), Some(Value::Int(3)));
-        assert_eq!(facts.get("keyboard.layers"), Some(Value::Bytes(vec![0, 2, 3])));
+        assert_eq!(
+            facts.get("keyboard.layers"),
+            Some(Value::Bytes(vec![0, 2, 3]))
+        );
         assert_eq!(facts.get("keyboard.right.battery"), Some(Value::Int(61)));
         assert_eq!(facts.get("keyboard.link"), Some(Value::Text("ble".into())));
-        assert_eq!(facts.get("keyboard.profile"), Some(Value::Int(2)), "1-based, as the app shows it");
-        publish(&facts, &DeviceEvent::Disconnected { reason: "unplugged".into() });
+        assert_eq!(
+            facts.get("keyboard.profile"),
+            Some(Value::Int(2)),
+            "1-based, as the app shows it"
+        );
+        publish(
+            &facts,
+            &DeviceEvent::Disconnected {
+                reason: "unplugged".into(),
+            },
+        );
         assert_eq!(facts.get("keyboard.connected"), Some(Value::Bool(false)));
         assert_eq!(facts.get("keyboard.layer"), None);
         assert_eq!(facts.get("keyboard.right.battery"), None);

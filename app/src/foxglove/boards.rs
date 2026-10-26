@@ -15,15 +15,30 @@ use serde::Deserialize;
 const FORMAT: &str = "foxglove-board";
 
 const BUILT_IN: &[(&str, &str)] = &[
-    ("eyelash-corne.toml", include_str!("../../resources/boards/eyelash-corne.toml")),
-    ("toucan2.toml", include_str!("../../resources/boards/toucan2.toml")),
-    ("halcyon-corne-epaper.toml", include_str!("../../resources/boards/halcyon-corne-epaper.toml")),
+    (
+        "eyelash-corne.toml",
+        include_str!("../../resources/boards/eyelash-corne.toml"),
+    ),
+    (
+        "toucan2.toml",
+        include_str!("../../resources/boards/toucan2.toml"),
+    ),
+    (
+        "halcyon-corne-epaper.toml",
+        include_str!("../../resources/boards/halcyon-corne-epaper.toml"),
+    ),
 ];
 
 /// Keymap sources a built-in profile can name.
 const KEYMAPS: &[(&str, &str)] = &[
-    ("eyelash_corne", include_str!("../../../config/eyelash_corne.keymap")),
-    ("toucan", include_str!("../../../config-toucan2/toucan.keymap")),
+    (
+        "eyelash_corne",
+        include_str!("../../../config/eyelash_corne.keymap"),
+    ),
+    (
+        "toucan",
+        include_str!("../../../config-toucan2/toucan.keymap"),
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -85,18 +100,32 @@ pub struct Drawing {
 impl Default for Drawing {
     /// A Corne-shaped half, for a keyboard without a profile (or a profile without a drawing).
     fn default() -> Self {
-        Drawing { columns: 6, rows: 3, thumbs: 3, stagger: vec![0.5, 0.5, 0.25, 0.0, 0.125, 0.25] }
+        Drawing {
+            columns: 6,
+            rows: 3,
+            thumbs: 3,
+            stagger: vec![0.5, 0.5, 0.25, 0.0, 0.125, 0.25],
+        }
     }
 }
 
 impl Drawing {
     /// Within reason, so a mistyped profile can't draw a wall of keys.
     fn bounded(&self) -> (u8, u8, u8) {
-        (self.columns.clamp(1, 10), self.rows.clamp(1, 8), self.thumbs.min(self.columns.clamp(1, 10)))
+        (
+            self.columns.clamp(1, 10),
+            self.rows.clamp(1, 8),
+            self.thumbs.min(self.columns.clamp(1, 10)),
+        )
     }
 
     fn drop_of(&self, column: usize) -> f32 {
-        self.stagger.get(column).copied().filter(|d| d.is_finite()).unwrap_or(0.0).clamp(0.0, 2.0)
+        self.stagger
+            .get(column)
+            .copied()
+            .filter(|d| d.is_finite())
+            .unwrap_or(0.0)
+            .clamp(0.0, 2.0)
     }
 
     /// One half's keys, each a 1×1 rectangle in key units from the half's top-left corner.
@@ -105,13 +134,19 @@ impl Drawing {
         let mut keys = Vec::new();
         for c in 0..usize::from(columns) {
             for r in 0..usize::from(rows) {
-                keys.push(egui::Rect::from_min_size(egui::pos2(c as f32, r as f32 + self.drop_of(c)), egui::vec2(1.0, 1.0)));
+                keys.push(egui::Rect::from_min_size(
+                    egui::pos2(c as f32, r as f32 + self.drop_of(c)),
+                    egui::vec2(1.0, 1.0),
+                ));
             }
         }
         // The thumbs sit under the inner columns, a little below the lowest of them.
         let (first, below) = self.thumb_row();
         for t in 0..usize::from(thumbs) {
-            keys.push(egui::Rect::from_min_size(egui::pos2((first + t) as f32 + 0.5, below), egui::vec2(1.0, 1.0)));
+            keys.push(egui::Rect::from_min_size(
+                egui::pos2((first + t) as f32 + 0.5, below),
+                egui::vec2(1.0, 1.0),
+            ));
         }
         if right {
             let (w, _) = self.size();
@@ -126,19 +161,28 @@ impl Drawing {
     fn thumb_row(&self) -> (usize, f32) {
         let (columns, rows, thumbs) = self.bounded();
         let first = usize::from(columns - thumbs);
-        let below = (first..usize::from(columns)).map(|c| self.drop_of(c)).fold(0.0, f32::max) + f32::from(rows) + 0.25;
+        let below = (first..usize::from(columns))
+            .map(|c| self.drop_of(c))
+            .fold(0.0, f32::max)
+            + f32::from(rows)
+            + 0.25;
         (first, below)
     }
 
     /// The half's width and height in key units.
     pub fn size(&self) -> (f32, f32) {
         let (columns, rows, thumbs) = self.bounded();
-        let lowest = (0..usize::from(columns)).map(|c| self.drop_of(c)).fold(0.0, f32::max);
+        let lowest = (0..usize::from(columns))
+            .map(|c| self.drop_of(c))
+            .fold(0.0, f32::max);
         let grid = f32::from(rows) + lowest;
         if thumbs == 0 {
             return (f32::from(columns), grid);
         }
-        (f32::from(columns) + 0.5, (self.thumb_row().1 + 1.0).max(grid))
+        (
+            f32::from(columns) + 0.5,
+            (self.thumb_row().1 + 1.0).max(grid),
+        )
     }
 }
 
@@ -186,14 +230,19 @@ impl Board {
     }
 
     fn matches(&self, vid: u16, pid: u16, product: &str) -> bool {
-        self.matches
-            .iter()
-            .any(|m| (m.vid, m.pid) == (vid, pid) && m.product.as_deref().is_none_or(|p| p.eq_ignore_ascii_case(product.trim())))
+        self.matches.iter().any(|m| {
+            (m.vid, m.pid) == (vid, pid)
+                && m.product
+                    .as_deref()
+                    .is_none_or(|p| p.eq_ignore_ascii_case(product.trim()))
+        })
     }
 
     /// The panel the PC draws on, when the firmware doesn't describe its screens.
     pub fn panel(&self) -> Option<&Screen> {
-        self.screens.iter().find(|s| s.kind == "panel" && s.format == "1bit")
+        self.screens
+            .iter()
+            .find(|s| s.kind == "panel" && s.format == "1bit")
     }
 
     /// Its keymap source: built in by name, or a `.keymap` file next to a user profile.
@@ -210,10 +259,24 @@ impl Board {
 /// The built-in profiles, then the user's (from `dir`), a user one replacing a built-in one
 /// with the same id.
 fn load(dir: Option<&Path>) -> Vec<Board> {
-    let mut all: Vec<Board> = BUILT_IN.iter().filter_map(|(file, text)| Board::parse(text).map_err(|e| eprintln!("Foxglove: board profile {file}: {e}")).ok()).collect();
-    let user = dir.and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().flatten();
+    let mut all: Vec<Board> = BUILT_IN
+        .iter()
+        .filter_map(|(file, text)| {
+            Board::parse(text)
+                .map_err(|e| eprintln!("Foxglove: board profile {file}: {e}"))
+                .ok()
+        })
+        .collect();
+    let user = dir
+        .and_then(|d| std::fs::read_dir(d).ok())
+        .into_iter()
+        .flatten()
+        .flatten();
     for entry in user.filter(|e| e.path().extension().is_some_and(|x| x == "toml")) {
-        match std::fs::read_to_string(entry.path()).map_err(|e| e.to_string()).and_then(|t| Board::parse(&t)) {
+        match std::fs::read_to_string(entry.path())
+            .map_err(|e| e.to_string())
+            .and_then(|t| Board::parse(&t))
+        {
             Ok(mut b) => {
                 b.dir = dir.map(Path::to_path_buf);
                 all.retain(|a| a.id != b.id);
@@ -237,7 +300,10 @@ pub fn find(vid: u16, pid: u16, product: &str) -> Option<Board> {
 
 fn find_in(all: &[Board], vid: u16, pid: u16, product: &str) -> Option<Board> {
     // A later profile (the user's) wins over an earlier one.
-    all.iter().rev().find(|b| b.matches(vid, pid, product)).cloned()
+    all.iter()
+        .rev()
+        .find(|b| b.matches(vid, pid, product))
+        .cloned()
 }
 
 static CURRENT: Mutex<Option<Board>> = Mutex::new(None);
@@ -272,14 +338,29 @@ mod tests {
         let corne = find_in(&all, 0x1d50, 0x615e, "Eyelash Corne").unwrap();
         assert_eq!((corne.status, corne.halves), (Status::Tested, 2));
         assert_eq!(corne.panel().map(|p| (p.width, p.height)), Some((64, 52)));
-        assert!(corne.keymap_source().is_some_and(|k| k.contains("zmk,keymap")));
+        assert!(corne
+            .keymap_source()
+            .is_some_and(|k| k.contains("zmk,keymap")));
         assert_eq!(corne.lighting.as_ref().map(|l| l.lamps), Some(42));
         let toucan = find_in(&all, 0x1d50, 0x615e, "Toucan").unwrap();
-        assert_eq!((toucan.status, toucan.screens[0].width, toucan.screens[0].height), (Status::Untested, 144, 168));
+        assert_eq!(
+            (
+                toucan.status,
+                toucan.screens[0].width,
+                toucan.screens[0].height
+            ),
+            (Status::Untested, 144, 168)
+        );
         assert!(toucan.keymap_source().is_some());
         let halcyon = find_in(&all, 0x1d50, 0x615e, "halcyon corne").unwrap();
-        assert_eq!((halcyon.status, halcyon.screens.len()), (Status::Untested, 2));
-        assert!(halcyon.keymap_source().is_none(), "no keymap source: no hints");
+        assert_eq!(
+            (halcyon.status, halcyon.screens.len()),
+            (Status::Untested, 2)
+        );
+        assert!(
+            halcyon.keymap_source().is_none(),
+            "no keymap source: no hints"
+        );
         // ZMK's shared ids alone match nothing.
         assert!(find_in(&all, 0x1d50, 0x615e, "Some Other Board").is_none());
         assert!(find_in(&all, 0x3434, 0x0250, "Eyelash Corne").is_none());
@@ -292,10 +373,17 @@ mod tests {
         let d = corne.drawing.expect("the Corne's profile has a drawing");
         let left = d.keys(false);
         let right = d.keys(true);
-        assert_eq!((left.len(), right.len()), (21, 21), "3 rows of 6 and 3 thumbs a half");
+        assert_eq!(
+            (left.len(), right.len()),
+            (21, 21),
+            "3 rows of 6 and 3 thumbs a half"
+        );
         let (w, h) = d.size();
         for k in left.iter().chain(&right) {
-            assert!(k.min.x >= 0.0 && k.min.y >= 0.0 && k.max.x <= w && k.max.y <= h, "{k:?} inside {w}x{h}");
+            assert!(
+                k.min.x >= 0.0 && k.min.y >= 0.0 && k.max.x <= w && k.max.y <= h,
+                "{k:?} inside {w}x{h}"
+            );
         }
         // The column stagger: the middle finger's column sits higher than the pinky's.
         assert!(left[3 * 3].min.y < left[0].min.y);
@@ -308,7 +396,12 @@ mod tests {
         }
         // No drawing in a profile: a Corne shape; a mistyped one stays within bounds.
         assert_eq!(Drawing::default().keys(false).len(), 21);
-        let wild = Drawing { columns: 200, rows: 0, thumbs: 50, stagger: vec![f32::NAN, 99.0] };
+        let wild = Drawing {
+            columns: 200,
+            rows: 0,
+            thumbs: 50,
+            stagger: vec![f32::NAN, 99.0],
+        };
         assert_eq!(wild.keys(false).len(), 10 + 10);
     }
 
@@ -321,13 +414,27 @@ mod tests {
             "format = \"foxglove-board\"\nversion = 1\nid = \"eyelash-corne\"\nname = \"My Corne\"\nprotocol = \"zmk\"\nkeymap = \"mine\"\n[[match]]\nvid = 0x1d50\npid = 0x615e\nproduct = \"Eyelash Corne\"\n",
         )
         .unwrap();
-        std::fs::write(dir.join("mine.keymap"), "/ { keymap { compatible = \"zmk,keymap\"; }; };").unwrap();
+        std::fs::write(
+            dir.join("mine.keymap"),
+            "/ { keymap { compatible = \"zmk,keymap\"; }; };",
+        )
+        .unwrap();
         std::fs::write(dir.join("broken.toml"), "id = 3").unwrap();
         let all = load(Some(&dir));
         let corne = find_in(&all, 0x1d50, 0x615e, "Eyelash Corne").unwrap();
-        assert_eq!((corne.name.as_str(), corne.status), ("My Corne", Status::Untested));
-        assert!(corne.keymap_source().unwrap().contains("zmk,keymap"), "its keymap file next to it");
-        assert_eq!(all.iter().filter(|b| b.id == "eyelash-corne").count(), 1, "replaced, not doubled");
+        assert_eq!(
+            (corne.name.as_str(), corne.status),
+            ("My Corne", Status::Untested)
+        );
+        assert!(
+            corne.keymap_source().unwrap().contains("zmk,keymap"),
+            "its keymap file next to it"
+        );
+        assert_eq!(
+            all.iter().filter(|b| b.id == "eyelash-corne").count(),
+            1,
+            "replaced, not doubled"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 }

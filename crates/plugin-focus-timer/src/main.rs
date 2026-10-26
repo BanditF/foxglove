@@ -31,8 +31,16 @@ struct Options {
 
 fn options() -> Options {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let num = |flag: &str| -> Option<u64> { args.windows(2).find(|w| w[0] == flag).and_then(|w| w[1].parse().ok()) };
-    let secs = |minutes: &str, seconds: &str, default_min: u64| num(seconds).unwrap_or(num(minutes).unwrap_or(default_min) * 60).max(1);
+    let num = |flag: &str| -> Option<u64> {
+        args.windows(2)
+            .find(|w| w[0] == flag)
+            .and_then(|w| w[1].parse().ok())
+    };
+    let secs = |minutes: &str, seconds: &str, default_min: u64| {
+        num(seconds)
+            .unwrap_or(num(minutes).unwrap_or(default_min) * 60)
+            .max(1)
+    };
     Options {
         durations: Durations {
             focus: secs("--focus-minutes", "--focus-seconds", 25),
@@ -46,7 +54,9 @@ fn options() -> Options {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn state_file() -> std::path::PathBuf {
@@ -84,8 +94,16 @@ fn keyboards(plugin: &Plugin) -> Vec<(String, bool, bool)> {
 
 fn colour(phase: Phase) -> Hsb {
     match phase {
-        Phase::Focus => Hsb { hue: 0, saturation: 100, brightness: 60 },
-        Phase::Rest | Phase::LongRest => Hsb { hue: 120, saturation: 100, brightness: 60 },
+        Phase::Focus => Hsb {
+            hue: 0,
+            saturation: 100,
+            brightness: 60,
+        },
+        Phase::Rest | Phase::LongRest => Hsb {
+            hue: 120,
+            saturation: 100,
+            brightness: 60,
+        },
     }
 }
 
@@ -111,7 +129,9 @@ fn main() {
         }
     };
     let art = if opts.panel {
-        panel::Art::load().map_err(|e| eprintln!("focus-timer: panel art: {e}")).ok()
+        panel::Art::load()
+            .map_err(|e| eprintln!("focus-timer: panel art: {e}"))
+            .ok()
     } else {
         None
     };
@@ -159,7 +179,15 @@ fn main() {
         // Panel: held until the next frame, and given back when the plugin stops (#281).
         if let Some(art) = &art {
             let hint = hint(&t, &d);
-            let view = panel::View { phase: t.phase, paused: t.paused(), round: t.round, rounds: d.rounds, left, progress: t.progress(at, &d), hint: &hint };
+            let view = panel::View {
+                phase: t.phase,
+                paused: t.paused(),
+                round: t.round,
+                rounds: d.rounds,
+                left,
+                progress: t.progress(at, &d),
+                hint: &hint,
+            };
             let frame = art.frame(&view);
             for (id, _, _) in boards.iter().filter(|b| b.2) {
                 if let Err(e) = plugin.panel_hold(id, panel::W as u16, panel::H as u16, &frame) {
@@ -169,7 +197,13 @@ fn main() {
         }
         // Running: wait for the next second (the countdown), or a key. Paused: nothing changes
         // until a key, so wait only for that (#281).
-        let wait = Duration::from_millis(1000 - u64::from(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_millis())));
+        let wait = Duration::from_millis(
+            1000 - u64::from(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_or(0, |d| d.subsec_millis()),
+            ),
+        );
         let pressed = match &actions {
             Some(rx) if t.paused() => match rx.recv() {
                 Ok(k) => Some(k),

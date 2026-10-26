@@ -35,13 +35,20 @@ struct Options {
 }
 
 fn options(args: &[String]) -> Options {
-    let num = |flag: &str| -> Option<u64> { args.windows(2).find(|w| w[0] == flag).and_then(|w| w[1].parse().ok()) };
+    let num = |flag: &str| -> Option<u64> {
+        args.windows(2)
+            .find(|w| w[0] == flag)
+            .and_then(|w| w[1].parse().ok())
+    };
     Options {
         universe: num("--universe").map_or(1, |n| n as u16),
         start_channel: num("--start-channel").map_or(1, |n| (n as usize).max(1)),
         leds: num("--leds").map(|n| n as usize),
         max_hz: num("--max-hz").map_or(10, |n| (n as u32).clamp(1, 30)),
-        port: num("--port").and_then(|n| u16::try_from(n).ok()).filter(|p| *p != 0).unwrap_or(e131::PORT),
+        port: num("--port")
+            .and_then(|n| u16::try_from(n).ok())
+            .filter(|p| *p != 0)
+            .unwrap_or(e131::PORT),
     }
 }
 
@@ -53,14 +60,29 @@ fn average(channels: &[u8], start_channel: usize, leds: Option<usize>) -> Option
     if n == 0 {
         return None;
     }
-    let sum = rgb.as_chunks::<3>().0.iter().take(n).fold([0u32; 3], |s, c| [s[0] + u32::from(c[0]), s[1] + u32::from(c[1]), s[2] + u32::from(c[2])]);
+    let sum = rgb
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .take(n)
+        .fold([0u32; 3], |s, c| {
+            [
+                s[0] + u32::from(c[0]),
+                s[1] + u32::from(c[1]),
+                s[2] + u32::from(c[2]),
+            ]
+        });
     let avg = |v: u32| (v / n as u32) as u8;
     Some((avg(sum[0]), avg(sum[1]), avg(sum[2])))
 }
 
 /// RGB to the device layer's HSB (hue 0-359, saturation and brightness 0-100).
 fn hsb((r, g, b): (u8, u8, u8)) -> Hsb {
-    let (r, g, b) = (f32::from(r) / 255.0, f32::from(g) / 255.0, f32::from(b) / 255.0);
+    let (r, g, b) = (
+        f32::from(r) / 255.0,
+        f32::from(g) / 255.0,
+        f32::from(b) / 255.0,
+    );
     let max = r.max(g).max(b);
     let delta = max - r.min(g).min(b);
     let hue = if delta == 0.0 {
@@ -73,7 +95,11 @@ fn hsb((r, g, b): (u8, u8, u8)) -> Hsb {
         60.0 * ((r - g) / delta + 4.0)
     };
     let saturation = if max == 0.0 { 0.0 } else { delta / max };
-    Hsb { hue: (hue.round() as u16) % 360, saturation: (saturation * 100.0).round() as u8, brightness: (max * 100.0).round() as u8 }
+    Hsb {
+        hue: (hue.round() as u16) % 360,
+        saturation: (saturation * 100.0).round() as u8,
+        brightness: (max * 100.0).round() as u8,
+    }
 }
 
 /// The keyboards with lights, each held with a low-priority lease in `color` (#73): a
@@ -85,28 +111,51 @@ fn take_over(plugin: &Arc<Plugin>, color: Hsb) -> Vec<Lease> {
         .unwrap_or_default()
         .into_iter()
         .filter(|d| d.connected && d.caps.iter().any(|c| c == "lighting"))
-        .filter_map(|d| plugin.lease(&d.id, color, LeasePriority::Low).map_err(|e| eprintln!("openrgb-e131: lighting: {e}")).ok())
+        .filter_map(|d| {
+            plugin
+                .lease(&d.id, color, LeasePriority::Low)
+                .map_err(|e| eprintln!("openrgb-e131: lighting: {e}"))
+                .ok()
+        })
         .collect()
 }
 
 fn send_test(args: &[String], universe: u16, port: u16) -> std::io::Result<()> {
     let at = args.iter().position(|a| a == "--send-test").unwrap_or(0);
-    let v: Vec<u8> = args[at + 1..].iter().take(3).filter_map(|a| a.parse().ok()).collect();
+    let v: Vec<u8> = args[at + 1..]
+        .iter()
+        .take(3)
+        .filter_map(|a| a.parse().ok())
+        .collect();
     let [r, g, b] = v[..] else {
         eprintln!("openrgb-e131: --send-test R G B");
         std::process::exit(2);
     };
     // --seq N numbers the frame (a repeat of the last number counts as stale); --stop marks it
     // the stream's end.
-    let seq = args.windows(2).find(|w| w[0] == "--seq").and_then(|w| w[1].parse().ok()).unwrap_or(1);
-    let options = if args.iter().any(|a| a == "--stop") { 0x40 } else { 0 };
+    let seq = args
+        .windows(2)
+        .find(|w| w[0] == "--seq")
+        .and_then(|w| w[1].parse().ok())
+        .unwrap_or(1);
+    let options = if args.iter().any(|a| a == "--stop") {
+        0x40
+    } else {
+        0
+    };
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0))?;
     let frame: Vec<u8> = [r, g, b].repeat(8);
     // Each test sender is its own source, as separate senders are in E1.31.
     let mut cid = *b"foxglove-test-00";
-    let unique = std::process::id() ^ std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    let unique = std::process::id()
+        ^ std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
     cid[12..].copy_from_slice(&unique.to_be_bytes());
-    socket.send_to(&e131::build(cid, universe, seq, options, &frame), (Ipv4Addr::LOCALHOST, port))?;
+    socket.send_to(
+        &e131::build(cid, universe, seq, options, &frame),
+        (Ipv4Addr::LOCALHOST, port),
+    )?;
     Ok(())
 }
 
@@ -154,11 +203,17 @@ fn main() {
         // lost, or when a held-back colour may go out (one-shot deadlines).
         let deadline = leases.is_some().then(|| {
             let lost = last_data + LOSS_TIMEOUT;
-            if wanted.is_some() && wanted != sent { lost.min(next_send) } else { lost }
+            if wanted.is_some() && wanted != sent {
+                lost.min(next_send)
+            } else {
+                lost
+            }
         });
         let event = match deadline {
             Some(at) => frames.recv_timeout(at.saturating_duration_since(Instant::now())),
-            None => frames.recv().map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
+            None => frames
+                .recv()
+                .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
         };
         let received = match event {
             Ok(NetEvent::Data(bytes, from)) => Some((bytes, from.unwrap_or_default())),
@@ -171,8 +226,12 @@ fn main() {
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
         };
         if let Some((buf, from)) = received {
-            if let Some(p) = e131::parse(&buf).filter(|p| p.universe == opts.universe && !p.preview) {
-                if last_seq.is_some_and(|(cid, last)| cid == p.cid && e131::is_stale(last, p.sequence)) && !p.terminated {
+            if let Some(p) = e131::parse(&buf).filter(|p| p.universe == opts.universe && !p.preview)
+            {
+                if last_seq
+                    .is_some_and(|(cid, last)| cid == p.cid && e131::is_stale(last, p.sequence))
+                    && !p.terminated
+                {
                     continue;
                 }
                 last_seq = Some((p.cid, p.sequence));
@@ -226,18 +285,58 @@ mod tests {
 
     #[test]
     fn rgb_to_hsb() {
-        assert_eq!(hsb((255, 0, 0)), Hsb { hue: 0, saturation: 100, brightness: 100 });
-        assert_eq!(hsb((0, 255, 0)), Hsb { hue: 120, saturation: 100, brightness: 100 });
-        assert_eq!(hsb((0, 0, 128)), Hsb { hue: 240, saturation: 100, brightness: 50 });
-        assert_eq!(hsb((255, 0, 255)), Hsb { hue: 300, saturation: 100, brightness: 100 });
-        assert_eq!(hsb((0, 0, 0)), Hsb { hue: 0, saturation: 0, brightness: 0 });
+        assert_eq!(
+            hsb((255, 0, 0)),
+            Hsb {
+                hue: 0,
+                saturation: 100,
+                brightness: 100
+            }
+        );
+        assert_eq!(
+            hsb((0, 255, 0)),
+            Hsb {
+                hue: 120,
+                saturation: 100,
+                brightness: 100
+            }
+        );
+        assert_eq!(
+            hsb((0, 0, 128)),
+            Hsb {
+                hue: 240,
+                saturation: 100,
+                brightness: 50
+            }
+        );
+        assert_eq!(
+            hsb((255, 0, 255)),
+            Hsb {
+                hue: 300,
+                saturation: 100,
+                brightness: 100
+            }
+        );
+        assert_eq!(
+            hsb((0, 0, 0)),
+            Hsb {
+                hue: 0,
+                saturation: 0,
+                brightness: 0
+            }
+        );
         assert_eq!(hsb((255, 255, 255)).saturation, 0);
     }
 
     #[test]
     fn options_parse_and_clamp() {
-        let a: Vec<String> = ["--universe", "4", "--start-channel", "0", "--max-hz", "99"].map(String::from).to_vec();
+        let a: Vec<String> = ["--universe", "4", "--start-channel", "0", "--max-hz", "99"]
+            .map(String::from)
+            .to_vec();
         let o = options(&a);
-        assert_eq!((o.universe, o.start_channel, o.leds, o.max_hz), (4, 1, None, 30));
+        assert_eq!(
+            (o.universe, o.start_channel, o.leds, o.max_hz),
+            (4, 1, None, 30)
+        );
     }
 }

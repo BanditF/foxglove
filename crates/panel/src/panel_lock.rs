@@ -22,7 +22,10 @@ mod imp {
 
         pub fn named(name: &str) -> Self {
             let handle = unsafe { CreateMutexW(None, false, &HSTRING::from(name)) }.ok();
-            PanelLock { handle, held: false }
+            PanelLock {
+                handle,
+                held: false,
+            }
         }
 
         /// Takes the lock if nobody holds it (or its holder died); true while we hold it.
@@ -90,7 +93,9 @@ mod tests {
         assert!(first.acquire());
         let rival = || {
             let name = name.clone();
-            std::thread::spawn(move || PanelLock::named(&name).acquire()).join().unwrap()
+            std::thread::spawn(move || PanelLock::named(&name).acquire())
+                .join()
+                .unwrap()
         };
         assert!(!rival());
         first.release();

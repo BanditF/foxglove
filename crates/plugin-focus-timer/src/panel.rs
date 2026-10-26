@@ -103,9 +103,16 @@ impl Art {
         if a.format != "foxglove-panel-assets" {
             return Err("not panel assets".into());
         }
-        let all = a.digits.values_mut().chain([&mut a.colon]).chain(a.icons.values_mut()).chain(a.font.glyphs.values_mut());
+        let all = a
+            .digits
+            .values_mut()
+            .chain([&mut a.colon])
+            .chain(a.icons.values_mut())
+            .chain(a.font.glyphs.values_mut());
         for s in all {
-            s.bits = base64::engine::general_purpose::STANDARD.decode(&s.bitmap).map_err(|e| e.to_string())?;
+            s.bits = base64::engine::general_purpose::STANDARD
+                .decode(&s.bitmap)
+                .map_err(|e| e.to_string())?;
             if s.bits.len() != s.w.div_ceil(8) * s.h {
                 return Err("a sprite's size doesn't match its bitmap".into());
             }
@@ -139,7 +146,15 @@ impl Art {
 
     /// One frame: 1 bpp, rows MSB first, 8 bytes a row.
     pub fn frame(&self, v: &View) -> Vec<u8> {
-        let View { phase, paused, round, rounds, left, progress, hint } = *v;
+        let View {
+            phase,
+            paused,
+            round,
+            rounds,
+            left,
+            progress,
+            hint,
+        } = *v;
         let l = &self.a.layout;
         let mut f = vec![0u8; STRIDE * H];
         let (icon, label) = match (paused, phase) {
@@ -152,14 +167,22 @@ impl Art {
         }
         self.text(&mut f, label, l.phase_label.x, l.phase_label.y);
         let r = format!("{round}/{rounds}");
-        self.text(&mut f, &r, l.round_label.x - self.text_width(&r), l.round_label.y);
+        self.text(
+            &mut f,
+            &r,
+            l.round_label.x - self.text_width(&r),
+            l.round_label.y,
+        );
         // MM:SS: digit, +advance, colon with a gap each side, digit, +advance.
         let (m, s) = ((left / 60).min(99), left % 60);
         let digits = [m / 10, m % 10, s / 10, s % 10].map(|d| &self.a.digits[&d.to_string()]);
         let d = &l.digits;
         let colon_x = d.x + d.advance + digits[1].w as i32 + d.colon_gap;
         let after = colon_x + self.a.colon.w as i32 + d.colon_gap;
-        for (digit, x) in digits.iter().zip([d.x, d.x + d.advance, after, after + d.advance]) {
+        for (digit, x) in digits
+            .iter()
+            .zip([d.x, d.x + d.advance, after, after + d.advance])
+        {
             self.blit(&mut f, digit, x, d.y);
         }
         self.blit(&mut f, &self.a.colon, colon_x, d.y);
@@ -184,7 +207,12 @@ impl Art {
             set(&mut f, b.x + (k * (b.w - 1)) / 5, l.bar_ticks.y);
         }
         let hint: String = hint.chars().take(15).collect();
-        self.text(&mut f, &hint, l.hint.x - self.text_width(&hint) / 2, l.hint.y);
+        self.text(
+            &mut f,
+            &hint,
+            l.hint.x - self.text_width(&hint) / 2,
+            l.hint.y,
+        );
         f
     }
 }
@@ -206,7 +234,15 @@ mod tests {
     #[test]
     fn draws_a_frame_from_the_assets() {
         let art = Art::load().unwrap();
-        let f = art.frame(&View { phase: Phase::Focus, paused: false, round: 2, rounds: 4, left: 24 * 60 + 59, progress: 0.5, hint: "NEXT REST 5M" });
+        let f = art.frame(&View {
+            phase: Phase::Focus,
+            paused: false,
+            round: 2,
+            rounds: 4,
+            left: 24 * 60 + 59,
+            progress: 0.5,
+            hint: "NEXT REST 5M",
+        });
         assert_eq!(f.len(), 416);
         // The bar's outline corners, half its inside filled, the right half empty.
         assert!(lit(&f, 2, 38) && lit(&f, 61, 43));
@@ -216,8 +252,30 @@ mod tests {
         assert!((13..34).any(|y| (5..57).any(|x| lit(&f, x, y))));
         assert!((4..9).any(|y| (14..40).any(|x| lit(&f, x, y))));
         // Paused shows another frame, and the time changes the digits.
-        assert_ne!(f, art.frame(&View { phase: Phase::Focus, paused: true, round: 2, rounds: 4, left: 24 * 60 + 59, progress: 0.5, hint: "NEXT REST 5M" }));
-        assert_ne!(f, art.frame(&View { phase: Phase::Focus, paused: false, round: 2, rounds: 4, left: 60, progress: 0.5, hint: "NEXT REST 5M" }));
+        assert_ne!(
+            f,
+            art.frame(&View {
+                phase: Phase::Focus,
+                paused: true,
+                round: 2,
+                rounds: 4,
+                left: 24 * 60 + 59,
+                progress: 0.5,
+                hint: "NEXT REST 5M"
+            })
+        );
+        assert_ne!(
+            f,
+            art.frame(&View {
+                phase: Phase::Focus,
+                paused: false,
+                round: 2,
+                rounds: 4,
+                left: 60,
+                progress: 0.5,
+                hint: "NEXT REST 5M"
+            })
+        );
     }
 }
 
@@ -230,7 +288,15 @@ mod look {
     #[ignore]
     fn dump_a_frame() {
         let art = Art::load().unwrap();
-        let f = art.frame(&View { phase: Phase::Focus, paused: false, round: 2, rounds: 4, left: 24 * 60 + 59, progress: 0.35, hint: "NEXT REST 5M" });
+        let f = art.frame(&View {
+            phase: Phase::Focus,
+            paused: false,
+            round: 2,
+            rounds: 4,
+            left: 24 * 60 + 59,
+            progress: 0.35,
+            hint: "NEXT REST 5M",
+        });
         let hex: String = f.iter().map(|b| format!("{b:02x}")).collect();
         std::fs::write(std::env::var("FOCUS_FRAME_OUT").unwrap(), hex).unwrap();
     }

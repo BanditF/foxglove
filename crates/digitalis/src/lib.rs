@@ -13,12 +13,12 @@
 //! - `devices` (feature `devices`): the keyboard as a device-layer device, and a backend that finds it
 
 pub mod art;
+#[cfg(feature = "devices")]
+pub mod devices;
 #[cfg(feature = "hid")]
 pub mod hid;
 pub mod link;
 pub mod panel;
-#[cfg(feature = "devices")]
-pub mod devices;
 pub mod protocol;
 pub mod settings;
 
@@ -32,5 +32,11 @@ pub trait Transport {
     fn send(&self, report: &[u8]) -> Result<()>;
 
     /// Sends `report` and waits for the reply to (`proto`, `cmd`), skipping other reports.
-    fn request(&self, report: &[u8], proto: u8, cmd: u8, timeout: Duration) -> Result<[u8; protocol::REPORT]>;
+    fn request(
+        &self,
+        report: &[u8],
+        proto: u8,
+        cmd: u8,
+        timeout: Duration,
+    ) -> Result<[u8; protocol::REPORT]>;
 }

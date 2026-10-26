@@ -25,7 +25,13 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [Page::Keyboard, Page::Lights, Page::Screens, Page::Plugins, Page::Settings];
+    pub const ALL: [Page; 5] = [
+        Page::Keyboard,
+        Page::Lights,
+        Page::Screens,
+        Page::Plugins,
+        Page::Settings,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -40,7 +46,9 @@ impl Page {
     /// What an empty page says (the Screens sections only show with a keyboard connected).
     fn empty_hint(self) -> &'static str {
         match self {
-            Page::Screens => "The screens show here once a keyboard with Foxglove's firmware is connected.",
+            Page::Screens => {
+                "The screens show here once a keyboard with Foxglove's firmware is connected."
+            }
             _ => "Nothing here yet.",
         }
     }
@@ -69,12 +77,18 @@ pub const SECTIONS: [(&str, Page); 12] = [
 const COLUMNS: [(&str, usize); 2] = [("Overlay Appearance", 0), ("Theme", 0)];
 
 fn column_of(title: &str) -> usize {
-    COLUMNS.iter().find(|(t, _)| *t == title).map_or(1, |(_, c)| *c)
+    COLUMNS
+        .iter()
+        .find(|(t, _)| *t == title)
+        .map_or(1, |(_, c)| *c)
 }
 
 /// The page a section goes on. An unknown title lands on Settings, so it is never lost.
 pub fn page_of(title: &str) -> Page {
-    SECTIONS.iter().find(|(t, _)| *t == title).map_or(Page::Settings, |(_, p)| *p)
+    SECTIONS
+        .iter()
+        .find(|(t, _)| *t == title)
+        .map_or(Page::Settings, |(_, p)| *p)
 }
 
 thread_local! {
@@ -90,7 +104,8 @@ thread_local! {
 
 /// Whether the section titled `title` is on the page being drawn.
 pub fn shows(title: &str) -> bool {
-    let shown = SHOWING.get().is_none_or(|page| page_of(title) == page) && COLUMN.get().is_none_or(|c| column_of(title) == c);
+    let shown = SHOWING.get().is_none_or(|page| page_of(title) == page)
+        && COLUMN.get().is_none_or(|c| column_of(title) == c);
     if shown {
         DREW.set(true);
     }
@@ -106,7 +121,9 @@ struct WindowSettings {
 
 fn current() -> Page {
     CURRENT.get().unwrap_or_else(|| {
-        let page = super::store::try_load::<WindowSettings>("window").unwrap_or_default().page;
+        let page = super::store::try_load::<WindowSettings>("window")
+            .unwrap_or_default()
+            .page;
         CURRENT.set(Some(page));
         page
     })
@@ -145,7 +162,12 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
     egui::Panel::left("foxglove-sidebar")
         .resizable(false)
         .exact_size(SIDEBAR_WIDTH)
-        .frame(egui::Frame::new().fill(p.well).inner_margin(Margin { left: 12, right: 12, top: 16, bottom: 12 }))
+        .frame(egui::Frame::new().fill(p.well).inner_margin(Margin {
+            left: 12,
+            right: 12,
+            top: 16,
+            bottom: 12,
+        }))
         .show(ui, |ui| sidebar(ui, &mut page));
     if page != current() {
         set_page(page);
@@ -153,59 +175,82 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
     let mut go = None;
     let strip = strip_state(ui.ctx());
     egui::Panel::top("foxglove-status")
-        .frame(egui::Frame::new().fill(p.ground).inner_margin(Margin::symmetric(18, 10)))
+        .frame(
+            egui::Frame::new()
+                .fill(p.ground)
+                .inner_margin(Margin::symmetric(18, 10)),
+        )
         .show(ui, |ui| status_strip(ui, &strip));
     egui::CentralPanel::default()
-        .frame(egui::Frame::new().fill(p.ground).inner_margin(Margin { left: 22, right: 14, top: 14, bottom: 10 }))
+        .frame(egui::Frame::new().fill(p.ground).inner_margin(Margin {
+            left: 22,
+            right: 14,
+            top: 14,
+            bottom: 10,
+        }))
         .show(ui, |ui| {
-            egui::ScrollArea::vertical().id_salt(("foxglove-page", page)).auto_shrink(false).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(page.label()).font(theme::hud(24.0)).color(p.text_strong));
-                    if page == Page::Plugins {
-                        // "Install from file…" sits in the page's header (#389).
-                        ui.with_layout(Layout::right_to_left(Align::Center), super::plugins_ui::header);
-                    }
-                });
-                let _showing = Showing;
-                SHOWING.set(Some(page));
-                DREW.set(false);
-                if page == Page::Keyboard {
-                    // The board and the keyboard's cards lead the page; the device picker
-                    // (KeyPeek's Connection section) follows them (#386).
-                    go = super::keyboard_page::top(ui);
-                }
-                if page == Page::Screens {
-                    // Two cards side by side (#388).
-                    super::screens_ui::page(ui);
-                }
-                // A grid of cards (#390): each column draws only its own sections. The left one
-                // holds KeyPeek's overlay grid, which needs about 460 points; narrower windows
-                // stack the cards.
-                const GAP: f32 = 16.0;
-                let width = ui.available_width();
-                let left = (width * 0.55).max(460.0);
-                let right = width - left - GAP;
-                if page == Page::Settings && right >= 300.0 {
-                    ui.horizontal_top(|ui| {
-                        ui.spacing_mut().item_spacing.x = GAP;
-                        for (i, w) in [left, right].into_iter().enumerate() {
-                            ui.allocate_ui_with_layout(egui::vec2(w, 0.0), Layout::top_down(Align::Min), |ui| {
-                                ui.set_width(w);
-                                COLUMN.set(Some(i));
-                                add(ui);
-                            });
+            egui::ScrollArea::vertical()
+                .id_salt(("foxglove-page", page))
+                .auto_shrink(false)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(page.label())
+                                .font(theme::hud(24.0))
+                                .color(p.text_strong),
+                        );
+                        if page == Page::Plugins {
+                            // "Install from file…" sits in the page's header (#389).
+                            ui.with_layout(
+                                Layout::right_to_left(Align::Center),
+                                super::plugins_ui::header,
+                            );
                         }
                     });
-                    COLUMN.set(None);
-                } else {
-                    add(ui);
-                }
-                if !DREW.get() {
+                    let _showing = Showing;
+                    SHOWING.set(Some(page));
+                    DREW.set(false);
+                    if page == Page::Keyboard {
+                        // The board and the keyboard's cards lead the page; the device picker
+                        // (KeyPeek's Connection section) follows them (#386).
+                        go = super::keyboard_page::top(ui);
+                    }
+                    if page == Page::Screens {
+                        // Two cards side by side (#388).
+                        super::screens_ui::page(ui);
+                    }
+                    // A grid of cards (#390): each column draws only its own sections. The left one
+                    // holds KeyPeek's overlay grid, which needs about 460 points; narrower windows
+                    // stack the cards.
+                    const GAP: f32 = 16.0;
+                    let width = ui.available_width();
+                    let left = (width * 0.55).max(460.0);
+                    let right = width - left - GAP;
+                    if page == Page::Settings && right >= 300.0 {
+                        ui.horizontal_top(|ui| {
+                            ui.spacing_mut().item_spacing.x = GAP;
+                            for (i, w) in [left, right].into_iter().enumerate() {
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(w, 0.0),
+                                    Layout::top_down(Align::Min),
+                                    |ui| {
+                                        ui.set_width(w);
+                                        COLUMN.set(Some(i));
+                                        add(ui);
+                                    },
+                                );
+                            }
+                        });
+                        COLUMN.set(None);
+                    } else {
+                        add(ui);
+                    }
+                    if !DREW.get() {
+                        ui.add_space(8.0);
+                        ui.weak(page.empty_hint());
+                    }
                     ui.add_space(8.0);
-                    ui.weak(page.empty_hint());
-                }
-                ui.add_space(8.0);
-            });
+                });
         });
     // A click on the page itself (the board's screens and lights) opens another page.
     if let Some(to) = go.filter(|to| *to != page) {
@@ -220,8 +265,16 @@ fn sidebar(ui: &mut egui::Ui, page: &mut Page) {
         fox_mark(ui, 30.0);
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            ui.label(RichText::new("FOXGLOVE").font(theme::hud(18.0)).color(p.text_strong));
-            ui.label(RichText::new("STEEL FOR GOOD").font(theme::mono(10.0)).color(p.muted));
+            ui.label(
+                RichText::new("FOXGLOVE")
+                    .font(theme::hud(18.0))
+                    .color(p.text_strong),
+            );
+            ui.label(
+                RichText::new("STEEL FOR GOOD")
+                    .font(theme::mono(10.0))
+                    .color(p.muted),
+            );
         });
     });
     ui.add_space(16.0);
@@ -243,9 +296,22 @@ mod fox {
     pub const W: f32 = 680.0;
     pub const H: f32 = 760.0;
     pub const EAR: [(f32, f32); 3] = [(20.0, 80.0), (245.0, 300.0), (115.0, 430.0)];
-    pub const FACE: [(f32, f32); 6] = [(238.0, 296.0), (442.0, 296.0), (608.0, 462.0), (402.0, 724.0), (278.0, 724.0), (72.0, 462.0)];
-    pub const CHEEK: [(f32, f32); 4] = [(8.0, 466.0), (170.0, 494.0), (310.0, 748.0), (250.0, 748.0)];
-    pub const MASK: [(f32, f32); 4] = [(70.0, 456.0), (268.0, 500.0), (300.0, 700.0), (180.0, 572.0)];
+    pub const FACE: [(f32, f32); 6] = [
+        (238.0, 296.0),
+        (442.0, 296.0),
+        (608.0, 462.0),
+        (402.0, 724.0),
+        (278.0, 724.0),
+        (72.0, 462.0),
+    ];
+    pub const CHEEK: [(f32, f32); 4] =
+        [(8.0, 466.0), (170.0, 494.0), (310.0, 748.0), (250.0, 748.0)];
+    pub const MASK: [(f32, f32); 4] = [
+        (70.0, 456.0),
+        (268.0, 500.0),
+        (300.0, 700.0),
+        (180.0, 572.0),
+    ];
     pub const NOSE: [(f32, f32); 3] = [(300.0, 704.0), (380.0, 704.0), (340.0, 752.0)];
 
     /// One convex piece of the fox, in crop coordinates.
@@ -257,7 +323,13 @@ mod fox {
 
     /// The solid fox as convex pieces (ears, cheeks, face), then the holes (mask, nose).
     pub fn pieces() -> (Vec<Piece>, Vec<Piece>) {
-        let solid = vec![EAR.to_vec(), mirror(&EAR), CHEEK.to_vec(), mirror(&CHEEK), FACE.to_vec()];
+        let solid = vec![
+            EAR.to_vec(),
+            mirror(&EAR),
+            CHEEK.to_vec(),
+            mirror(&CHEEK),
+            FACE.to_vec(),
+        ];
         let holes = vec![MASK.to_vec(), mirror(&MASK), NOSE.to_vec()];
         (solid, holes)
     }
@@ -265,7 +337,9 @@ mod fox {
     /// The points in clockwise order on screen (y down), as egui's convex fill wants them.
     pub fn clockwise(mut p: Vec<(f32, f32)>) -> Vec<(f32, f32)> {
         let n = p.len();
-        let twice_area: f32 = (0..n).map(|i| p[i].0 * p[(i + 1) % n].1 - p[(i + 1) % n].0 * p[i].1).sum();
+        let twice_area: f32 = (0..n)
+            .map(|i| p[i].0 * p[(i + 1) % n].1 - p[(i + 1) % n].0 * p[i].1)
+            .sum();
         if twice_area < 0.0 {
             p.reverse();
         }
@@ -283,7 +357,10 @@ fn fox_mark(ui: &mut egui::Ui, size: f32) {
     let origin = rect.min + egui::vec2((size - fox::W * scale) / 2.0, margin);
     // A hairline in the fill's own colour closes the anti-aliased seams where pieces meet.
     let shape = |points: Vec<(f32, f32)>, fill: egui::Color32| {
-        let pts = fox::clockwise(points).into_iter().map(|(x, y)| origin + egui::vec2(x, y) * scale).collect();
+        let pts = fox::clockwise(points)
+            .into_iter()
+            .map(|(x, y)| origin + egui::vec2(x, y) * scale)
+            .collect();
         egui::Shape::convex_polygon(pts, fill, Stroke::new(0.6, fill))
     };
     let (solid, holes) = fox::pieces();
@@ -300,19 +377,44 @@ fn fox_mark(ui: &mut egui::Ui, size: f32) {
 /// A sidebar entry: a square dot and the page's name; the current page sits on a raised fill.
 fn nav_button(ui: &mut egui::Ui, selected: bool, label: &str) -> egui::Response {
     let p = theme::palette(ui);
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label));
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 36.0), Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, label)
+    });
     let hovered = response.hovered() || response.has_focus();
     let painter = ui.painter();
     if selected {
-        painter.rect(rect, CornerRadius::same(6), p.surface_raised, Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
+        painter.rect(
+            rect,
+            CornerRadius::same(6),
+            p.surface_raised,
+            Stroke::new(1.0, p.line),
+            egui::StrokeKind::Inside,
+        );
     }
     if response.has_focus() {
-        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(2.0, p.accent), egui::StrokeKind::Inside);
+        painter.rect_stroke(
+            rect,
+            CornerRadius::same(6),
+            Stroke::new(2.0, p.accent),
+            egui::StrokeKind::Inside,
+        );
     }
-    let dot = egui::Rect::from_center_size(egui::pos2(rect.left() + 18.0, rect.center().y), egui::vec2(8.0, 8.0));
-    painter.rect_filled(dot, CornerRadius::same(2), if selected { p.accent } else { p.control_line });
-    let color = if selected || hovered { p.text_strong } else { p.text };
+    let dot = egui::Rect::from_center_size(
+        egui::pos2(rect.left() + 18.0, rect.center().y),
+        egui::vec2(8.0, 8.0),
+    );
+    painter.rect_filled(
+        dot,
+        CornerRadius::same(2),
+        if selected { p.accent } else { p.control_line },
+    );
+    let color = if selected || hovered {
+        p.text_strong
+    } else {
+        p.text
+    };
     painter.text(
         egui::pos2(rect.left() + 32.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -361,7 +463,12 @@ pub struct Chip {
 /// The strip's chips: left (connection, firmware), right (link, battery), the Bluetooth profile,
 /// and a plain-word warning when unplugging would leave the keyboard unable to type.
 pub fn chips(s: &StripState) -> Vec<Chip> {
-    let chip = |tone, name, text: String| Chip { tone: Some(tone), name, text, hover: None };
+    let chip = |tone, name, text: String| Chip {
+        tone: Some(tone),
+        name,
+        text,
+        hover: None,
+    };
     if !s.keyboard {
         return vec![
             chip(Tone::Off, "Left", "not connected".into()),
@@ -376,13 +483,25 @@ pub fn chips(s: &StripState) -> Vec<Chip> {
     };
     out.push(match &s.left_build {
         Some(Ok(build)) => chip(Tone::Ok, "Left", format!("{on} · {build}")),
-        Some(Err(e)) => Chip { hover: Some(e.clone()), ..chip(Tone::Warn, "Left", format!("{on} · firmware unknown")) },
+        Some(Err(e)) => Chip {
+            hover: Some(e.clone()),
+            ..chip(Tone::Warn, "Left", format!("{on} · firmware unknown"))
+        },
         None => chip(Tone::Ok, "Left", on.to_string()),
     });
-    let battery = s.right_battery.map(|b| format!(" · battery {b}%")).unwrap_or_default();
+    let battery = s
+        .right_battery
+        .map(|b| format!(" · battery {b}%"))
+        .unwrap_or_default();
     out.push(match &s.right_build {
-        Some(Ok(build)) => Chip { hover: Some(build.clone()), ..chip(Tone::Ok, "Right", format!("linked{battery}")) },
-        Some(Err(e)) => Chip { hover: Some(e.clone()), ..chip(Tone::Warn, "Right", format!("no reply yet{battery}")) },
+        Some(Ok(build)) => Chip {
+            hover: Some(build.clone()),
+            ..chip(Tone::Ok, "Right", format!("linked{battery}"))
+        },
+        Some(Err(e)) => Chip {
+            hover: Some(e.clone()),
+            ..chip(Tone::Warn, "Right", format!("no reply yet{battery}"))
+        },
         None => chip(Tone::Off, "Right", format!("asking…{battery}")),
     });
     if let Some(active) = s.profile {
@@ -391,7 +510,12 @@ pub fn chips(s: &StripState) -> Vec<Chip> {
             Some(_) => " · another PC",
             None => "",
         };
-        out.push(Chip { tone: None, name: "", text: format!("Bluetooth profile {}{whose}", active.saturating_add(1)), hover: None });
+        out.push(Chip {
+            tone: None,
+            name: "",
+            text: format!("Bluetooth profile {}{whose}", active.saturating_add(1)),
+            hover: None,
+        });
     }
     if let Some(fix) = &s.unplug_warning {
         out.push(Chip {
@@ -425,7 +549,9 @@ pub fn strip_state(ctx: &egui::Context) -> StripState {
     let link = super::connection::summary(ctx);
     let (left_build, right_build) = match super::keyboard_settings::firmware(ctx) {
         super::keyboard_settings::Firmware::Known { left, right } => {
-            let text = |r: Result<digitalis::protocol::BuildInfo, String>| r.map(|b| format!("{} · {}", b.version, b.sha));
+            let text = |r: Result<digitalis::protocol::BuildInfo, String>| {
+                r.map(|b| format!("{} · {}", b.version, b.sha))
+            };
             (Some(text(left)), Some(text(right)))
         }
         _ => (None, None),
@@ -478,25 +604,51 @@ fn chip(ui: &mut egui::Ui, c: &Chip) {
     let mut job = egui::text::LayoutJob::default();
     let font = theme::body(13.0);
     if !c.name.is_empty() {
-        job.append(c.name, 0.0, egui::TextFormat::simple(font.clone(), p.text_strong));
+        job.append(
+            c.name,
+            0.0,
+            egui::TextFormat::simple(font.clone(), p.text_strong),
+        );
     }
-    let color = if warn && c.name.is_empty() { p.warn } else { p.text };
-    job.append(&c.text, if c.name.is_empty() { 0.0 } else { 6.0 }, egui::TextFormat::simple(font, color));
+    let color = if warn && c.name.is_empty() {
+        p.warn
+    } else {
+        p.text
+    };
+    job.append(
+        &c.text,
+        if c.name.is_empty() { 0.0 } else { 6.0 },
+        egui::TextFormat::simple(font, color),
+    );
     let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
     let pad = egui::vec2(10.0, 6.0);
     let dot = if c.tone.is_some() { 14.0 } else { 0.0 };
     let size = egui::vec2(dot + galley.size().x, galley.size().y) + pad * 2.0;
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
-    let line = if warn { p.warn.gamma_multiply(0.45) } else { p.line };
+    let line = if warn {
+        p.warn.gamma_multiply(0.45)
+    } else {
+        p.line
+    };
     let painter = ui.painter();
-    painter.rect(rect, CornerRadius::same(6), p.surface, Stroke::new(1.0, line), egui::StrokeKind::Inside);
+    painter.rect(
+        rect,
+        CornerRadius::same(6),
+        p.surface,
+        Stroke::new(1.0, line),
+        egui::StrokeKind::Inside,
+    );
     if let Some(tone) = c.tone {
         let color = match tone {
             Tone::Ok => p.ok,
             Tone::Warn => p.warn,
             Tone::Off => p.muted,
         };
-        painter.circle_filled(egui::pos2(rect.left() + pad.x + 4.0, rect.center().y), 4.0, color);
+        painter.circle_filled(
+            egui::pos2(rect.left() + pad.x + 4.0, rect.center().y),
+            4.0,
+            color,
+        );
     }
     painter.galley(rect.min + pad + egui::vec2(dot, 0.0), galley, p.text);
     if let Some(h) = &c.hover {
@@ -517,14 +669,27 @@ mod tests {
     /// The sidebar's fox is the one the app icon and tray glyphs are drawn from.
     #[test]
     fn the_fox_matches_app_icons_py() {
-        let py = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/app_icons.py")).expect("app_icons.py");
+        let py = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scripts/app_icons.py"
+        ))
+        .expect("app_icons.py");
         let fmt = |name: &str, pts: &[(f32, f32)]| {
             let inner: Vec<String> = pts.iter().map(|(x, y)| format!("({x}, {y})")).collect();
             format!("{name} = [{}]", inner.join(", "))
         };
-        for (name, pts) in [("EAR", &fox::EAR[..]), ("FACE", &fox::FACE[..]), ("CHEEK", &fox::CHEEK[..]), ("MASK", &fox::MASK[..]), ("NOSE", &fox::NOSE[..])] {
+        for (name, pts) in [
+            ("EAR", &fox::EAR[..]),
+            ("FACE", &fox::FACE[..]),
+            ("CHEEK", &fox::CHEEK[..]),
+            ("MASK", &fox::MASK[..]),
+            ("NOSE", &fox::NOSE[..]),
+        ] {
             let line = fmt(name, pts);
-            assert!(py.lines().any(|l| l.trim() == line), "{line} not in app_icons.py");
+            assert!(
+                py.lines().any(|l| l.trim() == line),
+                "{line} not in app_icons.py"
+            );
         }
         assert!(py.contains("FW, FH = 680.0, 760.0"));
     }
@@ -535,7 +700,9 @@ mod tests {
         for piece in solid.into_iter().chain(holes) {
             let cw = fox::clockwise(piece.clone());
             let n = cw.len();
-            let area: f32 = (0..n).map(|i| cw[i].0 * cw[(i + 1) % n].1 - cw[(i + 1) % n].0 * cw[i].1).sum();
+            let area: f32 = (0..n)
+                .map(|i| cw[i].0 * cw[(i + 1) % n].1 - cw[(i + 1) % n].0 * cw[i].1)
+                .sum();
             assert!(area > 0.0, "{piece:?}");
         }
     }
@@ -617,7 +784,12 @@ mod tests {
         assert!(!shows("Profile") && !shows("Theme and updates") && !shows("About"));
         COLUMN.set(Some(1));
         assert!(!shows("Overlay Appearance"));
-        assert!(shows("Profile") && shows("Theme and updates") && shows("Other keyboards (VIA)") && shows("About"));
+        assert!(
+            shows("Profile")
+                && shows("Theme and updates")
+                && shows("Other keyboards (VIA)")
+                && shows("About")
+        );
         assert!(!shows("Lights"), "still only this page's sections");
         drop(Showing);
         assert_eq!((SHOWING.get(), COLUMN.get()), (None, None));
@@ -625,12 +797,18 @@ mod tests {
 
     #[test]
     fn the_page_is_stored_by_name() {
-        let text = toml::to_string(&WindowSettings { page: Page::Screens }).unwrap();
+        let text = toml::to_string(&WindowSettings {
+            page: Page::Screens,
+        })
+        .unwrap();
         assert_eq!(text.trim(), "page = \"screens\"");
         let back: WindowSettings = toml::from_str("").unwrap();
         assert_eq!(back.page, Page::Keyboard);
         let unknown: Result<WindowSettings, _> = toml::from_str("page = \"lab\"");
-        assert!(unknown.is_err(), "an unknown page fails the load, and try_load falls back");
+        assert!(
+            unknown.is_err(),
+            "an unknown page fails the load, and try_load falls back"
+        );
     }
 
     #[test]
@@ -646,7 +824,9 @@ mod tests {
     fn strip_without_a_keyboard() {
         let c = chips(&StripState::default());
         assert_eq!(c.len(), 2);
-        assert!(c.iter().all(|c| c.tone == Some(Tone::Off) && c.text == "not connected"));
+        assert!(c
+            .iter()
+            .all(|c| c.tone == Some(Tone::Off) && c.text == "not connected"));
     }
 
     #[test]
@@ -663,7 +843,10 @@ mod tests {
         };
         let c = chips(&s);
         assert_eq!(c[0].text, "on USB · 0.1.0 · e255d32");
-        assert_eq!((c[1].tone, c[1].text.as_str()), (Some(Tone::Warn), "no reply yet · battery 61%"));
+        assert_eq!(
+            (c[1].tone, c[1].text.as_str()),
+            (Some(Tone::Warn), "no reply yet · battery 61%")
+        );
         assert_eq!(c[2].text, "Bluetooth profile 1 · this PC");
         assert_eq!(c.len(), 3, "no warning while it's safe to unplug");
     }

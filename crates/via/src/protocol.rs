@@ -58,7 +58,13 @@ const WRITE: &[u8] = &[DYNAMIC_KEYMAP_SET_KEYCODE, CUSTOM_SET_VALUE, CUSTOM_SAVE
 /// Never sent, whatever the caller asks: resets, the bootloader, and Keychron's Bluetooth
 /// DFU/factory-test namespace (0xAA-0xAB, which includes a bootloader jump). Everything not on
 /// the read or write lists is refused too; this list is for the error message and the tests.
-pub const FORBIDDEN: &[u8] = &[DYNAMIC_KEYMAP_RESET, EEPROM_RESET, BOOTLOADER_JUMP, 0xAA, 0xAB];
+pub const FORBIDDEN: &[u8] = &[
+    DYNAMIC_KEYMAP_RESET,
+    EEPROM_RESET,
+    BOOTLOADER_JUMP,
+    0xAA,
+    0xAB,
+];
 
 /// A connection that exchanges one report for its reply.
 pub trait Transport: Send + Sync {
@@ -75,12 +81,18 @@ pub struct Guarded<T> {
 impl<T: Transport> Guarded<T> {
     /// Read-only: the safe default (the K5 Pro is the user's daily keyboard).
     pub fn read_only(inner: T) -> Self {
-        Guarded { inner, writes: false }
+        Guarded {
+            inner,
+            writes: false,
+        }
     }
 
     /// Also allows keycode and lighting writes; still never resets or the bootloader.
     pub fn with_writes(inner: T) -> Self {
-        Guarded { inner, writes: true }
+        Guarded {
+            inner,
+            writes: true,
+        }
     }
 
     pub fn writes(&self) -> bool {
@@ -93,10 +105,12 @@ impl<T: Transport> Guarded<T> {
         if command == GET_KEYBOARD_VALUE {
             return match bytes.get(1).copied() {
                 Some(keyboard_value::UPTIME | keyboard_value::LAYOUT_OPTIONS) => Ok(()),
-                Some(keyboard_value::SWITCH_MATRIX_STATE) => {
-                    Err(DeviceError::Denied("the switch matrix shows keys as they're pressed; it's never read".into()))
-                }
-                other => Err(DeviceError::Denied(format!("keyboard value {other:?} isn't allowed"))),
+                Some(keyboard_value::SWITCH_MATRIX_STATE) => Err(DeviceError::Denied(
+                    "the switch matrix shows keys as they're pressed; it's never read".into(),
+                )),
+                other => Err(DeviceError::Denied(format!(
+                    "keyboard value {other:?} isn't allowed"
+                ))),
             };
         }
         if READ.contains(&command) || (self.writes && WRITE.contains(&command)) {
@@ -105,7 +119,8 @@ impl<T: Transport> Guarded<T> {
         Err(DeviceError::Denied(if FORBIDDEN.contains(&command) {
             format!("VIA command {command:#04x} (reset, bootloader or factory) is never sent")
         } else if command == VIAL_PREFIX {
-            "Vial commands (unlock, settings) aren't sent; Foxglove reads Vial boards through VIA".into()
+            "Vial commands (unlock, settings) aren't sent; Foxglove reads Vial boards through VIA"
+                .into()
         } else if WRITE.contains(&command) {
             format!("VIA command {command:#04x} writes; this keyboard is open read-only")
         } else {
@@ -124,7 +139,9 @@ impl<T: Transport> Guarded<T> {
         match reply[0] {
             c if c == command => Ok(reply),
             UNHANDLED => Err(DeviceError::Unsupported),
-            other => Err(DeviceError::Backend(format!("reply {other:#04x} to command {command:#04x}"))),
+            other => Err(DeviceError::Backend(format!(
+                "reply {other:#04x} to command {command:#04x}"
+            ))),
         }
     }
 }
@@ -146,7 +163,10 @@ mod tests {
     fn forbidden_commands_never_reach_the_keyboard() {
         let g = Guarded::with_writes(Echo(Mutex::default()));
         for &c in FORBIDDEN {
-            assert!(matches!(g.send(&[c]), Err(DeviceError::Denied(_))), "{c:#04x}");
+            assert!(
+                matches!(g.send(&[c]), Err(DeviceError::Denied(_))),
+                "{c:#04x}"
+            );
         }
         for c in 0x0C..=0xFE {
             if !READ.contains(&c) && !WRITE.contains(&c) {
@@ -155,7 +175,9 @@ mod tests {
         }
         // Vial: unlock (and everything else) never goes out.
         for sub in 0..=0x20 {
-            assert!(matches!(g.send(&[VIAL_PREFIX, sub]), Err(DeviceError::Denied(m)) if m.contains("Vial")));
+            assert!(
+                matches!(g.send(&[VIAL_PREFIX, sub]), Err(DeviceError::Denied(m)) if m.contains("Vial"))
+            );
         }
         assert!(g.inner.0.lock().unwrap().is_empty(), "nothing was sent");
     }
@@ -163,21 +185,39 @@ mod tests {
     #[test]
     fn keyboard_values_are_read_but_never_the_switch_matrix() {
         let g = Guarded::read_only(Echo(Mutex::default()));
-        assert!(g.send(&[GET_KEYBOARD_VALUE, keyboard_value::UPTIME]).is_ok());
-        assert!(g.send(&[GET_KEYBOARD_VALUE, keyboard_value::LAYOUT_OPTIONS]).is_ok());
-        assert!(matches!(g.send(&[GET_KEYBOARD_VALUE, keyboard_value::SWITCH_MATRIX_STATE]), Err(DeviceError::Denied(_))));
+        assert!(g
+            .send(&[GET_KEYBOARD_VALUE, keyboard_value::UPTIME])
+            .is_ok());
+        assert!(g
+            .send(&[GET_KEYBOARD_VALUE, keyboard_value::LAYOUT_OPTIONS])
+            .is_ok());
+        assert!(matches!(
+            g.send(&[GET_KEYBOARD_VALUE, keyboard_value::SWITCH_MATRIX_STATE]),
+            Err(DeviceError::Denied(_))
+        ));
         assert!(g.send(&[GET_KEYBOARD_VALUE, 0x42]).is_err());
         assert!(g.send(&[GET_KEYBOARD_VALUE]).is_err());
-        assert!(g.send(&[SET_KEYBOARD_VALUE, keyboard_value::LAYOUT_OPTIONS]).is_err());
-        assert_eq!(*g.inner.0.lock().unwrap(), vec![GET_KEYBOARD_VALUE, GET_KEYBOARD_VALUE]);
+        assert!(g
+            .send(&[SET_KEYBOARD_VALUE, keyboard_value::LAYOUT_OPTIONS])
+            .is_err());
+        assert_eq!(
+            *g.inner.0.lock().unwrap(),
+            vec![GET_KEYBOARD_VALUE, GET_KEYBOARD_VALUE]
+        );
     }
 
     #[test]
     fn read_only_refuses_writes_but_reads() {
         let g = Guarded::read_only(Echo(Mutex::default()));
         assert!(g.send(&[GET_PROTOCOL_VERSION]).is_ok());
-        assert!(matches!(g.send(&[DYNAMIC_KEYMAP_SET_KEYCODE]), Err(DeviceError::Denied(_))));
-        assert!(matches!(g.send(&[CUSTOM_SAVE]), Err(DeviceError::Denied(_))));
+        assert!(matches!(
+            g.send(&[DYNAMIC_KEYMAP_SET_KEYCODE]),
+            Err(DeviceError::Denied(_))
+        ));
+        assert!(matches!(
+            g.send(&[CUSTOM_SAVE]),
+            Err(DeviceError::Denied(_))
+        ));
         assert_eq!(*g.inner.0.lock().unwrap(), vec![GET_PROTOCOL_VERSION]);
     }
 }

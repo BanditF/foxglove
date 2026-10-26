@@ -8,14 +8,31 @@ use std::sync::{
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeviceEvent {
     Connected,
-    Disconnected { reason: String },
-    LayerChanged { active: Vec<u8> },
-    Key { row: u16, col: u16, pressed: bool },
-    LightingChanged { state: LightingState },
-    Battery { part: String, percent: u8 },
+    Disconnected {
+        reason: String,
+    },
+    LayerChanged {
+        active: Vec<u8>,
+    },
+    Key {
+        row: u16,
+        col: u16,
+        pressed: bool,
+    },
+    LightingChanged {
+        state: LightingState,
+    },
+    Battery {
+        part: String,
+        percent: u8,
+    },
     /// How the keyboard talks to its host (#17): `output` "USB" or "BLE", the 0-based
     /// Bluetooth profile, and whether that profile is connected.
-    Link { output: String, profile: u8, connected: bool },
+    Link {
+        output: String,
+        profile: u8,
+        connected: bool,
+    },
 }
 
 /// A device identity paired with its event.
@@ -103,7 +120,10 @@ impl EventSink {
             DeviceEvent::Disconnected { reason } => {
                 // Layers, battery and lighting are unknown until the device is back.
                 let prefix = format!("device.{}.", self.device);
-                let keep = [format!("{prefix}connected"), format!("{prefix}disconnect_reason")];
+                let keep = [
+                    format!("{prefix}connected"),
+                    format!("{prefix}disconnect_reason"),
+                ];
                 let keep: Vec<&str> = keep.iter().map(String::as_str).collect();
                 self.bus.facts.remove_prefix(&prefix, &keep);
                 self.publish_fact("connected", Value::Bool(false));
@@ -115,7 +135,11 @@ impl EventSink {
             DeviceEvent::Battery { part, percent } => {
                 self.publish_fact(&format!("battery.{part}"), Value::Int((*percent).into()))
             }
-            DeviceEvent::Link { output, profile, connected } => {
+            DeviceEvent::Link {
+                output,
+                profile,
+                connected,
+            } => {
                 self.publish_fact("link.output", Value::Text(output.clone()));
                 self.publish_fact("link.profile", Value::Int((*profile).into()));
                 self.publish_fact("link.connected", Value::Bool(*connected));
@@ -176,13 +200,21 @@ mod tests {
         let sink = bus.sink(id.clone());
         sink.emit(DeviceEvent::Connected);
         sink.emit(DeviceEvent::LayerChanged { active: vec![0, 2] });
-        sink.emit(DeviceEvent::Battery { part: "right".into(), percent: 50 });
-        sink.emit(DeviceEvent::Disconnected { reason: "unplugged".into() });
+        sink.emit(DeviceEvent::Battery {
+            part: "right".into(),
+            percent: 50,
+        });
+        sink.emit(DeviceEvent::Disconnected {
+            reason: "unplugged".into(),
+        });
         let fact = |name: &str| bus.facts().get(&format!("device.{id}.{name}"));
         assert_eq!(fact("layers"), None);
         assert_eq!(fact("battery.right"), None);
         assert_eq!(fact("connected"), Some(Value::Bool(false)));
-        assert_eq!(fact("disconnect_reason"), Some(Value::Text("unplugged".into())));
+        assert_eq!(
+            fact("disconnect_reason"),
+            Some(Value::Text("unplugged".into()))
+        );
         sink.emit(DeviceEvent::Connected);
         assert_eq!(fact("disconnect_reason"), None);
     }

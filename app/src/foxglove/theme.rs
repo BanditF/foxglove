@@ -158,14 +158,25 @@ pub fn mono(size: f32) -> FontId {
 /// Adds the three fonts as their own families. Each falls back to egui's fonts (and the
 /// Phosphor icons, when they're already in `Proportional`) for glyphs it lacks.
 pub fn add_fonts(fonts: &mut egui::FontDefinitions) {
-    let proportional = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
-    let monospace = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
+    let proportional = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    let monospace = fonts
+        .families
+        .get(&FontFamily::Monospace)
+        .cloned()
+        .unwrap_or_default();
     for (name, bytes, fallback) in [
         (HUD, HUD_FONT, &proportional),
         (BODY, BODY_FONT, &proportional),
         (MONO, MONO_FONT, &monospace),
     ] {
-        fonts.font_data.insert(name.to_owned(), std::sync::Arc::new(egui::FontData::from_static(bytes)));
+        fonts.font_data.insert(
+            name.to_owned(),
+            std::sync::Arc::new(egui::FontData::from_static(bytes)),
+        );
         let mut list = vec![name.to_owned()];
         list.extend(fallback.iter().cloned());
         if !list.iter().any(|f| f == "phosphor") && fonts.font_data.contains_key("phosphor") {
@@ -177,7 +188,11 @@ pub fn add_fonts(fonts: &mut egui::FontDefinitions) {
 
 /// egui `Visuals` for a palette: cards on graphite, orange for focus, selection and sliders.
 pub fn visuals(p: &Palette) -> egui::Visuals {
-    let mut v = if p.dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+    let mut v = if p.dark {
+        egui::Visuals::dark()
+    } else {
+        egui::Visuals::light()
+    };
     let r6 = CornerRadius::same(6);
     let r8 = CornerRadius::same(8);
 
@@ -195,8 +210,18 @@ pub fn visuals(p: &Palette) -> egui::Visuals {
     v.window_corner_radius = r8;
     v.menu_corner_radius = r8;
     let shadow = Color32::from_black_alpha(if p.dark { 140 } else { 40 });
-    v.window_shadow = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: shadow };
-    v.popup_shadow = egui::Shadow { offset: [0, 4], blur: 12, spread: 0, color: shadow };
+    v.window_shadow = egui::Shadow {
+        offset: [0, 8],
+        blur: 24,
+        spread: 0,
+        color: shadow,
+    };
+    v.popup_shadow = egui::Shadow {
+        offset: [0, 4],
+        blur: 12,
+        spread: 0,
+        color: shadow,
+    };
     v.selection.bg_fill = p.accent;
     v.selection.stroke = Stroke::new(1.0, p.on_accent);
     v.text_cursor.stroke = Stroke::new(2.0, p.accent);
@@ -294,13 +319,17 @@ pub fn apply(ctx: &egui::Context) {
 
 /// A section or card heading in the HUD face.
 pub fn heading(ui: &egui::Ui, text: &str) -> RichText {
-    RichText::new(text).font(hud(15.0)).color(palette(ui).text_strong)
+    RichText::new(text)
+        .font(hud(15.0))
+        .color(palette(ui).text_strong)
 }
 
 /// A small upper-case label (`EFFECT`, `LIBRARY`) in the mono face.
 #[allow(dead_code)] // for the pages that follow (#385 on)
 pub fn caps_label(ui: &egui::Ui, text: &str) -> RichText {
-    RichText::new(text.to_uppercase()).font(mono(11.0)).color(palette(ui).muted)
+    RichText::new(text.to_uppercase())
+        .font(mono(11.0))
+        .color(palette(ui).muted)
 }
 
 /// A card: a surface with a line around it.
@@ -336,7 +365,9 @@ pub fn pill_button(ui: &egui::Ui, selected: bool, text: &str) -> egui::Button<'s
 #[allow(dead_code)] // for the pages that follow (#385 on)
 pub fn primary_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
     let p = palette(ui);
-    egui::Button::new(RichText::new(text.to_owned()).color(p.on_accent)).fill(p.accent).stroke(Stroke::new(1.0, p.accent))
+    egui::Button::new(RichText::new(text.to_owned()).color(p.on_accent))
+        .fill(p.accent)
+        .stroke(Stroke::new(1.0, p.accent))
 }
 
 /// The window theme picker, saved in the store's `[ui]` section.
@@ -348,7 +379,11 @@ pub fn picker(ui: &mut egui::Ui) {
     };
     ui.horizontal_wrapped(|ui| {
         ui.label("Window theme");
-        for (choice, label) in [(Choice::Dark, "Dark"), (Choice::Light, "Light"), (Choice::System, "System")] {
+        for (choice, label) in [
+            (Choice::Dark, "Dark"),
+            (Choice::Light, "Light"),
+            (Choice::System, "System"),
+        ] {
             if pill(ui, current == choice, label).clicked() && current != choice {
                 ui.ctx().set_theme(choice.preference());
                 if let Err(e) = super::store::save("ui", &UiSettings { theme: choice }) {
@@ -384,7 +419,11 @@ mod tests {
         unique.dedup();
         assert_eq!(unique.len(), dark.len());
         // The palette is `dark` plus 4-byte colours; tokens() must list each colour.
-        assert_eq!(dark.len(), (std::mem::size_of::<Palette>() - 1) / 4, "tokens() misses a field");
+        assert_eq!(
+            dark.len(),
+            (std::mem::size_of::<Palette>() - 1) / 4,
+            "tokens() misses a field"
+        );
         for (name, color) in dark.iter().chain(&light) {
             assert_eq!(color.a(), 255, "{name} must be opaque");
         }
@@ -406,7 +445,11 @@ mod tests {
         let l = |c: Color32| {
             let ch = |v: u8| {
                 let v = v as f32 / 255.0;
-                if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+                if v <= 0.03928 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
             };
             0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
         };
@@ -423,9 +466,21 @@ mod tests {
                     assert!(c >= 4.5, "{name} on {bg:?} (dark {}): {c:.2}", p.dark);
                 }
             }
-            assert!(contrast(p.accent, p.surface) >= 4.5, "links (dark {})", p.dark);
-            assert!(contrast(p.on_accent, p.accent) >= 4.5, "text on orange (dark {})", p.dark);
-            assert!(contrast(p.selected_text, p.selected_fill) >= 4.5, "pills (dark {})", p.dark);
+            assert!(
+                contrast(p.accent, p.surface) >= 4.5,
+                "links (dark {})",
+                p.dark
+            );
+            assert!(
+                contrast(p.on_accent, p.accent) >= 4.5,
+                "text on orange (dark {})",
+                p.dark
+            );
+            assert!(
+                contrast(p.selected_text, p.selected_fill) >= 4.5,
+                "pills (dark {})",
+                p.dark
+            );
         }
     }
 
@@ -443,7 +498,10 @@ mod tests {
 
     #[test]
     fn the_choice_is_stored_by_name() {
-        let text = toml::to_string(&UiSettings { theme: Choice::System }).unwrap();
+        let text = toml::to_string(&UiSettings {
+            theme: Choice::System,
+        })
+        .unwrap();
         assert_eq!(text.trim(), "theme = \"system\"");
         let back: UiSettings = toml::from_str("").unwrap();
         assert_eq!(back.theme, Choice::Dark);
@@ -453,10 +511,16 @@ mod tests {
     fn styles_use_the_new_fonts() {
         let ctx = egui::Context::default();
         apply_choice(&ctx, Choice::Light);
-        assert_eq!(ctx.options(|o| o.theme_preference), egui::ThemePreference::Light);
+        assert_eq!(
+            ctx.options(|o| o.theme_preference),
+            egui::ThemePreference::Light
+        );
         let style = ctx.style_of(egui::Theme::Dark);
         assert_eq!(style.text_styles[&TextStyle::Heading].family, family(HUD));
         assert_eq!(style.visuals.selection.bg_fill, DARK.accent);
-        assert_eq!(ctx.style_of(egui::Theme::Light).visuals.window_fill, LIGHT.ground);
+        assert_eq!(
+            ctx.style_of(egui::Theme::Light).visuals.window_fill,
+            LIGHT.ground
+        );
     }
 }

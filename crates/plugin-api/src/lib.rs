@@ -26,7 +26,10 @@ pub struct Version {
 impl Version {
     pub fn parse(text: &str) -> Option<Version> {
         let (major, minor) = text.split_once('.')?;
-        Some(Version { major: major.parse().ok()?, minor: minor.parse().ok()? })
+        Some(Version {
+            major: major.parse().ok()?,
+            minor: minor.parse().ok()?,
+        })
     }
 
     /// Whether a client built for `self` can talk to an app speaking `app`: same major, and the
@@ -70,7 +73,9 @@ mod tests {
         if std::env::var_os("UPDATE_SCHEMA").is_some() {
             std::fs::write(&path, &generated).unwrap();
         }
-        let checked_in = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+        let checked_in = std::fs::read_to_string(&path)
+            .unwrap_or_default()
+            .replace("\r\n", "\n");
         assert!(
             checked_in == generated,
             "schema/v1.json is out of date: run UPDATE_SCHEMA=1 cargo test -p foxglove-plugin-api"

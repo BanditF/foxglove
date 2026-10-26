@@ -110,7 +110,14 @@ mod tests {
         let b = build(*CID, 3, 9, 0, &[10, 20, 30, 40]);
         assert_eq!(
             parse(&b),
-            Some(Packet { cid: *CID, universe: 3, sequence: 9, terminated: false, preview: false, channels: &[10, 20, 30, 40] })
+            Some(Packet {
+                cid: *CID,
+                universe: 3,
+                sequence: 9,
+                terminated: false,
+                preview: false,
+                channels: &[10, 20, 30, 40]
+            })
         );
         let b = build(*CID, 1, 0, STREAM_TERMINATED, &[0; 3]);
         let p = parse(&b).unwrap();

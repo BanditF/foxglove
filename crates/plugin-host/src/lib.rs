@@ -13,11 +13,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use foxglove_plugin_api::methods::{self, ClientInfo, Fact, InitializeParams, InitializeResult, Kind};
+use foxglove_devices::facts::{Facts, Value as DeviceValue};
+use foxglove_plugin_api::methods::{
+    self, ClientInfo, Fact, InitializeParams, InitializeResult, Kind,
+};
 use foxglove_plugin_api::permission::{Grant, Permission};
 use foxglove_plugin_api::rpc::{code, Error, Id, Request, Response, MAX_LINE};
 use foxglove_plugin_api::{Version, API_VERSION};
-use foxglove_devices::facts::{Facts, Value as DeviceValue};
 use serde_json::{json, Value};
 
 /// Device methods, provided by the app (through the device layer). `method` has already passed the
@@ -25,7 +27,10 @@ use serde_json::{json, Value};
 pub trait Devices: Send + Sync {
     fn call(&self, method: &str, params: Value) -> Result<Value, Error> {
         let _ = params;
-        Err(error(code::UNSUPPORTED, format!("{method} is not available yet")))
+        Err(error(
+            code::UNSUPPORTED,
+            format!("{method} is not available yet"),
+        ))
     }
 
     /// Like [`Devices::call`], knowing which connection asked (for what ends with it, such as
@@ -42,12 +47,17 @@ pub trait Devices: Send + Sync {
 }
 
 /// Which plugin each open connection is, by connection number (tools aren't listed).
-static CONN_PLUGINS: Mutex<std::collections::BTreeMap<u64, String>> = Mutex::new(std::collections::BTreeMap::new());
+static CONN_PLUGINS: Mutex<std::collections::BTreeMap<u64, String>> =
+    Mutex::new(std::collections::BTreeMap::new());
 
 /// The plugin an open connection belongs to, for the app's diagnostics; `None` for a tool or a
 /// closed connection.
 pub fn plugin_of(conn: u64) -> Option<String> {
-    CONN_PLUGINS.lock().unwrap_or_else(|e| e.into_inner()).get(&conn).cloned()
+    CONN_PLUGINS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&conn)
+        .cloned()
 }
 
 /// Each connection's number, for [`Devices::call_from`] and [`Devices::closed`].
@@ -87,12 +97,19 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { per_second: 50.0, burst: 100.0 }
+        Limits {
+            per_second: 50.0,
+            burst: 100.0,
+        }
     }
 }
 
 fn error(code: i32, message: impl Into<String>) -> Error {
-    Error { code, message: message.into(), data: None }
+    Error {
+        code,
+        message: message.into(),
+        data: None,
+    }
 }
 
 fn denied(what: impl std::fmt::Display) -> Error {
@@ -105,7 +122,9 @@ fn to_fact(v: DeviceValue) -> Fact {
         DeviceValue::Int(i) => Fact::Int(i),
         DeviceValue::Float(f) => Fact::Float(f),
         DeviceValue::Text(t) => Fact::Text(t),
-        DeviceValue::Bytes(b) => Fact::Bytes { base64: STANDARD.encode(b) },
+        DeviceValue::Bytes(b) => Fact::Bytes {
+            base64: STANDARD.encode(b),
+        },
     }
 }
 
@@ -116,7 +135,9 @@ fn from_fact(f: Fact) -> Result<DeviceValue, Error> {
         Fact::Float(f) => DeviceValue::Float(f),
         Fact::Text(t) => DeviceValue::Text(t),
         Fact::Bytes { base64 } => DeviceValue::Bytes(
-            STANDARD.decode(base64).map_err(|e| error(code::INVALID_PARAMS, format!("bad base64: {e}")))?,
+            STANDARD
+                .decode(base64)
+                .map_err(|e| error(code::INVALID_PARAMS, format!("bad base64: {e}")))?,
         ),
     })
 }
@@ -148,7 +169,11 @@ struct Session {
 
 /// Serves one connection until the reader ends or a write fails. Messages are lines; events
 /// are written from other threads through the same writer, one whole line at a time.
-pub fn serve(reader: impl BufRead, writer: impl Write + Send + 'static, ctx: Context) -> std::io::Result<()> {
+pub fn serve(
+    reader: impl BufRead,
+    writer: impl Write + Send + 'static,
+    ctx: Context,
+) -> std::io::Result<()> {
     serve_with(reader, writer, ctx, None, |_| {})
 }
 
@@ -166,23 +191,32 @@ pub(crate) fn serve_with(
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let closed = Arc::new(AtomicBool::new(false));
     let writer_closed = closed.clone();
-    let writer_thread = std::thread::Builder::new().name("plugin-host-writer".into()).spawn(move || {
-        let mut w = writer;
-        for line in rx {
-            // The end of the connection: other senders (the plugin's event channel, the fact
-            // forwarder) may outlive it.
-            if line.is_empty() {
-                break;
+    let writer_thread = std::thread::Builder::new()
+        .name("plugin-host-writer".into())
+        .spawn(move || {
+            let mut w = writer;
+            for line in rx {
+                // The end of the connection: other senders (the plugin's event channel, the fact
+                // forwarder) may outlive it.
+                if line.is_empty() {
+                    break;
+                }
+                if w.write_all(line.as_bytes())
+                    .and_then(|()| w.write_all(b"\n"))
+                    .and_then(|()| w.flush())
+                    .is_err()
+                {
+                    writer_closed.store(true, Ordering::Relaxed);
+                    break;
+                }
             }
-            if w.write_all(line.as_bytes()).and_then(|()| w.write_all(b"\n")).and_then(|()| w.flush()).is_err() {
-                writer_closed.store(true, Ordering::Relaxed);
-                break;
-            }
-        }
-    })?;
+        })?;
 
     let mut session: Option<Session> = None;
-    let mut bucket = Bucket { tokens: ctx.limits.burst, at: Instant::now() };
+    let mut bucket = Bucket {
+        tokens: ctx.limits.burst,
+        at: Instant::now(),
+    };
     let mut lines = reader.lines();
     while !closed.load(Ordering::Relaxed) {
         let Some(line) = lines.next() else { break };
@@ -191,14 +225,21 @@ pub(crate) fn serve_with(
             continue;
         }
         let reply = if line.len() > MAX_LINE {
-            Some(Response::error(Id::Number(0), code::INVALID_REQUEST, "line too long"))
+            Some(Response::error(
+                Id::Number(0),
+                code::INVALID_REQUEST,
+                "line too long",
+            ))
         } else {
             let reply = handle(&line, &ctx, &mut session, &mut bucket, &out, &closed);
             if let Some(s) = session.as_mut().filter(|s| s.conn == 0) {
                 s.plugin = plugin.clone();
                 s.conn = conn;
                 if let Some(id) = &plugin {
-                    CONN_PLUGINS.lock().unwrap_or_else(|e| e.into_inner()).insert(conn, id.clone());
+                    CONN_PLUGINS
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(conn, id.clone());
                 }
             }
             reply
@@ -217,7 +258,10 @@ pub(crate) fn serve_with(
         }
     }
     ctx.devices.closed(conn);
-    CONN_PLUGINS.lock().unwrap_or_else(|e| e.into_inner()).remove(&conn);
+    CONN_PLUGINS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&conn);
     let forwarding = session.as_ref().is_some_and(|s| s.forwarding);
     let _ = out.send(String::new());
     drop(out);
@@ -239,14 +283,23 @@ fn handle(
 ) -> Option<Response> {
     let request: Request = match serde_json::from_str(line) {
         Ok(r) => r,
-        Err(e) => return Some(Response::error(Id::Number(0), code::PARSE_ERROR, e.to_string())),
+        Err(e) => {
+            return Some(Response::error(
+                Id::Number(0),
+                code::PARSE_ERROR,
+                e.to_string(),
+            ))
+        }
     };
     let id = request.id.clone();
     let result = dispatch(request, ctx, session, bucket, out, closed);
     // Notifications get no reply, not even an error.
     id.map(|id| match result {
         Ok(value) => Response::ok(id, value),
-        Err(e) => Response { outcome: foxglove_plugin_api::rpc::Outcome::Error(e), ..Response::ok(id, Value::Null) },
+        Err(e) => Response {
+            outcome: foxglove_plugin_api::rpc::Outcome::Error(e),
+            ..Response::ok(id, Value::Null)
+        },
     })
 }
 
@@ -259,7 +312,8 @@ fn dispatch(
     closed: &Arc<AtomicBool>,
 ) -> Result<Value, Error> {
     let now = Instant::now();
-    bucket.tokens = (bucket.tokens + now.duration_since(bucket.at).as_secs_f64() * ctx.limits.per_second)
+    bucket.tokens = (bucket.tokens
+        + now.duration_since(bucket.at).as_secs_f64() * ctx.limits.per_second)
         .min(ctx.limits.burst);
     bucket.at = now;
     if bucket.tokens < 1.0 {
@@ -275,7 +329,12 @@ fn dispatch(
     };
     let method = methods::find(&request.method)
         .filter(|m| m.kind == Kind::Call)
-        .ok_or_else(|| error(code::METHOD_NOT_FOUND, format!("no method {}", request.method)))?;
+        .ok_or_else(|| {
+            error(
+                code::METHOD_NOT_FOUND,
+                format!("no method {}", request.method),
+            )
+        })?;
     if let Some(p) = method.permission {
         let p = Permission::try_from(p.to_string()).expect("the method table's permissions parse");
         if !s.grant.has(&p) {
@@ -289,7 +348,9 @@ fn dispatch(
             if !s.grant.can_read_fact(&p.key) {
                 return Err(denied(format!("facts.read covering {}", p.key)));
             }
-            Ok(json!(methods::FactResult { value: ctx.facts.get(&p.key).map(to_fact) }))
+            Ok(json!(methods::FactResult {
+                value: ctx.facts.get(&p.key).map(to_fact)
+            }))
         }
         "facts.list" => {
             let p: methods::SubscribeParams = params(request.params)?;
@@ -300,7 +361,10 @@ fn dispatch(
                 .facts
                 .list(&p.pattern)
                 .into_iter()
-                .map(|(key, value)| methods::FactEntry { key, value: to_fact(value) })
+                .map(|(key, value)| methods::FactEntry {
+                    key,
+                    value: to_fact(value),
+                })
                 .collect();
             Ok(json!(methods::FactList { facts }))
         }
@@ -324,32 +388,56 @@ fn dispatch(
             }
             s.next_subscription += 1;
             let id = s.next_subscription;
-            s.subscriptions.lock().unwrap_or_else(|e| e.into_inner()).insert(id, p.pattern);
+            s.subscriptions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(id, p.pattern);
             if !s.forwarding {
                 s.forwarding = true;
-                forward(ctx.facts.clone(), s.subscriptions.clone(), out.clone(), closed.clone());
+                forward(
+                    ctx.facts.clone(),
+                    s.subscriptions.clone(),
+                    out.clone(),
+                    closed.clone(),
+                );
             }
             Ok(json!(methods::Subscription { subscription: id }))
         }
         "settings.get" => {
-            let plugin = s.plugin.as_deref().ok_or_else(|| denied("a plugin connection"))?;
-            Ok(json!(methods::SettingValues { values: settings_of(plugin) }))
+            let plugin = s
+                .plugin
+                .as_deref()
+                .ok_or_else(|| denied("a plugin connection"))?;
+            Ok(json!(methods::SettingValues {
+                values: settings_of(plugin)
+            }))
         }
         "apps.watch" => {
-            let plugin = s.plugin.as_deref().ok_or_else(|| denied("a plugin connection"))?;
+            let plugin = s
+                .plugin
+                .as_deref()
+                .ok_or_else(|| denied("a plugin connection"))?;
             let p: methods::AppsWatchParams = params(request.params)?;
             let exe = p.exe.to_ascii_lowercase();
             if !s.grant.has(&Permission::AppsWatch(exe.clone())) {
                 return Err(denied(format!("apps.watch:{exe}")));
             }
-            Ok(json!(methods::AppWindows { open: apps::watch(plugin, &exe), exe }))
+            Ok(json!(methods::AppWindows {
+                open: apps::watch(plugin, &exe),
+                exe
+            }))
         }
         "secrets.get" | "secrets.set" => {
-            let plugin = s.plugin.as_deref().ok_or_else(|| denied("a plugin connection"))?;
+            let plugin = s
+                .plugin
+                .as_deref()
+                .ok_or_else(|| denied("a plugin connection"))?;
             let failed = |e: String| error(code::INVALID_PARAMS, e);
             if method.name == "secrets.get" {
                 let p: methods::SecretName = params(request.params)?;
-                Ok(json!(methods::SecretValue { value: secrets::get(plugin, &p.name).map_err(failed)? }))
+                Ok(json!(methods::SecretValue {
+                    value: secrets::get(plugin, &p.name).map_err(failed)?
+                }))
             } else {
                 let p: methods::SetSecretParams = params(request.params)?;
                 secrets::set(plugin, &p.name, p.value.as_deref()).map_err(failed)?;
@@ -366,7 +454,9 @@ fn dispatch(
                 };
                 return Err(denied(need));
             }
-            Ok(json!(methods::NetStream { stream: s.net.open(&p, out.clone())? }))
+            Ok(json!(methods::NetStream {
+                stream: s.net.open(&p, out.clone())?
+            }))
         }
         "net.send" => {
             let p: methods::NetSendParams = params(request.params)?;
@@ -380,7 +470,10 @@ fn dispatch(
         }
         "facts.unsubscribe" => {
             let p: methods::Subscription = params(request.params)?;
-            s.subscriptions.lock().unwrap_or_else(|e| e.into_inner()).remove(&p.subscription);
+            s.subscriptions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&p.subscription);
             Ok(json!({}))
         }
         name => ctx.devices.call_from(s.conn, name, request.params),
@@ -392,17 +485,29 @@ fn initialize(p: Value, ctx: &Context, session: &mut Option<Session>) -> Result<
         return Err(error(code::INVALID_REQUEST, "already initialized"));
     }
     let p: InitializeParams = params(p)?;
-    let api = Version::parse(&p.api).ok_or_else(|| error(code::INVALID_PARAMS, "api must be major.minor"))?;
+    let api = Version::parse(&p.api)
+        .ok_or_else(|| error(code::INVALID_PARAMS, "api must be major.minor"))?;
     if !api.served_by(API_VERSION) {
-        return Err(error(code::VERSION, format!("this Foxglove speaks API {API_VERSION}; the client needs {api}")));
+        return Err(error(
+            code::VERSION,
+            format!("this Foxglove speaks API {API_VERSION}; the client needs {api}"),
+        ));
     }
     let granted = match &ctx.client {
         Client::Plugin(permissions) => permissions.clone(),
         // Secrets are kept per plugin, so a tool can't use them: it isn't asked about them, and
         // `granted` says what it can actually use.
         Client::Tool(approve) => {
-            let asked: Vec<Permission> = p.permissions.iter().filter(|p| **p != Permission::Secrets).cloned().collect();
-            approve(&p.client, &asked).into_iter().filter(|p| *p != Permission::Secrets).collect()
+            let asked: Vec<Permission> = p
+                .permissions
+                .iter()
+                .filter(|p| **p != Permission::Secrets)
+                .cloned()
+                .collect();
+            approve(&p.client, &asked)
+                .into_iter()
+                .filter(|p| *p != Permission::Secrets)
+                .collect()
         }
     };
     *session = Some(Session {
@@ -414,40 +519,54 @@ fn initialize(p: Value, ctx: &Context, session: &mut Option<Session>) -> Result<
         plugin: None,
         conn: 0,
     });
-    Ok(json!(InitializeResult { api: API_VERSION.to_string(), app: ctx.app_version.clone(), granted }))
+    Ok(json!(InitializeResult {
+        api: API_VERSION.to_string(),
+        app: ctx.app_version.clone(),
+        granted
+    }))
 }
 
 /// One thread per connection forwards fact changes to its subscriptions. It stops at the first
 /// change after the connection closes.
-fn forward(facts: Facts, subscriptions: Arc<Mutex<HashMap<u64, String>>>, out: Sender<String>, closed: Arc<AtomicBool>) {
+fn forward(
+    facts: Facts,
+    subscriptions: Arc<Mutex<HashMap<u64, String>>>,
+    out: Sender<String>,
+    closed: Arc<AtomicBool>,
+) {
     let changes = facts.subscribe("*");
-    let _ = std::thread::Builder::new().name("plugin-host-facts".into()).spawn(move || {
-        while let Ok(change) = changes.recv() {
-            if closed.load(Ordering::Relaxed) {
-                break;
-            }
-            let subs = subscriptions.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            for (id, pattern) in subs {
-                if foxglove_plugin_api::permission::key_matches(&pattern, &change.key) {
-                    let event = Request::notification(
-                        "facts.changed",
-                        json!(methods::FactChanged {
-                            subscription: id,
-                            key: change.key.clone(),
-                            value: change.value.clone().map(to_fact),
-                        }),
-                    );
-                    if out.send(serde_json::to_string(&event).unwrap()).is_err() {
-                        return;
+    let _ = std::thread::Builder::new()
+        .name("plugin-host-facts".into())
+        .spawn(move || {
+            while let Ok(change) = changes.recv() {
+                if closed.load(Ordering::Relaxed) {
+                    break;
+                }
+                let subs = subscriptions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                for (id, pattern) in subs {
+                    if foxglove_plugin_api::permission::key_matches(&pattern, &change.key) {
+                        let event = Request::notification(
+                            "facts.changed",
+                            json!(methods::FactChanged {
+                                subscription: id,
+                                key: change.key.clone(),
+                                value: change.value.clone().map(to_fact),
+                            }),
+                        );
+                        if out.send(serde_json::to_string(&event).unwrap()).is_err() {
+                            return;
+                        }
                     }
                 }
             }
-        }
-    });
+        });
 }
 
-mod net;
 pub mod apps;
+mod net;
 pub mod secrets;
 // The local API's named pipe is Windows-only; elsewhere it reports that (the app builds and
 // tests on Linux too).
@@ -485,7 +604,13 @@ fn settings_of(plugin: &str) -> serde_json::Map<String, Value> {
 
 /// The user changed a plugin's settings: tells it, if it's running.
 pub fn settings_changed(plugin: &str) -> bool {
-    notify(plugin, "settings.changed", json!(methods::SettingValues { values: settings_of(plugin) }))
+    notify(
+        plugin,
+        "settings.changed",
+        json!(methods::SettingValues {
+            values: settings_of(plugin)
+        }),
+    )
 }
 
 /// Each running plugin's event channel, by plugin id.
@@ -511,8 +636,11 @@ pub fn notify(plugin: &str, method: &str, params: Value) -> bool {
         return false;
     }
     let plugins = PLUGINS.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(out) = plugins.as_ref().and_then(|m| m.get(plugin)) else { return false };
-    out.send(serde_json::to_string(&Request::notification(method, params)).unwrap()).is_ok()
+    let Some(out) = plugins.as_ref().and_then(|m| m.get(plugin)) else {
+        return false;
+    };
+    out.send(serde_json::to_string(&Request::notification(method, params)).unwrap())
+        .is_ok()
 }
 pub mod runner;
 #[cfg(windows)]

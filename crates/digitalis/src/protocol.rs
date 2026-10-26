@@ -486,7 +486,12 @@ pub struct FirmwareVersion {
 
 impl FirmwareVersion {
     fn parse(b: &[u8]) -> Option<FirmwareVersion> {
-        (b[..4] != [0, 0, 0, 0]).then(|| FirmwareVersion { major: b[0], minor: b[1], patch: b[2], profile: b[3] })
+        (b[..4] != [0, 0, 0, 0]).then(|| FirmwareVersion {
+            major: b[0],
+            minor: b[1],
+            patch: b[2],
+            profile: b[3],
+        })
     }
 }
 
@@ -525,7 +530,12 @@ impl BuildInfo {
         let end = sha.iter().position(|&b| b == 0).unwrap_or(sha.len());
         Ok(BuildInfo {
             half: r[3],
-            version: FirmwareVersion { major: r[4], minor: r[5], patch: r[6], profile: r[7] },
+            version: FirmwareVersion {
+                major: r[4],
+                minor: r[5],
+                patch: r[6],
+                profile: r[7],
+            },
             sha: String::from_utf8_lossy(&sha[..end]).into_owned(),
         })
     }
@@ -699,7 +709,10 @@ mod tests {
             art_begin(0x1234, 0xAABBCCDD),
             [0xD6, 0x01, 0x34, 0x12, 0xDD, 0xCC, 0xBB, 0xAA]
         );
-        assert_eq!(art_data(0x0102, &[7, 8, 9]), [0xD6, 0x02, 0x02, 0x01, 3, 7, 8, 9]);
+        assert_eq!(
+            art_data(0x0102, &[7, 8, 9]),
+            [0xD6, 0x02, 0x02, 0x01, 3, 7, 8, 9]
+        );
         assert_eq!(art_commit(), [0xD6, 0x03]);
         assert_eq!(art_select(-1), [0xD6, 0x04, 0xFF]);
         assert_eq!(art_select(5), [0xD6, 0x04, 5]);
@@ -715,7 +728,11 @@ mod tests {
         r[..5].copy_from_slice(&[0xD7, 0x81, 1, 1, 2]);
         assert_eq!(
             RgbSync::parse(&r),
-            RgbSync { sync: Some(true), left_on: true, right_link: 2 }
+            RgbSync {
+                sync: Some(true),
+                left_on: true,
+                right_link: 2
+            }
         );
         r[2] = 0xff;
         assert_eq!(RgbSync::parse(&r).sync, None);
@@ -730,10 +747,35 @@ mod tests {
 
         assert_eq!(rgb_state(), [0xD7, 0x03]);
         let mut r = [0u8; REPORT];
-        r[..17].copy_from_slice(&[0xD7, 0x83, 1, 0x68, 0x01, 80, 50, 3, 2, 4, 0, 0x2C, 0x01, 100, 20, 0, 1]);
+        r[..17].copy_from_slice(&[
+            0xD7, 0x83, 1, 0x68, 0x01, 80, 50, 3, 2, 4, 0, 0x2C, 0x01, 100, 20, 0, 1,
+        ]);
         let s = RgbState::parse(&r);
-        assert_eq!(s.left, RgbHalf { on: true, hue: 360, sat: 80, brightness: 50, effect: 3, speed: 2 });
-        assert_eq!(s.right, Some((RgbHalf { on: false, hue: 300, sat: 100, brightness: 20, effect: 0, speed: 1 }, 4)));
+        assert_eq!(
+            s.left,
+            RgbHalf {
+                on: true,
+                hue: 360,
+                sat: 80,
+                brightness: 50,
+                effect: 3,
+                speed: 2
+            }
+        );
+        assert_eq!(
+            s.right,
+            Some((
+                RgbHalf {
+                    on: false,
+                    hue: 300,
+                    sat: 100,
+                    brightness: 20,
+                    effect: 0,
+                    speed: 1
+                },
+                4
+            ))
+        );
         r[9] = 0xff;
         assert_eq!(RgbState::parse(&r).right, None);
     }
@@ -785,9 +827,18 @@ mod tests {
             1, 1, 0, 0, 64, 0, 52, 0, 2, 0, 106, 0, 0, 0, 1, 0, 8, 0, 3, 0xff, 1, 0, 0, 0,
         ]);
         let s = ScreenDescriptor::parse(&r).unwrap();
-        assert_eq!((s.count, s.index, s.id, s.kind), (4, 1, 1, ScreenKind::Panel));
-        assert_eq!((s.parent, s.width, s.height, s.x, s.y), (Some(0), 64, 52, 2, 106));
-        assert_eq!((s.ops, s.stride, s.rows_per_report), (ScreenDescriptor::OP_ROWS, 8, 3));
+        assert_eq!(
+            (s.count, s.index, s.id, s.kind),
+            (4, 1, 1, ScreenKind::Panel)
+        );
+        assert_eq!(
+            (s.parent, s.width, s.height, s.x, s.y),
+            (Some(0), 64, 52, 2, 106)
+        );
+        assert_eq!(
+            (s.ops, s.stride, s.rows_per_report),
+            (ScreenDescriptor::OP_ROWS, 8, 3)
+        );
         assert_eq!((s.readback_half, s.version), (None, 1));
         r[2] = 5;
         assert_eq!(ScreenDescriptor::parse(&r), Err(5));
@@ -880,8 +931,12 @@ pub struct ConnState {
 impl ConnState {
     pub fn parse(r: &[u8; REPORT]) -> Self {
         Self {
-            active_profile: r[2], connected: r[3] != 0, bonded: r[4] != 0,
-            endpoint: r[5], usb_ready: r[6] != 0, profile_count: r[7],
+            active_profile: r[2],
+            connected: r[3] != 0,
+            bonded: r[4] != 0,
+            endpoint: r[5],
+            usb_ready: r[6] != 0,
+            profile_count: r[7],
         }
     }
 }
@@ -895,10 +950,17 @@ mod connection_tests {
         assert_eq!(conn_state(), [0xd7, 4]);
         let mut r = [0; REPORT];
         r[..8].copy_from_slice(&[0xd7, 0x84, 3, 1, 0, 1, 0, 5]);
-        assert_eq!(ConnState::parse(&r), ConnState {
-            active_profile: 3, connected: true, bonded: false, endpoint: 1,
-            usb_ready: false, profile_count: 5,
-        });
+        assert_eq!(
+            ConnState::parse(&r),
+            ConnState {
+                active_profile: 3,
+                connected: true,
+                bonded: false,
+                endpoint: 1,
+                usb_ready: false,
+                profile_count: 5,
+            }
+        );
         r[21..25].copy_from_slice(&0x12345610u32.to_le_bytes());
         assert_eq!(Hello::parse(&r).capabilities, 0x12345610);
         assert_ne!(Hello::parse(&r).capabilities & CAP_CONN_STATE, 0);
@@ -928,7 +990,13 @@ mod slot_tests {
         r[11..14].copy_from_slice(b"fox");
         assert_eq!(
             SlotInfo::parse(&r),
-            Ok(SlotInfo { slot: 3, used: true, writes: 5, len: 10000, name: "fox".into() })
+            Ok(SlotInfo {
+                slot: 3,
+                used: true,
+                writes: 5,
+                len: 10000,
+                name: "fox".into()
+            })
         );
         r[2] = 4;
         assert_eq!(SlotInfo::parse(&r), Err(4));
@@ -954,15 +1022,23 @@ mod build_info_tests {
     #[test]
     fn build_info_and_hello_version_parse() {
         let mut r = [0u8; REPORT];
-        r[..16].copy_from_slice(&[0xD7, 0x89, 0, 1, 0, 3, 2, 1, b'a', b'b', b'c', b'1', b'2', b'3', b'4', 0]);
+        r[..16].copy_from_slice(&[
+            0xD7, 0x89, 0, 1, 0, 3, 2, 1, b'a', b'b', b'c', b'1', b'2', b'3', b'4', 0,
+        ]);
         let b = BuildInfo::parse(&r).unwrap();
-        assert_eq!((b.half, b.version.to_string(), b.sha.as_str()), (1, "0.3.2".into(), "abc1234"));
+        assert_eq!(
+            (b.half, b.version.to_string(), b.sha.as_str()),
+            (1, "0.3.2".into(), "abc1234")
+        );
         r[2] = 4;
         assert_eq!(BuildInfo::parse(&r), Err(4));
         let mut h = [0u8; REPORT];
         assert_eq!(Hello::parse(&h).firmware, None, "older firmware");
         h[27..31].copy_from_slice(&[1, 0, 0, 0]);
-        assert_eq!(Hello::parse(&h).firmware.unwrap().to_string(), "1.0.0 (dev)");
+        assert_eq!(
+            Hello::parse(&h).firmware.unwrap().to_string(),
+            "1.0.0 (dev)"
+        );
         assert_eq!(build_info(0), [0xD7, 0x09, 0]);
     }
 }

@@ -19,11 +19,12 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub use foxglove_plugin_api::methods::{
-    Device, Devices, Fact, FactChanged, FactList, Hsb, InitializeResult, LightingState, SetLightingParams,
-};
 pub use foxglove_plugin_api::methods::NetKind;
 pub use foxglove_plugin_api::methods::{AppWindows, LeaseParams, LeasePriority};
+pub use foxglove_plugin_api::methods::{
+    Device, Devices, Fact, FactChanged, FactList, Hsb, InitializeResult, LightingState,
+    SetLightingParams,
+};
 use foxglove_plugin_api::rpc::{Error, Id, Outcome, Request, Response};
 
 mod net;
@@ -113,7 +114,11 @@ impl Plugin {
                 let Ok(line) = line else { break };
                 if let Ok(r) = serde_json::from_str::<Response>(&line) {
                     if let Id::Number(n) = r.id {
-                        if let Some(tx) = reader_pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&n) {
+                        if let Some(tx) = reader_pending
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&n)
+                        {
                             let _ = tx.send(r.outcome);
                         }
                     }
@@ -127,7 +132,10 @@ impl Plugin {
                             let _ = actions_tx.send(a.to_string());
                         }
                     } else if n.method == "settings.changed" {
-                        if let Ok(s) = serde_json::from_value::<foxglove_plugin_api::methods::SettingValues>(n.params) {
+                        if let Ok(s) = serde_json::from_value::<
+                            foxglove_plugin_api::methods::SettingValues,
+                        >(n.params)
+                        {
                             let _ = settings_tx.send(s.values);
                         }
                     } else if n.method == "app.window.appeared" || n.method == "app.window.closed" {
@@ -147,7 +155,10 @@ impl Plugin {
             // Fail every waiting call once Foxglove is gone, and end every stream, so plugins
             // blocked on one wake up and can exit.
             reader_closed.store(true, Ordering::Relaxed);
-            reader_pending.lock().unwrap_or_else(|e| e.into_inner()).clear();
+            reader_pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
             reader_routes.close_all("Foxglove went away");
         });
         let mut plugin = Plugin {
@@ -176,16 +187,24 @@ impl Plugin {
     pub fn call(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = mpsc::channel();
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, tx);
         let line = serde_json::to_string(&Request::call(id, method, params)).expect("serializable");
         {
             let mut w = self.write.lock().unwrap_or_else(|e| e.into_inner());
-            writeln!(w, "{line}").and_then(|()| w.flush()).map_err(|_| PluginError::Closed)?;
+            writeln!(w, "{line}")
+                .and_then(|()| w.flush())
+                .map_err(|_| PluginError::Closed)?;
         }
         let outcome = match rx.recv_timeout(CALL_TIMEOUT) {
             Ok(o) => o,
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+                self.pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&id);
                 return Err(PluginError::Timeout);
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => return Err(PluginError::Closed),
@@ -197,22 +216,26 @@ impl Plugin {
     }
 
     fn call_as<T: DeserializeOwned>(&self, method: &str, params: Value) -> Result<T> {
-        serde_json::from_value(self.call(method, params)?).map_err(|e| PluginError::Decode(e.to_string()))
+        serde_json::from_value(self.call(method, params)?)
+            .map_err(|e| PluginError::Decode(e.to_string()))
     }
 
     pub fn fact(&self, key: &str) -> Result<Option<Fact>> {
-        let r: foxglove_plugin_api::methods::FactResult = self.call_as("facts.get", json!({ "key": key }))?;
+        let r: foxglove_plugin_api::methods::FactResult =
+            self.call_as("facts.get", json!({ "key": key }))?;
         Ok(r.value)
     }
 
     /// Publishes a fact (`None` removes it). Needs `facts.write` covering the key.
     pub fn set_fact(&self, key: &str, value: Option<Fact>) -> Result<()> {
-        self.call("facts.set", json!({ "key": key, "value": value })).map(|_| ())
+        self.call("facts.set", json!({ "key": key, "value": value }))
+            .map(|_| ())
     }
 
     /// Subscribes to fact changes; they arrive on [`Plugin::events`].
     pub fn subscribe(&self, pattern: &str) -> Result<u64> {
-        let s: foxglove_plugin_api::methods::Subscription = self.call_as("facts.subscribe", json!({ "pattern": pattern }))?;
+        let s: foxglove_plugin_api::methods::Subscription =
+            self.call_as("facts.subscribe", json!({ "pattern": pattern }))?;
         Ok(s.subscription)
     }
 
@@ -224,15 +247,38 @@ impl Plugin {
     /// Holds `device`'s lights at `color` until the returned lease is dropped or released, or
     /// the plugin stops (#236; needs `lighting.write`). The highest-priority lease shows; when
     /// the last one ends the lights go back as they were.
-    pub fn lease(self: &Arc<Self>, device: &str, color: Hsb, priority: LeasePriority) -> Result<Lease> {
-        let p = LeaseParams { device: device.into(), color, effect: None, priority };
-        let id: foxglove_plugin_api::methods::Lease = self.call_as("lighting.lease", serde_json::to_value(p).expect("serializable"))?;
-        Ok(Lease { plugin: self.clone(), id: id.lease })
+    pub fn lease(
+        self: &Arc<Self>,
+        device: &str,
+        color: Hsb,
+        priority: LeasePriority,
+    ) -> Result<Lease> {
+        let p = LeaseParams {
+            device: device.into(),
+            color,
+            effect: None,
+            priority,
+        };
+        let id: foxglove_plugin_api::methods::Lease = self.call_as(
+            "lighting.lease",
+            serde_json::to_value(p).expect("serializable"),
+        )?;
+        Ok(Lease {
+            plugin: self.clone(),
+            id: id.lease,
+        })
     }
 
     /// Shows `frame` (1 bpp, rows MSB first, padded to whole bytes) on a keyboard's left panel
     /// for `ttl` (60 s at most; send it again to keep it). Needs `screens.write`.
-    pub fn panel_override(&self, device: &str, width: u16, height: u16, frame: &[u8], ttl: Duration) -> Result<()> {
+    pub fn panel_override(
+        &self,
+        device: &str,
+        width: u16,
+        height: u16,
+        frame: &[u8],
+        ttl: Duration,
+    ) -> Result<()> {
         use base64::Engine;
         let bitmap = base64::engine::general_purpose::STANDARD.encode(frame);
         let ttl_ms = u32::try_from(ttl.as_millis()).unwrap_or(u32::MAX);
@@ -251,18 +297,25 @@ impl Plugin {
 
     /// Gives the left panel back to Foxglove.
     pub fn panel_release(&self, device: &str) -> Result<()> {
-        self.call("screens.panel_release", json!({ "device": device })).map(|_| ())
+        self.call("screens.panel_release", json!({ "device": device }))
+            .map(|_| ())
     }
 
     /// One of this plugin's secrets (#213; needs `secrets`): what the user entered in the
     /// Plugins tab, or what the plugin saved. `None` when it isn't set.
     pub fn secret(&self, name: &str) -> Result<Option<String>> {
-        Ok(self.call_as::<foxglove_plugin_api::methods::SecretValue>("secrets.get", json!({ "name": name }))?.value)
+        Ok(self
+            .call_as::<foxglove_plugin_api::methods::SecretValue>(
+                "secrets.get",
+                json!({ "name": name }),
+            )?
+            .value)
     }
 
     /// Saves (or with `None` removes) one of this plugin's secrets, such as a refreshed token.
     pub fn set_secret(&self, name: &str, value: Option<&str>) -> Result<()> {
-        self.call("secrets.set", json!({ "name": name, "value": value })).map(|_| ())
+        self.call("secrets.set", json!({ "name": name, "value": value }))
+            .map(|_| ())
     }
 
     /// The plugin's own folder for state between runs (`data/` in its folder, writable even in
@@ -280,31 +333,42 @@ impl Plugin {
     /// The ids of this plugin's actions (`[[actions]]` in `plugin.toml`) as the user presses
     /// their keys (#212). Taken once.
     pub fn actions(&self) -> Option<Receiver<String>> {
-        self.actions.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.actions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// Asks to be told when `exe`'s (such as `obs64.exe`) windows open and close; needs
     /// `apps.watch:<exe>` (API 1.3). How many of its windows are open now. Wait for an app this
     /// way instead of polling for it.
     pub fn watch_app(&self, exe: &str) -> Result<u32> {
-        self.call_as::<AppWindows>("apps.watch", json!({ "exe": exe })).map(|w| w.open)
+        self.call_as::<AppWindows>("apps.watch", json!({ "exe": exe }))
+            .map(|w| w.open)
     }
 
     /// This plugin's settings (`[[settings]]` in `plugin.toml`), as the user set them in the
     /// Plugins tab, or their defaults (API 1.3).
     pub fn settings(&self) -> Result<serde_json::Map<String, Value>> {
-        self.call_as::<foxglove_plugin_api::methods::SettingValues>("settings.get", json!({})).map(|s| s.values)
+        self.call_as::<foxglove_plugin_api::methods::SettingValues>("settings.get", json!({}))
+            .map(|s| s.values)
     }
 
     /// All the settings again each time the user changes one. Taken once.
     pub fn settings_changes(&self) -> Option<Receiver<serde_json::Map<String, Value>>> {
-        self.settings_changes.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.settings_changes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// The watched apps' windows opening and closing. It ends when Foxglove goes away. Taken
     /// once.
     pub fn app_windows(&self) -> Option<Receiver<AppWindowEvent>> {
-        self.app_windows.lock().unwrap_or_else(|e| e.into_inner()).take()
+        self.app_windows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     pub fn devices(&self) -> Result<Vec<Device>> {
@@ -318,7 +382,11 @@ impl Plugin {
 
     /// Changes a device's lights (only what's given). Needs `lighting.write`.
     pub fn set_lighting(&self, params: &SetLightingParams) -> Result<()> {
-        self.call("lighting.set", serde_json::to_value(params).expect("serializable")).map(|_| ())
+        self.call(
+            "lighting.set",
+            serde_json::to_value(params).expect("serializable"),
+        )
+        .map(|_| ())
     }
 }
 
@@ -332,13 +400,20 @@ impl Lease {
     /// Changes the leased colour in place (API 1.3): for a stream of colours, one lease for the
     /// whole stream.
     pub fn set(&self, color: Hsb) -> Result<()> {
-        self.plugin.call("lighting.update", json!({ "lease": self.id, "color": color })).map(|_| ())
+        self.plugin
+            .call(
+                "lighting.update",
+                json!({ "lease": self.id, "color": color }),
+            )
+            .map(|_| ())
     }
 }
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        let _ = self.plugin.call("lighting.release", json!({ "lease": self.id }));
+        let _ = self
+            .plugin
+            .call("lighting.release", json!({ "lease": self.id }));
     }
 }
 
@@ -366,7 +441,9 @@ mod tests {
     struct PipeWrite(Sender<Vec<u8>>);
     impl Write for PipeWrite {
         fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
-            self.0.send(b.to_vec()).map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+            self.0
+                .send(b.to_vec())
+                .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
             Ok(b.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
@@ -387,7 +464,9 @@ mod tests {
                     let req: Request = serde_json::from_slice(&line).unwrap();
                     let id = req.id.clone().unwrap();
                     let result = match req.method.as_str() {
-                        "initialize" => json!({"api":"1.1","app":"test","granted":["facts.write:focus.*"]}),
+                        "initialize" => {
+                            json!({"api":"1.1","app":"test","granted":["facts.write:focus.*"]})
+                        }
                         "facts.subscribe" => json!({"subscription": 7}),
                         _ => json!({}),
                     };
@@ -395,7 +474,10 @@ mod tests {
                     out.push(b'\n');
                     to_plugin.send(out).unwrap();
                     if req.method == "facts.subscribe" {
-                        let ev = Request::notification("facts.changed", json!({"subscription":7,"key":"clock.time","value":"12:00"}));
+                        let ev = Request::notification(
+                            "facts.changed",
+                            json!({"subscription":7,"key":"clock.time","value":"12:00"}),
+                        );
                         let mut out = serde_json::to_vec(&ev).unwrap();
                         out.push(b'\n');
                         to_plugin.send(out).unwrap();
@@ -411,10 +493,15 @@ mod tests {
         let (r, w) = fake();
         let plugin = Plugin::connect_over(r, w, "test", "1").unwrap();
         assert_eq!(plugin.granted, vec!["facts.write:focus.*".to_string()]);
-        plugin.set_fact("focus.state", Some(Fact::Text("focus".into()))).unwrap();
+        plugin
+            .set_fact("focus.state", Some(Fact::Text("focus".into())))
+            .unwrap();
         let events = plugin.events().unwrap();
         assert_eq!(plugin.subscribe("clock.*").unwrap(), 7);
         let ev = events.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert_eq!((ev.key.as_str(), ev.value), ("clock.time", Some(Fact::Text("12:00".into()))));
+        assert_eq!(
+            (ev.key.as_str(), ev.value),
+            ("clock.time", Some(Fact::Text("12:00".into())))
+        );
     }
 }

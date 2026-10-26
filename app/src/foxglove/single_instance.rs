@@ -10,14 +10,22 @@
 fn names(config_dir: Option<&std::ffi::OsStr>) -> (String, String) {
     let scope = match config_dir {
         None => "user".to_string(),
-        Some(dir) => format!("dir-{:016x}", fnv1a(dir.to_string_lossy().to_lowercase().as_bytes())),
+        Some(dir) => format!(
+            "dir-{:016x}",
+            fnv1a(dir.to_string_lossy().to_lowercase().as_bytes())
+        ),
     };
-    (format!("Local\\BanditF.Foxglove.{scope}.instance"), format!("Local\\BanditF.Foxglove.{scope}.show"))
+    (
+        format!("Local\\BanditF.Foxglove.{scope}.instance"),
+        format!("Local\\BanditF.Foxglove.{scope}.show"),
+    )
 }
 
 /// FNV-1a: stable across builds and Rust versions, unlike `DefaultHasher`.
 fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3))
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+        (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3)
+    })
 }
 
 #[cfg(windows)]
@@ -25,8 +33,12 @@ mod imp {
     use std::sync::OnceLock;
 
     use windows::core::HSTRING;
-    use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0};
-    use windows::Win32::System::Threading::{CreateEventW, CreateMutexW, SetEvent, WaitForSingleObject, INFINITE};
+    use windows::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0,
+    };
+    use windows::Win32::System::Threading::{
+        CreateEventW, CreateMutexW, SetEvent, WaitForSingleObject, INFINITE,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{AllowSetForegroundWindow, ASFW_ANY};
 
     /// The show event, kept for the process's life once this instance is the first.
@@ -41,7 +53,8 @@ mod imp {
         let (mutex_name, event_name) = super::names(config_dir);
         // The event first (auto-reset, opened if it exists), so a second launch can always signal
         // it, even while the first instance is still starting: the signal waits for its waiter.
-        let Ok(event) = (unsafe { CreateEventW(None, false, false, &HSTRING::from(event_name)) }) else {
+        let Ok(event) = (unsafe { CreateEventW(None, false, false, &HSTRING::from(event_name)) })
+        else {
             return true; // no guard rather than no Foxglove
         };
         let mutex = unsafe { CreateMutexW(None, false, &HSTRING::from(mutex_name)) };
@@ -77,17 +90,19 @@ mod imp {
     }
 
     pub fn on_show(show: impl Fn() + Send + 'static) {
-        let Some(event) = SHOW.get().map(|s| s.0.0 as isize) else {
+        let Some(event) = SHOW.get().map(|s| s.0 .0 as isize) else {
             return;
         };
         // Blocks on the event, no timer; it ends with the process.
-        let _ = std::thread::Builder::new().name("single-instance".into()).spawn(move || loop {
-            let handle = HANDLE(event as *mut core::ffi::c_void);
-            if unsafe { WaitForSingleObject(handle, INFINITE) } != WAIT_OBJECT_0 {
-                return;
-            }
-            show();
-        });
+        let _ = std::thread::Builder::new()
+            .name("single-instance".into())
+            .spawn(move || loop {
+                let handle = HANDLE(event as *mut core::ffi::c_void);
+                if unsafe { WaitForSingleObject(handle, INFINITE) } != WAIT_OBJECT_0 {
+                    return;
+                }
+                show();
+            });
     }
 }
 
@@ -128,7 +143,11 @@ mod tests {
         assert_eq!(mutex, "Local\\BanditF.Foxglove.user.instance");
         assert_eq!(event, "Local\\BanditF.Foxglove.user.show");
         let a = names(Some("C:\\Temp\\lab".as_ref()));
-        assert_eq!(a, names(Some("c:\\temp\\LAB".as_ref())), "case doesn't matter on Windows");
+        assert_eq!(
+            a,
+            names(Some("c:\\temp\\LAB".as_ref())),
+            "case doesn't matter on Windows"
+        );
         assert_ne!(a, names(Some("C:\\Temp\\other".as_ref())));
         assert_ne!(a.0, mutex);
     }
@@ -144,7 +163,11 @@ mod tests {
         on_show(move || {
             let _ = tx.send(());
         });
-        assert!(!imp::claim(Some(dir.as_os_str())), "a second claim for the same folder loses");
-        rx.recv_timeout(std::time::Duration::from_secs(10)).expect("the first instance is asked to show");
+        assert!(
+            !imp::claim(Some(dir.as_os_str())),
+            "a second claim for the same folder loses"
+        );
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the first instance is asked to show");
     }
 }

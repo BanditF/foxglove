@@ -34,13 +34,19 @@ fn band_text(p: &mut Panel, font: &'static MonoFont, s: &str, y: i32, ink: Binar
     let tw = text_width(font, s);
     let style = MonoTextStyle::new(font, ink);
     if tw <= w {
-        Text::with_baseline(s, Point::new((w - tw) / 2, y), style, Baseline::Top).draw(p).ok();
+        Text::with_baseline(s, Point::new((w - tw) / 2, y), style, Baseline::Top)
+            .draw(p)
+            .ok();
         return;
     }
     let gap = 16;
     let x = -((tick as i32 * 2) % (tw + gap));
-    Text::with_baseline(s, Point::new(x, y), style, Baseline::Top).draw(p).ok();
-    Text::with_baseline(s, Point::new(x + tw + gap, y), style, Baseline::Top).draw(p).ok();
+    Text::with_baseline(s, Point::new(x, y), style, Baseline::Top)
+        .draw(p)
+        .ok();
+    Text::with_baseline(s, Point::new(x + tw + gap, y), style, Baseline::Top)
+        .draw(p)
+        .ok();
 }
 
 /// Only visible overflowing text needs animation frames, and media text only while it plays:
@@ -49,7 +55,8 @@ pub fn animated(v: &View, width: usize) -> bool {
     let over = |font, text: &str| text_width(font, text) > width as i32;
     (v.playing
         && (v.title.as_deref().is_some_and(|s| over(&FONT_5X8, s))
-            || (v.title.is_some() && v.hint.is_none()
+            || (v.title.is_some()
+                && v.hint.is_none()
                 && v.artist.as_deref().is_some_and(|s| over(&FONT_4X6, s)))))
         || v.hint.as_deref().is_some_and(|s| over(&FONT_5X8, s))
 }
@@ -67,7 +74,10 @@ pub fn draw(p: &mut Panel, v: &View, tick: u32) {
     // Volume: speaker and a bar, crossed out when muted
     if let Some((vol, muted)) = v.volume {
         let y = 20;
-        Rectangle::new(Point::new(0, y + 2), Size::new(2, 3)).into_styled(fill).draw(p).ok();
+        Rectangle::new(Point::new(0, y + 2), Size::new(2, 3))
+            .into_styled(fill)
+            .draw(p)
+            .ok();
         Triangle::new(Point::new(2, y + 3), Point::new(5, y), Point::new(5, y + 6))
             .into_styled(fill)
             .draw(p)
@@ -76,11 +86,20 @@ pub fn draw(p: &mut Panel, v: &View, tick: u32) {
         bar.into_styled(line).draw(p).ok();
         let inner = (w - 12) * vol.min(100) as i32 / 100;
         if inner > 0 {
-            Rectangle::new(Point::new(10, y + 2), Size::new(inner as u32, 3)).into_styled(fill).draw(p).ok();
+            Rectangle::new(Point::new(10, y + 2), Size::new(inner as u32, 3))
+                .into_styled(fill)
+                .draw(p)
+                .ok();
         }
         if muted {
-            Line::new(Point::new(8, y), Point::new(w - 1, y + 6)).into_styled(line).draw(p).ok();
-            Line::new(Point::new(8, y + 6), Point::new(w - 1, y)).into_styled(line).draw(p).ok();
+            Line::new(Point::new(8, y), Point::new(w - 1, y + 6))
+                .into_styled(line)
+                .draw(p)
+                .ok();
+            Line::new(Point::new(8, y + 6), Point::new(w - 1, y))
+                .into_styled(line)
+                .draw(p)
+                .ok();
         }
     }
 
@@ -108,7 +127,10 @@ pub fn draw(p: &mut Panel, v: &View, tick: u32) {
     // Game hint: inverted strip along the bottom
     if let Some(hint) = &v.hint {
         let y = p.height as i32 - 10;
-        Rectangle::new(Point::new(0, y), Size::new(w as u32, 10)).into_styled(fill).draw(p).ok();
+        Rectangle::new(Point::new(0, y), Size::new(w as u32, 10))
+            .into_styled(fill)
+            .draw(p)
+            .ok();
         band_text(p, &FONT_5X8, hint, y + 1, BinaryColor::Off, tick);
     }
 }
@@ -119,7 +141,12 @@ mod tests {
 
     #[test]
     fn only_visible_overflowing_bands_animate() {
-        let mut v = View { time: "12:34".into(), date: "Fri 23 Oct".into(), playing: true, ..View::default() };
+        let mut v = View {
+            time: "12:34".into(),
+            date: "Fri 23 Oct".into(),
+            playing: true,
+            ..View::default()
+        };
         assert!(!animated(&v, 64));
         v.artist = Some("An artist with a very long name".into());
         assert!(!animated(&v, 64)); // artist is hidden without a title

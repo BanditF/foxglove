@@ -179,7 +179,10 @@ mod tests {
             behaviors.invoke(0, 1, 2, false),
             Err(DeviceError::Denied(_))
         ));
-        assert_eq!(behaviors.invoke(0, 9, 9, true), Err(DeviceError::Unsupported));
+        assert_eq!(
+            behaviors.invoke(0, 9, 9, true),
+            Err(DeviceError::Unsupported)
+        );
         behaviors.invoke(0, 1, 2, true).unwrap();
     }
 

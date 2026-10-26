@@ -23,7 +23,10 @@ pub struct Subscription(u64);
 
 impl Drop for Subscription {
     fn drop(&mut self) {
-        LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).retain(|(id, _)| *id != self.0);
+        LISTENERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(id, _)| *id != self.0);
     }
 }
 
@@ -36,7 +39,10 @@ pub fn away() -> bool {
 /// on a system thread with the listener list locked: only enqueue work there.
 pub fn subscribe(notify: impl Fn(bool) + Send + 'static) -> Subscription {
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    LISTENERS.lock().unwrap_or_else(|e| e.into_inner()).push((id, Box::new(notify)));
+    LISTENERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((id, Box::new(notify)));
     Subscription(id)
 }
 
@@ -59,7 +65,16 @@ fn update(flag: &AtomicBool, value: bool, on: &str, off: &str) {
     if now == before {
         return;
     }
-    eprintln!("Foxglove: {} ({}), {}", if now { "away" } else { "back" }, if value { on } else { off }, if now { "background work stops" } else { "background work resumes" });
+    eprintln!(
+        "Foxglove: {} ({}), {}",
+        if now { "away" } else { "back" },
+        if value { on } else { off },
+        if now {
+            "background work stops"
+        } else {
+            "background work resumes"
+        }
+    );
     tell(now);
 }
 
@@ -83,11 +98,17 @@ pub fn start() {
 mod imp {
     use windows::core::{GUID, PCWSTR};
     use windows::Win32::Foundation::{HANDLE, HWND, LPARAM, LRESULT, WPARAM};
-    use windows::Win32::System::Power::{PowerSettingRegisterNotification, DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, POWERBROADCAST_SETTING};
-    use windows::Win32::System::RemoteDesktop::{WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION};
+    use windows::Win32::System::Power::{
+        PowerSettingRegisterNotification, DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS,
+        POWERBROADCAST_SETTING,
+    };
+    use windows::Win32::System::RemoteDesktop::{
+        WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, RegisterClassW, DEVICE_NOTIFY_CALLBACK, HWND_MESSAGE, MSG,
-        PBT_POWERSETTINGCHANGE, WINDOW_EX_STYLE, WINDOW_STYLE, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
+        CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, RegisterClassW,
+        DEVICE_NOTIFY_CALLBACK, HWND_MESSAGE, MSG, PBT_POWERSETTINGCHANGE, WINDOW_EX_STYLE,
+        WINDOW_STYLE, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
     };
 
     /// `GUID_CONSOLE_DISPLAY_STATE`: 0 off, 1 on, 2 dimmed.
@@ -98,17 +119,27 @@ mod imp {
         session();
     }
 
-    unsafe extern "system" fn on_power(_context: *const core::ffi::c_void, kind: u32, setting: *const core::ffi::c_void) -> u32 {
+    unsafe extern "system" fn on_power(
+        _context: *const core::ffi::c_void,
+        kind: u32,
+        setting: *const core::ffi::c_void,
+    ) -> u32 {
         if kind != PBT_POWERSETTINGCHANGE || setting.is_null() {
             return 0;
         }
         // SAFETY: for PBT_POWERSETTINGCHANGE, `setting` points at a POWERBROADCAST_SETTING whose
         // Data holds DataLength bytes; the display state is one DWORD.
         let setting = unsafe { &*setting.cast::<POWERBROADCAST_SETTING>() };
-        if setting.PowerSetting != CONSOLE_DISPLAY_STATE || (setting.DataLength as usize) < size_of::<u32>() {
+        if setting.PowerSetting != CONSOLE_DISPLAY_STATE
+            || (setting.DataLength as usize) < size_of::<u32>()
+        {
             return 0;
         }
-        let state = unsafe { std::ptr::addr_of!(setting.Data).cast::<u32>().read_unaligned() };
+        let state = unsafe {
+            std::ptr::addr_of!(setting.Data)
+                .cast::<u32>()
+                .read_unaligned()
+        };
         super::set_display_off(state == 0);
         0
     }
@@ -116,7 +147,10 @@ mod imp {
     /// The display state, by callback: Windows sends the current state at once, then changes.
     fn display() {
         // Process-lifetime registration: the parameters must outlive it, so they're leaked.
-        let params = Box::leak(Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS { Callback: Some(on_power), Context: std::ptr::null_mut() }));
+        let params = Box::leak(Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+            Callback: Some(on_power),
+            Context: std::ptr::null_mut(),
+        }));
         let mut handle = std::ptr::null_mut();
         // SAFETY: with DEVICE_NOTIFY_CALLBACK the recipient is a pointer to the subscribe
         // parameters, which live for the rest of the process; `handle` is a valid out pointer.
@@ -133,7 +167,12 @@ mod imp {
         }
     }
 
-    unsafe extern "system" fn window_proc(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe extern "system" fn window_proc(
+        hwnd: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
         if message == WM_WTSSESSION_CHANGE {
             match wparam.0 as u32 {
                 WTS_SESSION_LOCK => super::set_locked(true),
@@ -154,7 +193,11 @@ mod imp {
             // SAFETY: plain window-class and window creation on this thread; the class name
             // outlives both calls, and the window lives as long as this thread's message loop.
             unsafe {
-                let wc = WNDCLASSW { lpfnWndProc: Some(window_proc), lpszClassName: PCWSTR(class.as_ptr()), ..Default::default() };
+                let wc = WNDCLASSW {
+                    lpfnWndProc: Some(window_proc),
+                    lpszClassName: PCWSTR(class.as_ptr()),
+                    ..Default::default()
+                };
                 if RegisterClassW(&wc) == 0 {
                     eprintln!("Foxglove: can't follow the session lock (no window class)");
                     return;
@@ -212,6 +255,9 @@ mod tests {
         drop(token);
         set_locked(true);
         set_locked(false);
-        assert!(rx.try_iter().next().is_none(), "a dropped token stops the calls");
+        assert!(
+            rx.try_iter().next().is_none(),
+            "a dropped token stops the calls"
+        );
     }
 }

@@ -27,7 +27,11 @@ struct Overrides {
 
 fn temp_ini() -> std::path::PathBuf {
     static N: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!("foxglove-overlay-{}-{}.ini", std::process::id(), N.fetch_add(1, Ordering::Relaxed)))
+    std::env::temp_dir().join(format!(
+        "foxglove-overlay-{}-{}.ini",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ))
 }
 
 /// A Settings value as `section.key` -> INI value (through KeyPeek's own writer).
@@ -118,7 +122,11 @@ mod tests {
 
     #[test]
     fn settings_round_trip_through_pairs() {
-        let s = Settings { size: 77, timeout: 1234, ..Settings::default() };
+        let s = Settings {
+            size: 77,
+            timeout: 1234,
+            ..Settings::default()
+        };
         let p = pairs(&s);
         assert_eq!(p.get("settings.size").map(String::as_str), Some("77"));
         assert!(from_pairs(&p) == Some(s));

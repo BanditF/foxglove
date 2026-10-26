@@ -10,7 +10,9 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 /// The keys actions can be bound to.
-pub const KEYS: [&str; 12] = ["F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24"];
+pub const KEYS: [&str; 12] = [
+    "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Binding {
@@ -27,7 +29,9 @@ pub fn bindings() -> Bindings {
 
 /// The key bound to a plugin's action, if any.
 pub fn key_for(all: &Bindings, plugin: &str, action: &str) -> Option<String> {
-    all.iter().find(|(_, b)| b.plugin == plugin && b.action == action).map(|(k, _)| k.clone())
+    all.iter()
+        .find(|(_, b)| b.plugin == plugin && b.action == action)
+        .map(|(k, _)| k.clone())
 }
 
 /// Binds `key` (or nothing) to a plugin's action: a key triggers one action, and an action has
@@ -35,7 +39,13 @@ pub fn key_for(all: &Bindings, plugin: &str, action: &str) -> Option<String> {
 pub fn rebind(all: &mut Bindings, plugin: &str, action: &str, key: Option<&str>) {
     all.retain(|k, b| !(b.plugin == plugin && b.action == action) && Some(k.as_str()) != key);
     if let Some(key) = key.filter(|k| KEYS.contains(k)) {
-        all.insert(key.into(), Binding { plugin: plugin.into(), action: action.into() });
+        all.insert(
+            key.into(),
+            Binding {
+                plugin: plugin.into(),
+                action: action.into(),
+            },
+        );
     }
 }
 
@@ -57,7 +67,11 @@ pub fn taken() -> Vec<String> {
 
 fn pressed(key: &str) {
     if let Some(b) = bindings().get(key) {
-        foxglove_plugin_host::notify(&b.plugin, "action.invoked", serde_json::json!({ "action": b.action }));
+        foxglove_plugin_host::notify(
+            &b.plugin,
+            "action.invoked",
+            serde_json::json!({ "action": b.action }),
+        );
     }
 }
 
@@ -72,8 +86,12 @@ mod imp {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     use windows::Win32::System::Threading::GetCurrentThreadId;
-    use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT, VK_F13};
-    use windows::Win32::UI::WindowsAndMessaging::{GetMessageW, PostThreadMessageW, MSG, WM_APP, WM_HOTKEY};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT, VK_F13,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetMessageW, PostThreadMessageW, MSG, WM_APP, WM_HOTKEY,
+    };
 
     use super::{bindings, pressed, KEYS, TAKEN};
 
@@ -91,7 +109,9 @@ mod imp {
                 }
                 let mut taken = Vec::new();
                 for key in bindings().keys() {
-                    let Some(i) = KEYS.iter().position(|k| k == key) else { continue };
+                    let Some(i) = KEYS.iter().position(|k| k == key) else {
+                        continue;
+                    };
                     let id = i as i32 + 1;
                     let vk = u32::from(VK_F13.0) + i as u32;
                     if RegisterHotKey(None, id, HOT_KEY_MODIFIERS(MOD_NOREPEAT.0), vk).is_ok() {
@@ -149,7 +169,13 @@ mod tests {
         assert_eq!(all.keys().collect::<Vec<_>>(), ["F14", "F15"]);
         // Binding a taken key takes it over.
         rebind(&mut all, "b.mic", "toggle", Some("F14"));
-        assert_eq!(all["F14"], Binding { plugin: "b.mic".into(), action: "toggle".into() });
+        assert_eq!(
+            all["F14"],
+            Binding {
+                plugin: "b.mic".into(),
+                action: "toggle".into()
+            }
+        );
         assert_eq!(key_for(&all, "a.timer", "reset"), None);
         // Unbinding, and keys outside F13-F24, leave nothing.
         rebind(&mut all, "b.mic", "toggle", None);

@@ -44,7 +44,11 @@ pub fn save(settings: LibrarySettings) {
 
 /// The slot standing in for this built-in, if any.
 pub fn stand_in(builtin: &str) -> Option<u8> {
-    load().stand_ins.iter().find(|s| s.builtin == builtin).map(|s| s.slot)
+    load()
+        .stand_ins
+        .iter()
+        .find(|s| s.builtin == builtin)
+        .map(|s| s.slot)
 }
 
 /// Makes `slot` stand in for `builtin` (`None` undoes it).
@@ -52,7 +56,10 @@ pub fn set_stand_in(builtin: &str, slot: Option<u8>) {
     let mut s = load();
     s.stand_ins.retain(|i| i.builtin != builtin);
     if let Some(slot) = slot {
-        s.stand_ins.push(StandIn { builtin: builtin.to_owned(), slot });
+        s.stand_ins.push(StandIn {
+            builtin: builtin.to_owned(),
+            slot,
+        });
     }
     save(s);
 }
@@ -95,9 +102,15 @@ mod tests {
     fn settings_round_trip() {
         let s = LibrarySettings {
             sources: vec![PathBuf::from("art-src")],
-            stand_ins: vec![StandIn { builtin: "Bandit_Gem".into(), slot: 2 }],
+            stand_ins: vec![StandIn {
+                builtin: "Bandit_Gem".into(),
+                slot: 2,
+            }],
         };
-        assert_eq!(toml::from_str::<LibrarySettings>(&toml::to_string(&s).unwrap()).unwrap(), s);
+        assert_eq!(
+            toml::from_str::<LibrarySettings>(&toml::to_string(&s).unwrap()).unwrap(),
+            s
+        );
         assert_eq!(toml::to_string(&LibrarySettings::default()).unwrap(), "");
     }
 

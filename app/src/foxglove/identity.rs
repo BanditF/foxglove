@@ -24,7 +24,10 @@ pub const ENABLED: bool = cfg!(foxglove_sparse_identity);
 /// every user and exits. True when it handled the command line.
 #[cfg(windows)]
 pub fn entry() -> bool {
-    if std::env::args_os().nth(1).is_none_or(|a| a != "--unregister-identity") {
+    if std::env::args_os()
+        .nth(1)
+        .is_none_or(|a| a != "--unregister-identity")
+    {
         return false;
     }
     if let Err(e) = unregister_all() {
@@ -48,7 +51,9 @@ pub fn start() {
                 return; // registered already, or elevated: per-user registration waits
             }
             match register() {
-                Ok(true) => eprintln!("foxglove: identity package registered; it applies from the next start"),
+                Ok(true) => eprintln!(
+                    "foxglove: identity package registered; it applies from the next start"
+                ),
                 Ok(false) => {}
                 Err(e) => eprintln!("foxglove: identity package not registered: {e}"),
             }
@@ -70,7 +75,9 @@ pub fn has_identity() -> bool {
 #[cfg(windows)]
 fn elevated() -> bool {
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
     unsafe {
         let mut token = HANDLE::default();
@@ -99,7 +106,10 @@ fn register() -> windows::core::Result<bool> {
     use windows::core::HSTRING;
     use windows::Foundation::Uri;
     use windows::Management::Deployment::{AddPackageOptions, PackageManager};
-    let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(std::path::Path::to_path_buf)) else {
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+    else {
         return Ok(false);
     };
     let package = dir.join(PACKAGE_FILE);
@@ -109,11 +119,17 @@ fn register() -> windows::core::Result<bool> {
     let options = AddPackageOptions::new()?;
     options.SetExternalLocationUri(&Uri::CreateUri(&HSTRING::from(dir.as_os_str()))?)?;
     let result = PackageManager::new()?
-        .AddPackageByUriAsync(&Uri::CreateUri(&HSTRING::from(package.as_os_str()))?, &options)?
+        .AddPackageByUriAsync(
+            &Uri::CreateUri(&HSTRING::from(package.as_os_str()))?,
+            &options,
+        )?
         .join()?;
     let code = result.ExtendedErrorCode()?;
     if code.is_err() {
-        return Err(windows::core::Error::new(code, result.ErrorText()?.to_string()));
+        return Err(windows::core::Error::new(
+            code,
+            result.ErrorText()?.to_string(),
+        ));
     }
     Ok(true)
 }
@@ -125,9 +141,15 @@ fn unregister_all() -> windows::core::Result<()> {
     use windows::Management::Deployment::{PackageManager, RemovalOptions};
     let manager = PackageManager::new()?;
     // An empty user SID means every user.
-    for package in manager.FindPackagesByUserSecurityIdNamePublisher(&HSTRING::new(), &HSTRING::from(NAME), &HSTRING::from(PUBLISHER))? {
+    for package in manager.FindPackagesByUserSecurityIdNamePublisher(
+        &HSTRING::new(),
+        &HSTRING::from(NAME),
+        &HSTRING::from(PUBLISHER),
+    )? {
         let full_name = package.Id()?.FullName()?;
-        manager.RemovePackageWithOptionsAsync(&full_name, RemovalOptions::RemoveForAllUsers)?.join()?;
+        manager
+            .RemovePackageWithOptionsAsync(&full_name, RemovalOptions::RemoveForAllUsers)?
+            .join()?;
     }
     Ok(())
 }
@@ -144,7 +166,10 @@ mod tests {
         assert!(appx.contains(&format!("Name=\"{NAME}\" Publisher=\"{PUBLISHER}\"")));
         assert!(exe.contains(&format!("publisher=\"{PUBLISHER}\"")));
         assert!(exe.contains(&format!("packageName=\"{NAME}\"")));
-        assert!(appx.contains("Application Id=\"Foxglove\"") && exe.contains("applicationId=\"Foxglove\""));
+        assert!(
+            appx.contains("Application Id=\"Foxglove\"")
+                && exe.contains("applicationId=\"Foxglove\"")
+        );
         assert!(appx.contains("com.microsoft.windows.lighting"));
     }
 }

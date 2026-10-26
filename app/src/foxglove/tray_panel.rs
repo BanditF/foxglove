@@ -54,15 +54,25 @@ pub fn edge(icon: Rect, work: Rect) -> Edge {
         (c.x - work.left(), Edge::Left),
         (work.right() - c.x, Edge::Right),
     ];
-    gaps.into_iter().min_by(|a, b| a.0.total_cmp(&b.0)).map_or(Edge::Bottom, |(_, e)| e)
+    gaps.into_iter()
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map_or(Edge::Bottom, |(_, e)| e)
 }
 
 /// Where the panel's top-left corner goes, all in screen points: against the taskbar's edge of
 /// the work area, centred on the icon along it, and kept inside the work area.
 pub fn place(icon: Rect, work: Rect, panel: Vec2) -> Pos2 {
     let clamp = |v: f32, lo: f32, hi: f32| if hi < lo { lo } else { v.clamp(lo, hi) };
-    let x_along = clamp(icon.center().x - panel.x / 2.0, work.left() + MARGIN, work.right() - panel.x - MARGIN);
-    let y_along = clamp(icon.center().y - panel.y / 2.0, work.top() + MARGIN, work.bottom() - panel.y - MARGIN);
+    let x_along = clamp(
+        icon.center().x - panel.x / 2.0,
+        work.left() + MARGIN,
+        work.right() - panel.x - MARGIN,
+    );
+    let y_along = clamp(
+        icon.center().y - panel.y / 2.0,
+        work.top() + MARGIN,
+        work.bottom() - panel.y - MARGIN,
+    );
     match edge(icon, work) {
         Edge::Bottom => pos2(x_along, (work.bottom() - panel.y - MARGIN).max(work.top())),
         Edge::Top => pos2(x_along, work.top() + MARGIN),
@@ -155,7 +165,11 @@ pub enum Intent {
     Profile(Option<String>),
     Lights(bool),
     Effect(u8),
-    Color { hue: u16, sat: u8, brightness: u8 },
+    Color {
+        hue: u16,
+        sat: u8,
+        brightness: u8,
+    },
     NextArt,
     PushFile,
     PauseLeftPanel(bool),
@@ -185,7 +199,10 @@ pub fn while_paused(mut v: View) -> View {
 /// Both halves in a few words, from the status strip's state.
 pub fn halves(s: &StripState) -> [(Tone, String); 2] {
     if !s.keyboard {
-        return [(Tone::Off, "not connected".into()), (Tone::Off, "not connected".into())];
+        return [
+            (Tone::Off, "not connected".into()),
+            (Tone::Off, "not connected".into()),
+        ];
     }
     let left = match s.usb {
         Some(true) => "on USB",
@@ -205,7 +222,8 @@ pub fn halves(s: &StripState) -> [(Tone, String); 2] {
 fn view(ctx: &egui::Context) -> View {
     let (profiles, active_profile) = super::store::cached_profiles();
     let lights = super::keyboard_settings::rgb_state(ctx).map(|s| s.left);
-    let lights_ready = super::keyboard_actions::underglow_behavior().is_some() && !super::keyboard_settings::invoking();
+    let lights_ready = super::keyboard_actions::underglow_behavior().is_some()
+        && !super::keyboard_settings::invoking();
     let (mut art_name, mut art_image, mut art_ready) = ("…".to_string(), None, false);
     if let Some(h) = super::art_service::handle() {
         let s = h.snapshot();
@@ -214,7 +232,11 @@ fn view(ctx: &egui::Context) -> View {
             art_name = super::art_ui::playing(&s).0;
             let library = super::art_library::snapshot();
             art_image = s.showing_file().and_then(|path| {
-                super::art_ui::tiles(&library.entries).0.into_iter().find(|t| t.path == *path).map(|t| t.image)
+                super::art_ui::tiles(&library.entries)
+                    .0
+                    .into_iter()
+                    .find(|t| t.path == *path)
+                    .map(|t| t.image)
             });
         }
     }
@@ -238,23 +260,39 @@ fn view(ctx: &egui::Context) -> View {
 pub fn show(ctx: &egui::Context) -> bool {
     set_wake(ctx);
     // The tray reports physical pixels; the window works in points.
-    let ppp = ctx.input(|i| i.viewport().native_pixels_per_point).unwrap_or_else(|| ctx.pixels_per_point());
+    let ppp = ctx
+        .input(|i| i.viewport().native_pixels_per_point)
+        .unwrap_or_else(|| ctx.pixels_per_point());
     if let Some(icon) = CLICKED.lock().unwrap_or_else(|e| e.into_inner()).take() {
         let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
-        let just_closed = LOST_FOCUS_AT.lock().unwrap_or_else(|e| e.into_inner()).take().is_some_and(|at| at.elapsed() < SAME_CLICK);
+        let just_closed = LOST_FOCUS_AT
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .is_some_and(|at| at.elapsed() < SAME_CLICK);
         if open.is_some() || just_closed {
             // A second click on the icon closes it, as Windows' own flyouts do.
             *open = None;
             return false;
         }
-        let icon = Rect::from_min_max((icon.min.to_vec2() / ppp).to_pos2(), (icon.max.to_vec2() / ppp).to_pos2());
-        *open = Some(Open { icon, focused: false, draft: Draft::default(), rect: None });
+        let icon = Rect::from_min_max(
+            (icon.min.to_vec2() / ppp).to_pos2(),
+            (icon.max.to_vec2() / ppp).to_pos2(),
+        );
+        *open = Some(Open {
+            icon,
+            focused: false,
+            draft: Draft::default(),
+            rect: None,
+        });
         // Focus, so a click elsewhere (or Alt+Tab) closes the panel through the focus event.
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         ctx.request_repaint();
     }
     let mut guard = OPEN.lock().unwrap_or_else(|e| e.into_inner());
-    let Some(open) = guard.as_mut() else { return false };
+    let Some(open) = guard.as_mut() else {
+        return false;
+    };
     let focused = ctx.input(|i| i.viewport().focused);
     if focused == Some(true) {
         open.focused = true;
@@ -268,9 +306,13 @@ pub fn show(ctx: &egui::Context) -> bool {
         return false;
     }
     // The work area the overlay covers, in screen points.
-    let work = ctx.input(|i| i.viewport().inner_rect).unwrap_or_else(|| ctx.content_rect());
+    let work = ctx
+        .input(|i| i.viewport().inner_rect)
+        .unwrap_or_else(|| ctx.content_rect());
     let id = egui::Id::new("foxglove-tray-panel");
-    let size = egui::AreaState::load(ctx, id).and_then(|s| s.size).unwrap_or(egui::vec2(WIDTH, 560.0));
+    let size = egui::AreaState::load(ctx, id)
+        .and_then(|s| s.size)
+        .unwrap_or(egui::vec2(WIDTH, 560.0));
     let at = place(open.icon, work, size) - work.min.to_vec2();
     let v = view(ctx);
     let mut intents = Vec::new();
@@ -281,7 +323,9 @@ pub fn show(ctx: &egui::Context) -> bool {
         .response;
     open.rect = Some(response.rect);
     let clicked_outside = ctx.input(|i| i.pointer.any_pressed())
-        && ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| !response.rect.contains(p));
+        && ctx
+            .input(|i| i.pointer.interact_pos())
+            .is_some_and(|p| !response.rect.contains(p));
     drop(guard);
     let mut open_settings = false;
     for intent in intents {
@@ -300,7 +344,11 @@ const CORNER: u8 = 10;
 /// While the panel is open and drawn: the part of the overlay window that takes the mouse, in
 /// window pixels (see [`region`]).
 pub fn hit_region(ctx: &egui::Context) -> Option<[i32; 5]> {
-    let rect = OPEN.lock().unwrap_or_else(|e| e.into_inner()).as_ref()?.rect?;
+    let rect = OPEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()?
+        .rect?;
     Some(region(rect, ctx.pixels_per_point()))
 }
 
@@ -329,7 +377,11 @@ fn act(ctx: &egui::Context, intent: Intent) -> bool {
         }
         Intent::Lights(on) => ks::set_lights(on, ctx.clone()),
         Intent::Effect(e) => ks::set_effect(e, ctx.clone()),
-        Intent::Color { hue, sat, brightness } => ks::set_color(hue, sat, brightness, ctx.clone()),
+        Intent::Color {
+            hue,
+            sat,
+            brightness,
+        } => ks::set_color(hue, sat, brightness, ctx.clone()),
         Intent::NextArt => {
             if let Some(h) = super::art_service::handle() {
                 let _ = h.next();
@@ -349,19 +401,26 @@ fn act(ctx: &egui::Context, intent: Intent) -> bool {
 }
 
 /// A part of the panel: a line above it and a small label (not a settings section).
-fn part(ui: &mut egui::Ui, label: &str, right: impl FnOnce(&mut egui::Ui), add: impl FnOnce(&mut egui::Ui)) {
+fn part(
+    ui: &mut egui::Ui,
+    label: &str,
+    right: impl FnOnce(&mut egui::Ui),
+    add: impl FnOnce(&mut egui::Ui),
+) {
     let p = theme::palette(ui);
     let (line, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), Sense::hover());
     ui.painter().rect_filled(line, 0.0, p.line);
-    egui::Frame::new().inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            ui.label(theme::caps_label(ui, label));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
+    egui::Frame::new()
+        .inner_margin(egui::Margin::symmetric(18, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(theme::caps_label(ui, label));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), right);
+            });
+            ui.add_space(4.0);
+            add(ui);
         });
-        ui.add_space(4.0);
-        add(ui);
-    });
 }
 
 /// Paints the panel; returns what was clicked.
@@ -464,20 +523,23 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
 
 fn half_chip(ui: &mut egui::Ui, name: &str, tone: Tone, text: &str) {
     let p = theme::palette(ui);
-    theme::card(ui).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
-            let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
-            let color = match tone {
-                Tone::Ok => p.ok,
-                Tone::Warn => p.warn,
-                Tone::Off => p.muted,
-            };
-            ui.painter().circle_filled(dot.center(), 4.0, color);
-            ui.label(RichText::new(name).strong().color(p.text_strong));
+    theme::card(ui)
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
+                let color = match tone {
+                    Tone::Ok => p.ok,
+                    Tone::Warn => p.warn,
+                    Tone::Off => p.muted,
+                };
+                ui.painter().circle_filled(dot.center(), 4.0, color);
+                ui.label(RichText::new(name).strong().color(p.text_strong));
+            });
+            ui.label(text);
         });
-        ui.label(text);
-    });
 }
 
 fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>) {
@@ -488,7 +550,13 @@ fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>)
         "Lights",
         |ui| {
             let mut on = left.is_some_and(|l| l.on);
-            if ui.add_enabled(v.lights_ready && left.is_some(), egui::Checkbox::new(&mut on, "On")).changed() {
+            if ui
+                .add_enabled(
+                    v.lights_ready && left.is_some(),
+                    egui::Checkbox::new(&mut on, "On"),
+                )
+                .changed()
+            {
                 switched = Some(on);
             }
         },
@@ -511,9 +579,17 @@ fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>)
                     for (name, rgb) in super::lights_page::SWATCHES {
                         let selected = super::lights_page::is_swatch((l.hue, l.sat), rgb);
                         let color = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-                        if super::lights_page::swatch(ui, color, selected).on_hover_text(name).clicked() && !selected {
+                        if super::lights_page::swatch(ui, color, selected)
+                            .on_hover_text(name)
+                            .clicked()
+                            && !selected
+                        {
                             let (hue, sat) = super::accent::hue_sat(rgb[0], rgb[1], rgb[2]);
-                            out.push(Intent::Color { hue, sat, brightness: l.brightness });
+                            out.push(Intent::Color {
+                                hue,
+                                sat,
+                                brightness: l.brightness,
+                            });
                         }
                     }
                 });
@@ -529,7 +605,11 @@ fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>)
                 if r.drag_stopped() || (r.changed() && !r.dragged()) {
                     draft.brightness = None;
                     if b != l.brightness {
-                        out.push(Intent::Color { hue: l.hue, sat: l.sat, brightness: b });
+                        out.push(Intent::Color {
+                            hue: l.hue,
+                            sat: l.sat,
+                            brightness: b,
+                        });
                     }
                 }
             });
@@ -557,7 +637,11 @@ fn art_thumb(ui: &mut egui::Ui, image: Option<&egui::ColorImage>) {
                 Some((k, t)) if *k == key => t.clone(),
                 _ => {
                     let half = super::art_ui::thumbnail(stored, true);
-                    let t = ui.ctx().load_texture("foxglove-tray-art", half, egui::TextureOptions::NEAREST);
+                    let t = ui.ctx().load_texture(
+                        "foxglove-tray-art",
+                        half,
+                        egui::TextureOptions::NEAREST,
+                    );
                     *cache = Some((key, t.clone()));
                     t
                 }
@@ -566,7 +650,13 @@ fn art_thumb(ui: &mut egui::Ui, image: Option<&egui::ColorImage>) {
         }
         None => {
             let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-            ui.painter().rect(rect, CornerRadius::same(3), Color32::from_rgb(0x0b, 0x0d, 0x0c), Stroke::new(1.0, p.control_line), egui::StrokeKind::Inside);
+            ui.painter().rect(
+                rect,
+                CornerRadius::same(3),
+                Color32::from_rgb(0x0b, 0x0d, 0x0c),
+                Stroke::new(1.0, p.control_line),
+                egui::StrokeKind::Inside,
+            );
         }
     }
 }
@@ -606,17 +696,26 @@ pub mod tests {
         let work = screen(Edge::Top);
         let icon = r(1700.0, 8.0, 24.0, 32.0);
         assert_eq!(edge(icon, work), Edge::Top);
-        assert_eq!(place(icon, work, PANEL), pos2(1920.0 - 400.0 - MARGIN, 48.0 + MARGIN));
+        assert_eq!(
+            place(icon, work, PANEL),
+            pos2(1920.0 - 400.0 - MARGIN, 48.0 + MARGIN)
+        );
 
         let work = screen(Edge::Left);
         let icon = r(12.0, 1000.0, 24.0, 24.0);
         assert_eq!(edge(icon, work), Edge::Left);
-        assert_eq!(place(icon, work, PANEL), pos2(48.0 + MARGIN, 1080.0 - 600.0 - MARGIN));
+        assert_eq!(
+            place(icon, work, PANEL),
+            pos2(48.0 + MARGIN, 1080.0 - 600.0 - MARGIN)
+        );
 
         let work = screen(Edge::Right);
         let icon = r(1884.0, 300.0, 24.0, 24.0);
         assert_eq!(edge(icon, work), Edge::Right);
-        assert_eq!(place(icon, work, PANEL), pos2(1872.0 - 400.0 - MARGIN, 312.0 - 300.0));
+        assert_eq!(
+            place(icon, work, PANEL),
+            pos2(1872.0 - 400.0 - MARGIN, 312.0 - 300.0)
+        );
     }
 
     #[test]
@@ -636,14 +735,20 @@ pub mod tests {
     #[test]
     fn the_pause_button_pauses_and_resumes() {
         assert_eq!(pause_button(false), ("Pause Foxglove", Intent::Pause(true)));
-        assert_eq!(pause_button(true), ("Resume Foxglove", Intent::Pause(false)));
+        assert_eq!(
+            pause_button(true),
+            ("Resume Foxglove", Intent::Pause(false))
+        );
     }
 
     #[test]
     fn paused_the_lights_and_art_rest() {
         let v = while_paused(sample());
         assert!(v.lights_ready && v.art_ready, "not paused: as they were");
-        let v = while_paused(View { paused: true, ..sample() });
+        let v = while_paused(View {
+            paused: true,
+            ..sample()
+        });
         assert!(!v.lights_ready && !v.art_ready);
         assert_eq!(v.profiles, sample().profiles, "profiles stay");
     }
@@ -651,9 +756,15 @@ pub mod tests {
     #[test]
     fn the_hit_region_covers_the_panel_in_pixels() {
         // 100 %: the panel's own rectangle; the corner is the radius doubled.
-        assert_eq!(region(r(1508.0, 420.0, 400.0, 600.0), 1.0), [1508, 420, 1908, 1020, 20]);
+        assert_eq!(
+            region(r(1508.0, 420.0, 400.0, 600.0), 1.0),
+            [1508, 420, 1908, 1020, 20]
+        );
         // 150 %: points become pixels, rounded outward.
-        assert_eq!(region(r(10.3, 20.6, 400.0, 600.0), 1.5), [15, 30, 616, 931, 30]);
+        assert_eq!(
+            region(r(10.3, 20.6, 400.0, 600.0), 1.5),
+            [15, 30, 616, 931, 30]
+        );
         // 125 % with a fractional size: the right and bottom edges round up.
         let [l, t, rgt, b, c] = region(r(0.0, 0.0, 400.4, 559.9), 1.25);
         assert_eq!((l, t, rgt, b, c), (0, 0, 501, 700, 25));
@@ -667,24 +778,64 @@ pub mod tests {
 
     #[test]
     fn halves_in_a_few_words() {
-        assert_eq!(halves(&StripState::default()).map(|h| h.1), ["not connected", "not connected"]);
-        let s = StripState { keyboard: true, usb: Some(true), right_battery: Some(61), right_build: Some(Ok("x".into())), ..Default::default() };
-        assert_eq!(halves(&s), [(Tone::Ok, "on USB".to_string()), (Tone::Ok, "battery 61%".to_string())]);
-        let s = StripState { keyboard: true, usb: Some(false), right_build: Some(Err("no reply".into())), ..Default::default() };
-        assert_eq!(halves(&s), [(Tone::Ok, "on Bluetooth".to_string()), (Tone::Warn, "no reply yet".to_string())]);
+        assert_eq!(
+            halves(&StripState::default()).map(|h| h.1),
+            ["not connected", "not connected"]
+        );
+        let s = StripState {
+            keyboard: true,
+            usb: Some(true),
+            right_battery: Some(61),
+            right_build: Some(Ok("x".into())),
+            ..Default::default()
+        };
+        assert_eq!(
+            halves(&s),
+            [
+                (Tone::Ok, "on USB".to_string()),
+                (Tone::Ok, "battery 61%".to_string())
+            ]
+        );
+        let s = StripState {
+            keyboard: true,
+            usb: Some(false),
+            right_build: Some(Err("no reply".into())),
+            ..Default::default()
+        };
+        assert_eq!(
+            halves(&s),
+            [
+                (Tone::Ok, "on Bluetooth".to_string()),
+                (Tone::Warn, "no reply yet".to_string())
+            ]
+        );
     }
 
     /// The previews' panel: both halves seen, two profiles, the lights on, art playing.
     pub fn sample() -> View {
         let (snapshot, library) = super::super::art_ui::tests::sample();
         let image = snapshot.showing_file().and_then(|p| {
-            super::super::art_ui::tiles(&library.entries).0.into_iter().find(|t| t.path == *p).map(|t| t.image)
+            super::super::art_ui::tiles(&library.entries)
+                .0
+                .into_iter()
+                .find(|t| t.path == *p)
+                .map(|t| t.image)
         });
         View {
-            halves: [(Tone::Ok, "on USB".into()), (Tone::Ok, "battery 61%".into())],
+            halves: [
+                (Tone::Ok, "on USB".into()),
+                (Tone::Ok, "battery 61%".into()),
+            ],
             profiles: vec!["Work".into(), "Game".into()],
             active_profile: None,
-            lights: Some(RgbHalf { on: true, hue: 26, sat: 76, brightness: 80, effect: 0, speed: 3 }),
+            lights: Some(RgbHalf {
+                on: true,
+                hue: 26,
+                sat: 76,
+                brightness: 80,
+                effect: 0,
+                speed: 3,
+            }),
             lights_ready: true,
             art_name: super::super::art_ui::playing(&snapshot).0,
             art_image: image,

@@ -18,7 +18,12 @@ pub struct Panel {
 impl Panel {
     pub fn new(width: usize, height: usize) -> Self {
         let stride = width.div_ceil(8);
-        Panel { width, height, stride, bits: vec![0; stride * height] }
+        Panel {
+            width,
+            height,
+            stride,
+            bits: vec![0; stride * height],
+        }
     }
 
     pub fn clear(&mut self) {
@@ -50,7 +55,10 @@ impl DrawTarget for Panel {
     type Color = BinaryColor;
     type Error = core::convert::Infallible;
 
-    fn draw_iter<I: IntoIterator<Item = Pixel<BinaryColor>>>(&mut self, pixels: I) -> Result<(), Self::Error> {
+    fn draw_iter<I: IntoIterator<Item = Pixel<BinaryColor>>>(
+        &mut self,
+        pixels: I,
+    ) -> Result<(), Self::Error> {
         for Pixel(p, c) in pixels {
             self.set(p.x, p.y, c.is_on());
         }
@@ -70,8 +78,15 @@ pub fn show(t: &impl Transport, frame: &[u8], last: Option<&[u8]>, stride: usize
     // Wide rows or tall panels go byte-addressed (ROWS_AT, #289); the rest as whole rows.
     if protocol::panel::needs_rows_at(stride, rows) {
         for y in (0..rows).filter(|y| changed(*y)) {
-            for (i, chunk) in frame[y * stride..(y + 1) * stride].chunks(protocol::panel::ROWS_AT_MAX).enumerate() {
-                t.send(&protocol::rows_at(y, i * protocol::panel::ROWS_AT_MAX, chunk))?;
+            for (i, chunk) in frame[y * stride..(y + 1) * stride]
+                .chunks(protocol::panel::ROWS_AT_MAX)
+                .enumerate()
+            {
+                t.send(&protocol::rows_at(
+                    y,
+                    i * protocol::panel::ROWS_AT_MAX,
+                    chunk,
+                ))?;
                 sent += 1;
             }
         }
@@ -86,7 +101,11 @@ pub fn show(t: &impl Transport, frame: &[u8], last: Option<&[u8]>, stride: usize
             continue;
         }
         let n = per_report.min(rows - y);
-        t.send(&protocol::rows(y, &frame[y * stride..(y + n) * stride], stride))?;
+        t.send(&protocol::rows(
+            y,
+            &frame[y * stride..(y + n) * stride],
+            stride,
+        ))?;
         sent += 1;
         y += n;
     }
@@ -96,7 +115,12 @@ pub fn show(t: &impl Transport, frame: &[u8], last: Option<&[u8]>, stride: usize
 
 /// Asks the keyboard for its panel size, right-half link and battery.
 pub fn hello(t: &impl Transport) -> Result<Hello> {
-    let r = t.request(&protocol::hello(), protocol::PANEL, protocol::panel::HELLO, Duration::from_millis(500))?;
+    let r = t.request(
+        &protocol::hello(),
+        protocol::PANEL,
+        protocol::panel::HELLO,
+        Duration::from_millis(500),
+    )?;
     Ok(Hello::parse(&r))
 }
 
@@ -104,8 +128,14 @@ pub fn hello(t: &impl Transport) -> Result<Hello> {
 /// first for the count, then the rest.
 pub fn screens(t: &impl Transport) -> Result<Vec<protocol::ScreenDescriptor>> {
     let ask = |i: u8| -> Result<protocol::ScreenDescriptor> {
-        let r = t.request(&protocol::screens(i), protocol::PANEL, protocol::panel::SCREENS, Duration::from_millis(500))?;
-        protocol::ScreenDescriptor::parse(&r).map_err(|status| anyhow::anyhow!("screen {i}: status {status}"))
+        let r = t.request(
+            &protocol::screens(i),
+            protocol::PANEL,
+            protocol::panel::SCREENS,
+            Duration::from_millis(500),
+        )?;
+        protocol::ScreenDescriptor::parse(&r)
+            .map_err(|status| anyhow::anyhow!("screen {i}: status {status}"))
     };
     let first = ask(0)?;
     let mut all = vec![first.clone()];
@@ -118,11 +148,17 @@ pub fn screens(t: &impl Transport) -> Result<Vec<protocol::ScreenDescriptor>> {
 /// The PC-drawable panel among `screens`: the first 1-bit panel that takes the rows it needs
 /// (ROWS, or ROWS_AT when its rows are too wide or it's too tall for ROWS). Reserved formats
 /// (RGB565, 2-bit grey) aren't drawn (#289).
-pub fn drawable_panel(screens: &[protocol::ScreenDescriptor]) -> Option<&protocol::ScreenDescriptor> {
+pub fn drawable_panel(
+    screens: &[protocol::ScreenDescriptor],
+) -> Option<&protocol::ScreenDescriptor> {
     use protocol::ScreenDescriptor as S;
     screens.iter().find(|s| {
         let stride = usize::from(s.width).div_ceil(8);
-        let ops = if protocol::panel::needs_rows_at(stride, usize::from(s.height)) { S::OP_ROWS_AT } else { S::OP_ROWS | S::OP_ROWS_AT };
+        let ops = if protocol::panel::needs_rows_at(stride, usize::from(s.height)) {
+            S::OP_ROWS_AT
+        } else {
+            S::OP_ROWS | S::OP_ROWS_AT
+        };
         s.kind == protocol::ScreenKind::Panel && s.ops & ops != 0 && s.format == S::FORMAT_1BIT
     })
 }
@@ -151,17 +187,41 @@ pub(crate) mod tests {
             Ok(())
         }
 
-        fn request(&self, report: &[u8], proto: u8, cmd: u8, _: Duration) -> Result<[u8; protocol::REPORT]> {
+        fn request(
+            &self,
+            report: &[u8],
+            proto: u8,
+            cmd: u8,
+            _: Duration,
+        ) -> Result<[u8; protocol::REPORT]> {
             self.send(report)?;
-            let r = self.replies.borrow_mut().pop_front().ok_or_else(|| anyhow::anyhow!("no reply"))?;
+            let r = self
+                .replies
+                .borrow_mut()
+                .pop_front()
+                .ok_or_else(|| anyhow::anyhow!("no reply"))?;
             anyhow::ensure!(protocol::is_reply(&r, proto, cmd), "wrong reply");
             Ok(r)
         }
     }
 
-    fn screen(count: u8, index: u8, id: u8, kind: u8, w: u16, h: u16, ops: u16) -> [u8; protocol::REPORT] {
+    fn screen(
+        count: u8,
+        index: u8,
+        id: u8,
+        kind: u8,
+        w: u16,
+        h: u16,
+        ops: u16,
+    ) -> [u8; protocol::REPORT] {
         let mut r = [0u8; protocol::REPORT];
-        r[..5].copy_from_slice(&[protocol::PANEL, 0x80 | protocol::panel::SCREENS, 0, count, index]);
+        r[..5].copy_from_slice(&[
+            protocol::PANEL,
+            0x80 | protocol::panel::SCREENS,
+            0,
+            count,
+            index,
+        ]);
         r[5] = id;
         r[6] = kind;
         r[8] = if kind == 0 { 0xff } else { 0 };
@@ -181,7 +241,10 @@ pub(crate) mod tests {
         ]);
         let all = screens(&t).unwrap();
         assert_eq!(all.len(), 3);
-        assert_eq!(t.sent.borrow().iter().map(|r| r[2]).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(
+            t.sent.borrow().iter().map(|r| r[2]).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
         let panel = drawable_panel(&all).unwrap();
         assert_eq!((panel.id, panel.width, panel.height), (1, 64, 52));
         assert!(drawable_panel(&all[..1]).is_none());
@@ -198,8 +261,14 @@ pub(crate) mod tests {
         let parse = |r: [u8; protocol::REPORT]| protocol::ScreenDescriptor::parse(&r).unwrap();
         assert!(drawable_panel(&[parse(narrow)]).is_some());
         assert!(drawable_panel(&[parse(wide)]).is_some());
-        assert!(drawable_panel(&[parse(wide_rows_only)]).is_none(), "too wide for ROWS, and no ROWS_AT");
-        assert!(drawable_panel(&[parse(rgb)]).is_none(), "RGB565 is reserved");
+        assert!(
+            drawable_panel(&[parse(wide_rows_only)]).is_none(),
+            "too wide for ROWS, and no ROWS_AT"
+        );
+        assert!(
+            drawable_panel(&[parse(rgb)]).is_none(),
+            "RGB565 is reserved"
+        );
         assert!(parse(rgb).format_name().contains("reserved"));
         // A 300-wide panel goes byte-addressed: 38-byte rows in 25 + 13.
         let t = Mock::default();

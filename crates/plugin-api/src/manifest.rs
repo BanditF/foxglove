@@ -94,10 +94,14 @@ impl SettingDecl {
     /// wrong type.
     pub fn accept(&self, value: &serde_json::Value) -> Option<serde_json::Value> {
         match (self.kind, value) {
-            (SettingKind::Bool, serde_json::Value::Bool(_)) | (SettingKind::Text, serde_json::Value::String(_)) => Some(value.clone()),
+            (SettingKind::Bool, serde_json::Value::Bool(_))
+            | (SettingKind::Text, serde_json::Value::String(_)) => Some(value.clone()),
             (SettingKind::Int, v) => {
                 let n = v.as_i64()?;
-                Some(n.clamp(self.min.unwrap_or(i64::MIN), self.max.unwrap_or(i64::MAX)).into())
+                Some(
+                    n.clamp(self.min.unwrap_or(i64::MIN), self.max.unwrap_or(i64::MAX))
+                        .into(),
+                )
             }
             _ => None,
         }
@@ -137,34 +141,58 @@ impl Manifest {
     pub fn parse(text: &str, app: Version) -> Result<Manifest, String> {
         let m: Manifest = toml::from_str(text).map_err(|e| e.to_string())?;
         let id_ok = m.id.split('.').count() >= 2
-            && m.id
-                .split('.')
-                .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+            && m.id.split('.').all(|p| {
+                !p.is_empty()
+                    && p.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            });
         if !id_ok {
-            return Err(format!("id {:?} must be reverse-DNS, like com.example.plugin", m.id));
+            return Err(format!(
+                "id {:?} must be reverse-DNS, like com.example.plugin",
+                m.id
+            ));
         }
-        let api = Version::parse(&m.api).ok_or_else(|| format!("api {:?} must be major.minor", m.api))?;
+        let api =
+            Version::parse(&m.api).ok_or_else(|| format!("api {:?} must be major.minor", m.api))?;
         if !api.served_by(app) {
             return Err(format!("built for API {api}; this Foxglove speaks {app}"));
         }
         let program = m.run.first().ok_or("run must name the program")?;
-        let escapes = std::path::Path::new(program)
-            .components()
-            .any(|c| !matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir));
+        let escapes = std::path::Path::new(program).components().any(|c| {
+            !matches!(
+                c,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        });
         if escapes {
-            return Err(format!("run {program:?} must stay inside the plugin's folder"));
+            return Err(format!(
+                "run {program:?} must stay inside the plugin's folder"
+            ));
         }
         let mut ids = std::collections::HashSet::new();
         for a in &m.actions {
-            let ok = !a.id.is_empty() && a.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            let ok = !a.id.is_empty()
+                && a.id
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
             if !ok || !ids.insert(a.id.as_str()) || a.name.trim().is_empty() {
-                return Err(format!("action {:?} needs a unique id (a-z, 0-9, -) and a name", a.id));
+                return Err(format!(
+                    "action {:?} needs a unique id (a-z, 0-9, -) and a name",
+                    a.id
+                ));
             }
         }
         let mut names = std::collections::HashSet::new();
         for s in &m.settings {
-            let ok = !s.name.is_empty() && s.name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
-            if !ok || !names.insert(s.name.as_str()) || s.label.trim().is_empty() || s.accept(&s.default).is_none() {
+            let ok = !s.name.is_empty()
+                && s.name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+            if !ok
+                || !names.insert(s.name.as_str())
+                || s.label.trim().is_empty()
+                || s.accept(&s.default).is_none()
+            {
                 return Err(format!("setting {:?} needs a unique name (a-z, 0-9, -), a label and a default of its kind", s.name));
             }
         }
@@ -176,7 +204,11 @@ impl Manifest {
 
     /// Permissions in `self` that `previous` didn't have: an update needs the user's OK for these.
     pub fn added_permissions(&self, previous: &Manifest) -> Vec<Permission> {
-        self.permissions.iter().filter(|p| !previous.permissions.contains(p)).cloned().collect()
+        self.permissions
+            .iter()
+            .filter(|p| !previous.permissions.contains(p))
+            .cloned()
+            .collect()
     }
 }
 
@@ -193,35 +225,59 @@ name = \"obs-password\"
 label = \"OBS password\"
 ";
         assert!(Manifest::parse(&plugin(decl), APP).is_err());
-        let with = plugin(&format!("permissions = [\"secrets\"]
-{decl}"));
-        assert_eq!(Manifest::parse(&with, APP).unwrap().secrets[0].name, "obs-password");
+        let with = plugin(&format!(
+            "permissions = [\"secrets\"]
+{decl}"
+        ));
+        assert_eq!(
+            Manifest::parse(&with, APP).unwrap().secrets[0].name,
+            "obs-password"
+        );
     }
 
     #[test]
     fn actions_need_unique_ids_and_names() {
-        let ok = plugin("[[actions]]
+        let ok = plugin(
+            "[[actions]]
 id = \"toggle-mute\"
 name = \"Toggle mute\"
-");
-        assert_eq!(Manifest::parse(&ok, APP).unwrap().actions[0].id, "toggle-mute");
-        let twice = plugin("[[actions]]
+",
+        );
+        assert_eq!(
+            Manifest::parse(&ok, APP).unwrap().actions[0].id,
+            "toggle-mute"
+        );
+        let twice = plugin(
+            "[[actions]]
 id = \"a\"
 name = \"A\"
 [[actions]]
 id = \"a\"
 name = \"B\"
-");
+",
+        );
         assert!(Manifest::parse(&twice, APP).is_err());
-        assert!(Manifest::parse(&plugin("[[actions]]
+        assert!(Manifest::parse(
+            &plugin(
+                "[[actions]]
 id = \"Bad Id\"
 name = \"x\"
-"), APP).is_err());
-        assert!(Manifest::parse(&plugin("[[actions]]
+"
+            ),
+            APP
+        )
+        .is_err());
+        assert!(Manifest::parse(
+            &plugin(
+                "[[actions]]
 id = \"a\"
 name = \"x\"
 key = \"F13\"
-"), APP).is_err());
+"
+            ),
+            APP
+        )
+        .is_err());
     }
 
     #[test]
@@ -244,20 +300,30 @@ key = \"F13\"
 
     #[test]
     fn parses_and_checks() {
-        let m = Manifest::parse(&plugin("permissions = [\"facts.write:weather.*\", \"net\"]\nprovides = [\"facts\"]"), APP).unwrap();
-        assert_eq!(m.permissions, vec![Permission::FactsWrite("weather.*".into()), Permission::Net]);
+        let m = Manifest::parse(
+            &plugin("permissions = [\"facts.write:weather.*\", \"net\"]\nprovides = [\"facts\"]"),
+            APP,
+        )
+        .unwrap();
+        assert_eq!(
+            m.permissions,
+            vec![Permission::FactsWrite("weather.*".into()), Permission::Net]
+        );
         assert_eq!(m.provides, vec![Provides::Facts]);
         assert!(Manifest::parse(&plugin("permissions = [\"root\"]"), APP).is_err());
         assert!(Manifest::parse(&plugin("surprise = 1"), APP).is_err());
         assert!(Manifest::parse(&plugin("").replace("1.0\"\nrun", "2.0\"\nrun"), APP).is_err());
         assert!(Manifest::parse(&plugin("").replace("weather.exe", "../evil.exe"), APP).is_err());
-        assert!(Manifest::parse(&plugin("").replace("com.example.weather", "weather"), APP).is_err());
+        assert!(
+            Manifest::parse(&plugin("").replace("com.example.weather", "weather"), APP).is_err()
+        );
     }
 
     #[test]
     fn update_lists_added_permissions() {
         let old = Manifest::parse(&plugin("permissions = [\"net\"]"), APP).unwrap();
-        let new = Manifest::parse(&plugin("permissions = [\"net\", \"lighting.write\"]"), APP).unwrap();
+        let new =
+            Manifest::parse(&plugin("permissions = [\"net\", \"lighting.write\"]"), APP).unwrap();
         assert_eq!(new.added_permissions(&old), vec![Permission::LightingWrite]);
     }
 }

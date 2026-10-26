@@ -27,7 +27,11 @@ impl Match {
             }
         }
         match &self.product {
-            Some(p) => info.product_string().unwrap_or("").to_lowercase().contains(&p.to_lowercase()),
+            Some(p) => info
+                .product_string()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains(&p.to_lowercase()),
             None => true,
         }
     }
@@ -45,7 +49,13 @@ impl Keyboard {
     /// Finds the first Raw HID interface that answers HELLO, optionally only products whose name
     /// contains `product`.
     pub fn open(api: &mut HidApi, product: Option<&str>) -> Result<Keyboard> {
-        Self::open_matching(api, &Match { product: product.map(str::to_string), ..Match::default() })
+        Self::open_matching(
+            api,
+            &Match {
+                product: product.map(str::to_string),
+                ..Match::default()
+            },
+        )
     }
 
     pub fn open_matching(api: &mut HidApi, m: &Match) -> Result<Keyboard> {
@@ -62,8 +72,15 @@ impl Keyboard {
             }
             let name = info.product_string().unwrap_or("").to_string();
             tried += 1;
-            let Ok(dev) = info.open_device(api) else { continue };
-            let mut kb = Keyboard { dev, bus_type: info.bus_type(), product: name, hello: None };
+            let Ok(dev) = info.open_device(api) else {
+                continue;
+            };
+            let mut kb = Keyboard {
+                dev,
+                bus_type: info.bus_type(),
+                product: name,
+                hello: None,
+            };
             // A reply now and then goes missing while other reports are in flight, so ask again;
             // a keyboard that may lack the host link gets one try, to connect quickly.
             let tries = if m.without_host_link { 1 } else { 3 };
@@ -75,7 +92,9 @@ impl Keyboard {
         if tried == 0 {
             bail!("no Raw HID keyboard (usage page 0xFF60) found");
         }
-        bail!("found {tried} Raw HID interface(s), but none answered: flash the host-panel firmware")
+        bail!(
+            "found {tried} Raw HID interface(s), but none answered: flash the host-panel firmware"
+        )
     }
 
     /// Drops input reports already waiting (other apps' traffic, stale replies).
@@ -95,7 +114,12 @@ impl Keyboard {
     }
 
     pub fn say_hello(&self) -> Result<Hello> {
-        let r = self.request(&protocol::hello(), protocol::PANEL, protocol::panel::HELLO, Duration::from_millis(500))?;
+        let r = self.request(
+            &protocol::hello(),
+            protocol::PANEL,
+            protocol::panel::HELLO,
+            Duration::from_millis(500),
+        )?;
         Ok(Hello::parse(&r))
     }
 }
@@ -114,13 +138,22 @@ impl Transport for Keyboard {
         Ok(())
     }
 
-    fn request(&self, report: &[u8], proto: u8, cmd: u8, timeout: Duration) -> Result<[u8; REPORT]> {
+    fn request(
+        &self,
+        report: &[u8],
+        proto: u8,
+        cmd: u8,
+        timeout: Duration,
+    ) -> Result<[u8; REPORT]> {
         self.drain();
         self.send(report)?;
         let end = Instant::now() + timeout;
         let mut buf = [0u8; REPORT];
         while Instant::now() < end {
-            let left = end.saturating_duration_since(Instant::now()).as_millis().min(i32::MAX as u128) as i32;
+            let left = end
+                .saturating_duration_since(Instant::now())
+                .as_millis()
+                .min(i32::MAX as u128) as i32;
             let n = self.dev.read_timeout(&mut buf, left.max(1))?;
             if protocol::is_reply(&buf[..n], proto, cmd) {
                 return Ok(buf);
@@ -151,8 +184,17 @@ mod tests {
 
     #[test]
     fn output_report_only_for_windows_bluetooth() {
-        for bus in [BusType::Unknown, BusType::Usb, BusType::Bluetooth, BusType::I2c, BusType::Spi] {
-            assert_eq!(use_output_report(bus, true), matches!(bus, BusType::Bluetooth));
+        for bus in [
+            BusType::Unknown,
+            BusType::Usb,
+            BusType::Bluetooth,
+            BusType::I2c,
+            BusType::Spi,
+        ] {
+            assert_eq!(
+                use_output_report(bus, true),
+                matches!(bus, BusType::Bluetooth)
+            );
             assert!(!use_output_report(bus, false));
         }
     }

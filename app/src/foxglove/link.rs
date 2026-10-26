@@ -145,9 +145,14 @@ fn watch_arrivals() {
             let watch = super::device_watch::DeviceWatch::interfaces(
                 true,
                 Box::new(|path| {
-                    let ours = LINKS.get().and_then(|links| links.try_lock().ok()).is_some_and(|links| {
-                        links.keys().any(|(vid, pid)| super::connection::matches_interface(path, *vid, *pid))
-                    });
+                    let ours = LINKS
+                        .get()
+                        .and_then(|links| links.try_lock().ok())
+                        .is_some_and(|links| {
+                            links.keys().any(|(vid, pid)| {
+                                super::connection::matches_interface(path, *vid, *pid)
+                            })
+                        });
                     if ours {
                         reconnect();
                     }

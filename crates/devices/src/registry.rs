@@ -164,7 +164,9 @@ impl Registry {
         let sink = self.bus.sink(id.clone());
         let device = backend.open(&entry.info, sink.clone())?;
         if device.info().id != *id {
-            return Err(DeviceError::Backend("opened device identity changed".into()));
+            return Err(DeviceError::Backend(
+                "opened device identity changed".into(),
+            ));
         }
         entry.device = Some(device);
         sink.emit(DeviceEvent::Connected);

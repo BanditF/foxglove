@@ -53,16 +53,49 @@ mod tests {
     #[test]
     fn states_become_facts_and_a_failure_is_never_muted() {
         let f = Facts::default();
-        publish(&f, &Mic { state: MicState::Muted, id: "{0.0.1}".into(), name: "Headset".into() });
+        publish(
+            &f,
+            &Mic {
+                state: MicState::Muted,
+                id: "{0.0.1}".into(),
+                name: "Headset".into(),
+            },
+        );
         assert_eq!(state(&f, "mic.state"), Some(Value::Text("muted".into())));
-        assert_eq!(state(&f, "mic.endpoint_name"), Some(Value::Text("Headset".into())));
-        publish(&f, &Mic { state: MicState::Unknown("E_ACCESSDENIED".into()), id: "{0.0.1}".into(), name: "Headset".into() });
+        assert_eq!(
+            state(&f, "mic.endpoint_name"),
+            Some(Value::Text("Headset".into()))
+        );
+        publish(
+            &f,
+            &Mic {
+                state: MicState::Unknown("E_ACCESSDENIED".into()),
+                id: "{0.0.1}".into(),
+                name: "Headset".into(),
+            },
+        );
         assert_eq!(state(&f, "mic.state"), Some(Value::Text("unknown".into())));
-        assert_eq!(state(&f, "mic.error"), Some(Value::Text("E_ACCESSDENIED".into())));
-        publish(&f, &Mic { state: MicState::Unavailable, id: String::new(), name: String::new() });
-        assert_eq!(state(&f, "mic.state"), Some(Value::Text("unavailable".into())));
+        assert_eq!(
+            state(&f, "mic.error"),
+            Some(Value::Text("E_ACCESSDENIED".into()))
+        );
+        publish(
+            &f,
+            &Mic {
+                state: MicState::Unavailable,
+                id: String::new(),
+                name: String::new(),
+            },
+        );
+        assert_eq!(
+            state(&f, "mic.state"),
+            Some(Value::Text("unavailable".into()))
+        );
         assert_eq!(state(&f, "mic.endpoint_id"), None, "no stale device");
         assert_eq!(state(&f, "mic.error"), None);
-        assert_eq!(state(&f, "mic.app_state"), Some(Value::Text("unknown".into())));
+        assert_eq!(
+            state(&f, "mic.app_state"),
+            Some(Value::Text("unknown".into()))
+        );
     }
 }

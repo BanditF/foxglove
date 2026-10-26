@@ -107,7 +107,8 @@ impl Cycle {
     /// Imported once from the `art-cycle.json` of earlier builds.
     pub fn load() -> Self {
         let cycle: Cycle = super::store::load_or_migrate("art.cycle", || {
-            let json = crate::settings::Settings::config_file_path()?.with_file_name("art-cycle.json");
+            let json =
+                crate::settings::Settings::config_file_path()?.with_file_name("art-cycle.json");
             let cycle = serde_json::from_slice(&std::fs::read(&json).ok()?).ok()?;
             Some((cycle, vec![json]))
         });
@@ -145,7 +146,10 @@ impl Cycle {
 
     /// The art for a layer, if one is set.
     pub fn layer_art(&self, layer: u8) -> Option<&Item> {
-        self.layers.iter().find(|l| l.layer == layer).map(|l| &l.art)
+        self.layers
+            .iter()
+            .find(|l| l.layer == layer)
+            .map(|l| &l.art)
     }
 
     pub fn set_layer_art(&mut self, layer: u8, art: Option<Item>) {
@@ -184,7 +188,12 @@ pub fn resolve(item: &Item, set_count: u8, flash_used: u8) -> Option<Choice> {
 
 /// As `resolve`, with the stand-ins (art_sources) passed in: a built-in with a saved slot
 /// standing in for it shows that slot, while the slot holds a set.
-pub fn resolve_with(item: &Item, set_count: u8, flash_used: u8, stand_in: impl Fn(&str) -> Option<u8>) -> Option<Choice> {
+pub fn resolve_with(
+    item: &Item,
+    set_count: u8,
+    flash_used: u8,
+    stand_in: impl Fn(&str) -> Option<u8>,
+) -> Option<Choice> {
     let used = |n: u8| n < 8 && flash_used & (1 << n) != 0;
     match item {
         Item::BuiltIn(name) if stand_in(name).is_some_and(used) => stand_in(name).map(Choice::Slot),
@@ -226,14 +235,24 @@ mod tests {
 
     #[test]
     fn old_modes_migrate_to_triggers() {
-        let old = |mode: &str| toml::from_str::<Cycle>(&format!("mode = {mode}\nitems = []")).unwrap().migrated();
+        let old = |mode: &str| {
+            toml::from_str::<Cycle>(&format!("mode = {mode}\nitems = []"))
+                .unwrap()
+                .migrated()
+        };
         let m = old("{ Minutes = 7 }");
-        assert_eq!((m.step.clone(), m.minutes, m.follow), (vec![Step::Minutes], 7, Follow::Nothing));
+        assert_eq!(
+            (m.step.clone(), m.minutes, m.follow),
+            (vec![Step::Minutes], 7, Follow::Nothing)
+        );
         assert_eq!(old("\"LightsWake\"").step, vec![Step::LightsWake]);
         let w = old("\"Wallpaper\"");
         assert_eq!((w.step.is_empty(), w.follow), (true, Follow::Wallpaper));
         assert_eq!(old("\"Off\""), Cycle::default());
-        assert!(!toml::to_string(&m).unwrap().contains("mode"), "mode is never written back");
+        assert!(
+            !toml::to_string(&m).unwrap().contains("mode"),
+            "mode is never written back"
+        );
     }
 
     #[test]
@@ -242,7 +261,10 @@ mod tests {
         c.set_layer_art(3, Some(Item::BuiltIn("Bandit_Radar".into())));
         c.set_layer_art(1, Some(Item::Slot(0)));
         c.set_layer_art(3, Some(Item::Slot(2)));
-        assert_eq!(c.layers.iter().map(|l| l.layer).collect::<Vec<_>>(), vec![1, 3]);
+        assert_eq!(
+            c.layers.iter().map(|l| l.layer).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
         assert_eq!(c.layer_art(3), Some(&Item::Slot(2)));
         c.set_layer_art(1, None);
         assert_eq!(c.layer_art(1), None);
@@ -251,29 +273,57 @@ mod tests {
     #[test]
     fn empty_slots_and_unknown_names_do_not_resolve() {
         let none = |_: &str| None;
-        assert_eq!(resolve_with(&Item::Slot(3), 17, 0b1000, none), Some(Choice::Slot(3)));
+        assert_eq!(
+            resolve_with(&Item::Slot(3), 17, 0b1000, none),
+            Some(Choice::Slot(3))
+        );
         assert_eq!(resolve_with(&Item::Slot(3), 17, 0, none), None);
-        assert_eq!(resolve_with(&Item::BuiltIn("no such set".into()), 17, 0, none), None);
+        assert_eq!(
+            resolve_with(&Item::BuiltIn("no such set".into()), 17, 0, none),
+            None
+        );
         // a stand-in slot shows instead of the built-in, but only while it holds a set
         let gem = |n: &str| (n == "Bandit_Gem").then_some(2);
-        assert_eq!(resolve_with(&Item::BuiltIn("Bandit_Gem".into()), 17, 0b100, gem), Some(Choice::Slot(2)));
-        assert_ne!(resolve_with(&Item::BuiltIn("Bandit_Gem".into()), 17, 0, gem), Some(Choice::Slot(2)));
+        assert_eq!(
+            resolve_with(&Item::BuiltIn("Bandit_Gem".into()), 17, 0b100, gem),
+            Some(Choice::Slot(2))
+        );
+        assert_ne!(
+            resolve_with(&Item::BuiltIn("Bandit_Gem".into()), 17, 0, gem),
+            Some(Choice::Slot(2))
+        );
     }
 
     #[test]
     fn hotlist_round_trips_through_toml() {
         let c = Cycle {
-            items: vec![Item::BuiltIn("ZMK_1".into()), Item::Slot(2), Item::File(PathBuf::from(r"C:\art\fox.bin"))],
+            items: vec![
+                Item::BuiltIn("ZMK_1".into()),
+                Item::Slot(2),
+                Item::File(PathBuf::from(r"C:\art\fox.bin")),
+            ],
             position: 1,
             step: vec![Step::Minutes, Step::Key],
             minutes: 9,
             follow: Follow::Wallpaper,
-            layers: vec![LayerArt { layer: 3, art: Item::BuiltIn("Bandit_Radar".into()) }],
+            layers: vec![LayerArt {
+                layer: 3,
+                art: Item::BuiltIn("Bandit_Radar".into()),
+            }],
             wallpaper_monitor: Some("Monitor0".into()),
             ..Cycle::default()
         };
-        assert_eq!(toml::from_str::<Cycle>(&toml::to_string(&c).unwrap()).unwrap(), c);
-        let off = Cycle { step: vec![Step::LightsWake], ..Cycle::default() };
-        assert_eq!(toml::from_str::<Cycle>(&toml::to_string(&off).unwrap()).unwrap(), off);
+        assert_eq!(
+            toml::from_str::<Cycle>(&toml::to_string(&c).unwrap()).unwrap(),
+            c
+        );
+        let off = Cycle {
+            step: vec![Step::LightsWake],
+            ..Cycle::default()
+        };
+        assert_eq!(
+            toml::from_str::<Cycle>(&toml::to_string(&off).unwrap()).unwrap(),
+            off
+        );
     }
 }
