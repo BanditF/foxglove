@@ -242,6 +242,8 @@ pub struct Settings {
     pub held_layers: LayerMask,
     pub theme: ThemeSettings,
     pub legend_mode: LegendMode,
+    /// Foxglove: how opaque the layer overlay is drawn, in percent ([`Self::OPACITY_RANGE`]).
+    pub opacity: u8,
 }
 
 impl Default for Settings {
@@ -259,6 +261,7 @@ impl Default for Settings {
             held_layers: LayerMask::ALL,
             theme: ThemeSettings::default(),
             legend_mode: LegendMode::Stacked,
+            opacity: 100,
         }
     }
 }
@@ -266,6 +269,8 @@ impl Default for Settings {
 impl Settings {
     /// Upper bound for `activation_delay`, shared with the settings UI.
     pub const MAX_ACTIVATION_DELAY_MS: u32 = 3_000;
+    /// Foxglove: the overlay's opacity in percent; below 20 it gets hard to find.
+    pub const OPACITY_RANGE: std::ops::RangeInclusive<u8> = 20..=100;
 
     pub fn config_file_path() -> Option<PathBuf> {
         // Foxglove: FOXGLOVE_CONFIG_DIR points every settings file elsewhere (tests, the Test
@@ -334,6 +339,7 @@ impl Settings {
         }
         section.set("font_color", self.theme.font_color.to_string());
         section.set("legend_mode", self.legend_mode.to_string());
+        section.set("opacity", self.opacity.to_string());
         conf.write_to_file(path)
     }
 
@@ -396,6 +402,10 @@ impl Settings {
             if let Ok(parsed) = val.parse() {
                 s.legend_mode = parsed;
             }
+        }
+        if let Some(val) = section.get("opacity") {
+            let parsed = val.parse::<u8>().unwrap_or(s.opacity);
+            s.opacity = parsed.clamp(*Self::OPACITY_RANGE.start(), *Self::OPACITY_RANGE.end());
         }
         Some(s)
     }

@@ -133,6 +133,25 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_carries_the_overlay_opacity() {
+        let s = Settings {
+            opacity: 45,
+            ..Settings::default()
+        };
+        let p = pairs(&s);
+        assert_eq!(p.get("settings.opacity").map(String::as_str), Some("45"));
+        assert!(from_pairs(&p).is_some_and(|back| back.opacity == 45));
+        // Out of range in a hand-edited file: clamped, never invisible.
+        let mut low = p.clone();
+        low.insert("settings.opacity".into(), "0".into());
+        assert_eq!(from_pairs(&low).map(|s| s.opacity), Some(20));
+        // Missing (an older settings.ini): the look it always had.
+        let mut old = p;
+        old.remove("settings.opacity");
+        assert_eq!(from_pairs(&old).map(|s| s.opacity), Some(100));
+    }
+
+    #[test]
     fn machine_keys_are_never_overridden() {
         assert!(MACHINE.contains(&"settings.monitor"));
     }

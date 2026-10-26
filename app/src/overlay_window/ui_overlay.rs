@@ -33,6 +33,8 @@ impl OverlayApp {
             .fade_out(true)
             .title_bar(false)
             .show(ctx, |ui| {
+                // Foxglove: the overlay's opacity setting, on top of its fade.
+                ui.multiply_opacity(opacity(self.settings.active.opacity));
                 let layout = keyboard.layout();
                 let layout_size = layout.get_dimensions();
                 let overlay_space =
@@ -172,6 +174,12 @@ impl OverlayApp {
             }
         }
     }
+}
+
+/// The overlay's opacity setting (percent) as egui's 0..1 factor, clamped to the allowed range.
+fn opacity(percent: u8) -> f32 {
+    let range = crate::settings::Settings::OPACITY_RANGE;
+    f32::from(percent.clamp(*range.start(), *range.end())) / 100.0
 }
 
 fn key_tooltip(key: &crate::layout_key::LayoutKey, transparent: bool) -> Option<String> {
