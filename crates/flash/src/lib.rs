@@ -84,6 +84,9 @@ pub trait Board {
     /// Whether the left is connected to this PC over USB (CONN_STATE); `None` if it can't say.
     fn left_on_usb(&self) -> Option<bool>;
     fn right_battery(&self) -> Option<u8>;
+    /// Whether the right half is plugged into this PC by USB too (its drive can only appear
+    /// then); `None` if it can't say.
+    fn right_on_usb(&self) -> Option<bool>;
     /// The running left half's USB serial; its bootloader shows the same one.
     fn left_serial(&self) -> Option<String>;
     fn build(&self, half: Half) -> Option<Build>;
@@ -217,6 +220,10 @@ pub fn plan(
         None => return Err("Can't tell how the left half is connected, so nothing is written. Connect it by USB and try again.".into()),
     }
     if images.iter().any(|i| i.half == Half::Right) {
+        // Restarted into its bootloader without a cable, it would wait there, not typing.
+        if board.right_on_usb() == Some(false) {
+            return Err("Plug the right half into this PC by USB too: its new firmware goes over its own cable.".into());
+        }
         if let Some(b) = board.right_battery().filter(|b| *b < MIN_RIGHT_BATTERY) {
             return Err(format!(
                 "The right half's battery is at {b}%. Charge it (or plug it in) before updating."

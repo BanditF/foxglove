@@ -655,6 +655,17 @@ mod windows_board {
                 .or(self.hello.right_battery)
         }
 
+        fn right_on_usb(&self) -> Option<bool> {
+            // The right on USB shows up with the keyboard's id but not OK (Windows problem 28,
+            // no interfaces): any instance besides the running left's.
+            let left = self.left_serial()?;
+            Some(
+                self.present(&self.keyboard_prefix(), false)
+                    .iter()
+                    .any(|s| *s != left),
+            )
+        }
+
         fn left_serial(&self) -> Option<String> {
             // The right half on USB power shows up with the same id but not OK (Windows problem 28).
             match self.present(&self.keyboard_prefix(), true).as_slice() {

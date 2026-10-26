@@ -31,6 +31,7 @@ fn build(version: &str, profile: &str, sha: &str) -> Build {
 /// The keyboard and the PC in memory. `drives` scripts which bootloaders show after each wait.
 struct Mock {
     on_usb: Option<bool>,
+    right_usb: Option<bool>,
     battery: Option<u8>,
     hands_free: bool,
     builds: RefCell<[Option<Build>; 2]>,
@@ -54,6 +55,7 @@ impl Default for Mock {
     fn default() -> Self {
         Mock {
             on_usb: Some(true),
+            right_usb: Some(true),
             battery: Some(80),
             hands_free: true,
             builds: RefCell::new([
@@ -92,6 +94,9 @@ impl Board for Mock {
     }
     fn right_battery(&self) -> Option<u8> {
         self.battery
+    }
+    fn right_on_usb(&self) -> Option<bool> {
+        self.right_usb
     }
     fn left_serial(&self) -> Option<String> {
         Some(LEFT_SERIAL.into())
