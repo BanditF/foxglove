@@ -61,6 +61,71 @@ pub fn caps(hello: &Hello) -> Caps {
     caps
 }
 
+/// What the keyboard can do with light and pictures (#423), for the Lights page's chips: the
+/// underglow from HELLO's RGB bit (one colour at a time, ZMK's four effects, brightness), and a
+/// screen per display the keyboard describes (D5 06), or the HELLO panel on older firmware.
+pub fn light_caps(
+    hello: &Hello,
+    screens: &[crate::protocol::ScreenDescriptor],
+) -> foxglove_devices::pc_lighting::LightCaps {
+    use crate::protocol::{ScreenDescriptor as D, ScreenKind};
+    use foxglove_devices::pc_lighting::{Color, LightCaps, Screen};
+    let bits = hello.capabilities;
+    let rgb = bits & capabilities::SETTINGS_RGB != 0;
+    let mut out = LightCaps {
+        color: if rgb { Color::Single } else { Color::None },
+        effects: if rgb {
+            ["Solid", "Breathe", "Spectrum", "Swirl"]
+                .map(String::from)
+                .to_vec()
+        } else {
+            Vec::new()
+        },
+        brightness: rgb,
+        ..Default::default()
+    };
+    let displays: Vec<&D> = screens
+        .iter()
+        .filter(|s| s.kind == ScreenKind::Display)
+        .collect();
+    for d in &displays {
+        // The display's own ops and those of the regions on it.
+        let ops = screens
+            .iter()
+            .filter(|s| s.id == d.id || s.parent == Some(d.id))
+            .fold(0, |ops, s| ops | s.ops);
+        out.screens.push(Screen {
+            width: Some(d.width),
+            height: Some(d.height),
+            depth: match d.format {
+                D::FORMAT_1BIT => Some(1),
+                D::FORMAT_GREY2 => Some(2),
+                D::FORMAT_RGB565 => Some(16),
+                _ => None,
+            },
+            fps: None,
+            // Art is a set of frames with a rate: still pictures and animations.
+            images: ops & D::OP_ART != 0,
+            animations: ops & D::OP_ART != 0,
+            stream: ops & (D::OP_ROWS | D::OP_ROWS_AT) != 0,
+        });
+    }
+    let legacy = bits == 0 || bits & (capabilities::PANEL | capabilities::ART_RELAY) != 0;
+    if displays.is_empty() && legacy && hello.width > 0 && hello.height > 0 {
+        let art = bits == 0 || bits & capabilities::ART_RELAY != 0;
+        out.screens.push(Screen {
+            width: u16::try_from(hello.width).ok(),
+            height: u16::try_from(hello.height).ok(),
+            depth: Some(1),
+            fps: None,
+            images: art,
+            animations: art,
+            stream: bits == 0 || bits & capabilities::PANEL != 0,
+        });
+    }
+    out
+}
+
 fn err(e: anyhow::Error) -> DeviceError {
     let text = e.to_string();
     if text.contains("not connected")
@@ -735,6 +800,63 @@ mod tests {
         assert!(!rgb_only.contains(Caps::SCREENS));
         assert!(
             caps(&hello(capabilities::PANEL)).contains(Caps::SCREENS | Caps::POWER | Caps::LAYERS)
+        );
+    }
+
+    #[test]
+    fn light_caps_from_hello_and_screens() {
+        use crate::protocol::{ScreenDescriptor as D, ScreenKind};
+        let screen = |id, kind, parent, ops| D {
+            count: 2,
+            index: 0,
+            id,
+            kind,
+            half: 0,
+            parent,
+            width: 160,
+            height: 68,
+            x: 0,
+            y: 0,
+            rotation: 0,
+            format: D::FORMAT_1BIT,
+            ops,
+            stride: 20,
+            rows_per_report: 1,
+            readback_half: None,
+            version: 1,
+        };
+        let h = Hello {
+            width: 160,
+            height: 68,
+            capabilities: capabilities::SETTINGS_RGB | capabilities::SCREENS,
+            ..Hello::default()
+        };
+        let caps = light_caps(
+            &h,
+            &[
+                screen(0, ScreenKind::Display, None, 0),
+                screen(1, ScreenKind::Art, Some(0), D::OP_ART | D::OP_SLOTS),
+            ],
+        );
+        assert_eq!(
+            caps.chips(true),
+            vec![
+                "Single-colour RGB",
+                "4 onboard effects",
+                "Brightness",
+                "Screen 160×68 · 1-bit · images & animations"
+            ]
+        );
+        // Older firmware: the HELLO panel, live frames only.
+        let old = Hello {
+            width: 160,
+            height: 68,
+            capabilities: capabilities::PANEL,
+            ..Hello::default()
+        };
+        assert_eq!(
+            light_caps(&old, &[]).chips(true),
+            vec!["Screen 160×68 · 1-bit · live"]
         );
     }
 

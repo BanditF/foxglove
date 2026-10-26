@@ -92,7 +92,8 @@ windows = { version = "0.62.2", features = [
     "Win32_System_SystemInformation",
     # Foxglove (#346): the GPU-reset watch.
     "Win32_System_EventLog",
-    # Foxglove (#423): is OMEN Light Studio running?
+    # Foxglove (#423): is OMEN Light Studio running? And LampArray attributes.
+    "Devices_Lights",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_RemoteDesktop",
     "Win32_System_Threading",

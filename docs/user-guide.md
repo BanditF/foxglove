@@ -252,6 +252,19 @@ Foxglove controls them:
   control it for now.
 - **Not controllable yet**, such as the OMEN liquid cooler: listed so you know it was seen.
 
+Each device shows what it can do as small chips, such as **Per-zone RGB · 5 zones**,
+**Per-LED RGB · 2 lamps**, or **Screen 160×68 · 1-bit · images & animations**. The controls
+follow them: a device with one colour has no zone pickers, and one without lights has none.
+
+**Gear Foxglove doesn't know.** **Add a device…** lists the devices it doesn't recognise. Pick
+yours, give it a name, and pick the protocol it speaks if it's one Foxglove knows (or
+**Unknown**, which only lists it). Then for each zone, click **Light zone N**, look at the
+device, and type what lit up (leave it empty if nothing did). Each zone blinks for a moment
+and goes back to how it was (dark if Foxglove never set it). Nothing is sent to the device
+until you click. **Save** keeps the entry in `lighting-catalog.local.toml` next to your
+settings; **Copy entry** on the device copies it to share, or to send to Foxglove so everyone
+gets it.
+
 **Retiring OMEN Light Studio.** While Light Studio runs, the page says so: it may put its own
 colours back over Foxglove's. Once the case looks right from Foxglove, remove it in
 **Settings → Apps → Installed apps → OMEN Light Studio → Uninstall** (or set its
