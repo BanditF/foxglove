@@ -104,11 +104,12 @@ pub fn select(t: &impl Transport, set: i8) -> Result<ArtStatus> {
 /// Selects `set` and returns the right half's state once it plays it. The right acknowledges
 /// SELECT and only then switches sets on its display queue, so the select's own reply still
 /// names the old set (and for -1 not the one it drew). Each reply also has the left read the
-/// right again (see [`status`]), so one status `settle` later names the set now on screen.
+/// right again (see [`status`]), so one status `settle` later names the set now on screen. The
+/// select stands if that status goes unanswered: its own reply comes back instead.
 pub fn select_settled(t: &impl Transport, set: i8, settle: Duration) -> Result<ArtStatus> {
-    select(t, set)?;
+    let selected = select(t, set)?;
     std::thread::sleep(settle);
-    status(t)
+    Ok(status(t).unwrap_or(selected))
 }
 
 /// Saves the pushed set now playing on the right into flash slot `slot`, under `name`, and
@@ -278,6 +279,10 @@ mod tests {
         let sent = t.sent.borrow();
         assert_eq!(sent.len(), 2);
         assert_eq!(sent[1], protocol::art_status());
+        drop(sent);
+        // No answer to the status: the select still succeeded.
+        t.replies.borrow_mut().push_back(with_set(art::SELECT, 2));
+        assert_eq!(select_settled(&t, 5, Duration::ZERO).unwrap().right_set, 2);
     }
 
     #[test]
