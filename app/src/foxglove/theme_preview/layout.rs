@@ -27,7 +27,10 @@ use crate::foxglove::theme::DARK;
 const SLACK: f32 = 1.0;
 
 const SIZES: [egui::Vec2; 3] = [MIN_SIZE, DEFAULT_SIZE, egui::vec2(1440.0, 900.0)];
-const SCALES: [f32; 2] = [1.0, 1.5];
+/// 100%, the common 125% and 150% (the user's display).
+const SCALES: [f32; 3] = [1.0, 1.25, 1.5];
+/// A mark (a colour chip, a swatch, a dot) is a filled shape at most this big, in points².
+const MARK_AREA: f32 = 2500.0;
 
 /// One line of text as drawn: its words and the box from its first glyph to its last.
 #[derive(Debug)]
@@ -43,6 +46,8 @@ struct Drawn {
     lines: Vec<Line>,
     cards: Vec<(Rect, Rect)>,
     controls: Vec<Rect>,
+    /// Small filled shapes: colour chips, swatches, status dots. Text must not run into them.
+    marks: Vec<Rect>,
 }
 
 fn collect(shape: &Shape, clip: Rect, d: &mut Drawn) {
@@ -74,6 +79,15 @@ fn collect(shape: &Shape, clip: Rect, d: &mut Drawn) {
             if r.fill == DARK.surface && r.stroke.color == DARK.line && r.stroke.width == 1.0 =>
         {
             d.cards.push((r.rect, clip));
+        }
+        Shape::Rect(r) if r.fill.a() > 0 && r.rect.is_positive() && r.rect.area() <= MARK_AREA => {
+            d.marks.push(r.rect);
+        }
+        Shape::Circle(c) if c.fill.a() > 0 && c.radius > 1.0 => {
+            let r = Rect::from_center_size(c.center, egui::Vec2::splat(c.radius * 2.0));
+            if r.area() <= MARK_AREA {
+                d.marks.push(r);
+            }
         }
         _ => {}
     }
@@ -107,6 +121,12 @@ fn overlap(a: Rect, b: Rect) -> Option<Rect> {
 
 fn inside(inner: Rect, outer: Rect) -> bool {
     outer.expand(SLACK).contains_rect(inner)
+}
+
+/// `a` and `b` are the same box, give or take two points each way (a label's widget rect
+/// around its glyphs); a control the size of a short word drawn over it is not.
+fn same(a: Rect, b: Rect) -> bool {
+    inside(a, b.expand(2.0)) && inside(b, a.expand(2.0))
 }
 
 fn fmt(r: Rect) -> String {
@@ -145,13 +165,25 @@ fn problems(d: &Drawn) -> Vec<String> {
                 ));
             }
         }
+        // A line is fine inside a control (a button's label, a selectable label), and a control
+        // the size of the line is the line's own (a link); anything else touching it isn't.
         for c in &d.controls {
-            if overlap(a.rect, *c).is_some() && !inside(a.rect, *c) && !inside(*c, a.rect) {
+            if overlap(a.rect, *c).is_some() && !inside(a.rect, *c) && !same(*c, a.rect) {
                 out.push(format!(
                     "text over a control: {:?} {} and {}",
                     a.text,
                     fmt(a.rect),
                     fmt(*c)
+                ));
+            }
+        }
+        for m in &d.marks {
+            if overlap(a.rect, *m).is_some() && !inside(a.rect, *m) {
+                out.push(format!(
+                    "text over a mark: {:?} {} and {}",
+                    a.text,
+                    fmt(a.rect),
+                    fmt(*m)
                 ));
             }
         }
@@ -194,8 +226,9 @@ fn problems(d: &Drawn) -> Vec<String> {
                 fmt(*clip)
             ));
         }
+        // No card sits inside another: any overlap is one drawn over the other.
         for (b, _) in &d.cards[i + 1..] {
-            if overlap(*a, *b).is_some() && !inside(*a, *b) && !inside(*b, *a) {
+            if overlap(*a, *b).is_some() {
                 out.push(format!("card over a card: {} and {}", fmt(*a), fmt(*b)));
             }
         }
@@ -206,11 +239,13 @@ fn problems(d: &Drawn) -> Vec<String> {
 }
 
 /// One case: `draw` on a fresh context at `size` and `ppp`; the problems, prefixed with `name`.
-/// Keeps a PNG named `png` when the preview folder is set.
+/// With `cards`, finding no card at all is a problem too (the card checks would see nothing if
+/// the cards' look changed). Keeps a PNG named `png` when the preview folder is set.
 fn check(
     name: &str,
     size: egui::Vec2,
     ppp: f32,
+    cards: bool,
     png: Option<&str>,
     mut draw: impl FnMut(&mut egui::Ui),
 ) -> Vec<String> {
@@ -224,7 +259,11 @@ fn check(
         want_png.then_some(&mut textures),
         &mut draw,
     );
-    let found = problems(&drawn(&ctx, &shapes));
+    let d = drawn(&ctx, &shapes);
+    let mut found = problems(&d);
+    if cards && d.cards.is_empty() {
+        found.push("no cards found: did the cards' look change? (`collect`)".into());
+    }
     if let (true, Some(png)) = (want_png, png) {
         let img = paint(
             &ctx,
@@ -249,9 +288,10 @@ fn page_cases(name: &str, page: Page, samples: &Samples, png: Option<&str>) -> V
         for ppp in SCALES {
             show_samples(page, samples);
             let png = png.map(|p| format!("{p}-{}x{}@{}.png", size.x, size.y, ppp * 100.0));
-            out.extend(check(name, size, ppp, png.as_deref(), |ui| {
+            let found = check(name, size, ppp, true, png.as_deref(), |ui| {
                 crate::foxglove::shell::frame(ui, sections)
-            }));
+            });
+            out.extend(found);
             clear_samples();
         }
     }
@@ -409,7 +449,7 @@ fn tray_panel_lays_out_without_overlaps() {
     let mut found = Vec::new();
     for (name, view) in [("Tray panel", &v), ("Tray panel (paused)", &paused)] {
         for ppp in SCALES {
-            found.extend(check(name, size, ppp, None, |ui| {
+            found.extend(check(name, size, ppp, false, None, |ui| {
                 egui::Area::new(egui::Id::new("tray-panel-preview"))
                     .fixed_pos(egui::pos2(20.0, 20.0))
                     .show(ui.ctx(), |ui| {
@@ -426,34 +466,99 @@ fn tray_panel_lays_out_without_overlaps() {
     report(&found);
 }
 
-/// The guard itself catches what the user saw: two cards on top of each other, and a label
-/// and its value drawn in the same place.
+/// A probe's drawing.
+type Draw<'a> = dyn Fn(&mut egui::Ui) + 'a;
+
+/// The guard itself catches each kind of problem, starting with what the user saw: two cards on
+/// top of each other, and a label and its value drawn in the same place.
 #[test]
 fn the_guard_catches_overlaps() {
-    let found = check("probe", egui::vec2(400.0, 300.0), 1.0, None, |ui| {
-        let r = Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(200.0, 80.0));
-        for at in [r, r.translate(egui::vec2(120.0, 40.0))] {
-            ui.put(at, |ui: &mut egui::Ui| {
-                crate::foxglove::theme::card(ui)
-                    .show(ui, |ui| ui.label("A card"))
-                    .response
-            });
-        }
-        ui.put(
-            Rect::from_min_size(egui::pos2(20.0, 200.0), egui::vec2(100.0, 20.0)),
-            egui::Label::new("Left"),
-        );
-        ui.put(
-            Rect::from_min_size(egui::pos2(24.0, 200.0), egui::vec2(100.0, 20.0)),
-            egui::Label::new("on · Solid"),
-        );
+    let probe = |draw: &Draw<'_>| {
+        check("probe", egui::vec2(400.0, 300.0), 1.0, false, None, |ui| {
+            draw(ui)
+        })
+    };
+    let at =
+        |x: f32, y: f32, w: f32, h: f32| Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));
+    let card = |ui: &mut egui::Ui, r: Rect, text: &str| {
+        ui.put(r, |ui: &mut egui::Ui| {
+            crate::foxglove::theme::card(ui)
+                .show(ui, |ui| {
+                    ui.set_min_size(ui.available_size());
+                    ui.label(text)
+                })
+                .response
+        });
+    };
+    let cases: [(&str, &Draw<'_>); 8] = [
+        ("card over a card", &|ui| {
+            card(ui, at(20.0, 20.0, 200.0, 80.0), "A card");
+            card(ui, at(140.0, 60.0, 200.0, 80.0), "Another");
+        }),
+        ("card over a card", &|ui| {
+            card(ui, at(20.0, 20.0, 300.0, 200.0), "A card");
+            card(ui, at(60.0, 80.0, 120.0, 60.0), "Inside it");
+        }),
+        ("text over text", &|ui| {
+            ui.put(at(20.0, 200.0, 100.0, 20.0), egui::Label::new("Left"));
+            ui.put(at(24.0, 200.0, 100.0, 20.0), egui::Label::new("on · Solid"));
+        }),
+        ("text over a control", &|ui| {
+            ui.put(
+                at(20.0, 20.0, 300.0, 20.0),
+                egui::Label::new("A long line of text here"),
+            );
+            ui.put(at(80.0, 18.0, 60.0, 24.0), egui::Button::new("OK"));
+        }),
+        ("control over a control", &|ui| {
+            ui.put(at(20.0, 20.0, 80.0, 24.0), egui::Button::new("One"));
+            ui.put(at(70.0, 20.0, 80.0, 24.0), egui::Button::new("Two"));
+        }),
+        ("text over a mark", &|ui| {
+            ui.put(
+                at(20.0, 20.0, 60.0, 20.0),
+                egui::Label::new("on · Solid · 80%"),
+            );
+            ui.painter()
+                .rect_filled(at(40.0, 22.0, 28.0, 14.0), 3.0, Color32::WHITE);
+        }),
+        ("across a card's edge", &|ui| {
+            card(ui, at(20.0, 20.0, 160.0, 80.0), "A card");
+            ui.put(at(150.0, 50.0, 80.0, 24.0), egui::Button::new("Apply"));
+        }),
+        ("cut off at the side", &|ui| {
+            ui.set_clip_rect(at(0.0, 0.0, 120.0, 300.0));
+            ui.put(
+                at(80.0, 20.0, 200.0, 20.0),
+                egui::Label::new("Cut off here"),
+            );
+        }),
+    ];
+    for (want, draw) in cases {
+        let found = probe(draw);
+        assert!(found.iter().any(|p| p.contains(want)), "{want}: {found:#?}");
+    }
+    // A page whose cards aren't recognised fails, rather than passing every card check.
+    let blind = check("probe", egui::vec2(400.0, 300.0), 1.0, true, None, |ui| {
+        ui.label("No card here");
     });
     assert!(
-        found.iter().any(|p| p.contains("card over a card")),
-        "{found:#?}"
+        blind.iter().any(|p| p.contains("no cards found")),
+        "{blind:#?}"
     );
-    assert!(
-        found.iter().any(|p| p.contains("text over text")),
-        "{found:#?}"
-    );
+    // And a clean layout passes: a card with a row of controls inside it.
+    let clean = probe(&|ui| {
+        ui.put(at(20.0, 20.0, 300.0, 120.0), |ui: &mut egui::Ui| {
+            crate::foxglove::theme::card(ui)
+                .show(ui, |ui| {
+                    ui.label("Underglow");
+                    ui.horizontal(|ui| {
+                        let _ = ui.button("On");
+                        let _ = ui.button("Off");
+                    });
+                })
+                .response
+        });
+    });
+    assert!(clean.is_empty(), "{clean:#?}");
 }

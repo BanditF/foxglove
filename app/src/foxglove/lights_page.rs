@@ -357,16 +357,16 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 ui.painter().rect_filled(rect, 3.0, shown_color(*hue, *sat, *brightness));
             },
             |ui| {
-            if ui
-                .checkbox(&mut accent, "Follow the Windows accent colour")
-                .on_hover_text(
-                    "The underglow takes the accent colour's hue and saturation whenever it changes in Windows, \
-                     and when the keyboard connects. The brightness stays the board's.",
-                )
-                .changed()
-            {
-                out.push(Intent::Accent(accent));
-            }
+                if ui
+                    .checkbox(&mut accent, "Follow the Windows accent colour")
+                    .on_hover_text(
+                        "The underglow takes the accent colour's hue and saturation whenever it changes in Windows, \
+                         and when the keyboard connects. The brightness stays the board's.",
+                    )
+                    .changed()
+                {
+                    out.push(Intent::Accent(accent));
+                }
             },
         );
         if apply {

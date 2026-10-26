@@ -464,8 +464,10 @@ impl OverlayApp {
         if self.ui.settings_visible && !open {
             self.ui.settings_visible = false;
             self.ui.settings_window.closed();
-            // Foxglove: the overlay's preview goes with Settings; so does a drag of it.
+            // Foxglove: the overlay's preview goes with Settings; so does a drag of it, and an
+            // opacity slider's hold (closed mid-drag, or minimized, which closes it).
             self.cancel_overlay_drag();
+            crate::foxglove::overlay_opacity::release_preview();
             self.persist_settings();
             if !self.session.ever_connected {
                 self.request_close_editor();

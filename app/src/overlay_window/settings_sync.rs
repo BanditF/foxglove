@@ -85,7 +85,9 @@ impl OverlayApp {
             AppConnectionState::Disconnected | AppConnectionState::Reconnecting { .. } => false,
             AppConnectionState::Connected { keyboard } => {
                 // Foxglove (#404): no layer overlay while paused.
+                // Foxglove: an opacity slider being dragged previews it too.
                 self.is_any_window_open()
+                    || crate::foxglove::overlay_opacity::previewing()
                     || (!crate::foxglove::pause::paused() && keyboard.overlay_is_visible(Instant::now()))
             }
         }
