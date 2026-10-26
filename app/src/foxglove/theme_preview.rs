@@ -616,6 +616,7 @@ fn sample_strip() -> crate::foxglove::shell::StripState {
         profile: Some(0),
         this_pc: Some(0),
         unplug_warning: None,
+        host_link: Some("USB"),
     }
 }
 
@@ -708,6 +709,7 @@ fn long_samples() -> Samples {
         profile: Some(3),
         this_pc: Some(1),
         unplug_warning: Some("Unplugging now leaves the keyboard unable to type".into()),
+        host_link: Some("USB"),
     };
     for h in &mut s.keyboard.halves {
         h.text = format!(

@@ -169,9 +169,9 @@ impl Tray {
                 let _ = icon.set_icon(Some(create_icon(glyph)));
             }
             // Foxglove (#373): the tooltip only when it changes.
+            // Kept only once Windows took it, so a failed set is tried again next frame.
             let tooltip = controls.tooltip();
-            if tooltip != self.tooltip {
-                let _ = icon.set_tooltip(Some(&tooltip));
+            if tooltip != self.tooltip && icon.set_tooltip(Some(&tooltip)).is_ok() {
                 self.tooltip = tooltip;
             }
         }

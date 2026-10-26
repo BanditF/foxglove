@@ -442,6 +442,8 @@ pub struct StripState {
     pub keyboard: bool,
     /// The left half talks to this PC over USB (`Some(false)`: Bluetooth).
     pub usb: Option<bool>,
+    /// How Foxglove's host link reaches the keyboard (`USB` or `BLE`), when known.
+    pub host_link: Option<&'static str>,
     /// Each half's build (`version · sha`), or why it couldn't be read; `None` while unknown.
     pub left_build: Option<Result<String, String>>,
     pub right_build: Option<Result<String, String>>,
@@ -472,6 +474,22 @@ pub struct Chip {
     pub hover: Option<String>,
 }
 
+/// How the left half is connected, in a few words: how it types to this PC, and Foxglove's
+/// host link too when that runs over the other transport (USB Raw HID is silent before firmware
+/// #434, so the link can be BLE while typing goes over USB).
+pub fn left_link(usb: Option<bool>, host_link: Option<&str>) -> String {
+    let typing = match usb {
+        Some(true) => "USB",
+        Some(false) => "BLE",
+        None => return "connected".into(),
+    };
+    match host_link {
+        Some(link) if link != typing => format!("{typing} (typing) · host link {link}"),
+        _ if typing == "USB" => "on USB".into(),
+        _ => "on Bluetooth".into(),
+    }
+}
+
 /// The strip's chips: left (connection, firmware), right (link, battery), the Bluetooth profile,
 /// and a plain-word warning when unplugging would leave the keyboard unable to type.
 pub fn chips(s: &StripState) -> Vec<Chip> {
@@ -488,11 +506,7 @@ pub fn chips(s: &StripState) -> Vec<Chip> {
         ];
     }
     let mut out = Vec::new();
-    let on = match s.usb {
-        Some(true) => "on USB",
-        Some(false) => "on Bluetooth",
-        None => "connected",
-    };
+    let on = left_link(s.usb, s.host_link);
     let left_battery = s
         .left_battery
         .map(|b| format!(" · battery {b}%"))
@@ -583,6 +597,7 @@ pub fn strip_state(ctx: &egui::Context) -> StripState {
     StripState {
         keyboard,
         usb: link.usb,
+        host_link: super::devices::host_link(),
         left_build,
         right_build,
         right_battery: battery,
@@ -879,15 +894,41 @@ mod tests {
             profile: Some(0),
             this_pc: Some(0),
             unplug_warning: None,
+            host_link: Some("USB"),
         };
         let c = chips(&s);
         assert_eq!(c[0].text, "on USB · 0.1.0 · e255d32 · battery 95%");
+        // Typing over USB, the host link over BLE (USB Raw HID silent before #434).
+        let ble = chips(&StripState {
+            host_link: Some("BLE"),
+            ..s.clone()
+        });
+        assert_eq!(
+            ble[0].text,
+            "USB (typing) · host link BLE · 0.1.0 · e255d32 · battery 95%"
+        );
         assert_eq!(
             (c[1].tone, c[1].text.as_str()),
             (Some(Tone::Warn), "no reply yet · battery 61%")
         );
         assert_eq!(c[2].text, "Bluetooth profile 1 · this PC");
         assert_eq!(c.len(), 3, "no warning while it's safe to unplug");
+    }
+
+    #[test]
+    fn the_left_link_names_both_transports_when_they_differ() {
+        assert_eq!(
+            left_link(Some(true), Some("BLE")),
+            "USB (typing) · host link BLE"
+        );
+        assert_eq!(
+            left_link(Some(false), Some("USB")),
+            "BLE (typing) · host link USB"
+        );
+        assert_eq!(left_link(Some(true), Some("USB")), "on USB");
+        assert_eq!(left_link(Some(false), Some("BLE")), "on Bluetooth");
+        assert_eq!(left_link(Some(false), None), "on Bluetooth");
+        assert_eq!(left_link(None, Some("BLE")), "connected");
     }
 
     #[test]
