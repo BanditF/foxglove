@@ -1,8 +1,11 @@
 //! Start with Windows (user decision, 2026-10-26): a switch in Settings, on by default.
 //!
-//! - It owns the same Run value the MSI's optional "Start with Windows" feature writes:
-//!   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Foxglove`, the quoted exe path
-//!   (`app/wix/main.wxs`). One value, never a second entry.
+//! - The app is the only owner of the Run value (#444):
+//!   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`, value `Foxglove`, the quoted exe path.
+//!   The per-user MSI writes none; Windows' Settings › Apps › Startup shows it with its own toggle.
+//!   (0.1's per-machine MSI could write the same value; it's kept as it is when it starts this exe.)
+//! - Uninstall runs `foxglove.exe --uninstall-cleanup` (`app/wix/main.wxs`), which removes the
+//!   value only when it starts this exe, so another install's entry is left alone.
 //! - At startup, with the switch on, a missing value or one naming another exe is set to this
 //!   one. With it off, startup leaves the value alone: turning it off removed it, and it is
 //!   never added back.
@@ -112,6 +115,33 @@ pub fn reconcile(on: bool, command: &str, key: &dyn RunKey) -> std::io::Result<S
     }
     key.set(command)?;
     Ok(Startup::Written)
+}
+
+/// Uninstall: removes the Run value if it starts `command` (this exe). True when removed.
+pub fn cleanup(command: &str, key: &dyn RunKey) -> std::io::Result<bool> {
+    if key.get()?.is_some_and(|v| same(&v, command)) {
+        key.remove()?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// `foxglove.exe --uninstall-cleanup`, run by the MSI's uninstall as the user: removes this
+/// exe's Run value and exits. Opens no window. True when this was that run.
+pub fn uninstall_entry() -> bool {
+    if std::env::args_os()
+        .nth(1)
+        .is_none_or(|a| a != "--uninstall-cleanup")
+    {
+        return false;
+    }
+    #[cfg(windows)]
+    if let Ok(exe) = std::env::current_exe() {
+        if let Err(e) = cleanup(&command(&exe), &Registry) {
+            eprintln!("Foxglove: uninstall: Start with Windows: {e}");
+        }
+    }
+    true
 }
 
 /// The switch: on writes the Run value, off removes it.
@@ -246,8 +276,21 @@ mod tests {
     }
 
     #[test]
+    fn uninstall_removes_only_this_exes_value() {
+        let key = Fake(RefCell::new(Some(ME.into())), RefCell::new(0));
+        assert!(cleanup(ME, &key).unwrap());
+        assert_eq!(*key.0.borrow(), None);
+        assert!(!cleanup(ME, &key).unwrap(), "nothing left to remove");
+        // Another install's value (a second copy, a dev build) stays.
+        let other = r#""D:\dev\foxglove.exe""#;
+        *key.0.borrow_mut() = Some(other.into());
+        assert!(!cleanup(ME, &key).unwrap());
+        assert_eq!(key.0.borrow().as_deref(), Some(other));
+    }
+
+    #[test]
     fn the_msis_own_value_is_kept_as_it_is() {
-        // The MSI writes the same name and the quoted path; case and quoting don't matter.
+        // 0.1's MSI wrote the same name and the quoted path; case and quoting don't matter.
         let key = Fake(
             RefCell::new(Some(r#""c:\program files\foxglove\FOXGLOVE.EXE""#.into())),
             RefCell::new(0),

@@ -134,13 +134,14 @@ fn register() -> windows::core::Result<bool> {
     Ok(true)
 }
 
-/// Removes the identity package for every user (needs elevation; the uninstaller has it).
+/// Removes the identity package for this user: the per-user MSI's uninstall runs as the user
+/// (#444), and the package was registered per user.
 #[cfg(windows)]
 fn unregister_all() -> windows::core::Result<()> {
     use windows::core::HSTRING;
     use windows::Management::Deployment::{PackageManager, RemovalOptions};
     let manager = PackageManager::new()?;
-    // An empty user SID means every user.
+    // An empty user SID means the current user.
     for package in manager.FindPackagesByUserSecurityIdNamePublisher(
         &HSTRING::new(),
         &HSTRING::from(NAME),
@@ -148,7 +149,7 @@ fn unregister_all() -> windows::core::Result<()> {
     )? {
         let full_name = package.Id()?.FullName()?;
         manager
-            .RemovePackageWithOptionsAsync(&full_name, RemovalOptions::RemoveForAllUsers)?
+            .RemovePackageWithOptionsAsync(&full_name, RemovalOptions::None)?
             .join()?;
     }
     Ok(())
