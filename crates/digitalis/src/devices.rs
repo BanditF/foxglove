@@ -340,6 +340,25 @@ impl DigitalisDevice {
         &self.link
     }
 
+    /// The underglow's levels by power state and both halves' state (D7 0E); `set` changes the
+    /// levels first. Unsupported on firmware without [`capabilities::BATTERY_DIM`].
+    pub fn battery_dim(
+        &self,
+        set: Option<crate::protocol::BatteryDimConfig>,
+    ) -> PResult<crate::protocol::BatteryDim> {
+        if !self.has(capabilities::BATTERY_DIM) {
+            return Err(DeviceError::Unsupported);
+        }
+        let d = settings::battery_dim(&*self.link, set).map_err(err)?;
+        match d.status {
+            0 => Ok(d),
+            4 => Err(DeviceError::Unsupported),
+            s => Err(err(anyhow::anyhow!(
+                "the keyboard refused the levels (status {s})"
+            ))),
+        }
+    }
+
     /// The PC panel's size: from the keyboard's screen descriptors when it has them (#289),
     /// read once, else from HELLO.
     fn panel_size(&self) -> (usize, usize) {

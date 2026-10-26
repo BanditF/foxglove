@@ -35,6 +35,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "screen_snap.h"
 #include "art_relay.h"
 #include "rgb_idle.h"
+#include "battery_dim.h"
 #include "behavior_safety.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 #include "test_hooks.h"
@@ -59,7 +60,8 @@ enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE,
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
        SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B, // 0x0A: LAMP_TEST (#115 branch)
-       SETTING_ART_KEYS = 0x0D };                    // 0x0C: FRAME (#272 branch)
+       SETTING_ART_KEYS = 0x0D,                      // 0x0C: FRAME (#272 branch)
+       SETTING_BATTERY_DIM = 0x0E };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -211,6 +213,9 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_CONN_STATE_EVENT | HOST_LINK_CAP_BUILD_INFO | HOST_LINK_CAP_SCREENS;
 #if IS_ENABLED(CONFIG_ZMK_BATTERY_REPORTING)
     caps |= HOST_LINK_CAP_LEFT_BATTERY;
+#endif
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
+    caps |= HOST_LINK_CAP_BATTERY_DIM;
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) && DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_art_step)
     caps |= HOST_LINK_CAP_ART_KEYS;
@@ -610,6 +615,66 @@ void host_link_rgb_changed(void) {
     }
 }
 
+/* D7 0E BATTERY_DIM: the underglow's levels by power state, per half (battery_dim.c) */
+
+#define BATTERY_DIM_SIZE 16
+
+// The D7 8E reply. refresh: also ask the right for a fresher state (a PC request); the unsolicited
+// one is the answer to such a read, so it doesn't ask again.
+static void battery_dim_fill(uint8_t r[BATTERY_DIM_SIZE], uint8_t status, bool refresh) {
+    memset(r, 0, BATTERY_DIM_SIZE);
+    r[0] = HOST_LINK_SETTINGS;
+    r[1] = 0x80 | SETTING_BATTERY_DIM;
+    r[2] = status;
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
+    struct battery_dim_wire left, right = {0};
+    uint8_t age = 0xff;
+    battery_dim_state(&left);
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    age = art_relay_right_dim(&right, refresh);
+#endif
+    memcpy(&r[3], &left.config, sizeof(left.config));
+    r[8] = left.flags;
+    r[9] = left.level;
+    r[10] = left.soc;
+    r[11] = age;
+    if (age != 0xff) {
+        r[12] = right.flags;
+        r[13] = right.level;
+        r[14] = right.soc;
+        r[15] = memcmp(&right.config, &left.config, sizeof(left.config)) == 0;
+    }
+#endif
+}
+
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
+// Unsolicited D7 8E: the state changed on either half; coalesced, and only sent if the payload
+// (apart from the right's age) differs from the last one sent this way.
+#define BATTERY_DIM_SETTLE K_MSEC(50)
+
+static uint8_t battery_dim_sent[BATTERY_DIM_SIZE];
+
+static void battery_dim_event_cb(struct k_work *work) {
+    uint8_t r[BATTERY_DIM_SIZE], cmp[BATTERY_DIM_SIZE];
+    battery_dim_fill(r, 0, false);
+    memcpy(cmp, r, sizeof(cmp));
+    cmp[11] = cmp[11] == 0xff ? 0xff : 0;
+    if (memcmp(cmp, battery_dim_sent, sizeof(cmp)) != 0) {
+        memcpy(battery_dim_sent, cmp, sizeof(cmp));
+        reply(r, sizeof(r));
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(battery_dim_event_work, battery_dim_event_cb);
+#endif
+
+void host_link_battery_dim_changed(void) {
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
+    if (atomic_get(&host_seen)) {
+        k_work_reschedule(&battery_dim_event_work, BATTERY_DIM_SETTLE);
+    }
+#endif
+}
+
 static void settings_command(const uint8_t *d, int len) {
     if (d[1] == SETTING_SCREEN_SNAP || d[1] == SETTING_SCREEN_READ) {
         screen_snap_command(d, len);
@@ -700,6 +765,27 @@ static void settings_command(const uint8_t *d, int len) {
     case SETTING_RGB_STATE: {
         uint8_t r[RGB_STATE_SIZE];
         rgb_state(r);
+        reply(r, sizeof(r));
+        break;
+    }
+    case SETTING_BATTERY_DIM: {
+        uint8_t status = 4;
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
+        status = 0;
+        if (len >= 3 && d[2] == 1) {
+            struct battery_dim_config c;
+            memcpy(&c, &d[3], sizeof(c)); // d is padded to the report size
+            status = len < 3 + (int)sizeof(c) || battery_dim_set_config(&c) != 0 ? 5 : 0;
+        }
+#endif
+        uint8_t r[BATTERY_DIM_SIZE];
+        battery_dim_fill(r, status, true);
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
+        // The PC has this now: an unsolicited one only comes if something changes from here.
+        memcpy(battery_dim_sent, r, sizeof(r));
+        battery_dim_sent[2] = 0;
+        battery_dim_sent[11] = r[11] == 0xff ? 0xff : 0;
+#endif
         reply(r, sizeof(r));
         break;
     }

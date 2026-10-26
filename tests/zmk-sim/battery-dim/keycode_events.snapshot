@@ -1,12 +1,62 @@
 dim: ready 1
-dim: battery
-dim: strip 76,38,3 30,0,60
+dim: first frame, no event yet
+dim: level 80
+dim: strip 204,102,8 80,0,160
 dim: err 0, caller's frame unchanged
-dim: usb
+dim: usb at 25%
+dim: level 100
 dim: strip 255,128,10 100,0,200
 dim: err 0, caller's frame unchanged
-dim: battery again
-dim: strip 76,38,3 30,0,60
+dim: battery 25%
+dim: level 80
+dim: strip 204,102,8 80,0,160
+dim: err 0, caller's frame unchanged
+dim: battery 20%
+dim: level 80
+dim: strip 204,102,8 80,0,160
+dim: err 0, caller's frame unchanged
+dim: battery 15%
+dim: level 12
+dim: strip 30,15,1 12,0,24
+dim: err 0, caller's frame unchanged
+dim: battery 21%, still low
+dim: level 12
+dim: strip 30,15,1 12,0,24
+dim: err 0, caller's frame unchanged
+dim: battery 22%
+dim: level 80
+dim: strip 204,102,8 80,0,160
+dim: err 0, caller's frame unchanged
+dim: battery 19%
+dim: level 12
+dim: strip 30,15,1 12,0,24
+dim: err 0, caller's frame unchanged
+dim: usb at 19%
+dim: level 100
+dim: strip 255,128,10 100,0,200
+dim: err 0, caller's frame unchanged
+dim: unplugged at 19%
+dim: level 12
+dim: strip 30,15,1 12,0,24
+dim: err 0, caller's frame unchanged
+dim: config switched off: 0
+dim: switched off
+dim: level 100
+dim: strip 255,128,10 100,0,200
+dim: err 0, caller's frame unchanged
+dim: config level 0 refused: -22
+dim: level 0 refused
+dim: level 100
+dim: strip 255,128,10 100,0,200
+dim: err 0, caller's frame unchanged
+dim: config own levels: 0
+dim: own levels
+dim: level 5
+dim: strip 12,6,1 5,0,10
+dim: err 0, caller's frame unchanged
+dim: battery 40%, own levels
+dim: level 50
+dim: strip 127,64,5 50,0,100
 dim: err 0, caller's frame unchanged
 kp_pressed: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00
 kp_released: usage_page 0x07 keycode 0x14 implicit_mods 0x00 explicit_mods 0x00

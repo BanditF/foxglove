@@ -40,6 +40,8 @@ pub mod capabilities {
     pub const PANEL_HOLD: u32 = 1 << 15;
     /// CONN_STATE (D7 84) byte 8 is the left half's own battery % (#373).
     pub const LEFT_BATTERY: u32 = 1 << 17;
+    /// Settings BATTERY_DIM (D7 0E): the underglow's levels by power state, per half.
+    pub const BATTERY_DIM: u32 = 1 << 18;
 }
 pub const VERSION: u8 = 1;
 
@@ -95,6 +97,8 @@ pub mod settings {
     pub const BOOTLOADER: u8 = 0x08;
     /// A half's firmware version, profile and git SHA (firmware #133).
     pub const BUILD_INFO: u8 = 0x09;
+    /// The underglow's levels by power state (on USB, on battery, low battery), per half.
+    pub const BATTERY_DIM: u8 = 0x0E;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -453,6 +457,128 @@ impl RgbSync {
     }
 }
 
+/// The underglow's levels by power state (D7 0E, firmware battery_dim.h), as percentages of the
+/// brightness the user picked: each half goes by its own cable and charge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatteryDimConfig {
+    /// Off: `power` everywhere, whatever the cable or charge.
+    pub enabled: bool,
+    /// On USB power, 1-100.
+    pub power: u8,
+    /// On battery at or above `low_below`, 1-100.
+    pub battery: u8,
+    /// On battery below `low_below`, 1-100.
+    pub low: u8,
+    /// Charge percent, 0-100 (0: no low level).
+    pub low_below: u8,
+}
+
+impl Default for BatteryDimConfig {
+    /// The firmware's defaults: 100% on power, 80% on battery, 12% below 20% charge.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            power: 100,
+            battery: 80,
+            low: 12,
+            low_below: 20,
+        }
+    }
+}
+
+impl BatteryDimConfig {
+    /// What the firmware takes: levels 1-100, threshold 0-100.
+    pub fn valid(&self) -> bool {
+        [self.power, self.battery, self.low]
+            .iter()
+            .all(|l| (1..=100).contains(l))
+            && self.low_below <= 100
+    }
+
+    fn bytes(&self) -> [u8; 5] {
+        [
+            self.enabled.into(),
+            self.power,
+            self.battery,
+            self.low,
+            self.low_below,
+        ]
+    }
+
+    fn parse(b: &[u8]) -> Self {
+        Self {
+            enabled: b[0] != 0,
+            power: b[1],
+            battery: b[2],
+            low: b[3],
+            low_below: b[4],
+        }
+    }
+}
+
+/// BATTERY_DIM: reads the levels (`None`) or sets them.
+pub fn battery_dim(set: Option<BatteryDimConfig>) -> Vec<u8> {
+    match set {
+        None => vec![SETTINGS, settings::BATTERY_DIM, 0],
+        Some(c) => {
+            let mut r = vec![SETTINGS, settings::BATTERY_DIM, 1];
+            r.extend_from_slice(&c.bytes());
+            r
+        }
+    }
+}
+
+/// One half's battery dim state now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatteryDimHalf {
+    pub usb: bool,
+    /// At the low-battery level.
+    pub low: bool,
+    /// Percent of the user's brightness the underglow is drawn at now.
+    pub level: u8,
+    /// The charge the level went by; `None` before the half's first reading.
+    pub charge: Option<u8>,
+}
+
+impl BatteryDimHalf {
+    fn parse(b: &[u8]) -> Self {
+        Self {
+            usb: b[0] & 1 != 0,
+            low: b[0] & 2 != 0,
+            level: b[1],
+            charge: (b[2] != 0 && b[2] <= 100).then_some(b[2]),
+        }
+    }
+}
+
+/// The reply to BATTERY_DIM (D7 8E), which also comes unsolicited when a half's state changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BatteryDim {
+    /// 0 ok, 4 not built in, 5 values refused.
+    pub status: u8,
+    /// As in force on the left.
+    pub config: BatteryDimConfig,
+    pub left: BatteryDimHalf,
+    /// The right half's, `age` seconds old; `None` without a relay link or with right firmware
+    /// that doesn't report it.
+    pub right: Option<(BatteryDimHalf, u8)>,
+    /// The right half has the left's levels.
+    pub right_synced: bool,
+}
+
+impl BatteryDim {
+    pub fn parse(r: &[u8; REPORT]) -> Self {
+        let right = (r[11] != 0xff).then(|| (BatteryDimHalf::parse(&r[12..15]), r[11]));
+        Self {
+            status: r[2],
+            config: BatteryDimConfig::parse(&r[3..8]),
+            left: BatteryDimHalf::parse(&r[8..11]),
+            right,
+            right_synced: right.is_some() && r[15] != 0,
+        }
+    }
+}
+
 /// What the keyboard said to HELLO.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Hello {
@@ -780,6 +906,67 @@ mod tests {
         );
         r[9] = 0xff;
         assert_eq!(RgbState::parse(&r).right, None);
+    }
+
+    #[test]
+    fn battery_dim_reports() {
+        assert_eq!(battery_dim(None), [0xD7, 0x0E, 0]);
+        assert_eq!(
+            battery_dim(Some(BatteryDimConfig::default())),
+            [0xD7, 0x0E, 1, 1, 100, 80, 12, 20]
+        );
+        let off = BatteryDimConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        assert_eq!(battery_dim(Some(off))[3], 0);
+        assert!(BatteryDimConfig::default().valid());
+        assert!(!BatteryDimConfig {
+            low: 0,
+            ..Default::default()
+        }
+        .valid());
+        assert!(!BatteryDimConfig {
+            low_below: 101,
+            ..Default::default()
+        }
+        .valid());
+
+        // Left on USB, no reading yet; right on battery at 15%, at the low level, 3 s old, in
+        // sync.
+        let mut r = [0u8; REPORT];
+        r[..16].copy_from_slice(&[
+            0xD7, 0x8E, 0, 1, 100, 80, 12, 20, 1, 100, 0, 3, 2, 12, 15, 1,
+        ]);
+        let d = BatteryDim::parse(&r);
+        assert_eq!(d.status, 0);
+        assert_eq!(d.config, BatteryDimConfig::default());
+        assert_eq!(
+            d.left,
+            BatteryDimHalf {
+                usb: true,
+                low: false,
+                level: 100,
+                charge: None
+            }
+        );
+        assert_eq!(
+            d.right,
+            Some((
+                BatteryDimHalf {
+                    usb: false,
+                    low: true,
+                    level: 12,
+                    charge: Some(15)
+                },
+                3
+            ))
+        );
+        assert!(d.right_synced);
+        r[11] = 0xff;
+        let d = BatteryDim::parse(&r);
+        assert_eq!(d.right, None);
+        assert!(!d.right_synced, "no right, nothing to be in sync with");
     }
 
     #[test]

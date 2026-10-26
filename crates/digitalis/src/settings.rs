@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::protocol::{self, InvokeStatus, RgbState, RgbSync};
+use crate::protocol::{self, BatteryDim, BatteryDimConfig, InvokeStatus, RgbState, RgbSync};
 use crate::Transport;
 
 /// Reads "right half's underglow follows the left" (`set` = `None`) or sets it.
@@ -16,6 +16,18 @@ pub fn rgb_sync(t: &impl Transport, set: Option<bool>) -> Result<RgbSync> {
         Duration::from_millis(500),
     )?;
     Ok(RgbSync::parse(&r))
+}
+
+/// Reads the underglow's levels by power state and both halves' state (`set` = `None`), or sets
+/// the levels: the left saves them and passes them on to the right.
+pub fn battery_dim(t: &impl Transport, set: Option<BatteryDimConfig>) -> Result<BatteryDim> {
+    let r = t.request(
+        &protocol::battery_dim(set),
+        protocol::SETTINGS,
+        protocol::settings::BATTERY_DIM,
+        Duration::from_millis(500),
+    )?;
+    Ok(BatteryDim::parse(&r))
 }
 
 /// Presses behavior `local_id` (ZMK Studio's id) with these parameters as a key would,

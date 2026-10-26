@@ -49,7 +49,7 @@ static int flash_shown = -1;  // flash slot playing, or -1
 static uint32_t rx_crc;
 
 static struct art_relay_status status = {
-    .version = 5, // 5: ART_RELAY_RGB_HSB
+    .version = 6, // 5: ART_RELAY_RGB_HSB, 6: battery dim (config in RGB, state after build)
     .capacity = CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE,
     .set = -1,
 };
@@ -297,6 +297,13 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
         rgb_idle_remote(d[1] != 0, len < 3 || d[2] != 0);
 #endif
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
+        if (len >= 3 + sizeof(struct battery_dim_config)) {
+            struct battery_dim_config c;
+            memcpy(&c, &d[3], sizeof(c));
+            battery_dim_set_config(&c); // an invalid one is ignored; the rest still applies
+        }
+#endif
         break;
 
     case ART_RELAY_RGB_HSB: {
@@ -324,20 +331,27 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
 #endif
     status.flash_slots = art_slots_count();
     status.flash_used = art_slots_used();
-    // Status, then the slot table (only built when a read reaches past the status).
-    // Status, then the slot table, then the build info.
-    static uint8_t value[sizeof(status) + ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info) +
-                         sizeof(struct foxglove_build_info)];
+    // Status, then the slot table, the build info and the battery dim state (only built when a
+    // read reaches past the status).
+#define SLOTS_AT sizeof(status)
+#define BUILD_AT (SLOTS_AT + ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info))
+#define DIM_AT (BUILD_AT + sizeof(struct foxglove_build_info))
+    static uint8_t value[DIM_AT + sizeof(struct battery_dim_wire)];
     memcpy(value, &status, sizeof(status));
     if (offset + len > sizeof(status)) {
         for (int i = 0; i < ART_RELAY_FLASH_SLOTS; i++) {
             struct art_relay_slot_info info;
             art_slots_info(i, &info);
-            memcpy(&value[sizeof(status) + i * sizeof(info)], &info, sizeof(info));
+            memcpy(&value[SLOTS_AT + i * sizeof(info)], &info, sizeof(info));
         }
         struct foxglove_build_info build;
         foxglove_build_info(&build);
-        memcpy(&value[sizeof(value) - sizeof(build)], &build, sizeof(build));
+        memcpy(&value[BUILD_AT], &build, sizeof(build));
+        struct battery_dim_wire dim = {0};
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
+        battery_dim_state(&dim);
+#endif
+        memcpy(&value[DIM_AT], &dim, sizeof(dim));
     }
     return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
 }
