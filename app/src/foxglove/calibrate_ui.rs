@@ -186,7 +186,8 @@ impl Wizard {
         self.step = Step::White;
     }
 
-    /// What Save keeps: `None` when it's just the model's default (nothing to store), with
+    /// What Save keeps: `None` when it's just the model's default (nothing to store, and a
+    /// saved one is forgotten), with
     /// identity matrices dropped and zones that match the device folded in.
     pub fn result(&self) -> Option<DeviceCalibration> {
         let tidy = |c: &Calibration| {
@@ -205,7 +206,7 @@ impl Wizard {
             .filter(|(_, c)| *c != device)
             .collect();
         let default = tidy(&self.target.default.clone().unwrap_or_default());
-        if zones.is_empty() && device == default && self.saved.is_none() {
+        if zones.is_empty() && device == default {
             return None;
         }
         Some(DeviceCalibration {
@@ -247,8 +248,9 @@ pub struct Output {
     pub show: bool,
     /// The step or the reference changed: show the step on the reference too.
     pub show_reference: bool,
-    /// A reference the user switched away from, to put back.
-    pub old_reference: Option<Target>,
+    /// The user picked another reference: the old one (`None`: the screen) is put back, and
+    /// the new one's colours are captured before it shows the step.
+    pub reference_changed: Option<Option<Target>>,
     pub done: Option<Done>,
     /// Text for the clipboard (an export).
     pub copy: Option<String>,
@@ -319,7 +321,7 @@ fn choices(ui: &mut egui::Ui, v: &View, w: &mut Wizard, out: &mut Output) {
         let mut pick = |ui: &mut egui::Ui, w: &mut Wizard, r: Option<&Target>, name: &str| {
             let selected = w.reference.as_ref().map(|t| &t.key) == r.map(|t| &t.key);
             if theme::pill(ui, selected, name).clicked() && !selected {
-                out.old_reference = std::mem::replace(&mut w.reference, r.cloned());
+                out.reference_changed = Some(std::mem::replace(&mut w.reference, r.cloned()));
                 out.show_reference = true;
             }
         };
@@ -433,7 +435,9 @@ fn sliders(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
     ui.label(RichText::new(step.hint()).size(12.5).color(p.text));
     ui.add_space(6.0);
     let linked = w.linked;
-    let c = w.editing();
+    // A copy: a zone gets its own calibration only once one of its sliders moves.
+    let mut edit = w.cal.zone(w.zone.as_deref()).clone();
+    let c = &mut edit;
     let mut changed = false;
     match step.primary() {
         None if step == Step::White => {
@@ -473,7 +477,10 @@ fn sliders(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
             ui.checkbox(&mut w.linked, "Same for red, green and blue");
         }
     }
-    out.show |= changed;
+    if changed {
+        *w.editing() = edit;
+        out.show = true;
+    }
 }
 
 /// One slider across the column, its value in the row above.
@@ -636,11 +643,28 @@ pub fn show(ui: &mut egui::Ui) -> bool {
     true
 }
 
+/// Ends an open calibrator as Cancel does: the Lights page was left, the settings window
+/// closed, or the app is quitting. The saved calibration and the colours go back.
+pub fn cancel() {
+    let open = OPEN.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(mut w) = open {
+        act(
+            &mut w,
+            Output {
+                done: Some(Done::Cancel),
+                ..Default::default()
+            },
+        );
+    }
+}
+
 /// Sends what a frame asked for; true when the calibrator is done.
 fn act(w: &mut Wizard, out: Output) -> bool {
     let color = w.step.color();
-    if let Some(old) = &out.old_reference {
-        calibrate::restore(old, &w.reference_before);
+    if let Some(old) = &out.reference_changed {
+        if let Some(old) = old {
+            calibrate::restore(old, &w.reference_before);
+        }
         w.reference_before = w
             .reference
             .as_ref()
@@ -871,6 +895,46 @@ pub mod tests {
         w.cal.device.matrix = Some(IDENTITY_MATRIX);
         w.cal.device.gain = [1.0, 0.9, 0.9];
         assert_eq!(w.result().unwrap().device.matrix, None);
+    }
+
+    #[test]
+    fn picking_a_zone_alone_saves_nothing_for_it() {
+        let (_, mut w) = sample(Step::White, false);
+        w.zone = Some("5".into());
+        let (v, _) = sample(Step::White, false);
+        let _ = shown(&v, &mut w);
+        assert!(w.cal.zones.is_empty(), "drawn, not moved: no zone entry");
+        w.zone = None;
+        w.cal.device.brightness = 0.5;
+        assert!(w.result().unwrap().zones.is_empty());
+    }
+
+    #[test]
+    fn back_to_the_default_forgets_a_saved_calibration() {
+        let saved = DeviceCalibration {
+            device: Calibration {
+                brightness: 0.7,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut w = Wizard::new(case(), Some(saved));
+        w.start_over();
+        assert_eq!(w.result(), None);
+    }
+
+    #[test]
+    fn the_first_device_picked_to_compare_with_is_captured_and_put_back() {
+        let mut w = Wizard::new(case(), None);
+        let picked = Output {
+            reference_changed: Some(None),
+            show_reference: true,
+            ..Default::default()
+        };
+        w.reference = Some(corne());
+        assert!(!act(&mut w, picked));
+        // No keyboard in the tests: captured as unknown, which restore turns into white.
+        assert_eq!(w.reference_before, Before::Unknown);
     }
 
     #[test]

@@ -104,6 +104,8 @@ pub fn restore(t: &Target, before: &Before) {
                 .collect(),
         }),
         (Kind::Lights { .. }, Before::Unknown) => pc_lights::send(Msg::Recalibrate(t.key.clone())),
+        // The keyboard's colour wasn't known: white rather than a calibration step.
+        (Kind::Keyboard, _) => keyboard((0, 0, 100)),
         _ => {}
     }
 }
@@ -137,7 +139,16 @@ fn keyboard(c: Hsb) {
         });
         Mutex::new(tx)
     });
-    let _ = wake.lock().unwrap_or_else(|e| e.into_inner()).send(());
+    if wake
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .send(())
+        .is_err()
+    {
+        // The writer is gone (it panicked): let the next colour try again, not wait forever.
+        next_keyboard();
+        eprintln!("Foxglove: calibrate: the keyboard writer stopped");
+    }
 }
 
 fn next_keyboard() -> Option<Hsb> {
@@ -148,7 +159,8 @@ fn next_keyboard() -> Option<Hsb> {
 }
 
 fn write_keyboard((hue, sat, brightness): Hsb) {
-    if super::pause::paused() {
+    // Tests never look for a keyboard: the user's own is plugged in.
+    if cfg!(test) || super::pause::paused() {
         return;
     }
     let Some(d) = super::devices::device() else {
