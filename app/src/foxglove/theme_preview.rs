@@ -521,7 +521,8 @@ struct Samples {
     strip: crate::foxglove::shell::StripState,
     keyboard: crate::foxglove::keyboard_page::View,
     lights: crate::foxglove::lights_page::View,
-    pc: crate::foxglove::pc_lights::Snapshot,
+    pc: crate::foxglove::pc_lights_ui::View,
+    wizard: crate::foxglove::pc_lights_add::Wizard,
     screens: Option<crate::foxglove::screens::Snapshot>,
     art: Option<(
         crate::foxglove::art_service::Snapshot,
@@ -537,6 +538,7 @@ impl Samples {
             keyboard: crate::foxglove::keyboard_page::tests::sample(),
             lights: crate::foxglove::lights_page::tests::sample(),
             pc: crate::foxglove::pc_lights_ui::tests::sample(),
+            wizard: Default::default(),
             screens: Some(sample_screens()),
             art: Some(crate::foxglove::art_ui::tests::sample()),
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -549,6 +551,7 @@ impl Samples {
             keyboard: crate::foxglove::keyboard_page::tests::sample_none(),
             lights: crate::foxglove::lights_page::tests::sample_none(),
             pc: Default::default(),
+            wizard: Default::default(),
             screens: None,
             art: None,
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -607,7 +610,7 @@ fn show_samples(page: crate::foxglove::shell::Page, samples: &Samples) {
     shell::PREVIEW_STRIP.set(Some(samples.strip.clone()));
     crate::foxglove::keyboard_page::PREVIEW.set(Some(samples.keyboard.clone()));
     crate::foxglove::lights_page::PREVIEW.set(Some(samples.lights.clone()));
-    crate::foxglove::pc_lights_ui::PREVIEW.set(Some(samples.pc.clone()));
+    crate::foxglove::pc_lights_ui::PREVIEW.set(Some((samples.pc.clone(), samples.wizard.clone())));
     crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
     crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
     crate::foxglove::plugins_ui::PREVIEW.set(Some(samples.plugins.clone()));
@@ -1312,6 +1315,30 @@ fn pc_lights_render() {
     assert!(count(&fresh, DARK.warn) < count(&with, DARK.warn));
     assert_ne!(with, fresh);
     assert_ne!(fresh, none);
+}
+
+/// What each device can do, as chips (the keyboard from HELLO, the case and cooler from the
+/// catalog, the mouse from its LampArray attributes), and "Add a device…": picking an unknown
+/// device, then naming its zones.
+#[test]
+fn pc_lights_caps_and_add_render() {
+    use crate::foxglove::pc_lights_add::{tests::sample_zones, Step, Wizard};
+    use crate::foxglove::shell::Page;
+    let mut pick = Samples::full();
+    pick.wizard = Wizard {
+        step: Step::Pick,
+        ..Wizard::default()
+    };
+    let mut zones = Samples::full();
+    zones.wizard = sample_zones();
+    let caps = shell_preview_with(Page::Lights, &Samples::full(), 1400.0);
+    let pick = shell_preview_with(Page::Lights, &pick, 1400.0);
+    let zones = shell_preview_with(Page::Lights, &zones, 1400.0);
+    keep("ui-423-caps.png", &caps);
+    keep("ui-423-add-pick.png", &pick);
+    keep("ui-423-add-zones.png", &zones);
+    assert_ne!(caps, pick);
+    assert_ne!(pick, zones);
 }
 
 #[test]

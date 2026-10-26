@@ -21,6 +21,8 @@ use super::{HidWriter, LightingDevice, ZoneSpec};
 use crate::{DeviceError, Result, Rgb};
 
 pub const REPORT_LEN: usize = 59;
+/// The highest zone number whose colour bytes fit before the brightness byte.
+pub const MAX_ZONE: u8 = 13;
 const VERSION: u8 = 0x12;
 const MODE_STATIC: u8 = 0x01;
 const COLORS: usize = 0x08;

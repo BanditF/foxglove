@@ -7,11 +7,20 @@
 //! keyboard's colour as Foxglove sets it, or the Windows accent). Nothing streams or polls.
 //! The colours the user picks are saved in the store's `[pc_lighting]` and put back when the
 //! board arrives (at startup too), unless OMEN Light Studio is running.
+//!
+//! Each device carries what it can do (`LightCaps`): from the catalog, or from a LampArray's own
+//! attributes, read through Windows when one arrives. Boards the catalog doesn't know can be
+//! added by hand: the page lists them, a zone test lights one zone only on a click and puts it
+//! back, and the entry goes into the user's `lighting-catalog.local.toml`.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{mpsc, Mutex, OnceLock};
 
-use foxglove_devices::pc_lighting::{self as pcl, Catalog, Control, Found, LightingDevice};
+use foxglove_devices::pc_lighting::{
+    self as pcl, Catalog, CatalogDevice, Control, Found, HidWriter, LampArrayInfo, LightCaps,
+    LightingDevice, Protocol, Unknown,
+};
 use foxglove_devices::{DeviceError, Rgb};
 use serde::{Deserialize, Serialize};
 
@@ -39,6 +48,10 @@ pub struct Row {
     /// Zone names and their colours as Foxglove last set (or saved) them.
     pub zones: Vec<(String, Option<[u8; 3]>)>,
     pub match_keyboard: bool,
+    /// What the device can do.
+    pub caps: LightCaps,
+    /// The user's own catalog entry as TOML, to copy and share; `None` for bundled ones.
+    pub entry: Option<String>,
 }
 
 /// What the page shows.
@@ -50,6 +63,10 @@ pub struct Snapshot {
     /// The last action's result, for the status line.
     pub status: Option<String>,
     pub busy: bool,
+    /// HID devices nothing recognises, for "Add a device".
+    pub unknown: Vec<Unknown>,
+    /// Where the user's own entries are saved.
+    pub local_file: Option<String>,
 }
 
 /// A request to the worker.
@@ -66,6 +83,18 @@ pub enum Msg {
     Match(String, bool),
     /// The colour "Match keyboard" follows changed.
     Follow([u8; 3]),
+    /// Add a device: blink one zone of a board through a protocol, then put it back.
+    TestZone {
+        vid: u16,
+        pid: u16,
+        path: String,
+        protocol: Protocol,
+        zone: u8,
+    },
+    /// Add a device: save (or replace) the user's own catalog entry.
+    SaveLocal(CatalogDevice),
+    /// Remove the user's own entry for this VID/PID.
+    RemoveLocal(u16, u16),
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -86,7 +115,10 @@ pub fn snapshot() -> Snapshot {
 /// Queues a request; a no-op before [`start`].
 pub fn send(msg: Msg) {
     if let Some(q) = QUEUE.get() {
-        if matches!(msg, Msg::Set { .. } | Msg::Off(_) | Msg::Identify(_)) {
+        if matches!(
+            msg,
+            Msg::Set { .. } | Msg::Off(_) | Msg::Identify(_) | Msg::TestZone { .. }
+        ) {
             if let Some(s) = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
                 s.busy = true;
             }
@@ -153,14 +185,25 @@ fn rgb(c: [u8; 3]) -> Rgb {
     }
 }
 
-/// Opens a driver for a found device.
-pub type Opener = Box<dyn Fn(&Found) -> foxglove_devices::Result<Box<dyn LightingDevice>> + Send>;
+/// Opens a HID path for writing (the hidapi writer, or a recording one in tests).
+pub type Writers = Box<dyn Fn(&str) -> foxglove_devices::Result<Box<dyn HidWriter>> + Send>;
+
+/// Reads every LampArray's attributes (Windows), by VID/PID.
+pub type LampArrays = Box<dyn FnMut() -> Vec<(u16, u16, LampArrayInfo)> + Send>;
 
 /// The worker's state, apart from the OS: tests drive it with a mocked HID writer.
 pub struct Worker {
+    bundled: Catalog,
+    local: Catalog,
+    local_path: Option<PathBuf>,
     catalog: Catalog,
-    open: Opener,
+    writers: Writers,
+    lamp_arrays: LampArrays,
+    lamp_info: BTreeMap<(u16, u16), LampArrayInfo>,
     found: Vec<Found>,
+    unknown: Vec<Unknown>,
+    /// The catalog changed: scan again, without putting colours back.
+    pub rescan: bool,
     drivers: BTreeMap<String, Box<dyn LightingDevice>>,
     pub settings: Settings,
     follow: Option<[u8; 3]>,
@@ -171,11 +214,34 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn new(catalog: Catalog, settings: Settings, open: Opener) -> Self {
+    pub fn new(
+        bundled: Catalog,
+        local_path: Option<PathBuf>,
+        settings: Settings,
+        writers: Writers,
+        lamp_arrays: LampArrays,
+    ) -> Self {
+        let local = local_path
+            .as_ref()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|text| {
+                Catalog::parse(&text).unwrap_or_else(|e| {
+                    eprintln!("Foxglove: lighting-catalog.local.toml: {e}");
+                    Catalog::default()
+                })
+            })
+            .unwrap_or_default();
         Self {
-            catalog,
-            open,
+            catalog: bundled.clone().with_local(&local),
+            bundled,
+            local,
+            local_path,
+            writers,
+            lamp_arrays,
+            lamp_info: BTreeMap::new(),
             found: Vec::new(),
+            unknown: Vec::new(),
+            rescan: false,
             drivers: BTreeMap::new(),
             settings,
             follow: None,
@@ -187,23 +253,44 @@ impl Worker {
 
     /// A new enumeration: opens drivers for arrivals and puts their saved colours back (unless
     /// Light Studio is running), and drops the ones that went.
-    pub fn scan(&mut self, hid: &[pcl::HidEntry], light_studio: bool, paused: bool) {
+    /// `restore`: false after a catalog change, which isn't a board arriving.
+    pub fn scan(&mut self, hid: &[pcl::HidEntry], light_studio: bool, paused: bool, restore: bool) {
         self.light_studio = light_studio;
-        let now = pcl::discover(&self.catalog, hid);
-        self.drivers
-            .retain(|key, _| now.iter().any(|f| &f.key == key));
+        let mut now = pcl::discover(&self.catalog, hid);
+        self.unknown = pcl::unknown(&self.catalog, hid);
+        // A LampArray not read yet: read them all once (Windows), then reuse.
+        let unread = now.iter().any(|f| {
+            f.control == Control::LampArray && !self.lamp_info.contains_key(&(f.vid, f.pid))
+        });
+        if unread {
+            for (vid, pid, info) in (self.lamp_arrays)() {
+                self.lamp_info.insert((vid, pid), info);
+            }
+        }
+        for f in &mut now {
+            if let (Control::LampArray, Some(info)) =
+                (f.control, self.lamp_info.get(&(f.vid, f.pid)))
+            {
+                f.caps = LightCaps::from_lamp_array(*info);
+            }
+        }
+        // Same device, same interface, same catalog entry: keep its driver.
+        let same = |o: &Found, f: &Found| {
+            o.key == f.key && o.path == f.path && o.zones == f.zones && o.control == f.control
+        };
+        self.drivers.retain(|key, _| {
+            now.iter()
+                .any(|f| &f.key == key && self.found.iter().any(|o| same(o, f)))
+        });
         for f in &now {
-            let arrived = !self
-                .found
-                .iter()
-                .any(|o| o.key == f.key && o.path == f.path);
+            let arrived = !self.found.iter().any(|o| same(o, f));
             if !arrived || !matches!(f.control, Control::Driver(_)) {
                 continue;
             }
-            match (self.open)(f) {
+            match (self.writers)(&f.path).and_then(|w| pcl::open(f, w)) {
                 Ok(driver) => {
                     self.drivers.insert(f.key.clone(), driver);
-                    if !light_studio && !paused {
+                    if restore && !light_studio && !paused {
                         self.restore(f);
                     }
                 }
@@ -211,6 +298,32 @@ impl Worker {
             }
         }
         self.found = now;
+    }
+
+    /// The colour Foxglove knows for a board's zone (by VID/PID and zone number).
+    fn known_color(&self, vid: u16, pid: u16, zone: u8) -> Option<Rgb> {
+        self.found
+            .iter()
+            .filter(|f| (f.vid, f.pid) == (vid, pid))
+            .find_map(|f| {
+                let i = f.zones.iter().position(|z| z.id == zone)?;
+                self.drivers.get(&f.key)?.colors().get(i).copied().flatten()
+            })
+    }
+
+    /// Writes the user's own catalog and rebuilds the merged one.
+    fn save_local(&mut self) {
+        self.catalog = self.bundled.clone().with_local(&self.local);
+        self.rescan = true;
+        let Some(path) = &self.local_path else {
+            return;
+        };
+        let tmp = path.with_extension("toml.tmp");
+        let result =
+            std::fs::write(&tmp, self.local.to_toml()).and_then(|()| std::fs::rename(&tmp, path));
+        if let Err(e) = result {
+            self.status = Some(format!("Can't save {}: {e}", path.display()));
+        }
     }
 
     /// Saved colours (or the followed colour) back on a board that just arrived.
@@ -246,7 +359,14 @@ impl Worker {
     /// Handles one request. `paused` refuses writes (#404); `wait` sleeps between identify
     /// steps.
     pub fn handle(&mut self, msg: Msg, paused: bool, wait: &mut dyn FnMut(std::time::Duration)) {
-        let writes = !matches!(msg, Msg::Scan | Msg::Follow(_) | Msg::Match(_, false));
+        let writes = !matches!(
+            msg,
+            Msg::Scan
+                | Msg::Follow(_)
+                | Msg::Match(_, false)
+                | Msg::SaveLocal(_)
+                | Msg::RemoveLocal(..)
+        );
         if paused && writes {
             self.status = Some(super::pause::REFUSED.replace("the keyboard", "the lights"));
             return;
@@ -286,6 +406,42 @@ impl Worker {
                 for key in keys {
                     self.write(&key, "Matching the keyboard", |d| d.set_all(rgb(c)), false);
                 }
+            }
+            Msg::TestZone {
+                vid,
+                pid,
+                path,
+                protocol,
+                zone,
+            } => {
+                let restore = self.known_color(vid, pid, zone);
+                let result = (self.writers)(&path)
+                    .and_then(|w| pcl::test_zone(protocol, zone, restore, w, wait));
+                let back = if restore.is_some() {
+                    "back to its colour"
+                } else {
+                    "left dark"
+                };
+                self.status = Some(match result {
+                    Ok(()) => format!("Zone {zone}: blinked, {back}"),
+                    Err(DeviceError::Unsupported) => {
+                        "Foxglove can't light zones with an unknown protocol".into()
+                    }
+                    Err(e) => format!("Zone {zone}: {e}"),
+                });
+            }
+            Msg::SaveLocal(device) => {
+                self.status = Some(format!("{}: saved as your own device", device.name));
+                self.local.put(CatalogDevice {
+                    local: true,
+                    ..device
+                });
+                self.save_local();
+            }
+            Msg::RemoveLocal(vid, pid) => {
+                self.local.devices.retain(|d| (d.vid, d.pid) != (vid, pid));
+                self.status = Some(format!("{vid:04x}:{pid:04x}: your entry removed"));
+                self.save_local();
             }
         }
     }
@@ -356,6 +512,11 @@ impl Worker {
                     control: f.control,
                     zones,
                     match_keyboard: saved.is_some_and(|s| s.match_keyboard),
+                    caps: f.caps.clone(),
+                    entry: f
+                        .local
+                        .then(|| self.local.find(f.vid, f.pid).map(CatalogDevice::to_toml))
+                        .flatten(),
                 }
             })
             .collect();
@@ -364,6 +525,8 @@ impl Worker {
             light_studio: self.light_studio,
             status: self.status.clone(),
             busy: false,
+            unknown: self.unknown.clone(),
+            local_file: self.local_path.as_ref().map(|p| p.display().to_string()),
         }
     }
 }
@@ -392,11 +555,18 @@ pub fn start() {
                 }),
             )
         };
-        let open: Opener = Box::new(|f: &Found| {
-            let writer = pcl::hid::PathWriter::new(&f.path)?;
-            pcl::open(f, Box::new(writer))
+        let writers: Writers = Box::new(|path: &str| {
+            Ok(Box::new(pcl::hid::PathWriter::new(path)?) as Box<dyn HidWriter>)
         });
-        let mut worker = Worker::new(Catalog::bundled(), settings, open);
+        let local_path =
+            super::store::path().map(|p| p.with_file_name("lighting-catalog.local.toml"));
+        let mut worker = Worker::new(
+            Catalog::bundled(),
+            local_path,
+            settings,
+            writers,
+            Box::new(lamp_arrays),
+        );
         let _ = tx.send(Msg::Scan);
         while let Ok(first) = rx.recv() {
             // A burst of arrivals (a hub with several interfaces) scans once.
@@ -407,16 +577,14 @@ pub fn start() {
                 if msg == Msg::Scan {
                     if !scanned {
                         scanned = true;
-                        match pcl::hid::enumerate() {
-                            Ok(hid) => {
-                                worker.scan(&hid, light_studio_running(), super::pause::paused())
-                            }
-                            Err(e) => eprintln!("Foxglove: lighting scan: {e}"),
-                        }
+                        scan(&mut worker, true);
                     }
                     continue;
                 }
                 worker.handle(msg, super::pause::paused(), &mut std::thread::sleep);
+            }
+            if std::mem::take(&mut worker.rescan) {
+                scan(&mut worker, false);
             }
             if std::mem::take(&mut worker.dirty) {
                 if let Err(e) = super::store::save("pc_lighting", &worker.settings) {
@@ -429,6 +597,67 @@ pub fn start() {
             }
         }
     });
+}
+
+fn scan(worker: &mut Worker, restore: bool) {
+    match pcl::hid::enumerate() {
+        Ok(hid) => worker.scan(
+            &hid,
+            light_studio_running(),
+            super::pause::paused(),
+            restore,
+        ),
+        Err(e) => eprintln!("Foxglove: lighting scan: {e}"),
+    }
+}
+
+/// Every LampArray's attributes, through Windows' Dynamic Lighting API: lamp count, whether
+/// lamps have positions, the update interval and kind. Read once per new LampArray on a scan;
+/// nothing is written to it.
+#[cfg(target_os = "windows")]
+pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
+    use windows::Devices::Enumeration::DeviceInformation;
+    use windows::Devices::Lights::LampArray;
+    let read = || -> windows::core::Result<Vec<(u16, u16, LampArrayInfo)>> {
+        let selector = LampArray::GetDeviceSelector()?;
+        let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join()?;
+        let mut out = Vec::new();
+        for info in &list {
+            let Ok(lamps) = LampArray::FromIdAsync(&info.Id()?).and_then(|op| op.join()) else {
+                continue;
+            };
+            let count = lamps.LampCount().unwrap_or(0).max(0);
+            let positions = (0..count.min(512)).any(|i| {
+                lamps
+                    .GetLampInfo(i)
+                    .and_then(|l| l.Position())
+                    .is_ok_and(|p| p.X != 0.0 || p.Y != 0.0 || p.Z != 0.0)
+            });
+            out.push((
+                lamps.HardwareVendorId()?,
+                lamps.HardwareProductId()?,
+                LampArrayInfo {
+                    lamp_count: count as u32,
+                    positions,
+                    // TimeSpan counts 100 ns.
+                    min_update_us: lamps
+                        .MinUpdateInterval()
+                        .map_or(0, |t| (t.Duration.max(0) / 10) as u64),
+                    kind: lamps.LampArrayKind().map_or(0, |k| k.0 as u32),
+                },
+            ));
+        }
+        Ok(out)
+    };
+    read().unwrap_or_else(|e| {
+        eprintln!("Foxglove: LampArray attributes: {e}");
+        Vec::new()
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
+    Vec::new()
 }
 
 /// Whether OMEN Light Studio runs now: one process snapshot, taken only with a scan.
@@ -477,7 +706,7 @@ pub fn light_studio_running() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foxglove_devices::pc_lighting::{HidEntry, HidWriter};
+    use foxglove_devices::pc_lighting::{HidEntry, ZoneSpec};
     use std::sync::Arc;
 
     type Sent = Arc<Mutex<Vec<Vec<u8>>>>;
@@ -493,10 +722,30 @@ mod tests {
     }
 
     fn worker(settings: Settings) -> (Worker, Sent) {
+        worker_at(settings, None)
+    }
+
+    fn worker_at(settings: Settings, local: Option<PathBuf>) -> (Worker, Sent) {
         let sent: Sent = Arc::default();
         let s = sent.clone();
-        let open: Opener = Box::new(move |f: &Found| pcl::open(f, Box::new(Recorder(s.clone()))));
-        (Worker::new(Catalog::bundled(), settings, open), sent)
+        let writers: Writers =
+            Box::new(move |_path: &str| Ok(Box::new(Recorder(s.clone())) as Box<dyn HidWriter>));
+        let lamps: LampArrays = Box::new(|| {
+            vec![(
+                0x046d,
+                0xc332,
+                LampArrayInfo {
+                    lamp_count: 2,
+                    positions: true,
+                    min_update_us: 33_000,
+                    kind: 2,
+                },
+            )]
+        });
+        (
+            Worker::new(Catalog::bundled(), local, settings, writers, lamps),
+            sent,
+        )
     }
 
     fn case_hid() -> Vec<HidEntry> {
@@ -550,7 +799,7 @@ mod tests {
     #[test]
     fn the_page_lists_each_device_and_how_it_is_controlled() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), true, false);
+        w.scan(&case_hid(), true, false, true);
         let s = w.snapshot();
         let rows: Vec<_> = s
             .devices
@@ -579,7 +828,7 @@ mod tests {
     #[test]
     fn a_colour_pick_writes_its_zones_and_is_saved() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), false, false);
+        w.scan(&case_hid(), false, false, true);
         w.handle(
             Msg::Set {
                 key: "103c:84fd".into(),
@@ -615,26 +864,26 @@ mod tests {
             },
         );
         let (mut w, sent) = worker(settings.clone());
-        w.scan(&case_hid(), true, false);
+        w.scan(&case_hid(), true, false, true);
         assert!(sent.lock().unwrap().is_empty(), "Light Studio is running");
         let (mut w, sent) = worker(settings);
-        w.scan(&case_hid(), false, false);
+        w.scan(&case_hid(), false, false, true);
         assert_eq!(*sent.lock().unwrap(), vec![report(2, [0x11, 0x22, 0x33])]);
-        w.scan(&case_hid(), false, false);
+        w.scan(&case_hid(), false, false, true);
         assert_eq!(
             sent.lock().unwrap().len(),
             1,
             "still there: no second write"
         );
-        w.scan(&[], false, false);
-        w.scan(&case_hid(), false, false);
+        w.scan(&[], false, false, true);
+        w.scan(&case_hid(), false, false, true);
         assert_eq!(sent.lock().unwrap().len(), 2, "replugged: put back again");
     }
 
     #[test]
     fn match_keyboard_follows_colour_changes_only() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), false, false);
+        w.scan(&case_hid(), false, false, true);
         let key = "103c:84fd".to_string();
         w.handle(Msg::Follow([255, 0, 0]), false, &mut no_wait());
         assert!(sent.lock().unwrap().is_empty(), "not matching yet");
@@ -669,7 +918,7 @@ mod tests {
     #[test]
     fn off_identify_and_pause() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), false, false);
+        w.scan(&case_hid(), false, false, true);
         let key = "103c:84fd".to_string();
         w.handle(Msg::Off(key.clone()), true, &mut no_wait());
         assert!(sent.lock().unwrap().is_empty(), "paused: refused");
@@ -696,5 +945,145 @@ mod tests {
         assert_eq!(parse_hex(&hex([1, 0xab, 0xff])), Some([1, 0xab, 0xff]));
         assert_eq!(parse_hex("f08a3c"), None);
         assert_eq!(parse_hex("#f08a3"), None);
+    }
+
+    #[test]
+    fn devices_carry_caps_and_lamp_arrays_are_read_once() {
+        let (mut w, _) = worker(Settings::default());
+        w.scan(&case_hid(), false, false, true);
+        let s = w.snapshot();
+        assert_eq!(
+            s.devices[0].caps.chips(false),
+            vec!["Per-zone RGB · 5 zones", "5 onboard effects", "Brightness"]
+        );
+        assert_eq!(
+            s.devices[1].caps.chips(false),
+            vec!["Screen · images & animations"]
+        );
+        assert_eq!(
+            s.devices[2].caps.chips(false)[0],
+            "Per-LED RGB · 2 lamps · up to 30 fps"
+        );
+        assert!(s.unknown.is_empty(), "all three are placed");
+    }
+
+    #[test]
+    fn a_hand_added_board_is_saved_found_and_tested_only_on_request() {
+        let dir = crate::foxglove::store::test_config_dir().join("pc-lights-local");
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("lighting-catalog.local.toml");
+        let _ = std::fs::remove_file(&file);
+        let (mut w, sent) = worker_at(Settings::default(), Some(file.clone()));
+        let strip = HidEntry {
+            vid: 0x1209,
+            pid: 0x0001,
+            usage_page: 0xff00,
+            path: "strip".into(),
+            product: Some("Desk strip".into()),
+            ..Default::default()
+        };
+        let mut hid = case_hid();
+        hid.push(strip);
+        w.scan(&hid, false, false, true);
+        let s = w.snapshot();
+        assert_eq!(s.unknown.len(), 1);
+        assert_eq!(s.unknown[0].name, "Desk strip");
+        assert!(sent.lock().unwrap().is_empty(), "listing writes nothing");
+
+        // A zone test: one zone blinks, then goes dark (nothing known for it).
+        w.handle(
+            Msg::TestZone {
+                vid: 0x1209,
+                pid: 0x0001,
+                path: "strip".into(),
+                protocol: Protocol::OmenTracer,
+                zone: 2,
+            },
+            false,
+            &mut no_wait(),
+        );
+        {
+            let sent = sent.lock().unwrap();
+            assert_eq!(sent.len(), pcl::IDENTIFY_STEPS + 1);
+            assert_eq!(*sent.last().unwrap(), report(2, [0, 0, 0]));
+        }
+        assert!(w.snapshot().status.unwrap().contains("left dark"));
+        // Paused: refused.
+        w.handle(
+            Msg::TestZone {
+                vid: 0x1209,
+                pid: 0x0001,
+                path: "strip".into(),
+                protocol: Protocol::OmenTracer,
+                zone: 1,
+            },
+            true,
+            &mut no_wait(),
+        );
+        assert_eq!(sent.lock().unwrap().len(), pcl::IDENTIFY_STEPS + 1);
+
+        let entry = CatalogDevice::new(
+            "Desk strip".into(),
+            0x1209,
+            0x0001,
+            Protocol::OmenTracer,
+            vec![ZoneSpec {
+                id: 2,
+                name: "Shelf".into(),
+            }],
+        );
+        w.handle(Msg::SaveLocal(entry), false, &mut no_wait());
+        assert!(w.rescan);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains("name = \"Shelf\""), "{text}");
+        let before = sent.lock().unwrap().len();
+        w.rescan = false;
+        w.scan(&hid, false, false, false);
+        let s = w.snapshot();
+        let row = s.devices.iter().find(|r| r.name == "Desk strip").unwrap();
+        assert!(row.entry.as_ref().unwrap().contains("vid = 0x1209"));
+        assert_eq!(row.caps.chips(false), vec!["Per-zone RGB · 1 zone"]);
+        assert!(s.unknown.is_empty());
+        assert_eq!(sent.lock().unwrap().len(), before, "saving writes nothing");
+
+        // A fresh worker reads the local file back.
+        let (mut again, _) = worker_at(Settings::default(), Some(file.clone()));
+        again.scan(&hid, false, false, true);
+        assert!(again
+            .snapshot()
+            .devices
+            .iter()
+            .any(|r| r.name == "Desk strip"));
+        again.handle(Msg::RemoveLocal(0x1209, 0x0001), false, &mut no_wait());
+        assert!(!std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("Desk strip"));
+    }
+
+    #[test]
+    fn a_zone_test_on_a_known_board_puts_its_colour_back() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), false, false, true);
+        w.handle(
+            Msg::Set {
+                key: "103c:84fd".into(),
+                colors: vec![(1, [9, 8, 7])],
+            },
+            false,
+            &mut no_wait(),
+        );
+        sent.lock().unwrap().clear();
+        w.handle(
+            Msg::TestZone {
+                vid: 0x103c,
+                pid: 0x84fd,
+                path: "tracer".into(),
+                protocol: Protocol::OmenTracer,
+                zone: 2,
+            },
+            false,
+            &mut no_wait(),
+        );
+        assert_eq!(*sent.lock().unwrap().last().unwrap(), report(2, [9, 8, 7]));
     }
 }

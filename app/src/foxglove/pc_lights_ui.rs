@@ -1,19 +1,33 @@
 //! The Lights page's "PC & peripherals" card (#423): each lighting device Foxglove found, how
-//! it's controlled, Identify, a colour per zone, Off and "Match keyboard".
+//! it's controlled and what it can do (chips), Identify, a colour per zone, Off and "Match
+//! keyboard", and "Add a device…" for gear the catalog doesn't know.
 //!
-//! [`show`] reads the worker's snapshot and sends clicks to it; [`draw`] paints a
-//! [`Snapshot`] and returns [`Intent`]s, so the previews and tests need no hardware. Colours
-//! are picked first and written on Apply: dragging a picker sends nothing.
+//! The controls follow the device's capabilities: zone pickers only for per-zone or per-LED
+//! colour, swatches and Match only for devices that take a colour, Off and Identify only for
+//! lights that switch.
+//!
+//! [`show`] reads the worker's snapshot and sends clicks to it; [`draw`] paints a [`View`] and
+//! returns [`Intent`]s, so the previews and tests need no hardware. Colours are picked first
+//! and written on Apply: dragging a picker sends nothing.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use egui::{Color32, RichText, Sense, Stroke};
-use foxglove_devices::pc_lighting::Control;
+use foxglove_devices::pc_lighting::{CatalogDevice, Control, LightCaps, Protocol};
 
 use super::pc_lights::{self, Msg, Row, Snapshot};
+use super::pc_lights_add::{self as add, Wizard};
 use super::settings_ui::card;
 use super::theme;
+
+/// What the card shows: the worker's snapshot and the keyboard with Foxglove's firmware.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct View {
+    pub pc: Snapshot,
+    /// The keyboard's name and what it said it can do (HELLO and its screens).
+    pub keyboard: Option<(String, LightCaps)>,
+}
 
 /// What a click asks for.
 #[derive(Clone, Debug, PartialEq)]
@@ -26,6 +40,18 @@ pub enum Intent {
     Off(String),
     Identify(String),
     Match(String, bool),
+    /// Add a device: blink one zone (only ever from a click).
+    TestZone {
+        vid: u16,
+        pid: u16,
+        path: String,
+        protocol: Protocol,
+        zone: u8,
+    },
+    Save(CatalogDevice),
+    Remove(u16, u16),
+    /// Put text on the clipboard (a catalog entry to share).
+    Copy(String),
 }
 
 /// The colours being picked per device (by key), until Apply.
@@ -49,26 +75,29 @@ impl Draft {
     }
 }
 
-static DRAFT: Mutex<Option<Draft>> = Mutex::new(None);
+static DRAFT: Mutex<Option<(Draft, Wizard)>> = Mutex::new(None);
 
 #[cfg(test)]
 thread_local! {
-    /// The previews' card, so they never touch real devices.
-    pub static PREVIEW: std::cell::RefCell<Option<Snapshot>> = const { std::cell::RefCell::new(None) };
+    /// The previews' card and wizard, so they never touch real devices.
+    pub static PREVIEW: std::cell::RefCell<Option<(View, Wizard)>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The card, and what its clicks do.
 pub fn show(ui: &mut egui::Ui) {
     #[cfg(test)]
-    if let Some(s) = PREVIEW.with_borrow(|v| v.clone()) {
-        draw(ui, &s, &mut Draft::default());
+    if let Some((v, mut wizard)) = PREVIEW.with_borrow(|v| v.clone()) {
+        draw(ui, &v, &mut Draft::default(), &mut wizard);
         return;
     }
     pc_lights::page_shown(ui.ctx());
-    let snapshot = pc_lights::snapshot();
+    let view = View {
+        pc: pc_lights::snapshot(),
+        keyboard: keyboard_caps(),
+    };
     let mut guard = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
-    let draft = guard.get_or_insert_with(Draft::default);
-    for intent in draw(ui, &snapshot, draft) {
+    let (draft, wizard) = guard.get_or_insert_with(Default::default);
+    for intent in draw(ui, &view, draft, wizard) {
         match intent {
             Intent::Apply { key, colors } => {
                 draft.colors.remove(&key);
@@ -87,8 +116,36 @@ pub fn show(ui: &mut egui::Ui) {
                 }
                 pc_lights::send(Msg::Match(key, on));
             }
+            Intent::TestZone {
+                vid,
+                pid,
+                path,
+                protocol,
+                zone,
+            } => pc_lights::send(Msg::TestZone {
+                vid,
+                pid,
+                path,
+                protocol,
+                zone,
+            }),
+            Intent::Save(device) => pc_lights::send(Msg::SaveLocal(device)),
+            Intent::Remove(vid, pid) => pc_lights::send(Msg::RemoveLocal(vid, pid)),
+            Intent::Copy(text) => ui.ctx().copy_text(text),
         }
     }
+}
+
+/// The keyboard with Foxglove's firmware, from what it said when it connected.
+fn keyboard_caps() -> Option<(String, LightCaps)> {
+    let s = super::screens::snapshot();
+    let hello = s.hello?;
+    let name = if s.product.is_empty() {
+        "Keyboard".to_string()
+    } else {
+        s.product.clone()
+    };
+    Some((name, digitalis::devices::light_caps(&hello, &s.screens)))
 }
 
 /// What "Match keyboard" starts from: the Windows accent when the keyboard follows it, else
@@ -113,11 +170,14 @@ pub fn control_text(c: Control) -> &'static str {
 }
 
 /// Paints the card; returns what was asked for this frame.
-pub fn draw(ui: &mut egui::Ui, s: &Snapshot, draft: &mut Draft) -> Vec<Intent> {
+pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard) -> Vec<Intent> {
     let mut out = Vec::new();
+    let s = &v.pc;
     card(ui, "PC & peripherals", |ui| {
         let p = theme::palette(ui);
-        ui.weak("Case lights and other lighting devices on this PC.");
+        ui.weak(
+            "Case lights, screens and other lighting devices on this PC, and what each can do.",
+        );
         if s.light_studio {
             ui.add_space(4.0);
             ui.label(
@@ -132,7 +192,17 @@ pub fn draw(ui: &mut egui::Ui, s: &Snapshot, draft: &mut Draft) -> Vec<Intent> {
                  OMEN Command Center stays: it runs the fans and performance modes.",
             );
         }
-        if s.devices.is_empty() {
+        if let Some((name, caps)) = &v.keyboard {
+            ui.add_space(8.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(name).color(p.text_strong).strong());
+                ui.label(RichText::new("Foxglove firmware").color(p.muted));
+            });
+            chips(ui, &caps.chips(true));
+            ui.weak("Its underglow is in the card above; its screens are on the Screens page.");
+        }
+        if s.devices.is_empty() && v.keyboard.is_none() {
             ui.add_space(4.0);
             ui.label(RichText::new("No PC or peripheral lights found.").color(p.muted));
         }
@@ -141,6 +211,9 @@ pub fn draw(ui: &mut egui::Ui, s: &Snapshot, draft: &mut Draft) -> Vec<Intent> {
             ui.separator();
             device(ui, row, s.busy, draft, &mut out);
         }
+        ui.add_space(8.0);
+        ui.separator();
+        add::draw(ui, s, wizard, &mut out);
         if let Some(status) = &s.status {
             ui.add_space(6.0);
             ui.label(RichText::new(status).color(p.muted).font(theme::mono(12.0)));
@@ -149,12 +222,34 @@ pub fn draw(ui: &mut egui::Ui, s: &Snapshot, draft: &mut Draft) -> Vec<Intent> {
     out
 }
 
+/// A row of small capability chips.
+pub fn chips(ui: &mut egui::Ui, chips: &[String]) {
+    let p = theme::palette(ui);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+        for c in chips {
+            egui::Frame::new()
+                .fill(p.well)
+                .stroke(Stroke::new(1.0, p.line))
+                .corner_radius(9.0)
+                .inner_margin(egui::Margin::symmetric(8, 2))
+                .show(ui, |ui| {
+                    ui.label(RichText::new(c).size(12.0).color(p.text));
+                });
+        }
+    });
+}
+
 fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut Vec<Intent>) {
     let p = theme::palette(ui);
+    let driven = matches!(row.control, Control::Driver(_));
     ui.horizontal(|ui| {
         ui.label(RichText::new(&row.name).color(p.text_strong).strong());
         ui.label(RichText::new(control_text(row.control)).color(p.muted));
-        if matches!(row.control, Control::Driver(_)) {
+        if row.entry.is_some() {
+            ui.label(RichText::new("· added by you").color(p.muted));
+        }
+        if driven && row.caps.switchable() {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled_ui(!busy, |ui| {
                     if ui
@@ -175,8 +270,10 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
             });
         }
     });
+    chips(ui, &row.caps.chips(false));
     match row.control {
-        Control::Driver(_) => zones(ui, row, busy, draft, out),
+        Control::Driver(_) if row.caps.takes_color() => zones(ui, row, busy, draft, out),
+        Control::Driver(_) => {}
         Control::LampArray => {
             ui.weak(
                 "A Windows Dynamic Lighting device. Foxglove support is coming soon; until then \
@@ -187,6 +284,29 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
             ui.weak("Found, not controllable yet.");
         }
     }
+    if let Some(entry) = &row.entry {
+        ui.horizontal(|ui| {
+            if ui
+                .small_button("Copy entry")
+                .on_hover_text(
+                    "Copy this device's catalog entry (TOML) to share it, or to contribute it \
+                     to Foxglove's lighting-catalog.toml",
+                )
+                .clicked()
+            {
+                out.push(Intent::Copy(entry.clone()));
+            }
+            if let Some(device) = add::parse_entry(entry) {
+                if ui
+                    .small_button("Remove")
+                    .on_hover_text("Forget your entry for this device")
+                    .clicked()
+                {
+                    out.push(Intent::Remove(device.vid, device.pid));
+                }
+            }
+        });
+    }
 }
 
 fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut Vec<Intent>) {
@@ -195,35 +315,44 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
         .entry(row.key.clone())
         .or_insert_with(|| vec![None; row.zones.len()]);
     picks.resize(row.zones.len(), None);
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 14.0;
-        for (i, (name, now)) in row.zones.iter().enumerate() {
-            ui.vertical(|ui| {
-                ui.set_width(118.0);
-                let shown = picks[i].or(*now);
-                let mut color = shown.unwrap_or([0x80, 0x80, 0x80]);
-                ui.horizontal(|ui| {
-                    if egui::widgets::color_picker::color_edit_button_srgb(ui, &mut color)
-                        .on_hover_text(format!("{name}: pick a colour, then Apply"))
-                        .changed()
-                    {
-                        picks[i] = Some(color);
-                    }
-                    if shown.is_none() {
-                        ui.weak("not set");
-                    } else if picks[i].is_some_and(|c| Some(c) != *now) {
-                        ui.label(RichText::new("changed").color(theme::palette(ui).accent));
-                    }
+    if row.caps.per_zone() {
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            for (i, (name, now)) in row.zones.iter().enumerate() {
+                ui.vertical(|ui| {
+                    ui.set_width(118.0);
+                    let shown = picks[i].or(*now);
+                    let mut color = shown.unwrap_or([0x80, 0x80, 0x80]);
+                    ui.horizontal(|ui| {
+                        if egui::widgets::color_picker::color_edit_button_srgb(ui, &mut color)
+                            .on_hover_text(format!("{name}: pick a colour, then Apply"))
+                            .changed()
+                        {
+                            picks[i] = Some(color);
+                        }
+                        if shown.is_none() {
+                            ui.weak("not set");
+                        } else if picks[i].is_some_and(|c| Some(c) != *now) {
+                            ui.label(RichText::new("changed").color(theme::palette(ui).accent));
+                        }
+                    });
+                    ui.label(RichText::new(name).size(12.5));
                 });
-                ui.label(RichText::new(name).size(12.5));
-            });
-        }
-    });
+            }
+        });
+    }
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        ui.label(theme::caps_label(ui, "All zones"));
+        ui.label(theme::caps_label(
+            ui,
+            if row.caps.per_zone() {
+                "All zones"
+            } else {
+                "Colour"
+            },
+        ));
         for (name, rgb) in super::lights_page::SWATCHES {
             let all = picks.iter().all(|c| *c == Some(rgb));
             if swatch(ui, Color32::from_rgb(rgb[0], rgb[1], rgb[2]), all)
@@ -282,7 +411,7 @@ fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool) -> egui::Response {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use foxglove_devices::pc_lighting::Protocol;
+    use foxglove_devices::pc_lighting::{Color, LampArrayInfo, Screen, Unknown};
 
     fn case(colors: [Option<[u8; 3]>; 5], matching: bool) -> Row {
         let names = [
@@ -302,42 +431,121 @@ pub mod tests {
                 .map(|(n, c)| (n.to_string(), c))
                 .collect(),
             match_keyboard: matching,
+            caps: LightCaps {
+                color: Color::PerZone,
+                count: 5,
+                effects: ["breathing", "colour cycle", "blinking", "wave", "radial"]
+                    .map(String::from)
+                    .to_vec(),
+                brightness: true,
+                ..Default::default()
+            },
+            entry: None,
         }
     }
 
-    /// The previews' sample: the 45L with colours, the cooler, the G502, Light Studio running.
-    pub fn sample() -> Snapshot {
+    fn corne() -> (String, LightCaps) {
+        (
+            "Eyelash Corne".into(),
+            LightCaps {
+                color: Color::Single,
+                effects: ["Solid", "Breathe", "Spectrum", "Swirl"]
+                    .map(String::from)
+                    .to_vec(),
+                brightness: true,
+                screens: vec![Screen {
+                    width: Some(160),
+                    height: Some(68),
+                    depth: Some(1),
+                    images: true,
+                    animations: true,
+                    stream: true,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn unknown_strip() -> Unknown {
+        Unknown {
+            vid: 0x1209,
+            pid: 0xa1e5,
+            name: "Desk strip".into(),
+            usage_pages: vec![0xff00, 0x0001],
+            path: "strip".into(),
+        }
+    }
+
+    /// The previews' sample: the keyboard, the 45L with colours, the cooler, the G502 with its
+    /// LampArray attributes, Light Studio running, two unknown devices.
+    pub fn sample() -> View {
         let orange = Some([0xf0, 0x8a, 0x3c]);
         let pine = Some([0x5f, 0xc4, 0x8e]);
-        Snapshot {
-            devices: vec![
-                case([orange, pine, orange, orange, orange], false),
-                Row {
-                    key: "03f0:7397".into(),
-                    name: "HP OMEN liquid cooler".into(),
-                    control: Control::NotYet,
-                    zones: vec![],
-                    match_keyboard: false,
-                },
-                Row {
-                    key: "046d:c332".into(),
-                    name: "G502 Proteus Spectrum".into(),
-                    control: Control::LampArray,
-                    zones: vec![],
-                    match_keyboard: false,
-                },
-            ],
-            light_studio: true,
-            status: Some("HP OMEN 45L case lights: colours set".into()),
-            busy: false,
+        View {
+            pc: Snapshot {
+                devices: vec![
+                    case([orange, pine, orange, orange, orange], false),
+                    Row {
+                        key: "03f0:7397".into(),
+                        name: "HP OMEN liquid cooler".into(),
+                        control: Control::NotYet,
+                        zones: vec![],
+                        match_keyboard: false,
+                        caps: LightCaps {
+                            screens: vec![Screen {
+                                images: true,
+                                animations: true,
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                        entry: None,
+                    },
+                    Row {
+                        key: "046d:c332".into(),
+                        name: "G502 Proteus Spectrum".into(),
+                        control: Control::LampArray,
+                        zones: vec![],
+                        match_keyboard: false,
+                        caps: LightCaps::from_lamp_array(LampArrayInfo {
+                            lamp_count: 2,
+                            positions: true,
+                            min_update_us: 33_000,
+                            kind: 2,
+                        }),
+                        entry: None,
+                    },
+                ],
+                light_studio: true,
+                status: Some("HP OMEN 45L case lights: colours set".into()),
+                busy: false,
+                unknown: vec![
+                    unknown_strip(),
+                    Unknown {
+                        vid: 0x045e,
+                        pid: 0x0b12,
+                        name: "Xbox Wireless Controller".into(),
+                        usage_pages: vec![0x0001],
+                        path: "pad".into(),
+                    },
+                ],
+                local_file: Some(
+                    r"C:\Users\you\AppData\Roaming\Foxglove\lighting-catalog.local.toml".into(),
+                ),
+            },
+            keyboard: Some(corne()),
         }
     }
 
     /// Before Foxglove has set anything, no Light Studio, matching the keyboard.
-    pub fn sample_fresh() -> Snapshot {
-        Snapshot {
-            devices: vec![case([None; 5], true)],
-            ..Default::default()
+    pub fn sample_fresh() -> View {
+        View {
+            pc: Snapshot {
+                devices: vec![case([None; 5], true)],
+                ..Default::default()
+            },
+            keyboard: None,
         }
     }
 
@@ -370,5 +578,64 @@ pub mod tests {
             "Standard LampArray device"
         );
         assert_eq!(control_text(Control::NotYet), "Not controllable yet");
+    }
+
+    /// A headless context with the app's fonts and theme.
+    pub fn test_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        crate::platform::add_phosphor_to_fonts(&mut fonts);
+        theme::add_fonts(&mut fonts);
+        ctx.set_fonts(fonts);
+        theme::apply_choice(&ctx, theme::Choice::Dark);
+        ctx
+    }
+
+    /// Draws the card once headless and returns the labels and buttons it showed.
+    fn shown(v: &View) -> String {
+        let ctx = test_ctx();
+        let mut text = String::new();
+        // The first frame lays out; the second's shapes carry every label's text.
+        let mut first = ctx.run_ui(egui::RawInput::default(), |ui| {
+            draw(ui, v, &mut Draft::default(), &mut Wizard::default());
+        });
+        first.textures_delta.clear();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            draw(ui, v, &mut Draft::default(), &mut Wizard::default());
+        });
+        out.textures_delta.clear();
+        for clipped in &out.shapes {
+            collect_text(&clipped.shape, &mut text);
+        }
+        text
+    }
+
+    fn collect_text(shape: &egui::Shape, out: &mut String) {
+        match shape {
+            egui::Shape::Text(t) => {
+                out.push_str(t.galley.text());
+                out.push('\n');
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|s| collect_text(s, out)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn controls_follow_capabilities() {
+        let mut v = sample_fresh();
+        let text = shown(&v);
+        assert!(text.contains("Apply colours") && text.contains("Front top fan"));
+        assert!(text.contains("Identify") && text.contains("Match keyboard"));
+        // The same board, said to take only one colour: no zone pickers, still a colour.
+        v.pc.devices[0].caps.color = Color::Single;
+        let text = shown(&v);
+        assert!(!text.contains("Front top fan"), "{text}");
+        assert!(text.contains("Match keyboard") && text.contains("COLOUR"));
+        // No lights at all: no colour controls, no Off or Identify.
+        v.pc.devices[0].caps = LightCaps::default();
+        let text = shown(&v);
+        assert!(!text.contains("Match keyboard") && !text.contains("Identify"));
+        assert!(text.contains("No lights Foxglove knows of"));
     }
 }

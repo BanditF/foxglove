@@ -2,14 +2,18 @@
 //! aren't keyboards. Each one is found from a HID enumeration and gets a [`LightingDevice`]
 //! driver when Foxglove can drive it.
 //!
-//! - [`catalog`]: the data-driven list of known boards (`lighting-catalog.toml`)
-//! - [`discover`]: matches a HID enumeration against the catalog and the LampArray usage
+//! - [`catalog`]: the data-driven list of known boards (`lighting-catalog.toml`), and the
+//!   user's own entries
+//! - [`caps`]: what a device can do (colour, effects, brightness, screens), as chips
+//! - [`discover`]: matches a HID enumeration against the catalog and the LampArray usage;
+//!   [`unknown`] lists the rest for "Add a device", and [`test_zone`] lights one zone of it
 //! - [`omen_tracer`]: the HP OMEN case lighting board (TracerLED)
 //! - `hid` (feature `hid`): the hidapi enumeration and report writer
 //!
 //! Discovery is caller-driven: the host calls it on device-arrival events, never on a timer.
 //! Nothing streams: every write follows a call.
 
+pub mod caps;
 pub mod catalog;
 #[cfg(feature = "hid")]
 pub mod hid;
@@ -18,11 +22,14 @@ pub mod omen_tracer;
 use std::time::Duration;
 
 use crate::{DeviceError, Result, Rgb};
+pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
 pub use catalog::{Catalog, CatalogDevice, Protocol, ZoneSpec};
 
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;
 pub const LAMP_ARRAY_USAGE: u16 = 0x0001;
+/// The Raw HID usage page ZMK (Digitalis), QMK and VIA keyboards use.
+pub const RAW_HID_USAGE_PAGE: u16 = 0xFF60;
 
 /// How Foxglove controls a found device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +66,85 @@ pub struct Found {
     /// The interface a driver writes to.
     pub path: String,
     pub zones: Vec<ZoneSpec>,
+    /// What it can do: from the catalog, or from a LampArray's attributes once read.
+    pub caps: LightCaps,
+    /// Its catalog entry is the user's own (added by hand).
+    pub local: bool,
+}
+
+/// A HID device the catalog doesn't know and that isn't a LampArray: a candidate for "Add a
+/// device".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unknown {
+    pub vid: u16,
+    pub pid: u16,
+    pub name: String,
+    /// Every usage page it has, vendor-defined ones (0xFF00 and up) first.
+    pub usage_pages: Vec<u16>,
+    /// The interface a zone test writes to: the first vendor-defined one, else the first.
+    pub path: String,
+}
+
+/// The HID devices [`discover`] doesn't place, one per VID/PID, those with a vendor-defined
+/// interface first (that's where bespoke lighting boards usually are).
+pub fn unknown(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Unknown> {
+    let lamp_array = |vid, pid| {
+        hid.iter().any(|o| {
+            (o.vid, o.pid) == (vid, pid)
+                && o.usage_page == LAMP_ARRAY_USAGE_PAGE
+                && o.usage == LAMP_ARRAY_USAGE
+        })
+    };
+    // Keyboards with a Raw HID interface (ZMK with Digitalis, QMK, VIA) have their own
+    // backends, and a test report must never reach them: keyboard first.
+    let raw_hid_keyboard = |vid, pid| {
+        hid.iter()
+            .any(|o| (o.vid, o.pid) == (vid, pid) && o.usage_page == RAW_HID_USAGE_PAGE)
+    };
+    let mut out: Vec<Unknown> = Vec::new();
+    for e in hid {
+        if catalog.find(e.vid, e.pid).is_some()
+            || lamp_array(e.vid, e.pid)
+            || raw_hid_keyboard(e.vid, e.pid)
+        {
+            continue;
+        }
+        let product = e
+            .product
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty());
+        let vendor = e.usage_page >= 0xFF00;
+        match out.iter_mut().find(|u| (u.vid, u.pid) == (e.vid, e.pid)) {
+            Some(u) => {
+                let first_vendor = vendor && u.usage_pages.iter().all(|p| *p < 0xFF00);
+                if !u.usage_pages.contains(&e.usage_page) {
+                    u.usage_pages.push(e.usage_page);
+                }
+                if first_vendor {
+                    u.path = e.path.clone();
+                }
+                if let (true, Some(p)) = (u.name.starts_with("USB device "), product) {
+                    u.name = p.to_string();
+                }
+            }
+            None => out.push(Unknown {
+                vid: e.vid,
+                pid: e.pid,
+                name: product.map_or_else(
+                    || format!("USB device {:04x}:{:04x}", e.vid, e.pid),
+                    str::to_string,
+                ),
+                usage_pages: vec![e.usage_page],
+                path: e.path.clone(),
+            }),
+        }
+    }
+    for u in &mut out {
+        u.usage_pages.sort_by_key(|p| (*p < 0xFF00, *p));
+    }
+    out.sort_by_key(|u| (u.usage_pages.iter().all(|p| *p < 0xFF00), u.vid, u.pid));
+    out
 }
 
 /// Matches HID interfaces against the catalog, then lists LampArray devices the catalog
@@ -82,6 +168,8 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
                 },
                 path: entry.path.clone(),
                 zones: known.zones.clone(),
+                caps: known.caps(),
+                local: known.local,
             });
         }
     }
@@ -110,6 +198,12 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
             control: Control::LampArray,
             path: entry.path.clone(),
             zones: Vec::new(),
+            // Per-LED until its attributes are read (lamp count, positions).
+            caps: LightCaps {
+                color: Color::PerLed,
+                ..Default::default()
+            },
+            local: false,
         });
     }
     found
@@ -181,6 +275,40 @@ pub const WHITE: Rgb = Rgb {
 /// Identify: white, dark, white, dark, white, dark, then the colours back.
 pub const IDENTIFY_STEPS: usize = 6;
 pub const IDENTIFY_STEP: Duration = Duration::from_millis(250);
+
+/// Tests one zone of a board for the manual add: blinks it (white, dark, three times), then
+/// sets it to `restore` (dark when unknown), even when a blink write failed. Run only on the
+/// user's click.
+pub fn test_zone(
+    protocol: Protocol,
+    zone: u8,
+    restore: Option<Rgb>,
+    writer: Box<dyn HidWriter>,
+    wait: &mut dyn FnMut(Duration),
+) -> Result<()> {
+    let spec = vec![ZoneSpec {
+        id: zone,
+        name: format!("zone {zone}"),
+    }];
+    let mut d: Box<dyn LightingDevice> = match protocol {
+        Protocol::OmenTracer => Box::new(omen_tracer::OmenTracer::new(
+            "zone test".into(),
+            spec,
+            writer,
+        )?),
+        Protocol::None => return Err(DeviceError::Unsupported),
+    };
+    let mut blink = || -> Result<()> {
+        for step in 0..IDENTIFY_STEPS {
+            d.set_all(if step % 2 == 0 { WHITE } else { BLACK })?;
+            wait(IDENTIFY_STEP);
+        }
+        Ok(())
+    };
+    let blinked = blink();
+    let restored = d.set_all(restore.unwrap_or(BLACK));
+    blinked.and(restored)
+}
 
 /// Opens the driver for a found device, writing through `writer`.
 pub fn open(found: &Found, writer: Box<dyn HidWriter>) -> Result<Box<dyn LightingDevice>> {
@@ -261,6 +389,86 @@ mod tests {
         let found = discover(&catalog, &[a, b]);
         assert_eq!(found.len(), 2);
         assert_eq!(found[0].key, "103c:84fd:A1B2C3D4");
+    }
+
+    #[test]
+    fn unknown_devices_are_listed_once_vendor_pages_first() {
+        let catalog = Catalog::bundled();
+        let hid = vec![
+            entry(0x046d, 0xc332, 1, 2, "mouse"),
+            entry(0x046d, 0xc332, 0x59, 1, "vhf"),
+            entry(0x103c, 0x84fd, 1, 0, "tracer"),
+            entry(0x045e, 0x0001, 1, 6, "kbd"),
+            HidEntry {
+                product: Some("Desk strip".into()),
+                ..entry(0x1209, 0x0001, 1, 0, "strip-std")
+            },
+            entry(0x1209, 0x0001, 0xff00, 1, "strip-vendor"),
+            entry(0x1d50, 0x615e, 1, 6, "corne-keys"),
+            entry(0x1d50, 0x615e, 0xff60, 0x61, "corne-raw"),
+        ];
+        let u = unknown(&catalog, &hid);
+        let rows: Vec<_> = u
+            .iter()
+            .map(|u| (u.name.as_str(), u.usage_pages.clone(), u.path.as_str()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("Desk strip", vec![0xff00, 1], "strip-vendor"),
+                ("USB device 045e:0001", vec![1], "kbd"),
+            ],
+            "the case and the LampArray mouse are placed; a Raw HID keyboard is never offered"
+        );
+    }
+
+    #[test]
+    fn found_devices_carry_their_caps() {
+        let catalog = Catalog::bundled();
+        let found = discover(
+            &catalog,
+            &[
+                entry(0x103c, 0x84fd, 1, 0, "tracer"),
+                entry(0x046d, 0xc332, 0x59, 1, "vhf"),
+            ],
+        );
+        assert_eq!(found[0].caps.count, 5);
+        assert_eq!(found[1].caps.color, Color::PerLed);
+        assert_eq!(found[1].caps.count, 0, "unknown until read");
+    }
+
+    #[test]
+    fn a_zone_test_blinks_one_zone_and_puts_it_back() {
+        let rec = omen_tracer::tests::Recorder::default();
+        let mut waits = 0;
+        test_zone(
+            Protocol::OmenTracer,
+            3,
+            Some(Rgb { r: 1, g: 2, b: 3 }),
+            Box::new(rec.clone()),
+            &mut |_| waits += 1,
+        )
+        .unwrap();
+        let sent = rec.sent.lock().unwrap().clone();
+        assert_eq!(waits, IDENTIFY_STEPS);
+        assert_eq!(sent.len(), IDENTIFY_STEPS + 1);
+        assert!(sent.iter().all(|r| r[0x36] == 3), "only zone 3");
+        assert_eq!(&sent[0][0x0E..0x11], &[255, 255, 255]);
+        assert_eq!(&sent[IDENTIFY_STEPS][0x0E..0x11], &[1, 2, 3], "restored");
+        let none = test_zone(Protocol::None, 1, None, Box::new(rec.clone()), &mut |_| {});
+        assert_eq!(none, Err(DeviceError::Unsupported));
+        let failing = omen_tracer::tests::Recorder {
+            fail: true,
+            ..Default::default()
+        };
+        assert!(test_zone(
+            Protocol::OmenTracer,
+            1,
+            None,
+            Box::new(failing),
+            &mut |_| {}
+        )
+        .is_err());
     }
 
     #[test]

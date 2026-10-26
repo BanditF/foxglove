@@ -4,6 +4,12 @@
 #   "omen-tracer"  HP OMEN case lighting board (TracerLED), static colour per zone
 #   "none"         recognised, listed as "found, not controllable yet"
 # Zones list only the parts that light up; `id` is the board's own zone number.
+# Capabilities, all optional: `color` = "none" | "on-off" | "single" | "per-zone" | "per-led"
+# (per-zone when zones are listed), `effects` (onboard effect names), `brightness`, and
+# [[device.screen]] tables: width, height, depth (bits per pixel), fps, images, animations,
+# stream (live frames from the PC).
+# Entries the user adds on the Lights page go to lighting-catalog.local.toml next to the
+# settings, in this same format.
 # Windows Dynamic Lighting (HID LampArray) devices need no entry: they're found by their
 # usage page.
 
@@ -21,9 +27,17 @@ zones = [
     { id = 6, name = "Front middle fan" },
     { id = 7, name = "Front top fan" },
 ]
+# The board's own modes and brightness byte (#423); Foxglove's driver sets static colours only.
+effects = ["breathing", "colour cycle", "blinking", "wave", "radial"]
+brightness = true
 
 [[device]]
 name = "HP OMEN liquid cooler"
 vid = 0x03F0
 pid = 0x7397
 protocol = "none"
+# The pump head's LCD shows pictures and animations through HP's helper app. Its size and
+# frame rate aren't measured yet.
+[[device.screen]]
+images = true
+animations = true

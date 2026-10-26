@@ -124,6 +124,24 @@ Lights that aren't a keyboard (case boards, coolers, mice) go through `pc_lighti
   set (`[pc_lighting]`) and puts them back when the board arrives, unless Light Studio runs.
 - **Adding a board** that speaks a known protocol is a catalog entry. A new protocol is a new
   driver module and a `Protocol` variant.
+- **Capabilities** (`pc_lighting::caps::LightCaps`): every found device says how sophisticated
+  it is: colour addressing (none, on/off, single, per-zone, per-LED with lamp count and
+  positions), onboard effects, brightness, an update-rate limit, and screens (size, colour
+  depth, frame-rate limit, still images, animation sets, a live stream). Sources: the catalog
+  (`color`, `effects`, `brightness`, `[[device.screen]]`), a LampArray's own attributes (read
+  through Windows' `LampArray` API when one arrives: lamp count, positions, update interval,
+  kind; nothing is written), and the keyboard's HELLO and screen descriptors
+  (`digitalis::devices::light_caps`). The Lights page shows them as chips
+  ("Per-zone RGB · 5 zones", "Screen 160×68 · 1-bit · images, animations & live"), and the
+  controls follow them: zone pickers only for per-zone or per-LED colour, a colour only where
+  the device takes one, Off and Identify only where the lights switch.
+- **Bespoke gear (manual add):** "Add a device…" lists the HID devices nothing recognises
+  (`pc_lighting::unknown`: name, VID:PID, usage pages, vendor-defined first). The user picks
+  one, names it, picks a known protocol to try or "unknown", and names the zones: "Light zone
+  N" (`pc_lighting::test_zone`) blinks that one zone and puts it back (the colour Foxglove knows,
+  else dark), only on that click and never while paused. The entry goes into the user's
+  `lighting-catalog.local.toml` next to the settings (same format, wins over the bundled entry
+  for the same VID/PID); "Copy entry" puts it on the clipboard to share or contribute.
 
 Not yet: lighting leases (#73) for case boards, the board's own effects (breathing, colour
 cycle, themes), and the OMEN liquid cooler (`03F0:7397`), which is listed as found only.

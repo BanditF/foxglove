@@ -43,6 +43,7 @@ pub mod overlay_place;
 pub mod overlay_profile;
 pub mod pause;
 pub mod pc_lights;
+pub mod pc_lights_add;
 pub mod pc_lights_ui;
 pub mod plugin_actions;
 pub mod plugin_icons;
