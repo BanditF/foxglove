@@ -535,9 +535,7 @@ fn shell_window(ctx: &egui::Context, size: egui::Vec2) -> Option<Rect> {
         .collapsible(false)
         .resizable(true)
         .open(&mut true)
-        .show(ctx, |ui| {
-            crate::foxglove::shell::frame(ui, sections)
-        })
+        .show(ctx, |ui| crate::foxglove::shell::frame(ui, sections))
         .map(|r| r.response.rect)
 }
 
