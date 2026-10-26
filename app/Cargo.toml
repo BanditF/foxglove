@@ -89,6 +89,7 @@ windows = { version = "0.62.2", features = [
     # Foxglove (#370): stderr into the log file.
     "Win32_System_Pipes",
     "Win32_System_Console",
+    "Win32_System_SystemInformation",
     # Foxglove (#346): the GPU-reset watch.
     "Win32_System_EventLog",
     "Win32_System_RemoteDesktop",

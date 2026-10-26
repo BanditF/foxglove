@@ -193,17 +193,42 @@ pub fn redact(text: &str) -> String {
     out
 }
 
-/// Opens the log and points stderr and panics at it. Call once, early in `main`.
+/// The first line of a run: the version, the pid, how long after boot (sign-in starts read a
+/// minute or two, a later manual start more), and any arguments (the updater's helper).
+fn started_line(pid: u32, since_boot: Option<u64>, args: &[String]) -> String {
+    let mut text = format!("Foxglove {} started (pid {pid}", env!("CARGO_PKG_VERSION"));
+    if let Some(s) = since_boot {
+        text.push_str(&format!(", {s} s after boot"));
+    }
+    text.push(')');
+    if !args.is_empty() {
+        text.push_str(&format!(" with {}", args.join(" ")));
+    }
+    text
+}
+
+/// A line that must reach the file before the process exits right after it (a second launch,
+/// a failed start): written at once, not through the stderr pipe, whose reader may not get to it.
+/// Without a log (or capture) it goes to stderr as usual.
+pub fn early(text: &str) {
+    line(text);
+    if !imp::capturing() {
+        eprintln!("{text}");
+    }
+}
+
+/// Opens the log and points stderr and panics at it. Call once, first in `main`.
 pub fn start() {
     let Some(dir) = dir() else { return };
     match Log::open(&dir) {
         Ok(log) => *LOG.lock().unwrap_or_else(|e| e.into_inner()) = Some(log),
         Err(_) => return, // no log rather than no Foxglove
     }
-    line(&format!(
-        "Foxglove {} started (pid {})",
-        env!("CARGO_PKG_VERSION"),
-        std::process::id()
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    line(&started_line(
+        std::process::id(),
+        imp::since_boot_secs(),
+        &args,
     ));
     let console = imp::capture_stderr();
     let previous = std::panic::take_hook();
@@ -283,6 +308,12 @@ mod imp {
         CAPTURING.load(Ordering::Relaxed)
     }
 
+    /// Seconds since Windows started.
+    pub fn since_boot_secs() -> Option<u64> {
+        // SAFETY: no arguments; reads the tick count.
+        Some(unsafe { windows::Win32::System::SystemInformation::GetTickCount64() } / 1000)
+    }
+
     /// Points stderr at a pipe drained into the log. True when there was a real stderr (a
     /// console run), which keeps getting each line too.
     pub fn capture_stderr() -> bool {
@@ -348,6 +379,9 @@ mod imp {
 mod imp {
     pub fn capturing() -> bool {
         false
+    }
+    pub fn since_boot_secs() -> Option<u64> {
+        None
     }
     /// Elsewhere only panics reach the file; stderr stays as it is.
     pub fn capture_stderr() -> bool {
@@ -448,6 +482,35 @@ mod tests {
             redact("left · battery 61% — ünïcode"),
             "left · battery 61% — ünïcode"
         );
+    }
+
+    #[test]
+    fn the_started_line_says_when_and_how() {
+        let v = env!("CARGO_PKG_VERSION");
+        assert_eq!(
+            started_line(7, Some(52), &[]),
+            format!("Foxglove {v} started (pid 7, 52 s after boot)")
+        );
+        assert_eq!(
+            started_line(7, None, &["--apply-update".into(), "x".into()]),
+            format!("Foxglove {v} started (pid 7) with --apply-update x")
+        );
+    }
+
+    #[test]
+    fn early_lines_reach_the_file_at_once() {
+        let d = temp("early");
+        *LOG.lock().unwrap_or_else(|e| e.into_inner()) = Some(Log::open(&d).unwrap());
+        early("Foxglove: already running; showing that one");
+        *LOG.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let lines = recent_in(&d, 50);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.ends_with("Foxglove: already running; showing that one")),
+            "{lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
