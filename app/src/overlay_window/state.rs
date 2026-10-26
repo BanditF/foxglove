@@ -71,6 +71,11 @@ pub struct UiState {
     /// only there.
     pub overlay_rect: Option<egui::Rect>,
     pub overlay_hovered: bool,
+    /// Foxglove: the overlay's last size, its dragged place, and its top-left while a drag is
+    /// under way (window points).
+    pub overlay_size: egui::Vec2,
+    pub overlay_place: crate::foxglove::overlay_place::Place,
+    pub overlay_drag: Option<egui::Pos2>,
 }
 
 pub struct SettingsState {
