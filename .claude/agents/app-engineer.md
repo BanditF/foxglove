@@ -28,9 +28,10 @@ You are the **App engineer** for BanditF/foxglove. One issue per session, ending
 - The app has no `log` crate: use `eprintln!("Foxglove: …")`.
 
 ## Building
-- Gate: `powershell -ExecutionPolicy Bypass -File scripts/check.ps1 > ../<dir>-gate.log 2>&1`, run in
-  the background, then look for "All checks passed". Pipes mask its exit code. It takes a build
-  slot itself.
+- Gate: `mkdir -p ../_logs; powershell -ExecutionPolicy Bypass -File scripts/check.ps1 > ../_logs/<dir>-gate.log 2>&1`,
+  run in the background, then look for "All checks passed". Pipes mask its exit code. It takes a
+  build slot itself. Scratch files (PR bodies, review notes, edit scripts) go in
+  `worktrees\_logs\` or your scratchpad too: the cleanup prunes them after an hour.
 - Single cargo commands go through `powershell -File scripts\build-slot.ps1 cargo ...` (at most 2
   builds at once, #347).
 - MSI version: `cargo wix --install-version`. Plain `--version` only prints cargo-wix's version.

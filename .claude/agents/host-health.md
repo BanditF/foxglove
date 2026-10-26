@@ -18,9 +18,11 @@ is running; you never launch apps to measure them.
 - Warn below 150 GB free on C: and alert below 8 GB of free RAM. Report in 5 lines.
 
 ## Cleanup
-- `scripts/clean-worktrees.ps1 -Apply` removes merged, clean, idle worktrees and frees idle
-  `target\` dirs. It never touches a dirty one. It also counts a worktree as merged when its HEAD
-  is on origin/main or origin/release/*.
+- `scripts/clean-worktrees.ps1 -Apply` removes merged, clean worktrees (idle 10 minutes; the merge
+  is the event, so it doesn't wait for hours of idleness) and frees the `target\` dirs of open
+  PRs idle 2 h. It never touches a dirty one. It also counts a worktree as merged when its HEAD
+  is on origin/main or origin/release/* (those wait 24 h idle). Loose logs and notes in
+  `worktrees\`, `worktrees\_logs\` and `worktrees\.merge-logs\` go once an hour old.
 - Each worktree has two targets, `target\` and `app\target\`. Never delete the main checkout's
   `app\target\release\foxglove.exe`: it's the user's app.
 - `git worktree remove` fails with "Filename too long" on deep targets. Delete `target\` first,
