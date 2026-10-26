@@ -79,6 +79,31 @@ fn keyboards() -> Option<std::collections::BTreeSet<(u16, u16)>> {
     Some(keyboards)
 }
 
+/// How keyboard `vid:pid` reaches this PC, for the log: "BLE" when its host-link interface is
+/// on Bluetooth, "USB" otherwise. One HID enumeration, run on a connect event, never on a timer.
+pub fn transport(vid: u16, pid: u16) -> &'static str {
+    let Ok(api) = hidapi::HidApi::new() else {
+        return "USB";
+    };
+    transport_of(
+        api.device_list()
+            .filter(|d| {
+                (d.vendor_id(), d.product_id()) == (vid, pid)
+                    && d.usage_page() == digitalis::protocol::USAGE_PAGE
+                    && d.usage() == digitalis::protocol::USAGE
+            })
+            .map(|d| d.bus_type()),
+    )
+}
+
+fn transport_of(mut buses: impl Iterator<Item = hidapi::BusType>) -> &'static str {
+    if buses.any(|b| matches!(b, hidapi::BusType::Bluetooth)) {
+        "BLE"
+    } else {
+        "USB"
+    }
+}
+
 /// Asks the keyboard on `link` for HELLO (a few tries; replies sometimes go missing) and
 /// returns it if it describes a usable panel.
 pub fn ask_hello(link: &Link) -> Option<Hello> {
@@ -192,4 +217,20 @@ pub fn transport_changed(spec: &crate::protocols::ConnectionSpec) {
 /// Looks up a selected identity without enumeration or I/O.
 pub fn cached(vid: u16, pid: u16) -> Option<Arc<Link>> {
     LINKS.get()?.lock().ok()?.get(&(vid, pid))?.upgrade()
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use hidapi::BusType;
+
+    #[test]
+    fn bluetooth_reads_as_ble_and_everything_else_as_usb() {
+        assert_eq!(super::transport_of([BusType::Bluetooth].into_iter()), "BLE");
+        assert_eq!(super::transport_of([BusType::Usb].into_iter()), "USB");
+        assert_eq!(super::transport_of(std::iter::empty()), "USB");
+        assert_eq!(
+            super::transport_of([BusType::Usb, BusType::Bluetooth].into_iter()),
+            "BLE"
+        );
+    }
 }
