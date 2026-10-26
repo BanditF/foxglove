@@ -253,18 +253,43 @@ pub trait LightingDevice: Send {
     /// colours it had (white where Foxglove never set one). `wait` sleeps between steps; it's a
     /// bounded sequence of [`IDENTIFY_STEPS`], not a timer.
     fn identify(&mut self, wait: &mut dyn FnMut(Duration)) -> Result<()> {
-        let before = self.colors();
-        for step in 0..IDENTIFY_STEPS {
-            self.set_all(if step % 2 == 0 { WHITE } else { BLACK })?;
-            wait(IDENTIFY_STEP);
-        }
-        let restore: Vec<_> = before
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (i, c.unwrap_or(WHITE)))
-            .collect();
-        self.set_zones(&restore)
+        self.identify_restoring(&[], wait)
     }
+
+    /// [`Self::identify`], putting back `fallback[i]` on a zone whose colour Foxglove doesn't
+    /// know (a write-only board set by something else: the user's saved colours), and white
+    /// where that's missing too. The device never ends dark: the colours go back even when a
+    /// blink failed, and a failed restore is tried once more after one step's wait.
+    fn identify_restoring(
+        &mut self,
+        fallback: &[Option<Rgb>],
+        wait: &mut dyn FnMut(Duration),
+    ) -> Result<()> {
+        let restore = restore_colors(&self.colors(), fallback);
+        let mut blinked = Ok(());
+        for step in 0..IDENTIFY_STEPS {
+            blinked = self.set_all(if step % 2 == 0 { WHITE } else { BLACK });
+            wait(IDENTIFY_STEP);
+            if blinked.is_err() {
+                break;
+            }
+        }
+        let restored = self.set_zones(&restore).or_else(|_| {
+            wait(IDENTIFY_STEP);
+            self.set_zones(&restore)
+        });
+        restored.and(blinked)
+    }
+}
+
+/// What a zone goes back to after a blink: the colour Foxglove knows, else `fallback`'s, else
+/// white. Never dark unless that's the colour it had.
+pub fn restore_colors(known: &[Option<Rgb>], fallback: &[Option<Rgb>]) -> Vec<(usize, Rgb)> {
+    known
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (i, c.or(fallback.get(i).copied().flatten()).unwrap_or(WHITE)))
+        .collect()
 }
 
 pub const BLACK: Rgb = Rgb { r: 0, g: 0, b: 0 };
@@ -278,8 +303,8 @@ pub const IDENTIFY_STEPS: usize = 6;
 pub const IDENTIFY_STEP: Duration = Duration::from_millis(250);
 
 /// Tests one zone of a board for the manual add: blinks it (white, dark, three times), then
-/// sets it to `restore` (dark when unknown), even when a blink write failed. Run only on the
-/// user's click.
+/// sets it to `restore` (white when unknown, never dark), even when a blink write failed. Run
+/// only on the user's click.
 pub fn test_zone(
     protocol: Protocol,
     zone: u8,
@@ -307,7 +332,7 @@ pub fn test_zone(
         Ok(())
     };
     let blinked = blink();
-    let restored = d.set_all(restore.unwrap_or(BLACK));
+    let restored = d.set_all(restore.unwrap_or(WHITE));
     blinked.and(restored)
 }
 
@@ -441,6 +466,21 @@ mod tests {
     #[test]
     fn a_zone_test_blinks_one_zone_and_puts_it_back() {
         let rec = omen_tracer::tests::Recorder::default();
+        test_zone(
+            Protocol::OmenTracer,
+            2,
+            None,
+            Box::new(rec.clone()),
+            &mut |_| {},
+        )
+        .unwrap();
+        let unknown = rec.sent.lock().unwrap().last().unwrap().clone();
+        assert_eq!(
+            &unknown[0x0B..0x0E],
+            &[255, 255, 255],
+            "unknown: white, not dark"
+        );
+        let rec = omen_tracer::tests::Recorder::default();
         let mut waits = 0;
         test_zone(
             Protocol::OmenTracer,
@@ -470,6 +510,106 @@ mod tests {
             &mut |_| {}
         )
         .is_err());
+    }
+
+    /// A board whose writes fail for the first `fail` sends.
+    struct Flaky {
+        sent: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+        fail: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        fail_at: usize,
+    }
+
+    impl HidWriter for Flaky {
+        fn send(&mut self, reports: &[Vec<u8>]) -> Result<()> {
+            let n = self.fail.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n == self.fail_at {
+                return Err(DeviceError::Disconnected);
+            }
+            self.sent.lock().unwrap().extend(reports.iter().cloned());
+            Ok(())
+        }
+    }
+
+    fn case_with(writer: Box<dyn HidWriter>) -> Box<dyn LightingDevice> {
+        let found = discover(
+            &Catalog::bundled(),
+            &[entry(0x103c, 0x84fd, 1, 0, "tracer")],
+        );
+        open(&found[0], writer).unwrap()
+    }
+
+    fn last_colors(sent: &[Vec<u8>]) -> Vec<(u8, [u8; 3])> {
+        sent[sent.len() - 5..]
+            .iter()
+            .map(|r| {
+                let at = 0x08 + 3 * usize::from(r[0x36] - 1);
+                (r[0x36], [r[at], r[at + 1], r[at + 2]])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn identify_with_no_prior_state_restores_the_saved_or_default_colours() {
+        let rec = omen_tracer::tests::Recorder::default();
+        let mut d = case_with(Box::new(rec.clone()));
+        let saved = Rgb {
+            r: 0xf0,
+            g: 0x8a,
+            b: 0x3c,
+        };
+        // Nothing set by Foxglove yet; the user saved zone 1 and zone 7 only.
+        d.identify_restoring(&[Some(saved), None, None, None, Some(saved)], &mut |_| {})
+            .unwrap();
+        let sent = rec.sent.lock().unwrap().clone();
+        assert_eq!(
+            last_colors(&sent),
+            vec![
+                (1, [0xf0, 0x8a, 0x3c]),
+                (2, [255, 255, 255]),
+                (5, [255, 255, 255]),
+                (6, [255, 255, 255]),
+                (7, [0xf0, 0x8a, 0x3c]),
+            ],
+            "saved colours where there are some, white elsewhere: never dark"
+        );
+        assert_eq!(d.colors()[0], Some(saved), "and now it knows them");
+    }
+
+    #[test]
+    fn a_failed_blink_still_puts_the_colours_back() {
+        let sent = std::sync::Arc::default();
+        let flaky = Flaky {
+            sent: std::sync::Arc::clone(&sent),
+            fail: std::sync::Arc::default(),
+            // The second blink (dark) fails: the lights must not stay off.
+            fail_at: 1,
+        };
+        let mut d = case_with(Box::new(flaky));
+        assert!(d.identify(&mut |_| {}).is_err(), "the failure is reported");
+        let sent = sent.lock().unwrap().clone();
+        assert!(last_colors(&sent)
+            .iter()
+            .all(|(_, c)| *c == [255, 255, 255]));
+        // A restore that fails once is tried again.
+        let sent = std::sync::Arc::default();
+        let flaky = Flaky {
+            sent: std::sync::Arc::clone(&sent),
+            fail: std::sync::Arc::default(),
+            fail_at: IDENTIFY_STEPS,
+        };
+        let mut d = case_with(Box::new(flaky));
+        let mut waits = 0;
+        d.identify(&mut |_| waits += 1).unwrap();
+        assert_eq!(
+            waits,
+            IDENTIFY_STEPS + 1,
+            "one step's wait before the retry"
+        );
+        let sent = sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 5 * IDENTIFY_STEPS + 5);
+        assert!(last_colors(&sent)
+            .iter()
+            .all(|(_, c)| *c == [255, 255, 255]));
     }
 
     #[test]
