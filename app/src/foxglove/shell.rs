@@ -690,12 +690,6 @@ fn chip(ui: &mut egui::Ui, c: &Chip) {
     }
 }
 
-/// The settings window's frame: the theme's window look with no inner margin, so the sidebar
-/// and the status strip reach its edges.
-pub fn window_frame(ctx: &egui::Context) -> egui::Frame {
-    egui::Frame::window(&ctx.global_style()).inner_margin(Margin::ZERO)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
