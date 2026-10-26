@@ -3,18 +3,27 @@
 # check.ps1, after a PR merges, and after a worktree is removed.
 #   powershell -File scripts\clean-worktrees.ps1            # list what would go
 #   powershell -File scripts\clean-worktrees.ps1 -Apply     # do it
-# For a worktree that is clean, idle for -IdleHours and not in use:
-#   - PR merged: remove the worktree (git worktree remove, never --force). A worktree with no PR
-#     (a detached checkout, or a branch never pushed) counts as merged once its HEAD is on
-#     origin/main or an origin/release/* branch: nothing in it is lost. Those wait -LandedHours
-#     idle (a fresh worktree has no commits yet either, and its session may still be coming back).
-#   - PR open:   delete only its target\ and app\target\; a review fix costs one rebuild.
+# For a worktree that is clean and not in use:
+#   - PR merged: remove the worktree (git worktree remove, never --force) once it has been idle
+#     -MergedMinutes. The merge is the event, and it comes right after the job's last build, so a
+#     merged worktree must not wait hours of idleness: no later event may come.
+#     A worktree with no PR (a detached checkout, or a branch never pushed) counts as merged once
+#     its HEAD is on origin/main or an origin/release/* branch: nothing in it is lost. Those wait
+#     -LandedHours idle (a fresh worktree has no commits yet either, and its session may still be
+#     coming back).
+#   - PR open:   once idle -IdleHours, delete only its target\ and app\target\; a review fix costs
+#     one rebuild.
+# Loose files agents leave in the worktrees folder (gate, merge and test logs, review notes, PR
+# bodies, edit scripts) go once idle -LooseHours, and so do the files in worktrees\_logs\ (where
+# gate logs belong) and worktrees\.merge-logs\ (merge-pr.sh's).
 # The main checkout is never removed; its target\ is cleaned once it passes -MainLimitGB.
 # Never touches a dirty worktree, one with unpushed commits, the caller's own worktree, or -Skip.
 param(
     [switch]$Apply,
     [int]$IdleHours = 2,
+    [int]$MergedMinutes = 10,
     [int]$LandedHours = 24,
+    [int]$LooseHours = 1,
     [int]$MainLimitGB = 8,
     # The Planner's merge worktrees, and On-call's sitting worktrees (0.1 re-check; drop them
     # from this list when On-call is done with them).
@@ -44,7 +53,8 @@ function Size($path) {
 function DropTargets($path) {
     foreach ($t in $targets) {
         $dir = Join-Path $path $t
-        if (Test-Path $dir) { Remove-Item $dir -Recurse -Force }
+        # The \\?\ form: deep build paths pass MAX_PATH ("Filename too long").
+        if (Test-Path $dir) { Remove-Item -LiteralPath "\\?\$dir" -Recurse -Force }
     }
 }
 # Hours since the worktree was last committed to, checked out or built.
@@ -90,7 +100,7 @@ foreach ($w in $worktrees) {
     elseif ($running -match [regex]::Escape($path)) { $why = 'in use' }
     else {
         $idle = IdleHours $path
-        $limit = if ($landedOnly) { $LandedHours } else { $IdleHours }
+        $limit = if ($landedOnly) { $LandedHours } elseif ($state -eq 'MERGED') { $MergedMinutes / 60 } else { $IdleHours }
         if ($idle -lt $limit) { $why = ('active {0:N1} h ago' -f $idle) }
     }
     $name = if ($w.Branch) { $w.Branch } else { "(detached) $path" }
@@ -120,6 +130,26 @@ if ($running -notmatch [regex]::Escape($main)) {
         Write-Host ('clean   main checkout debug builds ({0:N1} GB > {1} GB)' -f ($size / 1GB), $MainLimitGB)
         if ($Apply) { $debug | ForEach-Object { Remove-Item $_ -Recurse -Force } }
     }
+}
+
+# Loose files in the worktrees folder: a log still being written is never idle, so it stays.
+$root = Join-Path (Split-Path $main -Parent) 'worktrees'
+$loose = @('*-gate.log', 'merge-*.log', 'merge*.log', 'review-*.md', 'pr-*-body.md', '*-edit.py', '*.log')
+$old = (Get-Date).AddHours(-$LooseHours)
+$files = @()
+if (Test-Path $root) {
+    $files += Get-ChildItem -LiteralPath $root -File -Force -ErrorAction SilentlyContinue |
+        Where-Object { $name = $_.Name; ($loose | Where-Object { $name -like $_ }) -and $_.LastWriteTime -lt $old }
+    foreach ($logs in '_logs', '.merge-logs') {
+        $dir = Join-Path $root $logs
+        if (Test-Path $dir) { $files += Get-ChildItem -LiteralPath $dir -File -Recurse -Force -ErrorAction SilentlyContinue | Where-Object LastWriteTime -lt $old }
+    }
+}
+if ($files) {
+    $size = ($files | Measure-Object Length -Sum).Sum
+    $freed += $size
+    Write-Host ('clean   {0} loose log/note files in {1} ({2:N1} MB)' -f $files.Count, $root, ($size / 1MB))
+    if ($Apply) { $files | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } }
 }
 
 if ($Apply) { git -C $repo worktree prune }
