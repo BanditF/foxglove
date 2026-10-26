@@ -34,6 +34,12 @@ elevating with another account's credentials, it applies to that account.
 It does not configure startup for every user. Maintain/uninstall with the same
 account to remove its Run entry. Quit the running app before upgrading/uninstalling.
 
+The app has the same switch: **Settings -> Theme and updates -> Start with Windows**, on by default.
+It writes and removes that same `Foxglove` value (never a second one); at startup, with the switch
+on, it fixes a missing value or one naming another exe. Turned off, it is removed and never added
+back. An entry the app wrote outlives an uninstall (MSI removes only the value it owns); turn the
+switch off first, or delete the value.
+
 Uninstall removes the installed files, shortcut and installer-owned registry
 values. It never removes user settings or cached keymaps. Major upgrades replace
 the previous package and reject downgrades.

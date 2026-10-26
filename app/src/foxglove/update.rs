@@ -183,6 +183,7 @@ pub fn group(ui: &mut egui::Ui) {
     // The window theme and the version in one card (#390).
     super::settings_ui::section(ui, "Theme and updates", |ui| {
         super::theme::picker(ui);
+        super::autostart::checkbox(ui);
         let version = format!("Foxglove {}", env!("CARGO_PKG_VERSION"));
         // Builds without the release signing key (0.1) can't verify an update, so they don't
         // offer one: they point at the release page instead.

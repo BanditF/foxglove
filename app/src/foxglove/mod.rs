@@ -15,6 +15,7 @@ pub mod art_service;
 mod art_sources;
 mod art_triggers;
 pub mod art_ui;
+pub mod autostart;
 pub mod away;
 pub mod battery;
 pub mod boards;

@@ -58,5 +58,6 @@ fn main() {
     foxglove::mic_broker::start();
     foxglove::catalog_refresh::start();
     foxglove::identity::start();
+    foxglove::autostart::start(); // Foxglove: Start with Windows
     foxglove::startup::finish(platform::run(settings, available_devices))
 }
