@@ -88,15 +88,21 @@ pub fn tooltip_line(levels: &BTreeMap<String, u8>) -> String {
     parts.join(" · ")
 }
 
-/// The whole tooltip, inside Windows' 127 characters.
+/// The whole tooltip, inside Windows' 127 characters. A long status line is cut, never the
+/// battery line under it: a status that once carried the art relay's whole report pushed the
+/// battery past the limit, so the tooltip never showed it.
 pub fn tooltip(status: &str, levels: &BTreeMap<String, u8>) -> String {
-    let text = format!("Foxglove\n{status}\n{}", tooltip_line(levels));
-    if text.chars().count() <= 127 {
-        return text;
-    }
-    let mut cut: String = text.chars().take(126).collect();
-    cut.push('…');
-    cut
+    let battery = tooltip_line(levels);
+    // "Foxglove\n" and the "\n" before the battery line.
+    let room = 127usize.saturating_sub(10 + battery.chars().count());
+    let status = if status.chars().count() <= room {
+        status.to_string()
+    } else {
+        let mut cut: String = status.chars().take(room.saturating_sub(1)).collect();
+        cut.push('…');
+        cut
+    };
+    format!("Foxglove\n{status}\n{battery}")
 }
 
 /// The `[battery]` section of the settings store.
@@ -352,7 +358,17 @@ mod tests {
         let long = "x".repeat(200);
         let t = tooltip(&long, &levels);
         assert_eq!(t.chars().count(), 127);
-        assert!(t.ends_with('…'));
+        assert!(
+            t.ends_with("\nRight 61% · Left 80%"),
+            "the battery is never cut: {t}"
+        );
+        assert!(t.contains('…'));
+        // The status the tray once used, with the art relay's report in it, still shows the
+        // battery.
+        let old = "Connected Eyelash_Corne / right art: left: idle, 0/0 bytes pushed, error: none; right: idle, set 3, 12 built-in, slot 8192 bytes";
+        assert!(tooltip(old, &levels).ends_with("Right 61% · Left 80%"));
+        // Windows counts UTF-16 units: every character here is one.
+        assert!(tooltip(&long, &levels).encode_utf16().count() <= 127);
     }
 
     /// The tooltip reads the keyboard facts the tray panel shows: the first reading after a
