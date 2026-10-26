@@ -20,7 +20,7 @@ manifest:
       import: app/west.yml
     - name: zmk-raw-hid
       url: https://github.com/BanditF/zmk-raw-hid
-      revision: nonblocking
+      revision: fix/usb-reply-recovery
     - name: zmk-keypeek-layer-notifier
       remote: srwi
       revision: master
