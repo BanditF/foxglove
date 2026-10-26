@@ -1,7 +1,9 @@
 build/
 zmk/
 modules/
-tools/
+# tools/ (west's and others); only the dev-tooling example is tracked.
+**/tools/*
+!/tools/local.example.toml
 .west/
 __pycache__/
 

@@ -4,8 +4,90 @@
 use anyhow::{ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// This PC's halves: the defaults when neither the environment nor `tools/local.toml` names
+/// others (`scripts/local_config.py` has the same keys and order).
 pub const LEFT_SERIAL: &str = "1E89EF085AA8A635";
 pub const RIGHT_SERIAL: &str = "35B4541F78DE9CF8";
+
+/// The two halves' USB serials.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Serials {
+    pub left: String,
+    pub right: String,
+}
+
+impl Default for Serials {
+    fn default() -> Self {
+        Self {
+            left: LEFT_SERIAL.into(),
+            right: RIGHT_SERIAL.into(),
+        }
+    }
+}
+
+/// The serials from `FOXGLOVE_LEFT_SERIAL` / `FOXGLOVE_RIGHT_SERIAL`, else `[keyboard]
+/// left_serial` / `right_serial` in `toml` (a tools/local.toml), else this PC's. A value that
+/// isn't plain letters and digits is ignored, as it goes into a PowerShell pattern.
+pub fn serials_from(env: impl Fn(&str) -> Option<String>, toml: Option<&str>) -> Serials {
+    let table: Option<toml::Table> = toml.and_then(|t| t.parse().ok());
+    let file = |key: &str| {
+        table
+            .as_ref()?
+            .get("keyboard")?
+            .get(key)?
+            .as_str()
+            .map(str::to_string)
+    };
+    let ok = |v: &String| !v.is_empty() && v.chars().all(|c| c.is_ascii_alphanumeric());
+    let pick = |var: &str, key: &str, default: &str| {
+        env(var)
+            .filter(ok)
+            .or_else(|| file(key).filter(ok))
+            .unwrap_or_else(|| default.to_string())
+    };
+    Serials {
+        left: pick("FOXGLOVE_LEFT_SERIAL", "left_serial", LEFT_SERIAL),
+        right: pick("FOXGLOVE_RIGHT_SERIAL", "right_serial", RIGHT_SERIAL),
+    }
+}
+
+/// Where tools/local.toml may be: `FOXGLOVE_LOCAL_TOML`, this checkout's `tools\`, then the
+/// workspace's (the folder holding the main checkout), as in `scripts/local_config.py`.
+fn local_toml() -> Option<String> {
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(p) = std::env::var_os("FOXGLOVE_LOCAL_TOML").filter(|v| !v.is_empty()) {
+        paths.push(p.into());
+    }
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    if let Some(top) = git(&["rev-parse", "--show-toplevel"]) {
+        paths.push(std::path::Path::new(&top).join("tools/local.toml"));
+    }
+    if let Some(common) = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]) {
+        if let Some(ws) = std::path::Path::new(&common)
+            .parent()
+            .and_then(|p| p.parent())
+        {
+            paths.push(ws.join("tools/local.toml"));
+        }
+    }
+    paths
+        .into_iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())
+}
+
+/// This PC's serials (read once).
+pub fn serials() -> &'static Serials {
+    static S: std::sync::OnceLock<Serials> = std::sync::OnceLock::new();
+    S.get_or_init(|| serials_from(|v| std::env::var(v).ok(), local_toml().as_deref()))
+}
 const RUNNING: &str = "USB\\VID_1D50&PID_615E\\";
 const BOOTLOADER: &str = "USB\\VID_239A&PID_00B3\\";
 
@@ -41,6 +123,11 @@ pub struct HalfUsb {
 /// USB with no interfaces, so Windows lists it with problem 28 and no children: expected. A
 /// right half WITH interfaces is running left or settings_reset firmware.
 pub fn classify(entries: &[UsbEntry]) -> Vec<HalfUsb> {
+    classify_with(entries, serials())
+}
+
+/// [`classify`] for the given halves.
+pub fn classify_with(entries: &[UsbEntry], serials: &Serials) -> Vec<HalfUsb> {
     let find = |prefix: &str, serial: &str| {
         entries.iter().find(|e| {
             e.instance_id
@@ -53,7 +140,7 @@ pub fn classify(entries: &[UsbEntry]) -> Vec<HalfUsb> {
         message,
     };
     let mut out = Vec::new();
-    for (name, serial) in [("left", LEFT_SERIAL), ("right", RIGHT_SERIAL)] {
+    for (name, serial) in [("left", &serials.left), ("right", &serials.right)] {
         if find(BOOTLOADER, serial).is_some() {
             out.push(half(
                 name,
@@ -120,9 +207,13 @@ fn powershell(script: &str) -> Result<String> {
 
 /// The halves' present USB devices, with their interface counts.
 pub fn usb_entries() -> Result<Vec<UsbEntry>> {
+    let Serials {
+        left: left_serial,
+        right: right_serial,
+    } = serials();
     let script = format!(
         "$d = @(Get-PnpDevice -PresentOnly | Where-Object {{ $_.InstanceId -match \
-         '^USB\\\\VID_(1D50&PID_615E|239A&PID_00B3)\\\\({LEFT_SERIAL}|{RIGHT_SERIAL})$' }} | \
+         '^USB\\\\VID_(1D50&PID_615E|239A&PID_00B3)\\\\({left_serial}|{right_serial})$' }} | \
          ForEach-Object {{ $c = (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName \
          DEVPKEY_Device_Children -ErrorAction SilentlyContinue).Data; [pscustomobject]@{{ \
          InstanceId = $_.InstanceId; Status = [string]$_.Status; Children = @($c | \
@@ -262,7 +353,10 @@ mod tests {
         }
     }
     fn verdicts(entries: &[UsbEntry]) -> Vec<Verdict> {
-        classify(entries).iter().map(|h| h.verdict).collect()
+        classify_with(entries, &Serials::default())
+            .iter()
+            .map(|h| h.verdict)
+            .collect()
     }
 
     #[test]
@@ -281,7 +375,7 @@ mod tests {
             entry(RUNNING, LEFT_SERIAL, "OK", 3),
             entry(RUNNING, RIGHT_SERIAL, "OK", 3),
         ];
-        let r = classify(&e);
+        let r = classify_with(&e, &Serials::default());
         assert_eq!(r[1].verdict, Verdict::Fail);
         assert!(r[1].message.contains("settings_reset"));
     }
@@ -352,5 +446,22 @@ mod tests {
     #[test]
     fn rejects_odd_process_names() {
         assert!(process_cpu_ms("foo; Remove-Item x").is_err());
+    }
+
+    #[test]
+    fn serials_come_from_the_environment_then_local_toml_then_this_pc() {
+        let none = |_: &str| None;
+        assert_eq!(serials_from(none, None), Serials::default());
+        let toml = "[keyboard]\nleft_serial = \"AAAA1111\"\n";
+        let s = serials_from(none, Some(toml));
+        assert_eq!(
+            (s.left.as_str(), s.right.as_str()),
+            ("AAAA1111", RIGHT_SERIAL)
+        );
+        let env = |v: &str| (v == "FOXGLOVE_LEFT_SERIAL").then(|| "BBBB2222".to_string());
+        assert_eq!(serials_from(env, Some(toml)).left, "BBBB2222");
+        // Not a plain serial (it would go into a PowerShell pattern): ignored.
+        let bad = |_: &str| Some("x|.*".to_string());
+        assert_eq!(serials_from(bad, Some("not toml [")), Serials::default());
     }
 }
