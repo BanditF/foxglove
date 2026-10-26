@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: MIT */
-// The underglow on battery: an LED strip between ZMK and the WS2812s that scales every pixel to
-// CONFIG_NICE_VIEW_RGB_BATTERY_CAP percent while the half has no USB power (#218). ZMK's own
-// brightness, effects and saved state don't change, nothing is written to flash, and each half
-// goes by its own cable. ZMK redraws every 50 ms while the underglow is on, so plugging in or out
-// shows on the next frame; there's no timer or listener of our own.
+// The underglow's brightness by power state: an LED strip between ZMK and the WS2812s that scales
+// every pixel to battery_dim_level() percent (battery_dim.c: on USB, on battery, low battery). ZMK's
+// own brightness, effects and saved state don't change, and each half goes by its own cable and
+// charge. ZMK redraws every 50 ms while the underglow is on, so a new level shows on the next
+// frame; the level itself only changes on ZMK's USB and battery events (#218).
 #define DT_DRV_COMPAT foxglove_dim_strip
 
 #include <zephyr/device.h>
@@ -12,9 +12,7 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/toolchain.h>
 
-#if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
-#include <zmk/usb.h>
-#endif
+#include "battery_dim.h"
 
 #define LEN DT_INST_PROP(0, chain_length)
 
@@ -22,27 +20,21 @@ static const struct device *const strip = DEVICE_DT_GET(DT_INST_PHANDLE(0, led_s
 static struct led_rgb scaled[LEN]; // the WS2812 driver may write into the buffer it's given
 static K_MUTEX_DEFINE(scaled_lock); // the underglow and the LampArray (#115) both draw
 
-// Weak so the simulator can fake the cable (tests/zmk-sim/battery-dim).
-__weak bool dim_strip_usb_powered(void) {
-#if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
-    return zmk_usb_is_powered();
-#else
-    return false;
-#endif
-}
+// A lit channel stays at least 1, so the lowest level dims the lights but never turns them off.
+static uint8_t scale(uint8_t v, unsigned int cap) { return v == 0 ? 0 : MAX(v * cap / 100, 1); }
 
 static int dim_update_rgb(const struct device *dev, struct led_rgb *pixels, size_t n) {
-    const unsigned int cap = CONFIG_NICE_VIEW_RGB_BATTERY_CAP;
-    if (cap >= 100 || dim_strip_usb_powered()) {
+    const unsigned int cap = battery_dim_level();
+    if (cap >= 100) {
         return led_strip_update_rgb(strip, pixels, n);
     }
     n = MIN(n, LEN);
     k_mutex_lock(&scaled_lock, K_FOREVER);
     for (size_t i = 0; i < n; i++) {
         scaled[i] = pixels[i];
-        scaled[i].r = pixels[i].r * cap / 100;
-        scaled[i].g = pixels[i].g * cap / 100;
-        scaled[i].b = pixels[i].b * cap / 100;
+        scaled[i].r = scale(pixels[i].r, cap);
+        scaled[i].g = scale(pixels[i].g, cap);
+        scaled[i].b = scale(pixels[i].b, cap);
     }
     int err = led_strip_update_rgb(strip, scaled, n);
     k_mutex_unlock(&scaled_lock);

@@ -33,7 +33,7 @@ preview chip per preset in `app/resources/lighting/<id>.svg`. Both are written b
 
 - **`id`:** stable. Profiles and settings store it. Change `name`, never `id`.
 - **`color`:** the same HSB as `SetLightingParams`: hue 0-359, saturation and brightness 0-100.
-  The battery cap (about 30% off USB) still applies on top. The values are tuned for the WS2812
+  The battery dim (80% on battery, very weak below 20% charge, by default) still applies on top. The values are tuned for the WS2812
   LEDs, where low saturation washes out to white, so they're stronger than the screen colours.
 - **`effect`:** an entry from `effects`. Its index is the keyboard's effect number ("0" solid,
   "1" breathe, "2" spectrum, "3" swirl).
