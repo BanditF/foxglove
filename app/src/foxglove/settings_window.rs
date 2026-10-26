@@ -1,8 +1,10 @@
 //! The Settings window as a window of its own (an egui immediate viewport) instead of a panel
 //! drawn inside the full-screen overlay. Like any app window it can be dragged to any display by
 //! its title bar, and nothing behind it is dimmed or blocked. It opens where it was last left:
-//! the same place on the same display, or centred on that display (or the overlay's, if that one
-//! is gone too) when the old place is no longer on any screen.
+//! the same place on the same display, or centred on that display (or the one under the mouse,
+//! if that one is gone too) when the old place is no longer on any screen. The first time, it
+//! opens compact: [`DEFAULT_SIZE`], never more than [`MAX_SHARE`] of the display, centred on the
+//! display under the mouse (else the main one).
 //!
 //! The overlay stays one topmost, click-through window on its display; only the keymap editor
 //! still draws there. Where the window is, is read and set in physical pixels through Win32
@@ -25,9 +27,13 @@ use crate::monitors::Monitor;
 
 /// The window's title; the Win32 side finds the window by it.
 pub const TITLE: &str = "Foxglove Settings";
-/// The size it first opens at, in points (#385: room for the sidebar).
-pub const DEFAULT_SIZE: egui::Vec2 = egui::vec2(1040.0, 660.0);
+/// The size it first opens at, in points: compact but readable, room for the sidebar and a
+/// page at the normal text size (#385). A remembered size wins over it.
+pub const DEFAULT_SIZE: egui::Vec2 = egui::vec2(880.0, 600.0);
+/// The smallest size, in points: sidebar labels and status chips still fit (#443's tests).
 pub const MIN_SIZE: egui::Vec2 = egui::vec2(720.0, 420.0);
+/// The first opening takes at most this share of the display's work area, each way.
+pub const MAX_SHARE: f32 = 0.7;
 /// The store section with the last place.
 const SECTION: &str = "settings_window";
 /// How much of the title bar, in pixels, must be on a display for the old place to be used.
@@ -126,11 +132,39 @@ fn reachable(r: [i32; 4], monitors: &[Monitor]) -> bool {
     })
 }
 
+/// The display a desktop point is on, by work area, else by whole-pixel distance to it ("" when
+/// no display is known), so a pointer over the taskbar still counts.
+pub fn monitor_at(point: [i32; 2], monitors: &[Monitor]) -> String {
+    let dist = |m: &Monitor| {
+        let a = m.work_area;
+        let dx = (a[0] - point[0]).max(point[0] - (a[2] - 1)).max(0);
+        let dy = (a[1] - point[1]).max(point[1] - (a[3] - 1)).max(0);
+        i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy)
+    };
+    monitors
+        .iter()
+        .min_by_key(|m| dist(m))
+        .map(|m| m.id.clone())
+        .unwrap_or_default()
+}
+
+/// A first-opening size in points: `size`, at most [`MAX_SHARE`] of `monitor`'s work area each
+/// way (but not below [`MIN_SIZE`]; the work area itself is the last limit, in [`centred`]).
+pub fn compact(size: [f32; 2], monitor: &Monitor) -> [f32; 2] {
+    let s = monitor.scale();
+    let area = monitor.work_area;
+    let cap = |v: f32, px: i32, min: f32| v.min((px as f32 / s * MAX_SHARE).max(min));
+    [
+        cap(size[0], area[2] - area[0], MIN_SIZE.x),
+        cap(size[1], area[3] - area[1], MIN_SIZE.y),
+    ]
+}
+
 /// Where to open the window, in physical desktop pixels. The saved place when enough of its
-/// title bar is on a display (so it can still be grabbed); otherwise its size (or `size`, in
-/// points) centred on the saved display, or on `fallback` (the overlay's display, else the main
-/// one) when that display is gone. `None` when no display is known: leave it where Windows put
-/// it.
+/// title bar is on a display (so it can still be grabbed); otherwise its remembered size
+/// centred on the saved display, or on `fallback` (the display under the mouse, else the main
+/// one) when that display is gone. With no remembered size, `size` in points made
+/// [`compact`]. `None` when no display is known: leave it where Windows put it.
 pub fn restore(
     saved: &Saved,
     monitors: &[Monitor],
@@ -161,7 +195,7 @@ pub fn restore(
                 .rect
                 .map(|r| [(r[2] - r[0]) as f32 / s, (r[3] - r[1]) as f32 / s])
         })
-        .unwrap_or(size);
+        .unwrap_or_else(|| compact(size, &monitor));
     let s = monitor.scale();
     let px = |v: f32| (v * s).round() as i32;
     Some(centred([px(size[0]), px(size[1])], monitor.work_area))
@@ -328,10 +362,11 @@ fn save(saved: Option<Saved>) {
 
 impl SettingsWindow {
     /// Runs inside the window's viewport each frame: places it on its first frame, keeps its
-    /// title bar in the app's theme, and saves its place when it loses the focus.
-    /// `overlay_monitor` is where it opens when it has no place of its own yet. True when it
-    /// should close: it was minimized (by a path the window hook doesn't catch, e.g. Win+M).
-    pub fn frame(&mut self, ctx: &egui::Context, overlay_monitor: &str) -> bool {
+    /// title bar in the app's theme, and saves its place when it loses the focus. With no
+    /// place of its own yet it opens on the display under the mouse (else the main one). True
+    /// when it should close: it was minimized (by a path the window hook doesn't catch, e.g.
+    /// Win+M).
+    pub fn frame(&mut self, ctx: &egui::Context) -> bool {
         let theme = ctx.theme();
         if self.theme != Some(theme) {
             self.theme = Some(theme);
@@ -350,6 +385,15 @@ impl SettingsWindow {
                 }
             }
             let monitors = crate::monitors::list();
+            // Read only while it isn't placed yet: the first frame of an opening.
+            let under_mouse = if self.memory.placed {
+                String::new()
+            } else {
+                imp::cursor()
+                    .map(|p| monitor_at(p, &monitors))
+                    .unwrap_or_default()
+            };
+            let overlay_monitor = under_mouse.as_str();
             match self.hwnd {
                 Some(hwnd) => {
                     let mut window = imp::Win32Window { hwnd, ctx };
@@ -371,8 +415,6 @@ impl SettingsWindow {
             }
             self.focused = focused;
         }
-        #[cfg(not(target_os = "windows"))]
-        let _ = overlay_monitor;
         ctx.input(|i| i.viewport().minimized) == Some(true)
     }
 
@@ -420,6 +462,14 @@ mod imp {
         SWP_NOZORDER, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_DPICHANGED, WM_GETMINMAXINFO,
         WM_NCDESTROY,
     };
+
+    /// The mouse pointer in physical desktop pixels, for where a first opening goes.
+    pub fn cursor() -> Option<[i32; 2]> {
+        let mut p = POINT::default();
+        // SAFETY: GetCursorPos writes the POINT we own; nothing is kept.
+        unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p) }.ok()?;
+        Some([p.x, p.y])
+    }
 
     /// This thread's top-level window titled `title` (the viewport's window, made by winit on
     /// the UI thread). Found once per opening.
@@ -766,18 +816,59 @@ pub mod tests {
     }
 
     #[test]
-    fn the_first_opening_is_centred_on_the_overlays_display_and_fits() {
+    fn the_first_opening_is_compact_and_centred_on_the_display_under_the_mouse() {
         let first = Saved::default();
+        let d = two_displays();
+        let size = [DEFAULT_SIZE.x, DEFAULT_SIZE.y];
+        // The mouse on the 150 % display: 880 x 600 points are 1320 x 900 pixels there.
+        let under = monitor_at([4000, 1000], &d);
+        assert_eq!(under, D2);
         assert_eq!(
-            restore(&first, &two_displays(), [1040.0, 660.0], D2),
-            Some([3700, 549, 5260, 1539])
+            restore(&first, &d, size, &under),
+            Some([3820, 594, 5140, 1494])
         );
-        // Bigger than the display: shrunk to its work area.
+        // No mouse position: the main display.
+        assert_eq!(restore(&first, &d, size, ""), Some([840, 396, 1720, 996]));
+        // Never more than 70 % of the work area, each way.
         assert_eq!(
-            restore(&first, &two_displays(), [9000.0, 9000.0], ""),
-            Some([0, 0, 2560, 1392])
+            restore(&first, &d, [9000.0, 9000.0], ""),
+            Some([384, 209, 2176, 1183])
         );
-        assert_eq!(restore(&first, &[], [1040.0, 660.0], ""), None);
+        assert_eq!(restore(&first, &[], size, ""), None);
+    }
+
+    #[test]
+    fn a_small_display_gets_at_most_70_percent_but_not_below_the_minimum() {
+        let small = Monitor {
+            id: D1.into(),
+            label: String::new(),
+            primary: true,
+            work_area: [0, 0, 1366, 728],
+            dpi: 96,
+        };
+        // 70 % of 728 is 509.6: the height gives way, the width fits.
+        assert_eq!(
+            compact([DEFAULT_SIZE.x, DEFAULT_SIZE.y], &small),
+            [880.0, 509.6]
+        );
+        let tiny = Monitor {
+            work_area: [0, 0, 800, 480],
+            ..small.clone()
+        };
+        assert_eq!(compact([880.0, 600.0], &tiny), [MIN_SIZE.x, MIN_SIZE.y]);
+        // And a remembered size isn't made compact: it wins.
+        let remembered = place(D1, [9000.0, 9000.0, 1200.0, 700.0]);
+        let r = restore(&remembered, &[small], [1.0, 1.0], "").unwrap();
+        assert_eq!((r[2] - r[0], r[3] - r[1]), (1200, 700));
+    }
+
+    #[test]
+    fn the_mouse_over_the_taskbar_still_names_its_display() {
+        let d = two_displays();
+        assert_eq!(monitor_at([100, 1420], &d), D1, "below D1's work area");
+        assert_eq!(monitor_at([2559, 10], &d), D1);
+        assert_eq!(monitor_at([2560, 10], &d), D2);
+        assert_eq!(monitor_at([0, 0], &[]), "");
     }
 
     #[test]
@@ -916,7 +1007,7 @@ pub mod tests {
                 .or_default()
                 .minimized = Some(minimized);
             let mut asked = false;
-            let mut out = ctx.run_ui(input, |ui| asked = window.frame(ui.ctx(), ""));
+            let mut out = ctx.run_ui(input, |ui| asked = window.frame(ui.ctx()));
             out.textures_delta.clear();
             asked
         };
