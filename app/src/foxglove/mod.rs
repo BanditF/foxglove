@@ -42,6 +42,7 @@ pub mod lighting_leases;
 pub mod lights_page;
 pub mod link;
 pub mod mic_broker;
+pub mod overlay_opacity;
 pub mod overlay_place;
 pub mod overlay_profile;
 pub mod pause;

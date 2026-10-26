@@ -333,17 +333,8 @@ impl OverlayApp {
                             );
                             ui.end_row();
 
-                            // Foxglove: the key popup's opacity, applied live.
-                            ui.label("Opacity");
-                            ui.add(
-                                egui::Slider::new(
-                                    &mut self.settings.draft.opacity,
-                                    Settings::OPACITY_RANGE,
-                                )
-                                .suffix("%"),
-                            )
-                            .on_hover_text("How see-through the layer overlay is");
-                            ui.end_row();
+                            // Foxglove: the key popup's and its labels' opacity, applied live.
+                            crate::foxglove::overlay_opacity::rows(ui, &mut self.settings.draft);
 
                             ui.label("Key label font scale");
                             ui.add_sized(

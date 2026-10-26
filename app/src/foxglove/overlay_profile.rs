@@ -148,14 +148,42 @@ mod tests {
         let p = pairs(&s);
         assert_eq!(p.get("settings.opacity").map(String::as_str), Some("45"));
         assert!(from_pairs(&p).is_some_and(|back| back.opacity == 45));
-        // Out of range in a hand-edited file: clamped, never invisible.
+        // Zero is allowed (hidden); out of range in a hand-edited file is clamped.
         let mut low = p.clone();
         low.insert("settings.opacity".into(), "0".into());
-        assert_eq!(from_pairs(&low).map(|s| s.opacity), Some(20));
+        assert_eq!(from_pairs(&low).map(|s| s.opacity), Some(0));
+        low.insert("settings.opacity".into(), "250".into());
+        assert_eq!(from_pairs(&low).map(|s| s.opacity), Some(100));
         // Missing (an older settings.ini): the look it always had.
         let mut old = p;
         old.remove("settings.opacity");
         assert_eq!(from_pairs(&old).map(|s| s.opacity), Some(100));
+    }
+
+    #[test]
+    fn a_profile_carries_the_label_opacity_or_following() {
+        let own = Settings {
+            label_opacity: Some(80),
+            ..Settings::default()
+        };
+        let p = pairs(&own);
+        assert_eq!(
+            p.get("settings.label_opacity").map(String::as_str),
+            Some("80")
+        );
+        assert!(from_pairs(&p).is_some_and(|back| back.label_opacity == Some(80)));
+        // Following is written out too, so a profile that follows overrides a base that doesn't.
+        let follows = pairs(&Settings::default());
+        assert_eq!(
+            follows.get("settings.label_opacity").map(String::as_str),
+            Some("follow")
+        );
+        let mut values = p;
+        values.insert("settings.label_opacity".into(), "follow".into());
+        assert!(from_pairs(&values).is_some_and(|back| back.label_opacity.is_none()));
+        // Missing (an older settings.ini): follows.
+        values.remove("settings.label_opacity");
+        assert!(from_pairs(&values).is_some_and(|back| back.label_opacity.is_none()));
     }
 
     #[test]
