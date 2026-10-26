@@ -1598,6 +1598,7 @@ dependencies = [
  "egui_extras",
  "egui_glow",
  "foxglove-devices",
+ "foxglove-flash",
  "foxglove-panel",
  "foxglove-plugin-api",
  "foxglove-plugin-host",
@@ -1642,6 +1643,10 @@ dependencies = [
  "serde",
  "thiserror 2.0.18",
 ]
+
+[[package]]
+name = "foxglove-flash"
+version = "0.2.0"
 
 [[package]]
 name = "foxglove-panel"

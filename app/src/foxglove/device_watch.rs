@@ -68,18 +68,32 @@ impl DeviceWatch {
         Self::register(hid, on_change, overlay)
     }
 
+    /// Interfaces of one device class (`guid`) arriving or going, such as disk volumes.
+    pub(crate) fn class(guid: u128, on_change: OnChange) -> Option<Self> {
+        let overlay = Arc::new(Overlay {
+            changed: AtomicBool::new(false),
+            identity: AtomicU32::new(0),
+        });
+        Self::register_guid(guid, on_change, overlay)
+    }
+
     fn register(hid: bool, on_change: OnChange, overlay: Arc<Overlay>) -> Option<Self> {
+        let guid = if hid {
+            0x4d1e55b2_f16f_11cf_88cb_001111000030
+        } else {
+            0x86e0d1e0_8089_11d0_9ce4_08003e301f73
+        };
+        Self::register_guid(guid, on_change, overlay)
+    }
+
+    fn register_guid(guid: u128, on_change: OnChange, overlay: Arc<Overlay>) -> Option<Self> {
         let context = Box::new(Context { on_change });
         let mut filter = CM_NOTIFY_FILTER {
             cbSize: std::mem::size_of::<CM_NOTIFY_FILTER>() as u32,
             FilterType: CM_NOTIFY_FILTER_TYPE_DEVICEINTERFACE,
             ..Default::default()
         };
-        filter.u.DeviceInterface.ClassGuid = windows::core::GUID::from_u128(if hid {
-            0x4d1e55b2_f16f_11cf_88cb_001111000030
-        } else {
-            0x86e0d1e0_8089_11d0_9ce4_08003e301f73
-        });
+        filter.u.DeviceInterface.ClassGuid = windows::core::GUID::from_u128(guid);
         let mut handle = HCMNOTIFICATION::default();
         // The boxed context stays at this address until unregister has drained callbacks.
         let result = unsafe {

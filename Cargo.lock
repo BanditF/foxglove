@@ -509,6 +509,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "foxglove-flash"
+version = "0.2.0"
+
+[[package]]
 name = "foxglove-lab"
 version = "0.2.0"
 dependencies = [
