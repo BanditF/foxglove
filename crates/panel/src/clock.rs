@@ -118,7 +118,7 @@ pub fn choose(p: &Pictures, format: impl Fn(&str) -> String, hour: u32) -> Texts
         format(&picture(&q))
     };
     let date = format(&p.date);
-    let (date, date_short) = if latin1(&date) {
+    let (date, date_short) = if latin1(&date) && !date.trim().is_empty() {
         let short = (!p.date_short.is_empty())
             .then(|| format(&p.date_short))
             .filter(|s| latin1(s))
@@ -184,15 +184,24 @@ fn tokens(p: &str) -> Vec<Tok> {
 }
 
 /// Removes the matching fields with the literal that joined each to the rest.
+/// The separator goes with it: the punctuation before it, else after it. A word after a year
+/// ("2026. gada", "2026年") is the year's own and goes too; other words stay.
 fn remove_fields(toks: &mut Vec<Tok>, drop: impl Fn(char, usize) -> bool) {
+    let wordy =
+        |t: Option<&Tok>| matches!(t, Some(Tok::Lit(s)) if s.chars().any(char::is_alphabetic));
+    let plain =
+        |t: Option<&Tok>| matches!(t, Some(Tok::Lit(s)) if !s.chars().any(char::is_alphabetic));
     while let Some(i) = toks
         .iter()
         .position(|t| matches!(t, Tok::Field(c, n) if drop(*c, *n)))
     {
+        let year = matches!(toks[i], Tok::Field('y' | 'g', _));
         toks.remove(i);
-        if i > 0 && matches!(toks.get(i - 1), Some(Tok::Lit(_))) {
+        if year && wordy(toks.get(i)) {
+            toks.remove(i);
+        } else if i > 0 && plain(toks.get(i - 1)) {
             toks.remove(i - 1);
-        } else if matches!(toks.get(i), Some(Tok::Lit(_))) {
+        } else if plain(toks.get(i)) {
             toks.remove(i);
         }
     }
@@ -415,6 +424,10 @@ mod tests {
         assert_eq!((p.time.as_str(), p.mark), ("h:mm", Some(true)));
         assert_eq!(p.date, "M'월 'd'일 'ddd");
         assert_eq!(p.date_numeric, "MM-dd");
+        // lv-LV: the year's own word goes with it
+        let p = Pictures::new("HH:mm", "dddd, yyyy. 'gada' d. MMMM", "dd.MM.yyyy");
+        assert_eq!(p.date, "ddd, d. MMM");
+        assert_eq!(p.date_short, "d. MMM");
     }
 
     #[test]

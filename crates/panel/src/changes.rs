@@ -179,6 +179,9 @@ mod imp {
                         WINEVENT_OUTOFCONTEXT,
                     );
                     let settings = settings_window();
+                    if settings.is_none() {
+                        eprintln!("Foxglove: no settings-change window; the panel clock keeps its formats until restart");
+                    }
                     if tx.send(id).is_ok() {
                         while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
                             let _ = DispatchMessageW(&msg);

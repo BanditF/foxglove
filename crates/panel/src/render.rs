@@ -77,26 +77,41 @@ pub fn date_for(v: &View, width: i32) -> &str {
     }
 }
 
-/// Whether the clock (with its mark) fits `width` without clipping.
+/// Whether the clock, with its mark as drawn, fits `width` without clipping.
 pub fn clock_fits(v: &View, width: i32) -> bool {
-    clock_width(v) <= width
+    width_with(&v.time, &fitting_mark(&v.time, &v.time_mark, width)) <= width
 }
 
 const MARK_GAP: i32 = 2;
 
-fn clock_width(v: &View) -> i32 {
-    let digits = text_width(&FONT_9X18_BOLD, &v.time);
-    if v.time_mark.is_empty() {
+fn width_with(time: &str, mark: &str) -> i32 {
+    let digits = text_width(&FONT_9X18_BOLD, time);
+    if mark.is_empty() {
         digits
     } else {
-        digits + MARK_GAP + text_width(&FONT_5X8, &v.time_mark)
+        digits + MARK_GAP + text_width(&FONT_5X8, mark)
     }
 }
 
+/// The AM/PM mark as drawn: as the region writes it if it fits, else without spaces and dots
+/// ("p. m." -> "pm"), else its first letter.
+pub fn fitting_mark(time: &str, mark: &str, width: i32) -> String {
+    let compact: String = mark
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '.')
+        .collect();
+    let first: String = compact.chars().take(1).collect();
+    [mark.to_string(), compact, first]
+        .into_iter()
+        .find(|m| width_with(time, m) <= width)
+        .unwrap_or_default()
+}
+
 fn draw_clock_with_mark(p: &mut Panel, v: &View) {
-    let x = ((p.width as i32 - clock_width(v)) / 2).max(0);
+    let mark_text = fitting_mark(&v.time, &v.time_mark, p.width as i32);
+    let x = ((p.width as i32 - width_with(&v.time, &mark_text)) / 2).max(0);
     let digits = text_width(&FONT_9X18_BOLD, &v.time);
-    let mark = text_width(&FONT_5X8, &v.time_mark);
+    let mark = text_width(&FONT_5X8, &mark_text);
     let (time_x, mark_x) = if v.time_mark_first {
         (x + mark + MARK_GAP, x)
     } else {
@@ -108,7 +123,7 @@ fn draw_clock_with_mark(p: &mut Panel, v: &View) {
         .draw(p)
         .ok();
     // Level with the bottom of the digits.
-    Text::with_baseline(&v.time_mark, Point::new(mark_x, 7), small, Baseline::Top)
+    Text::with_baseline(&mark_text, Point::new(mark_x, 7), small, Baseline::Top)
         .draw(p)
         .ok();
 }
@@ -247,6 +262,9 @@ mod tests {
             ("23:59", "", false, "Wed 30 Sep", "30 Sep"),
             ("23:59", "", false, "Mi., 30. Sep.", "30. Sep."),
             ("12:59", "PM", true, "09/30", "09/30"),
+            // en-CA and es-MX marks, too wide as written (#449 review)
+            ("12:59", "p.m.", false, "Wed, Sep 30", "Sep 30"),
+            ("12:59", "p.\u{a0}m.", false, "mié, 30 sep", "30 sep"),
         ];
         for (time, mark, first, date, short) in cases {
             let v = View {
@@ -270,5 +288,8 @@ mod tests {
         };
         assert_eq!(date_for(&de, 64), "30. Sep.", "13 characters are 65 pixels");
         assert_eq!(date_for(&de, 160), "Mi., 30. Sep.");
+        assert_eq!(fitting_mark("12:59", "p.m.", 64), "pm");
+        assert_eq!(fitting_mark("2:05", "p.m.", 64), "p.m.");
+        assert_eq!(fitting_mark("12:59", "nachm.", 64), "n");
     }
 }
