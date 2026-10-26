@@ -28,6 +28,8 @@ pub use catalog::{Catalog, CatalogDevice, Protocol, ZoneSpec};
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;
 pub const LAMP_ARRAY_USAGE: u16 = 0x0001;
+/// The Raw HID usage page ZMK (Digitalis), QMK and VIA keyboards use.
+pub const RAW_HID_USAGE_PAGE: u16 = 0xFF60;
 
 /// How Foxglove controls a found device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,9 +95,18 @@ pub fn unknown(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Unknown> {
                 && o.usage == LAMP_ARRAY_USAGE
         })
     };
+    // Keyboards with a Raw HID interface (ZMK with Digitalis, QMK, VIA) have their own
+    // backends, and a test report must never reach them: keyboard first.
+    let raw_hid_keyboard = |vid, pid| {
+        hid.iter()
+            .any(|o| (o.vid, o.pid) == (vid, pid) && o.usage_page == RAW_HID_USAGE_PAGE)
+    };
     let mut out: Vec<Unknown> = Vec::new();
     for e in hid {
-        if catalog.find(e.vid, e.pid).is_some() || lamp_array(e.vid, e.pid) {
+        if catalog.find(e.vid, e.pid).is_some()
+            || lamp_array(e.vid, e.pid)
+            || raw_hid_keyboard(e.vid, e.pid)
+        {
             continue;
         }
         let product = e
@@ -393,6 +404,8 @@ mod tests {
                 ..entry(0x1209, 0x0001, 1, 0, "strip-std")
             },
             entry(0x1209, 0x0001, 0xff00, 1, "strip-vendor"),
+            entry(0x1d50, 0x615e, 1, 6, "corne-keys"),
+            entry(0x1d50, 0x615e, 0xff60, 0x61, "corne-raw"),
         ];
         let u = unknown(&catalog, &hid);
         let rows: Vec<_> = u
@@ -405,7 +418,7 @@ mod tests {
                 ("Desk strip", vec![0xff00, 1], "strip-vendor"),
                 ("USB device 045e:0001", vec![1], "kbd"),
             ],
-            "the case and the LampArray mouse are placed already"
+            "the case and the LampArray mouse are placed; a Raw HID keyboard is never offered"
         );
     }
 
