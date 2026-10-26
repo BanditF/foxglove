@@ -20,8 +20,8 @@ pub const PACKAGE_FILE: &str = "foxglove-identity.msix";
 /// Whether this build carries the identity manifest.
 pub const ENABLED: bool = cfg!(foxglove_sparse_identity);
 
-/// `foxglove.exe --unregister-identity` (the uninstaller, elevated): removes the package for
-/// every user and exits. True when it handled the command line.
+/// `foxglove.exe --unregister-identity` (the per-user uninstaller, as the user): removes the
+/// package for that user and exits. True when it handled the command line.
 #[cfg(windows)]
 pub fn entry() -> bool {
     if std::env::args_os()
@@ -30,7 +30,7 @@ pub fn entry() -> bool {
     {
         return false;
     }
-    if let Err(e) = unregister_all() {
+    if let Err(e) = unregister_for_user() {
         eprintln!("foxglove: unregistering the identity package: {e}");
     }
     true
@@ -137,7 +137,7 @@ fn register() -> windows::core::Result<bool> {
 /// Removes the identity package for this user: the per-user MSI's uninstall runs as the user
 /// (#444), and the package was registered per user.
 #[cfg(windows)]
-fn unregister_all() -> windows::core::Result<()> {
+fn unregister_for_user() -> windows::core::Result<()> {
     use windows::core::HSTRING;
     use windows::Management::Deployment::{PackageManager, RemovalOptions};
     let manager = PackageManager::new()?;

@@ -60,8 +60,12 @@ The clean migration:
 3. Run the new MSI. No UAC. Start Foxglove; with the switch on (the default, or as you left it),
    it writes the Run value for its new path.
 
-0.1's in-app updater runs the new MSI elevated. That run stops at the same message, and 0.1
-shows "Update failed" and keeps running. Nothing is half-installed. After step 2 every update is
+If the message still appears right after uninstalling 0.1, the old exe was still running and
+Windows removes it at the next restart: restart, then run the MSI again.
+
+0.1 never installs an update by itself: its build has the placeholder update key, so it only
+says automatic updates are off and links to the releases page. So users meet this message only
+when they run the new MSI themselves. Nothing is half-installed. After step 2 every update is
 per user and silent.
 
 ## Current settings paths

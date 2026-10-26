@@ -1,5 +1,5 @@
 //! Auto-update (#65): a check at startup and on demand, a signed manifest, a verified MSI
-//! download, and a copied helper that runs the elevated upgrade after the app exits.
+//! download, and a copied helper that runs the (per-user, no UAC) upgrade after the app exits.
 use foxglove_update::{Manifest, Release, Result, Transport};
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 #[derive(Clone, Default)]
