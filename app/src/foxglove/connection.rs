@@ -67,6 +67,7 @@ pub fn start(ctx: &egui::Context) {
             let mut links: Vec<Arc<digitalis::link::Link>> = Vec::new();
             let mut force = true;
             let mut previous_link = None;
+            let mut ble_before = None;
             loop {
                 while let Ok(request) = rx.try_recv() {
                     force |= request;
@@ -93,6 +94,12 @@ pub fn start(ctx: &egui::Context) {
                 let watched_ble = watcher.as_ref().and_then(windows_status::Watch::connected);
                 #[cfg(not(target_os = "windows"))]
                 let watched_ble = None;
+                // A Bluetooth keyboard coming back may bring no HID arrival (its interfaces stay
+                // while it's away), so its connect is the event that retries the links (#410).
+                if watched_ble == Some(true) && ble_before != Some(true) {
+                    super::link::reconnect();
+                }
+                ble_before = watched_ble;
                 let status = read(force, &mut previous_link, watched_ble);
                 // Repaint only for news: an unchanged status must not wake an idle UI (#100).
                 let mut current = STATUS.lock().unwrap_or_else(|e| e.into_inner());

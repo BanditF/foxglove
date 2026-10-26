@@ -363,6 +363,11 @@ fn run() {
         )
     });
     let mut settings = ScreensSettings::load();
+    // Locked or display off (#410): the panel goes back to the firmware until we're back.
+    let away_tx = tx.clone();
+    let _away = super::away::subscribe(move |_| {
+        let _ = away_tx.send(Event::Wake);
+    });
     let available = tx.clone();
     let _subscription = super::link::subscribe_links(move |link| {
         let _ = available.send(Event::Available(link));
@@ -483,7 +488,8 @@ fn run() {
             s.hello = shown.map(|(_, h)| h);
         });
         let foxglove_paused = super::pause::paused();
-        if paused() || foxglove_paused || !settings.drive_left {
+        let away = super::away::away();
+        if paused() || foxglove_paused || away || !settings.drive_left {
             stop_driving(&mut lock, &drawing, &mut was_driving);
             if let Some(d) = drawing.as_mut() {
                 d.last = None;
@@ -491,6 +497,8 @@ fn run() {
             lock_watch = None;
             set_status(if foxglove_paused {
                 "Foxglove paused"
+            } else if away {
+                "Away (locked or display off): the keyboard shows its own screen"
             } else if paused() {
                 "Left panel paused"
             } else {

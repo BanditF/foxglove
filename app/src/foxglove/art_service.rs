@@ -409,6 +409,13 @@ fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     });
     // Discovery runs once. New shared links and each link's reconnects arrive as events.
     let _ = super::link::discover_links();
+    // Coming back (#410) restarts the hotlist's timer, as resuming from a pause does.
+    let back = h.commands.clone();
+    let _away = super::away::subscribe(move |away| {
+        if !away && !super::pause::paused() {
+            let _ = back.send(Command::Resume);
+        }
+    });
     run_events(h, receiver);
 }
 
@@ -584,13 +591,19 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 continue;
             }
             Command::Next => {
+                // Paused, or away (#410): the timer stops instead of firing to no effect;
+                // resuming or coming back (Command::Resume) starts it again.
+                if super::pause::paused() || super::away::away() {
+                    due = None;
+                    continue;
+                }
                 due = reschedule(current.is_some());
                 let snap = h.snapshot();
                 let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
                     continue;
                 };
-                // The hotlist waits while layer or preset art is on top, and while paused.
-                if triggers.top(&snap.cycle).is_some() || super::pause::paused() {
+                // The hotlist waits while layer or preset art is on top.
+                if triggers.top(&snap.cycle).is_some() {
                     continue;
                 }
                 let mut cycle = snap.cycle;

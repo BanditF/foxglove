@@ -155,7 +155,7 @@ pub struct Keyboard {
     alive: Arc<AtomicBool>,
     command_tx: mpsc::Sender<KeymapCommand>,
     write_support: WriteSupport,
-    _keepalive: Option<mpsc::Sender<()>>,
+    _keepalive: Option<(mpsc::Sender<()>, crate::foxglove::away::Subscription)>,
     action_filter: Option<crate::protocols::ActionFilter>,
 }
 
@@ -295,18 +295,30 @@ impl Keyboard {
                 // Foxglove (#279): QMK's KeyPeek module drops a layer subscription a few seconds
                 // after its last renewal, and that firmware isn't ours to change, so this renews
                 // it. It starts with the connection and stops when the keyboard is dropped (the
-                // channel closes); there's no event to renew on instead.
+                // channel closes); there's no event to renew on instead. While away (locked or
+                // display off, #410) it lets the subscription go and sleeps until we're back.
+                let changed = tx.clone();
+                let away = crate::foxglove::away::subscribe(move |_| {
+                    let _ = changed.send(());
+                });
                 crate::foxglove::services::spawn_named("keypeek-keepalive", move || {
                     loop {
+                        if crate::foxglove::away::away() {
+                            let _ = sender.set_active(false);
+                            match rx.recv() {
+                                Ok(()) => continue,
+                                Err(_) => break,
+                            }
+                        }
                         let _ = sender.set_active(true);
                         match rx.recv_timeout(Duration::from_millis(1000)) {
-                            Err(RecvTimeoutError::Timeout) => continue,
-                            _ => break,
+                            Ok(()) | Err(RecvTimeoutError::Timeout) => continue,
+                            Err(RecvTimeoutError::Disconnected) => break,
                         }
                     }
                     let _ = sender.set_active(false);
                 });
-                tx
+                (tx, away)
             });
 
         let action_filter = protocol.action_filter();
