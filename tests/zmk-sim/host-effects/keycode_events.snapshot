@@ -14,10 +14,10 @@ effects: draws in 300 ms after it: 0
 effects: -- idle: the scene still draws; RGB_SYNC and the right hear the left off, then on
 effects: the scene still draws: yes
 hostlink: rx D7 81 01
-effects: the right is told the left is off, follow; ZMK's underglow off
+effects: the PC hears the left off, the right is told off, follow; ZMK's underglow off
 effects: right clock again
 hostlink: rx D7 81 01 01
-effects: the right is told the left is on, follow; ZMK's underglow off
+effects: the PC hears the left on, the right is told on, follow; ZMK's underglow off
 effects: -- a moving scanline: a frame every 33 ms, on the clock it was sent with
 effects: right gets scanline, 2 colours, half at 270,5 120x90, room 400x100
 hostlink: rx D7 8F 00 03 01 01
@@ -57,20 +57,27 @@ effects: right effect stops, back to its own
 hostlink: rx D7 8F 00 00 00 01
 effects: draws in 300 ms after it: 0
 effects: -- hand-back puts the on/off back: off while idle, on with activity
-effects: the right is told the left is off, follow; ZMK's underglow off
-effects: the right is told the left is on, follow; ZMK's underglow on
+effects: right gets breathe, 2 colours, half at 300,10 120x90, room 500x120
+effects: left taken from its effect
+hostlink: rx D7 8F 00 03 04 01
+effects: left draws 0-20=204060
+effects: left back to its effect
+effects: right effect stops, back to its own
+hostlink: rx D7 8F 00 00 00 01
+effects: the PC hears the left off, the right is told off, follow; ZMK's underglow off
+effects: the PC hears the left on, the right is told on, follow; ZMK's underglow on
 effects: -- the user's off: a scene still draws; RELEASE leaves the underglow off
 effects: right gets breathe, 2 colours, half at 300,10 120x90, room 500x120
 effects: left taken from its effect
 hostlink: rx D7 8F 00 03 04 01
 effects: left draws 0-20=204060
 hostlink: rx D7 81 01
-effects: the right is told the left is off, follow; ZMK's underglow off
+effects: the PC hears the left off, the right is told off, follow; ZMK's underglow off
 effects: left back to its effect
 effects: right effect stops, back to its own
 hostlink: rx D7 8F 00 00 00 01
-effects: the right is told the left is off, follow; ZMK's underglow off
-effects: the right is told the left is on, follow; ZMK's underglow on
+effects: the PC hears the left off, the right is told off, follow; ZMK's underglow off
+effects: the PC hears the left on, the right is told on, follow; ZMK's underglow on
 effects: -- as the right: the left's link drops mid-scene and comes back saying off
 effects: right gets breathe, 2 colours, half at 300,10 120x90, room 500x120
 effects: left taken from its effect

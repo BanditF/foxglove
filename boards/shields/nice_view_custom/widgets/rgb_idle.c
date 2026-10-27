@@ -34,10 +34,7 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE),
              "NICE_VIEW_RGB_IDLE replaces ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE; turn that off");
 
 #define CENTRAL (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
-// The simulator's host-effects case fakes the relay (tests/zmk-sim/module/effects_sim.c).
-#define RELAY_CENTRAL                                                                              \
-    (CENTRAL &&                                                                                    \
-     (IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) || IS_ENABLED(CONFIG_FOXGLOVE_SIM_HOSTLINK)))
+#define RELAY_CENTRAL (CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY))
 #define HOST_CENTRAL (CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_HOST_LINK))
 #define RIGHT_RELAY (!CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY))
 
@@ -53,6 +50,7 @@ static bool sync = true; // left: the right follows the left, saved
 static bool following;   // right: the left's state is in charge
 static bool remote_on;   // right: the left's state
 static atomic_t host_drawn; // the PC draws this half's LEDs (SET_FRAME, lamp_strip.c)
+static atomic_t host_want;  // the last rgb_idle_host_control: hand-back pending or done
 
 static bool active(void) { return zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE; }
 
@@ -237,13 +235,18 @@ void rgb_idle_remote(bool on, bool follow) {
 
 // Hand-back clears the flag on the system queue, where check_cb and apply_cb run, so a key's
 // check can't see ZMK still off without the flag and save that as the user's choice.
+// A take-over that comes before this runs wins: the scene keeps the lights.
 static void host_back_cb(struct k_work *work) {
+    if (atomic_get(&host_want)) {
+        return;
+    }
     atomic_set(&host_drawn, 0);
     apply_cb(work);
 }
 static K_WORK_DEFINE(host_back_work, host_back_cb);
 
 void rgb_idle_host_control(bool on) {
+    atomic_set(&host_want, on);
     if (on) {
         atomic_set(&host_drawn, 1); // at once: nothing may turn ZMK's underglow back on
         return;

@@ -235,11 +235,17 @@ static void check_vectors(void) {
 /* The PC */
 
 static uint32_t caps;
+// The left's on/off in the last unsolicited RGB_STATE (D7 83): it comes 600 ms after a change,
+// so the walk reads it here when it reports rather than at a time-dependent place in the log.
+static atomic_t pc_heard = ATOMIC_INIT(-1);
 
 static int effects_sent_listener(const zmk_event_t *eh) {
     const struct raw_hid_sent_event *ev = as_raw_hid_sent_event(eh);
     if (ev != NULL && ev->length >= 25 && ev->data[0] == 0xD5 && ev->data[1] == 0x81) {
         caps = sys_get_le32(&ev->data[21]);
+    }
+    if (ev != NULL && ev->length >= 3 && ev->data[0] == 0xD7 && ev->data[1] == 0x83) {
+        atomic_set(&pc_heard, ev->data[2]);
     }
     return ZMK_EV_EVENT_BUBBLE;
 }
@@ -294,11 +300,13 @@ static void rgb_sync_read(void) {
     settle();
 }
 
-// What the underglow relay last told the right, and ZMK's underglow here.
+// What the PC last heard (D7 83) and the underglow relay last told the right about the left's
+// on/off, and ZMK's underglow here. At least 600 ms after a change (RGB_STATE_SETTLE).
 static void lights_report(void) {
-    printk("effects: the right is told the left is %s%s; ZMK's underglow %s\n",
-           atomic_get(&told_on) ? "on" : "off", atomic_get(&told_follow) ? ", follow" : "",
-           atomic_get(&zmk_on) ? "on" : "off");
+    atomic_val_t pc = atomic_get(&pc_heard);
+    printk("effects: the PC hears the left %s, the right is told %s%s; ZMK's underglow %s\n",
+           pc < 0 ? "nothing" : pc ? "on" : "off", atomic_get(&told_on) ? "on" : "off",
+           atomic_get(&told_follow) ? ", follow" : "", atomic_get(&zmk_on) ? "on" : "off");
 }
 
 static void underglow_report(void) {
@@ -315,15 +323,15 @@ static void still_lit(void) {
            host && lit && memcmp(pixels, printed, sizeof(pixels)) == 0 ? "yes" : "no");
 }
 
-// A pointer move: ZMK's activity wakes (activity.c listens to every input device).
+// A pointer move: ZMK's activity wakes (activity.c listens to every input device). Waits out
+// the PC's D7 83 (600 ms after the change).
 static void wake(void) {
     input_report_rel(NULL, INPUT_REL_X, 1, true, K_NO_WAIT);
-    settle();
+    k_msleep(800);
 }
 
 // ZMK's idle comes 3 s after the last activity, checked each second (case.conf).
 static void wait_idle(void) { k_msleep(4500); }
-
 
 // Draws over a stretch of time (printed or not as quiet says).
 static int count_draws(int ms) {
@@ -469,15 +477,20 @@ void effects_sim_driver(void) {
     printk("effects: draws in 300 ms after it: %d\n", count_draws(300));
 
     note("hand-back puts the on/off back: off while idle, on with activity");
+    effect(4, 2, 0, 0, 0, 0, 0, 0, still);
     wait_idle();
+    release();
+    settle();
     lights_report();
     wake();
     lights_report();
 
+    // Each part ends well inside the 3 s idle timeout: a wake (no event while active) restarts it.
     note("the user's off: a scene still draws; RELEASE leaves the underglow off");
+    wake();
     atomic_set(&zmk_on, 0); // an &rgb_ug key turned it off
     rgb_idle_check();
-    settle();
+    k_msleep(800);
     effect(4, 2, 0, 0, 0, 0, 0, 0, still);
     settle();
     rgb_sync_read();
@@ -485,9 +498,10 @@ void effects_sim_driver(void) {
     release();
     settle();
     lights_report();
+    wake();
     atomic_set(&zmk_on, 1); // and on again
     rgb_idle_check();
-    settle();
+    k_msleep(800);
     lights_report();
 
     note("as the right: the left's link drops mid-scene and comes back saying off");
