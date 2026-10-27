@@ -716,6 +716,18 @@ fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     run_events(h, receiver);
 }
 
+/// Whether an RGB_STATE report shows the lights switched since the last on this connection:
+/// the left on or off, or the right half's on/off or whether it is known (which comes as an
+/// event with HELLO bit 20, #543). The left's first report after a connect counts, as before.
+fn lights_switched(
+    was: Option<bool>,
+    right_was: Option<Option<bool>>,
+    on: bool,
+    right: Option<bool>,
+) -> bool {
+    was != Some(on) || right_was.is_some_and(|r| r != right)
+}
+
 fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let mut links: Vec<(Arc<Link>, EventSubscription)> = Vec::new();
     let mut light_taps: Vec<EventSubscription> = Vec::new();
@@ -799,8 +811,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 let was = lights_on.replace(on);
                 let right_was = right_on.replace(right);
                 // Switched on the keyboard too: the tray panel and Lights page read them again.
-                // The right half's changes come as RGB_STATE events with HELLO bit 20 (#543).
-                if was != Some(on) || right_was.is_some_and(|r| r != right) {
+                if lights_switched(was, right_was, on, right) {
                     super::keyboard_settings::lights_changed();
                 }
                 let woke = was == Some(false) && on;
@@ -1197,6 +1208,38 @@ mod tests {
     use super::*;
     use digitalis::protocol::{art as cmd, left_state, right_state, REPORT};
     use std::cell::{Cell, RefCell};
+
+    /// The right half's own switch (HELLO bit 20 sends it as an RGB_STATE event, #543) reads
+    /// the lights again, as the left's always did; a report that changes nothing doesn't.
+    #[test]
+    fn a_right_half_switch_reads_the_lights_again() {
+        assert!(
+            lights_switched(None, None, true, Some(true)),
+            "the first report"
+        );
+        assert!(!lights_switched(
+            Some(true),
+            Some(Some(true)),
+            true,
+            Some(true)
+        ));
+        assert!(lights_switched(
+            Some(true),
+            Some(Some(true)),
+            false,
+            Some(true)
+        ));
+        assert!(lights_switched(
+            Some(true),
+            Some(Some(false)),
+            true,
+            Some(true)
+        ));
+        assert!(
+            lights_switched(Some(true), Some(Some(true)), true, None),
+            "the split link went"
+        );
+    }
 
     /// The keyboard on the far side of the link, answering the art relay as the firmware does
     /// (art_relay_central.c / art_relay_peripheral.c), with a log of the commands it got.

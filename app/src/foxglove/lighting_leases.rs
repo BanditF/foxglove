@@ -233,6 +233,12 @@ impl Arbiter {
                 .is_some_and(|w| w.id == id)
     }
 
+    /// Whether a lease's frames (or effect) may be showing on `device` now: sent and not handed
+    /// back since.
+    pub fn holds(&self, device: &str) -> bool {
+        self.frames.get(device).is_some_and(|f| f.held)
+    }
+
     /// A frame went out on `device`: it hides the keyboard's colour until handed back.
     pub fn frame_sent(&mut self, device: &str) {
         if let Some(f) = self.frames.get_mut(device) {

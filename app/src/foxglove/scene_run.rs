@@ -29,7 +29,7 @@
 //!   | Away (locked, display off) | released; coming back sends it again |
 //!   | A notification lease (mic mute) | released under it; sent again after |
 //!   | Profile switch keeping the scene | the new look replaces it, no release in between |
-//!   | Quit | released, unless "Keep running on the keyboard" ([`KeyboardKeep`], off by default) is on and the effect is showing: it stays, and the next lights change from Foxglove hands it back |
+//!   | Quit | released, unless "Keep running on the keyboard" ([`KeyboardKeep`], off by default) is on and the effect is showing: it stays until Foxglove next finds the keyboard (or changes its lights), which hands it back |
 //!
 //!   Scenes that don't map (gradient, noise), and ripples or sweeps over a scene (#489), use
 //!   frames while they show. Copy diagnostics says which path the keyboard got.
@@ -105,7 +105,7 @@ pub struct KeyboardKeep {
     /// "Keep running on the keyboard": quitting leaves the scene's effect running on it. Off by
     /// default: quitting gives the keyboard its own lights back.
     pub on_quit: bool,
-    /// Quitting left an effect running: the next lights change from Foxglove hands it back.
+    /// Quitting left an effect running: Foxglove hands it back when it next finds the keyboard.
     pub left_running: bool,
 }
 
@@ -132,7 +132,7 @@ pub fn set_keep_on_quit(on: bool) {
 /// left running would hide the change, so it is handed back first. Once: the mark goes with it.
 pub fn release_left_effect(kb: &digitalis::devices::DigitalisDevice) {
     let k = keep();
-    if !k.left_running || running().is_some() {
+    if !k.left_running || running().is_some() || QUITTING.load(Ordering::Relaxed) {
         return;
     }
     if kb.effects() {
@@ -153,9 +153,29 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 /// Foxglove quits: the running scene ends as [`stop`] does, except that the keyboard keeps an
 /// effect it is showing when the user ticked "Keep running on the keyboard".
 pub fn quit() {
-    QUITTING.store(true, Ordering::Relaxed);
-    stop();
+    end(true);
 }
+
+/// A keyboard connected (the device bus's Connected, after the lease arbiter's own reconnect):
+/// a running scene sends the keyboard its effect or frame again, and looks for it at once even
+/// if it was missing a moment ago. With no scene, an effect a quit left running is handed back:
+/// Foxglove runs again and manages the lights.
+pub fn keyboard_connected() {
+    if running().is_some() {
+        ARRIVED.store(true, Ordering::Relaxed);
+        tell(Ctl::KeyboardArrived);
+        return;
+    }
+    if QUITTING.load(Ordering::Relaxed) || !keep().left_running {
+        return;
+    }
+    if let Some(kb) = super::devices::device() {
+        release_left_effect(&kb);
+    }
+}
+
+/// Set by [`keyboard_connected`], taken by the keyboard writer: look for the keyboard now.
+static ARRIVED: AtomicBool = AtomicBool::new(false);
 
 /// What a running scene's control thread hears.
 #[derive(Debug, PartialEq)]
@@ -170,6 +190,8 @@ enum Ctl {
     KeyRipple(usize, usize),
     /// The top layer changed (#489): a sweep in this colour.
     LayerSweep(Rgb),
+    /// A keyboard connected: send it the scene again.
+    KeyboardArrived,
     Stop,
 }
 
@@ -353,7 +375,16 @@ static ENDING: Mutex<()> = Mutex::new(());
 
 /// Stops the running scene and waits until the lights are given back (bounded).
 pub fn stop() {
+    end(false);
+}
+
+/// Ends the running scene; `quitting` is read by its end after any stop still giving the
+/// lights back has finished (so a quit never keeps an effect a Stop is releasing).
+fn end(quitting: bool) {
     let _ending = ENDING.lock().unwrap_or_else(|e| e.into_inner());
+    if quitting {
+        QUITTING.store(true, Ordering::Relaxed);
+    }
     let running = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(r) = running {
         let _ = r.tx.send(Ctl::Stop);
@@ -509,6 +540,7 @@ fn control(
                 .unwrap_or_else(|e| e.into_inner())
                 .set_effect(*effect);
         }
+        Ctl::KeyboardArrived => again.store(true, Ordering::Relaxed),
         Ctl::Stop => {}
     });
     give_back.ended = ended;
@@ -748,8 +780,10 @@ impl EffectTarget for digitalis::devices::DigitalisDevice {
 /// What sending the effect came to.
 #[derive(Debug, PartialEq, Eq)]
 enum EffectSent {
-    /// It runs, or the lease doesn't show now (it is sent again when it does).
+    /// It runs.
     Done,
+    /// The lease doesn't show now (a notification, pause): sent again when it does.
+    Waiting,
     /// The keyboard takes no effects after all (refused, or failed [`FRAME_ERRORS`] times in a
     /// row): frames from now on.
     Frames,
@@ -772,13 +806,14 @@ impl KeyboardLease {
         light: &dyn Lighting,
         f: &KeyboardFrame,
         again: &Arc<AtomicBool>,
-    ) -> Result<(), DeviceError> {
+    ) -> Result<bool, DeviceError> {
         let draws = self.frames != Some(false);
         if self.hold(a, device, light, f.mix, draws, again)? {
             self.effect_on = false;
-            return self.draw(a, device, light, f);
+            self.draw(a, device, light, f)?;
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
     }
 
     /// The effect for a keyboard that draws it itself: the lease holds its colours' mix (what
@@ -795,9 +830,14 @@ impl KeyboardLease {
         clock: &Clock,
         again: &Arc<AtomicBool>,
     ) -> Result<EffectSent, DeviceError> {
-        if !self.hold(a, device, light, e.mix, true, again)? {
+        let shows = match self.hold(a, device, light, e.mix, true, again) {
+            Ok(shows) => shows,
+            // The lease itself failed (the keyboard didn't answer): bounded like the sends.
+            Err(err) => return self.failed(err),
+        };
+        if !shows {
             self.effect_on = false;
-            return Ok(EffectSent::Done);
+            return Ok(EffectSent::Waiting);
         }
         let sent = target
             .place(e.room, e.left, e.right)
@@ -818,15 +858,20 @@ impl KeyboardLease {
                 // It may run although the reply was lost: hand it back when needed.
                 a.frame_sent(device);
                 self.effect_on = false;
-                self.effect_errors += 1;
-                if self.effect_errors < FRAME_ERRORS {
-                    return Err(err);
-                }
-                eprintln!("Foxglove: {FRAME_ERRORS} scene effects failed ({err}); frames for the keyboard until the scene takes it again");
-                self.effect_errors = 0;
-                Ok(EffectSent::Frames)
+                self.failed(err)
             }
         }
+    }
+
+    /// One more failed effect: the error, or frames after [`FRAME_ERRORS`] in a row.
+    fn failed(&mut self, err: DeviceError) -> Result<EffectSent, DeviceError> {
+        self.effect_errors += 1;
+        if self.effect_errors < FRAME_ERRORS {
+            return Err(err);
+        }
+        eprintln!("Foxglove: {FRAME_ERRORS} scene effects failed ({err}); frames for the keyboard until it connects again");
+        self.effect_errors = 0;
+        Ok(EffectSent::Frames)
     }
 
     /// Takes the lights (a low lease with `mix` as its colour: its snapshot, on, solid), or
@@ -984,6 +1029,7 @@ impl AppKeyboard {
     /// The keyboard to draw on, with its device id; takes care of another keyboard (the old
     /// one's lease ends) and of the hand-back watch. `None` while there is none.
     fn keyboard(&mut self) -> Option<(Arc<digitalis::devices::DigitalisDevice>, String)> {
+        self.take_arrival();
         if self.next_look.is_some_and(|t| Instant::now() < t) {
             return None;
         }
@@ -1008,6 +1054,15 @@ impl AppKeyboard {
             self.again.store(true, Ordering::Relaxed);
         }
         Some((kb, device))
+    }
+
+    /// A keyboard connected ([`keyboard_connected`]): look now, and one whose effects failed
+    /// gets them again.
+    fn take_arrival(&mut self) {
+        if ARRIVED.swap(false, Ordering::Relaxed) {
+            self.next_look = None;
+            self.effects_failed = false;
+        }
     }
 
     /// Something of this scene now shows on the keyboard: an effect a quit left there is gone
@@ -1067,10 +1122,12 @@ impl KeyboardLights for AppKeyboard {
         let again = self.again.clone();
         let shown = super::lighting_leases::with(|a| self.lease.show(a, &device, light, f, &again));
         match shown {
-            Ok(()) => {
+            Ok(drawn) => {
                 status().keyboard_frames += 1;
                 self.error_logged = false;
-                self.drew();
+                if drawn {
+                    self.drew();
+                }
             }
             Err(e) if !std::mem::replace(&mut self.error_logged, true) => {
                 eprintln!("Foxglove: scene colour to the keyboard: {e}");
@@ -1103,6 +1160,7 @@ impl KeyboardLights for AppKeyboard {
                 self.error_logged = false;
                 self.drew();
             }
+            Ok(EffectSent::Waiting) => {}
             Ok(EffectSent::Frames) => {
                 self.effects_failed = true;
                 self.effects.store(false, Ordering::Relaxed);
@@ -1135,13 +1193,15 @@ impl KeyboardLights for AppKeyboard {
     fn give_back(&mut self) {
         // Quitting with "Keep running on the keyboard": an effect showing stays. The arbiter
         // forgets it, so ending the lease restores the lights under it (hidden while it runs)
-        // without handing it back; the mark hands it back on the next lights change.
+        // without handing it back; the mark hands it back when Foxglove next finds the keyboard.
         if let Some(device) = &self.device {
             let k = keep();
             let lease = self.lease.id;
             // Not under a notification or pause, which handed it back already.
             let showing = self.lease.effect_on
-                && lease.is_some_and(|id| super::lighting_leases::with(|a| a.shows(id)));
+                && super::lighting_leases::with(|a| {
+                    a.holds(device) && lease.is_some_and(|id| a.shows(id))
+                });
             if keeps_on_quit(QUITTING.load(Ordering::Relaxed), k, showing) {
                 super::lighting_leases::with(|a| a.no_frames(device));
                 save_keep(KeyboardKeep {
@@ -1387,16 +1447,23 @@ mod tests {
         );
         assert!(scene.effect_on);
 
+        assert!(a.holds("kb"));
         // A notification: the effect is handed back before its colour shows.
         let mute = a.add(mute_lease(), &kb).unwrap();
+        assert!(!a.holds("kb"), "nothing of the scene's left to keep");
         assert_eq!(Fake::count(&kb.releases), 1);
         assert_eq!(kb.running(), None);
         assert_eq!(kb.hsb().1, 0, "the mute's red, visible");
         // Sent again while the notification shows: nothing goes out.
         let ops = kb.effect_ops.lock().unwrap().len();
-        scene
+        let sent = scene
             .show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again)
             .unwrap();
+        assert_eq!(
+            sent,
+            EffectSent::Waiting,
+            "nothing drawn: a quit's mark stays"
+        );
         assert_eq!(kb.effect_ops.lock().unwrap().len(), ops);
         assert!(!scene.effect_on);
         // Unmuted: the scene is asked for its effect again.
@@ -1447,6 +1514,21 @@ mod tests {
             a.apply(&d, &kb).unwrap();
         }
         assert_eq!((kb.running(), kb.hsb()), (None, before));
+    }
+
+    /// A keyboard that connects is looked for at once, even inside the wait after it was
+    /// missing, and gets effects again after they failed.
+    #[test]
+    fn a_connect_ends_the_wait_for_a_missing_keyboard() {
+        let mut kb = AppKeyboard::new(Arc::default(), Arc::default(), Clock::starting_now());
+        kb.next_look = Some(Instant::now() + Duration::from_secs(60));
+        kb.effects_failed = true;
+        kb.take_arrival();
+        assert!(kb.next_look.is_some(), "no connect: the wait stays");
+        ARRIVED.store(true, Ordering::Relaxed);
+        kb.take_arrival();
+        assert_eq!((kb.next_look, kb.effects_failed), (None, false));
+        assert!(!ARRIVED.load(Ordering::Relaxed));
     }
 
     /// Quitting with "Keep running on the keyboard" leaves the effect: the arbiter forgets it,
