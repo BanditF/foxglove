@@ -232,6 +232,69 @@ static void check_vectors(void) {
            (int)ARRAY_SIZE(vectors));
 }
 
+/* The Scenes page's directions, end to end (app/src/foxglove/keyboard_direction_vectors.rs):
+ * the PLACE and EFFECT reports the app sends for each direction, and the colour the app's scene
+ * gives each LED. Here both halves render them with the firmware's lamp table (the right
+ * mirrored), as host_effects.c hands each half its copy. The wire rounds the halves' places to
+ * whole mm, so a lamp may sit up to about a mm off the app's: within DIR_SLACK per channel. */
+
+#define DIR_SLACK 8
+
+struct direction_vector {
+    int16_t place[12]; // room, left, right: x, y, w, h
+    uint8_t report[32];
+    uint8_t want[2 * LAMP_EFFECT_LAMPS][3];
+};
+
+static const struct direction_vector directions[] = {
+#include "direction_vectors.inc"
+};
+
+static void check_directions(void) {
+    static struct lamp_effect fx; // static: the effect is large for a driver stack
+    int good = 0;
+    for (int v = 0; v < (int)ARRAY_SIZE(directions); v++) {
+        const struct direction_vector *c = &directions[v];
+        const uint8_t *r = c->report;
+        struct lamp_effect_wire w = {.kind = r[3], .n = r[4]};
+        memcpy(w.period_ms, &r[8], 3);
+        memcpy(w.angle_cdeg, &r[11], 2);
+        memcpy(w.width_dmm, &r[13], 2);
+        memcpy(w.origin, &r[15], 4);
+        memcpy(w.rgb, &r[19], 3 * MIN(w.n, LAMP_EFFECT_COLOURS));
+        for (int i = 0; i < 4; i++) {
+            sys_put_le16(c->place[i], &w.room[2 * i]);
+        }
+        float phase = lamp_effect_phase(sys_get_le24(&r[5]), sys_get_le24(&r[8]));
+        bool ok = true;
+        for (int half = 0; half < 2 && ok; half++) {
+            for (int i = 0; i < 4; i++) {
+                sys_put_le16(c->place[4 + 4 * half + i], &w.half[2 * i]);
+            }
+            uint8_t out[LAMP_EFFECT_LAMPS][3];
+            ok = lamp_effect_prepare(&fx, &w, half == 1);
+            if (ok) {
+                lamp_effect_render(&fx, phase, out);
+            }
+            for (int i = 0; ok && i < LAMP_EFFECT_LAMPS; i++) {
+                const uint8_t *want = c->want[half * LAMP_EFFECT_LAMPS + i];
+                for (int ch = 0; ch < 3; ch++) {
+                    ok = ok && abs(out[i][ch] - want[ch]) <= DIR_SLACK;
+                }
+                if (!ok) {
+                    printk("effects: direction vector %d (kind %d, angle %d) %s lamp %d got "
+                           "%02X%02X%02X, the app %02X%02X%02X\n",
+                           v, w.kind, sys_get_le16(&r[11]) / 100, half ? "right" : "left", i,
+                           out[i][0], out[i][1], out[i][2], want[0], want[1], want[2]);
+                }
+            }
+        }
+        good += ok;
+    }
+    printk("effects: %d of %d direction vectors match the app on both halves\n", good,
+           (int)ARRAY_SIZE(directions));
+}
+
 /* The PC */
 
 static uint32_t caps;
@@ -371,6 +434,8 @@ void effects_sim_driver(void) {
     k_msleep(500);
     note("the maths against crates/scene");
     check_vectors();
+    note("the Scenes page's directions, as the app sends them, on both halves");
+    check_directions();
 
     note("hello: capability bit 19 EFFECTS");
     {

@@ -67,6 +67,8 @@ pub mod plugins_ui;
 pub mod profiles_ui;
 pub mod reconnect;
 pub mod repaint_trace;
+#[cfg(test)]
+mod keyboard_direction_vectors;
 pub mod scene_looks;
 pub mod scene_output;
 pub mod scene_room;

@@ -1,5 +1,7 @@
 effects: -- the maths against crates/scene
 effects: 492 of 492 crates/scene vectors within 2 per channel
+effects: -- the Scenes page's directions, as the app sends them, on both halves
+effects: 128 of 128 direction vectors match the app on both halves
 effects: -- hello: capability bit 19 EFFECTS
 effects: caps bit 19 1
 effects: -- PLACE: a half without area is refused; a whole place is kept, nothing drawn yet

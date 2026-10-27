@@ -228,7 +228,7 @@ fn half_of(device: &str) -> Option<usize> {
 /// number (the board profile's LED map) colours that LED; any other light (a half lit as one)
 /// colours every LED of its half that no numbered light covers. A one-piece keyboard, or a
 /// half missing from the room, gets the mix of everything.
-fn keyboard_frame(lights: &[(&str, &str, Rgb)]) -> Option<KeyboardFrame> {
+pub(crate) fn keyboard_frame(lights: &[(&str, &str, Rgb)]) -> Option<KeyboardFrame> {
     let all: Vec<Rgb> = lights.iter().map(|(_, _, c)| *c).collect();
     let mix = mixed(&all)?;
     let mut lamps = vec![mix; HALF_LAMPS * 2];
