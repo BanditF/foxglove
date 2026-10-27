@@ -560,8 +560,8 @@ pub(crate) mod tests {
     #[test]
     fn the_users_devices_come_in_from_what_foxglove_knows() {
         let rows = [
-            users_desk::catalog_row((0x103c, 0x84fd)),
-            users_desk::catalog_row((0x03f0, 0x7397)),
+            users_desk::catalog_row(users_desk::CASE),
+            users_desk::catalog_row(users_desk::COOLER),
             users_desk::mouse_row(),
         ];
         let mut lamps = BTreeMap::new();
