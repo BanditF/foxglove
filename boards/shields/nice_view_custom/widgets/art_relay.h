@@ -7,7 +7,12 @@
  *   screen (encrypted read) frame u16 LE, crc32 u32 LE, 1360 native screen bytes
  *      SNAP (op 7, one byte, write request) queues capture; screen reads return ATT unlikely
  *      until ready. Long reads use offsets into the frozen image; CRC excludes the 6-byte header.
- *   status (read)                            struct art_relay_status
+ *   status (read, notify)                    struct art_relay_status
+ *      Notify (#478): one byte, ART_RELAY_RANG_*, when the right's underglow on/off or its power
+ *      source (battery dim state) changed on its own. A doorbell only: the left reads the status
+ *      (and the dim state) again, and the PC hears from those reads. The CCC follows the status
+ *      value (its handle + 1); the left subscribes after discovery, and a right without it
+ *      answers that write with an ATT error.
  * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set |
  *      RGB on u8, follow u8 [, battery dim config (5 B)] | PRESS position u8, state u8
  * PRESS is exactly three bytes: 06, global keymap position, state (1 down, 0 up).
@@ -36,6 +41,7 @@
 #include <stdint.h>
 
 #include <zephyr/bluetooth/uuid.h>
+#include <zephyr/sys/util.h>
 #include <zephyr/toolchain.h>
 
 #include "battery_dim.h"
@@ -68,6 +74,10 @@ enum art_relay_op {
     ART_RELAY_RGB_HSB = 13, // hue u16, saturation u8, brightness u8 (write request): the PC's
                             // colour, applied at once; status version >= 5 (#266)
 };
+
+// The status notify's bits (#478).
+#define ART_RELAY_RANG_RGB BIT(0)   // the right's underglow went on or off
+#define ART_RELAY_RANG_POWER BIT(1) // its battery dim state: USB power or the level
 
 #define ART_RELAY_HEADER_SIZE 12
 #define ART_RELAY_MAGIC "NVA1"
@@ -226,6 +236,10 @@ static inline int art_relay_lamp_span(const uint8_t a[][3], const uint8_t b[][3]
     }
     return last - first + 1;
 }
+
+// Right half (art_relay_peripheral.c): rings the left (ART_RELAY_RANG_*) when this half's
+// underglow on/off or power source changed. Coalesced; best effort. Any thread.
+void art_relay_right_rang(uint8_t what);
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 void art_relay_press(uint8_t pos, uint8_t state);

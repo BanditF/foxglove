@@ -44,6 +44,9 @@ pub mod capabilities {
     pub const LEFT_BATTERY: u32 = 1 << 17;
     /// Settings BATTERY_DIM (D7 0E): the underglow's levels by power state, per half.
     pub const BATTERY_DIM: u32 = 1 << 18;
+    /// The relayed right half's on/off (D7 83) and power source (D7 8E) changes arrive as
+    /// events (#478): no extra read after an underglow change is needed.
+    pub const RIGHT_EVENTS: u32 = 1 << 20;
 }
 pub const VERSION: u8 = 1;
 

@@ -220,6 +220,9 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
     caps |= HOST_LINK_CAP_BATTERY_DIM;
 #endif
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) && IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+    caps |= HOST_LINK_CAP_RIGHT_EVENTS;
+#endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
     caps |= HOST_LINK_CAP_FRAMES;
 #endif
@@ -608,6 +611,12 @@ static K_WORK_DEFINE(rgb_followed_work, rgb_followed_cb);
 void host_link_rgb_right_followed(void) {
     if (atomic_get(&host_seen)) {
         k_work_submit(&rgb_followed_work);
+    }
+}
+
+void host_link_rgb_right_changed(void) {
+    if (atomic_get(&host_seen)) {
+        k_work_reschedule(&rgb_state_event_work, K_NO_WAIT); // deduped against the last one sent
     }
 }
 

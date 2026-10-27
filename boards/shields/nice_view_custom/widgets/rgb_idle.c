@@ -36,6 +36,7 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE),
 #define CENTRAL (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
 #define RELAY_CENTRAL (CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY))
 #define HOST_CENTRAL (CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_HOST_LINK))
+#define RIGHT_RELAY (!CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY))
 
 // On/off changes made with the rgb_ug behaviours are picked up this long after a key, an encoder
 // step or a PC invoke, once the binding has run (#280: no free-running poll).
@@ -151,6 +152,9 @@ static void apply_cb(struct k_work *work) {
 #if HOST_CENTRAL
         host_link_rgb_changed();
 #endif
+#if RIGHT_RELAY
+        art_relay_right_rang(ART_RELAY_RANG_RGB); // the left reads it and tells the PC (#478)
+#endif
     }
 #if RELAY_CENTRAL
     art_relay_rgb_kick();
@@ -167,6 +171,9 @@ static void check_cb(struct k_work *work) {
         save();
 #if HOST_CENTRAL
         host_link_rgb_changed();
+#endif
+#if RIGHT_RELAY
+        art_relay_right_rang(ART_RELAY_RANG_RGB);
 #endif
 #if RELAY_CENTRAL
         art_relay_rgb_kick();

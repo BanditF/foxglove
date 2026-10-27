@@ -33,10 +33,11 @@
 #define CENTRAL (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
 #define HOST_CENTRAL (CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_HOST_LINK))
 #define RELAY_CENTRAL (CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY))
+#define RIGHT_RELAY (!CENTRAL && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY))
 #if HOST_CENTRAL
 #include "host_link.h"
 #endif
-#if RELAY_CENTRAL
+#if RELAY_CENTRAL || RIGHT_RELAY
 #include "art_relay.h"
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
@@ -81,6 +82,9 @@ static void recompute(void) { atomic_set(&level, battery_dim_level_for(&config, 
 static void changed(void) {
 #if HOST_CENTRAL
     host_link_battery_dim_changed();
+#endif
+#if RIGHT_RELAY
+    art_relay_right_rang(ART_RELAY_RANG_POWER); // the left reads it again and tells the PC (#478)
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
     lamp_strip_show(); // a frame from the PC shows at the new level too (ZMK redraws on its own)
