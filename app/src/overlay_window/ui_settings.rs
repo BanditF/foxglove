@@ -98,10 +98,20 @@ impl OverlayApp {
         // Foxglove: Settings is a native window of its own (an immediate viewport), so it can be
         // dragged to any display and dims nothing behind it.
         let builder = crate::foxglove::settings_window::builder();
+        // Foxglove: the windows' focus this frame, for whether the overlay takes the mouse
+        // (overlay_grab): the overlay's own window here, Settings' inside its viewport.
+        let mut seen = crate::foxglove::overlay_grab::Seen {
+            open,
+            overlay_focused: ctx.input(|i| i.viewport().focused).unwrap_or(false),
+            dragging: self.ui.overlay_grab.is_some(),
+            ..Default::default()
+        };
         ctx.show_viewport_immediate(crate::foxglove::settings_window::id(), builder, |ui, class| {
             let ctx = ui.ctx().clone();
             // Foxglove: minimized is closed (the app lives in the tray).
             let minimized = self.ui.settings_window.frame(&ctx);
+            seen.minimized = minimized;
+            seen.settings_focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
             if minimized || ctx.input(|i| i.viewport().close_requested()) {
                 open = false;
             }
@@ -460,6 +470,18 @@ impl OverlayApp {
                 crate::foxglove::settings_ui::footer(ui);
             });
         });
+
+        seen.open = open;
+        let armed = crate::foxglove::overlay_grab::next(self.ui.overlay_armed, seen);
+        if armed != self.ui.overlay_armed {
+            self.ui.overlay_armed = armed;
+            if !armed {
+                // Settings lost the focus (or went): no opacity slider holds the preview (#466).
+                crate::foxglove::overlay_opacity::release_preview();
+            }
+            // The overlay's click-through and hit region follow on the next frame.
+            ctx.request_repaint();
+        }
 
         if self.ui.settings_visible && !open {
             self.ui.settings_visible = false;

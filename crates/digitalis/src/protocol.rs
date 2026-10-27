@@ -452,7 +452,8 @@ pub struct RgbSync {
     /// Whether the right half's underglow follows the left's; `None` if the firmware hasn't
     /// got the feature.
     pub sync: Option<bool>,
-    /// The left half's underglow is on.
+    /// The left half's underglow is on: the user's on/off with idle; under a scene (SET_FRAME,
+    /// SET_EFFECT), the on/off hand-back will show.
     pub left_on: bool,
     /// 0 = right half not connected, 1 = connected, 2 = connected with the relay.
     pub right_link: u8,

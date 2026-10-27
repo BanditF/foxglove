@@ -31,8 +31,13 @@ config FOXGLOVE_SIM_FRAMES
     bool "Simulator: SET_FRAME case (host_frames.c with a fake strip and relay, module/frames_sim.c)"
 
 config FOXGLOVE_SIM_EFFECTS
-    bool "Simulator: SET_EFFECT case (host_effects.c, effect_run.c, lamp_effect.c with a fake strip, relay and on/off, module/effects_sim.c)"
+    bool "Simulator: SET_EFFECT case (host_effects.c, effect_run.c, lamp_effect.c, rgb_idle.c with a fake strip, relay and underglow, module/effects_sim.c)"
     depends on !FOXGLOVE_SIM_FRAMES
+    depends on SETTINGS
+
+config NICE_VIEW_RGB_IDLE
+    bool
+    default y if FOXGLOVE_SIM_EFFECTS
 
 config FOXGLOVE_HOST_FRAMES
     bool

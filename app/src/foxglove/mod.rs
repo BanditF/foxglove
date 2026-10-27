@@ -51,6 +51,7 @@ pub mod link;
 pub mod live_feed;
 pub mod live_wire;
 pub mod mic_broker;
+pub mod overlay_grab;
 pub mod overlay_opacity;
 pub mod overlay_place;
 pub mod overlay_profile;

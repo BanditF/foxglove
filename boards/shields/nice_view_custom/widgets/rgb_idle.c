@@ -28,9 +28,6 @@
 
 #include "rgb_idle.h"
 #include "art_relay.h"
-#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
-#include "effect_run.h"
-#endif
 #include "host_link.h"
 
 BUILD_ASSERT(!IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE),
@@ -53,6 +50,7 @@ static bool sync = true; // left: the right follows the left, saved
 static bool following;   // right: the left's state is in charge
 static bool remote_on;   // right: the left's state
 static atomic_t host_drawn; // the PC draws this half's LEDs (SET_FRAME, lamp_strip.c)
+static atomic_t host_want;  // the last rgb_idle_host_control: hand-back pending or done
 
 static bool active(void) { return zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE; }
 
@@ -140,29 +138,41 @@ static void save(void) { k_work_reschedule(&save_work, SAVE_DELAY); }
 
 // The work items below all run on the system work queue, one at a time.
 
-static void apply_cb(struct k_work *work) {
-    if (atomic_get(&host_drawn)) {
-#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
-        effect_run_lights_changed(); // an effect goes dark when idle (or off), and comes back
-#endif
-        return; // ZMK's underglow stays off under the PC's frames; this runs again on hand-back
+static int8_t told = -1; // the on/off last told to the PC (left) or the left (right), -1 none
+
+// The on/off may have changed: the PC hears (left), the left reads it (right). Under a scene too,
+// where it's the on/off hand-back will show (#542).
+static void tell(bool on) {
+    if (told == on) {
+        return;
     }
-    bool on;
-    bool target = following ? remote_on : wanted && active();
-    if (zmk_rgb_underglow_get_state(&on) == 0 && on != target) {
-        if (target) {
-            zmk_rgb_underglow_on();
-        } else {
-            zmk_rgb_underglow_off();
-        }
+    told = on;
 #if HOST_CENTRAL
-        host_link_rgb_changed();
+    host_link_rgb_changed();
 #endif
 #if RIGHT_RELAY
-        art_relay_right_rang(ART_RELAY_RANG_RGB); // the left reads it and tells the PC (#478)
+    art_relay_right_rang(ART_RELAY_RANG_RGB); // the left reads it and tells the PC (#478)
 #endif
+}
+
+static void apply_cb(struct k_work *work) {
+    bool target = following ? remote_on : wanted && active();
+    // Under the PC's scene (SET_FRAME, SET_EFFECT) ZMK's underglow stays off and the scene draws
+    // whatever the on/off (#542); this runs again on hand-back, which puts target back.
+    if (!atomic_get(&host_drawn)) {
+        bool on;
+        if (zmk_rgb_underglow_get_state(&on) == 0 && on != target) {
+            if (target) {
+                zmk_rgb_underglow_on();
+            } else {
+                zmk_rgb_underglow_off();
+            }
+        }
     }
+    tell(target);
 #if RELAY_CENTRAL
+    // The right follows the left's on/off under a scene as well, so it's right on hand-back
+    // (#542). The relay sends only what the right hasn't confirmed.
     art_relay_rgb_kick();
 #endif
 }
@@ -175,12 +185,7 @@ static void check_cb(struct k_work *work) {
         on != wanted) {
         wanted = on; // toggled with a key
         save();
-#if HOST_CENTRAL
-        host_link_rgb_changed();
-#endif
-#if RIGHT_RELAY
-        art_relay_right_rang(ART_RELAY_RANG_RGB);
-#endif
+        tell(on);
 #if RELAY_CENTRAL
         art_relay_rgb_kick();
 #endif
@@ -230,13 +235,18 @@ void rgb_idle_remote(bool on, bool follow) {
 
 // Hand-back clears the flag on the system queue, where check_cb and apply_cb run, so a key's
 // check can't see ZMK still off without the flag and save that as the user's choice.
+// A take-over that comes before this runs wins: the scene keeps the lights.
 static void host_back_cb(struct k_work *work) {
+    if (atomic_get(&host_want)) {
+        return;
+    }
     atomic_set(&host_drawn, 0);
     apply_cb(work);
 }
 static K_WORK_DEFINE(host_back_work, host_back_cb);
 
 void rgb_idle_host_control(bool on) {
+    atomic_set(&host_want, on);
     if (on) {
         atomic_set(&host_drawn, 1); // at once: nothing may turn ZMK's underglow back on
         return;

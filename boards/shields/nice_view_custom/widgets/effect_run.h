@@ -23,6 +23,3 @@ void effect_run_stop(bool hand_back);
 bool effect_run_active(void);
 // This half's effect clock now, modulo the period: the anchor for the other half.
 uint32_t effect_run_clock(void);
-// rgb_idle.c: the user's on/off (or idle) may have changed while the PC has the LEDs. Off draws
-// black and stops the frames; on starts them again. Any thread.
-void effect_run_lights_changed(void);

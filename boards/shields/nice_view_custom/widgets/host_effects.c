@@ -6,8 +6,9 @@
  * The PC sends the effect once; the left draws its half (effect_run.c) and sends the right its
  * half's copy over the art relay, which re-anchors the right's clock on every send. Nothing is
  * streamed: the effect runs on with the app closed or the cable out, until RELEASE, SET_FRAME
- * taking the lights, or a reboot. While it runs, each half draws only while its underglow is on
- * as the user set it (idle turns it dark), and the battery dim applies on each half.
+ * taking the lights, or a reboot. The scene owns the lights (#542): each half draws it whatever
+ * its underglow on/off and idle say, and RELEASE puts that on/off back. The battery dim applies
+ * on each half.
  *
  * Start/stop (no polling): the left's frames are effect_run.c's; the right's send starts on an
  * effect, a PLACE or RELEASE, or the relay coming up while one runs, and stops on the right's ack,

@@ -78,6 +78,9 @@ pub struct UiState {
     pub overlay_drag: Option<egui::Pos2>,
     /// Foxglove: the drag under way, followed across displays (foxglove_place.rs).
     pub overlay_grab: Option<super::foxglove_place::Drag>,
+    /// Foxglove: the overlay takes the mouse (Settings has the focus, or handed it to the
+    /// overlay by a click on it; `foxglove::overlay_grab`). Off, it's click-through.
+    pub overlay_armed: bool,
 }
 
 pub struct SettingsState {

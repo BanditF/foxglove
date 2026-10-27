@@ -59,6 +59,7 @@ impl OverlayApp {
                 overlay_place: crate::foxglove::overlay_place::load(),
                 overlay_drag: None,
                 overlay_grab: None,
+                overlay_armed: false,
             },
             settings: SettingsState {
                 active: base_settings.clone(),
@@ -101,20 +102,20 @@ impl OverlayApp {
         // Foxglove (#391): the tray panel takes the mouse too, but only over itself (#405): a
         // click anywhere else goes straight to the window underneath, and the panel closes when
         // the overlay loses the focus to it. The Settings window is a window of its own; while
-        // it's open the overlay takes the mouse only over the keys (to open the editor), and over
-        // the whole display only while a key's tooltip shows or the editor is open.
+        // it's open and has the focus the overlay takes the mouse only over the keys (to open the
+        // editor), and over the whole display only while a key's tooltip shows or the editor is
+        // open. Minimized, or another app in front, the overlay is click-through
+        // (`foxglove::overlay_grab`).
         // A host without native windows (Wayland) draws Settings inside the overlay: the whole
         // overlay takes the mouse then, as the editor does.
         let editor = self.editor.target.is_some()
             || (self.ui.settings_visible && ctx.embed_viewports());
         let tray = crate::foxglove::tray_panel::is_open();
+        let settings = self.ui.settings_visible && self.ui.overlay_armed;
         // A drag (of the overlay) takes the whole display, so the overlay never draws clipped.
         let busy = self.ui.overlay_hovered || self.ui.overlay_drag.is_some();
-        let keys = self
-            .ui
-            .overlay_rect
-            .filter(|_| self.ui.settings_visible && !busy);
-        let region = if editor || (self.ui.settings_visible && busy) {
+        let keys = self.ui.overlay_rect.filter(|_| settings && !busy);
+        let region = if editor || (settings && busy) {
             None
         } else if tray {
             crate::foxglove::tray_panel::hit_region(ctx)
@@ -125,9 +126,7 @@ impl OverlayApp {
             host.set_hit_region(region);
             self.ui.hit_region = region;
         }
-        let takes_mouse = editor
-            || tray
-            || (self.ui.settings_visible && self.ui.overlay_rect.is_some());
+        let takes_mouse = editor || tray || (settings && self.ui.overlay_rect.is_some());
         let mouse_passthrough = !takes_mouse;
         if self.ui.mouse_passthrough == Some(mouse_passthrough) {
             return;

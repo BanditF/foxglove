@@ -1,13 +1,15 @@
 /*
  * Simulator case for SET_EFFECT (tests/zmk-sim/host-effects, #490): the real host_link.c,
- * host_effects.c, effect_run.c, lamp_effect.c and host_frames.c, with this half's strip, the art
- * relay and the underglow's on/off faked here.
+ * host_effects.c, effect_run.c, lamp_effect.c, host_frames.c and rgb_idle.c, with this half's
+ * strip, the art relay and ZMK's underglow faked here.
  *
  * First the maths: every vector crates/scene wrote (effect_vectors.inc) through lamp_effect.c,
  * within 2 per channel. Then the PC's side: PLACE, EFFECT and RELEASE over the host link, a still
- * effect drawn once, a moving one drawn every frame, idle going dark and coming back, SET_FRAME
- * taking over and an effect taking back, the bad requests, and the effect living through an
- * endpoint change.
+ * effect drawn once, a moving one drawn every frame, SET_FRAME taking over and an effect taking
+ * back, the bad requests, and the effect living through an endpoint change. Then the scene owning
+ * the lights (#542): it draws through idle and the user's off, RGB_SYNC and the right hear the
+ * left's real on/off meanwhile, RELEASE puts that on/off back, and (as the right) it draws on
+ * through the left's link dropping and coming back with "off".
  * SPDX-License-Identifier: MIT
  */
 
@@ -18,9 +20,13 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/printk.h>
 
+#include <zephyr/input/input.h>
+
 #include <raw_hid/events.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/endpoint_changed.h>
+#include <zmk/rgb_underglow.h>
+#include <zmk/workqueue.h>
 
 #include "art_relay.h"
 #include "effect_run.h"
@@ -51,12 +57,52 @@ static void print_lamps(const char *what, const uint8_t rgb[][3], int n) {
     printk(any ? "\n" : " black\n");
 }
 
+/* ZMK's underglow (rgb_underglow.c, which the simulator doesn't build): on/off only */
+
+static atomic_t zmk_on;
+
+int zmk_rgb_underglow_get_state(bool *on) {
+    *on = atomic_get(&zmk_on);
+    return 0;
+}
+int zmk_rgb_underglow_on(void) {
+    atomic_set(&zmk_on, 1);
+    return 0;
+}
+int zmk_rgb_underglow_off(void) {
+    atomic_set(&zmk_on, 0);
+    return 0;
+}
+struct zmk_led_hsb zmk_rgb_underglow_calc_hue(int direction) {
+    return (struct zmk_led_hsb){.h = 30, .s = 80, .b = 60};
+}
+int zmk_rgb_underglow_calc_effect(int direction) { return 0; }
+
 /* The left strip (lamp_strip.c): draws are counted; a draw that differs from the last printed
- * one is printed unless the case is counting a moving effect. */
+ * one is printed unless the case is counting a moving effect. Taking it and handing it back go
+ * through rgb_idle.c on ZMK's low-priority queue, as the real one's do. */
 
 static uint8_t pixels[LAMP_STRIP_LEN][3], printed[LAMP_STRIP_LEN][3];
-static bool host, quiet, dark, printed_dark;
+static bool host, quiet;
 static atomic_t draws;
+static atomic_t want_owned;
+static bool owned; // the low-priority queue's
+
+static void owner_cb(struct k_work *work) {
+    bool want = atomic_get(&want_owned);
+    if (want == owned) {
+        return;
+    }
+    owned = want;
+    if (want) {
+        rgb_idle_host_control(true);
+        zmk_rgb_underglow_off();
+    } else {
+        zmk_rgb_underglow_off();
+        rgb_idle_host_control(false);
+    }
+}
+static K_WORK_DEFINE(owner_work, owner_cb);
 
 void lamp_strip_host(bool on) {
     if (on != host) {
@@ -64,6 +110,8 @@ void lamp_strip_host(bool on) {
         memset(pixels, 0, sizeof(pixels));
         memset(printed, 0xff, sizeof(printed));
         printk("effects: left %s\n", on ? "taken from its effect" : "back to its effect");
+        atomic_set(&want_owned, on);
+        k_work_submit_to_queue(zmk_workqueue_lowprio_work_q(), &owner_work);
     }
 }
 
@@ -80,23 +128,21 @@ void lamp_strip_show(void) {
         return;
     }
     atomic_inc(&draws);
-    if (!quiet && (memcmp(pixels, printed, sizeof(pixels)) != 0 || dark != printed_dark)) {
+    if (!quiet && memcmp(pixels, printed, sizeof(pixels)) != 0) {
         memcpy(printed, pixels, sizeof(pixels));
-        printed_dark = dark;
-        print_lamps(dark ? "left draws, then cuts the LEDs' power:" : "left draws", pixels,
-                    LAMP_STRIP_LEN);
+        print_lamps("left draws", pixels, LAMP_STRIP_LEN);
     }
 }
 
-void lamp_strip_dark(bool on) { dark = on; }
+/* The underglow relay (art_relay_central.c rgb_sync_cb): what the right would be told */
 
-/* The underglow's on/off as the user set it (rgb_idle.c) */
+static atomic_t told_on = ATOMIC_INIT(-1), told_follow = ATOMIC_INIT(-1);
 
-static bool lights = true;
-
-int rgb_idle_get_on(bool *on) {
-    *on = lights;
-    return 0;
+void art_relay_rgb_kick(void) {
+    bool on = false;
+    rgb_idle_get_on(&on);
+    atomic_set(&told_on, on);
+    atomic_set(&told_follow, rgb_idle_sync());
 }
 
 /* The art relay (art_relay_central.c): prints what the right would be sent */
@@ -189,11 +235,17 @@ static void check_vectors(void) {
 /* The PC */
 
 static uint32_t caps;
+// The left's on/off in the last unsolicited RGB_STATE (D7 83): it comes 600 ms after a change,
+// so the walk reads it here when it reports rather than at a time-dependent place in the log.
+static atomic_t pc_heard = ATOMIC_INIT(-1);
 
 static int effects_sent_listener(const zmk_event_t *eh) {
     const struct raw_hid_sent_event *ev = as_raw_hid_sent_event(eh);
     if (ev != NULL && ev->length >= 25 && ev->data[0] == 0xD5 && ev->data[1] == 0x81) {
         caps = sys_get_le32(&ev->data[21]);
+    }
+    if (ev != NULL && ev->length >= 3 && ev->data[0] == 0xD7 && ev->data[1] == 0x83) {
+        atomic_set(&pc_heard, ev->data[2]);
     }
     return ZMK_EV_EVENT_BUBBLE;
 }
@@ -241,6 +293,45 @@ static void release(void) {
     put(d, sizeof(d));
 }
 
+// RGB_SYNC read (0xff: just read): the reply's left on is the user's on/off with idle.
+static void rgb_sync_read(void) {
+    const uint8_t d[] = {0xD7, 0x01, 0xff};
+    put(d, sizeof(d));
+    settle();
+}
+
+// What the PC last heard (D7 83) and the underglow relay last told the right about the left's
+// on/off, and ZMK's underglow here. At least 600 ms after a change (RGB_STATE_SETTLE).
+static void lights_report(void) {
+    atomic_val_t pc = atomic_get(&pc_heard);
+    printk("effects: the PC hears the left %s, the right is told %s%s; ZMK's underglow %s\n",
+           pc < 0 ? "nothing" : pc ? "on" : "off", atomic_get(&told_on) ? "on" : "off",
+           atomic_get(&told_follow) ? ", follow" : "", atomic_get(&zmk_on) ? "on" : "off");
+}
+
+static void underglow_report(void) {
+    printk("effects: ZMK's underglow %s\n", atomic_get(&zmk_on) ? "on" : "off");
+}
+
+// Whether the left strip still shows its last printed frame, lit.
+static void still_lit(void) {
+    bool lit = false;
+    for (int i = 0; i < LAMP_STRIP_LEN; i++) {
+        lit |= (pixels[i][0] | pixels[i][1] | pixels[i][2]) != 0;
+    }
+    printk("effects: the scene still draws: %s\n",
+           host && lit && memcmp(pixels, printed, sizeof(pixels)) == 0 ? "yes" : "no");
+}
+
+// A pointer move: ZMK's activity wakes (activity.c listens to every input device). Waits out
+// the PC's D7 83 (600 ms after the change).
+static void wake(void) {
+    input_report_rel(NULL, INPUT_REL_X, 1, true, K_NO_WAIT);
+    k_msleep(800);
+}
+
+// ZMK's idle comes 3 s after the last activity, checked each second (case.conf).
+static void wait_idle(void) { k_msleep(4500); }
 
 // Draws over a stretch of time (printed or not as quiet says).
 static int count_draws(int ms) {
@@ -303,13 +394,14 @@ void effects_sim_driver(void) {
     settle();
     printk("effects: draws in 300 ms after it: %d\n", count_draws(300));
 
-    note("idle: the half goes dark, then lit again on activity");
-    lights = false;
-    effect_run_lights_changed();
-    settle();
-    lights = true;
-    effect_run_lights_changed();
-    settle();
+    note("idle: the scene still draws; RGB_SYNC and the right hear the left off, then on");
+    wait_idle();
+    still_lit();
+    rgb_sync_read();
+    lights_report();
+    wake();
+    rgb_sync_read();
+    lights_report();
 
     note("a moving scanline: a frame every 33 ms, on the clock it was sent with");
     quiet = true; // its frames move: counted, not printed
@@ -383,5 +475,50 @@ void effects_sim_driver(void) {
     release();
     settle();
     printk("effects: draws in 300 ms after it: %d\n", count_draws(300));
+
+    note("hand-back puts the on/off back: off while idle, on with activity");
+    effect(4, 2, 0, 0, 0, 0, 0, 0, still);
+    wait_idle();
+    release();
+    settle();
+    lights_report();
+    wake();
+    lights_report();
+
+    // Each part ends well inside the 3 s idle timeout: a wake (no event while active) restarts it.
+    note("the user's off: a scene still draws; RELEASE leaves the underglow off");
+    wake();
+    atomic_set(&zmk_on, 0); // an &rgb_ug key turned it off
+    rgb_idle_check();
+    k_msleep(800);
+    effect(4, 2, 0, 0, 0, 0, 0, 0, still);
+    settle();
+    rgb_sync_read();
+    lights_report();
+    release();
+    settle();
+    lights_report();
+    wake();
+    atomic_set(&zmk_on, 1); // and on again
+    rgb_idle_check();
+    k_msleep(800);
+    lights_report();
+
+    note("as the right: the left's link drops mid-scene and comes back saying off");
+    rgb_idle_remote(true, true);
+    effect(4, 2, 0, 0, 0, 0, 0, 0, still);
+    settle();
+    rgb_idle_remote_lost();
+    settle();
+    still_lit();
+    rgb_idle_remote(false, true);
+    settle();
+    still_lit();
+    release();
+    settle();
+    underglow_report();
+    rgb_idle_remote(true, true);
+    settle();
+    underglow_report();
     note("done");
 }
