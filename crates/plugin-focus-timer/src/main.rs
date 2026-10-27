@@ -190,7 +190,12 @@ fn main() {
             };
             let frame = art.frame(&view);
             for (id, _, _) in boards.iter().filter(|b| b.2) {
-                if let Err(e) = plugin.panel_hold(id, panel::W as u16, panel::H as u16, &frame) {
+                // Drawn at the info screen's own size (#560).
+                let Some(target) = plugin.panel_target(id) else {
+                    continue;
+                };
+                let fitted = target.fit(&frame, panel::W as u16, panel::H as u16);
+                if let Err(e) = plugin.panel_show(id, &target, &fitted, None) {
                     eprintln!("focus-timer: panel: {e}");
                 }
             }

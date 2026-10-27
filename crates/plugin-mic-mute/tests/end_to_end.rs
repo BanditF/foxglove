@@ -30,6 +30,12 @@ impl Devices for Mock {
                 "backend": "mock", "connected": true, "caps": ["lighting", "screens"]}]})
             }
             "lighting.lease" => json!({"lease": self.calls.lock().unwrap().len()}),
+            // #560: an info screen of another size than the Corne's, with its id.
+            "screens.list" => json!({"screens": [
+                {"id": 4, "role": "info", "name": "Info screen", "width": 128, "height": 32,
+                 "format": "1bit", "rotation": 0},
+                {"id": 5, "role": "art", "name": "Art screen", "width": 160, "height": 80,
+                 "format": "1bit", "rotation": 0}]}),
             _ => json!({}),
         })
     }
@@ -98,9 +104,14 @@ fn muted_is_red_and_held_and_a_key_unmutes() {
     assert_eq!(lease["priority"], "high");
     let panel = mock.wait("the muted screen", |m, _| m == "screens.panel_override");
     assert_eq!(
-        (panel["width"].clone(), panel["ttl_ms"].clone()),
-        (json!(64), json!(0)),
-        "held, not timed"
+        (
+            panel["width"].clone(),
+            panel["height"].clone(),
+            panel["screen"].clone(),
+            panel["ttl_ms"].clone()
+        ),
+        (json!(128), json!(32), json!(4), json!(0)),
+        "held, not timed, at the info screen's size (#560)"
     );
 
     // The bound key toggles: the plugin asks Foxglove to unmute.

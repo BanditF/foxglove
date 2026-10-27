@@ -462,6 +462,10 @@ pub struct BoardView {
     pub glow: Option<Color32>,
     pub left_label: String,
     pub right_label: String,
+    /// The info and art screens' shapes upright, from the keyboard's screens (#560); `None`
+    /// takes the firmware's.
+    pub panel_shape: Option<egui::Vec2>,
+    pub art_shape: Option<egui::Vec2>,
 }
 
 /// The board drawing's state from the cached keyboard state; nothing here asks the keyboard.
@@ -500,7 +504,10 @@ fn board_view(ctx: &egui::Context) -> BoardView {
         || second.clone(),
         |n| format!("{second} · {}", n.to_uppercase()),
     );
+    let screens = super::screen_roles::current();
     BoardView {
+        panel_shape: shape_of(screens.as_deref(), super::screen_roles::Role::Info),
+        art_shape: shape_of(screens.as_deref(), super::screen_roles::Role::Art),
         drawing,
         split: parts.is_split(),
         panel,
@@ -525,10 +532,26 @@ thread_local! {
     pub static LAST_HITS: std::cell::RefCell<Option<Hits>> = const { std::cell::RefCell::new(None) };
 }
 
-/// The screens' shapes as the device shows them (width, height): the left panel, and the right
-/// screen's art upright (tall: the art is stored turned, see `art_ui::thumbnail`).
-const PANEL_SHAPE: egui::Vec2 = egui::vec2(64.0, 52.0);
-const ART_SHAPE: egui::Vec2 = egui::vec2(68.0, 140.0);
+/// The screens' shapes when the keyboard doesn't say (width, height): the panel Foxglove's
+/// firmware draws, and its art screen upright.
+const PANEL_SHAPE: egui::Vec2 = egui::vec2(
+    super::screens::FIRMWARE_PANEL.0 as f32,
+    super::screens::FIRMWARE_PANEL.1 as f32,
+);
+const ART_SHAPE: egui::Vec2 = egui::vec2(
+    super::art_encode::ArtTarget::FIRMWARE.height as f32,
+    super::art_encode::ArtTarget::FIRMWARE.width as f32,
+);
+
+/// A screen's shape upright, as the user sees it (#560).
+fn shape_of(
+    screens: Option<&[super::screen_roles::Screen]>,
+    role: super::screen_roles::Role,
+) -> Option<egui::Vec2> {
+    let s = super::screen_roles::first(screens?, role)?;
+    let (w, h) = s.upright();
+    (w > 0 && h > 0).then(|| egui::vec2(f32::from(w), f32::from(h)))
+}
 const SCREEN_HEIGHT: f32 = 72.0;
 
 thread_local! {
@@ -567,7 +590,11 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
                 let right = i == 1;
                 let top = rect.top();
                 // The screen sits over the inner columns, as on the Corne, shaped like what it shows.
-                let shape = if right { ART_SHAPE } else { PANEL_SHAPE };
+                let shape = if right {
+                    v.art_shape.unwrap_or(ART_SHAPE)
+                } else {
+                    v.panel_shape.unwrap_or(PANEL_SHAPE)
+                };
                 let screen = egui::vec2(
                     (SCREEN_HEIGHT - 6.0) * shape.x / shape.y + 6.0,
                     SCREEN_HEIGHT,
@@ -861,6 +888,13 @@ pub mod tests {
             drawing: second_desk::board().drawing.unwrap(),
             split: false,
             left_label: "KEYBOARD · USB".into(),
+            // #560: its 128x32 info screen, drawn in its own shape.
+            panel_shape: shape_of(
+                Some(&crate::foxglove::screen_roles::of_board(
+                    &second_desk::board(),
+                )),
+                crate::foxglove::screen_roles::Role::Info,
+            ),
             ..Default::default()
         };
         let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
@@ -868,6 +902,11 @@ pub mod tests {
         let hits = LAST_HITS.take().unwrap();
         assert_eq!(hits.keys.len(), second_desk::LAMPS, "61 keys, drawn once");
         assert_eq!(hits.screens.len(), 1);
+        let screen = hits.screens[0];
+        assert!(
+            screen.width() > screen.height() * 3.0,
+            "a 4:1 info screen, not the Corne's: {screen:?}"
+        );
     }
 
     /// The sample the previews draw: both halves seen, the right one not answering yet.
@@ -931,6 +970,8 @@ pub mod tests {
             glow: Some(Color32::from_rgb(0xf0, 0x8a, 0x3c)),
             left_label: "LEFT · USB".into(),
             right_label: "RIGHT · HEARTH".into(),
+            panel_shape: None,
+            art_shape: None,
         }
     }
 

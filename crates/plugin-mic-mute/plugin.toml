@@ -5,7 +5,7 @@ api = "1.2"
 run = ["mic-mute.exe"]
 permissions = ["audio.inputs.read", "audio.inputs.mute", "devices.read", "lighting.write", "screens.write"]
 provides = ["lighting-effect", "action"]
-description = "Shows whether your microphone is muted, red on the keyboard and MUTED on the left screen, and mutes or unmutes it from a key. This is Windows' mute for the default communications microphone; apps can still mute themselves."
+description = "Shows whether your microphone is muted, red on the keyboard and MUTED on the keyboard's info screen, and mutes or unmutes it from a key. This is Windows' mute for the default communications microphone; apps can still mute themselves."
 
 [[actions]]
 id = "toggle"

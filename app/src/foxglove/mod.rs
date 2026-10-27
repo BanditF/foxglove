@@ -86,6 +86,7 @@ pub mod scene_room;
 pub mod scene_run;
 pub mod scene_triggers;
 pub mod scenes_ui;
+pub mod screen_roles;
 pub mod screens;
 mod screens_settings;
 pub mod screens_ui;

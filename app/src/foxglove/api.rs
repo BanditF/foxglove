@@ -266,6 +266,16 @@ impl Devices for AppDevices {
                         message: e.to_string(),
                         data: None,
                     })?;
+                // API 1.4: a screen id must be an info screen Foxglove draws (the first one;
+                // a second info screen isn't driven yet). No id: the first, as before.
+                if let Some(id) = p.screen {
+                    let screens = super::screen_roles::current().unwrap_or_default();
+                    check_panel_screen(&screens, id).map_err(|message| Error {
+                        code: code::INVALID_PARAMS,
+                        message,
+                        data: None,
+                    })?;
+                }
                 let bits = base64::engine::general_purpose::STANDARD
                     .decode(&p.bitmap)
                     .map_err(|e| Error {
@@ -300,6 +310,16 @@ impl Devices for AppDevices {
 
     fn call(&self, method: &str, _params: Value) -> Result<Value, Error> {
         match method {
+            "screens.list" => {
+                let p: methods::DeviceParams = params(_params)?;
+                // The host-link keyboard's screens; a VIA keyboard has none Foxglove knows.
+                if !keyboard().is_some_and(|d| d.info().id.to_string() == p.device) {
+                    with_device(&p.device, |_| Ok(()))?;
+                    return Ok(json!(methods::Screens { screens: vec![] }));
+                }
+                let screens = super::screen_roles::current().unwrap_or_default();
+                Ok(json!(screens_list(&screens)))
+            }
             "devices.list" => {
                 let devices = keyboard()
                     .map(|d| {
@@ -413,6 +433,85 @@ impl Devices for AppDevices {
                 data: None,
             }),
         }
+    }
+}
+
+/// `screens.list` (API 1.4, #560): each screen by id, role, name and size.
+fn screens_list(screens: &[super::screen_roles::Screen]) -> methods::Screens {
+    methods::Screens {
+        screens: screens
+            .iter()
+            .map(|s| methods::ScreenInfo {
+                id: s.id,
+                role: s.role.api_name().into(),
+                name: s.name.clone(),
+                width: s.width,
+                height: s.height,
+                format: s.format.clone(),
+                rotation: s.rotation,
+            })
+            .collect(),
+    }
+}
+
+/// Whether a plugin may draw on screen `id`: the first info screen, the one Foxglove draws.
+fn check_panel_screen(screens: &[super::screen_roles::Screen], id: u8) -> Result<(), String> {
+    use super::screen_roles::Role;
+    match super::screen_roles::first(screens, Role::Info) {
+        Some(s) if s.id == id => Ok(()),
+        _ => match screens.iter().find(|s| s.id == id) {
+            Some(s) => Err(format!("{} isn't an info screen Foxglove draws", s.the())),
+            None => Err(format!("no screen {id}")),
+        },
+    }
+}
+
+#[cfg(test)]
+mod screens_tests {
+    use super::*;
+    use crate::foxglove::fixtures::{second_desk, users_desk};
+    use crate::foxglove::screen_roles::of_board;
+
+    /// #560: `screens.list` on the second desk's three screens, and which one plugins draw on.
+    #[test]
+    fn screens_list_names_each_screen_by_role_and_size() {
+        let plank = of_board(&second_desk::board());
+        let list = screens_list(&plank);
+        let got: Vec<_> = list
+            .screens
+            .iter()
+            .map(|s| (s.id, s.role.as_str(), s.name.as_str(), s.width, s.height))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (0, "info", "Info screen", 128, 32),
+                (1, "art", "Art screen", 160, 80),
+                (2, "display", "Display", 240, 135),
+            ]
+        );
+        assert_eq!(check_panel_screen(&plank, 0), Ok(()));
+        assert_eq!(
+            check_panel_screen(&plank, 1),
+            Err("the art screen isn't an info screen Foxglove draws".into())
+        );
+        assert_eq!(check_panel_screen(&plank, 9), Err("no screen 9".into()));
+        // The Corne: its info screen 64x52, its art screen stored turned.
+        let corne = screens_list(&of_board(&users_desk::board()));
+        assert_eq!(
+            (
+                corne.screens[0].width,
+                corne.screens[0].height,
+                corne.screens[1].rotation
+            ),
+            (64, 52, 1)
+        );
+        // An old plugin's call (no screen id) still parses.
+        let old: methods::PanelOverrideParams = serde_json::from_value(json!({
+            "device": "d", "width": 64, "height": 52, "bitmap": "", "ttl_ms": 0
+        }))
+        .unwrap();
+        assert_eq!(old.screen, None);
     }
 }
 

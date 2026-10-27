@@ -119,18 +119,19 @@ pub fn after_restart(showing: Showing, remembered: bool) -> Option<&'static str>
     })
 }
 
-/// The right half's own states (`RIGHT_STATES`), as a sentence for the Showing-now line.
-pub fn right_state_words(state: u8) -> &'static str {
+/// The art screen's own states (`RIGHT_STATES`), as a sentence for the Showing-now line.
+pub fn right_state_words(state: u8) -> String {
+    let art = super::screen_roles::the(super::screen_roles::Role::Art);
     match state {
-        0 => "Showing a piece that comes with the keyboard.",
-        1 => "Receiving a piece from this PC…",
-        2 => "Showing a piece sent from this PC.",
-        3 | 4 => "The last piece arrived damaged, so the right screen kept what it had.",
-        5 => "The last piece was too big for the right screen.",
-        6 => "Keeping a piece on the keyboard…",
-        7 => "Kept on the keyboard.",
-        8 => "The keyboard couldn't keep the last piece.",
-        _ => "The right screen is busy.",
+        0 => "Showing a piece that comes with the keyboard.".into(),
+        1 => "Receiving a piece from this PC…".into(),
+        2 => "Showing a piece sent from this PC.".into(),
+        3 | 4 => format!("The last piece arrived damaged, so {art} kept what it had."),
+        5 => format!("The last piece was too big for {art}."),
+        6 => "Keeping a piece on the keyboard…".into(),
+        7 => "Kept on the keyboard.".into(),
+        8 => "The keyboard couldn't keep the last piece.".into(),
+        _ => format!("{} is busy.", super::parts::upper_first(&art)),
     }
 }
 
@@ -278,7 +279,10 @@ impl Problem {
                 again,
             ),
             Problem::RightAsleep => (
-                "The right half is asleep. Press any key on it, then:".into(),
+                format!(
+                    "{} is asleep. Press any key on it, then:",
+                    super::parts::upper_first(&super::parts::Parts::current().seen(2).the(1))
+                ),
                 None,
                 again,
             ),
@@ -288,13 +292,19 @@ impl Problem {
                 again,
             ),
             Problem::TooBig => (
-                format!("{name} is too big for the right screen."),
+                format!(
+                    "{name} is too big for {}.",
+                    super::screen_roles::the(super::screen_roles::Role::Art)
+                ),
                 Some("A piece can be at most 16 KiB.".into()),
                 None,
             ),
             Problem::Damaged => (
                 format!("{name} arrived damaged on the keyboard."),
-                Some("Nothing changed on the keyboard; the right screen kept what it had.".into()),
+                Some(format!(
+                    "Nothing changed on the keyboard; {} kept what it had.",
+                    super::screen_roles::the(super::screen_roles::Role::Art)
+                )),
                 again,
             ),
             Problem::LinkLost => (
@@ -322,7 +332,10 @@ impl Problem {
                 again,
             ),
             Problem::NotArt => (
-                format!("{name} isn't art for the right screen."),
+                format!(
+                    "{name} isn't art for {}.",
+                    super::screen_roles::the(super::screen_roles::Role::Art)
+                ),
                 Some("Foxglove shows .bin files made for it (see the art guide).".into()),
                 None,
             ),
@@ -369,7 +382,10 @@ pub fn strip(s: &Snapshot) -> Option<Strip> {
         let sending = matches!(job.kind, JobKind::Show | JobKind::Keep);
         let (text, progress) = match (job.kind, s.push_progress) {
             (JobKind::Show | JobKind::Keep, Some((done, total))) => (
-                format!("Sending {name} to the right screen…"),
+                format!(
+                    "Sending {name} to {}…",
+                    super::screen_roles::the(super::screen_roles::Role::Art)
+                ),
                 Some(if total == 0 {
                     0.0
                 } else {
@@ -403,9 +419,15 @@ pub fn strip(s: &Snapshot) -> Option<Strip> {
                     Some(Showing::Sent) => {
                         format!("{name} is showing until the keyboard restarts (not kept).")
                     }
-                    _ => format!("{name} is on the right screen."),
+                    _ => format!(
+                        "{name} is on {}.",
+                        super::screen_roles::the(super::screen_roles::Role::Art)
+                    ),
                 },
-                JobKind::Keep => format!("{name} is on the right screen and kept on the keyboard."),
+                JobKind::Keep => format!(
+                    "{name} is on {} and kept on the keyboard.",
+                    super::screen_roles::the(super::screen_roles::Role::Art)
+                ),
                 JobKind::Remove => format!("{name} is no longer kept on the keyboard."),
                 JobKind::Read => return None,
             };
@@ -535,7 +557,7 @@ mod tests {
                 assert!(!words.contains(raw), "{raw} leaks into {words}");
             }
         }
-        assert_eq!(right_state_words(200), "The right screen is busy.");
+        assert_eq!(right_state_words(200), "The art screen is busy.");
     }
 
     #[test]
@@ -692,7 +714,7 @@ mod tests {
             ..Default::default()
         };
         let sending = strip(&s).unwrap();
-        assert_eq!(sending.text, "Sending Uplink to the right screen…");
+        assert_eq!(sending.text, "Sending Uplink to the art screen…");
         assert_eq!(sending.progress, Some(0.6));
         assert_eq!(sending.button, Some(Button::Cancel));
         s.push_progress = None;
@@ -717,7 +739,7 @@ mod tests {
         );
         assert_eq!(done.tone, Tone::Warn);
         s.status = Some(st(0, 3));
-        assert_eq!(strip(&s).unwrap().text, "Uplink is on the right screen.");
+        assert_eq!(strip(&s).unwrap().text, "Uplink is on the art screen.");
         if let Some(old) = Instant::now().checked_sub(DONE_FOR + Duration::from_secs(1)) {
             s.outcome.as_mut().unwrap().at = old;
             assert_eq!(strip(&s), None, "a success line fades");
@@ -736,10 +758,7 @@ mod tests {
         s.busy = true;
         s.job = Some(job(JobKind::Keep));
         s.push_progress = Some((500, 1000));
-        assert_eq!(
-            strip(&s).unwrap().text,
-            "Sending Uplink to the right screen…"
-        );
+        assert_eq!(strip(&s).unwrap().text, "Sending Uplink to the art screen…");
         s.push_progress = None;
         let saving = strip(&s).unwrap();
         assert_eq!(saving.text, "Keeping Uplink on the keyboard…");
@@ -758,7 +777,7 @@ mod tests {
         let kept = strip(&s).unwrap();
         assert_eq!(
             kept.text,
-            "Uplink is on the right screen and kept on the keyboard."
+            "Uplink is on the art screen and kept on the keyboard."
         );
         assert_eq!(kept.tone, Tone::Ok);
 

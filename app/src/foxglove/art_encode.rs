@@ -2,25 +2,69 @@
 //! `scripts/flipper_art.py` does, so the art library can list and push source folders such as
 //! `art-src\bandit\out\Bandit_idle` without Python (#59).
 //!
-//! Same rules as the script: each frame is fitted upright into 68x140 (never upscaled, centred),
-//! thresholded at 50% (white = a set bit; the keyboard shows black source pixels lit), stored
-//! turned 90° clockwise, and each unique frame is an RLE-packed XOR delta against the previous one.
+//! Same rules as the script: each frame is fitted upright into the art screen (never upscaled,
+//! centred), thresholded at 50% (white = a set bit; the keyboard shows black source pixels lit),
+//! stored turned as the screen is mounted, and each unique frame is an RLE-packed XOR delta
+//! against the previous one. The screen's size and turn come from its descriptor (#560).
 
 use std::path::Path;
 
 use image::{imageops, GrayImage, Luma};
 
-/// The stored buffer: 140 wide, 68 high (the upright art is 68x140).
-const ART_W: u32 = 140;
-const ART_H: u32 = 68;
+/// The art screen a set is made for (#560): its stored buffer's size, and how many quarter turns
+/// clockwise the upright art is turned to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArtTarget {
+    pub width: u32,
+    pub height: u32,
+    pub rotation: u8,
+}
+
+impl ArtTarget {
+    /// The art format Foxglove's firmware builds today, for a keyboard that doesn't describe its
+    /// art screen: 140x68 stored, mounted on its side (other sizes on the firmware: #340).
+    pub const FIRMWARE: ArtTarget = ArtTarget {
+        width: 140,
+        height: 68,
+        rotation: 1,
+    };
+
+    /// The target for a described art screen; `None` past what a blob's header holds (255).
+    pub fn of(screen: &super::screen_roles::Screen) -> Option<ArtTarget> {
+        let fits = |v: u16| (1..=255).contains(&v);
+        (fits(screen.width) && fits(screen.height)).then(|| ArtTarget {
+            width: u32::from(screen.width),
+            height: u32::from(screen.height),
+            rotation: screen.rotation % 4,
+        })
+    }
+
+    /// The connected keyboard's art screen, else [`ArtTarget::FIRMWARE`].
+    pub fn current() -> ArtTarget {
+        super::screen_roles::current()
+            .as_deref()
+            .and_then(|s| super::screen_roles::first(s, super::screen_roles::Role::Art))
+            .and_then(ArtTarget::of)
+            .unwrap_or(ArtTarget::FIRMWARE)
+    }
+
+    /// The art's size upright, as drawn.
+    fn upright(self) -> (u32, u32) {
+        if self.rotation % 2 == 1 {
+            (self.height, self.width)
+        } else {
+            (self.width, self.height)
+        }
+    }
+}
 
 /// A folder holds one set when it has a `meta.txt`.
 pub fn is_set(folder: &Path) -> bool {
     folder.join("meta.txt").is_file()
 }
 
-/// The folder's frames encoded as one pushable blob.
-pub fn encode_folder(folder: &Path) -> Result<Vec<u8>, String> {
+/// The folder's frames encoded as one pushable blob for `target`.
+pub fn encode_folder(folder: &Path, target: ArtTarget) -> Result<Vec<u8>, String> {
     let meta =
         std::fs::read_to_string(folder.join("meta.txt")).map_err(|e| format!("meta.txt: {e}"))?;
     let value = |key: &str| {
@@ -51,17 +95,17 @@ pub fn encode_folder(folder: &Path) -> Result<Vec<u8>, String> {
         let img = image::open(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .to_luma8();
-        let stored = to_bytes(&stored(&img));
+        let stored = to_bytes(&stored(&img, target), target);
         cache.push((i, stored.clone()));
         frames.push(stored);
     }
-    encode(&frames, fps)
+    encode(&frames, fps, target)
 }
 
-/// Fits upright art into 68x140 (as flipper_art's `fit`), thresholds it and turns it to the
+/// Fits upright art into the target (as flipper_art's `fit`), thresholds it and turns it to the
 /// stored orientation.
-fn stored(img: &GrayImage) -> GrayImage {
-    let (uw, uh) = (ART_H, ART_W);
+fn stored(img: &GrayImage, target: ArtTarget) -> GrayImage {
+    let (uw, uh) = target.upright();
     let mut img = img.clone();
     if img.width() > uw || img.height() > uh {
         let scale = f64::min(
@@ -82,13 +126,18 @@ fn stored(img: &GrayImage) -> GrayImage {
     for p in canvas.pixels_mut() {
         p.0[0] = if p.0[0] >= 128 { 255 } else { 0 };
     }
-    imageops::rotate90(&canvas)
+    match target.rotation % 4 {
+        1 => imageops::rotate90(&canvas),
+        2 => imageops::rotate180(&canvas),
+        3 => imageops::rotate270(&canvas),
+        _ => canvas,
+    }
 }
 
 /// Rows MSB first, a set bit for white (flipper_art's `to_lvgl_bytes`).
-fn to_bytes(img: &GrayImage) -> Vec<u8> {
-    let stride = ART_W.div_ceil(8) as usize;
-    let mut out = vec![0u8; stride * ART_H as usize];
+fn to_bytes(img: &GrayImage, target: ArtTarget) -> Vec<u8> {
+    let stride = target.width.div_ceil(8) as usize;
+    let mut out = vec![0u8; stride * target.height as usize];
     for (x, y, p) in img.enumerate_pixels() {
         if p.0[0] != 0 {
             out[y as usize * stride + x as usize / 8] |= 0x80 >> (x % 8);
@@ -133,8 +182,14 @@ fn rle(data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// One set as a blob: header, play order, delta offsets, deltas (art_relay.h).
-pub fn encode(frames: &[Vec<u8>], fps: u8) -> Result<Vec<u8>, String> {
+/// One set as a blob for `target`: header, play order, delta offsets, deltas (art_relay.h).
+pub fn encode(frames: &[Vec<u8>], fps: u8, target: ArtTarget) -> Result<Vec<u8>, String> {
+    let (Ok(w), Ok(h)) = (u8::try_from(target.width), u8::try_from(target.height)) else {
+        return Err(format!(
+            "a {}x{} screen is bigger than a blob describes",
+            target.width, target.height
+        ));
+    };
     let mut unique: Vec<&Vec<u8>> = Vec::new();
     let mut order = Vec::with_capacity(frames.len());
     for f in frames {
@@ -157,7 +212,7 @@ pub fn encode(frames: &[Vec<u8>], fps: u8) -> Result<Vec<u8>, String> {
         })
         .collect();
     let mut blob = b"NVA1".to_vec();
-    blob.extend_from_slice(&[ART_W as u8, ART_H as u8, fps, 0]);
+    blob.extend_from_slice(&[w, h, fps, 0]);
     blob.extend_from_slice(&(deltas.len() as u16).to_le_bytes());
     blob.extend_from_slice(&(order.len() as u16).to_le_bytes());
     blob.extend_from_slice(&order);
@@ -201,8 +256,9 @@ mod tests {
                 up.put_pixel(x, y, Luma([0]));
             }
         }
-        let f = to_bytes(&stored(&up));
-        let blob = encode(&[f.clone(), f], 4).unwrap();
+        let corne = ArtTarget::FIRMWARE;
+        let f = to_bytes(&stored(&up, corne), corne);
+        let blob = encode(&[f.clone(), f], 4, corne).unwrap();
         assert_eq!(&blob[..8], b"NVA1\x8c\x44\x04\x00");
         assert_eq!(
             u16::from_le_bytes([blob[8], blob[9]]),
@@ -215,5 +271,75 @@ mod tests {
         // upright (5, 10) is stored at column 139 - 10, row 5; black source = a clear bit
         assert_eq!(img.pixels[5 * 140 + (139 - 10)], egui::Color32::BLACK);
         assert_eq!(img.pixels[50 * 140 + 50], egui::Color32::WHITE);
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+    use crate::foxglove::fixtures::{second_desk, users_desk};
+    use crate::foxglove::screen_roles::{first, of_board, Role};
+
+    /// A folder of one frame: a white canvas with a black square at upright (5..15, 10..20).
+    fn folder(name: &str, w: u32, h: u32) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("foxglove-art-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("meta.txt"), "Frame rate: 4\nFrames order: 0 0\n").unwrap();
+        let mut img = GrayImage::from_pixel(w, h, Luma([255]));
+        for y in 10..20 {
+            for x in 5..15 {
+                img.put_pixel(x, y, Luma([0]));
+            }
+        }
+        img.save(d.join("frame_0.png")).unwrap();
+        d
+    }
+
+    /// #560: the Corne's art screen from its profile is the firmware's format, byte for byte.
+    #[test]
+    fn the_cornes_art_screen_encodes_as_before() {
+        let corne = of_board(&users_desk::board());
+        let target = ArtTarget::of(first(&corne, Role::Art).unwrap()).unwrap();
+        assert_eq!(target, ArtTarget::FIRMWARE);
+        let d = folder("corne", 68, 140);
+        let blob = encode_folder(&d, target).unwrap();
+        assert_eq!(&blob[..6], b"NVA1\x8c\x44");
+        let img = super::super::art_preview::first_frame(&blob).unwrap();
+        assert_eq!(img.size, [140, 68]);
+        assert_eq!(img.pixels[5 * 140 + (139 - 10)], egui::Color32::BLACK);
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// #560: the second desk's 160x80 art screen, upright: the set is made at its size, not
+    /// turned, and the header says so.
+    #[test]
+    fn a_wide_upright_art_screen_gets_art_at_its_size() {
+        let plank = of_board(&second_desk::board());
+        let target = ArtTarget::of(first(&plank, Role::Art).unwrap()).unwrap();
+        assert_eq!(
+            target,
+            ArtTarget {
+                width: 160,
+                height: 80,
+                rotation: 0
+            }
+        );
+        let d = folder("plank", 160, 80);
+        let blob = encode_folder(&d, target).unwrap();
+        assert_eq!(&blob[..6], b"NVA1\xa0\x50");
+        let img = super::super::art_preview::first_frame(&blob).unwrap();
+        assert_eq!(img.size, [160, 80]);
+        // Upright: the square is where it was drawn.
+        assert_eq!(img.pixels[12 * 160 + 7], egui::Color32::BLACK);
+        assert_eq!(img.pixels[50 * 160 + 100], egui::Color32::WHITE);
+        // Too big for a blob's header: refused, not cut.
+        let huge = ArtTarget {
+            width: 320,
+            height: 80,
+            rotation: 0,
+        };
+        assert!(encode(&[vec![0; 40 * 80]], 1, huge).is_err());
+        let _ = std::fs::remove_dir_all(d);
     }
 }

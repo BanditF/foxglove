@@ -5,7 +5,7 @@
     {
       "id": "org.foxglove.focus-timer",
       "name": "Pomodoro",
-      "description": "A focus timer on the left screen and the underglow: focus, short rests and a long rest every four rounds, with keys to pause and restart.",
+      "description": "A focus timer on the keyboard's info screen and the underglow: focus, short rests and a long rest every four rounds, with keys to pause and restart.",
       "permissions": [
         "devices.read",
         "lighting.write",
@@ -16,7 +16,7 @@
     {
       "id": "org.foxglove.mic-mute",
       "name": "Mic mute",
-      "description": "Shows whether your microphone is muted, red on the keyboard and MUTED on the left screen, and mutes or unmutes it from a key.",
+      "description": "Shows whether your microphone is muted, red on the keyboard and MUTED on the keyboard's info screen, and mutes or unmutes it from a key.",
       "permissions": [
         "audio.inputs.read",
         "audio.inputs.mute",
@@ -28,7 +28,7 @@
     {
       "id": "org.foxglove.broadcast-status",
       "name": "Broadcast Status",
-      "description": "Shows whether OBS is recording or streaming, REC or LIVE and the scene on the left screen and red on the keyboard. It only listens to OBS on this PC.",
+      "description": "Shows whether OBS is recording or streaming, REC or LIVE and the scene on the keyboard's info screen and red on the keyboard. It only listens to OBS on this PC.",
       "permissions": [
         "net.connect:127.0.0.1:4455",
         "apps.watch:obs64.exe",

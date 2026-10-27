@@ -180,10 +180,11 @@ pub struct InvokeParams {
     pub param2: u32,
 }
 
-/// Draws over the left panel until `ttl_ms` passes (at most 60 000), then the panel goes back
-/// to what Foxglove draws. `ttl_ms` 0 holds it until the plugin replaces it, releases it
-/// (`screens.panel_release`) or its connection closes (API 1.3), so a steady screen needs no
-/// re-sending (#281). A later override replaces an earlier one.
+/// Draws over an info screen (the panel the PC draws) until `ttl_ms` passes (at most 60 000),
+/// then it goes back to what Foxglove draws. `ttl_ms` 0 holds it until the plugin replaces it,
+/// releases it (`screens.panel_release`) or its connection closes (API 1.3), so a steady screen
+/// needs no re-sending (#281). A later override replaces an earlier one. `width` and `height`
+/// are the screen's, from `screens.list` (API 1.4).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PanelOverrideParams {
     pub device: String,
@@ -192,6 +193,34 @@ pub struct PanelOverrideParams {
     /// 1 bit per pixel, rows MSB first, padded to whole bytes, 1 = ink; base64.
     pub bitmap: String,
     pub ttl_ms: u32,
+    /// The info screen to draw on, by its `screens.list` id (API 1.4). Absent: the keyboard's
+    /// first info screen, as before 1.4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen: Option<u8>,
+}
+
+/// One of a device's screens (API 1.4, #560), named by what it is for, never by side.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ScreenInfo {
+    /// The id `screens.panel_override` takes.
+    pub id: u8,
+    /// `info` (the panel the PC draws; plugins draw here), `art` (where art plays) or `display`
+    /// (one the keyboard's firmware draws itself).
+    pub role: String,
+    /// What Foxglove calls it: "Info screen", "Art screen", or the board profile's name.
+    pub name: String,
+    /// As the screen stores its picture.
+    pub width: u16,
+    pub height: u16,
+    /// `1bit`; frames for other formats aren't taken yet.
+    pub format: String,
+    /// Quarter turns clockwise from upright to how it's stored (an art screen on its side: 1).
+    pub rotation: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Screens {
+    pub screens: Vec<ScreenInfo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -531,6 +560,14 @@ pub const METHODS: &[Method] = &[
         permission: Some("behaviors.invoke"),
         params: schema!(InvokeParams),
         result: Some(schema!(Empty)),
+    },
+    // A device's screens by role, id and size (API 1.4, #560).
+    Method {
+        name: "screens.list",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(DeviceParams),
+        result: Some(schema!(Screens)),
     },
     Method {
         name: "screens.panel_override",

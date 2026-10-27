@@ -126,14 +126,16 @@ fn details(ui: &mut egui::Ui, snap: &Snapshot) {
             ScreenKind::Art => "art area",
             ScreenKind::Other(_) => "other",
         };
-        let half = if s.half == 0 { "left" } else { "right" };
+        let part = super::parts::Parts::current()
+            .seen(usize::from(s.half) + 1)
+            .lower(usize::from(s.half));
         let on = s.parent.map_or(String::new(), |p| {
             format!(" at ({}, {}) on screen {p}", s.x, s.y)
         });
         line(
             ui,
             format!(
-                "Screen {}: {half} {kind}, {}×{}, {}{on}",
+                "Screen {}: {kind} on the {part}, {}×{}, {}{on}",
                 s.id,
                 s.width,
                 s.height,

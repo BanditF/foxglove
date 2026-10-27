@@ -105,11 +105,13 @@ impl Out {
         };
         let frame = art.frame(*state, scene.as_deref());
         for (id, _, _) in keyboards(plugin).into_iter().filter(|k| k.2) {
-            let sent = if state.hold() {
-                plugin.panel_hold(&id, screens::W, screens::H, &frame)
-            } else {
-                plugin.panel_override(&id, screens::W, screens::H, &frame, screens::BRIEF)
+            // Drawn at the info screen's own size (#560).
+            let Some(target) = plugin.panel_target(&id) else {
+                continue;
             };
+            let fitted = target.fit(&frame, screens::W, screens::H);
+            let ttl = (!state.hold()).then_some(screens::BRIEF);
+            let sent = plugin.panel_show(&id, &target, &fitted, ttl);
             if let Err(e) = sent {
                 eprintln!("broadcast-status: panel: {e}");
             }
