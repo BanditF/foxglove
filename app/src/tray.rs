@@ -102,7 +102,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
                         // Foxglove (#485, #488): lights and a scene's right art back, while
                         // the art service still runs to put the art back.
                         crate::foxglove::scenes_ui::quitting();
-                        crate::foxglove::scene_run::stop();
+                        crate::foxglove::scene_run::quit();
                         crate::foxglove::art_service::stop();
                         crate::foxglove::calibrate_ui::cancel(); // Foxglove: mid-calibration
                         process::exit(0)

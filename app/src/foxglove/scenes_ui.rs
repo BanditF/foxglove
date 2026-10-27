@@ -63,6 +63,8 @@ pub struct View {
     pub triggers: Triggers,
     /// The active profile's name, as the picker says it.
     pub profile: String,
+    /// "Keep running on the keyboard" (#542): quitting leaves the scene's effect on it.
+    pub keep_on_keyboard: bool,
 }
 
 /// The Triggers card's three boxes (#489).
@@ -136,6 +138,8 @@ pub enum Intent {
     WithArt(bool),
     /// A Triggers box switched on or off.
     Trigger(Trigger, bool),
+    /// "Keep running on the keyboard" switched on or off.
+    KeepOnKeyboard(bool),
 }
 
 /// The page's own state between frames.
@@ -154,6 +158,8 @@ struct State {
     reload: bool,
     /// The preview's clock while no scene runs.
     clock: Clock,
+    /// "Keep running on the keyboard", as stored.
+    keep_on_keyboard: bool,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
@@ -214,6 +220,7 @@ fn show(ui: &mut egui::Ui) {
         on_screen: super::wallpaper::on_screen_ids(),
         triggers: Triggers::of(&st.chosen),
         profile: st.profile.clone().unwrap_or_else(|| "Base settings".into()),
+        keep_on_keyboard: st.keep_on_keyboard,
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
@@ -240,6 +247,7 @@ fn refresh(slot: &mut Option<State>, frame: u64) -> &mut State {
         last_frame: 0,
         reload: false,
         clock: Clock::starting_now(),
+        keep_on_keyboard: super::scene_run::keep().on_quit,
     });
     if st.profile != profile || std::mem::take(&mut st.reload) {
         st.profile = profile;
@@ -403,6 +411,10 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
             }
             looks::save_chosen(&st.chosen);
             super::scene_triggers::set_flags(&st.chosen);
+        }
+        Intent::KeepOnKeyboard(on) => {
+            st.keep_on_keyboard = on;
+            super::scene_run::set_keep_on_quit(on);
         }
         Intent::SavePreset(name) => {
             if st.saved.save(&name, &st.chosen.look) {
@@ -582,6 +594,15 @@ fn triggers_card(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
         "Changing layer sends one sweep across the room in that layer's overlay colour.",
     );
     ui.weak("Ripples and sweeps show while a scene runs.");
+    ui.add_space(4.0);
+    let mut keep = v.keep_on_keyboard;
+    if ui
+        .checkbox(&mut keep, "Keep running on the keyboard")
+        .on_hover_text("When you quit Foxglove, the keyboard keeps drawing the scene by itself. Needs keyboard firmware that draws effects (scanline, sweep, ripple, breathe). Off: quitting gives the keyboard its own lights back.")
+        .changed()
+    {
+        out.push(Intent::KeepOnKeyboard(keep));
+    }
 }
 
 /// Start or Stop with the scene's state, the map, and what the scene lights.
@@ -1270,6 +1291,7 @@ pub(crate) mod tests {
                 sweep_layers: false,
             },
             profile: "Game".into(),
+            keep_on_keyboard: false,
         }
     }
 
@@ -1295,6 +1317,7 @@ pub(crate) mod tests {
             on_screen: vec![],
             triggers: Triggers::default(),
             profile: "Base settings".into(),
+            keep_on_keyboard: false,
         }
     }
 

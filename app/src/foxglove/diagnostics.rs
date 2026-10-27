@@ -128,6 +128,11 @@ fn capability_names(bits: u32) -> String {
         (c::BUILD_INFO, "BUILD_INFO"),
         (c::SCREENS, "SCREENS"),
         (c::PANEL_HOLD, "PANEL_HOLD"),
+        (c::FRAMES, "FRAMES"),
+        (c::LEFT_BATTERY, "LEFT_BATTERY"),
+        (c::BATTERY_DIM, "BATTERY_DIM"),
+        (c::EFFECTS, "EFFECTS"),
+        (c::RIGHT_EVENTS, "RIGHT_EVENTS"),
     ];
     let mut names: Vec<String> = named
         .iter()

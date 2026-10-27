@@ -15,6 +15,24 @@
 //!   next scene frame once the lease shows again, and after the keyboard's own hand-back (its
 //!   30 s timeout under a still scene, seen as the D7 8C event), never on a timer. Firmware
 //!   without the bit gets the one colour as before. The battery dim is the firmware's.
+//! - With SET_EFFECT (HELLO bit 19, #542) the keyboard draws the scene itself: PLACE (the room
+//!   and both halves, mm) and EFFECT go once, with the effect's clock set from the scene's
+//!   epoch at the moment it is sent, so the halves, the case and the wallpapers share a phase.
+//!   No keyboard frames go out while it runs. It is sent on start, on a look change, after the
+//!   room changes, after a reconnect or HELLO, and when the scene's lease shows again; it is
+//!   handed back wherever frames are (`Lighting::release` ends both), so the rules are:
+//!
+//!   | Event | The keyboard's effect |
+//!   |---|---|
+//!   | Stop (Scenes page, a profile without the scene, the time limit) | released: the lights from before the scene |
+//!   | Pause | released; resuming sends it again |
+//!   | Away (locked, display off) | released; coming back sends it again |
+//!   | A notification lease (mic mute) | released under it; sent again after |
+//!   | Profile switch keeping the scene | the new look replaces it, no release in between |
+//!   | Quit | released, unless "Keep running on the keyboard" ([`KeyboardKeep`], off by default) is on and the effect is showing: it stays, and the next lights change from Foxglove hands it back |
+//!
+//!   Scenes that don't map (gradient, noise), and ripples or sweeps over a scene (#489), use
+//!   frames while they show. Copy diagnostics says which path the keyboard got.
 //! - The case: the Lights worker keeps each board's colours from before the scene and puts them
 //!   back at its end; Identify still runs (the worker does one thing at a time, and frames that
 //!   wait meanwhile collapse to the newest); colours the user picks meanwhile are what comes back.
@@ -36,12 +54,14 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use digitalis::protocol::MmRect;
 use foxglove_devices::{DeviceError, Lighting};
 use foxglove_scene::scheduler::{Gate, Scheduler, MIN_INTERVAL};
 use foxglove_scene::{Clock, Effect, Rgb};
+use serde::{Deserialize, Serialize};
 
 use super::lighting_leases::{Arbiter, Lease, Priority};
-use super::scene_output::{CaseTarget, Hsb, KeyboardFrame, Out, Outputs};
+use super::scene_output::{CaseTarget, Hsb, KeyboardEffect, KeyboardFrame, Out, Outputs};
 
 /// The lighting-lease connection a scene holds the keyboard under (no plugin has it: plugin
 /// connections count up from 1).
@@ -73,6 +93,68 @@ pub fn demo_seconds(value: &str) -> Duration {
         .filter(|s| (5..=600).contains(s))
         .unwrap_or(30);
     Duration::from_secs(secs)
+}
+
+/// The store section for [`KeyboardKeep`] (not profiled: it is about quitting).
+pub const KEEP_SECTION: &str = "scene_keyboard";
+
+/// `[scene_keyboard]`: what quitting does to a scene's effect on the keyboard (#542).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct KeyboardKeep {
+    /// "Keep running on the keyboard": quitting leaves the scene's effect running on it. Off by
+    /// default: quitting gives the keyboard its own lights back.
+    pub on_quit: bool,
+    /// Quitting left an effect running: the next lights change from Foxglove hands it back.
+    pub left_running: bool,
+}
+
+/// The keep setting as stored (defaults when the store can't be read).
+pub fn keep() -> KeyboardKeep {
+    super::store::try_load(KEEP_SECTION).unwrap_or_default()
+}
+
+fn save_keep(k: KeyboardKeep) {
+    if let Err(e) = super::store::save(KEEP_SECTION, &k) {
+        eprintln!("Foxglove: can't save [{KEEP_SECTION}]: {e}");
+    }
+}
+
+/// The Scenes page's "Keep running on the keyboard" box.
+pub fn set_keep_on_quit(on: bool) {
+    save_keep(KeyboardKeep {
+        on_quit: on,
+        ..keep()
+    });
+}
+
+/// Before Foxglove changes the keyboard's lights itself (the Lights page): an effect a quit
+/// left running would hide the change, so it is handed back first. Once: the mark goes with it.
+pub fn release_left_effect(kb: &digitalis::devices::DigitalisDevice) {
+    let k = keep();
+    if !k.left_running || running().is_some() {
+        return;
+    }
+    if kb.effects() {
+        if let Err(e) = kb.release_effect() {
+            eprintln!("Foxglove: handing back the effect left on the keyboard: {e}");
+            return;
+        }
+    }
+    save_keep(KeyboardKeep {
+        left_running: false,
+        ..k
+    });
+}
+
+/// Set by [`quit`]: the scene ends because Foxglove quits.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// Foxglove quits: the running scene ends as [`stop`] does, except that the keyboard keeps an
+/// effect it is showing when the user ticked "Keep running on the keyboard".
+pub fn quit() {
+    QUITTING.store(true, Ordering::Relaxed);
+    stop();
 }
 
 /// What a running scene's control thread hears.
@@ -135,9 +217,10 @@ struct Status {
     started: Option<Instant>,
     case_frames: u64,
     keyboard_frames: u64,
-    /// The keyboard draws SET_FRAME frames (`Some(true)`), takes one colour (`Some(false)`), or
-    /// hasn't been sent anything yet.
-    keyboard_frames_mode: Option<bool>,
+    /// Effects sent to the keyboard (SET_EFFECT).
+    keyboard_effects: u64,
+    /// The path the keyboard got last, or `None` before anything was sent.
+    keyboard_path: Option<KeyboardPath>,
     /// The keyboard's own hand-backs (D7 8C events) seen.
     hand_backs: u64,
     last: Option<String>,
@@ -148,10 +231,22 @@ static STATUS: Mutex<Status> = Mutex::new(Status {
     started: None,
     case_frames: 0,
     keyboard_frames: 0,
-    keyboard_frames_mode: None,
+    keyboard_effects: 0,
+    keyboard_path: None,
     hand_backs: 0,
     last: None,
 });
+
+/// How the keyboard shows the scene (#542).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyboardPath {
+    /// It draws the effect itself (SET_EFFECT).
+    Effect,
+    /// SET_FRAME frames.
+    Frames,
+    /// One `&rgb_ug` colour.
+    OneColour,
+}
 
 fn status() -> std::sync::MutexGuard<'static, Status> {
     STATUS.lock().unwrap_or_else(|e| e.into_inner())
@@ -160,12 +255,16 @@ fn status() -> std::sync::MutexGuard<'static, Status> {
 /// One line for Copy diagnostics.
 pub fn summary() -> String {
     let s = status().clone();
-    let keyboard = match s.keyboard_frames_mode {
-        Some(true) => format!(
-            "{} keyboard frames (SET_FRAME, {} hand-backs)",
-            s.keyboard_frames, s.hand_backs
+    let keyboard = match s.keyboard_path {
+        Some(KeyboardPath::Effect) => format!(
+            "keyboard: effect (SET_EFFECT, {} sent; {} frames)",
+            s.keyboard_effects, s.keyboard_frames
         ),
-        _ => format!("{} keyboard colours", s.keyboard_frames),
+        Some(KeyboardPath::Frames) => format!(
+            "keyboard: frames ({} SET_FRAME, {} hand-backs; {} effects)",
+            s.keyboard_frames, s.hand_backs, s.keyboard_effects
+        ),
+        _ => format!("keyboard: one colour ({} colours)", s.keyboard_frames),
     };
     let sent = format!("{} case frames, {keyboard}", s.case_frames);
     match (&s.name, s.started) {
@@ -335,11 +434,14 @@ fn control(
     // The room as last placed, for the wallpapers when the look changes.
     let mut placed = room.clone();
     let outputs = Arc::new(Mutex::new(Outputs::new(effect, room, cases)));
-    let again = outputs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .keyboard_again();
-    let keyboard = KeyboardOut::spawn(Box::new(AppKeyboard::new(again.clone())));
+    let (again, effects) = {
+        let o = outputs.lock().unwrap_or_else(|e| e.into_inner());
+        (o.keyboard_again(), o.keyboard_effects())
+    };
+    // What the keyboard found last says (the writer corrects it), so the first send is
+    // already the effect rather than a frame.
+    effects.store(super::devices::effects(), Ordering::Relaxed);
+    let keyboard = KeyboardOut::spawn(Box::new(AppKeyboard::new(again.clone(), effects, clock)));
     let frames = outputs.clone();
     let mailbox = keyboard.mailbox.clone();
     let scheduler = Scheduler::new(clock, MIN_INTERVAL, move |t| {
@@ -467,7 +569,8 @@ fn send(outs: Vec<Out>, keyboard: &Mailbox) {
                 status().case_frames += 1;
                 super::pc_lights::send(super::pc_lights::Msg::SceneFrame { key, colors });
             }
-            Out::Keyboard(f) => keyboard.post(f),
+            Out::Keyboard(f) => keyboard.post(Draw::Frame(f)),
+            Out::KeyboardEffect(e) => keyboard.post(Draw::Effect(e)),
         }
     }
 }
@@ -489,17 +592,24 @@ fn pump(rx: &mpsc::Receiver<Ctl>, until: Option<Instant>, mut on: impl FnMut(Ctl
     }
 }
 
+/// What the keyboard is sent: a frame, or the effect it draws itself.
+#[derive(Clone, Debug, PartialEq)]
+enum Draw {
+    Frame(KeyboardFrame),
+    Effect(KeyboardEffect),
+}
+
 /// What the keyboard writer does next.
 #[derive(Debug, PartialEq)]
 enum Job {
-    Show(KeyboardFrame),
-    /// Hand the frames back (the user is away).
+    Show(Draw),
+    /// Hand the frames (or the effect) back (the user is away).
     Release,
 }
 
 #[derive(Default)]
 struct Slot {
-    frame: Option<KeyboardFrame>,
+    frame: Option<Draw>,
     release: bool,
     closed: bool,
 }
@@ -516,7 +626,7 @@ impl Mailbox {
         self.slot.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn post(&self, f: KeyboardFrame) {
+    fn post(&self, f: Draw) {
         self.lock().frame = Some(f);
         self.wake.notify_one();
     }
@@ -556,6 +666,8 @@ impl Mailbox {
 /// Where the keyboard's frames go: the app's lease-held keyboard, or a fake in tests.
 trait KeyboardLights: Send {
     fn show(&mut self, f: &KeyboardFrame);
+    /// The keyboard draws the scene itself from now on (SET_EFFECT).
+    fn effect(&mut self, e: &KeyboardEffect);
     /// Hand the frames back; the lease's colour shows.
     fn release_frames(&mut self);
     /// The scene ended: the lights from before it.
@@ -576,7 +688,8 @@ impl KeyboardOut {
         let thread = super::services::spawn_named("scene-keyboard", move || {
             while let Some(job) = mb.next() {
                 match job {
-                    Job::Show(f) => lights.show(&f),
+                    Job::Show(Draw::Frame(f)) => lights.show(&f),
+                    Job::Show(Draw::Effect(e)) => lights.effect(&e),
                     Job::Release => lights.release_frames(),
                 }
             }
@@ -608,6 +721,38 @@ struct KeyboardLease {
     sent_mix: Option<Hsb>,
     /// Frames that failed in a row (the keyboard refused or didn't answer).
     frame_errors: u32,
+    /// Effects that failed in a row.
+    effect_errors: u32,
+    /// The scene's effect is what the keyboard shows now (the last thing sent was it, and the
+    /// lease shows): what "Keep running on the keyboard" keeps on quit.
+    effect_on: bool,
+}
+
+/// Where the keyboard's effect goes: the host-link keyboard, or a fake in tests.
+trait EffectTarget {
+    /// EFFECT PLACE: the room's bounds and each half's place in it.
+    fn place(&self, room: MmRect, left: MmRect, right: MmRect) -> Result<(), DeviceError>;
+    /// EFFECT, with the keyboard's colour calibration on its colours.
+    fn run(&self, e: &digitalis::protocol::Effect) -> Result<(), DeviceError>;
+}
+
+impl EffectTarget for digitalis::devices::DigitalisDevice {
+    fn place(&self, room: MmRect, left: MmRect, right: MmRect) -> Result<(), DeviceError> {
+        self.place_effect(room, left, right).map(|_| ())
+    }
+    fn run(&self, e: &digitalis::protocol::Effect) -> Result<(), DeviceError> {
+        self.show_effect(e).map(|_| ())
+    }
+}
+
+/// What sending the effect came to.
+#[derive(Debug, PartialEq, Eq)]
+enum EffectSent {
+    /// It runs, or the lease doesn't show now (it is sent again when it does).
+    Done,
+    /// The keyboard takes no effects after all (refused, or failed [`FRAME_ERRORS`] times in a
+    /// row): frames from now on.
+    Frames,
 }
 
 /// After this many failed frames in a row (a second of them) the scene sends the keyboard one
@@ -628,11 +773,78 @@ impl KeyboardLease {
         f: &KeyboardFrame,
         again: &Arc<AtomicBool>,
     ) -> Result<(), DeviceError> {
-        let c = f.mix;
+        let draws = self.frames != Some(false);
+        if self.hold(a, device, light, f.mix, draws, again)? {
+            self.effect_on = false;
+            return self.draw(a, device, light, f);
+        }
+        Ok(())
+    }
+
+    /// The effect for a keyboard that draws it itself: the lease holds its colours' mix (what
+    /// shows when it is handed back), and while the lease shows, PLACE then EFFECT go out with
+    /// the clock read just before. PLACE goes each time, since a reboot forgets it.
+    #[allow(clippy::too_many_arguments)]
+    fn show_effect(
+        &mut self,
+        a: &mut Arbiter,
+        device: &str,
+        light: &dyn Lighting,
+        target: &dyn EffectTarget,
+        e: &KeyboardEffect,
+        clock: &Clock,
+        again: &Arc<AtomicBool>,
+    ) -> Result<EffectSent, DeviceError> {
+        if !self.hold(a, device, light, e.mix, true, again)? {
+            self.effect_on = false;
+            return Ok(EffectSent::Done);
+        }
+        let sent = target
+            .place(e.room, e.left, e.right)
+            .and_then(|()| target.run(&e.at(clock.now())));
+        match sent {
+            Ok(()) => {
+                self.effect_errors = 0;
+                self.effect_on = true;
+                a.frame_sent(device);
+                status().keyboard_path = Some(KeyboardPath::Effect);
+                Ok(EffectSent::Done)
+            }
+            Err(DeviceError::Unsupported) => {
+                self.effect_on = false;
+                Ok(EffectSent::Frames)
+            }
+            Err(err) => {
+                // It may run although the reply was lost: hand it back when needed.
+                a.frame_sent(device);
+                self.effect_on = false;
+                self.effect_errors += 1;
+                if self.effect_errors < FRAME_ERRORS {
+                    return Err(err);
+                }
+                eprintln!("Foxglove: {FRAME_ERRORS} scene effects failed ({err}); frames for the keyboard until the scene takes it again");
+                self.effect_errors = 0;
+                Ok(EffectSent::Frames)
+            }
+        }
+    }
+
+    /// Takes the lights (a low lease with `mix` as its colour: its snapshot, on, solid), or
+    /// changes the lease in place; true while it is the one showing and Foxglove isn't paused.
+    /// `draws`: the lease draws frames or an effect over its colour, which the arbiter hands
+    /// back before anything else shows and asks for again (`again`) when the lease shows again.
+    fn hold(
+        &mut self,
+        a: &mut Arbiter,
+        device: &str,
+        light: &dyn Lighting,
+        c: Hsb,
+        draws: bool,
+        again: &Arc<AtomicBool>,
+    ) -> Result<bool, DeviceError> {
         if let Some(id) = self.id {
             match a.update(id, SCENE_CONN, c.hue, c.sat, c.brightness, "0") {
-                Ok(Some(_)) => return self.draw(a, device, light, f),
-                Ok(None) => return Ok(()),
+                Ok(shows) => return Ok(shows.is_some()),
                 // Gone (the keyboard was another one): take it again.
                 Err(_) => *self = KeyboardLease::default(),
             }
@@ -651,14 +863,11 @@ impl KeyboardLease {
         self.id = Some(id);
         // The arbiter just showed the mix (when the lease is the one showing).
         self.sent_mix = Some(c);
-        if self.frames != Some(false) {
+        if draws {
             let again = again.clone();
             a.draws_frames(id, move || again.store(true, Ordering::Relaxed));
         }
-        if a.shows(id) {
-            return self.draw(a, device, light, f);
-        }
-        Ok(())
+        Ok(a.shows(id))
     }
 
     /// Sends the frame to a keyboard the lease shows on.
@@ -684,14 +893,14 @@ impl KeyboardLease {
                     self.frames = Some(true);
                     self.frame_errors = 0;
                     a.frame_sent(device);
-                    status().keyboard_frames_mode = Some(true);
+                    status().keyboard_path = Some(KeyboardPath::Frames);
                     return Ok(());
                 }
                 Err(DeviceError::Unsupported) => {
                     // Firmware without SET_FRAME: one colour from now on.
                     self.frames = Some(false);
                     a.no_frames(device);
-                    status().keyboard_frames_mode = Some(false);
+                    status().keyboard_path = Some(KeyboardPath::OneColour);
                 }
                 Err(e) => {
                     // It may have shown before the reply was lost: hand it back when needed.
@@ -706,7 +915,7 @@ impl KeyboardLease {
                     a.no_frames(device);
                     self.frames = Some(false);
                     self.sent_mix = Some(f.mix);
-                    status().keyboard_frames_mode = Some(false);
+                    status().keyboard_path = Some(KeyboardPath::OneColour);
                     return Ok(());
                 }
             }
@@ -741,6 +950,14 @@ struct AppKeyboard {
     error_logged: bool,
     /// The scene's flag for sending the keyboard its frame again.
     again: Arc<AtomicBool>,
+    /// The scene's flag for the keyboard drawing its effect itself ([`Outputs::keyboard_effects`]).
+    effects: Arc<AtomicBool>,
+    /// The keyboard refused effects (or they kept failing): frames until another keyboard.
+    effects_failed: bool,
+    /// The scene's clock, read just before an effect goes.
+    clock: Clock,
+    /// The "left running" mark of a quit before was looked at (once per scene).
+    left_checked: bool,
     /// The link whose hand-back events [`hand_back_tap`] watches, and the watch.
     tapped: Option<(
         Arc<digitalis::link::Link>,
@@ -749,14 +966,62 @@ struct AppKeyboard {
 }
 
 impl AppKeyboard {
-    fn new(again: Arc<AtomicBool>) -> Self {
+    fn new(again: Arc<AtomicBool>, effects: Arc<AtomicBool>, clock: Clock) -> Self {
         AppKeyboard {
             lease: KeyboardLease::default(),
             next_look: None,
             device: None,
             error_logged: false,
             again,
+            effects,
+            effects_failed: false,
+            clock,
+            left_checked: false,
             tapped: None,
+        }
+    }
+
+    /// The keyboard to draw on, with its device id; takes care of another keyboard (the old
+    /// one's lease ends) and of the hand-back watch. `None` while there is none.
+    fn keyboard(&mut self) -> Option<(Arc<digitalis::devices::DigitalisDevice>, String)> {
+        if self.next_look.is_some_and(|t| Instant::now() < t) {
+            return None;
+        }
+        let Some(kb) = super::devices::device() else {
+            self.next_look = Some(Instant::now() + LOOK_AGAIN);
+            return None;
+        };
+        self.next_look = None;
+        use foxglove_devices::Device as _;
+        let device = kb.info().id.to_string();
+        if self.device.as_ref().is_some_and(|d| *d != device) {
+            // Another keyboard: the old one's lease ends, its lights come back.
+            super::api::end_leases(|l| l.conn == SCENE_CONN);
+            self.lease = KeyboardLease::default();
+            self.effects_failed = false;
+        }
+        self.device = Some(device.clone());
+        self.tap(&kb);
+        // The firmware may have changed under the same id (a flash): the scene follows it.
+        let effects = kb.effects() && !self.effects_failed;
+        if self.effects.swap(effects, Ordering::Relaxed) != effects {
+            self.again.store(true, Ordering::Relaxed);
+        }
+        Some((kb, device))
+    }
+
+    /// Something of this scene now shows on the keyboard: an effect a quit left there is gone
+    /// (replaced), so its mark goes.
+    fn drew(&mut self) {
+        if std::mem::replace(&mut self.left_checked, true) {
+            return;
+        }
+        let k = keep();
+        if k.left_running {
+            save_keep(KeyboardKeep {
+                left_running: false,
+                ..k
+            });
         }
     }
 
@@ -780,37 +1045,32 @@ impl AppKeyboard {
     }
 }
 
+/// Whether a scene's end leaves its effect on the keyboard: only on quit, with "Keep running
+/// on the keyboard" ticked, and while the effect is what the keyboard shows (not frames, not
+/// handed back for away, pause or a notification).
+fn keeps_on_quit(quitting: bool, keep: KeyboardKeep, effect_on: bool) -> bool {
+    quitting && keep.on_quit && effect_on
+}
+
 /// How long a missing keyboard is left before frames look for it again.
 const LOOK_AGAIN: Duration = Duration::from_secs(5);
 
 impl KeyboardLights for AppKeyboard {
     fn show(&mut self, f: &KeyboardFrame) {
-        if self.next_look.is_some_and(|t| Instant::now() < t) {
-            return;
-        }
-        let Some(kb) = super::devices::device() else {
-            self.next_look = Some(Instant::now() + LOOK_AGAIN);
+        let Some((kb, device)) = self.keyboard() else {
             return;
         };
-        self.next_look = None;
         use foxglove_devices::Device as _;
         let Some(light) = kb.lighting() else {
             return;
         };
-        let device = kb.info().id.to_string();
-        if self.device.as_ref().is_some_and(|d| *d != device) {
-            // Another keyboard: the old one's lease ends, its lights come back.
-            super::api::end_leases(|l| l.conn == SCENE_CONN);
-            self.lease = KeyboardLease::default();
-        }
-        self.device = Some(device.clone());
-        self.tap(&kb);
         let again = self.again.clone();
         let shown = super::lighting_leases::with(|a| self.lease.show(a, &device, light, f, &again));
         match shown {
             Ok(()) => {
                 status().keyboard_frames += 1;
                 self.error_logged = false;
+                self.drew();
             }
             Err(e) if !std::mem::replace(&mut self.error_logged, true) => {
                 eprintln!("Foxglove: scene colour to the keyboard: {e}");
@@ -819,7 +1079,47 @@ impl KeyboardLights for AppKeyboard {
         }
     }
 
+    fn effect(&mut self, e: &KeyboardEffect) {
+        let Some((kb, device)) = self.keyboard() else {
+            return;
+        };
+        if !self.effects.load(Ordering::Relaxed) {
+            // Not this keyboard (keyboard() asked for frames instead).
+            return;
+        }
+        use foxglove_devices::Device as _;
+        let Some(light) = kb.lighting() else {
+            return;
+        };
+        let again = self.again.clone();
+        let clock = self.clock;
+        let sent = super::lighting_leases::with(|a| {
+            self.lease
+                .show_effect(a, &device, light, &*kb, e, &clock, &again)
+        });
+        match sent {
+            Ok(EffectSent::Done) => {
+                status().keyboard_effects += 1;
+                self.error_logged = false;
+                self.drew();
+            }
+            Ok(EffectSent::Frames) => {
+                self.effects_failed = true;
+                self.effects.store(false, Ordering::Relaxed);
+                self.again.store(true, Ordering::Relaxed);
+            }
+            Err(err) => {
+                if !std::mem::replace(&mut self.error_logged, true) {
+                    eprintln!("Foxglove: scene effect to the keyboard: {err}");
+                }
+                // Tried again on the keyboard's next turn (bounded by FRAME_ERRORS).
+                self.again.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+
     fn release_frames(&mut self) {
+        self.lease.effect_on = false;
         let Some(device) = &self.device else {
             return;
         };
@@ -833,6 +1133,24 @@ impl KeyboardLights for AppKeyboard {
     }
 
     fn give_back(&mut self) {
+        // Quitting with "Keep running on the keyboard": an effect showing stays. The arbiter
+        // forgets it, so ending the lease restores the lights under it (hidden while it runs)
+        // without handing it back; the mark hands it back on the next lights change.
+        if let Some(device) = &self.device {
+            let k = keep();
+            let lease = self.lease.id;
+            // Not under a notification or pause, which handed it back already.
+            let showing = self.lease.effect_on
+                && lease.is_some_and(|id| super::lighting_leases::with(|a| a.shows(id)));
+            if keeps_on_quit(QUITTING.load(Ordering::Relaxed), k, showing) {
+                super::lighting_leases::with(|a| a.no_frames(device));
+                save_keep(KeyboardKeep {
+                    left_running: true,
+                    ..k
+                });
+                eprintln!("Foxglove: quitting; the scene's effect keeps running on the keyboard");
+            }
+        }
         // Ending the lease hands the frames back before the lights from before come back.
         if self.device.is_some() {
             super::api::end_leases(|l| l.conn == SCENE_CONN);
@@ -860,6 +1178,14 @@ mod tests {
         releases: AtomicU32,
         /// Frames to fail (no answer) before taking them.
         failing: AtomicU32,
+        /// It draws SET_EFFECT effects (HELLO bit 19).
+        effects: bool,
+        /// The effect running, if any (a frame or a release ends it).
+        effect: Mutex<Option<digitalis::protocol::Effect>>,
+        /// Every PLACE and EFFECT, in order ('P', 'E').
+        effect_ops: Mutex<Vec<char>>,
+        /// Effects to fail (no answer) before taking them.
+        effect_failing: AtomicU32,
     }
 
     impl Fake {
@@ -883,7 +1209,23 @@ mod tests {
                 frames_sent: AtomicU32::new(0),
                 releases: AtomicU32::new(0),
                 failing: AtomicU32::new(0),
+                effects: false,
+                effect: Mutex::new(None),
+                effect_ops: Mutex::new(Vec::new()),
+                effect_failing: AtomicU32::new(0),
             }
+        }
+
+        fn with_effects() -> Fake {
+            Fake {
+                frames: true,
+                effects: true,
+                ..Fake::new()
+            }
+        }
+
+        fn running(&self) -> Option<digitalis::protocol::Effect> {
+            self.effect.lock().unwrap().clone()
         }
 
         fn with_frames() -> Fake {
@@ -952,13 +1294,233 @@ mod tests {
             }
             self.frames_sent.fetch_add(1, Ordering::SeqCst);
             *self.frame.lock().unwrap() = Some(frame.to_vec());
+            // Frames draw over an effect: SET_FRAME ends it (#541).
+            *self.effect.lock().unwrap() = None;
             Ok(())
         }
         fn release(&self) -> foxglove_devices::Result<()> {
             self.releases.fetch_add(1, Ordering::SeqCst);
             *self.frame.lock().unwrap() = None;
+            // DigitalisDevice's release ends an effect too.
+            *self.effect.lock().unwrap() = None;
             Ok(())
         }
+    }
+
+    impl EffectTarget for Fake {
+        fn place(&self, _: MmRect, _: MmRect, _: MmRect) -> Result<(), DeviceError> {
+            if !self.effects {
+                return Err(DeviceError::Unsupported);
+            }
+            self.effect_ops.lock().unwrap().push('P');
+            Ok(())
+        }
+        fn run(&self, e: &digitalis::protocol::Effect) -> Result<(), DeviceError> {
+            if !self.effects {
+                return Err(DeviceError::Unsupported);
+            }
+            if self
+                .effect_failing
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                return Err(DeviceError::Timeout);
+            }
+            self.effect_ops.lock().unwrap().push('E');
+            *self.frame.lock().unwrap() = None;
+            *self.effect.lock().unwrap() = Some(e.clone());
+            Ok(())
+        }
+    }
+
+    /// A 4 s scanline on both halves, as `scene_output::keyboard_effect` makes it.
+    fn scan_effect(mix: Hsb) -> KeyboardEffect {
+        KeyboardEffect {
+            effect: digitalis::protocol::Effect {
+                kind: digitalis::protocol::EffectKind::Scanline,
+                colours: vec![RED, BLUE],
+                clock_ms: 0,
+                period_ms: 4000,
+                angle_deg: 90.0,
+                width_mm: 80.0,
+                origin_mm: [0, 0],
+            },
+            room: [0, 0, 600, 700],
+            left: [100, 500, 124, 86],
+            right: [304, 500, 124, 86],
+            mix,
+        }
+    }
+
+    /// The SET_EFFECT path (#542) through the lease contract: sent once with its clock from the
+    /// scene's epoch, handed back under a notification, pause and away, sent again when the
+    /// lease shows again, and released at the end.
+    #[test]
+    fn an_effect_runs_on_the_keyboard_and_gives_way_like_frames() {
+        let kb = Fake::with_effects();
+        let before = kb.hsb();
+        let again = Arc::new(AtomicBool::new(false));
+        let mut a = Arbiter::default();
+        let mut scene = KeyboardLease::default();
+        // A clock whose epoch was 10.5 s ago: the effect starts 2.5 s into its 4 s period.
+        let clock = Clock::aligned(foxglove_scene::clock::unix_ms_now() - 10_500);
+        let e = scan_effect(c(30));
+        let sent = scene
+            .show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again)
+            .unwrap();
+        assert_eq!(sent, EffectSent::Done);
+        assert_eq!(
+            *kb.effect_ops.lock().unwrap(),
+            ['P', 'E'],
+            "placed, then the effect"
+        );
+        let running = kb.running().expect("the effect runs");
+        assert!(
+            (2500..2700).contains(&running.clock_ms),
+            "on the scene's clock: {}",
+            running.clock_ms
+        );
+        assert_eq!(
+            kb.hsb(),
+            (true, 30, 100, 90, "0".into()),
+            "the lease holds the mix"
+        );
+        assert!(scene.effect_on);
+
+        // A notification: the effect is handed back before its colour shows.
+        let mute = a.add(mute_lease(), &kb).unwrap();
+        assert_eq!(Fake::count(&kb.releases), 1);
+        assert_eq!(kb.running(), None);
+        assert_eq!(kb.hsb().1, 0, "the mute's red, visible");
+        // Sent again while the notification shows: nothing goes out.
+        let ops = kb.effect_ops.lock().unwrap().len();
+        scene
+            .show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again)
+            .unwrap();
+        assert_eq!(kb.effect_ops.lock().unwrap().len(), ops);
+        assert!(!scene.effect_on);
+        // Unmuted: the scene is asked for its effect again.
+        for d in a.end(|l| l.id == mute) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert!(again.swap(false, Ordering::SeqCst), "send it again");
+        scene
+            .show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again)
+            .unwrap();
+        assert!(kb.running().is_some());
+
+        // Paused: released, the keyboard's own lights; resumed: asked again.
+        for d in a.set_paused(true) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(Fake::count(&kb.releases), 2);
+        assert_eq!((kb.running(), kb.hsb()), (None, before.clone()));
+        for d in a.set_paused(false) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert!(again.swap(false, Ordering::SeqCst));
+        scene
+            .show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again)
+            .unwrap();
+
+        // Away: released with the lease kept; its colour shows.
+        a.release_frames("kb", &kb);
+        assert_eq!(Fake::count(&kb.releases), 3);
+        assert_eq!((kb.running(), kb.hsb().1), (None, 30));
+
+        // A ripple over the scene goes as frames, which take over from the effect.
+        scene
+            .show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again)
+            .unwrap();
+        scene
+            .show(&mut a, "kb", &kb, &halves(RED, BLUE, c(30)), &again)
+            .unwrap();
+        assert_eq!(kb.running(), None);
+        assert_eq!(kb.showing(), Some((RED, BLUE)));
+        assert!(!scene.effect_on);
+
+        // The end (Stop): released, then the lights from before.
+        scene
+            .show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again)
+            .unwrap();
+        for d in a.end(|l| l.conn == SCENE_CONN) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!((kb.running(), kb.hsb()), (None, before));
+    }
+
+    /// Quitting with "Keep running on the keyboard" leaves the effect: the arbiter forgets it,
+    /// so the lease's end restores the lights under it without a release.
+    #[test]
+    fn keep_on_quit_leaves_the_effect_and_only_then() {
+        let off = KeyboardKeep::default();
+        let on = KeyboardKeep {
+            on_quit: true,
+            ..off
+        };
+        assert!(!keeps_on_quit(true, off, true), "off by default");
+        assert!(keeps_on_quit(true, on, true));
+        assert!(!keeps_on_quit(false, on, true), "Stop always releases");
+        assert!(
+            !keeps_on_quit(true, on, false),
+            "frames or handed back: nothing to keep"
+        );
+
+        let kb = Fake::with_effects();
+        let before = kb.hsb();
+        let again = Arc::new(AtomicBool::new(false));
+        let mut a = Arbiter::default();
+        let mut scene = KeyboardLease::default();
+        let clock = Clock::starting_now();
+        scene
+            .show_effect(&mut a, "kb", &kb, &kb, &scan_effect(c(30)), &clock, &again)
+            .unwrap();
+        // What give_back does on a keeping quit.
+        a.no_frames("kb");
+        for d in a.end(|l| l.conn == SCENE_CONN) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(Fake::count(&kb.releases), 0, "not released");
+        assert!(kb.running().is_some(), "still running");
+        assert_eq!(kb.hsb(), before, "the lights under it are the user's again");
+    }
+
+    #[test]
+    fn effects_fall_back_to_frames_when_refused_or_failing() {
+        // Refused (firmware without bit 19): frames from now on, nothing held.
+        let kb = Fake::with_frames();
+        let again = Arc::new(AtomicBool::new(false));
+        let mut a = Arbiter::default();
+        let mut scene = KeyboardLease::default();
+        let clock = Clock::starting_now();
+        let e = scan_effect(c(30));
+        assert_eq!(
+            scene
+                .show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again)
+                .unwrap(),
+            EffectSent::Frames
+        );
+        assert_eq!(Fake::count(&kb.releases), 0);
+        // Failing: errors, then frames after FRAME_ERRORS in a row.
+        let kb = Fake::with_effects();
+        let mut a = Arbiter::default();
+        let mut scene = KeyboardLease::default();
+        kb.effect_failing.store(FRAME_ERRORS, Ordering::SeqCst);
+        for i in 1..FRAME_ERRORS {
+            let r = scene.show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again);
+            assert!(r.is_err(), "effect {i} failed");
+        }
+        assert_eq!(
+            scene
+                .show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again)
+                .unwrap(),
+            EffectSent::Frames
+        );
+        // A failed send may have run: the end still hands it back.
+        for d in a.end(|l| l.conn == SCENE_CONN) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(Fake::count(&kb.releases), 1);
     }
 
     fn c(hue: u16) -> Hsb {
@@ -1192,7 +1754,7 @@ mod tests {
     #[test]
     fn the_mailbox_hands_back_before_drawing_and_drops_a_waiting_frame() {
         let mb = Mailbox::default();
-        mb.post(one(c(1)));
+        mb.post(Draw::Frame(one(c(1))));
         mb.release();
         assert_eq!(
             mb.next(),
@@ -1200,10 +1762,14 @@ mod tests {
             "away drops the frame waiting"
         );
         mb.release();
-        mb.post(one(c(2)));
+        mb.post(Draw::Frame(one(c(2))));
         assert_eq!(mb.next(), Some(Job::Release));
-        assert_eq!(mb.next(), Some(Job::Show(one(c(2)))));
-        mb.post(one(c(3)));
+        assert_eq!(mb.next(), Some(Job::Show(Draw::Frame(one(c(2))))));
+        // Newest wins between a frame and an effect too.
+        mb.post(Draw::Frame(one(c(4))));
+        mb.post(Draw::Effect(scan_effect(c(5))));
+        assert_eq!(mb.next(), Some(Job::Show(Draw::Effect(scan_effect(c(5))))));
+        mb.post(Draw::Frame(one(c(3))));
         mb.close();
         assert_eq!(mb.next(), None);
     }
@@ -1217,6 +1783,9 @@ mod tests {
             // A slow keyboard: frames posted meanwhile collapse to the newest.
             std::thread::sleep(Duration::from_millis(30));
         }
+        fn effect(&mut self, e: &KeyboardEffect) {
+            self.0.lock().unwrap().push(Some(e.mix));
+        }
         fn release_frames(&mut self) {}
         fn give_back(&mut self) {
             self.0.lock().unwrap().push(None);
@@ -1228,6 +1797,7 @@ mod tests {
 
     impl KeyboardLights for Releases {
         fn show(&mut self, _: &KeyboardFrame) {}
+        fn effect(&mut self, _: &KeyboardEffect) {}
         fn release_frames(&mut self) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
@@ -1251,14 +1821,14 @@ mod tests {
     fn a_busy_keyboard_gets_the_newest_colour_and_the_end_gives_back() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let out = KeyboardOut::spawn(Box::new(Recorded(seen.clone())));
-        out.mailbox.post(one(c(1)));
+        out.mailbox.post(Draw::Frame(one(c(1))));
         // Wait (bounded) until the first is being written, then post a burst.
         let until = Instant::now() + Duration::from_secs(5);
         while seen.lock().unwrap().is_empty() && Instant::now() < until {
             std::thread::yield_now();
         }
         for h in 2..=9 {
-            out.mailbox.post(one(c(h)));
+            out.mailbox.post(Draw::Frame(one(c(h))));
         }
         // Wait (bounded) for the newest.
         while !seen.lock().unwrap().contains(&Some(c(9))) && Instant::now() < until {

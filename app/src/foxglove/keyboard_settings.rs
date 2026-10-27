@@ -128,6 +128,8 @@ static RGB_STATE: Mutex<Option<RgbState>> = Mutex::new(None);
 static RGB_READ_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 static RGB_REFRESH: AtomicBool = AtomicBool::new(true);
 static RGB_POLLING: AtomicBool = AtomicBool::new(false);
+/// The last read's keyboard sends the right half's changes as events (HELLO bit 20, #543).
+static RIGHT_LIVE: AtomicBool = AtomicBool::new(false);
 
 /// Both halves' lights as last read, without asking the keyboard.
 pub fn cached_rgb_state() -> Option<RgbState> {
@@ -157,18 +159,23 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
                 device().and_then(|d| {
                     let mut s = digitalis::settings::rgb_state(d.link().as_ref()).ok()?;
                     d.asked_state(&mut s);
-                    Some(s)
+                    Some((s, d.right_events()))
                 })
             };
-            let mut state = read();
+            let first = read();
+            let right_events = first.is_some_and(|(_, events)| events);
+            let mut state = first.map(|(s, _)| s);
             // The right's half is the relay's last read, and each RGB_STATE starts a fresh one
-            // that this reply can't carry (firmware art_relay_right_rgb). A stale or missing
-            // right half ("off · 8 s ago" while it was lit, 2026-10-26) is asked once more,
-            // after the relay read has had time to land. Bounded: two reads per refresh.
-            if state.as_ref().is_some_and(right_is_stale) {
+            // that this reply can't carry (firmware art_relay_right_rgb). Firmware with HELLO
+            // bit 20 (#543) sends RGB_STATE when that read changes anything, so the event
+            // brings it (lights_changed). Older firmware: a stale or missing right half
+            // ("off · 8 s ago" while it was lit, 2026-10-26) is asked once more, after the
+            // relay read has had time to land. Bounded: two reads per refresh.
+            if !right_events && state.as_ref().is_some_and(right_is_stale) {
                 std::thread::sleep(RIGHT_READ_SETTLE);
-                state = read().or(state);
+                state = read().map(|(s, _)| s).or(state);
             }
+            RIGHT_LIVE.store(right_events, Ordering::Relaxed);
             *RGB_STATE.lock().unwrap() = state;
             *RGB_READ_AT.lock().unwrap_or_else(|e| e.into_inner()) =
                 Some(std::time::Instant::now());
@@ -180,10 +187,20 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .map_or(0, |at| at.elapsed().as_secs());
-    RGB_STATE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .map(|s| aged(s, elapsed))
+    let state = *RGB_STATE.lock().unwrap_or_else(|e| e.into_inner());
+    state.map(|s| shown(s, elapsed, RIGHT_LIVE.load(Ordering::Relaxed)))
+}
+
+/// `s` as the UI shows it. With right-half events (HELLO bit 20) a change would have come as
+/// an RGB_STATE event, so a known right half is current (age 0); otherwise it ages ([`aged`]).
+fn shown(mut s: RgbState, elapsed_s: u64, right_events: bool) -> RgbState {
+    if !right_events {
+        return aged(s, elapsed_s);
+    }
+    if let Some((_, age)) = &mut s.right {
+        *age = 0;
+    }
+    s
 }
 
 /// `s` as read `elapsed_s` seconds ago: the right half's age grows by that much (the UI adds
@@ -222,6 +239,8 @@ fn lighting(
     keep: impl FnOnce(&mut foxglove_devices::LightingState) + Send + 'static,
 ) {
     run(label.into(), ctx, move |d| {
+        // An effect a quit left running (#542) would hide the change.
+        super::scene_run::release_left_effect(d);
         change(
             d.lighting()
                 .ok_or(foxglove_devices::DeviceError::Unsupported)?,
@@ -393,6 +412,16 @@ mod rgb_state_tests {
         assert_eq!(super::aged(s, 30).right.map(|(_, a)| a), Some(38));
         assert_eq!(super::aged(s, 10_000).right.map(|(_, a)| a), Some(254));
         assert_eq!(super::aged(with_right(None), 30).right, None);
+    }
+
+    /// With HELLO bit 20 a change arrives as an event: a known right half shows as current,
+    /// an unknown one stays unknown, and without the bit it ages as before.
+    #[test]
+    fn right_events_keep_a_known_right_half_current() {
+        let s = with_right(Some((false, 8)));
+        assert_eq!(super::shown(s, 30, true).right.map(|(_, a)| a), Some(0));
+        assert_eq!(super::shown(s, 30, false).right.map(|(_, a)| a), Some(38));
+        assert_eq!(super::shown(with_right(None), 30, true).right, None);
     }
 
     #[test]
