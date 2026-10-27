@@ -439,6 +439,7 @@ fn real_link_routes_scripted_layer_reports_and_rejects_reconnection() {
                     version: 1,
                     ..Default::default()
                 }),
+                bus: digitalis::link::Bus::Unknown,
             },
         ))
     }));
@@ -844,6 +845,7 @@ mod left_half {
                             capabilities: 1 << 6,
                             ..Default::default()
                         }),
+                        bus: digitalis::link::Bus::Unknown,
                     },
                 ))
             }));

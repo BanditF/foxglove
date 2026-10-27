@@ -23,8 +23,11 @@ pub enum DimState {
     Unknown,
     Asking,
     NoKeyboard,
-    /// The firmware has no D7 0E (older than this feature).
+    /// The firmware has no D7 0E (older than this feature): HELLO lacks the capability bit.
     NotSupported,
+    /// The firmware has D7 0E, but the read went unanswered twice (a reply lost while the
+    /// keyboard switched between USB and Bluetooth, say). Asked again on ↻ or a new connection.
+    NoAnswer,
     Known(BatteryDim),
 }
 
@@ -122,29 +125,58 @@ pub fn ask(set: Option<BatteryDimConfig>, ctx: egui::Context) {
     });
 }
 
-/// One D7 0E and its answer into the cache.
+/// How long after an unanswered D7 0E the one retry goes out: long enough for a USB/Bluetooth
+/// switch to settle (the reply lost at 2026-10-26 23:57:39 came 2 s after a reconnect).
+const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// One D7 0E (retried once if unanswered) and its answer into the cache.
 fn request(set: Option<BatteryDimConfig>, ctx: &egui::Context) {
-    let generation = super::devices::generation();
-    let state = match super::devices::device() {
-        None => DimState::NoKeyboard,
+    let (generation, state) = match super::devices::device() {
+        None => (super::devices::generation(), DimState::NoKeyboard),
         Some(d) => {
             tap(d.link(), ctx);
-            match d.battery_dim(set) {
-                Ok(dim) => DimState::Known(dim),
-                Err(foxglove_devices::DeviceError::Unsupported) => DimState::NotSupported,
-                Err(e) => {
-                    // A lost reply: keep what was known; ↻ or the next report asks again.
-                    eprintln!("Foxglove: battery dim: {}", super::devices::describe(&e));
-                    match current() {
-                        known @ DimState::Known(_) => known,
-                        _ => DimState::NotSupported,
-                    }
-                }
-            }
+            // The connection asked, read after `device()`: it may have just found the keyboard,
+            // and a generation read before that made `state` ask a second time (two "no answer"
+            // lines at 23:57:39).
+            let generation = Some(d.link().state().generation);
+            let state = answer(
+                || d.battery_dim(set),
+                || std::thread::sleep(RETRY_AFTER),
+                current(),
+            );
+            (generation, state)
         }
     };
     set_state(generation, state);
     ctx.request_repaint();
+}
+
+/// The state after asking with `ask`: [`DimState::NotSupported`] only when the device says the
+/// firmware lacks D7 0E (its HELLO capability bit, checked before any I/O). Any other failure is
+/// a lost reply: `pause` once, ask once more, then keep what was `known`, else
+/// [`DimState::NoAnswer`]. Bounded: at most two asks per request.
+fn answer(
+    mut ask: impl FnMut() -> Result<BatteryDim, foxglove_devices::DeviceError>,
+    pause: impl FnOnce(),
+    known: DimState,
+) -> DimState {
+    let mut pause = Some(pause);
+    loop {
+        match ask() {
+            Ok(dim) => return DimState::Known(dim),
+            Err(foxglove_devices::DeviceError::Unsupported) => return DimState::NotSupported,
+            Err(e) => match pause.take() {
+                Some(pause) => pause(),
+                None => {
+                    eprintln!("Foxglove: battery dim: {}", super::devices::describe(&e));
+                    return match known {
+                        DimState::Known(_) => known,
+                        _ => DimState::NoAnswer,
+                    };
+                }
+            },
+        }
+    }
 }
 
 /// Follows the keyboard's own reports on `link`: D7 8E updates the state at once; a HELLO (the
@@ -263,9 +295,14 @@ pub fn draw(ui: &mut egui::Ui, s: &DimState, draft: &mut Draft) -> Vec<Intent> {
             );
             return out;
         }
-        DimState::NotSupported => {
+        DimState::NotSupported | DimState::NoAnswer => {
+            let text = if *s == DimState::NotSupported {
+                "Save battery: dim lights on battery: needs newer keyboard firmware"
+            } else {
+                "Save battery: dim lights on battery: the keyboard didn't answer"
+            };
             ui.horizontal_wrapped(|ui| {
-                ui.weak("Save battery: dim lights on battery: needs newer keyboard firmware");
+                ui.weak(text);
                 if ui
                     .small_button("↻")
                     .on_hover_text("Ask the keyboard again")
@@ -541,6 +578,60 @@ pub mod tests {
     fn older_firmware_says_so() {
         let mut draft = Draft::default();
         assert_eq!(frame(DimState::NotSupported, &mut draft, None), vec![]);
+        assert_eq!(frame(DimState::NoAnswer, &mut draft, None), vec![]);
         assert_eq!(frame(DimState::NoKeyboard, &mut draft, None), vec![]);
+    }
+
+    /// Asks answered from a script, counting asks and pauses.
+    fn scripted(
+        replies: Vec<Result<BatteryDim, foxglove_devices::DeviceError>>,
+        known: DimState,
+    ) -> (DimState, usize, usize) {
+        let mut replies = replies.into_iter();
+        let (mut asks, mut pauses) = (0, 0);
+        let state = super::answer(
+            || {
+                asks += 1;
+                replies.next().expect("asked more than scripted")
+            },
+            || pauses += 1,
+            known,
+        );
+        (state, asks, pauses)
+    }
+
+    /// Right after a reconnect (USB to Bluetooth) the first reply is lost: one retry reads it,
+    /// and the firmware with the capability bit is never called old.
+    #[test]
+    fn a_dim_read_lost_after_a_reconnect_is_asked_once_more() {
+        use foxglove_devices::DeviceError::{Timeout, Unsupported};
+        let dim = match sample() {
+            DimState::Known(d) => d,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            scripted(vec![Err(Timeout), Ok(dim)], DimState::Asking),
+            (DimState::Known(dim), 2, 1)
+        );
+        // Unanswered twice: no third ask, and no "newer firmware" either.
+        assert_eq!(
+            scripted(vec![Err(Timeout), Err(Timeout)], DimState::Asking),
+            (DimState::NoAnswer, 2, 1)
+        );
+        // What was known stays.
+        assert_eq!(
+            scripted(vec![Err(Timeout), Err(Timeout)], sample()),
+            (sample(), 2, 1)
+        );
+        // Only a missing capability bit (Unsupported, before any I/O) means older firmware,
+        // and it is not retried.
+        assert_eq!(
+            scripted(vec![Err(Unsupported)], DimState::Asking),
+            (DimState::NotSupported, 1, 0)
+        );
+        assert_eq!(
+            scripted(vec![Ok(dim)], DimState::Asking),
+            (DimState::Known(dim), 1, 0)
+        );
     }
 }

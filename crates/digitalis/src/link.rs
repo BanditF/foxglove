@@ -72,6 +72,29 @@ pub struct Connected {
     pub product: String,
     /// `None` when the keyboard has no host link (only with [`crate::hid::Match::without_host_link`]).
     pub hello: Option<Hello>,
+    /// The bus of the interface this link opened. A keyboard on USB and Bluetooth at once shows
+    /// both interfaces; only this one says which the link uses.
+    pub bus: Bus,
+}
+
+/// How the opened Raw HID interface reaches the PC.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Bus {
+    /// A transport that doesn't say (a test fake, a custom transport).
+    #[default]
+    Unknown,
+    Usb,
+    Bluetooth,
+}
+
+impl Bus {
+    /// For the log and the Diagnostics page: "BLE" on Bluetooth, "USB" otherwise.
+    pub fn label(self) -> &'static str {
+        match self {
+            Bus::Bluetooth => "BLE",
+            Bus::Usb | Bus::Unknown => "USB",
+        }
+    }
 }
 
 /// Finds and opens the keyboard; called again after every disconnect.
@@ -656,6 +679,7 @@ mod hid_open {
                 let connected = Connected {
                     product: kb.product.clone(),
                     hello: kb.hello,
+                    bus: kb.bus(),
                 };
                 #[cfg(windows)]
                 let device = Device {
@@ -785,6 +809,7 @@ mod tests {
             let c = Connected {
                 product: "Fake".into(),
                 hello: None,
+                bus: Bus::Unknown,
             };
             let mut connection = fake.clone();
             connection.interrupted = Arc::new(AtomicBool::new(false));
@@ -938,6 +963,7 @@ mod tests {
                 Connected {
                     product: "USB".into(),
                     hello: None,
+                    bus: Bus::Unknown,
                 },
             ))
         }));
@@ -963,6 +989,7 @@ mod tests {
                     Connected {
                         product: "Back".into(),
                         hello: None,
+                        bus: Bus::Unknown,
                     },
                 ))
             }),
@@ -1274,5 +1301,46 @@ mod tests {
         };
         assert!(s.connected.is_some());
         assert_eq!(s.generation, first + 1);
+    }
+
+    /// The state names the bus the opener used, and follows it across a reconnect: the left
+    /// half unplugged (USB to Bluetooth) and plugged back in (an arrival reconnects to USB).
+    #[test]
+    fn the_state_names_the_opened_bus_across_reconnects() {
+        let route = Arc::new(Mutex::new(Bus::Usb));
+        let r = route.clone();
+        let l = Link::start(Box::new(move || {
+            Ok((
+                Box::new(Fake::default()) as Box<dyn RawHid>,
+                Connected {
+                    product: "Eyelash Corne".into(),
+                    hello: None,
+                    bus: *r.lock().unwrap(),
+                },
+            ))
+        }));
+        assert_eq!(l.wait_connected(WAIT).unwrap().bus, Bus::Usb);
+        let (tx, rx) = mpsc::channel();
+        let _subscription = l.subscribe_events(move |event| {
+            if let Event::State(s) = event {
+                if let Some(c) = s.connected {
+                    let _ = tx.send((s.generation, c.bus));
+                }
+            }
+        });
+        for (bus, label) in [(Bus::Bluetooth, "BLE"), (Bus::Usb, "USB")] {
+            let before = l.state().generation;
+            *route.lock().unwrap() = bus;
+            l.reconnect();
+            // Start: the reconnect. Stop: the next connection's State event (or WAIT).
+            let seen = loop {
+                let (generation, seen) = rx.recv_timeout(WAIT).expect("reconnected");
+                if generation > before {
+                    break seen;
+                }
+            };
+            assert_eq!((seen, seen.label()), (bus, label));
+        }
+        assert_eq!(Bus::Unknown.label(), "USB");
     }
 }

@@ -849,6 +849,7 @@ mod tests {
             let connected = Connected {
                 product: "Fake".into(),
                 hello: Some(hello(capabilities)),
+                bus: crate::link::Bus::Unknown,
             };
             Ok((Box::new(opener_fake.clone()) as Box<dyn RawHid>, connected))
         })));

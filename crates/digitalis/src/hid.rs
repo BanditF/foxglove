@@ -113,6 +113,11 @@ impl Keyboard {
         Ok(self.dev.read_timeout(buf, timeout)?)
     }
 
+    /// The bus of the interface this keyboard was opened on.
+    pub fn bus(&self) -> crate::link::Bus {
+        bus_of(self.bus_type)
+    }
+
     pub fn say_hello(&self) -> Result<Hello> {
         let r = self.request(
             &protocol::hello(),
@@ -186,6 +191,14 @@ fn pick<K>(
         }
     }
     silent.map(|kb| (kb, None))
+}
+
+fn bus_of(bus: BusType) -> crate::link::Bus {
+    match bus {
+        BusType::Usb => crate::link::Bus::Usb,
+        BusType::Bluetooth => crate::link::Bus::Bluetooth,
+        _ => crate::link::Bus::Unknown,
+    }
 }
 
 fn prefer_usb(bus: BusType) -> bool {
@@ -281,6 +294,29 @@ mod tests {
         assert!(matches!(kb.bus, BusType::Usb));
         assert!(hello.is_none());
         assert!(pick(ifaces(false, false), false, hello_0_1).is_none());
+    }
+
+    /// The route the link reports, from fake interfaces: USB whenever it answers HELLO,
+    /// Bluetooth only when USB is silent, and the label follows the picked interface.
+    #[test]
+    fn the_route_prefers_usb_that_answers_and_reports_the_picked_bus() {
+        for (usb, ble, route) in [
+            (true, true, Some("USB")),
+            (true, false, Some("USB")),
+            (false, true, Some("BLE")),
+            (false, false, None),
+        ] {
+            let mut ifaces = ifaces(usb, ble);
+            // Enumeration order doesn't matter: the opener sorts USB first.
+            ifaces.reverse();
+            ifaces.sort_by_key(|i| prefer_usb(i.bus));
+            let picked = pick(ifaces, false, hello_0_1);
+            assert_eq!(
+                picked.map(|(kb, _)| bus_of(kb.bus).label()),
+                route,
+                "usb answers {usb}, ble answers {ble}"
+            );
+        }
     }
 
     #[test]

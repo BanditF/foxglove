@@ -29,15 +29,17 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
     }
     let mut found = None;
     let mut name = String::new();
+    let mut route = digitalis::link::Bus::Unknown;
     *cached = super::link::host_keyboard().map(|((vid, pid), link, hello)| {
         found = Some((vid, pid));
         let backend = BackendId("zmk".into());
-        let product = link
+        let (product, opened) = link
             .state()
             .connected
-            .map(|c| c.product)
+            .map(|c| (c.product, c.bus))
             .unwrap_or_default();
         name.clone_from(&product);
+        route = opened;
         // Its board profile, read once now it's connected (#75).
         super::boards::connected(vid, pid, &product);
         let id = DeviceId::new(
@@ -65,7 +67,9 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
     // Nothing learned from the keymap yet (the overlay hasn't opened it): use the cached one,
     // so plugins can change the lights without the UI. Outside the lock: learning sets it.
     if let Some((vid, pid)) = found {
-        let transport = super::link::transport(vid, pid);
+        // The bus of the interface the link opened, not of every interface the keyboard shows:
+        // on USB and Bluetooth at once both are listed, and the link prefers USB.
+        let transport = route.label();
         *HOST_LINK.lock().unwrap_or_else(|e| e.into_inner()) = Some(transport);
         // Foxglove: the log said only "Waiting for a keyboard"; now it says when one arrives.
         let line = connected_line(transport, &name);
@@ -196,9 +200,9 @@ pub fn describe(e: &foxglove_devices::DeviceError) -> String {
             "not supported by this keyboard or keymap".into()
         }
         foxglove_devices::DeviceError::Disconnected => "the keyboard is not connected".into(),
-        foxglove_devices::DeviceError::Timeout => {
-            "no answer; newer keyboard firmware needed?".into()
-        }
+        // A lost reply (a transport switch, a busy link); a missing feature is `Unsupported`,
+        // decided from HELLO's capability bits.
+        foxglove_devices::DeviceError::Timeout => "no answer".into(),
         foxglove_devices::DeviceError::Busy(why)
         | foxglove_devices::DeviceError::Denied(why)
         | foxglove_devices::DeviceError::Backend(why) => why.clone(),
