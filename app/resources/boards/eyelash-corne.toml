@@ -39,8 +39,8 @@ layout = "underglow, 21 per half"
 # below (each column top to bottom, outer column first: 0-17; then the thumbs, outer first:
 # 18-20). The right half mirrors it (lamps 21-41). This guess is a column snake; the LED-order
 # sitting (#90 row G) corrects it. Scenes use it only once led_map says "checked"; until then
-# each half gets one colour. To try a corrected map, copy this file into the boards folder
-# next to Foxglove's settings, edit led_keys, set led_map = "checked" and reconnect.
+# each half gets one colour. "Find my LEDs…" (Lights, Keyboard card) places them on the board
+# and saves the points as this profile's override (foxglove.toml [led_map]), which wins.
 led_keys = [0, 1, 2, 5, 4, 3, 6, 7, 8, 11, 10, 9, 12, 13, 14, 17, 16, 15, 18, 19, 20]
 led_map = "provisional"
 

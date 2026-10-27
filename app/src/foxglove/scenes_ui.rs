@@ -67,6 +67,9 @@ pub struct View {
     pub profile: String,
     /// "Keep running on the keyboard" (#542): quitting leaves the scene's effect on it.
     pub keep_on_keyboard: bool,
+    /// The keyboard's LEDs are placed (its profile's map is checked, or "Find my LEDs" saved
+    /// one). A keyboard that takes frames without it gets the page's prompt.
+    pub leds_placed: bool,
 }
 
 /// The Triggers card's three boxes (#489).
@@ -144,6 +147,8 @@ pub enum Intent {
     Trigger(Trigger, bool),
     /// "Keep running on the keyboard" switched on or off.
     KeepOnKeyboard(bool),
+    /// "Find my LEDs…": to the Lights page, with the wizard open.
+    FindLeds,
 }
 
 /// The page's own state between frames.
@@ -226,6 +231,7 @@ fn show(ui: &mut egui::Ui) {
         triggers: Triggers::of(&st.chosen),
         profile: st.profile.clone().unwrap_or_else(|| "Base settings".into()),
         keep_on_keyboard: st.keep_on_keyboard,
+        leds_placed: super::led_map::checked(super::boards::current().as_ref()),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
@@ -420,6 +426,11 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
         Intent::KeepOnKeyboard(on) => {
             st.keep_on_keyboard = on;
             super::scene_run::set_keep_on_quit(on);
+        }
+        Intent::FindLeds => {
+            super::shell::set_page(super::shell::Page::Lights);
+            super::led_map_ui::open(ctx);
+            ctx.request_repaint();
         }
         Intent::SavePreset(name) => {
             if st.saved.save(&name, &st.chosen.look) {
@@ -653,6 +664,32 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
     room_map(ui, v, draft, out);
     ui.add_space(6.0);
     ui.add(egui::Label::new(RichText::new(legend(v)).color(p.muted)).wrap());
+    if v.keyboard_frames && !v.leds_placed {
+        ui.add_space(4.0);
+        split_row(
+            ui,
+            |ui| {
+                if ui
+                    .button("Find my LEDs…")
+                    .on_hover_text("Light each LED in turn and click where it is: about a minute")
+                    .clicked()
+                {
+                    out.push(Intent::FindLeds);
+                }
+            },
+            |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(
+                            "The keyboard lights a colour per half until Foxglove knows where its LEDs are.",
+                        )
+                        .color(p.warn),
+                    )
+                    .wrap(),
+                );
+            },
+        );
+    }
 }
 
 /// Which devices the scene lights, in words.
@@ -1338,6 +1375,7 @@ pub(crate) mod tests {
             },
             profile: "Game".into(),
             keep_on_keyboard: false,
+            leds_placed: true,
         }
     }
 
@@ -1364,6 +1402,7 @@ pub(crate) mod tests {
             triggers: Triggers::default(),
             profile: "Base settings".into(),
             keep_on_keyboard: false,
+            leds_placed: false,
         }
     }
 

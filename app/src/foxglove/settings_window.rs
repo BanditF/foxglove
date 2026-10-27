@@ -421,6 +421,7 @@ impl SettingsWindow {
     /// The window closed: remember where it was, and end an open colour calibrator.
     pub fn closed(&mut self) {
         super::calibrate_ui::cancel();
+        super::led_map_ui::cancel();
         save(self.memory.closed(&crate::monitors::list()));
         self.focused = false;
         self.theme = None;

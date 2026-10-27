@@ -360,6 +360,26 @@ fn wizards_lay_out_without_overlaps() {
         &s,
         None,
     ));
+    // Find my LEDs: the first LED, one on each half, the end; and the Scenes page's prompt.
+    for answered in [0, 9, 30, 42] {
+        let mut s = Samples::full();
+        s.leds = Some(crate::foxglove::led_map_ui::tests::sample(answered));
+        found.extend(page_cases(
+            &format!("Find my LEDs after {answered}"),
+            Page::Lights,
+            &s,
+            None,
+        ));
+    }
+    let mut s = Samples::full();
+    s.scenes.0.keyboard_frames = true;
+    s.scenes.0.leds_placed = false;
+    found.extend(page_cases(
+        "Scenes, LEDs not placed",
+        Page::Scenes,
+        &s,
+        None,
+    ));
     // Add a device: pick, set up, name the zones, review.
     {
         use crate::foxglove::pc_lights_add::{tests::sample_zones, Step, Wizard};

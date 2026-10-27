@@ -161,6 +161,8 @@ pub fn quit() {
 /// if it was missing a moment ago. With no scene, an effect a quit left running is handed back:
 /// Foxglove runs again and manages the lights.
 pub fn keyboard_connected() {
+    // "Find my LEDs" lights its LED again on the keyboard that came back.
+    super::led_map::keyboard_connected();
     if running().is_some() {
         ARRIVED.store(true, Ordering::Relaxed);
         tell(Ctl::KeyboardArrived);
@@ -471,7 +473,10 @@ fn control(
     };
     // What the keyboard found last says (the writer corrects it), so the first send is
     // already the effect rather than a frame.
-    effects.store(super::devices::effects(), Ordering::Relaxed);
+    effects.store(
+        super::devices::effects() && super::led_map::effects_place_leds(),
+        Ordering::Relaxed,
+    );
     let keyboard = KeyboardOut::spawn(Box::new(AppKeyboard::new(again.clone(), effects, clock)));
     let frames = outputs.clone();
     let mailbox = keyboard.mailbox.clone();
@@ -1049,7 +1054,9 @@ impl AppKeyboard {
         self.device = Some(device.clone());
         self.tap(&kb);
         // The firmware may have changed under the same id (a flash): the scene follows it.
-        let effects = kb.effects() && !self.effects_failed;
+        // A map from "Find my LEDs" needs frames: the firmware's effects place LEDs by its own
+        // built-in table (led_map::effects_place_leds).
+        let effects = kb.effects() && !self.effects_failed && super::led_map::effects_place_leds();
         if self.effects.swap(effects, Ordering::Relaxed) != effects {
             self.again.store(true, Ordering::Relaxed);
         }
