@@ -599,40 +599,17 @@ pub mod tests {
         }
     }
 
-    /// The second desk (`fixtures`): Plank 3 (61 LEDs, three screens), another vendor's case
-    /// board driven by a fake driver, and a lightbar on Dynamic Lighting.
+    /// The second desk (`fixtures`): another vendor's case board driven by a fake driver, and
+    /// a lightbar on Dynamic Lighting. (The keyboard has the page's own card, #533.)
     pub fn sample_second_desk() -> View {
         use crate::foxglove::fixtures::second_desk as desk;
         let mut bar = desk::lightbar_row();
         bar.caps = LightCaps::from_lamp_array(desk::lightbar_info());
-        let board = desk::board();
-        let screens = board
-            .screens
-            .iter()
-            .map(|s| Screen {
-                width: Some(s.width),
-                height: Some(s.height),
-                depth: Some(1),
-                images: true,
-                ..Default::default()
-            })
-            .collect();
         View {
             pc: Snapshot {
                 devices: vec![desk::case_row(), bar],
                 ..Default::default()
             },
-            keyboard: Some((
-                board.name.clone(),
-                LightCaps {
-                    color: Color::PerLed,
-                    count: desk::LAMPS as u32,
-                    brightness: true,
-                    screens,
-                    ..Default::default()
-                },
-            )),
-            keyboard_calibration: Some(false),
         }
     }
 
@@ -641,7 +618,6 @@ pub mod tests {
         let v = sample_second_desk();
         let text = shown(&v);
         for want in [
-            "Plank 3",
             "Nimbus Strata case lights",
             "Top light bar",
             "Glass glow",

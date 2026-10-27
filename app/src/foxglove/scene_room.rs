@@ -635,7 +635,7 @@ pub(crate) mod tests {
         let row = |key: &str, name: &str| Row {
             key: key.into(),
             name: name.into(),
-            ..g502_row()
+            ..users_desk::mouse_row()
         };
         let rows = [
             row("2a5f:0101", "Desk headset"),
