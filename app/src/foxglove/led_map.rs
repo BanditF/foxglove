@@ -28,7 +28,7 @@ use std::thread::JoinHandle;
 use foxglove_devices::{DeviceError, Lighting, Rgb};
 use serde::{Deserialize, Serialize};
 
-use super::boards::{Board, Drawing, LED_MAP_CHECKED};
+use super::boards::{Board, Drawing, LED_MAP_CHECKED, LED_MAP_SHIPPED};
 use super::lighting_leases::{Arbiter, Lease, Priority};
 
 /// The store section with every board's map.
@@ -139,17 +139,20 @@ pub fn note_current(board: Option<&Board>) {
     PLACED.store(placed(board), Ordering::Relaxed);
 }
 
-/// Whether a profile has a map from "Find my LEDs".
+/// Whether a profile places its LEDs itself: a map from "Find my LEDs" or the dot test, or a
+/// key map scenes use (shipped or checked). Then the scene's positions are the map's, which
+/// firmware without EFFECT LAMPS can't take, so scenes send frames there.
 fn placed(board: Option<&Board>) -> bool {
     board
         .and_then(|b| b.lighting.as_ref())
-        .is_some_and(|l| !l.led_points.is_empty())
+        .is_some_and(|l| !l.led_points.is_empty() || (l.led_map_usable() && !l.led_keys.is_empty()))
 }
 
 /// Whether the firmware's own effects (SET_EFFECT) put the LEDs where they are: always with
 /// firmware that takes the PC's points (`takes_points`, EFFECT LAMPS, HELLO bit 21, #550), since
-/// the scene sends them. Without it, not once the user found them: that firmware places them by
-/// its built-in table, so scenes send frames, which do. Never looks anything up (frame threads
+/// the scene sends them. Without it, not once the profile places them (found, confirmed, or a
+/// shipped map): that firmware places them by its built-in table, so scenes send frames, which
+/// do. Never looks anything up (frame threads
 /// ask).
 pub fn effects_place_leds(takes_points: bool) -> bool {
     takes_points || !PLACED.load(Ordering::Relaxed)
@@ -161,6 +164,27 @@ pub fn checked(board: Option<&Board>) -> bool {
     board
         .and_then(|b| b.lighting.as_ref())
         .is_some_and(|l| l.led_map == LED_MAP_CHECKED)
+}
+
+/// How far the connected keyboard's LED map is known.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MapState {
+    /// No map scenes use: each half is one light.
+    #[default]
+    Unknown,
+    /// The profile ships a map no one has checked on a board: scenes use it, the dot test asks.
+    Shipped,
+    /// Checked on the board (or found with "Find my LEDs").
+    Checked,
+}
+
+/// The connected keyboard's map state. Never looks for a keyboard (the UI thread asks).
+pub fn state(board: Option<&Board>) -> MapState {
+    match board.and_then(|b| b.lighting.as_ref()) {
+        Some(l) if l.led_map == LED_MAP_CHECKED => MapState::Checked,
+        Some(l) if l.led_map == LED_MAP_SHIPPED && !l.led_keys.is_empty() => MapState::Shipped,
+        _ => MapState::Unknown,
+    }
 }
 
 /// The wizard's state: which LED is lit, and what the user said about the ones before it.
@@ -322,9 +346,20 @@ pub fn give_back(a: &mut Arbiter, id: u64, light: &dyn Lighting) {
 enum Job {
     /// Show this frame (a step of the wizard).
     Show(Vec<Rgb>),
+    /// Run these frames one after another, `every` apart, `rounds` times, then all off (the
+    /// dot test).
+    Play(Play),
     /// Send the frame again (the keyboard handed it back, or came back).
     Again,
     End,
+}
+
+/// A dot run: the frames in order and their pace.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Play {
+    pub frames: Vec<Vec<Rgb>>,
+    pub every: std::time::Duration,
+    pub rounds: u32,
 }
 
 /// How the worker is getting on, for the page.
@@ -334,6 +369,10 @@ pub struct Status {
     pub shown: Option<Vec<Rgb>>,
     /// Something went wrong (no keyboard, refused).
     pub error: Option<String>,
+    /// The dot test: the step lit now; `None` before it starts and once its rounds are done.
+    pub step: Option<usize>,
+    /// The dot test ran all its rounds and stopped.
+    pub played: bool,
 }
 
 /// Where the wizard's frames go: the app's keyboard, or a fake in tests.
@@ -394,6 +433,11 @@ impl Worker {
         let _ = self.tx.send(Job::Show(frame));
     }
 
+    /// Runs the dot test's frames (replacing a run or a frame before).
+    pub fn play(&self, play: Play) {
+        let _ = self.tx.send(Job::Play(play));
+    }
+
     /// Ends this worker and waits for its give-back (tests: no shared [`LAST`]).
     #[cfg(test)]
     fn end_and_wait(mut self) {
@@ -431,13 +475,40 @@ pub fn keyboard_connected() {
     }
 }
 
-/// The newest of the jobs waiting: a newer frame replaces an older one, an End wins.
+/// The newest of the jobs waiting: a newer frame or run replaces an older one, an End wins.
 fn newest(job: Job, next: Job) -> Job {
     match (job, next) {
         (Job::End, _) | (_, Job::End) => Job::End,
         (_, Job::Show(f)) => Job::Show(f),
+        (_, Job::Play(p)) => Job::Play(p),
         (Job::Show(f), Job::Again) => Job::Show(f),
+        (Job::Play(p), Job::Again) => Job::Play(p),
         (Job::Again, Job::Again) => Job::Again,
+    }
+}
+
+/// A dot run under way: which step, and when the next one is due.
+struct Running {
+    play: Play,
+    at: usize,
+    next: std::time::Instant,
+}
+
+impl Running {
+    /// The frame for the step now due; `None` once every round is done.
+    fn advance(&mut self) -> Option<Vec<Rgb>> {
+        let n = self.play.frames.len().max(1);
+        self.at += 1;
+        // From now if a slow send made the step late, so the dot never rushes to catch up.
+        self.next = self.next.max(std::time::Instant::now()) + self.play.every;
+        if self.at >= n * self.play.rounds.max(1) as usize {
+            return None;
+        }
+        self.play.frames.get(self.at % n).cloned()
+    }
+
+    fn step(&self) -> usize {
+        self.at % self.play.frames.len().max(1)
     }
 }
 
@@ -454,15 +525,75 @@ fn run(
     };
     let mut frame: Option<Vec<Rgb>> = None;
     let mut taken = false;
-    while let Ok(first) = rx.recv() {
-        let mut job = first;
-        while let Ok(next) = rx.try_recv() {
-            job = newest(job, next);
-        }
-        match job {
-            Job::End => break,
-            Job::Show(f) => frame = Some(f),
-            Job::Again => {}
+    // The dot test's clock: the worker sleeps until its next step is due (or a job comes); it
+    // stops after its rounds, so nothing runs on once the test is left alone.
+    let mut running: Option<Running> = None;
+    loop {
+        let first = match &running {
+            Some(r) => {
+                let wait = r.next.saturating_duration_since(std::time::Instant::now());
+                match rx.recv_timeout(wait) {
+                    Ok(job) => Some(job),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            None => match rx.recv() {
+                Ok(job) => Some(job),
+                Err(_) => break,
+            },
+        };
+        match first {
+            // The dot's next step is due.
+            None => {
+                let Some(r) = running.as_mut() else { continue };
+                match r.advance() {
+                    Some(f) => {
+                        let step = r.step();
+                        frame = Some(f);
+                        set(&|s| s.step = Some(step));
+                    }
+                    None => {
+                        frame = frame.map(|f| vec![Rgb { r: 0, g: 0, b: 0 }; f.len()]);
+                        running = None;
+                        set(&|s| {
+                            s.step = None;
+                            s.played = true;
+                        });
+                    }
+                }
+            }
+            Some(first) => {
+                let mut job = first;
+                while let Ok(next) = rx.try_recv() {
+                    job = newest(job, next);
+                }
+                match job {
+                    Job::End => break,
+                    Job::Show(f) => {
+                        running = None;
+                        frame = Some(f);
+                        set(&|s| {
+                            s.step = None;
+                            s.played = false;
+                        });
+                    }
+                    Job::Play(p) => {
+                        frame = p.frames.first().cloned();
+                        running = frame.as_ref().map(|_| Running {
+                            next: std::time::Instant::now() + p.every,
+                            play: p,
+                            at: 0,
+                        });
+                        let started = running.is_some();
+                        set(&|s| {
+                            s.step = started.then_some(0);
+                            s.played = false;
+                        });
+                    }
+                    Job::Again => {}
+                }
+            }
         }
         let Some(f) = &frame else { continue };
         if !taken {
