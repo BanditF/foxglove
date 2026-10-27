@@ -117,6 +117,8 @@ fn hex(c: Rgb) -> String {
 
 /// A number with at most one decimal, no trailing `.0`.
 fn num(v: f32) -> String {
+    // Never `NaN` or `inf` in the text: the wallpaper would refuse the whole payload.
+    let v = if v.is_finite() { v } else { 0.0 };
     let r = (v * 10.0).round() / 10.0;
     if r == r.trunc() {
         format!("{}", r as i64)

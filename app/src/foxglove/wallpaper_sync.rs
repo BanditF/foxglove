@@ -50,6 +50,9 @@ pub struct Scene {
     pub effect: Effect,
     pub clock: Clock,
     pub room: RoomMap,
+    /// Counts the scene's placements (start, devices placed again): the monitors' interface
+    /// paths are read again on each.
+    pub placement: u64,
 }
 
 /// What the wallpapers are told.
@@ -155,13 +158,18 @@ pub trait Apply: Send {
     fn interfaces(&mut self) -> Vec<(String, String)>;
 }
 
+/// One monitor showing a Bandit wallpaper: Wallpaper Engine's key for it and the wallpaper's
+/// file (another wallpaper on the same monitor starts from its defaults, so it is sent again).
+pub type Target = (String, String);
+
 /// What has been sent, per monitor, and the pushes that keep it current.
 pub struct Pusher<A: Apply> {
     apply: A,
-    sent: BTreeMap<String, String>,
+    /// Per monitor: the wallpaper's file and the properties it was sent.
+    sent: BTreeMap<String, (String, String)>,
     /// The interface paths, read once per scene placement.
     interfaces: Option<Vec<(String, String)>>,
-    room_seen: Option<Rect>,
+    placement_seen: Option<u64>,
 }
 
 impl<A: Apply> Pusher<A> {
@@ -170,13 +178,13 @@ impl<A: Apply> Pusher<A> {
             apply,
             sent: BTreeMap::new(),
             interfaces: None,
-            room_seen: None,
+            placement_seen: None,
         }
     }
 
     /// Brings every target up to `state`; returns how many monitors were sent something.
-    pub fn sync(&mut self, state: &State, targets: &[String]) -> usize {
-        self.sent.retain(|k, _| targets.contains(k));
+    pub fn sync(&mut self, state: &State, targets: &[Target]) -> usize {
+        self.sent.retain(|k, _| targets.iter().any(|(t, _)| t == k));
         if targets.is_empty() {
             return 0;
         }
@@ -185,13 +193,13 @@ impl<A: Apply> Pusher<A> {
             self.sent.clear();
             return 0;
         }
-        let room = state.scene.as_ref().map(|s| s.room.bounds);
-        if room != self.room_seen {
-            self.room_seen = room;
+        let placement = state.scene.as_ref().map(|s| s.placement);
+        if placement != self.placement_seen {
+            self.placement_seen = placement;
             self.interfaces = None;
         }
         let mut pushed = 0;
-        for location in targets {
+        for (location, file) in targets {
             let monitor = state.scene.as_ref().and_then(|s| {
                 let ifaces = self
                     .interfaces
@@ -199,12 +207,16 @@ impl<A: Apply> Pusher<A> {
                 monitor_rect(location, &s.room, ifaces)
             });
             let props = properties(state, monitor);
-            if self.sent.get(location) == Some(&props) {
+            if self
+                .sent
+                .get(location)
+                .is_some_and(|(f, p)| f == file && *p == props)
+            {
                 continue;
             }
             match self.apply.apply(location, &props) {
                 Ok(()) => {
-                    self.sent.insert(location.clone(), props);
+                    self.sent.insert(location.clone(), (file.clone(), props));
                     pushed += 1;
                 }
                 Err(e) => {
@@ -224,7 +236,7 @@ impl<A: Apply> Pusher<A> {
         }
         let props = gone();
         for location in told {
-            if self.sent.get(&location) != Some(&props) {
+            if self.sent.get(&location).map(|(_, p)| p) != Some(&props) {
                 let _ = self.apply.apply(&location, &props);
             }
         }
@@ -242,9 +254,12 @@ enum Wake {
 #[derive(Default)]
 struct Shared {
     state: State,
-    /// Wallpaper Engine's keys of the monitors showing a Bandit wallpaper.
-    targets: Vec<String>,
+    /// The monitors showing a Bandit wallpaper.
+    targets: Vec<Target>,
     wake: Option<Sender<Wake>>,
+    /// Foxglove is quitting: no worker starts again.
+    quitting: bool,
+    placements: u64,
 }
 
 static SHARED: Mutex<Option<Shared>> = Mutex::new(None);
@@ -270,20 +285,25 @@ pub fn scene_started(id: &str, effect: &Effect, clock: Clock, room: RoomMap) {
         "Foxglove: wallpaper sync: scene {id} on epoch {} ms",
         clock.epoch_unix_ms()
     );
-    let scene = Scene {
-        id: id.to_string(),
-        effect: effect.clone(),
-        clock,
-        room,
-    };
-    changed(|s| s.state.scene = Some(scene));
+    changed(|s| {
+        s.placements += 1;
+        s.state.scene = Some(Scene {
+            id: id.to_string(),
+            effect: effect.clone(),
+            clock,
+            room,
+            placement: s.placements,
+        });
+    });
 }
 
 /// The running scene placed its devices again.
 pub fn scene_room(room: RoomMap) {
     changed(|s| {
+        s.placements += 1;
         if let Some(scene) = s.state.scene.as_mut() {
             scene.room = room;
+            scene.placement = s.placements;
         }
     });
 }
@@ -294,10 +314,10 @@ pub fn scene_stopped() {
 }
 
 /// The wallpapers on screen, from Wallpaper Engine's config (`wallpaper.rs`, on each change):
-/// `targets` are the monitors showing a Bandit wallpaper, empty without Wallpaper Engine or
-/// while it isn't running. The first non-empty list starts the worker.
-pub fn wallpapers(targets: Vec<String>) {
-    let start = with(|s| s.wake.is_none() && !targets.is_empty());
+/// `targets` are the monitors showing a Bandit wallpaper (and its file), empty without Wallpaper
+/// Engine or while it isn't running. The first non-empty list starts the worker.
+pub fn wallpapers(targets: Vec<Target>) {
+    let start = with(|s| s.wake.is_none() && !s.quitting && !targets.is_empty());
     if start {
         start_worker();
     }
@@ -307,7 +327,10 @@ pub fn wallpapers(targets: Vec<String>) {
 /// Quitting: tells the wallpapers Foxglove has gone (bounded), so they don't keep showing a
 /// layer that no longer is.
 pub fn quit() {
-    let Some(wake) = with(|s| s.wake.take()) else {
+    let Some(wake) = with(|s| {
+        s.quitting = true;
+        s.wake.take()
+    }) else {
         return;
     };
     let (tx, rx) = mpsc::channel();
@@ -405,6 +428,11 @@ impl Apply for Cli {
     }
 
     fn apply(&mut self, location: &str, props: &str) -> Result<(), String> {
+        // Checked again before every push: if Wallpaper Engine quit meanwhile, its command
+        // line would start it.
+        if !super::wallpaper_engine::running_now() {
+            return Err("Wallpaper Engine isn't running".into());
+        }
         let exe = self.exe.clone().ok_or("no Wallpaper Engine program")?;
         let (args, raw) = arguments(location, props);
         run_cli(&exe, &args, &raw)
@@ -543,6 +571,7 @@ mod tests {
             effect: super::super::scene_run::demo_effect(),
             clock: Clock::aligned(1_761_000_000_000),
             room: room(),
+            placement: 1,
         }
     }
 
@@ -636,7 +665,11 @@ mod tests {
     #[test]
     fn pushes_go_only_on_change_and_only_while_wallpaper_engine_runs() {
         let mut fake = Fake::default();
-        let targets = vec![WE_LEFT.to_string(), WE_RIGHT.to_string()];
+        let hud = "C:/WE/projects/myprojects/bandit-hud/index.html".to_string();
+        let targets = vec![
+            (WE_LEFT.to_string(), hud.clone()),
+            (WE_RIGHT.to_string(), hud.clone()),
+        ];
         let mut state = State::default();
         {
             let mut p = Pusher::new(&mut fake);
@@ -658,19 +691,27 @@ mod tests {
         state.scene = Some(scene());
         assert_eq!(p.sync(&state, &targets), 2, "a scene start");
         assert_eq!(p.sync(&state, &targets), 0);
+        // Another wallpaper on one monitor starts from its defaults: it is sent again.
+        let radar = "C:/WE/projects/myprojects/bandit-bandit-radar/index.html".to_string();
+        let swapped = vec![targets[0].clone(), (WE_RIGHT.to_string(), radar)];
+        assert_eq!(p.sync(&state, &swapped), 1, "a swapped wallpaper");
+        assert_eq!(p.sync(&state, &swapped), 0);
+        // The devices placed again: the interface paths are read again.
+        state.scene.as_mut().unwrap().placement = 2;
+        assert_eq!(p.sync(&state, &swapped), 0, "same room, nothing to send");
         state.scene = None;
         assert_eq!(p.sync(&state, &targets), 2, "a scene stop");
         assert_eq!(p.sync(&state, &[]), 0, "no Bandit wallpaper: nothing");
         p.quit();
         drop(p);
-        assert_eq!(fake.pushes.len(), 8);
+        assert_eq!(fake.pushes.len(), 9);
         assert_eq!(
-            fake.interface_reads, 1,
+            fake.interface_reads, 2,
             "interfaces read once per scene placement"
         );
         let scene_push = &fake.pushes[4].1;
         assert!(scene_push.contains("v=1;id=demo-scanline;fx=scanline"));
-        assert!(fake.pushes[6].1.ends_with(r#""foxglove_scene":""}"#));
+        assert!(fake.pushes[7].1.ends_with(r#""foxglove_scene":""}"#));
     }
 
     #[test]
@@ -679,7 +720,7 @@ mod tests {
             running: true,
             ..Fake::default()
         };
-        let targets = vec![WE_LEFT.to_string()];
+        let targets = vec![(WE_LEFT.to_string(), "bandit-hud".to_string())];
         let state = State {
             layer: Some("GAME".into()),
             game: true,

@@ -264,16 +264,16 @@ fn find_in(
     find(index, &on_screen(text, source), monitor).cloned()
 }
 
-/// Wallpaper Engine's keys of the monitors whose wallpaper is in the index (a Bandit wallpaper);
-/// none from any other source.
-fn bandit_monitors(index: &[Wallpaper], text: &str, source: &Source) -> Vec<String> {
+/// The monitors whose wallpaper is in the index (a Bandit wallpaper): Wallpaper Engine's key and
+/// the wallpaper's file. None from any other source.
+fn bandit_monitors(index: &[Wallpaper], text: &str, source: &Source) -> Vec<(String, String)> {
     if !matches!(source, Source::Engine(_)) {
         return Vec::new();
     }
     let on = selected(text);
     on.iter()
         .filter(|(m, _)| find(index, &on, Some(m)).is_some())
-        .map(|(m, _)| m.clone())
+        .cloned()
         .collect()
 }
 
@@ -412,10 +412,11 @@ mod tests {
             "//?/DISPLAY#SAM0E3C#2":{"file":"C:/WE/projects/myprojects/bandit-hud/index.html"},
             "Monitor0":{"file":"C:/WE/workshop/content/431960/3000562427/scene.pkg"}}}}}}"#;
         let engine = Source::Engine(PathBuf::new());
-        assert_eq!(
-            bandit_monitors(&index, config, &engine),
-            ["//?/DISPLAY#DEL40EA#1", "//?/DISPLAY#SAM0E3C#2"]
-        );
+        let keys: Vec<String> = bandit_monitors(&index, config, &engine)
+            .into_iter()
+            .map(|(m, _)| m)
+            .collect();
+        assert_eq!(keys, ["//?/DISPLAY#DEL40EA#1", "//?/DISPLAY#SAM0E3C#2"]);
         assert!(bandit_monitors(&index, "hud", &Source::Override(PathBuf::new())).is_empty());
         assert!(bandit_monitors(&index, config, &Source::Desktop).is_empty());
     }
