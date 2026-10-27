@@ -1,0 +1,99 @@
+{
+  "format": "foxglove-scenes",
+  "version": 1,
+  "about": "Built-in scenes matched to the Bandit wallpapers (#488). Colours come from each wallpaper's own theme in bandit-wallpapers (shared/*.js, wallpapers/*/main.js); art names from its dist/keyboard/manifest.json. Spec: docs/lighting-presets.md, Scenes.",
+  "palettes": [
+    { "name": "FURY", "stops": ["#c8342b", "#ece5d5", "#0e0d0c"] },
+    { "name": "Night sky", "stops": ["#d9a441", "#efe6cf", "#111829", "#070a12"] },
+    { "name": "Skyline", "stops": ["#f2c46b", "#efe6cf", "#1a2133", "#04060b"] },
+    { "name": "Hearth", "stops": ["#f08a2b", "#ffb35c", "#5b3a63", "#1a1220"] },
+    { "name": "Moon garden", "stops": ["#9db38c", "#ffd27a", "#5b3a63", "#1a1220"] },
+    { "name": "Sabbats", "stops": ["#8fb07c", "#d6a647", "#c7714a", "#f2d4dc", "#5b3a63"] }
+  ],
+  "presets": [
+    {
+      "wallpaper": "hud",
+      "name": "Bandit HUD",
+      "motif": "The HUD's scan: Bandit orange down the room over night blue",
+      "look": { "kind": "scanline", "colour": "#e5732b", "background": "night", "speed": 5, "direction": "down", "width_mm": 80 },
+      "art": { "builtin": "Bandit_Idle", "library": "hud.bin" }
+    },
+    {
+      "wallpaper": "bandit-radar",
+      "name": "Bandit Radar",
+      "motif": "The scope's sweep: a wide cream band crossing the room",
+      "look": { "kind": "scanline", "colour": "#e8dcc4", "background": "night", "speed": 4, "direction": "right", "width_mm": 140 },
+      "art": { "builtin": "Bandit_Radar", "library": "bandit-radar.bin" }
+    },
+    {
+      "wallpaper": "bandit-skyline",
+      "name": "Bandit Skyline",
+      "motif": "Searchlights over the city: window gold and moonlight scrolling slowly",
+      "look": { "kind": "sweep", "palette": "Skyline", "speed": 2, "direction": "right" },
+      "art": { "builtin": "Bandit_Skyline", "library": "bandit-skyline.bin" }
+    },
+    {
+      "wallpaper": "courier",
+      "name": "Bandit Courier",
+      "motif": "A packet in transit: a thin paper-white line along the route",
+      "look": { "kind": "scanline", "colour": "#e6e1d6", "background": "off", "speed": 4, "direction": "right", "width_mm": 40 },
+      "art": { "builtin": "Bandit_Uplink", "library": "courier.bin" }
+    },
+    {
+      "wallpaper": "fury-print",
+      "name": "FURY Print",
+      "motif": "The squeegee pass: vermilion and paper ink swept across",
+      "look": { "kind": "sweep", "palette": "FURY", "speed": 3, "direction": "right" },
+      "art": { "library": "fury-print.bin", "bundled": "fury.bin", "fallback": "Bandit_Emblem" }
+    },
+    {
+      "wallpaper": "fury-chase",
+      "name": "FURY Chase",
+      "motif": "Ink specks on the beat: vermilion rings from the keys",
+      "look": { "kind": "ripple", "colour": "#c8342b", "background": "off", "speed": 7, "width_mm": 60 },
+      "art": { "library": "fury-chase.bin", "bundled": "fury.bin", "fallback": "Bandit_Emblem" }
+    },
+    {
+      "wallpaper": "fury-pattern",
+      "name": "FURY Pattern",
+      "motif": "The drifting repeat: large soft patches of FURY ink",
+      "look": { "kind": "drift", "palette": "FURY", "speed": 2, "width_mm": 220 },
+      "art": { "library": "fury-pattern.bin", "bundled": "fury.bin", "fallback": "Bandit_Emblem" }
+    },
+    {
+      "wallpaper": "fury-stars",
+      "name": "FURY Constellations",
+      "motif": "Stars swelling: small gold and cream points on a night sky",
+      "look": { "kind": "drift", "palette": "Night sky", "speed": 4, "width_mm": 70 },
+      "art": { "library": "fury-stars.bin", "bundled": "constellations.bin", "fallback": "Bandit_Emblem" }
+    },
+    {
+      "wallpaper": "fury-forest",
+      "name": "FURY Forest",
+      "motif": "Snow through the pines: a wide pale band falling slowly",
+      "look": { "kind": "scanline", "colour": "#c9d3e3", "background": "night", "speed": 2, "direction": "down", "width_mm": 200 },
+      "art": { "library": "fury-forest.bin", "bundled": "fury.bin", "fallback": "Bandit_Emblem" }
+    },
+    {
+      "wallpaper": "hearth-cauldron",
+      "name": "Cauldron Corner",
+      "motif": "The hearth fire: quick embers of orange and plum",
+      "look": { "kind": "drift", "palette": "Hearth", "speed": 6, "width_mm": 90 },
+      "art": { "library": "hearth-cauldron.bin", "bundled": "hearth.bin", "fallback": "Bandit_Emblem" }
+    },
+    {
+      "wallpaper": "hearth-moongarden",
+      "name": "Moon Garden",
+      "motif": "Herbs swaying under the moon: sage, lantern gold and plum night",
+      "look": { "kind": "drift", "palette": "Moon garden", "speed": 2, "width_mm": 260 },
+      "art": { "library": "hearth-moongarden.bin", "bundled": "moon-garden.bin", "fallback": "Bandit_Emblem" }
+    },
+    {
+      "wallpaper": "hearth-wheel",
+      "name": "Wheel of the Year",
+      "motif": "The turning seasons: the sabbats' colours scrolling at the slowest speed",
+      "look": { "kind": "sweep", "palette": "Sabbats", "speed": 1, "direction": "right" },
+      "art": { "library": "hearth-wheel.bin", "bundled": "hearth.bin", "fallback": "Bandit_Emblem" }
+    }
+  ]
+}

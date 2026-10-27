@@ -1208,7 +1208,11 @@ fn scenes_page_renders() {
     let mut s = Samples::full();
     s.scenes = (
         View {
-            look: crate::foxglove::scene_looks::built_in()[3].look.clone(),
+            look: crate::foxglove::scene_looks::built_in()
+                .into_iter()
+                .find(|p| p.name == "Steel sweep")
+                .unwrap()
+                .look,
             running: None,
             ..tests::sample()
         },
@@ -1228,6 +1232,117 @@ fn scenes_page_renders() {
     assert!(count(&with, DARK.surface) > (with.width() * with.height()) as usize / 20);
     assert_ne!(with, without);
     assert_ne!(with, dragging);
+}
+
+/// The Bandit wallpapers' looks on the Scenes page (#488): one running with "Right screen too"
+/// and its wallpaper on screen, and one picked with nothing running, at the window's default
+/// size (one column).
+#[test]
+fn scenes_wallpaper_presets_render() {
+    use crate::foxglove::scene_looks::scenes;
+    use crate::foxglove::scenes_ui::{tests, View};
+    use crate::foxglove::shell::Page;
+    let look = |id: &str| {
+        scenes()
+            .looks
+            .iter()
+            .find(|w| w.wallpaper == id)
+            .unwrap()
+            .preset
+            .clone()
+    };
+    let mut s = Samples::full();
+    let fury = look("fury-chase");
+    s.scenes.0 = View {
+        look: fury.look.clone(),
+        running: Some(fury.name.clone()),
+        with_art: true,
+        on_screen: vec!["fury-chase".into()],
+        t: foxglove_scene::SceneTime(600),
+        ..tests::sample()
+    };
+    let running = shell_preview_with(Page::Scenes, &s, 1100.0);
+    keep("ui-scenes-presets-running.png", &running);
+    let moon = look("hearth-moongarden");
+    s.scenes.0 = View {
+        look: moon.look.clone(),
+        on_screen: vec!["hearth-moongarden".into(), "hud".into()],
+        ..tests::sample_none()
+    };
+    let picked = shell_preview_with(Page::Scenes, &s, 1100.0);
+    keep("ui-scenes-presets-picked.png", &picked);
+    assert_ne!(running, picked);
+}
+
+/// The review sheet for #488: each Bandit wallpaper's look rendered from the real effect code
+/// over a room (a monitor above the keyboard), six moments of one cycle per row, and a GIF of
+/// each look's cycle. Written only with FOXGLOVE_UI_PREVIEW_DIR set.
+#[test]
+fn scenes_wallpaper_preset_sheet() {
+    use crate::foxglove::scene_looks::scenes;
+    use foxglove_scene::{Point, Rgb, SceneTime};
+    let Some(dir) = std::env::var_os("FOXGLOVE_UI_PREVIEW_DIR") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let room = crate::foxglove::scene_room::tests::sample_room();
+    let bounds = room.bounds;
+    let (w, h) = (
+        160u32,
+        (160.0 * bounds.h / bounds.w).round().max(40.0) as u32,
+    );
+    let frame = |effect: &foxglove_scene::Effect, t: SceneTime| {
+        image::RgbaImage::from_fn(w, h, |x, y| {
+            let at = Point::new(
+                bounds.x + bounds.w * (x as f32 + 0.5) / w as f32,
+                bounds.y + bounds.h * (y as f32 + 0.5) / h as f32,
+            );
+            let Rgb([r, g, b]) = effect.colour(at, t, &bounds);
+            image::Rgba([r, g, b, 255])
+        })
+    };
+    let looks = &scenes().looks;
+    let gap = 6u32;
+    let cols = 6u32;
+    let mut sheet = image::RgbaImage::from_pixel(
+        cols * (w + gap) + gap,
+        looks.len() as u32 * (h + gap) + gap,
+        image::Rgba([0x09, 0x0a, 0x0c, 255]),
+    );
+    for (row, wl) in looks.iter().enumerate() {
+        let effect = wl.preset.look.effect(&room);
+        // One whole cycle (Drift's is four of its speed's periods).
+        let speed_ms = i64::from(crate::foxglove::scene_looks::period_ms(
+            wl.preset.look.speed,
+        ));
+        let period = match wl.preset.look.kind {
+            crate::foxglove::scene_looks::Kind::Drift => speed_ms * 4,
+            _ => speed_ms,
+        };
+        for c in 0..cols {
+            let t = SceneTime(period * i64::from(c) / i64::from(cols));
+            let img = frame(&effect, t);
+            image::imageops::overlay(
+                &mut sheet,
+                &img,
+                i64::from(gap + c * (w + gap)),
+                i64::from(gap + row as u32 * (h + gap)),
+            );
+        }
+        let path = dir.join(format!("ui-scenes-presets-{}.gif", wl.wallpaper));
+        let file = std::fs::File::create(&path).expect("create the gif");
+        let mut gif = image::codecs::gif::GifEncoder::new_with_speed(file, 10);
+        gif.set_repeat(image::codecs::gif::Repeat::Infinite)
+            .expect("loop the gif");
+        let n = 16;
+        let delay = image::Delay::from_numer_denom_ms((period / n) as u32, 1);
+        for k in 0..n {
+            let img = frame(&effect, SceneTime(period * k / n));
+            gif.encode_frame(image::Frame::from_parts(img, 0, 0, delay))
+                .expect("a gif frame");
+        }
+    }
+    keep("ui-scenes-presets-sheet.png", &sheet);
 }
 
 /// The preview asks for frames only while the Scenes page is drawn (#487): another page, with

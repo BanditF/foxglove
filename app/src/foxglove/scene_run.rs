@@ -97,6 +97,33 @@ struct Running {
 
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
 
+/// The right-screen art the running scene shows (a wallpaper look's, #488): `None` while no
+/// scene takes art (none runs, or it is ending), `Some(None)` for a scene without art.
+static ART: Mutex<Option<Option<super::art_cycle::Item>>> = Mutex::new(None);
+
+/// The running scene shows this right-screen art, or none. A no-op when no scene runs; the
+/// scene's end puts back the art from before it (the art service's preset slot).
+pub fn set_art(art: Option<super::art_cycle::Item>) {
+    let mut cur = ART.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(shown) = cur.as_mut() else {
+        return;
+    };
+    if *shown == art {
+        return;
+    }
+    *shown = art.clone();
+    if let Some(h) = super::art_service::handle() {
+        h.preset_art(art);
+    }
+}
+
+/// Repaints the Scenes page, if it was ever shown (a wallpaper change, for its "On screen").
+pub fn repaint_page() {
+    if let Some(ctx) = PAGE.get() {
+        ctx.request_repaint();
+    }
+}
+
 /// What diagnostics says about scenes.
 #[derive(Clone, Debug, Default)]
 struct Status {
@@ -174,6 +201,8 @@ pub fn start(name: &str, effect: Effect, limit: Option<Duration>) -> bool {
     let shown = name.to_string();
     let name = name.to_string();
     let clock = Clock::starting_now();
+    // Before the thread, whose end (even a failed start) takes it back.
+    *ART.lock().unwrap_or_else(|e| e.into_inner()) = Some(None);
     let thread = super::services::spawn_named("scene-control", move || {
         control(&name, effect, limit, clock, &own, &rx)
     });
@@ -368,6 +397,13 @@ impl Drop for GiveBack {
         // Idempotent: nothing to end when the keyboard writer already gave it back.
         super::api::end_leases(|l| l.conn == SCENE_CONN);
         super::wallpaper_sync::scene_stopped();
+        // The art from before the scene, when it showed a wallpaper's.
+        let art = ART.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if matches!(art, Some(Some(_))) {
+            if let Some(h) = super::art_service::handle() {
+                h.preset_art(None);
+            }
+        }
         let case_back = super::pc_lights::end_scene(GIVE_BACK);
         eprintln!(
             "Foxglove: scene {} ended ({}){}",

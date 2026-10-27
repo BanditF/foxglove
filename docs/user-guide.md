@@ -299,6 +299,13 @@ scanline can run down the monitors, through the case's fans and on into the keys
   paused.
 - **Presets:** pick one to load its look. To keep your own, type a name under **Save as
   preset** and click **Save**; **Remove** deletes one of yours.
+- **Bandit wallpapers:** the first presets are looks matched to the twelve Bandit wallpapers
+  (Bandit HUD, Radar, Skyline, Courier, the FURY five, Cauldron Corner, Moon Garden, Wheel of
+  the Year), in each wallpaper's own colours. They work with any wallpaper, or none. The one
+  Wallpaper Engine shows now says **On screen**. Tick **Right screen too** and, while one of
+  them runs, the right screen shows that wallpaper's art; Stop puts your art back. With
+  Wallpaper Engine showing a Bandit wallpaper, the wallpaper follows the scene's clock as soon
+  as it starts or its look changes.
 
 Each profile keeps its own scene, so switching to Game can bring a different look; your saved
 presets are the same in every profile.
