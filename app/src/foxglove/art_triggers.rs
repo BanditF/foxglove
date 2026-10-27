@@ -90,7 +90,8 @@ impl Triggers {
         }
     }
 
-    /// A lighting preset was applied (`Some`, its art) or cleared (`None`).
+    /// A preset's art: a running scene's wallpaper art (#488, `scene_run::set_art`), `Some`,
+    /// or none any more (`None`).
     pub fn preset(&mut self, art: Option<Item>) -> Change {
         if self.preset == art {
             return Change::Nothing;

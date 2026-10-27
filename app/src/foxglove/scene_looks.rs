@@ -4,12 +4,21 @@
 //!   `store::PROFILED`), so each profile keeps its own scene;
 //! - the user's saved presets in `[scene_presets]`, the same in every profile.
 //!
-//! The built-in presets are [`built_in`]. Presets made for each Bandit wallpaper are #488: they
-//! go in [`wallpaper_presets`], which the list already includes.
+//! The built-in presets are [`built_in`]: first the looks matched to the twelve Bandit
+//! wallpapers (#488, [`wallpaper_presets`]), then one per effect. The wallpapers' looks, their
+//! palettes and their right-screen art come from `app/resources/scenes.json` (format
+//! `foxglove-scenes` v1). Each works with no wallpaper and no other app: a look is only an
+//! effect and its colours. With Wallpaper Engine showing that wallpaper, the scene's clock
+//! reaches it through wallpaper sync (#493) when the scene starts or its look changes.
+
+use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
 use foxglove_scene::{DeviceKind, Effect, Point, Rgb, RoomMap};
+
+use super::art_cycle::Item;
 
 /// The store section with the chosen look (profiled).
 pub const SECTION: &str = "scenes";
@@ -189,16 +198,21 @@ pub const PALETTES: [(&str, &[[u8; 3]]); 5] = [
     ),
 ];
 
-/// A palette's stops; an unknown name (a palette since removed) is the first.
+/// A palette's stops: one of [`PALETTES`] or a wallpaper's (`scenes.json`). An unknown name (a
+/// palette since removed) is the first.
 pub fn palette(name: &str) -> Vec<Rgb> {
-    PALETTES
-        .iter()
-        .find(|(n, _)| *n == name)
-        .unwrap_or(&PALETTES[0])
-        .1
-        .iter()
-        .map(|c| Rgb(*c))
-        .collect()
+    if let Some((_, stops)) = PALETTES.iter().find(|(n, _)| *n == name) {
+        return stops.iter().map(|c| Rgb(*c)).collect();
+    }
+    if let Some(p) = scenes().palettes.iter().find(|p| p.name == name) {
+        return p.stops.clone();
+    }
+    PALETTES[0].1.iter().map(|c| Rgb(*c)).collect()
+}
+
+/// The palette is one Foxglove knows (its own or a wallpaper's).
+pub fn known_palette(name: &str) -> bool {
+    PALETTES.iter().any(|(n, _)| *n == name) || scenes().palettes.iter().any(|p| p.name == name)
 }
 
 /// Speed 1 (slowest) to 10: one cycle's length, in milliseconds. Speed 5 is the demo's 4 s.
@@ -264,7 +278,7 @@ impl Look {
     pub fn clamped(mut self) -> Look {
         self.speed = self.speed.clamp(*SPEEDS.start(), *SPEEDS.end());
         self.width_mm = self.width_mm.clamp(*WIDTHS.start(), *WIDTHS.end());
-        if !PALETTES.iter().any(|(n, _)| *n == self.palette) {
+        if !known_palette(&self.palette) {
             self.palette = PALETTES[0].0.into();
         }
         self
@@ -393,10 +407,204 @@ pub fn built_in() -> Vec<Preset> {
     out
 }
 
-/// The hook for #488: presets made for each Bandit wallpaper (and, with it, the wallpaper's
-/// clock). None yet.
+/// The presets made for each Bandit wallpaper (#488), in the file's order.
 pub fn wallpaper_presets() -> Vec<Preset> {
-    Vec::new()
+    scenes().looks.iter().map(|w| w.preset.clone()).collect()
+}
+
+/// The wallpaper look this is, if it is one.
+pub fn wallpaper_look(look: &Look) -> Option<&'static WallpaperLook> {
+    scenes().looks.iter().find(|w| w.preset.look == *look)
+}
+
+/// The built-in scenes file: the Bandit wallpapers' palettes and looks.
+const SCENES_JSON: &str = include_str!("../../resources/scenes.json");
+pub const SCENES_FORMAT: &str = "foxglove-scenes";
+pub const SCENES_VERSION: u32 = 1;
+
+/// A wallpaper's right-screen art, tried in this order: the keyboard's built-in set, the
+/// wallpaper's own file in the art folder (bandit-wallpapers installs it there), the copy that
+/// ships with Foxglove, then another built-in set.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Art {
+    pub builtin: Option<String>,
+    pub library: Option<String>,
+    pub bundled: Option<String>,
+    pub fallback: Option<String>,
+}
+
+impl Art {
+    /// The art to show. `library` finds a file in the art folder; `bundled` copies a set that
+    /// ships with Foxglove into it.
+    pub fn item(
+        &self,
+        library: impl Fn(&str) -> Option<PathBuf>,
+        bundled: impl Fn(&str) -> Option<PathBuf>,
+    ) -> Option<Item> {
+        if let Some(b) = &self.builtin {
+            return Some(Item::BuiltIn(b.clone()));
+        }
+        self.library
+            .as_deref()
+            .and_then(library)
+            .or_else(|| self.bundled.as_deref().and_then(bundled))
+            .map(Item::File)
+            .or_else(|| self.fallback.clone().map(Item::BuiltIn))
+    }
+}
+
+/// One Bandit wallpaper's look.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WallpaperLook {
+    /// The wallpaper's id in bandit-wallpapers (its folder name, as `wallpapers.json` has it).
+    pub wallpaper: String,
+    /// What the look takes from the wallpaper, for the preset's hover.
+    pub motif: String,
+    pub preset: Preset,
+    pub art: Art,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NamedPalette {
+    pub name: String,
+    pub stops: Vec<Rgb>,
+}
+
+/// `scenes.json`, read.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Scenes {
+    pub palettes: Vec<NamedPalette>,
+    pub looks: Vec<WallpaperLook>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScenesFile {
+    format: String,
+    version: u32,
+    #[serde(default, rename = "about")]
+    _about: String,
+    palettes: Vec<FilePalette>,
+    presets: Vec<FilePreset>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FilePalette {
+    name: String,
+    stops: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FilePreset {
+    wallpaper: String,
+    name: String,
+    motif: String,
+    look: FileLook,
+    #[serde(default)]
+    art: Art,
+}
+
+/// A look as the file writes it: colours in hex, and only what the effect uses.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileLook {
+    kind: Kind,
+    colour: Option<String>,
+    background: Option<Background>,
+    palette: Option<String>,
+    speed: Option<u8>,
+    direction: Option<Direction>,
+    width_mm: Option<u16>,
+}
+
+fn hex(s: &str) -> Result<[u8; 3], String> {
+    let h = s
+        .strip_prefix('#')
+        .filter(|h| h.len() == 6 && h.is_ascii())
+        .ok_or_else(|| format!("{s:?} is not #rrggbb"))?;
+    let byte = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).map_err(|e| format!("{s:?}: {e}"));
+    Ok([byte(0)?, byte(2)?, byte(4)?])
+}
+
+/// Reads a scenes file: every colour, palette, range and name checked.
+pub fn parse_scenes(text: &str) -> Result<Scenes, String> {
+    let file: ScenesFile = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    if file.format != SCENES_FORMAT || file.version != SCENES_VERSION {
+        return Err(format!("not {SCENES_FORMAT} v{SCENES_VERSION}"));
+    }
+    let mut palettes: Vec<NamedPalette> = Vec::new();
+    for p in file.palettes {
+        if p.stops.len() < 2 {
+            return Err(format!("palette {} needs two colours", p.name));
+        }
+        if PALETTES.iter().any(|(n, _)| *n == p.name) || palettes.iter().any(|q| q.name == p.name) {
+            return Err(format!("palette {} is named twice", p.name));
+        }
+        let stops = p
+            .stops
+            .iter()
+            .map(|s| hex(s).map(Rgb))
+            .collect::<Result<_, _>>()?;
+        palettes.push(NamedPalette {
+            name: p.name,
+            stops,
+        });
+    }
+    let mut looks: Vec<WallpaperLook> = Vec::new();
+    for p in file.presets {
+        let name = p.name.trim().to_string();
+        if name.is_empty() || name.chars().count() > NAME_MAX {
+            return Err(format!("preset name {:?}", p.name));
+        }
+        if looks
+            .iter()
+            .any(|w| w.preset.name.eq_ignore_ascii_case(&name) || w.wallpaper == p.wallpaper)
+        {
+            return Err(format!("{name} ({}) is there twice", p.wallpaper));
+        }
+        let f = p.look;
+        let d = Look::default();
+        let look = Look {
+            kind: f.kind,
+            colour: f
+                .colour
+                .as_deref()
+                .map(hex)
+                .transpose()?
+                .unwrap_or(d.colour),
+            background: f.background.unwrap_or(d.background),
+            palette: f.palette.unwrap_or(d.palette),
+            speed: f.speed.unwrap_or(d.speed),
+            direction: f.direction.unwrap_or(d.direction),
+            width_mm: f.width_mm.unwrap_or(d.width_mm),
+        };
+        let palette_known = PALETTES.iter().any(|(n, _)| *n == look.palette)
+            || palettes.iter().any(|q| q.name == look.palette);
+        if !palette_known || !SPEEDS.contains(&look.speed) || !WIDTHS.contains(&look.width_mm) {
+            return Err(format!("{name}: palette, speed or width out of range"));
+        }
+        looks.push(WallpaperLook {
+            wallpaper: p.wallpaper,
+            motif: p.motif,
+            preset: Preset { name, look },
+            art: p.art,
+        });
+    }
+    Ok(Scenes { palettes, looks })
+}
+
+/// The scenes file that ships with Foxglove, read once (a test checks it reads).
+pub fn scenes() -> &'static Scenes {
+    static SCENES: OnceLock<Scenes> = OnceLock::new();
+    SCENES.get_or_init(|| {
+        parse_scenes(SCENES_JSON).unwrap_or_else(|e| {
+            eprintln!("Foxglove: the built-in scenes file doesn't read: {e}");
+            Scenes::default()
+        })
+    })
 }
 
 /// The `[scenes]` section: the chosen look.
@@ -404,6 +612,18 @@ pub fn wallpaper_presets() -> Vec<Preset> {
 #[serde(default)]
 pub struct Chosen {
     pub look: Look,
+    /// A wallpaper's look also shows that wallpaper's right-screen art while it runs.
+    pub with_art: bool,
+}
+
+impl Chosen {
+    /// The right-screen art a running scene of this look shows, if any.
+    pub fn art(&self) -> Option<&'static Art> {
+        self.with_art
+            .then(|| wallpaper_look(&self.look))
+            .flatten()
+            .map(|w| &w.art)
+    }
 }
 
 /// The `[scene_presets]` section: the user's own presets, in the order saved.
@@ -493,16 +713,161 @@ pub fn save_saved(s: &Saved) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foxglove_scene::{DeviceInfo, Layout};
+    use foxglove_scene::{DeviceInfo, Layout, SceneTime};
 
     #[test]
-    fn the_first_preset_is_the_demo_scene() {
+    fn the_wallpapers_come_first_then_the_demo_scene() {
         let room = RoomMap::default();
+        let all = built_in();
+        let n = wallpaper_presets().len();
+        assert_eq!(all[..n], wallpaper_presets()[..]);
+        assert_eq!(all[n].name, "Bandit scanline");
         assert_eq!(
-            built_in()[0].look.effect(&room),
+            all[n].look.effect(&room),
             super::super::scene_run::demo_effect()
         );
-        assert!(wallpaper_presets().is_empty(), "the hook for #488");
+    }
+
+    /// The twelve wallpapers in bandit-wallpapers (`dist/keyboard/manifest.json`).
+    const WALLPAPERS: [&str; 12] = [
+        "hud",
+        "bandit-radar",
+        "bandit-skyline",
+        "courier",
+        "fury-print",
+        "fury-chase",
+        "fury-pattern",
+        "fury-stars",
+        "fury-forest",
+        "hearth-cauldron",
+        "hearth-moongarden",
+        "hearth-wheel",
+    ];
+
+    #[test]
+    fn the_scenes_file_has_a_look_for_every_bandit_wallpaper() {
+        let s = parse_scenes(SCENES_JSON).expect("scenes.json reads");
+        assert_eq!(&s, scenes());
+        let ids: Vec<&str> = s.looks.iter().map(|w| w.wallpaper.as_str()).collect();
+        assert_eq!(ids, WALLPAPERS);
+        let room = RoomMap::default();
+        let bundled: Vec<&str> = super::super::art_pieces::BUNDLED
+            .iter()
+            .map(|b| b.0)
+            .collect();
+        for w in &s.looks {
+            let look = &w.preset.look;
+            assert_eq!(&look.clone().clamped(), look, "{}: in range", w.wallpaper);
+            assert!(known_palette(&look.palette));
+            assert!(!w.motif.is_empty());
+            // Every look runs on its own: with no room, no wallpaper and no other app.
+            let effect = look.effect(&room);
+            let _ = effect.colour(Point::new(10.0, 10.0), SceneTime(1234), &room.bounds);
+            // Its art: a built-in set, or the wallpaper's file with a bundled copy and a set
+            // to fall back to.
+            let a = &w.art;
+            assert!(a.library.as_deref() == Some(&format!("{}.bin", w.wallpaper)));
+            assert!(
+                a.builtin.is_some() || (a.bundled.is_some() && a.fallback.is_some()),
+                "{}",
+                w.wallpaper
+            );
+            if let Some(b) = &a.bundled {
+                assert!(bundled.contains(&b.as_str()), "{b} ships with Foxglove");
+            }
+        }
+        // The wallpapers' palettes are their own, and each is used.
+        for p in &s.palettes {
+            assert!(s.looks.iter().any(|w| w.preset.look.palette == p.name));
+            assert_eq!(palette(&p.name), p.stops);
+        }
+        let names: Vec<_> = built_in()
+            .into_iter()
+            .map(|p| p.name.to_lowercase())
+            .collect();
+        let mut unique = names.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(names.len(), unique.len(), "no two built-ins share a name");
+    }
+
+    #[test]
+    fn a_bad_scenes_file_is_refused() {
+        let ok = r##"{"format":"foxglove-scenes","version":1,"palettes":[{"name":"P","stops":["#000000","#ffffff"]}],
+            "presets":[{"wallpaper":"w","name":"W","motif":"m","look":{"kind":"sweep","palette":"P"}}]}"##;
+        let s = parse_scenes(ok).unwrap();
+        assert_eq!(s.looks[0].preset.look.palette, "P");
+        assert_eq!(s.looks[0].preset.look.speed, Look::default().speed);
+        for (bad, why) in [
+            (ok.replace("version\":1", "version\":2"), "version"),
+            (ok.replace("#ffffff", "#fffff"), "hex"),
+            (
+                ok.replace("\"palette\":\"P\"", "\"palette\":\"Q\""),
+                "palette",
+            ),
+            (
+                ok.replace("\"kind\":\"sweep\"", "\"kind\":\"sweep\",\"speed\":11"),
+                "speed",
+            ),
+            (
+                ok.replace("\"name\":\"P\"", "\"name\":\"Forest\""),
+                "a palette name taken",
+            ),
+            (ok.replace("\"motif\"", "\"motive\""), "an unknown field"),
+        ] {
+            assert!(parse_scenes(&bad).is_err(), "{why}");
+        }
+    }
+
+    #[test]
+    fn wallpaper_art_is_tried_in_order() {
+        let none = |_: &str| None;
+        let file = |n: &str| Some(PathBuf::from(format!("art/{n}")));
+        let built = Art {
+            builtin: Some("Bandit_Idle".into()),
+            library: Some("hud.bin".into()),
+            ..Art::default()
+        };
+        assert_eq!(
+            built.item(file, file),
+            Some(Item::BuiltIn("Bandit_Idle".into()))
+        );
+        let fury = Art {
+            builtin: None,
+            library: Some("fury-chase.bin".into()),
+            bundled: Some("fury.bin".into()),
+            fallback: Some("Bandit_Emblem".into()),
+        };
+        assert_eq!(
+            fury.item(file, file),
+            Some(Item::File("art/fury-chase.bin".into())),
+            "the wallpaper's own art when bandit-wallpapers installed it"
+        );
+        assert_eq!(
+            fury.item(none, file),
+            Some(Item::File("art/fury.bin".into())),
+            "else the bundled copy"
+        );
+        assert_eq!(
+            fury.item(none, none),
+            Some(Item::BuiltIn("Bandit_Emblem".into()))
+        );
+        assert_eq!(Art::default().item(file, file), None);
+    }
+
+    #[test]
+    fn only_a_wallpaper_look_with_art_on_brings_art() {
+        let hud = wallpaper_presets()[0].clone();
+        let mut c = Chosen {
+            look: hud.look.clone(),
+            with_art: false,
+        };
+        assert_eq!(c.art(), None, "off by default");
+        c.with_art = true;
+        assert_eq!(c.art(), Some(&scenes().looks[0].art));
+        assert_eq!(wallpaper_look(&hud.look).unwrap().wallpaper, "hud");
+        c.look.speed = 9;
+        assert_eq!(c.art(), None, "an edited look is the user's own");
     }
 
     #[test]
@@ -622,9 +987,10 @@ mod tests {
         let chosen = Chosen {
             look: Look {
                 kind: Kind::Sweep,
-                palette: "Forest".into(),
+                palette: "Night sky".into(),
                 ..Look::default()
             },
+            with_art: true,
         };
         save_chosen(&chosen);
         let mut saved = Saved::default();
