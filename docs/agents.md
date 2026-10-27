@@ -18,6 +18,20 @@ keyboard). Everything else starts on demand.
 | Code reviewer | `code-reviewer.md` | a subagent, the merge gate |
 | Release | `release.md` | a subagent |
 
+## Feature requests: research & scope gate
+
+Every feature request goes through three steps before a job is briefed:
+1. **Scope:** the Planner checks it against [`scope.md`](scope.md). Out of scope is closed with
+   the reason; unclear gets `needs-decision` and goes to the user through the Hub.
+2. **Research:** the Scout writes it in the issue body's Research section, or as a comment headed
+   "Research" (either counts), in order: **Reuse** (open-market code or
+   crates and their licence), **Emulate** (patterns in existing software), **Design our own**
+   (only when the first two come up empty).
+3. **Design and build:** only then does the Planner brief an engineer.
+
+New feature issues use the Feature template (`.github/ISSUE_TEMPLATE/feature.yml`). Bug fixes
+skip the gate.
+
 ## Starting a job
 
 The Planner (or the Hub) starts one session per issue with a brief like:
