@@ -1,7 +1,9 @@
 # Live wallpaper feed (`foxglove-live` v1)
 
 Foxglove's side of the live keyboard wallpaper (#498, #499). Off by default: Settings → Live
-wallpaper. The code is `app/src/foxglove/live_feed.rs` (runtime) and `live_wire.rs` (format,
+wallpaper. This page is also the public spec: any wallpaper, or another host (#501), can be
+a client. A Wallpaper Engine wallpaper opts in to the port push with its `foxglove.json`
+(docs/wallpaper-manifest.md, `supports: ["foxglove_live"]`). The code is `app/src/foxglove/live_feed.rs` (runtime) and `live_wire.rs` (format,
 checks, batching).
 
 ## Can a Wallpaper Engine wallpaper open `ws://127.0.0.1`? (#320)
@@ -30,9 +32,10 @@ the real check.
   is first turned on. The user pastes it into the wallpaper's "Foxglove pairing token"
   property. It never goes on a command line.
 - **The port:** the feed listens on `8768` by default (`[live_wallpaper] port`). Foxglove tells
-  each Bandit wallpaper the port as the `foxglove_live` property through Wallpaper Engine's
-  command line (`wallpaper_sync`), and sends `0` when it stops. The wallpaper connects when
-  that property changes, so nothing retries on a timer.
+  each wallpaper whose manifest supports `foxglove_live` the port as the `foxglove_live`
+  property through Wallpaper Engine's command line (`wallpaper_sync`), and sends `0` when it
+  stops. The wallpaper connects when that property changes, so nothing retries on a timer. A
+  client outside Wallpaper Engine uses the configured port.
 
 ## Messages
 

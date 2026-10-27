@@ -1,6 +1,7 @@
-//! Wallpaper sync, stage 1 (#493, #377; the plan on #39): Foxglove tells each Bandit wallpaper
-//! the keyboard's layer, whether game mode is on, and the running scene's clock, through
-//! Wallpaper Engine's own command line:
+//! Wallpaper sync, stage 1 (#493, #377; the plan on #39): Foxglove tells each wallpaper that
+//! asks for them (its `foxglove.json` `supports`, #562, docs/wallpaper-manifest.md) the
+//! keyboard's layer, whether game mode is on, the running scene's clock and the live feed's
+//! port, through Wallpaper Engine's own command line:
 //!
 //! ```text
 //! wallpaper64.exe -control applyProperties -location <monitor> -properties RAW~({"foxglove_game":true,"foxglove_layer":"GAME","foxglove_scene":"v=1;..."})~END
@@ -8,8 +9,9 @@
 //!
 //! The wallpaper gets them in `wallpaperPropertyListener.applyUserProperties`, the path the
 //! editor uses, and draws its monitor's part of the scene from the shared epoch
-//! (`foxglove_scene::wallpaper`, `shared/foxglove-sync.js` in bandit-wallpapers). Nothing is
-//! streamed: one push per change, and only to the monitors that show a Bandit wallpaper.
+//! (`foxglove_scene::wallpaper`; `shared/foxglove-sync.js` in bandit-wallpapers is one client).
+//! Nothing is streamed: one push per change, only to the monitors that show such a wallpaper,
+//! and only the properties it supports.
 //!
 //! - **When:** a scene starts, stops or is placed again; the layer or game mode changes; the
 //!   wallpapers on screen change (a new wallpaper gets the current state). A push goes out only
@@ -19,7 +21,7 @@
 //!   layer's name, a bool and the scene's timing, colours and geometry. Never a token.
 //! - **Optional:** without Wallpaper Engine, or while it isn't running, nothing is sent and no
 //!   thread starts (its command line would start it). The worker starts the first time Wallpaper
-//!   Engine shows a Bandit wallpaper.
+//!   Engine shows a wallpaper that supports one of the properties.
 //! - **Game mode:** a layer named GAME... is active (the GAME / GAME+ layers, docs/layers.md).
 //!
 //! Stage 2 (#499): the live socket (`live_feed`) carries key presses and, later, PC stats and
@@ -33,7 +35,10 @@ use std::time::Duration;
 
 use foxglove_scene::{Clock, Effect, Rect, RoomMap, WallpaperScene};
 
-/// The properties the Bandit wallpapers declare (bandit-wallpapers `shared/properties.json`).
+pub use super::wallpaper_manifest::Supports;
+
+/// The properties a wallpaper declares in its `project.json` to receive them (each one its
+/// manifest's `supports` names: `layer`, `gamemode`, `clock`, `foxglove_live`).
 pub const LAYER: &str = "foxglove_layer";
 pub const GAME: &str = "foxglove_game";
 pub const SCENE: &str = "foxglove_scene";
@@ -101,24 +106,31 @@ pub fn game_mode(active: &[u8], names: &[Option<String>]) -> bool {
     })
 }
 
-/// One monitor's properties as compact JSON: no spaces, and no quotes inside the values, so it
-/// passes through `RAW~(...)~END` as typed.
-pub fn properties(state: &State, monitor: Option<Rect>) -> String {
-    let scene = state.scene.as_ref().map_or_else(String::new, |s| {
-        WallpaperScene::new(&s.id, &s.effect, &s.clock, s.room.bounds, monitor).encode()
-    });
-    serde_json::json!({
-        LAYER: state.layer.clone().unwrap_or_default(),
-        GAME: state.game,
-        SCENE: scene,
-        LIVE: state.live.unwrap_or(0),
-    })
-    .to_string()
+/// One monitor's properties as compact JSON, only those its wallpaper supports: no spaces, and
+/// no quotes inside the values, so it passes through `RAW~(...)~END` as typed.
+pub fn properties(state: &State, monitor: Option<Rect>, supports: Supports) -> String {
+    let mut out = serde_json::Map::new();
+    if supports.game {
+        out.insert(GAME.into(), state.game.into());
+    }
+    if supports.layer {
+        out.insert(LAYER.into(), state.layer.clone().unwrap_or_default().into());
+    }
+    if supports.live {
+        out.insert(LIVE.into(), state.live.unwrap_or(0).into());
+    }
+    if supports.clock {
+        let scene = state.scene.as_ref().map_or_else(String::new, |s| {
+            WallpaperScene::new(&s.id, &s.effect, &s.clock, s.room.bounds, monitor).encode()
+        });
+        out.insert(SCENE.into(), scene.into());
+    }
+    serde_json::Value::Object(out).to_string()
 }
 
 /// What quitting leaves: no layer, no game mode, no scene (the wallpaper runs on its own).
-fn gone() -> String {
-    properties(&State::default(), None)
+fn gone(supports: Supports) -> String {
+    properties(&State::default(), None, supports)
 }
 
 /// The command line's arguments after the program, the properties last (they go in raw, as a
@@ -164,15 +176,23 @@ pub trait Apply: Send {
     fn interfaces(&mut self) -> Vec<(String, String)>;
 }
 
-/// One monitor showing a Bandit wallpaper: Wallpaper Engine's key for it and the wallpaper's
-/// file (another wallpaper on the same monitor starts from its defaults, so it is sent again).
-pub type Target = (String, String);
+/// One monitor showing a wallpaper that reads Foxglove's properties.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Target {
+    /// Wallpaper Engine's key for the monitor.
+    pub location: String,
+    /// The wallpaper's file (another wallpaper on the same monitor starts from its defaults, so
+    /// it is sent again).
+    pub file: String,
+    /// What its manifest says it reads.
+    pub supports: Supports,
+}
 
 /// What has been sent, per monitor, and the pushes that keep it current.
 pub struct Pusher<A: Apply> {
     apply: A,
-    /// Per monitor: the wallpaper's file and the properties it was sent.
-    sent: BTreeMap<String, (String, String)>,
+    /// Per monitor: the wallpaper's file, the properties it was sent and what it supports.
+    sent: BTreeMap<String, (String, String, Supports)>,
     /// The interface paths, read once per scene placement.
     interfaces: Option<Vec<(String, String)>>,
     placement_seen: Option<u64>,
@@ -190,7 +210,8 @@ impl<A: Apply> Pusher<A> {
 
     /// Brings every target up to `state`; returns how many monitors were sent something.
     pub fn sync(&mut self, state: &State, targets: &[Target]) -> usize {
-        self.sent.retain(|k, _| targets.iter().any(|(t, _)| t == k));
+        self.sent
+            .retain(|k, _| targets.iter().any(|t| t.location == *k));
         if targets.is_empty() {
             return 0;
         }
@@ -205,24 +226,30 @@ impl<A: Apply> Pusher<A> {
             self.interfaces = None;
         }
         let mut pushed = 0;
-        for (location, file) in targets {
+        for Target {
+            location,
+            file,
+            supports,
+        } in targets
+        {
             let monitor = state.scene.as_ref().and_then(|s| {
                 let ifaces = self
                     .interfaces
                     .get_or_insert_with(|| self.apply.interfaces());
                 monitor_rect(location, &s.room, ifaces)
             });
-            let props = properties(state, monitor);
+            let props = properties(state, monitor, *supports);
             if self
                 .sent
                 .get(location)
-                .is_some_and(|(f, p)| f == file && *p == props)
+                .is_some_and(|(f, p, _)| f == file && *p == props)
             {
                 continue;
             }
             match self.apply.apply(location, &props) {
                 Ok(()) => {
-                    self.sent.insert(location.clone(), (file.clone(), props));
+                    self.sent
+                        .insert(location.clone(), (file.clone(), props, *supports));
                     pushed += 1;
                 }
                 Err(e) => {
@@ -236,17 +263,16 @@ impl<A: Apply> Pusher<A> {
 
     /// Quitting: the monitors that were sent something are told Foxglove has gone.
     pub fn quit(&mut self) {
-        let told: Vec<String> = self.sent.keys().cloned().collect();
+        let told = std::mem::take(&mut self.sent);
         if told.is_empty() || !self.apply.ready() {
             return;
         }
-        let props = gone();
-        for location in told {
-            if self.sent.get(&location).map(|(_, p)| p) != Some(&props) {
+        for (location, (_, sent, supports)) in told {
+            let props = gone(supports);
+            if sent != props {
                 let _ = self.apply.apply(&location, &props);
             }
         }
-        self.sent.clear();
     }
 }
 
@@ -260,7 +286,7 @@ enum Wake {
 #[derive(Default)]
 struct Shared {
     state: State,
-    /// The monitors showing a Bandit wallpaper.
+    /// The monitors showing a wallpaper that reads Foxglove's properties.
     targets: Vec<Target>,
     wake: Option<Sender<Wake>>,
     /// Foxglove is quitting: no worker starts again.
@@ -325,8 +351,8 @@ pub fn scene_stopped() {
 }
 
 /// The wallpapers on screen, from Wallpaper Engine's config (`wallpaper.rs`, on each change):
-/// `targets` are the monitors showing a Bandit wallpaper (and its file), empty without Wallpaper
-/// Engine or while it isn't running. The first non-empty list starts the worker.
+/// `targets` are the monitors showing a wallpaper that reads Foxglove's properties, empty
+/// without Wallpaper Engine or while it isn't running. The first non-empty list starts the worker.
 pub fn wallpapers(targets: Vec<Target>) {
     let start = with(|s| s.wake.is_none() && !s.quitting && !targets.is_empty());
     if start {
@@ -635,17 +661,38 @@ mod tests {
             scene: None,
             live: Some(8768),
         };
-        let props = properties(&state, None);
+        let props = properties(&state, None, Supports::ALL);
         assert_eq!(
             props,
             r#"{"foxglove_game":true,"foxglove_layer":"GAME","foxglove_live":8768,"foxglove_scene":""}"#
+        );
+        // A wallpaper gets only what its manifest says it reads.
+        let live_only = Supports {
+            live: true,
+            ..Supports::default()
+        };
+        assert_eq!(
+            properties(&state, None, live_only),
+            r#"{"foxglove_live":8768}"#
+        );
+        assert_eq!(
+            properties(
+                &state,
+                None,
+                Supports {
+                    clock: true,
+                    layer: true,
+                    ..Supports::default()
+                }
+            ),
+            r#"{"foxglove_layer":"GAME","foxglove_scene":""}"#
         );
         let (args, raw) = arguments(WE_LEFT, &props);
         assert_eq!(args, ["-control", "applyProperties", "-location", WE_LEFT]);
         assert_eq!(raw, format!("-properties RAW~({props})~END"));
         assert_eq!(raw.matches(' ').count(), 1, "one space, after -properties");
         assert_eq!(
-            gone(),
+            gone(Supports::ALL),
             r#"{"foxglove_game":false,"foxglove_layer":"","foxglove_live":0,"foxglove_scene":""}"#
         );
     }
@@ -663,8 +710,8 @@ mod tests {
             ..State::default()
         };
         state.layer = Some("QWERTY".into());
-        let a = properties(&state, Some(left));
-        let b = properties(&state, Some(right));
+        let a = properties(&state, Some(left), Supports::ALL);
+        let b = properties(&state, Some(right), Supports::ALL);
         assert_ne!(a, b);
         assert!(
             a.contains("fx=scanline;e=1761000000000;p=4000;a=90;w=80"),
@@ -674,14 +721,19 @@ mod tests {
         assert!(!a.contains(' '));
     }
 
+    fn target(location: &str, file: &str) -> Target {
+        Target {
+            location: location.into(),
+            file: file.into(),
+            supports: Supports::ALL,
+        }
+    }
+
     #[test]
     fn pushes_go_only_on_change_and_only_while_wallpaper_engine_runs() {
         let mut fake = Fake::default();
-        let hud = "C:/WE/projects/myprojects/bandit-hud/index.html".to_string();
-        let targets = vec![
-            (WE_LEFT.to_string(), hud.clone()),
-            (WE_RIGHT.to_string(), hud.clone()),
-        ];
+        let reef = "C:/WE/projects/myprojects/reef/index.html";
+        let targets = vec![target(WE_LEFT, reef), target(WE_RIGHT, reef)];
         let mut state = State::default();
         {
             let mut p = Pusher::new(&mut fake);
@@ -704,8 +756,8 @@ mod tests {
         assert_eq!(p.sync(&state, &targets), 2, "a scene start");
         assert_eq!(p.sync(&state, &targets), 0);
         // Another wallpaper on one monitor starts from its defaults: it is sent again.
-        let radar = "C:/WE/projects/myprojects/bandit-bandit-radar/index.html".to_string();
-        let swapped = vec![targets[0].clone(), (WE_RIGHT.to_string(), radar)];
+        let lighthouse = "D:/Lib/steamapps/workshop/content/431960/777/scene.pkg";
+        let swapped = vec![targets[0].clone(), target(WE_RIGHT, lighthouse)];
         assert_eq!(p.sync(&state, &swapped), 1, "a swapped wallpaper");
         assert_eq!(p.sync(&state, &swapped), 0);
         // The devices placed again: the interface paths are read again.
@@ -713,7 +765,11 @@ mod tests {
         assert_eq!(p.sync(&state, &swapped), 0, "same room, nothing to send");
         state.scene = None;
         assert_eq!(p.sync(&state, &targets), 2, "a scene stop");
-        assert_eq!(p.sync(&state, &[]), 0, "no Bandit wallpaper: nothing");
+        assert_eq!(
+            p.sync(&state, &[]),
+            0,
+            "no wallpaper that reads them: nothing"
+        );
         p.quit();
         drop(p);
         assert_eq!(fake.pushes.len(), 9);
@@ -732,7 +788,7 @@ mod tests {
             running: true,
             ..Fake::default()
         };
-        let targets = vec![(WE_LEFT.to_string(), "bandit-hud".to_string())];
+        let targets = vec![target(WE_LEFT, "reef")];
         let state = State {
             layer: Some("GAME".into()),
             game: true,
@@ -746,7 +802,7 @@ mod tests {
             p.quit();
         }
         assert_eq!(fake.pushes.len(), 2);
-        assert_eq!(fake.pushes[1].1, gone());
+        assert_eq!(fake.pushes[1].1, gone(Supports::ALL));
         fake.pushes.clear();
         fake.fail = true;
         let mut p = Pusher::new(&mut fake);
@@ -762,5 +818,41 @@ mod tests {
         assert_eq!(p.sync(&state, &targets), 0);
         p.apply.running = true;
         assert_eq!(p.sync(&state, &targets), 1);
+    }
+
+    /// A third-party wallpaper that asks for the live feed's port and the scene clock (#562): it
+    /// hears the port when the feed starts and 0 when Foxglove goes, and never the layer.
+    #[test]
+    fn a_third_party_wallpaper_pairs_with_the_live_feed() {
+        use super::super::wallpaper_manifest::tests::fake_manifests;
+        let reef = fake_manifests().remove(0);
+        let mut fake = Fake {
+            running: true,
+            ..Fake::default()
+        };
+        let targets = vec![Target {
+            location: WE_LEFT.into(),
+            file: "C:/WE/projects/myprojects/reef/index.html".into(),
+            supports: reef.supports,
+        }];
+        let mut state = State::default();
+        {
+            let mut p = Pusher::new(&mut fake);
+            p.sync(&state, &targets);
+            state.live = Some(8768);
+            p.sync(&state, &targets);
+            state.layer = Some("GAME".into());
+            assert_eq!(p.sync(&state, &targets), 0, "it doesn't read the layer");
+            p.quit();
+        }
+        let sent: Vec<&str> = fake.pushes.iter().map(|(_, p)| p.as_str()).collect();
+        assert_eq!(
+            sent,
+            [
+                r#"{"foxglove_live":0,"foxglove_scene":""}"#,
+                r#"{"foxglove_live":8768,"foxglove_scene":""}"#,
+                r#"{"foxglove_live":0,"foxglove_scene":""}"#
+            ]
+        );
     }
 }

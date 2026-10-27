@@ -341,13 +341,13 @@ scanline can run down the monitors, through the case's fans and on into the keys
   paused.
 - **Presets:** pick one to load its look. To keep your own, type a name under **Save as
   preset** and click **Save**; **Remove** deletes one of yours.
-- **Bandit wallpapers:** the first presets are looks matched to the twelve Bandit wallpapers
-  (Bandit HUD, Radar, Skyline, Courier, the FURY five, Cauldron Corner, Moon Garden, Wheel of
-  the Year), in each wallpaper's own colours. They work with any wallpaper, or none. The one
+- **Wallpapers:** when a Wallpaper Engine wallpaper on your PC comes with looks for Foxglove
+  (a `foxglove.json` in its folder, such as the Bandit wallpapers), its looks show first under
+  **Wallpapers**, in its own colours. They work with any wallpaper on screen, or none. The one
   Wallpaper Engine shows now says **On screen**. Tick **Right screen too** and, while one of
-  them runs, the right screen shows that wallpaper's art; Stop puts your art back. With
-  Wallpaper Engine showing a Bandit wallpaper, the wallpaper follows the scene's clock as soon
-  as it starts or its look changes.
+  them runs, the right screen shows that wallpaper's art; Stop puts your art back. A wallpaper
+  that follows Foxglove gets the scene's clock as soon as the scene starts or its look changes.
+  With no such wallpaper, the group isn't there.
 
 - **Triggers** (under Effect, each for the profile you are in):
   - **Start with this profile:** switching to this profile starts its scene, and switching to a

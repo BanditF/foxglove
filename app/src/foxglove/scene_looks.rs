@@ -4,15 +4,17 @@
 //!   `store::PROFILED`), so each profile keeps its own scene;
 //! - the user's saved presets in `[scene_presets]`, the same in every profile.
 //!
-//! The built-in presets are [`built_in`]: first the looks matched to the twelve Bandit
-//! wallpapers (#488, [`wallpaper_presets`]), then one per effect. The wallpapers' looks, their
-//! palettes and their right-screen art come from `app/resources/scenes.json` (format
-//! `foxglove-scenes` v1). Each works with no wallpaper and no other app: a look is only an
-//! effect and its colours. With Wallpaper Engine showing that wallpaper, the scene's clock
-//! reaches it through wallpaper sync (#493) when the scene starts or its look changes.
+//! The built-in presets are [`built_in`]: first the looks of the wallpapers on this PC that
+//! describe themselves to Foxglove (#562, [`wallpaper_presets`]), then one per effect. Nothing
+//! about any wallpaper is built in: their looks, palettes and right-screen art come from each
+//! wallpaper's `foxglove.json` (`wallpaper_manifest`, docs/wallpaper-manifest.md), gathered into
+//! [`scenes`]. With none, only the effects show. Each look works with no wallpaper and no other
+//! app: a look is only an effect and its colours. With Wallpaper Engine showing that wallpaper,
+//! the scene's clock reaches it through wallpaper sync (#493) when the scene starts or its look
+//! changes.
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -198,8 +200,8 @@ pub const PALETTES: [(&str, &[[u8; 3]]); 5] = [
     ),
 ];
 
-/// A palette's stops: one of [`PALETTES`] or a wallpaper's (`scenes.json`). An unknown name (a
-/// palette since removed) is the first.
+/// A palette's stops: one of [`PALETTES`] or a wallpaper's (its manifest). An unknown name (a
+/// wallpaper since removed, or not gathered yet) shows as the first.
 pub fn palette(name: &str) -> Vec<Rgb> {
     if let Some((_, stops)) = PALETTES.iter().find(|(n, _)| *n == name) {
         return stops.iter().map(|c| Rgb(*c)).collect();
@@ -208,11 +210,6 @@ pub fn palette(name: &str) -> Vec<Rgb> {
         return p.stops.clone();
     }
     PALETTES[0].1.iter().map(|c| Rgb(*c)).collect()
-}
-
-/// The palette is one Foxglove knows (its own or a wallpaper's).
-pub fn known_palette(name: &str) -> bool {
-    PALETTES.iter().any(|(n, _)| *n == name) || scenes().palettes.iter().any(|p| p.name == name)
 }
 
 /// Speed 1 (slowest) to 10: one cycle's length, in milliseconds. Speed 5 is the demo's 4 s.
@@ -274,13 +271,12 @@ fn ripple_origin(room: &RoomMap) -> Point {
 }
 
 impl Look {
-    /// The parameters within the page's ranges (a hand-edited file may hold anything).
+    /// The parameters within the page's ranges (a hand-edited file may hold anything). The
+    /// palette's name is kept: a wallpaper's palette is known only once its wallpaper is found,
+    /// and an unknown one shows as the first ([`palette`]).
     pub fn clamped(mut self) -> Look {
         self.speed = self.speed.clamp(*SPEEDS.start(), *SPEEDS.end());
         self.width_mm = self.width_mm.clamp(*WIDTHS.start(), *WIDTHS.end());
-        if !known_palette(&self.palette) {
-            self.palette = PALETTES[0].0.into();
-        }
         self
     }
 
@@ -344,16 +340,22 @@ fn preset(name: &str, look: Look) -> Preset {
     }
 }
 
-/// The presets that ship with Foxglove, the wallpapers' first (#488).
+/// The presets Foxglove offers: the wallpapers' (#488, #562), then [`effect_presets`].
 pub fn built_in() -> Vec<Preset> {
+    let mut out = wallpaper_presets();
+    out.extend(effect_presets());
+    out
+}
+
+/// The presets that ship with Foxglove: one per effect.
+pub fn effect_presets() -> Vec<Preset> {
     let swatch = |name: &str| {
         super::lights_page::SWATCHES
             .iter()
             .find(|(n, _)| *n == name)
             .map_or([255, 255, 255], |(_, c)| *c)
     };
-    let mut out = wallpaper_presets();
-    out.extend([
+    vec![
         preset("Bandit scanline", Look::default()),
         preset(
             "Ripple from the keys",
@@ -403,32 +405,31 @@ pub fn built_in() -> Vec<Preset> {
                 ..Look::default()
             },
         ),
-    ]);
-    out
+    ]
 }
 
-/// The presets made for each Bandit wallpaper (#488), in the file's order.
+/// The presets of the wallpapers found (#488, #562), in [`scenes`]' order.
 pub fn wallpaper_presets() -> Vec<Preset> {
     scenes().looks.iter().map(|w| w.preset.clone()).collect()
 }
 
 /// The wallpaper look this is, if it is one.
-pub fn wallpaper_look(look: &Look) -> Option<&'static WallpaperLook> {
-    scenes().looks.iter().find(|w| w.preset.look == *look)
+pub fn wallpaper_look(look: &Look) -> Option<WallpaperLook> {
+    scenes()
+        .looks
+        .iter()
+        .find(|w| w.preset.look == *look)
+        .cloned()
 }
 
-/// The built-in scenes file: the Bandit wallpapers' palettes and looks.
-const SCENES_JSON: &str = include_str!("../../resources/scenes.json");
-pub const SCENES_FORMAT: &str = "foxglove-scenes";
-pub const SCENES_VERSION: u32 = 1;
-
-/// A wallpaper's right-screen art, tried in this order: the keyboard's built-in set, the
-/// wallpaper's own file in the art folder (bandit-wallpapers installs it there), the copy that
-/// ships with Foxglove, then another built-in set.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+/// A wallpaper's right-screen art, tried in this order: the keyboard's built-in set, the file
+/// the wallpaper ships in its own folder, its file in the art folder (bandit-wallpapers installs
+/// it there), the copy that ships with Foxglove, then another built-in set.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Art {
     pub builtin: Option<String>,
+    /// A file in the wallpaper's folder, already resolved (the manifest's `art.file`).
+    pub file: Option<PathBuf>,
     pub library: Option<String>,
     pub bundled: Option<String>,
     pub fallback: Option<String>,
@@ -445,24 +446,43 @@ impl Art {
         if let Some(b) = &self.builtin {
             return Some(Item::BuiltIn(b.clone()));
         }
-        self.library
-            .as_deref()
-            .and_then(library)
+        self.file
+            .clone()
+            .filter(|p| p.is_file())
+            .or_else(|| self.library.as_deref().and_then(library))
             .or_else(|| self.bundled.as_deref().and_then(bundled))
             .map(Item::File)
             .or_else(|| self.fallback.clone().map(Item::BuiltIn))
     }
 }
 
-/// One Bandit wallpaper's look.
+/// One wallpaper's look (a motif in its manifest).
 #[derive(Clone, Debug, PartialEq)]
 pub struct WallpaperLook {
-    /// The wallpaper's id in bandit-wallpapers (its folder name, as `wallpapers.json` has it).
+    /// The wallpaper's id, from its manifest.
     pub wallpaper: String,
+    /// The wallpaper's title and its pack's name, for the preset's hover.
+    pub title: String,
+    pub pack: Option<String>,
     /// What the look takes from the wallpaper, for the preset's hover.
     pub motif: String,
     pub preset: Preset,
     pub art: Art,
+}
+
+impl WallpaperLook {
+    /// The preset's hover: the motif, then where it comes from.
+    pub fn hint(&self) -> String {
+        let from = match &self.pack {
+            Some(pack) => format!("{} ({pack})", self.title),
+            None => self.title.clone(),
+        };
+        if self.motif.is_empty() {
+            from
+        } else {
+            format!("{}. From {from}", self.motif.trim_end_matches('.'))
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -471,56 +491,27 @@ pub struct NamedPalette {
     pub stops: Vec<Rgb>,
 }
 
-/// `scenes.json`, read.
+/// The wallpapers' palettes and looks, as gathered from their manifests.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scenes {
     pub palettes: Vec<NamedPalette>,
     pub looks: Vec<WallpaperLook>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ScenesFile {
-    format: String,
-    version: u32,
-    #[serde(default, rename = "about")]
-    _about: String,
-    palettes: Vec<FilePalette>,
-    presets: Vec<FilePreset>,
+/// A look as a manifest writes it: colours in hex, and only what the effect uses. Fields it
+/// doesn't know are skipped, so a newer manifest still reads.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+pub struct FileLook {
+    pub kind: Kind,
+    pub colour: Option<String>,
+    pub background: Option<Background>,
+    pub palette: Option<String>,
+    pub speed: Option<u8>,
+    pub direction: Option<Direction>,
+    pub width_mm: Option<u16>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FilePalette {
-    name: String,
-    stops: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FilePreset {
-    wallpaper: String,
-    name: String,
-    motif: String,
-    look: FileLook,
-    #[serde(default)]
-    art: Art,
-}
-
-/// A look as the file writes it: colours in hex, and only what the effect uses.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FileLook {
-    kind: Kind,
-    colour: Option<String>,
-    background: Option<Background>,
-    palette: Option<String>,
-    speed: Option<u8>,
-    direction: Option<Direction>,
-    width_mm: Option<u16>,
-}
-
-fn hex(s: &str) -> Result<[u8; 3], String> {
+pub fn hex(s: &str) -> Result<[u8; 3], String> {
     let h = s
         .strip_prefix('#')
         .filter(|h| h.len() == 6 && h.is_ascii())
@@ -529,82 +520,63 @@ fn hex(s: &str) -> Result<[u8; 3], String> {
     Ok([byte(0)?, byte(2)?, byte(4)?])
 }
 
-/// Reads a scenes file: every colour, palette, range and name checked.
-pub fn parse_scenes(text: &str) -> Result<Scenes, String> {
-    let file: ScenesFile = serde_json::from_str(text).map_err(|e| e.to_string())?;
-    if file.format != SCENES_FORMAT || file.version != SCENES_VERSION {
-        return Err(format!("not {SCENES_FORMAT} v{SCENES_VERSION}"));
-    }
-    let mut palettes: Vec<NamedPalette> = Vec::new();
-    for p in file.palettes {
-        if p.stops.len() < 2 {
-            return Err(format!("palette {} needs two colours", p.name));
-        }
-        if PALETTES.iter().any(|(n, _)| *n == p.name) || palettes.iter().any(|q| q.name == p.name) {
-            return Err(format!("palette {} is named twice", p.name));
-        }
-        let stops = p
-            .stops
-            .iter()
-            .map(|s| hex(s).map(Rgb))
-            .collect::<Result<_, _>>()?;
-        palettes.push(NamedPalette {
-            name: p.name,
-            stops,
-        });
-    }
-    let mut looks: Vec<WallpaperLook> = Vec::new();
-    for p in file.presets {
-        let name = p.name.trim().to_string();
-        if name.is_empty() || name.chars().count() > NAME_MAX {
-            return Err(format!("preset name {:?}", p.name));
-        }
-        if looks
-            .iter()
-            .any(|w| w.preset.name.eq_ignore_ascii_case(&name) || w.wallpaper == p.wallpaper)
-        {
-            return Err(format!("{name} ({}) is there twice", p.wallpaper));
-        }
-        let f = p.look;
+impl FileLook {
+    /// The look, with the defaults for what the file leaves out; refused when out of range.
+    pub fn look(&self) -> Result<Look, String> {
         let d = Look::default();
         let look = Look {
-            kind: f.kind,
-            colour: f
+            kind: self.kind,
+            colour: self
                 .colour
                 .as_deref()
                 .map(hex)
                 .transpose()?
                 .unwrap_or(d.colour),
-            background: f.background.unwrap_or(d.background),
-            palette: f.palette.unwrap_or(d.palette),
-            speed: f.speed.unwrap_or(d.speed),
-            direction: f.direction.unwrap_or(d.direction),
-            width_mm: f.width_mm.unwrap_or(d.width_mm),
+            background: self.background.unwrap_or(d.background),
+            palette: self.palette.clone().unwrap_or(d.palette),
+            speed: self.speed.unwrap_or(d.speed),
+            direction: self.direction.unwrap_or(d.direction),
+            width_mm: self.width_mm.unwrap_or(d.width_mm),
         };
-        let palette_known = PALETTES.iter().any(|(n, _)| *n == look.palette)
-            || palettes.iter().any(|q| q.name == look.palette);
-        if !palette_known || !SPEEDS.contains(&look.speed) || !WIDTHS.contains(&look.width_mm) {
-            return Err(format!("{name}: palette, speed or width out of range"));
+        if !SPEEDS.contains(&look.speed) || !WIDTHS.contains(&look.width_mm) {
+            return Err("speed or width out of range".into());
         }
-        looks.push(WallpaperLook {
-            wallpaper: p.wallpaper,
-            motif: p.motif,
-            preset: Preset { name, look },
-            art: p.art,
-        });
+        Ok(look)
     }
-    Ok(Scenes { palettes, looks })
 }
 
-/// The scenes file that ships with Foxglove, read once (a test checks it reads).
-pub fn scenes() -> &'static Scenes {
-    static SCENES: OnceLock<Scenes> = OnceLock::new();
-    SCENES.get_or_init(|| {
-        parse_scenes(SCENES_JSON).unwrap_or_else(|e| {
-            eprintln!("Foxglove: the built-in scenes file doesn't read: {e}");
-            Scenes::default()
-        })
-    })
+/// The wallpapers gathered last; under test, the fake pack in `wallpaper_manifest::tests`.
+static SCENES: Mutex<Option<Arc<Scenes>>> = Mutex::new(None);
+
+#[cfg(not(test))]
+fn first_scenes() -> Scenes {
+    Scenes::default()
+}
+
+#[cfg(test)]
+fn first_scenes() -> Scenes {
+    super::wallpaper_manifest::tests::fake_scenes()
+}
+
+/// The wallpapers' palettes and looks: none until the wallpaper service gathers them.
+pub fn scenes() -> Arc<Scenes> {
+    SCENES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(|| Arc::new(first_scenes()))
+        .clone()
+}
+
+/// The wallpaper service gathered `s`; true when it differs from before.
+pub fn set_scenes(s: Scenes) -> bool {
+    let mut g = SCENES.lock().unwrap_or_else(|e| e.into_inner());
+    // Nothing gathered yet counts as none: an empty first gather is no change.
+    let before = g.get_or_insert_with(|| Arc::new(first_scenes()));
+    if **before == s {
+        return false;
+    }
+    *g = Some(Arc::new(s));
+    true
 }
 
 /// The `[scenes]` section: the chosen look.
@@ -624,11 +596,11 @@ pub struct Chosen {
 
 impl Chosen {
     /// The right-screen art a running scene of this look shows, if any.
-    pub fn art(&self) -> Option<&'static Art> {
+    pub fn art(&self) -> Option<Art> {
         self.with_art
             .then(|| wallpaper_look(&self.look))
             .flatten()
-            .map(|w| &w.art)
+            .map(|w| w.art)
     }
 }
 
@@ -734,59 +706,22 @@ mod tests {
         );
     }
 
-    /// The twelve wallpapers in bandit-wallpapers (`dist/keyboard/manifest.json`).
-    const WALLPAPERS: [&str; 12] = [
-        "hud",
-        "bandit-radar",
-        "bandit-skyline",
-        "courier",
-        "fury-print",
-        "fury-chase",
-        "fury-pattern",
-        "fury-stars",
-        "fury-forest",
-        "hearth-cauldron",
-        "hearth-moongarden",
-        "hearth-wheel",
-    ];
-
+    /// The fake pack's looks are offered, each in range and runnable on its own, with no two
+    /// presets sharing a name.
     #[test]
-    fn the_scenes_file_has_a_look_for_every_bandit_wallpaper() {
-        let s = parse_scenes(SCENES_JSON).expect("scenes.json reads");
-        assert_eq!(&s, scenes());
+    fn the_wallpapers_looks_are_offered() {
+        let s = scenes();
         let ids: Vec<&str> = s.looks.iter().map(|w| w.wallpaper.as_str()).collect();
-        assert_eq!(ids, WALLPAPERS);
+        assert_eq!(ids, ["tidepool.reef", "tidepool.lighthouse"]);
         let room = RoomMap::default();
-        let bundled: Vec<&str> = super::super::art_pieces::BUNDLED
-            .iter()
-            .map(|b| b.0)
-            .collect();
         for w in &s.looks {
             let look = &w.preset.look;
             assert_eq!(&look.clone().clamped(), look, "{}: in range", w.wallpaper);
-            assert!(known_palette(&look.palette));
-            assert!(!w.motif.is_empty());
-            // Every look runs on its own: with no room, no wallpaper and no other app.
             let effect = look.effect(&room);
             let _ = effect.colour(Point::new(10.0, 10.0), SceneTime(1234), &room.bounds);
-            // Its art: a built-in set, or the wallpaper's file with a bundled copy and a set
-            // to fall back to.
-            let a = &w.art;
-            assert!(a.library.as_deref() == Some(&format!("{}.bin", w.wallpaper)));
-            assert!(
-                a.builtin.is_some() || (a.bundled.is_some() && a.fallback.is_some()),
-                "{}",
-                w.wallpaper
-            );
-            if let Some(b) = &a.bundled {
-                assert!(bundled.contains(&b.as_str()), "{b} ships with Foxglove");
-            }
+            assert!(w.hint().contains("Tidepool"), "{}", w.hint());
         }
-        // The wallpapers' palettes are their own, and each is used.
-        for p in &s.palettes {
-            assert!(s.looks.iter().any(|w| w.preset.look.palette == p.name));
-            assert_eq!(palette(&p.name), p.stops);
-        }
+        assert_eq!(palette("Reef"), s.palettes[0].stops);
         let names: Vec<_> = built_in()
             .into_iter()
             .map(|p| p.name.to_lowercase())
@@ -798,31 +733,20 @@ mod tests {
     }
 
     #[test]
-    fn a_bad_scenes_file_is_refused() {
-        let ok = r##"{"format":"foxglove-scenes","version":1,"palettes":[{"name":"P","stops":["#000000","#ffffff"]}],
-            "presets":[{"wallpaper":"w","name":"W","motif":"m","look":{"kind":"sweep","palette":"P"}}]}"##;
-        let s = parse_scenes(ok).unwrap();
-        assert_eq!(s.looks[0].preset.look.palette, "P");
-        assert_eq!(s.looks[0].preset.look.speed, Look::default().speed);
-        for (bad, why) in [
-            (ok.replace("version\":1", "version\":2"), "version"),
-            (ok.replace("#ffffff", "#fffff"), "hex"),
-            (
-                ok.replace("\"palette\":\"P\"", "\"palette\":\"Q\""),
-                "palette",
-            ),
-            (
-                ok.replace("\"kind\":\"sweep\"", "\"kind\":\"sweep\",\"speed\":11"),
-                "speed",
-            ),
-            (
-                ok.replace("\"name\":\"P\"", "\"name\":\"Forest\""),
-                "a palette name taken",
-            ),
-            (ok.replace("\"motif\"", "\"motive\""), "an unknown field"),
+    fn a_manifest_look_is_checked() {
+        let f: FileLook =
+            serde_json::from_str(r#"{"kind":"sweep","palette":"P","later":1}"#).unwrap();
+        let l = f.look().unwrap();
+        assert_eq!((l.palette.as_str(), l.speed), ("P", Look::default().speed));
+        for bad in [
+            r##"{"kind":"sweep","speed":11}"##,
+            r##"{"kind":"ripple","width_mm":5}"##,
+            r##"{"kind":"breathe","colour":"#fffff"}"##,
         ] {
-            assert!(parse_scenes(&bad).is_err(), "{why}");
+            let f: FileLook = serde_json::from_str(bad).unwrap();
+            assert!(f.look().is_err(), "{bad}");
         }
+        assert!(serde_json::from_str::<FileLook>(r#"{"kind":"laser"}"#).is_err());
     }
 
     #[test]
@@ -840,6 +764,7 @@ mod tests {
         );
         let fury = Art {
             builtin: None,
+            file: Some(PathBuf::from("no/such/right.bin")),
             library: Some("fury-chase.bin".into()),
             bundled: Some("fury.bin".into()),
             fallback: Some("Bandit_Emblem".into()),
@@ -859,20 +784,34 @@ mod tests {
             Some(Item::BuiltIn("Bandit_Emblem".into()))
         );
         assert_eq!(Art::default().item(file, file), None);
+        // The wallpaper's own file, when it is there, comes before the art folder.
+        let dir = std::env::temp_dir().join(format!("foxglove-art-own-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let own = dir.join("right.bin");
+        std::fs::write(&own, b"NVA1").unwrap();
+        let shipped = Art {
+            file: Some(own.clone()),
+            ..fury
+        };
+        assert_eq!(shipped.item(file, file), Some(Item::File(own)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn only_a_wallpaper_look_with_art_on_brings_art() {
-        let hud = wallpaper_presets()[0].clone();
+        let reef = wallpaper_presets()[0].clone();
         let mut c = Chosen {
-            look: hud.look.clone(),
+            look: reef.look.clone(),
             with_art: false,
             ..Chosen::default()
         };
         assert_eq!(c.art(), None, "off by default");
         c.with_art = true;
-        assert_eq!(c.art(), Some(&scenes().looks[0].art));
-        assert_eq!(wallpaper_look(&hud.look).unwrap().wallpaper, "hud");
+        assert_eq!(c.art(), Some(scenes().looks[0].art.clone()));
+        assert_eq!(
+            wallpaper_look(&reef.look).unwrap().wallpaper,
+            "tidepool.reef"
+        );
         c.look.speed = 9;
         assert_eq!(c.art(), None, "an edited look is the user's own");
     }
@@ -880,7 +819,7 @@ mod tests {
     #[test]
     fn every_effect_has_a_look_and_presets_cover_all_six() {
         let room = RoomMap::default();
-        let kinds: Vec<Kind> = built_in().iter().map(|p| p.look.kind).collect();
+        let kinds: Vec<Kind> = effect_presets().iter().map(|p| p.look.kind).collect();
         for k in Kind::ALL {
             assert!(kinds.contains(&k), "{k:?} has no preset");
             let look = Look {
@@ -949,7 +888,7 @@ mod tests {
                 .unwrap();
         let l = look.clamped();
         assert_eq!((l.kind, l.speed, l.width_mm), (Kind::Drift, 1, 400));
-        assert_eq!(l.palette, "Bandit");
+        assert_eq!(l.palette, "Gone", "kept for when its wallpaper is back");
         assert_eq!(palette("Gone"), palette("Bandit"));
         let unknown: Result<Look, _> = toml::from_str("kind = \"laser\"");
         assert!(
@@ -994,7 +933,7 @@ mod tests {
         let chosen = Chosen {
             look: Look {
                 kind: Kind::Sweep,
-                palette: "Night sky".into(),
+                palette: "Reef".into(),
                 ..Look::default()
             },
             with_art: true,
