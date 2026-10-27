@@ -118,9 +118,34 @@ pub fn of_board(board: &Board) -> Vec<Screen> {
         .collect()
 }
 
+/// How an art screen stores its picture, from its upright size as the firmware describes it
+/// (`screens_corne.c`: "upright as the art tools draw it, stored turned in the NVA1 blobs"): the
+/// profile's art screen of that upright size, else the firmware's own art format when it is
+/// that size, else as it is (upright, unturned).
+fn art_stored(upright: (u16, u16), profile: Option<&Screen>) -> (u16, u16, u8) {
+    if let Some(p) = profile.filter(|p| p.upright() == upright) {
+        return (p.width, p.height, p.rotation);
+    }
+    let f = super::art_encode::ArtTarget::FIRMWARE;
+    let firmware = Screen {
+        id: 0,
+        role: Role::Art,
+        name: String::new(),
+        width: f.width as u16,
+        height: f.height as u16,
+        format: String::new(),
+        rotation: f.rotation,
+    };
+    if firmware.upright() == upright {
+        return (firmware.width, firmware.height, firmware.rotation);
+    }
+    (upright.0, upright.1, 0)
+}
+
 /// The screens the firmware describes, named from the profile (the n-th screen of a role takes
 /// the profile's n-th of that role). A display that holds panels or art areas isn't one of its
-/// own: its regions are.
+/// own: its regions are. A panel is sized as the PC addresses it; an art area is described
+/// upright, and stored as [`art_stored`] says.
 pub fn of_descriptors(described: &[ScreenDescriptor], board: Option<&Board>) -> Vec<Screen> {
     let named = board.map(of_board).unwrap_or_default();
     let mut seen: Vec<Role> = Vec::new();
@@ -131,23 +156,25 @@ pub fn of_descriptors(described: &[ScreenDescriptor], board: Option<&Board>) -> 
             let role = Role::of_descriptor(d.kind)?;
             let nth = seen.iter().filter(|r| **r == role).count();
             seen.push(role);
-            let name = named
-                .iter()
-                .filter(|s| s.role == role)
-                .nth(nth)
-                .map_or_else(|| role.default_name().to_string(), |s| s.name.clone());
+            let profile = named.iter().filter(|s| s.role == role).nth(nth);
+            let name = profile.map_or_else(|| role.default_name().to_string(), |s| s.name.clone());
+            let (width, height, rotation) = match role {
+                Role::Art => art_stored((d.width, d.height), profile),
+                Role::Info => (d.width, d.height, 0),
+                Role::Display => (d.width, d.height, d.rotation % 4),
+            };
             Some(Screen {
                 id: d.id,
                 role,
                 name,
-                width: d.width,
-                height: d.height,
+                width,
+                height,
                 format: if d.format == ScreenDescriptor::FORMAT_1BIT {
                     "1bit".to_string()
                 } else {
                     d.format_name().to_string()
                 },
-                rotation: d.rotation % 4,
+                rotation,
             })
         })
         .collect()
@@ -268,18 +295,37 @@ mod tests {
             readback_half: None,
             version: 1,
         };
-        // Two displays, each holding a region: the regions are the screens.
+        // The Corne's own descriptors (screens_corne.c): two displays, each holding a region;
+        // the art region described upright. The regions are the screens.
         let described = [
-            display(0, None, ScreenKind::Display, 160, 68, 0),
+            display(0, None, ScreenKind::Display, 160, 68, 1),
             display(1, Some(0), ScreenKind::Panel, 64, 52, 0),
-            display(2, None, ScreenKind::Display, 160, 68, 0),
-            display(3, Some(2), ScreenKind::Art, 140, 68, 1),
+            display(2, None, ScreenKind::Display, 160, 68, 1),
+            display(3, Some(2), ScreenKind::Art, 68, 140, 0),
         ];
         let s = of_descriptors(&described, Some(&b));
         let named: Vec<_> = s.iter().map(|s| (s.id, s.name.as_str())).collect();
         assert_eq!(named, [(1, "Info screen"), (3, "Fox screen")]);
+        // Stored as the firmware's blobs are: 140x68, turned; the same as the profile says.
+        assert_eq!((s[0].width, s[0].height, s[0].rotation), (64, 52, 0));
+        assert_eq!((s[1].width, s[1].height, s[1].rotation), (140, 68, 1));
         assert_eq!(s[1].upright(), (68, 140));
-        // No profile: the roles' names.
-        assert_eq!(of_descriptors(&described, None)[1].name, "Art screen");
+        assert_eq!(s, {
+            let mut p = of_board(&b);
+            p[0].id = 1;
+            p[1].id = 3;
+            p
+        });
+        // No profile: the roles' names, and the firmware's art format all the same.
+        let bare = of_descriptors(&described, None);
+        assert_eq!(bare[1].name, "Art screen");
+        assert_eq!(
+            (bare[1].width, bare[1].height, bare[1].rotation),
+            (140, 68, 1)
+        );
+        // An upright art area of another size, with nothing to say otherwise: stored upright.
+        let wide = [display(5, None, ScreenKind::Art, 160, 80, 0)];
+        let w = &of_descriptors(&wide, None)[0];
+        assert_eq!((w.width, w.height, w.rotation), (160, 80, 0));
     }
 }

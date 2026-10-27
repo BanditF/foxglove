@@ -331,9 +331,10 @@ impl Plugin {
         Ok(s.screens)
     }
 
-    /// Where to draw on a device: its first info screen (API 1.4). An app before 1.4 has no
-    /// `screens.list` and one 64x52 panel ([`PanelTarget::BEFORE_1_4`]); `None` when the device
-    /// has no info screen, or it can't be asked.
+    /// Where to draw on a device: its first info screen (API 1.4; `screens.list` needs
+    /// `devices.read`). An app before 1.4, or a plugin without `devices.read`, gets the one
+    /// 64x52 panel API 1.0-1.3 draw on ([`PanelTarget::BEFORE_1_4`]); `None` when the device has
+    /// no info screen, or the call failed otherwise.
     pub fn panel_target(&self, device: &str) -> Option<PanelTarget> {
         match self.screens(device) {
             Ok(screens) => screens
@@ -346,7 +347,8 @@ impl Plugin {
                 }),
             Err(PluginError::Api(e))
                 if e.code == foxglove_plugin_api::rpc::code::METHOD_NOT_FOUND
-                    || e.code == foxglove_plugin_api::rpc::code::UNSUPPORTED =>
+                    || e.code == foxglove_plugin_api::rpc::code::UNSUPPORTED
+                    || e.code == foxglove_plugin_api::rpc::code::DENIED =>
             {
                 Some(PanelTarget::BEFORE_1_4)
             }

@@ -36,6 +36,9 @@ pub struct Library {
 }
 static LIBRARY: OnceLock<Arc<Mutex<Library>>> = OnceLock::new();
 static LOADING: AtomicBool = AtomicBool::new(false);
+/// The art screen the source sets were last made for (#560): when the keyboard's turns out
+/// different (it connected after the first scan), they are made again.
+static MADE_FOR: Mutex<Option<super::art_encode::ArtTarget>> = Mutex::new(None);
 pub static PICK_FILE: AtomicBool = AtomicBool::new(false);
 
 /// A `.bin` the right screen can play. `<name>.left.bin` is a wallpaper's left-screen companion
@@ -60,6 +63,10 @@ pub fn snapshot() -> Library {
         scan(state.clone());
         state
     });
+    let made_for = *MADE_FOR.lock().unwrap_or_else(|e| e.into_inner());
+    if made_for.is_some_and(|t| t != super::art_encode::ArtTarget::current()) {
+        scan(state.clone());
+    }
     state.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 pub fn refresh() {
@@ -72,6 +79,8 @@ fn scan(state: Arc<Mutex<Library>>) {
     if LOADING.swap(true, Ordering::Relaxed) {
         return;
     }
+    let target = super::art_encode::ArtTarget::current();
+    *MADE_FOR.lock().unwrap_or_else(|e| e.into_inner()) = Some(target);
     if std::thread::Builder::new()
         .name("foxglove-art-library".into())
         .spawn(move || {
@@ -106,7 +115,6 @@ fn scan(state: Arc<Mutex<Library>>) {
                 library.entries.sort_by(|a, b| a.path.cmp(&b.path));
                 // Source folders (#59): every set folder under them, converted for the view.
                 // Made for the connected keyboard's art screen (#560).
-                let target = super::art_encode::ArtTarget::current();
                 for source in super::art_sources::load().sources {
                     for folder in super::art_sources::sets_in(&source) {
                         let blob = super::art_encode::encode_folder(&folder, target);

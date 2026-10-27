@@ -100,7 +100,10 @@ impl Out {
                 (Some(frame), Some(t)) => {
                     plugin.panel_show(&id, &t, &fitted(&t, frame), Some(screens::BRIEF))
                 }
-                (Some(_), None) => Ok(()),
+                (Some(_), None) => {
+                    eprintln!("mic-mute: {id} has no info screen to draw on");
+                    Ok(())
+                }
                 (None, _) if self.held => plugin.panel_release(&id),
                 (None, _) => Ok(()),
             };
