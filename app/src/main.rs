@@ -57,6 +57,8 @@ fn main() {
     foxglove::via_host::start();
     foxglove::pc_lights::start(); // Foxglove (#423): case and peripheral lights
     foxglove::scene_run::start_from_env(); // Foxglove (#485): the live check's demo scene
+    foxglove::scene_triggers::start(); // Foxglove (#489): layer sweeps
+    foxglove::scenes_ui::startup(); // Foxglove (#489): "Start with this profile"
     foxglove::plugin_install::autoinstall();
     foxglove::plugin_runner::sync();
     foxglove::plugin_actions::start();
@@ -68,6 +70,7 @@ fn main() {
     foxglove::autostart::start(); // Foxglove: Start with Windows
     let result = platform::run(settings, available_devices);
     foxglove::calibrate_ui::cancel(); // Foxglove: quitting mid-calibration puts the colours back
+    foxglove::scenes_ui::quitting(); // Foxglove (#489): no profile starts a scene now
     foxglove::scene_run::stop(); // Foxglove (#485): a running scene gives the lights back
     foxglove::wallpaper_sync::quit(); // Foxglove (#493): the wallpapers go back to their own clocks
     foxglove::startup::finish(result)

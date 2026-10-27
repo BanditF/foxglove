@@ -59,6 +59,36 @@ pub struct View {
     pub with_art: bool,
     /// The Bandit wallpapers on screen now (ids), so their looks say "On screen".
     pub on_screen: Vec<String>,
+    /// The Triggers card's boxes (#489), the active profile's.
+    pub triggers: Triggers,
+    /// The active profile's name, as the picker says it.
+    pub profile: String,
+}
+
+/// The Triggers card's three boxes (#489).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Triggers {
+    pub start_with_profile: bool,
+    pub ripple_keys: bool,
+    pub sweep_layers: bool,
+}
+
+impl Triggers {
+    fn of(c: &Chosen) -> Triggers {
+        Triggers {
+            start_with_profile: c.start_with_profile,
+            ripple_keys: c.ripple_keys,
+            sweep_layers: c.sweep_layers,
+        }
+    }
+}
+
+/// One of the Triggers card's boxes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Trigger {
+    StartWithProfile,
+    RippleKeys,
+    SweepLayers,
 }
 
 impl View {
@@ -104,6 +134,8 @@ pub enum Intent {
     ResetPositions,
     /// "Right screen too" switched on or off.
     WithArt(bool),
+    /// A Triggers box switched on or off.
+    Trigger(Trigger, bool),
 }
 
 /// The page's own state between frames.
@@ -130,6 +162,13 @@ static DRAFT: Mutex<Draft> = Mutex::new(Draft {
     drag: None,
 });
 static STOPPING: AtomicBool = AtomicBool::new(false);
+/// The running scene was started by a profile switch ("Start with this profile"), so a switch
+/// to a profile without it stops it (#489).
+static BY_PROFILE: AtomicBool = AtomicBool::new(false);
+/// Foxglove has started its services, so a profile switch may start a scene.
+static READY: AtomicBool = AtomicBool::new(false);
+/// A profile switch came while a stop was ending a scene: decide again after it.
+static RECHECK: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 thread_local! {
@@ -173,6 +212,8 @@ fn show(ui: &mut egui::Ui) {
         t,
         with_art: st.chosen.with_art,
         on_screen: super::wallpaper::on_screen_ids(),
+        triggers: Triggers::of(&st.chosen),
+        profile: st.profile.clone().unwrap_or_else(|| "Base settings".into()),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
@@ -203,6 +244,7 @@ fn refresh(slot: &mut Option<State>, frame: u64) -> &mut State {
     if st.profile != profile || std::mem::take(&mut st.reload) {
         st.profile = profile;
         st.chosen = looks::load_chosen();
+        super::scene_triggers::set_flags(&st.chosen);
     }
     // Not drawn on the frame before (another page, or the window was closed and reopened).
     let shown_again = frame != st.last_frame.wrapping_add(1);
@@ -230,20 +272,73 @@ fn rebuild_room(st: &mut State) {
         .collect();
 }
 
-/// The profile changed: a running scene takes the new profile's look at once, whatever page
-/// shows (or none); the page loads it again when drawn.
+/// The profile changed (a program rule or by hand), whatever page shows (or none); the page
+/// loads it again when drawn. The new profile's "Start with this profile" starts its scene,
+/// and a scene a profile started stops when the new one's is off; otherwise a running scene
+/// takes the new profile's look (#489, `scene_triggers::on_profile`).
 pub fn profile_changed() {
     if let Some(st) = STATE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
         st.reload = true;
     }
-    if super::scene_run::running().is_none() {
+    let chosen = looks::load_chosen();
+    super::scene_triggers::set_flags(&chosen);
+    if !READY.load(Ordering::Relaxed) {
         return;
     }
-    let chosen = looks::load_chosen();
+    let running = super::scene_run::running().is_some();
+    let by_profile = BY_PROFILE.load(Ordering::Relaxed);
+    match super::scene_triggers::on_profile(running, by_profile, chosen.start_with_profile) {
+        super::scene_triggers::ProfileAction::Start => start_by_profile(&chosen),
+        super::scene_triggers::ProfileAction::Stop => {
+            BY_PROFILE.store(false, Ordering::Relaxed);
+            RECHECK.store(true, Ordering::Relaxed);
+            stop_scene();
+        }
+        super::scene_triggers::ProfileAction::Restyle => {
+            // A stop still on its way ends this scene: decide again once it has.
+            if STOPPING.load(Ordering::Relaxed) {
+                RECHECK.store(true, Ordering::Relaxed);
+            }
+            let saved = looks::load_saved().presets;
+            let room = super::scene_room::room();
+            super::scene_run::set_effect(
+                &scene_name(&chosen.look, &saved),
+                chosen.look.effect(&room),
+            );
+            show_art(&chosen);
+        }
+        super::scene_triggers::ProfileAction::Nothing => {}
+    }
+}
+
+/// A profile's "Start with this profile" starts its scene.
+fn start_by_profile(chosen: &Chosen) {
     let saved = looks::load_saved().presets;
     let room = super::scene_room::room();
-    super::scene_run::set_effect(&scene_name(&chosen.look, &saved), chosen.look.effect(&room));
-    show_art(&chosen);
+    let name = scene_name(&chosen.look, &saved);
+    if super::scene_run::start(&name, chosen.look.effect(&room), None) {
+        BY_PROFILE.store(true, Ordering::Relaxed);
+        show_art(chosen);
+    } else {
+        // A scene is still ending: start once it has (the stop thread decides again).
+        RECHECK.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Foxglove started its services: the trigger boxes take effect, and the active profile's
+/// scene starts when it has "Start with this profile" on.
+pub fn startup() {
+    READY.store(true, Ordering::Relaxed);
+    // The same decision as a switch (it reads the active profile as it is now), unless the
+    // demo scene already runs.
+    if super::scene_run::running().is_none() {
+        profile_changed();
+    }
+}
+
+/// Quitting: profile switches no longer start scenes (called before the scene stops).
+pub fn quitting() {
+    READY.store(false, Ordering::Relaxed);
 }
 
 /// Repaints the page when the PC comes back (unlocked, display on), since the preview asks for
@@ -280,6 +375,7 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
             resend(st);
         }
         Intent::Start => {
+            BY_PROFILE.store(false, Ordering::Relaxed);
             looks::save_chosen(&st.chosen);
             let name = scene_name(&st.chosen.look, &st.saved.presets);
             if super::scene_run::start(&name, st.chosen.look.effect(&st.room), None) {
@@ -294,15 +390,19 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
             show_art(&st.chosen);
         }
         Intent::Stop => {
-            if !STOPPING.swap(true, Ordering::Relaxed) {
-                let ctx = ctx.clone();
-                // Stop waits (bounded) for the lights to be given back: off the UI thread.
-                super::services::spawn_named("scene-stop", move || {
-                    super::scene_run::stop();
-                    STOPPING.store(false, Ordering::Relaxed);
-                    ctx.request_repaint();
-                });
+            BY_PROFILE.store(false, Ordering::Relaxed);
+            stop_scene();
+            ctx.request_repaint();
+        }
+        Intent::Trigger(which, on) => {
+            let c = &mut st.chosen;
+            match which {
+                Trigger::StartWithProfile => c.start_with_profile = on,
+                Trigger::RippleKeys => c.ripple_keys = on,
+                Trigger::SweepLayers => c.sweep_layers = on,
             }
+            looks::save_chosen(&st.chosen);
+            super::scene_triggers::set_flags(&st.chosen);
         }
         Intent::SavePreset(name) => {
             if st.saved.save(&name, &st.chosen.look) {
@@ -324,6 +424,26 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
             layout.offsets.clear();
             save_layout(st, &layout);
         }
+    }
+}
+
+/// Stops the running scene off the calling thread: Stop waits (bounded) for the lights to be
+/// given back. The scene's end repaints the page.
+fn stop_scene() {
+    if !STOPPING.swap(true, Ordering::Relaxed) {
+        super::services::spawn_named("scene-stop", move || {
+            super::scene_run::stop();
+            STOPPING.store(false, Ordering::Relaxed);
+            // A profile switch while this stop ran (quick switches back to a game) gets its
+            // scene now that the lights are back.
+            if super::scene_triggers::restart_after_stop(
+                RECHECK.swap(false, Ordering::Relaxed),
+                READY.load(Ordering::Relaxed),
+            ) {
+                profile_changed();
+            }
+            super::scene_run::repaint_page();
+        });
     }
 }
 
@@ -392,6 +512,8 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
         card(ui, "Presets", |ui| presets(ui, v, &mut out));
         ui.add_space(10.0);
         card(ui, "Effect", |ui| effect_card(ui, v, draft, &mut out));
+        ui.add_space(10.0);
+        card(ui, "Triggers", |ui| triggers_card(ui, v, &mut out));
         ui.add_space(6.0);
         return out;
     }
@@ -406,6 +528,8 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
                 card(ui, "Room", |ui| room_card(ui, v, draft, &mut out));
                 ui.add_space(10.0);
                 card(ui, "Effect", |ui| effect_card(ui, v, draft, &mut out));
+                ui.add_space(10.0);
+                card(ui, "Triggers", |ui| triggers_card(ui, v, &mut out));
             },
         );
         let right_w = width - left_w - gap;
@@ -420,6 +544,44 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     });
     ui.add_space(6.0);
     out
+}
+
+/// What starts the scene or draws over it (#489): the active profile's three boxes.
+fn triggers_card(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
+    let t = v.triggers;
+    let mut boxed = |ui: &mut egui::Ui, which: Trigger, on: bool, label: &str, hint: &str| {
+        let mut now = on;
+        if ui.checkbox(&mut now, label).on_hover_text(hint).changed() {
+            out.push(Intent::Trigger(which, now));
+        }
+    };
+    boxed(
+        ui,
+        Trigger::StartWithProfile,
+        t.start_with_profile,
+        "Start with this profile",
+        "Switching to this profile starts the scene. Switching away stops it, unless you started it yourself.",
+    );
+    ui.weak(format!(
+        "Profile: {}. Programs switch profiles under Settings, Profile.",
+        v.profile
+    ));
+    ui.add_space(4.0);
+    boxed(
+        ui,
+        Trigger::RippleKeys,
+        t.ripple_keys,
+        "Ripple on key press",
+        "Each key you press sends one ring of the scene's colour across the room. Foxglove sees where the key is, never what it types.",
+    );
+    boxed(
+        ui,
+        Trigger::SweepLayers,
+        t.sweep_layers,
+        "Sweep on layer change",
+        "Changing layer sends one sweep across the room in that layer's overlay colour.",
+    );
+    ui.weak("Ripples and sweeps show while a scene runs.");
 }
 
 /// Start or Stop with the scene's state, the map, and what the scene lights.
@@ -1102,6 +1264,12 @@ pub(crate) mod tests {
             t: SceneTime(2300),
             with_art: false,
             on_screen: vec!["hud".into()],
+            triggers: Triggers {
+                start_with_profile: true,
+                ripple_keys: true,
+                sweep_layers: false,
+            },
+            profile: "Game".into(),
         }
     }
 
@@ -1125,6 +1293,8 @@ pub(crate) mod tests {
             t: SceneTime(5000),
             with_art: false,
             on_screen: vec![],
+            triggers: Triggers::default(),
+            profile: "Base settings".into(),
         }
     }
 
@@ -1288,6 +1458,23 @@ pub(crate) mod tests {
         assert_eq!(
             click(&sample(), "Remove"),
             vec![Intent::RemovePreset("Desk evening".into())]
+        );
+    }
+
+    /// The Triggers card (#489): each box sends its own switch, from the active profile's state.
+    #[test]
+    fn the_trigger_boxes_switch_their_own_trigger() {
+        assert_eq!(
+            click(&sample(), "Start with this profile"),
+            vec![Intent::Trigger(Trigger::StartWithProfile, false)]
+        );
+        assert_eq!(
+            click(&sample(), "Ripple on key press"),
+            vec![Intent::Trigger(Trigger::RippleKeys, false)]
+        );
+        assert_eq!(
+            click(&sample_none(), "Sweep on layer change"),
+            vec![Intent::Trigger(Trigger::SweepLayers, true)]
         );
     }
 

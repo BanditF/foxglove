@@ -263,6 +263,7 @@ impl Keyboard {
         let layout = definition
             .get_layout(&layout_name)
             .map_err(|_| "Failed to get layout".to_string())?;
+        crate::foxglove::scene_triggers::set_layout(&layout); // Foxglove (#489)
 
         let snapshot = protocol
             .read_keymap()
@@ -418,6 +419,8 @@ impl Keyboard {
                         if let Ok(mut mat) = matrix_clone.lock() {
                             mat.set_pressed(row, col, pressed != 0);
                         }
+                        // Foxglove (#489): a scene's key ripple; position only.
+                        crate::foxglove::scene_triggers::key(row, col, pressed != 0);
                         needs_repaint = visibility_clone.lock().unwrap().is_visible(Instant::now());
                     }
                     _ => {}
@@ -631,6 +634,7 @@ impl Keyboard {
     }
 
     pub fn set_layout(&self, layout: KeyboardLayout) {
+        crate::foxglove::scene_triggers::set_layout(&layout); // Foxglove (#489)
         *self.layout.lock().unwrap() = layout;
     }
 }
