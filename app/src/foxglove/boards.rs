@@ -416,8 +416,10 @@ impl Board {
         if b.matches.is_empty() {
             return Err("a profile needs at least one [[match]]".into());
         }
+        // The host link reaches two parts: the one the PC talks to and its other half. More
+        // `[[parts]]` name modules the link can't address yet; the lights count two.
         if !b.parts.is_empty() {
-            b.halves = u8::try_from(b.parts.len()).unwrap_or(u8::MAX);
+            b.halves = u8::try_from(b.parts.len().min(2)).unwrap_or(2);
         }
         Ok(b)
     }
@@ -531,6 +533,8 @@ pub fn connected(vid: u16, pid: u16, product: &str) {
         );
     }
     super::led_map::note_current(board.as_ref());
+    // Its keymap tells its key count again; the last keyboard's doesn't carry over.
+    KEYMAP_KEYS.store(0, std::sync::atomic::Ordering::Relaxed);
     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = board;
 }
 
@@ -553,14 +557,24 @@ pub fn keymap_keys(n: usize) {
     KEYMAP_KEYS.store(n, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// How a board is drawn: its profile's drawing, else a plain grid of its keymap's keys (#559).
+/// How a board is drawn: its profile's drawing, else a plain grid of its keymap's keys (#559),
+/// shared out between a split's halves (the drawing is one half).
 pub fn drawing(board: Option<&Board>) -> Drawing {
-    board.and_then(|b| b.drawing.clone()).unwrap_or_else(|| {
-        match KEYMAP_KEYS.load(std::sync::atomic::Ordering::Relaxed) {
-            0 => Drawing::default(),
-            n => Drawing::plain(n),
-        }
-    })
+    plain_or_profile(
+        board,
+        KEYMAP_KEYS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+fn plain_or_profile(board: Option<&Board>, keys: usize) -> Drawing {
+    if let Some(d) = board.and_then(|b| b.drawing.clone()) {
+        return d;
+    }
+    let drawn = board.map_or(1, |b| usize::from(b.halves.clamp(1, 2)));
+    match keys {
+        0 => Drawing::default(),
+        n => Drawing::plain(n.div_ceil(drawn)),
+    }
 }
 
 /// "Find my LEDs" saved a map: the connected keyboard's profile takes it at once.
@@ -742,8 +756,13 @@ mod tests {
             "{old}[[parts]]\nid = \"main\"\nname = \"Main board\"\n[[parts]]\nid = \"pad\"\nname = \"Numpad\"\n[[parts]]\nid = \"dial\"\nname = \"Dial\"\n"
         );
         let b = Board::parse(&with).unwrap();
-        assert_eq!(b.halves, 3);
+        assert_eq!(b.halves, 2, "the link reaches two parts");
+        assert_eq!(b.parts().len(), 3);
         assert_eq!(b.parts().name(1), "Numpad");
+        // A split without a drawing: each half a plain grid of half the keymap's keys.
+        let split = Board::parse(old).unwrap();
+        assert_eq!(plain_or_profile(Some(&split), 42).keys(false).len(), 21);
+        assert_eq!(plain_or_profile(None, 42).keys(false).len(), 42);
         assert_eq!(b.parts().the(0), "the main board");
     }
 

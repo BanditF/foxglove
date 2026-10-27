@@ -107,8 +107,12 @@ pub fn firmware_lines(
             let note = match (left, right) {
                 (Ok(l), Ok(r)) if l.version != r.version || l.sha != r.sha => Some((
                     format!(
-                        "{} run different firmware. Flash both from the same build.",
-                        super::parts::upper_first(&parts.all())
+                        "The {} run different firmware. Flash both from the same build.",
+                        if parts.noun() == "half" {
+                            "halves"
+                        } else {
+                            "parts"
+                        }
                     ),
                     Tone::Warn,
                 )),
@@ -373,7 +377,11 @@ fn devices(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
         let mut on = v.device_notice;
         if ui
             .checkbox(&mut on, "Tell me when a device's battery runs low")
-            .on_hover_text("One notification below 15% and one below 5%, as for the keyboard.")
+            .on_hover_text(if v.parts.noun() == "half" {
+                "One notification below 15% and one below 5%, as for the halves."
+            } else {
+                "One notification below 15% and one below 5%, as for the keyboard."
+            })
             .changed()
         {
             intent = Some(Intent::DeviceNotice(on));
@@ -797,7 +805,7 @@ pub mod tests {
         assert_eq!(
             note,
             Some((
-                "Both halves run different firmware. Flash both from the same build.".into(),
+                "The halves run different firmware. Flash both from the same build.".into(),
                 Tone::Warn
             )),
             "the halves differ"

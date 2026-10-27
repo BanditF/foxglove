@@ -293,7 +293,7 @@ fn check(dir: PathBuf) {
         let result = (|| -> Result<Plan, String> {
             let board = board()?;
             let profile = board.profile();
-            let parts = flash_parts(&super::parts::Parts::current());
+            let parts = flash_parts_for(super::boards::current().as_ref());
             let (left, right) = pick_files(&dir, &profile, parts.is_split())?;
             let read = |p: Option<PathBuf>| {
                 p.map(|p| std::fs::read(&p).map_err(|e| format!("Can't read {}: {e}", p.display())))
@@ -398,6 +398,16 @@ fn board() -> Result<windows_board::WindowsBoard, String> {
 /// PC talks to and its other half).
 pub fn flash_parts(parts: &super::parts::Parts) -> foxglove_flash::Parts {
     foxglove_flash::Parts::new((0..parts.len().min(2)).map(|i| parts.name(i)).collect())
+}
+
+/// The flasher's parts for the connected board: only a profile makes it one piece. Without one
+/// the update keeps a split's rules (each image needs its half marker), so an unknown split is
+/// never flashed as one piece.
+pub fn flash_parts_for(board: Option<&super::boards::Board>) -> foxglove_flash::Parts {
+    match board {
+        Some(b) => flash_parts(&b.parts()),
+        None => foxglove_flash::Parts::split(),
+    }
 }
 
 /// The single-flasher lock the script uses too, so the app and the script never write at once.
@@ -1064,6 +1074,10 @@ pub mod tests {
         // The Corne's names stay the flasher's halves.
         let corne = crate::foxglove::fixtures::users_desk::board().parts();
         assert_eq!(flash_parts(&corne), foxglove_flash::Parts::split());
+        // Only a profile makes a keyboard one piece: without one, a split's rules stay.
+        assert_eq!(flash_parts_for(None), foxglove_flash::Parts::split());
+        let plank = crate::foxglove::fixtures::second_desk::board();
+        assert!(!flash_parts_for(Some(&plank)).is_split());
     }
 
     #[test]
