@@ -161,6 +161,16 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_config_starts_the_overlay_at_the_detent() {
+        let fresh = Settings::default();
+        assert_eq!(fresh.opacity, 20);
+        // The key labels follow it.
+        assert!(fresh.label_opacity.is_none());
+        // Saved, it keeps 20 rather than reading back as an older file.
+        assert!(from_pairs(&pairs(&fresh)).is_some_and(|back| back.opacity == 20));
+    }
+
+    #[test]
     fn a_profile_carries_the_label_opacity_or_following() {
         let own = Settings {
             label_opacity: Some(80),
