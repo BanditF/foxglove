@@ -172,45 +172,114 @@ fn lamps_problem(board: &Board) -> Option<String> {
     })
 }
 
+/// The widest grid a drawing may have: a whole full-size board.
+const MAX_COLUMNS: u8 = 24;
+/// The most keys a drawing may list.
+const MAX_KEYS: usize = 160;
+
+/// One part of a board (#559): a half of a split, the one piece, or a module. The first is the
+/// one the PC talks to (ZMK's central).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct PartSpec {
+    pub id: String,
+    /// What the app calls it: "Left half", "Keyboard", "Numpad".
+    pub name: String,
+}
+
 /// [`Lighting::led_map`] for an LED map confirmed on the board.
 pub const LED_MAP_CHECKED: &str = "checked";
 
 /// [`Lighting::led_map`] for a map shipped with the profile and not yet checked on a board.
 pub const LED_MAP_SHIPPED: &str = "shipped";
 
-/// How the Keyboard page draws one half of the board (#392), in key units: a grid of columns
-/// with each column dropped by its stagger, and a row of thumb keys under the inner columns.
-/// The left half is described; the right one is its mirror image.
+/// How the Keyboard page draws one part of the board (#392, #559), in key units: a grid of
+/// columns with each column dropped by its stagger and a row of thumb keys under the inner
+/// columns, or each key's place (`keys`, as KLE and QMK's `info.json` list them). On a split
+/// board the first part is described and the second is its mirror image; a one-piece board's
+/// drawing is the whole board.
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Drawing {
+    #[serde(default)]
     pub columns: u8,
+    #[serde(default)]
     pub rows: u8,
     #[serde(default)]
     pub thumbs: u8,
     /// How far each column sits below the highest one, outer column first; missing ones are 0.
     #[serde(default)]
     pub stagger: Vec<f32>,
+    /// Each key's top-left corner and width, `[x, y]` or `[x, y, w]` in key units, in key order.
+    /// Wins over the grid when set.
+    #[serde(default)]
+    pub keys: Vec<Vec<f32>>,
 }
 
+/// Keys in the plain grid drawn for a keyboard Foxglove knows nothing about.
+const PLAIN_KEYS: usize = 40;
+
 impl Default for Drawing {
-    /// A Corne-shaped half, for a keyboard without a profile (or a profile without a drawing).
+    /// A plain grid, for a keyboard without a profile (or a profile without a drawing) whose
+    /// keymap hasn't said how many keys it has yet. See [`Drawing::plain`].
     fn default() -> Self {
-        Drawing {
-            columns: 6,
-            rows: 3,
-            thumbs: 3,
-            stagger: vec![0.5, 0.5, 0.25, 0.0, 0.125, 0.25],
-        }
+        Drawing::plain(PLAIN_KEYS)
     }
 }
 
 impl Drawing {
+    /// A plain grid of `keys` keys, row after row, about three times as wide as it is tall:
+    /// the shape for a board with no drawing, sized from its keymap.
+    pub fn plain(keys: usize) -> Drawing {
+        let keys = keys.clamp(1, MAX_KEYS);
+        let rows = ((keys as f32 / 3.0).sqrt().round() as usize).clamp(1, 8);
+        let columns = keys.div_ceil(rows);
+        Drawing {
+            columns: 0,
+            rows: 0,
+            thumbs: 0,
+            stagger: Vec::new(),
+            keys: (0..keys)
+                .map(|i| vec![(i % columns) as f32, (i / columns) as f32])
+                .collect(),
+        }
+    }
+
     /// Within reason, so a mistyped profile can't draw a wall of keys.
     fn bounded(&self) -> (u8, u8, u8) {
         (
-            self.columns.clamp(1, 10),
+            self.columns.clamp(1, MAX_COLUMNS),
             self.rows.clamp(1, 8),
-            self.thumbs.min(self.columns.clamp(1, 10)),
+            self.thumbs.min(self.columns.clamp(1, MAX_COLUMNS)),
+        )
+    }
+
+    /// The listed keys, each within reason; `None` for a grid drawing.
+    fn placed(&self) -> Option<Vec<egui::Rect>> {
+        if self.keys.is_empty() {
+            return None;
+        }
+        let at = |v: Option<&f32>, max: f32| {
+            v.copied()
+                .filter(|v| v.is_finite())
+                .unwrap_or(0.0)
+                .clamp(0.0, max)
+        };
+        Some(
+            self.keys
+                .iter()
+                .take(MAX_KEYS)
+                .map(|k| {
+                    let w = k
+                        .get(2)
+                        .copied()
+                        .filter(|w| w.is_finite())
+                        .unwrap_or(1.0)
+                        .clamp(0.5, 10.0);
+                    egui::Rect::from_min_size(
+                        egui::pos2(at(k.first(), 40.0), at(k.get(1), 12.0)),
+                        egui::vec2(w, 1.0),
+                    )
+                })
+                .collect(),
         )
     }
 
@@ -223,8 +292,20 @@ impl Drawing {
             .clamp(0.0, 2.0)
     }
 
-    /// One half's keys, each a 1×1 rectangle in key units from the half's top-left corner.
+    /// One part's keys, each a rectangle in key units from the part's top-left corner; `right`
+    /// mirrors them (a split board's second half).
     pub fn keys(&self, right: bool) -> Vec<egui::Rect> {
+        let mut keys = self.placed().unwrap_or_else(|| self.grid_keys());
+        if right {
+            let (w, _) = self.size();
+            for k in &mut keys {
+                *k = egui::Rect::from_min_size(egui::pos2(w - k.max.x, k.min.y), k.size());
+            }
+        }
+        keys
+    }
+
+    fn grid_keys(&self) -> Vec<egui::Rect> {
         let (columns, rows, thumbs) = self.bounded();
         let mut keys = Vec::new();
         for c in 0..usize::from(columns) {
@@ -243,18 +324,16 @@ impl Drawing {
                 egui::vec2(1.0, 1.0),
             ));
         }
-        if right {
-            let (w, _) = self.size();
-            for k in &mut keys {
-                *k = egui::Rect::from_min_size(egui::pos2(w - k.max.x, k.min.y), k.size());
-            }
-        }
         keys
     }
 
     /// The key grid as [`keys`](Self::keys) draws it: columns, rows and thumbs. Key `c * rows + r`
-    /// is column `c` (outer first), row `r` (top first); the thumbs follow, outer first.
+    /// is column `c` (outer first), row `r` (top first); the thumbs follow, outer first. Listed
+    /// keys count as one row.
     pub fn grid(&self) -> (usize, usize, usize) {
+        if let Some(keys) = self.placed() {
+            return (keys.len(), 1, 0);
+        }
         let (c, r, t) = self.bounded();
         (usize::from(c), usize::from(r), usize::from(t))
     }
@@ -271,8 +350,12 @@ impl Drawing {
         (first, below)
     }
 
-    /// The half's width and height in key units.
+    /// The part's width and height in key units.
     pub fn size(&self) -> (f32, f32) {
+        if let Some(keys) = self.placed() {
+            let r = keys.iter().fold(egui::Rect::NOTHING, |a, k| a.union(*k));
+            return (r.max.x.max(1.0), r.max.y.max(1.0));
+        }
         let (columns, rows, thumbs) = self.bounded();
         let lowest = (0..usize::from(columns))
             .map(|c| self.drop_of(c))
@@ -297,8 +380,13 @@ pub struct Board {
     #[serde(default)]
     pub status: Status,
     pub protocol: Protocol,
+    /// Shorthand for the parts: 1 is one piece, 2 a split with a left and a right half (the
+    /// default, for profiles from before `[[parts]]`). `[[parts]]` wins and sets it.
     #[serde(default = "two")]
     pub halves: u8,
+    /// The board's parts by name (#559), the one the PC talks to first.
+    #[serde(default)]
+    pub parts: Vec<PartSpec>,
     #[serde(default)]
     pub keymap: Option<String>,
     #[serde(rename = "match")]
@@ -307,7 +395,7 @@ pub struct Board {
     pub screens: Vec<Screen>,
     #[serde(default)]
     pub lighting: Option<Lighting>,
-    /// How the Keyboard page draws it (#392); a Corne shape when absent.
+    /// How the Keyboard page draws it (#392); a plain key grid when absent ([`drawing`]).
     #[serde(default)]
     pub drawing: Option<Drawing>,
     /// The folder of a user profile, for its keymap file.
@@ -321,14 +409,24 @@ fn two() -> u8 {
 
 impl Board {
     pub fn parse(text: &str) -> Result<Board, String> {
-        let b: Board = toml::from_str(text).map_err(|e| e.to_string())?;
+        let mut b: Board = toml::from_str(text).map_err(|e| e.to_string())?;
         if b.format != FORMAT || b.version != 1 {
             return Err(format!("not a {FORMAT} v1 profile"));
         }
         if b.matches.is_empty() {
             return Err("a profile needs at least one [[match]]".into());
         }
+        // The host link reaches two parts: the one the PC talks to and its other half. More
+        // `[[parts]]` name modules the link can't address yet; the lights count two.
+        if !b.parts.is_empty() {
+            b.halves = u8::try_from(b.parts.len().min(2)).unwrap_or(2);
+        }
         Ok(b)
+    }
+
+    /// Its parts, by name (#559).
+    pub fn parts(&self) -> super::parts::Parts {
+        super::parts::Parts::of(Some(self))
     }
 
     fn matches(&self, vid: u16, pid: u16, product: &str) -> bool {
@@ -435,6 +533,8 @@ pub fn connected(vid: u16, pid: u16, product: &str) {
         );
     }
     super::led_map::note_current(board.as_ref());
+    // Its keymap tells its key count again; the last keyboard's doesn't carry over.
+    KEYMAP_KEYS.store(0, std::sync::atomic::Ordering::Relaxed);
     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = board;
 }
 
@@ -446,6 +546,35 @@ pub fn built_in_keymaps() -> impl Iterator<Item = &'static str> {
 /// The connected keyboard's profile, if it has one.
 pub fn current() -> Option<Board> {
     CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// How many keys the connected keyboard's keymap has (its active physical layout), for the
+/// drawing of a board without one; 0 before a keymap was read.
+static KEYMAP_KEYS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A keymap was read: the plain drawing takes its key count.
+pub fn keymap_keys(n: usize) {
+    KEYMAP_KEYS.store(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How a board is drawn: its profile's drawing, else a plain grid of its keymap's keys (#559),
+/// shared out between a split's halves (the drawing is one half).
+pub fn drawing(board: Option<&Board>) -> Drawing {
+    plain_or_profile(
+        board,
+        KEYMAP_KEYS.load(std::sync::atomic::Ordering::Relaxed),
+    )
+}
+
+fn plain_or_profile(board: Option<&Board>, keys: usize) -> Drawing {
+    if let Some(d) = board.and_then(|b| b.drawing.clone()) {
+        return d;
+    }
+    let drawn = board.map_or(1, |b| usize::from(b.halves.clamp(1, 2)));
+    match keys {
+        0 => Drawing::default(),
+        n => Drawing::plain(n.div_ceil(drawn)),
+    }
 }
 
 /// "Find my LEDs" saved a map: the connected keyboard's profile takes it at once.
@@ -572,15 +701,69 @@ mod tests {
         for (l, r) in left.iter().zip(&right) {
             assert_eq!((r.min.y, r.min.x), (l.min.y, w - l.max.x));
         }
-        // No drawing in a profile: a Corne shape; a mistyped one stays within bounds.
-        assert_eq!(Drawing::default().keys(false).len(), 21);
+        // A mistyped drawing stays within bounds.
         let wild = Drawing {
             columns: 200,
             rows: 0,
             thumbs: 50,
             stagger: vec![f32::NAN, 99.0],
+            keys: vec![],
         };
-        assert_eq!(wild.keys(false).len(), 10 + 10);
+        assert_eq!(wild.keys(false).len(), 24 + 24);
+    }
+
+    /// #559: no profile (or no drawing) is a plain grid of the keymap's keys, not a Corne.
+    #[test]
+    fn a_board_without_a_drawing_is_a_plain_grid_of_its_keys() {
+        for n in [36, 42, 61, 104] {
+            let d = Drawing::plain(n);
+            let keys = d.keys(false);
+            assert_eq!(keys.len(), n);
+            let (w, h) = d.size();
+            assert!(w > h, "{n} keys: wider than tall ({w}x{h})");
+            assert!(keys.iter().all(|k| k.max.x <= w && k.max.y <= h));
+            assert_eq!(d.grid(), (n, 1, 0));
+        }
+        assert_eq!(Drawing::default().keys(false).len(), PLAIN_KEYS);
+        assert_ne!(Drawing::default(), corne_drawing(), "not a Corne");
+        // A drawing that lists its keys, as KLE does: widths and places kept, wild ones bounded.
+        let listed: Drawing =
+            toml::from_str("keys = [[0, 0], [1, 0, 1.5], [0, 1, 2.75], [999, -4, nan]]").unwrap();
+        let keys = listed.keys(false);
+        assert_eq!(keys.len(), 4);
+        assert_eq!(keys[1].width(), 1.5);
+        assert_eq!(keys[3].min, egui::pos2(40.0, 0.0));
+        assert_eq!(listed.size(), (41.0, 2.0));
+    }
+
+    fn corne_drawing() -> Drawing {
+        let all = load(None);
+        find_in(&all, 0x1d50, 0x615e, "Eyelash Corne")
+            .unwrap()
+            .drawing
+            .unwrap()
+    }
+
+    /// #559: a profile from before `[[parts]]` reads as it did; `[[parts]]` names them.
+    #[test]
+    fn old_profiles_keep_two_halves_and_parts_set_them() {
+        let old = "format = \"foxglove-board\"\nversion = 1\nid = \"x\"\nname = \"X\"\nprotocol = \"zmk\"\n[[match]]\nvid = 1\npid = 2\n";
+        let b = Board::parse(old).unwrap();
+        assert_eq!((b.halves, b.parts.len()), (2, 0));
+        let names: Vec<String> = (0..2).map(|i| b.parts().name(i)).collect();
+        assert_eq!(names, ["Left half", "Right half"]);
+        let with = format!(
+            "{old}[[parts]]\nid = \"main\"\nname = \"Main board\"\n[[parts]]\nid = \"pad\"\nname = \"Numpad\"\n[[parts]]\nid = \"dial\"\nname = \"Dial\"\n"
+        );
+        let b = Board::parse(&with).unwrap();
+        assert_eq!(b.halves, 2, "the link reaches two parts");
+        assert_eq!(b.parts().len(), 3);
+        assert_eq!(b.parts().name(1), "Numpad");
+        // A split without a drawing: each half a plain grid of half the keymap's keys.
+        let split = Board::parse(old).unwrap();
+        assert_eq!(plain_or_profile(Some(&split), 42).keys(false).len(), 21);
+        assert_eq!(plain_or_profile(None, 42).keys(false).len(), 42);
+        assert_eq!(b.parts().the(0), "the main board");
     }
 
     #[test]

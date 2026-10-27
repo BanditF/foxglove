@@ -118,7 +118,7 @@ fn apply_leds(board: &mut Board, leds: &BoardLeds) {
     let other_split = !leds.parts.is_empty() && parts_now.as_ref() != Some(&leds.parts);
     if lighting.lamps != leds.lamps || board.halves != leds.halves || other_split {
         eprintln!(
-            "Foxglove: the LED map for {} was found with {} LEDs ({:?}) on {} half(s); the profile now says {} ({:?}) on {}: find them again",
+            "Foxglove: the LED map for {} was found with {} LEDs ({:?}) on {} part(s); the profile now says {} ({:?}) on {}: find them again",
             board.id, leds.lamps, leds.parts, leds.halves, lighting.lamps, parts_now, board.halves
         );
         return;
@@ -233,7 +233,7 @@ impl Wizard {
         Wizard {
             board: board.id.clone(),
             name: board.name.clone(),
-            drawing: board.drawing.clone().unwrap_or_default(),
+            drawing: super::boards::drawing(Some(board)),
             halves,
             parts,
             answers: Vec::new(),

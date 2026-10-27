@@ -14,7 +14,10 @@ Foxglove is a Windows app for the **keyboard and the lights and screens around i
   to the keyboard and the wallpaper.
 - **Device management on Windows:** finding devices, their state, and one place to see them.
 - **Optional integrations:** Wallpaper Engine, OBS, SignalRGB, OpenRGB, iCUE and others. Foxglove
-  works fully without each of them and is richer with them.
+  works fully without each of them and is richer with them. Content made for Foxglove, our own
+  included, opts in through data that ships with it, never through code that names it: a
+  wallpaper's `foxglove.json` (docs/wallpaper-manifest.md), a plugin's manifest, a board
+  profile.
 
 ## Out of scope
 

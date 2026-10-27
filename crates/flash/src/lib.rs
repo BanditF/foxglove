@@ -1,5 +1,5 @@
-//! Updating both halves of the keyboard from the app (#382), with the safe flasher's rules
-//! (`scripts/flash/foxglove_flash.py`):
+//! Updating the keyboard's parts from the app (#382): both halves of a split, or a one-piece
+//! board (#559), with the safe flasher's rules (`scripts/flash/foxglove_flash.py`):
 //!
 //! - every image passes the UF2 checks for its half first ([`uf2::preflight`]);
 //! - the left must be on USB (a Bluetooth-only left can't show its bootloader drive), and a right
@@ -15,6 +15,10 @@
 //!
 //! The steps run against a [`Board`], so the whole flow is tested with a mock; the app provides
 //! the real one. All waits are the board's, which waits on device events with a timeout.
+//!
+//! [`Half`] is the firmware's number for a part (D7 08, D7 09, the image marker): `Left` is the
+//! one the PC talks to, `Right` the other half of a split. What the steps call each part comes
+//! from [`Parts`], the app's names from the board profile.
 
 pub mod uf2;
 
@@ -39,6 +43,90 @@ impl Half {
         match self {
             Half::Left => 0,
             Half::Right => 1,
+        }
+    }
+}
+
+/// What the update calls the keyboard's parts (#559), first the one the PC talks to: "Left
+/// half" and "Right half" on a split (the default), "Keyboard" on a one-piece board.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Parts {
+    names: Vec<String>,
+}
+
+impl Default for Parts {
+    fn default() -> Self {
+        Parts::split()
+    }
+}
+
+impl Parts {
+    /// The parts by name, first the one the PC talks to. The firmware updates two at most.
+    pub fn new(names: Vec<String>) -> Parts {
+        let mut names: Vec<String> = names.into_iter().filter(|n| !n.is_empty()).collect();
+        names.truncate(2);
+        if names.is_empty() {
+            names.push("Keyboard".into());
+        }
+        Parts { names }
+    }
+
+    /// A split with a left and a right half.
+    pub fn split() -> Parts {
+        Parts::new(vec!["Left half".into(), "Right half".into()])
+    }
+
+    pub fn is_split(&self) -> bool {
+        self.names.len() > 1
+    }
+
+    /// Whether the keyboard has this part.
+    pub fn has(&self, half: Half) -> bool {
+        usize::from(half.index()) < self.names.len()
+    }
+
+    /// "Left half", "Keyboard".
+    pub fn name(&self, half: Half) -> String {
+        self.names
+            .get(usize::from(half.index()))
+            .cloned()
+            .unwrap_or_else(|| Parts::split().names[usize::from(half.index())].clone())
+    }
+
+    /// "Left", "Keyboard": a line's label.
+    pub fn short(&self, half: Half) -> String {
+        let name = self.name(half);
+        match name.strip_suffix(" half") {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => name,
+        }
+    }
+
+    /// "the left half", "the keyboard".
+    pub fn the(&self, half: Half) -> String {
+        let name = self.name(half);
+        let mut c = name.chars();
+        let lower = match (c.next(), name.chars().nth(1)) {
+            (Some(f), Some(n)) if n.is_lowercase() || n == ' ' => {
+                f.to_lowercase().chain(c).collect()
+            }
+            _ => name.clone(),
+        };
+        format!("the {lower}")
+    }
+
+    /// "The left half", "The keyboard": a sentence's start.
+    pub fn the_cap(&self, half: Half) -> String {
+        let the = self.the(half);
+        format!("T{}", &the[1..])
+    }
+
+    /// Every part: "both halves", "both parts", "the keyboard".
+    pub fn all(&self) -> &'static str {
+        match self.names.len() {
+            1 => "the keyboard",
+            _ if self.names.iter().all(|n| n.ends_with(" half")) => "both halves",
+            _ => "both parts",
         }
     }
 }
@@ -144,6 +232,8 @@ pub struct Plan {
     /// A half would get an older version: the user has to allow it.
     pub downgrade: bool,
     pub hands_free: bool,
+    /// What the steps call each part.
+    pub parts: Parts,
 }
 
 /// Below this, the right half isn't updated: it may wait in its bootloader for a while.
@@ -161,10 +251,13 @@ fn version(v: &str) -> Option<(u32, u32, u32)> {
 }
 
 impl Plan {
-    /// One line per half: what it runs now and what it gets.
+    /// One line per part: what it runs now and what it gets.
     pub fn lines(&self) -> Vec<String> {
         let mut out = Vec::new();
-        for half in [Half::Left, Half::Right] {
+        for half in [Half::Left, Half::Right]
+            .into_iter()
+            .filter(|h| self.parts.has(*h))
+        {
             let now = self.current[half.index() as usize]
                 .as_ref()
                 .map_or("unknown".to_string(), |b| b.to_string());
@@ -174,36 +267,57 @@ impl Plan {
                     profile: i.check.profile.clone(),
                     sha: i.check.sha.clone(),
                 };
-                out.push(format!("{}: {now} -> {new}", cap(half)));
+                out.push(format!("{}: {now} -> {new}", self.parts.short(half)));
             } else if self.skipped.contains(&half) {
-                out.push(format!("{}: {now}, already up to date", cap(half)));
+                out.push(format!(
+                    "{}: {now}, already up to date",
+                    self.parts.short(half)
+                ));
             }
         }
         out
     }
 }
 
-fn cap(half: Half) -> &'static str {
-    match half {
-        Half::Left => "Left",
-        Half::Right => "Right",
-    }
-}
-
-/// Checks the images and the keyboard and says what an update would do; nothing is touched.
+/// Checks the images and a split keyboard and says what an update would do; nothing is touched.
 pub fn plan(
     left: Option<Vec<u8>>,
     right: Option<Vec<u8>>,
     board: &dyn Board,
 ) -> Result<Plan, String> {
+    plan_for(left, right, board, &Parts::split())
+}
+
+/// [`plan`] for a keyboard of these parts (#559): a one-piece board takes one image, which
+/// needs no half marker, and has no second cable or battery to check.
+pub fn plan_for(
+    left: Option<Vec<u8>>,
+    right: Option<Vec<u8>>,
+    board: &dyn Board,
+    parts: &Parts,
+) -> Result<Plan, String> {
+    if right.is_some() && !parts.has(Half::Right) {
+        return Err(format!(
+            "{} is one piece: it takes one firmware file, not a left and a right.",
+            parts.the_cap(Half::Left)
+        ));
+    }
     let mut images = Vec::new();
     for (half, data) in [(Half::Left, left), (Half::Right, right)] {
         let Some(data) = data else { continue };
-        let check = uf2::preflight(&data, half);
+        let check = if parts.is_split() {
+            uf2::preflight(&data, half)
+        } else {
+            uf2::preflight_one(&data)
+        };
         if !check.ok() {
+            let which = if parts.is_split() {
+                half.name()
+            } else {
+                "firmware"
+            };
             return Err(format!(
-                "The {} image can't be used: {}.",
-                half.name(),
+                "The {which} image can't be used: {}.",
                 check.reasons.join("; ")
             ));
         }
@@ -212,25 +326,37 @@ pub fn plan(
     if images.is_empty() {
         return Err("No firmware to write.".into());
     }
+    let first = parts.the(Half::Left);
     match board.left_on_usb() {
         Some(true) => {}
         Some(false) => {
-            return Err("The left half is connected over Bluetooth only. Plug its USB cable into this PC: an update needs the cable.".into())
+            return Err(format!("{} is connected over Bluetooth only. Plug its USB cable into this PC: an update needs the cable.", parts.the_cap(Half::Left)))
         }
-        None => return Err("Can't tell how the left half is connected, so nothing is written. Connect it by USB and try again.".into()),
+        None => return Err(format!("Can't tell how {first} is connected, so nothing is written. Connect it by USB and try again.")),
     }
     if images.iter().any(|i| i.half == Half::Right) {
         // Restarted into its bootloader without a cable, it would wait there, not typing.
         if board.right_on_usb() == Some(false) {
-            return Err("Plug the right half into this PC by USB too: its new firmware goes over its own cable.".into());
+            return Err(format!(
+                "Plug {} into this PC by USB too: its new firmware goes over its own cable.",
+                parts.the(Half::Right)
+            ));
         }
         if let Some(b) = board.right_battery().filter(|b| *b < MIN_RIGHT_BATTERY) {
             return Err(format!(
-                "The right half's battery is at {b}%. Charge it (or plug it in) before updating."
+                "{}'s battery is at {b}%. Charge it (or plug it in) before updating.",
+                parts.the_cap(Half::Right)
             ));
         }
     }
-    let current = [board.build(Half::Left), board.build(Half::Right)];
+    let current = [
+        board.build(Half::Left),
+        if parts.has(Half::Right) {
+            board.build(Half::Right)
+        } else {
+            None
+        },
+    ];
     // The profile each half would run afterwards: dev and GA together are refused.
     let after: Vec<String> = [Half::Left, Half::Right]
         .iter()
@@ -250,8 +376,12 @@ pub fn plan(
         .collect();
     if !after[0].is_empty() && !after[1].is_empty() && after[0] != after[1] {
         return Err(format!(
-            "This would leave the left {} and the right {}. Update both halves with the same kind of build.",
-            after[0], after[1]
+            "This would leave the {} {} and the {} {}. Update {} with the same kind of build.",
+            parts.short(Half::Left).to_lowercase(),
+            after[0],
+            parts.short(Half::Right).to_lowercase(),
+            after[1],
+            parts.all()
         ));
     }
     let mut skipped = Vec::new();
@@ -276,6 +406,7 @@ pub fn plan(
         skipped,
         downgrade,
         hands_free: board.hands_free(),
+        parts: parts.clone(),
     })
 }
 
@@ -294,16 +425,17 @@ pub struct Failure {
     pub recovery: String,
 }
 
-fn recovery(half: Half) -> String {
+fn recovery(parts: &Parts, half: Half) -> String {
     format!(
-        "If the {0} half doesn't type: double-tap its reset button, copy its firmware file onto the drive that appears, \
+        "If {} doesn't type: double-tap its reset button, copy its firmware file onto the drive that appears, \
          and wait for the drive to go. Earlier firmware works the same way (RESCUE.md).",
-        half.name()
+        parts.the(half)
     )
 }
 
 /// Whether `serial` may be `half`'s bootloader.
 fn identify(
+    parts: &Parts,
     half: Half,
     serial: &str,
     left_serial: Option<&str>,
@@ -311,13 +443,14 @@ fn identify(
 ) -> Result<(), String> {
     let is_left = left_serial == Some(serial) || known.left.as_deref() == Some(serial);
     let is_right = known.right.as_deref() == Some(serial);
+    let (left, right) = (parts.the(Half::Left), parts.the(Half::Right));
     match half {
-        Half::Left if is_right => Err("the bootloader that appeared is the right half's".into()),
-        Half::Left if !is_left => Err("the bootloader that appeared isn't the left half's".into()),
-        Half::Right if is_left => Err("the bootloader that appeared is the left half's".into()),
-        Half::Right if known.right.is_some() && !is_right => {
-            Err("the bootloader that appeared isn't the right half seen before".into())
-        }
+        Half::Left if is_right => Err(format!("the bootloader that appeared is {right}'s")),
+        Half::Left if !is_left => Err(format!("the bootloader that appeared isn't {left}'s")),
+        Half::Right if is_left => Err(format!("the bootloader that appeared is {left}'s")),
+        Half::Right if known.right.is_some() && !is_right => Err(format!(
+            "the bootloader that appeared isn't {right} seen before"
+        )),
         _ => Ok(()),
     }
 }
@@ -342,13 +475,21 @@ pub fn run(
     // Learned once, while the left still runs: its bootloader has the same serial.
     let left_serial = board.left_serial().or_else(|| known.left.clone());
     for image in &plan.images {
-        one(image, board, known, left_serial.as_deref(), progress)?;
+        one(
+            image,
+            &plan.parts,
+            board,
+            known,
+            left_serial.as_deref(),
+            progress,
+        )?;
     }
     Ok(())
 }
 
 fn one(
     image: &Image,
+    parts: &Parts,
     board: &dyn Board,
     known: &mut Known,
     left_serial: Option<&str>,
@@ -356,11 +497,13 @@ fn one(
 ) -> Result<(), Failure> {
     let half = image.half;
     let sha = image.check.sha.as_str();
+    // "the left half", "the keyboard"; "The left half" to start a sentence.
+    let (the, the_cap) = (parts.the(half), parts.the_cap(half));
     let mut say = |text: String| progress(Progress { half, text });
     let fail = |message: String| Failure {
         half,
         message,
-        recovery: recovery(half),
+        recovery: recovery(parts, half),
     };
     // Nothing is written while it's unclear which drive is which.
     if !board.bootloaders().is_empty() {
@@ -373,21 +516,30 @@ fn one(
     if half == Half::Left && left_serial.is_none() {
         return Err(Failure {
             half,
-            message: "Can't identify the left half's USB connection, so nothing is written.".into(),
+            message: format!("Can't identify {the}'s USB connection, so nothing is written."),
             recovery: String::new(),
         });
     }
     if half == Half::Right {
-        say("Waiting for the link to the right half".into());
+        say(format!("Waiting for the link to {the}"));
         if !board.wait_right_back(RELAY_WAIT) {
-            say("The link to the right half isn't up; trying anyway".into());
+            say(format!("The link to {the} isn't up; trying anyway"));
         }
     }
     let hands_free = board.hands_free() && board.enter_bootloader(half).is_ok();
     say(if hands_free {
-        format!("Restarting the {} half into its bootloader", half.name())
+        format!("Restarting {the} into its bootloader")
+    } else if parts.is_split() {
+        format!(
+            "Double-tap the reset button on {the} (only that {}), with its cable plugged in",
+            if parts.all() == "both halves" {
+                "half"
+            } else {
+                "part"
+            }
+        )
     } else {
-        format!("Double-tap the reset button on the {} half (only that half), with its cable plugged in", half.name())
+        format!("Double-tap the reset button on {the}, with its cable plugged in")
     });
     // Its bootloader drive: exactly one, and the right one.
     let deadline = board.now() + DRIVE_WAIT;
@@ -395,7 +547,7 @@ fn one(
         let present = board.bootloaders();
         match present.as_slice() {
             [one] => {
-                identify(half, one, left_serial, known).map_err(|e| fail(format!("Stopped before writing: {e}.")))?;
+                identify(parts, half, one, left_serial, known).map_err(|e| fail(format!("Stopped before writing: {e}.")))?;
                 break one.clone();
             }
             [] => {}
@@ -403,10 +555,7 @@ fn one(
         }
         let left = deadline.saturating_duration_since(board.now());
         if left.is_zero() {
-            return Err(fail(format!(
-                "The {} half's bootloader drive didn't appear.",
-                half.name()
-            )));
+            return Err(fail(format!("{the_cap}'s bootloader drive didn't appear.")));
         }
         board.wait_bootloaders(left);
     };
@@ -418,10 +567,7 @@ fn one(
     let id = board
         .board_id(&volume)
         .map_err(|e| fail(format!("Stopped before writing: {e}.")))?;
-    say(format!(
-        "Found the {} half's bootloader ({id})",
-        half.name()
-    ));
+    say(format!("Found {the}'s bootloader ({id})"));
     let mut unconfirmed = false;
     for attempt in 1..=2 {
         // Identity once more, right before touching the drive.
@@ -432,7 +578,7 @@ fn one(
                 "Stopped before writing: the bootloader drive changed.".into(),
             ));
         }
-        say(format!("Writing the {} half's firmware", half.name()));
+        say(format!("Writing {the}'s firmware"));
         match board.write(&volume, &image.data) {
             Ok(()) => {}
             Err(WriteError::DriveGone(e)) => {
@@ -463,28 +609,30 @@ fn one(
     if !unconfirmed {
         board.record(half, sha, "written", "");
     }
-    say(format!("Waiting for the {} half to restart", half.name()));
+    say(format!("Waiting for {the} to restart"));
     let back = match half {
         Half::Left => board.wait_left_back(&serial, LEFT_BACK_WAIT),
         Half::Right => board.wait_right_back(RIGHT_BACK_WAIT),
     };
     if !back && half == Half::Left {
         board.record(half, sha, "not-back", "");
-        return Err(fail(
-            "The left half didn't come back as a keyboard; the right wasn't touched.".into(),
-        ));
+        return Err(fail(if parts.is_split() {
+            format!(
+                "{the_cap} didn't come back as a keyboard; the {} wasn't touched.",
+                parts.short(Half::Right).to_lowercase()
+            )
+        } else {
+            format!("{the_cap} didn't come back on USB after the write.")
+        }));
     }
     match board.build(half) {
         Some(b) if !sha.is_empty() && b.sha != sha => {
             board.record(half, sha, "verify-failed", &b.to_string());
-            return Err(fail(format!(
-                "The {} half runs {b}, not the new build.",
-                half.name()
-            )));
+            return Err(fail(format!("{the_cap} runs {b}, not the new build.")));
         }
         Some(b) if !sha.is_empty() => {
             board.record(half, sha, "verified", "");
-            say(format!("The {} half runs {b}", half.name()));
+            say(format!("{the_cap} runs {b}"));
         }
         _ if unconfirmed => {
             board.record(
@@ -494,15 +642,13 @@ fn one(
                 "no read-back after the drive went away",
             );
             return Err(fail(format!(
-                "Couldn't read the {} half's build back, so it's unknown whether it was written.",
-                half.name()
+                "Couldn't read {the}'s build back, so it's unknown whether it was written."
             )));
         }
         _ => {
             board.record(half, sha, "unverified", "");
             say(format!(
-                "The {} half restarted; its build couldn't be read back",
-                half.name()
+                "{the_cap} restarted; its build couldn't be read back"
             ));
         }
     }

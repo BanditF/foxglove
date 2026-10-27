@@ -141,7 +141,8 @@ pub fn is_open() -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub struct View {
     /// Left and right: how each half is, and in words.
-    pub halves: [(Tone, String); 2],
+    /// Each part: its short name ("Left", "Keyboard"), tone and words (#559).
+    pub halves: Vec<(String, Tone, String)>,
     pub profiles: Vec<String>,
     pub active_profile: Option<String>,
     /// The left half's lights as last read.
@@ -213,23 +214,29 @@ pub fn while_paused(mut v: View) -> View {
     v
 }
 
-/// Both halves in a few words, from the status strip's state.
-pub fn halves(s: &StripState) -> [(Tone, String); 2] {
+/// The board's parts in a few words, from the status strip's state: both halves of a split,
+/// or the one piece (#559).
+pub fn halves(s: &StripState) -> Vec<(String, Tone, String)> {
+    let parts = s.parts();
+    let named = |i: usize, (tone, text): (Tone, String)| (parts.short(i), tone, text);
     if !s.keyboard {
-        return [
-            (Tone::Off, "not connected".into()),
-            (Tone::Off, "not connected".into()),
-        ];
+        return (0..parts.len().min(2))
+            .map(|i| named(i, (Tone::Off, "not connected".into())))
+            .collect();
     }
     let left = super::shell::left_link(s.usb, s.host_link);
-    let battery = s.right_battery.map(|b| format!("battery {b}%"));
-    let right = match (&s.right_build, battery) {
-        (Some(Err(_)), _) => (Tone::Warn, "no reply yet".to_string()),
-        (None, None) => (Tone::Off, "asking…".to_string()),
-        (_, Some(b)) => (Tone::Ok, b),
-        (Some(Ok(_)), None) => (Tone::Ok, "linked".to_string()),
-    };
-    [(Tone::Ok, left), right]
+    let mut out = vec![named(0, (Tone::Ok, left))];
+    if parts.is_split() {
+        let battery = s.right_battery.map(|b| format!("battery {b}%"));
+        let right = match (&s.right_build, battery) {
+            (Some(Err(_)), _) => (Tone::Warn, "no reply yet".to_string()),
+            (None, None) => (Tone::Off, "asking…".to_string()),
+            (_, Some(b)) => (Tone::Ok, b),
+            (Some(Ok(_)), None) => (Tone::Ok, "linked".to_string()),
+        };
+        out.push(named(1, right));
+    }
+    out
 }
 
 /// The right screen from the art service's snapshot, read afresh each frame: its name,
@@ -521,8 +528,8 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     );
                 }
                 ui.add_space(6.0);
-                ui.columns(2, |cols| {
-                    for (col, (name, (tone, text))) in cols.iter_mut().zip(["Left", "Right"].into_iter().zip(&v.halves)) {
+                ui.columns(v.halves.len().max(1), |cols| {
+                    for (col, (name, tone, text)) in cols.iter_mut().zip(&v.halves) {
                         half_chip(col, name, *tone, text);
                     }
                 });
@@ -923,8 +930,16 @@ pub mod tests {
 
     #[test]
     fn halves_in_a_few_words() {
+        let corne = crate::foxglove::fixtures::users_desk::board().parts();
+        let words = |s: &StripState| -> Vec<(Tone, String)> {
+            halves(s).into_iter().map(|(_, t, w)| (t, w)).collect()
+        };
+        let none = StripState {
+            parts: corne.clone(),
+            ..Default::default()
+        };
         assert_eq!(
-            halves(&StripState::default()).map(|h| h.1),
+            halves(&none).into_iter().map(|h| h.2).collect::<Vec<_>>(),
             ["not connected", "not connected"]
         );
         let s = StripState {
@@ -932,27 +947,42 @@ pub mod tests {
             usb: Some(true),
             right_battery: Some(61),
             right_build: Some(Ok("x".into())),
+            parts: corne.clone(),
             ..Default::default()
         };
         assert_eq!(
-            halves(&s),
+            words(&s),
             [
                 (Tone::Ok, "on USB".to_string()),
                 (Tone::Ok, "battery 61%".to_string())
             ]
         );
+        assert_eq!(halves(&s)[1].0, "Right");
         let s = StripState {
             keyboard: true,
             usb: Some(false),
             right_build: Some(Err("no reply".into())),
+            parts: corne,
             ..Default::default()
         };
         assert_eq!(
-            halves(&s),
+            words(&s),
             [
                 (Tone::Ok, "on Bluetooth".to_string()),
                 (Tone::Warn, "no reply yet".to_string())
             ]
+        );
+        // #559: a one-piece board is the keyboard alone.
+        let plank = StripState {
+            keyboard: true,
+            usb: Some(true),
+            right_build: Some(Err("no right half".into())),
+            parts: crate::foxglove::fixtures::second_desk::board().parts(),
+            ..Default::default()
+        };
+        assert_eq!(
+            halves(&plank),
+            [("Keyboard".to_string(), Tone::Ok, "on USB".to_string())]
         );
     }
 
@@ -961,9 +991,9 @@ pub mod tests {
         let (snapshot, library) = super::super::art_ui::tests::sample();
         let a = art(&snapshot, &library);
         View {
-            halves: [
-                (Tone::Ok, "on USB".into()),
-                (Tone::Ok, "battery 61%".into()),
+            halves: vec![
+                ("Left".into(), Tone::Ok, "on USB".into()),
+                ("Right".into(), Tone::Ok, "battery 61%".into()),
             ],
             profiles: vec!["Work".into(), "Game".into()],
             active_profile: None,

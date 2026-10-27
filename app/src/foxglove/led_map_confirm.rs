@@ -142,7 +142,7 @@ impl Confirm {
             return None;
         }
         let per_half = parts.count(0);
-        let drawing = board.drawing.clone().unwrap_or_default();
+        let drawing = super::boards::drawing(Some(board));
         let mut c = Confirm {
             board: board.id.clone(),
             name: board.name.clone(),
@@ -164,19 +164,17 @@ impl Confirm {
             c.found.resize(per_half * usize::from(halves), None);
             return Some(c);
         }
-        // A one-piece board's keys are both halves' drawings side by side: guesses are per half.
-        if halves == 2 && fits(&lighting.led_keys, &c.drawing, per_half) {
+        // A split's drawing is one half (the other mirrors it); a one-piece board's is the whole
+        // board (#559). Either way the chain is per drawing.
+        if fits(&lighting.led_keys, &c.drawing, per_half) {
             c.source = Source::Profile {
                 checked: lighting.led_map == super::boards::LED_MAP_CHECKED,
             };
             c.keys = Some(lighting.led_keys.clone());
             return Some(c);
         }
-        if halves == 2 {
-            c.keys = Some(serpentine(&c.drawing, per_half)?);
-            return Some(c);
-        }
-        None
+        c.keys = Some(serpentine(&c.drawing, per_half)?);
+        Some(c)
     }
 
     pub fn total(&self) -> usize {
@@ -283,7 +281,7 @@ mod tests {
 
     #[test]
     fn the_guess_is_a_column_snake_with_the_thumbs_last() {
-        let d = Drawing::default();
+        let d = corne().drawing.unwrap();
         let keys = serpentine(&d, 21).unwrap();
         assert_eq!(
             keys,
@@ -296,7 +294,7 @@ mod tests {
 
     #[test]
     fn each_correction_is_a_permutation_and_its_own_inverse() {
-        let d = Drawing::default();
+        let d = corne().drawing.unwrap();
         let shipped = corne().lighting.unwrap().led_keys;
         for a in [Answer::Backwards, Answer::Mirrored, Answer::RowsFlipped] {
             let once = fix(&shipped, &d, a);
@@ -373,7 +371,7 @@ mod tests {
         l.led_map = "provisional".into();
         let c = Confirm::new(&board).unwrap();
         assert_eq!(c.source, Source::Guess);
-        assert_eq!(c.keys, serpentine(&Drawing::default(), 21));
+        assert_eq!(c.keys, serpentine(&corne().drawing.unwrap(), 21));
         // A broken profile map (a key twice) falls back to the guess too.
         let l = board.lighting.as_mut().unwrap();
         l.led_keys = vec![0; 21];

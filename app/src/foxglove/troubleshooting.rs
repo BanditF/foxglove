@@ -86,16 +86,24 @@ fn details(ui: &mut egui::Ui, snap: &Snapshot) {
                 .wrap(),
             );
             ui.end_row();
-            ui.weak("Right half");
-            ui.label(right_link(hello.right_link));
-            ui.end_row();
-            ui.weak("Right battery");
-            ui.label(
-                hello
-                    .right_battery
-                    .map_or("unknown".into(), |b| format!("{b}%")),
-            );
-            ui.end_row();
+            // The other half of a split (#559): a one-piece board has none.
+            let parts = super::parts::Parts::current().seen(if hello.right_battery.is_some() {
+                2
+            } else {
+                1
+            });
+            if parts.is_split() {
+                ui.weak(parts.name(1));
+                ui.label(right_link(hello.right_link));
+                ui.end_row();
+                ui.weak(format!("{} battery", parts.short(1)));
+                ui.label(
+                    hello
+                        .right_battery
+                        .map_or("unknown".into(), |b| format!("{b}%")),
+                );
+                ui.end_row();
+            }
         });
     let line = |ui: &mut egui::Ui, text: String| {
         ui.add(egui::Label::new(RichText::new(text).weak()).wrap());

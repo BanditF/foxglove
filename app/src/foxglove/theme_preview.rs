@@ -673,6 +673,7 @@ fn sample_strip() -> crate::foxglove::shell::StripState {
         this_pc: Some(0),
         unplug_warning: None,
         host_link: Some("USB"),
+        parts: crate::foxglove::fixtures::users_desk::board().parts(),
     }
 }
 
@@ -774,6 +775,7 @@ fn long_samples() -> Samples {
         this_pc: Some(1),
         unplug_warning: Some("Unplugging now leaves the keyboard unable to type".into()),
         host_link: Some("USB"),
+        parts: crate::foxglove::fixtures::users_desk::board().parts(),
     };
     for h in &mut s.keyboard.halves {
         h.text = format!(
@@ -783,11 +785,11 @@ fn long_samples() -> Samples {
     }
     s.keyboard.link.rows = vec![
         (
-            "Left half",
+            "Left half".into(),
             "on USB and on Bluetooth slot 4 (another PC) at the same time".into(),
         ),
         (
-            "Bluetooth to this PC",
+            "Bluetooth to this PC".into(),
             "connected, but this PC is paired on slot 2 of 5".into(),
         ),
     ];
@@ -1282,9 +1284,9 @@ fn scenes_page_renders() {
     assert_ne!(with, dragging);
 }
 
-/// The Bandit wallpapers' looks on the Scenes page (#488): one running with "Right screen too"
-/// and its wallpaper on screen, and one picked with nothing running, at the window's default
-/// size (one column).
+/// A wallpaper pack's looks on the Scenes page (#488, #562; the fake third-party pack): one
+/// running with "Right screen too" and its wallpaper on screen, and one picked with nothing
+/// running, at the window's default size (one column).
 #[test]
 fn scenes_wallpaper_presets_render() {
     use crate::foxglove::scene_looks::scenes;
@@ -1300,21 +1302,21 @@ fn scenes_wallpaper_presets_render() {
             .clone()
     };
     let mut s = Samples::full();
-    let fury = look("fury-chase");
+    let reef = look("tidepool.reef");
     s.scenes.0 = View {
-        look: fury.look.clone(),
-        running: Some(fury.name.clone()),
+        look: reef.look.clone(),
+        running: Some(reef.name.clone()),
         with_art: true,
-        on_screen: vec!["fury-chase".into()],
+        on_screen: vec!["tidepool.reef".into()],
         t: foxglove_scene::SceneTime(600),
         ..tests::sample()
     };
     let running = shell_preview_with(Page::Scenes, &s, 1100.0);
     keep("ui-scenes-presets-running.png", &running);
-    let moon = look("hearth-moongarden");
+    let beam = look("tidepool.lighthouse");
     s.scenes.0 = View {
-        look: moon.look.clone(),
-        on_screen: vec!["hearth-moongarden".into(), "hud".into()],
+        look: beam.look.clone(),
+        on_screen: vec!["tidepool.lighthouse".into(), "tidepool.reef".into()],
         ..tests::sample_none()
     };
     let picked = shell_preview_with(Page::Scenes, &s, 1100.0);
@@ -1334,8 +1336,9 @@ fn scenes_triggers_render() {
     assert_ne!(on, off);
 }
 
-/// The review sheet for #488: each Bandit wallpaper's look rendered from the real effect code
-/// over a room (a monitor above the keyboard), six moments of one cycle per row, and a GIF of
+/// The review sheet for #488: each wallpaper look found (in tests, the fake pack) rendered
+/// from the real effect code over a room (a monitor above the keyboard), six moments of one
+/// cycle per row, and a GIF of
 /// each look's cycle. Written only with FOXGLOVE_UI_PREVIEW_DIR set.
 #[test]
 fn scenes_wallpaper_preset_sheet() {

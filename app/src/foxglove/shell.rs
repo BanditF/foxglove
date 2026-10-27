@@ -496,6 +496,17 @@ pub struct StripState {
     pub this_pc: Option<u8>,
     /// Set when unplugging now would leave the keyboard unable to type: how to fix it.
     pub unplug_warning: Option<String>,
+    /// The board's parts (#559): a chip each, named from its profile.
+    pub parts: super::parts::Parts,
+}
+
+impl StripState {
+    /// The parts the strip shows: the profile's, or two once a keyboard without one shows a
+    /// second part (a right build or battery).
+    pub fn parts(&self) -> super::parts::Parts {
+        let second = self.right_battery.is_some() || matches!(self.right_build, Some(Ok(_)));
+        self.parts.clone().seen(if second { 2 } else { 1 })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -509,7 +520,7 @@ pub enum Tone {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chip {
     pub tone: Option<Tone>,
-    pub name: &'static str,
+    pub name: String,
     pub text: String,
     pub hover: Option<String>,
 }
@@ -530,20 +541,24 @@ pub fn left_link(usb: Option<bool>, host_link: Option<&str>) -> String {
     }
 }
 
-/// The strip's chips: left (connection, firmware), right (link, battery), the Bluetooth profile,
-/// and a plain-word warning when unplugging would leave the keyboard unable to type.
+/// The strip's chips: the part the PC talks to (connection, firmware), on a split the other
+/// half (link, battery), the Bluetooth profile, and a plain-word warning when unplugging would
+/// leave the keyboard unable to type. Named by the board's parts (#559).
 pub fn chips(s: &StripState) -> Vec<Chip> {
-    let chip = |tone, name, text: String| Chip {
+    let parts = s.parts();
+    let (first, second) = (parts.short(0), parts.short(1));
+    let chip = |tone, name: &str, text: String| Chip {
         tone: Some(tone),
-        name,
+        name: name.to_string(),
         text,
         hover: None,
     };
     if !s.keyboard {
-        return vec![
-            chip(Tone::Off, "Left", "not connected".into()),
-            chip(Tone::Off, "Right", "not connected".into()),
-        ];
+        let mut out = vec![chip(Tone::Off, &first, "not connected".into())];
+        if parts.is_split() {
+            out.push(chip(Tone::Off, &second, "not connected".into()));
+        }
+        return out;
     }
     let mut out = Vec::new();
     let on = left_link(s.usb, s.host_link);
@@ -552,32 +567,34 @@ pub fn chips(s: &StripState) -> Vec<Chip> {
         .map(|b| format!(" · battery {b}%"))
         .unwrap_or_default();
     out.push(match &s.left_build {
-        Some(Ok(build)) => chip(Tone::Ok, "Left", format!("{on} · {build}{left_battery}")),
+        Some(Ok(build)) => chip(Tone::Ok, &first, format!("{on} · {build}{left_battery}")),
         Some(Err(e)) => Chip {
             hover: Some(e.clone()),
             ..chip(
                 Tone::Warn,
-                "Left",
+                &first,
                 format!("{on} · firmware unknown{left_battery}"),
             )
         },
-        None => chip(Tone::Ok, "Left", format!("{on}{left_battery}")),
+        None => chip(Tone::Ok, &first, format!("{on}{left_battery}")),
     });
     let battery = s
         .right_battery
         .map(|b| format!(" · battery {b}%"))
         .unwrap_or_default();
-    out.push(match &s.right_build {
-        Some(Ok(build)) => Chip {
-            hover: Some(build.clone()),
-            ..chip(Tone::Ok, "Right", format!("linked{battery}"))
-        },
-        Some(Err(e)) => Chip {
-            hover: Some(e.clone()),
-            ..chip(Tone::Warn, "Right", format!("no reply yet{battery}"))
-        },
-        None => chip(Tone::Off, "Right", format!("asking…{battery}")),
-    });
+    if parts.is_split() {
+        out.push(match &s.right_build {
+            Some(Ok(build)) => Chip {
+                hover: Some(build.clone()),
+                ..chip(Tone::Ok, &second, format!("linked{battery}"))
+            },
+            Some(Err(e)) => Chip {
+                hover: Some(e.clone()),
+                ..chip(Tone::Warn, &second, format!("no reply yet{battery}"))
+            },
+            None => chip(Tone::Off, &second, format!("asking…{battery}")),
+        });
+    }
     if let Some(active) = s.profile {
         let whose = match s.this_pc {
             Some(pc) if pc == active => " · this PC",
@@ -586,7 +603,7 @@ pub fn chips(s: &StripState) -> Vec<Chip> {
         };
         out.push(Chip {
             tone: None,
-            name: "",
+            name: String::new(),
             text: format!("Bluetooth slot {}{whose}", active.saturating_add(1)),
             hover: None,
         });
@@ -594,7 +611,7 @@ pub fn chips(s: &StripState) -> Vec<Chip> {
     if let Some(fix) = &s.unplug_warning {
         out.push(Chip {
             tone: Some(Tone::Warn),
-            name: "",
+            name: String::new(),
             text: "Don't unplug: the keyboard couldn't type".into(),
             hover: Some(fix.clone()),
         });
@@ -645,6 +662,7 @@ pub fn strip_state(ctx: &egui::Context) -> StripState {
         profile: link.profile,
         this_pc: link.this_pc,
         unplug_warning: link.unplug_warning,
+        parts: super::parts::Parts::current(),
     }
 }
 
@@ -678,7 +696,7 @@ fn chip(ui: &mut egui::Ui, c: &Chip) {
     let font = theme::body(13.0);
     if !c.name.is_empty() {
         job.append(
-            c.name,
+            &c.name,
             0.0,
             egui::TextFormat::simple(font.clone(), p.text_strong),
         );
@@ -949,11 +967,39 @@ mod tests {
 
     #[test]
     fn strip_without_a_keyboard() {
-        let c = chips(&StripState::default());
+        let corne = StripState {
+            parts: crate::foxglove::fixtures::users_desk::board().parts(),
+            ..Default::default()
+        };
+        let c = chips(&corne);
         assert_eq!(c.len(), 2);
         assert!(c
             .iter()
             .all(|c| c.tone == Some(Tone::Off) && c.text == "not connected"));
+        assert_eq!((c[0].name.as_str(), c[1].name.as_str()), ("Left", "Right"));
+        // #559: a one-piece board (or none known) is one chip, the keyboard's.
+        let c = chips(&StripState::default());
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].name, "Keyboard");
+    }
+
+    /// #559: the second desk's one-piece board: one chip for the keyboard, no half.
+    #[test]
+    fn strip_with_a_one_piece_board() {
+        let s = StripState {
+            keyboard: true,
+            usb: Some(true),
+            left_build: Some(Ok("0.1.0 · e255d32".into())),
+            right_build: Some(Err("no right half on this board".into())),
+            profile: Some(0),
+            this_pc: Some(0),
+            parts: crate::foxglove::fixtures::second_desk::board().parts(),
+            ..Default::default()
+        };
+        let c = chips(&s);
+        assert_eq!(c.len(), 2, "the keyboard and the Bluetooth slot");
+        assert_eq!(c[0].name, "Keyboard");
+        assert!(c.iter().all(|c| !c.name.contains("Right")));
     }
 
     #[test]
@@ -969,6 +1015,7 @@ mod tests {
             this_pc: Some(0),
             unplug_warning: None,
             host_link: Some("USB"),
+            parts: crate::foxglove::fixtures::users_desk::board().parts(),
         };
         let c = chips(&s);
         assert_eq!(c[0].text, "on USB · 0.1.0 · e255d32 · battery 95%");
@@ -1013,6 +1060,7 @@ mod tests {
             profile: Some(1),
             this_pc: Some(0),
             unplug_warning: Some("select Bluetooth slot 1".into()),
+            parts: crate::foxglove::fixtures::users_desk::board().parts(),
             ..Default::default()
         };
         let c = chips(&s);
