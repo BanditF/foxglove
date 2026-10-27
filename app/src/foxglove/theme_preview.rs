@@ -576,6 +576,11 @@ struct Samples {
         crate::foxglove::art_library::Library,
     )>,
     plugins: crate::foxglove::plugins_ui::View,
+    /// The Scenes page (#487) and what's being dragged or typed on it.
+    scenes: (
+        crate::foxglove::scenes_ui::View,
+        crate::foxglove::scenes_ui::Draft,
+    ),
 }
 
 impl Samples {
@@ -594,6 +599,10 @@ impl Samples {
             screens: Some(sample_screens()),
             art: Some(crate::foxglove::art_ui::tests::sample()),
             plugins: crate::foxglove::plugins_ui::tests::sample(),
+            scenes: (
+                crate::foxglove::scenes_ui::tests::sample(),
+                Default::default(),
+            ),
         }
     }
 
@@ -612,6 +621,10 @@ impl Samples {
             screens: None,
             art: None,
             plugins: crate::foxglove::plugins_ui::tests::sample(),
+            scenes: (
+                crate::foxglove::scenes_ui::tests::sample_none(),
+                Default::default(),
+            ),
         }
     }
 }
@@ -674,6 +687,7 @@ fn show_samples(page: crate::foxglove::shell::Page, samples: &Samples) {
     crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
     crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
     crate::foxglove::plugins_ui::PREVIEW.set(Some(samples.plugins.clone()));
+    crate::foxglove::scenes_ui::PREVIEW.set(Some(samples.scenes.clone()));
 }
 
 fn clear_samples() {
@@ -686,6 +700,7 @@ fn clear_samples() {
     crate::foxglove::screens_ui::PREVIEW.set(None);
     crate::foxglove::art_ui::PREVIEW.set(None);
     crate::foxglove::plugins_ui::PREVIEW.set(None);
+    crate::foxglove::scenes_ui::PREVIEW.set(None);
 }
 
 /// The settings window's width after a few frames of `samples`, at the window's minimum size.
@@ -1171,6 +1186,62 @@ fn lights_page_renders() {
     assert!(count(&with, DARK.selected_fill) > 200, "a selected pill");
     assert!(count(&with, DARK.accent) > count(&without, DARK.accent));
     assert_ne!(with, without);
+}
+
+/// The Scenes page (#487): the user's room with a scene running (wide and at the window's
+/// default size), a scene being dragged, and an empty room with nothing running.
+#[test]
+fn scenes_page_renders() {
+    use crate::foxglove::scenes_ui::{tests, Draft, View};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    let with = shell_preview_with(Page::Scenes, &Samples::full(), 1000.0);
+    let without = shell_preview_with(Page::Scenes, &Samples::none(), 1000.0);
+    keep("ui-scenes.png", &with);
+    keep("ui-scenes-none.png", &without);
+    // A sweep with a palette, and a device being dragged (the case, 300 mm to the left).
+    let mut s = Samples::full();
+    s.scenes = (
+        View {
+            look: crate::foxglove::scene_looks::built_in()[3].look.clone(),
+            running: None,
+            ..tests::sample()
+        },
+        Draft {
+            name: "Desk".into(),
+            drag: Some((
+                crate::foxglove::scene_room::tests::SAMPLE_CASE.into(),
+                foxglove_scene::Point::new(-300.0, 0.0),
+            )),
+        },
+    );
+    let dragging = shell_preview_with(Page::Scenes, &s, 1000.0);
+    keep("ui-scenes-sweep-drag.png", &dragging);
+    // The orange of Stop's neighbour pills and the scanline; Start is orange with nothing running.
+    assert!(count(&with, DARK.accent) > 200, "orange");
+    assert!(count(&without, DARK.accent) > 200, "the Start button");
+    assert!(count(&with, DARK.surface) > (with.width() * with.height()) as usize / 20);
+    assert_ne!(with, without);
+    assert_ne!(with, dragging);
+}
+
+/// The preview asks for frames only while the Scenes page is drawn (#487): another page, with
+/// the same scene chosen, asks for none.
+#[test]
+fn the_scenes_preview_repaints_only_on_its_page() {
+    use crate::foxglove::scenes_ui::REPAINTS;
+    use crate::foxglove::shell::Page;
+    REPAINTS.set(0);
+    let _ = shell_preview_with(Page::Lights, &Samples::full(), 600.0);
+    let _ = shell_preview_with(Page::Keyboard, &Samples::full(), 600.0);
+    assert_eq!(REPAINTS.get(), 0, "a hidden page asks for no frames");
+    let _ = shell_preview_with(Page::Scenes, &Samples::full(), 600.0);
+    assert!(REPAINTS.get() > 0, "the visible page animates");
 }
 
 /// "Save battery: dim lights on battery" on the Lights page: closed (the default), with the

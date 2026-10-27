@@ -424,7 +424,7 @@ fn follow_row(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
 }
 
 /// A label with its value on the right, above a slider.
-fn value_row(ui: &mut egui::Ui, name: &str, value: String) {
+pub(crate) fn value_row(ui: &mut egui::Ui, name: &str, value: String) {
     super::settings_ui::split_row(
         ui,
         |ui| {
@@ -437,7 +437,7 @@ fn value_row(ui: &mut egui::Ui, name: &str, value: String) {
 }
 
 /// A slider across the card, its value shown in the row above.
-fn full_slider(ui: &mut egui::Ui, slider: egui::Slider) -> egui::Response {
+pub(crate) fn full_slider(ui: &mut egui::Ui, slider: egui::Slider) -> egui::Response {
     ui.spacing_mut().slider_width = ui.available_width();
     ui.add(slider.show_value(false))
 }

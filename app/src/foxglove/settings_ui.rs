@@ -111,7 +111,7 @@ fn shown_title(title: &str) -> &str {
 
 fn style(title: &str) -> Style {
     match title {
-        "Keyboard" | "Lights" | "Plugins" => Style::Bare,
+        "Keyboard" | "Lights" | "Scenes" | "Plugins" => Style::Bare,
         "Connection"
         | "Showing now"
         | "On the keyboard"

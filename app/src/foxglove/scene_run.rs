@@ -11,8 +11,9 @@
 //!   back at its end; Identify still runs (the worker does one thing at a time, and frames that
 //!   wait meanwhile collapse to the newest); colours the user picks meanwhile are what comes back.
 //!
-//! Until the Scenes page (#487), the one way to start a scene is the hidden demo for live
-//! checks: launch Foxglove with `FOXGLOVE_SCENE_DEMO=<seconds>` (5-600, any other value 30). A
+//! The Scenes page (#487) starts and stops scenes ([`start`], [`stop`]) and changes the look of
+//! a running one ([`set_effect`]). The hidden demo for live checks still works too: launch
+//! Foxglove with `FOXGLOVE_SCENE_DEMO=<seconds>` (5-600, any other value 30). A
 //! scanline runs top to bottom through the room (the case's fans 7, 6, 5, then the keys) and
 //! stops by itself after that long, putting the lights back. Quitting stops it too. Copy
 //! diagnostics has a "Scene" line with what was sent.
@@ -70,14 +71,19 @@ pub fn demo_seconds(value: &str) -> Duration {
 enum Ctl {
     Away(bool),
     Paused(bool),
-    /// The lighting devices changed: place them again.
+    /// The lighting devices changed (or the user moved one): place them again.
     Devices,
+    /// Another look for the running scene.
+    Effect(Box<Effect>),
     Stop,
 }
 
 struct Running {
     tx: mpsc::Sender<Ctl>,
     thread: JoinHandle<()>,
+    name: String,
+    /// The scene's clock, so the Scenes page's preview shows the phase the lights show.
+    clock: Clock,
 }
 
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
@@ -135,22 +141,67 @@ pub fn start_from_env() {
 
 /// Starts a scene; false if one already runs. `limit` stops it after that long.
 pub fn start(name: &str, effect: Effect, limit: Option<Duration>) -> bool {
+    // A scene still giving the lights back would undo this one's: wait for its end.
+    let Ok(_ending) = ENDING.try_lock() else {
+        return false;
+    };
     let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
     if running.as_ref().is_some_and(|r| !r.thread.is_finished()) {
         return false;
     }
     let (tx, rx) = mpsc::channel();
     let own = tx.clone();
+    let shown = name.to_string();
     let name = name.to_string();
+    let clock = Clock::starting_now();
     let thread = super::services::spawn_named("scene-control", move || {
-        control(&name, effect, limit, &own, &rx)
+        control(&name, effect, limit, clock, &own, &rx)
     });
-    *running = Some(Running { tx, thread });
+    *running = Some(Running {
+        tx,
+        thread,
+        name: shown,
+        clock,
+    });
     true
 }
 
+/// The running scene's name and clock, or `None` when none runs (or it has just ended by
+/// itself).
+pub fn running() -> Option<(String, Clock)> {
+    RUNNING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|r| !r.thread.is_finished())
+        .map(|r| (r.name.clone(), r.clock))
+}
+
+/// Gives the running scene another look (a no-op when none runs).
+pub fn set_effect(name: &str, effect: Effect) {
+    let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(r) = running.as_mut().filter(|r| !r.thread.is_finished()) {
+        r.name = name.to_string();
+        let _ = r.tx.send(Ctl::Effect(Box::new(effect)));
+        status().name = Some(name.to_string());
+    }
+}
+
+/// The settings window, so a scene's end repaints the Scenes page.
+static PAGE: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+
+/// The Scenes page's context, for [`GiveBack`]'s repaint.
+pub fn set_page(ctx: &egui::Context) {
+    let _ = PAGE.set(ctx.clone());
+}
+
+/// Held while a scene ends, so a second `stop` (quitting while the Scenes page's Stop is still
+/// giving the lights back) waits for the first instead of returning at once.
+static ENDING: Mutex<()> = Mutex::new(());
+
 /// Stops the running scene and waits until the lights are given back (bounded).
 pub fn stop() {
+    let _ending = ENDING.lock().unwrap_or_else(|e| e.into_inner());
     let running = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(r) = running {
         let _ = r.tx.send(Ctl::Stop);
@@ -169,8 +220,10 @@ pub fn pause_changed(paused: bool) {
     tell(Ctl::Paused(paused));
 }
 
-/// The Lights worker found a different set of boards.
+/// The Lights worker found a different set of boards, or the user moved a device on the
+/// Scenes page's room map.
 pub fn devices_changed() {
+    super::scene_room::changed();
     tell(Ctl::Devices);
 }
 
@@ -193,6 +246,7 @@ fn control(
     name: &str,
     effect: Effect,
     limit: Option<Duration>,
+    clock: Clock,
     own: &mpsc::Sender<Ctl>,
     rx: &mpsc::Receiver<Ctl>,
 ) {
@@ -217,7 +271,7 @@ fn control(
     let outputs = Arc::new(Mutex::new(Outputs::new(effect, room, cases)));
     let frames = outputs.clone();
     let mailbox = keyboard.mailbox.clone();
-    let scheduler = Scheduler::new(Clock::starting_now(), MIN_INTERVAL, move |t| {
+    let scheduler = Scheduler::new(clock, MIN_INTERVAL, move |t| {
         let outs = frames.lock().unwrap_or_else(|e| e.into_inner()).frame(t);
         send(outs, &mailbox);
     });
@@ -238,6 +292,10 @@ fn control(
                 .unwrap_or_else(|e| e.into_inner())
                 .set_room(room, cases);
         }
+        Ctl::Effect(effect) => outputs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_effect(*effect),
         Ctl::Stop => {}
     });
     give_back.ended = ended;
@@ -269,10 +327,16 @@ impl Drop for GiveBack {
                 "; the case's colours were still being put back"
             }
         );
-        let mut s = status();
-        s.last = Some(format!("{}, {}", self.name, self.ended));
-        s.name = None;
-        s.started = None;
+        {
+            let mut s = status();
+            s.last = Some(format!("{}, {}", self.name, self.ended));
+            s.name = None;
+            s.started = None;
+        }
+        // The Scenes page shows the end, however it came.
+        if let Some(ctx) = PAGE.get() {
+            ctx.request_repaint();
+        }
     }
 }
 
@@ -688,6 +752,15 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         drop(tx);
         assert_eq!(pump(&rx, None, |_| {}), "Foxglove stopped it");
+    }
+
+    /// A Start while a stop still gives the lights back is refused: the old scene's end would
+    /// undo the new one's lease and case hold.
+    #[test]
+    fn no_start_while_a_scene_is_still_ending() {
+        let _ending = ENDING.lock().unwrap();
+        assert!(!start("test", demo_effect(), Some(Duration::from_secs(5))));
+        assert!(running().is_none());
     }
 
     #[test]
