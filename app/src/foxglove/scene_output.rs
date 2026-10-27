@@ -683,6 +683,21 @@ mod tests {
         (room, cases)
     }
 
+    /// The second desk (`fixtures`): two monitors of different DPI, the one-piece Plank 3 with
+    /// 61 LEDs, another vendor's case board and a lightbar, as `scene_room` gathers them.
+    fn second_desk() -> (RoomMap, Vec<CaseTarget>) {
+        use crate::foxglove::fixtures::second_desk as desk;
+        let rows = [desk::case_row(), desk::lightbar_row()];
+        let devices =
+            crate::foxglove::scene_room::devices(Some(&desk::board()), &rows, &desk::lamps());
+        let room = RoomMap::build(&desk::monitors(), &devices, &Default::default());
+        let cases = vec![CaseTarget {
+            key: "1a2b:3c4d".into(),
+            zone_ids: ["1", "2", "3", "4"].map(String::from).to_vec(),
+        }];
+        (room, cases)
+    }
+
     fn scanline() -> Effect {
         Effect::Scanline {
             colour: ORANGE,
@@ -967,6 +982,73 @@ mod tests {
         let a = Rgb([255, 0, 0]);
         assert_eq!(mixed(&[a, a, a]), Some(a));
         assert_eq!(mixed(&[]), None);
+    }
+
+    #[test]
+    fn the_second_desks_case_gets_every_zone_and_runs_top_to_bottom() {
+        let (room, cases) = second_desk();
+        let still = Effect::Breathe {
+            from: ORANGE,
+            to: ORANGE,
+            period_ms: 1000,
+        };
+        let mut o = Outputs::new(still, room.clone(), cases.clone());
+        let outs = o.frame(SceneTime(0));
+        assert!(
+            outs.contains(&Out::Case {
+                key: "1a2b:3c4d".into(),
+                colors: (0..4).map(|i| (i, ORANGE.0)).collect(),
+            }),
+            "{outs:?}"
+        );
+        assert!(
+            outs.iter().any(|o| matches!(o, Out::Keyboard(_))),
+            "the one-piece keyboard gets frames too"
+        );
+        // A scanline down the room: the case's top bar before its upper ring before its lower.
+        let mut o = Outputs::new(scanline(), room, cases);
+        let mut first_lit: BTreeMap<usize, i64> = BTreeMap::new();
+        for ms in (0..4000).step_by(10) {
+            for out in o.frame(SceneTime(ms)) {
+                if let Out::Case { colors, .. } = out {
+                    for (i, c) in colors {
+                        if c[0] > 200 {
+                            first_lit.entry(i).or_insert(ms);
+                        }
+                    }
+                }
+            }
+        }
+        let at = |i: usize| first_lit.get(&i).copied().unwrap_or(i64::MAX);
+        assert!(at(0) < at(1) && at(1) < at(2), "{first_lit:?}");
+    }
+
+    #[test]
+    #[ignore = "#561"]
+    fn the_second_desks_keyboard_frame_has_one_colour_per_led() {
+        let (room, cases) = second_desk();
+        let still = Effect::Breathe {
+            from: ORANGE,
+            to: ORANGE,
+            period_ms: 1000,
+        };
+        let mut o = Outputs::new(still, room, cases);
+        let frame = o.frame(SceneTime(0)).into_iter().find_map(|o| match o {
+            Out::Keyboard(f) => Some(f),
+            _ => None,
+        });
+        let lamps = crate::foxglove::fixtures::second_desk::LAMPS;
+        assert_eq!(frame.map(|f| f.lamps.len()), Some(lamps));
+    }
+
+    #[test]
+    #[ignore = "#561"]
+    fn the_second_desks_keyboard_effect_places_every_led() {
+        let (room, _) = second_desk();
+        let e = keyboard_effect(&scanline(), &room).expect("a scanline maps");
+        let lamps = crate::foxglove::fixtures::second_desk::LAMPS;
+        let placed = e.lamps.map(|[l, r]| l.len() + r.len());
+        assert_eq!(placed, Some(lamps), "every LED of the one piece");
     }
 
     #[test]

@@ -599,6 +599,69 @@ pub mod tests {
         }
     }
 
+    /// The second desk (`fixtures`): Plank 3 (61 LEDs, three screens), another vendor's case
+    /// board driven by a fake driver, and a lightbar on Dynamic Lighting.
+    pub fn sample_second_desk() -> View {
+        use crate::foxglove::fixtures::second_desk as desk;
+        let mut bar = desk::lightbar_row();
+        bar.caps = LightCaps::from_lamp_array(desk::lightbar_info());
+        let board = desk::board();
+        let screens = board
+            .screens
+            .iter()
+            .map(|s| Screen {
+                width: Some(s.width),
+                height: Some(s.height),
+                depth: Some(1),
+                images: true,
+                ..Default::default()
+            })
+            .collect();
+        View {
+            pc: Snapshot {
+                devices: vec![desk::case_row(), bar],
+                ..Default::default()
+            },
+            keyboard: Some((
+                board.name.clone(),
+                LightCaps {
+                    color: Color::PerLed,
+                    count: desk::LAMPS as u32,
+                    brightness: true,
+                    screens,
+                    ..Default::default()
+                },
+            )),
+            keyboard_calibration: Some(false),
+        }
+    }
+
+    #[test]
+    fn the_second_desk_shows_its_own_devices_and_no_one_elses() {
+        let v = sample_second_desk();
+        let text = shown(&v);
+        for want in [
+            "Plank 3",
+            "Nimbus Strata case lights",
+            "Top light bar",
+            "Glass glow",
+            "Lumen desk lightbar",
+            "Windows lighting",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
+        for not in [
+            "OMEN",
+            "Light Studio",
+            "Corne",
+            "G502",
+            "left half",
+            "right half",
+        ] {
+            assert!(!text.contains(not), "{not}: {text}");
+        }
+    }
+
     #[test]
     fn apply_sends_only_the_zones_that_changed() {
         let row = case([Some([1, 1, 1]), None, None, None, None], false);

@@ -436,41 +436,16 @@ mod imp {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use foxglove_devices::pc_lighting::{Catalog, LightCaps};
+    use crate::foxglove::fixtures::{second_desk, users_desk};
 
     /// The user's room for the Scenes page's previews: a 27" 1440p monitor and a 1080p one to
-    /// its left, the Corne, the OMEN 45L and the G502.
+    /// its left, the Corne, the case board and the mouse.
     pub(crate) fn sample_room() -> RoomMap {
-        let rows = [row_from_catalog(0x103c, 0x84fd), g502_row()];
-        let mut lamps = BTreeMap::new();
-        lamps.insert(
-            (0x046d, 0xc332),
-            LampLayout {
-                kind: 2,
-                size_mm: [68.0, 132.0],
-                lamps: vec![[34.0, 40.0], [34.0, 100.0]],
-            },
-        );
-        let monitors = [
-            MonitorInfo {
-                id: r"\\.\DISPLAY1".into(),
-                primary: true,
-                rect_px: [0, 0, 2560, 1440],
-                raw_dpi: Some(109),
-                dpi: 96,
-            },
-            MonitorInfo {
-                id: r"\\.\DISPLAY2".into(),
-                primary: false,
-                rect_px: [-1920, 360, 0, 1440],
-                raw_dpi: Some(92),
-                dpi: 96,
-            },
-        ];
+        let rows = [users_desk::catalog_row(users_desk::CASE), g502_row()];
         let board = corne();
         RoomMap::build(
-            &monitors,
-            &devices(Some(&board), &rows, &lamps),
+            &users_desk::monitors(),
+            &devices(Some(&board), &rows, &users_desk::lamps()),
             &Layout::default(),
         )
     }
@@ -487,51 +462,108 @@ pub(crate) mod tests {
     /// The case's room id in [`sample_room`].
     pub(crate) const SAMPLE_CASE: &str = "light:103c:84fd";
 
-    /// A Lights page row from the bundled catalog's entry, as the worker builds it.
     fn row_from_catalog(vid: u16, pid: u16) -> Row {
-        let c = Catalog::bundled();
-        let d = c.find(vid, pid).unwrap();
-        Row {
-            key: format!("{vid:04x}:{pid:04x}"),
-            name: d.name.clone(),
-            control: match d.protocol {
-                Protocol::None => Control::NotYet,
-                p => Control::Driver(p),
-            },
-            zones: d.zones.iter().map(|z| (z.name.clone(), None)).collect(),
-            match_keyboard: false,
-            caps: d.caps(),
-            entry: None,
-            zone_ids: d.zones.iter().map(|z| z.id.to_string()).collect(),
-            calibration: None,
-            calibrated: false,
-            size: d.size,
-            zone_positions: d.zones.iter().map(|z| z.position).collect(),
-            zone_roles: d.zones.iter().map(|z| z.role).collect(),
-        }
+        users_desk::catalog_row((vid, pid))
     }
 
     fn g502_row() -> Row {
-        Row {
-            key: "046d:c332".into(),
-            name: "G502 Proteus Spectrum".into(),
-            control: Control::LampArray,
-            zones: vec![],
-            match_keyboard: false,
-            caps: LightCaps::default(),
-            entry: None,
-            zone_ids: vec![],
-            calibration: None,
-            calibrated: false,
-            size: None,
-            zone_positions: vec![],
-            zone_roles: vec![],
-        }
+        users_desk::mouse_row()
     }
 
     fn corne() -> Board {
-        Board::parse(include_str!("../../resources/boards/eyelash-corne.toml"))
-            .expect("the Corne's profile")
+        users_desk::board()
+    }
+
+    /// The second desk's devices: Plank 3, the other vendor's case and the lightbar.
+    fn second_desk_devices() -> Vec<DeviceInfo> {
+        let rows = [second_desk::case_row(), second_desk::lightbar_row()];
+        devices(Some(&second_desk::board()), &rows, &second_desk::lamps())
+    }
+
+    #[test]
+    fn the_second_desks_devices_come_in_from_what_foxglove_knows() {
+        let devices = second_desk_devices();
+        let ids: Vec<_> = devices.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["keyboard", second_desk::CASE_ID, second_desk::LIGHTBAR_ID],
+            "a one-piece board is one device"
+        );
+        assert_eq!(devices[0].kind, DeviceKind::Keyboard);
+        // The case's zones carry its catalog's positions and roles.
+        let case = &devices[1];
+        assert_eq!(case.size, Some(Point::new(230.0, 500.0)));
+        let roles: Vec<_> = case
+            .lights
+            .iter()
+            .map(|l| (l.id.as_str(), l.role, l.at.is_some()))
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                ("1", LightRole::Point, true),
+                ("2", LightRole::Point, true),
+                ("3", LightRole::Point, true),
+                ("4", LightRole::Ambient, true),
+            ]
+        );
+        // The lightbar: every lamp where Windows says, and not taken for a mouse.
+        let bar = &devices[2];
+        assert_eq!(bar.kind, DeviceKind::Other);
+        assert_eq!(bar.lights.len(), second_desk::LIGHTBAR_LAMPS);
+        assert_eq!(bar.size, Some(Point::new(400.0, 24.0)));
+        assert!(bar.lights.iter().all(|l| l.at.is_some_and(|p| p.y == 12.0)));
+        // Both monitors of different DPI, and every device, are in the room.
+        let room = RoomMap::build(&second_desk::monitors(), &devices, &Layout::default());
+        let monitors: Vec<_> = room
+            .devices
+            .iter()
+            .filter(|d| d.kind == DeviceKind::Monitor)
+            .collect();
+        assert_eq!(monitors.len(), 2);
+        // Physical sizes from the raw DPI: the 4K panel is wider than the 1080p one.
+        assert!(
+            monitors[0].rect.w > monitors[1].rect.w,
+            "{}",
+            room.summary()
+        );
+        assert_eq!(room.devices.len(), 5);
+        assert!(room.device(second_desk::LIGHTBAR_ID).is_some());
+    }
+
+    #[test]
+    #[ignore = "#558"]
+    fn the_second_desks_case_is_a_case_by_its_catalog_entry() {
+        let devices = second_desk_devices();
+        let case = devices
+            .iter()
+            .find(|d| d.id == second_desk::CASE_ID)
+            .unwrap();
+        assert_eq!(case.kind, DeviceKind::Case, "the catalog says what it is");
+    }
+
+    #[test]
+    #[ignore = "#559"]
+    fn a_one_piece_board_is_as_wide_as_its_whole_drawing() {
+        let board = second_desk::board();
+        let (w, h) = board.drawing.as_ref().unwrap().size();
+        let devices = second_desk_devices();
+        let size = devices[0].size.unwrap();
+        assert!((size.x - w * KEY_MM).abs() < 0.5, "{size:?} for {w} keys");
+        assert!((size.y - h * KEY_MM).abs() < 0.5, "{size:?}");
+    }
+
+    #[test]
+    #[ignore = "#561"]
+    fn a_one_piece_board_lights_each_of_its_leds_at_its_key() {
+        let devices = second_desk_devices();
+        let board = &devices[0];
+        assert_eq!(board.lights.len(), second_desk::LAMPS);
+        assert_eq!(board.lights[60].id, "60");
+        let size = board.size.unwrap();
+        assert!(board.lights.iter().all(|l| l
+            .at
+            .is_some_and(|p| p.x > 0.0 && p.x < size.x && p.y > 0.0 && p.y < size.y)));
     }
 
     #[test]

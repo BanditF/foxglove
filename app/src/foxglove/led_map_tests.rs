@@ -391,6 +391,41 @@ fn only_the_newest_step_goes_out_and_an_end_wins() {
     assert_eq!(newest(play(), Job::Show(vec![])), Job::Show(vec![]));
 }
 
+/// The second desk's one-piece board (`fixtures`): one strip of 61, every LED in turn, and the
+/// map found goes back into its profile.
+#[test]
+fn the_second_desks_board_is_one_strip_of_61() {
+    use crate::foxglove::fixtures::second_desk;
+    let plank = second_desk::board();
+    let mut w = Wizard::new(&plank);
+    assert_eq!(
+        (w.halves, w.per_half, w.total()),
+        (1, second_desk::LAMPS, second_desk::LAMPS)
+    );
+    assert_eq!(w.frame().len(), second_desk::LAMPS);
+    let mut seen = 0;
+    while !w.done() {
+        let s = w.step().unwrap();
+        assert_eq!((s.lamp, s.half, s.index), (seen, 0, seen));
+        assert_eq!(w.frame()[seen], white());
+        w.place([seen as f32 / 6.0, 1.0]);
+        seen += 1;
+    }
+    assert_eq!(seen, second_desk::LAMPS);
+    let r = w.result();
+    assert_eq!((r.lamps, r.halves), (61, 1));
+    let mut board = plank.clone();
+    apply_leds(&mut board, &r);
+    assert!(checked(Some(&board)));
+    assert_eq!(
+        board.lighting.as_ref().unwrap().led_points.len(),
+        second_desk::LAMPS
+    );
+    // Its shipped map is used, and the dot test is asked for once.
+    assert_eq!(state(Some(&plank)), MapState::Shipped);
+    assert!(placed(Some(&plank)));
+}
+
 #[test]
 fn a_one_piece_board_is_one_strip() {
     let mut b = corne();
