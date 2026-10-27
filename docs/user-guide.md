@@ -299,13 +299,21 @@ scanline can run down the monitors, through the case's fans and on into the keys
   which devices the scene lights: today the case (a colour per zone) and the keyboard (a colour
   per half on firmware with per-LED frames, otherwise one colour for both halves). Others, such
   as a Logitech mouse, are shown only.
-- **Find my LEDs…** (Lights page, Keyboard card; the Scenes page offers it too while the
-  keyboard lights a colour per half): once per keyboard, Foxglove lights one LED at a time in
-  bright white. Click where you see it on the drawing, under a key or between keys; **Can't see
+- **Check LED map…** (Lights page, Keyboard card; the Scenes page asks once while the map
+  isn't checked): a white dot runs along the keyboard's LEDs on both halves, and the drawing
+  shows where Foxglove thinks it is. Answer **Matches**, or say how it differs: **Runs
+  backwards**, **Mirrored** (it starts on the other side of the half) or **Rows flipped** (it
+  goes up where the drawing goes down); the dot runs again on the corrected map, so one to
+  three answers settle it. **Undo** takes an answer back, **Run again** restarts the dot. The
+  Eyelash Corne comes with a map (shipped, not yet checked on a real one), so scenes use it
+  from the start; a keyboard without one gets a guess (down and up each column, then the
+  thumbs), and the button says **Find my LEDs…**.
+- **Click each LED instead…** (in the dot test, when the answers can't fix it): Foxglove lights
+  one LED at a time in bright white. Click where you see it on the drawing, under a key or between keys; **Can't see
   it** skips one, **Back** lights the one before again, and the count shows how far along you
   are. **Save** at the end, and scenes light every LED where it is (on firmware that takes the
   LEDs' places, the keyboard keeps drawing the scene that way with Foxglove closed too). Cancel (or leaving the
-  page) gives the lights back as they were. To do it again, open it again.
+  page) gives the lights back as they were. To check the map again, open **Check LED map…**.
 - **Effect:** Scanline, Sweep, Ripple, Breathe, Gradient or Drift, then its colour (and
   background) or palette, speed, direction and width. Changes show on the map at once, and on
   the lights too while the scene runs.

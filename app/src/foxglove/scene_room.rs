@@ -140,12 +140,13 @@ fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
 }
 
 /// One half's LEDs at their keys, numbered in strip order (the scene output's SET_FRAME lamps),
-/// from the board profile's LED map once it is checked on the board (#90 row G). `None` (one
-/// light for the half) without a checked map, or when it names a key the drawing hasn't.
+/// from the board profile's LED map once it is checked on the board (#90 row G) or shipped with
+/// the profile. `None` (one light for the half) without such a map, or when it names a key the
+/// drawing hasn't.
 fn leds(board: Option<&Board>, drawing: &Drawing, right: bool) -> Option<Vec<LightSpec>> {
     let b = board?;
     let l = b.lighting.as_ref()?;
-    if l.led_map != super::boards::LED_MAP_CHECKED {
+    if !l.led_map_usable() {
         return None;
     }
     if !l.led_points.is_empty() {
@@ -597,14 +598,19 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_keyboard_is_one_light_per_half_until_its_led_map_is_checked() {
+    fn the_keyboard_is_one_light_per_half_until_it_has_a_usable_led_map() {
         let mut board = corne();
+        // A provisional map isn't used.
+        board.lighting.as_mut().unwrap().led_map = "provisional".into();
         let halves = keyboard(Some(&board));
         assert!(
             halves.iter().all(|d| d.lights.len() == 1),
             "the provisional map isn't used"
         );
-        // The sitting checked the map (a corrected profile in the boards folder).
+        // The shipped map is (the dot test confirms it later); so is a checked one.
+        let lighting = board.lighting.as_mut().unwrap();
+        lighting.led_map = super::super::boards::LED_MAP_SHIPPED.into();
+        assert!(keyboard(Some(&board)).iter().all(|d| d.lights.len() == 21));
         let lighting = board.lighting.as_mut().unwrap();
         lighting.led_map = super::super::boards::LED_MAP_CHECKED.into();
         let halves = keyboard(Some(&board));
@@ -612,8 +618,10 @@ pub(crate) mod tests {
         assert_eq!((left.lights.len(), right.lights.len()), (21, 21));
         assert_eq!(left.lights[0].id, "0");
         let at = |d: &DeviceInfo, i: usize| d.lights[i].at.unwrap();
-        // LED 0 under the outer column's top key; the right half mirrors it.
-        assert!(at(left, 0).x < KEY_MM && at(left, 0).y > KEY_MM * 0.5);
+        // LED 0 under the inner thumb (the bottom row, right of the middle); LED 18 under the
+        // outer column's top key; the right half mirrors it.
+        assert!(at(left, 0).x > KEY_MM * 4.0 && at(left, 0).y > KEY_MM * 3.0);
+        assert!(at(left, 18).x < KEY_MM && at(left, 18).y < KEY_MM * 1.5);
         let size = right.size.unwrap();
         assert!((at(right, 0).x - (size.x - at(left, 0).x)).abs() < 0.01);
         // Every LED inside its half.

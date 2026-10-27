@@ -85,8 +85,10 @@ pub struct Lighting {
     /// [`Drawing::keys`]. The right half mirrors it. Scenes place LEDs by it (#529).
     #[serde(default)]
     pub led_keys: Vec<u8>,
-    /// [`LED_MAP_CHECKED`] once a sitting confirmed `led_keys` on the board, or once "Find my
-    /// LEDs" placed them; until then scenes light each half as one.
+    /// [`LED_MAP_CHECKED`] once `led_keys` is confirmed on the board (a sitting, the dot test, or
+    /// "Find my LEDs" placed them); [`LED_MAP_SHIPPED`] for a map that comes with the profile but
+    /// no one has checked on a board yet (scenes use it, the app asks for the dot test once);
+    /// anything else (`provisional`) and scenes light each half as one.
     #[serde(default)]
     pub led_map: String,
     /// Where "Find my LEDs" saw each LED (the user's override, the store's `[led_map]`): one
@@ -97,6 +99,11 @@ pub struct Lighting {
 }
 
 impl Lighting {
+    /// Whether scenes place each LED by this map: checked, or shipped with the profile.
+    pub fn led_map_usable(&self) -> bool {
+        self.led_map == LED_MAP_CHECKED || self.led_map == LED_MAP_SHIPPED
+    }
+
     /// LEDs per half: the profile's lamps shared out between `halves`.
     pub fn per_half(&self, halves: u8) -> usize {
         usize::from(self.lamps) / usize::from(halves.max(1))
@@ -105,6 +112,9 @@ impl Lighting {
 
 /// [`Lighting::led_map`] for an LED map confirmed on the board.
 pub const LED_MAP_CHECKED: &str = "checked";
+
+/// [`Lighting::led_map`] for a map shipped with the profile and not yet checked on a board.
+pub const LED_MAP_SHIPPED: &str = "shipped";
 
 /// How the Keyboard page draws one half of the board (#392), in key units: a grid of columns
 /// with each column dropped by its stagger, and a row of thumb keys under the inner columns.
@@ -178,6 +188,13 @@ impl Drawing {
             }
         }
         keys
+    }
+
+    /// The key grid as [`keys`](Self::keys) draws it: columns, rows and thumbs. Key `c * rows + r`
+    /// is column `c` (outer first), row `r` (top first); the thumbs follow, outer first.
+    pub fn grid(&self) -> (usize, usize, usize) {
+        let (c, r, t) = self.bounded();
+        (usize::from(c), usize::from(r), usize::from(t))
     }
 
     /// Where the thumb row starts and how far down it sits.
@@ -387,12 +404,14 @@ mod tests {
             .keymap_source()
             .is_some_and(|k| k.contains("zmk,keymap")));
         assert_eq!(corne.lighting.as_ref().map(|l| l.lamps), Some(42));
-        // The provisional LED map: one key per LED of a half, every key once, not yet checked.
+        // The shipped LED map (crkbd's per-key chain): one key per LED of a half, every key
+        // once, the inner thumb first; not yet checked on a board.
         let lighting = corne.lighting.clone().unwrap();
         let mut keys = lighting.led_keys.clone();
         keys.sort_unstable();
         assert_eq!(keys, (0..21).collect::<Vec<u8>>());
-        assert_eq!(lighting.led_map, "provisional");
+        assert_eq!(lighting.led_keys[0], 20, "the chain starts at the inner thumb");
+        assert_eq!(lighting.led_map, LED_MAP_SHIPPED);
         let toucan = find_in(&all, 0x1d50, 0x615e, "Toucan").unwrap();
         assert_eq!(
             (

@@ -43,8 +43,8 @@ pub struct View {
     pub controls: bool,
     /// A change is being sent.
     pub busy: bool,
-    /// "Find my LEDs…" can run (frames and a board profile), and the LEDs are placed.
-    pub leds: (bool, bool),
+    /// "Find my LEDs…" can run (frames and a board profile), and how far the LED map is known.
+    pub leds: (bool, super::led_map::MapState),
 }
 
 /// What the user is choosing but hasn't sent: the colour until Apply, the speed until the
@@ -126,7 +126,7 @@ pub fn show(ui: &mut egui::Ui) {
         busy: ks::invoking(),
         leds: (
             super::led_map_ui::available(),
-            super::led_map::checked(super::boards::current().as_ref()),
+            super::led_map::state(super::boards::current().as_ref()),
         ),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
@@ -567,7 +567,7 @@ pub mod tests {
             accent: false,
             controls: true,
             busy: false,
-            leds: (true, false),
+            leds: (true, super::super::led_map::MapState::Shipped),
         }
     }
 
@@ -579,7 +579,7 @@ pub mod tests {
             accent: false,
             controls: false,
             busy: false,
-            leds: (false, false),
+            leds: (false, super::super::led_map::MapState::Unknown),
         }
     }
 }

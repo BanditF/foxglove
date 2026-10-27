@@ -576,6 +576,11 @@ struct Samples {
         crate::foxglove::led_map_ui::View,
         crate::foxglove::led_map::Wizard,
     )>,
+    /// "Check LED map" (the dot test), open in place of the Lights page's cards.
+    ledcheck: Option<(
+        crate::foxglove::led_map_ui::CheckView,
+        crate::foxglove::led_map_confirm::Confirm,
+    )>,
     screens: Option<crate::foxglove::screens::Snapshot>,
     art: Option<(
         crate::foxglove::art_service::Snapshot,
@@ -603,6 +608,7 @@ impl Samples {
             wizard: Default::default(),
             calibrate: None,
             leds: None,
+            ledcheck: None,
             screens: Some(sample_screens()),
             art: Some(crate::foxglove::art_ui::tests::sample()),
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -626,6 +632,7 @@ impl Samples {
             wizard: Default::default(),
             calibrate: None,
             leds: None,
+            ledcheck: None,
             screens: None,
             art: None,
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -693,6 +700,7 @@ fn show_samples(page: crate::foxglove::shell::Page, samples: &Samples) {
     crate::foxglove::pc_lights_ui::PREVIEW.set(Some((samples.pc.clone(), samples.wizard.clone())));
     crate::foxglove::calibrate_ui::PREVIEW.set(samples.calibrate.clone());
     crate::foxglove::led_map_ui::PREVIEW.set(samples.leds.clone());
+    crate::foxglove::led_map_ui::PREVIEW_CONFIRM.set(samples.ledcheck.clone());
     crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
     crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
     crate::foxglove::plugins_ui::PREVIEW.set(Some(samples.plugins.clone()));
@@ -707,6 +715,7 @@ fn clear_samples() {
     crate::foxglove::pc_lights_ui::PREVIEW.set(None);
     crate::foxglove::calibrate_ui::PREVIEW.set(None);
     crate::foxglove::led_map_ui::PREVIEW.set(None);
+    crate::foxglove::led_map_ui::PREVIEW_CONFIRM.set(None);
     crate::foxglove::screens_ui::PREVIEW.set(None);
     crate::foxglove::art_ui::PREVIEW.set(None);
     crate::foxglove::plugins_ui::PREVIEW.set(None);
@@ -1499,6 +1508,55 @@ fn led_map_renders() {
     assert!(
         count(&prompt, DARK.warn) > count(&placed, DARK.warn),
         "the prompt"
+    );
+}
+
+/// "Check LED map" (guess and confirm): the dot on the shipped Corne map, after a correction,
+/// once the dot stopped, the Lights entry for a shipped map, and the Scenes prompt for it.
+#[test]
+fn led_map_confirm_renders() {
+    use crate::foxglove::led_map_confirm::Answer;
+    use crate::foxglove::led_map_ui::tests::check_sample;
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    let mut shots = Vec::new();
+    for (name, step, fixes, played) in [
+        ("shipped", Some(4), vec![], false),
+        ("fixed", Some(12), vec![Answer::Mirrored, Answer::Backwards], false),
+        ("stopped", None, vec![Answer::Mirrored, Answer::Backwards, Answer::RowsFlipped], true),
+    ] {
+        let mut s = Samples::full();
+        let (mut v, c) = check_sample(step, &fixes);
+        v.played = played;
+        s.ledcheck = Some((v, c));
+        let img = shell_preview_with(Page::Lights, &s, 900.0);
+        keep(&format!("ui-ledmap-confirm-{name}.png"), &img);
+        shots.push(img);
+    }
+    for pair in shots.windows(2) {
+        assert_ne!(pair[0], pair[1]);
+    }
+    // The dot (white, ringed) shows while it runs, not once it stopped.
+    let white = |i: &image::RgbaImage| count(i, Color32::WHITE);
+    assert!(white(&shots[0]) > white(&shots[2]), "the dot");
+    let entry = shell_preview_with(Page::Lights, &Samples::full(), 1180.0);
+    keep("ui-ledmap-confirm-entry.png", &entry);
+    let mut s = Samples::full();
+    s.scenes.0.keyboard_frames = true;
+    s.scenes.0.leds_placed = false;
+    s.scenes.0.leds_shipped = true;
+    let shipped = shell_preview_with(Page::Scenes, &s, 1000.0);
+    keep("ui-ledmap-confirm-scenes.png", &shipped);
+    s.scenes.0.leds_shipped = false;
+    let unknown = shell_preview_with(Page::Scenes, &s, 1000.0);
+    assert!(
+        count(&unknown, DARK.warn) > count(&shipped, DARK.warn),
+        "a shipped map is a quiet note, not a warning"
     );
 }
 

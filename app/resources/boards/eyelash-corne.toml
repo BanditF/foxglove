@@ -34,15 +34,21 @@ format = "1bit"
 [lighting]
 lamps = 42
 layout = "underglow, 21 per half"
-# PROVISIONAL LED map (#529), NOT checked on the board: which key each LED of the left half's
-# strip sits under, in chain order (SET_FRAME lamps 0-20), as an index into the drawing's keys
-# below (each column top to bottom, outer column first: 0-17; then the thumbs, outer first:
-# 18-20). The right half mirrors it (lamps 21-41). This guess is a column snake; the LED-order
-# sitting (#90 row G) corrects it. Scenes use it only once led_map says "checked"; until then
-# each half gets one colour. "Find my LEDs…" (Lights, Keyboard card) places them on the board
-# and saves the points as this profile's override (foxglove.toml [led_map]), which wins.
-led_keys = [0, 1, 2, 5, 4, 3, 6, 7, 8, 11, 10, 9, 12, 13, 14, 17, 16, 15, 18, 19, 20]
-led_map = "provisional"
+# The LED map (#529), shipped but NOT yet checked on the board: which key each LED of the left
+# half's strip sits under, in chain order (SET_FRAME lamps 0-20), as an index into the drawing's
+# keys below (each column top to bottom, outer column first: 0-17; then the thumbs, outer first:
+# 18-20). The right half mirrors it (lamps 21-41).
+# Source: the Eyelash Corne's PCB isn't public (its ZMK board only says chain-length 21), so this
+# is the per-key chain of foostan's Corne (crkbd rev1) from QMK's keyboards/crkbd/rev1/
+# keyboard.json (rgb_matrix.layout, LEDs 6-26: QMK is GPL-2.0-or-later; only the order is taken):
+# the inner thumb, up the inner column, down the next, the middle and outer thumbs, then a snake
+# out to the outer column. The Eyelash's 21 LEDs a half match crkbd's 21 per-key ones.
+# "shipped": scenes use it, and the app asks once for the dot test (Lights > Keyboard card >
+# "Check LED map...") to confirm or turn it round; "checked" once that confirmed it on a board.
+# "Find my LEDs" (one click per LED) saves the user's own map in foxglove.toml [led_map], which
+# wins.
+led_keys = [20, 17, 16, 15, 12, 13, 14, 19, 18, 11, 10, 9, 6, 7, 8, 5, 4, 3, 0, 1, 2]
+led_map = "shipped"
 
 # How the Keyboard page draws one half (the left; the right mirrors it), in key units: the
 # key grid, each column's drop from the highest (outer column first), and the thumb keys.

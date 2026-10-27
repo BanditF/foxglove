@@ -378,6 +378,16 @@ fn only_the_newest_step_goes_out_and_an_end_wins() {
     assert_eq!(newest(Job::Again, Job::Show(vec![])), Job::Show(vec![]));
     assert_eq!(newest(Job::End, Job::Show(vec![])), Job::End);
     assert_eq!(newest(Job::Again, Job::End), Job::End);
+    let play = || {
+        Job::Play(Play {
+            frames: vec![vec![white()]],
+            every: std::time::Duration::from_millis(1),
+            rounds: 1,
+        })
+    };
+    assert_eq!(newest(Job::Show(vec![]), play()), play());
+    assert_eq!(newest(play(), Job::Again), play());
+    assert_eq!(newest(play(), Job::Show(vec![])), Job::Show(vec![]));
 }
 
 #[test]
@@ -391,4 +401,73 @@ fn a_one_piece_board_is_one_strip() {
     let mut bare = corne();
     bare.lighting = None;
     assert_eq!(Wizard::new(&bare).total(), 42);
+}
+
+#[test]
+fn the_dot_runs_its_rounds_then_goes_dark_and_a_frame_stops_it() {
+    let rec = Recorder::default();
+    let (tx, woke) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let worker = Worker::spawn(Box::new(rec.clone()), move || {
+        let _ = tx.lock().unwrap().send(());
+    });
+    let frames: Vec<Vec<Rgb>> = (0..3)
+        .map(|i| {
+            let mut f = vec![Rgb { r: 0, g: 0, b: 0 }; 3];
+            f[i] = white();
+            f
+        })
+        .collect();
+    let status = worker.status.clone();
+    worker.play(Play {
+        frames: frames.clone(),
+        every: std::time::Duration::from_millis(5),
+        rounds: 2,
+    });
+    wait_for(&woke, &status, |s| s.played);
+    assert_eq!(status.lock().unwrap().step, None);
+    let shown: Vec<String> = rec.log.lock().unwrap().clone();
+    assert_eq!(
+        shown,
+        vec![
+            "take",
+            "show Some(0)",
+            "show Some(1)",
+            "show Some(2)",
+            "show Some(0)",
+            "show Some(1)",
+            "show Some(2)",
+            "show None"
+        ],
+        "two rounds, then all off"
+    );
+    // A new run starts over; a plain frame ends it at once.
+    worker.play(Play {
+        frames,
+        every: std::time::Duration::from_secs(60),
+        rounds: 1,
+    });
+    wait_for(&woke, &status, |s| s.step == Some(0) && !s.played);
+    worker.show(vec![Rgb { r: 0, g: 0, b: 0 }; 3]);
+    wait_for(&woke, &status, |s| s.step.is_none());
+    worker.end_and_wait();
+    let log = rec.log.lock().unwrap();
+    assert_eq!(log.last().map(String::as_str), Some("give back"));
+    assert_eq!(log.iter().filter(|l| *l == "take").count(), 1);
+}
+
+#[test]
+fn a_shipped_map_is_used_and_asked_about_a_checked_one_is_not() {
+    let mut b = corne();
+    assert_eq!(state(Some(&b)), MapState::Shipped);
+    b.lighting.as_mut().unwrap().led_map = LED_MAP_CHECKED.into();
+    assert_eq!(state(Some(&b)), MapState::Checked);
+    b.lighting.as_mut().unwrap().led_map = "provisional".into();
+    assert_eq!(state(Some(&b)), MapState::Unknown);
+    assert_eq!(state(None), MapState::Unknown);
+    // A saved map (found, or confirmed by the dot test) marks it checked.
+    let mut b = corne();
+    let c = super::super::led_map_confirm::Confirm::new(&b).unwrap();
+    apply_leds(&mut b, &c.result());
+    assert_eq!(state(Some(&b)), MapState::Checked);
 }

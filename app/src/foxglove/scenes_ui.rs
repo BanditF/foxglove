@@ -70,6 +70,9 @@ pub struct View {
     /// The keyboard's LEDs are placed (its profile's map is checked, or "Find my LEDs" saved
     /// one). A keyboard that takes frames without it gets the page's prompt.
     pub leds_placed: bool,
+    /// Its profile ships a map no one has checked yet: scenes use it, the prompt asks for the
+    /// dot test once.
+    pub leds_shipped: bool,
 }
 
 /// The Triggers card's three boxes (#489).
@@ -232,6 +235,8 @@ fn show(ui: &mut egui::Ui) {
         profile: st.profile.clone().unwrap_or_else(|| "Base settings".into()),
         keep_on_keyboard: st.keep_on_keyboard,
         leds_placed: super::led_map::checked(super::boards::current().as_ref()),
+        leds_shipped: super::led_map::state(super::boards::current().as_ref())
+            == super::led_map::MapState::Shipped,
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
@@ -665,28 +670,31 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
     ui.add_space(6.0);
     ui.add(egui::Label::new(RichText::new(legend(v)).color(p.muted)).wrap());
     if v.keyboard_frames && !v.leds_placed {
+        let (label, hint, text, color) = if v.leds_shipped {
+            (
+                "Check LED map…",
+                "A dot runs along the LEDs; say whether it follows the drawing: about 20 seconds",
+                "Scenes use the LED map that comes with this keyboard, not yet checked on yours.",
+                p.muted,
+            )
+        } else {
+            (
+                "Find my LEDs…",
+                "A dot runs along the LEDs; say whether it follows the drawing: under a minute",
+                "The keyboard lights a colour per half until Foxglove knows where its LEDs are.",
+                p.warn,
+            )
+        };
         ui.add_space(4.0);
         split_row(
             ui,
             |ui| {
-                if ui
-                    .button("Find my LEDs…")
-                    .on_hover_text("Light each LED in turn and click where it is: about a minute")
-                    .clicked()
-                {
+                if ui.button(label).on_hover_text(hint).clicked() {
                     out.push(Intent::FindLeds);
                 }
             },
             |ui| {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(
-                            "The keyboard lights a colour per half until Foxglove knows where its LEDs are.",
-                        )
-                        .color(p.warn),
-                    )
-                    .wrap(),
-                );
+                ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
             },
         );
     }
@@ -1376,6 +1384,7 @@ pub(crate) mod tests {
             profile: "Game".into(),
             keep_on_keyboard: false,
             leds_placed: true,
+            leds_shipped: false,
         }
     }
 
@@ -1403,6 +1412,7 @@ pub(crate) mod tests {
             profile: "Base settings".into(),
             keep_on_keyboard: false,
             leds_placed: false,
+            leds_shipped: false,
         }
     }
 
