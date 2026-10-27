@@ -47,6 +47,9 @@ pub mod capabilities {
     /// Settings EFFECT (D7 0F): effects each half draws on its own from its lamp positions
     /// (#490), pre-GA test builds only for now.
     pub const EFFECTS: u32 = 1 << 19;
+    /// The relayed right half's on/off (D7 83) and power source (D7 8E) changes arrive as
+    /// events (#478): no extra read after an underglow change is needed.
+    pub const RIGHT_EVENTS: u32 = 1 << 20;
 }
 pub const VERSION: u8 = 1;
 

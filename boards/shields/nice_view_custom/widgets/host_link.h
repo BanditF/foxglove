@@ -26,7 +26,9 @@
  *                    12 BUILD_INFO (D7 09; HELLO bytes 27-30), 13 SCREENS (D5 06),
  *                    14 FRAMES (D7 0C SET_FRAME), 15 PANEL_HOLD, 16 ART_KEYS (D7 0D),
  *                    17 LEFT_BATTERY (CONN_STATE byte 8 is the left's battery %),
- *                    18 BATTERY_DIM (D7 0E), 19 EFFECTS (D7 0F SET_EFFECT).
+ *                    18 BATTERY_DIM (D7 0E), 19 EFFECTS (D7 0F SET_EFFECT),
+ *                    20 RIGHT_EVENTS (the right's on/off and power source reach the
+ *                    PC as D7 83 / D7 8E events, #478).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -93,8 +95,12 @@
  *      After host traffic, D7 83 also comes unsolicited ~600 ms after the left's underglow turns
  *      on or off (idle, wake, a key, sync), if left on / right on / right known changed since the
  *      last unsolicited one (capability bit 11).
- *      The right's state comes from the last relay status read (each request asks for a new one),
- *      so poll it; age says how old it is.
+ *      With capability bit 20 (#478) it also comes, on the same terms, as soon as a relay status
+ *      read shows the right's on/off changed, or the right became known or unknown (the split
+ *      link up or down); and the right rings the left (art_relay.h, status notify) when its on/off
+ *      or power source changes on its own, so the left reads it and D7 83 or D7 8E follows.
+ *      The right's state comes from the last relay status read (each request asks for a new one);
+ *      age says how old it is.
  *   04 CONN_STATE  no payload (request D7 04)          reply: D7 84, active BLE profile index u8,
  *                                                     connected (0/1), bonded (0/1),
  *                                                     selected endpoint (0 USB, 1 BLE),
@@ -199,7 +205,8 @@
  *      state, so a write on the left reaches the right whenever the split link is up. No boot
  *      work, no timer: the levels move on ZMK's USB and battery events.
  *      After host traffic, D7 8E also comes unsolicited when the left's level or cable changes,
- *      or a read of the right (each request starts one) shows its state changed.
+ *      or a read of the right (each request starts one, and so does the right's ring when its
+ *      cable or level changes, capability bit 20) shows its state changed.
  *   0F EFFECT  op u8, then by op                                       (HELLO bit 19, #490)
  *      reply (every op): D7 8F, status, owner, kind, right, event
  *      An effect the PC sends once and each half draws on its own, from where its LEDs sit and
@@ -275,6 +282,8 @@
 #define HOST_LINK_CAP_BATTERY_DIM (1U << 18)
 // D7 0F SET_EFFECT: effects that each half draws from its lamp positions (#490).
 #define HOST_LINK_CAP_EFFECTS (1U << 19)
+// The relayed right's on/off (D7 83) and power source (D7 8E) changes come as events (#478).
+#define HOST_LINK_CAP_RIGHT_EVENTS (1U << 20)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
@@ -303,6 +312,10 @@ int host_link_art_key(int8_t dir);
 // art_relay_central.c: the right acknowledged the PC's colour, or a read-back after another
 // underglow command came in. Sends RGB_STATE (D7 83) after host traffic.
 void host_link_rgb_right_followed(void);
+// art_relay_central.c: a status read showed the right's on/off changed, or the right became known
+// or unknown (#478). Sends RGB_STATE (D7 83) after host traffic, if it differs from the last
+// unsolicited one. Any thread.
+void host_link_rgb_right_changed(void);
 
 // Called by relay connection/discovery callbacks; queues a report only after host traffic.
 void host_link_art_status(void);

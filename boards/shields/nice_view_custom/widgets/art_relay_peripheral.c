@@ -441,7 +441,47 @@ BT_GATT_SERVICE_DEFINE(
     BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_DATA_UUID),
                            BT_GATT_CHRC_WRITE | BT_GATT_CHRC_WRITE_WITHOUT_RESP,
                            BT_GATT_PERM_WRITE_ENCRYPT, NULL, data_write, NULL),
-    BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_STATUS_UUID), BT_GATT_CHRC_READ,
-                           BT_GATT_PERM_READ_ENCRYPT, status_read, NULL, NULL),
+    BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_STATUS_UUID),
+                           BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_READ_ENCRYPT,
+                           status_read, NULL, NULL),
+    // Right after the status value: the left subscribes at its handle + 1 (#478).
+    BT_GATT_CCC(NULL, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_ENCRYPT),
     BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_SCREEN_UUID), BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ_ENCRYPT, screen_read, NULL, NULL), );
+
+/* The doorbell (#478): this half's underglow on/off or power source changed (following the left,
+ * its own idle with sync off, a key, the cable, new levels). One notify of the status value, the bits of what changed;
+ * the left reads again and tells the PC. Start/stop: starts on a change; stops once sent, when
+ * nobody is subscribed (old left firmware, no link), or after RING_TRIES when the radio has no
+ * buffer. */
+
+#define STATUS_VALUE 4 // art_relay_svc.attrs: service, data decl, data, status decl, status
+#define RING_RETRY K_MSEC(100)
+#define RING_TRIES 5
+
+static atomic_t rang;
+static uint8_t ring_tries;
+
+static void ring_cb(struct k_work *work) {
+    uint8_t what = atomic_get(&rang);
+    const struct bt_gatt_attr *status_attr = &art_relay_svc.attrs[STATUS_VALUE];
+    if (what == 0 || bt_uuid_cmp(status_attr->uuid, BT_UUID_DECLARE_128(ART_RELAY_STATUS_UUID))) {
+        return; // the table moved: never notify another attribute
+    }
+    int err = bt_gatt_notify(NULL, status_attr, &what, sizeof(what));
+    if (err == -ENOMEM && ring_tries++ < RING_TRIES) {
+        k_work_reschedule(k_work_delayable_from_work(work), RING_RETRY);
+        return;
+    }
+    ring_tries = 0;
+    atomic_and(&rang, ~(atomic_val_t)what); // a change since then rings again
+    if (atomic_get(&rang)) {
+        k_work_reschedule(k_work_delayable_from_work(work), K_NO_WAIT);
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(ring_work, ring_cb);
+
+void art_relay_right_rang(uint8_t what) {
+    atomic_or(&rang, what);
+    k_work_reschedule(&ring_work, K_NO_WAIT);
+}
