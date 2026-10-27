@@ -115,12 +115,15 @@ pub fn tooltip(status: &str, levels: &BTreeMap<String, u8>) -> String {
 #[serde(default)]
 pub struct BatterySettings {
     pub low_battery_notice: bool,
+    /// The same heads-up for Bluetooth devices and controllers (#504).
+    pub device_notice: bool,
 }
 
 impl Default for BatterySettings {
     fn default() -> Self {
         Self {
             low_battery_notice: true,
+            device_notice: true,
         }
     }
 }
@@ -144,12 +147,48 @@ pub fn notices_on() -> bool {
 
 pub fn set_notices(on: bool) -> std::io::Result<()> {
     NOTICES.store(if on { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
-    super::store::save(
-        "battery",
-        &BatterySettings {
-            low_battery_notice: on,
-        },
-    )
+    save_with(|s| s.low_battery_notice = on)
+}
+
+/// Foxglove (#504): the switch for the other devices' heads-ups, cached like [`notices_on`].
+static DEVICE_NOTICES: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn device_notices_on() -> bool {
+    use std::sync::atomic::Ordering;
+    match DEVICE_NOTICES.load(Ordering::Relaxed) {
+        0 => {
+            let on = super::store::try_load::<BatterySettings>("battery")
+                .unwrap_or_default()
+                .device_notice;
+            DEVICE_NOTICES.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+        v => v == 2,
+    }
+}
+
+pub fn set_device_notices(on: bool) -> std::io::Result<()> {
+    DEVICE_NOTICES.store(if on { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
+    save_with(|s| s.device_notice = on)
+}
+
+/// Changes one switch and keeps the other as stored.
+fn save_with(change: impl FnOnce(&mut BatterySettings)) -> std::io::Result<()> {
+    let mut s = super::store::try_load::<BatterySettings>("battery").unwrap_or_default();
+    change(&mut s);
+    super::store::save("battery", &s)
+}
+
+/// Shows a battery notification (the halves' and the other devices').
+pub fn show_notice(title: &str, text: &str) {
+    imp::show(title, text);
+}
+
+/// A frame for the tray and the pages, after a battery list changed.
+pub fn wake() {
+    if let Some(w) = WAKE.get() {
+        w.request_repaint();
+    }
 }
 
 static WAKE: OnceLock<crate::ui_wake::UiWake> = OnceLock::new();
@@ -425,5 +464,8 @@ mod tests {
             parsed.low_battery_notice,
             "a store without the section keeps it on"
         );
+        // #504: a store from before the devices' switch keeps the halves' and turns that on.
+        let old: BatterySettings = toml::from_str("low_battery_notice = false").unwrap();
+        assert!(!old.low_battery_notice && old.device_notice);
     }
 }

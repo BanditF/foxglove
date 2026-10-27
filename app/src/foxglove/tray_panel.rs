@@ -165,6 +165,8 @@ pub struct View {
     pub paused: bool,
     /// "Update available": v…", when there is one.
     pub update: Option<String>,
+    /// The other devices' batteries (#504): name, level, and whether it's low.
+    pub devices: Vec<(String, String, bool)>,
 }
 
 /// What a click asks for.
@@ -281,7 +283,21 @@ fn view(ctx: &egui::Context) -> View {
         panel_paused: super::screens::paused(),
         paused: super::pause::paused(),
         update: super::update::available_version().map(|v| format!("Update available: v{v}")),
+        devices: devices(&super::peripherals::list()),
     })
+}
+
+/// The Devices part's rows (#504): name, level in words, low.
+pub fn devices(list: &[super::peripherals::Peripheral]) -> Vec<(String, String, bool)> {
+    list.iter()
+        .map(|d| {
+            (
+                d.name.clone(),
+                super::peripherals::level_text(d),
+                d.percent < super::battery::THRESHOLDS[0] && !d.charging,
+            )
+        })
+        .collect()
 }
 
 /// Draws the panel when it's open, opens it on a tray click, and closes it on Esc, a click
@@ -343,6 +359,8 @@ pub fn show(ctx: &egui::Context) -> bool {
         .and_then(|s| s.size)
         .unwrap_or(egui::vec2(WIDTH, 560.0));
     let at = place(open.icon, work, size) - work.min.to_vec2();
+    // #504: the controllers' levels stay fresh while the panel is open.
+    super::peripherals::visible(ctx);
     let v = view(ctx);
     let mut intents = Vec::new();
     let response = egui::Area::new(id)
@@ -509,6 +527,19 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     }
                 });
             });
+            // #504: the other devices' batteries, only when one reports.
+            if !v.devices.is_empty() {
+                part(ui, "Devices", |_| {}, |ui| {
+                    for (name, level, low) in &v.devices {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(name).color(p.text));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(RichText::new(level).color(if *low { p.warn } else { p.text_strong }));
+                            });
+                        });
+                    }
+                });
+            }
             part(ui, "Profile", |_| {}, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     if theme::pill(ui, v.active_profile.is_none(), "Base settings").clicked() && v.active_profile.is_some() {
@@ -955,6 +986,7 @@ pub mod tests {
             panel_paused: false,
             paused: false,
             update: Some("Update available: v0.2.1".into()),
+            devices: devices(&super::super::peripherals::tests::sample()),
         }
     }
 }

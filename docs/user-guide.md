@@ -129,6 +129,11 @@ Open it from the tray: **Settings...**. From the top:
 - **Updates.** Version checks.
 - **Keyboard.** The connection line, both halves' firmware versions (a warning appears if they
   differ), and:
+  - **Devices.** The batteries of the Bluetooth devices and game controllers connected to this
+    PC (a mouse, headphones, a wireless controller), with **Tell me when a device's battery runs
+    low** (on by default; one notification below 15% and one below 5%). Devices that don't
+    report a battery aren't listed, and the keyboard has its own lines. The tray panel shows the
+    same list under **Devices** when one reports.
   - **Lights.** Colour, effect, brightness and speed of the underglow on each half.
     **Follow the Windows accent colour** makes the lights take Windows' accent colour
     whenever you change it, keeping your brightness. These controls need an RGB key in the

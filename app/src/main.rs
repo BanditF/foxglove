@@ -53,6 +53,7 @@ fn main() {
     foxglove::devices::start(); // Foxglove: find the host-link keyboard whenever a link connects
     foxglove::keyboard_facts::start();
     foxglove::battery::start(); // Foxglove (#372, #373)
+    foxglove::peripherals::start(); // Foxglove (#504): Bluetooth and controller batteries
     foxglove::via_host::start();
     foxglove::pc_lights::start(); // Foxglove (#423): case and peripheral lights
     foxglove::scene_run::start_from_env(); // Foxglove (#485): the live check's demo scene
