@@ -85,7 +85,10 @@ pub fn update(ctx: &egui::Context) {
 fn add_failed(error: &str, path: &std::path::Path) -> String {
     let name = art_service::file_name(path);
     match art_words::problem(error, None) {
-        art_words::Problem::NotArt => format!("{name} isn't art for the right screen."),
+        art_words::Problem::NotArt => format!(
+            "{name} isn't art for {}.",
+            super::screen_roles::the(super::screen_roles::Role::Art)
+        ),
         _ => format!("Couldn't add {name} to this PC."),
     }
 }
@@ -335,19 +338,36 @@ pub fn texture(
 const LIT: Color32 = Color32::from_rgb(0xe8, 0xea, 0xe9);
 const OFF: Color32 = Color32::from_rgb(0x0b, 0x0d, 0x0c);
 
-/// A stored frame turned upright, in the screen's tones, at full size or halved. The stored
-/// background is a set bit (white in `art_preview`) and the ink a clear one; the screen lights
-/// the ink, so ink becomes [`LIT`] and the background [`OFF`] (not big white blocks). Halving
-/// averages 2×2 and dithers back to 1 bit (ordered 2×2), so a thumbnail stays a 1-bit picture
-/// like the device's, not a grey blur.
+/// A stored frame turned upright as the connected keyboard's art screen is mounted (#560), in
+/// the screen's tones, at full size or halved. See [`thumbnail_turned`].
 pub fn thumbnail(stored: &egui::ColorImage, half: bool) -> egui::ColorImage {
-    let [sw, sh] = stored.size; // stored: sw = upright height, sh = upright width
+    thumbnail_turned(
+        stored,
+        half,
+        super::art_encode::ArtTarget::current().rotation,
+    )
+}
+
+/// A stored frame turned upright from `rotation` quarter turns clockwise, in the screen's
+/// tones, at full size or halved. The stored background is a set bit (white in `art_preview`)
+/// and the ink a clear one; the screen lights the ink, so ink becomes [`LIT`] and the
+/// background [`OFF`] (not big white blocks). Halving averages 2×2 and dithers back to 1 bit
+/// (ordered 2×2), so a thumbnail stays a 1-bit picture like the device's, not a grey blur.
+pub fn thumbnail_turned(stored: &egui::ColorImage, half: bool, rotation: u8) -> egui::ColorImage {
+    let [sw, sh] = stored.size;
+    let turned = rotation % 2 == 1;
     let lit = |x: usize, y: usize| -> f32 {
-        // upright (x, y) = stored (sw - 1 - y, x)
-        let p = stored.pixels[x * sw + (sw - 1 - y)];
+        // Upright (x, y) in the stored frame, by how it is mounted.
+        let (sx, sy) = match rotation % 4 {
+            1 => (sw - 1 - y, x),
+            2 => (sw - 1 - x, sh - 1 - y),
+            3 => (y, sh - 1 - x),
+            _ => (x, y),
+        };
+        let p = stored.pixels[sy * sw + sx];
         1.0 - f32::from(p.r().max(p.g()).max(p.b())) / 255.0
     };
-    let (w, h) = (sh, sw);
+    let (w, h) = if turned { (sh, sw) } else { (sw, sh) };
     if !half {
         let pixels = (0..h)
             .flat_map(|y| (0..w).map(move |x| (x, y)))
@@ -593,14 +613,24 @@ pub fn now_right(ui: &mut egui::Ui) {
 fn draw_now_right(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
     let p = theme::palette(ui);
     let s = &art.s;
-    ui.label(theme::caps_label(ui, "Right screen"));
+    ui.label(theme::caps_label(
+        ui,
+        &super::screen_roles::name(super::screen_roles::Role::Art),
+    ));
     if !s.connected {
         ui.weak("Waiting for the keyboard.");
         return;
     }
     let (name, picture) = art.showing();
     ui.horizontal_top(|ui| {
-        let size = egui::vec2(68.0, 140.0);
+        // The art screen's shape upright, 140 points tall (#560).
+        let t = super::art_encode::ArtTarget::current();
+        let (w, h) = if t.rotation % 2 == 1 {
+            (t.height, t.width)
+        } else {
+            (t.width, t.height)
+        };
+        let size = egui::vec2((140.0 * w as f32 / h.max(1) as f32).min(240.0), 140.0);
         match &picture {
             Some((key, image)) => {
                 let t = texture(ui.ctx(), *key, false, image);
@@ -705,7 +735,10 @@ fn draw_rotation(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
         return;
     };
     ui.label(theme::caps_label(ui, "Rotation"));
-    ui.label("Changes the right screen");
+    ui.label(format!(
+        "Changes {}",
+        super::screen_roles::the(super::screen_roles::Role::Art)
+    ));
     let mut cycle = s.cycle.clone();
     let mut changed = false;
     let lit = rotation_pills(&cycle);
@@ -1171,7 +1204,7 @@ fn draw_pc(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act
                 }
             })
             .response
-            .on_hover_text("Adds art to this PC and shows it on the right screen.");
+            .on_hover_text(format!("Adds art to this PC and shows it on {}.", super::screen_roles::the(super::screen_roles::Role::Art)));
             if ui.button("Refresh").clicked() {
                 acts.push(Act::Refresh);
             }
@@ -1298,10 +1331,11 @@ fn pc_tile(
     if r.clicked() && showable && !on {
         acts.push(Act::ShowPiece(index));
     }
+    let art = super::screen_roles::the(super::screen_roles::Role::Art);
     r.on_hover_text(if on {
-        "On the right screen now"
+        format!("On {art} now")
     } else {
-        "Click to show it on the right screen until the keyboard restarts"
+        format!("Click to show it on {art} until the keyboard restarts")
     })
     .context_menu(|ui| {
         if ui
@@ -1336,6 +1370,20 @@ fn pc_tile(
 pub mod tests {
     use super::*;
 
+    /// #560: an art screen mounted upright is shown as stored; one on its side is turned.
+    #[test]
+    fn thumbnails_follow_how_the_art_screen_is_mounted() {
+        let mut px = vec![Color32::WHITE; 8];
+        px[1] = Color32::BLACK;
+        let img = egui::ColorImage::new([4, 2], px);
+        let upright = thumbnail_turned(&img, false, 0);
+        assert_eq!(upright.size, [4, 2]);
+        assert_eq!(upright.pixels[1], LIT);
+        assert_eq!(upright.pixels.iter().filter(|p| **p == LIT).count(), 1);
+        assert_eq!(thumbnail_turned(&img, false, 1).size, [2, 4]);
+        assert_eq!(thumbnail_turned(&img, false, 2).pixels[6], LIT);
+    }
+
     #[test]
     fn thumbnails_are_upright_and_one_bit() {
         // Stored 4 wide x 2 high: upright is 2 wide x 4 tall.
@@ -1343,7 +1391,7 @@ pub mod tests {
         let mut px = vec![Color32::WHITE; 8];
         px[3] = Color32::BLACK; // stored (3, 0) = upright (0, 0)
         let stored = egui::ColorImage::new([4, 2], px);
-        let full = thumbnail(&stored, false);
+        let full = thumbnail_turned(&stored, false, 1);
         assert_eq!(full.size, [2, 4]);
         assert_eq!(full.pixels[0], LIT);
         assert_eq!(full.pixels.iter().filter(|p| **p == LIT).count(), 1);
@@ -1360,19 +1408,21 @@ pub mod tests {
                 })
                 .collect(),
         );
-        let half = thumbnail(&grey, true);
+        let half = thumbnail_turned(&grey, true, 1);
         assert_eq!(half.size, [4, 4]);
         assert!(half.pixels.iter().all(|p| *p == LIT || *p == OFF), "1-bit");
         let lit = half.pixels.iter().filter(|p| **p == LIT).count();
         assert_eq!(lit, 8, "a 50% grey dithers to half lit");
-        let ink = thumbnail(
+        let ink = thumbnail_turned(
             &egui::ColorImage::new([4, 4], vec![Color32::BLACK; 16]),
             true,
+            1,
         );
         assert!(ink.pixels.iter().all(|p| *p == LIT));
-        let background = thumbnail(
+        let background = thumbnail_turned(
             &egui::ColorImage::new([4, 4], vec![Color32::WHITE; 16]),
             true,
+            1,
         );
         assert!(background.pixels.iter().all(|p| *p == OFF));
     }

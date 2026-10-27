@@ -18,6 +18,10 @@ enum { HOST_FRAMES_OWNER_NONE = 0, HOST_FRAMES_OWNER_HOST_LINK = 3 };
 // reply and returns whether it goes out (SHOW, RELEASE and errors reply; chunks don't).
 bool host_frames_command(const uint8_t *d, int len, uint8_t r[HOST_FRAMES_REPLY_SIZE]);
 
+// LAMP_PARTS (D7 10, #561): each part's LED count in frame order (the left's, then the right's)
+// into out (room for max); returns how many parts.
+int host_frames_parts(uint8_t *out, int max);
+
 // SET_EFFECT takes the lights (host_effects.c): the frames hand both halves back, quietly (the PC
 // asked for the effect, so no D7 8C event). Any thread.
 void host_frames_yield(void);

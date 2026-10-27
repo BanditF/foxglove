@@ -67,7 +67,7 @@ enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
        SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B, // 0x0A: LAMP_TEST (#115 branch)
        SETTING_FRAME = 0x0C, SETTING_ART_KEYS = 0x0D,
-       SETTING_BATTERY_DIM = 0x0E, SETTING_EFFECT = 0x0F };
+       SETTING_BATTERY_DIM = 0x0E, SETTING_EFFECT = 0x0F, SETTING_LAMP_PARTS = 0x10 };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -227,7 +227,7 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_RIGHT_EVENTS;
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
-    caps |= HOST_LINK_CAP_FRAMES;
+    caps |= HOST_LINK_CAP_FRAMES | HOST_LINK_CAP_LAMP_PARTS;
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
     caps |= HOST_LINK_CAP_EFFECTS | HOST_LINK_CAP_EFFECT_LAMPS;
@@ -709,6 +709,15 @@ static void settings_command(const uint8_t *d, int len) {
         if (!host_frames_command(d, len, r)) {
             break;
         }
+#endif
+        reply(r, sizeof(r));
+        break;
+    }
+    case SETTING_LAMP_PARTS: {
+        uint8_t r[8] = {HOST_LINK_SETTINGS, 0x80 | SETTING_LAMP_PARTS, 4}; // not built in
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+        r[3] = host_frames_parts(&r[4], sizeof(r) - 4);
+        r[2] = 0;
 #endif
         reply(r, sizeof(r));
         break;

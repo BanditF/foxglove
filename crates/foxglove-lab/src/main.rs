@@ -150,6 +150,25 @@ fn sha() -> String {
 fn firmware(h: digitalis::protocol::Hello) -> serde_json::Value {
     serde_json::json!({"hello_version":h.version,"panel_width":h.width,"panel_height":h.height,"right_link":h.right_link,"right_battery":h.right_battery,"discovery":h.discovery,"discovery_tries":h.discovery_tries,"debug":h.debug,"capabilities":h.capabilities})
 }
+/// The board's LEDs by part (#561): what it reports (LAMP_PARTS, HELLO bit 22), else what
+/// firmware that doesn't report them has.
+fn board_parts(
+    link: &Link,
+    hello: Option<&digitalis::protocol::Hello>,
+) -> digitalis::lamps::LampParts {
+    let reports =
+        hello.is_some_and(|h| h.capabilities & digitalis::protocol::capabilities::LAMP_PARTS != 0);
+    let read = reports.then(|| digitalis::settings::lamp_parts(link));
+    match read {
+        Some(Ok(parts)) => parts,
+        Some(Err(e)) => {
+            eprintln!("reading the board's LED counts: {e}; using the old firmware's");
+            digitalis::lamps::LampParts::old_firmware()
+        }
+        None => digitalis::lamps::LampParts::old_firmware(),
+    }
+}
+
 fn connect(product: Option<String>) -> Result<Link> {
     Link::hid(Match {
         product,
@@ -201,10 +220,10 @@ fn main() -> Result<std::process::ExitCode> {
         let _guard = platform::guard(cli.allow_app)?;
         let _lab = platform::lab_lock(Duration::from_secs(300))?;
         let link = connect(cli.product.clone())?;
-        link.wait_connected(Duration::from_secs(10))?;
+        let c = link.wait_connected(Duration::from_secs(10))?;
         let half_id = u8::from(half == "right");
-        // The half's LEDs: what firmware that doesn't report them has (#561).
-        let count = digitalis::lamps::LampParts::old_firmware().count(usize::from(half_id));
+        // The half's LEDs, as the board says (#561).
+        let count = board_parts(&link, c.hello.as_ref()).count(usize::from(half_id));
         let last = u8::try_from(count.saturating_sub(1)).unwrap_or(u8::MAX);
         let light = |i: u8, c: [u8; 3]| -> Result<u8> {
             let r = link.request(
@@ -272,8 +291,8 @@ fn main() -> Result<std::process::ExitCode> {
             eprintln!("this firmware has no SET_FRAME (no HELLO bit 14)");
             return Ok(std::process::ExitCode::from(4));
         }
-        // The board's LEDs by part: what firmware that doesn't report them has (#561).
-        let parts = digitalis::lamps::LampParts::old_firmware();
+        // The board's LEDs by part, as it says (#561).
+        let parts = board_parts(&link, c.hello.as_ref());
         for i in 0..parts.total() {
             let mut frame = vec![[0u8; 3]; parts.total()];
             frame[i] = [255, 255, 255];

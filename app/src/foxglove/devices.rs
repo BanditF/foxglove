@@ -63,7 +63,8 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
         let (actions, underglow) = ACTIONS.lock().unwrap_or_else(|e| e.into_inner()).clone();
         device.set_behaviors(actions);
         device.set_underglow(underglow);
-        // Its LEDs by part, from the profile just read (#561): frames are that size.
+        // Its LEDs by part, from the profile just read (#561): frames are that size, until the
+        // firmware says (below).
         device.set_lamp_parts(super::boards::lamp_parts(super::boards::current().as_ref()));
         device
     });
@@ -86,8 +87,53 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
             eprintln!("{line}");
         }
         super::keyboard_actions::learn_cached(vid, pid);
+        if let Some(d) = &out {
+            learn_lamp_parts(d);
+        }
     }
     out
+}
+
+/// The LEDs per part the keyboard found last reported (LAMP_PARTS, HELLO bit 22, #561); `None`
+/// for firmware that doesn't say.
+static FIRMWARE_PARTS: Mutex<Option<digitalis::lamps::LampParts>> = Mutex::new(None);
+
+/// A keyboard connected: its own LED counts, when its firmware gives them, win over the profile's.
+/// One request, on the connect.
+fn learn_lamp_parts(d: &DigitalisDevice) {
+    let parts = match d.read_lamp_parts() {
+        Ok(p) => Some(p),
+        Err(foxglove_devices::DeviceError::Unsupported) => None,
+        Err(e) => {
+            eprintln!("Foxglove: reading the keyboard's LED counts: {e}");
+            None
+        }
+    };
+    *FIRMWARE_PARTS.lock().unwrap_or_else(|e| e.into_inner()) = parts.clone();
+    // Frames split (and calibrate) by the same counts the scenes size them by.
+    d.set_lamp_parts(choose_parts(parts, super::boards::current().as_ref()));
+}
+
+/// The keyboard's LEDs by part (#561): what its firmware said when it connected, when that has
+/// as many parts as `board` has halves; else the board profile's (`boards::lamp_parts`). Never
+/// looks for a keyboard.
+pub fn lamp_parts(board: Option<&super::boards::Board>) -> digitalis::lamps::LampParts {
+    let firmware = FIRMWARE_PARTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    choose_parts(firmware, board)
+}
+
+/// The firmware's parts when they fit the board's halves, else the profile's.
+fn choose_parts(
+    firmware: Option<digitalis::lamps::LampParts>,
+    board: Option<&super::boards::Board>,
+) -> digitalis::lamps::LampParts {
+    let halves = board.map_or(2, |b| if b.halves == 1 { 1 } else { 2 });
+    firmware
+        .filter(|p| p.len() == halves)
+        .unwrap_or_else(|| super::boards::lamp_parts(board))
 }
 
 /// Whether the keyboard found last takes SET_FRAME frames (HELLO bit 14, #529). Never looks
@@ -240,6 +286,30 @@ pub fn describe(e: &foxglove_devices::DeviceError) -> String {
 
 #[cfg(test)]
 mod tests {
+    use digitalis::lamps::LampParts;
+
+    /// The firmware's LED counts (#561) win when they fit the board's halves; else the
+    /// profile's, as for firmware that doesn't say.
+    #[test]
+    fn the_firmwares_lamp_parts_win_when_they_fit_the_board() {
+        use crate::foxglove::fixtures::{second_desk, users_desk};
+        let corne = users_desk::board();
+        let uneven = LampParts::new(&[30, 24]).unwrap();
+        assert_eq!(
+            super::choose_parts(Some(uneven.clone()), Some(&corne)),
+            uneven
+        );
+        assert_eq!(
+            super::choose_parts(None, Some(&corne)),
+            LampParts::old_firmware()
+        );
+        // Two parts from the firmware on a one-piece board's profile: the profile's 61.
+        let plank = second_desk::board();
+        assert_eq!(super::choose_parts(Some(uneven), Some(&plank)).total(), 61);
+        let one = LampParts::new(&[61]).unwrap();
+        assert_eq!(super::choose_parts(Some(one.clone()), Some(&plank)), one);
+    }
+
     /// One connect found twice is logged once; a later reconnect or another transport is not
     /// a repeat.
     #[test]

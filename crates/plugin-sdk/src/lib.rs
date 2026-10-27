@@ -41,6 +41,61 @@ pub enum AppWindowEvent {
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
+/// Where a plugin draws on a keyboard (API 1.4, #560): one of its info screens, by id and size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PanelTarget {
+    /// `None`: the first info screen (an app before 1.4 takes no id).
+    pub screen: Option<u8>,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl PanelTarget {
+    /// The one panel an app before API 1.4 draws: 64x52, no id.
+    pub const BEFORE_1_4: PanelTarget = PanelTarget {
+        screen: None,
+        width: 64,
+        height: 52,
+    };
+
+    /// A frame drawn at `w`x`h` (1 bpp, rows MSB first, padded to whole bytes), fitted to this
+    /// screen: as it is at the same size, else scaled (nearest pixel, no stretching) to fit and
+    /// centred, so a plugin's art shows on any info screen.
+    pub fn fit(&self, frame: &[u8], w: u16, h: u16) -> Vec<u8> {
+        let (tw, th) = (usize::from(self.width), usize::from(self.height));
+        let (w, h) = (usize::from(w), usize::from(h));
+        if (tw, th) == (w, h) {
+            return frame.to_vec();
+        }
+        let (src_stride, stride) = (w.div_ceil(8), tw.div_ceil(8));
+        let mut out = vec![0u8; stride * th];
+        if w == 0 || h == 0 || tw == 0 || th == 0 {
+            return out;
+        }
+        let scale = f64::min(tw as f64 / w as f64, th as f64 / h as f64);
+        let (dw, dh) = (
+            ((w as f64 * scale) as usize).clamp(1, tw),
+            ((h as f64 * scale) as usize).clamp(1, th),
+        );
+        let (x0, y0) = ((tw - dw) / 2, (th - dh) / 2);
+        for y in 0..dh {
+            // Each target pixel takes the source pixel under its centre.
+            let sy = ((2 * y + 1) * h / (2 * dh)).min(h - 1);
+            for x in 0..dw {
+                let sx = ((2 * x + 1) * w / (2 * dw)).min(w - 1);
+                let ink = frame
+                    .get(sy * src_stride + sx / 8)
+                    .is_some_and(|b| b & (0x80 >> (sx % 8)) != 0);
+                if ink {
+                    let (ox, oy) = (x0 + x, y0 + y);
+                    out[oy * stride + ox / 8] |= 0x80 >> (ox % 8);
+                }
+            }
+        }
+        out
+    }
+}
+
 /// A call that failed: Foxglove's error (code and message), or the connection.
 #[derive(Debug)]
 pub enum PluginError {
@@ -269,8 +324,61 @@ impl Plugin {
         })
     }
 
-    /// Shows `frame` (1 bpp, rows MSB first, padded to whole bytes) on a keyboard's left panel
-    /// for `ttl` (60 s at most; send it again to keep it). Needs `screens.write`.
+    /// A device's screens by role, id and size (API 1.4, #560). Needs `devices.read`.
+    pub fn screens(&self, device: &str) -> Result<Vec<foxglove_plugin_api::methods::ScreenInfo>> {
+        let s: foxglove_plugin_api::methods::Screens =
+            self.call_as("screens.list", json!({ "device": device }))?;
+        Ok(s.screens)
+    }
+
+    /// Where to draw on a device: its first info screen (API 1.4; `screens.list` needs
+    /// `devices.read`). An app before 1.4, or a plugin without `devices.read`, gets the one
+    /// 64x52 panel API 1.0-1.3 draw on ([`PanelTarget::BEFORE_1_4`]); `None` when the device has
+    /// no info screen, or the call failed otherwise.
+    pub fn panel_target(&self, device: &str) -> Option<PanelTarget> {
+        match self.screens(device) {
+            Ok(screens) => screens
+                .iter()
+                .find(|s| s.role == "info" && s.format == "1bit")
+                .map(|s| PanelTarget {
+                    screen: Some(s.id),
+                    width: s.width,
+                    height: s.height,
+                }),
+            Err(PluginError::Api(e))
+                if e.code == foxglove_plugin_api::rpc::code::METHOD_NOT_FOUND
+                    || e.code == foxglove_plugin_api::rpc::code::UNSUPPORTED
+                    || e.code == foxglove_plugin_api::rpc::code::DENIED =>
+            {
+                Some(PanelTarget::BEFORE_1_4)
+            }
+            Err(_) => None,
+        }
+    }
+
+    /// Shows `frame` (1 bpp at the target's size) on `target`, for `ttl` (60 s at most), or with
+    /// no `ttl` until it's replaced, released or this plugin stops. Needs `screens.write`.
+    pub fn panel_show(
+        &self,
+        device: &str,
+        target: &PanelTarget,
+        frame: &[u8],
+        ttl: Option<Duration>,
+    ) -> Result<()> {
+        use base64::Engine;
+        let bitmap = base64::engine::general_purpose::STANDARD.encode(frame);
+        let ttl_ms = ttl.map_or(0, |t| {
+            u32::try_from(t.as_millis()).unwrap_or(u32::MAX).max(1)
+        });
+        let mut params = json!({"device": device, "width": target.width, "height": target.height, "bitmap": bitmap, "ttl_ms": ttl_ms});
+        if let Some(id) = target.screen {
+            params["screen"] = json!(id);
+        }
+        self.call("screens.panel_override", params).map(|_| ())
+    }
+
+    /// Shows `frame` (1 bpp, rows MSB first, padded to whole bytes) on a keyboard's first info
+    /// screen for `ttl` (60 s at most; send it again to keep it). Needs `screens.write`.
     pub fn panel_override(
         &self,
         device: &str,
@@ -286,7 +394,7 @@ impl Plugin {
             .map(|_| ())
     }
 
-    /// Shows a frame on the left panel until it's replaced, released ([`Plugin::panel_release`])
+    /// Shows a frame on the first info screen until it's replaced, released ([`Plugin::panel_release`])
     /// or this plugin stops: a steady screen without re-sending it (API 1.3, #281).
     pub fn panel_hold(&self, device: &str, width: u16, height: u16, frame: &[u8]) -> Result<()> {
         use base64::Engine;
@@ -295,7 +403,7 @@ impl Plugin {
             .map(|_| ())
     }
 
-    /// Gives the left panel back to Foxglove.
+    /// Gives the info screen back to Foxglove.
     pub fn panel_release(&self, device: &str) -> Result<()> {
         self.call("screens.panel_release", json!({ "device": device }))
             .map(|_| ())
@@ -502,6 +610,40 @@ mod tests {
         assert_eq!(
             (ev.key.as_str(), ev.value),
             ("clock.time", Some(Fact::Text("12:00".into())))
+        );
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::PanelTarget;
+
+    /// #560: the same size is untouched (byte for byte); another size gets the frame scaled to
+    /// fit and centred.
+    #[test]
+    fn a_frame_fits_any_info_screen() {
+        let mut frame = vec![0u8; 8 * 52];
+        frame[0] = 0x80; // top-left
+        frame[8 * 51 + 7] = 0x01; // bottom-right
+        assert_eq!(PanelTarget::BEFORE_1_4.fit(&frame, 64, 52), frame);
+        let wide = PanelTarget {
+            screen: Some(0),
+            width: 128,
+            height: 32,
+        };
+        let out = wide.fit(&frame, 64, 52);
+        assert_eq!(out.len(), 16 * 32);
+        // 64x52 at 32/52 is 39x32, centred: x from 44.
+        let at = |x: usize, y: usize| out[y * 16 + x / 8] & (0x80 >> (x % 8)) != 0;
+        assert!(
+            at(44, 0),
+            "top-left lands at the left edge of the centred art"
+        );
+        assert!(at(44 + 38, 31), "bottom-right at its bottom-right");
+        assert_eq!(
+            out.iter().map(|b| b.count_ones()).sum::<u32>(),
+            2,
+            "nothing else"
         );
     }
 }

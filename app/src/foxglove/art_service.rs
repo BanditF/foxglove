@@ -361,7 +361,7 @@ impl Handle {
 
     /// Tells the service which wallpaper is on screen; used in the "match the wallpaper" mode.
     /// A preset's art shows, or is cleared (`None`): today a running scene's wallpaper art
-    /// with "Right screen too" on (#488, `scene_run::set_art`).
+    /// with "Art screen too" on (#488, `scene_run::set_art`).
     pub fn preset_art(&self, art: Option<art_cycle::Item>) {
         let _ = self.commands.send(Command::Preset(art));
     }

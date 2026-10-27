@@ -42,6 +42,7 @@ same messages.
 | `devices.list` / `devices.changed` | call / event | `devices.read` |
 | `lighting.state` / `lighting.set` | call | `devices.read` / `lighting.write` |
 | `behaviors.list` / `behaviors.invoke` | call | `devices.read` / `behaviors.invoke` |
+| `screens.list` | call | `devices.read` |
 | `screens.panel_override` | call | `screens.write` |
 | `art.status` / `art.select` | call | `devices.read` / `art.write` |
 | `key.event` | event | `key.events` (warned: a keylogger) |
@@ -133,7 +134,8 @@ description = "Puts the temperature on the left screen."
   - **Delivery:** Foxglove registers the bound keys as global hotkeys and sends `action.invoked {action}` to that plugin only. The SDK delivers them on `Plugin::actions()`. No plugin needs `key.events` for this.
   - **Storage and conflicts:** bindings live in `[plugins.bindings]`. A key another program already holds is flagged in the tab. `FOXGLOVE_DISABLE=actions` turns the hotkeys off.
 - **Left panel (#209):**
-  - **Drawing:** `screens.panel_override {device, width, height, bitmap, ttl_ms}`, with `screens.write`, shows a plugin's 1 bpp frame (rows MSB first, padded to whole bytes, base64) over the panel for up to 60 s.
+  - **Screens (API 1.4, #560):** `screens.list {device}`, with `devices.read`, returns each screen as `{id, role, name, width, height, format, rotation}`. `role` is `info` (the panel the PC draws, where plugins draw), `art` or `display`. Screens are named by role ("Info screen", "Art screen") or by the board profile, never by side. SDK: `Plugin::screens()`, `Plugin::panel_target()` (64x52 on an app before 1.4), `PanelTarget::fit()`.
+  - **Drawing:** `screens.panel_override {device, width, height, bitmap, ttl_ms, screen?}`, with `screens.write`, shows a plugin's 1 bpp frame (rows MSB first, padded to whole bytes, base64) over an info screen for up to 60 s. `screen` is an id from `screens.list` (API 1.4); without it the frame goes to the first info screen, as API 1.0-1.3 plugins expect. SDK: `Plugin::panel_show()`.
   - **Holding it (API 1.3, #281):**
     - `ttl_ms` 0 holds the frame until the next one replaces it, `screens.panel_release {device}` gives the panel back, or the plugin's connection closes.
     - A steady screen is sent once, never re-sent. SDK: `Plugin::panel_hold()`, `Plugin::panel_release()`.

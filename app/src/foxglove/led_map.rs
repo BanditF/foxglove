@@ -231,7 +231,7 @@ impl Wizard {
         let halves = if board.halves == 1 { 1 } else { 2 };
         let mut profile = board.clone();
         profile.halves = halves;
-        let parts = super::boards::lamp_parts(Some(&profile));
+        let parts = super::devices::lamp_parts(Some(&profile));
         Wizard {
             board: board.id.clone(),
             name: board.name.clone(),

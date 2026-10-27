@@ -15,6 +15,10 @@ The panel is the same as the wallpaper art's left-panel spec: 64x52, 1 bit, 416 
 Plugins draw it with `screens.panel_override` ([local-api.md](local-api.md)), which lasts at most
 60 s, so a plugin re-sends on each change and before the TTL runs out.
 
+The assets are drawn at 64x52, but a keyboard's info screen can be any size (#560): a plugin asks
+`Plugin::panel_target()` (`screens.list`, API 1.4) and sends `PanelTarget::fit()` of its frame,
+which is the frame itself at 64x52 and otherwise scaled to fit and centred.
+
 `panel.json` is `"format": "foxglove-panel-assets", "version": 1`. Every sprite is
 `{w, h, bitmap}`, with `bitmap` in exactly `panel_override`'s encoding: rows MSB first, each row
 padded to whole bytes, 1 = ink, base64. A plugin builds a frame by ORing sprites into a 64x52

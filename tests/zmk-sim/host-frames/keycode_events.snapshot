@@ -1,5 +1,8 @@
 frames: -- hello: capability bit 14 FRAMES
 frames: caps bit 14 1
+frames: caps bit 22 1
+frames: -- lamp parts (D7 10, #561): the left's chain, then the right's
+frames: parts status 0, 2 parts: 21 21
 frames: -- a chunk without SHOW: no reply, nothing drawn, the lights stay with the keyboard
 frames: replies so far 0
 frames: -- a whole frame (5 reports): lamp 3 red on the left, lamp 30 green on the right

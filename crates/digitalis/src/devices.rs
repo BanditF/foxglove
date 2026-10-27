@@ -189,8 +189,8 @@ pub struct DigitalisDevice {
     /// Its key in the colour calibration registry: underglow colours go through that
     /// calibration (`calibration::send_hsb`).
     calibration_key: Mutex<String>,
-    /// Its LEDs by part, in SET_FRAME's order (#561): what the app learnt from the board
-    /// profile, else the old firmware's.
+    /// Its LEDs by part, in SET_FRAME's order (#561): what the firmware or the board profile
+    /// says, else the old firmware's.
     lamp_parts: Mutex<LampParts>,
     _events: EventSubscription,
     _reports: EventSubscription,
@@ -315,9 +315,19 @@ impl DigitalisDevice {
             .clone()
     }
 
-    /// The board's LEDs by part, from its profile: frames are split (and calibrated) by them.
+    /// The board's LEDs by part, from its firmware or profile: frames are split (and calibrated)
+    /// by them.
     pub fn set_lamp_parts(&self, parts: LampParts) {
         *self.lamp_parts.lock().unwrap_or_else(|e| e.into_inner()) = parts;
+    }
+
+    /// Asks the keyboard for its LEDs per part (LAMP_PARTS, HELLO bit 22, #561). Unsupported on
+    /// firmware without it, whose parts are the profile's (or the old firmware's).
+    pub fn read_lamp_parts(&self) -> PResult<LampParts> {
+        if !self.has(capabilities::LAMP_PARTS) {
+            return Err(DeviceError::Unsupported);
+        }
+        settings::lamp_parts(&*self.link).map_err(err)
     }
 
     /// Stores its calibration under another key.
@@ -1038,6 +1048,10 @@ mod tests {
                     };
                     report(&[0xD7, 0x8C, 0, owner, 30, 1, 0])
                 }
+                // A split board of 30 + 24 LEDs.
+                (protocol::SETTINGS, protocol::settings::LAMP_PARTS) => {
+                    report(&[0xD7, 0x90, 0, 2, 30, 24])
+                }
                 // Effects: every op answers; EFFECT runs its kind, RELEASE and PLACE report.
                 (protocol::SETTINGS, protocol::settings::EFFECT) => {
                     let (owner, kind) = match out[2] {
@@ -1141,6 +1155,19 @@ mod tests {
                 (protocol::frame::RELEASE, 0, vec![]),
             ]
         );
+    }
+
+    #[test]
+    fn the_lamp_parts_come_from_the_firmware_with_bit_22() {
+        let (dev, fake, _bus) = device(capabilities::SETTINGS_RGB | capabilities::FRAMES);
+        assert!(matches!(
+            dev.read_lamp_parts(),
+            Err(DeviceError::Unsupported)
+        ));
+        assert!(fake.written.lock().unwrap().is_empty(), "nothing asked");
+        let (dev, _fake, _bus) = device(capabilities::FRAMES | capabilities::LAMP_PARTS);
+        let parts = dev.read_lamp_parts().unwrap();
+        assert_eq!(parts.counts().collect::<Vec<_>>(), [30, 24]);
     }
 
     #[test]

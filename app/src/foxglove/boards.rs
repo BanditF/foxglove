@@ -70,11 +70,20 @@ pub struct Match {
 pub struct Screen {
     /// `display`, `panel` (where the PC draws) or `art` (where art plays).
     pub kind: String,
+    /// The part it sits on (informative; screens are named by role, #560).
+    #[serde(default)]
     pub half: String,
     pub width: u16,
     pub height: u16,
     /// `1bit`; other formats aren't drawn yet.
     pub format: String,
+    /// What the app calls it; the role's name ("Info screen", "Art screen") when absent (#560).
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Degrees clockwise from upright to how the screen stores its picture (0, 90, 180, 270):
+    /// an art screen mounted on its side is 90.
+    #[serde(default)]
+    pub rotate: u16,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]

@@ -15,6 +15,12 @@
 #include "battery_dim.h"
 
 #define LEN DT_INST_PROP(0, chain_length)
+// The underglow's chain is the board's strip's (#561): this wrapper's chain-length
+// (dim_strip.dtsi) has to say the same, or LEDs go undrawn or SET_FRAME misses them.
+#if DT_NODE_HAS_PROP(DT_INST_PHANDLE(0, led_strip), chain_length)
+BUILD_ASSERT(LEN == DT_PROP(DT_INST_PHANDLE(0, led_strip), chain_length),
+             "dim_strip.dtsi's chain-length must match the board's led_strip");
+#endif
 
 static const struct device *const strip = DEVICE_DT_GET(DT_INST_PHANDLE(0, led_strip));
 static struct led_rgb scaled[LEN]; // the WS2812 driver may write into the buffer it's given

@@ -523,7 +523,7 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 if v.paused {
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new("Paused. Foxglove leaves the keyboard alone: its own lights, the left screen back to the firmware, no art changes and no layer overlay.")
+                        RichText::new(format!("Paused. Foxglove leaves the keyboard alone: its own lights, {} back to the firmware, no art changes and no layer overlay.", super::screen_roles::the(super::screen_roles::Role::Info)))
                             .color(p.warn),
                     );
                 }
@@ -565,12 +565,12 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             // piece with ‹ / Next › through Rotation, Art… to the page, and the strip.
             part(ui, "Screens", |_| {}, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("Left screen: {}", v.left_name)).color(p.text));
+                    ui.label(RichText::new(format!("{}: {}", super::screen_roles::name(super::screen_roles::Role::Info), v.left_name)).color(p.text));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let text = if v.panel_paused { "Resume" } else { "Pause" };
                         if ui
                             .add_enabled(!v.paused && v.left_driven, egui::Button::new(text).small())
-                            .on_hover_text("The keyboard shows its own left screen meanwhile")
+                            .on_hover_text(format!("The keyboard shows its own {} meanwhile", super::parts::lower_first(&super::screen_roles::name(super::screen_roles::Role::Info))))
                             .clicked()
                         {
                             out.push(Intent::PauseLeftPanel(!v.panel_paused));

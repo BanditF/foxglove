@@ -1285,7 +1285,7 @@ fn scenes_page_renders() {
 }
 
 /// A wallpaper pack's looks on the Scenes page (#488, #562; the fake third-party pack): one
-/// running with "Right screen too" and its wallpaper on screen, and one picked with nothing
+/// running with "Art screen too" and its wallpaper on screen, and one picked with nothing
 /// running, at the window's default size (one column).
 #[test]
 fn scenes_wallpaper_presets_render() {
@@ -1949,7 +1949,7 @@ fn left_screen_stats_render() {
             egui::Frame::new()
                 .inner_margin(egui::Margin::same(16))
                 .show(ui, |ui| {
-                    ui.label(crate::foxglove::theme::heading(ui, "Left screen: Change…"));
+                    ui.label(crate::foxglove::theme::heading(ui, "Info screen: Change…"));
                     ui.add_space(6.0);
                     crate::foxglove::screens_ui::left_choices(
                         ui,
