@@ -34,5 +34,8 @@ void rgb_idle_set_sync(bool sync);
 // Right: the left's underglow state, from the art relay link. follow = false hands the right its
 // own idle auto-off back.
 void rgb_idle_remote(bool on, bool follow);
+// The PC draws this half's LEDs (SET_FRAME, lamp_strip.c): idle, sync and key toggles leave
+// ZMK's underglow alone until it hands back, which re-applies the user's on/off. Any thread.
+void rgb_idle_host_control(bool on);
 // Right: the split link dropped; go by the right's own activity until the left is back.
 void rgb_idle_remote_lost(void);

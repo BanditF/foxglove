@@ -31,6 +31,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #endif
 
 #include "art_relay.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+#include "lamp_strip.h"
+#endif
 #include "screen_snap.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 #include "test_hooks.h"
@@ -49,7 +52,9 @@ static int flash_shown = -1;  // flash slot playing, or -1
 static uint32_t rx_crc;
 
 static struct art_relay_status status = {
-    .version = 6, // 5: ART_RELAY_RGB_HSB, 6: battery dim (config in RGB, state after build)
+    // 5: ART_RELAY_RGB_HSB, 6: battery dim (config in RGB, state after build), 7: SET_FRAME's
+    // ART_RELAY_LAMPS / LAMP_HOST (#272)
+    .version = IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES) ? 7 : 6,
     .capacity = CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE,
     .set = -1,
 };
@@ -120,7 +125,12 @@ static void play(void) {
 }
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
-static void rgb_disconnected(struct bt_conn *conn, uint8_t reason) { rgb_idle_remote_lost(); }
+static void rgb_disconnected(struct bt_conn *conn, uint8_t reason) {
+    rgb_idle_remote_lost();
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+    lamp_strip_host(false); // no PC to draw any more: the right's own effect comes back
+#endif
+}
 
 BT_CONN_CB_DEFINE(art_relay_rgb_conn_cb) = {
     .disconnected = rgb_disconnected,
@@ -139,6 +149,33 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     }
 
     switch (d[0]) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+    case ART_RELAY_LAMPS: {
+        // Commands fill the frame; the request (the frame's last write) draws it.
+        if (len < 3) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+        bool fill = d[2] & 0x80;
+        int n = d[2] & 0x7f;
+        if (fill ? len != 6 : len != 3 + 3 * n) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+        for (int i = 0; i < n; i++) {
+            const uint8_t *c = fill ? &d[3] : &d[3 + 3 * i];
+            lamp_strip_set(d[1] + i, c[0], c[1], c[2]);
+        }
+        if (!(flags & BT_GATT_WRITE_FLAG_CMD)) {
+            lamp_strip_show();
+        }
+        break;
+    }
+    case ART_RELAY_LAMP_HOST:
+        if (len != 2) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+        lamp_strip_host(d[1] != 0);
+        break;
+#endif
     case ART_RELAY_BOOT:
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
         if (len != 5 || memcmp(&d[1], "BOOT", 4) != 0) {

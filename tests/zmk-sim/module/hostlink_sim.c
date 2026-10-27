@@ -122,8 +122,13 @@ static uint32_t arm(void) {
 
 void panel_stream_driver(void);
 void art_keys_sim_driver(void);
+void frames_sim_driver(void);
 
 static void driver(void) {
+    if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_FRAMES)) {
+        frames_sim_driver(); // the host-frames case plays a different PC
+        return;
+    }
     if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_ART_KEYS)) {
         art_keys_sim_driver(); // the art-keys case plays a different PC
         return;

@@ -48,6 +48,7 @@ static bool loaded;      // wanted came from the settings
 static bool sync = true; // left: the right follows the left, saved
 static bool following;   // right: the left's state is in charge
 static bool remote_on;   // right: the left's state
+static atomic_t host_drawn; // the PC draws this half's LEDs (SET_FRAME, lamp_strip.c)
 
 static bool active(void) { return zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE; }
 
@@ -127,6 +128,9 @@ static void save(void) { k_work_reschedule(&save_work, SAVE_DELAY); }
 // The work items below all run on the system work queue, one at a time.
 
 static void apply_cb(struct k_work *work) {
+    if (atomic_get(&host_drawn)) {
+        return; // ZMK's underglow stays off under the PC's frames; this runs again on hand-back
+    }
     bool on;
     bool target = following ? remote_on : wanted && active();
     if (zmk_rgb_underglow_get_state(&on) == 0 && on != target) {
@@ -147,7 +151,9 @@ static K_WORK_DEFINE(apply_work, apply_cb);
 
 static void check_cb(struct k_work *work) {
     bool on;
-    if (!following && zmk_rgb_underglow_get_state(&on) == 0 && on != wanted) {
+    // Under the PC's frames ZMK's underglow is off on purpose: that's not the user's choice.
+    if (!following && !atomic_get(&host_drawn) && zmk_rgb_underglow_get_state(&on) == 0 &&
+        on != wanted) {
         wanted = on; // toggled with a key
         save();
 #if HOST_CENTRAL
@@ -197,6 +203,11 @@ void rgb_idle_set_sync(bool on) {
 void rgb_idle_remote(bool on, bool follow) {
     remote_on = on;
     following = follow;
+    k_work_submit(&apply_work);
+}
+
+void rgb_idle_host_control(bool on) {
+    atomic_set(&host_drawn, on);
     k_work_submit(&apply_work);
 }
 

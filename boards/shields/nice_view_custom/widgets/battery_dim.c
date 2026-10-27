@@ -39,6 +39,9 @@
 #if RELAY_CENTRAL
 #include "art_relay.h"
 #endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+#include "lamp_strip.h"
+#endif
 
 // A few quick changes from the app's sliders make one flash write.
 #define SAVE_DELAY K_SECONDS(10)
@@ -78,6 +81,9 @@ static void recompute(void) { atomic_set(&level, battery_dim_level_for(&config, 
 static void changed(void) {
 #if HOST_CENTRAL
     host_link_battery_dim_changed();
+#endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+    lamp_strip_show(); // a frame from the PC shows at the new level too (ZMK redraws on its own)
 #endif
 }
 

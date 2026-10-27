@@ -141,6 +141,27 @@ config NICE_VIEW_RGB_DIM_LOW_BELOW
     range 0 100
     depends on NICE_VIEW_RGB_BATTERY_DIM
 
+config FOXGLOVE_HOST_FRAMES
+    bool "Per-LED frames from the PC for both halves (D7 0C SET_FRAME, #272)"
+    default y if FOXGLOVE_TEST_HOOKS
+    depends on NICE_VIEW_RGB_IDLE
+    depends on NICE_VIEW_HOST_LINK || (ZMK_SPLIT && !ZMK_SPLIT_ROLE_CENTRAL && NICE_VIEW_ART_RELAY)
+    help
+      The left takes D7 0C frames from the PC (HELLO bit 14) and relays the right's lamps over
+      the art relay; the right draws them (relay status version 7). Dev builds only until a Test
+      lab pass; GA keeps the one-colour path. Both halves need it for per-half frames: a right
+      without it keeps its own effect.
+
+config FOXGLOVE_HOST_FRAMES_TIMEOUT_S
+    int "Seconds without a frame before the keyboard's own effect comes back (0 = never)"
+    default 30
+    range 0 255
+    depends on FOXGLOVE_HOST_FRAMES
+    help
+      A safety net for an app that dies with the cable in. A running scene's frames restart it;
+      a PC holding a static frame sends it again when the hand-back event (D7 8C, event 1)
+      comes.
+
 config NICE_VIEW_ART_RELAY_MAX_SIZE
     int "Largest pushed art set, in bytes (RAM on both halves)"
     default 16384
