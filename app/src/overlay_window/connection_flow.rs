@@ -110,6 +110,8 @@ impl OverlayApp {
         self.session.active_layout_name = connected.selected_layout_name.clone();
         self.session.draft_layout_name = connected.selected_layout_name;
         self.session.connected_definition = Some(connected.definition);
+        // Foxglove (#499): the board's geometry for the live wallpaper feed.
+        crate::foxglove::live_feed::layout(&connected.keyboard.layout());
         self.session.reopen = connected.reopen;
         self.session.connection = AppConnectionState::Connected {
             keyboard: Arc::new(connected.keyboard),

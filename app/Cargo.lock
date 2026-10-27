@@ -1616,12 +1616,14 @@ dependencies = [
  "foxglove-devices",
  "foxglove-flash",
  "foxglove-panel",
+ "foxglove-plugin",
  "foxglove-plugin-api",
  "foxglove-plugin-host",
  "foxglove-plugin-trust",
  "foxglove-scene",
  "foxglove-update",
  "foxglove-via",
+ "getrandom 0.3.4",
  "gtk",
  "hidapi",
  "image",
@@ -1676,6 +1678,16 @@ dependencies = [
  "embedded-graphics",
  "windows 0.62.2",
  "windows-core",
+]
+
+[[package]]
+name = "foxglove-plugin"
+version = "0.2.0"
+dependencies = [
+ "base64",
+ "foxglove-plugin-api",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
