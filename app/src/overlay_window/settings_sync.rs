@@ -62,6 +62,7 @@ impl OverlayApp {
             return;
         };
 
+        crate::foxglove::live_feed::layout(&next_layout); // Foxglove (#499)
         keyboard.set_layout(next_layout);
         self.session.active_layout_name = selected_layout;
     }

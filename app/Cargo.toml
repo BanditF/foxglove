@@ -22,6 +22,9 @@ foxglove-via = { path = "../crates/via" }
 foxglove-plugin-host = { path = "../crates/plugin-host" }
 foxglove-plugin-api = { path = "../crates/plugin-api" }
 foxglove-plugin-trust = { path = "../crates/plugin-trust" }
+# Foxglove (#499): the live wallpaper feed's WebSocket side (MIT) and its pairing token.
+foxglove-plugin = { path = "../crates/plugin-sdk" }
+getrandom = "0.3"
 # Foxglove: unpacking plugins in the Plugins tab.
 zip = { version = "9", default-features = false, features = ["deflate"] }
 # Foxglove: plugins' panel frames arrive as base64.

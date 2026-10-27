@@ -272,6 +272,8 @@ impl Handle {
 
     fn update(&self, f: impl FnOnce(&mut Snapshot)) {
         f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()));
+        // The live wallpaper feed names the piece on the right screen (#499).
+        super::live_feed::art_changed();
         if let Some(wake) = WAKE.get() {
             wake.request_repaint();
         }

@@ -545,6 +545,7 @@ fn sections(ui: &mut egui::Ui) {
     keypeek_groups(ui);
     crate::foxglove::profiles_ui::picker(ui);
     crate::foxglove::update::group(ui);
+    crate::foxglove::live_feed::group(ui);
     foxglove_groups(ui);
     crate::foxglove::settings_ui::footer(ui);
 }

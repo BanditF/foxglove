@@ -53,6 +53,7 @@ fn main() {
     foxglove::devices::start(); // Foxglove: find the host-link keyboard whenever a link connects
     foxglove::keyboard_facts::start();
     foxglove::battery::start(); // Foxglove (#372, #373)
+    foxglove::live_feed::start(); // Foxglove (#499): the live wallpaper feed, when turned on
     foxglove::via_host::start();
     foxglove::pc_lights::start(); // Foxglove (#423): case and peripheral lights
     foxglove::scene_run::start_from_env(); // Foxglove (#485): the live check's demo scene
@@ -68,6 +69,7 @@ fn main() {
     let result = platform::run(settings, available_devices);
     foxglove::calibrate_ui::cancel(); // Foxglove: quitting mid-calibration puts the colours back
     foxglove::scene_run::stop(); // Foxglove (#485): a running scene gives the lights back
+    foxglove::live_feed::stop(); // Foxglove (#499)
     foxglove::wallpaper_sync::quit(); // Foxglove (#493): the wallpapers go back to their own clocks
     foxglove::startup::finish(result)
 }

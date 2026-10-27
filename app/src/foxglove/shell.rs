@@ -61,7 +61,7 @@ impl Page {
 
 /// Every settings section by title, and the page it lives on (#385). A new section goes in
 /// here too; the `every_section_has_a_page` test finds the ones that don't.
-pub const SECTIONS: [(&str, Page); 15] = [
+pub const SECTIONS: [(&str, Page); 16] = [
     ("Connection", Page::Keyboard),
     ("Keyboard", Page::Keyboard),
     ("Lights", Page::Lights),
@@ -76,6 +76,7 @@ pub const SECTIONS: [(&str, Page); 15] = [
     ("Theme", Page::Settings),
     ("Profile", Page::Settings),
     ("Theme and updates", Page::Settings),
+    ("Live wallpaper", Page::Settings),
     ("Other keyboards (VIA)", Page::Settings),
     // The links, credits and version at the end of the window.
     ("About", Page::Settings),

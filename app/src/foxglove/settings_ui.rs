@@ -119,6 +119,7 @@ fn style(title: &str) -> Style {
         | "Left screen"
         | "Profile"
         | "Theme and updates"
+        | "Live wallpaper"
         | "Other keyboards (VIA)" => Style::Card,
         "Overlay Appearance" => Style::CardTop,
         "Theme" => Style::CardBottom,
