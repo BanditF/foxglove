@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use digitalis::protocol::MmRect;
 use foxglove_scene::scheduler::Pacing;
-use foxglove_scene::{Burst, Bursts, Effect, Rgb, RoomMap, SceneTime};
+use foxglove_scene::{Ambient, Burst, Bursts, Effect, LightRole, Rgb, RoomMap, SceneTime};
 
 /// The keyboard's output id in [`Pacing`].
 pub const KEYBOARD: &str = "keyboard";
@@ -325,6 +325,8 @@ pub struct Outputs {
     keyboard_again: Arc<AtomicBool>,
     /// Rings and sweeps over the scene (#489), drawn by these same frames.
     bursts: Bursts,
+    /// Eases the ambient lights (the case's interior light) frame to frame.
+    ambient: Ambient,
 }
 
 impl Outputs {
@@ -342,6 +344,7 @@ impl Outputs {
             keyboard_effects: Arc::default(),
             keyboard_again: Arc::default(),
             bursts: Bursts::default(),
+            ambient: Ambient::new(),
         };
         o.set_room(room, cases);
         o
@@ -405,7 +408,8 @@ impl Outputs {
     }
 
     /// Another look while the scene runs (the Scenes page, #487): every device gets the next
-    /// frame in full.
+    /// frame in full. The ambient lights fade across to the new look rather than jumping (so
+    /// the case is written at its own rate until they settle, a few seconds).
     pub fn set_effect(&mut self, effect: Effect) {
         self.effect = effect;
         self.sent_case.clear();
@@ -452,9 +456,14 @@ impl Outputs {
             // `render` lists the lights device by device, in the room's order.
             let places = self.room.devices.iter().flat_map(|d| d.lights.iter());
             for (l, place) in frame.lights.iter_mut().zip(places) {
-                l.colour = self.bursts.over(l.colour, place.at, t, &self.room.bounds);
+                if place.role == LightRole::Point {
+                    l.colour = self.bursts.over(l.colour, place.at, t, &self.room.bounds);
+                }
             }
+            // An area light follows the burst on its neighbours rather than being hit itself.
+            foxglove_scene::ambient::group(&mut frame, &self.room);
         }
+        self.ambient.apply(&mut frame, &self.room);
         for id in due {
             if id == KEYBOARD {
                 let lights: Vec<(&str, &str, Rgb)> = frame
@@ -515,10 +524,7 @@ mod tests {
             raw_dpi: Some(109),
             dpi: 96,
         }];
-        let zone = |id: &str, x: f32, y: f32| LightSpec {
-            id: id.into(),
-            at: Some(Point::new(x, y)),
-        };
+        let zone = |id: &str, x: f32, y: f32| LightSpec::point(id, Some(Point::new(x, y)));
         let devices = [
             DeviceInfo::whole("keyboard:left", "Corne left", DeviceKind::KeyboardLeft),
             DeviceInfo::whole("keyboard:right", "Corne right", DeviceKind::KeyboardRight),
@@ -530,7 +536,7 @@ mod tests {
                 // The catalog's order: 1, 2, 5, 6, 7.
                 lights: vec![
                     zone("1", 102.0, 55.0),
-                    zone("2", 120.0, 250.0),
+                    zone("2", 120.0, 250.0).with_role(foxglove_scene::LightRole::Ambient),
                     zone("5", 102.0, 405.0),
                     zone("6", 102.0, 285.0),
                     zone("7", 102.0, 165.0),
@@ -606,6 +612,45 @@ mod tests {
         assert!(at("zone 7") < at("zone 6"), "{first_lit:?}");
         assert!(at("zone 6") < at("zone 5"), "{first_lit:?}");
         assert!(at("zone 5") < at("keyboard"), "{first_lit:?}");
+    }
+
+    #[test]
+    fn the_interior_light_fades_with_the_fans_rather_than_pinging() {
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        let (mut fans, mut interior) = (0u8, 0u8);
+        let (mut low, mut high) = (u8::MAX, 0u8);
+        let mut last: Option<Vec<(usize, [u8; 3])>> = None;
+        let step = |a: [u8; 3], b: [u8; 3]| (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0);
+        // Two periods at the scheduler's fastest tick; the case writes as often as it may.
+        for ms in (0..8000).step_by(33) {
+            for out in o.frame(SceneTime(ms)) {
+                let Out::Case { colors, .. } = out else {
+                    continue;
+                };
+                if let Some(p) = &last {
+                    // Zone order 1, 2, 5, 6, 7: index 1 is the interior light.
+                    for i in 2..5 {
+                        fans = fans.max(step(p[i].1, colors[i].1));
+                    }
+                    interior = interior.max(step(p[1].1, colors[1].1));
+                }
+                if ms >= 4000 {
+                    low = low.min(colors[1].1[0]);
+                    high = high.max(colors[1].1[0]);
+                }
+                last = Some(colors);
+            }
+        }
+        assert!(fans >= 40, "the fans ping: {fans}");
+        assert!(
+            interior <= 12,
+            "the interior light eases: {interior} per write"
+        );
+        assert!(
+            high.saturating_sub(low) >= 10,
+            "and fades in and out: {low}..{high}"
+        );
     }
 
     #[test]

@@ -35,10 +35,7 @@ fn g502() -> DeviceInfo {
 
 /// The OMEN 45L as the lighting catalog describes it (zones 1, 2, 5, 6, 7).
 fn omen_45l() -> DeviceInfo {
-    let zone = |id: &str, x: f32, y: f32| LightSpec {
-        id: id.into(),
-        at: Some(Point::new(x, y)),
-    };
+    let zone = |id: &str, x: f32, y: f32| LightSpec::point(id, Some(Point::new(x, y)));
     DeviceInfo {
         id: "light:103c:84fd".into(),
         name: "HP OMEN 45L case lights".into(),
@@ -46,7 +43,7 @@ fn omen_45l() -> DeviceInfo {
         size: Some(Point::new(205.0, 475.0)),
         lights: vec![
             zone("1", 102.0, 55.0),
-            zone("2", 120.0, 250.0),
+            zone("2", 120.0, 250.0).with_role(LightRole::Ambient),
             zone("5", 102.0, 405.0),
             zone("6", 102.0, 285.0),
             zone("7", 102.0, 165.0),
@@ -209,16 +206,7 @@ fn a_device_added_by_hand_and_a_case_on_the_left() {
         name: "Shelf".into(),
         kind: DeviceKind::Other,
         size: Some(Point::new(400.0, 20.0)),
-        lights: vec![
-            LightSpec {
-                id: "1".into(),
-                at: None,
-            },
-            LightSpec {
-                id: "3".into(),
-                at: None,
-            },
-        ],
+        lights: vec![LightSpec::point("1", None), LightSpec::point("3", None)],
     };
     let monitors = [monitor("DISPLAY1", true, [0, 0, 2560, 1440], Some(109))];
     let mut devices = halves();

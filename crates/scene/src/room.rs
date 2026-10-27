@@ -103,6 +103,20 @@ impl MonitorInfo {
     }
 }
 
+/// How a light takes its colour from a scene.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LightRole {
+    /// A light at one place (a key, a fan, a lamp): the effect is sampled where it is, so a
+    /// scanline pings it as it passes.
+    #[default]
+    Point,
+    /// An area light that fills a space (a case's interior light): it isn't sampled at a
+    /// point but takes the average of its device's point lights, eased in and out
+    /// ([`crate::ambient`]), so it swells and fades with them instead of pinging.
+    Ambient,
+}
+
 /// One light on a device: an id the device's output knows it by (a zone number, a lamp index,
 /// `all`) and where it sits on the device, in millimetres from its top-left corner.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -110,6 +124,24 @@ pub struct LightSpec {
     pub id: String,
     /// `None`: spread evenly with the device's other unplaced lights.
     pub at: Option<Point>,
+    #[serde(default)]
+    pub role: LightRole,
+}
+
+impl LightSpec {
+    /// A point light (`at`: `None` to spread it with the device's other unplaced lights).
+    pub fn point(id: impl Into<String>, at: Option<Point>) -> Self {
+        LightSpec {
+            id: id.into(),
+            at,
+            role: LightRole::Point,
+        }
+    }
+
+    pub fn with_role(mut self, role: LightRole) -> Self {
+        self.role = role;
+        self
+    }
 }
 
 /// One device to place.
@@ -133,10 +165,7 @@ impl DeviceInfo {
             name: name.into(),
             kind,
             size: None,
-            lights: vec![LightSpec {
-                id: "all".into(),
-                at: None,
-            }],
+            lights: vec![LightSpec::point("all", None)],
         }
     }
 
@@ -191,6 +220,18 @@ impl Layout {
 pub struct PlacedLight {
     pub id: String,
     pub at: Point,
+    #[serde(default)]
+    pub role: LightRole,
+}
+
+impl PlacedLight {
+    pub fn point(id: impl Into<String>, at: Point) -> Self {
+        PlacedLight {
+            id: id.into(),
+            at,
+            role: LightRole::Point,
+        }
+    }
 }
 
 /// A device where it is in the room. Monitors have no lights: they are surfaces a wallpaper
@@ -487,6 +528,7 @@ fn lights_on(rect: Rect, lights: &[LightSpec]) -> Vec<PlacedLight> {
             PlacedLight {
                 id: l.id.clone(),
                 at,
+                role: l.role,
             }
         })
         .collect()

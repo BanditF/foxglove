@@ -26,7 +26,7 @@ use std::time::Duration;
 use crate::calibration::Calibration;
 use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
-pub use catalog::{Catalog, CatalogDevice, Protocol, ZoneSpec};
+pub use catalog::{Catalog, CatalogDevice, Protocol, ZoneRole, ZoneSpec};
 
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;
@@ -322,6 +322,7 @@ pub fn test_zone(
         id: zone,
         name: format!("zone {zone}"),
         position: None,
+        role: Default::default(),
     }];
     let mut d: Box<dyn LightingDevice> = match protocol {
         Protocol::OmenTracer => Box::new(omen_tracer::OmenTracer::new(

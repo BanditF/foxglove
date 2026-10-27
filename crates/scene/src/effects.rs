@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::clock::SceneTime;
 use crate::colour::{gradient, Rgb};
-use crate::room::RoomMap;
+use crate::room::{LightRole, RoomMap};
 use crate::space::{along, extent, Point, Rect};
 
 /// One effect and its parameters.
@@ -192,20 +192,41 @@ impl Effect {
     }
 
     /// Every light in the room at `t`. Monitors have no lights, so they're not in it.
+    ///
+    /// A point light shows the effect where it is. An ambient light shows the average of its
+    /// device's point lights (or, on a device with none, of the effect across the device);
+    /// this is its target, which [`crate::Ambient`] eases it towards over time.
     pub fn render(&self, room: &RoomMap, t: SceneTime) -> Frame {
         let perlin = self.perlin();
         let lights = room
             .devices
             .iter()
             .flat_map(|d| {
-                d.lights.iter().map(|l| FrameLight {
+                let perlin = perlin.as_ref();
+                d.lights.iter().map(move |l| FrameLight {
                     device: d.id.clone(),
                     light: l.id.clone(),
-                    colour: self.colour_with(l.at, t, &room.bounds, perlin.as_ref()),
+                    colour: match l.role {
+                        LightRole::Point => self.colour_with(l.at, t, &room.bounds, perlin),
+                        LightRole::Ambient => self.area(&d.rect, t, &room.bounds, perlin),
+                    },
                 })
             })
             .collect();
-        Frame { t, lights }
+        let mut frame = Frame { t, lights };
+        crate::ambient::group(&mut frame, room);
+        frame
+    }
+
+    /// The effect's average over an area: a 3 x 3 grid across it.
+    fn area(&self, r: &Rect, t: SceneTime, bounds: &Rect, perlin: Option<&Perlin>) -> Rgb {
+        const N: usize = 3;
+        let at = |i: usize, j: usize| {
+            let f = |k: usize| (k as f32 + 0.5) / N as f32;
+            Point::new(r.x + r.w * f(i), r.y + r.h * f(j))
+        };
+        let samples = (0..N * N).map(|k| self.colour_with(at(k % N, k / N), t, bounds, perlin));
+        Rgb::average(samples).unwrap_or_default()
     }
 }
 

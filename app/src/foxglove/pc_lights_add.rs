@@ -79,6 +79,7 @@ impl Wizard {
                 id,
                 name: name.to_string(),
                 position: None,
+                role: Default::default(),
             })
             .collect()
     }
@@ -385,11 +386,13 @@ pub mod tests {
                     id: 1,
                     name: "Shelf left".into(),
                     position: None,
+                    role: Default::default(),
                 },
                 ZoneSpec {
                     id: 3,
                     name: "Shelf right".into(),
                     position: None,
+                    role: Default::default(),
                 },
             ]
         );
