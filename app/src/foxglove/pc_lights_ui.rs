@@ -188,19 +188,18 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
         ui.weak(
             "Case lights, screens and other lighting devices on this PC, and what each can do.",
         );
-        if s.light_studio {
+        for c in &s.conflicts {
             ui.add_space(4.0);
-            ui.label(
-                RichText::new(
-                    "OMEN Light Studio is running and may override Foxglove's case colours. \
-                     Once Foxglove drives the case, you can remove Light Studio.",
-                )
+            let line = ui.label(
+                RichText::new(format!(
+                    "{} is running and may override Foxglove's colours on {}.",
+                    c.app, c.device
+                ))
                 .color(p.warn),
-            )
-            .on_hover_text(
-                "Settings > Apps > Installed apps > OMEN Light Studio > Uninstall. \
-                 OMEN Command Center stays: it runs the fans and performance modes.",
             );
+            if let Some(hint) = &c.hint {
+                line.on_hover_text(hint);
+            }
         }
         if s.devices.is_empty() {
             ui.add_space(4.0);
@@ -504,6 +503,7 @@ pub mod tests {
             size: None,
             zone_positions: vec![],
             zone_roles: vec![],
+            kind: foxglove_devices::pc_lighting::DeviceKind::Case,
         }
     }
 
@@ -518,7 +518,7 @@ pub mod tests {
     }
 
     /// The previews' sample: the keyboard, the 45L with colours, the cooler, the G502 with its
-    /// LampArray attributes, Light Studio running, two unknown devices.
+    /// LampArray attributes, the case's vendor tool running, two unknown devices.
     pub fn sample() -> View {
         let orange = Some([0xf0, 0x8a, 0x3c]);
         let pine = Some([0x5f, 0xc4, 0x8e]);
@@ -547,6 +547,7 @@ pub mod tests {
                         size: None,
                         zone_positions: vec![],
                         zone_roles: vec![],
+                        kind: Default::default(),
                     },
                     Row {
                         key: "046d:c332".into(),
@@ -567,9 +568,15 @@ pub mod tests {
                         size: None,
                         zone_positions: vec![],
                         zone_roles: vec![],
+                        kind: Default::default(),
                     },
                 ],
-                light_studio: true,
+                conflicts: vec![pc_lights::Conflicting {
+                    app: "OMEN Light Studio".into(),
+                    device: "HP OMEN 45L case lights".into(),
+                    key: "103c:84fd".into(),
+                    hint: Some("Settings > Apps > Installed apps > OMEN Light Studio".into()),
+                }],
                 status: Some("HP OMEN 45L case lights: colours set".into()),
                 busy: false,
                 unknown: vec![
@@ -639,6 +646,38 @@ pub mod tests {
         ] {
             assert!(!text.contains(not), "{not}: {text}");
         }
+    }
+
+    /// #558: a conflict is the catalog's app on its device, one line each, nobody's by name.
+    #[test]
+    fn conflicting_apps_warn_one_line_per_app_and_device() {
+        use crate::foxglove::fixtures::second_desk as desk;
+        let mut v = sample_second_desk();
+        let one = |app: &str, device: &str| pc_lights::Conflicting {
+            app: app.into(),
+            device: device.into(),
+            key: String::new(),
+            hint: Some("Quit it from its tray icon.".into()),
+        };
+        v.pc.conflicts = vec![
+            one(desk::CONFLICT_APP, "Nimbus Strata case lights"),
+            one("Lumen Studio", "Lumen desk lightbar"),
+        ];
+        let text = shown(&v);
+        assert!(
+            text.contains(
+                "Nimbus Glow is running and may override Foxglove's colours on Nimbus Strata case lights."
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("Lumen Studio is running and may override Foxglove's colours on Lumen desk lightbar."),
+            "{text}"
+        );
+        assert!(!text.contains("OMEN") && !text.contains("Light Studio"));
+        // None running: no line.
+        let text = shown(&sample_second_desk());
+        assert!(!text.contains("is running"), "{text}");
     }
 
     #[test]

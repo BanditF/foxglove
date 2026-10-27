@@ -121,7 +121,11 @@ Lights that aren't a keyboard (case boards, coolers, mice) go through `pc_lighti
   59-byte static report layout in #423 (written from those facts, not from OpenRGB's GPL code).
   The 45L's zones: diamond display, interior light, front bottom, middle and top fans
   (3 and 4 aren't connected). The board can't be read back, so the app saves the colours it
-  set (`[pc_lighting]`) and puts them back when the board arrives, unless Light Studio runs.
+  set (`[pc_lighting]`) and puts them back when the board arrives, unless an app its catalog
+  entry names in `[[device.conflict]]` runs (OMEN Light Studio for the 45L).
+- **Vendor quirks are data (#558):** `kind` (case, cooler, strip, peripheral, other) says what a
+  device is for scenes and the page, and `[[device.conflict]]` names apps that fight Foxglove
+  over it (`app`, `processes`, optional `hint`). No vendor's name or process is in the code.
 - **Adding a board** that speaks a known protocol is a catalog entry. A new protocol is a new
   driver module and a `Protocol` variant.
 - **Capabilities** (`pc_lighting::caps::LightCaps`): every found device says how sophisticated

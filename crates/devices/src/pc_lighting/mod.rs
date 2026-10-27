@@ -26,7 +26,7 @@ use std::time::Duration;
 use crate::calibration::Calibration;
 use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
-pub use catalog::{Catalog, CatalogDevice, Protocol, ZoneRole, ZoneSpec};
+pub use catalog::{Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRole, ZoneSpec};
 
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;
@@ -77,6 +77,10 @@ pub struct Found {
     pub calibration: Option<Calibration>,
     /// Its front in millimetres (width, height), from the catalog, for scenes' room map.
     pub size: Option<[u16; 2]>,
+    /// What it is, from the catalog ("other" for a LampArray: Windows says its kind).
+    pub kind: DeviceKind,
+    /// Apps that may fight Foxglove over its lights, from the catalog.
+    pub conflicts: Vec<Conflict>,
 }
 
 /// A HID device the catalog doesn't know and that isn't a LampArray: a candidate for "Add a
@@ -179,6 +183,8 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
                 local: known.local,
                 calibration: known.calibration.clone(),
                 size: known.size,
+                kind: known.kind,
+                conflicts: known.conflicts.clone(),
             });
         }
     }
@@ -215,6 +221,8 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
             local: false,
             calibration: None,
             size: None,
+            kind: DeviceKind::Other,
+            conflicts: Vec::new(),
         });
     }
     found
