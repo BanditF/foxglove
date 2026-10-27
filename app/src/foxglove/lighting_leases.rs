@@ -92,6 +92,25 @@ impl Arbiter {
         Ok(id)
     }
 
+    /// The device's lights from before its first lease, kept now if no lease holds it yet:
+    /// what comes back when the last one ends. A lease that only draws frames over its colour
+    /// takes this as its colour, so a hand-back mid-way shows the user's own lights and ending
+    /// it changes nothing (the LED map's dot test).
+    pub fn lights_before(
+        &mut self,
+        device: &str,
+        light: &dyn Lighting,
+    ) -> Result<LightingState, DeviceError> {
+        if let Some(base) = self.base.get(device) {
+            return Ok(base.clone());
+        }
+        let now = settled(light)?;
+        if !self.paused {
+            self.base.insert(device.to_string(), now.clone());
+        }
+        Ok(now)
+    }
+
     /// Changes a lease's colour and effect; returns its device when the lights need
     /// [`Arbiter::apply`] (it's the one showing), or an error if `conn` holds no such lease.
     pub fn update(

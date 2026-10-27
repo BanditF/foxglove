@@ -11,16 +11,43 @@
 //!
 //! "Matches" saves the map as points at the keys' centres in the store's `[led_map]`, which
 //! marks it checked, so the profile's shipped map is asked about once.
+//!
+//! A split board's halves each have their own chain: an answer is for both halves, or for one
+//! when their dots run differently. The dot's pace is the user's (about 0.7 s an LED by
+//! default), and the drawing's dot moves when the keyboard has the frame, so both show the same
+//! LED at the same time.
 
 use foxglove_devices::Rgb;
 
 use super::boards::{Board, Drawing};
 use super::led_map::{BoardLeds, Seen, LIT};
 
-/// The steps the dot takes a second (one LED each).
-pub const STEP_MS: u64 = 350;
-/// How many times the dot runs along the chain before it stops (Run again starts it anew).
-pub const ROUNDS: u32 = 4;
+/// The dot's paces: a name and how long each LED stays lit, in ms. Each is well above what a
+/// split board's other half needs to follow (SET_FRAME relays it at most 10 times a second, one
+/// frame acknowledged before the next), so both halves show the same LED, and slow enough to
+/// follow on the board and the drawing at once.
+pub const PACES: [(&str, u64); 3] = [("Slower", 1100), ("Normal", 700), ("Faster", 450)];
+/// The pace the test starts at.
+pub const DEFAULT_PACE: usize = 1;
+/// About how long the dot runs before it stops (Run again starts it anew): at least two rounds.
+const RUN_MS: u64 = 60_000;
+const MIN_ROUNDS: u32 = 2;
+const MAX_ROUNDS: u32 = 4;
+
+/// How long each LED stays lit at pace `pace` (an index into [`PACES`]; out of range is the
+/// default).
+pub fn step_ms(pace: usize) -> u64 {
+    PACES.get(pace).unwrap_or(&PACES[DEFAULT_PACE]).1
+}
+
+/// How many rounds a chain of `leds` runs at `step_ms` an LED: about [`RUN_MS`], two to four.
+pub fn rounds(leds: usize, step_ms: u64) -> u32 {
+    let round = (leds as u64).max(1) * step_ms.max(1);
+    let n = RUN_MS.div_ceil(round);
+    u32::try_from(n)
+        .unwrap_or(MAX_ROUNDS)
+        .clamp(MIN_ROUNDS, MAX_ROUNDS)
+}
 
 /// What the user said about the dot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +73,13 @@ pub enum Source {
     Guess,
 }
 
+/// One correction: what was said, and for which half (`None`: every half).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fix {
+    pub half: Option<usize>,
+    pub answer: Answer,
+}
+
 /// The dot test's state: the chain proposed now and what the user said so far.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Confirm {
@@ -55,13 +89,17 @@ pub struct Confirm {
     pub halves: u8,
     pub per_half: usize,
     pub source: Source,
-    /// The proposal as keys: lamp `i` of a half sits under key `keys[i]` of its half's drawing
-    /// (the right half mirrors the left). `None` for a found map ([`Self::found`]).
-    pub keys: Option<Vec<u8>>,
+    /// The proposal as keys, one chain per half: lamp `i` of half `h` sits under key
+    /// `keys[h][i]` of its half's drawing (the right half's drawing mirrors the left's). Both
+    /// start the same; an answer for one half turns only its chain. `None` for a found map
+    /// ([`Self::found`]).
+    pub keys: Option<Vec<Vec<u8>>>,
     /// A found map: each lamp's point on its half, or `None` for one not seen.
     pub found: Vec<Option<[f32; 2]>>,
     /// The corrections so far, in order.
-    pub fixes: Vec<Answer>,
+    pub fixes: Vec<Fix>,
+    /// Which half the next answer is for (`None`: every half). The card's choice.
+    pub half: Option<usize>,
     /// A problem to show (a failed save).
     pub note: Option<String>,
 }
@@ -153,6 +191,7 @@ impl Confirm {
             keys: None,
             found: Vec::new(),
             fixes: Vec::new(),
+            half: None,
             note: None,
         };
         if per_half == 0 {
@@ -170,10 +209,10 @@ impl Confirm {
             c.source = Source::Profile {
                 checked: lighting.led_map == super::boards::LED_MAP_CHECKED,
             };
-            c.keys = Some(lighting.led_keys.clone());
+            c.keys = Some(vec![lighting.led_keys.clone(); usize::from(halves)]);
             return Some(c);
         }
-        c.keys = Some(serpentine(&c.drawing, per_half)?);
+        c.keys = Some(vec![serpentine(&c.drawing, per_half)?; usize::from(halves)]);
         Some(c)
     }
 
@@ -186,23 +225,34 @@ impl Confirm {
         self.keys.is_some()
     }
 
-    /// The user's answer: a correction turns the chain; Matches changes nothing (the caller
-    /// saves).
+    /// The user's answer, for the half picked ([`Self::half`]): a correction turns that half's
+    /// chain (every half's when none is picked); Matches changes nothing (the caller saves).
     pub fn answer(&mut self, a: Answer) {
-        let Some(keys) = &self.keys else { return };
-        if a != Answer::Matches {
-            self.keys = Some(fix(keys, &self.drawing, a));
-            self.fixes.push(a);
+        let half = self.half.filter(|&h| h < usize::from(self.halves));
+        if a != Answer::Matches && self.turn(half, a) {
+            self.fixes.push(Fix { half, answer: a });
         }
     }
 
     /// Takes the last correction back.
     pub fn undo(&mut self) {
-        let (Some(keys), Some(a)) = (&self.keys, self.fixes.pop()) else {
-            return;
+        if let Some(f) = self.fixes.pop() {
+            // Each correction is its own inverse.
+            self.turn(f.half, f.answer);
+        }
+    }
+
+    /// Turns the chain of `half` (every half's for `None`) by `a`; false for a found map.
+    fn turn(&mut self, half: Option<usize>, a: Answer) -> bool {
+        let Some(keys) = &mut self.keys else {
+            return false;
         };
-        // Each correction is its own inverse.
-        self.keys = Some(fix(keys, &self.drawing, a));
+        for (h, chain) in keys.iter_mut().enumerate() {
+            if half.is_none_or(|only| only == h) {
+                *chain = fix(chain, &self.drawing, a);
+            }
+        }
+        true
     }
 
     /// Where lamp `index` of half `half` (0 left, 1 right) is proposed to be: a point on its
@@ -210,7 +260,7 @@ impl Confirm {
     pub fn point(&self, half: usize, index: usize) -> Option<[f32; 2]> {
         match &self.keys {
             Some(keys) => {
-                let k = *keys.get(index)?;
+                let k = *keys.get(half)?.get(index)?;
                 let c = self.drawing.keys(half == 1).get(usize::from(k))?.center();
                 Some([c.x, c.y])
             }
@@ -254,15 +304,22 @@ impl Confirm {
     }
 }
 
-/// What the corrections so far say, in words ("Turned round, then mirrored").
-pub fn fixes_text(fixes: &[Answer]) -> Option<String> {
-    let words: Vec<&str> = fixes
+/// What the corrections so far say, in words ("Turned round, then the right half mirrored").
+/// `halves` names the halves; a one-piece board's fixes are never for one half.
+pub fn fixes_text(fixes: &[Fix], halves: u8) -> Option<String> {
+    let words: Vec<String> = fixes
         .iter()
-        .map(|a| match a {
-            Answer::Matches => "as it was",
-            Answer::Backwards => "turned round",
-            Answer::Mirrored => "mirrored",
-            Answer::RowsFlipped => "rows flipped",
+        .map(|f| {
+            let what = match f.answer {
+                Answer::Matches => "as it was",
+                Answer::Backwards => "turned round",
+                Answer::Mirrored => "mirrored",
+                Answer::RowsFlipped => "rows flipped",
+            };
+            match f.half.filter(|_| halves > 1) {
+                Some(h) => format!("{} {what}", super::parts::Parts::halves(halves).the(h)),
+                None => what.to_string(),
+            }
         })
         .collect();
     let text = words.join(", then ");
@@ -318,7 +375,8 @@ mod tests {
         let mut c = Confirm::new(&corne()).unwrap();
         assert_eq!(c.source, Source::Profile { checked: false });
         assert!(c.correctable());
-        let shipped = c.keys.clone().unwrap();
+        let shipped = c.keys.as_ref().unwrap()[0].clone();
+        let both = |k: Vec<u8>| Some(vec![k.clone(), k]);
         // The keyboard's real chain is the shipped one mirrored and backwards: two answers.
         let real = fix(
             &fix(&shipped, &c.drawing, Answer::Mirrored),
@@ -327,22 +385,95 @@ mod tests {
         );
         c.answer(Answer::Mirrored);
         c.answer(Answer::Backwards);
-        assert_eq!(c.keys.as_ref(), Some(&real));
+        assert_eq!(c.keys, both(real));
         assert_eq!(
-            fixes_text(&c.fixes).as_deref(),
+            fixes_text(&c.fixes, c.halves).as_deref(),
             Some("Mirrored, then turned round")
         );
         c.answer(Answer::Matches);
         assert_eq!(c.fixes.len(), 2, "Matches isn't a correction");
         c.undo();
+        assert_eq!(c.keys, both(fix(&shipped, &c.drawing, Answer::Mirrored)));
+        c.undo();
+        assert_eq!(c.keys, both(shipped.clone()));
+        c.undo();
+        assert_eq!(c.keys, both(shipped), "nothing more to undo");
+    }
+
+    #[test]
+    fn an_answer_for_one_half_turns_only_its_chain() {
+        let mut c = Confirm::new(&corne()).unwrap();
+        let shipped = c.keys.as_ref().unwrap()[0].clone();
+        // The halves' dots ran differently: the right one ran backwards.
+        c.half = Some(1);
+        c.answer(Answer::Backwards);
+        c.half = None;
+        c.answer(Answer::Mirrored);
+        let keys = c.keys.clone().unwrap();
+        assert_eq!(keys[0], fix(&shipped, &c.drawing, Answer::Mirrored));
         assert_eq!(
-            c.keys.as_ref(),
-            Some(&fix(&shipped, &c.drawing, Answer::Mirrored))
+            keys[1],
+            fix(
+                &fix(&shipped, &c.drawing, Answer::Backwards),
+                &c.drawing,
+                Answer::Mirrored
+            )
         );
+        assert_eq!(
+            fixes_text(&c.fixes, c.halves).as_deref(),
+            Some("The right half turned round, then mirrored")
+        );
+        // The right half's dot now starts where the left's ends; the left's is unchanged.
+        let (w, _) = c.drawing.size();
+        let left_last = c.point(0, 20).unwrap();
+        let right_first = c.point(1, 0).unwrap();
+        assert!((right_first[0] - (w - left_last[0])).abs() < 1e-3);
+        assert_eq!(right_first[1], left_last[1]);
+        // The saved map has each half where its own chain put it.
+        let r = c.result();
+        assert_eq!([r.leds[21].x, r.leds[21].y], right_first);
+        // Undo takes back each answer for the halves it was for.
         c.undo();
-        assert_eq!(c.keys.as_ref(), Some(&shipped));
         c.undo();
-        assert_eq!(c.keys.as_ref(), Some(&shipped), "nothing more to undo");
+        assert_eq!(c.keys, Some(vec![shipped.clone(), shipped]));
+        // A half past the board's (a stale pick) answers for every half.
+        c.half = Some(5);
+        c.answer(Answer::RowsFlipped);
+        assert_eq!(c.fixes[0].half, None);
+    }
+
+    #[test]
+    fn the_pace_is_slow_enough_for_the_relay_and_the_dot_runs_about_a_minute() {
+        // Every pace leaves a split's other half (10 frames a second at most) four frames' time.
+        for (_, ms) in PACES {
+            assert!(ms >= 400, "{ms}");
+        }
+        assert!((600..=800).contains(&step_ms(DEFAULT_PACE)));
+        assert!(step_ms(0) > step_ms(1) && step_ms(1) > step_ms(2));
+        assert_eq!(step_ms(99), step_ms(DEFAULT_PACE));
+        // The Corne's 21 a half at 0.7 s: 14.7 s a round, four rounds (the most).
+        assert_eq!(rounds(21, 700), 4);
+        // The second desk's 61 at 0.7 s: 43 s a round, still two.
+        assert_eq!(rounds(61, 700), 2);
+        assert_eq!(rounds(0, 0), 4);
+    }
+
+    #[test]
+    fn the_second_desks_one_piece_board_gets_its_own_dot_test() {
+        use crate::foxglove::fixtures::second_desk;
+        let mut c = Confirm::new(&second_desk::board()).unwrap();
+        assert_eq!((c.halves, c.per_half), (1, second_desk::LAMPS));
+        assert!(c.correctable());
+        assert_eq!(c.keys.as_ref().map(Vec::len), Some(1), "one chain");
+        let frames = c.frames();
+        assert_eq!(frames.len(), second_desk::LAMPS);
+        assert!(frames.iter().all(|f| f.len() == second_desk::LAMPS));
+        // A one-piece board's answers are never for a half, whatever was picked.
+        c.half = Some(1);
+        c.answer(Answer::Mirrored);
+        assert_eq!(c.fixes[0].half, None);
+        assert_eq!(fixes_text(&c.fixes, c.halves).as_deref(), Some("Mirrored"));
+        assert_eq!(c.result().leds.len(), second_desk::LAMPS);
     }
 
     #[test]
@@ -371,7 +502,10 @@ mod tests {
         l.led_map = "provisional".into();
         let c = Confirm::new(&board).unwrap();
         assert_eq!(c.source, Source::Guess);
-        assert_eq!(c.keys, serpentine(&corne().drawing.unwrap(), 21));
+        assert_eq!(
+            c.keys,
+            serpentine(&corne().drawing.unwrap(), 21).map(|k| vec![k; 2])
+        );
         // A broken profile map (a key twice) falls back to the guess too.
         let l = board.lighting.as_mut().unwrap();
         l.led_keys = vec![0; 21];

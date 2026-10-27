@@ -317,21 +317,25 @@ scanline can run down the monitors, through the case's fans and on into the keys
   as a Logitech mouse, are shown only.
 - **Check LED map…** (Lights page, Keyboard card; the Scenes page shows it until the map is
   checked): a white dot runs along the keyboard's LEDs on both halves, and the drawing
-  shows where Foxglove thinks it is. Answer **Matches**, or say how it differs: **Runs
-  backwards**, **Mirrored** (it starts on the other side of the half) or **Rows flipped** (it
-  goes up where the drawing goes down); the dot runs again on the corrected map, so one to
-  three answers settle it. **Undo** takes an answer back, **Run again** restarts the dot. The
-  Eyelash Corne comes with a map (shipped, not yet checked on a real one), so scenes use it
-  from the start; a keyboard without one gets a guess (down and up each column, then the
-  thumbs), and the button says **Find my LEDs…**.
-- **Click each LED instead…** (in the dot test, when the answers can't fix it): Foxglove lights
+  shows where Foxglove thinks it is, moving when the keyboard lights each LED (about 0.7 s an
+  LED; **Dot speed** makes it slower or faster). Answer **Yes, it matches**, or under
+  **Doesn't match?** say how it differs: **Runs backwards**, **Mirrored** (it starts on the
+  other side of the half) or **Rows flipped** (it goes up where the drawing goes down); the dot
+  runs again on the corrected map, so one to three answers settle it. When the two halves'
+  dots run differently, pick **Left half** or **Right half** first and answer for that half
+  alone. **None of these…** goes straight to clicking each LED. **Undo** takes an answer back,
+  **Run again** restarts the dot; after about a minute the dot stops and the keyboard's own
+  lights come back until you run it again. The Eyelash Corne comes with a map (shipped, not
+  yet checked on a real one), so scenes use it from the start; a keyboard without one gets a
+  guess (down and up each column, then the thumbs), and the button says **Find my LEDs…**.
+- **Click each LED** (the dot test's **None of these…**, when the answers can't fix it): Foxglove lights
   one LED at a time in bright white. Click where you see it on the drawing, under a key or between keys; **Can't see
   it** skips one, **Back** lights the one before again, and the count shows how far along you
   are. **Save** at the end, and scenes light every LED where it is (on firmware that takes the
   LEDs' places, the keyboard keeps drawing the scene that way with Foxglove closed too). Cancel (or leaving the
   page) gives the lights back as they were. To check the map again, open **Check LED map…**:
   once saved, the map is yours (a later Foxglove's map for the board doesn't replace it), and
-  to start over, **Click each LED instead…**.
+  to start over, **Click each LED…** under **Doesn't match?**.
 - **Effect:** Scanline, Sweep, Ripple, Breathe, Gradient or Drift, then its colour (and
   background) or palette, speed, direction and width. Changes show on the map at once, and on
   the lights too while the scene runs.
