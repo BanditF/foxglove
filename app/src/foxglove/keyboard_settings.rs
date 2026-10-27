@@ -210,50 +210,73 @@ fn right_is_stale(s: &RgbState) -> bool {
 /// The age (seconds) past which the Lights page shows "· N s ago".
 pub const STALE_AFTER_S: u8 = 3;
 
+/// One change to the lights from the user. While a lighting lease holds them (a scene, a
+/// plugin's notification), `keep` puts the change into the lights that come back at its end,
+/// as the case keeps the user's colours under a scene (#529).
 fn lighting(
     label: &str,
     ctx: egui::Context,
     change: impl FnOnce(&dyn foxglove_devices::Lighting) -> foxglove_devices::Result<()>
         + Send
         + 'static,
+    keep: impl FnOnce(&mut foxglove_devices::LightingState) + Send + 'static,
 ) {
     run(label.into(), ctx, move |d| {
         change(
             d.lighting()
                 .ok_or(foxglove_devices::DeviceError::Unsupported)?,
-        )
+        )?;
+        use foxglove_devices::Device as _;
+        let device = d.info().id.to_string();
+        super::lighting_leases::with(|a| a.user_changed(&device, keep));
+        Ok(())
     });
 }
 
 /// Lights on or off on both halves, through the keymap's `&rgb_ug`.
 pub fn set_lights(on: bool, ctx: egui::Context) {
     let label = if on { "Lights on" } else { "Lights off" };
-    lighting(label, ctx, move |l| l.set_on(on));
+    lighting(label, ctx, move |l| l.set_on(on), move |s| s.on = on);
 }
 
 /// Colour: hue 0-359, saturation and brightness 0-100.
 pub fn set_color(hue: u16, sat: u8, brightness: u8, ctx: egui::Context) {
-    lighting("Set colour", ctx, move |l| {
-        l.set_color(hue, sat, brightness)?;
-        // The case's "Match keyboard" follows (#423).
-        super::pc_lights::keyboard_color(hue, sat, brightness);
-        Ok(())
-    });
+    lighting(
+        "Set colour",
+        ctx,
+        move |l| {
+            l.set_color(hue, sat, brightness)?;
+            // The case's "Match keyboard" follows (#423).
+            super::pc_lights::keyboard_color(hue, sat, brightness);
+            Ok(())
+        },
+        move |s| (s.hue, s.sat, s.brightness) = (hue, sat, brightness),
+    );
 }
 
 /// Effect: 0 solid, 1 breathe, 2 spectrum, 3 swirl.
 pub fn set_effect(effect: u8, ctx: egui::Context) {
-    lighting("Set effect", ctx, move |l| {
-        l.set_effect(foxglove_devices::Effect {
-            id: effect.to_string(),
-            params: vec![],
-        })
-    });
+    lighting(
+        "Set effect",
+        ctx,
+        move |l| {
+            l.set_effect(foxglove_devices::Effect {
+                id: effect.to_string(),
+                params: vec![],
+            })
+        },
+        move |s| s.effect.id = effect.to_string(),
+    );
 }
 
 /// Effect speed 1-5 (#387). ZMK only steps it, so the device steps toward it and reads back.
 pub fn set_speed(speed: u8, ctx: egui::Context) {
-    lighting("Set speed", ctx, move |l| l.set_speed(speed));
+    lighting(
+        "Set speed",
+        ctx,
+        move |l| l.set_speed(speed),
+        move |s| s.speed = speed,
+    );
 }
 
 /// Both halves' firmware builds (#132), read once per connection.

@@ -3,8 +3,9 @@
 //! - The OMEN case (and any catalog board with a driver): one colour per zone, at the zone's
 //!   place in the room. Written through the Lights worker's drivers, so the colour calibration
 //!   applies at the driver boundary as for every other write.
-//! - The keyboard: one colour for the whole board, the halves' colours mixed (the firmware
-//!   takes one `&rgb_ug` colour for both halves; per-LED frames come with SET_FRAME, #272).
+//! - The keyboard: a frame of both halves' LEDs (#529), each half its own colour, or each LED
+//!   its own once the board profile places them; and the whole frame as one colour (the
+//!   halves mixed) for firmware without SET_FRAME, which takes one `&rgb_ug` colour.
 //!
 //! Each output has its own interval (never faster than the scheduler's 30 fps cap): the case
 //! [`CASE_INTERVAL`], the keyboard [`KEYBOARD_INTERVAL`], since its colour goes over the host
@@ -12,6 +13,8 @@
 //! its colours changed. This is pure: the app's `scene_run` sends what it returns.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use foxglove_scene::scheduler::Pacing;
@@ -19,6 +22,10 @@ use foxglove_scene::{Effect, Rgb, RoomMap, SceneTime};
 
 /// The keyboard's output id in [`Pacing`].
 pub const KEYBOARD: &str = "keyboard";
+
+/// LEDs per keyboard half in a frame (the Eyelash Corne's strip, SET_FRAME's lamps 0-20 and
+/// 21-41).
+pub const HALF_LAMPS: usize = digitalis::protocol::frame::HALF_LAMPS;
 
 /// The keyboard gets at most 10 colours a second (host link, then BLE to the right half).
 pub const KEYBOARD_INTERVAL: Duration = Duration::from_millis(100);
@@ -48,8 +55,64 @@ pub enum Out {
         key: String,
         colors: Vec<(usize, [u8; 3])>,
     },
-    /// The keyboard's colour: hue 0-359, saturation and brightness 0-100.
-    Keyboard(Hsb),
+    /// The keyboard's frame.
+    Keyboard(KeyboardFrame),
+}
+
+/// One frame for the keyboard.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyboardFrame {
+    /// Both halves' LEDs in strip order: [`HALF_LAMPS`] for the left, then the right's.
+    pub lamps: Vec<Rgb>,
+    /// All of it as one colour, for firmware without SET_FRAME.
+    pub mix: Hsb,
+}
+
+/// The room id of a keyboard light's half: the left's LEDs come first in a frame.
+fn half_of(device: &str) -> Option<usize> {
+    match device {
+        "keyboard:left" => Some(0),
+        "keyboard:right" => Some(1),
+        _ => None,
+    }
+}
+
+/// The keyboard's lights in a rendered frame as one SET_FRAME frame. A light whose id is an LED
+/// number (the board profile's LED map) colours that LED; any other light (a half lit as one)
+/// colours every LED of its half that no numbered light covers. A one-piece keyboard, or a
+/// half missing from the room, gets the mix of everything.
+fn keyboard_frame(lights: &[(&str, &str, Rgb)]) -> Option<KeyboardFrame> {
+    let all: Vec<Rgb> = lights.iter().map(|(_, _, c)| *c).collect();
+    let mix = mixed(&all)?;
+    let mut lamps = vec![mix; HALF_LAMPS * 2];
+    for half in 0..2 {
+        let own: Vec<(&str, Rgb)> = lights
+            .iter()
+            .filter(|(d, _, _)| half_of(d) == Some(half))
+            .map(|(_, l, c)| (*l, *c))
+            .collect();
+        let whole: Vec<Rgb> = own
+            .iter()
+            .filter(|(l, _)| l.parse::<usize>().is_err())
+            .map(|(_, c)| *c)
+            .collect();
+        let fill =
+            mixed(&whole).or_else(|| mixed(&own.iter().map(|(_, c)| *c).collect::<Vec<_>>()));
+        let Some(fill) = fill else {
+            continue;
+        };
+        let slots = &mut lamps[half * HALF_LAMPS..(half + 1) * HALF_LAMPS];
+        slots.fill(fill);
+        for (l, c) in &own {
+            if let Some(i) = l.parse::<usize>().ok().filter(|i| *i < HALF_LAMPS) {
+                slots[i] = *c;
+            }
+        }
+    }
+    Some(KeyboardFrame {
+        lamps,
+        mix: hsb(mix),
+    })
 }
 
 /// Hue 0-359, saturation and brightness 0-100, as the keyboard takes them.
@@ -102,7 +165,10 @@ pub struct Outputs {
     keyboard: bool,
     pacing: Pacing,
     sent_case: BTreeMap<String, Vec<(usize, [u8; 3])>>,
-    sent_keyboard: Option<Hsb>,
+    sent_keyboard: Option<KeyboardFrame>,
+    /// Set from elsewhere (the keyboard handed its frames back): send the keyboard's next frame
+    /// in full even though nothing changed.
+    keyboard_again: Arc<AtomicBool>,
 }
 
 impl Outputs {
@@ -115,9 +181,18 @@ impl Outputs {
             pacing: Pacing::default(),
             sent_case: BTreeMap::new(),
             sent_keyboard: None,
+            keyboard_again: Arc::default(),
         };
         o.set_room(room, cases);
         o
+    }
+
+    /// A flag that sends the keyboard its next frame again, set from any thread: SET_FRAME's
+    /// hand-back event (a static scene's frame timed out), the scene's lease showing again, the
+    /// user coming back. Only the scheduler's frames send it, so nothing goes out while away or
+    /// paused.
+    pub fn keyboard_again(&self) -> Arc<AtomicBool> {
+        self.keyboard_again.clone()
     }
 
     /// The devices changed (one arrived, went or was found again): the new room. Every device
@@ -155,6 +230,9 @@ impl Outputs {
 
     /// The writes for scene time `t`: each due device whose colours changed.
     pub fn frame(&mut self, t: SceneTime) -> Vec<Out> {
+        if self.keyboard_again.swap(false, Ordering::Relaxed) {
+            self.sent_keyboard = None;
+        }
         let due = self.pacing.due(t);
         if due.is_empty() {
             return Vec::new();
@@ -163,18 +241,18 @@ impl Outputs {
         let mut out = Vec::new();
         for id in due {
             if id == KEYBOARD {
-                let halves: Vec<Rgb> = frame
+                let lights: Vec<(&str, &str, Rgb)> = frame
                     .lights
                     .iter()
                     .filter(|l| l.device.starts_with(KEYBOARD))
-                    .map(|l| l.colour)
+                    .map(|l| (l.device.as_str(), l.light.as_str(), l.colour))
                     .collect();
-                let Some(c) = mixed(&halves).map(hsb) else {
+                let Some(f) = keyboard_frame(&lights) else {
                     continue;
                 };
-                if self.sent_keyboard != Some(c) {
-                    self.sent_keyboard = Some(c);
-                    out.push(Out::Keyboard(c));
+                if self.sent_keyboard.as_ref() != Some(&f) {
+                    self.sent_keyboard = Some(f.clone());
+                    out.push(Out::Keyboard(f));
                 }
                 continue;
             }
@@ -294,8 +372,8 @@ mod tests {
                             }
                         }
                     }
-                    Out::Keyboard(h) => {
-                        if h.brightness > 80 {
+                    Out::Keyboard(f) => {
+                        if f.mix.brightness > 80 {
                             first_lit.entry("keyboard".into()).or_insert(ms);
                         }
                     }
@@ -362,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn a_case_frame_names_every_zone_and_the_halves_mix() {
+    fn a_case_frame_names_every_zone_and_the_keyboard_gets_both_halves() {
         let (room, cases) = desk();
         let still = Effect::Breathe {
             from: ORANGE,
@@ -378,12 +456,72 @@ mod tests {
                     key: "103c:84fd".into(),
                     colors: (0..5).map(|i| (i, ORANGE.0)).collect(),
                 },
-                Out::Keyboard(hsb(ORANGE)),
+                Out::Keyboard(KeyboardFrame {
+                    lamps: vec![ORANGE; 2 * HALF_LAMPS],
+                    mix: hsb(ORANGE),
+                }),
             ]
         );
         let a = Rgb([255, 0, 0]);
         assert_eq!(mixed(&[a, a, a]), Some(a));
         assert_eq!(mixed(&[]), None);
+    }
+
+    #[test]
+    fn each_half_gets_its_own_colour_and_numbered_leds_their_own() {
+        let (red, blue, green) = (Rgb([255, 0, 0]), Rgb([0, 0, 255]), Rgb([0, 255, 0]));
+        // Per half (the default): the left's 21 LEDs red, the right's blue, one colour mixed.
+        let f = keyboard_frame(&[
+            ("keyboard:left", "all", red),
+            ("keyboard:right", "all", blue),
+        ])
+        .unwrap();
+        assert_eq!(f.lamps[..HALF_LAMPS], [red; HALF_LAMPS]);
+        assert_eq!(f.lamps[HALF_LAMPS..], [blue; HALF_LAMPS]);
+        assert_eq!(f.mix, hsb(red.mix(blue, 0.5)));
+        // Per LED (a board profile with an LED map): each numbered light its LED; LEDs the map
+        // leaves out get the half's mix.
+        let mut lights: Vec<(&str, &str, Rgb)> = Vec::new();
+        let ids: Vec<String> = (0..HALF_LAMPS).map(|i| i.to_string()).collect();
+        for (i, id) in ids.iter().enumerate().take(20) {
+            lights.push(("keyboard:left", id, if i == 3 { green } else { red }));
+        }
+        lights.push(("keyboard:right", "all", blue));
+        let f = keyboard_frame(&lights).unwrap();
+        assert_eq!(f.lamps[3], green);
+        assert_eq!(f.lamps[0], red);
+        let left: Vec<Rgb> = lights
+            .iter()
+            .filter(|(d, _, _)| *d == "keyboard:left")
+            .map(|(_, _, c)| *c)
+            .collect();
+        assert_eq!(f.lamps[20], mixed(&left).unwrap(), "the half's mix");
+        assert_eq!(f.lamps[HALF_LAMPS], blue);
+        // A one-piece keyboard (or one half placed): the mix everywhere.
+        let f = keyboard_frame(&[("keyboard", "all", green)]).unwrap();
+        assert_eq!(f.lamps, vec![green; 2 * HALF_LAMPS]);
+        assert!(keyboard_frame(&[]).is_none());
+    }
+
+    #[test]
+    fn the_keyboard_is_sent_again_when_asked() {
+        let (room, cases) = desk();
+        let still = Effect::Gradient {
+            stops: vec![ORANGE, Rgb([0, 0, 255])],
+            angle_deg: 90.0,
+        };
+        let mut o = Outputs::new(still, room, cases);
+        let kb = |outs: Vec<Out>| {
+            outs.iter()
+                .filter(|o| matches!(o, Out::Keyboard(_)))
+                .count()
+        };
+        assert_eq!(kb(o.frame(SceneTime(0))), 1);
+        assert_eq!(kb(o.frame(SceneTime(200))), 0, "a still scene: once");
+        // The keyboard handed its frames back (its timeout): the same frame again, once.
+        o.keyboard_again().store(true, Ordering::Relaxed);
+        assert_eq!(kb(o.frame(SceneTime(400))), 1);
+        assert_eq!(kb(o.frame(SceneTime(600))), 0);
     }
 
     #[test]

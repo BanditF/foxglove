@@ -2,7 +2,7 @@
 //! places from Windows and from what Foxglove already knows:
 //! - the monitors: Windows' display layout and each panel's physical DPI;
 //! - the keyboard: its board profile (halves, and their size from the drawing), lit as one
-//!   strip per half until per-LED positions arrive (#115, #274);
+//!   light per half, or one per LED once the profile's LED map is checked on the board (#529);
 //! - the lighting devices the Lights page found: catalog zones with their positions (the OMEN
 //!   45L), LampArrays with their lamps (the G502), and devices added by hand.
 //!
@@ -115,7 +115,7 @@ fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
         let whole = Point::new(half.x * 2.0, half.y);
         return vec![DeviceInfo::whole("keyboard", name, DeviceKind::Keyboard).with_size(whole)];
     }
-    vec![
+    let mut halves = vec![
         DeviceInfo::whole(
             "keyboard:left",
             format!("{name} left"),
@@ -128,7 +128,35 @@ fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
             DeviceKind::KeyboardRight,
         )
         .with_size(half),
-    ]
+    ];
+    for (i, d) in halves.iter_mut().enumerate() {
+        if let Some(lights) = leds(board, &drawing, i == 1) {
+            d.lights = lights;
+        }
+    }
+    halves
+}
+
+/// One half's LEDs at their keys, numbered in strip order (the scene output's SET_FRAME lamps),
+/// from the board profile's LED map once it is checked on the board (#90 row G). `None` (one
+/// light for the half) without a checked map, or when it names a key the drawing hasn't.
+fn leds(board: Option<&Board>, drawing: &Drawing, right: bool) -> Option<Vec<LightSpec>> {
+    let l = board?.lighting.as_ref()?;
+    if l.led_map != super::boards::LED_MAP_CHECKED || l.led_keys.is_empty() {
+        return None;
+    }
+    let keys = drawing.keys(right);
+    l.led_keys
+        .iter()
+        .enumerate()
+        .map(|(i, &k)| {
+            let c = keys.get(usize::from(k))?.center();
+            Some(LightSpec {
+                id: i.to_string(),
+                at: Some(Point::new(c.x * KEY_MM, c.y * KEY_MM)),
+            })
+        })
+        .collect()
 }
 
 /// The `vvvv:pppp` a lighting device's key starts with.
@@ -507,6 +535,35 @@ pub(crate) mod tests {
             "{}",
             room.summary()
         );
+    }
+
+    #[test]
+    fn the_keyboard_is_one_light_per_half_until_its_led_map_is_checked() {
+        let mut board = corne();
+        let halves = keyboard(Some(&board));
+        assert!(
+            halves.iter().all(|d| d.lights.len() == 1),
+            "the provisional map isn't used"
+        );
+        // The sitting checked the map (a corrected profile in the boards folder).
+        let lighting = board.lighting.as_mut().unwrap();
+        lighting.led_map = super::super::boards::LED_MAP_CHECKED.into();
+        let halves = keyboard(Some(&board));
+        let (left, right) = (&halves[0], &halves[1]);
+        assert_eq!((left.lights.len(), right.lights.len()), (21, 21));
+        assert_eq!(left.lights[0].id, "0");
+        let at = |d: &DeviceInfo, i: usize| d.lights[i].at.unwrap();
+        // LED 0 under the outer column's top key; the right half mirrors it.
+        assert!(at(left, 0).x < KEY_MM && at(left, 0).y > KEY_MM * 0.5);
+        let size = right.size.unwrap();
+        assert!((at(right, 0).x - (size.x - at(left, 0).x)).abs() < 0.01);
+        // Every LED inside its half.
+        assert!(left.lights.iter().all(|l| l
+            .at
+            .is_some_and(|p| p.x > 0.0 && p.x < size.x && p.y < size.y)));
+        // A map naming a key the drawing hasn't: one light per half again.
+        board.lighting.as_mut().unwrap().led_keys[3] = 99;
+        assert!(keyboard(Some(&board)).iter().all(|d| d.lights.len() == 1));
     }
 
     #[test]

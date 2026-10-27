@@ -282,14 +282,16 @@ scanline can run down the monitors, through the case's fans and on into the keys
 - **Room** shows your monitors, the case, the keyboard and the mouse where Foxglove placed them
   from Windows' display layout, with the scene playing over them. If a device stands somewhere
   else, drag it there; **Reset positions** puts everything back. The line under the map says
-  which devices the scene lights: today the case (a colour per zone) and the keyboard (one
-  colour for both halves). Others, such as a Logitech mouse, are shown only.
+  which devices the scene lights: today the case (a colour per zone) and the keyboard (a colour
+  per half on firmware with per-LED frames, otherwise one colour for both halves). Others, such
+  as a Logitech mouse, are shown only.
 - **Effect:** Scanline, Sweep, Ripple, Breathe, Gradient or Drift, then its colour (and
   background) or palette, speed, direction and width. Changes show on the map at once, and on
   the lights too while the scene runs.
-- **Start** sends the scene to the lights; **Stop** puts back the colours from before. A plugin's
-  notification still shows over a scene, and nothing is sent while the PC is locked, the
-  display is off or Foxglove is paused.
+- **Start** sends the scene to the lights; **Stop** puts back the colours from before (or the
+  ones you picked for the keyboard or the case meanwhile). A plugin's notification still shows
+  over a scene, and nothing is sent while the PC is locked, the display is off or Foxglove is
+  paused.
 - **Presets:** pick one to load its look. To keep your own, type a name under **Save as
   preset** and click **Save**; **Remove** deletes one of yours.
 
