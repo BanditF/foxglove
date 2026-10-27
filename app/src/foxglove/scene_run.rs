@@ -311,22 +311,24 @@ fn control(
     scheduler.set(Gate::Scene, true);
     let ended = pump(rx, limit.map(|l| Instant::now() + l), |ctl| match ctl {
         Ctl::Away(a) => {
+            if !a {
+                // Before the gate opens, so the first frame back draws the keyboard.
+                again.store(true, Ordering::Relaxed);
+            }
             scheduler.set(Gate::Away, a);
             if a {
                 // Nothing draws while away: the keyboard shows the lease's colour, not a
                 // frame that stopped.
                 keyboard.mailbox.release();
-            } else {
-                again.store(true, Ordering::Relaxed);
             }
         }
         Ctl::Paused(p) => {
             // Pausing hands the frames back through the lease arbiter (the keyboard's own
             // lights); resuming draws again.
-            scheduler.set(Gate::Paused, p);
             if !p {
                 again.store(true, Ordering::Relaxed);
             }
+            scheduler.set(Gate::Paused, p);
         }
         Ctl::Devices => {
             let (room, cases) = gather();
@@ -537,7 +539,13 @@ struct KeyboardLease {
     frames: Option<bool>,
     /// The colour last written without frames.
     sent_mix: Option<Hsb>,
+    /// Frames that failed in a row (the keyboard refused or didn't answer).
+    frame_errors: u32,
 }
+
+/// After this many failed frames in a row (a second of them) the scene sends the keyboard one
+/// colour instead, until it next takes the keyboard.
+const FRAME_ERRORS: u32 = 10;
 
 impl KeyboardLease {
     /// The first frame takes the lights (a low lease with the frame's mix as its colour: its
@@ -607,6 +615,7 @@ impl KeyboardLease {
             match light.set_frame(&lamps) {
                 Ok(()) => {
                     self.frames = Some(true);
+                    self.frame_errors = 0;
                     a.frame_sent(device);
                     status().keyboard_frames_mode = Some(true);
                     return Ok(());
@@ -620,7 +629,18 @@ impl KeyboardLease {
                 Err(e) => {
                     // It may have shown before the reply was lost: hand it back when needed.
                     a.frame_sent(device);
-                    return Err(e);
+                    self.frame_errors += 1;
+                    if self.frame_errors < FRAME_ERRORS {
+                        return Err(e);
+                    }
+                    eprintln!("Foxglove: {FRAME_ERRORS} scene frames failed ({e}); one colour for the keyboard until the scene takes it again");
+                    // Hands back whatever shows and puts the lease's colour on.
+                    a.release_frames(device, light);
+                    a.no_frames(device);
+                    self.frames = Some(false);
+                    self.sent_mix = Some(f.mix);
+                    status().keyboard_frames_mode = Some(false);
+                    return Ok(());
                 }
             }
         }
@@ -675,11 +695,14 @@ impl AppKeyboard {
 
     /// Watches this keyboard's link for the frames' hand-back, once per link.
     fn tap(&mut self, kb: &digitalis::devices::DigitalisDevice) {
-        if !kb.frames()
-            || self
-                .tapped
-                .as_ref()
-                .is_some_and(|(l, _)| Arc::ptr_eq(l, kb.link()))
+        if !kb.frames() {
+            self.tapped = None;
+            return;
+        }
+        if self
+            .tapped
+            .as_ref()
+            .is_some_and(|(l, _)| Arc::ptr_eq(l, kb.link()))
         {
             return;
         }
@@ -768,6 +791,8 @@ mod tests {
         frame: Mutex<Option<Vec<foxglove_devices::Rgb>>>,
         frames_sent: AtomicU32,
         releases: AtomicU32,
+        /// Frames to fail (no answer) before taking them.
+        failing: AtomicU32,
     }
 
     impl Fake {
@@ -790,6 +815,7 @@ mod tests {
                 frame: Mutex::new(None),
                 frames_sent: AtomicU32::new(0),
                 releases: AtomicU32::new(0),
+                failing: AtomicU32::new(0),
             }
         }
 
@@ -850,6 +876,13 @@ mod tests {
                 return Err(DeviceError::Unsupported);
             }
             assert_eq!(frame.len(), 2 * HALF, "both halves, every LED");
+            if self
+                .failing
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                return Err(DeviceError::Timeout);
+            }
             self.frames_sent.fetch_add(1, Ordering::SeqCst);
             *self.frame.lock().unwrap() = Some(frame.to_vec());
             Ok(())
@@ -1020,10 +1053,15 @@ mod tests {
             .unwrap();
         assert_eq!(kb.showing(), Some((BLUE, RED)));
 
-        // Away: handed back with the lease kept; the lease's colour shows.
+        // A new look: frames only, so the keyboard's own colour is still the last one shown.
+        scene
+            .show(&mut a, "kb", &kb, &halves(RED, RED, c(65)), &again)
+            .unwrap();
+        assert_eq!(kb.hsb().1, 60);
+        // Away: handed back with the lease kept; the lease's current colour shows.
         a.release_frames("kb", &kb);
         assert_eq!(Fake::count(&kb.releases), 3);
-        assert_eq!((kb.showing(), kb.hsb().1), (None, 60));
+        assert_eq!((kb.showing(), kb.hsb().1), (None, 65));
         a.release_frames("kb", &kb);
         assert_eq!(Fake::count(&kb.releases), 3, "nothing to hand back");
         // Back: the next frame takes the lights again.
@@ -1042,6 +1080,31 @@ mod tests {
         }
         assert_eq!(Fake::count(&kb.releases), 4);
         assert_eq!((kb.showing(), kb.hsb()), (None, before));
+    }
+
+    #[test]
+    fn frames_that_keep_failing_fall_back_to_one_colour() {
+        let kb = Fake::with_frames();
+        let again = Arc::new(AtomicBool::new(false));
+        let mut a = Arbiter::default();
+        let mut scene = KeyboardLease::default();
+        scene.show(&mut a, "kb", &kb, &one(c(30)), &again).unwrap();
+        kb.failing.store(FRAME_ERRORS, Ordering::SeqCst);
+        for i in 1..FRAME_ERRORS {
+            let r = scene.show(&mut a, "kb", &kb, &one(c(30 + i as u16)), &again);
+            assert!(r.is_err(), "frame {i} failed");
+        }
+        // The last one: handed back, the lease's colour on, one colour from now on.
+        scene.show(&mut a, "kb", &kb, &one(c(50)), &again).unwrap();
+        assert_eq!(Fake::count(&kb.releases), 1);
+        assert_eq!((kb.showing(), kb.hsb().1), (None, 50));
+        let sent = Fake::count(&kb.frames_sent);
+        scene.show(&mut a, "kb", &kb, &one(c(55)), &again).unwrap();
+        assert_eq!(Fake::count(&kb.frames_sent), sent);
+        assert_eq!(kb.hsb().1, 55);
+        // And a notification no longer sends RELEASE.
+        a.add(mute_lease(), &kb).unwrap();
+        assert_eq!(Fake::count(&kb.releases), 1);
     }
 
     #[test]
@@ -1091,6 +1154,30 @@ mod tests {
         fn give_back(&mut self) {
             self.0.lock().unwrap().push(None);
         }
+    }
+
+    /// Counts the writer's hand-backs.
+    struct Releases(Arc<AtomicU32>);
+
+    impl KeyboardLights for Releases {
+        fn show(&mut self, _: &KeyboardFrame) {}
+        fn release_frames(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+        fn give_back(&mut self) {}
+    }
+
+    #[test]
+    fn away_reaches_the_keyboard_writer() {
+        let n = Arc::new(AtomicU32::new(0));
+        let out = KeyboardOut::spawn(Box::new(Releases(n.clone())));
+        out.mailbox.release();
+        let until = Instant::now() + Duration::from_secs(5);
+        while n.load(Ordering::SeqCst) == 0 && Instant::now() < until {
+            std::thread::yield_now();
+        }
+        drop(out);
+        assert_eq!(n.load(Ordering::SeqCst), 1);
     }
 
     #[test]

@@ -212,8 +212,8 @@ fn rebuild_room(st: &mut State) {
     st.moved = !super::scene_room::layout().offsets.is_empty();
     st.keyboard_lit =
         super::devices::bus().facts().get("keyboard.connected") == Some(Value::Bool(true));
-    // Never looks for a keyboard here (the UI thread): the one found last, if still there.
-    st.keyboard_frames = super::devices::cached().is_some_and(|d| d.frames());
+    // Never looks for a keyboard here (the UI thread): what the one found last said.
+    st.keyboard_frames = st.keyboard_lit && super::devices::frames();
     st.lit = super::pc_lights::snapshot()
         .devices
         .into_iter()

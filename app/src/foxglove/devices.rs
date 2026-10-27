@@ -57,6 +57,7 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
             firmware: None,
         };
         let device = Arc::new(DigitalisDevice::new(info, link, hello, bus().sink(id)));
+        FRAMES.store(device.frames(), std::sync::atomic::Ordering::Relaxed);
         let (actions, underglow) = ACTIONS.lock().unwrap_or_else(|e| e.into_inner()).clone();
         device.set_behaviors(actions);
         device.set_underglow(underglow);
@@ -85,16 +86,13 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
     out
 }
 
-/// The keyboard found last, while it stays connected. Never looks for one, and never waits
-/// on a lookup in progress, so the UI thread may call it.
-pub fn cached() -> Option<Arc<DigitalisDevice>> {
-    DEVICE
-        .try_lock()
-        .ok()?
-        .as_ref()
-        .filter(|d| d.link().state().connected.is_some())
-        .cloned()
+/// Whether the keyboard found last takes SET_FRAME frames (HELLO bit 14, #529). Never looks
+/// for one, so the UI thread may ask.
+pub fn frames() -> bool {
+    FRAMES.load(std::sync::atomic::Ordering::Relaxed)
 }
+
+static FRAMES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// How Foxglove's host link reaches the keyboard found last (`USB` or `BLE`), which can differ
 /// from how it types to this PC (USB Raw HID stays silent before firmware #434).

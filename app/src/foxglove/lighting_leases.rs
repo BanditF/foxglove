@@ -243,7 +243,22 @@ impl Arbiter {
     /// Hands `device`'s frames back now (the user is away, or the keyboard has none): its
     /// lease's colour shows instead. The lease keeps drawing frames when asked again.
     pub fn release_frames(&mut self, device: &str, light: &dyn Lighting) {
+        let Some(f) = self.frames.get(device) else {
+            return;
+        };
+        let (held, lease) = (f.held, f.lease);
         self.hand_back_frames(device, None, light);
+        // Frames changed the lease's colour without sending it: the keyboard's own colour is
+        // the one last shown. Show the lease's colour now.
+        let current = self
+            .winner(device)
+            .filter(|w| w.id == lease && !self.paused)
+            .cloned();
+        if let (true, Some(w)) = (held, current) {
+            if let Err(e) = show(light, &Want::lease(&w), false) {
+                eprintln!("Foxglove: {device}'s colour after its frames: {e}");
+            }
+        }
     }
 
     /// The device draws no frames after all (firmware without SET_FRAME).
