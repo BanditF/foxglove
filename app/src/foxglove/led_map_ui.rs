@@ -23,6 +23,7 @@ use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use super::boards::Drawing;
 use super::led_map::{self, MapState, Status, Wizard, Worker};
 use super::led_map_confirm::{self as confirm, Answer, Confirm, Source};
+use super::parts::Parts;
 use super::settings_ui::{card, split_row};
 use super::theme;
 
@@ -65,8 +66,8 @@ pub enum Done {
     Cancel,
 }
 
-/// Where the drawing puts the board: the halves side by side (a one-piece board is one area,
-/// both halves joined), scaled to fit.
+/// Where the drawing puts the board: the halves side by side, or a one-piece board's whole
+/// drawing as one area (#559), scaled to fit.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Geometry {
     origin: Pos2,
@@ -80,11 +81,7 @@ pub struct Geometry {
 impl Geometry {
     pub fn new(drawing: &Drawing, halves: u8, within: Rect) -> Geometry {
         let (w, h) = drawing.size();
-        let (area, areas) = if halves == 1 {
-            (Vec2::new(w * 2.0, h), 1)
-        } else {
-            (Vec2::new(w, h), 2)
-        };
+        let (area, areas) = (Vec2::new(w, h), if halves == 1 { 1 } else { 2 });
         let total = Vec2::new(
             area.x * areas as f32 + GAP * (areas - 1) as f32 + MARGIN * 2.0,
             area.y + MARGIN * 2.0,
@@ -128,28 +125,13 @@ impl Geometry {
 
     /// Area `a`'s keys, in key units from its corner.
     pub fn keys(&self, drawing: &Drawing, a: usize) -> Vec<Rect> {
-        if self.areas == 1 {
-            let (w, _) = drawing.size();
-            let mut keys = drawing.keys(false);
-            keys.extend(
-                drawing
-                    .keys(true)
-                    .into_iter()
-                    .map(|k| k.translate(Vec2::X * w)),
-            );
-            return keys;
-        }
-        drawing.keys(a == 1)
+        drawing.keys(self.areas > 1 && a == 1)
     }
 }
 
-/// What each half is called in the steps.
-fn half_name(w: &Wizard, half: usize) -> &'static str {
-    match (w.halves, half) {
-        (1, _) => "keyboard",
-        (_, 0) => "left half",
-        _ => "right half",
-    }
+/// What each part is called in the steps: "left half", "keyboard".
+fn half_name(w: &Wizard, half: usize) -> String {
+    Parts::halves(w.halves).lower(half)
 }
 
 /// Paints the wizard; returns what was asked this frame.
@@ -194,9 +176,14 @@ pub fn draw(ui: &mut egui::Ui, v: &View, w: &mut Wizard) -> Output {
                 let text = match total - w.seen() {
                     0 => "Save, and scenes light each LED where it is.".to_string(),
                     n => format!(
-                        "{} placed, {n} not seen: those take the colour of their half's middle. \
+                        "{} placed, {n} not seen: those take the colour of {}'s middle. \
                          Save, and scenes light each LED where it is.",
-                        w.seen()
+                        w.seen(),
+                        if w.halves == 1 {
+                            "the keyboard"
+                        } else {
+                            "their half"
+                        }
                     ),
                 };
                 ui.add(egui::Label::new(text).wrap());
@@ -562,23 +549,26 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
     let mut out = None;
     card(ui, "Check LED map", |ui| {
         let p = theme::palette(ui);
+        let on = Parts::halves(c.halves).all();
         let intro = match c.source {
             Source::Profile { checked: false } => format!(
                 "Foxglove ships an LED map for the {}, not yet checked on a real one. A white dot \
-                 runs along the LEDs on both halves; the drawing shows where Foxglove thinks it is.",
+                 runs along the LEDs on {on}; the drawing shows where Foxglove thinks it is.",
                 c.name
             ),
             Source::Profile { checked: true } => format!(
-                "The {}'s LED map is checked. A white dot runs along the LEDs on both halves, with \
+                "The {}'s LED map is checked. A white dot runs along the LEDs on {on}, with \
                  the drawing alongside.",
                 c.name
             ),
-            Source::Found => "Your map from clicking each LED. A white dot runs along the LEDs; the \
+            Source::Found => {
+                "Your map from clicking each LED. A white dot runs along the LEDs; the \
                  drawing shows where you placed each one."
-                .to_string(),
+                    .to_string()
+            }
             Source::Guess => format!(
                 "Foxglove guessed how the {}'s LEDs are chained: down and up each column, then \
-                 the thumbs. A white dot runs along them on both halves; the drawing shows the \
+                 the thumbs. A white dot runs along them on {on}; the drawing shows the \
                  guess.",
                 c.name
             ),
@@ -624,7 +614,11 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
                     (
                         "Mirrored",
                         Answer::Mirrored,
-                        "It starts on the other side of each half: inner and outer swapped",
+                        if c.halves == 1 {
+                            "It starts on the other side: left and right swapped"
+                        } else {
+                            "It starts on the other side of each half: inner and outer swapped"
+                        },
                     ),
                     (
                         "Rows flipped",
@@ -957,9 +951,9 @@ pub mod tests {
         // Just outside the outline still counts (an LED on the edge), clamped to the margin.
         let edge = g.at(0, left.left_center() - Vec2::X * 3.0).unwrap();
         assert!(edge[0] < 0.0 && edge[0] >= -MARGIN);
-        // A one-piece board is one area, both halves' keys.
+        // A one-piece board is one area, its whole drawing (#559).
         let one = Geometry::new(&w.drawing, 1, g.rect(0).union(g.rect(1)));
-        assert_eq!(one.keys(&w.drawing, 0).len(), 42);
+        assert_eq!(one.keys(&w.drawing, 0), w.drawing.keys(false));
     }
 
     /// Draws the wizard on `ctx` for one frame with `events`; what it asked, and the drawing's

@@ -106,17 +106,17 @@ pub fn devices(
     out
 }
 
-/// The keyboard: both halves (or the one piece), sized from the board's drawing. With no
-/// profile it is a Corne-shaped split, as the Keyboard page draws it.
+/// The keyboard: both halves of a split, or the one piece, sized from the board's drawing
+/// (#559). With no profile it is one piece, a plain grid of its keymap's keys, as the Keyboard
+/// page draws it.
 fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
     let name = board.map_or("Keyboard", |b| b.name.as_str());
-    let drawing = board.and_then(|b| b.drawing.clone()).unwrap_or_default();
+    let drawing = super::boards::drawing(board);
     let (w, h) = Drawing::size(&drawing);
     let half = Point::new(w * KEY_MM, h * KEY_MM);
-    if board.is_some_and(|b| b.halves == 1) {
-        // A one-piece board's drawing is its left half; the right is the mirror.
-        let whole = Point::new(half.x * 2.0, half.y);
-        let mut one = DeviceInfo::whole("keyboard", name, DeviceKind::Keyboard).with_size(whole);
+    if !super::parts::Parts::of(board).is_split() {
+        // A one-piece board's drawing is the whole board (#559).
+        let mut one = DeviceInfo::whole("keyboard", name, DeviceKind::Keyboard).with_size(half);
         if let Some(lights) = leds(board, &drawing, 0) {
             one.lights = lights;
         }
@@ -538,7 +538,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[ignore = "#559"]
     fn a_one_piece_board_is_as_wide_as_its_whole_drawing() {
         let board = second_desk::board();
         let (w, h) = board.drawing.as_ref().unwrap().size();
@@ -737,9 +736,14 @@ pub(crate) mod tests {
     #[test]
     fn unknown_board_unread_lamp_array_and_a_hand_added_device() {
         let devices = devices(None, &[users_desk::mouse_row()], &BTreeMap::new());
-        assert_eq!(devices.len(), 3, "a Corne-shaped split stands in");
-        assert_eq!(devices[2].kind, DeviceKind::Other);
-        assert_eq!(devices[2].lights.len(), 1, "one light until it is read");
+        assert_eq!(
+            devices.len(),
+            2,
+            "one keyboard stands in, not a Corne-shaped split"
+        );
+        assert_eq!(devices[0].kind, DeviceKind::Keyboard);
+        assert_eq!(devices[1].kind, DeviceKind::Other);
+        assert_eq!(devices[1].lights.len(), 1, "one light until it is read");
         // A board added by hand: zones without positions.
         let mut shelf = users_desk::catalog_row((0x103c, 0x84fd));
         shelf.key = "1234:5678".into();

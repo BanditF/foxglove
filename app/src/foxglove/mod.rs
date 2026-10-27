@@ -63,6 +63,7 @@ pub mod overlay_grab;
 pub mod overlay_opacity;
 pub mod overlay_place;
 pub mod overlay_profile;
+pub mod parts;
 pub mod pause;
 pub mod pc_lights;
 pub mod pc_lights_add;

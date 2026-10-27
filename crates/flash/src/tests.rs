@@ -442,3 +442,127 @@ fn a_drive_that_never_appears_times_out_with_recovery_steps() {
         "it waited the whole window on the board's clock"
     );
 }
+
+/// #559: a one-piece board (the second desk's Plank 3) with a fake flasher backend: one image,
+/// no half marker needed, no second cable or battery, no relay wait, and no "half" in any line.
+#[test]
+fn a_one_piece_keyboard_is_one_part_with_no_halves() {
+    let parts = Parts::new(vec!["Keyboard".into()]);
+    let board = Mock {
+        right_usb: Some(false),
+        battery: Some(3),
+        builds: RefCell::new([Some(build("0.1.0", "dev", "aaaaaaa")), None]),
+        arrives: RefCell::new(VecDeque::from([vec![LEFT_SERIAL.to_string()]])),
+        ..Mock::default()
+    };
+    // An image without a half marker: a one-piece board's build.
+    let mut payload = vec![0u8; 512];
+    payload.extend(b"studio_rpc_thread raw_hid_received_event");
+    payload.resize(1024, 0);
+    let plain = uf2::build(&payload);
+    assert!(
+        plan(Some(plain.clone()), None, &board).is_ok(),
+        "the left markers alone pass on a split too"
+    );
+    let mut unmarked = vec![0u8; 1024];
+    unmarked[600] = 1;
+    let unmarked = uf2::build(&unmarked);
+    assert!(
+        plan(Some(unmarked.clone()), None, &board).is_err(),
+        "a split needs to know the half"
+    );
+    let p = plan_for(Some(unmarked), None, &board, &parts).expect("one piece, one image");
+    assert_eq!(p.lines(), ["Keyboard: 0.1.0 dev aaaaaaa -> ? ? ?"]);
+    // A right half's image, or two files, aren't for it.
+    let right = image(Half::Right, "0.2.0", "dev", "bbbbbbb");
+    let e = plan_for(Some(right.clone()), None, &board, &parts).unwrap_err();
+    assert!(e.contains("split keyboard's right half"), "{e}");
+    let e = plan_for(Some(plain.clone()), Some(right), &board, &parts).unwrap_err();
+    assert_eq!(
+        e,
+        "The keyboard is one piece: it takes one firmware file, not a left and a right."
+    );
+    let p = plan_for(
+        Some(image(Half::Left, "0.2.0", "dev", "bbbbbbb")),
+        None,
+        &board,
+        &parts,
+    )
+    .unwrap();
+    let mut known = Known::default();
+    let mut steps = vec![];
+    assert_eq!(
+        run(&p, &board, &mut known, false, &mut |s| steps.push(s)),
+        Ok(())
+    );
+    assert_eq!(
+        *board.log.borrow(),
+        ["enter left", "left written", "left verified"]
+    );
+    let words: Vec<&str> = steps.iter().map(|s| s.text.as_str()).collect();
+    assert_eq!(
+        words,
+        [
+            "Restarting the keyboard into its bootloader",
+            "Found the keyboard's bootloader (Board-ID: nRF52840-nicenano)",
+            "Writing the keyboard's firmware",
+            "Waiting for the keyboard to restart",
+            "The keyboard runs 0.2.0 dev bbbbbbb",
+        ]
+    );
+    // Without hands-free, the taps are the keyboard's; a failure's recovery names it too.
+    let board = Mock {
+        hands_free: false,
+        left_back: false,
+        builds: RefCell::new([Some(build("0.1.0", "dev", "aaaaaaa")), None]),
+        arrives: RefCell::new(VecDeque::from([vec![LEFT_SERIAL.to_string()]])),
+        ..Mock::default()
+    };
+    let mut steps = vec![];
+    let f = run(&p, &board, &mut Known::default(), false, &mut |s| {
+        steps.push(s)
+    })
+    .unwrap_err();
+    assert_eq!(
+        steps[0].text,
+        "Double-tap the reset button on the keyboard, with its cable plugged in"
+    );
+    assert_eq!(
+        f.message,
+        "The keyboard didn't come back on USB after the write."
+    );
+    assert!(f.recovery.starts_with("If the keyboard doesn't type"));
+    for text in steps
+        .iter()
+        .map(|s| s.text.clone())
+        .chain([f.message, f.recovery])
+    {
+        assert!(!text.contains("half"), "{text}");
+    }
+}
+
+/// #559: the Corne's words stay as they were.
+#[test]
+fn a_split_keeps_its_halves_words() {
+    let parts = Parts::split();
+    assert_eq!(
+        (parts.the(Half::Right), parts.the_cap(Half::Left)),
+        ("the right half".to_string(), "The left half".to_string())
+    );
+    assert_eq!(parts.short(Half::Right), "Right");
+    assert_eq!(parts.all(), "both halves");
+    let board = Mock {
+        hands_free: false,
+        ..Mock::default()
+    };
+    let (l, r) = both();
+    let p = plan(l, r, &board).unwrap();
+    let mut steps = vec![];
+    let _ = run(&p, &board, &mut Known::default(), false, &mut |s| {
+        steps.push(s)
+    });
+    assert_eq!(
+        steps[0].text,
+        "Double-tap the reset button on the left half (only that half), with its cable plugged in"
+    );
+}

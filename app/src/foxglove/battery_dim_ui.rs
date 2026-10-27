@@ -243,7 +243,7 @@ pub fn show(ui: &mut egui::Ui) {
     }
 }
 
-/// One half in words: "Right half on battery · 80%", "Left half on USB · 100%",
+/// One part in words: "Right half on battery · 80%", "Keyboard on USB · 100%",
 /// "Right half on low battery (15%) · 12%".
 pub fn half_text(name: &str, h: &BatteryDimHalf) -> String {
     let power = if h.usb {
@@ -256,23 +256,30 @@ pub fn half_text(name: &str, h: &BatteryDimHalf) -> String {
     } else {
         "on battery".to_string()
     };
-    format!("{name} half {power} · {}%", h.level)
+    format!("{name} {power} · {}%", h.level)
 }
 
-/// The halves' state under the switch, the one on battery first (that's the one being dimmed).
-pub fn status_lines(d: &BatteryDim) -> Vec<String> {
-    let mut halves = vec![("Left", Some(d.left))];
-    halves.push(("Right", d.right.map(|(h, _)| h)));
+/// The parts' state under the switch, the one on battery first (that's the one being dimmed).
+/// A one-piece board has one line (#559).
+pub fn status_lines(d: &BatteryDim, parts: &super::parts::Parts) -> Vec<String> {
+    let parts = parts.clone().seen(if d.right.is_some() { 2 } else { 1 });
+    let mut halves = vec![(parts.name(0), Some(d.left))];
+    if parts.is_split() {
+        halves.push((parts.name(1), d.right.map(|(h, _)| h)));
+    }
     halves.sort_by_key(|(_, h)| h.is_none_or(|h| h.usb));
     let mut lines: Vec<String> = halves
         .into_iter()
         .map(|(name, h)| match h {
-            Some(h) => half_text(name, &h),
-            None => format!("{name} half: no data yet"),
+            Some(h) => half_text(&name, &h),
+            None => format!("{name}: no data yet"),
         })
         .collect();
     if d.right.is_some() && !d.right_synced {
-        lines.push("The right half takes these levels when it next connects.".into());
+        lines.push(format!(
+            "{} takes these levels when it next connects.",
+            super::parts::upper_first(&parts.the(1))
+        ));
     }
     lines
 }
@@ -328,7 +335,7 @@ pub fn draw(ui: &mut egui::Ui, s: &DimState, draft: &mut Draft) -> Vec<Intent> {
     let muted = theme::palette(ui).muted;
     ui.indent("battery-dim-state", |ui| {
         if config.enabled {
-            for line in status_lines(&d) {
+            for line in status_lines(&d, &super::parts::Parts::current()) {
                 ui.label(RichText::new(line).color(muted));
             }
         } else {
@@ -449,15 +456,15 @@ pub mod tests {
     #[test]
     fn halves_in_words() {
         assert_eq!(
-            half_text("Right", &half(false, false, 80, Some(61))),
+            half_text("Right half", &half(false, false, 80, Some(61))),
             "Right half on battery · 80%"
         );
         assert_eq!(
-            half_text("Left", &half(true, false, 100, None)),
+            half_text("Left half", &half(true, false, 100, None)),
             "Left half on USB · 100%"
         );
         assert_eq!(
-            half_text("Right", &half(false, true, 12, Some(15))),
+            half_text("Right half", &half(false, true, 12, Some(15))),
             "Right half on low battery (15%) · 12%"
         );
     }
@@ -467,20 +474,32 @@ pub mod tests {
         let DimState::Known(d) = sample() else {
             unreachable!()
         };
+        let corne = crate::foxglove::fixtures::users_desk::board().parts();
         assert_eq!(
-            status_lines(&d),
+            status_lines(&d, &corne),
             vec!["Right half on battery · 80%", "Left half on USB · 100%"]
         );
         let no_right = BatteryDim { right: None, ..d };
         assert_eq!(
-            status_lines(&no_right),
+            status_lines(&no_right, &corne),
             vec!["Left half on USB · 100%", "Right half: no data yet"]
         );
         let behind = BatteryDim {
             right_synced: false,
             ..d
         };
-        assert_eq!(status_lines(&behind).len(), 3, "says the right is behind");
+        let lines = status_lines(&behind, &corne);
+        assert_eq!(lines.len(), 3, "says the right is behind");
+        assert_eq!(
+            lines[2],
+            "The right half takes these levels when it next connects."
+        );
+        // #559: a one-piece board is one line, the keyboard's.
+        let plank = crate::foxglove::fixtures::second_desk::board().parts();
+        assert_eq!(
+            status_lines(&no_right, &plank),
+            vec!["Keyboard on USB · 100%"]
+        );
     }
 
     #[test]

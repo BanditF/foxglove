@@ -317,6 +317,7 @@ fn build_from_zmk_data(vid: u16, pid: u16, data: ZmkData) -> Result<ZmkLayout, B
         })
         .collect();
     let num_keys = active_keys.len();
+    crate::foxglove::boards::keymap_keys(num_keys);
 
     let definition = KeyboardDefinition {
         vid,
