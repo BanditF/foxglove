@@ -44,6 +44,9 @@ pub mod capabilities {
     pub const LEFT_BATTERY: u32 = 1 << 17;
     /// Settings BATTERY_DIM (D7 0E): the underglow's levels by power state, per half.
     pub const BATTERY_DIM: u32 = 1 << 18;
+    /// Settings EFFECT (D7 0F): effects each half draws on its own from its lamp positions
+    /// (#490), pre-GA test builds only for now.
+    pub const EFFECTS: u32 = 1 << 19;
 }
 pub const VERSION: u8 = 1;
 
@@ -103,6 +106,8 @@ pub mod settings {
     pub const FRAME: u8 = 0x0C;
     /// The underglow's levels by power state (on USB, on battery, low battery), per half.
     pub const BATTERY_DIM: u8 = 0x0E;
+    /// Effects each half draws on its own (#490): see [`super::effect`].
+    pub const EFFECT: u8 = 0x0F;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -681,6 +686,146 @@ impl FrameReply {
     }
 }
 
+/// SET_EFFECT (D7 0F, #490): an effect sent once that each half draws from its LEDs' positions
+/// and the scene's clock (`crates/scene`: the same maths, held to its vectors in the firmware's
+/// simulator). Nothing streams: it runs on with the app closed until [`effect_release`], a
+/// SET_FRAME, or a reboot.
+pub mod effect {
+    pub const RELEASE: u8 = 0;
+    pub const PLACE: u8 = 1;
+    pub const EFFECT: u8 = 2;
+    /// Colours an effect carries at most (a sweep's stops).
+    pub const MAX_COLOURS: usize = 4;
+    /// The longest period (and clock) the wire carries: 24 bits of milliseconds.
+    pub const MAX_PERIOD_MS: u32 = 0xFF_FFFF;
+}
+
+/// The effects the keyboard draws, in crates/scene's terms (effects.rs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectKind {
+    /// A soft band of colours[0] over colours[1], crossing the room once per period.
+    Scanline = 1,
+    /// 1-4 stops scrolling across the room, wrapping, once per period.
+    Sweep = 2,
+    /// A ring of colours[0] over colours[1] growing from the origin to the far corner.
+    Ripple = 3,
+    /// colours[0] to colours[1] and back once per period.
+    Breathe = 4,
+}
+
+/// One effect, in the wire's units.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Effect {
+    pub kind: EffectKind,
+    /// Scanline, ripple: colour, background. Breathe: from, to. Sweep: 1-4 stops.
+    pub colours: Vec<[u8; 3]>,
+    /// The scene's time modulo the period, at the moment this is sent (`SceneTime::ms`
+    /// `.rem_euclid(period)`); 0 for a still effect.
+    pub clock_ms: u32,
+    /// 0 stands still; at most [`effect::MAX_PERIOD_MS`].
+    pub period_ms: u32,
+    /// Degrees: 0 left to right, 90 top to bottom.
+    pub angle_deg: f32,
+    /// The band's or ring's width in mm.
+    pub width_mm: f32,
+    /// The ripple's centre, room mm.
+    pub origin_mm: [i16; 2],
+}
+
+/// A rectangle in room mm: x, y, w, h.
+pub type MmRect = [i16; 4];
+
+/// EFFECT PLACE: the room's bounds and where each half sits in it (crates/scene's room map).
+pub fn effect_place(room: MmRect, left: MmRect, right: MmRect) -> Vec<u8> {
+    let mut r = vec![SETTINGS, settings::EFFECT, effect::PLACE];
+    for v in room.iter().chain(&left).chain(&right) {
+        r.extend(v.to_le_bytes());
+    }
+    r
+}
+
+/// EFFECT: draws `e` on both halves. `None` when it doesn't fit the wire (colour count, period).
+pub fn effect(e: &Effect) -> Option<Vec<u8>> {
+    let n = e.colours.len();
+    let colours_ok = match e.kind {
+        EffectKind::Sweep => (1..=effect::MAX_COLOURS).contains(&n),
+        _ => n == 2,
+    };
+    if !colours_ok || e.period_ms > effect::MAX_PERIOD_MS {
+        return None;
+    }
+    let clock = if e.period_ms == 0 {
+        0
+    } else {
+        e.clock_ms % e.period_ms
+    };
+    let angle = if e.angle_deg.is_finite() {
+        ((e.angle_deg.rem_euclid(360.0) * 100.0).round() as u32 % 36_000) as u16
+    } else {
+        0
+    };
+    let width = if e.width_mm.is_finite() {
+        (e.width_mm.max(0.0) * 10.0)
+            .round()
+            .min(f32::from(u16::MAX)) as u16
+    } else {
+        0
+    };
+    let mut r = vec![
+        SETTINGS,
+        settings::EFFECT,
+        effect::EFFECT,
+        e.kind as u8,
+        n as u8,
+    ];
+    r.extend(&clock.to_le_bytes()[..3]);
+    r.extend(&e.period_ms.to_le_bytes()[..3]);
+    r.extend(angle.to_le_bytes());
+    r.extend(width.to_le_bytes());
+    r.extend(e.origin_mm[0].to_le_bytes());
+    r.extend(e.origin_mm[1].to_le_bytes());
+    r.extend(e.colours.iter().flatten());
+    Some(r)
+}
+
+/// EFFECT RELEASE: both halves back to their own effect.
+pub fn effect_release() -> Vec<u8> {
+    vec![SETTINGS, settings::EFFECT, effect::RELEASE]
+}
+
+/// The reply to EFFECT (D7 8F).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EffectReply {
+    /// 0 ok, 4 not built in, 5 bad request.
+    pub status: u8,
+    /// [`FrameReply::OWNER_HOST_LINK`] while the PC's effect shows; 0 is the keyboard's own.
+    pub owner: u8,
+    /// The kind running ([`EffectKind`] as a byte), 0 for none.
+    pub kind: u8,
+    /// Whether the right half draws it (as for frames).
+    pub right: FrameRight,
+}
+
+impl EffectReply {
+    pub fn parse(r: &[u8; REPORT]) -> Self {
+        Self {
+            status: r[2],
+            owner: r[3],
+            kind: r[4],
+            right: match r[5] {
+                1 => FrameRight::Draws,
+                2 => FrameRight::Unsupported,
+                _ => FrameRight::NoLink,
+            },
+        }
+    }
+
+    /// Whether the PC's effect is showing.
+    pub fn running(&self) -> bool {
+        self.owner == FrameReply::OWNER_HOST_LINK
+    }
+}
+
 /// What the keyboard said to HELLO.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Hello {
@@ -1009,6 +1154,74 @@ mod tests {
         );
         r[9] = 0xff;
         assert_eq!(RgbState::parse(&r).right, None);
+    }
+
+    #[test]
+    fn effect_reports() {
+        let place = effect_place([0, 0, 400, 100], [10, 5, 120, 90], [270, -5, 120, 90]);
+        assert_eq!(place.len(), 27);
+        assert_eq!(&place[..7], [0xD7, 0x0F, 1, 0, 0, 0, 0]);
+        assert_eq!(&place[19..23], [14, 1, 0xFB, 0xFF]);
+        let scan = Effect {
+            kind: EffectKind::Scanline,
+            colours: vec![[0xF0, 0x8A, 0x3C], [6, 8, 14]],
+            clock_ms: 7_250,
+            period_ms: 3_000,
+            angle_deg: -90.0,
+            width_mm: 60.04,
+            origin_mm: [0, 0],
+        };
+        let r = effect(&scan).unwrap();
+        assert_eq!(r.len(), 25);
+        assert!(r.len() <= REPORT);
+        // Clock 7250 mod 3000 = 1250; angle -90 = 270.00; width 60.0 mm = 600.
+        assert_eq!(
+            &r[..19],
+            [
+                0xD7, 0x0F, 2, 1, 2, 0xE2, 0x04, 0, 0xB8, 0x0B, 0, 0x78, 0x69, 0x58, 0x02, 0, 0, 0,
+                0
+            ]
+        );
+        assert_eq!(&r[19..], [0xF0, 0x8A, 0x3C, 6, 8, 14]);
+        // A sweep of four stops fills the report; five, or a breathe of three, don't fit.
+        let sweep = Effect {
+            kind: EffectKind::Sweep,
+            colours: vec![[1, 2, 3]; 4],
+            period_ms: 0,
+            clock_ms: 99,
+            ..scan.clone()
+        };
+        let r = effect(&sweep).unwrap();
+        assert_eq!(r.len(), REPORT - 1);
+        assert_eq!(&r[5..8], [0, 0, 0], "a still effect's clock is 0");
+        assert!(effect(&Effect {
+            colours: vec![[0; 3]; 5],
+            ..sweep.clone()
+        })
+        .is_none());
+        assert!(effect(&Effect {
+            kind: EffectKind::Breathe,
+            colours: vec![[0; 3]; 3],
+            ..scan.clone()
+        })
+        .is_none());
+        assert!(effect(&Effect {
+            period_ms: effect::MAX_PERIOD_MS + 1,
+            ..scan.clone()
+        })
+        .is_none());
+        assert_eq!(effect_release(), [0xD7, 0x0F, 0]);
+
+        let mut r = [0u8; REPORT];
+        r[..6].copy_from_slice(&[0xD7, 0x8F, 0, 3, 1, 1]);
+        let reply = EffectReply::parse(&r);
+        assert!(reply.running());
+        assert_eq!((reply.kind, reply.right), (1, FrameRight::Draws));
+        r[3] = 0;
+        r[5] = 2;
+        let back = EffectReply::parse(&r);
+        assert!(!back.running());
+        assert_eq!(back.right, FrameRight::Unsupported);
     }
 
     #[test]

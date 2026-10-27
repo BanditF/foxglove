@@ -32,6 +32,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #endif
 
 #include "art_relay.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+#include "effect_run.h"
+#endif
 #include "half_marker.h"
 #include "host_link.h"
 #include "screen_snap.h"
@@ -82,6 +85,7 @@ static uint8_t discovery_tries;
 static struct k_work_delayable discover_work;
 static void rgb_sync_link_up(void);
 static void lamps_link_up(void);
+static void effect_link_up(void);
 
 // Tries again a little later, in case ZMK's own setup of the link got in the way.
 static void discovery_failed(int8_t result) {
@@ -109,6 +113,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
             discovery = ART_DISCOVERY_DONE;
             rgb_sync_link_up();
             lamps_link_up();
+            effect_link_up();
             host_link_art_status();
         } else {
             discovery_failed(ART_DISCOVERY_NO_CHRC);
@@ -135,6 +140,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         atomic_clear(&discovering); // Zephyr gets no callback after a STOP
         rgb_sync_link_up();
         lamps_link_up();
+        effect_link_up();
         host_link_art_status();
         return BT_GATT_ITER_STOP;
     }
@@ -1142,6 +1148,9 @@ void art_relay_rgb_verify(void) {
  * lights; it stops when the right has acknowledged, the link is gone, or after LAMPS_RETRIES
  * failed tries (the next frame starts over in full). */
 
+#define EFFECT_STATUS_VERSION 8 // right status version with ART_RELAY_EFFECT / EFFECT_GO
+static bool effect_takes_right(void);
+
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
 #define LAMPS_RETRY K_MSEC(100)
 #define LAMPS_RETRIES 3 // a frame: the next frame heals a lost one anyway
@@ -1214,6 +1223,11 @@ static void lamps_cb(struct k_work *work) {
         return;
     }
     bool host = atomic_get(&lamps_host);
+    if (!err && !host && lamps_host_sent == 1 && effect_takes_right()) {
+        // SET_EFFECT took over from the frames: its GO takes the right's LEDs as they are, so
+        // handing them back first would only flash the right's own effect.
+        lamps_host_sent = 0;
+    }
     if (!err && (host ? lamps_host_sent != 1 : lamps_host_sent == 1)) {
         const uint8_t op[] = {ART_RELAY_LAMP_HOST, host};
         err = write_req(conn, op, sizeof(op));
@@ -1289,9 +1303,146 @@ static void lamps_link_up(void) {
 #else
 static void lamps_link_up(void) {}
 #endif
+
+/* SET_EFFECT (#490): the right half's copy of the PC's effect (host_effects.c). Its parameters go
+ * as write commands (ART_RELAY_EFFECT, offset + bytes), then one write request (EFFECT_GO) with
+ * the left's clock read just before it goes, so the right's phase is the left's within the link's
+ * latency; ATT keeps the order, so GO's response acknowledges the whole effect. A stop is a GO
+ * with run 0, unless SET_FRAME took over (its LAMP_HOST stops the right's effect).
+ *
+ * Start/stop: a job starts on an effect, a PLACE, a stop, or link-up while an effect runs; it
+ * stops when the right has acknowledged, the link is gone, or after EFFECT_RETRIES failed tries. */
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+#define EFFECT_RETRY RGB_RETRY // nothing re-sends an effect: the RGB sync's budget (10 x 1 s)
+#define EFFECT_RETRIES RGB_RETRIES
+
+static struct k_spinlock effect_lock;
+static struct lamp_effect_wire effect_want; // under effect_lock
+static atomic_t effect_run;   // the right should draw effect_want
+static atomic_t effect_tell;  // a stop goes to the right (not when SET_FRAME took over)
+static atomic_t effect_dirty; // effect_want or effect_run changed since the right's last ack
+static atomic_t effect_right; // ART_LAMPS_*
+static atomic_t effect_reset; // a new link: effect_cb starts over
+// On relay_q only:
+static int8_t effect_sent = -1; // the GO the right last acknowledged: -1 unknown, 0 stop, 1 run
+static uint8_t effect_tries, effect_busy;
+
+static bool effect_takes_right(void) {
+    return atomic_get(&effect_run) && right.version >= EFFECT_STATUS_VERSION;
+}
+
+static int effect_send(struct bt_conn *conn) {
+    struct lamp_effect_wire w;
+    k_spinlock_key_t key = k_spin_lock(&effect_lock);
+    w = effect_want;
+    k_spin_unlock(&effect_lock, key);
+    uint8_t buf[2 + sizeof(w)] = {ART_RELAY_EFFECT};
+    int per = CLAMP((int)bt_gatt_get_mtu(conn) - 3 - 2, 1, (int)sizeof(w));
+    for (int at = 0; at < (int)sizeof(w); at += per) {
+        int n = MIN(per, (int)sizeof(w) - at);
+        buf[1] = at;
+        memcpy(&buf[2], (const uint8_t *)&w + at, n);
+        int err = write_cmd(conn, buf, 2 + n);
+        if (err) {
+            return err;
+        }
+    }
+    uint8_t go[6] = {ART_RELAY_EFFECT_GO, 1};
+    sys_put_le32(effect_run_clock(), &go[2]); // last, so the right starts where the left is
+    return write_req(conn, go, sizeof(go));
+}
+
+static void effect_cb(struct k_work *work) {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    if (atomic_cas(&effect_reset, 1, 0)) {
+        effect_sent = -1; // the right handed its LEDs back when the old link dropped
+        effect_tries = 0;
+        effect_busy = 0;
+    }
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        return; // effect_link_up starts over
+    }
+    int err = 0;
+    if (right_read_at == 0) {
+        err = read_status(conn); // the right's version says whether it draws effects
+    }
+    if (!err && right.version < EFFECT_STATUS_VERSION) {
+        atomic_set(&effect_right, ART_LAMPS_UNSUPPORTED); // its own effect stays
+        bt_conn_unref(conn);
+        return;
+    }
+    bool run = atomic_get(&effect_run);
+    bool dirty = atomic_cas(&effect_dirty, 1, 0);
+    if (!err && run && (dirty || effect_sent != 1)) {
+        effect_sent = -1;
+        err = effect_send(conn);
+        if (!err) {
+            effect_sent = 1;
+        }
+    } else if (!err && !run && effect_sent != 0 && atomic_get(&effect_tell)) {
+        const uint8_t go[6] = {ART_RELAY_EFFECT_GO, 0};
+        err = write_req(conn, go, sizeof(go));
+        if (!err) {
+            effect_sent = 0;
+        }
+    } else if (!err && !run) {
+        effect_sent = 0; // SET_FRAME's take-over stops it on the right
+    }
+    if (!err) {
+        atomic_set(&effect_right, ART_LAMPS_OK);
+    } else if (dirty) {
+        atomic_set(&effect_dirty, 1); // not sent: the retry sends it
+    }
+    bt_conn_unref(conn);
+    if (err == -EBUSY && effect_busy++ < BUSY_WAITS) {
+        k_work_reschedule_for_queue(&relay_q, dwork, HSB_BUSY_RETRY); // a status read is out
+        return;
+    }
+    effect_busy = 0;
+    if (err && effect_tries++ < EFFECT_RETRIES) {
+        k_work_reschedule_for_queue(&relay_q, dwork, EFFECT_RETRY);
+        return;
+    }
+    effect_tries = 0;
+}
+static K_WORK_DELAYABLE_DEFINE(effect_work, effect_cb);
+
+void art_relay_effect(bool run, bool tell, const struct lamp_effect_wire *right_half) {
+    if (run) {
+        k_spinlock_key_t key = k_spin_lock(&effect_lock);
+        effect_want = *right_half;
+        k_spin_unlock(&effect_lock, key);
+    }
+    atomic_set(&effect_run, run);
+    atomic_set(&effect_tell, tell);
+    atomic_set(&effect_dirty, 1);
+    if (art_relay_link() == 2) {
+        k_work_reschedule_for_queue(&relay_q, &effect_work, K_NO_WAIT);
+    }
+}
+
+uint8_t art_relay_effect_right(void) {
+    return art_relay_link() == 2 ? atomic_get(&effect_right) : ART_LAMPS_NO_LINK;
+}
+
+// From the discovery callback (Bluetooth thread); the relay queue's state resets in effect_cb.
+static void effect_link_up(void) {
+    atomic_set(&effect_reset, 1);
+    atomic_set(&effect_right, ART_LAMPS_NO_LINK);
+    if (atomic_get(&effect_run)) {
+        k_work_reschedule_for_queue(&relay_q, &effect_work, RGB_SETTLE);
+    }
+}
+#else
+static __maybe_unused bool effect_takes_right(void) { return false; }
+static void effect_link_up(void) {}
+#endif
 #else
 static void rgb_sync_link_up(void) {}
 static void lamps_link_up(void) {}
+static void effect_link_up(void) {}
 void art_relay_rgb_kick(void) {}
 int art_relay_rgb_hsb(uint16_t hue, uint8_t saturation, uint8_t brightness) { return -ENOTSUP; }
 void art_relay_rgb_verify(void) {}

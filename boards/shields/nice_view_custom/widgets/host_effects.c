@@ -1,0 +1,167 @@
+/*
+ * SET_EFFECT (D7 0F, #490): an effect from the PC that each half draws on its own from its lamp
+ * positions and the shared clock (host_effects.h; the wire format is in host_link.h). Left only.
+ * SPDX-License-Identifier: MIT
+ *
+ * The PC sends the effect once; the left draws its half (effect_run.c) and sends the right its
+ * half's copy over the art relay, which re-anchors the right's clock on every send. Nothing is
+ * streamed: the effect runs on with the app closed or the cable out, until RELEASE, SET_FRAME
+ * taking the lights, or a reboot. While it runs, each half draws only while its underglow is on
+ * as the user set it (idle turns it dark), and the battery dim applies on each half.
+ *
+ * Start/stop (no polling): the left's frames are effect_run.c's; the right's send starts on an
+ * effect, a PLACE or RELEASE, or the relay coming up while one runs, and stops on the right's ack,
+ * link loss or the relay's retry cap (art_relay_central.c).
+ */
+
+#include <string.h>
+
+#include <zephyr/kernel.h>
+#include <zephyr/spinlock.h>
+#include <zephyr/sys/byteorder.h>
+
+#include "art_relay.h"
+#include "effect_run.h"
+#include "host_effects.h"
+#include "host_frames.h"
+#include "host_link.h"
+
+// The right half goes through the art relay (which the simulator fakes).
+#define RIGHT (IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) || IS_ENABLED(CONFIG_FOXGLOVE_SIM_HOSTLINK))
+
+enum { OP_RELEASE = 0, OP_PLACE = 1, OP_EFFECT = 2 };
+enum { STATUS_OK = 0, STATUS_BAD = 5 };
+enum { ROOM, LEFT, RIGHT_HALF };
+
+#define EFFECT_COLOURS_AT 19
+#define PLACE_LEN (3 + 3 * 4 * 2)
+
+static struct k_spinlock lock;
+static struct lamp_effect_wire effect; // the PC's effect; room and half filled per half
+// Before any PLACE: the halves side by side, 80 mm apart, as the scene's room puts them, and the
+// room just them.
+static int16_t place[3][4] = {{0, 0, 328, 86}, {0, 0, 124, 86}, {204, 0, 124, 86}};
+static bool running;
+
+static uint8_t right_state(void) {
+#if RIGHT
+    return art_relay_effect_right();
+#else
+    return ART_LAMPS_NO_LINK;
+#endif
+}
+
+static void fill_reply(uint8_t r[HOST_EFFECTS_REPLY_SIZE], uint8_t status) {
+    r[0] = HOST_LINK_SETTINGS;
+    r[1] = 0x8F;
+    r[2] = status;
+    r[3] = running ? HOST_FRAMES_OWNER_HOST_LINK : HOST_FRAMES_OWNER_NONE;
+    r[4] = running ? effect.kind : LAMP_EFFECT_NONE;
+    r[5] = right_state();
+    r[6] = 0; // no unsolicited D7 8F yet: nothing hands an effect back on its own
+}
+
+static void for_half(struct lamp_effect_wire *w, int half) {
+    *w = effect;
+    for (int i = 0; i < 4; i++) {
+        sys_put_le16(place[ROOM][i], &w->room[2 * i]);
+        sys_put_le16(place[half][i], &w->half[2 * i]);
+    }
+}
+
+// Draws the effect on both halves, the clock at at_ms now. Under lock.
+static void run(uint32_t at_ms) {
+    struct lamp_effect_wire w;
+    running = true;
+#if RIGHT
+    for_half(&w, RIGHT_HALF);
+    art_relay_effect(true, true, &w); // the relay takes the left's clock when it sends
+#endif
+    for_half(&w, LEFT);
+    effect_run_start(&w, at_ms);
+}
+
+// Under lock.
+static void stop(bool hand_back) {
+    if (!running) {
+        return;
+    }
+    running = false;
+    effect_run_stop(hand_back);
+#if RIGHT
+    art_relay_effect(false, hand_back, NULL);
+#endif
+}
+
+// A whole EFFECT report into e; false if it doesn't hold together.
+static bool parse_effect(const uint8_t *d, int len, struct lamp_effect_wire *e, uint32_t *at) {
+    if (len < EFFECT_COLOURS_AT) {
+        return false;
+    }
+    uint8_t kind = d[3], n = d[4];
+    bool colours_ok = kind == LAMP_EFFECT_SWEEP ? n >= 1 && n <= LAMP_EFFECT_COLOURS : n == 2;
+    if (kind == LAMP_EFFECT_NONE || kind >= LAMP_EFFECT_KINDS || !colours_ok ||
+        len < EFFECT_COLOURS_AT + 3 * n || sys_get_le16(&d[11]) >= 36000) {
+        return false;
+    }
+    memset(e, 0, sizeof(*e));
+    e->kind = kind;
+    e->n = n;
+    memcpy(e->period_ms, &d[8], 3);
+    memcpy(e->angle_cdeg, &d[11], 2);
+    memcpy(e->width_dmm, &d[13], 2);
+    memcpy(e->origin, &d[15], 4);
+    memcpy(e->rgb, &d[EFFECT_COLOURS_AT], 3 * n);
+    uint32_t period = sys_get_le24(&d[8]);
+    *at = period > 0 ? sys_get_le24(&d[5]) % period : 0;
+    return true;
+}
+
+static bool parse_place(const uint8_t *d, int len, int16_t out[3][4]) {
+    if (len < PLACE_LEN) {
+        return false;
+    }
+    for (int r = 0; r < 3; r++) {
+        for (int i = 0; i < 4; i++) {
+            out[r][i] = (int16_t)sys_get_le16(&d[3 + 8 * r + 2 * i]);
+        }
+        // Sizes: a room may be a line (a scanline along it still works); a half has an area.
+        if (out[r][2] < 0 || out[r][3] < 0 || (r != ROOM && (out[r][2] == 0 || out[r][3] == 0))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void host_effects_command(const uint8_t *d, int len, uint8_t r[HOST_EFFECTS_REPLY_SIZE]) {
+    uint8_t op = len >= 3 ? d[2] : 0xff;
+    struct lamp_effect_wire e;
+    int16_t p[3][4];
+    uint32_t at = 0;
+    bool ok = op == OP_RELEASE || (op == OP_PLACE && parse_place(d, len, p)) ||
+              (op == OP_EFFECT && parse_effect(d, len, &e, &at));
+    if (ok && op == OP_EFFECT) {
+        // The PC's frames give way first (not under our lock: SET_FRAME takes its lock, then ours).
+        host_frames_yield();
+    }
+    k_spinlock_key_t key = k_spin_lock(&lock);
+    if (ok && op == OP_RELEASE) {
+        stop(true);
+    } else if (ok && op == OP_PLACE) {
+        memcpy(place, p, sizeof(place));
+        if (running) {
+            run(effect_run_clock()); // moved: same effect, same clock
+        }
+    } else if (ok) {
+        effect = e;
+        run(at);
+    }
+    fill_reply(r, ok ? STATUS_OK : STATUS_BAD);
+    k_spin_unlock(&lock, key);
+}
+
+void host_effects_yield(void) {
+    k_spinlock_key_t key = k_spin_lock(&lock);
+    stop(false);
+    k_spin_unlock(&lock, key);
+}

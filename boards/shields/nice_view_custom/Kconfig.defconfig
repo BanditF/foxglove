@@ -162,6 +162,25 @@ config FOXGLOVE_HOST_FRAMES_TIMEOUT_S
       a PC holding a static frame sends it again when the hand-back event (D7 8C, event 1)
       comes.
 
+config FOXGLOVE_HOST_EFFECTS
+    bool "Effects from the PC that each half draws on its own (D7 0F SET_EFFECT, #490)"
+    default y if FOXGLOVE_TEST_HOOKS
+    depends on FOXGLOVE_HOST_FRAMES
+    help
+      The PC sends a scanline, sweep, ripple or breathe once (HELLO bit 19); each half draws it
+      from its LEDs' positions and the scene's clock, so it runs with the app closed and the split
+      link carries one message per change (relay status version 8). Dev builds only until a Test
+      lab pass. A right without it keeps its own effect.
+
+config FOXGLOVE_HOST_EFFECTS_FRAME_MS
+    int "Milliseconds between an effect's frames"
+    default 33
+    range 10 1000
+    depends on FOXGLOVE_HOST_EFFECTS
+    help
+      Each half draws a moving effect this often while its underglow is on; a still one (period
+      0) once. ZMK's own effects tick every 50 ms.
+
 config NICE_VIEW_ART_RELAY_MAX_SIZE
     int "Largest pushed art set, in bytes (RAM on both halves)"
     default 16384

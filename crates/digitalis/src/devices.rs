@@ -409,6 +409,41 @@ impl DigitalisDevice {
         frame_status(settings::release_frame(&*self.link).map_err(err)?)
     }
 
+    /// Whether the firmware takes [`Self::set_effect`] (HELLO bit 19).
+    pub fn effects(&self) -> bool {
+        self.has(capabilities::EFFECTS)
+    }
+
+    /// Both halves draw `e` on their own (#490); Unsupported without
+    /// [`capabilities::EFFECTS`] (GA builds keep frames or one colour).
+    pub fn set_effect(&self, e: &crate::protocol::Effect) -> PResult<crate::protocol::EffectReply> {
+        if !self.effects() {
+            return Err(DeviceError::Unsupported);
+        }
+        effect_status(settings::set_effect(&*self.link, e).map_err(err)?)
+    }
+
+    /// Where the halves sit in the room, for [`Self::set_effect`].
+    pub fn place_effect(
+        &self,
+        room: crate::protocol::MmRect,
+        left: crate::protocol::MmRect,
+        right: crate::protocol::MmRect,
+    ) -> PResult<crate::protocol::EffectReply> {
+        if !self.effects() {
+            return Err(DeviceError::Unsupported);
+        }
+        effect_status(settings::place_effect(&*self.link, room, left, right).map_err(err)?)
+    }
+
+    /// Both halves back to their own effect after [`Self::set_effect`].
+    pub fn release_effect(&self) -> PResult<crate::protocol::EffectReply> {
+        if !self.effects() {
+            return Err(DeviceError::Unsupported);
+        }
+        effect_status(settings::release_effect(&*self.link).map_err(err)?)
+    }
+
     /// The PC panel's size: from the keyboard's screen descriptors when it has them (#289),
     /// read once, else from HELLO.
     fn panel_size(&self) -> (usize, usize) {
@@ -511,6 +546,16 @@ fn frame_status(r: crate::protocol::FrameReply) -> PResult<crate::protocol::Fram
         4 => Err(DeviceError::Unsupported),
         s => Err(err(anyhow::anyhow!(
             "the keyboard refused the frame (status {s})"
+        ))),
+    }
+}
+
+fn effect_status(r: crate::protocol::EffectReply) -> PResult<crate::protocol::EffectReply> {
+    match r.status {
+        0 => Ok(r),
+        4 => Err(DeviceError::Unsupported),
+        s => Err(err(anyhow::anyhow!(
+            "the keyboard refused the effect (status {s})"
         ))),
     }
 }
@@ -895,6 +940,14 @@ mod tests {
                     };
                     report(&[0xD7, 0x8C, 0, owner, 30, 1, 0])
                 }
+                // Effects: every op answers; EFFECT runs its kind, RELEASE and PLACE report.
+                (protocol::SETTINGS, protocol::settings::EFFECT) => {
+                    let (owner, kind) = match out[2] {
+                        protocol::effect::EFFECT => (3, out[3]),
+                        _ => (0, 0),
+                    };
+                    report(&[0xD7, 0x8F, 0, owner, kind, 1, 0])
+                }
                 _ => return Ok(()),
             };
             self.push(&reply);
@@ -990,6 +1043,62 @@ mod tests {
                 (protocol::frame::RELEASE, 0, vec![]),
             ]
         );
+    }
+
+    #[test]
+    fn effects_only_with_bit_19() {
+        let scan = protocol::Effect {
+            kind: protocol::EffectKind::Scanline,
+            colours: vec![[255, 0, 0], [0, 0, 0]],
+            clock_ms: 0,
+            period_ms: 4000,
+            angle_deg: 90.0,
+            width_mm: 80.0,
+            origin_mm: [0, 0],
+        };
+        let (dev, fake, _bus) = device(capabilities::FRAMES);
+        assert!(!dev.effects());
+        assert!(matches!(
+            dev.set_effect(&scan),
+            Err(DeviceError::Unsupported)
+        ));
+        assert!(matches!(
+            dev.release_effect(),
+            Err(DeviceError::Unsupported)
+        ));
+        assert!(fake.written.lock().unwrap().is_empty(), "nothing sent");
+
+        let (dev, fake, _bus) = device(capabilities::FRAMES | capabilities::EFFECTS);
+        let placed = dev
+            .place_effect([0, 0, 600, 700], [0, 500, 124, 86], [204, 500, 124, 86])
+            .unwrap();
+        assert!(!placed.running());
+        let reply = dev.set_effect(&scan).unwrap();
+        assert!(reply.running());
+        assert_eq!(reply.kind, protocol::EffectKind::Scanline as u8);
+        assert!(!dev.release_effect().unwrap().running());
+        let ops: Vec<u8> = fake
+            .written
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r[..2] == [protocol::SETTINGS, protocol::settings::EFFECT])
+            .map(|r| r[2])
+            .collect();
+        assert_eq!(
+            ops,
+            [
+                protocol::effect::PLACE,
+                protocol::effect::EFFECT,
+                protocol::effect::RELEASE
+            ]
+        );
+        // One that doesn't fit the wire never leaves the PC.
+        let three = protocol::Effect {
+            colours: vec![[0; 3]; 3],
+            ..scan
+        };
+        assert!(dev.set_effect(&three).is_err());
     }
 
     #[test]

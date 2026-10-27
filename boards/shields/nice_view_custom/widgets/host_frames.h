@@ -17,3 +17,7 @@ enum { HOST_FRAMES_OWNER_NONE = 0, HOST_FRAMES_OWNER_HOST_LINK = 3 };
 // A D7 0C report: d is padded to the report size, len is its real length. Fills r with the D7 8C
 // reply and returns whether it goes out (SHOW, RELEASE and errors reply; chunks don't).
 bool host_frames_command(const uint8_t *d, int len, uint8_t r[HOST_FRAMES_REPLY_SIZE]);
+
+// SET_EFFECT takes the lights (host_effects.c): the frames hand both halves back, quietly (the PC
+// asked for the effect, so no D7 8C event). Any thread.
+void host_frames_yield(void);

@@ -23,7 +23,8 @@ struct rgb_idle_wire {
 // This half's underglow. Any thread.
 void rgb_idle_state(struct rgb_idle_wire *out);
 // Whether the underglow is on as the user sees it: ZMK's state, or under the PC's frames
-// (SET_FRAME) the on/off that comes back on hand-back. 0 or ZMK's error. Any thread.
+// (SET_FRAME) or effect (SET_EFFECT) the on/off that comes back on hand-back, which an effect
+// also goes by (dark while idle). 0 or ZMK's error. Any thread.
 int rgb_idle_get_on(bool *on);
 
 // An rgb_ug binding may just have run (a key, an encoder, a PC invoke): look at the underglow's

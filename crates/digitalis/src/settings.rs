@@ -141,6 +141,41 @@ pub fn release_frame(t: &impl Transport) -> Result<protocol::FrameReply> {
     Ok(protocol::FrameReply::parse(&r))
 }
 
+/// SET_EFFECT (#490): one request, answered with D7 8F.
+fn effect_request(t: &impl Transport, report: &[u8]) -> Result<protocol::EffectReply> {
+    let r = t.request(
+        report,
+        protocol::SETTINGS,
+        protocol::settings::EFFECT,
+        Duration::from_millis(500),
+    )?;
+    Ok(protocol::EffectReply::parse(&r))
+}
+
+/// SET_EFFECT: both halves draw `e` from their LEDs' positions, the room as the last
+/// [`place_effect`] set it (or the halves alone). It replaces SET_FRAME's frames, quietly.
+pub fn set_effect(t: &impl Transport, e: &protocol::Effect) -> Result<protocol::EffectReply> {
+    let report =
+        protocol::effect(e).ok_or_else(|| anyhow::anyhow!("the effect doesn't fit the wire"))?;
+    effect_request(t, &report)
+}
+
+/// SET_EFFECT PLACE: the room's bounds and each half's place in it, in mm. A running effect
+/// moves at once, on the same clock.
+pub fn place_effect(
+    t: &impl Transport,
+    room: protocol::MmRect,
+    left: protocol::MmRect,
+    right: protocol::MmRect,
+) -> Result<protocol::EffectReply> {
+    effect_request(t, &protocol::effect_place(room, left, right))
+}
+
+/// SET_EFFECT RELEASE: both halves back to their own effect.
+pub fn release_effect(t: &impl Transport) -> Result<protocol::EffectReply> {
+    effect_request(t, &protocol::effect_release())
+}
+
 /// Reads the active Bluetooth profile and selected typing endpoint.
 pub fn conn_state(t: &impl Transport) -> Result<protocol::ConnState> {
     let r = t.request(
