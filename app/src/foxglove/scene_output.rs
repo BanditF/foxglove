@@ -140,7 +140,10 @@ fn half_lamps(room: &RoomMap, id: &str) -> Option<Vec<[u16; 2]>> {
     (0..HALF_LAMPS)
         .map(|i| {
             let l = d.lights.iter().find(|l| l.id == i.to_string())?;
-            Some([per(l.at.x, d.rect.x, d.rect.w), per(l.at.y, d.rect.y, d.rect.h)])
+            Some([
+                per(l.at.x, d.rect.x, d.rect.w),
+                per(l.at.y, d.rect.y, d.rect.h),
+            ])
         })
         .collect()
 }

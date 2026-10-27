@@ -1222,9 +1222,7 @@ mod tests {
         let r = effect_lamps(1, 3, &[[0, 1000], [1500, 77], effect::UNSEEN]).unwrap();
         assert_eq!(
             r,
-            [
-                0xD7, 0x0F, 3, 1, 3, 3, 0, 0, 0xE8, 3, 0xE8, 3, 77, 0, 0xFF, 0xFF, 0xFF, 0xFF
-            ]
+            [0xD7, 0x0F, 3, 1, 3, 3, 0, 0, 0xE8, 3, 0xE8, 3, 77, 0, 0xFF, 0xFF, 0xFF, 0xFF]
         );
         assert!(r.len() <= REPORT);
         // Six fill a report exactly; a seventh, a third half or past LED 20 don't fit.

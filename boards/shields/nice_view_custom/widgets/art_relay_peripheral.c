@@ -197,6 +197,10 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         if (len < 2 || d[1] + (len - 2) > sizeof(effect_rx)) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
         }
+        if (d[1] == 0) {
+            // A new copy: a left before #550 sends no LED points, so none are kept from before.
+            effect_rx.lamps_set = 0;
+        }
         memcpy((uint8_t *)&effect_rx + d[1], &d[2], len - 2);
         break;
     case ART_RELAY_EFFECT_GO:

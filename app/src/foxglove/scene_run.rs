@@ -764,6 +764,9 @@ struct KeyboardLease {
     /// The scene's effect is what the keyboard shows now (the last thing sent was it, and the
     /// lease shows): what "Keep running on the keyboard" keeps on quit.
     effect_on: bool,
+    /// The LED points (EFFECT LAMPS, #550) this keyboard last took: sent again only when they
+    /// change, or after a reconnect (the keyboard forgets them on a reboot).
+    lamps_sent: Option<Option<[Vec<[u16; 2]>; 2]>>,
 }
 
 /// Where the keyboard's effect goes: the host-link keyboard, or a fake in tests.
@@ -869,7 +872,12 @@ impl KeyboardLease {
             self.effect_on = false;
             return Ok(EffectSent::Waiting);
         }
-        let sent = send_lamps(target, e)
+        let lamps = if self.lamps_sent.as_ref() == Some(&e.lamps) {
+            Ok(())
+        } else {
+            send_lamps(target, e).inspect(|()| self.lamps_sent = Some(e.lamps.clone()))
+        };
+        let sent = lamps
             .and_then(|()| target.place(e.room, e.left, e.right))
             .and_then(|()| target.run(&e.at(clock.now())));
         match sent {
@@ -1096,6 +1104,7 @@ impl AppKeyboard {
         if ARRIVED.swap(false, Ordering::Relaxed) {
             self.next_look = None;
             self.effects_failed = false;
+            self.lease.lamps_sent = None; // it may have rebooted: its LED points again
         }
     }
 
@@ -1489,6 +1498,12 @@ mod tests {
             .show_effect(&mut a, "kb", &kb, &kb, &mapped, &clock, &again)
             .unwrap();
         assert_eq!(*kb.effect_ops.lock().unwrap(), ['l', 'r', 'P', 'E']);
+        // The same points again: only PLACE and the effect.
+        kb.effect_ops.lock().unwrap().clear();
+        scene
+            .show_effect(&mut a, "kb", &kb, &kb, &mapped, &clock, &again)
+            .unwrap();
+        assert_eq!(*kb.effect_ops.lock().unwrap(), ['P', 'E']);
         kb.effect_ops.lock().unwrap().clear();
         scene
             .show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again)

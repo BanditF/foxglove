@@ -232,8 +232,10 @@
  *                     LEDs never sent keep the built-in table's place; count 0 puts the half back
  *                     on the table. Kept until a reboot, like PLACE (send LAMPS before PLACE); a
  *                     running effect redraws at once on the same clock. The left sends the right
- *                     its points with the effect. Status 5 for a half > 1, start + count > 21,
- *                     a value > 1000 (other than 0xFFFF) or a short report.
+ *                     its points with the effect; a right half whose firmware predates #550
+ *                     (relay status version < 9) keeps the built-in table, so flash both halves.
+ *                     Status 5 for a half > 1, count > 6, start + count > 21, a value > 1000
+ *                     (other than 0xFFFF) or a short report.
  *      Each half draws its 21 LEDs at CONFIG_FOXGLOVE_HOST_EFFECTS_FRAME_MS (once for a still
  *      one), each LED where LAMPS put it, else at a provisional position (lamp_effect.c).
  *      The left sends the right its copy over the art relay with the left's clock read just before
