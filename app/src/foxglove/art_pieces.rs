@@ -436,6 +436,16 @@ pub fn add_file(from: &Path) -> Result<PathBuf, String> {
     write_to_library(&name, &bytes)
 }
 
+/// A set that ships with Foxglove ([`BUNDLED`], by file name) as a library file, copied in
+/// first when it isn't there yet (a scene's wallpaper art, #488).
+pub fn bundled_file(name: &str) -> Result<PathBuf, String> {
+    let (name, bytes, _) = BUNDLED
+        .iter()
+        .find(|b| b.0 == name)
+        .ok_or_else(|| format!("no bundled set {name}"))?;
+    write_to_library(name, bytes)
+}
+
 fn write_to_library(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     let folder = art_library::folder().ok_or("No settings directory")?;
     std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;

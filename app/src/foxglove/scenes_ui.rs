@@ -55,6 +55,10 @@ pub struct View {
     pub moved: bool,
     /// The moment the preview shows, on the running scene's clock (or the page's).
     pub t: SceneTime,
+    /// "Right screen too": a wallpaper's look also shows its right-screen art (#488).
+    pub with_art: bool,
+    /// The Bandit wallpapers on screen now (ids), so their looks say "On screen".
+    pub on_screen: Vec<String>,
 }
 
 impl View {
@@ -98,6 +102,8 @@ pub enum Intent {
         by: Point,
     },
     ResetPositions,
+    /// "Right screen too" switched on or off.
+    WithArt(bool),
 }
 
 /// The page's own state between frames.
@@ -165,6 +171,8 @@ fn show(ui: &mut egui::Ui) {
         stopping: STOPPING.load(Ordering::Relaxed),
         moved: st.moved,
         t,
+        with_art: st.chosen.with_art,
+        on_screen: super::wallpaper::on_screen_ids(),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
@@ -231,10 +239,11 @@ pub fn profile_changed() {
     if super::scene_run::running().is_none() {
         return;
     }
-    let look = looks::load_chosen().look;
+    let chosen = looks::load_chosen();
     let saved = looks::load_saved().presets;
     let room = super::scene_room::room();
-    super::scene_run::set_effect(&scene_name(&look, &saved), look.effect(&room));
+    super::scene_run::set_effect(&scene_name(&chosen.look, &saved), chosen.look.effect(&room));
+    show_art(&chosen);
 }
 
 /// Repaints the page when the PC comes back (unlocked, display on), since the preview asks for
@@ -273,9 +282,16 @@ fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context)
         Intent::Start => {
             looks::save_chosen(&st.chosen);
             let name = scene_name(&st.chosen.look, &st.saved.presets);
-            if !super::scene_run::start(&name, st.chosen.look.effect(&st.room), None) {
+            if super::scene_run::start(&name, st.chosen.look.effect(&st.room), None) {
+                show_art(&st.chosen);
+            } else {
                 eprintln!("Foxglove: a scene still runs; Start waits for it to end");
             }
+        }
+        Intent::WithArt(on) => {
+            st.chosen.with_art = on;
+            looks::save_chosen(&st.chosen);
+            show_art(&st.chosen);
         }
         Intent::Stop => {
             if !STOPPING.swap(true, Ordering::Relaxed) {
@@ -322,12 +338,33 @@ fn save_layout(st: &mut State, layout: &foxglove_scene::Layout) {
     resend(st);
 }
 
-/// A running scene takes the page's look.
+/// A running scene takes the page's look (and its right-screen art).
 fn resend(st: &State) {
     if super::scene_run::running().is_some() {
         let name = scene_name(&st.chosen.look, &st.saved.presets);
         super::scene_run::set_effect(&name, st.chosen.look.effect(&st.room));
+        show_art(&st.chosen);
     }
+}
+
+/// The running scene's right-screen art: its wallpaper's with "Right screen too", else none
+/// (the art from before the scene). Looked up only while a scene runs, since a bundled set is
+/// copied into the art folder first.
+fn show_art(chosen: &Chosen) {
+    if super::scene_run::running().is_none() {
+        return;
+    }
+    let art = chosen.art().and_then(|a| {
+        a.item(
+            |file| {
+                super::art_library::folder()
+                    .map(|f| f.join(file))
+                    .filter(|p| p.is_file())
+            },
+            |file| super::art_pieces::bundled_file(file).ok(),
+        )
+    });
+    super::scene_run::set_art(art);
 }
 
 /// When the preview wants its next frame: never while minimised or away, or for a still look.
@@ -835,7 +872,10 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
     } else {
         ui.label(theme::caps_label(ui, "Palette"));
         ui.horizontal_wrapped(|ui| {
-            for (name, _) in PALETTES {
+            // A wallpaper's palette shows only while its look has it (#488).
+            let own = (!PALETTES.iter().any(|(n, _)| *n == look.palette))
+                .then_some(look.palette.as_str());
+            for name in PALETTES.iter().map(|(n, _)| *n).chain(own) {
                 if theme::pill(ui, look.palette == name, name).clicked() {
                     set(
                         Look {
@@ -942,10 +982,45 @@ fn save_row(ui: &mut egui::Ui, draft: &mut Draft, out: &mut Vec<Intent>) {
     }
 }
 
-/// The presets: built-in, then the user's own.
+/// The presets: the Bandit wallpapers' looks, one per effect, then the user's own.
 fn presets(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
-    for p in looks::built_in() {
-        preset_row(ui, &p, v.look == p.look, false, out);
+    let wallpapers = &looks::scenes().looks;
+    if !wallpapers.is_empty() {
+        ui.label(theme::caps_label(ui, "Bandit wallpapers"));
+        let mut with_art = v.with_art;
+        if ui
+            .checkbox(&mut with_art, "Right screen too")
+            .on_hover_text("While one of these runs, the right screen shows its wallpaper's art")
+            .changed()
+        {
+            out.push(Intent::WithArt(with_art));
+        }
+        for w in wallpapers {
+            let shown = v.on_screen.contains(&w.wallpaper);
+            let tag = shown.then_some("On screen");
+            preset_row(
+                ui,
+                &w.preset,
+                v.look == w.preset.look,
+                false,
+                tag,
+                &w.motif,
+                out,
+            );
+        }
+        ui.add_space(6.0);
+        ui.label(theme::caps_label(ui, "Effects"));
+    }
+    for p in looks::built_in().iter().skip(wallpapers.len()) {
+        preset_row(
+            ui,
+            p,
+            v.look == p.look,
+            false,
+            None,
+            p.look.kind.hint(),
+            out,
+        );
     }
     ui.add_space(6.0);
     ui.label(theme::caps_label(ui, "Yours"));
@@ -953,15 +1028,18 @@ fn presets(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
         ui.weak("Presets you save show here.");
     }
     for p in &v.saved {
-        preset_row(ui, p, v.look == p.look, true, out);
+        preset_row(ui, p, v.look == p.look, true, None, p.look.kind.hint(), out);
     }
 }
 
+/// One preset: its colours, its name, and Remove (the user's) or a tag ("On screen").
 fn preset_row(
     ui: &mut egui::Ui,
     p: &Preset,
     selected: bool,
     removable: bool,
+    tag: Option<&str>,
+    hint: &str,
     out: &mut Vec<Intent>,
 ) {
     let mut remove = false;
@@ -973,13 +1051,15 @@ fn preset_row(
                     .small_button("Remove")
                     .on_hover_text("Remove this preset")
                     .clicked();
+            if let Some(tag) = tag {
+                ui.weak(tag)
+                    .on_hover_text("Wallpaper Engine shows this wallpaper now");
+            }
         },
         |ui| {
             let (chip, _) = ui.allocate_exact_size(egui::vec2(26.0, 12.0), Sense::hover());
             strip(ui.painter(), chip, &look_stops(&p.look));
-            let label = ui
-                .selectable_label(selected, &p.name)
-                .on_hover_text(p.look.kind.hint());
+            let label = ui.selectable_label(selected, &p.name).on_hover_text(hint);
             if label.clicked() && !selected {
                 out.push(Intent::Look {
                     look: p.look.clone(),
@@ -1020,6 +1100,8 @@ pub(crate) mod tests {
             moved: true,
             // The band on the case's middle fans, on its way to the keys.
             t: SceneTime(2300),
+            with_art: false,
+            on_screen: vec!["hud".into()],
         }
     }
 
@@ -1041,6 +1123,8 @@ pub(crate) mod tests {
             stopping: false,
             moved: false,
             t: SceneTime(5000),
+            with_art: false,
+            on_screen: vec![],
         }
     }
 
@@ -1205,5 +1289,49 @@ pub(crate) mod tests {
             click(&sample(), "Remove"),
             vec![Intent::RemovePreset("Desk evening".into())]
         );
+    }
+
+    /// The Bandit wallpapers' looks (#488): a row picks the look, and "Right screen too"
+    /// switches their art on and off.
+    #[test]
+    fn a_wallpaper_look_is_picked_and_its_art_switched() {
+        let fury = looks::scenes()
+            .looks
+            .iter()
+            .find(|w| w.wallpaper == "fury-chase")
+            .unwrap();
+        let picked = click(&sample_none(), "FURY Chase");
+        assert_eq!(
+            picked,
+            vec![Intent::Look {
+                look: fury.preset.look.clone(),
+                save: true
+            }]
+        );
+        assert_eq!(
+            click(&sample(), "Right screen too"),
+            vec![Intent::WithArt(true)]
+        );
+        let on = View {
+            with_art: true,
+            ..sample()
+        };
+        assert_eq!(click(&on, "Right screen too"), vec![Intent::WithArt(false)]);
+        // The wallpaper's own palette is a pill while its look is chosen, and only then.
+        let moon = looks::scenes()
+            .looks
+            .iter()
+            .find(|w| w.wallpaper == "hearth-moongarden")
+            .unwrap();
+        let v = View {
+            look: moon.preset.look.clone(),
+            ..sample_none()
+        };
+        let forest = click(&v, "Forest");
+        assert!(
+            matches!(&forest[..], [Intent::Look { look, .. }] if look.palette == "Forest"),
+            "{forest:?}"
+        );
+        assert!(click(&sample_none(), "Moon garden").is_empty());
     }
 }

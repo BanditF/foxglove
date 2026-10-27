@@ -309,6 +309,28 @@ fn watched_with(
     }
 }
 
+/// The ids of the indexed wallpapers on screen, on any monitor (the Scenes page marks their
+/// looks, #488). Set by the wallpaper service on each change.
+static ON_SCREEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// The indexed wallpapers on screen now (ids), as the wallpaper service last saw them.
+pub fn on_screen_ids() -> Vec<String> {
+    ON_SCREEN.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Every indexed wallpaper in `text`, each once, in monitor order.
+fn ids_on_screen(index: &[Wallpaper], text: &str, source: &Source) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for one in on_screen(text, source) {
+        if let Some(w) = find(index, std::slice::from_ref(&one), None) {
+            if !ids.contains(&w.id) {
+                ids.push(w.id.clone());
+            }
+        }
+    }
+    ids
+}
+
 /// Wakes the wallpaper service: a watched folder changed, or the user pressed Refresh.
 static WAKE: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> = std::sync::Mutex::new(None);
 
@@ -377,6 +399,14 @@ pub fn start() {
             // Wallpaper sync (#493): the monitors showing a Bandit wallpaper get the layer and
             // the scene clock; a new wallpaper gets them at once.
             super::wallpaper_sync::wallpapers(bandit_monitors(&index, &text, &source));
+            let ids = ids_on_screen(&index, &text, &source);
+            let changed = {
+                let mut on = ON_SCREEN.lock().unwrap_or_else(|e| e.into_inner());
+                std::mem::replace(&mut *on, ids.clone()) != ids
+            };
+            if changed {
+                super::scene_run::repaint_page();
+            }
             let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
             let Some(w) = find_in(&index, &text, &source, monitor.as_deref()) else {
                 continue;
@@ -419,6 +449,16 @@ mod tests {
         assert_eq!(keys, ["//?/DISPLAY#DEL40EA#1", "//?/DISPLAY#SAM0E3C#2"]);
         assert!(bandit_monitors(&index, "hud", &Source::Override(PathBuf::new())).is_empty());
         assert!(bandit_monitors(&index, config, &Source::Desktop).is_empty());
+        // The Scenes page's "On screen": every Bandit wallpaper shown, once each, from any source.
+        assert_eq!(
+            ids_on_screen(&index, config, &engine),
+            ["fury-stars", "hud"]
+        );
+        let twice = config.replace("bandit-fury-stars", "bandit-hud");
+        assert_eq!(ids_on_screen(&index, &twice, &engine), ["hud"]);
+        let o = Source::Override(PathBuf::new());
+        assert_eq!(ids_on_screen(&index, "fury-stars", &o), ["fury-stars"]);
+        assert!(ids_on_screen(&index, "nothing", &o).is_empty());
     }
 
     #[test]
