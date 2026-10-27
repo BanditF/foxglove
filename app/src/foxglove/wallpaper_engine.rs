@@ -75,6 +75,25 @@ pub fn refresh() -> Presence {
     now
 }
 
+/// Whether one of Wallpaper Engine's programs runs right now (a process snapshot, read on
+/// demand). Its command line starts Wallpaper Engine when it isn't running, so wallpaper sync
+/// (#493) checks this before every push.
+pub fn running_now() -> bool {
+    running()
+}
+
+/// The program that takes Wallpaper Engine's command line (`-control ...`): the 64-bit one when
+/// it is there.
+pub fn cli_exe(presence: &Presence) -> Option<PathBuf> {
+    let Presence::Installed { dir, .. } = presence else {
+        return None;
+    };
+    ["wallpaper64.exe", "wallpaper32.exe"]
+        .iter()
+        .map(|p| dir.join(p))
+        .find(|p| p.is_file())
+}
+
 fn look() -> Presence {
     match find(&Places::system()) {
         Some(dir) => Presence::Installed {
