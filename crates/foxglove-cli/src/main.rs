@@ -140,9 +140,11 @@ fn run(args: &[String]) -> Result<(), String> {
                     println!("{} {n}", if active == Some(n.as_str()) { "*" } else { " " });
                 }
             }
-            other => return Err(format!(
+            other => {
+                return Err(format!(
                 "unknown command {other:?}; try status, facts [pattern] or profile [name|default]"
-            )),
+            ))
+            }
         }
         Ok(())
     }
