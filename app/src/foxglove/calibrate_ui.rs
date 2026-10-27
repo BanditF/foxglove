@@ -210,6 +210,13 @@ impl Wizard {
         }
     }
 
+    /// The colour on show was adjusted since its match (or its start) and not confirmed.
+    pub fn unconfirmed(&self) -> bool {
+        let mut probe = self.clone();
+        probe.load_current();
+        probe.current != self.current
+    }
+
     /// The next test colour without a match, after this one.
     pub fn next_unmatched(&self) -> Option<Step> {
         let at = Step::ALL.iter().position(|s| *s == self.step).unwrap_or(0);
@@ -905,6 +912,10 @@ fn act(w: &mut Wizard, out: Output) -> bool {
     match done {
         Done::Cancel => calibration::global().set_device(&w.target.key, w.saved.clone()),
         Done::Save => {
+            // Adjusted but not confirmed yet: Save takes it as a match.
+            if w.unconfirmed() {
+                w.confirm();
+            }
             if let Err(e) = calibrate::commit(&w.target.key, w.result()) {
                 w.note = Some(format!("Can't save the calibration: {e}"));
                 return false;

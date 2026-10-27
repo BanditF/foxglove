@@ -225,6 +225,16 @@ fn save_keeps_the_matches_and_nothing_forgets() {
 }
 
 #[test]
+fn save_takes_an_adjusted_colour_as_a_match() {
+    let mut w = Wizard::new(case(), None);
+    assert!(!w.unconfirmed());
+    w.current.screen[2] = 161;
+    assert!(w.unconfirmed());
+    w.confirm();
+    assert!(!w.unconfirmed(), "confirmed");
+}
+
+#[test]
 fn while_matching_the_device_gets_the_light_value_as_it_is() {
     let (_, w) = sample(Step::Blue, false);
     let preview = w.previewing();
