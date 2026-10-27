@@ -1235,6 +1235,8 @@ void art_relay_rgb_verify(void) {
  * failed tries (the next frame starts over in full). */
 
 #define EFFECT_STATUS_VERSION 8 // right status version with ART_RELAY_EFFECT / EFFECT_GO
+#define EFFECT_LAMPS_STATUS_VERSION 9 // ... whose copy of the wire holds the LED points (#550)
+BUILD_ASSERT(sizeof(struct lamp_effect_wire) <= 255, "ART_RELAY_EFFECT's offset is a u8");
 static bool effect_takes_right(void);
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
@@ -1428,14 +1430,19 @@ static int effect_go(struct bt_conn *conn) {
 }
 
 static int effect_send(struct bt_conn *conn) {
-    struct lamp_effect_wire w;
+    // Static: relay_q's alone, and its stack is 1 KB (the wire is 126 bytes since #550).
+    static struct lamp_effect_wire w;
+    static uint8_t buf[2 + sizeof(w)] = {ART_RELAY_EFFECT};
     k_spinlock_key_t key = k_spin_lock(&effect_lock);
     w = effect_want;
     k_spin_unlock(&effect_lock, key);
-    uint8_t buf[2 + sizeof(w)] = {ART_RELAY_EFFECT};
-    int per = CLAMP((int)bt_gatt_get_mtu(conn) - 3 - 2, 1, (int)sizeof(w));
-    for (int at = 0; at < (int)sizeof(w); at += per) {
-        int n = MIN(per, (int)sizeof(w) - at);
+    // A right before #550 has no room for the LED points: it keeps its own table.
+    int size = right.version >= EFFECT_LAMPS_STATUS_VERSION
+                   ? (int)sizeof(w)
+                   : (int)offsetof(struct lamp_effect_wire, lamps_set);
+    int per = CLAMP((int)bt_gatt_get_mtu(conn) - 3 - 2, 1, size);
+    for (int at = 0; at < size; at += per) {
+        int n = MIN(per, size - at);
         buf[1] = at;
         memcpy(&buf[2], (const uint8_t *)&w + at, n);
         int err = write_cmd(conn, buf, 2 + n);

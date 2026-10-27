@@ -458,6 +458,25 @@ impl DigitalisDevice {
         effect_status(settings::place_effect(&*self.link, room, left, right).map_err(err)?)
     }
 
+    /// Whether the firmware takes LED points for effects (HELLO bit 21, #550).
+    pub fn effect_lamps(&self) -> bool {
+        self.has(capabilities::EFFECT_LAMPS)
+    }
+
+    /// Where each LED of `half` (0 left, 1 right) sits for [`Self::set_effect`], in thousandths
+    /// of the half (see [`crate::protocol::effect_lamps`]); empty puts the half back on the
+    /// firmware's table. Unsupported without [`capabilities::EFFECT_LAMPS`].
+    pub fn place_effect_lamps(
+        &self,
+        half: u8,
+        points: &[[u16; 2]],
+    ) -> PResult<crate::protocol::EffectReply> {
+        if !self.effect_lamps() {
+            return Err(DeviceError::Unsupported);
+        }
+        effect_status(settings::lamps_effect(&*self.link, half, points).map_err(err)?)
+    }
+
     /// Both halves back to their own effect after [`Self::set_effect`].
     pub fn release_effect(&self) -> PResult<crate::protocol::EffectReply> {
         if !self.effects() {

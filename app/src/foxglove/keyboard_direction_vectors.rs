@@ -222,3 +222,20 @@ fn keyboard_direction_vectors_move() {
         .collect();
     assert!(rows.len() > 8 * 4, "{} distinct frames", rows.len());
 }
+
+/// With every LED placed, the effect carries each half's points for EFFECT LAMPS (#550), in
+/// thousandths of the half: the profile's key centres are lamp_effect.c's built-in table, the
+/// right half its mirror (its own points, not mirrored again on the keyboard).
+#[test]
+fn keyboard_effect_lamps_are_each_halfs_own_points() {
+    let room = room();
+    let e = keyboard_effect(&Look::default().effect(&room), &room).expect("it maps");
+    let [left, right] = e.lamps.expect("every LED placed");
+    assert_eq!((left.len(), right.len()), (HALF_LAMPS, HALF_LAMPS));
+    // lamp_effect.c lamps_permille: LED 0 {77, 222}, LED 20 {923, 889}.
+    let near = |a: [u16; 2], b: [u16; 2]| a[0].abs_diff(b[0]) <= 1 && a[1].abs_diff(b[1]) <= 1;
+    assert!(near(left[0], [77, 222]), "{:?}", left[0]);
+    assert!(near(left[20], [923, 889]), "{:?}", left[20]);
+    assert!(near(right[0], [923, 222]), "{:?}", right[0]);
+    assert!(near(right[20], [77, 889]), "{:?}", right[20]);
+}

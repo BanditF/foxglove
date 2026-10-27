@@ -28,7 +28,7 @@
  *                    17 LEFT_BATTERY (CONN_STATE byte 8 is the left's battery %),
  *                    18 BATTERY_DIM (D7 0E), 19 EFFECTS (D7 0F SET_EFFECT),
  *                    20 RIGHT_EVENTS (the right's on/off and power source reach the
- *                    PC as D7 83 / D7 8E events, #478).
+ *                    PC as D7 83 / D7 8E events, #478), 21 EFFECT_LAMPS (D7 0F op 3, #550).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -225,8 +225,19 @@
  *                     width u16 (0.1 mm), origin x, y i16 (mm; the ripple's centre),
  *                     n x (r, g, b) from byte 19. Scanline and ripple: colour, background;
  *                     breathe: from, to (n = 2). Sweep: 1-4 stops. Status 5 for anything else.
+ *      op 3 LAMPS     half u8 (0 left, 1 right), start u8, count u8 (<= 6), then count x (x, y)
+ *                     u16 LE (HELLO bit 21, #550): where those LEDs of that half sit, in
+ *                     thousandths of the half's width and height from its top-left corner (the
+ *                     half's own points, never mirrored; 0xFFFF = not seen: the half's centre).
+ *                     LEDs never sent keep the built-in table's place; count 0 puts the half back
+ *                     on the table. Kept until a reboot, like PLACE (send LAMPS before PLACE); a
+ *                     running effect redraws at once on the same clock. The left sends the right
+ *                     its points with the effect; a right half whose firmware predates #550
+ *                     (relay status version < 9) keeps the built-in table, so flash both halves.
+ *                     Status 5 for a half > 1, count > 6, start + count > 21, a value > 1000
+ *                     (other than 0xFFFF) or a short report.
  *      Each half draws its 21 LEDs at CONFIG_FOXGLOVE_HOST_EFFECTS_FRAME_MS (once for a still
- *      one), each LED at a provisional position (lamp_effect.c; the #90 row G sitting corrects it).
+ *      one), each LED where LAMPS put it, else at a provisional position (lamp_effect.c).
  *      The left sends the right its copy over the art relay with the left's clock read just before
  *      the send, so both halves agree on the phase within the link's latency; again on link-up.
  *      The take-over and owner rules are SET_FRAME's, with no timeout and no hand-back on USB or
@@ -285,6 +296,8 @@
 #define HOST_LINK_CAP_EFFECTS (1U << 19)
 // The relayed right's on/off (D7 83) and power source (D7 8E) changes come as events (#478).
 #define HOST_LINK_CAP_RIGHT_EVENTS (1U << 20)
+// EFFECT op LAMPS: the PC's LED points for SET_EFFECT (#550).
+#define HOST_LINK_CAP_EFFECT_LAMPS (1U << 21)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);

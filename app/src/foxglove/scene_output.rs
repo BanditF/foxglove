@@ -80,6 +80,10 @@ pub struct KeyboardEffect {
     pub right: MmRect,
     /// The effect's colours as one, for the lease (what shows when the effect is handed back).
     pub mix: Hsb,
+    /// Each half's LEDs where the room has them, in strip order and thousandths of the half
+    /// (EFFECT LAMPS, #550), when every LED of both halves is placed; `None` leaves the
+    /// firmware's built-in table.
+    pub lamps: Option<[Vec<[u16; 2]>; 2]>,
 }
 
 impl KeyboardEffect {
@@ -120,6 +124,28 @@ fn keyboard_halves(room: &RoomMap) -> Option<(MmRect, MmRect)> {
         mm_rect(&foxglove_scene::Rect::new(whole.x, whole.y, w, whole.h)),
         mm_rect(&foxglove_scene::Rect::new(whole.x + w, whole.y, w, whole.h)),
     ))
+}
+
+/// One half's LEDs as EFFECT LAMPS points: each numbered light ("0", "1", ...) of the placed
+/// half, in thousandths of the half from its top-left corner. `None` unless the half has
+/// exactly [`HALF_LAMPS`] of them (one light per half: no map).
+fn half_lamps(room: &RoomMap, id: &str) -> Option<Vec<[u16; 2]>> {
+    let d = room.devices.iter().find(|d| d.id == id)?;
+    if d.lights.len() != HALF_LAMPS || d.rect.w <= 0.0 || d.rect.h <= 0.0 {
+        return None;
+    }
+    let per = |v: f32, from: f32, size: f32| {
+        ((v - from) / size * 1000.0).round().clamp(0.0, 1000.0) as u16
+    };
+    (0..HALF_LAMPS)
+        .map(|i| {
+            let l = d.lights.iter().find(|l| l.id == i.to_string())?;
+            Some([
+                per(l.at.x, d.rect.x, d.rect.w),
+                per(l.at.y, d.rect.y, d.rect.h),
+            ])
+        })
+        .collect()
 }
 
 /// The scene's effect as the keyboard's own (#542), or `None` when it doesn't map (gradient,
@@ -203,6 +229,9 @@ pub fn keyboard_effect(effect: &Effect, room: &RoomMap) -> Option<KeyboardEffect
         room: mm_rect(&room.bounds),
         left,
         right,
+        lamps: half_lamps(room, "keyboard:left")
+            .zip(half_lamps(room, "keyboard:right"))
+            .map(|(l, r)| [l, r]),
     })
 }
 
@@ -852,6 +881,7 @@ mod tests {
         let b = room.bounds;
         assert_eq!(e.room, [b.x, b.y, b.w, b.h].map(|v| v.round() as i16));
         assert_eq!(e.mix, hsb(ORANGE.mix(Rgb::BLACK, 0.5)));
+        assert_eq!(e.lamps, None, "a half lit as one: the firmware's own table");
 
         let blue = Rgb([0, 0, 255]);
         let sweep = |n: usize| Effect::Sweep {

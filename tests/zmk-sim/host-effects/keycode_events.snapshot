@@ -53,6 +53,30 @@ hostlink: rx D7 8F 05 03 02 01
 hostlink: rx D7 8F 05 03 02 01
 hostlink: rx D7 8F 05 03 02 01
 hostlink: rx D7 8F 05 03 02 01
+effects: -- LAMPS: the PC's LED points (HELLO bit 21); bad ones answer 5
+effects: caps bit 21 1
+hostlink: rx D7 8F 05 03 02 01
+hostlink: rx D7 8F 05 03 02 01
+hostlink: rx D7 8F 05 03 02 01
+hostlink: rx D7 8F 05 03 02 01
+effects: right gets sweep, 3 colours, half at 300,10 120x90, room 500x120
+hostlink: rx D7 8F 00 03 02 01
+effects: right gets sweep, 3 colours, half at 300,10 120x90, room 500x120
+hostlink: rx D7 8F 00 03 02 01
+effects: right gets sweep, 3 colours, half at 300,10 120x90, room 500x120
+hostlink: rx D7 8F 00 03 02 01
+effects: right gets sweep, 3 colours, half at 300,10 120x90, room 500x120
+hostlink: rx D7 8F 00 03 02 01
+effects: the left draws its LEDs where LAMPS put them: yes
+effects: right gets sweep, 3 colours, half at 300,10 120x90, room 500x120
+effects: right's LEDs from the PC: 0 at 0,0; 1 at 923,444
+hostlink: rx D7 8F 00 03 02 01
+effects: right gets sweep, 3 colours, half at 300,10 120x90, room 500x120
+effects: right's LEDs from the PC: 0 at 0,0; 1 at 923,444
+hostlink: rx D7 8F 00 03 02 01
+effects: count 0 puts the left back on its table: yes
+effects: right gets sweep, 3 colours, half at 300,10 120x90, room 500x120
+hostlink: rx D7 8F 00 03 02 01
 effects: -- RELEASE: both halves back to their own effect
 effects: left back to its effect
 effects: right effect stops, back to its own

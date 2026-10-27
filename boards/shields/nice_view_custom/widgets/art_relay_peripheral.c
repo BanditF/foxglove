@@ -56,8 +56,9 @@ static uint32_t rx_crc;
 
 static struct art_relay_status status = {
     // 5: ART_RELAY_RGB_HSB, 6: battery dim (config in RGB, state after build), 7: SET_FRAME's
-    // ART_RELAY_LAMPS / LAMP_HOST (#272), 8: SET_EFFECT's ART_RELAY_EFFECT / EFFECT_GO (#490)
-    .version = IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS) ? 8
+    // ART_RELAY_LAMPS / LAMP_HOST (#272), 8: SET_EFFECT's ART_RELAY_EFFECT / EFFECT_GO (#490),
+    // 9: ART_RELAY_EFFECT takes the whole wire, with the PC's LED points (#550)
+    .version = IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS) ? 9
                : IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES) ? 7
                                                          : 6,
     .capacity = CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE,
@@ -195,6 +196,10 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
     case ART_RELAY_EFFECT: // offset, bytes: part of the effect, as write commands
         if (len < 2 || d[1] + (len - 2) > sizeof(effect_rx)) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+        }
+        if (d[1] == 0) {
+            // A new copy: a left before #550 sends no LED points, so none are kept from before.
+            effect_rx.lamps_set = 0;
         }
         memcpy((uint8_t *)&effect_rx + d[1], &d[2], len - 2);
         break;

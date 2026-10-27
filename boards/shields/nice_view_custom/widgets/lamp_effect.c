@@ -241,11 +241,25 @@ bool lamp_effect_prepare(struct lamp_effect *fx, const struct lamp_effect_wire *
     float hx = i16(&w->half[0]), hy = i16(&w->half[2]), hw = i16(&w->half[4]),
           hh = i16(&w->half[6]);
     for (int i = 0; i < LAMP_EFFECT_LAMPS; i++) {
-        float px = lamps_permille[i][0] / 1000.0f, py = lamps_permille[i][1] / 1000.0f;
-        f->lamp[i][0] = hx + hw * (mirror ? 1.0f - px : px);
-        f->lamp[i][1] = hy + hh * py;
+        uint16_t pm[2];
+        if (w->lamps_set) {
+            pm[0] = (uint16_t)(w->lamp[i][0] | w->lamp[i][1] << 8);
+            pm[1] = (uint16_t)(w->lamp[i][2] | w->lamp[i][3] << 8);
+            if (pm[0] == LAMP_EFFECT_UNSEEN || pm[1] == LAMP_EFFECT_UNSEEN) {
+                pm[0] = pm[1] = 500; // not seen: the half's centre
+            }
+        } else {
+            lamp_effect_table(i, mirror, pm);
+        }
+        f->lamp[i][0] = hx + hw * (pm[0] / 1000.0f);
+        f->lamp[i][1] = hy + hh * (pm[1] / 1000.0f);
     }
     return true;
+}
+
+void lamp_effect_table(int i, bool mirror, uint16_t out[2]) {
+    out[0] = mirror ? 1000 - lamps_permille[i][0] : lamps_permille[i][0];
+    out[1] = lamps_permille[i][1];
 }
 
 void lamp_effect_at(const struct lamp_effect *fx, float x, float y, float phase, uint8_t out[3]) {
