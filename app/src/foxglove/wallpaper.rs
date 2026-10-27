@@ -264,6 +264,19 @@ fn find_in(
     find(index, &on_screen(text, source), monitor).cloned()
 }
 
+/// The monitors whose wallpaper is in the index (a Bandit wallpaper): Wallpaper Engine's key and
+/// the wallpaper's file. None from any other source.
+fn bandit_monitors(index: &[Wallpaper], text: &str, source: &Source) -> Vec<(String, String)> {
+    if !matches!(source, Source::Engine(_)) {
+        return Vec::new();
+    }
+    let on = selected(text);
+    on.iter()
+        .filter(|(m, _)| find(index, &on, Some(m)).is_some())
+        .cloned()
+        .collect()
+}
+
 /// The indexed wallpaper on screen now, if any.
 pub fn current(monitor: Option<&str>) -> Option<Wallpaper> {
     let source = source(&super::wallpaper_engine::presence());
@@ -361,6 +374,9 @@ pub fn start() {
                 continue;
             };
             let index = index();
+            // Wallpaper sync (#493): the monitors showing a Bandit wallpaper get the layer and
+            // the scene clock; a new wallpaper gets them at once.
+            super::wallpaper_sync::wallpapers(bandit_monitors(&index, &text, &source));
             let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
             let Some(w) = find_in(&index, &text, &source, monitor.as_deref()) else {
                 continue;
@@ -387,6 +403,23 @@ mod tests {
          "right":{"builtin":"Bandit_Idle","library":"hud.bin","bytes":10},"left":{"bin":"hud.left.bin","frames":1,"fps":0,"order":[0]}},
         {"id":"fury-stars","title":"Stars","workshop_id":null,"match":["projects/myprojects/bandit-fury-stars/"],
          "right":{"builtin":null,"library":"fury-stars.bin","bytes":10},"left":{"bin":"x","frames":1,"fps":0,"order":[0]}}]}"#;
+
+    #[test]
+    fn only_monitors_with_a_bandit_wallpaper_get_wallpaper_sync() {
+        let index = parse_index(INDEX).unwrap();
+        let config = r#"{"fuchs":{"general":{"wallpaperconfig":{"selectedwallpapers":{
+            "//?/DISPLAY#DEL40EA#1":{"file":"C:/WE/projects/myprojects/bandit-fury-stars/index.html"},
+            "//?/DISPLAY#SAM0E3C#2":{"file":"C:/WE/projects/myprojects/bandit-hud/index.html"},
+            "Monitor0":{"file":"C:/WE/workshop/content/431960/3000562427/scene.pkg"}}}}}}"#;
+        let engine = Source::Engine(PathBuf::new());
+        let keys: Vec<String> = bandit_monitors(&index, config, &engine)
+            .into_iter()
+            .map(|(m, _)| m)
+            .collect();
+        assert_eq!(keys, ["//?/DISPLAY#DEL40EA#1", "//?/DISPLAY#SAM0E3C#2"]);
+        assert!(bandit_monitors(&index, "hud", &Source::Override(PathBuf::new())).is_empty());
+        assert!(bandit_monitors(&index, config, &Source::Desktop).is_empty());
+    }
 
     #[test]
     fn override_file_names_a_wallpaper_by_id_or_path() {

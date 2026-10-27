@@ -13,6 +13,10 @@ It has no UI and makes no OS calls, so everything in it runs headless in tests.
   compute the same phase: `phase = ((now_ms - epoch_ms) mod period_ms) / period_ms`.
 - `effects`: pure `f(position, time) -> colour`: scanline, sweep, ripple, breathe, gradient
   and noise, mixed in Oklab (`palette`).
+- `wallpaper`: the scene as a wallpaper reads it (#493): one `foxglove_scene` text with the
+  epoch, period, direction, width, colours, the room's bounds and the monitor's rectangle. The
+  wallpaper side (bandit-wallpapers `shared/foxglove-sync.js`) is checked against the same
+  vectors, `tests/wallpaper_vectors.json`.
 - `scheduler`: renders frames only while a scene runs and nobody is away or paused. With no
   scene there is no thread and no timer; while one runs, the only timer is the frame interval
   (each device at most 30 fps).

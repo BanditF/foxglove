@@ -73,8 +73,8 @@ enum Ctl {
     Paused(bool),
     /// The lighting devices changed (or the user moved one): place them again.
     Devices,
-    /// Another look for the running scene.
-    Effect(Box<Effect>),
+    /// Another look for the running scene, and its name.
+    Effect(String, Box<Effect>),
     Stop,
 }
 
@@ -182,7 +182,7 @@ pub fn set_effect(name: &str, effect: Effect) {
     let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = running.as_mut().filter(|r| !r.thread.is_finished()) {
         r.name = name.to_string();
-        let _ = r.tx.send(Ctl::Effect(Box::new(effect)));
+        let _ = r.tx.send(Ctl::Effect(name.to_string(), Box::new(effect)));
         status().name = Some(name.to_string());
     }
 }
@@ -268,6 +268,9 @@ fn control(
     let keyboard = KeyboardOut::spawn(Box::new(AppKeyboard::default()));
     let (room, cases) = gather();
     eprintln!("Foxglove: scene {name} started; room: {}", room.summary());
+    super::wallpaper_sync::scene_started(name, &effect, clock, room.clone());
+    // The room as last placed, for the wallpapers when the look changes.
+    let mut placed = room.clone();
     let outputs = Arc::new(Mutex::new(Outputs::new(effect, room, cases)));
     let frames = outputs.clone();
     let mailbox = keyboard.mailbox.clone();
@@ -287,15 +290,21 @@ fn control(
         Ctl::Paused(p) => scheduler.set(Gate::Paused, p),
         Ctl::Devices => {
             let (room, cases) = gather();
+            super::wallpaper_sync::scene_room(room.clone());
+            placed = room.clone();
             outputs
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .set_room(room, cases);
         }
-        Ctl::Effect(effect) => outputs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_effect(*effect),
+        Ctl::Effect(name, effect) => {
+            // The wallpapers draw the new look on the same clock (#493).
+            super::wallpaper_sync::scene_started(&name, &effect, clock, placed.clone());
+            outputs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .set_effect(*effect);
+        }
         Ctl::Stop => {}
     });
     give_back.ended = ended;
@@ -316,6 +325,7 @@ impl Drop for GiveBack {
     fn drop(&mut self) {
         // Idempotent: nothing to end when the keyboard writer already gave it back.
         super::api::end_leases(|l| l.conn == SCENE_CONN);
+        super::wallpaper_sync::scene_stopped();
         let case_back = super::pc_lights::end_scene(GIVE_BACK);
         eprintln!(
             "Foxglove: scene {} ended ({}){}",
