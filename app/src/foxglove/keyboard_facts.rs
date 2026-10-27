@@ -52,10 +52,15 @@ pub fn start() {
 
 fn publish(facts: &Facts, event: &DeviceEvent) {
     match event {
-        DeviceEvent::Connected => facts.set("keyboard.connected", Value::Bool(true)),
+        DeviceEvent::Connected => {
+            facts.set("keyboard.connected", Value::Bool(true));
+            // The Scenes page's map lights the keyboard now (#487).
+            super::scene_room::changed();
+        }
         DeviceEvent::Disconnected { .. } => {
             facts.remove_prefix("keyboard.", &["keyboard.connected"]);
             facts.set("keyboard.connected", Value::Bool(false));
+            super::scene_room::changed();
         }
         DeviceEvent::LayerChanged { active } => {
             facts.set("keyboard.layers", Value::Bytes(active.clone()));

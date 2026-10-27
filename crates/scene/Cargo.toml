@@ -15,3 +15,5 @@ serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 toml = "0.9"
+# The shared wallpaper test vectors (tests/wallpaper_vectors.json).
+serde_json = "1"

@@ -9,8 +9,8 @@
 //! frame (the card surface with its line). The page's scroll area lays out the whole page
 //! however short the window is, so the parts below the fold are checked too.
 //!
-//! With `FOXGLOVE_UI_PREVIEW_DIR` set, the Lights page is also kept at every size and scale as
-//! `ui-layout-lights-<w>x<h>@<scale>.png`.
+//! With `FOXGLOVE_UI_PREVIEW_DIR` set, the Lights and Scenes pages are also kept at every size
+//! and scale as `ui-layout-lights-<w>x<h>@<scale>.png` and `ui-scenes-layout-<w>x<h>@<scale>.png`.
 
 use std::collections::HashMap;
 
@@ -312,7 +312,11 @@ fn pages_lay_out_without_overlaps() {
     let mut found = Vec::new();
     for page in Page::ALL {
         let label = page.label();
-        let png = (page == Page::Lights).then_some("ui-layout-lights");
+        let png = match page {
+            Page::Lights => Some("ui-layout-lights"),
+            Page::Scenes => Some("ui-scenes-layout"),
+            _ => None,
+        };
         found.extend(page_cases(label, page, &Samples::full(), png));
         found.extend(page_cases(
             &format!("{label} (no keyboard)"),

@@ -84,7 +84,7 @@ pub fn hsb(c: Rgb) -> Hsb {
 }
 
 /// Several lights as one colour: their mix in Oklab, each counted once.
-fn mixed(colours: &[Rgb]) -> Option<Rgb> {
+pub(crate) fn mixed(colours: &[Rgb]) -> Option<Rgb> {
     let (first, rest) = colours.split_first()?;
     Some(
         rest.iter()
@@ -143,6 +143,14 @@ impl Outputs {
         self.sent_keyboard = None;
         self.room = room;
         self.cases = cases;
+    }
+
+    /// Another look while the scene runs (the Scenes page, #487): every device gets the next
+    /// frame in full.
+    pub fn set_effect(&mut self, effect: Effect) {
+        self.effect = effect;
+        self.sent_case.clear();
+        self.sent_keyboard = None;
     }
 
     /// The writes for scene time `t`: each due device whose colours changed.
@@ -338,6 +346,19 @@ mod tests {
         let (room, cases) = desk();
         o.set_room(room, cases);
         assert_eq!(o.frame(SceneTime(2000)).len(), 2);
+        // Another look from the Scenes page (#487): every device gets it at its next turn.
+        assert!(o.frame(SceneTime(2100)).is_empty(), "still");
+        o.set_effect(Effect::Gradient {
+            stops: vec![Rgb([0, 0, 255]), ORANGE],
+            angle_deg: 90.0,
+        });
+        assert_eq!(o.frame(SceneTime(2200)).len(), 2);
+        // The same look again still redraws (a profile switch may send the same one).
+        o.set_effect(Effect::Gradient {
+            stops: vec![Rgb([0, 0, 255]), ORANGE],
+            angle_deg: 90.0,
+        });
+        assert_eq!(o.frame(SceneTime(2400)).len(), 2);
     }
 
     #[test]

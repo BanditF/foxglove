@@ -19,15 +19,19 @@ pub enum Page {
     #[default]
     Keyboard,
     Lights,
+    /// Scenes across every light (#487): its own page, since a scene spans the devices that
+    /// Lights lists one by one.
+    Scenes,
     Screens,
     Plugins,
     Settings,
 }
 
 impl Page {
-    pub const ALL: [Page; 5] = [
+    pub const ALL: [Page; 6] = [
         Page::Keyboard,
         Page::Lights,
+        Page::Scenes,
         Page::Screens,
         Page::Plugins,
         Page::Settings,
@@ -37,6 +41,7 @@ impl Page {
         match self {
             Page::Keyboard => "Keyboard",
             Page::Lights => "Lights",
+            Page::Scenes => "Scenes",
             Page::Screens => "Screens",
             Page::Plugins => "Plugins",
             Page::Settings => "Settings",
@@ -56,10 +61,11 @@ impl Page {
 
 /// Every settings section by title, and the page it lives on (#385). A new section goes in
 /// here too; the `every_section_has_a_page` test finds the ones that don't.
-pub const SECTIONS: [(&str, Page); 14] = [
+pub const SECTIONS: [(&str, Page); 15] = [
     ("Connection", Page::Keyboard),
     ("Keyboard", Page::Keyboard),
     ("Lights", Page::Lights),
+    ("Scenes", Page::Scenes),
     // The art flow's tiers (#516), then the left screen's own settings.
     ("Showing now", Page::Screens),
     ("On the keyboard", Page::Screens),
@@ -227,6 +233,10 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
                         // The board and the keyboard's cards lead the page; the device picker
                         // (KeyPeek's Connection section) follows them (#386).
                         go = super::keyboard_page::top(ui);
+                    }
+                    if page == Page::Scenes {
+                        // The room map, the effect and the presets (#487).
+                        super::scenes_ui::page(ui);
                     }
                     if page == Page::Screens {
                         // Showing now, On the keyboard, On this PC, the left screen (#516).
@@ -769,6 +779,7 @@ mod tests {
         for (title, page) in [
             ("Keyboard", Page::Keyboard),
             ("Lights", Page::Lights),
+            ("Scenes", Page::Scenes),
             ("Showing now", Page::Screens),
             ("On the keyboard", Page::Screens),
             ("On this PC", Page::Screens),

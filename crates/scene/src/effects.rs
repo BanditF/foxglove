@@ -86,6 +86,24 @@ pub fn band_centre(t: SceneTime, period_ms: u32, span: f32, width_mm: f32) -> f3
     t.phase(period_ms) * (span + width) - width / 2.0
 }
 
+/// How much of a scanline's colour a point shows, 0..=1: where the point lies along the
+/// direction, against the band's centre at that moment. A wallpaper computes the same from the
+/// payload in [`crate::wallpaper`] (`shared/foxglove-sync.js` in bandit-wallpapers, checked
+/// against `tests/wallpaper_vectors.json` on both sides).
+pub fn scanline_level(
+    at: Point,
+    t: SceneTime,
+    bounds: &Rect,
+    angle_deg: f32,
+    width_mm: f32,
+    period_ms: u32,
+) -> f32 {
+    let span = extent(bounds, angle_deg);
+    let here = along(at, bounds, angle_deg) * span;
+    let centre = band_centre(t, period_ms, span, width_mm);
+    band(here - centre, width_mm / 2.0)
+}
+
 impl Effect {
     /// The colour at a point of the room at a moment. `bounds` is the room's
     /// ([`RoomMap::bounds`]).
@@ -108,12 +126,10 @@ impl Effect {
                 angle_deg,
                 width_mm,
                 period_ms,
-            } => {
-                let span = extent(bounds, *angle_deg);
-                let here = along(at, bounds, *angle_deg) * span;
-                let centre = band_centre(t, *period_ms, span, *width_mm);
-                background.mix(*colour, band(here - centre, width_mm / 2.0))
-            }
+            } => background.mix(
+                *colour,
+                scanline_level(at, t, bounds, *angle_deg, *width_mm, *period_ms),
+            ),
             Effect::Sweep {
                 stops,
                 angle_deg,

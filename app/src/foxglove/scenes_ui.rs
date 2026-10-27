@@ -1,0 +1,1168 @@
+//! The Scenes page (#487, epic #481): the room map with a live preview of the scene, the six
+//! effects and their colour or palette, speed, direction and width, Start and Stop, and the
+//! presets (built-in and the user's own).
+//!
+//! It is its own sidebar page, after Lights: the IA review keeps feature pages and organises
+//! Lights by device (Keyboard, then Other devices), while a scene runs across every device at
+//! once, the monitors included.
+//!
+//! [`page`] gathers the state and acts on clicks; [`draw`] paints a [`View`] and returns
+//! [`Intent`]s, so the previews and tests draw it with no devices. Starting, stopping and a
+//! running scene's look all go through `scene_run`, which owns the clock, the outputs' pacing
+//! and who holds the lights (#485).
+//!
+//! The preview animates only while the page is drawn: each frame asks for the next one
+//! [`PREVIEW_INTERVAL`] later (20 a second at most), and not while the window is minimised or
+//! the PC is away (locked, display off). Another page, a closed window or a still effect asks
+//! for nothing. The room is built again only when something it comes from changed
+//! (`scene_room::generation`) or the page is shown again.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use egui::{Color32, Pos2, RichText, Sense, Stroke};
+use foxglove_scene::room::{Placed, PlacedLight};
+use foxglove_scene::{Clock, DeviceKind, Effect, Point, Rgb, RoomMap, SceneTime};
+
+use super::lights_page::{full_slider, swatch, value_row, SWATCHES, TWO_COLUMNS};
+use super::scene_looks::{
+    self as looks, Background, Chosen, Direction, Kind, Look, Preset, Saved, PALETTES,
+};
+use super::settings_ui::{card, split_row};
+use super::theme;
+
+/// The preview's frame interval: 20 frames a second at most.
+pub const PREVIEW_INTERVAL: Duration = Duration::from_millis(50);
+
+/// What the page shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct View {
+    pub room: RoomMap,
+    /// The keyboard answers, so a scene lights it.
+    pub keyboard_lit: bool,
+    /// The room ids of the other devices a scene lights (boards with a driver).
+    pub lit: Vec<String>,
+    pub look: Look,
+    pub saved: Vec<Preset>,
+    /// The running scene's name.
+    pub running: Option<String>,
+    /// Stop was pressed and the lights are being given back.
+    pub stopping: bool,
+    /// The user moved a device, so "Reset positions" shows.
+    pub moved: bool,
+    /// The moment the preview shows, on the running scene's clock (or the page's).
+    pub t: SceneTime,
+}
+
+impl View {
+    fn is_lit(&self, id: &str) -> bool {
+        if is_keyboard(id) {
+            self.keyboard_lit
+        } else {
+            self.lit.iter().any(|l| l == id)
+        }
+    }
+}
+
+fn is_keyboard(id: &str) -> bool {
+    id.starts_with(super::scene_output::KEYBOARD)
+}
+
+/// What the user is doing but hasn't finished.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Draft {
+    /// The name typed for a new preset.
+    pub name: String,
+    /// A device being dragged on the map, and how far so far (mm).
+    pub drag: Option<(String, Point)>,
+}
+
+/// What a click, a slider or a drag asks for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Intent {
+    /// Another look; `save` when the change is done (not mid-drag of a slider).
+    Look {
+        look: Look,
+        save: bool,
+    },
+    Start,
+    Stop,
+    SavePreset(String),
+    RemovePreset(String),
+    /// A device dragged on the map, by this much (mm).
+    Move {
+        id: String,
+        by: Point,
+    },
+    ResetPositions,
+}
+
+/// The page's own state between frames.
+struct State {
+    profile: Option<String>,
+    chosen: Chosen,
+    saved: Saved,
+    room: RoomMap,
+    lit: Vec<String>,
+    keyboard_lit: bool,
+    moved: bool,
+    room_generation: u64,
+    last_frame: u64,
+    /// The profile changed: load its look again.
+    reload: bool,
+    /// The preview's clock while no scene runs.
+    clock: Clock,
+}
+
+static STATE: Mutex<Option<State>> = Mutex::new(None);
+static DRAFT: Mutex<Draft> = Mutex::new(Draft {
+    name: String::new(),
+    drag: None,
+});
+static STOPPING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+thread_local! {
+    /// The previews' page, so they never touch a device.
+    pub static PREVIEW: std::cell::RefCell<Option<(View, Draft)>> = const { std::cell::RefCell::new(None) };
+    /// How many times the preview asked for a repaint on this thread.
+    pub static REPAINTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// The Scenes page.
+pub fn page(ui: &mut egui::Ui) {
+    super::settings_ui::section(ui, "Scenes", show);
+}
+
+fn show(ui: &mut egui::Ui) {
+    #[cfg(test)]
+    if let Some((v, mut draft)) = PREVIEW.with_borrow(|v| v.clone()) {
+        draw(ui, &v, &mut draft);
+        animate(ui.ctx(), &v);
+        return;
+    }
+    let ctx = ui.ctx().clone();
+    wake_on_return(&ctx);
+    let mut guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let st = refresh(&mut guard, ctx.cumulative_frame_nr());
+    let running = super::scene_run::running();
+    let t = match &running {
+        Some((_, clock)) => clock.now(),
+        None => st.clock.now(),
+    };
+    let view = View {
+        room: st.room.clone(),
+        keyboard_lit: st.keyboard_lit,
+        lit: st.lit.clone(),
+        look: st.chosen.look.clone(),
+        saved: st.saved.presets.clone(),
+        running: running.map(|(name, _)| name),
+        stopping: STOPPING.load(Ordering::Relaxed),
+        moved: st.moved,
+        t,
+    };
+    let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
+    let intents = draw(ui, &view, &mut draft);
+    animate(&ctx, &view);
+    for intent in intents {
+        apply(st, &mut draft, intent, &ctx);
+    }
+}
+
+/// The page's state, loaded on first use and brought up to date: the profile's look after a
+/// profile switch, the room after a change or when the page is shown again.
+fn refresh(slot: &mut Option<State>, frame: u64) -> &mut State {
+    let profile = super::store::cached_profiles().1;
+    let st = slot.get_or_insert_with(|| State {
+        profile: profile.clone(),
+        chosen: looks::load_chosen(),
+        saved: looks::load_saved(),
+        room: RoomMap::default(),
+        lit: Vec::new(),
+        keyboard_lit: false,
+        moved: false,
+        room_generation: u64::MAX,
+        last_frame: 0,
+        reload: false,
+        clock: Clock::starting_now(),
+    });
+    if st.profile != profile || std::mem::take(&mut st.reload) {
+        st.profile = profile;
+        st.chosen = looks::load_chosen();
+    }
+    // Not drawn on the frame before (another page, or the window was closed and reopened).
+    let shown_again = frame != st.last_frame.wrapping_add(1);
+    if shown_again || st.room_generation != super::scene_room::generation() {
+        rebuild_room(st);
+    }
+    st.last_frame = frame;
+    st
+}
+
+fn rebuild_room(st: &mut State) {
+    use foxglove_devices::facts::Value;
+    st.room_generation = super::scene_room::generation();
+    st.room = super::scene_room::room();
+    st.moved = !super::scene_room::layout().offsets.is_empty();
+    st.keyboard_lit =
+        super::devices::bus().facts().get("keyboard.connected") == Some(Value::Bool(true));
+    st.lit = super::pc_lights::snapshot()
+        .devices
+        .into_iter()
+        .filter(|r| matches!(r.control, foxglove_devices::pc_lighting::Control::Driver(_)))
+        .map(|r| format!("light:{}", r.key))
+        .collect();
+}
+
+/// The profile changed: a running scene takes the new profile's look at once, whatever page
+/// shows (or none); the page loads it again when drawn.
+pub fn profile_changed() {
+    if let Some(st) = STATE.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        st.reload = true;
+    }
+    if super::scene_run::running().is_none() {
+        return;
+    }
+    let look = looks::load_chosen().look;
+    let saved = looks::load_saved().presets;
+    let room = super::scene_room::room();
+    super::scene_run::set_effect(&scene_name(&look, &saved), look.effect(&room));
+}
+
+/// Repaints the page when the PC comes back (unlocked, display on), since the preview asks for
+/// no frames while away. Subscribed once, on the page's first frame.
+fn wake_on_return(ctx: &egui::Context) {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        super::scene_run::set_page(ctx);
+        let ctx = ctx.clone();
+        let sub = super::away::subscribe(move |away| {
+            if !away {
+                ctx.request_repaint();
+            }
+        });
+        // For the app's life: one listener, woken only by lock and display events.
+        std::mem::forget(sub);
+    });
+}
+
+/// The name a look runs under: its preset's, or "Custom scene".
+fn scene_name(look: &Look, saved: &[Preset]) -> String {
+    looks::named(look, &looks::built_in(), saved)
+        .unwrap_or("Custom scene")
+        .to_string()
+}
+
+fn apply(st: &mut State, draft: &mut Draft, intent: Intent, ctx: &egui::Context) {
+    match intent {
+        Intent::Look { look, save } => {
+            st.chosen.look = look.clamped();
+            if save {
+                looks::save_chosen(&st.chosen);
+            }
+            resend(st);
+        }
+        Intent::Start => {
+            looks::save_chosen(&st.chosen);
+            let name = scene_name(&st.chosen.look, &st.saved.presets);
+            if !super::scene_run::start(&name, st.chosen.look.effect(&st.room), None) {
+                eprintln!("Foxglove: a scene still runs; Start waits for it to end");
+            }
+        }
+        Intent::Stop => {
+            if !STOPPING.swap(true, Ordering::Relaxed) {
+                let ctx = ctx.clone();
+                // Stop waits (bounded) for the lights to be given back: off the UI thread.
+                super::services::spawn_named("scene-stop", move || {
+                    super::scene_run::stop();
+                    STOPPING.store(false, Ordering::Relaxed);
+                    ctx.request_repaint();
+                });
+            }
+        }
+        Intent::SavePreset(name) => {
+            if st.saved.save(&name, &st.chosen.look) {
+                looks::save_saved(&st.saved);
+                draft.name.clear();
+            }
+        }
+        Intent::RemovePreset(name) => {
+            st.saved.remove(&name);
+            looks::save_saved(&st.saved);
+        }
+        Intent::Move { id, by } => {
+            let mut layout = super::scene_room::layout();
+            layout.nudge(&id, by);
+            save_layout(st, &layout);
+        }
+        Intent::ResetPositions => {
+            let mut layout = super::scene_room::layout();
+            layout.offsets.clear();
+            save_layout(st, &layout);
+        }
+    }
+}
+
+fn save_layout(st: &mut State, layout: &foxglove_scene::Layout) {
+    if let Err(e) = super::store::save(super::scene_room::SECTION, layout) {
+        eprintln!("Foxglove: can't save the room map: {e}");
+    }
+    // A running scene places the devices again too.
+    super::scene_run::devices_changed();
+    rebuild_room(st);
+    // A ripple starts at the keyboard, wherever it now is.
+    resend(st);
+}
+
+/// A running scene takes the page's look.
+fn resend(st: &State) {
+    if super::scene_run::running().is_some() {
+        let name = scene_name(&st.chosen.look, &st.saved.presets);
+        super::scene_run::set_effect(&name, st.chosen.look.effect(&st.room));
+    }
+}
+
+/// When the preview wants its next frame: never while minimised or away, or for a still look.
+pub fn next_frame(kind: Kind, minimised: bool, away: bool) -> Option<Duration> {
+    (!minimised && !away && kind != Kind::Gradient).then_some(PREVIEW_INTERVAL)
+}
+
+fn animate(ctx: &egui::Context, v: &View) {
+    let minimised = ctx.input(|i| i.viewport().minimized) == Some(true);
+    if let Some(after) = next_frame(v.look.kind, minimised, super::away::away()) {
+        ctx.request_repaint_after(after);
+        #[cfg(test)]
+        REPAINTS.set(REPAINTS.get() + 1);
+    }
+}
+
+/// Paints the page; returns what was asked for this frame.
+pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
+    let mut out = Vec::new();
+    let gap = 16.0;
+    let width = ui.available_width();
+    if width < TWO_COLUMNS {
+        card(ui, "Room", |ui| room_card(ui, v, draft, &mut out));
+        ui.add_space(10.0);
+        card(ui, "Presets", |ui| presets(ui, v, &mut out));
+        ui.add_space(10.0);
+        card(ui, "Effect", |ui| effect_card(ui, v, draft, &mut out));
+        ui.add_space(6.0);
+        return out;
+    }
+    let left_w = ((width - gap) * 0.62).floor();
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        ui.allocate_ui_with_layout(
+            egui::vec2(left_w, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(left_w);
+                card(ui, "Room", |ui| room_card(ui, v, draft, &mut out));
+                ui.add_space(10.0);
+                card(ui, "Effect", |ui| effect_card(ui, v, draft, &mut out));
+            },
+        );
+        let right_w = width - left_w - gap;
+        ui.allocate_ui_with_layout(
+            egui::vec2(right_w, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_width(right_w);
+                card(ui, "Presets", |ui| presets(ui, v, &mut out));
+            },
+        );
+    });
+    ui.add_space(6.0);
+    out
+}
+
+/// Start or Stop with the scene's state, the map, and what the scene lights.
+fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>) {
+    let p = theme::palette(ui);
+    split_row(
+        ui,
+        |ui| {
+            if v.running.is_some() || v.stopping {
+                let stop = ui.add_enabled(!v.stopping, egui::Button::new("Stop"));
+                if stop
+                    .on_hover_text("Stop the scene and put the lights back")
+                    .clicked()
+                {
+                    out.push(Intent::Stop);
+                }
+            } else if ui
+                .add(theme::primary_button(ui, "Start"))
+                .on_hover_text("Run this scene on the lights")
+                .clicked()
+            {
+                out.push(Intent::Start);
+            }
+            if v.moved
+                && ui
+                    .button("Reset positions")
+                    .on_hover_text("Put every device back where Foxglove placed it")
+                    .clicked()
+            {
+                out.push(Intent::ResetPositions);
+            }
+        },
+        |ui| {
+            let (text, color) = match (&v.running, v.stopping) {
+                (_, true) => ("Stopping: putting the lights back…".to_string(), p.text),
+                (Some(name), false) => (format!("Running: {name}"), p.ok),
+                (None, false) => ("Not running. The map shows a preview.".to_string(), p.muted),
+            };
+            ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
+        },
+    );
+    ui.add_space(6.0);
+    room_map(ui, v, draft, out);
+    ui.add_space(6.0);
+    ui.add(egui::Label::new(RichText::new(legend(v)).color(p.muted)).wrap());
+}
+
+/// Which devices the scene lights, in words.
+pub fn legend(v: &View) -> String {
+    let mut lit: Vec<String> = Vec::new();
+    let mut shown: Vec<String> = Vec::new();
+    for d in v
+        .room
+        .devices
+        .iter()
+        .filter(|d| d.kind != DeviceKind::Monitor)
+    {
+        let keyboard = is_keyboard(&d.id);
+        let name = if keyboard {
+            let n = d.name.trim_end_matches(" left").trim_end_matches(" right");
+            format!("{n} (one colour for both halves)")
+        } else {
+            d.name.clone()
+        };
+        let list = if v.is_lit(&d.id) {
+            &mut lit
+        } else {
+            &mut shown
+        };
+        if !list.contains(&name) {
+            list.push(name);
+        }
+    }
+    let mut text = if lit.is_empty() {
+        "Nothing to light yet: connect the keyboard or the case.".to_string()
+    } else {
+        format!("Lights: {}.", lit.join(", "))
+    };
+    if !shown.is_empty() {
+        text.push_str(&format!(" Shown only: {}.", shown.join(", ")));
+    }
+    text.push_str(
+        " Drag a device to where it stands; the monitors follow Windows' display layout.",
+    );
+    text
+}
+
+/// Where the room map assumes the primary monitor when Windows lists none (`foxglove_scene`'s
+/// 27" default at the room's origin).
+const STAND_IN_MONITOR: foxglove_scene::Rect = foxglove_scene::Rect::new(0.0, 0.0, 597.0, 336.0);
+
+/// Room space (mm) onto the map's rectangle (points), keeping the room's shape.
+struct Map {
+    origin: Pos2,
+    scale: f32,
+    bounds: foxglove_scene::Rect,
+}
+
+impl Map {
+    fn new(area: egui::Rect, bounds: foxglove_scene::Rect) -> Map {
+        let (w, h) = (bounds.w.max(1.0), bounds.h.max(1.0));
+        let scale = (area.width() / w).min(area.height() / h).max(0.001);
+        let size = egui::vec2(w * scale, h * scale);
+        Map {
+            origin: area.center() - size / 2.0,
+            scale,
+            bounds,
+        }
+    }
+
+    fn pos(&self, p: Point) -> Pos2 {
+        self.origin
+            + egui::vec2(
+                (p.x - self.bounds.x) * self.scale,
+                (p.y - self.bounds.y) * self.scale,
+            )
+    }
+
+    fn rect(&self, r: &foxglove_scene::Rect) -> egui::Rect {
+        egui::Rect::from_min_max(
+            self.pos(Point::new(r.x, r.y)),
+            self.pos(Point::new(r.right(), r.bottom())),
+        )
+    }
+
+    fn mm(&self, d: egui::Vec2) -> Point {
+        Point::new(d.x / self.scale, d.y / self.scale)
+    }
+}
+
+/// The room as drawn this frame: with the drag in progress applied.
+fn dragged_room(room: &RoomMap, drag: Option<&(String, Point)>) -> RoomMap {
+    let mut room = room.clone();
+    if let Some((id, by)) = drag {
+        if let Some(d) = room.devices.iter_mut().find(|d| d.id == *id) {
+            d.rect = d.rect.moved(*by);
+            for l in &mut d.lights {
+                l.at = l.at + *by;
+            }
+        }
+    }
+    room
+}
+
+/// The device a drag on the map at `at` moves: the top one under it that isn't a monitor.
+fn device_at<'a>(room: &'a RoomMap, map: &Map, at: Pos2) -> Option<&'a Placed> {
+    room.devices
+        .iter()
+        .rev()
+        .filter(|d| d.kind != DeviceKind::Monitor)
+        .find(|d| map.rect(&d.rect).expand(3.0).contains(at))
+}
+
+fn color(c: Rgb) -> Color32 {
+    let [r, g, b] = c.0;
+    Color32::from_rgb(r, g, b)
+}
+
+/// The map: the scene's field across the room, faint, then each device and its lights.
+fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>) {
+    let p = theme::palette(ui);
+    let width = ui.available_width();
+    // With no display read, a monitor's outline where the room assumes one, for scale.
+    let stand_in =
+        (!v.room.devices.iter().any(|d| d.kind == DeviceKind::Monitor)).then_some(STAND_IN_MONITOR);
+    let b = stand_in.map_or(v.room.bounds, |m| v.room.bounds.union(&m));
+    let aspect = if b.w > 0.0 { b.h / b.w } else { 0.6 };
+    let height = (width * aspect).clamp(150.0, 320.0);
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, height), Sense::click_and_drag());
+    let map = Map::new(rect.shrink(12.0), b);
+    handle_drag(&response, v, &map, draft, out);
+    let room = dragged_room(&v.room, draft.drag.as_ref());
+    let effect = v.look.effect(&room);
+    let painter = ui.painter_at(rect);
+    painter.rect(
+        rect,
+        6.0,
+        p.well,
+        Stroke::new(1.0, p.line),
+        egui::StrokeKind::Inside,
+    );
+    field(&painter, &map, &effect, v.t, &room.bounds);
+    if let Some(m) = stand_in {
+        let r = map.rect(&m);
+        painter.rect_stroke(r, 3.0, Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
+    }
+    let frame = effect.render(&room, v.t);
+    let keyboard = super::scene_output::mixed(
+        &frame
+            .lights
+            .iter()
+            .filter(|l| is_keyboard(&l.device))
+            .map(|l| l.colour)
+            .collect::<Vec<_>>(),
+    );
+    let hovered = response
+        .hover_pos()
+        .and_then(|at| device_at(&room, &map, at))
+        .map(|d| d.id.clone());
+    for d in &room.devices {
+        let r = map.rect(&d.rect);
+        if d.kind == DeviceKind::Monitor {
+            painter.rect_stroke(
+                r,
+                3.0,
+                Stroke::new(1.5, p.control_line),
+                egui::StrokeKind::Inside,
+            );
+            continue;
+        }
+        let lit = v.is_lit(&d.id);
+        let active = hovered.as_deref() == Some(&d.id)
+            || draft.drag.as_ref().is_some_and(|(id, _)| *id == d.id);
+        let line = if active {
+            p.accent
+        } else if lit {
+            p.control_line
+        } else {
+            p.line
+        };
+        painter.rect(
+            r,
+            4.0,
+            p.surface_raised,
+            Stroke::new(1.0, line),
+            egui::StrokeKind::Inside,
+        );
+        let dim = |c: Color32| if lit { c } else { c.gamma_multiply(0.4) };
+        if is_keyboard(&d.id) {
+            // The keyboard shows one colour for both halves (#485), so the map does too.
+            if let Some(c) = keyboard {
+                painter.rect_filled(r.shrink(3.0), 3.0, dim(color(c)));
+            }
+            continue;
+        }
+        for l in frame.lights.iter().filter(|l| l.device == d.id) {
+            let at = d.lights.iter().find(|x| x.id == l.light).map(|x| x.at);
+            if let Some(at) = at {
+                let radius = (r.width().min(r.height()) / 6.0).clamp(2.5, 7.0);
+                painter.circle_filled(map.pos(at), radius, dim(color(l.colour)));
+            }
+        }
+    }
+    if let Some(id) = hovered {
+        if let Some(d) = room.devices.iter().find(|d| d.id == id) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            let lit = if v.is_lit(&d.id) {
+                "lit by the scene"
+            } else {
+                "shown only"
+            };
+            response.on_hover_text_at_pointer(format!("{} · {lit} · drag to move", d.name));
+        }
+    }
+}
+
+/// A drag on the map moves the device it started on; the move is kept when it ends.
+fn handle_drag(
+    response: &egui::Response,
+    v: &View,
+    map: &Map,
+    draft: &mut Draft,
+    out: &mut Vec<Intent>,
+) {
+    if response.drag_started() {
+        let start = response.interact_pointer_pos();
+        draft.drag = start
+            .and_then(|at| device_at(&v.room, map, at))
+            .map(|d| (d.id.clone(), Point::default()));
+    }
+    if response.dragged() {
+        if let Some((_, by)) = draft.drag.as_mut() {
+            *by = *by + map.mm(response.drag_delta());
+        }
+    }
+    if response.drag_stopped() {
+        if let Some((id, by)) = draft.drag.take() {
+            if by.x.abs() >= 1.0 || by.y.abs() >= 1.0 {
+                out.push(Intent::Move { id, by });
+            }
+        }
+    }
+}
+
+/// The scene across the whole room, faint: what a wallpaper would draw on the monitors, and
+/// how the light travels between the devices. One mesh, its corners coloured by the effect.
+fn field(
+    painter: &egui::Painter,
+    map: &Map,
+    effect: &Effect,
+    t: SceneTime,
+    bounds: &foxglove_scene::Rect,
+) {
+    let area = map.rect(bounds);
+    let nx = ((area.width() / 14.0).ceil() as usize).clamp(2, 48);
+    let ny = ((area.height() / 14.0).ceil() as usize).clamp(2, 32);
+    // The grid as one device's lights, so the effect renders it in one pass.
+    let mut lights = Vec::with_capacity((nx + 1) * (ny + 1));
+    for j in 0..=ny {
+        for i in 0..=nx {
+            let (fx, fy) = (i as f32 / nx as f32, j as f32 / ny as f32);
+            lights.push(PlacedLight {
+                id: String::new(),
+                at: Point::new(bounds.x + fx * bounds.w, bounds.y + fy * bounds.h),
+            });
+        }
+    }
+    let grid = RoomMap {
+        devices: vec![Placed {
+            id: String::new(),
+            name: String::new(),
+            kind: DeviceKind::Other,
+            rect: *bounds,
+            lights,
+        }],
+        bounds: *bounds,
+    };
+    let frame = effect.render(&grid, t);
+    let mut mesh = egui::Mesh::default();
+    for (k, l) in frame.lights.iter().enumerate() {
+        let (i, j) = (k % (nx + 1), k / (nx + 1));
+        let at = area.min
+            + egui::vec2(
+                area.width() * i as f32 / nx as f32,
+                area.height() * j as f32 / ny as f32,
+            );
+        mesh.colored_vertex(at, color(l.colour).gamma_multiply(0.45));
+    }
+    let row = (nx + 1) as u32;
+    for j in 0..ny as u32 {
+        for i in 0..nx as u32 {
+            let a = j * row + i;
+            mesh.add_triangle(a, a + 1, a + row);
+            mesh.add_triangle(a + 1, a + row + 1, a + row);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// A strip of colours left to right, as one mesh.
+fn strip(painter: &egui::Painter, rect: egui::Rect, stops: &[Rgb]) {
+    let stops: Vec<Rgb> = if stops.is_empty() {
+        vec![Rgb::BLACK]
+    } else {
+        stops.to_vec()
+    };
+    let n = stops.len().max(2) - 1;
+    let mut mesh = egui::Mesh::default();
+    for k in 0..=n {
+        let x = rect.left() + rect.width() * k as f32 / n as f32;
+        let c = color(stops[k.min(stops.len() - 1)]);
+        mesh.colored_vertex(egui::pos2(x, rect.top()), c);
+        mesh.colored_vertex(egui::pos2(x, rect.bottom()), c);
+    }
+    for k in 0..n as u32 {
+        let a = k * 2;
+        mesh.add_triangle(a, a + 1, a + 2);
+        mesh.add_triangle(a + 1, a + 3, a + 2);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// A look's colours, for its chip in the preset list.
+fn look_stops(look: &Look) -> Vec<Rgb> {
+    if look.kind.uses_colour() {
+        vec![Rgb(look.colour), look.background.rgb()]
+    } else {
+        looks::palette(&look.palette)
+    }
+}
+
+/// The effect and its parameters, and saving the look as a preset.
+fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>) {
+    let look = &v.look;
+    let mut set = |look: Look, save: bool| out.push(Intent::Look { look, save });
+    ui.horizontal_wrapped(|ui| {
+        for k in Kind::ALL {
+            if theme::pill(ui, look.kind == k, k.label())
+                .on_hover_text(k.hint())
+                .clicked()
+                && look.kind != k
+            {
+                set(
+                    Look {
+                        kind: k,
+                        ..look.clone()
+                    },
+                    true,
+                );
+            }
+        }
+    });
+    ui.add_space(4.0);
+    if look.kind.uses_colour() {
+        ui.label(theme::caps_label(ui, "Colour"));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            for (name, rgb) in SWATCHES {
+                if swatch(ui, color(Rgb(rgb)), look.colour == rgb)
+                    .on_hover_text(name)
+                    .clicked()
+                {
+                    set(
+                        Look {
+                            colour: rgb,
+                            ..look.clone()
+                        },
+                        true,
+                    );
+                }
+            }
+        });
+        ui.label(theme::caps_label(ui, "Background"));
+        ui.horizontal_wrapped(|ui| {
+            for b in Background::ALL {
+                if theme::pill(ui, look.background == b, b.label()).clicked() {
+                    set(
+                        Look {
+                            background: b,
+                            ..look.clone()
+                        },
+                        true,
+                    );
+                }
+            }
+        });
+    } else {
+        ui.label(theme::caps_label(ui, "Palette"));
+        ui.horizontal_wrapped(|ui| {
+            for (name, _) in PALETTES {
+                if theme::pill(ui, look.palette == name, name).clicked() {
+                    set(
+                        Look {
+                            palette: name.into(),
+                            ..look.clone()
+                        },
+                        true,
+                    );
+                }
+            }
+        });
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 10.0), Sense::hover());
+        strip(ui.painter(), rect, &looks::palette(&look.palette));
+    }
+    ui.add_space(4.0);
+    if look.kind.uses_speed() {
+        let mut speed = look.speed;
+        value_row(ui, "Speed", format!("{speed} of 10"));
+        let r = full_slider(ui, egui::Slider::new(&mut speed, looks::SPEEDS));
+        slid(
+            &r,
+            Look {
+                speed,
+                ..look.clone()
+            },
+            look,
+            &mut set,
+        );
+    }
+    if look.kind.uses_direction() {
+        ui.label(theme::caps_label(ui, "Direction"));
+        ui.horizontal_wrapped(|ui| {
+            for d in Direction::ALL {
+                if theme::pill(ui, look.direction == d, d.label()).clicked() {
+                    set(
+                        Look {
+                            direction: d,
+                            ..look.clone()
+                        },
+                        true,
+                    );
+                }
+            }
+        });
+    }
+    if look.kind.uses_width() {
+        let mut width = look.width_mm;
+        value_row(ui, look.kind.width_label(), format!("{width} mm"));
+        let r = full_slider(ui, egui::Slider::new(&mut width, looks::WIDTHS));
+        slid(
+            &r,
+            Look {
+                width_mm: width,
+                ..look.clone()
+            },
+            look,
+            &mut set,
+        );
+    }
+    ui.add_space(6.0);
+    save_row(ui, draft, out);
+}
+
+/// A slider's change: shown at once, saved when the drag ends (or on a key press).
+fn slid(r: &egui::Response, new: Look, old: &Look, set: &mut impl FnMut(Look, bool)) {
+    if r.changed() && new != *old {
+        set(new, !r.dragged());
+    } else if r.drag_stopped() {
+        set(new, true);
+    }
+}
+
+fn save_row(ui: &mut egui::Ui, draft: &mut Draft, out: &mut Vec<Intent>) {
+    ui.label(theme::caps_label(ui, "Save as preset"));
+    let problem = looks::name_problem(&draft.name);
+    let save = std::cell::Cell::new(false);
+    split_row(
+        ui,
+        |ui| {
+            let clicked = ui
+                .add_enabled(problem.is_none(), egui::Button::new("Save"))
+                .on_hover_text("Keep this look in your presets")
+                .clicked();
+            save.set(save.get() || clicked);
+        },
+        |ui| {
+            let edit = egui::TextEdit::singleline(&mut draft.name)
+                .hint_text("Name")
+                .char_limit(looks::NAME_MAX)
+                .desired_width(ui.available_width().max(60.0));
+            let r = ui.add(edit);
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && problem.is_none()
+            {
+                save.set(true);
+            }
+        },
+    );
+    if let Some(why) = problem.filter(|_| !draft.name.trim().is_empty()) {
+        ui.weak(why);
+    }
+    if save.get() {
+        out.push(Intent::SavePreset(draft.name.trim().to_string()));
+    }
+}
+
+/// The presets: built-in, then the user's own.
+fn presets(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
+    for p in looks::built_in() {
+        preset_row(ui, &p, v.look == p.look, false, out);
+    }
+    ui.add_space(6.0);
+    ui.label(theme::caps_label(ui, "Yours"));
+    if v.saved.is_empty() {
+        ui.weak("Presets you save show here.");
+    }
+    for p in &v.saved {
+        preset_row(ui, p, v.look == p.look, true, out);
+    }
+}
+
+fn preset_row(
+    ui: &mut egui::Ui,
+    p: &Preset,
+    selected: bool,
+    removable: bool,
+    out: &mut Vec<Intent>,
+) {
+    let mut remove = false;
+    split_row(
+        ui,
+        |ui| {
+            remove = removable
+                && ui
+                    .small_button("Remove")
+                    .on_hover_text("Remove this preset")
+                    .clicked();
+        },
+        |ui| {
+            let (chip, _) = ui.allocate_exact_size(egui::vec2(26.0, 12.0), Sense::hover());
+            strip(ui.painter(), chip, &look_stops(&p.look));
+            let label = ui
+                .selectable_label(selected, &p.name)
+                .on_hover_text(p.look.kind.hint());
+            if label.clicked() && !selected {
+                out.push(Intent::Look {
+                    look: p.look.clone(),
+                    save: true,
+                });
+            }
+        },
+    );
+    if remove {
+        out.push(Intent::RemovePreset(p.name.clone()));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::foxglove::scene_room::tests::{sample_room, sample_room_empty, SAMPLE_CASE};
+
+    /// The user's desk: the room with the case and the keyboard lit, the scanline over the
+    /// case's middle fans.
+    pub(crate) fn sample() -> View {
+        View {
+            room: sample_room(),
+            keyboard_lit: true,
+            lit: vec![SAMPLE_CASE.into()],
+            look: Look::default(),
+            saved: vec![Preset {
+                name: "Desk evening".into(),
+                look: Look {
+                    kind: Kind::Breathe,
+                    colour: [0x7f, 0xb0, 0xe0],
+                    ..Look::default()
+                },
+            }],
+            running: Some("Bandit scanline".into()),
+            stopping: false,
+            moved: true,
+            // The band on the case's middle fans, on its way to the keys.
+            t: SceneTime(2300),
+        }
+    }
+
+    /// No devices found and nothing running.
+    pub(crate) fn sample_none() -> View {
+        View {
+            room: sample_room_empty(),
+            keyboard_lit: false,
+            lit: vec![],
+            look: Look {
+                kind: Kind::Drift,
+                palette: "Forest".into(),
+                width_mm: 250,
+                ..Look::default()
+            },
+            saved: vec![],
+            running: None,
+            stopping: false,
+            moved: false,
+            t: SceneTime(5000),
+        }
+    }
+
+    #[test]
+    fn the_preview_waits_while_minimised_away_or_still() {
+        assert_eq!(
+            next_frame(Kind::Scanline, false, false),
+            Some(PREVIEW_INTERVAL)
+        );
+        assert!(
+            PREVIEW_INTERVAL >= Duration::from_millis(50),
+            "20 frames a second at most"
+        );
+        assert_eq!(next_frame(Kind::Scanline, true, false), None);
+        assert_eq!(next_frame(Kind::Ripple, false, true), None);
+        assert_eq!(
+            next_frame(Kind::Gradient, false, false),
+            None,
+            "a still look"
+        );
+    }
+
+    #[test]
+    fn the_legend_names_what_the_scene_lights() {
+        let text = legend(&sample());
+        assert!(
+            text.starts_with("Lights: Eyelash Corne (one colour for both halves), HP OMEN 45L"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Shown only: G502 Proteus Spectrum."),
+            "{text}"
+        );
+        let none = legend(&sample_none());
+        assert!(none.starts_with("Nothing to light yet"), "{none}");
+        assert!(none.contains("Shown only: Keyboard (one colour"), "{none}");
+    }
+
+    #[test]
+    fn a_drag_moves_the_device_under_it_but_never_a_monitor() {
+        let v = sample();
+        let map = Map::new(
+            egui::Rect::from_min_size(Pos2::ZERO, egui::vec2(500.0, 300.0)),
+            v.room.bounds,
+        );
+        let case = v.room.device(SAMPLE_CASE).unwrap();
+        let at = map.rect(&case.rect).center();
+        assert_eq!(
+            device_at(&v.room, &map, at).map(|d| d.id.as_str()),
+            Some(SAMPLE_CASE)
+        );
+        let monitor = v
+            .room
+            .devices
+            .iter()
+            .find(|d| d.kind == DeviceKind::Monitor)
+            .unwrap();
+        let on_monitor = map.rect(&monitor.rect).center();
+        assert!(device_at(&v.room, &map, on_monitor).is_none());
+        // A drag of 50 points is 50 / scale mm, and the drawn room moves with it.
+        let by = map.mm(egui::vec2(50.0, 0.0));
+        assert!((by.x * map.scale - 50.0).abs() < 1e-3);
+        let moved = dragged_room(&v.room, Some(&(SAMPLE_CASE.into(), by)));
+        let after = moved.device(SAMPLE_CASE).unwrap();
+        assert_eq!(after.rect.x, case.rect.x + by.x);
+        assert_eq!(after.lights[0].at.x, case.lights[0].at.x + by.x);
+    }
+
+    /// Where `label` was drawn in a frame's shapes.
+    fn text_at(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<Pos2> {
+        fn find(shape: &egui::Shape, label: &str) -> Option<Pos2> {
+            match shape {
+                egui::Shape::Vec(v) => v.iter().find_map(|s| find(s, label)),
+                egui::Shape::Text(t) if t.galley.job.text == label => {
+                    Some(t.pos + t.galley.rect.center().to_vec2())
+                }
+                _ => None,
+            }
+        }
+        shapes.iter().find_map(|s| find(&s.shape, label))
+    }
+
+    /// The intents a click on `label` gives, through the real draw code.
+    fn click(v: &View, label: &str) -> Vec<Intent> {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        crate::platform::add_phosphor_to_fonts(&mut fonts);
+        theme::add_fonts(&mut fonts);
+        ctx.set_fonts(fonts);
+        let mut found = Vec::new();
+        let mut at = None;
+        for _ in 0..3 {
+            let mut raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    Pos2::ZERO,
+                    egui::vec2(900.0, 1100.0),
+                )),
+                ..Default::default()
+            };
+            if let Some(at) = at.take() {
+                raw.events = vec![
+                    egui::Event::PointerMoved(at),
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: Default::default(),
+                    },
+                    egui::Event::PointerButton {
+                        pos: at,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers: Default::default(),
+                    },
+                ];
+            }
+            let mut out = ctx.run_ui(raw, |ui| {
+                found.extend(draw(ui, v, &mut Draft::default()));
+            });
+            out.textures_delta.clear();
+            if found.is_empty() {
+                at = text_at(&out.shapes, label);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn a_running_scene_shows_stop_and_an_idle_one_start() {
+        assert_eq!(click(&sample(), "Stop"), vec![Intent::Stop]);
+        assert_eq!(click(&sample_none(), "Start"), vec![Intent::Start]);
+        assert_eq!(
+            click(&sample(), "Reset positions"),
+            vec![Intent::ResetPositions]
+        );
+        assert!(
+            click(&sample(), "Start").is_empty(),
+            "no Start while one runs"
+        );
+        // A preset row picks its look; an effect pill keeps the other parameters.
+        let picked = click(&sample_none(), "Steel sweep");
+        assert!(
+            matches!(&picked[..], [Intent::Look { look, save: true }] if look.kind == Kind::Sweep && look.palette == "Steel"),
+            "{picked:?}"
+        );
+        let pill = click(&sample(), "Ripple");
+        assert!(
+            matches!(&pill[..], [Intent::Look { look, save: true }] if look.kind == Kind::Ripple && look.colour == sample().look.colour),
+            "{pill:?}"
+        );
+        assert_eq!(
+            click(&sample(), "Remove"),
+            vec![Intent::RemovePreset("Desk evening".into())]
+        );
+    }
+}
