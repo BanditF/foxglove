@@ -97,19 +97,22 @@ enum Style {
 }
 
 thread_local! {
-    /// Keyboards found for the overlay's keymap, and whether one is connected (#534).
-    static KEYMAP_CHOICE: std::cell::Cell<(usize, bool)> = const { std::cell::Cell::new((0, false)) };
+    /// Keyboards found for the overlay's keymap, whether one is connected, and its layouts (#534).
+    static KEYMAP_CHOICE: std::cell::Cell<(usize, bool, usize)> = const { std::cell::Cell::new((0, false, 0)) };
 }
 
-/// What the keymap source has to offer this frame: the keyboards found and whether one is
-/// connected. KeyPeek's settings code tells it before drawing the sections.
-pub fn keymap_choice(found: usize, connected: bool) {
-    KEYMAP_CHOICE.set((found, connected));
+/// What the keymap source has to offer this frame: the keyboards found, whether one is
+/// connected, and the connected one's layouts. KeyPeek's settings code tells it before drawing
+/// the sections.
+pub fn keymap_choice(found: usize, connected: bool, layouts: usize) {
+    KEYMAP_CHOICE.set((found, connected, layouts));
 }
 
-/// The keymap source shows unless there's nothing to choose: one keyboard, connected.
+/// The keymap source shows unless there's nothing to choose: one keyboard, connected, with at
+/// most one layout.
 pub fn keymap_source_shown() -> bool {
-    KEYMAP_CHOICE.get() != (1, true)
+    let (found, connected, layouts) = KEYMAP_CHOICE.get();
+    !(found == 1 && connected && layouts <= 1)
 }
 
 /// A heading row inside one of KeyPeek's two-column grids ("When it shows", "Appearance").
@@ -264,17 +267,18 @@ mod keymap_source_tests {
     use super::*;
 
     /// The keymap source hides only when there's nothing to choose (#534): one keyboard found,
-    /// and it's connected. Then the layer colours close the card.
+    /// connected, with one layout. Then the layer colours close the card.
     #[test]
     fn the_keymap_source_shows_only_with_a_choice() {
-        for (found, connected, shown) in [
-            (0, false, true),
-            (1, false, true),
-            (1, true, false),
-            (2, true, true),
-            (2, false, true),
+        for (found, connected, layouts, shown) in [
+            (0, false, 0, true),
+            (1, false, 0, true),
+            (1, true, 1, false),
+            (1, true, 2, true),
+            (2, true, 1, true),
+            (2, false, 0, true),
         ] {
-            keymap_choice(found, connected);
+            keymap_choice(found, connected, layouts);
             assert_eq!(
                 keymap_source_shown(),
                 shown,
@@ -288,6 +292,6 @@ mod keymap_source_tests {
             assert_eq!(style("Theme"), theme);
         }
         assert_eq!(style("Connection"), Style::CardBottom);
-        keymap_choice(0, false);
+        keymap_choice(0, false, 0);
     }
 }

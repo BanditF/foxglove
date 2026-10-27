@@ -128,6 +128,7 @@ impl OverlayApp {
             crate::foxglove::settings_ui::keymap_choice(
                 self.connect.available_devices.len(),
                 matches!(self.session.connection, AppConnectionState::Connected { .. }),
+                self.session.layout_names.len(),
             );
             // Foxglove (#385): the sidebar, status strip and pages; each page scrolls itself.
             crate::foxglove::shell::frame(ui, |ui| {

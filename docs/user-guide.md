@@ -140,7 +140,7 @@ Open it from the tray: **Open Foxglove**. The sidebar has six pages, top to bott
     appears), **Appearance** (display, alignment, size, opacity, labels), **Layer colours** (the
     text colour, and per layer its colour and whether it shows), and **Keymap source**, the
     keyboard the overlay reads (**Device**, **Layout**, **Connect**). Keymap source shows only
-    when there's a choice: two or more keyboards found, or none connected.
+    when there's a choice: two or more keyboards found, none connected, or more than one layout.
   - **Other keyboards:** read-only support for VIA/QMK keyboards: see
     [Other keyboards](#10-other-keyboards-via).
 - **Lights.** **Keyboard** sets the colour, effect, brightness and speed of the keyboard's
