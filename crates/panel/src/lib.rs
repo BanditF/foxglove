@@ -3,6 +3,7 @@
 //! - [`clock`]: the time and date in the user's region formats
 //! - [`providers`]: clock, volume, media and the foreground program, read from Windows
 //! - [`Sources`]: keeps a [`render::View`] up to date from the providers
+//! - [`stats`]: CPU, GPU and memory load for the PC load layout (#506)
 //! - [`panel_lock`]: only one app draws the panel at a time
 
 pub mod changes;
@@ -11,6 +12,7 @@ pub mod mic;
 pub mod panel_lock;
 pub mod providers;
 pub mod render;
+pub mod stats;
 
 use chrono::Timelike;
 use std::time::{Duration, Instant};
