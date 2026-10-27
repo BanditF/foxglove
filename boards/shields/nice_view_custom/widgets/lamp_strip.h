@@ -21,6 +21,3 @@ void lamp_strip_set(int index, uint8_t r, uint8_t g, uint8_t b);
 // Writes the strip soon (ZMK's low-priority queue), if the PC has it. Any thread. The strip goes
 // through dim_strip.c, so a new battery dim level (#465) is a lamp_strip_show() too.
 void lamp_strip_show(void);
-// SET_EFFECT (#490): the effect is dark (idle, or the user's off). The next draw writes black and
-// then cuts the LEDs' power (with ZMK's ext power), the next lit one powers them first. Any thread.
-void lamp_strip_dark(bool dark);

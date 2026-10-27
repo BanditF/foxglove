@@ -1,7 +1,9 @@
 # SET_EFFECT (module/effects_sim.c): crates/scene's vectors through lamp_effect.c; HELLO bit 19;
 # PLACE, EFFECT and RELEASE replies (D7 8F) and what each half is told; a still effect drawn
-# once, a moving one every 33 ms on its clock, dark while idle; it lives through an endpoint
-# change; SET_FRAME takes over and an effect takes back quietly; bad requests answer 5.
+# once, a moving one every 33 ms on its clock; it lives through an endpoint change; SET_FRAME
+# takes over and an effect takes back quietly; bad requests answer 5. The scene owns the lights:
+# it draws through idle and the user's off, RGB_SYNC (D7 81), the PC (D7 83, read by the case)
+# and the right hear the real on/off, and RELEASE puts it back.
 /^effects:/p
-/^hostlink: rx D7 8[CF]/p
+/^hostlink: rx D7 8[1CF]/p
 s/.*hid_listener_keycode/kp/p

@@ -789,7 +789,7 @@ static void settings_command(const uint8_t *d, int len) {
             rgb_idle_set_sync(d[2]);
         }
         bool on = false;
-        zmk_rgb_underglow_get_state(&on);
+        rgb_idle_get_on(&on); // the user's on/off: ZMK's is off under a scene (#542)
         r[2] = rgb_idle_sync();
         r[3] = on;
 #endif
