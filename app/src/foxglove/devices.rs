@@ -85,6 +85,17 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
     out
 }
 
+/// The keyboard found last, while it stays connected. Never looks for one, and never waits
+/// on a lookup in progress, so the UI thread may call it.
+pub fn cached() -> Option<Arc<DigitalisDevice>> {
+    DEVICE
+        .try_lock()
+        .ok()?
+        .as_ref()
+        .filter(|d| d.link().state().connected.is_some())
+        .cloned()
+}
+
 /// How Foxglove's host link reaches the keyboard found last (`USB` or `BLE`), which can differ
 /// from how it types to this PC (USB Raw HID stays silent before firmware #434).
 static HOST_LINK: Mutex<Option<&'static str>> = Mutex::new(None);

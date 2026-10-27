@@ -12,6 +12,10 @@
 //! - Every change is read back and sent again if the keyboard didn't take it (a few times).
 //! - While Foxglove is paused (#404) no lease shows: the lights go back as they were, leases
 //!   still come, change and go, and the winner shows again on resume.
+//! - A lease may draw per-LED frames over its colour (a scene with SET_FRAME, #529): frames hide
+//!   every colour the keyboard is sent, so they are handed back (`Lighting::release`) before
+//!   anything else shows, and the lease is asked to draw again when it shows again.
+//! - Colours the user sets while a lease holds the lights are what comes back at the end.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -46,6 +50,17 @@ pub struct Arbiter {
     next: u64,
     /// Foxglove is paused: no lease shows.
     paused: bool,
+    /// Devices whose lights a lease draws as frames (#529).
+    frames: HashMap<String, Frames>,
+}
+
+/// A lease that draws frames over its colour.
+struct Frames {
+    lease: u64,
+    /// Frames may be showing: a frame went out since the last hand-back.
+    held: bool,
+    /// Asks the lease's owner for a frame again (its lease shows again).
+    again: Box<dyn Fn() + Send>,
 }
 
 /// What a device's lights should show now.
@@ -147,7 +162,13 @@ impl Arbiter {
         if !self.paused && self.winner(device).is_some() && !self.base.contains_key(device) {
             self.base.insert(device.to_string(), settled(light)?);
         }
-        match self.target(device) {
+        let showing = match self.target(device) {
+            Target::Lease(l) => Some(l.id),
+            _ => None,
+        };
+        // Frames hide every colour: they go before anything else shows.
+        self.hand_back_frames(device, showing, light);
+        let shown = match self.target(device) {
             Target::Lease(l) => show(light, &Want::lease(l), false).map(|_| ()),
             // Giving the lights back waits for both halves of a split keyboard.
             Target::Restore(s) => {
@@ -159,16 +180,111 @@ impl Arbiter {
                 Ok(())
             }
             Target::Nothing => Ok(()),
-        }
+        };
+        self.frames_again(device, showing);
+        shown
     }
 
     /// The device (re)connected: a restore that didn't take is tried again (#293). Started by
-    /// the connection, stopped by the readback or [`RESENDS`].
+    /// the connection, stopped by the readback or [`RESENDS`]. A lease drawing frames draws
+    /// again (an unplug hands them back).
     pub fn connected(&mut self, device: &str, light: &dyn Lighting) -> Result<(), DeviceError> {
         if (self.paused || self.winner(device).is_none()) && self.base.contains_key(device) {
             return self.apply(device, light);
         }
+        if let (Some(f), Some(w)) = (self.frames.get(device), self.winner(device)) {
+            if f.lease == w.id && !self.paused {
+                (f.again)();
+            }
+        }
         Ok(())
+    }
+
+    /// Lease `id` draws frames on its device (#529). `again` asks it for a frame once its lease
+    /// shows again (a notification ended, Foxglove resumed, the keyboard reconnected); it runs
+    /// under the arbiter's lock, so it must only flag work.
+    pub fn draws_frames(&mut self, id: u64, again: impl Fn() + Send + 'static) {
+        let Some(device) = self
+            .leases
+            .iter()
+            .find(|l| l.id == id)
+            .map(|l| l.device.clone())
+        else {
+            return;
+        };
+        self.frames.insert(
+            device,
+            Frames {
+                lease: id,
+                held: false,
+                again: Box::new(again),
+            },
+        );
+    }
+
+    /// Whether lease `id` is the one its device shows now (and Foxglove isn't paused).
+    pub fn shows(&self, id: u64) -> bool {
+        !self.paused
+            && self
+                .leases
+                .iter()
+                .find(|l| l.id == id)
+                .and_then(|l| self.winner(&l.device))
+                .is_some_and(|w| w.id == id)
+    }
+
+    /// A frame went out on `device`: it hides the keyboard's colour until handed back.
+    pub fn frame_sent(&mut self, device: &str) {
+        if let Some(f) = self.frames.get_mut(device) {
+            f.held = true;
+        }
+    }
+
+    /// Hands `device`'s frames back now (the user is away, or the keyboard has none): its
+    /// lease's colour shows instead. The lease keeps drawing frames when asked again.
+    pub fn release_frames(&mut self, device: &str, light: &dyn Lighting) {
+        self.hand_back_frames(device, None, light);
+    }
+
+    /// The device draws no frames after all (firmware without SET_FRAME).
+    pub fn no_frames(&mut self, device: &str) {
+        self.frames.remove(device);
+    }
+
+    /// Releases frames that may be showing unless `showing` is the lease drawing them; forgets
+    /// a lease that ended.
+    fn hand_back_frames(&mut self, device: &str, showing: Option<u64>, light: &dyn Lighting) {
+        let Some(f) = self.frames.get_mut(device) else {
+            return;
+        };
+        if f.held && showing != Some(f.lease) {
+            // Not taken back (a lost reply): the keyboard's own timeout hands them back.
+            if let Err(e) = light.release() {
+                eprintln!("Foxglove: handing {device}'s frames back: {e}");
+            }
+            f.held = false;
+        }
+        let lease = f.lease;
+        if !self.leases.iter().any(|l| l.id == lease) {
+            self.frames.remove(device);
+        }
+    }
+
+    /// The lease drawing frames shows again without them: ask it for one.
+    fn frames_again(&self, device: &str, showing: Option<u64>) {
+        if let Some(f) = self.frames.get(device) {
+            if !f.held && showing == Some(f.lease) {
+                (f.again)();
+            }
+        }
+    }
+
+    /// The user changed `device`'s lights (the Lights page) while leases hold them: that is
+    /// what comes back when the last one ends, as for the case's colours under a scene.
+    pub fn user_changed(&mut self, device: &str, change: impl FnOnce(&mut LightingState)) {
+        if let Some(base) = self.base.get_mut(device) {
+            change(base);
+        }
     }
 }
 
@@ -479,6 +595,26 @@ mod tests {
             s.effect.id.clone(),
             s.speed,
         )
+    }
+
+    #[test]
+    fn what_the_user_sets_under_a_lease_comes_back_at_its_end() {
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        a.add(lease(1, Priority::Low, 30), &kb).unwrap();
+        // The Lights page: another colour and effect while the lease holds the lights.
+        a.user_changed("kb", |s| {
+            (s.hue, s.sat, s.brightness) = (300, 20, 70);
+            s.effect.id = "1".into();
+        });
+        a.user_changed("mouse", |s| s.hue = 1);
+        for d in a.end(|_| true) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(all(&kb), (false, 300, 20, 70, "1".into(), 1));
+        // No lease: nothing kept, nothing changes.
+        a.user_changed("kb", |s| s.hue = 5);
+        assert!(a.base.is_empty());
     }
 
     #[test]

@@ -81,7 +81,18 @@ pub struct Lighting {
     pub lamps: u16,
     #[serde(default)]
     pub layout: String,
+    /// Which key each LED of the left half's strip sits under, in chain order: an index into
+    /// [`Drawing::keys`]. The right half mirrors it. Scenes place LEDs by it (#529).
+    #[serde(default)]
+    pub led_keys: Vec<u8>,
+    /// [`LED_MAP_CHECKED`] once a sitting confirmed `led_keys` on the board; until then
+    /// scenes light each half as one.
+    #[serde(default)]
+    pub led_map: String,
 }
+
+/// [`Lighting::led_map`] for an LED map confirmed on the board.
+pub const LED_MAP_CHECKED: &str = "checked";
 
 /// How the Keyboard page draws one half of the board (#392), in key units: a grid of columns
 /// with each column dropped by its stagger, and a row of thumb keys under the inner columns.
@@ -352,6 +363,12 @@ mod tests {
             .keymap_source()
             .is_some_and(|k| k.contains("zmk,keymap")));
         assert_eq!(corne.lighting.as_ref().map(|l| l.lamps), Some(42));
+        // The provisional LED map: one key per LED of a half, every key once, not yet checked.
+        let lighting = corne.lighting.clone().unwrap();
+        let mut keys = lighting.led_keys.clone();
+        keys.sort_unstable();
+        assert_eq!(keys, (0..21).collect::<Vec<u8>>());
+        assert_eq!(lighting.led_map, "provisional");
         let toucan = find_in(&all, 0x1d50, 0x615e, "Toucan").unwrap();
         assert_eq!(
             (

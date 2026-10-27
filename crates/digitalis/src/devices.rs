@@ -396,6 +396,11 @@ impl DigitalisDevice {
         frame_status(settings::set_frame(&*self.link, start, colours).map_err(err)?)
     }
 
+    /// Whether the firmware takes [`Self::set_frame`] (HELLO bit 14).
+    pub fn frames(&self) -> bool {
+        self.has(capabilities::FRAMES)
+    }
+
     /// Both halves back to their own effect after [`Self::set_frame`].
     pub fn release_frame(&self) -> PResult<crate::protocol::FrameReply> {
         if !self.has(capabilities::FRAMES) {
@@ -600,9 +605,30 @@ impl Lighting for DigitalisDevice {
         Ok(())
     }
 
+    /// SET_FRAME (#272): both halves' LEDs in strip order (0-20 left, 21-41 right), each half
+    /// through its own colour calibration (the zone `left` or `right`, else the keyboard's).
+    fn set_frame(&self, frame: &[foxglove_devices::Rgb]) -> PResult<()> {
+        let key = self.calibration_key();
+        let half = crate::protocol::frame::HALF_LAMPS;
+        let colours: Vec<[u8; 3]> = frame
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                let zone = if i < half { "left" } else { "right" };
+                let c = calibration::global().rgb(&key, Some(zone), None, c);
+                [c.r, c.g, c.b]
+            })
+            .collect();
+        DigitalisDevice::set_frame(self, 0, &colours).map(|_| ())
+    }
+
+    /// Hands frames back to the keyboard's own effect. Colours, effects and on/off go through
+    /// the keymap's own behavior, so without frames the keyboard always keeps control.
     fn release(&self) -> PResult<()> {
-        // Changes go through the keymap's own behavior, so the keyboard always keeps control.
-        Ok(())
+        if !self.frames() {
+            return Ok(());
+        }
+        self.release_frame().map(|_| ())
     }
 }
 
@@ -858,6 +884,17 @@ mod tests {
                 (protocol::PANEL, protocol::panel::HELLO) => {
                     report(&[0xD5, 0x81, 1, 64, 52, 0, 0, 1, 55])
                 }
+                // Frames: the last report of one (SHOW) and RELEASE get an answer.
+                (protocol::SETTINGS, protocol::settings::FRAME)
+                    if out[2] & (protocol::frame::SHOW | protocol::frame::RELEASE) != 0 =>
+                {
+                    let owner = if out[2] & protocol::frame::RELEASE != 0 {
+                        0
+                    } else {
+                        3
+                    };
+                    report(&[0xD7, 0x8C, 0, owner, 30, 1, 0])
+                }
                 _ => return Ok(()),
             };
             self.push(&reply);
@@ -907,6 +944,52 @@ mod tests {
         while !done() && Instant::now() < end {
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn frames_go_through_the_lighting_trait_only_with_bit_14() {
+        let (dev, fake, _bus) = device(capabilities::SETTINGS_RGB);
+        let light = dev.lighting().unwrap();
+        let red = foxglove_devices::Rgb { r: 255, g: 0, b: 0 };
+        assert!(!dev.frames());
+        assert!(matches!(
+            light.set_frame(&[red; 42]),
+            Err(DeviceError::Unsupported)
+        ));
+        light.release().unwrap();
+        assert!(fake.written.lock().unwrap().is_empty(), "nothing sent");
+
+        let (dev, fake, _bus) = device(capabilities::SETTINGS_RGB | capabilities::FRAMES);
+        let light = dev.lighting().unwrap();
+        assert!(dev.frames());
+        let blue = foxglove_devices::Rgb { r: 0, g: 0, b: 255 };
+        let mut frame = vec![red; 21];
+        frame.extend([blue; 21]);
+        light.set_frame(&frame).unwrap();
+        light.release().unwrap();
+        let sent: Vec<(u8, u8, Vec<u8>)> = fake
+            .written
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r[..2] == [protocol::SETTINGS, protocol::settings::FRAME])
+            .map(|r| {
+                let at = r.get(3).copied().unwrap_or(0);
+                (r[2], at, r.get(5..8).unwrap_or(&[]).to_vec())
+            })
+            .collect();
+        assert_eq!(
+            sent,
+            [
+                (0, 0, vec![255, 0, 0]),
+                (0, 9, vec![255, 0, 0]),
+                // Lamps 18-26: three of the left's, then the right's blue.
+                (0, 18, vec![255, 0, 0]),
+                (0, 27, vec![0, 0, 255]),
+                (protocol::frame::SHOW, 36, vec![0, 0, 255]),
+                (protocol::frame::RELEASE, 0, vec![]),
+            ]
+        );
     }
 
     #[test]

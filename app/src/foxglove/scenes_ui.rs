@@ -41,6 +41,8 @@ pub struct View {
     pub room: RoomMap,
     /// The keyboard answers, so a scene lights it.
     pub keyboard_lit: bool,
+    /// It takes SET_FRAME frames (#529): each half (or LED) its own colour, not one for both.
+    pub keyboard_frames: bool,
     /// The room ids of the other devices a scene lights (boards with a driver).
     pub lit: Vec<String>,
     pub look: Look,
@@ -106,6 +108,7 @@ struct State {
     room: RoomMap,
     lit: Vec<String>,
     keyboard_lit: bool,
+    keyboard_frames: bool,
     moved: bool,
     room_generation: u64,
     last_frame: u64,
@@ -154,6 +157,7 @@ fn show(ui: &mut egui::Ui) {
     let view = View {
         room: st.room.clone(),
         keyboard_lit: st.keyboard_lit,
+        keyboard_frames: st.keyboard_frames,
         lit: st.lit.clone(),
         look: st.chosen.look.clone(),
         saved: st.saved.presets.clone(),
@@ -181,6 +185,7 @@ fn refresh(slot: &mut Option<State>, frame: u64) -> &mut State {
         room: RoomMap::default(),
         lit: Vec::new(),
         keyboard_lit: false,
+        keyboard_frames: false,
         moved: false,
         room_generation: u64::MAX,
         last_frame: 0,
@@ -207,6 +212,8 @@ fn rebuild_room(st: &mut State) {
     st.moved = !super::scene_room::layout().offsets.is_empty();
     st.keyboard_lit =
         super::devices::bus().facts().get("keyboard.connected") == Some(Value::Bool(true));
+    // Never looks for a keyboard here (the UI thread): the one found last, if still there.
+    st.keyboard_frames = super::devices::cached().is_some_and(|d| d.frames());
     st.lit = super::pc_lights::snapshot()
         .devices
         .into_iter()
@@ -436,7 +443,14 @@ pub fn legend(v: &View) -> String {
         let keyboard = is_keyboard(&d.id);
         let name = if keyboard {
             let n = d.name.trim_end_matches(" left").trim_end_matches(" right");
-            format!("{n} (one colour for both halves)")
+            let how = if !v.keyboard_frames {
+                "one colour for both halves"
+            } else if d.lights.len() > 1 {
+                "a colour per LED"
+            } else {
+                "a colour per half"
+            };
+            format!("{n} ({how})")
         } else {
             d.name.clone()
         };
@@ -606,11 +620,26 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
         );
         let dim = |c: Color32| if lit { c } else { c.gamma_multiply(0.4) };
         if is_keyboard(&d.id) {
-            // The keyboard shows one colour for both halves (#485), so the map does too.
-            if let Some(c) = keyboard {
+            // Without SET_FRAME the keyboard shows one colour for both halves (#485), so the
+            // map does too; with it each half its own (#529), and its LEDs once placed.
+            let fill = if v.keyboard_frames {
+                super::scene_output::mixed(
+                    &frame
+                        .lights
+                        .iter()
+                        .filter(|l| l.device == d.id)
+                        .map(|l| l.colour)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                keyboard
+            };
+            if let Some(c) = fill {
                 painter.rect_filled(r.shrink(3.0), 3.0, dim(color(c)));
             }
-            continue;
+            if !(v.keyboard_frames && d.lights.len() > 1) {
+                continue;
+            }
         }
         for l in frame.lights.iter().filter(|l| l.device == d.id) {
             let at = d.lights.iter().find(|x| x.id == l.light).map(|x| x.at);
@@ -975,6 +1004,7 @@ pub(crate) mod tests {
         View {
             room: sample_room(),
             keyboard_lit: true,
+            keyboard_frames: false,
             lit: vec![SAMPLE_CASE.into()],
             look: Look::default(),
             saved: vec![Preset {
@@ -998,6 +1028,7 @@ pub(crate) mod tests {
         View {
             room: sample_room_empty(),
             keyboard_lit: false,
+            keyboard_frames: false,
             lit: vec![],
             look: Look {
                 kind: Kind::Drift,
@@ -1046,6 +1077,16 @@ pub(crate) mod tests {
         let none = legend(&sample_none());
         assert!(none.starts_with("Nothing to light yet"), "{none}");
         assert!(none.contains("Shown only: Keyboard (one colour"), "{none}");
+        // Firmware with SET_FRAME (#529): each half its own colour.
+        let frames = View {
+            keyboard_frames: true,
+            ..sample()
+        };
+        let text = legend(&frames);
+        assert!(
+            text.starts_with("Lights: Eyelash Corne (a colour per half), HP OMEN 45L"),
+            "{text}"
+        );
     }
 
     #[test]
