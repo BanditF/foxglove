@@ -506,8 +506,14 @@ fn control(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .set_lamps(lamp_targets);
-    // Dropped before `give_back` (declared later): lets every Dynamic Lighting device go.
-    let lamp_writer = LampWriter::spawn(Box::new(super::scene_lamps::WindowsLamps), LAMPS.clone());
+    // Declared after `give_back`, so dropped before it (a panic too): lets every Dynamic
+    // Lighting device go before the end is reported. Package identity is read here once, off
+    // the UI thread, for the Scenes page.
+    let _ = super::scene_lamps::identity();
+    let lamp_writer = LampWriter::spawn(
+        Box::<super::scene_lamps::WindowsLamps>::default(),
+        LAMPS.clone(),
+    );
     let lamp_poster = lamp_writer.poster();
     let (again, effects) = {
         let o = outputs.lock().unwrap_or_else(|e| e.into_inner());
@@ -537,8 +543,10 @@ fn control(
     let ended = pump(rx, limit.map(|l| Instant::now() + l), |ctl| match ctl {
         Ctl::Away(a) => {
             if !a {
-                // Before the gate opens, so the first frame back draws the keyboard.
+                // Before the gate opens, so the first frame back draws the keyboard and the
+                // Dynamic Lighting devices (let go while away) even when nothing changed.
                 again.store(true, Ordering::Relaxed);
+                redraw_lamps(&outputs);
             }
             scheduler.set(Gate::Away, a);
             if a {
@@ -546,8 +554,6 @@ fn control(
                 // frame that stopped, and Dynamic Lighting devices Windows' own lights.
                 keyboard.mailbox.release();
                 lamp_writer.release();
-            } else {
-                redraw_lamps(&outputs);
             }
         }
         Ctl::Paused(p) => {

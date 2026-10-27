@@ -52,7 +52,8 @@ enum Job {
     Frame(String, Vec<[u8; 3]>),
     /// Windows changed who may drive this key's devices.
     Changed(String),
-    /// The devices found changed: look again for ones not found before.
+    /// The devices found changed: let every device go and open them afresh on their next
+    /// frame (one unplugged and back is a new device to Windows).
     Forget,
     /// Let every device go (pause, away); the next frame opens them again.
     Release,
@@ -64,6 +65,8 @@ struct Held {
     available: bool,
     latest: Option<Vec<[u8; 3]>>,
     shown: Option<Vec<[u8; 3]>>,
+    /// A write failed and was logged: later failures aren't, until one succeeds.
+    failing: bool,
 }
 
 /// The writer's state, driven one batch of jobs at a time (synchronously in tests).
@@ -112,7 +115,7 @@ impl Core {
                         touched.insert(key);
                     }
                 }
-                Job::Forget => self.held.retain(|_, h| h.is_some()),
+                Job::Forget => self.held.clear(),
                 Job::Release => {
                     self.held.clear();
                     let mut s = self.status();
@@ -155,6 +158,7 @@ impl Core {
             available,
             latest: None,
             shown: None,
+            failing: false,
         })
     }
 
@@ -165,10 +169,20 @@ impl Core {
         let mut wrote = false;
         if h.available && h.latest.is_some() && h.latest != h.shown {
             let colours = h.latest.clone().unwrap_or_default();
+            // Every device is written, even after one fails.
+            let mut failed = None;
             for d in &h.devices {
                 if let Err(e) = d.set(&colours) {
-                    eprintln!("Foxglove: scene: Dynamic Lighting device {key}: {e}");
+                    failed = Some(e);
                 }
+            }
+            match failed {
+                Some(e) if !h.failing => {
+                    eprintln!("Foxglove: scene: Dynamic Lighting device {key}: {e}");
+                    h.failing = true;
+                }
+                Some(_) => {}
+                None => h.failing = false,
             }
             h.shown = Some(colours);
             wrote = true;
@@ -206,6 +220,7 @@ pub struct LampWriter {
 
 impl LampWriter {
     pub fn spawn(opener: Box<dyn Opener>, status: Status) -> Self {
+        *status.lock().unwrap_or_else(|e| e.into_inner()) = LampStatus::default();
         let (tx, rx) = mpsc::channel();
         let mut core = Core {
             opener,
@@ -282,9 +297,15 @@ pub fn note(waiting: &[String], any: bool, identity: bool) -> Option<String> {
     })
 }
 
-/// Windows' devices: every LampArray whose vendor and product match the key.
+/// Windows' devices: the LampArrays whose vendor and product match the key. Windows doesn't
+/// give a LampArray's serial, so two of one model are shared out: a device another key holds
+/// is skipped, and a key with a serial takes one device only.
 #[cfg(target_os = "windows")]
-pub struct WindowsLamps;
+#[derive(Default)]
+pub struct WindowsLamps {
+    /// Windows' device id -> the key that opened it.
+    claimed: BTreeMap<String, String>,
+}
 
 #[cfg(target_os = "windows")]
 mod imp {
@@ -314,7 +335,8 @@ mod imp {
                 B: b,
             };
             let result = match colours {
-                [one] => self.array.SetColor(c(*one)),
+                [] => Ok(()),
+                [one, ..] if colours.len() == 1 || self.count <= 0 => self.array.SetColor(c(*one)),
                 many => {
                     let n = many.len().min(self.count.max(0) as usize);
                     let colours: Vec<Color> = many[..n].iter().map(|&v| c(v)).collect();
@@ -346,18 +368,29 @@ mod imp {
             let Some((vid, pid)) = vid_pid(key) else {
                 return Vec::new();
             };
-            let read = || -> windows::core::Result<Vec<Box<dyn LampDevice>>> {
+            // Opened afresh: what this key held before is let go.
+            self.claimed.retain(|_, k| k != key);
+            let one_only = key.split(':').count() > 2;
+            let claimed = &mut self.claimed;
+            let mut read = || -> windows::core::Result<Vec<Box<dyn LampDevice>>> {
                 let selector = LampArray::GetDeviceSelector()?;
                 let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join()?;
                 let mut out: Vec<Box<dyn LampDevice>> = Vec::new();
                 for info in &list {
-                    let Ok(array) = LampArray::FromIdAsync(&info.Id()?).and_then(|op| op.join())
-                    else {
+                    if one_only && !out.is_empty() {
+                        break;
+                    }
+                    let id = info.Id()?;
+                    if claimed.contains_key(&id.to_string()) {
+                        continue;
+                    }
+                    let Ok(array) = LampArray::FromIdAsync(&id).and_then(|op| op.join()) else {
                         continue;
                     };
                     if array.HardwareVendorId()? != vid || array.HardwareProductId()? != pid {
                         continue;
                     }
+                    claimed.insert(id.to_string(), key.to_string());
                     let tell = changed.clone();
                     let token = array
                         .AvailabilityChanged(&TypedEventHandler::new(move |_, _| {
@@ -383,6 +416,7 @@ mod imp {
 
 /// Elsewhere there are no Dynamic Lighting devices.
 #[cfg(not(target_os = "windows"))]
+#[derive(Default)]
 pub struct WindowsLamps;
 
 #[cfg(not(target_os = "windows"))]
@@ -526,15 +560,22 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_device_is_looked_for_again_only_after_a_change() {
+    fn devices_are_looked_for_again_only_after_a_change() {
         let fake = Arc::new(Fake::default());
+        fake.available.store(true, Ordering::SeqCst);
         let (mut core, _rx) = core(&fake);
         let other = |c| Job::Frame("abcd:0001".into(), vec![[c, c, c]]);
-        core.handle(vec![other(1)]);
-        core.handle(vec![other(2)]);
+        core.handle(vec![other(1), frame(1)]);
+        core.handle(vec![other(2), frame(2)]);
         assert!(core.held.get("abcd:0001").is_some_and(Option::is_none));
+        assert_eq!(fake.opened.load(Ordering::SeqCst), 1);
+        // Unplugged and back: a new device to Windows, so every key is opened afresh.
         core.handle(vec![Job::Forget]);
-        assert!(!core.held.contains_key("abcd:0001"));
+        assert!(core.held.is_empty());
+        assert_eq!(fake.dropped.load(Ordering::SeqCst), 1, "the old one let go");
+        core.handle(vec![frame(2)]);
+        assert_eq!(fake.opened.load(Ordering::SeqCst), 2);
+        assert_eq!(fake.writes.lock().unwrap().len(), 3, "drawn in full again");
     }
 
     #[test]
