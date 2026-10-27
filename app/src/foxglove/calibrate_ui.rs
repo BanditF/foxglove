@@ -872,7 +872,8 @@ pub fn dialog(ctx: &egui::Context) {
     };
     let (mut out, escape) = modal(ctx, |ui| draw(ui, &view, w));
     if escape {
-        out.done = Some(Done::Cancel);
+        // A Save clicked in the same frame wins.
+        out.done.get_or_insert(Done::Cancel);
     }
     if let Some(text) = out.copy.clone() {
         ctx.copy_text(text);
@@ -885,6 +886,10 @@ pub fn dialog(ctx: &egui::Context) {
 /// Draws `body` in a modal dialog, centred, as wide as the window allows (up to 720 points)
 /// and scrolling when it's taller than the window. True with it when Escape was pressed.
 fn modal<R>(ctx: &egui::Context, body: impl FnOnce(&mut egui::Ui) -> R) -> (R, bool) {
+    // Escape in the import box only leaves the box (egui doesn't consume the key there).
+    let typing = ctx
+        .memory(|m| m.focused())
+        .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
     let screen = ctx.content_rect();
     let width = (screen.width() - 48.0).clamp(240.0, 720.0);
     let height = (screen.height() - 48.0).max(160.0);
@@ -906,6 +911,7 @@ fn modal<R>(ctx: &egui::Context, body: impl FnOnce(&mut egui::Ui) -> R) -> (R, b
         });
     let escape = r.is_top_modal
         && !r.any_popup_open
+        && !typing
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
     (r.inner, escape)
 }

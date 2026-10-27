@@ -88,6 +88,13 @@ thread_local! {
     pub static PREVIEW: std::cell::RefCell<Option<(View, Wizard)>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Drops a pending "Remove" confirm: the page was left.
+pub fn forget_remove() {
+    if let Some((draft, _)) = DRAFT.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        draft.removing = None;
+    }
+}
+
 /// The card, and what its clicks do.
 pub fn show(ui: &mut egui::Ui) {
     #[cfg(test)]
