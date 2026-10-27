@@ -192,6 +192,10 @@ mod imp {
         ) -> i32;
         // WNF_SHEL_QUIETHOURS_ACTIVE_PROFILE_CHANGED
         const STATE: u64 = 0x0D83_063E_A3BF_1C75;
+        // SAFETY: ntdll is mapped in every process, so its handle needs no release. The pointer
+        // GetProcAddress returns is NtQueryWnfStateData, whose signature `Query` matches. Every
+        // pointer passed is to a live local; the buffer is 4 bytes and `size` says so, and the
+        // value is used only when the call succeeded and wrote exactly 4 bytes.
         unsafe {
             let ntdll = GetModuleHandleW(w!("ntdll.dll")).ok()?;
             let f = GetProcAddress(ntdll, s!("NtQueryWnfStateData"))?;
@@ -214,6 +218,7 @@ mod imp {
         if focus_assist().is_some_and(|v| v != 0) {
             return Some(Quiet::DoNotDisturb);
         }
+        // SAFETY: takes no pointers and only reads the shell's state.
         match unsafe { SHQueryUserNotificationState() }.ok()? {
             QUNS_BUSY | QUNS_RUNNING_D3D_FULL_SCREEN | QUNS_APP => Some(Quiet::FullScreen),
             QUNS_PRESENTATION_MODE => Some(Quiet::Presentation),

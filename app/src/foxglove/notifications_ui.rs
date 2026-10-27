@@ -111,6 +111,8 @@ pub(crate) fn contents(
 /// Windows' notification privacy page, where access is turned on.
 fn open_privacy_settings() {
     #[cfg(windows)]
+    // SAFETY: every string is a static wide literal and the window handle is none; ShellExecuteW
+    // keeps nothing after it returns.
     unsafe {
         use windows::core::w;
         use windows::Win32::UI::Shell::ShellExecuteW;
