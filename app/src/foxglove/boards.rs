@@ -76,7 +76,7 @@ pub struct Screen {
     pub format: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Lighting {
     pub lamps: u16,
     #[serde(default)]
@@ -85,10 +85,22 @@ pub struct Lighting {
     /// [`Drawing::keys`]. The right half mirrors it. Scenes place LEDs by it (#529).
     #[serde(default)]
     pub led_keys: Vec<u8>,
-    /// [`LED_MAP_CHECKED`] once a sitting confirmed `led_keys` on the board; until then
-    /// scenes light each half as one.
+    /// [`LED_MAP_CHECKED`] once a sitting confirmed `led_keys` on the board, or once "Find my
+    /// LEDs" placed them; until then scenes light each half as one.
     #[serde(default)]
     pub led_map: String,
+    /// Where "Find my LEDs" saw each LED (the user's override, the store's `[led_map]`): one
+    /// entry per lamp in SET_FRAME order, a point on its half's drawing in key units, `None`
+    /// for one the user couldn't see. Wins over `led_keys` when set.
+    #[serde(skip)]
+    pub led_points: Vec<Option<[f32; 2]>>,
+}
+
+impl Lighting {
+    /// LEDs per half: the profile's lamps shared out between `halves`.
+    pub fn per_half(&self, halves: u8) -> usize {
+        usize::from(self.lamps) / usize::from(halves.max(1))
+    }
 }
 
 /// [`Lighting::led_map`] for an LED map confirmed on the board.
@@ -316,7 +328,9 @@ pub fn user_dir() -> Option<PathBuf> {
 
 /// The profile for a keyboard, from the profiles as they are now.
 pub fn find(vid: u16, pid: u16, product: &str) -> Option<Board> {
-    find_in(&load(user_dir().as_deref()), vid, pid, product)
+    let mut board = find_in(&load(user_dir().as_deref()), vid, pid, product)?;
+    super::led_map::apply(&mut board);
+    Some(board)
 }
 
 fn find_in(all: &[Board], vid: u16, pid: u16, product: &str) -> Option<Board> {
@@ -335,6 +349,7 @@ pub fn connected(vid: u16, pid: u16, product: &str) {
     if board.is_none() {
         eprintln!("Foxglove: no board profile for {vid:04x}:{pid:04x} \"{product}\"; using only what the firmware says");
     }
+    super::led_map::note_current(board.as_ref());
     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = board;
 }
 
@@ -346,6 +361,15 @@ pub fn built_in_keymaps() -> impl Iterator<Item = &'static str> {
 /// The connected keyboard's profile, if it has one.
 pub fn current() -> Option<Board> {
     CURRENT.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// "Find my LEDs" saved a map: the connected keyboard's profile takes it at once.
+pub fn led_map_changed() {
+    let mut current = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(b) = current.as_mut() {
+        super::led_map::apply(b);
+    }
+    super::led_map::note_current(current.as_ref());
 }
 
 #[cfg(test)]

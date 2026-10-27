@@ -33,6 +33,8 @@ pub fn set(paused: bool) {
     super::api::pause_leases();
     // A running scene stops drawing, or draws again (#485).
     super::scene_run::pause_changed(paused);
+    // "Find my LEDs" ends: it may not drive the lights while paused.
+    super::led_map_ui::pause_changed(paused);
     // The live wallpaper feed goes quiet, or live again (#499).
     super::live_feed::pause_changed();
     if !paused {

@@ -43,6 +43,8 @@ pub mod keymap_cache;
 pub mod last_device;
 pub mod layer_access;
 pub mod layer_names;
+pub mod led_map;
+pub mod led_map_ui;
 pub mod lighting_leases;
 pub mod lights_page;
 pub mod link;
