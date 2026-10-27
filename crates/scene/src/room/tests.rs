@@ -169,6 +169,25 @@ fn three_monitors_of_mixed_density_touch_and_dont_overlap() {
 }
 
 #[test]
+fn a_row_of_monitors_from_one_end_chains_without_gaps_or_overlaps() {
+    // A 4K primary on the left, then a 1080p and another 1440p to its right.
+    let monitors = [
+        monitor("DISPLAY1", true, [0, 0, 3840, 2160], Some(163)),
+        monitor("DISPLAY2", false, [3840, 0, 5760, 1080], Some(92)),
+        monitor("DISPLAY3", false, [5760, 0, 8320, 1440], Some(109)),
+        // And one stacked on top of the middle one.
+        monitor("DISPLAY4", false, [3840, -1080, 5760, 0], Some(92)),
+    ];
+    let room = RoomMap::build(&monitors, &halves(), &Layout::default());
+    assert_sane(&room);
+    let r = |id: &str| room.device(&format!(r"monitor:\\.\{id}")).unwrap().rect;
+    assert!((r("DISPLAY2").x - r("DISPLAY1").right()).abs() < 0.01);
+    assert!((r("DISPLAY3").x - r("DISPLAY2").right()).abs() < 0.01);
+    assert!((r("DISPLAY4").bottom() - r("DISPLAY2").y).abs() < 0.01);
+    assert!((r("DISPLAY4").centre().x - r("DISPLAY2").centre().x).abs() < 0.01);
+}
+
+#[test]
 fn no_case_no_mouse_no_monitor() {
     let room = RoomMap::build(&[], &halves(), &Layout::default());
     assert_sane(&room);

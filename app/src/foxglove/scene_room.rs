@@ -58,11 +58,14 @@ pub fn monitors() -> Vec<MonitorInfo> {
 #[cfg_attr(not(windows), allow(dead_code))]
 fn display_changed() {
     let now = imp::read();
-    eprintln!(
-        "Foxglove: displays changed, the room map has {} monitor(s)",
-        now.len()
-    );
-    *MONITORS.lock().unwrap_or_else(|e| e.into_inner()) = Some(now);
+    let mut known = MONITORS.lock().unwrap_or_else(|e| e.into_inner());
+    if known.as_ref() != Some(&now) {
+        eprintln!(
+            "Foxglove: displays changed, the room map has {} monitor(s)",
+            now.len()
+        );
+    }
+    *known = Some(now);
 }
 
 /// Everything to place but the monitors.
@@ -265,7 +268,8 @@ mod imp {
         lparam: LPARAM,
     ) -> LRESULT {
         if message == WM_DISPLAYCHANGE {
-            super::display_changed();
+            // A panic must not unwind into Windows.
+            let _ = std::panic::catch_unwind(super::display_changed);
             return LRESULT(0);
         }
         // SAFETY: the default handling for this window's other messages.
@@ -312,8 +316,11 @@ mod imp {
                         eprintln!("Foxglove: can't follow display changes (no window)");
                         return;
                     }
+                    // A change between the first read and the window's creation is caught here.
+                    super::display_changed();
                     let mut msg = MSG::default();
-                    while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    // 0 is WM_QUIT and -1 an error: both end the loop.
+                    while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
                         let _ = DispatchMessageW(&msg);
                     }
                 }

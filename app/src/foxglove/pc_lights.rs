@@ -712,7 +712,8 @@ pub struct LampLayout {
 
 static LAMP_LAYOUTS: Mutex<BTreeMap<(u16, u16), LampLayout>> = Mutex::new(BTreeMap::new());
 
-/// Each LampArray's shape by VID/PID, as the last read of its attributes found it.
+/// Each LampArray's shape by VID/PID, as the last read of its attributes found it. Two of one
+/// model share an entry, as they share their attributes in [`Worker`]'s cache.
 pub fn lamp_layouts() -> BTreeMap<(u16, u16), LampLayout> {
     LAMP_LAYOUTS
         .lock()

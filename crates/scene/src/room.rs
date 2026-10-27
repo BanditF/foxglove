@@ -369,49 +369,98 @@ impl RoomMap {
 }
 
 /// Monitors in millimetres, each at its own density. Windows' layout is in pixels, and two
-/// panels of different density don't line up in millimetres, so a monitor beside the primary
-/// keeps the edge that faces it (one on the left is placed by its right edge) and its top (as
-/// Windows lines them up); one above or below keeps its facing edge and its centre. Panels
-/// that touch in Windows then touch in the room.
+/// panels of different density don't line up in millimetres, so each monitor is placed from a
+/// neighbour it touches in Windows, starting at the primary: one beside it keeps the facing
+/// edge and its top offset (Windows lines tops up), one above or below keeps the facing edge
+/// and its centre offset. Panels that touch in Windows then touch in the room, however long
+/// the chain.
 fn place_monitors(monitors: &[MonitorInfo]) -> Vec<Placed> {
-    let Some(p) = monitors.iter().find(|m| m.primary).or(monitors.first()) else {
+    let Some(first) = monitors
+        .iter()
+        .position(|m| m.primary)
+        .or((!monitors.is_empty()).then_some(0))
+    else {
         return Vec::new();
     };
-    let (pl, pt, pr, pb) = p.px();
-    let s = p.mm_per_px();
+    let size = |m: &MonitorInfo| {
+        let (l, t, r, b) = m.px();
+        let s = m.mm_per_px();
+        ((r - l) * s, (b - t) * s)
+    };
+    let mut rects: Vec<Option<Rect>> = vec![None; monitors.len()];
+    let (w, h) = size(&monitors[first]);
+    rects[first] = Some(Rect::new(0.0, 0.0, w, h));
+    let mut queue = std::collections::VecDeque::from([first]);
+    loop {
+        while let Some(a) = queue.pop_front() {
+            let Some(from) = rects[a] else { continue };
+            for (b, m) in monitors.iter().enumerate() {
+                if rects[b].is_none() && touches(&monitors[a], m) {
+                    rects[b] = Some(beside(&monitors[a], from, m, size(m)));
+                    queue.push_back(b);
+                }
+            }
+        }
+        // Windows keeps the desktop connected; a monitor that touches none is placed from
+        // the primary all the same.
+        let Some(b) = rects.iter().position(Option::is_none) else {
+            break;
+        };
+        let from = rects[first].unwrap_or_default();
+        rects[b] = Some(beside(
+            &monitors[first],
+            from,
+            &monitors[b],
+            size(&monitors[b]),
+        ));
+        queue.push_back(b);
+    }
     monitors
         .iter()
-        .map(|m| {
-            let (l, t, r, b) = m.px();
-            let own = m.mm_per_px();
-            let (w, h) = ((r - l) * own, (b - t) * own);
-            let (x, y) = if r <= pl || l >= pr {
-                let x = if r <= pl {
-                    (r - pl) * s - w
-                } else {
-                    (l - pl) * s
-                };
-                (x, (t - pt) * s)
-            } else if b <= pt || t >= pb {
-                let y = if b <= pt {
-                    (b - pt) * s - h
-                } else {
-                    (t - pt) * s
-                };
-                (((l + r) / 2.0 - pl) * s - w / 2.0, y)
-            } else {
-                // The primary itself (or a mirrored display).
-                ((l - pl) * s, (t - pt) * s)
-            };
-            Placed {
-                id: format!("monitor:{}", m.id),
-                name: m.id.trim_start_matches(r"\\.\").to_string(),
-                kind: DeviceKind::Monitor,
-                rect: Rect::new(x, y, w, h),
-                lights: Vec::new(),
-            }
+        .zip(rects)
+        .map(|(m, rect)| Placed {
+            id: format!("monitor:{}", m.id),
+            name: m.id.trim_start_matches(r"\\.\").to_string(),
+            kind: DeviceKind::Monitor,
+            rect: rect.unwrap_or_default(),
+            lights: Vec::new(),
         })
         .collect()
+}
+
+/// Whether two monitors share a stretch of edge in Windows' layout (a corner isn't enough).
+fn touches(a: &MonitorInfo, b: &MonitorInfo) -> bool {
+    let (al, at, ar, ab) = a.px();
+    let (bl, bt, br, bb) = b.px();
+    let side = (bl == ar || br == al) && bt < ab && at < bb;
+    let stacked = (bt == ab || bb == at) && bl < ar && al < br;
+    side || stacked
+}
+
+/// Where `m` (of `size` mm) goes next to `a`, which is already at `from`.
+fn beside(a: &MonitorInfo, from: Rect, m: &MonitorInfo, (w, h): (f32, f32)) -> Rect {
+    let (al, at, ar, ab) = a.px();
+    let (l, t, r, b) = m.px();
+    let s = a.mm_per_px();
+    if r <= al || l >= ar {
+        let x = if r <= al {
+            from.x - (al - r) * s - w
+        } else {
+            from.right() + (l - ar) * s
+        };
+        Rect::new(x, from.y + (t - at) * s, w, h)
+    } else if b <= at || t >= ab {
+        let y = if b <= at {
+            from.y - (at - b) * s - h
+        } else {
+            from.bottom() + (t - ab) * s
+        };
+        let x = from.centre().x + ((l + r) / 2.0 - (al + ar) / 2.0) * s - w / 2.0;
+        Rect::new(x, y, w, h)
+    } else {
+        // Overlapping in Windows (a mirrored display): the same place, in `a`'s scale.
+        Rect::new(from.x + (l - al) * s, from.y + (t - at) * s, w, h)
+    }
 }
 
 /// A device's lights in room space: placed ones where they say, the rest spread evenly

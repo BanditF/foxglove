@@ -164,7 +164,8 @@ impl Scheduler {
         let mut state = self.lock();
         state.gates.set(gate, on);
         match (state.gates.open(), state.run.is_some()) {
-            (true, false) => state.run = Some(self.spawn()),
+            // No thread to be had: no frames, and the next gate change tries again.
+            (true, false) => state.run = self.spawn(),
             (false, true) => {
                 if let Some(run) = state.run.take() {
                     stop(run);
@@ -178,7 +179,7 @@ impl Scheduler {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn spawn(&self) -> Run {
+    fn spawn(&self) -> Option<Run> {
         let (stop, wait) = mpsc::channel::<()>();
         let (clock, tick, render) = (self.clock, self.tick, self.render.clone());
         let thread = std::thread::Builder::new()
@@ -190,9 +191,14 @@ impl Scheduler {
                     // Stopped, or the scheduler is gone.
                     _ => break,
                 }
-            })
-            .expect("a thread for scene frames");
-        Run { stop, thread }
+            });
+        match thread {
+            Ok(thread) => Some(Run { stop, thread }),
+            Err(e) => {
+                eprintln!("Foxglove: no thread for scene frames: {e}");
+                None
+            }
+        }
     }
 }
 
