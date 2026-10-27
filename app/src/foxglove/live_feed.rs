@@ -42,6 +42,9 @@ const HANDSHAKE_LIMIT: Duration = Duration::from_secs(5);
 const WRITE_LIMIT: Duration = Duration::from_secs(1);
 /// Connections still in their handshake at once; more are closed at once.
 const MAX_PENDING: usize = 8;
+/// Key events waiting for the hub at most; more are dropped (a stalled wallpaper write).
+const KEYS_IN_FLIGHT: usize = 256;
+static KEYS_QUEUED: AtomicUsize = AtomicUsize::new(0);
 /// Typing after this much quiet is a new burst: the full-screen check runs again.
 const BURST_GAP: Duration = Duration::from_secs(2);
 
@@ -64,12 +67,21 @@ impl Default for LiveSettings {
     }
 }
 
+static SETTINGS: Mutex<Option<LiveSettings>> = Mutex::new(None);
+
+/// The settings, read from the store once and then kept in step by [`save`].
 pub fn settings() -> LiveSettings {
-    super::store::try_load(SECTION).unwrap_or_default()
+    SETTINGS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(|| super::store::try_load(SECTION).unwrap_or_default())
+        .clone()
 }
 
 fn save(s: &LiveSettings) -> Result<(), String> {
-    super::store::save(SECTION, s).map_err(|e| e.to_string())
+    super::store::save(SECTION, s).map_err(|e| e.to_string())?;
+    *SETTINGS.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.clone());
+    Ok(())
 }
 
 // ------------------------------------------------------------------------------ the hub
@@ -243,6 +255,8 @@ struct Running {
     tx: Sender<Msg>,
     stop: Arc<AtomicBool>,
     port: u16,
+    /// The accept thread, joined on stop so the port is free before it's bound again.
+    accept: std::thread::JoinHandle<()>,
 }
 
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
@@ -307,10 +321,14 @@ pub fn stop() {
     r.stop.store(true, Ordering::SeqCst);
     let _ = r.tx.send(Msg::Stop);
     // Wakes the accept thread, which then sees the stop.
-    let _ = TcpStream::connect_timeout(
+    let woke = TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], r.port)),
         Duration::from_millis(500),
     );
+    // With the wake-up delivered, the accept thread ends at once and drops the listener.
+    if woke.is_ok() {
+        let _ = r.accept.join();
+    }
     super::wallpaper_sync::live(None);
     set_status("");
 }
@@ -321,17 +339,18 @@ fn listen(s: &LiveSettings) -> Result<(), String> {
         .map_err(|e| format!("Can't listen on 127.0.0.1:{}: {e}", s.port))?;
     let (tx, rx) = mpsc::channel();
     let stop = Arc::new(AtomicBool::new(false));
-    *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Running {
-        tx: tx.clone(),
-        stop: stop.clone(),
-        port: s.port,
-    });
     set_status(format!("Listening on 127.0.0.1:{}", s.port));
     eprintln!("Foxglove: live feed on 127.0.0.1:{}", s.port);
     let token = s.token.clone();
-    let accept_tx = tx.clone();
-    super::services::spawn_named("live-accept", move || {
-        accept_loop(&listener, &stop, &accept_tx, &token)
+    let (accept_tx, accept_stop) = (tx.clone(), stop.clone());
+    let accept = super::services::spawn_named("live-accept", move || {
+        accept_loop(&listener, &accept_stop, &accept_tx, &token)
+    });
+    *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Running {
+        tx: tx.clone(),
+        stop,
+        port: s.port,
+        accept,
     });
     super::services::spawn_named("live-hub", move || run(&rx, &tx));
     super::wallpaper_sync::live(Some(s.port));
@@ -341,11 +360,26 @@ fn listen(s: &LiveSettings) -> Result<(), String> {
 fn accept_loop(listener: &TcpListener, stop: &AtomicBool, tx: &Sender<Msg>, token: &str) {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let pending = Arc::new(AtomicUsize::new(0));
+    let mut errors = 0;
     for conn in listener.incoming() {
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        let Ok(stream) = conn else { continue };
+        let stream = match conn {
+            Ok(s) => {
+                errors = 0;
+                s
+            }
+            Err(e) => {
+                errors += 1;
+                if errors >= 32 {
+                    eprintln!("Foxglove: live feed stops accepting: {e}");
+                    set_status(format!("Stopped: {e}"));
+                    break;
+                }
+                continue;
+            }
+        };
         if pending.fetch_add(1, Ordering::SeqCst) >= MAX_PENDING {
             pending.fetch_sub(1, Ordering::SeqCst);
             let _ = stream.shutdown(Shutdown::Both);
@@ -390,19 +424,35 @@ fn serve(mut stream: TcpStream, id: u64, tx: &Sender<Msg>, token: &str, pending:
     let _ = tx.send(Msg::Leave(id));
 }
 
+/// Reads with one deadline for the whole upgrade request, however it trickles in.
+struct Deadline<'a>(&'a mut TcpStream, Instant);
+
+impl std::io::Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.1.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.0.set_read_timeout(Some(left))?;
+        std::io::Read::read(self.0, buf)
+    }
+}
+
 fn handshake(stream: &mut TcpStream, token: &str) -> Result<(), String> {
-    stream
-        .set_read_timeout(Some(HANDSHAKE_LIMIT))
+    let h = ws::read_handshake(&mut Deadline(stream, Instant::now() + HANDSHAKE_LIMIT))
         .map_err(|e| e.to_string())?;
-    let h = ws::read_handshake(stream).map_err(|e| e.to_string())?;
+    if !(h.path == "/live" || h.path.starts_with("/live?")) {
+        let _ = ws::reject(stream, 404, "Not Found");
+        // Without the query: it may hold a token.
+        return Err(format!(
+            "no such path {}",
+            h.path.split('?').next().unwrap_or("")
+        ));
+    }
     let offered = h.header("sec-websocket-protocol");
     if let Err(e) = wire::admit(h.origin(), wire::token_from(&h.path, offered), token) {
         let _ = ws::reject(stream, 403, "Forbidden");
         return Err(e);
-    }
-    if !(h.path == "/live" || h.path.starts_with("/live?")) {
-        let _ = ws::reject(stream, 404, "Not Found");
-        return Err(format!("no such path {}", h.path));
     }
     let protocol = offered
         .is_some_and(|p| p.split(',').any(|p| p.trim() == wire::PROTOCOL))
@@ -431,6 +481,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>) {
         ..Hub::default()
     };
     let mut fullscreen = fullscreen_now();
+    hub.quiet = wire::quiet(super::pause::paused(), super::away::away(), fullscreen);
     let mut batch_started: Option<Instant> = None;
     let mut last_key: Option<Instant> = None;
     let mut keys = KeyTap::default();
@@ -494,6 +545,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>) {
                 pressed,
                 generation,
             }) if generation == keys.generation() => {
+                KEYS_QUEUED.fetch_sub(1, Ordering::SeqCst);
                 let now = Instant::now();
                 if last_key.is_none_or(|t| now.duration_since(t) >= BURST_GAP) {
                     fullscreen = fullscreen_now();
@@ -505,7 +557,9 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>) {
                     batch_started = Some(now);
                 }
             }
-            Some(Msg::Key { .. }) => {}
+            Some(Msg::Key { .. }) => {
+                KEYS_QUEUED.fetch_sub(1, Ordering::SeqCst);
+            }
         }
         let due = batch_started.is_some_and(|t| {
             t.elapsed() >= Duration::from_millis(wire::BATCH_MS) || hub.batch.is_full()
@@ -526,8 +580,13 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>) {
             super::tray_panel::wake();
         }
     }
-    // Stopped: the wallpapers are let go.
+    // Stopped: the wallpapers are let go, those still queued to join too.
     keys.want(false, tx);
+    while let Ok(m) = rx.try_recv() {
+        if let Msg::Join(_, stream) = m {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    }
     for mut c in clients {
         let _ = ws::write_frame(&mut c.stream, ws::CLOSE, &1001u16.to_be_bytes());
         let _ = c.stream.flush();
@@ -566,6 +625,10 @@ impl KeyTap {
                     break;
                 }
                 if let DeviceEvent::Key { row, col, pressed } = e.event {
+                    if KEYS_QUEUED.fetch_add(1, Ordering::SeqCst) >= KEYS_IN_FLIGHT {
+                        KEYS_QUEUED.fetch_sub(1, Ordering::SeqCst);
+                        continue;
+                    }
                     let key = Msg::Key {
                         row,
                         col,
@@ -1110,6 +1173,20 @@ mod tests {
         }
         // At most a frame already on its way before the pause arrived.
         assert!(got.len() <= 1, "{got:?}");
+
+        // A new token: the same port at once (the old accept thread is joined first), and only
+        // the new token gets in.
+        let fresh = wire::new_token().unwrap();
+        for _ in 0..3 {
+            listen(&LiveSettings {
+                enabled: true,
+                port,
+                token: fresh.clone(),
+            })
+            .expect("the port is free again");
+        }
+        assert!(StandIn::connect(port, &token).is_none(), "the old token");
+        assert!(StandIn::connect(port, &fresh).is_some(), "the new token");
 
         stop();
         assert!(
