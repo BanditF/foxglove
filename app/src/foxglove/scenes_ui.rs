@@ -23,7 +23,9 @@ use std::time::Duration;
 
 use egui::{Color32, Pos2, RichText, Sense, Stroke};
 use foxglove_scene::room::{Placed, PlacedLight};
-use foxglove_scene::{Clock, DeviceKind, Effect, Point, Rgb, RoomMap, SceneTime};
+use foxglove_scene::{
+    Ambient, Clock, DeviceKind, Effect, LightRole, Point, Rgb, RoomMap, SceneTime,
+};
 
 use super::lights_page::{full_slider, swatch, value_row, SWATCHES, TWO_COLUMNS};
 use super::scene_looks::{
@@ -114,6 +116,8 @@ pub struct Draft {
     pub name: String,
     /// A device being dragged on the map, and how far so far (mm).
     pub drag: Option<(String, Point)>,
+    /// The preview's ambient lights, eased from frame to frame as the scene eases them.
+    pub ambient: Ambient,
 }
 
 /// What a click, a slider or a drag asks for.
@@ -166,6 +170,7 @@ static STATE: Mutex<Option<State>> = Mutex::new(None);
 static DRAFT: Mutex<Draft> = Mutex::new(Draft {
     name: String::new(),
     drag: None,
+    ambient: Ambient::new(),
 });
 static STOPPING: AtomicBool = AtomicBool::new(false);
 /// The running scene was started by a profile switch ("Start with this profile"), so a switch
@@ -797,7 +802,8 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
         let r = map.rect(&m);
         painter.rect_stroke(r, 3.0, Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
     }
-    let frame = effect.render(&room, v.t);
+    let mut frame = effect.render(&room, v.t);
+    draft.ambient.apply(&mut frame, &room);
     let keyboard = super::scene_output::mixed(
         &frame
             .lights
@@ -861,12 +867,20 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
                 continue;
             }
         }
-        for l in frame.lights.iter().filter(|l| l.device == d.id) {
-            let at = d.lights.iter().find(|x| x.id == l.light).map(|x| x.at);
-            if let Some(at) = at {
-                let radius = (r.width().min(r.height()) / 6.0).clamp(2.5, 7.0);
-                painter.circle_filled(map.pos(at), radius, dim(color(l.colour)));
-            }
+        let lights: Vec<(&PlacedLight, Rgb)> = frame
+            .lights
+            .iter()
+            .filter(|l| l.device == d.id)
+            .filter_map(|l| Some((d.lights.iter().find(|x| x.id == l.light)?, l.colour)))
+            .collect();
+        // Area lights (the case's interior light) as a soft glow, behind the point lights.
+        for (x, c) in lights.iter().filter(|(x, _)| x.role == LightRole::Ambient) {
+            let radius = (r.width().min(r.height()) * 0.6).max(8.0);
+            glow(&painter, map.pos(x.at), radius, dim(color(*c)));
+        }
+        for (x, c) in lights.iter().filter(|(x, _)| x.role == LightRole::Point) {
+            let radius = (r.width().min(r.height()) / 6.0).clamp(2.5, 7.0);
+            painter.circle_filled(map.pos(x.at), radius, dim(color(*c)));
         }
     }
     if let Some(id) = hovered {
@@ -880,6 +894,33 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
             response.on_hover_text_at_pointer(format!("{} · {lit} · drag to move", d.name));
         }
     }
+}
+
+/// A soft round glow: `c` in the middle, fading to nothing at `radius`.
+fn glow(painter: &egui::Painter, centre: Pos2, radius: f32, c: Color32) {
+    const SEGMENTS: u32 = 32;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(centre, c.gamma_multiply(0.85));
+    // A middle ring keeps the falloff soft rather than a cone.
+    for (k, (f, a)) in [(0.45, 0.45), (1.0, 0.0)].into_iter().enumerate() {
+        for i in 0..SEGMENTS {
+            let angle = std::f32::consts::TAU * i as f32 / SEGMENTS as f32;
+            let at = centre + egui::vec2(angle.cos(), angle.sin()) * radius * f;
+            mesh.colored_vertex(at, c.gamma_multiply(a));
+        }
+        let ring = 1 + k as u32 * SEGMENTS;
+        for i in 0..SEGMENTS {
+            let j = (i + 1) % SEGMENTS;
+            if k == 0 {
+                mesh.add_triangle(0, ring + i, ring + j);
+            } else {
+                let inner = ring - SEGMENTS;
+                mesh.add_triangle(inner + i, ring + i, ring + j);
+                mesh.add_triangle(inner + i, ring + j, inner + j);
+            }
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// A drag on the map moves the device it started on; the move is kept when it ends.
@@ -927,10 +968,10 @@ fn field(
     for j in 0..=ny {
         for i in 0..=nx {
             let (fx, fy) = (i as f32 / nx as f32, j as f32 / ny as f32);
-            lights.push(PlacedLight {
-                id: String::new(),
-                at: Point::new(bounds.x + fx * bounds.w, bounds.y + fy * bounds.h),
-            });
+            lights.push(PlacedLight::point(
+                String::new(),
+                Point::new(bounds.x + fx * bounds.w, bounds.y + fy * bounds.h),
+            ));
         }
     }
     let grid = RoomMap {

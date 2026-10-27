@@ -12,10 +12,7 @@ fn room() -> RoomMap {
     let lights = |pts: &[(f32, f32)]| -> Vec<PlacedLight> {
         pts.iter()
             .enumerate()
-            .map(|(i, &(x, y))| PlacedLight {
-                id: i.to_string(),
-                at: Point::new(x, y),
-            })
+            .map(|(i, &(x, y))| PlacedLight::point(i.to_string(), Point::new(x, y)))
             .collect()
     };
     RoomMap {

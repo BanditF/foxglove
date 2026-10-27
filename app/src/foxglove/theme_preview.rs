@@ -1223,6 +1223,7 @@ fn scenes_page_renders() {
                 crate::foxglove::scene_room::tests::SAMPLE_CASE.into(),
                 foxglove_scene::Point::new(-300.0, 0.0),
             )),
+            ..Draft::default()
         },
     );
     let dragging = shell_preview_with(Page::Scenes, &s, 1000.0);

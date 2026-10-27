@@ -65,6 +65,8 @@ pub struct Row {
     /// catalog, for scenes' room map (#483).
     pub size: Option<[u16; 2]>,
     pub zone_positions: Vec<Option<[u16; 2]>>,
+    /// Each zone's role in a scene (point or ambient), in zone order, from the catalog.
+    pub zone_roles: Vec<foxglove_devices::pc_lighting::ZoneRole>,
 }
 
 /// What the page shows.
@@ -716,6 +718,7 @@ impl Worker {
                         .is_some(),
                     size: f.size,
                     zone_positions: f.zones.iter().map(|z| z.position).collect(),
+                    zone_roles: f.zones.iter().map(|z| z.role).collect(),
                 }
             })
             .collect();
@@ -1461,6 +1464,7 @@ mod tests {
                 id: 2,
                 name: "Shelf".into(),
                 position: None,
+                role: Default::default(),
             }],
         );
         w.handle(Msg::SaveLocal(Box::new(entry)), false, &mut no_wait());

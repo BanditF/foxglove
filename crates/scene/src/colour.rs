@@ -23,6 +23,50 @@ impl Rgb {
         Rgb([s.red, s.green, s.blue])
     }
 
+    /// Linear-light sRGB, 0..=1 per channel: where light adds up.
+    pub fn linear(self) -> [f32; 3] {
+        let [r, g, b] = self.0;
+        let l = Srgb::new(r, g, b).into_format::<f32>().into_linear();
+        [l.red, l.green, l.blue]
+    }
+
+    /// From linear-light sRGB (clamped to 0..=1).
+    pub fn from_linear([r, g, b]: [f32; 3]) -> Rgb {
+        let c = |v: f32| {
+            if v.is_finite() {
+                v.clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        };
+        let s: Srgb<u8> = Srgb::from_linear(LinSrgb::new(c(r), c(g), c(b)));
+        Rgb([s.red, s.green, s.blue])
+    }
+
+    /// Oklab (lightness, a, b): where equal steps look equal, for easing a colour over time.
+    pub fn lab(self) -> [f32; 3] {
+        let c = self.oklab();
+        [c.l, c.a, c.b]
+    }
+
+    /// From Oklab, clamped into sRGB.
+    pub fn from_lab([l, a, b]: [f32; 3]) -> Rgb {
+        let lin = LinSrgb::from_color(Oklab::new(l, a, b));
+        Rgb::from_linear([lin.red, lin.green, lin.blue])
+    }
+
+    /// The average of some colours as their light adds up (in linear light); `None` for none.
+    pub fn average(colours: impl IntoIterator<Item = Rgb>) -> Option<Rgb> {
+        let (mut sum, mut n) = ([0.0f32; 3], 0u32);
+        for c in colours {
+            for (s, v) in sum.iter_mut().zip(c.linear()) {
+                *s += v;
+            }
+            n += 1;
+        }
+        (n > 0).then(|| Rgb::from_linear(sum.map(|s| s / n as f32)))
+    }
+
     /// `self` at `t` = 0, `to` at `t` = 1, through Oklab.
     pub fn mix(self, to: Rgb, t: f32) -> Rgb {
         let t = if t.is_finite() {
@@ -74,6 +118,18 @@ mod tests {
         let mid = red.mix(blue, 0.5);
         // A plain sRGB average is (128, 0, 128); Oklab keeps more light in the middle.
         assert!(mid.0[0] > 128 && mid.0[2] > 128, "{mid:?}");
+    }
+
+    #[test]
+    fn averages_add_light_and_round_trip() {
+        assert_eq!(Rgb::average([]), None);
+        let c = Rgb([200, 90, 17]);
+        assert_eq!(Rgb::from_linear(c.linear()), c);
+        assert_eq!(Rgb::average([c, c]), Some(c));
+        assert_eq!(Rgb::from_lab(c.lab()), c);
+        // Half of white's light is brighter than sRGB's middle grey.
+        let half = Rgb::average([Rgb::WHITE, Rgb::BLACK]).unwrap();
+        assert!(half.0[0] > 180, "{half:?}");
     }
 
     #[test]
