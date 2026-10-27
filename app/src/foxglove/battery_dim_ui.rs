@@ -374,7 +374,7 @@ fn adjust(
             100,
         ),
         (
-            "Low battery below",
+            "Low battery threshold",
             "The charge where the low level starts",
             0,
             50,
