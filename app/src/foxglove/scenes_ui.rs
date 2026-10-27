@@ -1449,14 +1449,15 @@ pub(crate) mod tests {
         let none = legend(&sample_none());
         assert!(none.starts_with("Nothing to light yet"), "{none}");
         assert!(none.contains("Shown only: Keyboard (one colour"), "{none}");
-        // Firmware with SET_FRAME (#529): each half its own colour.
+        // Firmware with SET_FRAME (#529): with the profile's shipped LED map, each LED its own
+        // colour.
         let frames = View {
             keyboard_frames: true,
             ..sample()
         };
         let text = legend(&frames);
         assert!(
-            text.starts_with("Lights: Eyelash Corne (a colour per half), HP OMEN 45L"),
+            text.starts_with("Lights: Eyelash Corne (a colour per LED), HP OMEN 45L"),
             "{text}"
         );
     }

@@ -22,11 +22,16 @@ use super::scene_output::{keyboard_effect, keyboard_frame, KeyboardEffect, HALF_
 const VECTORS: &str = "tests/zmk-sim/module/direction_vectors.inc";
 
 /// The user's desk: a 1440p monitor and the Corne below it, its LED map taken as checked so
-/// every LED is placed (the order is still the profile's provisional one, #90 row G).
+/// every LED is placed. The order is pinned to the column snake that lamp_effect.c's built-in
+/// table has (the old provisional map), not the profile's shipped one, so these vectors and the
+/// firmware simulator keep agreeing whatever map the profile ships.
 fn room() -> RoomMap {
     let mut board = Board::parse(include_str!("../../resources/boards/eyelash-corne.toml"))
         .expect("the Corne's profile");
-    board.lighting.as_mut().expect("lighting").led_map = LED_MAP_CHECKED.into();
+    let drawing = board.drawing.clone().unwrap_or_default();
+    let lighting = board.lighting.as_mut().expect("lighting");
+    lighting.led_keys = super::led_map_confirm::serpentine(&drawing, 21).expect("21 keys");
+    lighting.led_map = LED_MAP_CHECKED.into();
     let monitors = [MonitorInfo {
         id: r"\\.\DISPLAY1".into(),
         primary: true,
