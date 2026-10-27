@@ -53,6 +53,10 @@ impl Protocol {
 pub struct ZoneSpec {
     pub id: u8,
     pub name: String,
+    /// Where the zone sits on the device's front, in millimetres from its top-left corner
+    /// (x right, y down), for scenes' room map (#483). Unset zones are spread evenly.
+    #[serde(default)]
+    pub position: Option<[u16; 2]>,
 }
 
 /// One known board.
@@ -78,6 +82,9 @@ pub struct CatalogDevice {
     /// The model's default colour calibration, until the user calibrates their own unit.
     #[serde(default)]
     pub calibration: Option<Calibration>,
+    /// The device's front face in millimetres (width, height), for scenes' room map (#483).
+    #[serde(default)]
+    pub size: Option<[u16; 2]>,
     /// From the user's own catalog (added by hand), not the bundled one.
     #[serde(skip)]
     pub local: bool,
@@ -112,6 +119,7 @@ impl CatalogDevice {
             brightness: false,
             screen: Vec::new(),
             calibration: None,
+            size: None,
             local: true,
         }
     }
@@ -147,11 +155,18 @@ impl CatalogDevice {
             self.pid,
             self.protocol.id()
         );
+        if let Some([w, h]) = self.size {
+            out.push_str(&format!("size = [{w}, {h}]\n"));
+        }
         if !self.zones.is_empty() {
             out.push_str("zones = [\n");
             for z in &self.zones {
+                let at = z
+                    .position
+                    .map(|[x, y]| format!(", position = [{x}, {y}]"))
+                    .unwrap_or_default();
                 out.push_str(&format!(
-                    "    {{ id = {}, name = {} }},\n",
+                    "    {{ id = {}, name = {}{at} }},\n",
                     z.id,
                     quote(&z.name)
                 ));
@@ -265,6 +280,18 @@ mod tests {
             .as_ref()
             .expect("the 45L's default calibration");
         assert!(cal.is_neutral(), "the 45L starts neutral");
+        // Scenes' room map (#483): the front fans run 7, 6, 5 top to bottom, the diamond on top.
+        assert_eq!(case.size, Some([205, 475]));
+        let y = |id: u8| {
+            case.zones
+                .iter()
+                .find(|z| z.id == id)
+                .unwrap()
+                .position
+                .unwrap()[1]
+        };
+        assert!(y(1) < y(7) && y(7) < y(6) && y(6) < y(5) && y(5) < 475);
+        assert!(case.zones.iter().all(|z| z.position.is_some()));
         assert!(c.find(0x03f0, 0x7397).unwrap().calibration.is_none());
     }
 
@@ -307,15 +334,20 @@ mod tests {
             vec![ZoneSpec {
                 id: 3,
                 name: "Logo".into(),
+                position: Some([40, 12]),
             }],
         );
         let mut local = Catalog::default();
-        local.put(mine.clone());
+        local.put(CatalogDevice {
+            size: Some([200, 450]),
+            ..mine.clone()
+        });
         let text = local.to_toml();
         assert!(text.contains("vid = 0x103C"), "{text}");
         let back = Catalog::parse(&text).expect("its own output parses");
         assert_eq!(back.devices[0].name, mine.name);
-        assert_eq!(back.devices[0].zones, mine.zones);
+        assert_eq!(back.devices[0].zones, mine.zones, "positions too");
+        assert_eq!(back.devices[0].size, Some([200, 450]));
         let merged = Catalog::bundled().with_local(&back);
         let case = merged.find(0x103c, 0x84fd).unwrap();
         assert!(case.local);

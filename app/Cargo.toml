@@ -15,6 +15,7 @@ ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 digitalis = { path = "../crates/digitalis", features = ["devices"] }
 # Foxglove: the device layer (MIT).
 foxglove-devices = { path = "../crates/devices", features = ["hid"] }
+foxglove-scene = { path = "../crates/scene" }
 # Foxglove: QMK keyboards over VIA, read-only (MIT).
 foxglove-via = { path = "../crates/via" }
 # Foxglove: the local API host and its protocol (MIT).

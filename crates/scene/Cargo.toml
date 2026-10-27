@@ -1,0 +1,17 @@
+[package]
+name = "foxglove-scene"
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+description = "Scenes: one room map, one clock and effects that travel through every light (no UI, no OS calls)"
+readme = "README.md"
+
+[dependencies]
+# Oklab mixing (#474). No named colours (phf), so only the maths comes in.
+palette = { version = "0.7.7", default-features = false, features = ["std"] }
+# The noise effect's field.
+noise = { version = "0.9.0", default-features = false }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+toml = "0.9"

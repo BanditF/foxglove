@@ -78,6 +78,7 @@ impl Wizard {
             .map(|(id, name)| ZoneSpec {
                 id,
                 name: name.to_string(),
+                position: None,
             })
             .collect()
     }
@@ -343,7 +344,7 @@ fn review(ui: &mut egui::Ui, s: &Snapshot, w: &mut Wizard, out: &mut Vec<Intent>
             .clicked()
         {
             if let Ok(device) = entry.clone() {
-                out.push(Intent::Save(device));
+                out.push(Intent::Save(Box::new(device)));
                 *w = Wizard::default();
             }
         }
@@ -382,11 +383,13 @@ pub mod tests {
             vec![
                 ZoneSpec {
                     id: 1,
-                    name: "Shelf left".into()
+                    name: "Shelf left".into(),
+                    position: None,
                 },
                 ZoneSpec {
                     id: 3,
-                    name: "Shelf right".into()
+                    name: "Shelf right".into(),
+                    position: None,
                 },
             ]
         );

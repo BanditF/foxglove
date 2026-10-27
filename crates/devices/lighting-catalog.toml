@@ -4,6 +4,9 @@
 #   "omen-tracer"  HP OMEN case lighting board (TracerLED), static colour per zone
 #   "none"         recognised, listed as "found, not controllable yet"
 # Zones list only the parts that light up; `id` is the board's own zone number.
+# Scenes' room map (#483), optional: `size` = [width, height] of the device's front in mm, and a
+# zone's `position` = [x, y] in mm from that front's top-left corner (x right, y down). Zones
+# without one are spread evenly over the front, top to bottom.
 # Capabilities, all optional: `color` = "none" | "on-off" | "single" | "per-zone" | "per-led"
 # (per-zone when zones are listed), `effects` (onboard effect names), `brightness`, and
 # [[device.screen]] tables: width, height, depth (bits per pixel), fps, images, animations,
@@ -23,12 +26,16 @@ pid = 0x84FD
 protocol = "omen-tracer"
 # Mapped in a sitting with the user on 2026-10-26 (#423). Zones 3 and 4 aren't connected on
 # the 45L.
+# The front is about 205 x 475 mm (HP's spec, rounded). Positions are where each zone shows
+# from the front: the three 120 mm front fans under the top chamber, top to bottom 7, 6, 5,
+# the interior light behind them, the diamond display at the top.
+size = [205, 475]
 zones = [
-    { id = 1, name = "Diamond display" },
-    { id = 2, name = "Interior light" },
-    { id = 5, name = "Front bottom fan" },
-    { id = 6, name = "Front middle fan" },
-    { id = 7, name = "Front top fan" },
+    { id = 1, name = "Diamond display", position = [102, 55] },
+    { id = 2, name = "Interior light", position = [120, 250] },
+    { id = 5, name = "Front bottom fan", position = [102, 405] },
+    { id = 6, name = "Front middle fan", position = [102, 285] },
+    { id = 7, name = "Front top fan", position = [102, 165] },
 ]
 # The board's own modes and brightness byte (#423); Foxglove's driver sets static colours only.
 effects = ["breathing", "colour cycle", "blinking", "wave", "radial"]

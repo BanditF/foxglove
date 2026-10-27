@@ -225,6 +225,7 @@ mod tests {
             vec![ZoneSpec {
                 id: 1,
                 name: "Diamond".into(),
+                position: None,
             }],
             Box::new(rec.clone()),
         )
@@ -240,6 +241,7 @@ mod tests {
             &[ZoneSpec {
                 id: 1,
                 name: "Diamond".into(),
+                position: None,
             }],
             Some(model.clone()),
         );

@@ -75,6 +75,8 @@ pub struct Found {
     pub local: bool,
     /// The model's default colour calibration, from the catalog.
     pub calibration: Option<Calibration>,
+    /// Its front in millimetres (width, height), from the catalog, for scenes' room map.
+    pub size: Option<[u16; 2]>,
 }
 
 /// A HID device the catalog doesn't know and that isn't a LampArray: a candidate for "Add a
@@ -176,6 +178,7 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
                 caps: known.caps(),
                 local: known.local,
                 calibration: known.calibration.clone(),
+                size: known.size,
             });
         }
     }
@@ -211,6 +214,7 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
             },
             local: false,
             calibration: None,
+            size: None,
         });
     }
     found
@@ -317,6 +321,7 @@ pub fn test_zone(
     let spec = vec![ZoneSpec {
         id: zone,
         name: format!("zone {zone}"),
+        position: None,
     }];
     let mut d: Box<dyn LightingDevice> = match protocol {
         Protocol::OmenTracer => Box::new(omen_tracer::OmenTracer::new(

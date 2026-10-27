@@ -47,7 +47,7 @@ and updating the firmware.
 | `scripts/flipper_art.py` | builds the right-hand art (`custom_art.c`, or a `.bin` blob to push) |
 | `keymap-drawer/` | keymap diagram, redrawn by CI |
 | `app/` | the Foxglove app (KeyPeek absorbed; own Cargo workspace): `cargo run --manifest-path app/Cargo.toml` |
-| `crates/` | `digitalis` (the PC end of the link), `foxglove-cli`, the plugin crates, and `hostpanel` (retired tray; CLI for push-art/select/preview) |
+| `crates/` | `digitalis` (the PC end of the link), `scene` (room map, clock, effects), `foxglove-cli`, the plugin crates, and `hostpanel` (retired tray; CLI for push-art/select/preview) |
 | `scripts/check.ps1` | lint and tests for `crates/` and `app/`: run it before pushing desktop changes |
 | `docs/` | design notes; [`docs/upstream/`](docs/upstream/README_EN.md) has the vendor's original README |
 
