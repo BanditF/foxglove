@@ -329,7 +329,12 @@ fn keypeek_groups(ui: &mut egui::Ui) {
             .striped(true)
             .spacing([20.0, 10.0])
             .show(ui, |ui| {
-                use crate::foxglove::settings_ui::grid_heading;
+                // The headings use the theme's fonts, which the "before #384" preview hasn't.
+                let grid_heading = |ui: &mut egui::Ui, text: &str| {
+                    if !legacy() {
+                        crate::foxglove::settings_ui::grid_heading(ui, text);
+                    }
+                };
                 grid_heading(ui, "When it shows");
                 for (label, value) in [("Display duration", 2000.0), ("Activation delay", 0.0)] {
                     ui.label(label);
