@@ -28,9 +28,13 @@ When Wallpaper Engine is installed (found as in `wallpaper_engine.rs`):
 - each Workshop item in `<library>\steamapps\workshop\content\431960`;
 - the folder of each wallpaper on screen (the `file` Wallpaper Engine records per monitor).
 
-The wallpaper service reads them at start, on **Refresh**, and when a watched wallpaper source
-changes. A folder list is read again only when that folder changed, so nothing polls. When two
-manifests share an id, the first wins (own projects before the Workshop).
+The wallpaper service reads them when it starts, on **Refresh** (Art page, Match the
+wallpaper), and when Wallpaper Engine's `config.json` or the Windows wallpaper changes (the
+folder watches it already has; nothing polls). On those events a root's folder list is read
+again only when the root folder changed (a project added or removed); a manifest edited inside
+an existing project is seen on Refresh, or as soon as that wallpaper is on screen. A scene that
+started before its wallpaper was found takes its look when the wallpaper is. When two manifests
+share an id, the first wins (own projects before the Workshop), so a prefixed id is safer.
 
 ## The file
 
@@ -58,7 +62,7 @@ manifests share an id, the first wins (own projects before the Workshop).
 |---|---|---|
 | `format`, `version` | yes | `"foxglove-wallpaper"`, `1`. Anything else is skipped. |
 | `id` | yes | A stable id: lower-case letters, digits, `.`, `_`, `-`, at most 64. A reverse-domain or pack prefix (`tidepool.reef`) keeps it unique. |
-| `title` | no | The name the page shows (1–40 characters). Defaults to `project.json`'s `title`, then the id. |
+| `title` | no | The name the page shows (1–40 characters). Defaults to `project.json`'s `title` (cut to 40), then the id. |
 | `pack` | no | The pack or author name, shown with the title (1–40 characters). |
 | `supports` | no | The Foxglove properties the wallpaper reads (below). Names Foxglove doesn't know are skipped, so a newer list still loads. |
 | `palette` | no | One named palette: `name` and two or more `#rrggbb` `stops`. |
@@ -68,6 +72,9 @@ manifests share an id, the first wins (own projects before the Workshop).
 Unknown fields are skipped. A manifest that breaks a rule is skipped as a whole, with one log
 line (`Foxglove: …\foxglove.json skipped: …`), and is read again when its folder list is next
 read (or on Refresh). The file must be under 64 KiB.
+
+A wallpaper is matched to a monitor by its folder. Only for the Windows desktop wallpaper and
+the `FOXGLOVE_WALLPAPER_OVERRIDE` test hook is it also matched by id (the file's name).
 
 ### `supports`
 

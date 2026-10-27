@@ -54,6 +54,7 @@ pub struct Supports {
 }
 
 impl Supports {
+    #[cfg(test)]
     pub const ALL: Supports = Supports {
         clock: true,
         layer: true,
@@ -151,6 +152,16 @@ fn shown_name(s: &str, what: &str) -> Result<String, String> {
     Ok(t.to_string())
 }
 
+/// A borrowed name cut to the page's 40 characters, with an ellipsis when cut.
+fn cut_to_fit(s: &str) -> String {
+    if s.chars().count() <= looks::NAME_MAX {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(looks::NAME_MAX - 1).collect();
+    out.push('…');
+    out
+}
+
 /// An id: lower-case letters, digits, `.`, `_` and `-`, at most 64.
 fn valid_id(id: &str) -> bool {
     let mut chars = id.chars();
@@ -187,9 +198,12 @@ pub fn parse(text: &str, dir: &Path, project_title: Option<&str>) -> Result<Mani
     if !valid_id(&f.id) {
         return Err(format!("id {:?}: lower-case letters, digits, . _ -", f.id));
     }
-    let title = match f.title.as_deref().or(project_title) {
-        Some(t) => shown_name(t, "title")?,
-        None => f.id.clone(),
+    // The manifest's own title must be right; one borrowed from project.json (often long, as
+    // Workshop titles are) is cut to fit, and a blank one gives way to the id.
+    let title = match (f.title.as_deref(), project_title.map(str::trim)) {
+        (Some(t), _) => shown_name(t, "title")?,
+        (None, Some(t)) if !t.is_empty() => cut_to_fit(t),
+        _ => f.id.clone(),
     };
     let pack = f
         .pack
@@ -275,8 +289,11 @@ pub fn read(dir: &Path) -> Option<Manifest> {
         return None;
     }
     let text = std::fs::read_to_string(&path).ok()?;
-    let title = std::fs::read_to_string(dir.join("project.json"))
-        .ok()
+    let project = dir.join("project.json");
+    let small = std::fs::metadata(&project).is_ok_and(|m| m.len() <= 4 * MAX_BYTES);
+    let title = small
+        .then(|| std::fs::read_to_string(&project).ok())
+        .flatten()
         .and_then(|t| {
             serde_json::from_str::<serde_json::Value>(t.trim_start_matches('\u{feff}')).ok()
         })
@@ -393,9 +410,10 @@ pub fn folder_of(file: &str) -> Option<PathBuf> {
     (!parent.as_os_str().is_empty()).then(|| parent.to_path_buf())
 }
 
-/// The wallpaper a monitor shows: the manifest in the file's folder, else one whose id is the
-/// whole text or the file's name (the test hook, a desktop image named after a wallpaper).
-pub fn for_file<'a>(manifests: &'a [Manifest], file: &str) -> Option<&'a Manifest> {
+/// The wallpaper a monitor shows: the manifest in the file's folder, else, with `by_name`, one
+/// whose id is the whole text or the file's name (the test hook, a desktop image named after a
+/// wallpaper; never for Wallpaper Engine's own monitors).
+pub fn for_file<'a>(manifests: &'a [Manifest], file: &str, by_name: bool) -> Option<&'a Manifest> {
     let dir = folder_of(file);
     let text = file.trim().to_lowercase();
     let stem = Path::new(&text.replace('\\', "/"))
@@ -406,7 +424,11 @@ pub fn for_file<'a>(manifests: &'a [Manifest], file: &str) -> Option<&'a Manifes
     manifests
         .iter()
         .find(|m| dir.as_deref().is_some_and(|d| same_dir(&m.dir, d)))
-        .or_else(|| manifests.iter().find(|m| m.id == text || m.id == stem))
+        .or_else(|| {
+            by_name
+                .then(|| manifests.iter().find(|m| m.id == text || m.id == stem))
+                .flatten()
+        })
 }
 
 /// The Scenes page's palettes and looks from the manifests. A palette named like one already
@@ -539,6 +561,27 @@ pub(crate) mod tests {
         );
         assert_eq!(reef.motifs[0].look.kind, Kind::Drift);
         assert_eq!(light.title, "Lighthouse");
+        // A borrowed project.json title is cut to fit, a blank one gives way to the id.
+        let long = "A Very Long Workshop Title That Goes On And On Forever";
+        let m = parse(
+            LIGHTHOUSE
+                .replace("\"title\": \"Lighthouse\",", "")
+                .as_str(),
+            Path::new("x"),
+            Some(long),
+        )
+        .unwrap();
+        assert_eq!(m.title.chars().count(), 40);
+        assert!(m.title.ends_with('…'));
+        let m = parse(
+            LIGHTHOUSE
+                .replace("\"title\": \"Lighthouse\",", "")
+                .as_str(),
+            Path::new("x"),
+            Some("  "),
+        )
+        .unwrap();
+        assert_eq!(m.title, "tidepool.lighthouse");
         assert!(
             !light.supports.any(),
             "a wallpaper that reads nothing from Foxglove"
@@ -638,17 +681,17 @@ pub(crate) mod tests {
         assert_eq!(found[0].title, "Reef", "from project.json");
         let shown = format!("{}/index.html", reef.display()).replace('\\', "/");
         assert_eq!(
-            for_file(&found, &shown).map(|m| m.id.as_str()),
+            for_file(&found, &shown, false).map(|m| m.id.as_str()),
             Some("tidepool.reef")
         );
         let other = format!("{}/index.html", plain.display());
         assert_eq!(
-            for_file(&found, &other),
+            for_file(&found, &other, true),
             None,
             "no manifest, not ours to know"
         );
         assert_eq!(
-            for_file(&found, "tidepool.lighthouse").map(|m| m.title.as_str()),
+            for_file(&found, "tidepool.lighthouse", true).map(|m| m.title.as_str()),
             Some("Lighthouse")
         );
         // A wallpaper on screen elsewhere is read from its own folder.

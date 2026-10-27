@@ -1334,8 +1334,9 @@ fn scenes_triggers_render() {
     assert_ne!(on, off);
 }
 
-/// The review sheet for #488: each wallpaper look found (in tests, the fake pack) rendered from the real effect code
-/// over a room (a monitor above the keyboard), six moments of one cycle per row, and a GIF of
+/// The review sheet for #488: each wallpaper look found (in tests, the fake pack) rendered
+/// from the real effect code over a room (a monitor above the keyboard), six moments of one
+/// cycle per row, and a GIF of
 /// each look's cycle. Written only with FOXGLOVE_UI_PREVIEW_DIR set.
 #[test]
 fn scenes_wallpaper_preset_sheet() {

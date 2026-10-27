@@ -372,6 +372,20 @@ pub fn profile_changed() {
     }
 }
 
+/// The wallpapers' looks changed (#562, the wallpaper service's first gather or a wallpaper
+/// added or removed): a running scene takes the chosen look again, so a wallpaper look started
+/// before its wallpaper was found gets its palette, name and right-screen art.
+pub fn wallpapers_changed() {
+    if super::scene_run::running().is_none() {
+        return;
+    }
+    let chosen = looks::load_chosen();
+    let saved = looks::load_saved().presets;
+    let room = super::scene_room::room();
+    super::scene_run::set_effect(&scene_name(&chosen.look, &saved), chosen.look.effect(&room));
+    show_art(&chosen);
+}
+
 /// A profile's "Start with this profile" starts its scene.
 fn start_by_profile(chosen: &Chosen) {
     let saved = looks::load_saved().presets;
@@ -1188,9 +1202,14 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
     } else {
         ui.label(theme::caps_label(ui, "Palette"));
         ui.horizontal_wrapped(|ui| {
-            // A wallpaper's palette shows only while its look has it (#488).
-            let own = (!PALETTES.iter().any(|(n, _)| *n == look.palette))
-                .then_some(look.palette.as_str());
+            // A wallpaper's palette shows only while its look has it and its wallpaper is
+            // here (#488, #562).
+            let own = (!PALETTES.iter().any(|(n, _)| *n == look.palette)
+                && looks::scenes()
+                    .palettes
+                    .iter()
+                    .any(|p| p.name == look.palette))
+            .then_some(look.palette.as_str());
             for name in PALETTES.iter().map(|(n, _)| *n).chain(own) {
                 if theme::pill(ui, look.palette == name, name).clicked() {
                     set(

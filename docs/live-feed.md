@@ -1,8 +1,8 @@
 # Live wallpaper feed (`foxglove-live` v1)
 
 Foxglove's side of the live keyboard wallpaper (#498, #499). Off by default: Settings → Live
-wallpaper. This page is also the public spec: any wallpaper, or another host (#501), can be a
-client. A Wallpaper Engine wallpaper opts in to the port push with its `foxglove.json`
+wallpaper. This page is also the public spec: any wallpaper, or another host (#501), can be
+a client. A Wallpaper Engine wallpaper opts in to the port push with its `foxglove.json`
 (docs/wallpaper-manifest.md, `supports: ["foxglove_live"]`). The code is `app/src/foxglove/live_feed.rs` (runtime) and `live_wire.rs` (format,
 checks, batching).
 

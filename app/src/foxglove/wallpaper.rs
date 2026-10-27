@@ -282,7 +282,7 @@ fn sync_targets(
     selected(text)
         .into_iter()
         .filter_map(|(location, file)| {
-            let supports = super::wallpaper_manifest::for_file(manifests, &file)?.supports;
+            let supports = super::wallpaper_manifest::for_file(manifests, &file, false)?.supports;
             supports.any().then_some(super::wallpaper_sync::Target {
                 location,
                 file,
@@ -336,8 +336,9 @@ pub fn on_screen_ids() -> Vec<String> {
 /// Every wallpaper with a manifest in `text`, each once, in monitor order.
 fn ids_on_screen(manifests: &[Manifest], text: &str, source: &Source) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
+    let by_name = !matches!(source, Source::Engine(_));
     for (_, file) in on_screen(text, source) {
-        if let Some(m) = super::wallpaper_manifest::for_file(manifests, &file) {
+        if let Some(m) = super::wallpaper_manifest::for_file(manifests, &file, by_name) {
             if !ids.contains(&m.id) {
                 ids.push(m.id.clone());
             }
@@ -430,6 +431,11 @@ pub fn start() {
                 .map_or_else(Vec::new, |t| folders_on_screen(t, &source));
             let manifests = super::wallpaper_manifest::gather(found, &shown);
             let mut repaint = super::wallpaper_manifest::set(&manifests);
+            if repaint {
+                // A scene that started before its wallpaper was found takes its palette, name
+                // and art now.
+                super::scenes_ui::wallpapers_changed();
+            }
             let Some(text) = text else {
                 if repaint {
                     super::scene_run::repaint_page();
