@@ -847,6 +847,7 @@ pub const BACKDROP: Color32 = Color32::from_black_alpha(140);
 
 /// Where the dialog's frame was last drawn, kept in the context's temp data: the frame takes
 /// the clicks between its controls, so the layout guard counts it as their container.
+#[cfg(test)]
 pub fn dialog_rect(ctx: &egui::Context) -> Option<egui::Rect> {
     ctx.data(|d| d.get_temp(egui::Id::new(DIALOG_RECT)))
 }
