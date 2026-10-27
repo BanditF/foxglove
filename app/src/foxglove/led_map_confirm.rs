@@ -301,7 +301,10 @@ mod tests {
         // Mirrored: the inner thumb (20) becomes the outer (18), the outer column the inner.
         let m = fix(&shipped, &d, Answer::Mirrored);
         assert_eq!(m[0], 18);
-        assert_eq!(m[18], 15, "the outer column's top key mirrors to the inner's");
+        assert_eq!(
+            m[18], 15,
+            "the outer column's top key mirrors to the inner's"
+        );
         // Rows flipped: the inner column's bottom key (17) becomes its top (15).
         assert_eq!(fix(&shipped, &d, Answer::RowsFlipped)[1], 15);
     }

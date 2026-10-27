@@ -410,7 +410,10 @@ mod tests {
         let mut keys = lighting.led_keys.clone();
         keys.sort_unstable();
         assert_eq!(keys, (0..21).collect::<Vec<u8>>());
-        assert_eq!(lighting.led_keys[0], 20, "the chain starts at the inner thumb");
+        assert_eq!(
+            lighting.led_keys[0], 20,
+            "the chain starts at the inner thumb"
+        );
         assert_eq!(lighting.led_map, LED_MAP_SHIPPED);
         let toucan = find_in(&all, 0x1d50, 0x615e, "Toucan").unwrap();
         assert_eq!(

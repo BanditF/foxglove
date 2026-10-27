@@ -592,7 +592,9 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
         if let Some(e) = &v.error {
             ui.add(egui::Label::new(RichText::new(e).color(p.warn)).wrap());
         } else if v.played {
-            ui.label(RichText::new("The dot stopped. Run again to watch once more.").color(p.muted));
+            ui.label(
+                RichText::new("The dot stopped. Run again to watch once more.").color(p.muted),
+            );
         } else if !v.started {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -612,7 +614,11 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
             }
             if c.correctable() {
                 for (label, a, hint) in [
-                    ("Runs backwards", Answer::Backwards, "Same path, the other way round"),
+                    (
+                        "Runs backwards",
+                        Answer::Backwards,
+                        "Same path, the other way round",
+                    ),
                     (
                         "Mirrored",
                         Answer::Mirrored,
@@ -727,7 +733,12 @@ fn check_board(ui: &mut egui::Ui, v: &CheckView, c: &Confirm) {
 
 /// Draws the dot test and acts on it: a correction or Run again restarts the dot, Matches
 /// saves. What the page does next, if anything.
-fn show_check_ui(ui: &mut egui::Ui, status: &Status, c: &mut Confirm, worker: &Worker) -> Option<Next> {
+fn show_check_ui(
+    ui: &mut egui::Ui,
+    status: &Status,
+    c: &mut Confirm,
+    worker: &Worker,
+) -> Option<Next> {
     let v = CheckView::of(status);
     match draw_check(ui, &v, c)? {
         CheckIntent::Answer(Answer::Matches) => match led_map::save(&c.board, c.result()) {

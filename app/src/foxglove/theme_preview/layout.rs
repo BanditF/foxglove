@@ -388,9 +388,15 @@ fn wizards_lay_out_without_overlaps() {
         None,
     ));
     // Check LED map: the dot on the shipped map, after three corrections.
-    for fixes in [vec![], vec![crate::foxglove::led_map_confirm::Answer::Mirrored; 3]] {
+    for fixes in [
+        vec![],
+        vec![crate::foxglove::led_map_confirm::Answer::Mirrored; 3],
+    ] {
         let mut s = Samples::full();
-        s.ledcheck = Some(crate::foxglove::led_map_ui::tests::check_sample(Some(2), &fixes));
+        s.ledcheck = Some(crate::foxglove::led_map_ui::tests::check_sample(
+            Some(2),
+            &fixes,
+        ));
         found.extend(page_cases(
             &format!("Check LED map after {} fixes", fixes.len()),
             Page::Lights,

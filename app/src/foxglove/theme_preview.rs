@@ -1527,8 +1527,18 @@ fn led_map_confirm_renders() {
     let mut shots = Vec::new();
     for (name, step, fixes, played) in [
         ("shipped", Some(4), vec![], false),
-        ("fixed", Some(12), vec![Answer::Mirrored, Answer::Backwards], false),
-        ("stopped", None, vec![Answer::Mirrored, Answer::Backwards, Answer::RowsFlipped], true),
+        (
+            "fixed",
+            Some(12),
+            vec![Answer::Mirrored, Answer::Backwards],
+            false,
+        ),
+        (
+            "stopped",
+            None,
+            vec![Answer::Mirrored, Answer::Backwards, Answer::RowsFlipped],
+            true,
+        ),
     ] {
         let mut s = Samples::full();
         let (mut v, c) = check_sample(step, &fixes);
