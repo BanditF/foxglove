@@ -26,8 +26,9 @@
  *                    12 BUILD_INFO (D7 09; HELLO bytes 27-30), 13 SCREENS (D5 06),
  *                    14 FRAMES (D7 0C SET_FRAME), 15 PANEL_HOLD, 16 ART_KEYS (D7 0D),
  *                    17 LEFT_BATTERY (CONN_STATE byte 8 is the left's battery %),
- *                    18 BATTERY_DIM (D7 0E), 20 RIGHT_EVENTS (the right's on/off and power
- *                    source reach the PC as D7 83 / D7 8E events, #478).
+ *                    18 BATTERY_DIM (D7 0E), 19 EFFECTS (D7 0F SET_EFFECT),
+ *                    20 RIGHT_EVENTS (the right's on/off and power source reach the
+ *                    PC as D7 83 / D7 8E events, #478).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -206,6 +207,37 @@
  *      After host traffic, D7 8E also comes unsolicited when the left's level or cable changes,
  *      or a read of the right (each request starts one, and so does the right's ring when its
  *      cable or level changes, capability bit 20) shows its state changed.
+ *   0F EFFECT  op u8, then by op                                       (HELLO bit 19, #490)
+ *      reply (every op): D7 8F, status, owner, kind, right, event
+ *      An effect the PC sends once and each half draws on its own, from where its LEDs sit and
+ *      the scene's clock (crates/scene: effects.rs, clock.rs): nothing is streamed, so it runs on
+ *      with the app closed, the cable out or another endpoint. The maths is crates/scene's, held
+ *      to its vectors in the simulator (lamp_effect.c, tests/zmk-sim/host-effects).
+ *      op 0 RELEASE   both halves back to their own effect (owner 0).
+ *      op 1 PLACE     room, left half, right half: each x, y, w, h i16 LE in mm (bytes 3-26), in
+ *                     the scene's room space (x right, y down). Kept until a reboot; a running
+ *                     effect moves at once on the same clock. Before any PLACE the room is the
+ *                     two halves, 124 x 86 mm each, 80 mm apart. Status 5 for a half without area.
+ *      op 2 EFFECT    kind u8 (1 scanline, 2 sweep, 3 ripple, 4 breathe), colours n u8,
+ *                     clock ms u24 (the scene's time modulo the period, as sent), period ms u24
+ *                     (0 stands still), angle u16 (0.01 degree, < 36000; 0 left to right, 90 down),
+ *                     width u16 (0.1 mm), origin x, y i16 (mm; the ripple's centre),
+ *                     n x (r, g, b) from byte 19. Scanline and ripple: colour, background;
+ *                     breathe: from, to (n = 2). Sweep: 1-4 stops. Status 5 for anything else.
+ *      Each half draws its 21 LEDs at CONFIG_FOXGLOVE_HOST_EFFECTS_FRAME_MS (once for a still
+ *      one), each LED at a provisional position (lamp_effect.c; the #90 row G sitting corrects it).
+ *      The left sends the right its copy over the art relay with the left's clock read just before
+ *      the send, so both halves agree on the phase within the link's latency; again on link-up.
+ *      The take-over and owner rules are SET_FRAME's, with no timeout and no hand-back on USB or
+ *      endpoint changes: the effect ends on RELEASE, when a SET_FRAME SHOW takes the lights (the
+ *      frames draw over it, both halves; owner 3 in D7 8C), or on a reboot. An effect replaces held
+ *      frames quietly (no D7 8C event). While it runs, each half draws only while its underglow is
+ *      on as the user set it (dark while idle or off; RGB_STATE reports that on/off), and its
+ *      battery dim (D7 0E) scales it.
+ *      Owner: 0 the keyboard's own effect, 3 the host link's effect. Kind: the one running (0
+ *      none). Right: as SET_FRAME's (0 no relay link yet, 1 the right draws it, 2 its firmware
+ *      can't and keeps its own effect). Event: always 0 (no unsolicited D7 8F).
+ *      Status: 0 ok, 4 not built in (CONFIG_FOXGLOVE_HOST_EFFECTS, dev builds), 5 bad request.
  *   0B GUARD_TEST [delay_ms u16] (test hooks + split guard only)        reply: D7 8B, status
  *      The #122 split guard treats the current split link as stuck once, delay_ms from now (2000
  *      when left out; 0 = at once, even mid-relay, e.g. during an art push): it drops it, ZMK
@@ -248,6 +280,8 @@
 #define HOST_LINK_CAP_LEFT_BATTERY (1U << 17)
 // D7 0E BATTERY_DIM: the underglow's levels by power state, per half.
 #define HOST_LINK_CAP_BATTERY_DIM (1U << 18)
+// D7 0F SET_EFFECT: effects that each half draws from its lamp positions (#490).
+#define HOST_LINK_CAP_EFFECTS (1U << 19)
 // The relayed right's on/off (D7 83) and power source (D7 8E) changes come as events (#478).
 #define HOST_LINK_CAP_RIGHT_EVENTS (1U << 20)
 

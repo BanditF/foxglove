@@ -40,6 +40,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
 #include "host_frames.h"
 #endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+#include "host_effects.h"
+#endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 #include "test_hooks.h"
 #endif
@@ -64,7 +67,7 @@ enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
        SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B, // 0x0A: LAMP_TEST (#115 branch)
        SETTING_FRAME = 0x0C, SETTING_ART_KEYS = 0x0D,
-       SETTING_BATTERY_DIM = 0x0E };
+       SETTING_BATTERY_DIM = 0x0E, SETTING_EFFECT = 0x0F };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -225,6 +228,9 @@ static void hello_reply(void) {
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
     caps |= HOST_LINK_CAP_FRAMES;
+#endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+    caps |= HOST_LINK_CAP_EFFECTS;
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) && DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_art_step)
     caps |= HOST_LINK_CAP_ART_KEYS;
@@ -703,6 +709,15 @@ static void settings_command(const uint8_t *d, int len) {
         if (!host_frames_command(d, len, r)) {
             break;
         }
+#endif
+        reply(r, sizeof(r));
+        break;
+    }
+    case SETTING_EFFECT: {
+        uint8_t r[7] = {HOST_LINK_SETTINGS, 0x80 | SETTING_EFFECT, 4}; // not built in
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+        BUILD_ASSERT(sizeof(r) == HOST_EFFECTS_REPLY_SIZE, "the D7 8F reply");
+        host_effects_command(d, len, r);
 #endif
         reply(r, sizeof(r));
         break;

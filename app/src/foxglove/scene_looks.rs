@@ -614,6 +614,12 @@ pub struct Chosen {
     pub look: Look,
     /// A wallpaper's look also shows that wallpaper's right-screen art while it runs.
     pub with_art: bool,
+    /// Triggers (#489): switching to this profile starts the scene.
+    pub start_with_profile: bool,
+    /// Each key press sends a ring of the scene's colour from that key.
+    pub ripple_keys: bool,
+    /// A layer change sends one sweep in the layer's overlay colour.
+    pub sweep_layers: bool,
 }
 
 impl Chosen {
@@ -861,6 +867,7 @@ mod tests {
         let mut c = Chosen {
             look: hud.look.clone(),
             with_art: false,
+            ..Chosen::default()
         };
         assert_eq!(c.art(), None, "off by default");
         c.with_art = true;
@@ -991,6 +998,9 @@ mod tests {
                 ..Look::default()
             },
             with_art: true,
+            start_with_profile: true,
+            ripple_keys: true,
+            sweep_layers: false,
         };
         save_chosen(&chosen);
         let mut saved = Saved::default();

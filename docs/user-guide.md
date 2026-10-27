@@ -144,7 +144,9 @@ Open it from the tray: **Open Foxglove**. The sidebar has six pages, top to bott
   - **Showing now:** the left screen and the right screen side by side, each with its name and
     what happens after the keyboard restarts, **‹ Previous** / **Next ›**, and **Rotation**.
     **Change…** under the left screen picks what it shows, with a preview of each: **Clock and
-    status** (the keyboard's own), **Clock, media and hints**, or **Wallpaper animation**.
+    status** (the keyboard's own), **Clock, media and hints**, **Wallpaper animation**, or **PC load**: CPU, graphics and
+    memory use as bars, read from Windows once a second only while it shows, and not while the PC
+    is locked or the screen is off. No temperatures: those need a driver.
   - **On the keyboard:** "Kept: 5 of 8 places" and the pieces kept there (they play without
     this PC), then the pieces that **come with the keyboard**. Click one to show it.
   - **On this PC:** every piece on this PC once, with one badge: **ON KEYBOARD**, **THIS PC**,
@@ -313,6 +315,17 @@ scanline can run down the monitors, through the case's fans and on into the keys
   them runs, the right screen shows that wallpaper's art; Stop puts your art back. With
   Wallpaper Engine showing a Bandit wallpaper, the wallpaper follows the scene's clock as soon
   as it starts or its look changes.
+
+- **Triggers** (under Effect, each for the profile you are in):
+  - **Start with this profile:** switching to this profile starts its scene, and switching to a
+    profile without the box stops it again, unless you pressed Start yourself. With program
+    rules (Settings, Profile, "Switch profile by program") a game can bring its own scene. On
+    Base settings it starts the scene when Foxglove starts.
+  - **Ripple on key press:** each key you press sends one ring of the scene's colour out from
+    that key. Foxglove only learns where the key is, never what it types.
+  - **Sweep on layer change:** changing layer sends one sweep across the room in that layer's
+    overlay colour.
+  - Ripples and sweeps show only while a scene runs.
 
 Each profile keeps its own scene, so switching to Game can bring a different look; your saved
 presets are the same in every profile.

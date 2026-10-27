@@ -22,8 +22,8 @@
 //!   Engine shows a Bandit wallpaper.
 //! - **Game mode:** a layer named GAME... is active (the GAME / GAME+ layers, docs/layers.md).
 //!
-//! Later (#320): the live socket carries key presses, PC stats and notifications. A transport is
-//! one [`Apply`]; the state and the change detection here stay as they are.
+//! Stage 2 (#499): the live socket (`live_feed`) carries key presses and, later, PC stats and
+//! notifications. This path only tells the wallpapers its port (`foxglove_live`).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -37,6 +37,9 @@ use foxglove_scene::{Clock, Effect, Rect, RoomMap, WallpaperScene};
 pub const LAYER: &str = "foxglove_layer";
 pub const GAME: &str = "foxglove_game";
 pub const SCENE: &str = "foxglove_scene";
+/// The live feed's port while it listens, 0 when it doesn't (#499): the wallpaper connects
+/// when this changes, so it never retries on a timer. The pairing token never goes here.
+pub const LIVE: &str = "foxglove_live";
 
 /// How long one push may take before it is given up (and its process ended).
 const PUSH_LIMIT: Duration = Duration::from_secs(5);
@@ -62,6 +65,8 @@ pub struct State {
     pub layer: Option<String>,
     pub game: bool,
     pub scene: Option<Scene>,
+    /// The live feed's port while it listens (`live_feed`).
+    pub live: Option<u16>,
 }
 
 /// A layer name as a property: letters, digits, `+`, `-` and `_`, upper case, at most 16.
@@ -106,6 +111,7 @@ pub fn properties(state: &State, monitor: Option<Rect>) -> String {
         LAYER: state.layer.clone().unwrap_or_default(),
         GAME: state.game,
         SCENE: scene,
+        LIVE: state.live.unwrap_or(0),
     })
     .to_string()
 }
@@ -306,6 +312,11 @@ pub fn scene_room(room: RoomMap) {
             scene.placement = s.placements;
         }
     });
+}
+
+/// The live feed started listening on `port`, or stopped (`None`).
+pub fn live(port: Option<u16>) {
+    changed(|s| s.state.live = port);
 }
 
 /// The scene ended: the wallpapers go back to their own clocks.
@@ -622,11 +633,12 @@ mod tests {
             layer: Some("GAME".into()),
             game: true,
             scene: None,
+            live: Some(8768),
         };
         let props = properties(&state, None);
         assert_eq!(
             props,
-            r#"{"foxglove_game":true,"foxglove_layer":"GAME","foxglove_scene":""}"#
+            r#"{"foxglove_game":true,"foxglove_layer":"GAME","foxglove_live":8768,"foxglove_scene":""}"#
         );
         let (args, raw) = arguments(WE_LEFT, &props);
         assert_eq!(args, ["-control", "applyProperties", "-location", WE_LEFT]);
@@ -634,7 +646,7 @@ mod tests {
         assert_eq!(raw.matches(' ').count(), 1, "one space, after -properties");
         assert_eq!(
             gone(),
-            r#"{"foxglove_game":false,"foxglove_layer":"","foxglove_scene":""}"#
+            r#"{"foxglove_game":false,"foxglove_layer":"","foxglove_live":0,"foxglove_scene":""}"#
         );
     }
 
@@ -725,6 +737,7 @@ mod tests {
             layer: Some("GAME".into()),
             game: true,
             scene: Some(scene()),
+            live: None,
         };
         {
             let mut p = Pusher::new(&mut fake);

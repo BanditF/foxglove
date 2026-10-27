@@ -122,6 +122,7 @@ fn style(title: &str) -> Style {
         | "Profile"
         | "Appearance"
         | "Startup and updates"
+        | "Live wallpaper"
         | "Other keyboards (VIA)" => Style::Card,
         "Overlay Appearance" => Style::CardTop,
         "Theme" => Style::CardBottom,

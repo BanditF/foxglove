@@ -23,7 +23,9 @@ static K_MUTEX_DEFINE(scaled_lock); // the underglow and the LampArray (#115) bo
 // A lit channel stays at least 1, so the lowest level dims the lights but never turns them off.
 static uint8_t scale(uint8_t v, unsigned int cap) { return v == 0 ? 0 : MAX(v * cap / 100, 1); }
 
-static int dim_update_rgb(const struct device *dev, struct led_rgb *pixels, size_t n) {
+static atomic_t held; // the PC draws (dim_strip_hold)
+
+static int draw(struct led_rgb *pixels, size_t n) {
     const unsigned int cap = battery_dim_level();
     if (cap >= 100) {
         return led_strip_update_rgb(strip, pixels, n);
@@ -40,6 +42,14 @@ static int dim_update_rgb(const struct device *dev, struct led_rgb *pixels, size
     k_mutex_unlock(&scaled_lock);
     return err;
 }
+
+static int dim_update_rgb(const struct device *dev, struct led_rgb *pixels, size_t n) {
+    return atomic_get(&held) ? 0 : draw(pixels, n);
+}
+
+void dim_strip_hold(bool on) { atomic_set(&held, on); }
+
+int dim_strip_update_host(struct led_rgb *pixels, size_t n) { return draw(pixels, n); }
 
 static int dim_update_channels(const struct device *dev, uint8_t *channels, size_t n) {
     return -ENOTSUP;

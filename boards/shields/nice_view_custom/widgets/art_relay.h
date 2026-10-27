@@ -21,6 +21,7 @@
  * The peripheral queues an event on the system queue; acceptance is the ATT reply.
  * Application ATT errors: 82 busy, 84 hooks not built in, 85 invalid length/position/state.
  * These map to POSITION statuses 2, 4, 5; ATT success maps to 0 and timeout to 3.
+ * SET_FRAME's LAMPS / LAMP_HOST (11, 12) and SET_EFFECT's EFFECT / EFFECT_GO (14, 15) are below.
  * RGB (write request, so the left knows it arrived) is the left's underglow on/off; with follow = 1 the right shows
  * the same, with 0 it goes by its own activity (rgb_idle.c). Bytes 3-7 (status version >= 6) are
  * the left's struct battery_dim_config, which the right takes and saves as its own levels (each
@@ -46,6 +47,7 @@
 #include <zephyr/toolchain.h>
 
 #include "battery_dim.h"
+#include "lamp_effect.h"
 #include "rgb_idle.h"
 
 #define ART_RELAY_SERVICE_UUID BT_UUID_128_ENCODE(0x6e766172, 0x7400, 0x4c6b, 0x9a10, 0x5d1e0bfa7a00)
@@ -74,6 +76,14 @@ enum art_relay_op {
                               // them back to its own effect
     ART_RELAY_RGB_HSB = 13, // hue u16, saturation u8, brightness u8 (write request): the PC's
                             // colour, applied at once; status version >= 5 (#266)
+    // SET_EFFECT (#490, FOXGLOVE_HOST_EFFECTS; status version >= 8):
+    ART_RELAY_EFFECT = 14,    // offset u8, bytes (write commands): fills the right's copy of
+                              // struct lamp_effect_wire (lamp_effect.h), its own half's place in it
+    ART_RELAY_EFFECT_GO = 15, // run u8, clock ms u32 (write request): run 1 draws the effect
+                              // filled so far with its clock at that value now (the left's, read
+                              // just before sending); run 0 stops it and hands the LEDs back to
+                              // the right's own effect. LAMP_HOST stops the effect too (SET_FRAME
+                              // takes over).
 };
 
 // The status notify's bits (#478).
@@ -208,6 +218,17 @@ void art_relay_lamps(bool host, const uint8_t rgb[ART_RELAY_LAMPS_MAX][3]);
 // Whether the right draws frames: 0 no relay link (or not read yet), 1 yes, 2 its firmware can't.
 enum { ART_LAMPS_NO_LINK, ART_LAMPS_OK, ART_LAMPS_UNSUPPORTED };
 uint8_t art_relay_lamps_right(void);
+
+// SET_EFFECT (#490): run says whether the right draws right_half (copied; may be NULL when not
+// running). A stop with tell goes to the right (EFFECT_GO 0, its LEDs back to its own effect);
+// without it the right hears SET_FRAME's take-over instead. Sent once per change with the left's
+// effect clock (effect_run_clock), and again on link-up while it runs.
+void art_relay_effect(bool run, bool tell, const struct lamp_effect_wire *right_half);
+// Whether the right draws effects: ART_LAMPS_* as for frames (2: its firmware can't).
+uint8_t art_relay_effect_right(void);
+// Re-anchors the right's effect clock to the left's (EFFECT_GO alone), so the halves' uptimes
+// can't drift apart over a long run. On an event (the left waking from idle). Any thread.
+void art_relay_effect_sync(void);
 
 // The span of lamps that differ between two frames of n lamps: *start and the returned count
 // (0 when they're equal); *uniform says whether the span is all one colour (sent as a fill).

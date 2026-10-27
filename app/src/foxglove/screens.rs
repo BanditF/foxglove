@@ -13,6 +13,7 @@ use digitalis::protocol::Hello;
 use digitalis::{protocol, Transport};
 use foxglove_panel::panel_lock::PanelLock;
 use foxglove_panel::render::{self, Panel, View};
+use foxglove_panel::stats::{Sample, Sampler, Stats};
 use foxglove_panel::Sources;
 
 use super::screens_settings::ScreensSettings;
@@ -356,6 +357,49 @@ fn deadline(
         .unwrap()
 }
 
+/// The PC load layout's sampler (#506): made when the layout starts drawing (its first reading a
+/// second later, as rates need two collections), read about once a second while drawn, and
+/// dropped, closing its counters, the moment it isn't.
+struct Load<S: Sample> {
+    sampler: S,
+    next: Instant,
+    stats: Stats,
+}
+
+const LOAD_EVERY: Duration = Duration::from_secs(1);
+
+impl<S: Sample> Load<S> {
+    fn new(sampler: S, now: Instant) -> Self {
+        Load {
+            sampler,
+            next: now + LOAD_EVERY,
+            stats: Stats::default(),
+        }
+    }
+
+    /// Samples when a second has passed; a late wake doesn't sample twice to catch up.
+    fn tick(&mut self, now: Instant) {
+        if now >= self.next {
+            self.stats = self.sampler.sample();
+            self.next = now + LOAD_EVERY;
+        }
+    }
+}
+
+/// The sampler while the PC load layout is `shown` (made on first need); dropped when it isn't.
+fn load_shown<S: Sample>(
+    load: &mut Option<Load<S>>,
+    shown: bool,
+    now: Instant,
+    make: impl FnOnce() -> S,
+) -> Option<&mut Load<S>> {
+    if !shown {
+        *load = None;
+        return None;
+    }
+    Some(load.get_or_insert_with(|| Load::new(make(), now)))
+}
+
 fn run() {
     let (tx, rx) = mpsc::channel();
     *EVENTS.get_or_init(Default::default).lock().unwrap() = Some(tx.clone());
@@ -402,6 +446,8 @@ fn run() {
     let mut next_wallpaper_frame = Instant::now();
     let mut next_frame = Instant::now();
     let mut wait = None;
+    // The PC load layout's counters (#506), open only while it's drawn.
+    let mut load: Option<Load<Sampler>> = None;
 
     while !STOP.load(Ordering::Relaxed) {
         let event = match wait {
@@ -506,6 +552,8 @@ fn run() {
         let foxglove_paused = super::pause::paused();
         let away = super::away::away();
         if paused() || foxglove_paused || away || !settings.drive_left {
+            // Not drawing: no PC load sampling either (#506).
+            load = None;
             stop_driving(&mut lock, &drawing, &mut was_driving);
             if let Some(d) = drawing.as_mut() {
                 d.last = None;
@@ -551,10 +599,12 @@ fn run() {
             });
         }
         let Some(d) = drawing.as_mut() else {
+            load = None;
             set_status("Waiting for a keyboard with the host link");
             continue;
         };
         if !lock.acquire() {
+            load = None;
             set_status("Panel driven by another app");
             if lock_watch.is_none() {
                 let available = tx.clone();
@@ -588,9 +638,18 @@ fn run() {
             tick = tick.wrapping_add(1);
             next_frame = now + period;
         }
-        render::draw(&mut d.panel, &view, tick);
-        // The wallpaper's own frames, when that's the layout and the wallpaper has them.
+        // PC load (#506): sampled only here, while that layout is drawn.
         let mut animated = animated;
+        let shown = settings.layout == super::screens_settings::Layout::Stats;
+        if let Some(l) = load_shown(&mut load, shown, now, Sampler::new) {
+            l.tick(now);
+            render::draw_stats(&mut d.panel, &l.stats);
+            animated = false;
+        } else {
+            render::draw(&mut d.panel, &view, tick);
+        }
+        let clock_at = load.as_ref().map_or(clock_at, |l| clock_at.min(l.next));
+        // The wallpaper's own frames, when that's the layout and the wallpaper has them.
         if settings.layout == super::screens_settings::Layout::Wallpaper {
             if wallpaper_frames.is_none() || WALLPAPER_CHANGED.swap(false, Ordering::Relaxed) {
                 wallpaper_frames = Some(load_wallpaper_frames(d.panel.bits.len()));
@@ -783,5 +842,58 @@ mod tests {
             deadline(Duration::ZERO, Some(Duration::from_secs(1)), None),
             Duration::ZERO
         );
+    }
+
+    /// A fake counter source: how often it was read.
+    struct Counting(std::rc::Rc<std::cell::Cell<u32>>);
+
+    impl Sample for Counting {
+        fn sample(&mut self) -> Stats {
+            self.0.set(self.0.get() + 1);
+            Stats {
+                cpu: Some(self.0.get() as u8),
+                gpu: Some(1),
+                ram: Some(50),
+            }
+        }
+    }
+
+    /// #506: nothing is opened or read while the PC load layout isn't on the screen; shown, a
+    /// reading a second, never two to catch up; hidden again, the counters are closed.
+    #[test]
+    fn pc_load_is_sampled_only_while_shown() {
+        let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+        let made = std::cell::Cell::new(0);
+        let make = || {
+            made.set(made.get() + 1);
+            Counting(reads.clone())
+        };
+        let t = Instant::now();
+        let mut load = None;
+        // Another layout, for a long while: no sampler, no reads.
+        for s in 0..100 {
+            assert!(load_shown(&mut load, false, t + Duration::from_secs(s), make).is_none());
+        }
+        assert_eq!((made.get(), reads.get()), (0, 0));
+        // Shown: made once, first read a second later.
+        load_shown(&mut load, true, t, make).unwrap().tick(t);
+        assert_eq!((made.get(), reads.get()), (1, 0));
+        let half = t + Duration::from_millis(500);
+        load_shown(&mut load, true, half, make).unwrap().tick(half);
+        assert_eq!(reads.get(), 0);
+        let one = t + LOAD_EVERY;
+        let l = load_shown(&mut load, true, one, make).unwrap();
+        l.tick(one);
+        assert_eq!(reads.get(), 1);
+        assert_eq!(l.stats.cpu, Some(1));
+        assert_eq!(l.next, one + LOAD_EVERY);
+        // Woken late (after a long frame): one read, not five.
+        let late = one + Duration::from_secs(5);
+        load_shown(&mut load, true, late, make).unwrap().tick(late);
+        assert_eq!(reads.get(), 2);
+        // Hidden (another layout, paused, away or no keyboard): dropped.
+        assert!(load_shown(&mut load, false, late, make).is_none());
+        assert!(load.is_none());
+        assert_eq!(made.get(), 1);
     }
 }

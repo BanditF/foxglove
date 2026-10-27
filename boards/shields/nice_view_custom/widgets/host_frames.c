@@ -34,6 +34,9 @@
 #include <zmk/usb.h>
 
 #include "art_relay.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+#include "host_effects.h"
+#endif
 #include "host_frames.h"
 #include "host_link.h"
 #include "lamp_strip.h"
@@ -140,6 +143,12 @@ static void release_event(void) {
 
 static void timeout_cb(struct k_work *work) { release_event(); }
 
+void host_frames_yield(void) {
+    k_spinlock_key_t key = k_spin_lock(&lock);
+    release();
+    k_spin_unlock(&lock, key);
+}
+
 // Under lock.
 static bool command(const uint8_t *d, int len, uint8_t r[HOST_FRAMES_REPLY_SIZE]) {
     uint8_t flags = len >= 3 ? d[2] : 0, start = len >= 4 ? d[3] : 0, count = len >= 5 ? d[4] : 0;
@@ -159,6 +168,11 @@ static bool command(const uint8_t *d, int len, uint8_t r[HOST_FRAMES_REPLY_SIZE]
     if (!(flags & FRAME_SHOW)) {
         return false; // chunks don't reply, like the panel's ROWS
     }
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+    if (!owned) {
+        host_effects_yield(); // a SET_EFFECT gives way: frames draw over it on both halves
+    }
+#endif
     owned = true;
     show();
     fill_reply(r, STATUS_OK, false);
