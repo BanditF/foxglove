@@ -673,6 +673,7 @@ fn sample_strip() -> crate::foxglove::shell::StripState {
         this_pc: Some(0),
         unplug_warning: None,
         host_link: Some("USB"),
+        parts: crate::foxglove::fixtures::users_desk::board().parts(),
     }
 }
 
@@ -774,6 +775,7 @@ fn long_samples() -> Samples {
         this_pc: Some(1),
         unplug_warning: Some("Unplugging now leaves the keyboard unable to type".into()),
         host_link: Some("USB"),
+        parts: crate::foxglove::fixtures::users_desk::board().parts(),
     };
     for h in &mut s.keyboard.halves {
         h.text = format!(
@@ -783,11 +785,11 @@ fn long_samples() -> Samples {
     }
     s.keyboard.link.rows = vec![
         (
-            "Left half",
+            "Left half".into(),
             "on USB and on Bluetooth slot 4 (another PC) at the same time".into(),
         ),
         (
-            "Bluetooth to this PC",
+            "Bluetooth to this PC".into(),
             "connected, but this PC is paired on slot 2 of 5".into(),
         ),
     ];

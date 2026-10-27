@@ -292,7 +292,7 @@ fn unplug_warning(s: &Status) -> Option<String> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Plain {
     /// (what, how it is), top to bottom.
-    pub rows: Vec<(&'static str, String)>,
+    pub rows: Vec<(String, String)>,
     /// When unplugging now leaves the keyboard unable to type: how to fix it.
     pub unplug_fix: Option<String>,
 }
@@ -300,12 +300,13 @@ pub struct Plain {
 pub fn plain(ctx: &egui::Context) -> Plain {
     start(ctx);
     let s = STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    plain_words(&s)
+    plain_words(&s, &super::parts::Parts::current())
 }
 
-fn plain_words(s: &Status) -> Plain {
+/// The rows; the first names the part the PC talks to ("Left half", "Keyboard", #559).
+fn plain_words(s: &Status, parts: &super::parts::Parts) -> Plain {
     let mut rows = vec![(
-        "Left half",
+        parts.name(0),
         match s.usb {
             Some(true) => "on USB",
             Some(false) => "on Bluetooth",
@@ -314,7 +315,7 @@ fn plain_words(s: &Status) -> Plain {
         .to_string(),
     )];
     rows.push((
-        "Bluetooth to this PC",
+        "Bluetooth to this PC".into(),
         match s.windows_ble {
             Some(true) => "connected",
             Some(false) => "not connected",
@@ -334,11 +335,11 @@ fn plain_words(s: &Status) -> Plain {
             " · waiting for its PC"
         };
         rows.push((
-            "Bluetooth slot",
+            "Bluetooth slot".into(),
             format!("{}{whose}{waiting}", shown(f.active_profile)),
         ));
         if let Some(p) = s.this_pc.filter(|p| *p != f.active_profile) {
-            rows.push(("This PC's slot", shown(p).to_string()));
+            rows.push(("This PC's slot".into(), shown(p).to_string()));
         }
     }
     let unplug_fix = unsafe_to_unplug(
@@ -728,35 +729,50 @@ mod tests {
 
     #[test]
     fn the_link_in_plain_words() {
-        let none = plain_words(&Status::default());
+        let corne = crate::foxglove::fixtures::users_desk::board().parts();
+        let none = plain_words(&Status::default(), &corne);
         assert_eq!(
             none.rows,
             vec![
-                ("Left half", "not connected".into()),
-                ("Bluetooth to this PC", "not known yet".into())
+                ("Left half".into(), "not connected".into()),
+                ("Bluetooth to this PC".into(), "not known yet".into())
             ]
         );
+        // A one-piece board (#559): the keyboard, never a half.
+        let plank = crate::foxglove::fixtures::second_desk::board().parts();
+        let one = plain_words(&Status::default(), &plank);
+        assert_eq!(one.rows[0], ("Keyboard".into(), "not connected".into()));
+        assert!(one
+            .rows
+            .iter()
+            .all(|(a, b)| !format!("{a} {b}").contains("half")));
         assert_eq!(none.unplug_fix, None);
 
-        let ok = plain_words(&Status {
-            usb: Some(true),
-            windows_ble: Some(true),
-            firmware: Some(conn(0, true)),
-            this_pc: Some(0),
-        });
+        let ok = plain_words(
+            &Status {
+                usb: Some(true),
+                windows_ble: Some(true),
+                firmware: Some(conn(0, true)),
+                this_pc: Some(0),
+            },
+            &corne,
+        );
         assert_eq!(ok.rows[0].1, "on USB");
-        assert_eq!(ok.rows[2], ("Bluetooth slot", "1 · this PC".into()));
+        assert_eq!(ok.rows[2], ("Bluetooth slot".into(), "1 · this PC".into()));
         assert_eq!(ok.rows.len(), 3);
         assert_eq!(ok.unplug_fix, None);
 
-        let other = plain_words(&Status {
-            usb: Some(true),
-            windows_ble: Some(false),
-            firmware: Some(conn(1, false)),
-            this_pc: Some(0),
-        });
+        let other = plain_words(
+            &Status {
+                usb: Some(true),
+                windows_ble: Some(false),
+                firmware: Some(conn(1, false)),
+                this_pc: Some(0),
+            },
+            &corne,
+        );
         assert_eq!(other.rows[2].1, "2 · another PC · waiting for its PC");
-        assert_eq!(other.rows[3], ("This PC's slot", "1".into()));
+        assert_eq!(other.rows[3], ("This PC's slot".into(), "1".into()));
         let fix = other.unplug_fix.clone().expect("unsafe to unplug");
         assert!(
             fix.starts_with("Select Bluetooth slot 1 first: hold both middle thumbs"),

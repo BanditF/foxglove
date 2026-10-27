@@ -53,17 +53,27 @@ impl Alerts {
     }
 }
 
-/// The notification's title and text.
+/// The notification's title and text, for the part the link calls `part` ("right": the
+/// Corne's "Right half", a one-piece board's "Keyboard", #559).
 pub fn notice(part: &str, threshold: u8, percent: u8) -> (String, String) {
-    let half = capitalised(part);
+    notice_for(&super::parts::Parts::current(), part, threshold, percent)
+}
+
+fn notice_for(
+    parts: &super::parts::Parts,
+    part: &str,
+    threshold: u8,
+    percent: u8,
+) -> (String, String) {
+    let half = parts.name_of(part);
     if threshold <= THRESHOLDS[THRESHOLDS.len() - 1] {
         (
-            format!("{half} half battery very low"),
+            format!("{half} battery very low"),
             format!("{percent}% left. It will switch off soon: plug it in to charge."),
         )
     } else {
         (
-            format!("{half} half battery low"),
+            format!("{half} battery low"),
             format!("{percent}% left. Charge it soon so it doesn't stop typing."),
         )
     }
@@ -76,17 +86,26 @@ fn capitalised(part: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The battery line for the tray tooltip: the right, then the left (`—` for a half not
-/// reporting), then any other part that reported.
-pub fn tooltip_line(levels: &BTreeMap<String, u8>) -> String {
+/// The battery line for the tray tooltip: the board's parts, the last first ("Right 61% · Left
+/// 80%", or "Keyboard 80%" for a one-piece board; `—` for one not reporting), then any other
+/// part that reported.
+fn tooltip_line_for(levels: &BTreeMap<String, u8>, board: &super::parts::Parts) -> String {
+    use super::parts::Parts;
     let level = |part: &str| levels.get(part).map_or("—".into(), |p| format!("{p}%"));
-    let mut parts = vec![
-        format!("Right {}", level("right")),
-        format!("Left {}", level("left")),
-    ];
+    let board = board
+        .clone()
+        .seen(if levels.contains_key("right") { 2 } else { 1 });
+    let linked: Vec<(usize, &str)> = (0..board.len())
+        .filter_map(|i| Some((i, Parts::link_id(i)?)))
+        .collect();
+    let mut parts: Vec<String> = linked
+        .iter()
+        .rev()
+        .map(|(i, id)| format!("{} {}", board.short(*i), level(id)))
+        .collect();
     for (part, p) in levels
         .iter()
-        .filter(|(k, _)| k.as_str() != "right" && k.as_str() != "left")
+        .filter(|(k, _)| !linked.iter().any(|(_, id)| id == k))
     {
         parts.push(format!("{} {p}%", capitalised(part)));
     }
@@ -97,7 +116,11 @@ pub fn tooltip_line(levels: &BTreeMap<String, u8>) -> String {
 /// battery line under it: a status that once carried the art relay's whole report pushed the
 /// battery past the limit, so the tooltip never showed it.
 pub fn tooltip(status: &str, levels: &BTreeMap<String, u8>) -> String {
-    let battery = tooltip_line(levels);
+    tooltip_for(status, levels, &super::parts::Parts::current())
+}
+
+fn tooltip_for(status: &str, levels: &BTreeMap<String, u8>, board: &super::parts::Parts) -> String {
+    let battery = tooltip_line_for(levels, board);
     // "Foxglove\n" and the "\n" before the battery line.
     let room = 127usize.saturating_sub(10 + battery.chars().count());
     let status = if status.chars().count() <= room {
@@ -338,6 +361,10 @@ mod imp {
 mod tests {
     use super::*;
 
+    fn corne() -> crate::foxglove::parts::Parts {
+        crate::foxglove::fixtures::users_desk::board().parts()
+    }
+
     /// The notices a sequence of levels gives.
     fn run(levels: &[u8]) -> Vec<(u8, u8)> {
         let mut a = Alerts::default();
@@ -395,24 +422,34 @@ mod tests {
 
     #[test]
     fn notices_read_plainly() {
-        assert_eq!(notice("right", 15, 14).0, "Right half battery low");
-        assert!(notice("right", 5, 4).0.contains("very low"));
-        assert!(notice("left", 5, 4).1.starts_with("4% left."));
+        let corne = crate::foxglove::fixtures::users_desk::board().parts();
+        assert_eq!(
+            notice_for(&corne, "right", 15, 14).0,
+            "Right half battery low"
+        );
+        assert!(notice_for(&corne, "right", 5, 4).0.contains("very low"));
+        assert!(notice_for(&corne, "left", 5, 4).1.starts_with("4% left."));
+        // #559: a one-piece board's battery is the keyboard's.
+        let plank = crate::foxglove::fixtures::second_desk::board().parts();
+        assert_eq!(notice_for(&plank, "left", 15, 14).0, "Keyboard battery low");
+        let mut levels = BTreeMap::new();
+        levels.insert("left".to_string(), 80);
+        assert_eq!(tooltip_line_for(&levels, &plank), "Keyboard 80%");
     }
 
     #[test]
     fn the_tooltip_follows_the_levels() {
         let mut levels = BTreeMap::new();
         assert_eq!(
-            tooltip("Disconnected", &levels),
+            tooltip_for("Disconnected", &levels, &corne()),
             "Foxglove\nDisconnected\nRight — · Left —"
         );
         levels.insert("right".to_string(), 61);
-        assert_eq!(tooltip_line(&levels), "Right 61% · Left —");
+        assert_eq!(tooltip_line_for(&levels, &corne()), "Right 61% · Left —");
         levels.insert("left".to_string(), 80);
-        assert_eq!(tooltip_line(&levels), "Right 61% · Left 80%");
+        assert_eq!(tooltip_line_for(&levels, &corne()), "Right 61% · Left 80%");
         let long = "x".repeat(200);
-        let t = tooltip(&long, &levels);
+        let t = tooltip_for(&long, &levels, &corne());
         assert_eq!(t.chars().count(), 127);
         assert!(
             t.ends_with("\nRight 61% · Left 80%"),
@@ -422,9 +459,9 @@ mod tests {
         // The status the tray once used, with the art relay's report in it, still shows the
         // battery.
         let old = "Connected Eyelash_Corne / right art: left: idle, 0/0 bytes pushed, error: none; right: idle, set 3, 12 built-in, slot 8192 bytes";
-        assert!(tooltip(old, &levels).ends_with("Right 61% · Left 80%"));
+        assert!(tooltip_for(old, &levels, &corne()).ends_with("Right 61% · Left 80%"));
         // Windows counts UTF-16 units: every character here is one.
-        assert!(tooltip(&long, &levels).encode_utf16().count() <= 127);
+        assert!(tooltip_for(&long, &levels, &corne()).encode_utf16().count() <= 127);
     }
 
     /// The tooltip reads the keyboard facts the tray panel shows: the first reading after a
@@ -434,16 +471,28 @@ mod tests {
     fn the_tooltip_reads_the_panels_battery_facts() {
         let facts = Facts::default();
         let changes = facts.subscribe("keyboard.*");
-        assert_eq!(tooltip_line(&levels_in(&facts)), "Right — · Left —");
+        assert_eq!(
+            tooltip_line_for(&levels_in(&facts), &corne()),
+            "Right — · Left —"
+        );
         facts.set("keyboard.connected", Value::Bool(true));
         facts.set("keyboard.link", Value::Text("ble".into()));
         facts.set("keyboard.right.battery", Value::Int(91));
-        assert_eq!(tooltip_line(&levels_in(&facts)), "Right 91% · Left —");
+        assert_eq!(
+            tooltip_line_for(&levels_in(&facts), &corne()),
+            "Right 91% · Left —"
+        );
         facts.set("keyboard.right.battery", Value::Int(90));
         facts.set("keyboard.left.battery", Value::Int(77));
-        assert_eq!(tooltip_line(&levels_in(&facts)), "Right 90% · Left 77%");
+        assert_eq!(
+            tooltip_line_for(&levels_in(&facts), &corne()),
+            "Right 90% · Left 77%"
+        );
         facts.remove_prefix("keyboard.", &["keyboard.connected"]);
-        assert_eq!(tooltip_line(&levels_in(&facts)), "Right — · Left —");
+        assert_eq!(
+            tooltip_line_for(&levels_in(&facts), &corne()),
+            "Right — · Left —"
+        );
         // Each battery change wakes the tray; the other keyboard facts don't.
         let woken = changes.try_iter().filter(|c| is_level(&c.key)).count();
         assert_eq!(woken, 5, "3 readings and 2 cleared halves");

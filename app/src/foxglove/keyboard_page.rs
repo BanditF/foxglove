@@ -29,7 +29,8 @@ pub enum Tone {
 /// One half's firmware line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Half {
-    pub name: &'static str,
+    /// The part's short name: "Left", "Keyboard" (#559).
+    pub name: String,
     pub text: String,
     pub tone: Tone,
     /// Why it couldn't be read, on hover.
@@ -44,6 +45,8 @@ pub struct View {
     pub firmware_note: Option<(String, Tone)>,
     pub can_ask_again: bool,
     pub link: super::connection::Plain,
+    /// The board's parts, for the words that name them (#559).
+    pub parts: super::parts::Parts,
     pub actions: Vec<Action>,
     /// The risky action waiting for its second click.
     pub armed: Option<String>,
@@ -75,10 +78,15 @@ pub enum Intent {
     DeviceNotice(bool),
 }
 
-/// The firmware card's lines for the cached builds.
-pub fn firmware_lines(f: &Firmware) -> (Vec<Half>, Option<(String, Tone)>, bool) {
+/// The firmware card's lines for the cached builds, one per part (#559): a one-piece board has
+/// one line and nothing to disagree with.
+pub fn firmware_lines(
+    f: &Firmware,
+    parts: &super::parts::Parts,
+) -> (Vec<Half>, Option<(String, Tone)>, bool) {
     match f {
         Firmware::Known { left, right } => {
+            let parts = parts.clone().seen(if right.is_ok() { 2 } else { 1 });
             let half = |name, r: &Result<digitalis::protocol::BuildInfo, String>| match r {
                 Ok(b) => Half {
                     name,
@@ -93,14 +101,28 @@ pub fn firmware_lines(f: &Firmware) -> (Vec<Half>, Option<(String, Tone)>, bool)
                     hover: Some(e.clone()),
                 },
             };
+            if !parts.is_split() {
+                return (vec![half(parts.short(0), left)], None, true);
+            }
             let note = match (left, right) {
                 (Ok(l), Ok(r)) if l.version != r.version || l.sha != r.sha => Some((
-                    "The halves run different firmware. Flash both from the same build.".into(),
+                    format!(
+                        "The {} run different firmware. Flash both from the same build.",
+                        if parts.noun() == "half" {
+                            "halves"
+                        } else {
+                            "parts"
+                        }
+                    ),
                     Tone::Warn,
                 )),
                 _ => None,
             };
-            (vec![half("Left", left), half("Right", right)], note, true)
+            (
+                vec![half(parts.short(0), left), half(parts.short(1), right)],
+                note,
+                true,
+            )
         }
         Firmware::Unknown | Firmware::Reading => (
             Vec::new(),
@@ -140,12 +162,14 @@ fn armed() -> Option<String> {
 
 /// The page's state from the cached keyboard state (the services keep it current).
 pub fn view(ctx: &egui::Context) -> View {
-    let (halves, firmware_note, can_ask_again) = firmware_lines(&ks::firmware(ctx));
+    let parts = super::parts::Parts::current();
+    let (halves, firmware_note, can_ask_again) = firmware_lines(&ks::firmware(ctx), &parts);
     View {
         halves,
         firmware_note,
         can_ask_again,
         link: super::connection::plain(ctx),
+        parts,
         actions: keyboard_actions::actions(),
         armed: armed(),
         busy: ks::invoking(),
@@ -238,7 +262,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
                 if h.tone == Tone::Plain {
                     value = value.font(theme::mono(12.5));
                 }
-                let r = row(ui, h.name, value);
+                let r = row(ui, &h.name, value);
                 if let Some(why) = &h.hover {
                     r.on_hover_text(why);
                 }
@@ -251,7 +275,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
                 ui.horizontal(|ui| {
                     if ui
                         .button("Refresh")
-                        .on_hover_text("Ask both halves for their firmware again")
+                        .on_hover_text(ask_again(&v.parts))
                         .clicked()
                     {
                         intent = Some(Intent::AskFirmwareAgain);
@@ -264,11 +288,8 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
             }
             // #372: a Windows notification below 15% and 5%, once each until it charges.
             let mut on = v.low_battery_notice;
-            if ui
-                .checkbox(&mut on, "Tell me when a half's battery runs low")
-                .on_hover_text("One notification below 15% and one below 5%. They come back after the half charges past 20%.")
-                .changed()
-            {
+            let (label, hover) = low_battery_words(&v.parts);
+            if ui.checkbox(&mut on, label).on_hover_text(hover).changed() {
                 intent = Some(Intent::LowBatteryNotice(on));
             }
         });
@@ -296,6 +317,28 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
     }
     ui.add_space(6.0);
     intent
+}
+
+/// "Ask both halves for their firmware again", "Ask the keyboard for its firmware again".
+fn ask_again(parts: &super::parts::Parts) -> String {
+    let theirs = if parts.is_split() { "their" } else { "its" };
+    format!("Ask {} for {theirs} firmware again", parts.all())
+}
+
+/// The low-battery heads-up's switch and hover, in the board's words (#559).
+fn low_battery_words(parts: &super::parts::Parts) -> (String, String) {
+    if parts.is_split() {
+        let noun = parts.noun();
+        (
+            format!("Tell me when a {noun}'s battery runs low"),
+            format!("One notification below 15% and one below 5%. They come back after the {noun} charges past 20%."),
+        )
+    } else {
+        (
+            "Tell me when the keyboard's battery runs low".into(),
+            "One notification below 15% and one below 5%. They come back after it charges past 20%.".into(),
+        )
+    }
 }
 
 /// Foxglove (#504): the Batteries card, the batteries of what else is connected to this PC.
@@ -334,7 +377,11 @@ fn devices(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
         let mut on = v.device_notice;
         if ui
             .checkbox(&mut on, "Tell me when a device's battery runs low")
-            .on_hover_text("One notification below 15% and one below 5%, as for the halves.")
+            .on_hover_text(if v.parts.noun() == "half" {
+                "One notification below 15% and one below 5%, as for the halves."
+            } else {
+                "One notification below 15% and one below 5%, as for the keyboard."
+            })
             .changed()
         {
             intent = Some(Intent::DeviceNotice(on));
@@ -405,6 +452,8 @@ fn short_label(a: &Action) -> &str {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BoardView {
     pub drawing: Drawing,
+    /// A split: the drawing is the left half and the right mirrors it. Else one piece (#559).
+    pub split: bool,
     /// The left panel as the PC last drew it.
     pub panel: Option<super::screens::Frame>,
     /// The right screen's art, as stored (see `art_ui::thumbnail`).
@@ -417,9 +466,9 @@ pub struct BoardView {
 
 /// The board drawing's state from the cached keyboard state; nothing here asks the keyboard.
 fn board_view(ctx: &egui::Context) -> BoardView {
-    let drawing = super::boards::current()
-        .and_then(|b| b.drawing)
-        .unwrap_or_default();
+    let board = super::boards::current();
+    let drawing = super::boards::drawing(board.as_ref());
+    let parts = super::parts::Parts::of(board.as_ref());
     let snap = super::screens::snapshot();
     let panel = snap
         .hello
@@ -440,17 +489,20 @@ fn board_view(ctx: &egui::Context) -> BoardView {
         .filter(|l| l.on)
         .map(|l| super::lights_page::shown_color(l.hue, l.sat, l.brightness));
     let link = super::connection::summary(ctx);
+    let first = parts.short(0).to_uppercase();
     let left_label = match link.usb {
-        Some(true) => "LEFT · USB".to_string(),
-        Some(false) => "LEFT · BLUETOOTH".to_string(),
-        None => "LEFT".to_string(),
+        Some(true) => format!("{first} · USB"),
+        Some(false) => format!("{first} · BLUETOOTH"),
+        None => first,
     };
+    let second = parts.short(1).to_uppercase();
     let right_label = art_name.map_or_else(
-        || "RIGHT".to_string(),
-        |n| format!("RIGHT · {}", n.to_uppercase()),
+        || second.clone(),
+        |n| format!("{second} · {}", n.to_uppercase()),
     );
     BoardView {
         drawing,
+        split: parts.is_split(),
         panel,
         art,
         glow,
@@ -505,10 +557,13 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
             let (rect, _) =
                 ui.allocate_exact_size(egui::vec2(ui.available_width(), height), Sense::hover());
             let left_x = rect.center().x - between / 2.0 - half.x;
-            for (i, x) in [left_x, rect.center().x + between / 2.0]
-                .into_iter()
-                .enumerate()
-            {
+            // A split's halves side by side; a one-piece board's whole drawing in the middle.
+            let places = if v.split {
+                vec![left_x, rect.center().x + between / 2.0]
+            } else {
+                vec![rect.center().x - half.x / 2.0]
+            };
+            for (i, x) in places.into_iter().enumerate() {
                 let right = i == 1;
                 let top = rect.top();
                 // The screen sits over the inner columns, as on the Corne, shaped like what it shows.
@@ -714,12 +769,19 @@ pub mod tests {
         }
     }
 
+    fn corne() -> crate::foxglove::parts::Parts {
+        crate::foxglove::fixtures::users_desk::board().parts()
+    }
+
     #[test]
     fn firmware_lines_in_plain_words() {
-        let (halves, note, ask) = firmware_lines(&Firmware::Known {
-            left: Ok(build(0, "e255d32")),
-            right: Err("no reply from the keyboard".into()),
-        });
+        let (halves, note, ask) = firmware_lines(
+            &Firmware::Known {
+                left: Ok(build(0, "e255d32")),
+                right: Err("no reply from the keyboard".into()),
+            },
+            &corne(),
+        );
         assert_eq!(halves[0].name, "Left");
         assert!(halves[0].text.ends_with("· e255d32"), "{}", halves[0].text);
         assert_eq!(
@@ -733,11 +795,21 @@ pub mod tests {
         assert_eq!(note, None);
         assert!(ask);
 
-        let (_, note, _) = firmware_lines(&Firmware::Known {
-            left: Ok(build(0, "aaaaaaa")),
-            right: Ok(build(1, "bbbbbbb")),
-        });
-        assert_eq!(note.map(|n| n.1), Some(Tone::Warn), "the halves differ");
+        let (_, note, _) = firmware_lines(
+            &Firmware::Known {
+                left: Ok(build(0, "aaaaaaa")),
+                right: Ok(build(1, "bbbbbbb")),
+            },
+            &corne(),
+        );
+        assert_eq!(
+            note,
+            Some((
+                "The halves run different firmware. Flash both from the same build.".into(),
+                Tone::Warn
+            )),
+            "the halves differ"
+        );
 
         for f in [
             Firmware::Unknown,
@@ -745,17 +817,68 @@ pub mod tests {
             Firmware::NoKeyboard,
             Firmware::NotReported,
         ] {
-            let (halves, note, ask) = firmware_lines(&f);
+            let (halves, note, ask) = firmware_lines(&f, &corne());
             assert!(halves.is_empty() && note.is_some() && !ask, "{f:?}");
         }
     }
 
+    /// #559: the second desk's one-piece board runs the Keyboard page with no half anywhere:
+    /// one firmware line, the connection rows, the low-battery switch and the drawing.
+    #[test]
+    fn a_one_piece_board_has_no_halves_on_the_page() {
+        use crate::foxglove::fixtures::second_desk;
+        let plank = second_desk::board().parts();
+        let (lines, note, ask) = firmware_lines(
+            &Firmware::Known {
+                left: Ok(build(0, "e255d32")),
+                right: Err("no right half on this board".into()),
+            },
+            &plank,
+        );
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].name, "Keyboard");
+        assert!(note.is_none() && ask);
+        let mut words: Vec<String> = lines
+            .iter()
+            .map(|h| format!("{} {}", h.name, h.text))
+            .collect();
+        let (label, hover) = low_battery_words(&plank);
+        words.extend([label, hover, ask_again(&plank)]);
+        for w in &words {
+            assert!(!w.to_lowercase().contains("half"), "{w}");
+        }
+        // The Corne's words stay.
+        assert_eq!(
+            low_battery_words(&corne()).0,
+            "Tell me when a half's battery runs low"
+        );
+        assert_eq!(
+            ask_again(&corne()),
+            "Ask both halves for their firmware again"
+        );
+        // The drawing: one piece, its whole board in the middle of the card.
+        let view = BoardView {
+            drawing: second_desk::board().drawing.unwrap(),
+            split: false,
+            left_label: "KEYBOARD · USB".into(),
+            ..Default::default()
+        };
+        let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
+        board_frame(&ctx, &view, vec![]);
+        let hits = LAST_HITS.take().unwrap();
+        assert_eq!(hits.keys.len(), second_desk::LAMPS, "61 keys, drawn once");
+        assert_eq!(hits.screens.len(), 1);
+    }
+
     /// The sample the previews draw: both halves seen, the right one not answering yet.
     pub fn sample() -> View {
-        let (halves, firmware_note, can_ask_again) = firmware_lines(&Firmware::Known {
-            left: Ok(build(0, "e255d32")),
-            right: Err("no reply from the keyboard".into()),
-        });
+        let (halves, firmware_note, can_ask_again) = firmware_lines(
+            &Firmware::Known {
+                left: Ok(build(0, "e255d32")),
+                right: Err("no reply from the keyboard".into()),
+            },
+            &corne(),
+        );
         let action = |label: &str, group| Action {
             label: label.into(),
             group,
@@ -769,12 +892,13 @@ pub mod tests {
             can_ask_again,
             link: super::super::connection::Plain {
                 rows: vec![
-                    ("Left half", "on USB".into()),
-                    ("Bluetooth to this PC", "connected".into()),
-                    ("Bluetooth slot", "1 · this PC".into()),
+                    ("Left half".into(), "on USB".into()),
+                    ("Bluetooth to this PC".into(), "connected".into()),
+                    ("Bluetooth slot".into(), "1 · this PC".into()),
                 ],
                 unplug_fix: None,
             },
+            parts: corne(),
             actions: vec![
                 action("Lights: Toggle", Group::Lights),
                 action("Lights: Next effect", Group::Lights),
@@ -796,12 +920,12 @@ pub mod tests {
 
     /// The board as the previews draw it: the Corne's profile, a panel frame, art, orange lights.
     pub fn sample_board() -> BoardView {
-        let corne =
-            super::super::boards::find(0x1d50, 0x615e, "Eyelash Corne").and_then(|b| b.drawing);
+        let corne = crate::foxglove::fixtures::users_desk::board().drawing;
         let (art, library) = super::super::art_ui::tests::sample();
         let (_, image) = super::super::art_ui::showing_now(&art, &library);
         BoardView {
             drawing: corne.unwrap_or_default(),
+            split: true,
             panel: super::super::theme_preview::sample_screens().frame,
             art: image,
             glow: Some(Color32::from_rgb(0xf0, 0x8a, 0x3c)),
@@ -812,18 +936,20 @@ pub mod tests {
 
     /// No keyboard: what the page says with nothing connected.
     pub fn sample_none() -> View {
-        let (halves, firmware_note, can_ask_again) = firmware_lines(&Firmware::NoKeyboard);
+        let (halves, firmware_note, can_ask_again) =
+            firmware_lines(&Firmware::NoKeyboard, &corne());
         View {
             halves,
             firmware_note,
             can_ask_again,
             link: super::super::connection::Plain {
                 rows: vec![
-                    ("Left half", "not connected".into()),
-                    ("Bluetooth to this PC", "not known yet".into()),
+                    ("Left half".into(), "not connected".into()),
+                    ("Bluetooth to this PC".into(), "not known yet".into()),
                 ],
                 unplug_fix: None,
             },
+            parts: corne(),
             board: BoardView {
                 left_label: "LEFT".into(),
                 right_label: "RIGHT".into(),

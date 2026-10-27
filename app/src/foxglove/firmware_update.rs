@@ -1,5 +1,6 @@
-//! "Update firmware" (#382): both halves from the app, with the safe flasher's rules
-//! (`foxglove_flash`, the same rules as `scripts/flash/foxglove_flash.py`).
+//! "Update firmware" (#382): the keyboard's parts from the app (both halves of a split, or the
+//! one piece, #559), with the safe flasher's rules (`foxglove_flash`, the same rules as
+//! `scripts/flash/foxglove_flash.py`).
 //!
 //! The Firmware card's button picks a folder with the new firmware (a release's
 //! `foxglove-<version>-left.uf2` / `-right.uf2`, or CI's `foxglove-fw-…-left-dev.uf2`), checks it
@@ -104,15 +105,24 @@ fn save_known(k: &Known) {
     }
 }
 
-/// The firmware files in `dir` for each half: a release's `foxglove-<version>-<half>.uf2`, else
-/// CI's `foxglove-fw-…-<half>-<profile>.uf2` for `profile`, else the older fixed names. More than
-/// one candidate for a half is refused rather than guessed.
-pub fn pick_files(dir: &Path, profile: &str) -> Result<(Option<PathBuf>, Option<PathBuf>), String> {
+/// The firmware files in `dir` for each half of a split: a release's
+/// `foxglove-<version>-<half>.uf2`, else CI's `foxglove-fw-…-<half>-<profile>.uf2` for
+/// `profile`, else the older fixed names. A one-piece board (`split` false, #559) takes one file
+/// with no half in its name: `foxglove-<version>.uf2` or `foxglove-fw-…-<profile>.uf2`. More than
+/// one candidate for a part is refused rather than guessed.
+pub fn pick_files(
+    dir: &Path,
+    profile: &str,
+    split: bool,
+) -> Result<(Option<PathBuf>, Option<PathBuf>), String> {
     let names: Vec<String> = std::fs::read_dir(dir)
         .map_err(|e| format!("Can't read {}: {e}", dir.display()))?
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
         .filter(|n| n.to_ascii_lowercase().ends_with(".uf2"))
         .collect();
+    if !split {
+        return pick_one(dir, &names, profile).map(|one| (Some(one), None));
+    }
     let one = |half: &str| -> Result<Option<PathBuf>, String> {
         let release: Vec<&String> = names
             .iter()
@@ -156,8 +166,57 @@ pub fn pick_files(dir: &Path, profile: &str) -> Result<(Option<PathBuf>, Option<
     Ok((left, right))
 }
 
-/// Notes for the confirm step, from the plan.
+/// A one-piece board's firmware file: no half in its name, and not the settings reset.
+fn pick_one(dir: &Path, names: &[String], profile: &str) -> Result<PathBuf, String> {
+    let halfless = |n: &&String| {
+        let l = n.to_ascii_lowercase();
+        !["-left", "-right", "settings-reset", "settings_reset"]
+            .iter()
+            .any(|w| l.contains(w))
+    };
+    let release: Vec<&String> = names
+        .iter()
+        .filter(|n| n.starts_with("foxglove-") && !n.starts_with("foxglove-fw-"))
+        .filter(halfless)
+        .collect();
+    let ci: Vec<&String> = names
+        .iter()
+        .filter(|n| n.starts_with("foxglove-fw-") && n.ends_with(&format!("-{profile}.uf2")))
+        .filter(halfless)
+        .collect();
+    for set in [release, ci] {
+        match set.as_slice() {
+            [] => continue,
+            [one] => return Ok(dir.join(one)),
+            _ => {
+                return Err(format!(
+                    "More than one keyboard firmware file in {}; keep one.",
+                    dir.display()
+                ))
+            }
+        }
+    }
+    Err(format!("No keyboard firmware (.uf2) in {}.", dir.display()))
+}
+
+/// Notes for the confirm step, from the plan: a split's two halves, or the one piece (#559).
 pub fn notes(plan: &Plan) -> Vec<String> {
+    if !plan.parts.is_split() {
+        let mut out = vec![
+            "The keyboard restarts into its bootloader, gets the new firmware and restarts."
+                .to_string(),
+            "Keep its USB cable plugged in. Typing stops for about a minute.".to_string(),
+        ];
+        out.push(if plan.hands_free {
+            "Your firmware can restart the keyboard by itself: no buttons to press.".into()
+        } else {
+            "When asked, double-tap the keyboard's reset button (GA builds can't restart themselves).".into()
+        });
+        if plan.downgrade {
+            out.push("This is an older version than the keyboard runs.".into());
+        }
+        return out;
+    }
     let mut out = vec![
         "Each half restarts into its bootloader, gets the new firmware and restarts. The left goes first; the right only after the left is back on the new build.".to_string(),
         "Keep both USB cables plugged in. Typing stops on each half for about a minute.".to_string(),
@@ -234,12 +293,13 @@ fn check(dir: PathBuf) {
         let result = (|| -> Result<Plan, String> {
             let board = board()?;
             let profile = board.profile();
-            let (left, right) = pick_files(&dir, &profile)?;
+            let parts = flash_parts_for(super::boards::current().as_ref());
+            let (left, right) = pick_files(&dir, &profile, parts.is_split())?;
             let read = |p: Option<PathBuf>| {
                 p.map(|p| std::fs::read(&p).map_err(|e| format!("Can't read {}: {e}", p.display())))
                     .transpose()
             };
-            foxglove_flash::plan(read(left)?, read(right)?, &board)
+            foxglove_flash::plan_for(read(left)?, read(right)?, &board, &parts)
         })();
         with(|s| match result {
             Ok(plan) if plan.images.is_empty() => s.view = View::Done(plan.lines()),
@@ -308,7 +368,14 @@ fn start_update() {
             }
             s.view = match result {
                 Ok(()) => {
-                    steps.push("Both halves are up to date.".into());
+                    steps.push(if plan.parts.is_split() {
+                        format!(
+                            "{} are up to date.",
+                            super::parts::upper_first(plan.parts.all())
+                        )
+                    } else {
+                        "The keyboard is up to date.".into()
+                    });
                     View::Done(steps)
                 }
                 Err(f) => View::Failed {
@@ -325,6 +392,22 @@ fn start_update() {
 #[cfg(windows)]
 fn board() -> Result<windows_board::WindowsBoard, String> {
     windows_board::WindowsBoard::new()
+}
+
+/// The flasher's names for the board's parts (the first two: the firmware updates the part the
+/// PC talks to and its other half).
+pub fn flash_parts(parts: &super::parts::Parts) -> foxglove_flash::Parts {
+    foxglove_flash::Parts::new((0..parts.len().min(2)).map(|i| parts.name(i)).collect())
+}
+
+/// The flasher's parts for the connected board: only a profile makes it one piece. Without one
+/// the update keeps a split's rules (each image needs its half marker), so an unknown split is
+/// never flashed as one piece.
+pub fn flash_parts_for(board: Option<&super::boards::Board>) -> foxglove_flash::Parts {
+    match board {
+        Some(b) => flash_parts(&b.parts()),
+        None => foxglove_flash::Parts::split(),
+    }
 }
 
 /// The single-flasher lock the script uses too, so the app and the script never write at once.
@@ -928,7 +1011,7 @@ pub mod tests {
         ] {
             std::fs::write(d.join(n), b"x").unwrap();
         }
-        let (l, r) = pick_files(&d, "dev").unwrap();
+        let (l, r) = pick_files(&d, "dev", true).unwrap();
         assert_eq!(l.unwrap().file_name().unwrap(), "foxglove-0.2.0-left.uf2");
         assert_eq!(r.unwrap().file_name().unwrap(), "foxglove-0.2.0-right.uf2");
         let d = temp("ci");
@@ -939,16 +1022,62 @@ pub mod tests {
         ] {
             std::fs::write(d.join(n), b"x").unwrap();
         }
-        let (l, r) = pick_files(&d, "ga").unwrap();
+        let (l, r) = pick_files(&d, "ga", true).unwrap();
         assert!(l.unwrap().to_string_lossy().ends_with("left-ga.uf2"));
         assert!(r.is_none(), "no right GA build: the right is left as it is");
         std::fs::write(d.join("foxglove-fw-v0.2.0-9z9z9z9-left-dev.uf2"), b"x").unwrap();
-        assert!(pick_files(&d, "dev")
+        assert!(pick_files(&d, "dev", true)
             .unwrap_err()
             .contains("More than one left"));
-        assert!(pick_files(&temp("empty"), "dev")
+        assert!(pick_files(&temp("empty"), "dev", true)
             .unwrap_err()
             .contains("No keyboard firmware"));
+    }
+
+    /// #559: a one-piece board takes the one file without a half in its name, and its confirm
+    /// step and plan never say "half".
+    #[test]
+    fn a_one_piece_board_takes_one_file_and_no_halves() {
+        let d = temp("one");
+        for n in [
+            "foxglove-0.2.0.uf2",
+            "foxglove-0.2.0-settings-reset.uf2",
+            "foxglove-fw-v0.2.0-1a2b3c4-dev.uf2",
+        ] {
+            std::fs::write(d.join(n), b"x").unwrap();
+        }
+        let (one, none) = pick_files(&d, "dev", false).unwrap();
+        assert_eq!(one.unwrap().file_name().unwrap(), "foxglove-0.2.0.uf2");
+        assert!(none.is_none());
+        let d = temp("one-ci");
+        std::fs::write(d.join("foxglove-fw-v0.2.0-1a2b3c4-dev.uf2"), b"x").unwrap();
+        std::fs::write(d.join("foxglove-fw-v0.2.0-1a2b3c4-left-dev.uf2"), b"x").unwrap();
+        let (one, _) = pick_files(&d, "dev", false).unwrap();
+        assert!(one.unwrap().to_string_lossy().ends_with("1a2b3c4-dev.uf2"));
+        assert!(pick_files(&temp("one-empty"), "dev", false)
+            .unwrap_err()
+            .contains("No keyboard firmware (.uf2)"));
+        let plank = crate::foxglove::fixtures::second_desk::board().parts();
+        let parts = flash_parts(&plank);
+        assert!(!parts.is_split());
+        for hands_free in [true, false] {
+            let n = notes(&Plan {
+                hands_free,
+                downgrade: true,
+                parts: parts.clone(),
+                ..Default::default()
+            });
+            for line in &n {
+                assert!(!line.contains("half") && !line.contains("both"), "{line}");
+            }
+        }
+        // The Corne's names stay the flasher's halves.
+        let corne = crate::foxglove::fixtures::users_desk::board().parts();
+        assert_eq!(flash_parts(&corne), foxglove_flash::Parts::split());
+        // Only a profile makes a keyboard one piece: without one, a split's rules stay.
+        assert_eq!(flash_parts_for(None), foxglove_flash::Parts::split());
+        let plank = crate::foxglove::fixtures::second_desk::board();
+        assert!(!flash_parts_for(Some(&plank)).is_split());
     }
 
     #[test]

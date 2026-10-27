@@ -757,7 +757,11 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             (
                 "Find my LEDs…",
                 "Show Foxglove where each LED is, so scenes light every LED in its place",
-                "The keyboard lights a colour per half until Foxglove knows where its LEDs are.",
+                if super::parts::Parts::current().is_split() {
+                    "The keyboard lights a colour per half until Foxglove knows where its LEDs are."
+                } else {
+                    "The keyboard lights one colour until Foxglove knows where its LEDs are."
+                },
                 p.warn,
             )
         };
@@ -789,10 +793,14 @@ pub fn legend(v: &View) -> String {
         let keyboard = is_keyboard(&d.id);
         let name = if keyboard {
             let n = d.name.trim_end_matches(" left").trim_end_matches(" right");
-            let how = if !v.keyboard_frames {
-                "one colour for both halves"
-            } else if d.lights.len() > 1 {
+            // A split's halves are "keyboard:left" and "keyboard:right"; one piece is "keyboard".
+            let split = d.id.contains(':');
+            let how = if d.lights.len() > 1 && v.keyboard_frames {
                 "a colour per LED"
+            } else if !split {
+                "one colour"
+            } else if !v.keyboard_frames {
+                "one colour for both halves"
             } else {
                 "a colour per half"
             };

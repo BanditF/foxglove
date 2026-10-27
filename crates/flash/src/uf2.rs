@@ -211,6 +211,20 @@ pub fn preflight(data: &[u8], half: Half) -> Preflight {
     p
 }
 
+/// Checks `data` as the image for a one-piece keyboard (#559): the same checks, but it needs no
+/// half marker. One for a split's right half is still refused.
+pub fn preflight_one(data: &[u8]) -> Preflight {
+    let mut p = preflight(data, Half::Left);
+    p.reasons.retain(|r| {
+        r != "can't tell which half this image is for" && !r.starts_with("the image is for the ")
+    });
+    if p.detected == Some(Half::Right) {
+        p.reasons
+            .push("the image is for a split keyboard's right half".into());
+    }
+    p
+}
+
 /// A UF2 holding `payload` from [`START`], in 256-byte blocks, for tests.
 pub fn build(payload: &[u8]) -> Vec<u8> {
     let chunks: Vec<&[u8]> = payload.chunks(256).collect();

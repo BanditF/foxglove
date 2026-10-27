@@ -50,6 +50,8 @@ pub struct View {
     pub leds: (bool, super::led_map::MapState),
     /// The keyboard can be calibrated (it's connected), and whether it has been.
     pub calibration: Option<bool>,
+    /// The board's parts (#559): one row each, and the split-only switch on a split.
+    pub parts: super::parts::Parts,
 }
 
 /// What the user is choosing but hasn't sent: the colour until Apply, the speed until the
@@ -140,6 +142,7 @@ pub fn show(ui: &mut egui::Ui) {
         ),
         calibration: super::devices::keyboard_key()
             .map(|k| foxglove_devices::calibration::global().device(&k).is_some()),
+        parts: super::parts::Parts::current(),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     draft.settle(view.state.as_ref());
@@ -269,13 +272,18 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
 /// The Keyboard card's other column: both halves as the keyboard reports them, with Refresh
 /// and Calibrate…, then the switches that are saved on the keyboard.
 fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
-    ui.label(theme::caps_label(ui, "Both halves now"));
     let right = v.state.and_then(|s| s.right);
-    for (name, half, age) in [
-        ("Left", v.state.map(|s| s.left), None),
-        ("Right", right.map(|(h, _)| h), right.map(|(_, a)| a)),
-    ] {
-        super::settings_ui::pair(ui, 52.0, name, |ui| {
+    let parts = v.parts.clone().seen(if right.is_some() { 2 } else { 1 });
+    ui.label(theme::caps_label(
+        ui,
+        &format!("{} now", super::parts::upper_first(&parts.all())),
+    ));
+    let mut rows = vec![(parts.short(0), v.state.map(|s| s.left), None)];
+    if parts.is_split() {
+        rows.push((parts.short(1), right.map(|(h, _)| h), right.map(|(_, a)| a)));
+    }
+    for (name, half, age) in rows {
+        super::settings_ui::pair(ui, 52.0, &name, |ui| {
             if let Some(h) = half {
                 let color = if h.on {
                     shown_color(h.hue, h.sat, h.brightness)
@@ -292,7 +300,11 @@ fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     ui.horizontal_wrapped(|ui| {
         if ui
             .button("Refresh")
-            .on_hover_text("Ask both halves for their lights again")
+            .on_hover_text(if parts.is_split() {
+                format!("Ask {} for their lights again", parts.all())
+            } else {
+                "Ask the keyboard for its lights again".to_string()
+            })
             .clicked()
         {
             out.push(Intent::Refresh);
@@ -314,7 +326,10 @@ fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
         }
     });
     ui.add_space(6.0);
-    follow_row(ui, v, out);
+    // Only a split has a second part to follow the first (#559).
+    if parts.is_split() {
+        follow_row(ui, v, &parts, out);
+    }
     // Dimming on battery (firmware D7 0E).
     ui.add_space(4.0);
     super::battery_dim_ui::show(ui);
@@ -426,14 +441,25 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
     }
 }
 
+/// "Right half's lights follow the left", saved on the keyboard: the second part's name, then
+/// the first's.
+pub fn follow_label(parts: &super::parts::Parts) -> String {
+    format!(
+        "{}'s lights follow the {}",
+        parts.name(1),
+        super::parts::lower_first(&parts.short(0))
+    )
+}
+
 /// "Right half's lights follow the left", saved on the keyboard.
-fn follow_row(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
+fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mut Vec<Intent>) {
+    let label = follow_label(parts);
     ui.horizontal_wrapped(|ui| {
         match v.sync {
             RgbSync::Known { on } => {
                 let mut follow = on;
                 if ui
-                    .checkbox(&mut follow, "Right half's lights follow the left")
+                    .checkbox(&mut follow, &label)
                     .on_hover_text(
                         "On: the left half decides when both halves' underglow is on, so they always match \
                          (it sees key presses on both halves). Off: each half turns its own lights off and on \
@@ -449,10 +475,10 @@ fn follow_row(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
                 ui.weak("Asking the keyboard…");
             }
             RgbSync::NoKeyboard => {
-                ui.weak("Right half's lights follow the left: needs a keyboard with Foxglove's firmware");
+                ui.weak(format!("{label}: needs a keyboard with Foxglove's firmware"));
             }
             RgbSync::NotSupported => {
-                ui.weak("Right half's lights follow the left: needs newer keyboard firmware");
+                ui.weak(format!("{label}: needs newer keyboard firmware"));
             }
         }
         if !matches!(v.sync, RgbSync::Unknown | RgbSync::Asking)
@@ -636,6 +662,7 @@ pub mod tests {
             busy: false,
             leds: (true, super::super::led_map::MapState::Shipped),
             calibration: Some(true),
+            parts: crate::foxglove::fixtures::users_desk::board().parts(),
         }
     }
 
@@ -649,6 +676,45 @@ pub mod tests {
             busy: false,
             leds: (false, super::super::led_map::MapState::Unknown),
             calibration: None,
+            parts: crate::foxglove::fixtures::users_desk::board().parts(),
         }
+    }
+
+    /// #559: on a one-piece board the Keyboard card has one row, the keyboard's, and no
+    /// "follow the left" switch; the Corne keeps both.
+    #[test]
+    fn a_one_piece_board_has_no_halves_in_the_keyboard_card() {
+        let ctx = super::super::pc_lights_ui::tests::test_ctx();
+        let draw_text = |v: &View| {
+            let mut text = String::new();
+            for _ in 0..2 {
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    draw(ui, v, &mut Draft::default());
+                });
+                out.textures_delta.clear();
+                text.clear();
+                for clipped in &out.shapes {
+                    collect(&clipped.shape, &mut text);
+                }
+            }
+            text
+        };
+        let plank = View {
+            state: Some(RgbState {
+                left: half(true, 26, 3),
+                right: None,
+            }),
+            parts: crate::foxglove::fixtures::second_desk::board().parts(),
+            ..sample()
+        };
+        let text = draw_text(&plank);
+        assert!(text.contains("THE KEYBOARD NOW"), "{text}");
+        assert!(!text.to_lowercase().contains("half"), "{text}");
+        assert!(!text.contains("follow"), "{text}");
+        let corne = draw_text(&sample());
+        assert!(
+            corne.contains("Right half's lights follow the left"),
+            "{corne}"
+        );
     }
 }
