@@ -55,7 +55,7 @@ struct lamp_effect {
 };
 
 // Fills fx from w. mirror: the right half, whose keys (and LEDs) are the left's mirror image.
-// Returns false (fx untouched) for a kind or colour count it doesn't know.
+// Returns false (fx untouched) for a kind or colour count it doesn't know. w must not be in fx.
 bool lamp_effect_prepare(struct lamp_effect *fx, const struct lamp_effect_wire *w, bool mirror);
 
 // crates/scene's SceneTime::phase: (t mod period) / period, 0 for period 0.

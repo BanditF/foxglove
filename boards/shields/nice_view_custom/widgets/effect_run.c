@@ -11,7 +11,8 @@
  * Start/stop (no polling):
  *   frame timer  starts on a start, or the lights coming back on; each frame schedules the next
  *                while the effect moves. Stops on stop, on the lights going off (idle, the user's
- *                off: one black frame), or after one frame for a still effect (period 0).
+ *                off: one black frame, then the LEDs' power off), or after one frame for a still
+ *                effect (period 0).
  */
 
 #include <string.h>
@@ -40,36 +41,37 @@ static uint32_t generation;             // under lock: one more per start
 static bool running;                    // under lock
 static int64_t epoch;                   // under lock: uptime when the effect's clock read 0
 
-// The low-priority queue's own:
+// The low-priority queue's own (static: that queue's stack is ZMK's 768 bytes):
 static struct lamp_effect fx;
 static uint32_t fx_generation;
 static bool fx_ok;
+static struct lamp_effect_wire fx_wire;
+static uint8_t out[LAMP_EFFECT_LAMPS][3];
 
 static void frame_cb(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(frame_work, frame_cb);
 
 static void frame_cb(struct k_work *work) {
-    struct lamp_effect_wire w;
     k_spinlock_key_t key = k_spin_lock(&lock);
     bool run = running;
     uint32_t g = generation;
     int64_t e = epoch;
     if (run && g != fx_generation) {
-        w = pending;
+        fx_wire = pending;
     }
     k_spin_unlock(&lock, key);
     if (!run) {
         return;
     }
     if (g != fx_generation) {
-        fx_ok = lamp_effect_prepare(&fx, &w, MIRROR);
+        fx_ok = lamp_effect_prepare(&fx, &fx_wire, MIRROR);
         fx_generation = g;
     }
     bool on = true;
     if (rgb_idle_get_on(&on) != 0) {
         on = true;
     }
-    uint8_t out[LAMP_EFFECT_LAMPS][3] = {0};
+    memset(out, 0, sizeof(out));
     if (fx_ok && on) {
         int64_t t = k_uptime_get() - e;
         lamp_effect_render(&fx, lamp_effect_phase(t > 0 ? (uint64_t)t : 0, fx.period_ms), out);
@@ -79,6 +81,7 @@ static void frame_cb(struct k_work *work) {
         for (int i = 0; i < LAMPS; i++) {
             lamp_strip_set(i, out[i][0], out[i][1], out[i][2]);
         }
+        lamp_strip_dark(!on); // dark: black, then the LEDs' power off until lit again
         lamp_strip_show();
         if (fx_ok && on && !lamp_effect_still(&fx)) {
             k_work_schedule_for_queue(zmk_workqueue_lowprio_work_q(), &frame_work, FRAME);
@@ -94,6 +97,7 @@ void effect_run_start(const struct lamp_effect_wire *w, uint32_t at_ms) {
     generation++;
     running = true;
     k_spin_unlock(&lock, key);
+    lamp_strip_dark(false);
     lamp_strip_host(true); // first: its take-over is queued ahead of the first frame
     k_work_reschedule_for_queue(zmk_workqueue_lowprio_work_q(), &frame_work, K_NO_WAIT);
 }
@@ -104,6 +108,7 @@ void effect_run_stop(bool hand_back) {
     running = false;
     k_spin_unlock(&lock, key);
     k_work_cancel_delayable(&frame_work);
+    lamp_strip_dark(false); // SET_FRAME's frames, or the keyboard's own effect, are lit
     if (was && hand_back) {
         lamp_strip_host(false);
     }

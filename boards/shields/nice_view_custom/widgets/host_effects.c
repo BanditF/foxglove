@@ -11,7 +11,8 @@
  *
  * Start/stop (no polling): the left's frames are effect_run.c's; the right's send starts on an
  * effect, a PLACE or RELEASE, or the relay coming up while one runs, and stops on the right's ack,
- * link loss or the relay's retry cap (art_relay_central.c).
+ * link loss or the relay's retry cap (art_relay_central.c). Each wake from idle re-anchors the
+ * right's clock to the left's, so the halves' crystals can't drift apart over a long run.
  */
 
 #include <string.h>
@@ -19,6 +20,10 @@
 #include <zephyr/kernel.h>
 #include <zephyr/spinlock.h>
 #include <zephyr/sys/byteorder.h>
+
+#include <zmk/activity.h>
+#include <zmk/event_manager.h>
+#include <zmk/events/activity_state_changed.h>
 
 #include "art_relay.h"
 #include "effect_run.h"
@@ -165,3 +170,22 @@ void host_effects_yield(void) {
     stop(false);
     k_spin_unlock(&lock, key);
 }
+
+#if RIGHT
+// The keyboard woke from idle: the right's clock to the left's again (the effect itself stays).
+static int effects_activity_listener(const zmk_event_t *eh) {
+    const struct zmk_activity_state_changed *ev = as_zmk_activity_state_changed(eh);
+    if (ev != NULL && ev->state == ZMK_ACTIVITY_ACTIVE) {
+        k_spinlock_key_t key = k_spin_lock(&lock);
+        bool run = running;
+        k_spin_unlock(&lock, key);
+        if (run) {
+            art_relay_effect_sync();
+        }
+    }
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(host_effects, effects_activity_listener);
+ZMK_SUBSCRIPTION(host_effects, zmk_activity_state_changed);
+#endif

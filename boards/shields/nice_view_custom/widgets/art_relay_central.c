@@ -1310,8 +1310,9 @@ static void lamps_link_up(void) {}
  * latency; ATT keeps the order, so GO's response acknowledges the whole effect. A stop is a GO
  * with run 0, unless SET_FRAME took over (its LAMP_HOST stops the right's effect).
  *
- * Start/stop: a job starts on an effect, a PLACE, a stop, or link-up while an effect runs; it
- * stops when the right has acknowledged, the link is gone, or after EFFECT_RETRIES failed tries. */
+ * Start/stop: a job starts on an effect, a PLACE, a stop, link-up while an effect runs, or the
+ * left waking from idle (the clock alone, so long runs don't drift); it stops when the right has
+ * acknowledged, the link is gone, or after EFFECT_RETRIES failed tries. */
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
 #define EFFECT_RETRY RGB_RETRY // nothing re-sends an effect: the RGB sync's budget (10 x 1 s)
@@ -1324,12 +1325,20 @@ static atomic_t effect_tell;  // a stop goes to the right (not when SET_FRAME to
 static atomic_t effect_dirty; // effect_want or effect_run changed since the right's last ack
 static atomic_t effect_right; // ART_LAMPS_*
 static atomic_t effect_reset; // a new link: effect_cb starts over
+static atomic_t effect_resync; // the running effect's clock again, alone
 // On relay_q only:
 static int8_t effect_sent = -1; // the GO the right last acknowledged: -1 unknown, 0 stop, 1 run
 static uint8_t effect_tries, effect_busy;
 
 static bool effect_takes_right(void) {
     return atomic_get(&effect_run) && right.version >= EFFECT_STATUS_VERSION;
+}
+
+// The left's clock, read just before it goes, so the right starts where the left is.
+static int effect_go(struct bt_conn *conn) {
+    uint8_t go[6] = {ART_RELAY_EFFECT_GO, 1};
+    sys_put_le32(effect_run_clock(), &go[2]);
+    return write_req(conn, go, sizeof(go));
 }
 
 static int effect_send(struct bt_conn *conn) {
@@ -1348,9 +1357,7 @@ static int effect_send(struct bt_conn *conn) {
             return err;
         }
     }
-    uint8_t go[6] = {ART_RELAY_EFFECT_GO, 1};
-    sys_put_le32(effect_run_clock(), &go[2]); // last, so the right starts where the left is
-    return write_req(conn, go, sizeof(go));
+    return effect_go(conn);
 }
 
 static void effect_cb(struct k_work *work) {
@@ -1375,11 +1382,17 @@ static void effect_cb(struct k_work *work) {
     }
     bool run = atomic_get(&effect_run);
     bool dirty = atomic_cas(&effect_dirty, 1, 0);
+    bool resync = atomic_cas(&effect_resync, 1, 0);
     if (!err && run && (dirty || effect_sent != 1)) {
         effect_sent = -1;
         err = effect_send(conn);
         if (!err) {
             effect_sent = 1;
+        }
+    } else if (!err && run && resync) {
+        err = effect_go(conn); // the right has the effect: only its clock again
+        if (err) {
+            atomic_set(&effect_resync, 1);
         }
     } else if (!err && !run && effect_sent != 0 && atomic_get(&effect_tell)) {
         const uint8_t go[6] = {ART_RELAY_EFFECT_GO, 0};
@@ -1425,6 +1438,13 @@ void art_relay_effect(bool run, bool tell, const struct lamp_effect_wire *right_
 
 uint8_t art_relay_effect_right(void) {
     return art_relay_link() == 2 ? atomic_get(&effect_right) : ART_LAMPS_NO_LINK;
+}
+
+void art_relay_effect_sync(void) {
+    if (atomic_get(&effect_run) && art_relay_link() == 2) {
+        atomic_set(&effect_resync, 1);
+        k_work_reschedule_for_queue(&relay_q, &effect_work, K_NO_WAIT);
+    }
 }
 
 // From the discovery callback (Bluetooth thread); the relay queue's state resets in effect_cb.

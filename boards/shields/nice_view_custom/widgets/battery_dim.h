@@ -12,6 +12,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include <zephyr/sys/util.h>
@@ -76,3 +77,11 @@ int battery_dim_set_config(const struct battery_dim_config *config);
 
 // The levels in force (a copy). Any thread.
 void battery_dim_get_config(struct battery_dim_config *out);
+
+// The PC draws this half (lamp_strip.c, SET_FRAME and SET_EFFECT): while held, ZMK's own writes
+// to the strip are dropped, so its animation (an &rgb_ug key that turns ZMK's underglow back on)
+// can't draw over the PC's frame or effect. Any thread.
+void dim_strip_hold(bool held);
+struct led_rgb;
+// lamp_strip.c's writes, which a hold lets through (dimmed as ever).
+int dim_strip_update_host(struct led_rgb *pixels, size_t n);

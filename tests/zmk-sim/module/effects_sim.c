@@ -55,7 +55,7 @@ static void print_lamps(const char *what, const uint8_t rgb[][3], int n) {
  * one is printed unless the case is counting a moving effect. */
 
 static uint8_t pixels[LAMP_STRIP_LEN][3], printed[LAMP_STRIP_LEN][3];
-static bool host, quiet;
+static bool host, quiet, dark, printed_dark;
 static atomic_t draws;
 
 void lamp_strip_host(bool on) {
@@ -80,11 +80,15 @@ void lamp_strip_show(void) {
         return;
     }
     atomic_inc(&draws);
-    if (!quiet && memcmp(pixels, printed, sizeof(pixels)) != 0) {
+    if (!quiet && (memcmp(pixels, printed, sizeof(pixels)) != 0 || dark != printed_dark)) {
         memcpy(printed, pixels, sizeof(pixels));
-        print_lamps("left draws", pixels, LAMP_STRIP_LEN);
+        printed_dark = dark;
+        print_lamps(dark ? "left draws, then cuts the LEDs' power:" : "left draws", pixels,
+                    LAMP_STRIP_LEN);
     }
 }
+
+void lamp_strip_dark(bool on) { dark = on; }
 
 /* The underglow's on/off as the user set it (rgb_idle.c) */
 
@@ -123,6 +127,8 @@ void art_relay_effect(bool run, bool tell, const struct lamp_effect_wire *w) {
 }
 
 uint8_t art_relay_effect_right(void) { return ART_LAMPS_OK; }
+
+void art_relay_effect_sync(void) { printk("effects: right clock again\n"); }
 
 /* crates/scene's vectors */
 

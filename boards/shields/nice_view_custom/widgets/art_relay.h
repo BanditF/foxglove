@@ -215,6 +215,9 @@ uint8_t art_relay_lamps_right(void);
 void art_relay_effect(bool run, bool tell, const struct lamp_effect_wire *right_half);
 // Whether the right draws effects: ART_LAMPS_* as for frames (2: its firmware can't).
 uint8_t art_relay_effect_right(void);
+// Re-anchors the right's effect clock to the left's (EFFECT_GO alone), so the halves' uptimes
+// can't drift apart over a long run. On an event (the left waking from idle). Any thread.
+void art_relay_effect_sync(void);
 
 // The span of lamps that differ between two frames of n lamps: *start and the returned count
 // (0 when they're equal); *uniform says whether the span is all one colour (sent as a fill).

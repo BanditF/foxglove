@@ -209,42 +209,42 @@ bool lamp_effect_prepare(struct lamp_effect *fx, const struct lamp_effect_wire *
         w->n > LAMP_EFFECT_COLOURS || (w->kind != LAMP_EFFECT_SWEEP && w->n != 2)) {
         return false;
     }
-    struct lamp_effect f = {
-        .kind = w->kind,
-        .n = w->n,
-        .period_ms = w->period_ms[0] | w->period_ms[1] << 8 | (uint32_t)w->period_ms[2] << 16,
-        .width = (uint16_t)(w->width_dmm[0] | w->width_dmm[1] << 8) / 10.0f,
-        .ox = i16(&w->origin[0]),
-        .oy = i16(&w->origin[2]),
-    };
+    // Straight into fx (no copy on the stack: the low-priority queue's is small).
+    struct lamp_effect *const f = fx;
+    memset(f, 0, sizeof(*f));
+    f->kind = w->kind;
+    f->n = w->n;
+    f->period_ms = w->period_ms[0] | w->period_ms[1] << 8 | (uint32_t)w->period_ms[2] << 16;
+    f->width = (uint16_t)(w->width_dmm[0] | w->width_dmm[1] << 8) / 10.0f;
+    f->ox = i16(&w->origin[0]);
+    f->oy = i16(&w->origin[2]);
     float deg = (uint16_t)(w->angle_cdeg[0] | w->angle_cdeg[1] << 8) / 100.0f;
     float rad = deg * 0.017453292519943295f; // f32::to_radians
-    f.s = sinf(rad);
-    f.c = cosf(rad);
+    f->s = sinf(rad);
+    f->c = cosf(rad);
     float bx = i16(&w->room[0]), by = i16(&w->room[2]), bw = i16(&w->room[4]),
           bh = i16(&w->room[6]);
     const float corners[4][2] = {{bx, by}, {bx + bw, by}, {bx, by + bh}, {bx + bw, by + bh}};
-    f.lo = INFINITY;
-    f.hi = -INFINITY;
+    f->lo = INFINITY;
+    f->hi = -INFINITY;
     for (int i = 0; i < 4; i++) {
-        float p = corners[i][0] * f.c + corners[i][1] * f.s;
-        f.lo = fminf(f.lo, p);
-        f.hi = fmaxf(f.hi, p);
-        f.reach = fmaxf(f.reach, hypotf(corners[i][0] - f.ox, corners[i][1] - f.oy));
+        float p = corners[i][0] * f->c + corners[i][1] * f->s;
+        f->lo = fminf(f->lo, p);
+        f->hi = fmaxf(f->hi, p);
+        f->reach = fmaxf(f->reach, hypotf(corners[i][0] - f->ox, corners[i][1] - f->oy));
     }
-    f.span = bw * fabsf(f.c) + bh * fabsf(f.s);
-    memcpy(f.rgb, w->rgb, sizeof(f.rgb));
-    for (int i = 0; i < f.n; i++) {
-        to_oklab(f.rgb[i], f.lab[i]);
+    f->span = bw * fabsf(f->c) + bh * fabsf(f->s);
+    memcpy(f->rgb, w->rgb, sizeof(f->rgb));
+    for (int i = 0; i < f->n; i++) {
+        to_oklab(f->rgb[i], f->lab[i]);
     }
     float hx = i16(&w->half[0]), hy = i16(&w->half[2]), hw = i16(&w->half[4]),
           hh = i16(&w->half[6]);
     for (int i = 0; i < LAMP_EFFECT_LAMPS; i++) {
         float px = lamps_permille[i][0] / 1000.0f, py = lamps_permille[i][1] / 1000.0f;
-        f.lamp[i][0] = hx + hw * (mirror ? 1.0f - px : px);
-        f.lamp[i][1] = hy + hh * py;
+        f->lamp[i][0] = hx + hw * (mirror ? 1.0f - px : px);
+        f->lamp[i][1] = hy + hh * py;
     }
-    *fx = f;
     return true;
 }
 
