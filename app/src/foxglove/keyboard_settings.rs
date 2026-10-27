@@ -170,16 +170,20 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
                 state = read().or(state);
             }
             *RGB_STATE.lock().unwrap() = state;
-            *RGB_READ_AT.lock().unwrap() = Some(std::time::Instant::now());
+            *RGB_READ_AT.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(std::time::Instant::now());
             RGB_POLLING.store(false, Ordering::Relaxed);
             ctx.request_repaint();
         });
     }
     let elapsed = RGB_READ_AT
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .map_or(0, |at| at.elapsed().as_secs());
-    RGB_STATE.lock().unwrap().map(|s| aged(s, elapsed))
+    RGB_STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .map(|s| aged(s, elapsed))
 }
 
 /// `s` as read `elapsed_s` seconds ago: the right half's age grows by that much (the UI adds
