@@ -87,12 +87,13 @@ pub const SECTIONS: [(&str, Page); 18] = [
 ];
 
 /// The part of its page each section is drawn in, where the page draws in parts. The App page's
-/// parts are its two columns (#390): Profiles on the left, the shorter cards on the right. The
+/// parts are its two columns (#390): Profiles and Appearance on the left, the rest on the right. The
 /// Keyboard page's are stacked (#534), so KeyPeek's sections keep their order in its file and
 /// still show in the canvas's: the layer overlay's card (its grid, then its colours), the keymap
 /// source at the card's foot, then Other keyboards. Unlisted sections are in part 1.
-const PARTS: [(&str, usize); 5] = [
+const PARTS: [(&str, usize); 6] = [
     ("Profile", 0),
+    ("Appearance", 0),
     ("Overlay Appearance", 0),
     ("Theme", 0),
     ("Connection", 1),
@@ -877,11 +878,11 @@ mod tests {
     fn the_settings_page_splits_into_two_columns() {
         SHOWING.set(Some(Page::Settings));
         COLUMN.set(Some(0));
-        assert!(shows("Profile"));
-        assert!(!shows("Appearance") && !shows("Startup and updates") && !shows("About"));
+        assert!(shows("Profile") && shows("Appearance"));
+        assert!(!shows("Startup and updates") && !shows("About"));
         COLUMN.set(Some(1));
-        assert!(!shows("Profile"));
-        assert!(shows("Appearance") && shows("Startup and updates") && shows("About"));
+        assert!(!shows("Profile") && !shows("Appearance"));
+        assert!(shows("Startup and updates") && shows("Live wallpaper") && shows("About"));
         assert!(!shows("Lights"), "still only this page's sections");
         // Nothing about the overlay or other keyboards is on App any more (#534).
         COLUMN.set(None);
