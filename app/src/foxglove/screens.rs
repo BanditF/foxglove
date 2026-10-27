@@ -597,7 +597,7 @@ fn run() {
                 d.last = None;
             }
             lock_watch = None;
-            set_status(&if foxglove_paused {
+            set_status(if foxglove_paused {
                 "Foxglove paused".to_string()
             } else if away {
                 "Away (locked or display off): the keyboard shows its own screen".to_string()
@@ -661,7 +661,7 @@ fn run() {
         lock_watch = None;
         if !was_driving {
             d.last = None;
-            set_status(&format!(
+            set_status(format!(
                 "Drawing {}",
                 super::screen_roles::the(super::screen_roles::Role::Info)
             ));
