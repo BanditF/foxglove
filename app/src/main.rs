@@ -72,7 +72,7 @@ fn main() {
     let result = platform::run(settings, available_devices);
     foxglove::calibrate_ui::cancel(); // Foxglove: quitting mid-calibration puts the colours back
     foxglove::scenes_ui::quitting(); // Foxglove (#489): no profile starts a scene now
-    foxglove::scene_run::stop(); // Foxglove (#485): a running scene gives the lights back
+    foxglove::scene_run::quit(); // Foxglove (#485, #542): a running scene gives the lights back (or keeps its keyboard effect)
     foxglove::live_feed::stop(); // Foxglove (#499)
     foxglove::wallpaper_sync::quit(); // Foxglove (#493): the wallpapers go back to their own clocks
     foxglove::startup::finish(result)

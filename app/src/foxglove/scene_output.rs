@@ -3,9 +3,14 @@
 //! - The OMEN case (and any catalog board with a driver): one colour per zone, at the zone's
 //!   place in the room. Written through the Lights worker's drivers, so the colour calibration
 //!   applies at the driver boundary as for every other write.
-//! - The keyboard: a frame of both halves' LEDs (#529), each half its own colour, or each LED
-//!   its own once the board profile places them; and the whole frame as one colour (the
-//!   halves mixed) for firmware without SET_FRAME, which takes one `&rgb_ug` colour.
+//! - The keyboard: with SET_EFFECT (HELLO bit 19, #542) the scene's effect itself, sent once:
+//!   each half draws it from its LEDs' places on the scene's clock ([`keyboard_effect`]), so no
+//!   keyboard frames go out while it runs. Scanline, sweep (1-4 stops), ripple and breathe map
+//!   one to one; gradient and noise, and any ripple or sweep burst drawn over the scene (#489),
+//!   take the frames path while they show. Else a frame of both halves' LEDs (#529), each half
+//!   its own colour, or each LED its own once the board profile places them; and the whole
+//!   frame as one colour (the halves mixed) for firmware without SET_FRAME, which takes one
+//!   `&rgb_ug` colour.
 //!
 //! Each output has its own interval (never faster than the scheduler's 30 fps cap): the case
 //! [`CASE_INTERVAL`], the keyboard [`KEYBOARD_INTERVAL`], since its colour goes over the host
@@ -17,6 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use digitalis::protocol::MmRect;
 use foxglove_scene::scheduler::Pacing;
 use foxglove_scene::{Burst, Bursts, Effect, Rgb, RoomMap, SceneTime};
 
@@ -57,6 +63,147 @@ pub enum Out {
     },
     /// The keyboard's frame.
     Keyboard(KeyboardFrame),
+    /// The keyboard draws the scene itself from now on (SET_EFFECT).
+    KeyboardEffect(KeyboardEffect),
+}
+
+/// The scene as one SET_EFFECT (#542): each half draws it from its LEDs' places.
+#[derive(Clone, Debug, PartialEq)]
+pub struct KeyboardEffect {
+    /// In the wire's units. `clock_ms` is 0 here: the writer fills it in from the scene's clock
+    /// just before it goes ([`KeyboardEffect::at`]), so the halves run in phase with the case
+    /// and the wallpapers.
+    pub effect: digitalis::protocol::Effect,
+    /// The room's bounds, and each half's place in it (mm), for EFFECT PLACE.
+    pub room: MmRect,
+    pub left: MmRect,
+    pub right: MmRect,
+    /// The effect's colours as one, for the lease (what shows when the effect is handed back).
+    pub mix: Hsb,
+}
+
+impl KeyboardEffect {
+    /// The effect to send at scene time `t`: its clock is `t` modulo the period.
+    pub fn at(&self, t: SceneTime) -> digitalis::protocol::Effect {
+        let period = i64::from(self.effect.period_ms);
+        let clock_ms = if period == 0 {
+            0
+        } else {
+            t.ms().rem_euclid(period) as u32
+        };
+        digitalis::protocol::Effect {
+            clock_ms,
+            ..self.effect.clone()
+        }
+    }
+}
+
+/// Room millimetres as the wire carries them: whole, within i16.
+fn mm(v: f32) -> i16 {
+    v.round().clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
+}
+
+fn mm_rect(r: &foxglove_scene::Rect) -> MmRect {
+    [mm(r.x), mm(r.y), mm(r.w), mm(r.h)]
+}
+
+/// Where each keyboard half sits in the room: the placed halves, or a one-piece keyboard's
+/// rectangle split down the middle. `None` without a keyboard (or with one half only).
+fn keyboard_halves(room: &RoomMap) -> Option<(MmRect, MmRect)> {
+    let rect = |id: &str| room.devices.iter().find(|d| d.id == id).map(|d| d.rect);
+    if let (Some(l), Some(r)) = (rect("keyboard:left"), rect("keyboard:right")) {
+        return Some((mm_rect(&l), mm_rect(&r)));
+    }
+    let whole = rect(KEYBOARD)?;
+    let w = whole.w / 2.0;
+    Some((
+        mm_rect(&foxglove_scene::Rect::new(whole.x, whole.y, w, whole.h)),
+        mm_rect(&foxglove_scene::Rect::new(whole.x + w, whole.y, w, whole.h)),
+    ))
+}
+
+/// The scene's effect as the keyboard's own (#542), or `None` when it doesn't map (gradient,
+/// noise, a sweep of more than 4 stops, a period past the wire's) or there is no keyboard in
+/// the room: those take the frames path.
+pub fn keyboard_effect(effect: &Effect, room: &RoomMap) -> Option<KeyboardEffect> {
+    use digitalis::protocol::EffectKind;
+    let (left, right) = keyboard_halves(room)?;
+    let c = |c: &Rgb| c.0;
+    // Kind, colours, period, angle, width, origin.
+    let (kind, colours, period_ms, angle_deg, width_mm, origin) = match effect {
+        Effect::Scanline {
+            colour,
+            background,
+            angle_deg,
+            width_mm,
+            period_ms,
+        } => (
+            EffectKind::Scanline,
+            vec![c(colour), c(background)],
+            *period_ms,
+            *angle_deg,
+            *width_mm,
+            [0, 0],
+        ),
+        Effect::Sweep {
+            stops,
+            angle_deg,
+            period_ms,
+        } => (
+            EffectKind::Sweep,
+            stops.iter().map(c).collect(),
+            *period_ms,
+            *angle_deg,
+            0.0,
+            [0, 0],
+        ),
+        Effect::Ripple {
+            origin,
+            colour,
+            background,
+            width_mm,
+            period_ms,
+        } => (
+            EffectKind::Ripple,
+            vec![c(colour), c(background)],
+            *period_ms,
+            0.0,
+            *width_mm,
+            [mm(origin.x), mm(origin.y)],
+        ),
+        Effect::Breathe {
+            from,
+            to,
+            period_ms,
+        } => (
+            EffectKind::Breathe,
+            vec![c(from), c(to)],
+            *period_ms,
+            0.0,
+            0.0,
+            [0, 0],
+        ),
+        Effect::Gradient { .. } | Effect::Noise { .. } => return None,
+    };
+    let wire = digitalis::protocol::Effect {
+        kind,
+        colours,
+        clock_ms: 0,
+        period_ms,
+        angle_deg,
+        width_mm,
+        origin_mm: origin,
+    };
+    // What the wire can't carry (colour count, period) stays on frames.
+    digitalis::protocol::effect(&wire)?;
+    let all: Vec<Rgb> = wire.colours.iter().map(|&c| Rgb(c)).collect();
+    Some(KeyboardEffect {
+        mix: hsb(mixed(&all)?),
+        effect: wire,
+        room: mm_rect(&room.bounds),
+        left,
+        right,
+    })
 }
 
 /// One frame for the keyboard.
@@ -166,6 +313,13 @@ pub struct Outputs {
     pacing: Pacing,
     sent_case: BTreeMap<String, Vec<(usize, [u8; 3])>>,
     sent_keyboard: Option<KeyboardFrame>,
+    /// The scene as the keyboard's own effect, when it maps (#542).
+    keyboard_effect: Option<KeyboardEffect>,
+    /// That effect went out: the keyboard needs nothing more until something changes.
+    effect_sent: bool,
+    /// The keyboard takes SET_EFFECT (HELLO bit 19): set by the scene from the keyboard found,
+    /// cleared by the writer when it refuses one.
+    keyboard_effects: Arc<AtomicBool>,
     /// Set from elsewhere (the keyboard handed its frames back): send the keyboard's next frame
     /// in full even though nothing changed.
     keyboard_again: Arc<AtomicBool>,
@@ -183,6 +337,9 @@ impl Outputs {
             pacing: Pacing::default(),
             sent_case: BTreeMap::new(),
             sent_keyboard: None,
+            keyboard_effect: None,
+            effect_sent: false,
+            keyboard_effects: Arc::default(),
             keyboard_again: Arc::default(),
             bursts: Bursts::default(),
         };
@@ -213,6 +370,12 @@ impl Outputs {
         self.keyboard_again.clone()
     }
 
+    /// A flag saying the keyboard takes SET_EFFECT (#542), shared with the keyboard's writer:
+    /// while set, a scene that maps goes to the keyboard as one effect instead of frames.
+    pub fn keyboard_effects(&self) -> Arc<AtomicBool> {
+        self.keyboard_effects.clone()
+    }
+
     /// The devices changed (one arrived, went or was found again): the new room. Every device
     /// gets its next frame in full, since one that came back shows its saved colours again.
     pub fn set_room(&mut self, room: RoomMap, cases: Vec<CaseTarget>) {
@@ -236,6 +399,9 @@ impl Outputs {
         self.sent_keyboard = None;
         self.room = room;
         self.cases = cases;
+        // Placed again: a drag or a monitor change moves the effect too.
+        self.keyboard_effect = keyboard_effect(&self.effect, &self.room);
+        self.effect_sent = false;
     }
 
     /// Another look while the scene runs (the Scenes page, #487): every device gets the next
@@ -244,26 +410,51 @@ impl Outputs {
         self.effect = effect;
         self.sent_case.clear();
         self.sent_keyboard = None;
+        self.keyboard_effect = keyboard_effect(&self.effect, &self.room);
+        self.effect_sent = false;
     }
 
     /// The writes for scene time `t`: each due device whose colours changed.
     pub fn frame(&mut self, t: SceneTime) -> Vec<Out> {
         if self.keyboard_again.swap(false, Ordering::Relaxed) {
             self.sent_keyboard = None;
+            self.effect_sent = false;
         }
-        let due = self.pacing.due(t);
+        let mut due = self.pacing.due(t);
         if due.is_empty() {
             return Vec::new();
         }
+        let bursting = self.bursts.prune(t);
+        let mut out = Vec::new();
+        // The keyboard draws the scene itself: sent once, then nothing per frame. A burst over
+        // the scene is drawn by frames (they take over from the effect on the keyboard), and
+        // the effect goes again once it is gone.
+        let effect = self.keyboard_effect.as_ref().filter(|_| {
+            self.keyboard && !bursting && self.keyboard_effects.load(Ordering::Relaxed)
+        });
+        if let Some(e) = effect {
+            if let Some(i) = due.iter().position(|id| id == KEYBOARD) {
+                due.remove(i);
+                if !self.effect_sent {
+                    self.effect_sent = true;
+                    self.sent_keyboard = None;
+                    out.push(Out::KeyboardEffect(e.clone()));
+                }
+            }
+            if due.is_empty() {
+                return out;
+            }
+        } else {
+            self.effect_sent = false;
+        }
         let mut frame = self.effect.render(&self.room, t);
-        if self.bursts.prune(t) {
+        if bursting {
             // `render` lists the lights device by device, in the room's order.
             let places = self.room.devices.iter().flat_map(|d| d.lights.iter());
             for (l, place) in frame.lights.iter_mut().zip(places) {
                 l.colour = self.bursts.over(l.colour, place.at, t, &self.room.bounds);
             }
         }
-        let mut out = Vec::new();
         for id in due {
             if id == KEYBOARD {
                 let lights: Vec<(&str, &str, Rgb)> = frame
@@ -402,6 +593,7 @@ mod tests {
                             first_lit.entry("keyboard".into()).or_insert(ms);
                         }
                     }
+                    Out::KeyboardEffect(_) => unreachable!("no SET_EFFECT keyboard here"),
                 }
             }
         }
@@ -426,7 +618,7 @@ mod tests {
             for out in o.frame(SceneTime(ms)) {
                 match out {
                     Out::Case { .. } => case_t.push(ms),
-                    Out::Keyboard(_) => kb_t.push(ms),
+                    Out::Keyboard(_) | Out::KeyboardEffect(_) => kb_t.push(ms),
                 }
             }
         }
@@ -590,6 +782,216 @@ mod tests {
         let after = frames(o.frame(SceneTime(1400)));
         assert_eq!(after, before, "the scene's colours again once it is gone");
         assert!(frames(o.frame(SceneTime(1600))).is_empty());
+    }
+
+    /// The four effects the keyboard draws map one to one onto SET_EFFECT (#542); gradient,
+    /// noise and a sweep the wire can't carry stay on frames.
+    #[test]
+    fn scenes_map_onto_the_keyboards_own_effects() {
+        use digitalis::protocol::EffectKind;
+        let (room, _) = desk();
+        let e = keyboard_effect(&scanline(), &room).expect("a scanline maps");
+        assert_eq!(e.effect.kind, EffectKind::Scanline);
+        assert_eq!(e.effect.colours, [ORANGE.0, [0, 0, 0]]);
+        assert_eq!((e.effect.period_ms, e.effect.width_mm), (4000, 80.0));
+        assert_eq!(e.effect.angle_deg, 90.0);
+        // Placed as the room map has the halves, in whole mm.
+        let rect = |id: &str| {
+            let r = room.devices.iter().find(|d| d.id == id).unwrap().rect;
+            [r.x, r.y, r.w, r.h].map(|v| v.round() as i16)
+        };
+        assert_eq!(e.left, rect("keyboard:left"));
+        assert_eq!(e.right, rect("keyboard:right"));
+        let b = room.bounds;
+        assert_eq!(e.room, [b.x, b.y, b.w, b.h].map(|v| v.round() as i16));
+        assert_eq!(e.mix, hsb(ORANGE.mix(Rgb::BLACK, 0.5)));
+
+        let blue = Rgb([0, 0, 255]);
+        let sweep = |n: usize| Effect::Sweep {
+            stops: vec![blue; n],
+            angle_deg: 0.0,
+            period_ms: 3000,
+        };
+        assert_eq!(
+            keyboard_effect(&sweep(4), &room).map(|e| e.effect.kind),
+            Some(EffectKind::Sweep)
+        );
+        assert!(
+            keyboard_effect(&sweep(5), &room).is_none(),
+            "5 stops: frames"
+        );
+        let ripple = Effect::Ripple {
+            origin: foxglove_scene::Point::new(120.4, -30.6),
+            colour: ORANGE,
+            background: blue,
+            width_mm: 60.0,
+            period_ms: 2000,
+        };
+        let r = keyboard_effect(&ripple, &room).unwrap();
+        assert_eq!(
+            (r.effect.kind, r.effect.origin_mm),
+            (EffectKind::Ripple, [120, -31])
+        );
+        let breathe = Effect::Breathe {
+            from: ORANGE,
+            to: blue,
+            period_ms: 5000,
+        };
+        assert_eq!(
+            keyboard_effect(&breathe, &room).map(|e| e.effect.colours),
+            Some(vec![ORANGE.0, blue.0])
+        );
+        let gradient = Effect::Gradient {
+            stops: vec![ORANGE, blue],
+            angle_deg: 0.0,
+        };
+        assert!(keyboard_effect(&gradient, &room).is_none());
+        let noise = Effect::Noise {
+            stops: vec![ORANGE, blue],
+            scale_mm: 100.0,
+            period_ms: 8000,
+            seed: 1,
+        };
+        assert!(keyboard_effect(&noise, &room).is_none());
+        let slow = Effect::Breathe {
+            from: ORANGE,
+            to: blue,
+            period_ms: 0x100_0000,
+        };
+        assert!(
+            keyboard_effect(&slow, &room).is_none(),
+            "past 24 bits of ms"
+        );
+        // No keyboard in the room: nothing to place.
+        let mut no_kb = room.clone();
+        no_kb.devices.retain(|d| !d.id.starts_with(KEYBOARD));
+        assert!(keyboard_effect(&scanline(), &no_kb).is_none());
+    }
+
+    /// The effect's clock is the scene's time modulo its period, so a send at any moment
+    /// starts the halves in phase with the case and the wallpapers on the same epoch.
+    #[test]
+    fn the_effects_clock_is_the_scenes_phase() {
+        let (room, _) = desk();
+        let e = keyboard_effect(&scanline(), &room).unwrap();
+        assert_eq!(e.at(SceneTime(0)).clock_ms, 0);
+        assert_eq!(e.at(SceneTime(10_500)).clock_ms, 2500);
+        assert_eq!(e.at(SceneTime(-500)).clock_ms, 3500, "before the epoch");
+        let still = Effect::Breathe {
+            from: ORANGE,
+            to: ORANGE,
+            period_ms: 0,
+        };
+        let s = keyboard_effect(&still, &room).unwrap();
+        assert_eq!(s.at(SceneTime(1234)).clock_ms, 0);
+        // A one-piece keyboard is split down the middle.
+        let mut one = room.clone();
+        let left = one
+            .devices
+            .iter()
+            .position(|d| d.id == "keyboard:left")
+            .unwrap();
+        one.devices.retain(|d| d.id != "keyboard:right");
+        one.devices[left].id = KEYBOARD.into();
+        one.devices[left].rect = foxglove_scene::Rect::new(0.0, 500.0, 300.0, 90.0);
+        let e = keyboard_effect(&scanline(), &one).unwrap();
+        assert_eq!((e.left, e.right), ([0, 500, 150, 90], [150, 500, 150, 90]));
+    }
+
+    #[test]
+    fn a_keyboard_with_effects_gets_the_effect_once_and_no_frames() {
+        let (room, cases) = desk();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.keyboard_effects().store(true, Ordering::Relaxed);
+        let kb = |outs: &[Out]| -> (usize, usize) {
+            let effects = outs
+                .iter()
+                .filter(|o| matches!(o, Out::KeyboardEffect(_)))
+                .count();
+            let frames = outs
+                .iter()
+                .filter(|o| matches!(o, Out::Keyboard(_)))
+                .count();
+            (effects, frames)
+        };
+        let mut sent = (0, 0);
+        let mut case = 0;
+        for ms in (0..2000).step_by(33) {
+            let outs = o.frame(SceneTime(ms));
+            let (e, f) = kb(&outs);
+            sent = (sent.0 + e, sent.1 + f);
+            case += outs.len() - e - f;
+        }
+        assert_eq!(sent, (1, 0), "one effect, no keyboard frames");
+        assert!(case > 10, "the case still gets its frames: {case}");
+        // Asked again (a reconnect, the lease showing again): once more.
+        o.keyboard_again().store(true, Ordering::Relaxed);
+        let mut n = 0;
+        for ms in (2000..2400).step_by(33) {
+            n += kb(&o.frame(SceneTime(ms))).0;
+        }
+        assert_eq!(n, 1);
+        // A new look, or the room again (a drag): once more each.
+        o.set_effect(Effect::Breathe {
+            from: ORANGE,
+            to: Rgb::BLACK,
+            period_ms: 3000,
+        });
+        assert_eq!(kb(&o.frame(SceneTime(2600))).0, 1);
+        let (room, cases) = desk();
+        o.set_room(room, cases);
+        assert_eq!(kb(&o.frame(SceneTime(2800))).0, 1);
+        // A look the keyboard can't draw: frames instead.
+        o.set_effect(Effect::Gradient {
+            stops: vec![ORANGE, Rgb([0, 0, 255])],
+            angle_deg: 0.0,
+        });
+        assert_eq!(kb(&o.frame(SceneTime(3000))), (0, 1));
+        // The writer found the keyboard takes none after all: frames.
+        o.set_effect(scanline());
+        o.keyboard_effects().store(false, Ordering::Relaxed);
+        assert_eq!(kb(&o.frame(SceneTime(3200))), (0, 1));
+    }
+
+    /// A key ripple over an effect scene (#489) is drawn by frames, which take over from the
+    /// effect; once it is gone the effect goes again.
+    #[test]
+    fn a_burst_over_an_effect_scene_draws_frames_then_the_effect_again() {
+        use foxglove_scene::burst::Shape;
+        let (room, cases) = desk();
+        let key = room
+            .devices
+            .iter()
+            .find(|d| d.id == "keyboard:left")
+            .unwrap()
+            .rect
+            .centre();
+        let mut o = Outputs::new(scanline(), room, cases);
+        o.keyboard_effects().store(true, Ordering::Relaxed);
+        let kinds = |outs: Vec<Out>| -> Vec<&'static str> {
+            outs.iter()
+                .filter_map(|o| match o {
+                    Out::Keyboard(_) => Some("frame"),
+                    Out::KeyboardEffect(_) => Some("effect"),
+                    Out::Case { .. } => None,
+                })
+                .collect()
+        };
+        assert_eq!(kinds(o.frame(SceneTime(0))), ["effect"]);
+        o.burst(Burst {
+            shape: Shape::Ring { origin: key },
+            colour: Rgb([255, 255, 255]),
+            start: SceneTime(200),
+            duration_ms: 500,
+            width_mm: 60.0,
+        });
+        assert_eq!(kinds(o.frame(SceneTime(200))), ["frame"]);
+        assert_eq!(
+            kinds(o.frame(SceneTime(1000))),
+            ["effect"],
+            "the ring is gone"
+        );
+        assert!(kinds(o.frame(SceneTime(1200))).is_empty());
     }
 
     #[test]

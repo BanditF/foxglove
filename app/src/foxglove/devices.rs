@@ -58,6 +58,7 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
         };
         let device = Arc::new(DigitalisDevice::new(info, link, hello, bus().sink(id)));
         FRAMES.store(device.frames(), std::sync::atomic::Ordering::Relaxed);
+        EFFECTS.store(device.effects(), std::sync::atomic::Ordering::Relaxed);
         let (actions, underglow) = ACTIONS.lock().unwrap_or_else(|e| e.into_inner()).clone();
         device.set_behaviors(actions);
         device.set_underglow(underglow);
@@ -93,6 +94,14 @@ pub fn frames() -> bool {
 }
 
 static FRAMES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the keyboard found last draws SET_EFFECT effects itself (HELLO bit 19, #542). Never
+/// looks for one, so the UI thread may ask.
+pub fn effects() -> bool {
+    EFFECTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static EFFECTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// How Foxglove's host link reaches the keyboard found last (`USB` or `BLE`), which can differ
 /// from how it types to this PC (USB Raw HID stays silent before firmware #434).

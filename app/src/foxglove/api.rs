@@ -51,6 +51,8 @@ fn restore_on_connect() {
                     eprintln!("Foxglove: giving back {device}'s lights: {}", e.message);
                 }
             });
+            // Outside the arbiter's lock: a scene sends its effect again (#542).
+            super::scene_run::keyboard_connected();
         }
     });
 }

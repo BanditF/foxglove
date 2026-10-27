@@ -423,6 +423,28 @@ impl DigitalisDevice {
         effect_status(settings::set_effect(&*self.link, e).map_err(err)?)
     }
 
+    /// [`Self::set_effect`] with the keyboard's colour calibration on each colour: one set for
+    /// both halves, since the wire carries one (per-half calibration is the frames' only).
+    pub fn show_effect(
+        &self,
+        e: &crate::protocol::Effect,
+    ) -> PResult<crate::protocol::EffectReply> {
+        let key = self.calibration_key();
+        let colours = e
+            .colours
+            .iter()
+            .map(|&[r, g, b]| {
+                let c =
+                    calibration::global().rgb(&key, None, None, foxglove_devices::Rgb { r, g, b });
+                [c.r, c.g, c.b]
+            })
+            .collect();
+        self.set_effect(&crate::protocol::Effect {
+            colours,
+            ..e.clone()
+        })
+    }
+
     /// Where the halves sit in the room, for [`Self::set_effect`].
     pub fn place_effect(
         &self,
@@ -442,6 +464,12 @@ impl DigitalisDevice {
             return Err(DeviceError::Unsupported);
         }
         effect_status(settings::release_effect(&*self.link).map_err(err)?)
+    }
+
+    /// Whether the right half's on/off and power source arrive as RGB_STATE / BATTERY_DIM
+    /// events (HELLO bit 20, #543), so a stale right half needs no second read.
+    pub fn right_events(&self) -> bool {
+        self.has(capabilities::RIGHT_EVENTS)
     }
 
     /// The PC panel's size: from the keyboard's screen descriptors when it has them (#289),
@@ -667,13 +695,21 @@ impl Lighting for DigitalisDevice {
         DigitalisDevice::set_frame(self, 0, &colours).map(|_| ())
     }
 
-    /// Hands frames back to the keyboard's own effect. Colours, effects and on/off go through
-    /// the keymap's own behavior, so without frames the keyboard always keeps control.
+    /// Hands frames and a SET_EFFECT effect back to the keyboard's own effect (a frame RELEASE
+    /// leaves an effect running, so both go). Colours, effects and on/off go through the
+    /// keymap's own behavior, so without frames the keyboard always keeps control.
     fn release(&self) -> PResult<()> {
-        if !self.frames() {
-            return Ok(());
-        }
-        self.release_frame().map(|_| ())
+        let effect = if self.effects() {
+            self.release_effect().map(|_| ())
+        } else {
+            Ok(())
+        };
+        let frames = if self.frames() {
+            self.release_frame().map(|_| ())
+        } else {
+            Ok(())
+        };
+        effect.and(frames)
     }
 }
 
@@ -1096,9 +1132,42 @@ mod tests {
         // One that doesn't fit the wire never leaves the PC.
         let three = protocol::Effect {
             colours: vec![[0; 3]; 3],
-            ..scan
+            ..scan.clone()
         };
         assert!(dev.set_effect(&three).is_err());
+
+        // The lease arbiter's hand-back (`Lighting::release`) ends an effect as well as frames:
+        // a frame RELEASE alone leaves an effect running.
+        fake.written.lock().unwrap().clear();
+        assert!(dev.show_effect(&scan).unwrap().running());
+        Lighting::release(&dev).unwrap();
+        let ops: Vec<(u8, u8)> = fake
+            .written
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r[0] == protocol::SETTINGS)
+            .map(|r| (r[1], r[2]))
+            .collect();
+        assert_eq!(
+            ops,
+            [
+                (protocol::settings::EFFECT, protocol::effect::EFFECT),
+                (protocol::settings::EFFECT, protocol::effect::RELEASE),
+                (protocol::settings::FRAME, protocol::frame::RELEASE),
+            ]
+        );
+        // Without bit 19 the hand-back is the frame RELEASE alone.
+        let (dev, fake, _bus) = device(capabilities::FRAMES);
+        Lighting::release(&dev).unwrap();
+        let effect_ops = fake
+            .written
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r[..2] == [protocol::SETTINGS, protocol::settings::EFFECT])
+            .count();
+        assert_eq!(effect_ops, 0);
     }
 
     #[test]

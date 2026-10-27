@@ -225,11 +225,13 @@ enum Command {
     Previous,
     /// The hotlist or its mode changed: reschedule.
     CycleChanged,
-    /// The left's underglow is on or off (an RGB_STATE report, firmware #130).
+    /// The left's underglow is on or off (an RGB_STATE report, firmware #130), with the right
+    /// half's on/off as the relay last read it (None: unknown).
     Lights {
         source: Weak<Link>,
         generation: u64,
         on: bool,
+        right: Option<bool>,
     },
     /// The keyboard's active layers changed (the device event bus).
     Layers(Vec<u8>),
@@ -714,11 +716,25 @@ fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     run_events(h, receiver);
 }
 
+/// Whether an RGB_STATE report shows the lights switched since the last on this connection:
+/// the left on or off, or the right half's on/off or whether it is known (which comes as an
+/// event with HELLO bit 20, #543). The left's first report after a connect counts, as before.
+fn lights_switched(
+    was: Option<bool>,
+    right_was: Option<Option<bool>>,
+    on: bool,
+    right: Option<bool>,
+) -> bool {
+    was != Some(on) || right_was.is_some_and(|r| r != right)
+}
+
 fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let mut links: Vec<(Arc<Link>, EventSubscription)> = Vec::new();
     let mut light_taps: Vec<EventSubscription> = Vec::new();
     // The left's lights as last reported on the current connection; off then on = a wake.
     let mut lights_on: Option<bool> = None;
+    // The right half's on/off from the same reports (None inside: unknown).
+    let mut right_on: Option<Option<bool>> = None;
     let mut current: Option<(usize, u64)> = None;
     // When the timed hotlist mode next changes the art; only while a keyboard is connected.
     let mut due: Option<Instant> = None;
@@ -784,6 +800,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 source,
                 generation,
                 on,
+                right,
             } => {
                 let is_current = current.is_some_and(|(id, g)| {
                     g == generation && Weak::ptr_eq(&Arc::downgrade(&links[id].0), &source)
@@ -792,8 +809,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 let was = lights_on.replace(on);
+                let right_was = right_on.replace(right);
                 // Switched on the keyboard too: the tray panel and Lights page read them again.
-                if was != Some(on) {
+                if lights_switched(was, right_was, on, right) {
                     super::keyboard_settings::lights_changed();
                 }
                 let woke = was == Some(false) && on;
@@ -972,11 +990,12 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 // Runs on the link's reader thread: only enqueue.
                 light_taps.push(link.subscribe_reports(move |generation, r| {
                     if protocol::is_reply(r, protocol::SETTINGS, protocol::settings::RGB_STATE) {
-                        let on = protocol::RgbState::parse(r).left.on;
+                        let state = protocol::RgbState::parse(r);
                         let _ = tx.send(Command::Lights {
                             source: source.clone(),
                             generation,
-                            on,
+                            on: state.left.on,
+                            right: state.right.map(|(half, _)| half.on),
                         });
                     }
                 }));
@@ -994,6 +1013,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     current = None;
                     due = None;
                     lights_on = None;
+                    right_on = None;
                     triggers.disconnected();
                     h.update(|s| {
                         s.connected = false;
@@ -1188,6 +1208,38 @@ mod tests {
     use super::*;
     use digitalis::protocol::{art as cmd, left_state, right_state, REPORT};
     use std::cell::{Cell, RefCell};
+
+    /// The right half's own switch (HELLO bit 20 sends it as an RGB_STATE event, #543) reads
+    /// the lights again, as the left's always did; a report that changes nothing doesn't.
+    #[test]
+    fn a_right_half_switch_reads_the_lights_again() {
+        assert!(
+            lights_switched(None, None, true, Some(true)),
+            "the first report"
+        );
+        assert!(!lights_switched(
+            Some(true),
+            Some(Some(true)),
+            true,
+            Some(true)
+        ));
+        assert!(lights_switched(
+            Some(true),
+            Some(Some(true)),
+            false,
+            Some(true)
+        ));
+        assert!(lights_switched(
+            Some(true),
+            Some(Some(false)),
+            true,
+            Some(true)
+        ));
+        assert!(
+            lights_switched(Some(true), Some(Some(true)), true, None),
+            "the split link went"
+        );
+    }
 
     /// The keyboard on the far side of the link, answering the art relay as the firmware does
     /// (art_relay_central.c / art_relay_peripheral.c), with a log of the commands it got.
