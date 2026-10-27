@@ -658,11 +658,15 @@ mod tests {
         }];
         let zone = |id: &str, x: f32, y: f32| LightSpec::point(id, Some(Point::new(x, y)));
         let devices = [
-            DeviceInfo::whole("keyboard:left", "Corne left", DeviceKind::KeyboardLeft),
-            DeviceInfo::whole("keyboard:right", "Corne right", DeviceKind::KeyboardRight),
+            DeviceInfo::whole("keyboard:left", "Keyboard left", DeviceKind::KeyboardLeft),
+            DeviceInfo::whole(
+                "keyboard:right",
+                "Keyboard right",
+                DeviceKind::KeyboardRight,
+            ),
             DeviceInfo {
                 id: "light:103c:84fd".into(),
-                name: "OMEN 45L".into(),
+                name: "Case".into(),
                 kind: DeviceKind::Case,
                 size: Some(Point::new(205.0, 475.0)),
                 // The catalog's order: 1, 2, 5, 6, 7.
@@ -692,7 +696,7 @@ mod tests {
             crate::foxglove::scene_room::devices(Some(&desk::board()), &rows, &desk::lamps());
         let room = RoomMap::build(&desk::monitors(), &devices, &Default::default());
         let cases = vec![CaseTarget {
-            key: "1a2b:3c4d".into(),
+            key: desk::CASE_ID.trim_start_matches("light:").into(),
             zone_ids: ["1", "2", "3", "4"].map(String::from).to_vec(),
         }];
         (room, cases)
@@ -996,7 +1000,7 @@ mod tests {
         let outs = o.frame(SceneTime(0));
         assert!(
             outs.contains(&Out::Case {
-                key: "1a2b:3c4d".into(),
+                key: cases[0].key.clone(),
                 colors: (0..4).map(|i| (i, ORANGE.0)).collect(),
             }),
             "{outs:?}"

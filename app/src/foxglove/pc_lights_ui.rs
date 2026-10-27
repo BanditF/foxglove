@@ -647,6 +647,9 @@ pub mod tests {
             "Glass glow",
             "Lumen desk lightbar",
             "Windows lighting",
+            // The fake driver: shown as driven, with its zone pickers.
+            "Built-in support",
+            "Apply colours",
         ] {
             assert!(text.contains(want), "{want}: {text}");
         }

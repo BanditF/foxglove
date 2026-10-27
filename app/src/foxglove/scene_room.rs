@@ -441,8 +441,11 @@ pub(crate) mod tests {
     /// The user's room for the Scenes page's previews: a 27" 1440p monitor and a 1080p one to
     /// its left, the Corne, the case board and the mouse.
     pub(crate) fn sample_room() -> RoomMap {
-        let rows = [users_desk::catalog_row(users_desk::CASE), g502_row()];
-        let board = corne();
+        let rows = [
+            users_desk::catalog_row(users_desk::CASE),
+            users_desk::mouse_row(),
+        ];
+        let board = users_desk::board();
         RoomMap::build(
             &users_desk::monitors(),
             &devices(Some(&board), &rows, &users_desk::lamps()),
@@ -461,18 +464,6 @@ pub(crate) mod tests {
 
     /// The case's room id in [`sample_room`].
     pub(crate) const SAMPLE_CASE: &str = "light:103c:84fd";
-
-    fn row_from_catalog(vid: u16, pid: u16) -> Row {
-        users_desk::catalog_row((vid, pid))
-    }
-
-    fn g502_row() -> Row {
-        users_desk::mouse_row()
-    }
-
-    fn corne() -> Board {
-        users_desk::board()
-    }
 
     /// The second desk's devices: Plank 3, the other vendor's case and the lightbar.
     fn second_desk_devices() -> Vec<DeviceInfo> {
@@ -569,9 +560,9 @@ pub(crate) mod tests {
     #[test]
     fn the_users_devices_come_in_from_what_foxglove_knows() {
         let rows = [
-            row_from_catalog(0x103c, 0x84fd),
-            row_from_catalog(0x03f0, 0x7397),
-            g502_row(),
+            users_desk::catalog_row((0x103c, 0x84fd)),
+            users_desk::catalog_row((0x03f0, 0x7397)),
+            users_desk::mouse_row(),
         ];
         let mut lamps = BTreeMap::new();
         lamps.insert(
@@ -582,7 +573,7 @@ pub(crate) mod tests {
                 lamps: vec![[34.0, 40.0], [34.0, 100.0]],
             },
         );
-        let board = corne();
+        let board = users_desk::board();
         let devices = devices(Some(&board), &rows, &lamps);
         let kinds: Vec<_> = devices.iter().map(|d| (d.id.as_str(), d.kind)).collect();
         assert_eq!(
@@ -688,7 +679,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_keyboard_is_one_light_per_half_until_it_has_a_usable_led_map() {
-        let mut board = corne();
+        let mut board = users_desk::board();
         // A provisional map isn't used.
         board.lighting.as_mut().unwrap().led_map = "provisional".into();
         let halves = keyboard(Some(&board));
@@ -724,12 +715,12 @@ pub(crate) mod tests {
 
     #[test]
     fn unknown_board_unread_lamp_array_and_a_hand_added_device() {
-        let devices = devices(None, &[g502_row()], &BTreeMap::new());
+        let devices = devices(None, &[users_desk::mouse_row()], &BTreeMap::new());
         assert_eq!(devices.len(), 3, "a Corne-shaped split stands in");
         assert_eq!(devices[2].kind, DeviceKind::Other);
         assert_eq!(devices[2].lights.len(), 1, "one light until it is read");
         // A board added by hand: zones without positions.
-        let mut shelf = row_from_catalog(0x103c, 0x84fd);
+        let mut shelf = users_desk::catalog_row((0x103c, 0x84fd));
         shelf.key = "1234:5678".into();
         shelf.size = None;
         shelf.zone_positions = vec![None; 5];

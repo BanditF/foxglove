@@ -231,8 +231,12 @@ zones = [
             .clone()
     }
 
-    /// The case board's row, as if a driver drove it: its catalog entry says `protocol =
-    /// "none"`, and a fake driver stands in, so it shows (and is placed) as a driven board.
+    /// The case board's row as if a driver drove it (the fake driver). Its catalog entry says
+    /// `protocol = "none"`, which the worker shows as "not controllable yet" and scenes skip
+    /// (`pc_lights`' second-desk test checks that). `Control::Driver(Protocol::None)` is the
+    /// stand-in for "some driver Foxglove has that isn't the OMEN one": the room places it and
+    /// the page shows it as driven, so the suites test the case's data and not the driver's
+    /// name. Never a state the app makes itself.
     pub(crate) fn case_row() -> Row {
         row(&case_entry(), Control::Driver(Protocol::None))
     }
@@ -310,6 +314,7 @@ zones = [
     }
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 
