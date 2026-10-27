@@ -372,18 +372,35 @@ pub fn profile_changed() {
     }
 }
 
-/// The wallpapers' looks changed (#562, the wallpaper service's first gather or a wallpaper
-/// added or removed): a running scene takes the chosen look again, so a wallpaper look started
-/// before its wallpaper was found gets its palette, name and right-screen art.
+/// The wallpapers' looks changed (#562, a wallpaper found, added or removed). A wallpaper look
+/// the Scenes page started before its wallpaper was found ran as "Custom scene" with the
+/// fallback palette and no art: it takes its palette, name and right-screen art now.
 pub fn wallpapers_changed() {
-    if super::scene_run::running().is_none() {
+    let Some((running, _)) = super::scene_run::running() else {
+        return;
+    };
+    // The page's look, unsaved edits included (a drag isn't undone); the saved one when the
+    // page hasn't loaded it.
+    let page = STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|st| !st.reload)
+        .map(|st| st.chosen.clone());
+    let chosen = page.unwrap_or_else(looks::load_chosen);
+    if !restyle_on_wallpapers(&running, looks::wallpaper_look(&chosen.look).is_some()) {
         return;
     }
-    let chosen = looks::load_chosen();
     let saved = looks::load_saved().presets;
     let room = super::scene_room::room();
     super::scene_run::set_effect(&scene_name(&chosen.look, &saved), chosen.look.effect(&room));
     show_art(&chosen);
+}
+
+/// Only a scene that ran under the page's unnamed fallback while its look is a wallpaper's
+/// is restyled: never the demo scene, a named preset or the user's own look.
+fn restyle_on_wallpapers(running: &str, chosen_is_wallpaper_look: bool) -> bool {
+    running == CUSTOM_SCENE && chosen_is_wallpaper_look
 }
 
 /// A profile's "Start with this profile" starts its scene.
@@ -433,10 +450,13 @@ fn wake_on_return(ctx: &egui::Context) {
     });
 }
 
+/// The name a look runs under when no preset has it.
+const CUSTOM_SCENE: &str = "Custom scene";
+
 /// The name a look runs under: its preset's, or "Custom scene".
 fn scene_name(look: &Look, saved: &[Preset]) -> String {
     looks::named(look, &looks::built_in(), saved)
-        .unwrap_or("Custom scene")
+        .unwrap_or(CUSTOM_SCENE)
         .to_string()
 }
 
@@ -1682,6 +1702,22 @@ pub(crate) mod tests {
         });
         out.textures_delta.clear();
         text_at(&out.shapes, label).is_some()
+    }
+
+    /// Wallpapers found late restyle only a page scene that ran unnamed with a wallpaper look
+    /// saved: never the demo, a preset or the user's own look (#562).
+    #[test]
+    fn only_an_unnamed_wallpaper_look_is_restyled_when_wallpapers_change() {
+        assert!(restyle_on_wallpapers(CUSTOM_SCENE, true));
+        assert!(
+            !restyle_on_wallpapers(CUSTOM_SCENE, false),
+            "the user's own look"
+        );
+        assert!(
+            !restyle_on_wallpapers("demo scanline", true),
+            "the demo scene"
+        );
+        assert!(!restyle_on_wallpapers("Reef drift", true), "already named");
     }
 
     /// With no wallpaper that describes itself, only the effects show (#562).

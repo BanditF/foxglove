@@ -570,7 +570,9 @@ pub fn scenes() -> Arc<Scenes> {
 /// The wallpaper service gathered `s`; true when it differs from before.
 pub fn set_scenes(s: Scenes) -> bool {
     let mut g = SCENES.lock().unwrap_or_else(|e| e.into_inner());
-    if g.as_deref() == Some(&s) {
+    // Nothing gathered yet counts as none: an empty first gather is no change.
+    let before = g.get_or_insert_with(|| Arc::new(first_scenes()));
+    if **before == s {
         return false;
     }
     *g = Some(Arc::new(s));
