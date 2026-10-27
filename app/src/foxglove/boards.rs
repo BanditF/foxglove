@@ -155,14 +155,21 @@ fn lamps_problem(board: &Board) -> Option<String> {
             l.parts, l.lamps
         ));
     }
-    if l.lamp_parts(board.halves).is_none() {
-        return Some(format!(
-            "its {} lamps are more than a frame addresses ({}): the old firmware's count instead",
-            l.lamps,
-            digitalis::lamps::MAX_LAMPS
-        ));
+    if l.lamp_parts(board.halves).is_some() {
+        return None;
     }
-    None
+    let given: Vec<usize> = l.parts.iter().map(|&n| usize::from(n)).collect();
+    let refused = if given.is_empty() {
+        LampParts::even(usize::from(l.lamps), usize::from(board.halves.max(1))).err()
+    } else {
+        LampParts::new(&given).err()
+    };
+    refused.map(|e| {
+        format!(
+            "its {} lamps on {} half(s) don't make a frame ({e}): the old firmware's count instead",
+            l.lamps, board.halves
+        )
+    })
 }
 
 /// [`Lighting::led_map`] for an LED map confirmed on the board.
@@ -529,6 +536,8 @@ mod tests {
         (l.lamps, l.parts) = (300, Vec::new());
         assert_eq!(counts(&b), [21, 21], "past a frame: the old firmware's");
         assert!(lamps_problem(&b).is_some_and(|p| p.contains("300")));
+        b.lighting.as_mut().unwrap().lamps = 0;
+        assert!(lamps_problem(&b).is_some_and(|p| p.contains("at least one part")));
         b.halves = 1;
         b.lighting = None;
         assert_eq!(counts(&b), [42], "one strip on a one-piece board");
