@@ -621,6 +621,12 @@ pub fn frame(start: u8, colours: &[[u8; 3]]) -> Vec<Vec<u8>> {
         .collect()
 }
 
+/// Whether `r` is SET_FRAME's hand-back event (D7 8C with byte 6 = 1), which the keyboard sends
+/// on its own after its timeout, a USB unplug or an endpoint change.
+pub fn is_frame_event(r: &[u8]) -> bool {
+    is_reply(r, SETTINGS, settings::FRAME) && r.get(6).is_some_and(|&e| e != 0)
+}
+
 /// FRAME RELEASE: both halves go back to their own effect.
 pub fn frame_release() -> Vec<u8> {
     vec![SETTINGS, settings::FRAME, frame::RELEASE]
@@ -1046,6 +1052,9 @@ mod tests {
         let back = FrameReply::parse(&r);
         assert!(!back.held() && back.event);
         assert_eq!(back.right, FrameRight::Unsupported);
+        assert!(is_frame_event(&r));
+        r[6] = 0;
+        assert!(!is_frame_event(&r));
     }
 
     #[test]

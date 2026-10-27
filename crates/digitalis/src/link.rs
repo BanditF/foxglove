@@ -585,6 +585,11 @@ fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
         // A reply goes to its request. Unasked art STATUS may be a firmware notification;
         // other replies stay private. A key held after a timeout drops the late reply.
         let key = (r[0], r[1] & 0x7f);
+        if protocol::is_frame_event(r) {
+            // SET_FRAME's hand-back event is never the answer to a frame: report observers
+            // (above) see it, and the request in flight keeps waiting for its own reply.
+            return;
+        }
         if requests.held.remove(&key).is_some() {
             return;
         }
@@ -899,6 +904,29 @@ mod tests {
         assert_eq!(fake.written().len(), 2, "grace expiry must wake the writer");
         fake.push(&[protocol::ART, 0x80 | art::STATUS, 2]);
         assert_eq!(second.join().unwrap().unwrap(), 2);
+    }
+
+    #[test]
+    fn a_frame_hand_back_event_is_not_the_reply_to_a_frame() {
+        let key = (protocol::SETTINGS, protocol::settings::FRAME);
+        let (tx, rx) = mpsc::channel();
+        let mut requests = Requests::default();
+        requests.in_flight.insert(
+            key,
+            Request {
+                key,
+                tx,
+                deadline: Instant::now() + WAIT,
+            },
+        );
+        let fake = Fake::default();
+        let l = link(&fake);
+        let event = report(&[protocol::SETTINGS, 0x8C, 0, 0, 30, 1, 1]);
+        dispatch(&event, &mut requests, &l.shared);
+        assert!(rx.try_recv().is_err(), "the event isn't the reply");
+        let reply = report(&[protocol::SETTINGS, 0x8C, 0, 3, 30, 1, 0]);
+        dispatch(&reply, &mut requests, &l.shared);
+        assert_eq!(rx.recv_timeout(WAIT).unwrap(), reply);
     }
 
     #[test]

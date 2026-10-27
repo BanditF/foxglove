@@ -980,7 +980,9 @@ static void rgb_sync_cb(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
     bool on;
     bool synced = true;
-    if (zmk_rgb_underglow_get_state(&on) == 0) {
+    // Under the PC's frames the user's on/off, not ZMK's: a right that can't draw frames keeps
+    // its own effect (and one that can comes back lit).
+    if (rgb_idle_get_on(&on) == 0) {
         uint8_t buf[sizeof(rgb_sent)] = {ART_RELAY_RGB, on, rgb_idle_sync()};
         uint8_t len = 3;
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
@@ -1142,7 +1144,10 @@ void art_relay_rgb_verify(void) {
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
 #define LAMPS_RETRY K_MSEC(100)
-#define LAMPS_RETRIES 3
+#define LAMPS_RETRIES 3 // a frame: the next frame heals a lost one anyway
+// A hand-back has no next frame to heal it: the RGB sync's budget (10 x 1 s).
+#define LAMPS_BACK_RETRY RGB_RETRY
+#define LAMPS_BACK_RETRIES RGB_RETRIES
 #define LAMPS_STATUS_VERSION 7 // right status version with ART_RELAY_LAMPS / LAMP_HOST
 #define LAMPS_REQ_MAX 5        // lamps in one write request (write_req copies up to 20 bytes)
 BUILD_ASSERT(3 + 3 * LAMPS_REQ_MAX <= 20, "write_req's copy holds the last chunk");
@@ -1250,8 +1255,8 @@ static void lamps_cb(struct k_work *work) {
         return;
     }
     lamps_busy = 0;
-    if (err && lamps_tries++ < LAMPS_RETRIES) {
-        k_work_reschedule_for_queue(&relay_q, dwork, LAMPS_RETRY);
+    if (err && lamps_tries++ < (host ? LAMPS_RETRIES : LAMPS_BACK_RETRIES)) {
+        k_work_reschedule_for_queue(&relay_q, dwork, host ? LAMPS_RETRY : LAMPS_BACK_RETRY);
         return;
     }
     lamps_tries = 0;

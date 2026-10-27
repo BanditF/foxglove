@@ -96,9 +96,18 @@ static void speed_ready_cb(struct k_work *work) {
 }
 static K_WORK_DELAYABLE_DEFINE(speed_ready_work, speed_ready_cb);
 
+int rgb_idle_get_on(bool *on) {
+    if (atomic_get(&host_drawn)) {
+        // ZMK's underglow is off under the PC's frames: say what hand-back will show.
+        *on = following ? remote_on : wanted && active();
+        return 0;
+    }
+    return zmk_rgb_underglow_get_state(on);
+}
+
 void rgb_idle_state(struct rgb_idle_wire *out) {
     bool on = false;
-    zmk_rgb_underglow_get_state(&on);
+    rgb_idle_get_on(&on);
     struct zmk_led_hsb hsb = zmk_rgb_underglow_calc_hue(0);
     *out = (struct rgb_idle_wire){
         .on = on,
@@ -206,9 +215,20 @@ void rgb_idle_remote(bool on, bool follow) {
     k_work_submit(&apply_work);
 }
 
+// Hand-back clears the flag on the system queue, where check_cb and apply_cb run, so a key's
+// check can't see ZMK still off without the flag and save that as the user's choice.
+static void host_back_cb(struct k_work *work) {
+    atomic_set(&host_drawn, 0);
+    apply_cb(work);
+}
+static K_WORK_DEFINE(host_back_work, host_back_cb);
+
 void rgb_idle_host_control(bool on) {
-    atomic_set(&host_drawn, on);
-    k_work_submit(&apply_work);
+    if (on) {
+        atomic_set(&host_drawn, 1); // at once: nothing may turn ZMK's underglow back on
+        return;
+    }
+    k_work_submit(&host_back_work);
 }
 
 void rgb_idle_remote_lost(void) {

@@ -175,6 +175,9 @@
  *      acknowledged frame go (one colour as a fill), the last write acknowledged, so a static
  *      frame sends nothing.
  *      Status: 0 ok, 4 not built in, 5 bad request (count > 9, short report, lamps past the end).
+ *      While frames hold, RGB_STATE and the right's sync report the user's on/off (what comes
+ *      back), not ZMK's off; an &rgb_ug key that turns ZMK's underglow on mixes its effect with
+ *      the frames until RELEASE.
  *      Owner: 0 none (the keyboard's own effect), 3 the host link (1 and 2 are kept for a HID
  *      LampArray over USB and BLE). Right: 0 no relay link yet, 1 the right draws frames,
  *      2 the right's firmware can't (it keeps its own effect).

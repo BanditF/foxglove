@@ -102,12 +102,18 @@ pub fn enter_bootloader(t: &impl Transport, half: u8) -> Result<()> {
 /// SET_FRAME (#272): colours for lamps `start..` (0-20 left, 21-41 right), drawn at once on the
 /// left and within 100 ms on the right. Chunks go without a reply; the last one shows the frame
 /// and waits for the keyboard's answer, so a caller that sends its next frame after this returns
-/// keeps one frame in flight. Lamps not sent keep their colour.
+/// keeps one frame in flight. Lamps not sent keep their colour. The keyboard's hand-back event
+/// ([`protocol::is_frame_event`]) reaches [`crate::link::Link::subscribe_reports`] observers.
 pub fn set_frame(
     t: &impl Transport,
     start: u8,
     colours: &[[u8; 3]],
 ) -> Result<protocol::FrameReply> {
+    anyhow::ensure!(
+        usize::from(start) + colours.len() <= 2 * protocol::frame::HALF_LAMPS,
+        "lamps {start}..{} are past the keyboard's 42",
+        usize::from(start) + colours.len()
+    );
     let reports = protocol::frame(start, colours);
     let (last, chunks) = reports
         .split_last()
@@ -259,6 +265,8 @@ mod tests {
             [(0, false), (9, false), (18, false), (27, false), (36, true)]
         );
         assert!(set_frame(&t, 0, &[]).is_err());
+        assert!(set_frame(&t, 40, &[[1, 2, 3]; 3]).is_err(), "past lamp 41");
+        assert_eq!(t.0.borrow().len(), 5, "nothing sent for a bad frame");
         assert!(!release_frame(&t).unwrap().held());
     }
 
