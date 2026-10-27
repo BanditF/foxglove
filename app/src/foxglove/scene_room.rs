@@ -245,11 +245,7 @@ fn lamp_array(row: &Row, layout: Option<&LampLayout>) -> DeviceInfo {
     let Some(layout) = layout.filter(|l| !l.lamps.is_empty()) else {
         return DeviceInfo::whole(id, row.name.clone(), DeviceKind::Other);
     };
-    let kind = match layout.kind {
-        2 => DeviceKind::Mouse,
-        7 => DeviceKind::Case,
-        _ => DeviceKind::Other,
-    };
+    let kind = lamp_array_kind(layout.kind);
     let positioned = layout.lamps.iter().any(|&[x, y]| x != 0.0 || y != 0.0);
     let [w, h] = layout.size_mm;
     DeviceInfo {
@@ -265,6 +261,19 @@ fn lamp_array(row: &Row, layout: Option<&LampLayout>) -> DeviceInfo {
                 LightSpec::point(i.to_string(), positioned.then_some(Point::new(x, y)))
             })
             .collect(),
+    }
+}
+
+/// Where a LampArray goes in the room, by the kind it tells Windows (`LampArrayKind`), never
+/// by vendor or model: a mouse beside the keyboard, a chassis beside the monitors, anything
+/// else (a strip, a headset, a second keyboard, a speaker) with the other devices.
+fn lamp_array_kind(kind: u32) -> DeviceKind {
+    const MOUSE: u32 = 2;
+    const CHASSIS: u32 = 7;
+    match kind {
+        MOUSE => DeviceKind::Mouse,
+        CHASSIS => DeviceKind::Case,
+        _ => DeviceKind::Other,
     }
 }
 
@@ -595,6 +604,54 @@ pub(crate) mod tests {
             "{}",
             room.summary()
         );
+    }
+
+    /// Any Dynamic Lighting device is placed by its own kind and lamps, whoever made it.
+    #[test]
+    fn any_lamparray_is_placed_by_its_kind_not_its_vendor() {
+        let row = |key: &str, name: &str| Row {
+            key: key.into(),
+            name: name.into(),
+            ..g502_row()
+        };
+        let rows = [
+            row("2a5f:0101", "Desk headset"),
+            row("1209:a0a0", "Some mouse"),
+            row("1209:b0b0", "Unread strip"),
+        ];
+        let mut lamps = BTreeMap::new();
+        // A headset (kind 11) with 8 lamps round its cups.
+        lamps.insert(
+            (0x2a5f, 0x0101),
+            LampLayout {
+                kind: 11,
+                size_mm: [180.0, 200.0],
+                lamps: (0..8).map(|i| [10.0 + 20.0 * i as f32, 100.0]).collect(),
+            },
+        );
+        // A mouse from another maker: the mouse's place, as any mouse.
+        lamps.insert(
+            (0x1209, 0xa0a0),
+            LampLayout {
+                kind: 2,
+                size_mm: [60.0, 120.0],
+                lamps: vec![[30.0, 20.0]],
+            },
+        );
+        let devices = devices(None, &rows, &lamps);
+        let by_id = |id: &str| devices.iter().find(|d| d.id == id).unwrap();
+        let headset = by_id("light:2a5f:0101");
+        assert_eq!(headset.kind, DeviceKind::Other);
+        assert_eq!(headset.lights.len(), 8);
+        assert_eq!(headset.lights[7].at, Some(Point::new(150.0, 100.0)));
+        assert_eq!(headset.size, Some(Point::new(180.0, 200.0)));
+        assert_eq!(by_id("light:1209:a0a0").kind, DeviceKind::Mouse);
+        // Not read yet: one light, still in the room.
+        assert_eq!(by_id("light:1209:b0b0").lights.len(), 1);
+        let room = RoomMap::build(&[], &devices, &Layout::default());
+        for id in ["light:2a5f:0101", "light:1209:a0a0", "light:1209:b0b0"] {
+            assert!(room.device(id).is_some(), "{id} placed");
+        }
     }
 
     #[test]

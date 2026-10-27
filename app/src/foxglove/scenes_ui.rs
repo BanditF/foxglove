@@ -45,7 +45,8 @@ pub struct View {
     pub keyboard_lit: bool,
     /// It takes SET_FRAME frames (#529): each half (or LED) its own colour, not one for both.
     pub keyboard_frames: bool,
-    /// The room ids of the other devices a scene lights (boards with a driver).
+    /// The room ids of the other devices a scene lights (boards with a driver, Dynamic
+    /// Lighting devices).
     pub lit: Vec<String>,
     pub look: Look,
     pub saved: Vec<Preset>,
@@ -73,6 +74,9 @@ pub struct View {
     /// Its profile ships a map no one has checked yet: scenes use it, the prompt asks for the
     /// dot test once.
     pub leds_shipped: bool,
+    /// What Windows lets the scene do with Dynamic Lighting devices (#503), when it limits it:
+    /// the text, and whether a device stopped (shown as a warning).
+    pub lamp_note: Option<(String, bool)>,
 }
 
 /// The Triggers card's three boxes (#489).
@@ -161,6 +165,8 @@ struct State {
     saved: Saved,
     room: RoomMap,
     lit: Vec<String>,
+    /// The room ids of the Dynamic Lighting devices among `lit`.
+    lamp_ids: Vec<String>,
     keyboard_lit: bool,
     keyboard_frames: bool,
     moved: bool,
@@ -237,6 +243,7 @@ fn show(ui: &mut egui::Ui) {
         leds_placed: super::led_map::checked(super::boards::current().as_ref()),
         leds_shipped: super::led_map::state(super::boards::current().as_ref())
             == super::led_map::MapState::Shipped,
+        lamp_note: lamp_note(st),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
@@ -256,6 +263,7 @@ fn refresh(slot: &mut Option<State>, frame: u64) -> &mut State {
         saved: looks::load_saved(),
         room: RoomMap::default(),
         lit: Vec::new(),
+        lamp_ids: Vec::new(),
         keyboard_lit: false,
         keyboard_frames: false,
         moved: false,
@@ -288,12 +296,37 @@ fn rebuild_room(st: &mut State) {
         super::devices::bus().facts().get("keyboard.connected") == Some(Value::Bool(true));
     // Never looks for a keyboard here (the UI thread): what the one found last said.
     st.keyboard_frames = st.keyboard_lit && super::devices::frames();
-    st.lit = super::pc_lights::snapshot()
-        .devices
-        .into_iter()
-        .filter(|r| matches!(r.control, foxglove_devices::pc_lighting::Control::Driver(_)))
-        .map(|r| format!("light:{}", r.key))
+    use foxglove_devices::pc_lighting::Control;
+    let rows = super::pc_lights::snapshot().devices;
+    let ids = |lit: fn(&Control) -> bool| -> Vec<String> {
+        rows.iter()
+            .filter(|r| lit(&r.control))
+            .map(|r| format!("light:{}", r.key))
+            .collect()
+    };
+    st.lit = ids(|c| matches!(c, Control::Driver(_) | Control::LampArray));
+    st.lamp_ids = ids(|c| *c == Control::LampArray);
+}
+
+/// The page's line about Dynamic Lighting devices: which ones Windows took back from the running
+/// scene and why, or that they follow it only from the front without package identity.
+fn lamp_note(st: &State) -> Option<(String, bool)> {
+    let waiting: Vec<String> = super::scene_run::lamps()
+        .waiting
+        .iter()
+        .map(|key| {
+            let id = format!("light:{key}");
+            st.room
+                .device(&id)
+                .map_or_else(|| key.clone(), |d| d.name.clone())
+        })
         .collect();
+    let text = super::scene_lamps::note(
+        &waiting,
+        !st.lamp_ids.is_empty(),
+        super::scene_lamps::identity(),
+    )?;
+    Some((text, !waiting.is_empty()))
 }
 
 /// The profile changed (a program rule or by hand), whatever page shows (or none); the page
@@ -669,6 +702,11 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
     room_map(ui, v, draft, out);
     ui.add_space(6.0);
     ui.add(egui::Label::new(RichText::new(legend(v)).color(p.muted)).wrap());
+    if let Some((text, stopped)) = &v.lamp_note {
+        let color = if *stopped { p.warn } else { p.muted };
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
+    }
     if v.keyboard_frames && !v.leds_placed {
         let (label, hint, text, color) = if v.leds_shipped {
             (
@@ -1385,6 +1423,7 @@ pub(crate) mod tests {
             keep_on_keyboard: false,
             leds_placed: true,
             leds_shipped: false,
+            lamp_note: None,
         }
     }
 
@@ -1413,6 +1452,7 @@ pub(crate) mod tests {
             keep_on_keyboard: false,
             leds_placed: false,
             leds_shipped: false,
+            lamp_note: None,
         }
     }
 
