@@ -98,6 +98,10 @@ windows = { version = "0.62.2", features = [
     "Win32_System_EventLog",
     # Foxglove (#423): is OMEN Light Studio running? And LampArray attributes.
     "Devices_Lights",
+    # Foxglove (#504): controllers' batteries.
+    "Gaming_Input",
+    "Devices_Power",
+    "System_Power",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_RemoteDesktop",
     "Win32_System_Threading",

@@ -172,13 +172,8 @@ impl Controls {
         if profiles != self.profiles_shown {
             while self.profile.remove_at(0).is_some() {}
             let (names, active) = &profiles;
-            let base = CheckMenuItem::with_id(
-                "fox-profile:",
-                "Base settings",
-                true,
-                active.is_none(),
-                None,
-            );
+            let base =
+                CheckMenuItem::with_id("fox-profile:", "Default", true, active.is_none(), None);
             let _ = self.profile.append(&base);
             for name in names {
                 let item = CheckMenuItem::with_id(

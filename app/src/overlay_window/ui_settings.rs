@@ -405,9 +405,9 @@ impl OverlayApp {
                             .unwrap_or_else(|| format!("Layer {layer}"))
                     };
 
-                    // Foxglove (#390): the window theme is in "Theme and updates".
+                    // Foxglove (#390): the window theme is in "Appearance".
                     let draft = &mut self.settings.draft;
-                    Self::theme_color_entry(ui, "Font color", &mut draft.theme.font_color);
+                    Self::theme_color_entry(ui, "Text colour", &mut draft.theme.font_color);
 
                     let mut layer_table = |ui: &mut egui::Ui, id: &str, layers: &[usize]| {
                         egui::Grid::new(id)

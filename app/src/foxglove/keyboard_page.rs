@@ -54,8 +54,12 @@ pub struct View {
     pub board: BoardView,
     /// The low-battery heads-up is on (#372).
     pub low_battery_notice: bool,
-    /// "Update keyboard" and its steps (#382).
+    /// "Update firmware" and its steps (#382).
     pub update: super::firmware_update::View,
+    /// The other devices' batteries (#504).
+    pub devices: Vec<super::peripherals::Peripheral>,
+    /// Their low-battery heads-up is on (#504).
+    pub device_notice: bool,
 }
 
 /// What a click on the page asks for.
@@ -65,8 +69,10 @@ pub enum Intent {
     Action(Action),
     /// Turns the low-battery heads-up on or off (#372).
     LowBatteryNotice(bool),
-    /// A click in "Update keyboard" (#382).
+    /// A click in "Update firmware" (#382).
     Update(super::firmware_update::Intent),
+    /// Turns the other devices' low-battery heads-up on or off (#504).
+    DeviceNotice(bool),
 }
 
 /// The firmware card's lines for the cached builds.
@@ -147,6 +153,8 @@ pub fn view(ctx: &egui::Context) -> View {
         board: BoardView::default(),
         low_battery_notice: super::battery::notices_on(),
         update: super::firmware_update::view(),
+        devices: super::peripherals::list(),
+        device_notice: super::battery::device_notices_on(),
     }
 }
 
@@ -178,6 +186,8 @@ pub fn top(ui: &mut egui::Ui) -> Option<Page> {
 /// The keyboard's cards, acting on their clicks.
 fn show(ui: &mut egui::Ui) {
     super::firmware_update::update_dialog(ui.ctx());
+    // #504: the controllers' levels stay fresh while the Devices card is on screen.
+    super::peripherals::visible(ui.ctx());
     let view = view(ui.ctx());
     match draw(ui, &view) {
         Some(Intent::AskFirmwareAgain) => {
@@ -199,6 +209,11 @@ fn show(ui: &mut egui::Ui) {
             }
         }
         Some(Intent::Update(i)) => super::firmware_update::act(i, ui.ctx()),
+        Some(Intent::DeviceNotice(on)) => {
+            if let Err(e) = super::battery::set_device_notices(on) {
+                eprintln!("Foxglove: can't save the battery setting: {e}");
+            }
+        }
         None => {}
     }
 }
@@ -234,12 +249,16 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
             ui.add_space(4.0);
             if v.can_ask_again {
                 ui.horizontal(|ui| {
-                    if ui.button("Ask the keyboard again").clicked() {
+                    if ui
+                        .button("Refresh")
+                        .on_hover_text("Ask both halves for their firmware again")
+                        .clicked()
+                    {
                         intent = Some(Intent::AskFirmwareAgain);
                     }
                 });
             }
-            // #382: "Update keyboard…", then its confirm step and progress, in this card.
+            // #382: "Update firmware…", then its confirm step and progress, in this card.
             if let Some(i) = super::firmware_update::draw(ui, &v.update) {
                 intent = Some(Intent::Update(i));
             }
@@ -253,14 +272,14 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
                 intent = Some(Intent::LowBatteryNotice(on));
             }
         });
-        card(&mut cols[1], "Actions", |ui| {
+        card(&mut cols[1], "Key actions", |ui| {
             if let Some(a) = actions(ui, v) {
                 intent = Some(Intent::Action(a));
             }
         });
     });
     ui.add_space(10.0);
-    card(ui, "Link to this PC", |ui| {
+    card(ui, "Connection", |ui| {
         for (what, how) in &v.link.rows {
             row(ui, what, how.as_str());
         }
@@ -271,7 +290,55 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
             ui.label(fix);
         }
     });
+    ui.add_space(10.0);
+    if let Some(i) = devices(ui, v) {
+        intent = Some(i);
+    }
     ui.add_space(6.0);
+    intent
+}
+
+/// Foxglove (#504): the Devices card, the batteries of what else is connected to this PC.
+fn devices(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
+    let mut intent = None;
+    card(ui, "Devices", |ui| {
+        let p = theme::palette(ui);
+        ui.label(
+            RichText::new(
+                "Batteries of the Bluetooth devices and game controllers connected to this PC.",
+            )
+            .color(p.muted),
+        );
+        ui.add_space(4.0);
+        if v.devices.is_empty() {
+            ui.label(RichText::new("No connected device reports its battery.").color(p.muted));
+        }
+        for d in &v.devices {
+            let tone = if d.percent < super::battery::THRESHOLDS[0] && !d.charging {
+                Tone::Warn
+            } else {
+                Tone::Plain
+            };
+            row(
+                ui,
+                &d.name,
+                RichText::new(super::peripherals::level_text(d)).color(tone_color(ui, tone)),
+            )
+            .on_hover_text(match d.kind {
+                super::peripherals::Kind::Bluetooth => "Bluetooth",
+                super::peripherals::Kind::Controller => "Game controller",
+            });
+        }
+        ui.add_space(4.0);
+        let mut on = v.device_notice;
+        if ui
+            .checkbox(&mut on, "Tell me when a device's battery runs low")
+            .on_hover_text("One notification below 15% and one below 5%, as for the halves.")
+            .changed()
+        {
+            intent = Some(Intent::DeviceNotice(on));
+        }
+    });
     intent
 }
 
@@ -703,7 +770,7 @@ pub mod tests {
                 rows: vec![
                     ("Left half", "on USB".into()),
                     ("Bluetooth to this PC", "connected".into()),
-                    ("Bluetooth profile", "1 · this PC".into()),
+                    ("Bluetooth slot", "1 · this PC".into()),
                 ],
                 unplug_fix: None,
             },
@@ -721,6 +788,8 @@ pub mod tests {
             board: sample_board(),
             low_battery_notice: true,
             update: super::super::firmware_update::tests::sample(),
+            devices: super::super::peripherals::tests::sample(),
+            device_notice: true,
         }
     }
 

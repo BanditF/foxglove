@@ -378,10 +378,10 @@ fn keypeek_groups(ui: &mut egui::Ui) {
             });
     });
     section(ui, "Theme", |ui| {
-        // The window theme is in "Theme and updates" since #390.
+        // The window theme is in "Appearance" since #390.
         let mut white = Color32::WHITE;
         ui.horizontal(|ui| {
-            ui.label("Font color");
+            ui.label("Text colour");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.color_edit_button_srgba(&mut white);
             });
@@ -445,7 +445,7 @@ fn widget_sheet(ctx: &egui::Context, focus: bool) {
             theme::picker(ui);
             theme::card(ui).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.label(theme::heading(ui, "Underglow"));
+                ui.label(theme::heading(ui, "Keyboard"));
                 ui.label(theme::caps_label(ui, "Effect"));
                 ui.horizontal(|ui| {
                     for (i, e) in ["Solid", "Breathe", "Spectrum", "Swirl"].iter().enumerate() {
@@ -460,7 +460,7 @@ fn widget_sheet(ctx: &egui::Context, focus: bool) {
                 ui.checkbox(&mut true, "Right half's lights follow the left");
                 ui.checkbox(&mut false, "Follow the Windows accent colour");
                 ui.horizontal(|ui| {
-                    let r = ui.button("Ask the keyboard again");
+                    let r = ui.button("Refresh");
                     if focus {
                         r.request_focus();
                     }
@@ -519,7 +519,7 @@ fn foxglove_groups(ui: &mut egui::Ui) {
         ui.checkbox(&mut true, "Use VIA keyboards");
         ui.horizontal(|ui| {
             let _ = ui.button("Add VIA definition (JSON)…");
-            let _ = ui.button("Rescan");
+            let _ = ui.button("Refresh");
         });
     });
     // The real Plugins page (#389), drawn from its preview sample.
@@ -750,16 +750,16 @@ fn long_samples() -> Samples {
     s.keyboard.link.rows = vec![
         (
             "Left half",
-            "on USB and on Bluetooth profile 4 (another PC) at the same time".into(),
+            "on USB and on Bluetooth slot 4 (another PC) at the same time".into(),
         ),
         (
             "Bluetooth to this PC",
-            "connected, but this PC is paired on profile 2 of 5".into(),
+            "connected, but this PC is paired on slot 2 of 5".into(),
         ),
     ];
     s.keyboard.link.unplug_fix = Some(
-        "Unplugging now leaves the keyboard unable to type - select profile 2: hold SYSTEM \
-         (both middle thumbs) and Tab, then press the profile's key on the number row"
+        "Unplugging now leaves the keyboard unable to type - select Bluetooth slot 2: hold SYSTEM \
+         (both middle thumbs) and Tab, then press the slot's key on the number row"
             .into(),
     );
     s
@@ -946,7 +946,7 @@ fn settings_page_renders() {
         count(&img, DARK.surface) > (img.width() * img.height()) as usize / 10,
         "cards"
     );
-    // The theme picker's selected pill sits in "Theme and updates".
+    // The theme picker's selected pill sits in "Appearance".
     assert!(count(&img, DARK.selected_fill) > 100, "the Dark pill");
 }
 
@@ -1209,7 +1209,11 @@ fn scenes_page_renders() {
     let mut s = Samples::full();
     s.scenes = (
         View {
-            look: crate::foxglove::scene_looks::built_in()[3].look.clone(),
+            look: crate::foxglove::scene_looks::built_in()
+                .into_iter()
+                .find(|p| p.name == "Steel sweep")
+                .unwrap()
+                .look,
             running: None,
             ..tests::sample()
         },
@@ -1229,6 +1233,129 @@ fn scenes_page_renders() {
     assert!(count(&with, DARK.surface) > (with.width() * with.height()) as usize / 20);
     assert_ne!(with, without);
     assert_ne!(with, dragging);
+}
+
+/// The Bandit wallpapers' looks on the Scenes page (#488): one running with "Right screen too"
+/// and its wallpaper on screen, and one picked with nothing running, at the window's default
+/// size (one column).
+#[test]
+fn scenes_wallpaper_presets_render() {
+    use crate::foxglove::scene_looks::scenes;
+    use crate::foxglove::scenes_ui::{tests, View};
+    use crate::foxglove::shell::Page;
+    let look = |id: &str| {
+        scenes()
+            .looks
+            .iter()
+            .find(|w| w.wallpaper == id)
+            .unwrap()
+            .preset
+            .clone()
+    };
+    let mut s = Samples::full();
+    let fury = look("fury-chase");
+    s.scenes.0 = View {
+        look: fury.look.clone(),
+        running: Some(fury.name.clone()),
+        with_art: true,
+        on_screen: vec!["fury-chase".into()],
+        t: foxglove_scene::SceneTime(600),
+        ..tests::sample()
+    };
+    let running = shell_preview_with(Page::Scenes, &s, 1100.0);
+    keep("ui-scenes-presets-running.png", &running);
+    let moon = look("hearth-moongarden");
+    s.scenes.0 = View {
+        look: moon.look.clone(),
+        on_screen: vec!["hearth-moongarden".into(), "hud".into()],
+        ..tests::sample_none()
+    };
+    let picked = shell_preview_with(Page::Scenes, &s, 1100.0);
+    keep("ui-scenes-presets-picked.png", &picked);
+    assert_ne!(running, picked);
+}
+
+/// The Triggers card (#489) under Effect: the Game profile starting its scene with key
+/// ripples on, and the base settings with every box off.
+#[test]
+fn scenes_triggers_render() {
+    use crate::foxglove::shell::Page;
+    let on = shell_preview_with(Page::Scenes, &Samples::full(), 1200.0);
+    let off = shell_preview_with(Page::Scenes, &Samples::none(), 1200.0);
+    keep("ui-scenes-triggers.png", &on);
+    keep("ui-scenes-triggers-none.png", &off);
+    assert_ne!(on, off);
+}
+
+/// The review sheet for #488: each Bandit wallpaper's look rendered from the real effect code
+/// over a room (a monitor above the keyboard), six moments of one cycle per row, and a GIF of
+/// each look's cycle. Written only with FOXGLOVE_UI_PREVIEW_DIR set.
+#[test]
+fn scenes_wallpaper_preset_sheet() {
+    use crate::foxglove::scene_looks::scenes;
+    use foxglove_scene::{Point, Rgb, SceneTime};
+    let Some(dir) = std::env::var_os("FOXGLOVE_UI_PREVIEW_DIR") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let room = crate::foxglove::scene_room::tests::sample_room();
+    let bounds = room.bounds;
+    let (w, h) = (
+        160u32,
+        (160.0 * bounds.h / bounds.w).round().max(40.0) as u32,
+    );
+    let frame = |effect: &foxglove_scene::Effect, t: SceneTime| {
+        image::RgbaImage::from_fn(w, h, |x, y| {
+            let at = Point::new(
+                bounds.x + bounds.w * (x as f32 + 0.5) / w as f32,
+                bounds.y + bounds.h * (y as f32 + 0.5) / h as f32,
+            );
+            let Rgb([r, g, b]) = effect.colour(at, t, &bounds);
+            image::Rgba([r, g, b, 255])
+        })
+    };
+    let looks = &scenes().looks;
+    let gap = 6u32;
+    let cols = 6u32;
+    let mut sheet = image::RgbaImage::from_pixel(
+        cols * (w + gap) + gap,
+        looks.len() as u32 * (h + gap) + gap,
+        image::Rgba([0x09, 0x0a, 0x0c, 255]),
+    );
+    for (row, wl) in looks.iter().enumerate() {
+        let effect = wl.preset.look.effect(&room);
+        // One whole cycle (Drift's is four of its speed's periods).
+        let speed_ms = i64::from(crate::foxglove::scene_looks::period_ms(
+            wl.preset.look.speed,
+        ));
+        let period = match wl.preset.look.kind {
+            crate::foxglove::scene_looks::Kind::Drift => speed_ms * 4,
+            _ => speed_ms,
+        };
+        for c in 0..cols {
+            let t = SceneTime(period * i64::from(c) / i64::from(cols));
+            let img = frame(&effect, t);
+            image::imageops::overlay(
+                &mut sheet,
+                &img,
+                i64::from(gap + c * (w + gap)),
+                i64::from(gap + row as u32 * (h + gap)),
+            );
+        }
+        let path = dir.join(format!("ui-scenes-presets-{}.gif", wl.wallpaper));
+        let file = std::fs::File::create(&path).expect("create the gif");
+        let mut gif = image::codecs::gif::GifEncoder::new_with_speed(file, 10);
+        gif.set_repeat(image::codecs::gif::Repeat::Infinite)
+            .expect("loop the gif");
+        let n = 16;
+        let delay = image::Delay::from_numer_denom_ms((period / n) as u32, 1);
+        for k in 0..n {
+            let img = frame(&effect, SceneTime(period * k / n));
+            gif.encode_frame(image::Frame::from_parts(img, 0, 0, delay))
+                .expect("a gif frame");
+        }
+    }
+    keep("ui-scenes-presets-sheet.png", &sheet);
 }
 
 /// The preview asks for frames only while the Scenes page is drawn (#487): another page, with
@@ -1291,7 +1418,7 @@ fn battery_dim_renders() {
     }
 }
 
-/// The Lights page's "PC & peripherals" card (#423): the 45L with colours, the cooler and the
+/// The Lights page's "Other devices" card (#423): the 45L with colours, the cooler and the
 /// G502 with Light Studio running; then a fresh 45L matching the keyboard; then none found.
 #[test]
 fn pc_lights_render() {
@@ -1462,6 +1589,116 @@ fn battery_notice_switch_renders() {
     use crate::foxglove::shell::Page;
     let img = shell_preview_with(Page::Keyboard, &Samples::full(), 1060.0);
     keep("ui-372-battery-notice.png", &img);
+}
+
+/// The other devices' batteries (#504): the Keyboard page's Devices card with a mouse and a
+/// low controller, the same card with none, and the tray panel's Devices part.
+#[test]
+fn peripheral_batteries_render() {
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    let with = shell_preview_with(Page::Keyboard, &Samples::full(), 1300.0);
+    keep("ui-batteries-1-keyboard.png", &with);
+    let mut none = Samples::full();
+    none.keyboard.devices.clear();
+    let without = shell_preview_with(Page::Keyboard, &none, 1300.0);
+    keep("ui-batteries-2-none.png", &without);
+    // The low controller's level is amber.
+    assert!(count(&with, DARK.warn) > count(&without, DARK.warn));
+
+    let tray = |v: &crate::foxglove::tray_panel::View| {
+        let ctx = preview_ctx();
+        let size = egui::vec2(crate::foxglove::tray_panel::WIDTH + 40.0, 820.0);
+        render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
+            egui::Area::new(egui::Id::new("tray-panel-preview"))
+                .fixed_pos(egui::pos2(20.0, 20.0))
+                .show(ctx, |ui| {
+                    crate::foxglove::tray_panel::panel(
+                        ui,
+                        v,
+                        &mut Default::default(),
+                        &mut Vec::new(),
+                    );
+                });
+        })
+    };
+    let v = crate::foxglove::tray_panel::tests::sample();
+    let img = tray(&v);
+    keep("ui-batteries-3-tray.png", &img);
+    let bare = tray(&crate::foxglove::tray_panel::View {
+        devices: Vec::new(),
+        ..v
+    });
+    assert_ne!(img, bare, "the Devices part shows only with a device");
+    assert!(count(&img, DARK.warn) > count(&bare, DARK.warn));
+}
+
+/// The PC load layout (#506): the 1-bit panel as the keyboard gets it (enlarged 6×, one pixel a
+/// square), its first second (values not known yet), and the Change… list with it chosen.
+#[test]
+fn left_screen_stats_render() {
+    use foxglove_panel::render::{draw_stats, Panel};
+    use foxglove_panel::stats::Stats;
+    let panel = |stats: &Stats| {
+        let mut p = Panel::new(64, 52);
+        draw_stats(&mut p, stats);
+        let scale = 6;
+        let mut img = image::RgbaImage::from_pixel(
+            64 * scale + 24,
+            52 * scale + 24,
+            image::Rgba([0x09, 0x0a, 0x0c, 0xff]),
+        );
+        for y in 0..52usize {
+            for x in 0..64usize {
+                let on = p.bits[y * p.stride + x / 8] & (0x80 >> (x % 8)) != 0;
+                let c = if on {
+                    [0xe8, 0xea, 0xe9, 0xff]
+                } else {
+                    [0, 0, 0, 0xff]
+                };
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        img.put_pixel(
+                            12 + x as u32 * scale + dx,
+                            12 + y as u32 * scale + dy,
+                            image::Rgba(c),
+                        );
+                    }
+                }
+            }
+        }
+        (img, p.bits)
+    };
+    let (shown, bits) = panel(&crate::foxglove::screens_ui::sample_stats());
+    keep("left-screen-stats-1-panel.png", &shown);
+    let (starting, empty_bits) = panel(&Stats::default());
+    keep("left-screen-stats-2-first-second.png", &starting);
+    assert_ne!(bits, empty_bits);
+
+    let ctx = preview_ctx();
+    let img = render_ui(
+        &ctx,
+        egui::vec2(460.0, 440.0),
+        Color32::from_rgb(0x09, 0x0a, 0x0c),
+        |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::same(16))
+                .show(ui, |ui| {
+                    ui.label(crate::foxglove::theme::heading(ui, "Left screen: Change…"));
+                    ui.add_space(6.0);
+                    crate::foxglove::screens_ui::left_choices(
+                        ui,
+                        crate::foxglove::screens_ui::LeftChoice::Stats,
+                    );
+                });
+        },
+    );
+    keep("left-screen-stats-3-picker.png", &img);
 }
 
 /// The sidebar's Bandit fox mark, whole and enlarged (it matches the tray glyph).

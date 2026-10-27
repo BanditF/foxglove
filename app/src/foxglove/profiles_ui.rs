@@ -30,17 +30,14 @@ fn combo(
     names: &[String],
     active: &Option<String>,
 ) -> Result<(), String> {
-    let shown = active.clone().unwrap_or_else(|| "Base settings".into());
+    let shown = active.clone().unwrap_or_else(|| "Default".into());
     let mut chosen = None;
     let mut combo = egui::ComboBox::from_id_salt(id).selected_text(shown);
     if let Some(width) = width {
         combo = combo.width(width);
     }
     combo.show_ui(ui, |ui| {
-        if ui
-            .selectable_label(active.is_none(), "Base settings")
-            .clicked()
-        {
+        if ui.selectable_label(active.is_none(), "Default").clicked() {
             chosen = Some(None);
         }
         for name in names {

@@ -2,7 +2,7 @@
 //!
 //! - `foxglove-cli status`: the app's version, the keyboards it sees, and their state facts.
 //! - `foxglove-cli facts [pattern]`: facts matching a pattern (default `*`).
-//! - `foxglove-cli profile [name|base]`: list the profiles, or switch to one.
+//! - `foxglove-cli profile [name|default]`: list the profiles, or switch to one (`base` works too).
 
 use std::io::{BufRead, BufReader, Write};
 
@@ -124,7 +124,10 @@ fn run(args: &[String]) -> Result<(), String> {
                 let profiles: Profiles = match args.get(1).map(String::as_str) {
                     None => serde_json::from_value(api.call("profiles.list", json!({}))?),
                     Some(name) => {
-                        let name = (!name.eq_ignore_ascii_case("base")).then_some(name);
+                        // "default" is the profile the app calls Default; "base" is its old name.
+                        let base = name.eq_ignore_ascii_case("default")
+                            || name.eq_ignore_ascii_case("base");
+                        let name = (!base).then_some(name);
                         serde_json::from_value(
                             api.call("profiles.activate", json!({"name": name}))?,
                         )
@@ -132,15 +135,15 @@ fn run(args: &[String]) -> Result<(), String> {
                 }
                 .map_err(|e| e.to_string())?;
                 let active = profiles.active.as_deref();
-                println!("{} Base settings", if active.is_none() { "*" } else { " " });
+                println!("{} Default", if active.is_none() { "*" } else { " " });
                 for n in &profiles.names {
                     println!("{} {n}", if active == Some(n.as_str()) { "*" } else { " " });
                 }
             }
             other => {
                 return Err(format!(
-                    "unknown command {other:?}; try status, facts [pattern] or profile [name|base]"
-                ))
+                "unknown command {other:?}; try status, facts [pattern] or profile [name|default]"
+            ))
             }
         }
         Ok(())

@@ -347,8 +347,9 @@ pub fn group(ui: &mut egui::Ui) {
 fn draw(ui: &mut egui::Ui, v: &View, state: &mut UiState) -> Vec<Intent> {
     let mut out = Vec::new();
     let p = theme::palette(ui);
-    ui.label(RichText::new(&v.lights).strong())
-        .on_hover_text("Which plugin is driving the underglow now, and which wait under it");
+    ui.label(RichText::new(&v.lights).strong()).on_hover_text(
+        "Which plugin is driving the keyboard's lights now, and which wait under it",
+    );
     ui.label(
         RichText::new("Each plugin runs as its own program with only the permissions you approve.")
             .color(p.muted),
@@ -483,7 +484,7 @@ fn card_contents(ui: &mut egui::Ui, c: &Card, state: &mut UiState, out: &mut Vec
             out.push(Intent::Enable(id.clone(), on));
         }
         let open = state.open.as_deref() == Some(id.as_str());
-        if theme::pill(ui, open, "Settings").clicked() {
+        if theme::pill(ui, open, "Options").clicked() {
             state.open = if open { None } else { Some(id.clone()) };
         }
         let confirming = state.confirm_remove.as_deref() == Some(id.as_str());

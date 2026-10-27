@@ -84,6 +84,10 @@ enum Ctl {
     Devices,
     /// Another look for the running scene, and its name.
     Effect(String, Box<Effect>),
+    /// A key was pressed at this row and column (#489): a ring from it.
+    KeyRipple(usize, usize),
+    /// The top layer changed (#489): a sweep in this colour.
+    LayerSweep(Rgb),
     Stop,
 }
 
@@ -96,6 +100,33 @@ struct Running {
 }
 
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
+
+/// The right-screen art the running scene shows (a wallpaper look's, #488): `None` while no
+/// scene takes art (none runs, or it is ending), `Some(None)` for a scene without art.
+static ART: Mutex<Option<Option<super::art_cycle::Item>>> = Mutex::new(None);
+
+/// The running scene shows this right-screen art, or none. A no-op when no scene runs; the
+/// scene's end puts back the art from before it (the art service's preset slot).
+pub fn set_art(art: Option<super::art_cycle::Item>) {
+    let mut cur = ART.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(shown) = cur.as_mut() else {
+        return;
+    };
+    if *shown == art {
+        return;
+    }
+    *shown = art.clone();
+    if let Some(h) = super::art_service::handle() {
+        h.preset_art(art);
+    }
+}
+
+/// Repaints the Scenes page, if it was ever shown (a wallpaper change, for its "On screen").
+pub fn repaint_page() {
+    if let Some(ctx) = PAGE.get() {
+        ctx.request_repaint();
+    }
+}
 
 /// What diagnostics says about scenes.
 #[derive(Clone, Debug, Default)]
@@ -174,6 +205,8 @@ pub fn start(name: &str, effect: Effect, limit: Option<Duration>) -> bool {
     let shown = name.to_string();
     let name = name.to_string();
     let clock = Clock::starting_now();
+    // Before the thread, whose end (even a failed start) takes it back.
+    *ART.lock().unwrap_or_else(|e| e.into_inner()) = Some(None);
     let thread = super::services::spawn_named("scene-control", move || {
         control(&name, effect, limit, clock, &own, &rx)
     });
@@ -233,6 +266,17 @@ fn tell(ctl: Ctl) {
     if let Some(r) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         let _ = r.tx.send(ctl);
     }
+}
+
+/// A key press for "Ripple on key press" (#489): its row and column only. A no-op when no
+/// scene runs.
+pub fn key_ripple(row: usize, col: usize) {
+    tell(Ctl::KeyRipple(row, col));
+}
+
+/// A layer change for "Sweep on layer change" (#489), in that layer's colour.
+pub fn layer_sweep(colour: Rgb) {
+    tell(Ctl::LayerSweep(colour));
 }
 
 /// Foxglove paused or resumed (#404).
@@ -339,6 +383,22 @@ fn control(
                 .unwrap_or_else(|e| e.into_inner())
                 .set_room(room, cases);
         }
+        Ctl::KeyRipple(row, col) => {
+            let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
+            let keys = super::scene_triggers::keys();
+            let ring =
+                super::scene_triggers::ripple(&keys, row, col, o.room(), o.effect(), clock.now());
+            if let Some(ring) = ring {
+                o.burst(ring);
+            }
+        }
+        Ctl::LayerSweep(colour) => {
+            let sweep = super::scene_triggers::sweep(colour, clock.now());
+            outputs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .burst(sweep);
+        }
         Ctl::Effect(name, effect) => {
             // The wallpapers draw the new look on the same clock (#493).
             super::wallpaper_sync::scene_started(&name, &effect, clock, placed.clone());
@@ -368,6 +428,13 @@ impl Drop for GiveBack {
         // Idempotent: nothing to end when the keyboard writer already gave it back.
         super::api::end_leases(|l| l.conn == SCENE_CONN);
         super::wallpaper_sync::scene_stopped();
+        // The art from before the scene, when it showed a wallpaper's.
+        let art = ART.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if matches!(art, Some(Some(_))) {
+            if let Some(h) = super::art_service::handle() {
+                h.preset_art(None);
+            }
+        }
         let case_back = super::pc_lights::end_scene(GIVE_BACK);
         eprintln!(
             "Foxglove: scene {} ended ({}){}",
