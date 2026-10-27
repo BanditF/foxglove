@@ -93,3 +93,4 @@ pub mod via_host;
 pub mod via_ui;
 pub mod wallpaper;
 pub mod wallpaper_engine;
+pub mod wallpaper_sync;

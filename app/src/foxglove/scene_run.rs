@@ -214,10 +214,12 @@ fn control(
     let keyboard = KeyboardOut::spawn(Box::new(AppKeyboard::default()));
     let (room, cases) = gather();
     eprintln!("Foxglove: scene {name} started; room: {}", room.summary());
+    let clock = Clock::starting_now();
+    super::wallpaper_sync::scene_started(name, &effect, clock, room.clone());
     let outputs = Arc::new(Mutex::new(Outputs::new(effect, room, cases)));
     let frames = outputs.clone();
     let mailbox = keyboard.mailbox.clone();
-    let scheduler = Scheduler::new(Clock::starting_now(), MIN_INTERVAL, move |t| {
+    let scheduler = Scheduler::new(clock, MIN_INTERVAL, move |t| {
         let outs = frames.lock().unwrap_or_else(|e| e.into_inner()).frame(t);
         send(outs, &mailbox);
     });
@@ -233,6 +235,7 @@ fn control(
         Ctl::Paused(p) => scheduler.set(Gate::Paused, p),
         Ctl::Devices => {
             let (room, cases) = gather();
+            super::wallpaper_sync::scene_room(room.clone());
             outputs
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -258,6 +261,7 @@ impl Drop for GiveBack {
     fn drop(&mut self) {
         // Idempotent: nothing to end when the keyboard writer already gave it back.
         super::api::end_leases(|l| l.conn == SCENE_CONN);
+        super::wallpaper_sync::scene_stopped();
         let case_back = super::pc_lights::end_scene(GIVE_BACK);
         eprintln!(
             "Foxglove: scene {} ended ({}){}",

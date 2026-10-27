@@ -1,0 +1,335 @@
+{
+ "format": "foxglove-scene-vectors",
+ "version": 1,
+ "about": "Shared test vectors for the scene clock and the scanline (foxglove crates/scene, #493; bandit-wallpapers shared/foxglove-sync.js, #494). Each case: a foxglove_scene payload, a moment, and the expected phase, band centre (mm from the room's start along the direction) and per-point level. Both sides must agree within 1e-3 mm and 1e-4.",
+ "formula": [
+  "scene_ms = now_unix_ms - e",
+  "phase = (scene_ms mod p) / p, euclidean; 0 when p = 0",
+  "span = room.w*|cos a| + room.h*|sin a|",
+  "centre = phase*(span + w) - w/2",
+  "here = clamp01((proj(at) - lo) / (hi - lo)) * span, proj(q) = q.x cos a + q.y sin a over the room's corners",
+  "level = smoothstep falloff: x = clamp01(|here - centre| / (w/2)); 1 - x*x*(3 - 2x); w = 0 draws nothing off the exact centre"
+ ],
+ "cases": [
+  {
+   "name": "demo scanline down the room, band on the monitor",
+   "payload": "v=1;id=demo;fx=scanline;e=1761000000000;p=4000;a=90;w=80;c=f08a3c;bg=06080e;room=0,0,600,700;mon=0,0,600,340",
+   "now_unix_ms": 1761000001000,
+   "scene_ms": 1000,
+   "phase": 0.25,
+   "span_mm": 700.0,
+   "centre_mm": 155.0,
+   "points": [
+    {
+     "at": [
+      300,
+      150
+     ],
+     "here_mm": 150.0,
+     "level": 0.957031
+    },
+    {
+     "at": [
+      300,
+      170
+     ],
+     "here_mm": 170.0,
+     "level": 0.683594
+    },
+    {
+     "at": [
+      300,
+      190
+     ],
+     "here_mm": 190.0,
+     "level": 0.042969
+    },
+    {
+     "at": [
+      300,
+      230
+     ],
+     "here_mm": 230.0,
+     "level": 0
+    },
+    {
+     "at": [
+      10,
+      600
+     ],
+     "here_mm": 600.0,
+     "level": 0
+    }
+   ]
+  },
+  {
+   "name": "twelve seconds in, the band is near the top again",
+   "payload": "v=1;id=demo;fx=scanline;e=1761000000000;p=4000;a=90;w=80;c=f08a3c;bg=06080e;room=0,0,600,700;mon=0,0,600,340",
+   "now_unix_ms": 1761000012345,
+   "scene_ms": 12345,
+   "phase": 0.08625,
+   "span_mm": 700.0,
+   "centre_mm": 27.275,
+   "points": [
+    {
+     "at": [
+      300,
+      40
+     ],
+     "here_mm": 40.0,
+     "level": 0.76078
+    },
+    {
+     "at": [
+      300,
+      10
+     ],
+     "here_mm": 10.0,
+     "level": 0.601555
+    },
+    {
+     "at": [
+      300,
+      600
+     ],
+     "here_mm": 600.0,
+     "level": 0
+    },
+    {
+     "at": [
+      0,
+      0
+     ],
+     "here_mm": 0.0,
+     "level": 0.23922
+    }
+   ]
+  },
+  {
+   "name": "before the epoch wraps backwards",
+   "payload": "v=1;id=demo;fx=scanline;e=1761000000000;p=4000;a=90;w=80;c=f08a3c;bg=06080e;room=0,0,600,700",
+   "now_unix_ms": 1760999999750,
+   "scene_ms": -250,
+   "phase": 0.9375,
+   "span_mm": 700.0,
+   "centre_mm": 691.25,
+   "points": [
+    {
+     "at": [
+      300,
+      650
+     ],
+     "here_mm": 650.0,
+     "level": 0
+    },
+    {
+     "at": [
+      300,
+      690
+     ],
+     "here_mm": 690.0,
+     "level": 0.997131
+    }
+   ]
+  },
+  {
+   "name": "left to right across two monitors, room offset",
+   "payload": "v=1;id=wide;fx=scanline;e=1761000000000;p=6000;a=0;w=120;c=ffffff;bg=000000;room=-597.7,-20,1195.4,750;mon=-597.7,0,597.7,336.2",
+   "now_unix_ms": 1761000002500,
+   "scene_ms": 2500,
+   "phase": 0.4166667,
+   "span_mm": 1195.4,
+   "centre_mm": 488.0833,
+   "points": [
+    {
+     "at": [
+      -597.7,
+      100
+     ],
+     "here_mm": 0.0,
+     "level": 0
+    },
+    {
+     "at": [
+      -100,
+      100
+     ],
+     "here_mm": 497.7,
+     "level": 0.931168
+    },
+    {
+     "at": [
+      -130,
+      100
+     ],
+     "here_mm": 467.7,
+     "level": 0.732182
+    },
+    {
+     "at": [
+      -60,
+      100
+     ],
+     "here_mm": 537.7,
+     "level": 0.079479
+    },
+    {
+     "at": [
+      400,
+      100
+     ],
+     "here_mm": 997.7,
+     "level": 0
+    }
+   ]
+  },
+  {
+   "name": "diagonal, a point outside the room clamps",
+   "payload": "v=1;id=diag;fx=scanline;e=1761000000000;p=3000;a=45;w=60;c=ffffff;bg=000000;room=0,0,400,300",
+   "now_unix_ms": 1761000001700,
+   "scene_ms": 1700,
+   "phase": 0.5666667,
+   "span_mm": 494.9747,
+   "centre_mm": 284.4857,
+   "points": [
+    {
+     "at": [
+      200,
+      200
+     ],
+     "here_mm": 282.8427,
+     "level": 0.991331
+    },
+    {
+     "at": [
+      190,
+      190
+     ],
+     "here_mm": 268.7006,
+     "level": 0.46078
+    },
+    {
+     "at": [
+      180,
+      200
+     ],
+     "here_mm": 268.7006,
+     "level": 0.46078
+    },
+    {
+     "at": [
+      -50,
+      -50
+     ],
+     "here_mm": 0.0,
+     "level": 0
+    },
+    {
+     "at": [
+      500,
+      500
+     ],
+     "here_mm": 494.9747,
+     "level": 0
+    }
+   ]
+  },
+  {
+   "name": "upwards, 270 degrees",
+   "payload": "v=1;id=up;fx=scanline;e=1761000000000;p=5000;a=270;w=50;c=ffffff;bg=000000;room=0,0,500,800",
+   "now_unix_ms": 1761000001250,
+   "scene_ms": 1250,
+   "phase": 0.25,
+   "span_mm": 800.0,
+   "centre_mm": 187.5,
+   "points": [
+    {
+     "at": [
+      0,
+      600
+     ],
+     "here_mm": 200.0,
+     "level": 0.5
+    },
+    {
+     "at": [
+      0,
+      620
+     ],
+     "here_mm": 180.0,
+     "level": 0.784
+    },
+    {
+     "at": [
+      0,
+      10
+     ],
+     "here_mm": 790.0,
+     "level": 0
+    }
+   ]
+  },
+  {
+   "name": "zero period stands still at the start",
+   "payload": "v=1;id=still;fx=scanline;e=1761000000000;p=0;a=90;w=40;c=ffffff;bg=000000;room=0,0,100,100",
+   "now_unix_ms": 1761000000999,
+   "scene_ms": 999,
+   "phase": 0.0,
+   "span_mm": 100.0,
+   "centre_mm": -20.0,
+   "points": [
+    {
+     "at": [
+      50,
+      0
+     ],
+     "here_mm": 0.0,
+     "level": 0
+    },
+    {
+     "at": [
+      50,
+      10
+     ],
+     "here_mm": 10.0,
+     "level": 0
+    },
+    {
+     "at": [
+      50,
+      30
+     ],
+     "here_mm": 30.0,
+     "level": 0
+    }
+   ]
+  },
+  {
+   "name": "zero width draws nothing (and no NaN)",
+   "payload": "v=1;id=thin;fx=scanline;e=1761000000000;p=1000;a=90;w=0;c=ffffff;bg=000000;room=0,0,100,100",
+   "now_unix_ms": 1761000000500,
+   "scene_ms": 500,
+   "phase": 0.5,
+   "span_mm": 100.0,
+   "centre_mm": 50.0,
+   "points": [
+    {
+     "at": [
+      50,
+      60
+     ],
+     "here_mm": 60.0,
+     "level": 0.0
+    },
+    {
+     "at": [
+      50,
+      10
+     ],
+     "here_mm": 10.0,
+     "level": 0.0
+    }
+   ]
+  }
+ ]
+}

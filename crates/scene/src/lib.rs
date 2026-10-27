@@ -7,9 +7,11 @@ pub mod effects;
 pub mod room;
 pub mod scheduler;
 pub mod space;
+pub mod wallpaper;
 
 pub use clock::{Clock, SceneTime};
 pub use colour::Rgb;
 pub use effects::{Effect, Frame};
 pub use room::{DeviceInfo, DeviceKind, Layout, LightSpec, MonitorInfo, RoomMap, Side};
 pub use space::{Point, Rect};
+pub use wallpaper::WallpaperScene;
