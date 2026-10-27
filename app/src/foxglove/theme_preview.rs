@@ -378,10 +378,10 @@ fn keypeek_groups(ui: &mut egui::Ui) {
             });
     });
     section(ui, "Theme", |ui| {
-        // The window theme is in "Theme and updates" since #390.
+        // The window theme is in "Appearance" since #390.
         let mut white = Color32::WHITE;
         ui.horizontal(|ui| {
-            ui.label("Font color");
+            ui.label("Text colour");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.color_edit_button_srgba(&mut white);
             });
@@ -445,7 +445,7 @@ fn widget_sheet(ctx: &egui::Context, focus: bool) {
             theme::picker(ui);
             theme::card(ui).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.label(theme::heading(ui, "Underglow"));
+                ui.label(theme::heading(ui, "Keyboard"));
                 ui.label(theme::caps_label(ui, "Effect"));
                 ui.horizontal(|ui| {
                     for (i, e) in ["Solid", "Breathe", "Spectrum", "Swirl"].iter().enumerate() {
@@ -460,7 +460,7 @@ fn widget_sheet(ctx: &egui::Context, focus: bool) {
                 ui.checkbox(&mut true, "Right half's lights follow the left");
                 ui.checkbox(&mut false, "Follow the Windows accent colour");
                 ui.horizontal(|ui| {
-                    let r = ui.button("Ask the keyboard again");
+                    let r = ui.button("Refresh");
                     if focus {
                         r.request_focus();
                     }
@@ -519,7 +519,7 @@ fn foxglove_groups(ui: &mut egui::Ui) {
         ui.checkbox(&mut true, "Use VIA keyboards");
         ui.horizontal(|ui| {
             let _ = ui.button("Add VIA definition (JSON)…");
-            let _ = ui.button("Rescan");
+            let _ = ui.button("Refresh");
         });
     });
     // The real Plugins page (#389), drawn from its preview sample.
@@ -749,16 +749,16 @@ fn long_samples() -> Samples {
     s.keyboard.link.rows = vec![
         (
             "Left half",
-            "on USB and on Bluetooth profile 4 (another PC) at the same time".into(),
+            "on USB and on Bluetooth slot 4 (another PC) at the same time".into(),
         ),
         (
             "Bluetooth to this PC",
-            "connected, but this PC is paired on profile 2 of 5".into(),
+            "connected, but this PC is paired on slot 2 of 5".into(),
         ),
     ];
     s.keyboard.link.unplug_fix = Some(
-        "Unplugging now leaves the keyboard unable to type - select profile 2: hold SYSTEM \
-         (both middle thumbs) and Tab, then press the profile's key on the number row"
+        "Unplugging now leaves the keyboard unable to type - select Bluetooth slot 2: hold SYSTEM \
+         (both middle thumbs) and Tab, then press the slot's key on the number row"
             .into(),
     );
     s
@@ -945,7 +945,7 @@ fn settings_page_renders() {
         count(&img, DARK.surface) > (img.width() * img.height()) as usize / 10,
         "cards"
     );
-    // The theme picker's selected pill sits in "Theme and updates".
+    // The theme picker's selected pill sits in "Appearance".
     assert!(count(&img, DARK.selected_fill) > 100, "the Dark pill");
 }
 
@@ -1405,7 +1405,7 @@ fn battery_dim_renders() {
     }
 }
 
-/// The Lights page's "PC & peripherals" card (#423): the 45L with colours, the cooler and the
+/// The Lights page's "Other devices" card (#423): the 45L with colours, the cooler and the
 /// G502 with Light Studio running; then a fresh 45L matching the keyboard; then none found.
 #[test]
 fn pc_lights_render() {

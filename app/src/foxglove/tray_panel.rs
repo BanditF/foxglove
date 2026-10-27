@@ -516,7 +516,7 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 if v.paused {
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new("Paused. Foxglove leaves the keyboard alone: its own lights, the left panel back to the firmware, no art changes and no layer overlay.")
+                        RichText::new("Paused. Foxglove leaves the keyboard alone: its own lights, the left screen back to the firmware, no art changes and no layer overlay.")
                             .color(p.warn),
                     );
                 }
@@ -542,7 +542,7 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             }
             part(ui, "Profile", |_| {}, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if theme::pill(ui, v.active_profile.is_none(), "Base settings").clicked() && v.active_profile.is_some() {
+                    if theme::pill(ui, v.active_profile.is_none(), "Default").clicked() && v.active_profile.is_some() {
                         out.push(Intent::Profile(None));
                     }
                     for name in &v.profiles {

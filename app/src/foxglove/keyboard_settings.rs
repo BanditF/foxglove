@@ -304,7 +304,7 @@ pub fn settings_opened() {
     RETRY_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// "Ask the keyboard again" (#386): forget the builds, so the next look reads them afresh.
+/// "Refresh" on the Firmware card (#386): forget the builds, so the next look reads them afresh.
 /// A read already under way is left to finish.
 pub fn read_firmware_again() {
     let mut cached = FIRMWARE.lock().unwrap_or_else(|e| e.into_inner());

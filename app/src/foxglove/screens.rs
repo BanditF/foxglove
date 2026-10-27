@@ -516,9 +516,9 @@ fn run() {
             } else if away {
                 "Away (locked or display off): the keyboard shows its own screen"
             } else if paused() {
-                "Left panel paused"
+                "Left screen paused"
             } else {
-                "Left panel off"
+                "Left screen off"
             });
             continue;
         }
@@ -567,7 +567,7 @@ fn run() {
         lock_watch = None;
         if !was_driving {
             d.last = None;
-            set_status("Drawing the left panel");
+            set_status("Drawing the left screen");
             battery_log(d.hello.right_battery, &mut last_battery);
         }
         was_driving = true;

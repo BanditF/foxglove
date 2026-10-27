@@ -3,7 +3,7 @@
 //! the local API, plugins) next to the host-link keyboard. Nothing is written to them: the VIA
 //! backend opens devices read-only, and reset/bootloader/factory commands never go out.
 //!
-//! Settings in the store's `[via]`; scanning happens on demand (Rescan, turning it on, adding a
+//! Settings in the store's `[via]`; scanning happens on demand (Refresh, turning it on, adding a
 //! definition), never on a timer.
 
 use std::collections::BTreeMap;

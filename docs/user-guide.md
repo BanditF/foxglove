@@ -28,14 +28,14 @@ the **^** arrow). Right-click it for the menu:
 | tray item | what it does |
 |---|---|
 | status line | which keyboard is connected, if any |
-| **Settings...** | opens the settings window |
-| **Pause left panel** | freezes the PC panel on the left screen |
-| **Right art** | picks the right screen's animation |
+| **Open Foxglove** | opens the Foxglove window |
+| **Pause Foxglove** | leaves the keyboard alone until you resume |
 | **Profile** | switches between your saved setups (see [Profiles](#profiles)) |
+| **Open log folder** | the logs, for a bug report |
 | **Quit** | closes Foxglove; the keyboard keeps working |
 
 Updates: Foxglove checks for a new version shortly after it starts, and offers to install it.
-**Settings → Updates** has **Check now** and the option to stop checking.
+**App → Startup and updates** has **Check now** and the option to stop checking.
 
 To uninstall, use **Windows Settings → Apps**. Your settings stay in
 `%APPDATA%\Foxglove\config` in case you reinstall; delete that folder to remove them too.
@@ -46,16 +46,16 @@ The **left half** is the one that talks to the PC. The right half talks only to 
 
 1. **Plug the left half in with a USB cable** for the first connection. Foxglove reads the
    keymap over USB once and remembers it.
-2. Open **Settings...** from the tray. Under **Connection**, pick the keyboard in **Device**
-   and click **Connect**.
+2. Click **Open Foxglove** in the tray. On the **Keyboard** page, under **Keymap source**, pick
+   the keyboard in **Device** and click **Connect**.
 3. To use Bluetooth too, pair it like any Bluetooth keyboard: **Windows Settings → Bluetooth
    & devices → Add device → Bluetooth → Eyelash Corne**. After that, Foxglove works over USB or
    Bluetooth, and reconnects by itself.
 
-Under **Keyboard** in Settings, the **Connection** line says whether you're on USB or Bluetooth,
-which Bluetooth profile is active, and which profile belongs to this PC. If unplugging the cable
-would leave the keyboard unable to type (it isn't on this PC's Bluetooth profile), it shows a
-warning. Switch profile first ([section 6](#6-it-types-on-the-cable-but-not-on-bluetooth)).
+On the **Keyboard** page, the **Connection** card says whether you're on USB or Bluetooth, which
+Bluetooth slot is active, and which slot belongs to this PC. If unplugging the cable would leave
+the keyboard unable to type (it isn't on this PC's Bluetooth slot), it shows a warning. Switch
+slot first ([section 6](#6-it-types-on-the-cable-but-not-on-bluetooth)).
 
 ## 3. The layers
 
@@ -75,11 +75,11 @@ The keyboard has seven layers. You reach most of them by holding a thumb key.
 
 | key | does |
 |---|---|
-| Q W E R T | Bluetooth profile 1-5 (Q is the first) |
+| Q W E R T | Bluetooth slot 1-5 (Q is the first) |
 | Y / U | send typing over USB / over Bluetooth |
 | A | back to QWERTY, and clears any locked layers |
 | N S G F | lock NUMBER / SYMBOL / GAME / FUNCTION on or off |
-| Left Ctrl | forget the current Bluetooth profile's pairing |
+| Left Ctrl | forget the current Bluetooth slot's pairing |
 | Esc | **forget all Bluetooth pairings: avoid this one** |
 | M (hold 2 s) | turn both halves off; press their reset buttons to wake them |
 
@@ -93,19 +93,19 @@ The full map, including the reset and bootloader keys, is in [layers.md](layers.
 
 From top to bottom:
 - **Battery and connection.** The battery level (with a bolt while charging), and **USB** or
-  **BT1-BT5**. A line through the BT number means that profile isn't connected.
+  **BT1-BT5**. A line through the BT number means that slot isn't connected.
 - **The layer name**, in the tab.
 - **Modifiers.** CTL, SFT, ALT, WIN and CAPS light up while they're held or on.
-- **Bluetooth profile boxes, 1-5.** The filled box is the active profile, and an outlined box
+- **Bluetooth slot boxes, 1-5.** The filled box is the active slot, and an outlined box
   is connected. The word below says what the active one is doing:
   - **USB**: typing goes over the cable.
   - **LINKED**: connected over Bluetooth.
   - **SEARCH**: paired, but the PC isn't in range or is off.
-  - **PAIR**: nothing is paired on this profile yet.
+  - **PAIR**: nothing is paired on this slot yet.
 
   The whole block turns inverted (white) while SYSTEM is held, and for 3 seconds after a
-  profile change, so you can see which profile you just picked. This is the quickest way to
-  catch a wrong-profile mix-up.
+  slot change, so you can see which slot you just picked. This is the quickest way to catch a
+  wrong-slot mix-up.
 - **The PC panel** at the bottom: the clock, what's playing and the volume. Foxglove draws it.
   If the app closes, the last picture stays. The clock and date follow Windows' region settings
   (Settings › Time & language › Language & region): 12- or 24-hour, the date order and the
@@ -118,28 +118,28 @@ From top to bottom:
 The right screen plays an animation. Several are built into the firmware, and Foxglove can send
 others (see **Screens** below). The battery and connection strip sits above it.
 
-## 5. Settings tour
+## 5. A tour of the window
 
-Open it from the tray: **Settings...**. From the top:
+Open it from the tray: **Open Foxglove**. The sidebar has six pages, top to bottom:
 
-- **Connection, Overlay Appearance, Theme.** The layer overlay: a picture of the keymap that
-  pops up on screen when you change layer. You can pick its monitor, size, colours, which layers
-  show it, and how long it stays.
-- **Profile.** The setup you're editing (see [Profiles](#profiles) below).
-- **Updates.** Version checks.
-- **Keyboard.** The connection line, both halves' firmware versions (a warning appears if they
-  differ), and:
-  - **Devices.** The batteries of the Bluetooth devices and game controllers connected to this
+- **Keyboard.** The board picture, then:
+  - **Firmware:** both halves' versions (a warning appears if they differ), **Refresh** and
+    **Update firmware…**.
+  - **Key actions:** things the keyboard's own keys can do, as buttons. Risky ones (resets,
+    bootloader) need a second click.
+  - **Connection:** whether the left half is on USB or Bluetooth, the active Bluetooth slot,
+    and this PC's slot.
+  - **Devices:** the batteries of the Bluetooth devices and game controllers connected to this
     PC (a mouse, headphones, a wireless controller), with **Tell me when a device's battery runs
     low** (on by default; one notification below 15% and one below 5%). Devices that don't
     report a battery aren't listed, and the keyboard has its own lines. The tray panel shows the
     same list under **Devices** when one reports.
-  - **Lights.** Colour, effect, brightness and speed of the underglow on each half.
-    **Follow the Windows accent colour** makes the lights take Windows' accent colour
-    whenever you change it, keeping your brightness. These controls need an RGB key in the
-    keymap.
-  - **Actions.** Things the keyboard's own keys can do, as buttons. Risky ones (resets,
-    bootloader) need a second click.
+  - **Keymap source:** the keyboard the layer overlay reads (**Device**, **Connect**).
+- **Lights.** **Keyboard** sets the colour, effect, brightness and speed of the keyboard's
+  lights. **Follow the Windows accent colour** makes them take Windows' accent colour whenever
+  you change it, keeping your brightness. These controls need an RGB key in the keymap.
+  **Other devices** lists the rest of the PC's lights ([below](#the-pcs-case-lights-hp-omen-45l)).
+- **Scenes.** One effect across every light at once ([below](#scenes-light-that-travels-through-the-room)).
 - **Screens.** Both screens and all the right screen's art, from the top:
   - **Showing now:** the left screen and the right screen side by side, each with its name and
     what happens after the keyboard restarts, **‹ Previous** / **Next ›**, and **Rotation**.
@@ -150,44 +150,51 @@ Open it from the tray: **Settings...**. From the top:
   - **On this PC:** every piece on this PC once, with one badge: **ON KEYBOARD**, **THIS PC**,
     **SENDING n%** or **TOO BIG**. Click one to show it until the keyboard restarts;
     **Keep on keyboard** keeps it. **Add art…** adds a file (or a folder of frames).
-  - **Left screen:** **Drive left screen**, **Pause**, what it shows (the clock, media and
-    hints, or the wallpaper's animation), how often it redraws, and **game hints**.
+  - **Left screen:** **On**, **Pause**, what it shows (the clock, media and hints, or the
+    wallpaper's animation), how often it redraws, and **App hints**.
   See [Lights and art that go together](#8-lights-and-art-that-go-together).
-- **Other keyboards (VIA).** Read-only support for VIA/QMK keyboards: see
-  [Other keyboards](#10-other-keyboards-via).
 - **Plugins.** Optional add-ons (Pomodoro, Mic mute, Broadcast Status, OpenRGB): see
   [Plugins](#9-plugins).
+- **App.** Foxglove's own preferences:
+  - **Layer overlay** and **Layer colours:** the picture of the keymap that pops up on screen
+    when you change layer. You can pick its monitor, size, colours, which layers show it, and
+    how long it stays.
+  - **Profiles:** the setup you're editing (see [Profiles](#profiles) below).
+  - **Appearance:** Dark, Light or System.
+  - **Startup and updates:** **Start with Windows** and version checks.
+  - **Other keyboards:** read-only support for VIA/QMK keyboards: see
+    [Other keyboards](#10-other-keyboards-via).
 
 ### Profiles
 
 A profile is a saved variation of your settings, for example "Game" with a different screen
 rate, lights and art. Changes to screens, lights and art go into the profile you're editing.
-Anything a profile doesn't change comes from **Base settings**.
+Anything a profile doesn't change comes from **Default**.
 
-- Switch from the tray (**Profile**) or the **Profile** box at the top of Settings.
+- Switch from the tray (**Profile**) or the **Profile** box at the bottom of the sidebar.
 - **Switch profile by program** picks a profile automatically when a given program comes to
   the front.
 - **Share profiles** saves them to a file, or loads them from one. The files never include this
   PC's keyboard connection.
 
-Don't confuse these with the keyboard's Bluetooth profiles (the 1-5 boxes), which are about
+Don't confuse these with the keyboard's Bluetooth slots (the 1-5 boxes; ZMK calls them profiles), which are about
 which device the keyboard types to.
 
 ## 6. It types on the cable but not on Bluetooth
 
-The keyboard is almost always on the wrong Bluetooth profile, the one paired with another
-device. Nothing is broken.
+The keyboard is almost always on the wrong Bluetooth slot, the one paired with another device.
+Nothing is broken.
 
-1. Look at the profile boxes on the left screen: the filled box is the active profile.
-2. Hold both middle thumbs, then hold **Tab** (SYSTEM). Tap the key for this PC's profile:
-   **Q** for profile 1, **W** for 2, **E** for 3, **R** for 4, **T** for 5. The block flashes
+1. Look at the slot boxes on the left screen: the filled box is the active slot.
+2. Hold both middle thumbs, then hold **Tab** (SYSTEM). Tap the key for this PC's slot:
+   **Q** for slot 1, **W** for 2, **E** for 3, **R** for 4, **T** for 5. The block flashes
    inverted to confirm.
-3. If you're not sure which profile is this PC's, plug the cable in. **Settings → Keyboard**
-   shows "this PC: profile N", numbered like the boxes.
+3. If you're not sure which slot is this PC's, plug the cable in. **Keyboard → Connection**
+   shows "This PC's slot", numbered like the boxes.
 4. Typing over the cable but want Bluetooth? SYSTEM + **U**. Back to the cable: SYSTEM + **Y**.
 
-If the PC is missing from every profile, pick an empty one (its word says **PAIR**) and pair
-again from Windows' Bluetooth settings. **SYSTEM + Left Ctrl** clears just the current profile
+If the PC is missing from every slot, pick an empty one (its word says **PAIR**) and pair
+again from Windows' Bluetooth settings. **SYSTEM + Left Ctrl** clears just the current slot
 so it can pair fresh. Avoid **SYSTEM + Esc**, which clears every pairing.
 
 If the halves stop talking to each other (the right screen freezes, right-hand keys do
@@ -229,7 +236,7 @@ Two labels in this section:
 
 ### Lighting presets *(next app update)*
 
-**Settings → Keyboard → Lights → Preset** offers seven ready-made looks, each matched to a
+**Lights → Presets** offers seven ready-made looks, each matched to a
 Bandit wallpaper family:
 
 | preset | lights | right screen |
@@ -250,14 +257,14 @@ Bandit wallpaper family:
 
 ### The PC's case lights (HP OMEN 45L)
 
-**Settings → Lights → PC & peripherals** lists the lighting devices on this PC and how
+**Lights → Other devices** lists the lighting devices on this PC and how
 Foxglove controls them:
-- **Foxglove driver:** the OMEN 45L case. Pick a colour per zone (diamond display, interior
+- **Built-in support:** the OMEN 45L case. Pick a colour per zone (diamond display, interior
   light, the three front fans) or one of the swatches for all zones, then **Apply colours**.
   **Identify** blinks the case for a moment; **Off** turns it dark. **Match keyboard** makes
-  the case follow the underglow colour you set in Foxglove, or the Windows accent colour when
+  the case follow the keyboard's light colour you set in Foxglove, or the Windows accent colour when
   the keyboard follows that. Foxglove puts your colours back when the PC starts.
-- **Standard LampArray device**, such as a Logitech G502: Windows' Dynamic Lighting settings
+- **Windows lighting**, such as a Logitech G502: Windows' Dynamic Lighting settings
   control it for now.
 - **Not controllable yet**, such as the OMEN liquid cooler: listed so you know it was seen.
 
@@ -321,7 +328,7 @@ later idea, #522.)
     then **P** for next and **O** for previous. Without the app, the keyboard steps through its
     own built-ins and saved slots. *(next app update)* The left screen shows **ART 3/7** and the
     name for a second.
-  - **Lights wake**: the next piece each time the underglow comes back on.
+  - **Lights wake**: the next piece each time the keyboard's lights come back on.
   - **every N minutes**.
 - **Wallpaper:** the right screen shows the art that goes with the wallpaper on
   screen. It works best with Wallpaper Engine, found in any Steam library. Without it, or while
@@ -364,13 +371,13 @@ the keyboard** shows how full it is ("Kept: 5 of 8 places") and what each place 
 
 ## 9. Plugins
 
-**Settings → Plugins.** Each plugin runs as its own small program with only the permissions you
+**The Plugins page.** Each plugin runs as its own small program with only the permissions you
 approve when you install it. Only signed plugins run.
 - **Installing:** the catalog lists the first-party plugins as "Coming soon" until they're
   published. For now a plugin installs from its file (**Install from file…**), which shows
   exactly what it may do first.
 - **Managing:** each installed plugin has an on/off switch, **Remove** (two clicks), its status
-  (running / restarting / stopped), its permissions, and its own settings.
+  (running / restarting / stopped), its permissions, and **Options** for its own settings.
 - **Keys for a plugin:** a plugin's actions (pause the timer, mute the mic) each get a key from
   **F13–F24**. Put that key on your keymap in ZMK Studio or VIA. It types nothing, and Foxglove
   passes it to the plugin. A key that another program already holds is flagged.
@@ -388,12 +395,12 @@ back when the plugin lets go, or at the latest after a minute.
 
 ## 10. Other keyboards (VIA)
 
-**Settings → Other keyboards (VIA)** shows QMK keyboards with VIA (like a Keychron K5 Pro) in
+**App → Other keyboards** shows QMK keyboards with VIA (like a Keychron K5 Pro) in
 the overlay, over USB. Foxglove only **reads** them: their keymap, layers and lights. It never
 changes them.
 - **Setup:** tick **Use VIA keyboards** and add the keyboard's VIA definition (the JSON from its
   maker) with **Add VIA definition (JSON)…**.
-- **Pause Foxglove for this keyboard** closes Foxglove's connection to it, so VIA or the maker's
+- **Let other apps use it** closes Foxglove's connection to it, so VIA or the maker's
   app can use it without two programs talking at once. **Resume** connects again.
 - **Active layer:** stock firmware doesn't report it, so it shows as unknown.
 - **The same keyboard on another port:** Foxglove asks whether it's the one you used before.
@@ -424,7 +431,7 @@ This wipes the halves' saved settings and every Bluetooth pairing.
    firmware release onto the drive. Do the same for the other half.
 2. Flash each half's normal file again, left first. The halves find each other on their own.
 3. Pair the keyboard with Windows again (Settings → Bluetooth & devices → Add device →
-   "Eyelash Corne"), on profile 1 ([section 6](#6-it-types-on-the-cable-but-not-on-bluetooth)).
+   "Eyelash Corne"), on slot 1 ([section 6](#6-it-types-on-the-cable-but-not-on-bluetooth)).
 
 ### The keyboard went dark and won't wake (soft off)
 
