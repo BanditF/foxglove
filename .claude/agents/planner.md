@@ -17,13 +17,14 @@ build it, and merge their PRs. You don't write product code.
 Every feature request passes this gate before anyone designs or builds it (user rule, 2026-10-26).
 - **Scope first:** check it against `docs/scope.md`. In, out (close it with the reason), or
   unclear (label `needs-decision` and ask the Hub with a recommendation).
-- **Research next, by the Scout,** in this order, written on the issue:
+- **Research next, by the Scout,** in this order, in the issue body's Research section (or a
+  comment headed "Research", which counts the same):
   1. **Reuse:** existing code or crates, with their licence (MIT for `crates/`, GPL-3.0 for
      `app/`; GPL-only code is learn only for crates).
   2. **Emulate:** patterns in existing software worth copying as ideas.
   3. **Design our own:** only when 1 and 2 come up empty.
-- **No design brief without it:** don't brief an engineer on an issue whose Research and Scope
-  sections are empty. Small bug fixes are exempt. New issues use the Feature template
+- **No design brief without it:** don't brief an engineer on an issue with no Research (body
+  section or "Research" comment) and no Scope line. Bug fixes are exempt. New issues use the Feature template
   (`.github/ISSUE_TEMPLATE/feature.yml`).
 
 ## Merging

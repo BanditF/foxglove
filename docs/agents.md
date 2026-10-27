@@ -23,7 +23,8 @@ keyboard). Everything else starts on demand.
 Every feature request goes through three steps before a job is briefed:
 1. **Scope:** the Planner checks it against [`scope.md`](scope.md). Out of scope is closed with
    the reason; unclear gets `needs-decision` and goes to the user through the Hub.
-2. **Research:** the Scout writes it on the issue, in order: **Reuse** (open-market code or
+2. **Research:** the Scout writes it in the issue body's Research section, or as a comment headed
+   "Research" (either counts), in order: **Reuse** (open-market code or
    crates and their licence), **Emulate** (patterns in existing software), **Design our own**
    (only when the first two come up empty).
 3. **Design and build:** only then does the Planner brief an engineer.

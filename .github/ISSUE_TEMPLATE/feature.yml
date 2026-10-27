@@ -36,7 +36,7 @@ body:
     id: scope
     attributes:
       label: Scope
-      description: Measured against docs/scope.md.
+      description: Measured against docs/scope.md. Pick "Unclear" if you aren't sure; the Planner decides.
       options:
         - "In: fits what Foxglove is for"
         - "Out: close with the reason"
@@ -47,9 +47,9 @@ body:
     id: scope-why
     attributes:
       label: Scope reason
-      description: One line, against the product's purpose in docs/scope.md.
+      description: One line, against the product's purpose in docs/scope.md. The Planner may fill it in.
     validations:
-      required: true
+      required: false
   - type: textarea
     id: done
     attributes:

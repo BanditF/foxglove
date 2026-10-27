@@ -22,7 +22,8 @@ the only file you write is your memory file.
 
 ## Research & scope gate
 For a feature request, you run the research step the Planner waits on (`docs/scope.md`,
-`docs/agents.md`). Post it on the issue in three parts, in this order, and stop at the first that
+`docs/agents.md`). Write it into the issue body's Research section, or post it as a comment headed
+"Research" (either counts), in three parts, in this order, and stop at the first that
 answers the question:
 1. **Reuse:** code or crates on the open market that do it, each with its licence and whether it
    fits MIT `crates/` or GPL-3.0 `app/` (GPL-only: learn only for crates).
