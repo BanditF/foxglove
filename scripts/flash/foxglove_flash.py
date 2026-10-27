@@ -449,10 +449,14 @@ def enter_with_retries(half, backend, log, clock=time.monotonic, sleep=time.slee
             retrying = True
             log(f'{half}: retrying the bootloader request for up to {ENTRY_RETRY_SECONDS} s while the split re-links.')
         sleep(ENTRY_RETRY_PAUSE)
+        # An earlier request may land late (#111): a bootloader showing up ends the retries, and
+        # the late-entry watch takes it from there.
         try:
-            wait_for(lambda: backend.right_link() == 2, max(0, deadline - clock()),
-                     'split not re-linked', clock, sleep)
+            wait_for(lambda: backend.right_link() == 2 or bool(backend.enumerate_bootloaders()),
+                     max(0, deadline - clock()), 'split not re-linked', clock, sleep)
         except TimeoutError:
+            return False, True
+        if backend.enumerate_bootloaders():
             return False, True
 
 

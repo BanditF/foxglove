@@ -195,7 +195,16 @@ class FlashTests(unittest.TestCase):
 
     def test_right_entry_retries_then_falls_back_to_double_tap(self):
         backend = FakeOS(['35B4541F78DE9CF8'])
-        self.run_flash(backend, ('FLASH',), {'right': uf2(b'FOXGLOVE_HALF=right')})
+        clock = Clock()
+        real = backend.enumerate_bootloaders
+        # The user double-taps after the retries and the late-entry watch.
+        after = f.ENTRY_RETRY_SECONDS + f.LATE_ENTRY_SECONDS + 1
+        backend.enumerate_bootloaders = lambda: real() if clock.now > after else []
+        answers = iter(('FLASH',))
+        f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 60,
+                stdin=type('TTY', (), {'isatty': lambda self: True})(),
+                ask=lambda prompt: next(answers), log=lambda message: None,
+                clock=clock.clock, sleep=clock.sleep)
         # Every ENTRY_RETRY_PAUSE s for ENTRY_RETRY_SECONDS, plus the first ask (#545).
         tries = f.ENTRY_RETRY_SECONDS // f.ENTRY_RETRY_PAUSE + 1
         self.assertEqual(backend.entered, ['right'] * tries)
@@ -601,6 +610,8 @@ class EntryRetryTests(unittest.TestCase):
         backend = FakeOS(['35B4541F78DE9CF8'])
         answers = [False, False, True]
         backend.enter_bootloader = lambda half, log: (backend.entered.append(half), answers.pop(0))[1]
+        real = backend.enumerate_bootloaders
+        backend.enumerate_bootloaders = lambda: real() if not answers else []  # once it's asked
         backend.links = [2, 0, 1, 2, 2]  # up before the first ask, then drops and re-links
         logs = []
         clock = Clock()
@@ -609,6 +620,20 @@ class EntryRetryTests(unittest.TestCase):
         self.assertEqual(backend.entered, ['right'] * 3)
         self.assertEqual(backend.link_polls, 5, 'each retry waits for the link')
         self.assertFalse(any(m.startswith('Double-tap reset on') or 'late entry' in m for m in logs), logs)
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_a_late_bootloader_ends_the_retries_without_a_prompt(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        backend.links = [2] + [0] * 1000  # up for the first ask, then down for good
+        real = backend.enumerate_bootloaders
+        clock = Clock()
+        backend.enumerate_bootloaders = lambda: real() if clock.now >= 10 else []  # lands ~10 s in
+        logs = []
+        f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 2, stdin=io.StringIO(''),
+                ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
+        self.assertEqual(backend.entered, ['right'], 'no retry once the drive is there')
+        self.assertLess(clock.now, 40)
+        self.assertFalse(any(m.startswith('Double-tap reset on') for m in logs), logs)
         self.assertEqual(len(backend.writes), 1)
 
     def test_retries_stop_when_the_split_stays_down(self):
@@ -642,13 +667,11 @@ class LateEntryTests(unittest.TestCase):
     def test_prompts_only_after_the_watch_window(self):
         backend = FakeOS(['35B4541F78DE9CF8'])
         real = backend.enumerate_bootloaders
-        polls = {'n': 0}
-        def very_late():
-            polls['n'] += 1
-            return real() if polls['n'] > 20 else []  # beyond the 15 s watch: user double-taps
-        backend.enumerate_bootloaders = very_late
-        logs = []
         clock = Clock()
+        # Beyond the retries and the 15 s watch: the user double-taps.
+        after = f.ENTRY_RETRY_SECONDS + f.LATE_ENTRY_SECONDS + 5
+        backend.enumerate_bootloaders = lambda: real() if clock.now > after else []
+        logs = []
         f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 60, stdin=io.StringIO(''),
                 ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
         watch = next(i for i, m in enumerate(logs) if 'late entry' in m)
