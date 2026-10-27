@@ -138,6 +138,8 @@ Open it from the tray: **Settings...**. From the top:
 - **Screens.** Both screens and all the right screen's art, from the top:
   - **Showing now:** the left screen and the right screen side by side, each with its name and
     what happens after the keyboard restarts, **‹ Previous** / **Next ›**, and **Rotation**.
+    **Change…** under the left screen picks what it shows, with a preview of each: **Clock and
+    status** (the keyboard's own), **Clock, media and hints**, or **Wallpaper animation**.
   - **On the keyboard:** "Kept: 5 of 8 places" and the pieces kept there (they play without
     this PC), then the pieces that **come with the keyboard**. Click one to show it.
   - **On this PC:** every piece on this PC once, with one badge: **ON KEYBOARD**, **THIS PC**,
@@ -318,6 +320,12 @@ the keyboard** shows how full it is ("Kept: 5 of 8 places") and what each place 
 - **The strip** under Showing now (and in the tray) says what is being sent, how it ended, and
   what to do when something goes wrong, for example "The right half is asleep. Press any key on
   it, then: Try again".
+- **After a firmware update** the keyboard card says what happened to the art: whether your kept
+  pieces are still there, and which pieces came or went with the new firmware. A built-in you
+  picked follows its name, not its number, so it stays the same picture.
+- **The tray panel's Screens part** shows the left screen's line with **Pause**, the right
+  screen's piece and badge, **‹** / **Next ›** through Rotation, **Art…** (opens Screens) and
+  the same strip. Adding files happens on the Screens page.
 
 ## 9. Plugins
 

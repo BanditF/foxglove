@@ -155,3 +155,76 @@ fn art_strip_states_render() {
     );
     keep("ux-art-built-6-strip-states.png", &img);
 }
+
+/// The tray's Screens part (#519), idle and sending, and the left screen's Change… list (#521).
+#[test]
+fn art_tray_and_left_picker_render() {
+    use crate::foxglove::tray_panel;
+    let tray = |v: &tray_panel::View| {
+        let ctx = preview_ctx();
+        render(
+            &ctx,
+            egui::vec2(tray_panel::WIDTH + 40.0, 760.0),
+            Color32::from_rgb(0x09, 0x0a, 0x0c),
+            |ctx| {
+                egui::Area::new(egui::Id::new("tray-panel-preview"))
+                    .fixed_pos(egui::pos2(20.0, 20.0))
+                    .show(ctx, |ui| {
+                        tray_panel::panel(ui, v, &mut Default::default(), &mut Vec::new());
+                    });
+            },
+        )
+    };
+    let idle = tray_panel::tests::sample();
+    keep("ux-art-built-7-tray.png", &tray(&idle));
+    let mut s = Snapshot {
+        busy: true,
+        push_progress: Some((2100, 3500)),
+        job: Some(job(JobKind::Show, "Uplink")),
+        ..Default::default()
+    };
+    s.connected = true;
+    let sending = tray_panel::View {
+        art_strip: crate::foxglove::art_words::strip(&s),
+        art_ready: false,
+        ..idle
+    };
+    let img = tray(&sending);
+    keep("ux-art-built-8-tray-sending.png", &img);
+    assert!(
+        count(&img, crate::foxglove::theme::DARK.accent) > 200,
+        "the strip's bar"
+    );
+
+    let ctx = preview_ctx();
+    let img = render_ui(
+        &ctx,
+        egui::vec2(420.0, 340.0),
+        Color32::from_rgb(0x09, 0x0a, 0x0c),
+        |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::same(16))
+                .show(ui, |ui| {
+                    ui.label(crate::foxglove::theme::heading(ui, "Left screen: Change…"));
+                    ui.add_space(6.0);
+                    crate::foxglove::screens_ui::left_choices(
+                        ui,
+                        crate::foxglove::screens_ui::LeftChoice::Info,
+                    );
+                });
+        },
+    );
+    keep("ux-art-built-9-left-picker.png", &img);
+}
+
+/// After a firmware update: the keyboard card says what happened to the art (#521).
+#[test]
+fn art_after_update_renders() {
+    let (mut s, l) = art_ui::tests::sample();
+    s.notice = Some(
+        "The keyboard's firmware changed. Your 5 kept pieces are still on the keyboard. \
+         New with the keyboard: Bandit skyline. No longer with the keyboard: Bandit boot."
+            .into(),
+    );
+    keep("ux-art-built-10-after-update.png", &page((s, l), 1300.0));
+}

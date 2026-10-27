@@ -150,8 +150,16 @@ pub struct View {
     pub lights_ready: bool,
     pub art_name: String,
     pub art_image: Option<Arc<egui::ColorImage>>,
+    /// The right screen's badge (ON KEYBOARD, COMES WITH KEYBOARD, SHOWING UNTIL RESTART).
+    pub art_badge: Option<super::art_words::Badge>,
+    /// The sending strip, the same as the Screens page's (#518).
+    pub art_strip: Option<super::art_words::Strip>,
     /// A keyboard with the art relay answers, and no transfer is running.
     pub art_ready: bool,
+    /// What the left screen shows, in a few words.
+    pub left_name: String,
+    /// Foxglove draws the left screen (so Pause means something).
+    pub left_driven: bool,
     pub panel_paused: bool,
     /// Foxglove is paused (#404).
     pub paused: bool,
@@ -170,8 +178,12 @@ pub enum Intent {
         sat: u8,
         brightness: u8,
     },
+    PreviousArt,
     NextArt,
-    PushFile,
+    /// "Art…": the settings window on Screens.
+    OpenArt,
+    /// The strip's button: Cancel or Try again.
+    ArtStrip(super::art_words::Button),
     PauseLeftPanel(bool),
     /// Pause (true) or resume Foxglove (#404).
     Pause(bool),
@@ -218,16 +230,29 @@ pub fn halves(s: &StripState) -> [(Tone, String); 2] {
     [(Tone::Ok, left), right]
 }
 
-/// The right art part from the art service's snapshot, read afresh each frame: its name, its
-/// picture (a library file) and whether Next and Send take a click. Each snapshot change draws a
-/// frame (the art service's wake), so the panel follows the keyboard.
-fn art(
-    s: &super::art_service::Snapshot,
-    library: &super::art_library::Library,
-) -> (String, Option<Arc<egui::ColorImage>>, bool) {
-    let ready = s.connected && !s.busy;
+/// The right screen from the art service's snapshot, read afresh each frame: its name,
+/// picture and badge, the strip, and whether ‹ / Next › take a click. Each snapshot change
+/// draws a frame (the art service's wake), so the panel follows the keyboard.
+pub struct ArtPart {
+    pub name: String,
+    pub image: Option<Arc<egui::ColorImage>>,
+    pub badge: Option<super::art_words::Badge>,
+    pub strip: Option<super::art_words::Strip>,
+    pub ready: bool,
+}
+
+fn art(s: &super::art_service::Snapshot, library: &super::art_library::Library) -> ArtPart {
     let (name, image) = super::art_ui::showing_now(s, library);
-    (name, image, ready)
+    ArtPart {
+        name,
+        image,
+        badge: s
+            .status
+            .filter(|_| s.connected)
+            .and_then(|st| super::art_words::showing_badge(super::art_words::showing(&st))),
+        strip: super::art_words::strip(s),
+        ready: s.connected && !s.busy,
+    }
 }
 
 fn view(ctx: &egui::Context) -> View {
@@ -235,19 +260,24 @@ fn view(ctx: &egui::Context) -> View {
     let lights = super::keyboard_settings::rgb_state(ctx).map(|s| s.left);
     let lights_ready = super::keyboard_actions::underglow_behavior().is_some()
         && !super::keyboard_settings::invoking();
-    let (art_name, art_image, art_ready) = match super::art_service::handle() {
+    let a = match super::art_service::handle() {
         Some(h) => art(&h.snapshot(), &super::art_library::snapshot()),
-        None => ("…".to_string(), None, false),
+        None => art(&Default::default(), &Default::default()),
     };
+    let (left, _, left_driven) = super::screens_ui::left_now();
     while_paused(View {
         halves: halves(&super::shell::strip_state(ctx)),
         profiles,
         active_profile,
         lights,
         lights_ready,
-        art_name,
-        art_image,
-        art_ready,
+        art_name: a.name,
+        art_image: a.image,
+        art_badge: a.badge,
+        art_strip: a.strip,
+        art_ready: a.ready,
+        left_name: left.to_string(),
+        left_driven,
         panel_paused: super::screens::paused(),
         paused: super::pause::paused(),
         update: super::update::available_version().map(|v| format!("Update available: v{v}")),
@@ -381,16 +411,32 @@ fn act(ctx: &egui::Context, intent: Intent) -> bool {
             sat,
             brightness,
         } => ks::set_color(hue, sat, brightness, ctx.clone()),
-        Intent::NextArt => {
+        Intent::PreviousArt => {
             if let Some(h) = super::art_service::handle() {
-                let _ = h.next();
+                h.previous();
             }
         }
-        Intent::PushFile => {
-            // The file picker lives with the Screens page, as the tray menu's Push file... does.
-            super::art_library::PICK_FILE.store(true, std::sync::atomic::Ordering::Relaxed);
+        Intent::NextArt => {
+            if let Some(h) = super::art_service::handle() {
+                h.next();
+            }
+        }
+        // Art is added and kept on the Screens page; the tray only steps through it (#519).
+        Intent::OpenArt => {
             super::shell::set_page(super::shell::Page::Screens);
             return true;
+        }
+        Intent::ArtStrip(button) => {
+            if let Some(h) = super::art_service::handle() {
+                match button {
+                    super::art_words::Button::Cancel => h.cancel(),
+                    super::art_words::Button::TryAgain => {
+                        if let Some(r) = h.snapshot().outcome.and_then(|o| o.job.again) {
+                            h.again(r);
+                        }
+                    }
+                }
+            }
         }
         Intent::PauseLeftPanel(on) => super::screens::set_paused(on),
         Intent::Pause(on) => super::pause::set(on),
@@ -477,35 +523,53 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 });
             });
             lights(ui, v, draft, out);
-            part(ui, "Right art", |_| {}, |ui| {
+            // The two screens (#519): the left one's line with its pause, the right one's
+            // piece with ‹ / Next › through Rotation, Art… to the page, and the strip.
+            part(ui, "Screens", |_| {}, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("Left screen: {}", v.left_name)).color(p.text));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let text = if v.panel_paused { "Resume" } else { "Pause" };
+                        if ui
+                            .add_enabled(!v.paused && v.left_driven, egui::Button::new(text).small())
+                            .on_hover_text("The keyboard shows its own left screen meanwhile")
+                            .clicked()
+                        {
+                            out.push(Intent::PauseLeftPanel(!v.panel_paused));
+                        }
+                    });
+                });
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     art_thumb(ui, v.art_image.as_ref());
                     ui.vertical(|ui| {
                         ui.label(RichText::new(&v.art_name).font(theme::hud(15.0)).color(p.text_strong));
-                        ui.add_enabled_ui(v.art_ready, |ui| {
-                            ui.horizontal(|ui| {
-                                if ui.button("Next").clicked() {
+                        if let Some(b) = v.art_badge {
+                            super::art_ui::badge_ui(ui, b);
+                        }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.add_enabled_ui(v.art_ready, |ui| {
+                                if ui.button("‹").on_hover_text("The keyboard's piece before").clicked() {
+                                    out.push(Intent::PreviousArt);
+                                }
+                                if ui.button("Next ›").on_hover_text("The keyboard's next piece").clicked() {
                                     out.push(Intent::NextArt);
                                 }
-                                if ui.button("Push file...").clicked() {
-                                    out.push(Intent::PushFile);
-                                }
                             });
+                            if ui.button("Art…").on_hover_text("Opens Screens: add, keep and remove art").clicked() {
+                                out.push(Intent::OpenArt);
+                            }
                         });
                     });
                 });
-            });
-            part(
-                ui,
-                "Left panel",
-                |ui| {
-                    let text = if v.panel_paused { "Resume left panel" } else { "Pause left panel" };
-                    if ui.add_enabled(!v.paused, egui::Button::new(text)).clicked() {
-                        out.push(Intent::PauseLeftPanel(!v.panel_paused));
+                if let Some(strip) = &v.art_strip {
+                    ui.add_space(6.0);
+                    if let Some(b) = super::art_ui::strip_ui(ui, strip) {
+                        out.push(Intent::ArtStrip(b));
                     }
-                },
-                |_| {},
-            );
+                }
+            });
             let (line, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), Sense::hover());
             ui.painter().rect_filled(line, 0.0, p.line);
             egui::Frame::new().fill(p.well).inner_margin(egui::Margin::symmetric(18, 12)).show(ui, |ui| {
@@ -624,21 +688,20 @@ fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>)
     }
 }
 
-thread_local! {
-    /// The art thumbnail's texture, by the picture it was made from.
-    /// Kept with the picture itself, so a freed picture's address can't pass for a new one.
-    static ART: std::cell::RefCell<Option<(Arc<egui::ColorImage>, egui::TextureHandle)>> = const { std::cell::RefCell::new(None) };
-}
-
 /// The art playing on the right, drawn in the screen's two tones; a dark box when unknown.
 fn art_thumb(ui: &mut egui::Ui, image: Option<&Arc<egui::ColorImage>>) {
     let p = theme::palette(ui);
     let size = egui::vec2(54.0, 112.0);
     match image {
         Some(stored) => {
-            // Made once per picture, not every frame.
-            let t = ART.with_borrow_mut(|cache| match cache {
-                Some((k, t)) if Arc::ptr_eq(k, stored) => t.clone(),
+            // Made once per picture, not every frame, and kept with the picture itself (so a
+            // freed picture's address can't pass for a new one) in this context's data (so
+            // another context never draws its texture id).
+            type Cached = (Arc<egui::ColorImage>, egui::TextureHandle);
+            let id = egui::Id::new("foxglove-tray-art");
+            let cached = ui.ctx().data(|d| d.get_temp::<Cached>(id));
+            let t = match cached {
+                Some((k, t)) if Arc::ptr_eq(&k, stored) => t,
                 _ => {
                     let half = super::art_ui::thumbnail(stored, true);
                     let t = ui.ctx().load_texture(
@@ -646,10 +709,11 @@ fn art_thumb(ui: &mut egui::Ui, image: Option<&Arc<egui::ColorImage>>) {
                         half,
                         egui::TextureOptions::NEAREST,
                     );
-                    *cache = Some((stored.clone(), t.clone()));
+                    ui.ctx()
+                        .data_mut(|d| d.insert_temp::<Cached>(id, (stored.clone(), t.clone())));
                     t
                 }
-            });
+            };
             ui.add(egui::Image::new((t.id(), t.size_vec2())).corner_radius(3));
         }
         None => {
@@ -763,15 +827,32 @@ pub mod tests {
             ..Default::default()
         };
         let none = crate::foxglove::art_library::Library::default();
-        let before = art(&s, &none).0;
+        let before = art(&s, &none).name;
         s.status = Some(status(4));
-        let after = art(&s, &none).0;
-        assert_ne!(before, after);
-        assert_eq!(after, crate::foxglove::art_pieces::showing_name(&s));
+        let after = art(&s, &none);
+        assert_ne!(before, after.name);
+        assert_eq!(after.name, crate::foxglove::art_pieces::showing_name(&s));
+        assert_eq!(
+            after.badge,
+            Some(crate::foxglove::art_words::Badge::ComesWithKeyboard)
+        );
         s.busy = true;
-        assert!(!art(&s, &none).2, "no clicks while the art is being sent");
+        s.job = Some(crate::foxglove::art_service::Job {
+            kind: crate::foxglove::art_service::JobKind::Show,
+            name: "Bandit gem".into(),
+            quiet: false,
+            again: None,
+        });
+        let sending = art(&s, &none);
+        assert!(!sending.ready, "no clicks while the art is being sent");
+        assert_eq!(
+            sending.strip,
+            crate::foxglove::art_words::strip(&s),
+            "the tray's strip is the page's strip"
+        );
+        assert_eq!(sending.strip.unwrap().text, "Showing Bandit gem…");
         s.connected = false;
-        assert_eq!(art(&s, &none).0, "…");
+        assert_eq!(art(&s, &none).name, "…");
     }
 
     #[test]
@@ -847,7 +928,7 @@ pub mod tests {
     /// The previews' panel: both halves seen, two profiles, the lights on, art playing.
     pub fn sample() -> View {
         let (snapshot, library) = super::super::art_ui::tests::sample();
-        let (art_name, image) = super::super::art_ui::showing_now(&snapshot, &library);
+        let a = art(&snapshot, &library);
         View {
             halves: [
                 (Tone::Ok, "on USB".into()),
@@ -864,9 +945,13 @@ pub mod tests {
                 speed: 3,
             }),
             lights_ready: true,
-            art_name,
-            art_image: image,
+            art_name: a.name,
+            art_image: a.image,
+            art_badge: a.badge,
+            art_strip: None,
             art_ready: true,
+            left_name: "Clock, media and hints".into(),
+            left_driven: true,
             panel_paused: false,
             paused: false,
             update: Some("Update available: v0.2.1".into()),

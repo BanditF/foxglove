@@ -155,7 +155,247 @@ fn now_left(ui: &mut egui::Ui) {
                 .color(p.text_strong),
         );
         ui.weak(line);
+        if let Some(pick) = change_picker(ui, &settings) {
+            let mut new = settings.clone();
+            pick.apply(&mut new);
+            match new.save() {
+                Ok(()) => {
+                    remember(&new);
+                    state.settings = Some(new);
+                }
+                Err(e) => eprintln!("Foxglove: can't save the left screen: {e}"),
+            }
+        }
     });
+}
+
+/// What the left screen can show (#521, the Change… picker).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeftChoice {
+    /// The keyboard's own screen: Foxglove doesn't draw.
+    KeyboardOwn,
+    Info,
+    Wallpaper,
+}
+
+impl LeftChoice {
+    pub const ALL: [LeftChoice; 3] = [
+        LeftChoice::KeyboardOwn,
+        LeftChoice::Info,
+        LeftChoice::Wallpaper,
+    ];
+
+    pub fn of(settings: &ScreensSettings) -> LeftChoice {
+        use super::screens_settings::Layout;
+        match (settings.drive_left, settings.layout) {
+            (false, _) => LeftChoice::KeyboardOwn,
+            (true, Layout::Info) => LeftChoice::Info,
+            (true, Layout::Wallpaper) => LeftChoice::Wallpaper,
+        }
+    }
+
+    pub fn apply(self, settings: &mut ScreensSettings) {
+        use super::screens_settings::Layout;
+        match self {
+            LeftChoice::KeyboardOwn => settings.drive_left = false,
+            LeftChoice::Info => {
+                settings.drive_left = true;
+                settings.layout = Layout::Info;
+            }
+            LeftChoice::Wallpaper => {
+                settings.drive_left = true;
+                settings.layout = Layout::Wallpaper;
+            }
+        }
+    }
+
+    /// Its name and what it needs.
+    pub fn words(self) -> (&'static str, &'static str) {
+        match self {
+            LeftChoice::KeyboardOwn => (
+                "Clock and status",
+                "The keyboard's own screen; needs nothing.",
+            ),
+            LeftChoice::Info => (
+                "Clock, media and hints",
+                "Drawn by Foxglove while it runs on this PC.",
+            ),
+            LeftChoice::Wallpaper => (
+                "Wallpaper animation",
+                "The wallpaper's own left frames, while Foxglove runs; the clock when it has none.",
+            ),
+        }
+    }
+}
+
+/// A preview of a left-screen choice, as the panel draws it (64×52, ink on black).
+fn left_preview(choice: LeftChoice) -> egui::ColorImage {
+    use foxglove_panel::render::{self, Panel, View};
+    let mut panel = Panel::new(64, 52);
+    match choice {
+        LeftChoice::Info => {
+            let view = View {
+                time: "14:32".into(),
+                date: "Mon 27 Oct".into(),
+                date_short: "27 Oct".into(),
+                title: Some("Bandit radio".into()),
+                artist: Some("Foxglove".into()),
+                playing: true,
+                ..View::default()
+            };
+            render::draw(&mut panel, &view, 0);
+        }
+        LeftChoice::Wallpaper => {
+            let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
+            let first = super::wallpaper::current(monitor.as_deref())
+                .and_then(|w| w.left)
+                .and_then(|left| super::wallpaper::left_frames(&left, panel.bits.len()))
+                .and_then(|frames| frames.into_iter().next());
+            match first {
+                Some(bits) => panel.bits = bits,
+                // No wallpaper frames now: what it falls back to.
+                None => render::draw(
+                    &mut panel,
+                    &View {
+                        time: "14:32".into(),
+                        ..View::default()
+                    },
+                    0,
+                ),
+            }
+        }
+        LeftChoice::KeyboardOwn => {}
+    }
+    frame_image(&Frame {
+        width: panel.width,
+        height: panel.height,
+        stride: panel.stride,
+        bits: panel.bits,
+    })
+}
+
+/// The Change… button and its list, each choice with a preview; the one clicked, if any.
+fn change_picker(ui: &mut egui::Ui, settings: &ScreensSettings) -> Option<LeftChoice> {
+    let mut picked = None;
+    let now = LeftChoice::of(settings);
+    // The previews are made when the list opens (the wallpaper's may have changed since).
+    let open_id = egui::Id::new("left-picker-open");
+    let was_open = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(open_id))
+        .unwrap_or(false);
+    let mut open = false;
+    ui.menu_button("Change…", |ui| {
+        open = true;
+        if !was_open {
+            ui.ctx().data_mut(|d| {
+                for choice in LeftChoice::ALL {
+                    d.remove::<egui::TextureHandle>(egui::Id::new(("left-preview", choice as u8)));
+                }
+            });
+        }
+        picked = left_choices(ui, now);
+        if picked.is_some() {
+            ui.close();
+        }
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
+    picked
+}
+
+/// The picker's list: each choice with its preview, name and what it needs.
+pub(crate) fn left_choices(ui: &mut egui::Ui, now: LeftChoice) -> Option<LeftChoice> {
+    let mut picked = None;
+    {
+        let p = super::theme::palette(ui);
+        ui.set_min_width(330.0);
+        for choice in LeftChoice::ALL {
+            let (name, needs) = choice.words();
+            let r = ui
+                .horizontal(|ui| {
+                    let id = egui::Id::new(("left-preview", choice as u8));
+                    let t = ui
+                        .ctx()
+                        .data(|d| d.get_temp::<egui::TextureHandle>(id))
+                        .unwrap_or_else(|| {
+                            let t = ui.ctx().load_texture(
+                                format!("left-preview-{name}"),
+                                left_preview(choice),
+                                egui::TextureOptions::NEAREST,
+                            );
+                            ui.ctx().data_mut(|d| d.insert_temp(id, t.clone()));
+                            t
+                        });
+                    let size = egui::vec2(64.0, 52.0) * 1.5;
+                    if choice == LeftChoice::KeyboardOwn {
+                        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                        ui.painter().rect(
+                            rect,
+                            3.0,
+                            egui::Color32::BLACK,
+                            egui::Stroke::new(1.0, p.control_line),
+                            egui::StrokeKind::Inside,
+                        );
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "its own\nscreen",
+                            super::theme::body(11.0),
+                            p.muted,
+                        );
+                    } else {
+                        ui.add(egui::Image::new((t.id(), size)).corner_radius(3));
+                    }
+                    ui.vertical(|ui| {
+                        let color = if choice == now {
+                            p.accent
+                        } else {
+                            p.text_strong
+                        };
+                        ui.label(egui::RichText::new(name).color(color));
+                        ui.label(egui::RichText::new(needs).small().color(p.muted));
+                    });
+                })
+                .response;
+            let r = ui.interact(
+                r.rect,
+                egui::Id::new(("left-choice", choice as u8)),
+                egui::Sense::click(),
+            );
+            if r.hovered() {
+                ui.painter().rect_stroke(
+                    r.rect.expand(2.0),
+                    4.0,
+                    egui::Stroke::new(1.0, p.accent),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            if r.clicked() && choice != now {
+                picked = Some(choice);
+            }
+            ui.add_space(4.0);
+        }
+    }
+    picked
+}
+
+/// The left screen's settings as last loaded or saved here, for the tray panel's line. Only
+/// the line's words come from it; a change made outside Foxglove's pages shows after a restart.
+static LEFT: std::sync::Mutex<Option<ScreensSettings>> = std::sync::Mutex::new(None);
+
+fn remember(settings: &ScreensSettings) {
+    *LEFT.lock().unwrap_or_else(|e| e.into_inner()) = Some(settings.clone());
+}
+
+/// What the left screen shows, in words, without reading the store every frame.
+pub fn left_now() -> (&'static str, &'static str, bool) {
+    let settings = LEFT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(ScreensSettings::load)
+        .clone();
+    let (name, line) = left_words(&settings, screens::paused());
+    (name, line, settings.drive_left)
 }
 
 fn snapshot() -> screens::Snapshot {
@@ -292,8 +532,11 @@ pub fn group(ui: &mut egui::Ui) {
             });
 
             if changed {
-                if let Err(e) = settings.save() {
-                    ui.colored_label(ui.visuals().error_fg_color, format!("Can't save: {e}"));
+                match settings.save() {
+                    Ok(()) => remember(settings),
+                    Err(e) => {
+                        ui.colored_label(ui.visuals().error_fg_color, format!("Can't save: {e}"));
+                    }
                 }
             }
         });
@@ -361,5 +604,26 @@ mod tests {
         let on = |x: usize, y: usize| image.pixels[y * 10 + x] == egui::Color32::WHITE;
         assert!(on(0, 0) && on(9, 0) && !on(1, 0));
         assert!(!on(0, 1) && !on(8, 1));
+    }
+
+    /// The Change… picker's choices set the settings the panel service reads, one click each.
+    #[test]
+    fn left_choices_round_trip() {
+        let mut s = ScreensSettings::default();
+        for choice in LeftChoice::ALL {
+            choice.apply(&mut s);
+            assert_eq!(LeftChoice::of(&s), choice);
+            assert_eq!(
+                left_words(&s, false).0,
+                choice.words().0,
+                "one name everywhere"
+            );
+        }
+        let info = left_preview(LeftChoice::Info);
+        assert_eq!(info.size, [64, 52]);
+        assert!(
+            info.pixels.contains(&egui::Color32::WHITE),
+            "the clock preview draws something"
+        );
     }
 }

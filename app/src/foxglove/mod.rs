@@ -14,6 +14,7 @@ pub mod art_library;
 pub mod art_manifest;
 pub mod art_pieces;
 mod art_preview;
+mod art_seen;
 pub mod art_service;
 mod art_sources;
 mod art_triggers;
