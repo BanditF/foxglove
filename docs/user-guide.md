@@ -46,8 +46,9 @@ The **left half** is the one that talks to the PC. The right half talks only to 
 
 1. **Plug the left half in with a USB cable** for the first connection. Foxglove reads the
    keymap over USB once and remembers it.
-2. Click **Open Foxglove** in the tray. On the **Keyboard** page, under **Keymap source**, pick
-   the keyboard in **Device** and click **Connect**.
+2. Click **Open Foxglove** in the tray. On the **Keyboard** page, in the **Layer overlay** card
+   under **Keymap source**, pick the keyboard in **Device** and click **Connect**. (Keymap source
+   hides once the only keyboard found is connected.)
 3. To use Bluetooth too, pair it like any Bluetooth keyboard: **Windows Settings → Bluetooth
    & devices → Add device → Bluetooth → Eyelash Corne**. After that, Foxglove works over USB or
    Bluetooth, and reconnects by itself.
@@ -134,7 +135,14 @@ Open it from the tray: **Open Foxglove**. The sidebar has six pages, top to bott
     low** (on by default; one notification below 15% and one below 5%). Devices that don't
     report a battery aren't listed, and the keyboard has its own lines. The tray panel shows the
     same list under **Batteries** when one reports.
-  - **Keymap source:** the keyboard the layer overlay reads (**Device**, **Connect**).
+  - **Layer overlay:** everything about the picture of the keymap that pops up on screen when
+    you change layer, in one card: **When it shows** (how long it stays, the delay before it
+    appears), **Appearance** (display, alignment, size, opacity, labels), **Layer colours** (the
+    text colour, and per layer its colour and whether it shows), and **Keymap source**, the
+    keyboard the overlay reads (**Device**, **Layout**, **Connect**). Keymap source shows only
+    when there's a choice: two or more keyboards found, none connected, or more than one layout.
+  - **Other keyboards:** read-only support for VIA/QMK keyboards: see
+    [Other keyboards](#10-other-keyboards-via).
 - **Lights.** **Keyboard** sets the colour, effect, brightness and speed of the keyboard's
   lights. **Follow the Windows accent colour** makes them take Windows' accent colour whenever
   you change it, keeping your brightness. These controls need an RGB key in the keymap. The
@@ -160,14 +168,9 @@ Open it from the tray: **Open Foxglove**. The sidebar has six pages, top to bott
 - **Plugins.** Optional add-ons (Pomodoro, Mic mute, Broadcast Status, OpenRGB): see
   [Plugins](#9-plugins).
 - **App.** Foxglove's own preferences:
-  - **Layer overlay** and **Layer colours:** the picture of the keymap that pops up on screen
-    when you change layer. You can pick its monitor, size, colours, which layers show it, and
-    how long it stays.
   - **Profiles:** the setup you're editing (see [Profiles](#profiles) below).
   - **Appearance:** Dark, Light or System.
   - **Startup and updates:** **Start with Windows** and version checks.
-  - **Other keyboards:** read-only support for VIA/QMK keyboards: see
-    [Other keyboards](#10-other-keyboards-via).
 
 ### Profiles
 
@@ -431,7 +434,7 @@ back when the plugin lets go, or at the latest after a minute.
 
 ## 10. Other keyboards (VIA)
 
-**App → Other keyboards** shows QMK keyboards with VIA (like a Keychron K5 Pro) in
+**Keyboard → Other keyboards** shows QMK keyboards with VIA (like a Keychron K5 Pro) in
 the overlay, over USB. Foxglove only **reads** them: their keymap, layers and lights. It never
 changes them.
 - **Setup:** tick **Use VIA keyboards** and add the keyboard's VIA definition (the JSON from its

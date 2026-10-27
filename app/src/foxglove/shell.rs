@@ -64,6 +64,11 @@ impl Page {
 pub const SECTIONS: [(&str, Page); 18] = [
     ("Connection", Page::Keyboard),
     ("Keyboard", Page::Keyboard),
+    // The layer overlay's card (#534): KeyPeek's appearance grid, its layer colours, then the
+    // keymap source (KeyPeek's "Connection" above). Other keyboards close the page.
+    ("Overlay Appearance", Page::Keyboard),
+    ("Theme", Page::Keyboard),
+    ("Other keyboards (VIA)", Page::Keyboard),
     ("Lights", Page::Lights),
     ("Scenes", Page::Scenes),
     // The art flow's tiers (#516), then the left screen's own settings.
@@ -73,23 +78,33 @@ pub const SECTIONS: [(&str, Page); 18] = [
     ("Left screen", Page::Screens),
     ("Notifications", Page::Screens),
     ("Plugins", Page::Plugins),
-    ("Overlay Appearance", Page::Settings),
-    ("Theme", Page::Settings),
     ("Profile", Page::Settings),
     ("Appearance", Page::Settings),
     ("Startup and updates", Page::Settings),
     ("Live wallpaper", Page::Settings),
-    ("Other keyboards (VIA)", Page::Settings),
     // The links, credits and version at the end of the window.
     ("About", Page::Settings),
 ];
 
-/// The App page's column for each of its sections (#390): the layer overlay's card on the
-/// left, the shorter cards stacked on the right. Unlisted sections go on the right.
-const COLUMNS: [(&str, usize); 2] = [("Overlay Appearance", 0), ("Theme", 0)];
+/// The part of its page each section is drawn in, where the page draws in parts. The App page's
+/// parts are its two columns (#390): Profiles and Appearance on the left, the rest on the right. The
+/// Keyboard page's are stacked (#534), so KeyPeek's sections keep their order in its file and
+/// still show in the canvas's: the layer overlay's card (its grid, then its colours), the keymap
+/// source at the card's foot, then Other keyboards. Unlisted sections are in part 1.
+const PARTS: [(&str, usize); 6] = [
+    ("Profile", 0),
+    ("Appearance", 0),
+    ("Overlay Appearance", 0),
+    ("Theme", 0),
+    ("Connection", 1),
+    ("Other keyboards (VIA)", 2),
+];
 
-fn column_of(title: &str) -> usize {
-    COLUMNS
+/// How many parts the Keyboard page draws, one under the other.
+const KEYBOARD_PARTS: usize = 3;
+
+fn part_of(title: &str) -> usize {
+    PARTS
         .iter()
         .find(|(t, _)| *t == title)
         .map_or(1, |(_, c)| *c)
@@ -108,7 +123,7 @@ thread_local! {
     static SHOWING: Cell<Option<Page>> = const { Cell::new(None) };
     /// Whether any section drew on the page so far.
     static DREW: Cell<bool> = const { Cell::new(false) };
-    /// The column being drawn on a two-column page; `None` draws both.
+    /// The part being drawn on a page drawn in parts; `None` draws them all.
     static COLUMN: Cell<Option<usize>> = const { Cell::new(None) };
     /// The chosen page, loaded from the store on first use.
     static CURRENT: Cell<Option<Page>> = const { Cell::new(None) };
@@ -117,7 +132,7 @@ thread_local! {
 /// Whether the section titled `title` is on the page being drawn.
 pub fn shows(title: &str) -> bool {
     let shown = SHOWING.get().is_none_or(|page| page_of(title) == page)
-        && COLUMN.get().is_none_or(|c| column_of(title) == c);
+        && COLUMN.get().is_none_or(|c| part_of(title) == c);
     if shown {
         DREW.set(true);
     }
@@ -175,7 +190,8 @@ const SIDEBAR_WIDTH: f32 = 196.0;
 const SCROLL_GUTTER: f32 = 12.0;
 
 /// Draws the sidebar, the status strip and the current page; `add` draws the sections, and only
-/// those of the current page show. The Settings page calls it once per column (#390).
+/// those of the current page show. The App page calls it once per column (#390), the Keyboard
+/// page once per part (#534).
 pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
     let p = theme::palette(ui);
     let mut page = current();
@@ -235,8 +251,8 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
                     SHOWING.set(Some(page));
                     DREW.set(false);
                     if page == Page::Keyboard {
-                        // The board and the keyboard's cards lead the page; the device picker
-                        // (KeyPeek's Connection section) follows them (#386).
+                        // The board and the keyboard's cards lead the page; the layer overlay's
+                        // card and Other keyboards follow them (#386, #534).
                         go = super::keyboard_page::top(ui);
                     }
                     if page == Page::Scenes {
@@ -248,13 +264,19 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
                         super::screens_ui::page(ui);
                     }
                     // A grid of cards (#390): each column draws only its own sections. The left one
-                    // holds KeyPeek's overlay grid, which needs about 460 points; narrower windows
-                    // stack the cards.
+                    // holds Profiles, whose rules need about 460 points; narrower windows stack
+                    // the cards.
                     const GAP: f32 = 16.0;
                     let width = ui.available_width();
                     let left = (width * 0.55).max(460.0);
                     let right = width - left - GAP;
-                    if page == Page::Settings && right >= 300.0 {
+                    if page == Page::Keyboard {
+                        for part in 0..KEYBOARD_PARTS {
+                            COLUMN.set(Some(part));
+                            add(ui);
+                        }
+                        COLUMN.set(None);
+                    } else if page == Page::Settings && right >= 300.0 {
                         ui.horizontal_top(|ui| {
                             ui.spacing_mut().item_spacing.x = GAP;
                             for (i, w) in [left, right].into_iter().enumerate() {
@@ -780,9 +802,13 @@ mod tests {
 
     #[test]
     fn sections_land_on_their_pages() {
-        // The table from #385.
+        // The table from #385, with the layer overlay and other keyboards on Keyboard (#534).
         for (title, page) in [
             ("Keyboard", Page::Keyboard),
+            ("Connection", Page::Keyboard),
+            ("Overlay Appearance", Page::Keyboard),
+            ("Theme", Page::Keyboard),
+            ("Other keyboards (VIA)", Page::Keyboard),
             ("Lights", Page::Lights),
             ("Scenes", Page::Scenes),
             ("Showing now", Page::Screens),
@@ -790,12 +816,9 @@ mod tests {
             ("On this PC", Page::Screens),
             ("Left screen", Page::Screens),
             ("Plugins", Page::Plugins),
-            ("Overlay Appearance", Page::Settings),
-            ("Theme", Page::Settings),
             ("Profile", Page::Settings),
             ("Appearance", Page::Settings),
             ("Startup and updates", Page::Settings),
-            ("Other keyboards (VIA)", Page::Settings),
         ] {
             assert_eq!(page_of(title), page, "{title}");
         }
@@ -855,25 +878,55 @@ mod tests {
     fn the_settings_page_splits_into_two_columns() {
         SHOWING.set(Some(Page::Settings));
         COLUMN.set(Some(0));
-        assert!(shows("Overlay Appearance") && shows("Theme"));
-        assert!(
-            !shows("Profile")
-                && !shows("Appearance")
-                && !shows("Startup and updates")
-                && !shows("About")
-        );
+        assert!(shows("Profile") && shows("Appearance"));
+        assert!(!shows("Startup and updates") && !shows("About"));
         COLUMN.set(Some(1));
-        assert!(!shows("Overlay Appearance"));
-        assert!(
-            shows("Profile")
-                && shows("Appearance")
-                && shows("Startup and updates")
-                && shows("Other keyboards (VIA)")
-                && shows("About")
-        );
+        assert!(!shows("Profile") && !shows("Appearance"));
+        assert!(shows("Startup and updates") && shows("Live wallpaper") && shows("About"));
         assert!(!shows("Lights"), "still only this page's sections");
+        // Nothing about the overlay or other keyboards is on App any more (#534).
+        COLUMN.set(None);
+        for title in [
+            "Overlay Appearance",
+            "Theme",
+            "Connection",
+            "Other keyboards (VIA)",
+        ] {
+            assert!(!shows(title), "{title} is on App");
+        }
         drop(Showing);
         assert_eq!((SHOWING.get(), COLUMN.get()), (None, None));
+    }
+
+    /// The Keyboard page (#534): the layer overlay's card, its keymap source at the foot, then
+    /// Other keyboards, whatever order KeyPeek's file draws them in.
+    #[test]
+    fn the_keyboard_page_draws_the_overlay_card_then_other_keyboards() {
+        SHOWING.set(Some(Page::Keyboard));
+        let order: Vec<Vec<&str>> = (0..KEYBOARD_PARTS)
+            .map(|part| {
+                COLUMN.set(Some(part));
+                // KeyPeek's order in ui_settings.rs, then Foxglove's.
+                [
+                    "Connection",
+                    "Overlay Appearance",
+                    "Theme",
+                    "Other keyboards (VIA)",
+                ]
+                .into_iter()
+                .filter(|t| shows(t))
+                .collect()
+            })
+            .collect();
+        assert_eq!(
+            order,
+            [
+                vec!["Overlay Appearance", "Theme"],
+                vec!["Connection"],
+                vec!["Other keyboards (VIA)"],
+            ]
+        );
+        drop(Showing);
     }
 
     #[test]

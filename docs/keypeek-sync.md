@@ -31,6 +31,11 @@ Then build and test (`cargo test --manifest-path app/Cargo.toml`) and check the 
 When upstream merges its own monitor picker (srwi/keypeek#49), ours (`monitor-select`) will
 conflict with it in `settings.rs`, `ui_settings.rs` and `eframe_host.rs`: take upstream's.
 
+The layer overlay's card (#534) moved KeyPeek's **Display duration** and **Activation delay**
+rows to the top of the appearance grid, under a "When it shows" heading
+(`settings_ui::grid_heading`), and calls `settings_ui::keymap_choice` before the sections. On a
+conflict there, keep upstream's rows and move the two again.
+
 ## Sending a change upstream
 
 ```bash

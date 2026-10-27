@@ -1,8 +1,8 @@
 //! Collapsible settings sections, kept apart from KeyPeek's shared widgets.
 
 pub fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut egui::Ui)) {
-    // Only the current page's sections show (#385).
-    if !super::shell::shows(title) {
+    // Only the current page's sections show (#385); the keymap source only with a choice (#534).
+    if !super::shell::shows(title) || (title == "Connection" && !keymap_source_shown()) {
         return;
     }
     ui.add_space(6.0);
@@ -21,29 +21,25 @@ pub fn section(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut eg
         return;
     }
     match style(title) {
-        // The layer overlay's card in two parts (#390): KeyPeek's appearance grid on top, its
-        // colours and layers below the line, drawn as one card.
-        Style::CardTop | Style::CardBottom => {
-            let top = style(title) == Style::CardTop;
+        // The layer overlay's card in parts (#390, #534): KeyPeek's grid on top, its colours
+        // and layers below a line, then the keymap source when it shows, drawn as one card.
+        part @ (Style::CardTop | Style::CardMiddle | Style::CardBottom) => {
+            let top = part == Style::CardTop;
             if !top {
                 // Back over the gap between sections, so the two outlines meet in one line.
                 ui.add_space(-(6.0 + ui.spacing().item_spacing.y + 1.0));
             }
             let (r, z) = (8, 0);
-            let corners = if top {
-                egui::CornerRadius {
-                    nw: r,
-                    ne: r,
-                    sw: z,
-                    se: z,
-                }
-            } else {
-                egui::CornerRadius {
-                    nw: z,
-                    ne: z,
-                    sw: r,
-                    se: r,
-                }
+            let (upper, lower) = match part {
+                Style::CardTop => (r, z),
+                Style::CardMiddle => (z, z),
+                _ => (z, r),
+            };
+            let corners = egui::CornerRadius {
+                nw: upper,
+                ne: upper,
+                sw: lower,
+                se: lower,
             };
             super::theme::card(ui)
                 .corner_radius(corners)
@@ -94,9 +90,35 @@ enum Style {
     Card,
     /// A card with a collapsing header (the pages not redesigned yet).
     Collapsing,
-    /// The top and bottom parts of one card.
+    /// The top, middle and bottom parts of one card.
     CardTop,
+    CardMiddle,
     CardBottom,
+}
+
+thread_local! {
+    /// Keyboards found for the overlay's keymap, whether one is connected, and its layouts (#534).
+    static KEYMAP_CHOICE: std::cell::Cell<(usize, bool, usize)> = const { std::cell::Cell::new((0, false, 0)) };
+}
+
+/// What the keymap source has to offer this frame: the keyboards found, whether one is
+/// connected, and the connected one's layouts. KeyPeek's settings code tells it before drawing
+/// the sections.
+pub fn keymap_choice(found: usize, connected: bool, layouts: usize) {
+    KEYMAP_CHOICE.set((found, connected, layouts));
+}
+
+/// The keymap source shows unless there's nothing to choose: one keyboard, connected, with at
+/// most one layout.
+pub fn keymap_source_shown() -> bool {
+    let (found, connected, layouts) = KEYMAP_CHOICE.get();
+    !(found == 1 && connected && layouts <= 1)
+}
+
+/// A heading row inside one of KeyPeek's two-column grids ("When it shows", "Appearance").
+pub fn grid_heading(ui: &mut egui::Ui, text: &str) {
+    ui.label(super::theme::caps_label(ui, text));
+    ui.end_row();
 }
 
 /// The name a section's card shows, where the canvas names it differently from the section.
@@ -114,8 +136,7 @@ fn shown_title(title: &str) -> &str {
 fn style(title: &str) -> Style {
     match title {
         "Keyboard" | "Lights" | "Scenes" | "Plugins" => Style::Bare,
-        "Connection"
-        | "Showing now"
+        "Showing now"
         | "On the keyboard"
         | "On this PC"
         | "Left screen"
@@ -125,7 +146,9 @@ fn style(title: &str) -> Style {
         | "Live wallpaper"
         | "Other keyboards (VIA)" => Style::Card,
         "Overlay Appearance" => Style::CardTop,
+        "Theme" if keymap_source_shown() => Style::CardMiddle,
         "Theme" => Style::CardBottom,
+        "Connection" => Style::CardBottom,
         _ => Style::Collapsing,
     }
 }
@@ -237,4 +260,38 @@ pub fn footer(ui: &mut egui::Ui) {
         "https://github.com/srwi/keypeek",
     );
     super::theme::credits(ui);
+}
+
+#[cfg(test)]
+mod keymap_source_tests {
+    use super::*;
+
+    /// The keymap source hides only when there's nothing to choose (#534): one keyboard found,
+    /// connected, with one layout. Then the layer colours close the card.
+    #[test]
+    fn the_keymap_source_shows_only_with_a_choice() {
+        for (found, connected, layouts, shown) in [
+            (0, false, 0, true),
+            (1, false, 0, true),
+            (1, true, 1, false),
+            (1, true, 2, true),
+            (2, true, 1, true),
+            (2, false, 0, true),
+        ] {
+            keymap_choice(found, connected, layouts);
+            assert_eq!(
+                keymap_source_shown(),
+                shown,
+                "{found} found, connected {connected}"
+            );
+            let theme = if shown {
+                Style::CardMiddle
+            } else {
+                Style::CardBottom
+            };
+            assert_eq!(style("Theme"), theme);
+        }
+        assert_eq!(style("Connection"), Style::CardBottom);
+        keymap_choice(0, false, 0);
+    }
 }
