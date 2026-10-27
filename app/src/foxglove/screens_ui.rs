@@ -406,7 +406,7 @@ fn snapshot() -> screens::Snapshot {
     screens::snapshot()
 }
 
-/// The left screen's card: the live preview, its switches, and the game hints.
+/// The left screen's card: the live preview, its switches, and the app hints.
 pub fn group(ui: &mut egui::Ui) {
     let snap = snapshot();
     let Some(hello) = snap.hello else {
@@ -419,11 +419,11 @@ pub fn group(ui: &mut egui::Ui) {
             let mut changed = false;
 
             ui.horizontal(|ui| {
-                changed |= ui.checkbox(&mut settings.drive_left, "Drive left screen").changed();
+                changed |= ui.checkbox(&mut settings.drive_left, "On").changed();
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let paused = screens::paused();
                     let button = ui.add_enabled(settings.drive_left, egui::Button::new(if paused { "Resume" } else { "Pause" }));
-                    if button.on_hover_text("Pause the panel; the keyboard shows its own screen meanwhile").clicked() {
+                    if button.on_hover_text("Pause the left screen; the keyboard shows its own screen meanwhile").clicked() {
                         screens::set_paused(!paused);
                     }
                 });
@@ -457,8 +457,8 @@ pub fn group(ui: &mut egui::Ui) {
             });
 
             ui.add_space(6.0);
-            ui.label(super::theme::caps_label(ui, "Game hints"));
-            ui.weak("Shown on the panel while that program is in front.");
+            ui.label(super::theme::caps_label(ui, "App hints"));
+            ui.weak("Shown on the left screen while that program is in front.");
             let mut remove = None;
             for (exe, hint) in settings.games.iter_mut() {
                 ui.horizontal(|ui| {
@@ -500,7 +500,7 @@ pub fn group(ui: &mut egui::Ui) {
                     ui.label(format!("{} · host link v{}", snap.product, hello.version));
                     ui.end_row();
                     // The board profile (#75): what Foxglove knows beyond the firmware.
-                    ui.weak("Board profile");
+                    ui.weak("Board type");
                     ui.label(match super::boards::current() {
                         Some(b) if b.status == super::boards::Status::Tested => b.name,
                         Some(b) => format!("{} (untested)", b.name),

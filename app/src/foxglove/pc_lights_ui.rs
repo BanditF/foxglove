@@ -1,4 +1,4 @@
-//! The Lights page's "PC & peripherals" card (#423): each lighting device Foxglove found, how
+//! The Lights page's "Other devices" card (#423): each lighting device Foxglove found, how
 //! it's controlled and what it can do (chips), Identify, a colour per zone, Off and "Match
 //! keyboard", and "Add a device…" for gear the catalog doesn't know.
 //!
@@ -190,8 +190,8 @@ fn follow_color() -> Option<[u8; 3]> {
 /// What the control kind is called on the page.
 pub fn control_text(c: Control) -> &'static str {
     match c {
-        Control::Driver(_) => "Foxglove driver",
-        Control::LampArray => "Standard LampArray device",
+        Control::Driver(_) => "Built-in support",
+        Control::LampArray => "Windows lighting",
         Control::NotYet => "Not controllable yet",
     }
 }
@@ -200,7 +200,7 @@ pub fn control_text(c: Control) -> &'static str {
 pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard) -> Vec<Intent> {
     let mut out = Vec::new();
     let s = &v.pc;
-    card(ui, "PC & peripherals", |ui| {
+    card(ui, "Other devices", |ui| {
         let p = theme::palette(ui);
         ui.weak(
             "Case lights, screens and other lighting devices on this PC, and what each can do.",
@@ -238,7 +238,9 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
                 },
             );
             chips(ui, &caps.chips(true));
-            ui.weak("Its underglow is in the card above; its screens are on the Screens page.");
+            ui.weak(
+                "Its lights are in the Keyboard card above; its screens are on the Screens page.",
+            );
         }
         if s.devices.is_empty() && v.keyboard.is_none() {
             ui.add_space(4.0);
@@ -659,12 +661,9 @@ pub mod tests {
     fn controls_have_plain_names() {
         assert_eq!(
             control_text(Control::Driver(Protocol::OmenTracer)),
-            "Foxglove driver"
+            "Built-in support"
         );
-        assert_eq!(
-            control_text(Control::LampArray),
-            "Standard LampArray device"
-        );
+        assert_eq!(control_text(Control::LampArray), "Windows lighting");
         assert_eq!(control_text(Control::NotYet), "Not controllable yet");
     }
 

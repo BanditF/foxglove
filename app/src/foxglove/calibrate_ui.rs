@@ -842,7 +842,7 @@ pub fn open_at(target: Target, zone: Option<String>, color: Option<[u8; 3]>) {
     *OPEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
 }
 
-/// The calibrator in place of the "PC & peripherals" card, while it's open; false when it
+/// The calibrator in place of the "Other devices" card, while it's open; false when it
 /// isn't.
 pub fn show(ui: &mut egui::Ui) -> bool {
     #[cfg(test)]

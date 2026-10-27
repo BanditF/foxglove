@@ -29,10 +29,10 @@ foxglove in 1542.
    **Settings... → Connection**, pick the keyboard and click **Connect**. To add Bluetooth,
    pair "Eyelash Corne" in Windows' Bluetooth settings.
 3. **Learn the layers:** hold a middle thumb for NUMBER or SYMBOL, or both for FUNCTION. Add Tab
-   to both for SYSTEM (Bluetooth profiles on Q-T). See [docs/layers.md](docs/layers.md).
-4. **Types on the cable but not on Bluetooth?** It's on another device's Bluetooth profile.
-   Hold SYSTEM and tap Q for profile 1 (W-T for 2-5); the filled box on the left screen shows
-   the active profile.
+   to both for SYSTEM (Bluetooth slots on Q-T). See [docs/layers.md](docs/layers.md).
+4. **Types on the cable but not on Bluetooth?** It's on another device's Bluetooth slot.
+   Hold SYSTEM and tap Q for slot 1 (W-T for 2-5); the filled box on the left screen shows
+   the active slot.
 
 The [user guide](docs/user-guide.md) covers the screens, every Settings section, lighting presets, art cycling and the art library, plugins, VIA keyboards, profiles
 and updating the firmware.

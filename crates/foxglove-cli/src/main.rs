@@ -132,7 +132,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 }
                 .map_err(|e| e.to_string())?;
                 let active = profiles.active.as_deref();
-                println!("{} Base settings", if active.is_none() { "*" } else { " " });
+                println!("{} Default", if active.is_none() { "*" } else { " " });
                 for n in &profiles.names {
                     println!("{} {n}", if active == Some(n.as_str()) { "*" } else { " " });
                 }

@@ -180,9 +180,9 @@ const RELEASES_PAGE: &str = "https://github.com/BanditF/foxglove/releases";
 
 pub fn group(ui: &mut egui::Ui) {
     let _ = WAKE.set(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
-    // The window theme and the version in one card (#390).
-    super::settings_ui::section(ui, "Theme and updates", |ui| {
-        super::theme::picker(ui);
+    // The window theme (#390), then starting with Windows and the version.
+    super::settings_ui::section(ui, "Appearance", super::theme::picker);
+    super::settings_ui::section(ui, "Startup and updates", |ui| {
         super::autostart::checkbox(ui);
         let version = format!("Foxglove {}", env!("CARGO_PKG_VERSION"));
         // Builds without the release signing key (0.1) can't verify an update, so they don't

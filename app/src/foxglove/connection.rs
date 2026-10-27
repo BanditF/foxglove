@@ -281,7 +281,7 @@ fn unplug_warning(s: &Status) -> Option<String> {
             .this_pc
             .map_or("for this PC".into(), |p| shown(p).to_string());
         format!(
-            "Unplugging now leaves the keyboard unable to type - select profile {profile}: {}",
+            "Unplugging now leaves the keyboard unable to type - select Bluetooth slot {profile}: {}",
             switch_hint(s.this_pc)
         )
     })
@@ -334,11 +334,11 @@ fn plain_words(s: &Status) -> Plain {
             " · waiting for its PC"
         };
         rows.push((
-            "Bluetooth profile",
+            "Bluetooth slot",
             format!("{}{whose}{waiting}", shown(f.active_profile)),
         ));
         if let Some(p) = s.this_pc.filter(|p| *p != f.active_profile) {
-            rows.push(("This PC's profile", shown(p).to_string()));
+            rows.push(("This PC's slot", shown(p).to_string()));
         }
     }
     let unplug_fix = unsafe_to_unplug(
@@ -352,7 +352,7 @@ fn plain_words(s: &Status) -> Plain {
             .this_pc
             .map_or("for this PC".into(), |p| shown(p).to_string());
         format!(
-            "Select profile {profile} first: {}.",
+            "Select Bluetooth slot {profile} first: {}.",
             switch_hint(s.this_pc)
         )
     });
@@ -745,7 +745,7 @@ mod tests {
             this_pc: Some(0),
         });
         assert_eq!(ok.rows[0].1, "on USB");
-        assert_eq!(ok.rows[2], ("Bluetooth profile", "1 · this PC".into()));
+        assert_eq!(ok.rows[2], ("Bluetooth slot", "1 · this PC".into()));
         assert_eq!(ok.rows.len(), 3);
         assert_eq!(ok.unplug_fix, None);
 
@@ -756,10 +756,10 @@ mod tests {
             this_pc: Some(0),
         });
         assert_eq!(other.rows[2].1, "2 · another PC · waiting for its PC");
-        assert_eq!(other.rows[3], ("This PC's profile", "1".into()));
+        assert_eq!(other.rows[3], ("This PC's slot", "1".into()));
         let fix = other.unplug_fix.clone().expect("unsafe to unplug");
         assert!(
-            fix.starts_with("Select profile 1 first: hold both middle thumbs"),
+            fix.starts_with("Select Bluetooth slot 1 first: hold both middle thumbs"),
             "{fix}"
         );
 
