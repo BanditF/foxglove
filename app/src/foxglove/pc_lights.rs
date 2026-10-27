@@ -1,4 +1,4 @@
-//! Other devices' lighting (#423): the OMEN 45L case and other lights that aren't the
+//! Other devices' lighting (#423): case lights, coolers and other lights that aren't the
 //! keyboard, through the device layer's `pc_lighting` discovery and drivers.
 //!
 //! One worker thread owns the drivers and blocks on its queue. It scans when the app starts,
@@ -6,7 +6,8 @@
 //! writes only for a click on the page or a colour the case follows ("Match keyboard": the
 //! keyboard's colour as Foxglove sets it, or the Windows accent). Nothing streams or polls.
 //! The colours the user picks are saved in the store's `[pc_lighting]` and put back when the
-//! board arrives (at startup too), unless OMEN Light Studio is running.
+//! board arrives (at startup too), unless an app its catalog entry names as a conflict (a
+//! vendor's lighting tool) is running.
 //!
 //! Each device carries what it can do (`LightCaps`): from the catalog, or from a LampArray's own
 //! attributes, read through Windows when one arrives. Boards the catalog doesn't know can be
@@ -67,14 +68,28 @@ pub struct Row {
     pub zone_positions: Vec<Option<[u16; 2]>>,
     /// Each zone's role in a scene (point or ambient), in zone order, from the catalog.
     pub zone_roles: Vec<foxglove_devices::pc_lighting::ZoneRole>,
+    /// What it is, from the catalog.
+    pub kind: foxglove_devices::pc_lighting::DeviceKind,
+}
+
+/// An app the catalog names as a conflict for a found device, running now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Conflicting {
+    /// The app's name.
+    pub app: String,
+    /// The device it may override.
+    pub device: String,
+    /// How to remove it or turn it off.
+    pub hint: Option<String>,
 }
 
 /// What the page shows.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot {
     pub devices: Vec<Row>,
-    /// OMEN Light Studio is running and may put its own colours back.
-    pub light_studio: bool,
+    /// Apps running now that may put their own colours back on a found device (from the
+    /// catalog's conflicts), one per app and device.
+    pub conflicts: Vec<Conflicting>,
     /// The last action's result, for the status line.
     pub status: Option<String>,
     pub busy: bool,
@@ -162,7 +177,7 @@ pub fn send(msg: Msg) {
 }
 
 /// Called each frame the Lights page draws: the first frame after it wasn't shown scans again
-/// (and checks for Light Studio), so the page is current whenever it's opened.
+/// (and checks for conflicting apps), so the page is current whenever it's opened.
 pub fn page_shown(ctx: &egui::Context) {
     let _ = CTX.set(ctx.clone());
     let frame = ctx.cumulative_frame_nr();
@@ -241,7 +256,7 @@ pub struct Worker {
     drivers: BTreeMap<String, Box<dyn LightingDevice>>,
     pub settings: Settings,
     follow: Option<[u8; 3]>,
-    light_studio: bool,
+    conflicts: Vec<Conflicting>,
     status: Option<String>,
     /// Settings changed and need saving.
     pub dirty: bool,
@@ -283,7 +298,7 @@ impl Worker {
             drivers: BTreeMap::new(),
             settings,
             follow: None,
-            light_studio: false,
+            conflicts: Vec::new(),
             status: None,
             dirty: false,
             scene: None,
@@ -292,11 +307,31 @@ impl Worker {
     }
 
     /// A new enumeration: opens drivers for arrivals and puts their saved colours back (unless
-    /// Light Studio is running), and drops the ones that went.
+    /// an app the catalog names as the device's conflict is running), and drops the ones that
+    /// went. `running` says whether any of some exe names runs now; it is asked only here, for
+    /// the found devices' conflicts.
     /// `restore`: false after a catalog change, which isn't a board arriving.
-    pub fn scan(&mut self, hid: &[pcl::HidEntry], light_studio: bool, paused: bool, restore: bool) {
-        self.light_studio = light_studio;
+    pub fn scan(
+        &mut self,
+        hid: &[pcl::HidEntry],
+        running: &mut dyn FnMut(&[&str]) -> bool,
+        paused: bool,
+        restore: bool,
+    ) {
         let mut now = pcl::discover(&self.catalog, hid);
+        self.conflicts = now
+            .iter()
+            .flat_map(|f| f.conflicts.iter().map(move |c| (f, c)))
+            .filter(|(_, c)| {
+                let names: Vec<&str> = c.processes.iter().map(String::as_str).collect();
+                running(&names)
+            })
+            .map(|(f, c)| Conflicting {
+                app: c.app.clone(),
+                device: f.name.clone(),
+                hint: c.hint.clone(),
+            })
+            .collect();
         self.unknown = pcl::unknown(&self.catalog, hid);
         // A LampArray not read yet: read them all once (Windows), then reuse.
         let unread = now.iter().any(|f| {
@@ -330,7 +365,8 @@ impl Worker {
             match (self.writers)(&f.path).and_then(|w| pcl::open(f, w)) {
                 Ok(driver) => {
                     self.drivers.insert(f.key.clone(), driver);
-                    if restore && !light_studio && !paused {
+                    let fought = self.conflicts.iter().any(|c| c.device == f.name);
+                    if restore && !fought && !paused {
                         self.restore(f);
                     }
                 }
@@ -719,12 +755,13 @@ impl Worker {
                     size: f.size,
                     zone_positions: f.zones.iter().map(|z| z.position).collect(),
                     zone_roles: f.zones.iter().map(|z| z.role).collect(),
+                    kind: f.kind,
                 }
             })
             .collect();
         Snapshot {
             devices,
-            light_studio: self.light_studio,
+            conflicts: self.conflicts.clone(),
             status: self.status.clone(),
             busy: false,
             unknown: self.unknown.clone(),
@@ -732,9 +769,6 @@ impl Worker {
         }
     }
 }
-
-/// OMEN Light Studio's processes, matched exactly (case-insensitive).
-pub const LIGHT_STUDIO: [&str; 2] = ["LightStudio-background.exe", "LightStudio.exe"];
 
 /// Starts the worker, the HID arrival watch and the first scan.
 pub fn start() {
@@ -860,7 +894,7 @@ fn scan(worker: &mut Worker, restore: bool) {
     match pcl::hid::enumerate() {
         Ok(hid) => worker.scan(
             &hid,
-            light_studio_running(),
+            &mut |names| process_running(names),
             super::pause::paused(),
             restore,
         ),
@@ -956,10 +990,11 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
     Vec::new()
 }
 
-/// Whether OMEN Light Studio runs now: one process snapshot, taken only with a scan.
+/// Whether a process with one of `names` runs now (a catalog conflict): one process snapshot,
+/// taken only with a scan.
 #[cfg(target_os = "windows")]
-pub fn light_studio_running() -> bool {
-    any_process_running(&LIGHT_STUDIO)
+fn process_running(names: &[&str]) -> bool {
+    any_process_running(names)
 }
 
 /// Whether a process with one of `names` (exe file names, any case) runs now: one snapshot,
@@ -1002,7 +1037,7 @@ pub(crate) fn any_process_running(names: &[&str]) -> bool {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn light_studio_running() -> bool {
+fn process_running(_names: &[&str]) -> bool {
     false
 }
 
@@ -1095,6 +1130,20 @@ mod tests {
         b
     }
 
+    /// No conflicting app runs.
+    fn nothing() -> impl FnMut(&[&str]) -> bool {
+        |_| false
+    }
+
+    /// The 45L's vendor tool runs (the bundled catalog's conflict, by its exe name).
+    fn studio() -> impl FnMut(&[&str]) -> bool {
+        |names: &[&str]| {
+            names
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case("lightstudio.exe"))
+        }
+    }
+
     fn no_wait() -> impl FnMut(std::time::Duration) {
         |_| {}
     }
@@ -1102,7 +1151,7 @@ mod tests {
     #[test]
     fn the_page_lists_each_device_and_how_it_is_controlled() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), true, false, true);
+        w.scan(&case_hid(), &mut studio(), false, true);
         let s = w.snapshot();
         let rows: Vec<_> = s
             .devices
@@ -1121,7 +1170,15 @@ mod tests {
                 ("G502 Proteus Spectrum", Control::LampArray, 0),
             ]
         );
-        assert!(s.light_studio);
+        assert_eq!(
+            s.conflicts,
+            [Conflicting {
+                app: "OMEN Light Studio".into(),
+                device: "HP OMEN 45L case lights".into(),
+                hint: s.conflicts[0].hint.clone(),
+            }],
+            "the catalog's conflict for the 45L"
+        );
         assert!(
             sent.lock().unwrap().is_empty(),
             "a scan alone writes nothing"
@@ -1131,7 +1188,7 @@ mod tests {
     #[test]
     fn a_colour_pick_writes_its_zones_and_is_saved() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         w.handle(
             Msg::Set {
                 key: "103c:84fd".into(),
@@ -1157,7 +1214,7 @@ mod tests {
     }
 
     #[test]
-    fn saved_colours_come_back_on_arrival_unless_light_studio_runs() {
+    fn saved_colours_come_back_on_arrival_unless_a_conflicting_app_runs() {
         let mut settings = Settings::default();
         settings.devices.insert(
             "103c:84fd".into(),
@@ -1167,26 +1224,26 @@ mod tests {
             },
         );
         let (mut w, sent) = worker(settings.clone());
-        w.scan(&case_hid(), true, false, true);
+        w.scan(&case_hid(), &mut studio(), false, true);
         assert!(sent.lock().unwrap().is_empty(), "Light Studio is running");
         let (mut w, sent) = worker(settings);
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         assert_eq!(*sent.lock().unwrap(), vec![report(2, [0x11, 0x22, 0x33])]);
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         assert_eq!(
             sent.lock().unwrap().len(),
             1,
             "still there: no second write"
         );
-        w.scan(&[], false, false, true);
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&[], &mut nothing(), false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         assert_eq!(sent.lock().unwrap().len(), 2, "replugged: put back again");
     }
 
     #[test]
     fn match_keyboard_follows_colour_changes_only() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         let key = "103c:84fd".to_string();
         w.handle(Msg::Follow([255, 0, 0]), false, &mut no_wait());
         assert!(sent.lock().unwrap().is_empty(), "not matching yet");
@@ -1221,7 +1278,7 @@ mod tests {
     #[test]
     fn off_identify_and_pause() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         let key = "103c:84fd".to_string();
         w.handle(Msg::Off(key.clone()), true, &mut no_wait());
         assert!(sent.lock().unwrap().is_empty(), "paused: refused");
@@ -1252,7 +1309,7 @@ mod tests {
             },
         );
         let (mut w, sent) = worker(settings);
-        w.scan(&case_hid(), true, false, true);
+        w.scan(&case_hid(), &mut studio(), false, true);
         assert!(sent.lock().unwrap().is_empty());
         w.handle(Msg::Identify("103c:84fd".into()), false, &mut no_wait());
         let sent = sent.lock().unwrap().clone();
@@ -1272,7 +1329,7 @@ mod tests {
         let mut hid = case_hid();
         hid[0].serial = Some("PCLIGHTS1".into());
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&hid, false, false, true);
+        w.scan(&hid, &mut nothing(), false, true);
         let warm = DeviceCalibration {
             device: Calibration {
                 gain: [1.0, 0.8, 0.5],
@@ -1349,7 +1406,7 @@ mod tests {
     #[test]
     fn show_writes_without_saving_and_only_the_latest_of_a_burst() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         let key = "103c:84fd".to_string();
         let show = |c: u8| Msg::Show {
             key: key.clone(),
@@ -1383,7 +1440,7 @@ mod tests {
     #[test]
     fn devices_carry_caps_and_lamp_arrays_are_read_once() {
         let (mut w, _) = worker(Settings::default());
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         let s = w.snapshot();
         assert_eq!(
             s.devices[0].caps.chips(false),
@@ -1412,7 +1469,7 @@ mod tests {
         let lamps: LampArrays =
             Box::new(|| vec![(desk::LIGHTBAR.0, desk::LIGHTBAR.1, desk::lightbar_info())]);
         let mut w = Worker::new(desk::catalog(), None, Settings::default(), writers, lamps);
-        w.scan(&desk::hid(), false, false, true);
+        w.scan(&desk::hid(), &mut nothing(), false, true);
         let snap = w.snapshot();
         let rows: Vec<_> = snap
             .devices
@@ -1439,6 +1496,41 @@ mod tests {
         assert!(sent.lock().unwrap().is_empty(), "nothing written");
     }
 
+    /// #558: the second desk's case names its own vendor tool; while it runs, the page warns
+    /// about that app on that device and the case's saved colours wait. The 45L's tool doesn't
+    /// matter here.
+    #[test]
+    fn a_conflict_comes_from_the_devices_catalog_entry() {
+        use crate::foxglove::fixtures::second_desk as desk;
+        let writers: Writers =
+            Box::new(|_path: &str| Ok(Box::new(Recorder(Arc::default())) as Box<dyn HidWriter>));
+        let lamps: LampArrays = Box::new(Vec::new);
+        let mut w = Worker::new(desk::catalog(), None, Settings::default(), writers, lamps);
+        let mut asked: Vec<Vec<String>> = Vec::new();
+        let mut glow = |names: &[&str]| {
+            asked.push(names.iter().map(|n| n.to_string()).collect());
+            names.contains(&desk::CONFLICT_EXE)
+        };
+        w.scan(&desk::hid(), &mut glow, false, true);
+        assert_eq!(
+            asked,
+            [vec![desk::CONFLICT_EXE.to_string()]],
+            "only its own exe"
+        );
+        let s = w.snapshot();
+        assert_eq!(s.conflicts.len(), 1);
+        assert_eq!(s.conflicts[0].app, desk::CONFLICT_APP);
+        assert_eq!(s.conflicts[0].device, "Nimbus Strata case lights");
+        assert!(s.conflicts[0].hint.is_some());
+        assert_eq!(
+            s.devices[0].kind,
+            foxglove_devices::pc_lighting::DeviceKind::Case
+        );
+        // The 45L's tool running changes nothing on this desk.
+        w.scan(&desk::hid(), &mut studio(), false, true);
+        assert!(w.snapshot().conflicts.is_empty());
+    }
+
     #[test]
     fn a_hand_added_board_is_saved_found_and_tested_only_on_request() {
         let dir = crate::foxglove::store::test_config_dir().join("pc-lights-local");
@@ -1456,7 +1548,7 @@ mod tests {
         };
         let mut hid = case_hid();
         hid.push(strip);
-        w.scan(&hid, false, false, true);
+        w.scan(&hid, &mut nothing(), false, true);
         let s = w.snapshot();
         assert_eq!(s.unknown.len(), 1);
         assert_eq!(s.unknown[0].name, "Desk strip");
@@ -1512,7 +1604,7 @@ mod tests {
         assert!(text.contains("name = \"Shelf\""), "{text}");
         let before = sent.lock().unwrap().len();
         w.rescan = false;
-        w.scan(&hid, false, false, false);
+        w.scan(&hid, &mut nothing(), false, false);
         let s = w.snapshot();
         let row = s.devices.iter().find(|r| r.name == "Desk strip").unwrap();
         assert!(row.entry.as_ref().unwrap().contains("vid = 0x1209"));
@@ -1522,7 +1614,7 @@ mod tests {
 
         // A fresh worker reads the local file back.
         let (mut again, _) = worker_at(Settings::default(), Some(file.clone()));
-        again.scan(&hid, false, false, true);
+        again.scan(&hid, &mut nothing(), false, true);
         assert!(again
             .snapshot()
             .devices
@@ -1537,7 +1629,7 @@ mod tests {
     #[test]
     fn a_zone_test_on_a_known_board_puts_its_colour_back() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         w.handle(
             Msg::Set {
                 key: "103c:84fd".into(),
@@ -1573,7 +1665,7 @@ mod tests {
     #[test]
     fn a_scene_takes_the_case_and_gives_its_colours_back() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         let key = "103c:84fd".to_string();
         w.handle(
             Msg::Set {
@@ -1628,7 +1720,7 @@ mod tests {
     #[test]
     fn picks_and_follows_during_a_scene_come_back_after_it() {
         let (mut w, sent) = worker(Settings::default());
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         let key = "103c:84fd".to_string();
         w.handle(Msg::SceneStart, false, &mut no_wait());
         w.handle(frame(&key, [50, 50, 50]), false, &mut no_wait());
@@ -1684,7 +1776,7 @@ mod tests {
         let (mut w, sent) = worker(settings);
         let key = "103c:84fd".to_string();
         w.handle(Msg::SceneStart, false, &mut no_wait());
-        w.scan(&case_hid(), false, false, true);
+        w.scan(&case_hid(), &mut nothing(), false, true);
         w.handle(frame(&key, [90, 90, 90]), false, &mut no_wait());
         sent.lock().unwrap().clear();
         w.handle(Msg::SceneEnd, false, &mut no_wait());

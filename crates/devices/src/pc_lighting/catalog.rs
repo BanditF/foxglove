@@ -59,6 +59,50 @@ pub enum ZoneRole {
     Ambient,
 }
 
+/// What kind of device a catalog entry is, for scenes' room map and the page: the catalog says
+/// it, not the driver (one protocol can drive a case and a strip).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeviceKind {
+    /// A PC case's front: fans, logo, light strips.
+    Case,
+    /// A CPU or liquid cooler (its pump head).
+    Cooler,
+    /// A light strip or bar.
+    Strip,
+    /// A mouse, headset or other peripheral.
+    Peripheral,
+    #[default]
+    Other,
+}
+
+impl DeviceKind {
+    /// The catalog's name for it.
+    pub fn id(self) -> &'static str {
+        match self {
+            DeviceKind::Case => "case",
+            DeviceKind::Cooler => "cooler",
+            DeviceKind::Strip => "strip",
+            DeviceKind::Peripheral => "peripheral",
+            DeviceKind::Other => "other",
+        }
+    }
+}
+
+/// Another app that drives the same device and may put its own colours back over Foxglove's
+/// (a vendor's lighting tool). Its processes are checked only with a scan, never on a timer.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Conflict {
+    /// Its name, as the page shows it.
+    pub app: String,
+    /// Its exe file names, matched exactly (any case).
+    pub processes: Vec<String>,
+    /// How to remove it or turn it off, shown on hover.
+    #[serde(default)]
+    pub hint: Option<String>,
+}
+
 /// One zone: the board's own zone number and what it lights.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,6 +126,12 @@ pub struct CatalogDevice {
     pub vid: u16,
     pub pid: u16,
     pub protocol: Protocol,
+    /// What it is (`kind = "case"`); "other" when unset.
+    #[serde(default)]
+    pub kind: DeviceKind,
+    /// Apps that may fight Foxglove over its lights (`[[device.conflict]]`).
+    #[serde(default, rename = "conflict")]
+    pub conflicts: Vec<Conflict>,
     #[serde(default)]
     pub zones: Vec<ZoneSpec>,
     /// How colour is addressed; per-zone when zones are listed, else none.
@@ -128,6 +178,8 @@ impl CatalogDevice {
             vid,
             pid,
             protocol,
+            kind: DeviceKind::Other,
+            conflicts: Vec::new(),
             zones,
             color: None,
             effects: Vec::new(),
@@ -170,6 +222,13 @@ impl CatalogDevice {
             self.pid,
             self.protocol.id()
         );
+        if self.kind != DeviceKind::Other {
+            out.push_str(&format!(
+                "kind = \"{}\"
+",
+                self.kind.id()
+            ));
+        }
         if let Some([w, h]) = self.size {
             out.push_str(&format!("size = [{w}, {h}]\n"));
         }
@@ -320,6 +379,51 @@ mod tests {
         assert!(y(1) < y(7) && y(7) < y(6) && y(6) < y(5) && y(5) < 475);
         assert!(case.zones.iter().all(|z| z.position.is_some()));
         assert!(c.find(0x03f0, 0x7397).unwrap().calibration.is_none());
+        // What it is, and the vendor tool that fights it, are data (#558).
+        assert_eq!(case.kind, DeviceKind::Case);
+        assert_eq!(case.conflicts.len(), 1);
+        let tool = &case.conflicts[0];
+        assert!(!tool.processes.is_empty() && tool.hint.is_some());
+        assert_eq!(c.find(0x03f0, 0x7397).unwrap().kind, DeviceKind::Cooler);
+    }
+
+    #[test]
+    fn kind_and_conflicts_are_read_and_default_to_none() {
+        let text = r#"
+            [[device]]
+            name = "Strip"
+            vid = 1
+            pid = 2
+            protocol = "none"
+            kind = "strip"
+            [[device.conflict]]
+            app = "Glow"
+            processes = ["Glow.exe", "GlowSvc.exe"]
+            [[device.conflict]]
+            app = "Other glow"
+            processes = ["Other.exe"]
+            hint = "Turn it off in its tray icon."
+
+            [[device]]
+            name = "Plain"
+            vid = 1
+            pid = 3
+            protocol = "none"
+        "#;
+        let c = Catalog::parse(text).unwrap();
+        let strip = c.find(1, 2).unwrap();
+        assert_eq!(strip.kind, DeviceKind::Strip);
+        assert_eq!(strip.conflicts.len(), 2);
+        assert_eq!(strip.conflicts[0].hint, None);
+        assert_eq!(strip.conflicts[1].processes, ["Other.exe"]);
+        let plain = c.find(1, 3).unwrap();
+        assert_eq!((plain.kind, plain.conflicts.len()), (DeviceKind::Other, 0));
+        assert!(Catalog::parse(&text.replace("\"strip\"", "\"lamp\"")).is_err());
+        // The kind survives the user's own file.
+        let mut mine = CatalogDevice::new("Mine".into(), 9, 9, Protocol::None, vec![]);
+        mine.kind = DeviceKind::Case;
+        let back = Catalog::parse(&mine.to_toml()).unwrap();
+        assert_eq!(back.devices[0].kind, DeviceKind::Case);
     }
 
     #[test]

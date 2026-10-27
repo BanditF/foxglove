@@ -3,8 +3,9 @@
 //! - the monitors: Windows' display layout and each panel's physical DPI;
 //! - the keyboard: its board profile (halves, and their size from the drawing), lit as one
 //!   light per half, or one per LED once the profile's LED map is checked on the board (#529);
-//! - the lighting devices the Lights page found: catalog zones with their positions (the OMEN
-//!   45L), LampArrays with their lamps (the G502), and devices added by hand.
+//! - the lighting devices the Lights page found: catalog zones with their positions and the
+//!   kind the catalog gives, LampArrays with their lamps and the kind Windows gives, and
+//!   devices added by hand.
 //!
 //! The user's drags live in the store's `[scene]` section ([`foxglove_scene::Layout`]).
 //!
@@ -16,7 +17,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use foxglove_devices::pc_lighting::{Control, Protocol, ZoneRole};
+use foxglove_devices::pc_lighting::{Control, DeviceKind as LightKind, ZoneRole};
 use foxglove_scene::{
     DeviceInfo, DeviceKind, Layout, LightRole, LightSpec, MonitorInfo, Point, RoomMap,
 };
@@ -97,7 +98,7 @@ pub fn devices(
         let ids = vid_pid(&row.key);
         let device = match row.control {
             Control::NotYet => continue,
-            Control::Driver(protocol) => zones(row, protocol),
+            Control::Driver(_) => zones(row),
             Control::LampArray => lamp_array(row, ids.and_then(|ids| lamps.get(&ids))),
         };
         out.push(device);
@@ -206,12 +207,14 @@ fn size(s: Option<[u16; 2]>) -> Option<Point> {
     s.map(|[w, h]| Point::new(f32::from(w), f32::from(h)))
 }
 
-/// A catalog board: one light per zone, where the catalog puts it, in the role it gives (the
-/// OMEN 45L's interior light is ambient).
-fn zones(row: &Row, protocol: Protocol) -> DeviceInfo {
-    let kind = match protocol {
-        Protocol::OmenTracer => DeviceKind::Case,
-        Protocol::None => DeviceKind::Other,
+/// A catalog board: one light per zone, where the catalog puts it, in the role it gives (a
+/// case's interior light is ambient), of the kind the catalog says (not its driver's).
+fn zones(row: &Row) -> DeviceInfo {
+    let kind = match row.kind {
+        LightKind::Case => DeviceKind::Case,
+        LightKind::Cooler | LightKind::Strip | LightKind::Peripheral | LightKind::Other => {
+            DeviceKind::Other
+        }
     };
     let lights = row
         .zone_ids
@@ -523,7 +526,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[ignore = "#558"]
     fn the_second_desks_case_is_a_case_by_its_catalog_entry() {
         let devices = second_desk_devices();
         let case = devices
@@ -589,7 +591,7 @@ pub(crate) mod tests {
         // The Corne's half from its drawing: 6.5 x 4.75 key units.
         let half = devices[0].size.unwrap();
         assert!((half.x - 6.5 * KEY_MM).abs() < 0.5, "{half:?}");
-        // The 45L's zones carry the catalog's positions.
+        // The case's zones carry the catalog's positions.
         let case = &devices[2];
         assert_eq!(case.size, Some(Point::new(205.0, 475.0)));
         assert_eq!(case.lights.len(), 5);
@@ -610,7 +612,7 @@ pub(crate) mod tests {
                 ("7", LightRole::Point),
             ]
         );
-        // The G502's lamps where Windows says.
+        // The mouse's lamps where Windows says.
         assert_eq!(devices[3].lights[1].at, Some(Point::new(34.0, 100.0)));
 
         let monitors = [MonitorInfo {
@@ -724,7 +726,7 @@ pub(crate) mod tests {
         shelf.key = "1234:5678".into();
         shelf.size = None;
         shelf.zone_positions = vec![None; 5];
-        let d = zones(&shelf, Protocol::OmenTracer);
+        let d = zones(&shelf);
         assert!(d.size.is_none() && d.lights.iter().all(|l| l.at.is_none()));
         assert_eq!(vid_pid("1234:5678:SER1"), Some((0x1234, 0x5678)));
         assert_eq!(vid_pid("nonsense"), None);

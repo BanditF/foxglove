@@ -39,6 +39,7 @@ pub(crate) fn row(d: &CatalogDevice, control: Control) -> Row {
         size: d.size,
         zone_positions: d.zones.iter().map(|z| z.position).collect(),
         zone_roles: d.zones.iter().map(|z| z.role).collect(),
+        kind: d.kind,
     }
 }
 
@@ -58,6 +59,7 @@ fn lamp_array_row(key: &str, name: &str) -> Row {
         size: None,
         zone_positions: vec![],
         zone_roles: vec![],
+        kind: Default::default(),
     }
 }
 
@@ -196,6 +198,7 @@ name = "Nimbus Strata case lights"
 vid = 0x1A2B
 pid = 0x3C4D
 protocol = "none"
+kind = "case"
 size = [230, 500]
 zones = [
     { id = 1, name = "Top light bar", position = [115, 20] },
@@ -203,7 +206,16 @@ zones = [
     { id = 3, name = "Front ring lower", position = [115, 330] },
     { id = 4, name = "Glass glow", position = [140, 250], role = "ambient" },
 ]
+# Its vendor's own lighting tool fights Foxglove over the case.
+[[device.conflict]]
+app = "Nimbus Glow"
+processes = ["NimbusGlow.exe"]
+hint = "Quit Nimbus Glow from its tray icon, or turn off its lighting control."
 "#;
+
+    /// The case board's vendor tool, as the catalog names it, and its exe.
+    pub(crate) const CONFLICT_APP: &str = "Nimbus Glow";
+    pub(crate) const CONFLICT_EXE: &str = "NimbusGlow.exe";
 
     /// The case board's VID/PID and its room id.
     pub(crate) const CASE: (u16, u16) = (0x1a2b, 0x3c4d);
