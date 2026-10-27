@@ -198,8 +198,10 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
         }
         if (d[1] == 0) {
-            // A new copy: a left before #550 sends no LED points, so none are kept from before.
+            // A new copy: a left before #550 sends no LED points, so none are kept from before;
+            // LEDs a left sends no point for (one set for fewer, #561) sit at the half's centre.
             effect_rx.lamps_set = 0;
+            memset(effect_rx.lamp, 0xFF, sizeof(effect_rx.lamp));
         }
         // LED points past this half's own (a left set for more, #561) are no LEDs here.
         memcpy((uint8_t *)&effect_rx + d[1], &d[2],

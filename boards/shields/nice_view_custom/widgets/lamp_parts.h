@@ -33,3 +33,8 @@
 // The most LEDs either half has: what a per-half table holds (at least one, so no array is
 // empty on a build without underglow).
 #define LAMP_PARTS_MAX MAX(1, MAX(LAMP_PARTS_OWN, LAMP_PARTS_RIGHT))
+
+// What the split relay carries for one half (art_relay_central.c asserts it): SET_EFFECT's copy
+// of the wire is addressed by a one-byte offset (42 + 4 bytes per LED). A one-piece board has no
+// relay and no such limit (SET_FRAME's one-byte lamp index is host_frames.c's).
+#define LAMP_PARTS_RELAY_MAX 53

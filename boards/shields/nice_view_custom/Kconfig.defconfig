@@ -155,12 +155,13 @@ config FOXGLOVE_HOST_FRAMES
 config FOXGLOVE_RIGHT_LAMPS
     int "LEDs on the right half's chain, when it differs from the left's (0 = the same)"
     default 0
-    range 0 255
+    range 0 53
     depends on FOXGLOVE_HOST_FRAMES
     help
       The left frames and relays the right half's LEDs (D7 0C, D7 0F op 3) and reports them in
       D7 10 (#561). 0: as many as the left's own underglow chain (halves that mirror each other,
-      as the Eyelash Corne's). Set it on a board whose halves have different chains.
+      as the Eyelash Corne's). Set it on a board whose halves have different chains. At most 53:
+      the relay's effect copy addresses its bytes with one byte (42 + 4 per LED).
 
 config FOXGLOVE_HOST_FRAMES_TIMEOUT_S
     int "Seconds without a frame before the keyboard's own effect comes back (0 = never)"

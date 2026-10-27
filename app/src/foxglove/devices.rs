@@ -109,10 +109,9 @@ fn learn_lamp_parts(d: &DigitalisDevice) {
             None
         }
     };
-    if let Some(p) = &parts {
-        d.set_lamp_parts(p.clone());
-    }
-    *FIRMWARE_PARTS.lock().unwrap_or_else(|e| e.into_inner()) = parts;
+    *FIRMWARE_PARTS.lock().unwrap_or_else(|e| e.into_inner()) = parts.clone();
+    // Frames split (and calibrate) by the same counts the scenes size them by.
+    d.set_lamp_parts(choose_parts(parts, super::boards::current().as_ref()));
 }
 
 /// The keyboard's LEDs by part (#561): what its firmware said when it connected, when that has
