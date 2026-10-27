@@ -175,6 +175,46 @@ fn write_keyboard((hue, sat, brightness): Hsb) {
     super::keyboard_settings::refresh_rgb_state();
 }
 
+fn rgb(c: [u8; 3]) -> foxglove_devices::Rgb {
+    foxglove_devices::Rgb {
+        r: c[0],
+        g: c[1],
+        b: c[2],
+    }
+}
+
+/// A colour as Foxglove draws it for a zone of a device: through the device's screen side.
+pub fn on_screen(key: &str, zone: Option<&str>, c: [u8; 3]) -> [u8; 3] {
+    let out = calibration::global().on_screen(key, zone, rgb(c));
+    [out.r, out.g, out.b]
+}
+
+/// [`on_screen`] as a colour to paint.
+pub fn screen_color(key: &str, zone: Option<&str>, c: [u8; 3]) -> egui::Color32 {
+    let [r, g, b] = on_screen(key, zone, c);
+    egui::Color32::from_rgb(r, g, b)
+}
+
+/// The colour a picker drawn through [`on_screen`] stands for.
+pub fn from_screen(key: &str, zone: Option<&str>, c: [u8; 3]) -> [u8; 3] {
+    let out = calibration::global().from_screen(key, zone, rgb(c));
+    [out.r, out.g, out.b]
+}
+
+/// Whether a device's matches cover a colour; `None` when it has none.
+pub fn covered(key: &str, zone: Option<&str>, c: [u8; 3]) -> Option<bool> {
+    calibration::global().covers(key, zone, rgb(c))
+}
+
+/// A colour Foxglove draws for the keyboard, through its screen side (as is while no keyboard
+/// is connected).
+pub fn keyboard_screen(c: egui::Color32) -> egui::Color32 {
+    match super::devices::keyboard_key() {
+        Some(key) => screen_color(&key, None, [c.r(), c.g(), c.b()]),
+        None => c,
+    }
+}
+
 /// Saves every calibration the registry holds, unless the saved section couldn't be read at
 /// startup (saving would overwrite it).
 pub fn save() -> std::io::Result<()> {
@@ -232,7 +272,7 @@ fn read(section: toml::Table) -> Result<Calibrations, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use foxglove_devices::calibration::{Calibration, DeviceCalibration};
+    use foxglove_devices::calibration::{Calibration, DeviceCalibration, Match};
 
     #[test]
     fn a_section_from_a_newer_foxglove_or_with_unknown_fields_is_not_read() {
@@ -274,8 +314,28 @@ mod tests {
             },
             ..Default::default()
         };
+        let matched = "calibrate-test:0002";
+        let with_matches = DeviceCalibration {
+            name: "Test fan".into(),
+            matches: vec![
+                Match {
+                    color: [0, 0, 153],
+                    light: [0, 0, 107],
+                    screen: [0, 0, 161],
+                    zone: None,
+                },
+                Match {
+                    color: [153; 3],
+                    light: [150, 147, 120],
+                    screen: [153; 3],
+                    zone: Some("2".into()),
+                },
+            ],
+            ..Default::default()
+        };
         let mut all = Calibrations::default();
         all.devices.insert(key.into(), cal.clone());
+        all.devices.insert(matched.into(), with_matches.clone());
         super::super::store::save(SECTION, &all).unwrap();
         // A new palette: the lights' colours are saved in their own section.
         let mut colours = super::super::pc_lights::Settings::default();
@@ -287,6 +347,12 @@ mod tests {
         let registry = calibration::Registry::default();
         load_into(&registry);
         assert_eq!(registry.device(key), Some(cal));
+        // Matches, with both sides, come back the same (one test writes this section: the
+        // tests share one settings file).
+        assert_eq!(registry.device(matched), Some(with_matches));
+        let blue = foxglove_devices::Rgb { r: 0, g: 0, b: 153 };
+        assert_eq!(registry.rgb(matched, None, None, blue).b, 107);
+        assert_eq!(registry.on_screen(matched, None, blue).b, 161);
         let saved: Calibrations = super::super::store::try_load(SECTION).unwrap();
         assert_eq!(saved.version, calibration::VERSION);
     }

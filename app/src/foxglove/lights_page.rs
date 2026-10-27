@@ -182,16 +182,18 @@ pub fn is_swatch(color: (u16, u8), rgb: [u8; 3]) -> bool {
     near_hue && (i32::from(color.1) - i32::from(s)).abs() <= 3
 }
 
-/// The colour an underglow setting shows on screen.
+/// The colour an underglow setting shows on screen, through the keyboard's screen side.
 pub(crate) fn shown_color(hue: u16, sat: u8, brightness: u8) -> Color32 {
     // Gamma space, so a swatch looks like the sRGB colour it came from.
-    egui::ecolor::HsvaGamma {
-        h: f32::from(hue) / 360.0,
-        s: f32::from(sat) / 100.0,
-        v: f32::from(brightness.max(15)) / 100.0,
-        a: 1.0,
-    }
-    .into()
+    super::calibrate::keyboard_screen(
+        egui::ecolor::HsvaGamma {
+            h: f32::from(hue) / 360.0,
+            s: f32::from(sat) / 100.0,
+            v: f32::from(brightness.max(15)) / 100.0,
+            a: 1.0,
+        }
+        .into(),
+    )
 }
 
 /// Paints the page; returns what was asked for this frame.
@@ -314,7 +316,8 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             ui.spacing_mut().item_spacing.x = 10.0;
             for (name, rgb) in SWATCHES {
                 let selected = is_swatch((*hue, *sat), rgb);
-                if swatch(ui, Color32::from_rgb(rgb[0], rgb[1], rgb[2]), selected).on_hover_text(name).clicked() {
+                let shown = super::calibrate::keyboard_screen(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+                if swatch(ui, shown, selected).on_hover_text(name).clicked() {
                     (*hue, *sat) = swatch_hue_sat(rgb);
                 }
             }

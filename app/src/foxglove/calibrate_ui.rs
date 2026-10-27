@@ -1,106 +1,100 @@
 //! The colour calibrator: "Calibrate…" on a device of the Lights page.
 //!
-//! Five steps: white, red, green, blue, then mid-grey. Each shows one colour on the device
-//! and on the reference (the screen, as a swatch, or another device, the "master"). The user
-//! nudges a few sliders until the device matches, and the device follows as they move: a
-//! slider change marks the frame, and the frame sends one write (the PC lights' worker and the
-//! keyboard's writer drop any that a newer one replaces). Nothing moves, nothing is written.
+//! Calibration here is a set of matches the user confirms, never a measurement of what a colour
+//! "really" is. For each test colour the device shows it and the reference (the screen, as a
+//! swatch, or another device, the "master") shows it too. The user moves the **light** (what
+//! the device is sent) or the **screen** (what Foxglove draws for this device), or both, with
+//! the "Adjust" switch, until the two look alike, then clicks **These match**. Each side keeps
+//! its own values (blue down 30% on the light and up 5% on the screen are both kept), and the
+//! device's transforms are fitted to the matches (`foxglove_devices::calibration::Fit`).
 //!
-//! - **White:** white balance (a gain per channel) and brightness, to match other devices.
-//! - **Red, green, blue:** that primary's level and how much of the other two it takes (a
-//!   column of the colour matrix): an LED's green is often bluer than a screen's.
-//! - **Grey:** gamma per channel, so mid-tones look as bright as on the reference.
+//! The test colours sit mid-range (about 60%, never a full channel), so either side can go up
+//! as well as down. A slider change marks the frame, and the frame sends one write (the PC
+//! lights' worker and the keyboard's writer drop any that a newer one replaces). Nothing moves,
+//! nothing is written.
 //!
-//! Save keeps it (per device, or per zone when a zone is picked); Cancel puts the previous
-//! calibration and colours back. [`show`] runs it on the page; [`draw`] paints a [`Wizard`]
-//! and returns what was asked, so the previews and tests need no device.
+//! Save keeps the matches; Cancel puts the previous calibration and colours back. [`show`] runs
+//! it on the page; [`draw`] paints a [`Wizard`] and returns what was asked, so the previews and
+//! tests need no device.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use egui::{Color32, RichText, Sense, Stroke};
-use foxglove_devices::calibration::{self, Calibration, DeviceCalibration, IDENTITY_MATRIX};
+use foxglove_devices::calibration::{self, DeviceCalibration, Match, Side};
 
 use super::calibrate::{self, Before, Kind, Target};
 use super::settings_ui::card;
 use super::theme;
 
-/// The calibrator's steps, in order.
+/// The test colours, in order.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Step {
     #[default]
     White,
+    Grey,
     Red,
     Green,
     Blue,
-    Grey,
+    Skin,
+    Warm,
 }
 
-impl Step {
-    pub const ALL: [Step; 5] = [Step::White, Step::Red, Step::Green, Step::Blue, Step::Grey];
+/// The brightest a test colour's channel goes (60%): room above it for either side.
+pub const TEST_LEVEL: u8 = 153;
 
-    /// The colour the step shows (sRGB).
+impl Step {
+    pub const ALL: [Step; 7] = [
+        Step::White,
+        Step::Grey,
+        Step::Red,
+        Step::Green,
+        Step::Blue,
+        Step::Skin,
+        Step::Warm,
+    ];
+
+    /// The colour the step shows (sRGB): mid-range, no channel above [`TEST_LEVEL`].
     pub fn color(self) -> [u8; 3] {
         match self {
-            Step::White => [255, 255, 255],
-            Step::Red => [255, 0, 0],
-            Step::Green => [0, 255, 0],
-            Step::Blue => [0, 0, 255],
-            Step::Grey => [128, 128, 128],
+            Step::White => [153, 153, 153],
+            Step::Grey => [115, 115, 115],
+            Step::Red => [153, 0, 0],
+            Step::Green => [0, 153, 0],
+            Step::Blue => [0, 0, 153],
+            Step::Skin => [153, 112, 92],
+            Step::Warm => [153, 97, 38],
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
             Step::White => "White",
+            Step::Grey => "Grey",
             Step::Red => "Red",
             Step::Green => "Green",
             Step::Blue => "Blue",
-            Step::Grey => "Grey",
+            Step::Skin => "Skin",
+            Step::Warm => "Warm",
         }
     }
 
-    fn index(self) -> usize {
-        Step::ALL.iter().position(|s| *s == self).unwrap_or(0)
-    }
-
-    fn hint(self) -> &'static str {
-        match self {
-            Step::White => {
-                "Lower the colour that's too strong until the white has no tint (bluish white: \
-                 lower Blue). Then set Brightness so it looks as bright as the reference."
-            }
-            Step::Red => {
-                "Too deep or pinkish? Add a little green. Then set Red so it's as bright as \
-                 the reference."
-            }
-            Step::Green => {
-                "Too minty or bluish? Add a little red. Then set Green so it's as bright as the \
-                 reference."
-            }
-            Step::Blue => {
-                "Too violet? Add a little green; too cold, a little red. Then set Blue so it's \
-                 as bright as the reference."
-            }
-            Step::Grey => {
-                "Match how bright the grey looks: higher makes the middle tones darker. For a \
-                 tint that only shows in grey, set red, green and blue on their own."
-            }
-        }
-    }
-
-    /// The primary this step works on: a column of the colour matrix.
-    fn primary(self) -> Option<usize> {
-        match self {
-            Step::Red => Some(0),
-            Step::Green => Some(1),
-            Step::Blue => Some(2),
-            _ => None,
-        }
+    fn of(color: [u8; 3]) -> Option<Step> {
+        Step::ALL.into_iter().find(|s| s.color() == color)
     }
 }
 
 const CHANNELS: [&str; 3] = ["Red", "Green", "Blue"];
+const SHORT: [&str; 3] = ["R", "G", "B"];
+
+/// A colour brought down to the test level, keeping its hue: a colour from a picker, matched.
+pub fn test_color(c: [u8; 3]) -> [u8; 3] {
+    let max = c.into_iter().max().unwrap_or(0);
+    if max <= TEST_LEVEL {
+        return c;
+    }
+    c.map(|v| (f32::from(v) * f32::from(TEST_LEVEL) / f32::from(max)).round() as u8)
+}
 
 /// The calibrator's state, kept by the page between frames.
 #[derive(Clone, Debug, PartialEq)]
@@ -108,22 +102,26 @@ pub struct Wizard {
     pub target: Target,
     /// What it's matched to: `None` is the screen.
     pub reference: Option<Target>,
-    /// The zone being calibrated on its own (by id); `None` is the whole device.
+    /// The zone being matched on its own (by id); `None` is every zone.
     pub zone: Option<String>,
     pub step: Step,
-    /// The calibration being made.
+    /// A colour from a picker being matched, in place of the step's.
+    pub custom: Option<[u8; 3]>,
+    /// Which side the sliders move.
+    pub side: Side,
+    /// The match being made for the colour on show.
+    pub current: Match,
+    /// The calibration being made: the device's values and its matches.
     pub cal: DeviceCalibration,
     /// What was saved before, put back on Cancel.
     pub saved: Option<DeviceCalibration>,
     /// What the device and the reference showed before, put back at the end.
     pub before: Before,
     pub reference_before: Before,
-    /// The grey step's three gammas move together.
-    pub linked: bool,
     /// The import box's text, while it's open.
     pub import: Option<String>,
     pub note: Option<String>,
-    /// The device hasn't been shown this step's colour yet.
+    /// The device hasn't been shown this colour yet.
     pub fresh: bool,
 }
 
@@ -131,68 +129,134 @@ impl Wizard {
     /// Starts on a device, from its saved calibration (else its model's default).
     pub fn new(target: Target, saved: Option<DeviceCalibration>) -> Self {
         let cal = saved.clone().unwrap_or_else(|| start(&target));
-        Self {
+        let mut w = Self {
             target,
             reference: None,
             zone: None,
             step: Step::White,
+            custom: None,
+            side: Side::Light,
+            current: Match::plain(Step::White.color()),
             cal,
             saved,
             before: Before::Unknown,
             reference_before: Before::Unknown,
-            linked: true,
             import: None,
             note: None,
             fresh: true,
-        }
+        };
+        w.load_current();
+        w
     }
 
-    /// The calibration the sliders move: the picked zone's own (starting from the device's),
-    /// or the device's.
-    pub fn editing(&mut self) -> &mut Calibration {
-        match &self.zone {
-            Some(z) => {
-                let device = self.cal.device.clone();
-                self.cal.zones.entry(z.clone()).or_insert(device)
-            }
-            None => &mut self.cal.device,
-        }
+    /// The colour on show.
+    pub fn color(&self) -> [u8; 3] {
+        self.custom.unwrap_or(self.step.color())
     }
 
-    /// Puts this step's sliders back to neutral.
-    pub fn reset_step(&mut self) {
-        let step = self.step;
-        let c = self.editing();
-        match step.primary() {
-            Some(col) => {
-                let mut m = c.matrix();
-                for (row, id) in m.iter_mut().zip(IDENTITY_MATRIX) {
-                    row[col] = id[col];
+    /// The saved match for this colour on this zone, if there is one.
+    fn saved_match(&self, color: [u8; 3]) -> Option<usize> {
+        self.cal
+            .matches
+            .iter()
+            .position(|m| m.color == color && m.zone == self.zone)
+    }
+
+    /// Whether a colour has a match on the zone being matched.
+    pub fn matched(&self, color: [u8; 3]) -> bool {
+        self.saved_match(color).is_some()
+    }
+
+    /// The match to adjust for the colour on show: its saved one, else where the matches so far
+    /// put it (so each match starts from the ones before).
+    fn load_current(&mut self) {
+        let color = self.color();
+        self.current = match self.saved_match(color) {
+            Some(i) => self.cal.matches[i].clone(),
+            None => {
+                let zone = self.zone.as_deref();
+                let rgb = rgb(color);
+                let light = self.cal.fit(zone, Side::Light).apply_rgb(rgb);
+                let screen = self.cal.fit(zone, Side::Screen).apply_rgb(rgb);
+                Match {
+                    color,
+                    light: [light.r, light.g, light.b],
+                    screen: [screen.r, screen.g, screen.b],
+                    zone: self.zone.clone(),
                 }
-                c.matrix = Some(m);
             }
-            None if step == Step::White => {
-                c.gain = [1.0; 3];
-                c.brightness = 1.0;
-            }
-            None => c.gamma = [1.0; 3],
+        };
+    }
+
+    /// Goes to a test colour (`custom`: a picked one).
+    pub fn go_to(&mut self, step: Step, custom: Option<[u8; 3]>) {
+        self.step = step;
+        self.custom = custom.filter(|c| Step::of(*c).is_none());
+        if let Some(s) = custom.and_then(Step::of) {
+            self.step = s;
+        }
+        self.load_current();
+    }
+
+    /// "These match": keeps the current pair, replacing this colour's match on this zone.
+    pub fn confirm(&mut self) {
+        let m = Match {
+            zone: self.zone.clone(),
+            ..self.current.clone()
+        };
+        match self.saved_match(m.color) {
+            Some(i) => self.cal.matches[i] = m,
+            None => self.cal.matches.push(m),
         }
     }
 
-    /// Everything back to the model's default, from the first step.
+    /// The next test colour without a match, after this one.
+    pub fn next_unmatched(&self) -> Option<Step> {
+        let at = Step::ALL.iter().position(|s| *s == self.step).unwrap_or(0);
+        (1..Step::ALL.len())
+            .map(|i| Step::ALL[(at + i) % Step::ALL.len()])
+            .find(|s| !self.matched(s.color()))
+    }
+
+    /// Forgets a match.
+    pub fn remove(&mut self, i: usize) {
+        if i < self.cal.matches.len() {
+            self.cal.matches.remove(i);
+            self.load_current();
+        }
+    }
+
+    /// Picks a saved match again, to adjust and confirm it anew.
+    pub fn redo(&mut self, i: usize) {
+        let Some(m) = self.cal.matches.get(i).cloned() else {
+            return;
+        };
+        self.zone = m.zone.clone();
+        let step = Step::of(m.color);
+        self.step = step.unwrap_or(self.step);
+        self.custom = step.is_none().then_some(m.color);
+        self.current = m;
+    }
+
+    /// One side of the colour on show back to the colour itself.
+    pub fn reset_side(&mut self, side: Side) {
+        let color = self.current.color;
+        *self.current.side_mut(side) = color;
+    }
+
+    /// Every match gone and the values back to the model's default, from the first colour.
     pub fn start_over(&mut self) {
         self.cal = start(&self.target);
         self.zone = None;
-        self.step = Step::White;
+        self.go_to(Step::White, None);
     }
 
-    /// What Save keeps: `None` when it's just the model's default (nothing to store, and a
-    /// saved one is forgotten), with
-    /// identity matrices dropped and zones that match the device folded in.
+    /// What Save keeps: `None` when it's just the model's default with no matches (nothing to
+    /// store, and a saved one is forgotten).
     pub fn result(&self) -> Option<DeviceCalibration> {
-        let tidy = |c: &Calibration| {
+        let tidy = |c: &calibration::Calibration| {
             let mut c = c.clone().sanitized();
-            if c.matrix.is_some_and(|m| m == IDENTITY_MATRIX) {
+            if c.matrix.is_some_and(|m| m == calibration::IDENTITY_MATRIX) {
                 c.matrix = None;
             }
             c
@@ -206,14 +270,32 @@ impl Wizard {
             .filter(|(_, c)| *c != device)
             .collect();
         let default = tidy(&self.target.default.clone().unwrap_or_default());
-        if zones.is_empty() && device == default {
+        if zones.is_empty() && device == default && self.cal.matches.is_empty() {
             return None;
         }
         Some(DeviceCalibration {
             name: self.target.name.clone(),
             device,
             zones,
+            matches: self.cal.matches.clone(),
         })
+    }
+
+    /// What the registry holds while matching: the values only, so the device shows exactly
+    /// the light value being adjusted.
+    fn previewing(&self) -> DeviceCalibration {
+        DeviceCalibration {
+            matches: Vec::new(),
+            ..self.cal.clone()
+        }
+    }
+}
+
+fn rgb(c: [u8; 3]) -> foxglove_devices::Rgb {
+    foxglove_devices::Rgb {
+        r: c[0],
+        g: c[1],
+        b: c[2],
     }
 }
 
@@ -221,8 +303,38 @@ fn start(target: &Target) -> DeviceCalibration {
     DeviceCalibration {
         name: target.name.clone(),
         device: target.default.clone().unwrap_or_default(),
-        zones: BTreeMap::new(),
+        ..Default::default()
     }
+}
+
+/// One side of a match in words: the light as each lit channel's level ("R 100 G 96 B 70"),
+/// the screen as what moved ("B +5"; "as is" when nothing did).
+pub fn side_text(m: &Match, side: Side) -> String {
+    let out = m.side(side);
+    let parts: Vec<String> = (0..3)
+        .filter(|i| m.color[*i] > 0)
+        .filter_map(|i| {
+            let pct = (f32::from(out[i]) * 100.0 / f32::from(m.color[i])).round() as i32;
+            match side {
+                Side::Light => Some(format!("{} {pct}", SHORT[i])),
+                Side::Screen => (pct != 100).then(|| format!("{} {:+}", SHORT[i], pct - 100)),
+            }
+        })
+        .collect();
+    if parts.is_empty() {
+        "as is".into()
+    } else {
+        parts.join(" ")
+    }
+}
+
+/// Both sides of a match in words: "Light: R 100 G 96 B 70 · Screen: B +5".
+pub fn match_text(m: &Match) -> String {
+    format!(
+        "Light: {} · Screen: {}",
+        side_text(m, Side::Light),
+        side_text(m, Side::Screen)
+    )
 }
 
 /// What the page around the calibrator offers.
@@ -244,12 +356,12 @@ pub enum Done {
 /// What a frame asked for.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Output {
-    /// The calibration (or the step, or the zone) changed: show the step on the device.
+    /// The light value (or the colour, or the zone) changed: show it on the device.
     pub show: bool,
-    /// The step or the reference changed: show the step on the reference too.
+    /// The colour or the reference changed: show the colour on the reference too.
     pub show_reference: bool,
     /// The user picked another reference: the old one (`None`: the screen) is put back, and
-    /// the new one's colours are captured before it shows the step.
+    /// the new one's colours are captured before it shows the colour.
     pub reference_changed: Option<Option<Target>>,
     pub done: Option<Done>,
     /// Text for the clipboard (an export).
@@ -268,9 +380,9 @@ pub fn draw(ui: &mut egui::Ui, v: &View, w: &mut Wizard) -> Output {
     card(ui, &title, |ui| {
         let p = theme::palette(ui);
         ui.weak(
-            "Make this device show Foxglove's colours the way your screen (or another device) \
-             does. Five steps, about a minute: nudge the sliders until the two match. The device \
-             follows as you move them.",
+            "Match this device to your screen (or another device), one test colour at a time: \
+             adjust the light, the screen or both until the two look alike to you, then click \
+             These match. Colours between your matches follow them.",
         );
         ui.add_space(6.0);
         choices(ui, v, w, &mut out);
@@ -304,6 +416,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, w: &mut Wizard) -> Output {
         ui.add_space(10.0);
         buttons(ui, w, &mut out);
         ui.add_space(6.0);
+        matches(ui, w, &mut out);
         ui.separator();
         share(ui, w, &mut out);
         if let Some(note) = &w.note {
@@ -341,11 +454,12 @@ fn choices(ui: &mut egui::Ui, v: &View, w: &mut Wizard, out: &mut Output) {
         let mut choose = |ui: &mut egui::Ui, w: &mut Wizard, z: Option<&String>, name: &str| {
             let selected = w.zone.as_ref() == z;
             if theme::pill(ui, selected, name)
-                .on_hover_text("Calibrate this zone on its own, when it doesn't match the rest")
+                .on_hover_text("Match this zone on its own, when it doesn't look like the rest")
                 .clicked()
                 && !selected
             {
                 w.zone = z.cloned();
+                w.load_current();
                 out.show = true;
             }
         };
@@ -356,47 +470,50 @@ fn choices(ui: &mut egui::Ui, v: &View, w: &mut Wizard, out: &mut Output) {
     });
 }
 
-/// The five steps as numbered pills; any can be picked.
+/// The test colours as pills, ticked once matched; any can be picked.
 fn steps(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
-        for (i, step) in Step::ALL.iter().enumerate() {
-            let text = format!("{} {}", i + 1, step.name());
-            if theme::pill(ui, w.step == *step, &text).clicked() && w.step != *step {
-                go(w, *step, out);
+        for step in Step::ALL {
+            let tick = if w.matched(step.color()) { " ✓" } else { "" };
+            let selected = w.step == step && w.custom.is_none();
+            let text = format!("{}{tick}", step.name());
+            if theme::pill(ui, selected, &text).clicked() && !selected {
+                go(w, step, out);
             }
+        }
+        if let Some(c) = w.custom {
+            theme::pill(ui, true, &format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]));
         }
     });
 }
 
 fn go(w: &mut Wizard, step: Step, out: &mut Output) {
-    w.step = step;
+    w.go_to(step, None);
     out.show = true;
     out.show_reference = true;
 }
 
-/// The reference colour (the screen's swatch, or a note to look at the other device) beside
-/// what goes to this device after calibration.
+/// The reference colour (the screen's swatch, through the screen side, or a note to look at the
+/// other device) beside what goes to this device.
 fn swatches(ui: &mut egui::Ui, w: &mut Wizard) {
     let p = theme::palette(ui);
-    let c = w.step.color();
-    let zone = w.zone.clone();
     let sent = w
         .cal
-        .zone(zone.as_deref())
-        .apply_rgb(foxglove_devices::Rgb {
-            r: c[0],
-            g: c[1],
-            b: c[2],
-        });
+        .zone(w.zone.as_deref())
+        .apply_rgb(rgb(w.current.light));
     let reference = match &w.reference {
         None => "On your screen".to_string(),
         Some(t) => format!("On the {}", t.name),
     };
+    let screen = match &w.reference {
+        None => w.current.screen,
+        Some(_) => w.current.color,
+    };
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
         for (label, color, big) in [
-            (reference.as_str(), c, true),
+            (reference.as_str(), screen, true),
             ("Sent to this device", [sent.r, sent.g, sent.b], false),
         ] {
             ui.vertical(|ui| {
@@ -416,97 +533,126 @@ fn swatches(ui: &mut egui::Ui, w: &mut Wizard) {
     });
     if w.reference.is_some() {
         ui.label(
-            RichText::new("Both devices show this step now: match this one to the other.")
+            RichText::new("Both devices show this colour now: match this one to the other.")
                 .size(12.0)
                 .color(p.muted),
         );
     }
 }
 
-/// This step's sliders.
+/// "Adjust: Light | Screen", each side's values, and the selected side's sliders.
 fn sliders(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
     let p = theme::palette(ui);
-    let step = w.step;
-    ui.label(
-        RichText::new(format!("{}. {}", step.index() + 1, step.name()))
-            .color(p.text_strong)
-            .strong(),
-    );
-    ui.label(RichText::new(step.hint()).size(12.5).color(p.text));
-    ui.add_space(6.0);
-    let linked = w.linked;
-    // A copy: a zone gets its own calibration only once one of its sliders moves.
-    let mut edit = w.cal.zone(w.zone.as_deref()).clone();
-    let c = &mut edit;
+    let name = match w.custom {
+        Some(_) => "Your colour".to_string(),
+        None => w.step.name().to_string(),
+    };
+    ui.label(RichText::new(name).color(p.text_strong).strong());
+    ui.horizontal_wrapped(|ui| {
+        ui.label(theme::caps_label(ui, "Adjust"));
+        for (side, text, hover) in [
+            (Side::Light, "Light", "Move what this device is sent"),
+            (
+                Side::Screen,
+                "Screen",
+                "Move what Foxglove draws for this device, when the light can't get there",
+            ),
+        ] {
+            if theme::pill(ui, w.side == side, text)
+                .on_hover_text(hover)
+                .clicked()
+            {
+                w.side = side;
+            }
+        }
+    });
+    ui.label(RichText::new(match_text(&w.current)).font(theme::mono(12.0)));
+    ui.add_space(4.0);
+    let side = w.side;
+    let color = w.current.color;
     let mut changed = false;
-    match step.primary() {
-        None if step == Step::White => {
-            for (i, name) in CHANNELS.iter().enumerate() {
-                changed |= slider(ui, name, &mut c.gain[i], 0.1..=1.0);
-            }
-            changed |= slider(ui, "Brightness", &mut c.brightness, 0.1..=1.0);
-        }
-        Some(col) => {
-            let mut m = c.matrix();
-            let mut any = slider(ui, CHANNELS[col], &mut m[col][col], 0.2..=1.0);
-            for (row, name) in CHANNELS.iter().enumerate().filter(|(r, _)| *r != col) {
-                any |= slider(
-                    ui,
-                    &format!("Add {}", name.to_lowercase()),
-                    &mut m[row][col],
-                    0.0..=0.5,
-                );
-            }
-            if any {
-                c.matrix = Some(m);
-                changed = true;
-            }
-        }
-        None if linked => {
-            let mut all = c.gamma.iter().sum::<f32>() / 3.0;
-            if slider(ui, "Mid-tones", &mut all, 0.4..=2.5) {
-                c.gamma = [all; 3];
-                changed = true;
-            }
-            ui.checkbox(&mut w.linked, "Same for red, green and blue");
-        }
-        None => {
-            for (i, name) in CHANNELS.iter().enumerate() {
-                changed |= slider(ui, &format!("{name} mid-tones"), &mut c.gamma[i], 0.4..=2.5);
-            }
-            ui.checkbox(&mut w.linked, "Same for red, green and blue");
+    for (i, name) in CHANNELS.iter().enumerate() {
+        let lit = color[i] > 0;
+        let value = &mut w.current.side_mut(side)[i];
+        // Whole percent, as the slider steps: drawing it never counts as a move.
+        let mut pct = if lit {
+            (f32::from(*value) * 100.0 / f32::from(color[i])).round()
+        } else {
+            100.0
+        };
+        let moved = ui
+            .add_enabled_ui(lit, |ui| slider(ui, name, &mut pct))
+            .inner;
+        if moved && lit {
+            *value = (f32::from(color[i]) * pct / 100.0)
+                .round()
+                .clamp(0.0, 255.0) as u8;
+            changed = true;
         }
     }
-    if changed {
-        *w.editing() = edit;
+    ui.label(
+        RichText::new(
+            "100% is the colour as it is; go either way. Channels this colour doesn't use stay off.",
+        )
+        .size(12.0)
+        .color(p.muted),
+    );
+    if changed && side == Side::Light {
         out.show = true;
     }
 }
 
-/// One slider across the column, its value in the row above.
-fn slider(
-    ui: &mut egui::Ui,
-    name: &str,
-    value: &mut f32,
-    range: std::ops::RangeInclusive<f32>,
-) -> bool {
+/// One channel's slider across the column, in percent of the colour (0-200), its value in the
+/// row above.
+fn slider(ui: &mut egui::Ui, name: &str, pct: &mut f32) -> bool {
     ui.horizontal(|ui| {
         ui.label(name);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{value:.2}")).font(theme::mono(12.5)));
+            ui.label(RichText::new(format!("{pct:.0}%")).font(theme::mono(12.5)));
         });
     });
     ui.spacing_mut().slider_width = ui.available_width();
     ui.add(
-        egui::Slider::new(value, range)
+        egui::Slider::new(pct, 0.0..=200.0)
             .show_value(false)
-            .step_by(0.01),
+            .step_by(1.0),
     )
     .changed()
 }
 
-/// Back and Next (Save on the last step), Reset step, Start over and Cancel.
+/// These match, reset per side, Start over, Cancel and Save.
 fn buttons(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add(theme::primary_button(ui, "These match"))
+            .on_hover_text("Keep this pair: the light and the screen as they are now")
+            .clicked()
+        {
+            w.confirm();
+            let name = w
+                .custom
+                .map_or(w.step.name().to_string(), |_| "Your colour".into());
+            w.note = Some(format!("Matched: {name}"));
+            if let Some(next) = w.next_unmatched().filter(|_| w.custom.is_none()) {
+                go(w, next, out);
+            }
+        }
+        if ui
+            .button("Reset light")
+            .on_hover_text("The light back to the colour as it is")
+            .clicked()
+        {
+            w.reset_side(Side::Light);
+            out.show = true;
+        }
+        if ui
+            .button("Reset screen")
+            .on_hover_text("The screen back to the colour as it is")
+            .clicked()
+        {
+            w.reset_side(Side::Screen);
+        }
+    });
     ui.horizontal(|ui| {
         if ui
             .button("Cancel")
@@ -517,33 +663,18 @@ fn buttons(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
         }
         if ui
             .button("Start over")
-            .on_hover_text("Every step back to its default, from White")
+            .on_hover_text("Forget every match and start from White")
             .clicked()
         {
             w.start_over();
-            go(w, Step::White, out);
-        }
-        if ui.button("Reset step").clicked() {
-            w.reset_step();
             out.show = true;
+            out.show_reference = true;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let last = w.step == Step::Grey;
-            let next = if last { "Save" } else { "Next" };
-            if ui.add(theme::primary_button(ui, next)).clicked() {
-                match Step::ALL.get(w.step.index() + 1) {
-                    Some(s) => go(w, *s, out),
-                    None => out.done = Some(Done::Save),
-                }
-            }
-            if w.step != Step::White && ui.button("Back").clicked() {
-                go(w, Step::ALL[w.step.index() - 1], out);
-            }
-            if !last
-                && ui
-                    .button("Save now")
-                    .on_hover_text("Keep what's set so far")
-                    .clicked()
+            if ui
+                .button("Save")
+                .on_hover_text("Keep the matches made so far")
+                .clicked()
             {
                 out.done = Some(Done::Save);
             }
@@ -551,12 +682,74 @@ fn buttons(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
     });
 }
 
+/// The matches made so far, each with Redo and Remove.
+fn matches(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
+    let p = theme::palette(ui);
+    ui.label(theme::caps_label(ui, "Matches"));
+    if w.cal.matches.is_empty() {
+        ui.weak("None yet: match a colour, then click These match.");
+        return;
+    }
+    let zones = match &w.target.kind {
+        Kind::Lights { zones } => zones.clone(),
+        Kind::Keyboard => Vec::new(),
+    };
+    let mut act: Option<(usize, bool)> = None;
+    for (i, m) in w.cal.matches.iter().enumerate() {
+        ui.horizontal(|ui| {
+            for c in [m.screen, m.light] {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
+                ui.painter()
+                    .rect_filled(rect, 3.0, Color32::from_rgb(c[0], c[1], c[2]));
+            }
+            let name = Step::of(m.color).map_or_else(
+                || format!("#{:02x}{:02x}{:02x}", m.color[0], m.color[1], m.color[2]),
+                |s| s.name().to_string(),
+            );
+            let zone = m.zone.as_ref().map(|z| {
+                zones
+                    .iter()
+                    .find(|(id, _)| id == z)
+                    .map_or(z.clone(), |(_, n)| n.clone())
+            });
+            let name = match zone {
+                Some(z) => format!("{name} · {z}"),
+                None => name,
+            };
+            ui.label(RichText::new(name).color(p.text_strong));
+            ui.label(
+                RichText::new(match_text(m))
+                    .font(theme::mono(11.5))
+                    .color(p.muted),
+            );
+            if ui.small_button("Redo").clicked() {
+                act = Some((i, true));
+            }
+            if ui.small_button("Remove").clicked() {
+                act = Some((i, false));
+            }
+        });
+    }
+    match act {
+        Some((i, true)) => {
+            w.redo(i);
+            out.show = true;
+            out.show_reference = true;
+        }
+        Some((i, false)) => {
+            w.remove(i);
+            out.show = true;
+        }
+        None => {}
+    }
+}
+
 /// Copy the calibration (to keep or share), or paste one in.
 fn share(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
     ui.horizontal(|ui| {
         if ui
             .small_button("Copy calibration")
-            .on_hover_text("This device's calibration as text, to keep or to use on another one")
+            .on_hover_text("This device's matches as text, to keep or to use on another one")
             .clicked()
         {
             match calibration::export(&w.target.key, &w.cal) {
@@ -593,12 +786,29 @@ fn share(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
                     ..cal
                 };
                 w.import = None;
-                w.note = Some("Imported: check each step, then Save".into());
+                w.load_current();
+                w.note = Some("Imported: check the matches, then Save".into());
                 out.show = true;
             }
             Err(e) => w.note = Some(format!("Can't use it: {e}")),
         }
     }
+}
+
+/// Beside a picker colour on the Lights page: "not matched yet" when the device has matches but
+/// none near this colour. True when it's clicked, to add a match for it.
+pub fn not_matched(ui: &mut egui::Ui, key: &str, zone: Option<&str>, color: [u8; 3]) -> bool {
+    if calibrate::covered(key, zone, color) != Some(false) {
+        return false;
+    }
+    let p = theme::palette(ui);
+    ui.add(
+        egui::Button::new(RichText::new("not matched yet").size(11.5).color(p.muted))
+            .small()
+            .frame(false),
+    )
+    .on_hover_text("None of this light's matches is near this colour: click to add a match for it")
+    .clicked()
 }
 
 static OPEN: Mutex<Option<Wizard>> = Mutex::new(None);
@@ -611,8 +821,16 @@ thread_local! {
 
 /// Opens the calibrator on a device, from what it shows now.
 pub fn open(target: Target) {
+    open_at(target, None, None);
+}
+
+/// Opens the calibrator on a device at a picked colour (brought to the test level) and zone,
+/// to add a match for it.
+pub fn open_at(target: Target, zone: Option<String>, color: Option<[u8; 3]>) {
     let saved = calibration::global().device(&target.key);
     let mut w = Wizard::new(target, saved);
+    w.zone = zone;
+    w.go_to(Step::White, color.map(test_color));
     w.before = calibrate::capture(&w.target);
     *OPEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
 }
@@ -660,7 +878,6 @@ pub fn cancel() {
 
 /// Sends what a frame asked for; true when the calibrator is done.
 fn act(w: &mut Wizard, out: Output) -> bool {
-    let color = w.step.color();
     if let Some(old) = &out.reference_changed {
         if let Some(old) = old {
             calibrate::restore(old, &w.reference_before);
@@ -672,13 +889,14 @@ fn act(w: &mut Wizard, out: Output) -> bool {
             .unwrap_or_default();
     }
     if out.show {
-        // The registry holds the calibration being made, so the device shows it.
-        calibration::global().set_device(&w.target.key, Some(w.cal.clone()));
-        calibrate::show(&w.target, color);
+        // The registry holds the values without the matches, so the device shows the light
+        // value being adjusted as it is.
+        calibration::global().set_device(&w.target.key, Some(w.previewing()));
+        calibrate::show(&w.target, w.current.light);
     }
     if out.show_reference {
         if let Some(r) = &w.reference {
-            calibrate::show(r, color);
+            calibrate::show(r, w.current.color);
         }
     }
     let Some(done) = out.done else {
@@ -762,291 +980,5 @@ fn moving(w: &Wizard) -> bool {
 }
 
 #[cfg(test)]
-pub mod tests {
-    use super::*;
-
-    pub fn case() -> Target {
-        Target {
-            key: "103c:84fd".into(),
-            name: "HP OMEN 45L case lights".into(),
-            kind: Kind::Lights {
-                zones: [
-                    ("1", "Diamond display"),
-                    ("2", "Interior light"),
-                    ("5", "Front bottom fan"),
-                    ("6", "Front middle fan"),
-                    ("7", "Front top fan"),
-                ]
-                .map(|(i, n)| (i.to_string(), n.to_string()))
-                .to_vec(),
-            },
-            default: Some(Calibration::default()),
-        }
-    }
-
-    pub fn corne() -> Target {
-        Target {
-            key: "1d50:615e".into(),
-            name: "Eyelash Corne".into(),
-            kind: Kind::Keyboard,
-            default: None,
-        }
-    }
-
-    /// The previews' calibrator on the 45L, at a step, part-way through.
-    pub fn sample(step: Step, master: bool) -> (View, Wizard) {
-        let mut w = Wizard::new(case(), None);
-        w.step = step;
-        w.fresh = false;
-        w.cal.device.gain = [1.0, 0.86, 0.72];
-        w.cal.device.brightness = 0.9;
-        w.cal.device.matrix = Some([[0.94, 0.06, 0.0], [0.08, 0.82, 0.0], [0.0, 0.0, 1.0]]);
-        w.cal.device.gamma = [1.12, 1.12, 1.12];
-        if master {
-            w.reference = Some(corne());
-        }
-        (
-            View {
-                others: vec![corne()],
-                moving: false,
-            },
-            w,
-        )
-    }
-
-    fn ui_run(v: &View, w: &mut Wizard, input: egui::RawInput) -> Output {
-        let ctx = super::super::pc_lights_ui::tests::test_ctx();
-        let mut out = Output::default();
-        let mut first = ctx.run_ui(egui::RawInput::default(), |ui| {
-            draw(ui, v, &mut w.clone());
-        });
-        first.textures_delta.clear();
-        let mut frame = ctx.run_ui(input, |ui| out = draw(ui, v, w));
-        frame.textures_delta.clear();
-        out
-    }
-
-    #[test]
-    fn the_first_frame_shows_the_step_and_a_quiet_frame_writes_nothing() {
-        let (v, mut w) = sample(Step::White, false);
-        w.fresh = true;
-        let out = ui_run(&v, &mut w, egui::RawInput::default());
-        assert!(out.show && out.show_reference && out.done.is_none());
-        let out = ui_run(&v, &mut w, egui::RawInput::default());
-        assert_eq!(out, Output::default(), "nothing moved: nothing is written");
-    }
-
-    #[test]
-    fn steps_have_their_colours_and_go_in_order() {
-        let colors: Vec<_> = Step::ALL.iter().map(|s| s.color()).collect();
-        assert_eq!(colors[0], [255; 3]);
-        assert_eq!(colors[4], [128; 3]);
-        let (_, mut w) = sample(Step::White, false);
-        let mut out = Output::default();
-        go(&mut w, Step::Red, &mut out);
-        assert!(out.show && out.show_reference);
-        assert_eq!(w.step.index(), 1);
-    }
-
-    #[test]
-    fn reset_step_and_start_over() {
-        let (_, mut w) = sample(Step::Red, false);
-        w.reset_step();
-        let m = w.cal.device.matrix();
-        assert_eq!([m[0][0], m[1][0], m[2][0]], [1.0, 0.0, 0.0], "red's column");
-        assert_eq!(m[1][1], 0.82, "green's column stays");
-        assert_eq!(w.cal.device.gain, [1.0, 0.86, 0.72], "white stays");
-        w.step = Step::White;
-        w.reset_step();
-        assert_eq!(
-            (w.cal.device.gain, w.cal.device.brightness),
-            ([1.0; 3], 1.0)
-        );
-        w.step = Step::Grey;
-        w.reset_step();
-        assert_eq!(w.cal.device.gamma, [1.0; 3]);
-        let (_, mut w) = sample(Step::Blue, true);
-        w.zone = Some("5".into());
-        w.editing().brightness = 0.5;
-        w.start_over();
-        assert_eq!(w.cal, start(&case()));
-        assert_eq!((w.step, w.zone.clone()), (Step::White, None));
-    }
-
-    #[test]
-    fn a_zone_starts_from_the_device_and_save_keeps_only_what_differs() {
-        let (_, mut w) = sample(Step::White, false);
-        w.zone = Some("5".into());
-        let device = w.cal.device.clone();
-        assert_eq!(*w.editing(), device, "starts from the device's");
-        w.zone = Some("6".into());
-        w.editing().brightness = 0.6;
-        let saved = w.result().unwrap();
-        assert!(
-            !saved.zones.contains_key("5"),
-            "same as the device: folded in"
-        );
-        assert_eq!(saved.zones["6"].brightness, 0.6);
-        assert_eq!(saved.name, "HP OMEN 45L case lights");
-        // Back to the model's default with nothing saved before: nothing to keep.
-        w.start_over();
-        assert_eq!(w.result(), None);
-        // An identity matrix isn't kept.
-        w.cal.device.matrix = Some(IDENTITY_MATRIX);
-        w.cal.device.gain = [1.0, 0.9, 0.9];
-        assert_eq!(w.result().unwrap().device.matrix, None);
-    }
-
-    #[test]
-    fn picking_a_zone_alone_saves_nothing_for_it() {
-        let (_, mut w) = sample(Step::White, false);
-        w.zone = Some("5".into());
-        let (v, _) = sample(Step::White, false);
-        let _ = shown(&v, &mut w);
-        assert!(w.cal.zones.is_empty(), "drawn, not moved: no zone entry");
-        w.zone = None;
-        w.cal.device.brightness = 0.5;
-        assert!(w.result().unwrap().zones.is_empty());
-    }
-
-    #[test]
-    fn back_to_the_default_forgets_a_saved_calibration() {
-        let saved = DeviceCalibration {
-            device: Calibration {
-                brightness: 0.7,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut w = Wizard::new(case(), Some(saved));
-        w.start_over();
-        assert_eq!(w.result(), None);
-    }
-
-    #[test]
-    fn the_first_device_picked_to_compare_with_is_captured_and_put_back() {
-        let mut w = Wizard::new(case(), None);
-        let picked = Output {
-            reference_changed: Some(None),
-            show_reference: true,
-            ..Default::default()
-        };
-        w.reference = Some(corne());
-        assert!(!act(&mut w, picked));
-        // No keyboard in the tests: captured as unknown, which restore turns into white.
-        assert_eq!(w.reference_before, Before::Unknown);
-    }
-
-    #[test]
-    fn cancel_puts_back_what_was_saved() {
-        let key = "calibrate-ui-cancel";
-        let saved = DeviceCalibration {
-            device: Calibration {
-                brightness: 0.7,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        calibration::global().set_device(key, Some(saved.clone()));
-        let mut target = case();
-        target.key = key.into();
-        // Before there is a device or page: show and restore only queue (no worker runs).
-        let mut w = Wizard::new(target, Some(saved.clone()));
-        w.cal.device.brightness = 0.3;
-        let preview = Output {
-            show: true,
-            ..Default::default()
-        };
-        assert!(!act(&mut w, preview));
-        assert_eq!(
-            calibration::global().device(key).unwrap().device.brightness,
-            0.3
-        );
-        let cancel = Output {
-            done: Some(Done::Cancel),
-            ..Default::default()
-        };
-        assert!(act(&mut w, cancel));
-        assert_eq!(calibration::global().device(key), Some(saved));
-        calibration::global().set_device(key, None);
-    }
-
-    #[test]
-    fn copy_and_import_round_trip() {
-        let (_, w) = sample(Step::Grey, false);
-        let text = calibration::export(&w.target.key, &w.cal).unwrap();
-        let (_, cal) = calibration::import(&text).unwrap();
-        assert_eq!(cal.device, w.cal.device.clone().sanitized());
-        assert!(calibration::import("not a calibration").is_err());
-    }
-
-    #[test]
-    fn linked_mid_tones_move_together() {
-        let (v, mut w) = sample(Step::Grey, false);
-        let text = shown(&v, &mut w);
-        assert!(
-            text.contains("Mid-tones") && !text.contains("Red mid-tones"),
-            "{text}"
-        );
-        w.linked = false;
-        let text = shown(&v, &mut w);
-        assert!(text.contains("Red mid-tones") && text.contains("Blue mid-tones"));
-    }
-
-    #[test]
-    fn every_step_has_its_sliders_and_zones_show_for_the_case() {
-        for (step, label) in [
-            (Step::White, "Brightness"),
-            (Step::Red, "Add green"),
-            (Step::Green, "Add red"),
-            (Step::Blue, "Add green"),
-            (Step::Grey, "Mid-tones"),
-        ] {
-            let (v, mut w) = sample(step, false);
-            let text = shown(&v, &mut w);
-            assert!(text.contains(label), "{step:?}: {text}");
-            assert!(text.contains("Front top fan") && text.contains("All zones"));
-            assert!(text.contains(if step == Step::Grey { "Save" } else { "Next" }));
-        }
-        let (v, mut w) = sample(Step::Blue, true);
-        let text = shown(&v, &mut w);
-        assert!(text.contains("On the Eyelash Corne"), "{text}");
-        let mut keyboard = Wizard::new(corne(), None);
-        let text = shown(&View::default(), &mut keyboard);
-        assert!(!text.contains("All zones"), "the keyboard has one colour");
-        let moving = View {
-            moving: true,
-            ..View::default()
-        };
-        assert!(shown(&moving, &mut keyboard).contains("Solid"));
-    }
-
-    /// Draws the calibrator headless and returns its text.
-    fn shown(v: &View, w: &mut Wizard) -> String {
-        let ctx = super::super::pc_lights_ui::tests::test_ctx();
-        let mut first = ctx.run_ui(egui::RawInput::default(), |ui| {
-            draw(ui, v, &mut w.clone());
-        });
-        first.textures_delta.clear();
-        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            draw(ui, v, w);
-        });
-        out.textures_delta.clear();
-        let mut text = String::new();
-        for clipped in &out.shapes {
-            collect(&clipped.shape, &mut text);
-        }
-        text
-    }
-
-    fn collect(shape: &egui::Shape, out: &mut String) {
-        match shape {
-            egui::Shape::Text(t) => {
-                out.push_str(t.galley.text());
-                out.push('\n');
-            }
-            egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
-            _ => {}
-        }
-    }
-}
+#[path = "calibrate_ui_tests.rs"]
+pub mod tests;

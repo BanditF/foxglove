@@ -1257,21 +1257,23 @@ fn calibrate_renders() {
     let mut shots = Vec::new();
     for step in Step::ALL {
         let mut s = Samples::full();
-        s.calibrate = Some(sample(step, false));
+        let (v, w) = sample(step, false);
+        let screen = w.current.screen;
+        s.calibrate = Some((v, w));
         let img = shell_preview_with(Page::Lights, &s, 1180.0);
         keep(
             &format!("ui-calibrate-{}.png", step.name().to_lowercase()),
             &img,
         );
-        // The screen's swatch is the step's own colour, large.
-        assert!(count(&img, step.color()) > 5000, "{step:?} swatch");
+        // The screen's swatch is the colour through the screen side, large.
+        assert!(count(&img, screen) > 5000, "{step:?} swatch");
         shots.push(img);
     }
     let mut master = Samples::full();
     master.calibrate = Some(sample(Step::Blue, true));
     let master = shell_preview_with(Page::Lights, &master, 1180.0);
     keep("ui-calibrate-master.png", &master);
-    // Next/Save is the orange primary button; every step looks different.
+    // These match is the orange primary button; every colour looks different.
     assert!(
         count(
             &shots[0],
@@ -1282,6 +1284,37 @@ fn calibrate_renders() {
         assert_ne!(pair[0], pair[1]);
     }
     assert_ne!(master, shots[3]);
+}
+
+/// The calibrator's "Adjust" switch on each side, side by side in one image: blue with the light
+/// down 30% and the screen up 5%, both kept.
+#[test]
+fn calibrate_two_way_renders() {
+    use crate::foxglove::calibrate_ui::{tests::sample, Step};
+    use crate::foxglove::shell::Page;
+    use foxglove_devices::calibration::Side;
+    let mut shots = Vec::new();
+    for side in [Side::Light, Side::Screen] {
+        let mut s = Samples::full();
+        let (v, mut w) = sample(Step::Blue, false);
+        w.side = side;
+        s.calibrate = Some((v, w));
+        shots.push(shell_preview_with(Page::Lights, &s, 1180.0));
+    }
+    assert_ne!(shots[0], shots[1], "the switch shows which side moves");
+    let (a, b) = (&shots[0], &shots[1]);
+    let gap = 24;
+    let mut both = image::RgbaImage::from_pixel(
+        a.width() + gap + b.width(),
+        a.height().max(b.height()),
+        image::Rgba([0, 0, 0, 255]),
+    );
+    image::imageops::overlay(&mut both, a, 0, 0);
+    image::imageops::overlay(&mut both, b, i64::from(a.width() + gap), 0);
+    keep("ui-calibrate-2way.png", &both);
+    // The screen's swatch draws blue up 5% on both: the switch only picks what the sliders move.
+    let blue = |img: &image::RgbaImage| img.pixels().filter(|p| p.0[..3] == [0, 0, 161]).count();
+    assert!(blue(a) > 5000 && blue(b) > 5000);
 }
 
 /// What each device can do, as chips (the keyboard from HELLO, the case and cooler from the
