@@ -13,6 +13,7 @@ mod art_encode;
 pub mod art_library;
 pub mod art_manifest;
 pub mod art_pieces;
+mod art_seen;
 mod art_preview;
 pub mod art_service;
 mod art_sources;

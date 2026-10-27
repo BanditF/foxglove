@@ -115,6 +115,8 @@ enum Act {
     AddFolder,
     RemoveSource(PathBuf),
     StandIn(String, Option<u8>),
+    /// Hide the firmware-change line.
+    Dismiss,
 }
 
 #[cfg(test)]
@@ -291,6 +293,7 @@ fn act(art: &Art, acts: Vec<Act>) {
                 art_library::refresh();
             }
             Act::StandIn(builtin, slot) => super::art_sources::set_stand_in(&builtin, slot),
+            Act::Dismiss => h.dismiss_notice(),
         }
     }
 }
@@ -634,7 +637,7 @@ fn draw_now_right(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
             if let Some(b) = art_words::showing_badge(now) {
                 badge_ui(ui, b);
             }
-            let remembered = s.pinned.as_ref().is_some_and(|pin| match (pin, now) {
+            let remembered = s.pin_now().as_ref().is_some_and(|pin| match (pin, now) {
                 (Choice::BuiltIn(n), Showing::BuiltIn(m)) => *n == m,
                 (Choice::Slot(n), Showing::Kept(m)) => *n == m,
                 (Choice::File(_), Showing::Sent) => s.showing_file().is_some(),
@@ -894,6 +897,15 @@ fn draw_keyboard(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut V
         ui.weak("Reading the keyboard…");
         return;
     };
+    if let Some(notice) = &s.notice {
+        ui.horizontal_wrapped(|ui| {
+            ui.colored_label(theme::palette(ui).warn, notice);
+            if ui.small_button("OK").clicked() {
+                acts.push(Act::Dismiss);
+            }
+        });
+        ui.add_space(4.0);
+    }
     if let Some((used, total)) = art_pieces::meter(s) {
         meter(ui, used, total);
     }

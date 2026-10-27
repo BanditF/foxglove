@@ -43,6 +43,11 @@ pub struct Snapshot {
     /// The file Foxglove last sent and a hash of its bytes, while the right half plays it from
     /// memory (whoever asked: a click, a layer, a preset). Cleared by a select and a disconnect.
     pub sent: Option<(PathBuf, u64)>,
+    /// The pinned built-in's manifest name, so the pin follows it across firmware updates.
+    pub pinned_name: Option<String>,
+    /// What changed on the keyboard since Foxglove last saw it (a firmware update), in words,
+    /// until the user dismisses it (#521).
+    pub notice: Option<String>,
     /// What runs now, named for the sending strip (#518).
     pub job: Option<Job>,
     /// How the last job ended; the strip says so until the next one starts.
@@ -181,6 +186,16 @@ impl Snapshot {
         }
     }
 
+    /// The pin as this keyboard has it (#521): a built-in pinned by name follows the name.
+    pub fn pin_now(&self) -> Option<Choice> {
+        let count = self.status.map_or(0, |s| s.right_set_count);
+        pin_for(
+            &self.pinned,
+            self.pinned_name.as_deref(),
+            manifest_index(count),
+        )
+    }
+
     pub fn progress(&self) -> Option<(u16, u16)> {
         self.push_progress
     }
@@ -311,6 +326,11 @@ impl Handle {
         self.submit(Command::Erase(slot))
     }
 
+    /// Hides the firmware-change line.
+    pub fn dismiss_notice(&self) {
+        self.update(|s| s.notice = None);
+    }
+
     /// Runs a job again (the strip's Try again).
     pub fn again(&self, retry: Retry) -> bool {
         match retry {
@@ -429,20 +449,91 @@ pub fn stop() {
 struct ArtSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pinned: Option<Choice>,
+    /// A pinned built-in's manifest name (#521): indexes change between firmware builds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    built_in: Option<String>,
 }
 
-fn load_pinned() -> Option<Choice> {
+/// A pinned built-in, followed by name to its index on this firmware (`None` when the
+/// firmware no longer has it); anything else as pinned.
+pub fn pin_for(
+    pinned: &Option<Choice>,
+    name: Option<&str>,
+    index_of: impl Fn(&str) -> Option<u8>,
+) -> Option<Choice> {
+    match (pinned, name) {
+        (Some(Choice::BuiltIn(n)), Some(name)) if *n >= 0 => index_of(name)
+            .and_then(|i| i8::try_from(i).ok())
+            .map(Choice::BuiltIn),
+        _ => pinned.clone(),
+    }
+}
+
+/// A built-in's index by manifest name, on firmware with `set_count` built-ins.
+fn manifest_index(set_count: u8) -> impl Fn(&str) -> Option<u8> {
+    move |name| {
+        super::art_manifest::sets(set_count)?
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.index)
+    }
+}
+
+/// Saves the pin, with a built-in's manifest name when the manifest knows it.
+fn save_pin(h: &Handle, choice: &Choice) -> Result<(), String> {
+    let count = h.snapshot().status.map_or(0, |s| s.right_set_count);
+    let built_in = match choice {
+        Choice::BuiltIn(n) if *n >= 0 => super::art_manifest::sets(count)
+            .and_then(|sets| sets.get(usize::try_from(*n).ok()?))
+            .map(|s| s.name.clone()),
+        _ => None,
+    };
+    h.update(|s| {
+        s.pinned = Some(choice.clone());
+        s.pinned_name = built_in.clone();
+    });
+    super::store::save(
+        "art",
+        &ArtSettings {
+            pinned: Some(choice.clone()),
+            built_in,
+        },
+    )
+    .map_err(|e| format!("saving pinned art: {e}"))
+}
+
+/// Remembers what the keyboard holds; on a connect, first says what changed since (#521).
+fn note_seen(h: &Handle, announce: bool) {
+    let snap = h.snapshot();
+    let Some(now) = super::art_seen::Seen::of(&snap) else {
+        return;
+    };
+    let before = super::art_seen::load();
+    if announce {
+        if let Some(line) = before.and_then(|b| super::art_seen::change(&b, &now)) {
+            h.update(|s| s.notice = Some(line));
+        }
+    }
+    super::art_seen::save(&now);
+}
+
+fn load_pinned() -> (Option<Choice>, Option<String>) {
+    let a = load_art_settings();
+    (a.pinned, a.built_in)
+}
+
+fn load_art_settings() -> ArtSettings {
     super::store::load_or_migrate::<ArtSettings>("art", || {
         let json = crate::settings::Settings::config_file_path()?.with_file_name("art.json");
         let pinned = serde_json::from_slice::<Choice>(&std::fs::read(&json).ok()?).ok()?;
         Some((
             ArtSettings {
                 pinned: Some(pinned),
+                built_in: None,
             },
             vec![json],
         ))
     })
-    .pinned
 }
 
 fn restore(pinned: &Option<Choice>, status: ArtStatus) -> Option<Choice> {
@@ -572,9 +663,10 @@ fn read_slots(link: &impl Transport, h: &Handle, st: &ArtStatus) {
 }
 
 fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
-    let pinned = load_pinned();
+    let (pinned, pinned_name) = load_pinned();
     h.update(|s| {
         s.pinned = pinned;
+        s.pinned_name = pinned_name;
         s.cycle = Cycle::load();
     });
     let profile_tx = h.commands.clone();
@@ -759,13 +851,15 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             }
             Command::ProfileChanged => {
                 // The profile may have its own pinned art and hotlist.
-                let pinned = load_pinned();
+                let (pinned, pinned_name) = load_pinned();
                 let changed = h.snapshot().pinned != pinned;
                 h.update(|s| {
                     s.pinned = pinned.clone();
+                    s.pinned_name = pinned_name;
                     s.cycle = Cycle::load();
                 });
                 due = reschedule(current.is_some());
+                let pinned = h.snapshot().pin_now();
                 match pinned.filter(|_| changed && current.is_some() && !h.snapshot().busy) {
                     Some(_) if super::pause::paused() => {
                         missed = true;
@@ -975,6 +1069,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                         h.update(|s| s.status = Some(st));
                         if connected_now && !queued_command {
                             read_slots(link, h, &st);
+                            note_seen(h, true);
                         }
                         if !queued_command && !paused_now {
                             // Preset art (layers are unknown until the keyboard reports them)
@@ -985,7 +1080,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                                 .and_then(|i| {
                                     art_cycle::resolve(&i, st.right_set_count, st.flash_used)
                                 })
-                                .or(snap.pinned);
+                                .or(snap.pin_now());
                             if let Some(choice) = restore(&wanted, st) {
                                 h.update(|s| {
                                     s.job = Some(Job {
@@ -1007,35 +1102,22 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                         keep(link, h, &file, slot, &name).and_then(|st| {
                             // Pinned to the place: after a restart it shows from there, with no
                             // send.
-                            let choice = Choice::Slot(slot);
-                            h.update(|s| {
-                                s.status = Some(st);
-                                s.pinned = Some(choice.clone());
-                            });
-                            super::store::save(
-                                "art",
-                                &ArtSettings {
-                                    pinned: Some(choice),
-                                },
-                            )
-                            .map_err(|e| format!("saving pinned art: {e}"))?;
+                            h.update(|s| s.status = Some(st));
+                            note_seen(h, false);
+                            save_pin(h, &Choice::Slot(slot))?;
                             Ok(st)
                         })
                     }
                     Command::Erase(slot) => art::erase(link, slot)
                         .map_err(|e| e.to_string())
-                        .inspect(|st| read_slots(link, h, st)),
+                        .inspect(|st| {
+                            read_slots(link, h, st);
+                            note_seen(h, false);
+                        }),
                     Command::Show(choice) => choose(link, h, &choice),
                     Command::Choose(choice) => choose(link, h, &choice).and_then(|st| {
-                        h.update(|s| {
-                            s.status = Some(st);
-                            s.pinned = Some(choice.clone());
-                        });
-                        let art = ArtSettings {
-                            pinned: Some(choice.clone()),
-                        };
-                        super::store::save("art", &art)
-                            .map_err(|e| format!("saving pinned art: {e}"))?;
+                        h.update(|s| s.status = Some(st));
+                        save_pin(h, &choice)?;
                         Ok(st)
                     }),
                     _ => unreachable!(),
@@ -1300,6 +1382,43 @@ mod tests {
         );
     }
 
+    /// A pinned built-in follows its name across firmware builds (#521): two manifests, the
+    /// set moved from index 3 to 5, and a firmware without it.
+    #[test]
+    fn a_pinned_built_in_follows_its_name() {
+        let old = |name: &str| {
+            ["A", "B", "C", "Bandit_Gem"]
+                .iter()
+                .position(|n| *n == name)
+        };
+        let new = |name: &str| {
+            ["A", "B", "C", "D", "E", "Bandit_Gem"]
+                .iter()
+                .position(|n| *n == name)
+        };
+        let to_u8 = |f: fn(&str) -> Option<usize>| move |n: &str| f(n).map(|i| i as u8);
+        let pin = Some(Choice::BuiltIn(3));
+        assert_eq!(pin_for(&pin, Some("Bandit_Gem"), to_u8(old)), pin);
+        assert_eq!(
+            pin_for(&pin, Some("Bandit_Gem"), to_u8(new)),
+            Some(Choice::BuiltIn(5))
+        );
+        assert_eq!(
+            pin_for(&pin, Some("Bandit_Gem"), |_| None),
+            None,
+            "gone: no pin"
+        );
+        assert_eq!(
+            pin_for(&pin, None, |_| None),
+            pin,
+            "an old pin without a name"
+        );
+        let random = Some(Choice::BuiltIn(-1));
+        assert_eq!(pin_for(&random, Some("x"), |_| None), random);
+        let slot = Some(Choice::Slot(2));
+        assert_eq!(pin_for(&slot, Some("x"), |_| None), slot);
+    }
+
     #[test]
     fn jobs_are_named_for_the_strip() {
         let s = Snapshot {
@@ -1364,6 +1483,7 @@ mod tests {
         ] {
             let a = ArtSettings {
                 pinned: Some(pinned),
+                built_in: Some("Bandit_Gem".into()),
             };
             let back: ArtSettings = toml::from_str(&toml::to_string(&a).unwrap()).unwrap();
             assert_eq!(back, a);
