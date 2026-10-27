@@ -541,7 +541,7 @@ fn keep(
     let saved = match art::save(link, slot, name) {
         Ok(st) => st,
         Err(e) => {
-            if let Some(st) = h.snapshot().status {
+            if let Ok(st) = art::status(link) {
                 read_slots(link, h, &st);
             }
             return Err(e.to_string());
