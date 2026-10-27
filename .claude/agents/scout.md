@@ -20,6 +20,16 @@ the only file you write is your memory file.
 - Licences: say whether each option is compatible with GPL-3.0 (`app/`) and MIT (`crates/`).
 - Bound every command that can hang (`timeout 60 du -sm <dir>`).
 
+## Research & scope gate
+For a feature request, you run the research step the Planner waits on (`docs/scope.md`,
+`docs/agents.md`). Post it on the issue in three parts, in this order, and stop at the first that
+answers the question:
+1. **Reuse:** code or crates on the open market that do it, each with its licence and whether it
+   fits MIT `crates/` or GPL-3.0 `app/` (GPL-only: learn only for crates).
+2. **Emulate:** existing software whose pattern we should follow, and what exactly to copy.
+3. **Design our own:** only if 1 and 2 come up empty; say why they did.
+End with a **Scope** line measured against `docs/scope.md`: in, out, or unclear (`needs-decision`).
+
 ## Report
 Start with a recommendation of 3 lines at most, then the comparison and the sources (links
 pinned to a SHA or a version). Post long reports on the issue; return a summary of 20 lines or

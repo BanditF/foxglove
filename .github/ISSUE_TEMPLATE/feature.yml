@@ -1,0 +1,66 @@
+name: Feature request
+description: A new feature for Foxglove. It passes the research & scope gate (docs/scope.md) before design.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What and why
+      description: What the feature does for the user, in plain words.
+    validations:
+      required: true
+  - type: textarea
+    id: reuse
+    attributes:
+      label: "Research 1: Reuse"
+      description: >
+        Existing code or crates that already do this, each with its licence. crates/ are MIT and
+        app/ is GPL-3.0; GPL-only code is learn only for crates. Write "none found" if so.
+    validations:
+      required: false
+  - type: textarea
+    id: emulate
+    attributes:
+      label: "Research 2: Emulate"
+      description: Patterns in existing software worth following, and what exactly to copy as an idea.
+    validations:
+      required: false
+  - type: textarea
+    id: design
+    attributes:
+      label: "Research 3: Design our own"
+      description: Only if Reuse and Emulate come up empty. Say why they did.
+    validations:
+      required: false
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      description: Measured against docs/scope.md.
+      options:
+        - "In: fits what Foxglove is for"
+        - "Out: close with the reason"
+        - "Unclear: needs-decision"
+    validations:
+      required: true
+  - type: textarea
+    id: scope-why
+    attributes:
+      label: Scope reason
+      description: One line, against the product's purpose in docs/scope.md.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Acceptance criteria
+      description: What done looks like, and how an agent can check it without the user.
+    validations:
+      required: false
+  - type: input
+    id: role
+    attributes:
+      label: Role
+      description: app-engineer, firmware-engineer, art, test-lab or scout.
+    validations:
+      required: false
