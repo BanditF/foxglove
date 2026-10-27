@@ -122,7 +122,7 @@ fn keyboard() -> Option<std::sync::Arc<digitalis::devices::DigitalisDevice>> {
 }
 
 /// Ends the leases `ends` picks and shows what's next on each device they held.
-fn end_leases(ends: impl Fn(&super::lighting_leases::Lease) -> bool) {
+pub(crate) fn end_leases(ends: impl Fn(&super::lighting_leases::Lease) -> bool) {
     super::lighting_leases::with(|a| {
         for device in a.end(ends) {
             let shown = with_device(&device, |d| {

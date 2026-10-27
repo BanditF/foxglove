@@ -49,6 +49,8 @@ pub struct Facts {
     pub lights: Vec<String>,
     /// Scenes' room map (#483): what is placed where, in millimetres.
     pub room: String,
+    /// The running scene and what it sent (#485).
+    pub scene: String,
     pub log: Vec<String>,
 }
 
@@ -207,6 +209,7 @@ pub fn report(f: &Facts, personal: &Personal) -> String {
         },
     );
     line("Room map", &f.room);
+    line("Scene", &f.scene);
     let _ = writeln!(s, "\nLast {} log lines:", f.log.len());
     for l in &f.log {
         let _ = writeln!(s, "{}", super::app_log::redact(l));
@@ -286,8 +289,12 @@ pub fn collect(ctx: &egui::Context) -> Facts {
     let lights = super::lighting_leases::holders()
         .into_iter()
         .map(|(device, conn, priority)| {
-            let who = foxglove_plugin_host::plugin_of(conn)
-                .unwrap_or_else(|| format!("a tool (connection {conn})"));
+            let who = if conn == super::scene_run::SCENE_CONN {
+                "a scene".to_string()
+            } else {
+                foxglove_plugin_host::plugin_of(conn)
+                    .unwrap_or_else(|| format!("a tool (connection {conn})"))
+            };
             format!("{device}: {who} ({priority:?})")
         })
         .collect();
@@ -315,6 +322,7 @@ pub fn collect(ctx: &egui::Context) -> Facts {
         plugins,
         lights,
         room: super::scene_room::room().summary(),
+        scene: super::scene_run::summary(),
         log: super::app_log::recent(LOG_LINES),
     }
 }
@@ -388,6 +396,7 @@ pub(crate) fn sample() -> Facts {
         ],
         lights: vec!["zmk:1d50:615e: pomodoro (Normal)".into()],
         room: "monitor 597x336 at 0,0 (0 lights), keyboard left 124x90 at 134,486 (1 lights)".into(),
+        scene: "demo scanline running 12 s, 180 case frames, 120 keyboard colours".into(),
         log: vec![
             "2026-10-25 14:10:07Z Foxglove: loaded C:\\Users\\Bandit\\AppData\\Roaming\\Foxglove\\foxglove.toml".into(),
             "2026-10-25 14:10:08Z Foxglove obs: token=hunter2 accepted on BANDIT-PC".into(),
@@ -441,6 +450,7 @@ mod tests {
             "obs-status 0.3.1 (off)",
             "Lights held by  zmk:1d50:615e: pomodoro (Normal)",
             "Room map        monitor 597x336",
+            "Scene           demo scanline running 12 s",
             "Last 2 log lines:",
         ] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
