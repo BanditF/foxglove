@@ -730,6 +730,38 @@ impl Lighting for DigitalisDevice {
     /// `right`), a one-piece board's through the keyboard's. A frame past what a frame
     /// addresses is refused.
     fn set_frame(&self, frame: &[foxglove_devices::Rgb]) -> PResult<()> {
+        self.show_frame(frame).map(|_| ())
+    }
+
+    /// Hands frames and a SET_EFFECT effect back to the keyboard's own effect (a frame RELEASE
+    /// leaves an effect running, so both go). Colours, effects and on/off go through the
+    /// keymap's own behavior, so without frames the keyboard always keeps control.
+    fn release(&self) -> PResult<()> {
+        let effect = if self.effects() {
+            self.release_effect().map(|_| ())
+        } else {
+            Ok(())
+        };
+        let frames = if self.frames() {
+            self.release_frame().map(|_| ())
+        } else {
+            Ok(())
+        };
+        effect.and(frames)
+    }
+}
+
+impl DigitalisDevice {
+    /// [`Lighting::set_frame`] with the keyboard's reply: how long it holds a frame without
+    /// another ([`crate::protocol::FrameReply::timeout_s`]) and whether the right half draws
+    /// it. Every part's LEDs in strip order ([`DigitalisDevice::lamp_parts`]); a split board's
+    /// halves each through their own colour calibration (the zone `left` or `right`), a
+    /// one-piece board's through the keyboard's. A frame past what a frame addresses is
+    /// refused.
+    pub fn show_frame(
+        &self,
+        frame: &[foxglove_devices::Rgb],
+    ) -> PResult<crate::protocol::FrameReply> {
         if frame.len() > crate::lamps::MAX_LAMPS {
             return Err(err(crate::lamps::LampsError::TooMany(frame.len()).into()));
         }
@@ -749,24 +781,7 @@ impl Lighting for DigitalisDevice {
                 [c.r, c.g, c.b]
             })
             .collect();
-        DigitalisDevice::set_frame(self, 0, &colours).map(|_| ())
-    }
-
-    /// Hands frames and a SET_EFFECT effect back to the keyboard's own effect (a frame RELEASE
-    /// leaves an effect running, so both go). Colours, effects and on/off go through the
-    /// keymap's own behavior, so without frames the keyboard always keeps control.
-    fn release(&self) -> PResult<()> {
-        let effect = if self.effects() {
-            self.release_effect().map(|_| ())
-        } else {
-            Ok(())
-        };
-        let frames = if self.frames() {
-            self.release_frame().map(|_| ())
-        } else {
-            Ok(())
-        };
-        effect.and(frames)
+        DigitalisDevice::set_frame(self, 0, &colours)
     }
 }
 

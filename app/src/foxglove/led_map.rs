@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use digitalis::lamps::LampParts;
 use foxglove_devices::{DeviceError, Lighting, Rgb};
@@ -209,6 +209,8 @@ pub struct Wizard {
     pub answers: Vec<Option<[f32; 2]>>,
     /// A problem to show (a failed save).
     pub note: Option<String>,
+    /// Why it opened, when it's the dot test's fallback (none of the corrections fit).
+    pub intro: Option<String>,
 }
 
 /// The LED the wizard lights now.
@@ -238,6 +240,7 @@ impl Wizard {
             parts,
             answers: Vec::new(),
             note: None,
+            intro: None,
         }
     }
 
@@ -318,24 +321,33 @@ impl Wizard {
     }
 }
 
-/// Takes the keyboard's lights for the wizard: a high-priority lease (dim white, solid) over
-/// whatever holds them, so a scene's frames or effect are handed back first. Returns its id.
+/// Takes the keyboard's lights for the wizard: a high-priority lease over whatever holds them,
+/// so a scene's frames or effect are handed back first and nothing else draws while it runs.
+/// Returns its id.
+///
+/// The lease's colour is the keyboard's own lights from before (the user's, not a scene's):
+/// taking them sends the keyboard nothing new when they were on (no colour change racing the
+/// first frames to the right half), a hand-back mid-way (the dot stopped, the keyboard's
+/// timeout) shows the user's lights rather than a dim board (dark only if they were off), and
+/// ending it puts back no more than the speed.
 ///
 /// The wizard's frames stay its own (it doesn't register them with `draws_frames`, which keeps
 /// one drawer a device: the scene's, so the scene is asked to draw again after). So a plugin
 /// notification that starts mid-wizard shows under the lit LED until the wizard ends; the
 /// wizard is short and the user is watching it.
 pub fn take(a: &mut Arbiter, device: &str, light: &dyn Lighting) -> Result<u64, DeviceError> {
+    let before = a.lights_before(device, light)?;
     a.add(
         Lease {
             id: 0,
             conn: LEDMAP_CONN,
             device: device.to_string(),
             priority: Priority::High,
-            hue: 0,
-            sat: 0,
-            brightness: 10,
-            effect: "0".into(),
+            hue: before.hue,
+            sat: before.sat,
+            // A lease's lights are on: lights that were off stay dark at no brightness.
+            brightness: if before.on { before.brightness } else { 0 },
+            effect: before.effect.id,
         },
         light,
     )
@@ -360,8 +372,8 @@ pub fn give_back(a: &mut Arbiter, id: u64, light: &dyn Lighting) {
 enum Job {
     /// Show this frame (a step of the wizard).
     Show(Vec<Rgb>),
-    /// Run these frames one after another, `every` apart, `rounds` times, then all off (the
-    /// dot test).
+    /// Run these frames one after another, `every` apart, `rounds` times, then hand the
+    /// frame back so the keyboard's own lights show (the dot test).
     Play(Play),
     /// Send the frame again (the keyboard handed it back, or came back).
     Again,
@@ -385,8 +397,31 @@ pub struct Status {
     pub error: Option<String>,
     /// The dot test: the step lit now; `None` before it starts and once its rounds are done.
     pub step: Option<usize>,
-    /// The dot test ran all its rounds and stopped.
+    /// The dot test ran all its rounds and stopped; its frame went back to the keyboard, so
+    /// the keyboard's own lights show until it runs again.
     pub played: bool,
+    /// A part of the board that doesn't draw the frames (a split's other half with no link):
+    /// what to tell the user.
+    pub warn: Option<String>,
+}
+
+/// What the keyboard said about a frame it was shown.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Shown {
+    /// How long it holds a frame with no other before it hands its lights back (its timeout);
+    /// `None` when it never does or doesn't say.
+    pub hold: Option<Duration>,
+    /// A part that doesn't draw the frame: the words for the page.
+    pub missing: Option<String>,
+}
+
+/// A held frame goes again this long before the keyboard's own hold would run out.
+const KEEP_MARGIN: Duration = Duration::from_secs(5);
+
+/// When a frame shown now has to go again so the keyboard keeps it: a little before its hold
+/// runs out, and never sooner than half of it.
+fn keep_alive(hold: Duration) -> Duration {
+    hold.saturating_sub(KEEP_MARGIN).max(hold / 2)
 }
 
 /// Where the wizard's frames go: the app's keyboard, or a fake in tests.
@@ -394,7 +429,11 @@ pub trait Target: Send {
     /// Takes the lights; an error ends the worker. `again` asks for the frame again (the
     /// keyboard handed it back); it may be called on any thread and only flags work.
     fn take(&mut self, again: Again) -> Result<(), String>;
-    fn show(&mut self, frame: &[Rgb]) -> Result<(), String>;
+    /// Shows a frame and waits for the keyboard's answer (so one frame is in flight at a time).
+    fn show(&mut self, frame: &[Rgb]) -> Result<Shown, String>;
+    /// Hands the frame back but keeps the lights (the dot stopped): the keyboard's own lights
+    /// show, and nothing else draws until the next frame or the end.
+    fn rest(&mut self);
     fn give_back(&mut self);
 }
 
@@ -544,12 +583,12 @@ struct Running {
 }
 
 impl Running {
-    /// The frame for the step now due (it is `now`); `None` once every round is done.
-    fn advance(&mut self, now: Instant) -> Option<Vec<Rgb>> {
+    /// The frame for the next step; `None` once every round is done. Its time on the keyboard
+    /// starts when the keyboard has it ([`run`] sets `next`), so a slow send never shortens a
+    /// step and the dot never rushes to catch up.
+    fn advance(&mut self) -> Option<Vec<Rgb>> {
         let n = self.play.frames.len().max(1);
         self.at += 1;
-        // From now if a slow send made the step late, so the dot never rushes to catch up.
-        self.next = self.next.max(now) + self.play.every;
         if self.at >= n * self.play.rounds.max(1) as usize {
             return None;
         }
@@ -561,6 +600,9 @@ impl Running {
     }
 }
 
+/// The worker's loop. Its only timers are the dot's next step and the held frame's keep-alive,
+/// both started by a frame going out and stopped by the end, a new job, or (the dot) its rounds;
+/// otherwise it sleeps on its channel.
 fn run(
     mut target: Box<dyn Target>,
     clock: &dyn DotClock,
@@ -573,14 +615,23 @@ fn run(
         f(&mut status.lock().unwrap_or_else(|e| e.into_inner()));
         wake();
     };
+    // The frame the keyboard should show; `None` before the first and while resting.
     let mut frame: Option<Vec<Rgb>> = None;
     let mut taken = false;
     // The dot test's clock: the worker sleeps until its next step is due (or a job comes); it
     // stops after its rounds, so nothing runs on once the test is left alone.
     let mut running: Option<Running> = None;
+    // When the held frame goes again so the keyboard doesn't time out and hand the lights back
+    // mid-way (its hold, from its answer); only while a frame is held.
+    let mut keep: Option<Instant> = None;
     loop {
-        let first = match &running {
-            Some(r) => match clock.recv_until(rx, r.next) {
+        let due = match (&running, keep) {
+            (Some(r), Some(k)) => Some(r.next.min(k)),
+            (Some(r), None) => Some(r.next),
+            (None, k) => k,
+        };
+        let first = match due {
+            Some(until) => match clock.recv_until(rx, until) {
                 Ok(job) => Some(job),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -590,23 +641,34 @@ fn run(
                 Err(_) => break,
             },
         };
+        // The dot's step the page shows once the keyboard has this frame (`Some(None)`: none).
+        let mut step: Option<Option<usize>> = None;
         match first {
-            // The dot's next step is due.
+            // A deadline came: the dot's next step, else the held frame's keep-alive (sent
+            // again below as it is).
             None => {
-                let Some(r) = running.as_mut() else { continue };
-                match r.advance(clock.now()) {
-                    Some(f) => {
-                        let step = r.step();
-                        frame = Some(f);
-                        set(&|s| s.step = Some(step));
-                    }
-                    None => {
-                        frame = frame.map(|f| vec![Rgb { r: 0, g: 0, b: 0 }; f.len()]);
-                        running = None;
-                        set(&|s| {
-                            s.step = None;
-                            s.played = true;
-                        });
+                let now = clock.now();
+                if let Some(r) = running.as_mut().filter(|r| r.next <= now) {
+                    match r.advance() {
+                        Some(f) => {
+                            step = Some(Some(r.step()));
+                            frame = Some(f);
+                        }
+                        None => {
+                            // Done: the keyboard's own lights come back (not a dark board) and
+                            // the page offers Run again.
+                            running = None;
+                            frame = None;
+                            keep = None;
+                            if taken {
+                                target.rest();
+                            }
+                            set(&|s| {
+                                s.step = None;
+                                s.played = true;
+                            });
+                            continue;
+                        }
                     }
                 }
             }
@@ -620,10 +682,8 @@ fn run(
                     Job::Show(f) => {
                         running = None;
                         frame = Some(f);
-                        set(&|s| {
-                            s.step = None;
-                            s.played = false;
-                        });
+                        step = Some(None);
+                        set(&|s| s.played = false);
                     }
                     Job::Play(p) => {
                         frame = p.frames.first().cloned();
@@ -632,11 +692,8 @@ fn run(
                             play: p,
                             at: 0,
                         });
-                        let started = running.is_some();
-                        set(&|s| {
-                            s.step = started.then_some(0);
-                            s.played = false;
-                        });
+                        step = Some(running.as_ref().map(|_| 0));
+                        set(&|s| s.played = false);
                     }
                     Job::Again => {}
                 }
@@ -650,12 +707,37 @@ fn run(
             }
             taken = true;
         }
-        match target.show(f) {
-            Ok(()) => set(&|s| {
-                s.shown = Some(f.clone());
-                s.error = None;
-            }),
-            Err(e) => set(&|s| s.error = Some(e.clone())),
+        let sent = target.show(f);
+        // The step's time on the keyboard starts now that the keyboard has it (or refused it:
+        // the dot goes on, and the page says what went wrong).
+        let now = clock.now();
+        if let (Some(r), Some(_)) = (running.as_mut(), step) {
+            r.next = now + r.play.every;
+        }
+        match sent {
+            Ok(shown) => {
+                keep = shown.hold.map(|h| now + keep_alive(h));
+                set(&|s| {
+                    s.shown = Some(f.clone());
+                    s.error = None;
+                    s.warn = shown.missing.clone();
+                    if let Some(at) = step {
+                        s.step = at;
+                    }
+                });
+            }
+            Err(e) => {
+                // No keep-alive for a frame the keyboard didn't take (gone, not answering): a
+                // keyboard arriving or handing its lights back (Again) sends it again, or the
+                // dot's next step does. Else a past deadline would send it over and over.
+                keep = None;
+                set(&|s| {
+                    s.error = Some(e.clone());
+                    if let Some(at) = step {
+                        s.step = at;
+                    }
+                });
+            }
         }
     }
     if taken {
@@ -663,10 +745,34 @@ fn run(
     }
 }
 
+/// What a keyboard's answer to a frame means for the wizard: how long it holds the frame, and
+/// whether a split board's other half draws it (`parts`: the board's parts).
+fn shown(reply: &digitalis::protocol::FrameReply, parts: usize) -> Shown {
+    use digitalis::protocol::FrameRight;
+    let missing = match (parts > 1, reply.right) {
+        (false, _) | (true, FrameRight::Draws) => None,
+        (true, FrameRight::NoLink) => Some(
+            "The other half isn't linked to this one yet, so its LEDs keep their own colour. \
+             Press a key on it to wake it."
+                .to_string(),
+        ),
+        (true, FrameRight::Unsupported) => Some(
+            "The other half's firmware can't light one LED at a time: update it to check its LEDs."
+                .to_string(),
+        ),
+    };
+    Shown {
+        hold: (reply.timeout_s > 0).then(|| Duration::from_secs(reply.timeout_s.into())),
+        missing,
+    }
+}
+
 /// The app's keyboard under the wizard's lease.
 #[derive(Default)]
 pub struct AppKeyboard {
     lease: Option<u64>,
+    /// The keyboard the lease was taken on: a rest touches only it.
+    device: Option<String>,
     again: Option<Again>,
     /// The hand-back watch on the keyboard's link.
     tapped: Option<(
@@ -708,19 +814,37 @@ impl Target for AppKeyboard {
         use foxglove_devices::Device as _;
         let device = kb.info().id.to_string();
         let light = kb.lighting().ok_or("This keyboard has no lights.")?;
-        let id = super::lighting_leases::with(|a| take(a, &device, light))
-            .map_err(|e| format!("The keyboard didn't hand over its lights: {e}"))?;
+        let id = super::lighting_leases::with(|a| take(a, &device, light)).map_err(|e| {
+            // A lease added whose lights then didn't take would hold them with no one to end
+            // it: only this wizard takes leases on LEDMAP_CONN, and it holds none yet.
+            super::api::end_leases(|l| l.conn == LEDMAP_CONN);
+            format!("The keyboard didn't hand over its lights: {e}")
+        })?;
         self.lease = Some(id);
+        self.device = Some(device);
         Ok(())
     }
 
-    fn show(&mut self, frame: &[Rgb]) -> Result<(), String> {
+    fn show(&mut self, frame: &[Rgb]) -> Result<Shown, String> {
         let kb = self.keyboard()?;
+        let reply = kb
+            .show_frame(frame)
+            .map_err(|e| format!("The keyboard didn't light the LED: {e}"))?;
+        Ok(shown(&reply, kb.lamp_parts().len()))
+    }
+
+    fn rest(&mut self) {
+        // The frame only: the lease stays, so nothing else draws meanwhile. Only on the keyboard
+        // the lease is on (another one plugged in meanwhile has no frame of ours).
         use foxglove_devices::Device as _;
-        let light = kb.lighting().ok_or("This keyboard has no lights.")?;
-        light
-            .set_frame(frame)
-            .map_err(|e| format!("The keyboard didn't light the LED: {e}"))
+        let ours = |kb: &Arc<digitalis::devices::DigitalisDevice>| {
+            self.device.as_ref() == Some(&kb.info().id.to_string())
+        };
+        if let Some(kb) = super::devices::device().filter(ours) {
+            if let Err(e) = kb.release_frame() {
+                eprintln!("Foxglove: handing the LED map's frame back after the dot: {e}");
+            }
+        }
     }
 
     fn give_back(&mut self) {

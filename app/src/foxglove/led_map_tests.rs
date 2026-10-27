@@ -239,6 +239,8 @@ fn the_wizard_takes_the_lights_over_a_scene_and_the_scene_draws_again_after() {
     let id = take(&mut a, "kb", &light).unwrap();
     assert!(a.shows(id) && !a.shows(scene));
     assert_eq!(light.releases.load(Ordering::Relaxed), 1);
+    // Under it the lights from before the scene, not the scene's colour.
+    assert_eq!(light.state.borrow().hue, 30);
     light.set_frame(&[white()]).unwrap();
 
     // Giving back: the wizard's frame goes, its lease ends, the scene is asked to draw again.
@@ -262,8 +264,13 @@ fn with_no_scene_the_lights_from_before_come_back() {
     let mut a = Arbiter::default();
     let id = take(&mut a, "kb", &light).unwrap();
     {
+        // The lease is the user's own lights: taking them changes nothing on the keyboard, and
+        // a hand-back mid-way (the dot stopped) shows them, not a dim or dark board.
         let s = light.state.borrow();
-        assert_eq!((s.sat, s.effect.id.as_str()), (0, "0"), "dim white, solid");
+        assert_eq!(
+            (s.on, s.hue, s.sat, s.brightness, s.effect.id.as_str()),
+            (true, 30, 80, 60, "2")
+        );
     }
     give_back(&mut a, id, &light);
     let s = light.state.borrow();
@@ -279,6 +286,8 @@ struct Recorder {
     log: Arc<Mutex<Vec<String>>>,
     again: Arc<Mutex<Option<Again>>>,
     refuse: bool,
+    /// What it answers to each frame.
+    shown: Shown,
 }
 
 impl Target for Recorder {
@@ -290,10 +299,13 @@ impl Target for Recorder {
         self.log.lock().unwrap().push("take".into());
         Ok(())
     }
-    fn show(&mut self, frame: &[Rgb]) -> Result<(), String> {
+    fn show(&mut self, frame: &[Rgb]) -> Result<Shown, String> {
         let lit = frame.iter().position(|c| *c == white());
         self.log.lock().unwrap().push(format!("show {lit:?}"));
-        Ok(())
+        Ok(self.shown.clone())
+    }
+    fn rest(&mut self) {
+        self.log.lock().unwrap().push("rest".into());
     }
     fn give_back(&mut self) {
         self.log.lock().unwrap().push("give back".into());
@@ -517,7 +529,7 @@ impl DotClock for HandClock {
 }
 
 #[test]
-fn the_dot_runs_its_rounds_then_goes_dark_and_a_frame_stops_it() {
+fn the_dot_runs_its_rounds_then_gives_the_lights_back_and_a_frame_stops_it() {
     let rec = Recorder::default();
     let (tx, woke) = mpsc::channel();
     let tx = Mutex::new(tx);
@@ -539,11 +551,8 @@ fn the_dot_runs_its_rounds_then_goes_dark_and_a_frame_stops_it() {
         every: std::time::Duration::from_millis(5),
         rounds: 2,
     });
-    // Played, and its dark frame shown: the status says played just before that frame goes.
-    let dark = vec![Rgb { r: 0, g: 0, b: 0 }; 3];
-    wait_for(&woke, &status, |s| {
-        s.played && s.shown.as_ref() == Some(&dark)
-    });
+    // Played: the frame went back to the keyboard (its own lights, not a dark board).
+    wait_for(&woke, &status, |s| s.played);
     assert_eq!(status.lock().unwrap().step, None);
     let shown: Vec<String> = rec.log.lock().unwrap().clone();
     assert_eq!(
@@ -556,12 +565,14 @@ fn the_dot_runs_its_rounds_then_goes_dark_and_a_frame_stops_it() {
             "show Some(0)",
             "show Some(1)",
             "show Some(2)",
-            "show None"
+            "rest"
         ],
-        "two rounds, then all off"
+        "two rounds, then the keyboard's own lights"
     );
-    // Six steps of 5 ms on the dot's clock: five to the second round's last LED, one to dark.
+    // Six steps of 5 ms on the dot's clock: five to the second round's last LED, one to rest.
     assert_eq!(clock.now() - started, std::time::Duration::from_millis(30));
+    // Resting, nothing goes out: the keyboard handing back or coming back sends no frame.
+    rec.again.lock().unwrap().clone().unwrap()();
     // A new run starts over; a plain frame ends it at once (time stands still meanwhile).
     clock.held.store(true, Ordering::SeqCst);
     worker.play(Play {
@@ -574,8 +585,198 @@ fn the_dot_runs_its_rounds_then_goes_dark_and_a_frame_stops_it() {
     wait_for(&woke, &status, |s| s.step.is_none());
     worker.end_and_wait();
     let log = rec.log.lock().unwrap();
+    assert_eq!(
+        log[8..],
+        ["show Some(0)", "show None", "give back"],
+        "nothing sent while resting: the next run, the plain frame, the end"
+    );
+}
+
+/// A frame the keyboard didn't take (it went away) isn't kept alive: no deadline in the past
+/// sending it over and over. The keyboard coming back (Again) or the next step sends it again.
+#[test]
+fn a_frame_the_keyboard_refused_is_not_kept_alive() {
+    /// Takes the first frame, then is gone.
+    #[derive(Clone)]
+    struct Leaves(Recorder);
+    impl Target for Leaves {
+        fn take(&mut self, again: Again) -> Result<(), String> {
+            self.0.take(again)
+        }
+        fn show(&mut self, frame: &[Rgb]) -> Result<Shown, String> {
+            self.0.show(frame)?;
+            if self.0.log.lock().unwrap().len() > 2 {
+                return Err("gone".into());
+            }
+            Ok(Shown {
+                hold: Some(std::time::Duration::from_secs(30)),
+                missing: None,
+            })
+        }
+        fn rest(&mut self) {}
+        fn give_back(&mut self) {
+            self.0.give_back();
+        }
+    }
+    let t = Leaves(Recorder::default());
+    let log = t.0.log.clone();
+    let (tx, woke) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let clock = HandClock::new();
+    let started = clock.now();
+    let worker = Worker::spawn_on(Box::new(t), Box::new(clock.clone()), move || {
+        let _ = tx.lock().unwrap().send(());
+    });
+    let status = worker.status.clone();
+    worker.show(Wizard::new(&corne()).frame());
+    // Shown, then its keep-alive (the clock runs on to it) fails: nothing more is due, so the
+    // worker sleeps on its channel until the end.
+    wait_for(&woke, &status, |s| s.error.is_some());
+    worker.end_and_wait();
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["take", "show Some(0)", "show Some(0)", "give back"]
+    );
+    assert_eq!(clock.now() - started, std::time::Duration::from_secs(25));
+}
+
+/// Lights that were off before the test stay dark under it (the lease is on, at no brightness).
+#[test]
+fn lights_that_were_off_stay_dark_under_the_test() {
+    let light = Fake::new();
+    light.state.borrow_mut().on = false;
+    let mut a = Arbiter::default();
+    let id = take(&mut a, "kb", &light).unwrap();
+    assert_eq!(light.state.borrow().brightness, 0);
+    give_back(&mut a, id, &light);
+    let s = light.state.borrow();
+    assert_eq!((s.on, s.brightness), (false, 60), "as they were");
+}
+
+/// The drawing's dot moves when the keyboard has the frame, on the same clock as the dot: the
+/// step the page shows is always the one the keyboard was last sent.
+#[test]
+fn the_page_shows_the_step_the_keyboard_has() {
+    let rec = Recorder::default();
+    let log = rec.log.clone();
+    let (tx, woke) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let clock = HandClock::new();
+    let worker = Worker::spawn_on(Box::new(rec), Box::new(clock.clone()), move || {
+        let _ = tx.lock().unwrap().send(());
+    });
+    let status = worker.status.clone();
+    let frames: Vec<Vec<Rgb>> = (0..4)
+        .map(|i| {
+            let mut f = vec![Rgb { r: 0, g: 0, b: 0 }; 4];
+            f[i] = white();
+            f
+        })
+        .collect();
+    worker.play(Play {
+        frames,
+        every: std::time::Duration::from_millis(700),
+        rounds: 1,
+    });
+    let mut seen = Vec::new();
+    // Every time the page wakes, the step it shows has gone to the keyboard: the page is never
+    // ahead of it (the keyboard may be a step on by the time the status is read).
+    while !status.lock().unwrap().played {
+        assert!(woke
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .is_ok());
+        let s = status.lock().unwrap().clone();
+        let sent: Option<usize> = log.lock().unwrap().iter().rev().find_map(|l| {
+            l.strip_prefix("show Some(")
+                .and_then(|n| n.trim_end_matches(')').parse().ok())
+        });
+        if let Some(step) = s.step {
+            assert!(
+                sent.is_some_and(|n| n >= step),
+                "page {step}, keyboard {sent:?}"
+            );
+            if seen.last() != Some(&step) {
+                seen.push(step);
+            }
+        }
+    }
+    assert!(seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
+    assert!(!seen.is_empty());
+    worker.end_and_wait();
+}
+
+/// A frame held for a while (a step of Find my LEDs, the user looking for the LED) goes again
+/// before the keyboard's own hold runs out, so it never hands the lights back mid-way; the
+/// keep-alive stops with the wizard.
+#[test]
+fn a_held_frame_goes_again_before_the_keyboard_lets_go() {
+    let rec = Recorder {
+        shown: Shown {
+            hold: Some(std::time::Duration::from_secs(30)),
+            missing: None,
+        },
+        ..Default::default()
+    };
+    let log = rec.log.clone();
+    let (tx, woke) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let clock = HandClock::new();
+    let started = clock.now();
+    let worker = Worker::spawn_on(Box::new(rec), Box::new(clock.clone()), move || {
+        let _ = tx.lock().unwrap().send(());
+    });
+    let status = worker.status.clone();
+    let frame = Wizard::new(&corne()).frame();
+    worker.show(frame.clone());
+    // The hand-wound clock jumps to each keep-alive at once: three sends, then hold it.
+    while log.lock().unwrap().len() < 4 {
+        assert!(woke
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .is_ok());
+    }
+    clock.held.store(true, Ordering::SeqCst);
+    worker.end_and_wait();
+    let log = log.lock().unwrap();
+    assert_eq!(log[0], "take");
+    assert!(log[1..log.len() - 1].iter().all(|l| l == "show Some(0)"));
     assert_eq!(log.last().map(String::as_str), Some("give back"));
-    assert_eq!(log.iter().filter(|l| *l == "take").count(), 1);
+    // Each one 25 s after the last: 5 s inside the keyboard's 30.
+    let sends = (log.len() - 2) as u32;
+    assert_eq!(
+        clock.now() - started,
+        std::time::Duration::from_secs(25) * (sends - 1)
+    );
+    assert_eq!(status.lock().unwrap().shown.as_ref(), Some(&frame));
+    assert_eq!(
+        keep_alive(std::time::Duration::from_secs(6)),
+        std::time::Duration::from_secs(3)
+    );
+}
+
+/// What the keyboard's answer means: its hold, and a split's other half that doesn't draw.
+#[test]
+fn the_keyboards_answer_gives_the_hold_and_a_missing_half() {
+    use digitalis::protocol::{FrameReply, FrameRight};
+    let reply = |timeout_s, right| FrameReply {
+        status: 0,
+        owner: FrameReply::OWNER_HOST_LINK,
+        timeout_s,
+        right,
+        event: false,
+    };
+    let s = shown(&reply(30, FrameRight::Draws), 2);
+    assert_eq!(s.hold, Some(std::time::Duration::from_secs(30)));
+    assert!(s.missing.is_none());
+    assert!(
+        shown(&reply(0, FrameRight::Draws), 2).hold.is_none(),
+        "never lets go"
+    );
+    assert!(shown(&reply(30, FrameRight::NoLink), 2).missing.is_some());
+    assert!(shown(&reply(30, FrameRight::Unsupported), 2)
+        .missing
+        .is_some());
+    // A one-piece board has no other half to miss (its firmware says "no link").
+    assert!(shown(&reply(30, FrameRight::NoLink), 1).missing.is_none());
 }
 
 #[test]

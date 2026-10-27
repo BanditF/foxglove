@@ -16,6 +16,7 @@
 //! back. [`draw`] paints a [`Wizard`] and says what was asked, so the previews and tests need no
 //! keyboard.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -23,7 +24,7 @@ use egui::{Color32, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use super::boards::Drawing;
 use super::led_map::{self, MapState, Status, Wizard, Worker};
 use super::led_map_confirm::{self as confirm, Answer, Confirm, Source};
-use super::parts::Parts;
+use super::parts::{upper_first, Parts};
 use super::settings_ui::{card, split_row};
 use super::theme;
 
@@ -41,6 +42,8 @@ pub struct View {
     pub lit: bool,
     /// The keyboard refused or isn't there.
     pub error: Option<String>,
+    /// A part that doesn't draw the frames (the other half not linked): its LEDs won't light.
+    pub warn: Option<String>,
 }
 
 impl View {
@@ -48,6 +51,7 @@ impl View {
         View {
             lit: status.shown.as_ref() == Some(&w.frame()),
             error: status.error.clone(),
+            warn: status.warn.clone(),
         }
     }
 }
@@ -141,6 +145,9 @@ pub fn draw(ui: &mut egui::Ui, v: &View, w: &mut Wizard) -> Output {
         let p = theme::palette(ui);
         let total = w.total();
         let answered = w.answers.len();
+        if let Some(intro) = &w.intro {
+            ui.add(egui::Label::new(RichText::new(intro).color(p.muted)).wrap());
+        }
         match w.step() {
             Some(s) => {
                 split_row(
@@ -216,6 +223,9 @@ fn status_line(ui: &mut egui::Ui, v: &View, w: &Wizard) {
             ui.spinner();
             ui.label(RichText::new("Lighting it…").color(p.muted));
         });
+    }
+    if let Some(warn) = v.warn.as_ref().filter(|_| v.error.is_none()) {
+        ui.add(egui::Label::new(RichText::new(warn).color(p.warn)).wrap());
     }
 }
 
@@ -364,12 +374,16 @@ thread_local! {
     pub static PREVIEW_CONFIRM: std::cell::RefCell<Option<(CheckView, Confirm)>> = const { std::cell::RefCell::new(None) };
 }
 
-/// The dot run for a proposal.
+/// The dot's pace the user picked (an index into [`confirm::PACES`]), kept while Foxglove runs.
+static PACE: AtomicUsize = AtomicUsize::new(confirm::DEFAULT_PACE);
+
+/// The dot run for a proposal, at the user's pace.
 fn play(c: &Confirm) -> led_map::Play {
+    let ms = confirm::step_ms(PACE.load(Ordering::Relaxed));
     led_map::Play {
         frames: c.frames(),
-        every: std::time::Duration::from_millis(confirm::STEP_MS),
-        rounds: confirm::ROUNDS,
+        every: std::time::Duration::from_millis(ms),
+        rounds: confirm::rounds(c.per_half, ms),
     }
 }
 
@@ -450,7 +464,7 @@ pub fn show(ui: &mut egui::Ui) -> bool {
     match next {
         None => {}
         Some(Next::Close) => *guard = None,
-        Some(Next::Wizard) => {
+        Some(Next::Wizard(intro)) => {
             // The fallback: one click per LED, on the lights the test already holds.
             let board = match &open.mode {
                 Mode::Confirm(c) => c.board.clone(),
@@ -458,7 +472,8 @@ pub fn show(ui: &mut egui::Ui) -> bool {
             };
             match super::boards::current().filter(|b| b.id == board) {
                 Some(b) => {
-                    let w = Wizard::new(&b);
+                    let mut w = Wizard::new(&b);
+                    w.intro = intro;
                     open.worker.show(w.frame());
                     open.mode = Mode::Wizard(w);
                     eprintln!("Foxglove: Check LED map: clicking each LED instead");
@@ -474,8 +489,14 @@ pub fn show(ui: &mut egui::Ui) -> bool {
 /// What the dot test asks of the page.
 enum Next {
     Close,
-    Wizard,
+    /// Click each LED instead, with why when none of the corrections fit.
+    Wizard(Option<String>),
 }
+
+/// The click wizard's opening words when the dot test's corrections didn't fit.
+pub const NONE_FIT: &str = "None of the quick fixes fit: these LEDs don't run along the keys in \
+     a way Foxglove can turn round. So one LED lights at a time instead, and you click where \
+     you see it. About a minute; Can't see it skips one.";
 
 /// Draws the click-each-LED wizard and acts on it; true when it closes.
 fn show_wizard_ui(ui: &mut egui::Ui, status: &Status, w: &mut Wizard, worker: &Worker) -> bool {
@@ -512,13 +533,17 @@ fn show_wizard_ui(ui: &mut egui::Ui, status: &Status, w: &mut Wizard, worker: &W
 /// What the dot test's card shows besides the proposal itself.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CheckView {
-    /// The dot's step lit on the keyboard now.
+    /// The dot's step lit on the keyboard now (the keyboard has its frame).
     pub step: Option<usize>,
     /// The keyboard has taken the lights (the first frame went out).
     pub started: bool,
-    /// The dot ran all its rounds and stopped.
+    /// The dot ran all its rounds and stopped; the keyboard's own lights show.
     pub played: bool,
     pub error: Option<String>,
+    /// A part that doesn't draw the dot (the other half not linked).
+    pub warn: Option<String>,
+    /// The dot's pace (an index into [`confirm::PACES`]).
+    pub pace: usize,
 }
 
 impl CheckView {
@@ -528,6 +553,8 @@ impl CheckView {
             started: status.shown.is_some(),
             played: status.played,
             error: status.error.clone(),
+            warn: status.warn.clone(),
+            pace: PACE.load(Ordering::Relaxed),
         }
     }
 }
@@ -539,8 +566,12 @@ pub enum CheckIntent {
     Answer(Answer),
     Undo,
     RunAgain,
-    /// "Click each LED instead".
-    Wizard,
+    /// Another pace (an index into [`confirm::PACES`]): the dot starts again at it.
+    Pace(usize),
+    /// Click each LED instead; `none_fit` when none of the corrections describe it.
+    Wizard {
+        none_fit: bool,
+    },
     Cancel,
 }
 
@@ -549,7 +580,8 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
     let mut out = None;
     card(ui, "Check LED map", |ui| {
         let p = theme::palette(ui);
-        let on = Parts::halves(c.halves).all();
+        let parts = Parts::halves(c.halves);
+        let on = parts.all();
         let intro = match c.source {
             Source::Profile { checked: false } => format!(
                 "Foxglove ships an LED map for the {}, not yet checked on a real one. A white dot \
@@ -574,7 +606,7 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
             ),
         };
         ui.add(egui::Label::new(intro).wrap());
-        let ask = match confirm::fixes_text(&c.fixes) {
+        let ask = match confirm::fixes_text(&c.fixes, c.halves) {
             Some(fixed) => format!("{fixed}. Watch again: does it match now?"),
             None => "Does the dot on the keyboard follow the one on the drawing?".to_string(),
         };
@@ -582,8 +614,15 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
         if let Some(e) = &v.error {
             ui.add(egui::Label::new(RichText::new(e).color(p.warn)).wrap());
         } else if v.played {
-            ui.label(
-                RichText::new("The dot stopped. Run again to watch once more.").color(p.muted),
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "The dot stopped and the keyboard's own lights are back. Run again to \
+                         watch once more.",
+                    )
+                    .color(p.muted),
+                )
+                .wrap(),
             );
         } else if !v.started {
             ui.horizontal(|ui| {
@@ -591,55 +630,28 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
                 ui.label(RichText::new("Lighting it…").color(p.muted));
             });
         }
+        if let Some(w) = v.warn.as_ref().filter(|_| v.error.is_none()) {
+            ui.add(egui::Label::new(RichText::new(w).color(p.warn)).wrap());
+        }
         ui.add_space(4.0);
         check_board(ui, v, c);
         ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
-            let ready = v.started && v.error.is_none();
-            if ui
-                .add_enabled(ready, theme::primary_button(ui, "Matches"))
-                .on_hover_text("Keep this map; scenes light each LED in its place")
-                .on_disabled_hover_text("Wait for the dot on the keyboard")
-                .clicked()
-            {
-                out = Some(CheckIntent::Answer(Answer::Matches));
-            }
-            if c.correctable() {
-                for (label, a, hint) in [
-                    (
-                        "Runs backwards",
-                        Answer::Backwards,
-                        "Same path, the other way round",
-                    ),
-                    (
-                        "Mirrored",
-                        Answer::Mirrored,
-                        if c.halves == 1 {
-                            "It starts on the other side: left and right swapped"
-                        } else {
-                            "It starts on the other side of each half: inner and outer swapped"
-                        },
-                    ),
-                    (
-                        "Rows flipped",
-                        Answer::RowsFlipped,
-                        "It goes up where the drawing goes down",
-                    ),
-                ] {
-                    if ui.button(label).on_hover_text(hint).clicked() {
-                        out = Some(CheckIntent::Answer(a));
-                    }
-                }
-            }
-        });
-        if c.fixes.len() >= 3 {
-            ui.add(
-                egui::Label::new(
-                    RichText::new("Still not right? Click each LED instead: about a minute.")
-                        .color(p.muted),
-                )
-                .wrap(),
-            );
+        let ready = v.started && v.error.is_none();
+        if ui
+            .add_enabled(ready, theme::primary_button(ui, "Yes, it matches"))
+            .on_hover_text("Keep this map; scenes light each LED in its place")
+            .on_disabled_hover_text("Wait for the dot on the keyboard")
+            .clicked()
+        {
+            out = Some(CheckIntent::Answer(Answer::Matches));
+        }
+        ui.add_space(6.0);
+        if let Some(asked) = mismatch(ui, c) {
+            out = Some(asked);
+        }
+        ui.add_space(6.0);
+        if let Some(asked) = pace(ui, v) {
+            out = Some(asked);
         }
         ui.add_space(4.0);
         let mut cancel = false;
@@ -652,13 +664,6 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
                     .clicked();
             },
             |ui| {
-                if ui
-                    .button("Click each LED instead…")
-                    .on_hover_text("Light one LED at a time and click where it is")
-                    .clicked()
-                {
-                    out = Some(CheckIntent::Wizard);
-                }
                 if !c.fixes.is_empty()
                     && ui
                         .button("Undo")
@@ -667,13 +672,6 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
                 {
                     out = Some(CheckIntent::Undo);
                 }
-                if ui
-                    .button("Run again")
-                    .on_hover_text("Start the dot from the first LED")
-                    .clicked()
-                {
-                    out = Some(CheckIntent::RunAgain);
-                }
             },
         );
         if cancel {
@@ -681,6 +679,124 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
         }
         if let Some(note) = &c.note {
             ui.add(egui::Label::new(RichText::new(note).color(p.warn)).wrap());
+        }
+    });
+    out
+}
+
+/// "It doesn't match": how the keyboard's dot differs (for which half), or none of those, which
+/// goes to clicking each LED. A found map has no corrections: clicking again is the one way.
+fn mismatch(ui: &mut egui::Ui, c: &mut Confirm) -> Option<CheckIntent> {
+    let p = theme::palette(ui);
+    let mut out = None;
+    if !c.correctable() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Doesn't match?").color(p.text_strong));
+            if ui
+                .button("Click each LED…")
+                .on_hover_text("Light one LED at a time and click where it is")
+                .clicked()
+            {
+                out = Some(CheckIntent::Wizard { none_fit: false });
+            }
+        });
+        return out;
+    }
+    let parts = Parts::halves(c.halves);
+    ui.add(
+        egui::Label::new(
+            RichText::new("Doesn't match? Say how the keyboard's dot differs:")
+                .color(p.text_strong),
+        )
+        .wrap(),
+    );
+    if parts.is_split() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("For").color(p.muted));
+            ui.selectable_value(&mut c.half, None, upper_first(&parts.all()))
+                .on_hover_text("Both dots run the same way, and both differ the same way");
+            for h in 0..parts.len() {
+                ui.selectable_value(&mut c.half, Some(h), parts.name(h))
+                    .on_hover_text(format!(
+                        "The two dots run differently: correct {} on its own",
+                        parts.the(h)
+                    ));
+            }
+        });
+    }
+    let each = if parts.is_split() && c.half.is_none() {
+        format!(" of each {}", parts.noun())
+    } else {
+        String::new()
+    };
+    ui.horizontal_wrapped(|ui| {
+        for (label, a, hint) in [
+            (
+                "Runs backwards",
+                Answer::Backwards,
+                "Same path, the other way round".to_string(),
+            ),
+            (
+                "Mirrored",
+                Answer::Mirrored,
+                format!("It starts on the other side{each}: the outer and inner columns swapped"),
+            ),
+            (
+                "Rows flipped",
+                Answer::RowsFlipped,
+                "It goes up where the drawing goes down".to_string(),
+            ),
+        ] {
+            if ui.button(label).on_hover_text(hint).clicked() {
+                out = Some(CheckIntent::Answer(a));
+            }
+        }
+        if ui
+            .button("None of these…")
+            .on_hover_text("Place each LED by clicking where it lights: about a minute")
+            .clicked()
+        {
+            out = Some(CheckIntent::Wizard { none_fit: true });
+        }
+    });
+    if c.fixes.len() >= 3 {
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "Still not right after three answers? None of these… places each LED by \
+                     clicking instead.",
+                )
+                .color(p.muted),
+            )
+            .wrap(),
+        );
+    }
+    out
+}
+
+/// The dot's speed and Run again.
+fn pace(ui: &mut egui::Ui, v: &CheckView) -> Option<CheckIntent> {
+    let p = theme::palette(ui);
+    let mut out = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Dot speed").color(p.muted));
+        for (i, (name, ms)) in confirm::PACES.iter().enumerate() {
+            let hint = format!("One LED every {:.1} s", *ms as f32 / 1000.0);
+            if ui
+                .selectable_label(v.pace == i, *name)
+                .on_hover_text(hint)
+                .clicked()
+                && v.pace != i
+            {
+                out = Some(CheckIntent::Pace(i));
+            }
+        }
+        if ui
+            .button("Run again")
+            .on_hover_text("Start the dot from the first LED")
+            .clicked()
+        {
+            out = Some(CheckIntent::RunAgain);
         }
     });
     out
@@ -727,8 +843,8 @@ fn check_board(ui: &mut egui::Ui, v: &CheckView, c: &Confirm) {
     }
 }
 
-/// Draws the dot test and acts on it: a correction or Run again restarts the dot, Matches
-/// saves. What the page does next, if anything.
+/// Draws the dot test and acts on it: a correction, another pace or Run again restarts the
+/// dot, Matches saves. What the page does next, if anything.
 fn show_check_ui(
     ui: &mut egui::Ui,
     status: &Status,
@@ -739,7 +855,8 @@ fn show_check_ui(
     match draw_check(ui, &v, c)? {
         CheckIntent::Answer(Answer::Matches) => match led_map::save(&c.board, c.result()) {
             Ok(()) => {
-                let fixed = confirm::fixes_text(&c.fixes).unwrap_or_else(|| "as proposed".into());
+                let fixed =
+                    confirm::fixes_text(&c.fixes, c.halves).unwrap_or_else(|| "as proposed".into());
                 eprintln!("Foxglove: Check LED map: {} matches ({fixed})", c.board);
                 Some(Next::Close)
             }
@@ -763,7 +880,20 @@ fn show_check_ui(
             worker.play(play(c));
             None
         }
-        CheckIntent::Wizard => Some(Next::Wizard),
+        CheckIntent::Pace(i) => {
+            PACE.store(i.min(confirm::PACES.len() - 1), Ordering::Relaxed);
+            worker.play(play(c));
+            None
+        }
+        CheckIntent::Wizard { none_fit } => {
+            if none_fit {
+                eprintln!(
+                    "Foxglove: Check LED map: none of the corrections fit ({} so far)",
+                    c.fixes.len()
+                );
+            }
+            Some(Next::Wizard(none_fit.then(|| NONE_FIT.to_string())))
+        }
         CheckIntent::Cancel => {
             eprintln!("Foxglove: Check LED map cancelled");
             Some(Next::Close)
@@ -860,7 +990,7 @@ pub mod tests {
         (
             View {
                 lit: true,
-                error: None,
+                ..Default::default()
             },
             w,
         )
@@ -878,8 +1008,8 @@ pub mod tests {
             CheckView {
                 step,
                 started: true,
-                played: false,
-                error: None,
+                pace: confirm::DEFAULT_PACE,
+                ..Default::default()
             },
             c,
         )
@@ -916,20 +1046,72 @@ pub mod tests {
             first.or(check_frame(ctx, &v, c, Vec::new()))
         };
         for (label, want) in [
-            ("Matches", CheckIntent::Answer(Answer::Matches)),
+            ("Yes, it matches", CheckIntent::Answer(Answer::Matches)),
             ("Runs backwards", CheckIntent::Answer(Answer::Backwards)),
             ("Mirrored", CheckIntent::Answer(Answer::Mirrored)),
             ("Rows flipped", CheckIntent::Answer(Answer::RowsFlipped)),
-            ("Click each LED instead…", CheckIntent::Wizard),
+            ("None of these…", CheckIntent::Wizard { none_fit: true }),
+            ("Slower", CheckIntent::Pace(0)),
+            ("Faster", CheckIntent::Pace(2)),
             ("Run again", CheckIntent::RunAgain),
             ("Cancel", CheckIntent::Cancel),
         ] {
             assert_eq!(press(&ctx, &mut c, label), Some(want), "{label}");
         }
+        // The pace showing now is no change.
+        assert_eq!(press(&ctx, &mut c, "Normal"), None);
         // Undo shows once there's a correction to take back.
         c.answer(Answer::Mirrored);
         check_frame(&ctx, &v, &mut c, Vec::new());
         assert_eq!(press(&ctx, &mut c, "Undo"), Some(CheckIntent::Undo));
+        // A split board's answers can be for one half: picking it is no answer yet.
+        assert_eq!(press(&ctx, &mut c, "Right half"), None);
+        assert_eq!(c.half, Some(1));
+        assert_eq!(
+            press(&ctx, &mut c, "Rows flipped"),
+            Some(CheckIntent::Answer(Answer::RowsFlipped))
+        );
+        // A found map has no corrections: clicking again is the way.
+        let mut board: Board =
+            Board::parse(include_str!("../../resources/boards/eyelash-corne.toml")).unwrap();
+        board.lighting.as_mut().unwrap().led_points = vec![Some([1.0, 1.0]); 42];
+        let mut found = Confirm::new(&board).unwrap();
+        check_frame(&ctx, &v, &mut found, Vec::new());
+        check_frame(&ctx, &v, &mut found, Vec::new());
+        assert_eq!(
+            press(&ctx, &mut found, "Click each LED…"),
+            Some(CheckIntent::Wizard { none_fit: false })
+        );
+    }
+
+    /// The second desk's one-piece board: no half to pick, and the corrections and the dot run
+    /// on its whole drawing.
+    #[test]
+    fn the_dot_test_on_a_one_piece_board_has_no_halves() {
+        use crate::foxglove::fixtures::second_desk;
+        let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
+        let mut c = Confirm::new(&second_desk::board()).unwrap();
+        let v = CheckView {
+            step: Some(5),
+            started: true,
+            ..Default::default()
+        };
+        check_frame(&ctx, &v, &mut c, Vec::new());
+        check_frame(&ctx, &v, &mut c, Vec::new());
+        let has = |label: &str| {
+            SHAPES.with_borrow(|shapes| {
+                fn find(shape: &egui::Shape, label: &str) -> bool {
+                    match shape {
+                        egui::Shape::Vec(v) => v.iter().any(|s| find(s, label)),
+                        egui::Shape::Text(t) => t.galley.job.text == label,
+                        _ => false,
+                    }
+                }
+                shapes.iter().any(|s| find(&s.shape, label))
+            })
+        };
+        assert!(has("Mirrored") && has("None of these…"));
+        assert!(!has("Left half") && !has("Right half") && !has("For"));
     }
 
     #[test]
