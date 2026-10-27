@@ -9,16 +9,17 @@ Foxglove is a Windows app for the **keyboard and the lights and screens around i
 - **The keyboard:** its screens and art, its lights, the layer overlay (KeyPeek), its keymap,
   battery and connection, flashing and firmware updates. Any ZMK or QMK board, with our own boards
   first in line.
-- **PC lighting and screens:** case lights (fan lighting included; fan speed is not), peripherals' lights (through Windows Dynamic Lighting
-  where it can), and scenes that tie them to the keyboard and the wallpaper.
+- **PC lighting and screens:** case lights (fan lighting included; fan speed is not),
+  peripherals' lights (through Windows Dynamic Lighting where it can), and scenes that tie them
+  to the keyboard and the wallpaper.
 - **Device management on Windows:** finding devices, their state, and one place to see them.
 - **Optional integrations:** Wallpaper Engine, OBS, SignalRGB, OpenRGB, iCUE and others. Foxglove
   works fully without each of them and is richer with them.
 
 ## Out of scope
 
-- **Hardware safety and performance controls:** fan speed and fan curves, pump speed, overclocking, power
-  limits. Leave them to the vendor's tool (OMEN Command Center and the like).
+- **Hardware safety and performance controls:** fan speed and fan curves, pump speed,
+  overclocking, power limits. Leave them to the vendor's tool (OMEN Command Center and the like).
 - **Generic automation and macro tooling,** unless it is about the keyboard (a key's action, a
   layer, a screen). Foxglove is not AutoHotkey.
 - **Anything that needs a cloud account** to work. Optional downloads (updates, the plugin

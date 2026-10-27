@@ -23,8 +23,8 @@ Every feature request passes this gate before anyone designs or builds it (user 
      `app/`; GPL-only code is learn only for crates).
   2. **Emulate:** patterns in existing software worth copying as ideas.
   3. **Design our own:** only when 1 and 2 come up empty.
-- **No design brief without it:** don't brief an engineer on an issue with no Research (body
-  section or "Research" comment) and no Scope line. Bug fixes are exempt. New issues use the Feature template
+- **No design brief without it:** don't brief an engineer on an issue that lacks a Research
+  (body section or "Research" comment) or a Scope line. Bug fixes are exempt. New issues use the Feature template
   (`.github/ISSUE_TEMPLATE/feature.yml`).
 
 ## Merging
