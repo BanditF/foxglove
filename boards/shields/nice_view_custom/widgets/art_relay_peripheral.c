@@ -34,6 +34,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
 #include "lamp_strip.h"
 #endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+#include "effect_run.h"
+#endif
 #include "screen_snap.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 #include "test_hooks.h"
@@ -53,8 +56,10 @@ static uint32_t rx_crc;
 
 static struct art_relay_status status = {
     // 5: ART_RELAY_RGB_HSB, 6: battery dim (config in RGB, state after build), 7: SET_FRAME's
-    // ART_RELAY_LAMPS / LAMP_HOST (#272)
-    .version = IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES) ? 7 : 6,
+    // ART_RELAY_LAMPS / LAMP_HOST (#272), 8: SET_EFFECT's ART_RELAY_EFFECT / EFFECT_GO (#490)
+    .version = IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS) ? 8
+               : IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES) ? 7
+                                                         : 6,
     .capacity = CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE,
     .set = -1,
 };
@@ -127,6 +132,9 @@ static void play(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
 static void rgb_disconnected(struct bt_conn *conn, uint8_t reason) {
     rgb_idle_remote_lost();
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+    effect_run_stop(true); // the left sends it again when the link is back
+#endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
     lamp_strip_host(false); // no PC to draw any more: the right's own effect comes back
 #endif
@@ -135,6 +143,10 @@ static void rgb_disconnected(struct bt_conn *conn, uint8_t reason) {
 BT_CONN_CB_DEFINE(art_relay_rgb_conn_cb) = {
     .disconnected = rgb_disconnected,
 };
+#endif
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+static struct lamp_effect_wire effect_rx; // ART_RELAY_EFFECT fills it, EFFECT_GO draws it
 #endif
 
 // From art_slots.c's queue when a SAVE or ERASE has finished.
@@ -173,7 +185,29 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         if (len != 2) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
         }
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+        effect_run_stop(false); // the frames take over from an effect, or hand back below
+#endif
         lamp_strip_host(d[1] != 0);
+        break;
+#endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+    case ART_RELAY_EFFECT: // offset, bytes: part of the effect, as write commands
+        if (len < 2 || d[1] + (len - 2) > sizeof(effect_rx)) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
+        }
+        memcpy((uint8_t *)&effect_rx + d[1], &d[2], len - 2);
+        break;
+    case ART_RELAY_EFFECT_GO:
+        if (len != 6) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+        if (d[1]) {
+            effect_run_start(&effect_rx, sys_get_le32(&d[2])); // re-anchors the clock
+        } else {
+            effect_run_stop(true);
+            lamp_strip_host(false); // also after frames the effect never replaced
+        }
         break;
 #endif
     case ART_RELAY_BOOT:

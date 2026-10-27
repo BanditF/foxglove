@@ -1,0 +1,55 @@
+effects: -- the maths against crates/scene
+effects: 492 of 492 crates/scene vectors within 2 per channel
+effects: -- hello: capability bit 19 EFFECTS
+effects: caps bit 19 1
+effects: -- PLACE: a half without area is refused; a whole place is kept, nothing drawn yet
+hostlink: rx D7 8F 05 00 00 01
+hostlink: rx D7 8F 00 00 00 01
+effects: -- a still effect (period 0): both halves taken, the left drawn once
+effects: right gets breathe, 2 colours, half at 270,5 120x90, room 400x100
+effects: left taken from its effect
+hostlink: rx D7 8F 00 03 04 01
+effects: left draws 0-20=204060
+effects: draws in 300 ms after it: 0
+effects: -- idle: the half goes dark, then lit again on activity
+effects: left draws, then cuts the LEDs' power: black
+effects: left draws 0-20=204060
+effects: -- a moving scanline: a frame every 33 ms, on the clock it was sent with
+effects: right gets scanline, 2 colours, half at 270,5 120x90, room 400x100
+hostlink: rx D7 8F 00 03 01 01
+effects: draws in 330 ms: one a frame
+effects: clock 335 ms after it read 500: within a frame of 835
+effects: -- an endpoint change: the effect stays (nothing is streamed)
+effects: draws in 330 ms after it: still drawing
+effects: -- PLACE while it runs: the right gets its new place, the clock goes on
+effects: right gets scanline, 2 colours, half at 300,10 120x90, room 500x120
+hostlink: rx D7 8F 00 03 01 01
+effects: the clock went on through it: yes
+effects: -- SET_FRAME takes the lights: the effect stops on both halves, the frame draws
+effects: right effect stops (frames take it)
+effects: left draws 0=FF0000
+effects: right frames on
+hostlink: rx D7 8C 00 03 03 01
+effects: draws in 300 ms after it: 0
+effects: -- RELEASE of an effect that frames replaced: no change, owner none
+hostlink: rx D7 8F 00 00 00 01
+effects: -- an effect takes the lights from the frames, quietly (no D7 8C event)
+effects: left back to its effect
+effects: right frames off
+effects: right gets sweep, 3 colours, half at 300,10 120x90, room 500x120
+effects: left taken from its effect
+hostlink: rx D7 8F 00 03 02 01
+effects: the left shows the sweep at its lamps' places: yes
+effects: -- bad requests: kind 9, a sweep of 5, a breathe of 3, angle 360, cut short, op 7
+hostlink: rx D7 8F 05 03 02 01
+hostlink: rx D7 8F 05 03 02 01
+hostlink: rx D7 8F 05 03 02 01
+hostlink: rx D7 8F 05 03 02 01
+hostlink: rx D7 8F 05 03 02 01
+hostlink: rx D7 8F 05 03 02 01
+effects: -- RELEASE: both halves back to their own effect
+effects: left back to its effect
+effects: right effect stops, back to its own
+hostlink: rx D7 8F 00 00 00 01
+effects: draws in 300 ms after it: 0
+effects: -- done

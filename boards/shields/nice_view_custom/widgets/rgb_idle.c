@@ -28,6 +28,9 @@
 
 #include "rgb_idle.h"
 #include "art_relay.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+#include "effect_run.h"
+#endif
 #include "host_link.h"
 
 BUILD_ASSERT(!IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_AUTO_OFF_IDLE),
@@ -138,6 +141,9 @@ static void save(void) { k_work_reschedule(&save_work, SAVE_DELAY); }
 
 static void apply_cb(struct k_work *work) {
     if (atomic_get(&host_drawn)) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+        effect_run_lights_changed(); // an effect goes dark when idle (or off), and comes back
+#endif
         return; // ZMK's underglow stays off under the PC's frames; this runs again on hand-back
     }
     bool on;

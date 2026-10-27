@@ -68,6 +68,15 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
     zephyr_library_compile_definitions(LAMP_STRIP_LEN=21)
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/host_frames.c frames_sim.c)
   endif()
+  if(CONFIG_FOXGLOVE_SIM_EFFECTS)
+    # SET_EFFECT (#490): the real host_effects.c, effect_run.c and lamp_effect.c, with
+    # host_frames.c for the hand-over; the strip, the relay and the on/off are faked (21 lamps).
+    # effect_vectors.inc comes from crates/scene/tests/keyboard_effect_vectors.rs.
+    zephyr_library_compile_definitions(LAMP_STRIP_LEN=21)
+    zephyr_library_sources(${FOXGLOVE_WIDGETS}/host_frames.c ${FOXGLOVE_WIDGETS}/host_effects.c
+                           ${FOXGLOVE_WIDGETS}/effect_run.c ${FOXGLOVE_WIDGETS}/lamp_effect.c
+                           effects_sim.c)
+  endif()
   if(CONFIG_FOXGLOVE_SIM_ART_KEYS)
     # &art_next / &art_prev (#60): the real behaviour; the board-side step prints instead.
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/art_keys.c art_keys_sim.c)
