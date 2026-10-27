@@ -26,7 +26,8 @@ foxglove in 1542.
    [Releases](https://github.com/BanditF/foxglove/releases) and run it. The installer isn't
    signed yet, so Windows SmartScreen warns you: click **More info**, then **Run anyway**.
 2. **Connect:** plug the keyboard's **left** half in by USB. In the fox tray icon, choose
-   **Settings... → Connection**, pick the keyboard and click **Connect**. To add Bluetooth,
+   **Open Foxglove**, then on the **Keyboard** page, under **Keymap source**, pick the keyboard and
+   click **Connect**. To add Bluetooth,
    pair "Eyelash Corne" in Windows' Bluetooth settings.
 3. **Learn the layers:** hold a middle thumb for NUMBER or SYMBOL, or both for FUNCTION. Add Tab
    to both for SYSTEM (Bluetooth slots on Q-T). See [docs/layers.md](docs/layers.md).
@@ -34,7 +35,7 @@ foxglove in 1542.
    Hold SYSTEM and tap Q for slot 1 (W-T for 2-5); the filled box on the left screen shows
    the active slot.
 
-The [user guide](docs/user-guide.md) covers the screens, every Settings section, lighting presets, art cycling and the art library, plugins, VIA keyboards, profiles
+The [user guide](docs/user-guide.md) covers the screens, every page of the window, lighting presets, art cycling and the art library, plugins, VIA keyboards, profiles
 and updating the firmware.
 
 ## Layout

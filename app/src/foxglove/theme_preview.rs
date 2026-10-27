@@ -758,7 +758,7 @@ fn long_samples() -> Samples {
     ];
     s.keyboard.link.unplug_fix = Some(
         "Unplugging now leaves the keyboard unable to type - select Bluetooth slot 2: hold SYSTEM \
-         (both middle thumbs) and Tab, then press the profile's key on the number row"
+         (both middle thumbs) and Tab, then press the slot's key on the number row"
             .into(),
     );
     s

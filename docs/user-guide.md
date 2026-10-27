@@ -123,17 +123,18 @@ others (see **Screens** below). The battery and connection strip sits above it.
 Open it from the tray: **Open Foxglove**. The sidebar has six pages, top to bottom:
 
 - **Keyboard.** The board picture, then:
-  - **Keymap source:** the keyboard the layer overlay reads (**Device**, **Connect**).
   - **Firmware:** both halves' versions (a warning appears if they differ), **Refresh** and
     **Update firmware…**.
   - **Key actions:** things the keyboard's own keys can do, as buttons. Risky ones (resets,
     bootloader) need a second click.
-  - **Connection:** USB or Bluetooth for each half, the Bluetooth slot, and the battery.
+  - **Connection:** whether the left half is on USB or Bluetooth, the active Bluetooth slot,
+    and this PC's slot.
   - **Devices:** the batteries of the Bluetooth devices and game controllers connected to this
     PC (a mouse, headphones, a wireless controller), with **Tell me when a device's battery runs
     low** (on by default; one notification below 15% and one below 5%). Devices that don't
     report a battery aren't listed, and the keyboard has its own lines. The tray panel shows the
     same list under **Devices** when one reports.
+  - **Keymap source:** the keyboard the layer overlay reads (**Device**, **Connect**).
 - **Lights.** **Keyboard** sets the colour, effect, brightness and speed of the keyboard's
   lights. **Follow the Windows accent colour** makes them take Windows' accent colour whenever
   you change it, keeping your brightness. These controls need an RGB key in the keymap.
@@ -261,7 +262,7 @@ Foxglove controls them:
 - **Built-in support:** the OMEN 45L case. Pick a colour per zone (diamond display, interior
   light, the three front fans) or one of the swatches for all zones, then **Apply colours**.
   **Identify** blinks the case for a moment; **Off** turns it dark. **Match keyboard** makes
-  the case follow the underglow colour you set in Foxglove, or the Windows accent colour when
+  the case follow the keyboard's light colour you set in Foxglove, or the Windows accent colour when
   the keyboard follows that. Foxglove puts your colours back when the PC starts.
 - **Windows lighting**, such as a Logitech G502: Windows' Dynamic Lighting settings
   control it for now.
@@ -327,7 +328,7 @@ later idea, #522.)
     then **P** for next and **O** for previous. Without the app, the keyboard steps through its
     own built-ins and saved slots. *(next app update)* The left screen shows **ART 3/7** and the
     name for a second.
-  - **Lights wake**: the next piece each time the underglow comes back on.
+  - **Lights wake**: the next piece each time the keyboard's lights come back on.
   - **every N minutes**.
 - **Wallpaper:** the right screen shows the art that goes with the wallpaper on
   screen. It works best with Wallpaper Engine, found in any Steam library. Without it, or while
