@@ -574,6 +574,7 @@ pub mod tests {
                 conflicts: vec![pc_lights::Conflicting {
                     app: "OMEN Light Studio".into(),
                     device: "HP OMEN 45L case lights".into(),
+                    key: "103c:84fd".into(),
                     hint: Some("Settings > Apps > Installed apps > OMEN Light Studio".into()),
                 }],
                 status: Some("HP OMEN 45L case lights: colours set".into()),
@@ -655,6 +656,7 @@ pub mod tests {
         let one = |app: &str, device: &str| pc_lights::Conflicting {
             app: app.into(),
             device: device.into(),
+            key: String::new(),
             hint: Some("Quit it from its tray icon.".into()),
         };
         v.pc.conflicts = vec![

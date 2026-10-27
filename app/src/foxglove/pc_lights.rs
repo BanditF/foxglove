@@ -77,8 +77,9 @@ pub struct Row {
 pub struct Conflicting {
     /// The app's name.
     pub app: String,
-    /// The device it may override.
+    /// The device it may override: its name, and its key ([`Found::key`]).
     pub device: String,
+    pub key: String,
     /// How to remove it or turn it off.
     pub hint: Option<String>,
 }
@@ -319,19 +320,26 @@ impl Worker {
         restore: bool,
     ) {
         let mut now = pcl::discover(&self.catalog, hid);
-        self.conflicts = now
-            .iter()
-            .flat_map(|f| f.conflicts.iter().map(move |c| (f, c)))
-            .filter(|(_, c)| {
-                let names: Vec<&str> = c.processes.iter().map(String::as_str).collect();
-                running(&names)
-            })
-            .map(|(f, c)| Conflicting {
-                app: c.app.clone(),
-                device: f.name.clone(),
-                hint: c.hint.clone(),
-            })
-            .collect();
+        // Each app's processes are looked for once a scan, however many devices name it.
+        let mut asked: BTreeMap<Vec<String>, bool> = BTreeMap::new();
+        let mut conflicts = Vec::new();
+        for f in &now {
+            for c in &f.conflicts {
+                let runs = *asked.entry(c.processes.clone()).or_insert_with(|| {
+                    let names: Vec<&str> = c.processes.iter().map(String::as_str).collect();
+                    running(&names)
+                });
+                if runs {
+                    conflicts.push(Conflicting {
+                        app: c.app.clone(),
+                        device: f.name.clone(),
+                        key: f.key.clone(),
+                        hint: c.hint.clone(),
+                    });
+                }
+            }
+        }
+        self.conflicts = conflicts;
         self.unknown = pcl::unknown(&self.catalog, hid);
         // A LampArray not read yet: read them all once (Windows), then reuse.
         let unread = now.iter().any(|f| {
@@ -365,7 +373,7 @@ impl Worker {
             match (self.writers)(&f.path).and_then(|w| pcl::open(f, w)) {
                 Ok(driver) => {
                     self.drivers.insert(f.key.clone(), driver);
-                    let fought = self.conflicts.iter().any(|c| c.device == f.name);
+                    let fought = self.conflicts.iter().any(|c| c.key == f.key);
                     if restore && !fought && !paused {
                         self.restore(f);
                     }
@@ -586,10 +594,21 @@ impl Worker {
             }
             Msg::SaveLocal(device) => {
                 self.status = Some(format!("{}: saved as your own device", device.name));
-                self.local.put(CatalogDevice {
+                let mut device = CatalogDevice {
                     local: true,
                     ..*device
-                });
+                };
+                // Your own entry for a bundled board keeps what the bundled one knows of it:
+                // its kind and the apps that fight Foxglove over it.
+                if let Some(b) = self.bundled.find(device.vid, device.pid) {
+                    if device.kind == pcl::DeviceKind::Other {
+                        device.kind = b.kind;
+                    }
+                    if device.conflicts.is_empty() {
+                        device.conflicts = b.conflicts.clone();
+                    }
+                }
+                self.local.put(device);
                 self.save_local();
             }
             Msg::RemoveLocal(vid, pid) => {
@@ -1170,15 +1189,20 @@ mod tests {
                 ("G502 Proteus Spectrum", Control::LampArray, 0),
             ]
         );
+        let names: Vec<_> = s
+            .conflicts
+            .iter()
+            .map(|c| (c.app.as_str(), c.device.as_str(), c.key.as_str()))
+            .collect();
         assert_eq!(
-            s.conflicts,
-            [Conflicting {
-                app: "OMEN Light Studio".into(),
-                device: "HP OMEN 45L case lights".into(),
-                hint: s.conflicts[0].hint.clone(),
-            }],
+            names,
+            [("OMEN Light Studio", "HP OMEN 45L case lights", "103c:84fd")],
             "the catalog's conflict for the 45L"
         );
+        assert!(s.conflicts[0]
+            .hint
+            .as_deref()
+            .is_some_and(|h| h.contains("Uninstall")));
         assert!(
             sent.lock().unwrap().is_empty(),
             "a scan alone writes nothing"
@@ -1529,6 +1553,96 @@ mod tests {
         // The 45L's tool running changes nothing on this desk.
         w.scan(&desk::hid(), &mut studio(), false, true);
         assert!(w.snapshot().conflicts.is_empty());
+    }
+
+    /// #558: a conflict holds back only its own device's colours on arrival. A second driven
+    /// board (another model on the same protocol, no conflict) gets its colours back while the
+    /// 45L's tool runs; the 45L waits.
+    #[test]
+    fn a_conflict_holds_back_only_its_own_devices_colours() {
+        let dir = std::env::temp_dir().join(format!("foxglove-conflict-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local = dir.join("lighting-catalog.local.toml");
+        std::fs::write(
+            &local,
+            "[[device]]
+name = \"Shelf\"
+vid = 0x1234
+pid = 0x5678
+protocol = \"omen-tracer\"
+kind = \"strip\"
+zones = [{ id = 3, name = \"Logo\" }]
+",
+        )
+        .unwrap();
+        let mut settings = Settings::default();
+        for key in ["103c:84fd", "1234:5678"] {
+            settings.devices.insert(
+                key.into(),
+                Saved {
+                    colors: [("3".to_string(), "#0000ff".to_string())].into(),
+                    match_keyboard: false,
+                },
+            );
+        }
+        settings
+            .devices
+            .get_mut("103c:84fd")
+            .unwrap()
+            .colors
+            .insert("2".into(), "#112233".into());
+        let (mut w, sent) = worker_at(settings, Some(local));
+        let mut hid = case_hid();
+        hid.push(HidEntry {
+            vid: 0x1234,
+            pid: 0x5678,
+            usage_page: 1,
+            path: "shelf".into(),
+            ..Default::default()
+        });
+        w.scan(&hid, &mut studio(), false, true);
+        assert_eq!(
+            *sent.lock().unwrap(),
+            vec![report(3, [0, 0, 0xff])],
+            "only the shelf's colour"
+        );
+        let s = w.snapshot();
+        assert_eq!(s.conflicts.len(), 1, "the shelf names no conflict");
+        assert_eq!(s.conflicts[0].key, "103c:84fd");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Your own entry for a bundled board keeps the bundled one's kind and conflicts, so the
+    /// vendor tool's warning doesn't vanish when you rename its zones.
+    #[test]
+    fn your_own_entry_for_a_bundled_board_keeps_its_kind_and_conflicts() {
+        let dir = std::env::temp_dir().join(format!("foxglove-own-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let local = dir.join("lighting-catalog.local.toml");
+        let (mut w, _) = worker_at(Settings::default(), Some(local.clone()));
+        let mine = CatalogDevice::new(
+            "My case".into(),
+            0x103c,
+            0x84fd,
+            Protocol::OmenTracer,
+            vec![ZoneSpec {
+                id: 1,
+                name: "Top".into(),
+                position: None,
+                role: Default::default(),
+            }],
+        );
+        w.handle(Msg::SaveLocal(Box::new(mine)), false, &mut no_wait());
+        let saved = Catalog::parse(&std::fs::read_to_string(&local).unwrap()).unwrap();
+        let d = &saved.devices[0];
+        assert_eq!(d.kind, pcl::DeviceKind::Case);
+        assert_eq!(
+            d.conflicts,
+            Catalog::bundled().find(0x103c, 0x84fd).unwrap().conflicts
+        );
+        w.scan(&case_hid(), &mut studio(), false, true);
+        assert_eq!(w.snapshot().conflicts.len(), 1, "still warned about");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

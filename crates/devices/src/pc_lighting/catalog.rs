@@ -223,11 +223,7 @@ impl CatalogDevice {
             self.protocol.id()
         );
         if self.kind != DeviceKind::Other {
-            out.push_str(&format!(
-                "kind = \"{}\"
-",
-                self.kind.id()
-            ));
+            out.push_str(&format!("kind = \"{}\"\n", self.kind.id()));
         }
         if let Some([w, h]) = self.size {
             out.push_str(&format!("size = [{w}, {h}]\n"));
@@ -250,6 +246,17 @@ impl CatalogDevice {
                 ));
             }
             out.push_str("]\n");
+        }
+        for c in &self.conflicts {
+            let processes: Vec<String> = c.processes.iter().map(|p| quote(p)).collect();
+            out.push_str(&format!(
+                "[[device.conflict]]\napp = {}\nprocesses = [{}]\n",
+                quote(&c.app),
+                processes.join(", ")
+            ));
+            if let Some(hint) = &c.hint {
+                out.push_str(&format!("hint = {}\n", quote(hint)));
+            }
         }
         out
     }
@@ -422,8 +429,26 @@ mod tests {
         // The kind survives the user's own file.
         let mut mine = CatalogDevice::new("Mine".into(), 9, 9, Protocol::None, vec![]);
         mine.kind = DeviceKind::Case;
+        mine.conflicts = strip.conflicts.clone();
         let back = Catalog::parse(&mine.to_toml()).unwrap();
         assert_eq!(back.devices[0].kind, DeviceKind::Case);
+        assert_eq!(
+            back.devices[0].conflicts, strip.conflicts,
+            "and its conflicts"
+        );
+        // The user's whole file, an entry with zones and conflicts, reads back the same.
+        let mut local = Catalog::default();
+        let mut zoned = mine.clone();
+        zoned.zones = vec![ZoneSpec {
+            id: 1,
+            name: "Logo".into(),
+            position: None,
+            role: ZoneRole::Point,
+        }];
+        local.put(zoned.clone());
+        let again = Catalog::parse(&local.to_toml()).unwrap();
+        assert_eq!(again.devices[0].zones, zoned.zones);
+        assert_eq!(again.devices[0].conflicts, zoned.conflicts);
     }
 
     #[test]
