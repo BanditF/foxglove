@@ -36,6 +36,8 @@ pub mod foreground;
 pub mod gpu_reset;
 pub mod identity;
 pub mod keyboard_actions;
+#[cfg(test)]
+mod keyboard_direction_vectors;
 pub mod keyboard_facts;
 pub mod keyboard_page;
 pub mod keyboard_settings;
@@ -67,8 +69,6 @@ pub mod plugins_ui;
 pub mod profiles_ui;
 pub mod reconnect;
 pub mod repaint_trace;
-#[cfg(test)]
-mod keyboard_direction_vectors;
 pub mod scene_looks;
 pub mod scene_output;
 pub mod scene_room;
