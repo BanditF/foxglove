@@ -28,21 +28,82 @@ thread_local! {
     pub static PREVIEW: RefCell<Option<screens::Snapshot>> = const { RefCell::new(None) };
 }
 
-/// The Screens page: Showing now, On the keyboard, On this PC, then the left screen's card and
-/// Notifications (#507).
-pub fn page(ui: &mut egui::Ui) {
-    showing_now(ui);
-    super::art_ui::keyboard_card(ui);
-    super::art_ui::pc_card(ui);
-    group(ui);
-    super::notifications_ui::card(ui);
+/// One card of the Screens page, by the keyboard's screens (#560).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Card {
+    /// Showing now: what the info and art screens show.
+    ShowingNow { info: bool, art: bool },
+    /// The art screen's: On the keyboard and On this PC.
+    Art,
+    /// The info screen's: its settings and Notifications (#507).
+    Info,
+    /// A screen the keyboard's firmware draws itself.
+    Display(super::screen_roles::Screen),
 }
 
-/// Showing now: the left screen, the right screen and Rotation in three columns, stacked when
-/// the window is narrow. Drawn once either screen's keyboard answers.
-fn showing_now(ui: &mut egui::Ui) {
-    let left = snapshot().hello.is_some();
-    let right = super::art_ui::current(ui.ctx()).is_some_and(|a| a.s.connected);
+/// The cards for these screens: none without a screen, one each for three. Unknown screens (no
+/// profile, nothing described) keep the info and art cards.
+pub fn cards(screens: Option<&[super::screen_roles::Screen]>) -> Vec<Card> {
+    use super::screen_roles::Role;
+    let has = |role| screens.is_none_or(|s| super::screen_roles::first(s, role).is_some());
+    let (info, art) = (has(Role::Info), has(Role::Art));
+    let mut out = Vec::new();
+    if info || art {
+        out.push(Card::ShowingNow { info, art });
+    }
+    if art {
+        out.push(Card::Art);
+    }
+    if info {
+        out.push(Card::Info);
+    }
+    for s in screens.unwrap_or_default() {
+        if s.role == Role::Display {
+            out.push(Card::Display(s.clone()));
+        }
+    }
+    out
+}
+
+/// The Screens page: Showing now, On the keyboard, On this PC, then the info screen's card and
+/// Notifications (#507), and a card for each screen the firmware draws itself; only the cards
+/// for the screens the keyboard has (#560).
+pub fn page(ui: &mut egui::Ui) {
+    for card in cards(super::screen_roles::current().as_deref()) {
+        match card {
+            Card::ShowingNow { info, art } => showing_now(ui, info, art),
+            Card::Art => {
+                super::art_ui::keyboard_card(ui);
+                super::art_ui::pc_card(ui);
+            }
+            Card::Info => {
+                group(ui);
+                super::notifications_ui::card(ui);
+            }
+            Card::Display(s) => display_card(ui, &s),
+        }
+    }
+}
+
+/// A screen the keyboard's firmware draws: its name and size.
+fn display_card(ui: &mut egui::Ui, s: &super::screen_roles::Screen) {
+    if !super::shell::shows("Showing now") {
+        return;
+    }
+    ui.add_space(6.0);
+    super::settings_ui::card(ui, &s.name, |ui| {
+        let (w, h) = s.upright();
+        ui.weak(format!(
+            "{w}×{h}. The keyboard's firmware draws it; Foxglove shows nothing on it yet."
+        ));
+    });
+}
+
+/// Showing now: the info screen, the art screen and Rotation in three columns, stacked when
+/// the window is narrow; only the screens the keyboard has. Drawn once either answers.
+fn showing_now(ui: &mut egui::Ui, has_info: bool, has_art: bool) {
+    let left = has_info && snapshot().hello.is_some();
+    let right = has_art && super::art_ui::current(ui.ctx()).is_some_and(|a| a.s.connected);
     if !left && !right {
         return;
     }
@@ -50,11 +111,18 @@ fn showing_now(ui: &mut egui::Ui) {
         let gap = 18.0;
         let width = ui.available_width();
         type Part = fn(&mut egui::Ui);
-        let parts: [(f32, Part); 3] = [
-            (0.27, now_left),
-            (0.43, super::art_ui::now_right),
-            (0.30, super::art_ui::rotation),
-        ];
+        let mut parts: Vec<(f32, Part)> = Vec::new();
+        if has_info {
+            parts.push((0.27, now_left));
+        }
+        if has_art {
+            parts.push((0.43, super::art_ui::now_right));
+            parts.push((0.30, super::art_ui::rotation));
+        }
+        let total: f32 = parts.iter().map(|p| p.0).sum();
+        for p in &mut parts {
+            p.0 /= total;
+        }
         if width < 720.0 {
             for (_, part) in parts {
                 part(ui);
@@ -64,7 +132,7 @@ fn showing_now(ui: &mut egui::Ui) {
         }
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
-            let room = width - gap * 2.0;
+            let room = width - gap * (parts.len().saturating_sub(1)) as f32;
             for (share, part) in parts {
                 let w = (room * share).floor();
                 ui.allocate_ui_with_layout(
@@ -102,7 +170,10 @@ pub fn left_words(settings: &ScreensSettings, paused: bool) -> (&'static str, &'
 fn now_left(ui: &mut egui::Ui) {
     let snap = snapshot();
     let p = super::theme::palette(ui);
-    ui.label(super::theme::caps_label(ui, "Left screen"));
+    ui.label(super::theme::caps_label(
+        ui,
+        &super::screen_roles::name(super::screen_roles::Role::Info),
+    ));
     if snap.hello.is_none() {
         ui.weak("Waiting for the keyboard.");
         return;
@@ -158,7 +229,7 @@ fn now_left(ui: &mut egui::Ui) {
                     remember(&new);
                     state.settings = Some(new);
                 }
-                Err(e) => eprintln!("Foxglove: can't save the left screen: {e}"),
+                Err(e) => eprintln!("Foxglove: can't save the info screen's settings: {e}"),
             }
         }
     });
@@ -244,10 +315,25 @@ pub fn sample_stats() -> foxglove_panel::stats::Stats {
     }
 }
 
-/// A preview of a left-screen choice, as the panel draws it (64×52, ink on black).
+/// The info screen's size, for its previews: the keyboard's (#560), else the panel Foxglove's
+/// firmware draws.
+fn info_size() -> (usize, usize) {
+    let (w, h) = super::screen_roles::current()
+        .as_deref()
+        .and_then(|s| super::screen_roles::first(s, super::screen_roles::Role::Info))
+        .map_or(screens::FIRMWARE_PANEL, |s| s.upright());
+    (usize::from(w.max(1)), usize::from(h.max(1)))
+}
+
+/// A preview of an info-screen choice, as the panel draws it at the info screen's size (ink on
+/// black).
 fn left_preview(choice: LeftChoice) -> egui::ColorImage {
+    left_preview_at(choice, info_size())
+}
+
+fn left_preview_at(choice: LeftChoice, (w, h): (usize, usize)) -> egui::ColorImage {
     use foxglove_panel::render::{self, Panel, View};
-    let mut panel = Panel::new(64, 52);
+    let mut panel = Panel::new(w, h);
     match choice {
         LeftChoice::Info => {
             let view = View {
@@ -430,7 +516,7 @@ pub fn group(ui: &mut egui::Ui) {
         UI.with_borrow_mut(|s| s.settings = None);
         return;
     }
-    super::settings_ui::section(ui, "Left screen", |ui| {
+    super::settings_ui::section(ui, "Info screen", |ui| {
         UI.with_borrow_mut(|state| {
             let settings = state.settings.get_or_insert_with(ScreensSettings::load);
             let mut changed = false;
@@ -440,7 +526,7 @@ pub fn group(ui: &mut egui::Ui) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let paused = screens::paused();
                     let button = ui.add_enabled(settings.drive_left, egui::Button::new(if paused { "Resume" } else { "Pause" }));
-                    if button.on_hover_text("Pause the left screen; the keyboard shows its own screen meanwhile").clicked() {
+                    if button.on_hover_text(format!("Pause {}; the keyboard shows its own screen meanwhile", super::screen_roles::the(super::screen_roles::Role::Info))).clicked() {
                         screens::set_paused(!paused);
                     }
                 });
@@ -480,7 +566,7 @@ pub fn group(ui: &mut egui::Ui) {
 
             ui.add_space(6.0);
             ui.label(super::theme::caps_label(ui, "App hints"));
-            ui.weak("Shown on the left screen while that program is in front.");
+            ui.weak(format!("Shown on {} while that program is in front.", super::screen_roles::the(super::screen_roles::Role::Info)));
             let mut remove = None;
             for (exe, hint) in settings.games.iter_mut() {
                 ui.horizontal(|ui| {
@@ -603,10 +689,69 @@ mod tests {
             );
         }
         let info = left_preview(LeftChoice::Info);
-        assert_eq!(info.size, [64, 52]);
+        assert_eq!(
+            info.size,
+            [64, 52],
+            "the firmware's panel when nothing says"
+        );
+        // #560: the second desk's 128x32 info screen gets previews at its size.
+        let wide = left_preview_at(LeftChoice::Info, (128, 32));
+        assert_eq!(wide.size, [128, 32]);
         assert!(
             info.pixels.contains(&egui::Color32::WHITE),
             "the clock preview draws something"
         );
+    }
+}
+
+#[cfg(test)]
+mod card_tests {
+    use super::*;
+    use crate::foxglove::fixtures::{second_desk, users_desk};
+    use crate::foxglove::screen_roles::of_board;
+
+    /// #560: a card for each screen the keyboard has: the Corne's two, the second desk's three
+    /// (its display gets one of its own), none without screens; unknown keeps today's cards.
+    #[test]
+    fn each_screen_gets_its_card() {
+        let corne = of_board(&users_desk::board());
+        assert_eq!(
+            cards(Some(&corne)),
+            [
+                Card::ShowingNow {
+                    info: true,
+                    art: true
+                },
+                Card::Art,
+                Card::Info
+            ]
+        );
+        let plank = of_board(&second_desk::board());
+        let c = cards(Some(&plank));
+        assert_eq!(c.len(), 4);
+        assert!(
+            matches!(&c[3], Card::Display(s) if s.name == "Display" && s.upright() == (240, 135))
+        );
+        assert!(
+            cards(Some(&[])).is_empty(),
+            "no screen, no Screens or Art card"
+        );
+        let art_only: Vec<_> = plank
+            .iter()
+            .filter(|s| s.role == crate::foxglove::screen_roles::Role::Art)
+            .cloned()
+            .collect();
+        assert_eq!(
+            cards(Some(&art_only)),
+            [
+                Card::ShowingNow {
+                    info: false,
+                    art: true
+                },
+                Card::Art
+            ],
+            "one art screen: its cards only"
+        );
+        assert_eq!(cards(None), cards(Some(&corne)));
     }
 }

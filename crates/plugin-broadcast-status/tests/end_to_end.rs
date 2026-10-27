@@ -33,6 +33,10 @@ impl Devices for Mock {
                 "backend": "mock", "connected": true, "caps": ["lighting", "screens"]}]})
             }
             "lighting.lease" => json!({"lease": self.calls.lock().unwrap().len()}),
+            // #560: a taller info screen than the Corne's.
+            "screens.list" => json!({"screens": [
+                {"id": 0, "role": "info", "name": "Status", "width": 96, "height": 96,
+                 "format": "1bit", "rotation": 0}]}),
             _ => json!({}),
         })
     }
@@ -225,10 +229,21 @@ fn streaming_is_red_and_live_and_a_lost_obs_lets_go() {
     assert_eq!(lease["priority"], "high");
     let live = mock.wait("the LIVE screen", |m, _| m == "screens.panel_override");
     assert_eq!(
-        (live["width"].clone(), live["ttl_ms"].clone()),
-        (json!(64), json!(0)),
-        "held, not timed"
+        (
+            live["width"].clone(),
+            live["height"].clone(),
+            live["ttl_ms"].clone()
+        ),
+        (json!(96), json!(96), json!(0)),
+        "held, not timed, at the info screen's size (#560)"
     );
+    {
+        use base64::Engine;
+        let bits = base64::engine::general_purpose::STANDARD
+            .decode(live["bitmap"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(bits.len(), 12 * 96, "a whole 96x96 frame");
+    }
     soon("the facts", || {
         facts.get("broadcast.streaming") == Some(DeviceValue::Bool(true))
             && facts.get("broadcast.scene") == Some(DeviceValue::Text("Gameplay".into()))

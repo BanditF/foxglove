@@ -59,7 +59,7 @@ pub struct View {
     pub moved: bool,
     /// The moment the preview shows, on the running scene's clock (or the page's).
     pub t: SceneTime,
-    /// "Right screen too": a wallpaper's look also shows its right-screen art (#488).
+    /// "Art screen too": a wallpaper's look also shows its art-screen art (#488, #560).
     pub with_art: bool,
     /// The looks of the wallpapers that describe themselves (#562); none hides the group.
     pub wallpapers: Vec<WallpaperLook>,
@@ -151,7 +151,7 @@ pub enum Intent {
         by: Point,
     },
     ResetPositions,
-    /// "Right screen too" switched on or off.
+    /// "Art screen too" switched on or off.
     WithArt(bool),
     /// A Triggers box switched on or off.
     Trigger(Trigger, bool),
@@ -571,7 +571,7 @@ fn resend(st: &State) {
     }
 }
 
-/// The running scene's right-screen art: its wallpaper's with "Right screen too", else none
+/// The running scene's art-screen art: its wallpaper's with "Art screen too", else none
 /// (the art from before the scene). Looked up only while a scene runs, since a bundled set is
 /// copied into the art folder first.
 fn show_art(chosen: &Chosen) {
@@ -1352,10 +1352,21 @@ fn presets(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     if !wallpapers.is_empty() {
         ui.label(theme::caps_label(ui, "Wallpapers"));
         let mut with_art = v.with_art;
-        if ui
-            .checkbox(&mut with_art, "Right screen too")
-            .on_hover_text("While one of these runs, the right screen shows its wallpaper's art")
-            .changed()
+        // Only a board with an art screen has art to show (#560).
+        if super::screen_roles::has(super::screen_roles::Role::Art)
+            && ui
+                .checkbox(
+                    &mut with_art,
+                    format!(
+                        "{} too",
+                        super::screen_roles::name(super::screen_roles::Role::Art)
+                    ),
+                )
+                .on_hover_text(format!(
+                    "While one of these runs, {} shows its wallpaper's art",
+                    super::screen_roles::the(super::screen_roles::Role::Art)
+                ))
+                .changed()
         {
             out.push(Intent::WithArt(with_art));
         }
@@ -1736,15 +1747,15 @@ pub(crate) mod tests {
             ..sample()
         };
         assert!(shows(&sample(), "WALLPAPERS"));
-        assert!(shows(&sample(), "Right screen too"));
+        assert!(shows(&sample(), "Art screen too"));
         assert!(!shows(&none, "WALLPAPERS"));
-        assert!(!shows(&none, "Right screen too"));
+        assert!(!shows(&none, "Art screen too"));
         assert!(!shows(&none, "Reef drift"));
         assert!(shows(&none, "Steel sweep"), "the effects stay");
     }
 
     /// A wallpaper's looks (#488, #562; here a fake third-party pack): a row picks the look,
-    /// and "Right screen too" switches their art on and off.
+    /// and "Art screen too" switches their art on and off.
     #[test]
     fn a_wallpaper_look_is_picked_and_its_art_switched() {
         let v = sample_none();
@@ -1762,14 +1773,14 @@ pub(crate) mod tests {
             }]
         );
         assert_eq!(
-            click(&sample(), "Right screen too"),
+            click(&sample(), "Art screen too"),
             vec![Intent::WithArt(true)]
         );
         let on = View {
             with_art: true,
             ..sample()
         };
-        assert_eq!(click(&on, "Right screen too"), vec![Intent::WithArt(false)]);
+        assert_eq!(click(&on, "Art screen too"), vec![Intent::WithArt(false)]);
         // The wallpaper's own palette is a pill while its look is chosen, and only then.
         let v = View {
             look: reef.preset.look.clone(),

@@ -21,7 +21,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
 
-use foxglove_plugin::{Fact, Hsb, Lease, LeasePriority, Plugin};
+use foxglove_plugin::{Fact, Hsb, Lease, LeasePriority, PanelTarget, Plugin};
 use screens::{Mic, Shown};
 
 /// What arrives: a fact change or a key.
@@ -91,19 +91,18 @@ impl Out {
         // MUTED is held until the next screen replaces it or the plugin stops (#281); LIVE and
         // `?` last a few seconds; nothing gives the panel back.
         for (id, _, _) in keyboards(plugin).into_iter().filter(|k| k.2) {
-            let sent = match shown.frame {
-                Some(frame) if shown.hold => {
-                    plugin.panel_hold(&id, screens::W, screens::H, art.frame(frame))
+            // Drawn at the info screen's own size (#560).
+            let fitted = |t: &PanelTarget, frame| t.fit(art.frame(frame), screens::W, screens::H);
+            let sent = match (shown.frame, plugin.panel_target(&id)) {
+                (Some(frame), Some(t)) if shown.hold => {
+                    plugin.panel_show(&id, &t, &fitted(&t, frame), None)
                 }
-                Some(frame) => plugin.panel_override(
-                    &id,
-                    screens::W,
-                    screens::H,
-                    art.frame(frame),
-                    screens::BRIEF,
-                ),
-                None if self.held => plugin.panel_release(&id),
-                None => Ok(()),
+                (Some(frame), Some(t)) => {
+                    plugin.panel_show(&id, &t, &fitted(&t, frame), Some(screens::BRIEF))
+                }
+                (Some(_), None) => Ok(()),
+                (None, _) if self.held => plugin.panel_release(&id),
+                (None, _) => Ok(()),
             };
             if let Err(e) = sent {
                 eprintln!("mic-mute: panel: {e}");

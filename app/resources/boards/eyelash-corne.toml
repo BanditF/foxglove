@@ -29,12 +29,15 @@ width = 64
 height = 52
 format = "1bit"
 
+# Screens are named by role ("Info screen", "Art screen"); `name = "..."` names one. The art
+# screen is mounted on its side: 140x68 as stored, 68x140 upright (`rotate = 90`).
 [[screens]]
 kind = "art"
 half = "right"
 width = 140
 height = 68
 format = "1bit"
+rotate = 90
 
 [lighting]
 lamps = 42

@@ -10,9 +10,9 @@ use std::sync::{Arc, OnceLock};
 
 const SOURCE: &str = include_str!("../../../boards/shields/nice_view_custom/widgets/custom_art.c");
 
-/// Frames as stored: 140 wide, 68 high (the screen is mounted turned), 1 bit, MSB first.
-const W: usize = 140;
-const H: usize = 68;
+/// Frames as stored by the firmware this file builds (its art format, 1 bit, MSB first).
+const W: usize = super::art_encode::ArtTarget::FIRMWARE.width as usize;
+const H: usize = super::art_encode::ArtTarget::FIRMWARE.height as usize;
 
 /// A built-in's first frame, in `art_preview::first_frame`'s form (set bits white).
 #[derive(Clone)]

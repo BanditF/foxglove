@@ -139,7 +139,7 @@ fn style(title: &str) -> Style {
         "Showing now"
         | "On the keyboard"
         | "On this PC"
-        | "Left screen"
+        | "Info screen"
         | "Profile"
         | "Appearance"
         | "Startup and updates"

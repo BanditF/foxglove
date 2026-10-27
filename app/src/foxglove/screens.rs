@@ -255,6 +255,9 @@ static OVERRIDE: Mutex<Option<Override>> = Mutex::new(None);
 /// The panel's size, once a keyboard with one has connected.
 static PANEL_SIZE: Mutex<Option<(u16, u16)>> = Mutex::new(None);
 
+/// The panel Foxglove's firmware draws, for a keyboard that doesn't describe its info screen.
+pub const FIRMWARE_PANEL: (u16, u16) = (64, 52);
+
 /// The longest a plugin's timed frame lasts.
 pub const MAX_OVERRIDE: Duration = Duration::from_secs(60);
 
@@ -269,7 +272,10 @@ pub fn set_override(
 ) -> Result<(), String> {
     let size = *PANEL_SIZE.lock().unwrap_or_else(|e| e.into_inner());
     let Some((w, h)) = size else {
-        return Err("no left panel connected".into());
+        return Err(format!(
+            "no {} connected",
+            super::parts::lower_first(&super::screen_roles::name(super::screen_roles::Role::Info))
+        ));
     };
     if (width, height) != (w, h) {
         return Err(format!("the panel is {w}x{h}, not {width}x{height}"));
@@ -591,14 +597,20 @@ fn run() {
                 d.last = None;
             }
             lock_watch = None;
-            set_status(if foxglove_paused {
-                "Foxglove paused"
+            set_status(&if foxglove_paused {
+                "Foxglove paused".to_string()
             } else if away {
-                "Away (locked or display off): the keyboard shows its own screen"
+                "Away (locked or display off): the keyboard shows its own screen".to_string()
             } else if paused() {
-                "Left screen paused"
+                format!(
+                    "{} paused",
+                    super::screen_roles::name(super::screen_roles::Role::Info)
+                )
             } else {
-                "Left screen off"
+                format!(
+                    "{} off",
+                    super::screen_roles::name(super::screen_roles::Role::Info)
+                )
             });
             continue;
         }
@@ -649,7 +661,10 @@ fn run() {
         lock_watch = None;
         if !was_driving {
             d.last = None;
-            set_status("Drawing the left screen");
+            set_status(&format!(
+                "Drawing {}",
+                super::screen_roles::the(super::screen_roles::Role::Info)
+            ));
             battery_log(d.hello.right_battery, &mut last_battery);
         }
         was_driving = true;

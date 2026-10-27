@@ -53,7 +53,10 @@ pub(crate) fn contents(
     changed |= ui
         .checkbox(
             &mut settings.enabled,
-            "Show Windows notifications on the left screen",
+            format!(
+                "Show Windows notifications on {}",
+                super::screen_roles::the(super::screen_roles::Role::Info)
+            ),
         )
         .changed();
     ui.weak(

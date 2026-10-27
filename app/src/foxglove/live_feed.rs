@@ -766,7 +766,7 @@ fn new_token() -> Result<(), String> {
 }
 
 /// What the settings card says the feed sends.
-pub const EXPLAINER: &str = "A live wallpaper paired with Foxglove shows your typing as ripples, with the layer, the right screen's art, battery and connection. It gets which key position was pressed and when, never the letter or keycode, and only with the pairing token. Someone who knows your keymap could still tell the keys apart. Nothing is sent while Foxglove is paused, the PC is locked, the screen is off or a full-screen game runs.";
+pub const EXPLAINER: &str = "A live wallpaper paired with Foxglove shows your typing as ripples, with the layer, the art screen's art, battery and connection. It gets which key position was pressed and when, never the letter or keycode, and only with the pairing token. Someone who knows your keymap could still tell the keys apart. Nothing is sent while Foxglove is paused, the PC is locked, the screen is off or a full-screen game runs.";
 
 /// The settings card.
 pub fn group(ui: &mut egui::Ui) {

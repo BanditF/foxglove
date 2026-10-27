@@ -105,9 +105,11 @@ fn scan(state: Arc<Mutex<Library>>) {
                 }
                 library.entries.sort_by(|a, b| a.path.cmp(&b.path));
                 // Source folders (#59): every set folder under them, converted for the view.
+                // Made for the connected keyboard's art screen (#560).
+                let target = super::art_encode::ArtTarget::current();
                 for source in super::art_sources::load().sources {
                     for folder in super::art_sources::sets_in(&source) {
-                        let blob = super::art_encode::encode_folder(&folder);
+                        let blob = super::art_encode::encode_folder(&folder, target);
                         let preview = blob
                             .as_ref()
                             .ok()
