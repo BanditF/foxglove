@@ -33,7 +33,10 @@ fn combo(
 ) -> Result<(), String> {
     let shown = format!("{prefix}{}", active.as_deref().unwrap_or("Default"));
     let mut chosen = None;
-    let mut combo = egui::ComboBox::from_id_salt(id).selected_text(shown);
+    // One line, cut with "…": a long name never makes the header taller.
+    let mut combo = egui::ComboBox::from_id_salt(id)
+        .selected_text(shown)
+        .truncate();
     if let Some(width) = width {
         combo = combo.width(width);
     }

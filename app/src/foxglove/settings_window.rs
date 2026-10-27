@@ -31,6 +31,7 @@ pub const TITLE: &str = "Foxglove";
 /// renamed it to [`TITLE`]. The overlay's own window is titled "Foxglove" (eframe's app name),
 /// so finding the settings window by [`TITLE`] could hook the overlay instead; this name is
 /// the settings window's alone. The window starts hidden, so the rename lands before it shows.
+/// Only Windows renames it (the Win32 lookup); elsewhere it keeps this title.
 pub const LOOKUP_TITLE: &str = "Foxglove Settings";
 /// eframe's app name, which titles the overlay's window (`platform/eframe_host.rs`).
 pub const OVERLAY_TITLE: &str = "Foxglove";
