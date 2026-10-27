@@ -29,8 +29,9 @@ fn combo(
     width: Option<f32>,
     names: &[String],
     active: &Option<String>,
+    prefix: &str,
 ) -> Result<(), String> {
-    let shown = active.clone().unwrap_or_else(|| "Default".into());
+    let shown = format!("{prefix}{}", active.as_deref().unwrap_or("Default"));
     let mut chosen = None;
     let mut combo = egui::ComboBox::from_id_salt(id).selected_text(shown);
     if let Some(width) = width {
@@ -55,15 +56,18 @@ fn combo(
     }
 }
 
-/// The profile picker at the bottom of the sidebar (#385).
-pub fn sidebar_picker(ui: &mut egui::Ui) {
+/// The profile picker in the window's header (#535), on every page. Managing profiles stays
+/// in App › Profiles.
+pub fn header_picker(ui: &mut egui::Ui, width: f32) {
     let (names, active) = store::cached_profiles();
     if let Err(e) = combo(
         ui,
-        "foxglove-profile-sidebar",
-        Some(ui.available_width() - 8.0),
+        "foxglove-profile-header",
+        Some(width),
         &names,
         &active,
+        // In the header it has no label of its own.
+        "Profile: ",
     ) {
         eprintln!("Foxglove: can't switch profile: {e}");
     }
@@ -74,7 +78,7 @@ pub fn picker(ui: &mut egui::Ui) {
     super::settings_ui::section(ui, "Profile", |ui| {
         ui.horizontal(|ui| {
             ui.label("Editing");
-            if let Err(e) = combo(ui, "foxglove-profile", None, &names, &active) {
+            if let Err(e) = combo(ui, "foxglove-profile", None, &names, &active, "") {
                 ui.colored_label(ui.visuals().error_fg_color, format!("Can't switch: {e}"));
             }
             if active.is_some() {

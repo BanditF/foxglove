@@ -121,7 +121,9 @@ others (see **Screens** below). The battery and connection strip sits above it.
 
 ## 5. A tour of the window
 
-Open it from the tray: **Open Foxglove**. The sidebar has six pages, top to bottom:
+Open it from the tray: **Open Foxglove**. The window is called **Foxglove**. At its top right,
+on every page, are the **Profile** picker (the profile you're using) and **Copy diagnostics**.
+The sidebar has six pages, top to bottom:
 
 - **Keyboard.** The board picture, then:
   - **Firmware:** both halves' versions (a warning appears if they differ), **Refresh** and
@@ -171,6 +173,9 @@ Open it from the tray: **Open Foxglove**. The sidebar has six pages, top to bott
   - **Profiles:** the setup you're editing (see [Profiles](#profiles) below).
   - **Appearance:** Dark, Light or System.
   - **Startup and updates:** **Start with Windows** and version checks.
+  - **Troubleshooting:** **Copy diagnostics**, **Open log folder**, and the connection details
+    (what the keyboard said when it connected: host link version, board type, the right half's
+    link and battery, the relay and the screens).
 
 ### Profiles
 
@@ -178,7 +183,9 @@ A profile is a saved variation of your settings, for example "Game" with a diffe
 rate, lights and art. Changes to screens, lights and art go into the profile you're editing.
 Anything a profile doesn't change comes from **Default**.
 
-- Switch from the tray (**Profile**) or the **Profile** box at the bottom of the sidebar.
+- Switch from the tray (**Profile**), the tray panel, or the **Profile** picker at the window's
+  top right. All three show the same profile. An imported profile called "Default" comes in as
+  **Default (imported)**, so it can't be mistaken for the built-in Default.
 - **Switch profile by program** picks a profile automatically when a given program comes to
   the front.
 - **Share profiles** saves them to a file, or loads them from one. The files never include this
@@ -503,7 +510,7 @@ sluggish after sleep:
    and firmware versions, the connection, plugins, Windows and the graphics card, and the last
    200 log lines. Your user name, PC name and passwords are left out.
 2. Paste it into the issue or message.
-3. The full log is in `%APPDATA%\Foxglove\logs\foxglove.log` (tray menu → **Open log folder**).
+3. The full log is in `%APPDATA%\Foxglove\logs\foxglove.log` (**App → Troubleshooting → Open log folder**, or the tray menu's **Open log folder**).
 
 ## Where things are kept
 

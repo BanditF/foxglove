@@ -543,7 +543,7 @@ fn foxglove_groups(ui: &mut egui::Ui) {
 
 /// The settings window as #385 draws it: the sidebar, the status strip and one page.
 fn shell_window(ctx: &egui::Context, size: egui::Vec2) -> Option<Rect> {
-    egui::Window::new("Foxglove Settings")
+    egui::Window::new("Foxglove")
         .fixed_pos(egui::pos2(16.0, 16.0))
         .default_size(size)
         .min_size(egui::vec2(720.0, 420.0))
@@ -561,6 +561,7 @@ fn sections(ui: &mut egui::Ui) {
     crate::foxglove::profiles_ui::picker(ui);
     crate::foxglove::update::group(ui);
     crate::foxglove::live_feed::group(ui);
+    crate::foxglove::troubleshooting::group(ui);
     foxglove_groups(ui);
     crate::foxglove::settings_ui::footer(ui);
 }

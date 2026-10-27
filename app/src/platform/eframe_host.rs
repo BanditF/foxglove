@@ -356,7 +356,7 @@ fn run_inner(
     }
 
     eframe::run_native(
-        "Foxglove",
+        crate::foxglove::settings_window::OVERLAY_TITLE, // Foxglove (#535)
         options,
         Box::new(move |cc| {
             #[cfg(target_os = "macos")]

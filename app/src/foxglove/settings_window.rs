@@ -25,8 +25,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::monitors::Monitor;
 
-/// The window's title; the Win32 side finds the window by it.
-pub const TITLE: &str = "Foxglove Settings";
+/// The window's title in its title bar and the taskbar (#535).
+pub const TITLE: &str = "Foxglove";
+/// The title the window is made with, until the Win32 side has found it by this title and
+/// renamed it to [`TITLE`]. The overlay's own window is titled "Foxglove" (eframe's app name),
+/// so finding the settings window by [`TITLE`] could hook the overlay instead; this name is
+/// the settings window's alone. The window starts hidden, so the rename lands before it shows.
+pub const LOOKUP_TITLE: &str = "Foxglove Settings";
+/// eframe's app name, which titles the overlay's window (`platform/eframe_host.rs`).
+pub const OVERLAY_TITLE: &str = "Foxglove";
 /// The size it first opens at, in points: compact but readable, room for the sidebar and a
 /// page at the normal text size (#385). A remembered size wins over it.
 pub const DEFAULT_SIZE: egui::Vec2 = egui::vec2(880.0, 600.0);
@@ -54,7 +61,7 @@ pub fn builder() -> egui::ViewportBuilder {
         )
     });
     egui::ViewportBuilder::default()
-        .with_title(TITLE)
+        .with_title(LOOKUP_TITLE)
         .with_inner_size(DEFAULT_SIZE)
         .with_min_inner_size(MIN_SIZE)
         .with_icon(icon.clone())
@@ -379,9 +386,11 @@ impl SettingsWindow {
         #[cfg(target_os = "windows")]
         {
             if self.hwnd.is_none() {
-                self.hwnd = imp::find(TITLE);
+                self.hwnd = imp::find(LOOKUP_TITLE);
                 if let Some(hwnd) = self.hwnd {
                     imp::hook(hwnd);
+                    // Found by its own name: now it can take the app's.
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(TITLE.into()));
                 }
             }
             let monitors = crate::monitors::list();
@@ -669,6 +678,20 @@ mod imp {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    /// The window says "Foxglove" (#535), but it's found by a name the overlay's window can't
+    /// have: the lookup can't hook the overlay, whose window eframe titles "Foxglove" too.
+    #[test]
+    fn the_settings_window_is_found_by_a_name_of_its_own() {
+        assert_eq!(TITLE, "Foxglove");
+        assert_ne!(LOOKUP_TITLE, OVERLAY_TITLE);
+        assert_ne!(LOOKUP_TITLE, TITLE);
+        assert_eq!(
+            builder().title.as_deref(),
+            Some(LOOKUP_TITLE),
+            "made with the lookup name, renamed once found"
+        );
+    }
 
     const D1: &str = r"\\.\DISPLAY1";
     const D2: &str = r"\\.\DISPLAY2";

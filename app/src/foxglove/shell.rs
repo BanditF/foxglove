@@ -61,7 +61,7 @@ impl Page {
 
 /// Every settings section by title, and the page it lives on (#385). A new section goes in
 /// here too; the `every_section_has_a_page` test finds the ones that don't.
-pub const SECTIONS: [(&str, Page); 18] = [
+pub const SECTIONS: [(&str, Page); 19] = [
     ("Connection", Page::Keyboard),
     ("Keyboard", Page::Keyboard),
     // The layer overlay's card (#534): KeyPeek's appearance grid, its layer colours, then the
@@ -82,18 +82,22 @@ pub const SECTIONS: [(&str, Page); 18] = [
     ("Appearance", Page::Settings),
     ("Startup and updates", Page::Settings),
     ("Live wallpaper", Page::Settings),
+    // Copy diagnostics, the log folder and the connection details (#535).
+    ("Troubleshooting", Page::Settings),
     // The links, credits and version at the end of the window.
     ("About", Page::Settings),
 ];
 
 /// The part of its page each section is drawn in, where the page draws in parts. The App page's
-/// parts are its two columns (#390): Profiles and Appearance on the left, the rest on the right. The
+/// parts are its two columns (#390): Profiles, Appearance and
+/// Troubleshooting on the left, the rest on the right. The
 /// Keyboard page's are stacked (#534), so KeyPeek's sections keep their order in its file and
 /// still show in the canvas's: the layer overlay's card (its grid, then its colours), the keymap
 /// source at the card's foot, then Other keyboards. Unlisted sections are in part 1.
-const PARTS: [(&str, usize); 6] = [
+const PARTS: [(&str, usize); 7] = [
     ("Profile", 0),
     ("Appearance", 0),
+    ("Troubleshooting", 0),
     ("Overlay Appearance", 0),
     ("Theme", 0),
     ("Connection", 1),
@@ -334,10 +338,6 @@ fn sidebar(ui: &mut egui::Ui, page: &mut Page) {
         }
         ui.add_space(2.0);
     }
-    ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-        super::profiles_ui::sidebar_picker(ui);
-        ui.label(theme::caps_label(ui, "Profile"));
-    });
 }
 
 /// The Bandit fox, in its 680 x 760 crop: the shapes `scripts/app_icons.py` draws the app icon
@@ -660,19 +660,12 @@ fn status_strip(ui: &mut egui::Ui, s: &StripState) {
                 chip(ui, &c);
             }
         });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            // #371: copies the report; it reads "Copied" until the pointer leaves the button.
-            let id = ui.id().with("diagnostics-copied");
-            let copied = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
-            let response = ui
-                .button(if copied { "Copied" } else { "Copy diagnostics" })
-                .on_hover_text("Copies a report for bug reports: versions, the connection, the GPU and the last log lines. No names, paths or passwords.");
-            if response.clicked() {
-                super::diagnostics::copy(ui.ctx());
-                ui.data_mut(|d| d.insert_temp(id, true));
-            } else if copied && !response.hovered() {
-                ui.data_mut(|d| d.remove::<bool>(id));
-            }
+        // The window's header, at its top right (#535): the profile picker on every page, then
+        // Copy diagnostics (#371, also in App > Troubleshooting).
+        ui.with_layout(Layout::top_down(Align::Max), |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            super::profiles_ui::header_picker(ui, BUTTON_ROOM - 8.0);
+            super::troubleshooting::copy_diagnostics(ui);
         });
     });
 }
