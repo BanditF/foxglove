@@ -240,9 +240,233 @@ pub fn draw_stats(p: &mut Panel, s: &crate::stats::Stats) {
     }
 }
 
+/// A Windows notification on the panel (#507). `title` and `body` are only ever set for apps the
+/// user allowed to show their text; otherwise the panel shows the app's name alone.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Notice {
+    pub app: String,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    /// Further notifications that arrived with this one.
+    pub more: usize,
+}
+
+/// The large bell over an app's name, 11×12.
+const BELL: [&str; 12] = [
+    "....###....",
+    "...#####...",
+    "..#######..",
+    "..#######..",
+    "..#######..",
+    ".#########.",
+    ".#########.",
+    ".#########.",
+    "###########",
+    "###########",
+    "...........",
+    "....###....",
+];
+
+/// The small bell in the header band, 7×7.
+const SMALL_BELL: [&str; 7] = [
+    "..###..", ".#####.", ".#####.", ".#####.", "#######", ".......", "..###..",
+];
+
+fn glyph(p: &mut Panel, rows: &[&str], x: i32, y: i32, on: bool) {
+    for (dy, row) in rows.iter().enumerate() {
+        for (dx, c) in row.chars().enumerate() {
+            if c == '#' {
+                p.set(x + dx as i32, y + dy as i32, on);
+            }
+        }
+    }
+}
+
+/// `s` cut to `width` pixels, ending in ".." when it was longer.
+fn clipped(font: &MonoFont, s: &str, width: i32) -> String {
+    if text_width(font, s) <= width {
+        return s.to_string();
+    }
+    let per = (font.character_size.width + font.character_spacing) as i32;
+    let keep = (width / per - 2).max(0) as usize;
+    let mut out: String = s.chars().take(keep).collect::<String>().trim_end().into();
+    out.push_str("..");
+    out
+}
+
+/// Word-wrapped lines of at most `width` pixels, no more than `lines` of them; a long word is
+/// broken, and text that doesn't fit ends the last line in "..".
+pub fn wrap(font: &MonoFont, s: &str, width: i32, lines: usize) -> Vec<String> {
+    let per = (font.character_size.width + font.character_spacing) as i32;
+    let max = (width / per).max(1) as usize;
+    let mut out: Vec<String> = Vec::new();
+    let mut line = String::new();
+    for word in s.split_whitespace() {
+        let mut word: Vec<char> = word.chars().collect();
+        loop {
+            let used = line.chars().count();
+            let gap = usize::from(used > 0);
+            if used + gap + word.len() <= max {
+                if gap == 1 {
+                    line.push(' ');
+                }
+                line.extend(word.iter());
+                break;
+            }
+            if used > 0 {
+                out.push(std::mem::take(&mut line));
+                continue;
+            }
+            // A word longer than the line: break it.
+            line = word.drain(..max).collect();
+            out.push(std::mem::take(&mut line));
+            if word.is_empty() {
+                break;
+            }
+        }
+    }
+    if !line.is_empty() {
+        out.push(line);
+    }
+    if lines == 0 {
+        return Vec::new();
+    }
+    if out.len() > lines {
+        // The last line takes as much of the rest as fits.
+        let rest = out[lines - 1..].join(" ");
+        out.truncate(lines - 1);
+        let cut: String = rest.chars().take(max.saturating_sub(2)).collect();
+        out.push(format!("{}..", cut.trim_end()));
+    }
+    out
+}
+
+fn text_at(p: &mut Panel, font: &MonoFont, s: &str, x: i32, y: i32, ink: BinaryColor) {
+    Text::with_baseline(
+        s,
+        Point::new(x, y),
+        MonoTextStyle::new(font, ink),
+        Baseline::Top,
+    )
+    .draw(p)
+    .ok();
+}
+
+fn centred(p: &mut Panel, font: &MonoFont, s: &str, y: i32) {
+    let x = ((p.width as i32 - text_width(font, s)) / 2).max(0);
+    text_at(p, font, s, x, y, BinaryColor::On);
+}
+
+/// A notification (#507), still: nothing scrolls, so it costs one frame.
+/// - The app's name alone (the default): a bell, then the name in up to two lines, and
+///   "+N more" when others came with it.
+/// - With the app's text allowed: an inverted band with a small bell and the name, the title,
+///   then the body in up to four small lines.
+pub fn draw_notice(p: &mut Panel, n: &Notice) {
+    p.clear();
+    let w = p.width as i32;
+    let h = p.height as i32;
+    let more = (n.more > 0).then(|| format!("+{}", n.more));
+    if n.title.is_none() && n.body.is_none() {
+        glyph(p, &BELL, (w - 11) / 2, 2, true);
+        let name = wrap(&FONT_5X8, &n.app, w, 2);
+        let top = if name.len() > 1 { 18 } else { 22 };
+        for (i, line) in name.iter().enumerate() {
+            centred(p, &FONT_5X8, line, top + 9 * i as i32);
+        }
+        if let Some(more) = more {
+            centred(p, &FONT_4X6, &format!("{more} more"), h - 7);
+        }
+        return;
+    }
+    Rectangle::new(Point::new(0, 0), Size::new(w as u32, 10))
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(p)
+        .ok();
+    glyph(p, &SMALL_BELL, 1, 1, false);
+    let more_w = more.as_deref().map_or(0, |m| text_width(&FONT_4X6, m) + 1);
+    let name = clipped(&FONT_5X8, &n.app, w - 10 - more_w);
+    text_at(p, &FONT_5X8, &name, 10, 1, BinaryColor::Off);
+    if let Some(more) = &more {
+        text_at(p, &FONT_4X6, more, w - more_w + 1, 2, BinaryColor::Off);
+    }
+    let mut y = 12;
+    if let Some(title) = n.title.as_deref().filter(|t| !t.trim().is_empty()) {
+        text_at(
+            p,
+            &FONT_5X8,
+            &clipped(&FONT_5X8, title.trim(), w),
+            0,
+            y,
+            BinaryColor::On,
+        );
+        y += 10;
+    }
+    if let Some(body) = &n.body {
+        let room = ((h - y) / 7).max(0) as usize;
+        for line in wrap(&FONT_4X6, body, w, room) {
+            text_at(p, &FONT_4X6, &line, 0, y, BinaryColor::On);
+            y += 7;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #507: both notice forms stay inside the Corne's 64×52 panel, the name-only form shows no
+    /// text but the name, and wrapping keeps to its width and line count.
+    #[test]
+    fn notices_fit_the_panel() {
+        let ink = |p: &Panel| p.bits.iter().map(|b| b.count_ones()).sum::<u32>();
+        let mut name_only = Panel::new(64, 52);
+        draw_notice(
+            &mut name_only,
+            &Notice {
+                app: "Microsoft Teams".into(),
+                more: 2,
+                ..Notice::default()
+            },
+        );
+        let mut with_text = Panel::new(64, 52);
+        draw_notice(
+            &mut with_text,
+            &Notice {
+                app: "Discord".into(),
+                title: Some("Raid tonight".into()),
+                body: Some("Bring the good keyboard and a charger for the right half".into()),
+                more: 0,
+            },
+        );
+        assert!(ink(&name_only) > 0 && ink(&with_text) > 0);
+        assert_ne!(name_only.bits, with_text.bits);
+        // The name-only form's header row is clear: no band.
+        assert!(name_only.bits[..name_only.stride].iter().all(|&b| b == 0));
+        // The text form's band: its first row is all ink.
+        assert!(with_text.bits[..with_text.stride]
+            .iter()
+            .all(|&b| b == 0xff));
+
+        for (s, lines) in [
+            ("Bring the good keyboard and a charger", 2),
+            ("Supercalifragilisticexpialidocious", 3),
+            ("", 2),
+        ] {
+            let out = wrap(&FONT_5X8, s, 64, lines);
+            assert!(out.len() <= lines, "{s}: {out:?}");
+            assert!(
+                out.iter().all(|l| text_width(&FONT_5X8, l) <= 64),
+                "{out:?}"
+            );
+        }
+        assert_eq!(
+            wrap(&FONT_5X8, "Bring the good keyboard and a charger", 64, 2),
+            ["Bring the", "good keybo.."]
+        );
+        assert_eq!(wrap(&FONT_5X8, "Outlook", 64, 2), ["Outlook"]);
+        assert_eq!(clipped(&FONT_5X8, "Microsoft Teams", 54), "Microsof..");
+    }
 
     #[test]
     fn only_visible_overflowing_bands_animate() {

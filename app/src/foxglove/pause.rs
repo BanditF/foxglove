@@ -37,6 +37,8 @@ pub fn set(paused: bool) {
     super::led_map_ui::pause_changed(paused);
     // The live wallpaper feed goes quiet, or live again (#499).
     super::live_feed::pause_changed();
+    // A notification on the screen goes; none shows while paused (#507).
+    super::notifications::pause_changed();
     if !paused {
         super::accent::wake();
         if let Some(h) = super::art_service::handle() {

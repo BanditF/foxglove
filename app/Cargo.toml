@@ -89,6 +89,8 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Power",
     # Foxglove (#372): the low-battery notification.
     "UI_Notifications",
+    # Foxglove (#507): Windows notifications on the left screen.
+    "UI_Notifications_Management",
     "Data_Xml_Dom",
     # Foxglove (#370): stderr into the log file.
     "Win32_System_Pipes",

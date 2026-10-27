@@ -186,6 +186,9 @@ fn holder_name(conn: u64, installed: &[Installed]) -> String {
     if conn == super::scene_run::SCENE_CONN {
         return "a scene".into();
     }
+    if conn == super::notifications::NOTIFY_CONN {
+        return "a notification".into();
+    }
     match foxglove_plugin_host::plugin_of(conn) {
         Some(id) => installed
             .iter()

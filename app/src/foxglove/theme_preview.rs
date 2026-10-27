@@ -1764,6 +1764,124 @@ fn peripheral_batteries_render() {
     assert!(count(&img, DARK.warn) > count(&bare, DARK.warn));
 }
 
+/// A 1-bit panel as the keyboard gets it, enlarged 6×, one pixel a square.
+fn panel_image(p: &foxglove_panel::render::Panel) -> image::RgbaImage {
+    let scale = 6;
+    let (w, h) = (p.width as u32, p.height as u32);
+    let mut img = image::RgbaImage::from_pixel(
+        w * scale + 24,
+        h * scale + 24,
+        image::Rgba([0x09, 0x0a, 0x0c, 0xff]),
+    );
+    for y in 0..p.height {
+        for x in 0..p.width {
+            let on = p.bits[y * p.stride + x / 8] & (0x80 >> (x % 8)) != 0;
+            let c = if on {
+                [0xe8, 0xea, 0xe9, 0xff]
+            } else {
+                [0, 0, 0, 0xff]
+            };
+            for dy in 0..scale {
+                for dx in 0..scale {
+                    img.put_pixel(
+                        12 + x as u32 * scale + dx,
+                        12 + y as u32 * scale + dy,
+                        image::Rgba(c),
+                    );
+                }
+            }
+        }
+    }
+    img
+}
+
+/// Notifications on the left screen (#507): the app's name alone (the default), an app whose
+/// text the user allowed, and the Screens page's Notifications card.
+#[test]
+fn left_screen_notify_render() {
+    use crate::foxglove::notifications::{NotifySettings, State};
+    use foxglove_panel::render::{draw_notice, Notice, Panel};
+    let panel = |n: &Notice| {
+        let mut p = Panel::new(64, 52);
+        draw_notice(&mut p, n);
+        (panel_image(&p), p.bits)
+    };
+    let (name, name_bits) = panel(&Notice {
+        app: "Microsoft Teams".into(),
+        more: 2,
+        ..Notice::default()
+    });
+    keep("left-screen-notify-1-name.png", &name);
+    let (text, text_bits) = panel(&Notice {
+        app: "Discord".into(),
+        title: Some("Raid tonight".into()),
+        body: Some("Bring the good keyboard and a charger for the right half".into()),
+        more: 0,
+    });
+    keep("left-screen-notify-2-text.png", &text);
+    assert_ne!(name_bits, text_bits);
+
+    let ctx = preview_ctx();
+    let mut settings = NotifySettings {
+        enabled: true,
+        light_cue: true,
+        ..NotifySettings::default()
+    };
+    settings.text_apps.insert("Discord".into());
+    let recent = [
+        "Microsoft Teams".to_string(),
+        "Discord".into(),
+        "Outlook".into(),
+    ];
+    let img = render_ui(
+        &ctx,
+        egui::vec2(460.0, 420.0),
+        Color32::from_rgb(0x09, 0x0a, 0x0c),
+        |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::same(16))
+                .show(ui, |ui| {
+                    ui.label(crate::foxglove::theme::heading(ui, "Notifications"));
+                    ui.add_space(6.0);
+                    crate::foxglove::notifications_ui::contents(
+                        ui,
+                        &mut settings,
+                        &State::Listening { by_event: false },
+                        &recent,
+                    );
+                });
+        },
+    );
+    keep("left-screen-notify-3-settings.png", &img);
+
+    // Without access: the one hint and its button.
+    let ctx = preview_ctx();
+    let mut settings = NotifySettings {
+        enabled: true,
+        ..NotifySettings::default()
+    };
+    let img = render_ui(
+        &ctx,
+        egui::vec2(460.0, 300.0),
+        Color32::from_rgb(0x09, 0x0a, 0x0c),
+        |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::same(16))
+                .show(ui, |ui| {
+                    ui.label(crate::foxglove::theme::heading(ui, "Notifications"));
+                    ui.add_space(6.0);
+                    crate::foxglove::notifications_ui::contents(
+                        ui,
+                        &mut settings,
+                        &State::NoAccess,
+                        &[],
+                    );
+                });
+        },
+    );
+    keep("left-screen-notify-4-no-access.png", &img);
+}
+
 /// The PC load layout (#506): the 1-bit panel as the keyboard gets it (enlarged 6×, one pixel a
 /// square), its first second (values not known yet), and the Change… list with it chosen.
 #[test]
@@ -1773,32 +1891,7 @@ fn left_screen_stats_render() {
     let panel = |stats: &Stats| {
         let mut p = Panel::new(64, 52);
         draw_stats(&mut p, stats);
-        let scale = 6;
-        let mut img = image::RgbaImage::from_pixel(
-            64 * scale + 24,
-            52 * scale + 24,
-            image::Rgba([0x09, 0x0a, 0x0c, 0xff]),
-        );
-        for y in 0..52usize {
-            for x in 0..64usize {
-                let on = p.bits[y * p.stride + x / 8] & (0x80 >> (x % 8)) != 0;
-                let c = if on {
-                    [0xe8, 0xea, 0xe9, 0xff]
-                } else {
-                    [0, 0, 0, 0xff]
-                };
-                for dy in 0..scale {
-                    for dx in 0..scale {
-                        img.put_pixel(
-                            12 + x as u32 * scale + dx,
-                            12 + y as u32 * scale + dy,
-                            image::Rgba(c),
-                        );
-                    }
-                }
-            }
-        }
-        (img, p.bits)
+        (panel_image(&p), p.bits)
     };
     let (shown, bits) = panel(&crate::foxglove::screens_ui::sample_stats());
     keep("left-screen-stats-1-panel.png", &shown);

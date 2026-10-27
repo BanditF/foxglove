@@ -27,6 +27,7 @@ pub fn paused() -> bool {
 pub fn set_paused(value: bool) {
     PAUSED.store(value, Ordering::Relaxed);
     wake();
+    super::notifications::pause_changed();
 }
 
 /// Foxglove paused or resumed (#404): the service hands the panel back or draws again.
@@ -305,6 +306,37 @@ fn current_override(now: Instant) -> Option<(Vec<u8>, Option<Instant>)> {
         *o = None;
     }
     o.as_ref().map(|o| (o.bits.clone(), o.until))
+}
+
+/// A Windows notification over the layout (#507), until its time is up. Plugin frames still
+/// draw over it. Never kept past the app's run.
+static NOTICE: Mutex<Option<(render::Notice, Instant)>> = Mutex::new(None);
+
+/// Shows a notification on the left screen until `until` (`notifications` decides whether).
+pub fn show_notice(notice: render::Notice, until: Instant) {
+    *NOTICE.lock().unwrap_or_else(|e| e.into_inner()) = Some((notice, until));
+    wake();
+}
+
+/// Takes the notification off the screen now (away, paused, or the feature turned off).
+pub fn clear_notice() {
+    if NOTICE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
+        .is_some()
+    {
+        wake();
+    }
+}
+
+/// The notification showing at `now` and when it ends; an ended one is dropped.
+fn current_notice(now: Instant) -> Option<(render::Notice, Instant)> {
+    let mut n = NOTICE.lock().unwrap_or_else(|e| e.into_inner());
+    if n.as_ref().is_some_and(|(_, until)| *until <= now) {
+        *n = None;
+    }
+    n.clone()
 }
 
 fn wake() {
@@ -669,6 +701,13 @@ fn run() {
         } else {
             wallpaper_frames = None;
         }
+        // A notification (#507) over the layout, still, until its time is up.
+        let notice = current_notice(now);
+        if let Some((n, _)) = &notice {
+            render::draw_notice(&mut d.panel, n);
+            animated = false;
+        }
+        let clock_at = notice.map_or(clock_at, |(_, until)| clock_at.min(until));
         // A plugin's frame, over everything else, until it lapses.
         *PANEL_SIZE.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((d.panel.width as u16, d.panel.height as u16));
