@@ -124,6 +124,11 @@ impl OverlayApp {
             crate::foxglove::art_ui::update(&ctx);
             Self::message_window(&ctx, "Error", &mut self.ui.settings_error);
             Self::message_window(&ctx, "Notice", &mut self.ui.settings_warning);
+            // Foxglove (#534): the keymap source shows only with a choice to make.
+            crate::foxglove::settings_ui::keymap_choice(
+                self.connect.available_devices.len(),
+                matches!(self.session.connection, AppConnectionState::Connected { .. }),
+            );
             // Foxglove (#385): the sidebar, status strip and pages; each page scrolls itself.
             crate::foxglove::shell::frame(ui, |ui| {
                 titled_group(ui, "Connection", |ui| {
@@ -235,6 +240,41 @@ impl OverlayApp {
                         .striped(true)
                         .spacing([20.0, 10.0])
                         .show(ui, |ui| {
+                            // Foxglove (#534): when it shows, then how it looks.
+                            crate::foxglove::settings_ui::grid_heading(ui, "When it shows");
+                            ui.label("Display duration");
+                            let mut timeout_ui =
+                                Self::timeout_to_ui_value(self.settings.draft.timeout);
+                            ui.add_sized(
+                                ui.available_size(),
+                                egui::DragValue::new(&mut timeout_ui)
+                                    .speed(50)
+                                    .range(0..=15_000)
+                                    .custom_formatter(|value, _range| {
+                                        if value >= 15_000.0 {
+                                            "∞".to_string()
+                                        } else {
+                                            format!("{} ms", value as i64)
+                                        }
+                                    }),
+                            );
+                            self.settings.draft.timeout = Self::ui_value_to_timeout(timeout_ui);
+                            ui.end_row();
+
+                            ui.label("Activation delay");
+                            ui.add_sized(
+                                ui.available_size(),
+                                egui::DragValue::new(&mut self.settings.draft.activation_delay)
+                                    .speed(10)
+                                    .range(0..=Settings::MAX_ACTIVATION_DELAY_MS)
+                                    .suffix(" ms"),
+                            )
+                            .on_hover_text(
+                                "How long a layer has to be held before the overlay appears",
+                            );
+                            ui.end_row();
+
+                            crate::foxglove::settings_ui::grid_heading(ui, "Appearance");
                             let monitors = crate::monitors::list();
                             if monitors.len() > 1 {
                                 let current =
@@ -291,38 +331,6 @@ impl OverlayApp {
 
                             // Foxglove: the overlay can be dragged; this says so and undoes it.
                             self.overlay_place_row(ui);
-
-                            ui.label("Display duration");
-                            let mut timeout_ui =
-                                Self::timeout_to_ui_value(self.settings.draft.timeout);
-                            ui.add_sized(
-                                ui.available_size(),
-                                egui::DragValue::new(&mut timeout_ui)
-                                    .speed(50)
-                                    .range(0..=15_000)
-                                    .custom_formatter(|value, _range| {
-                                        if value >= 15_000.0 {
-                                            "∞".to_string()
-                                        } else {
-                                            format!("{} ms", value as i64)
-                                        }
-                                    }),
-                            );
-                            self.settings.draft.timeout = Self::ui_value_to_timeout(timeout_ui);
-                            ui.end_row();
-
-                            ui.label("Activation delay");
-                            ui.add_sized(
-                                ui.available_size(),
-                                egui::DragValue::new(&mut self.settings.draft.activation_delay)
-                                    .speed(10)
-                                    .range(0..=Settings::MAX_ACTIVATION_DELAY_MS)
-                                    .suffix(" ms"),
-                            )
-                            .on_hover_text(
-                                "How long a layer has to be held before the overlay appears",
-                            );
-                            ui.end_row();
 
                             ui.label("Distance from screen edge");
                             ui.add_sized(

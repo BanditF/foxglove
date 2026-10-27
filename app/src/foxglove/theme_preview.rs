@@ -329,6 +329,18 @@ fn keypeek_groups(ui: &mut egui::Ui) {
             .striped(true)
             .spacing([20.0, 10.0])
             .show(ui, |ui| {
+                use crate::foxglove::settings_ui::grid_heading;
+                grid_heading(ui, "When it shows");
+                for (label, value) in [("Display duration", 2000.0), ("Activation delay", 0.0)] {
+                    ui.label(label);
+                    let mut v: f64 = value;
+                    ui.add_sized(
+                        ui.available_size(),
+                        egui::DragValue::new(&mut v).suffix(" ms"),
+                    );
+                    ui.end_row();
+                }
+                grid_heading(ui, "Appearance");
                 ui.label("Alignment");
                 egui::ComboBox::from_id_salt("position_combo")
                     .width(ui.available_width())
@@ -343,8 +355,6 @@ fn keypeek_groups(ui: &mut egui::Ui) {
                 });
                 ui.end_row();
                 for (label, value, suffix) in [
-                    ("Display duration", 2000.0, " ms"),
-                    ("Activation delay", 0.0, " ms"),
                     ("Distance from screen edge", 10.0, " px"),
                     ("Key unit size", 60.0, " px"),
                 ] {
@@ -831,6 +841,18 @@ fn shell_pages_render() {
         );
         seen.push(img);
     }
+}
+
+/// The Keyboard page in full (#534): the layer overlay's card (when it shows, appearance, layer
+/// colours, keymap source) and Other keyboards below the keyboard's cards; and App without them.
+#[test]
+fn layer_overlay_card_renders() {
+    use crate::foxglove::shell::Page;
+    let keyboard = shell_preview_with(Page::Keyboard, &Samples::full(), 2300.0);
+    let app = shell_preview_with(Page::Settings, &Samples::full(), 1100.0);
+    keep("ui-ia-keyboard-full.png", &keyboard);
+    keep("ui-ia-app.png", &app);
+    assert_ne!(keyboard, app);
 }
 
 /// The Keyboard page (#386) with a keyboard and without one.
