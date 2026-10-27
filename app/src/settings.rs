@@ -263,7 +263,7 @@ impl Default for Settings {
             held_layers: LayerMask::ALL,
             theme: ThemeSettings::default(),
             legend_mode: LegendMode::Stacked,
-            opacity: 100,
+            opacity: Self::DEFAULT_OPACITY,
             label_opacity: None,
         }
     }
@@ -275,6 +275,11 @@ impl Settings {
     /// Foxglove: the overlay's opacity in percent. At 0 it's hidden (still draggable with
     /// Settings open); the slider rests at 20 (`foxglove::overlay_opacity`).
     pub const OPACITY_RANGE: std::ops::RangeInclusive<u8> = 0..=100;
+    /// Foxglove: a fresh config's overlay opacity, at the slider's 20% detent.
+    pub const DEFAULT_OPACITY: u8 = 20;
+    /// Foxglove: the opacity of a saved settings.ini without the key (one from before the
+    /// slider, or KeyPeek's): fully opaque, the look it always had.
+    pub const LEGACY_OPACITY: u8 = 100;
 
     pub fn config_file_path() -> Option<PathBuf> {
         // Foxglove: FOXGLOVE_CONFIG_DIR points every settings file elsewhere (tests, the Test
@@ -355,7 +360,10 @@ impl Settings {
     pub fn load_from_file(path: impl AsRef<Path>) -> Option<Self> {
         let conf = Ini::load_from_file(path).ok()?;
         let section = conf.section(Some("settings"))?;
-        let mut s = Settings::default();
+        let mut s = Settings {
+            opacity: Self::LEGACY_OPACITY,
+            ..Settings::default()
+        };
         if let Some(val) = section.get("size") {
             s.size = val.parse().unwrap_or(s.size);
         }
