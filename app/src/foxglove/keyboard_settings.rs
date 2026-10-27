@@ -123,6 +123,9 @@ fn run(
 
 /// Both halves' lights, refreshed on request and after actions.
 static RGB_STATE: Mutex<Option<RgbState>> = Mutex::new(None);
+/// When [`RGB_STATE`] was read, so the right half's age keeps counting while it is shown
+/// (it stayed at "8 s ago" however long the page was open).
+static RGB_READ_AT: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 static RGB_REFRESH: AtomicBool = AtomicBool::new(true);
 static RGB_POLLING: AtomicBool = AtomicBool::new(false);
 
@@ -150,18 +153,58 @@ pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
         super::services::spawn_named("rgb-state", move || {
             // Read from the link: the device layer's lighting state has no per-half age yet.
             // In the palette's colours: what Foxglove asked for, not its calibrated form.
-            let state = device().and_then(|d| {
-                let mut s = digitalis::settings::rgb_state(d.link().as_ref()).ok()?;
-                d.asked_state(&mut s);
-                Some(s)
-            });
+            let read = || {
+                device().and_then(|d| {
+                    let mut s = digitalis::settings::rgb_state(d.link().as_ref()).ok()?;
+                    d.asked_state(&mut s);
+                    Some(s)
+                })
+            };
+            let mut state = read();
+            // The right's half is the relay's last read, and each RGB_STATE starts a fresh one
+            // that this reply can't carry (firmware art_relay_right_rgb). A stale or missing
+            // right half ("off · 8 s ago" while it was lit, 2026-10-26) is asked once more,
+            // after the relay read has had time to land. Bounded: two reads per refresh.
+            if state.as_ref().is_some_and(right_is_stale) {
+                std::thread::sleep(RIGHT_READ_SETTLE);
+                state = read().or(state);
+            }
             *RGB_STATE.lock().unwrap() = state;
+            *RGB_READ_AT.lock().unwrap() = Some(std::time::Instant::now());
             RGB_POLLING.store(false, Ordering::Relaxed);
             ctx.request_repaint();
         });
     }
-    *RGB_STATE.lock().unwrap()
+    let elapsed = RGB_READ_AT
+        .lock()
+        .unwrap()
+        .map_or(0, |at| at.elapsed().as_secs());
+    RGB_STATE.lock().unwrap().map(|s| aged(s, elapsed))
 }
+
+/// `s` as read `elapsed_s` seconds ago: the right half's age grows by that much (the UI adds
+/// no timer for it; the age is right whenever the page is drawn).
+fn aged(mut s: RgbState, elapsed_s: u64) -> RgbState {
+    if let Some((_, age)) = &mut s.right {
+        *age = u8::try_from(u64::from(*age) + elapsed_s)
+            .unwrap_or(u8::MAX)
+            .min(254);
+    }
+    s
+}
+
+/// How long a relay read of the right half takes to land after RGB_STATE asked for it: one
+/// BLE status read between the halves, well under this.
+const RIGHT_READ_SETTLE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// The right half's data is older than the UI calls current ("· N s ago" past 3 s), or there
+/// is none yet, while the left answered: one more read gets the relay's fresh one.
+fn right_is_stale(s: &RgbState) -> bool {
+    s.right.is_none_or(|(_, age)| age > STALE_AFTER_S)
+}
+
+/// The age (seconds) past which the Lights page shows "· N s ago".
+pub const STALE_AFTER_S: u8 = 3;
 
 fn lighting(
     label: &str,
@@ -290,6 +333,51 @@ pub fn firmware(ctx: &egui::Context) -> Firmware {
         });
     }
     cached.1.clone()
+}
+
+#[cfg(test)]
+mod rgb_state_tests {
+    use digitalis::protocol::{RgbHalf, RgbState};
+
+    fn with_right(right: Option<(bool, u8)>) -> RgbState {
+        RgbState {
+            left: RgbHalf {
+                on: true,
+                ..RgbHalf::default()
+            },
+            right: right.map(|(on, age)| {
+                (
+                    RgbHalf {
+                        on,
+                        ..RgbHalf::default()
+                    },
+                    age,
+                )
+            }),
+        }
+    }
+
+    /// The live case: the right read as off 8 s ago while it was lit. That reply is stale, so
+    /// the refresh asks once more; a fresh right half is taken as it is.
+    #[test]
+    fn the_right_half_keeps_ageing_while_shown() {
+        let s = with_right(Some((false, 8)));
+        assert_eq!(super::aged(s, 0).right.map(|(_, a)| a), Some(8));
+        assert_eq!(super::aged(s, 30).right.map(|(_, a)| a), Some(38));
+        assert_eq!(super::aged(s, 10_000).right.map(|(_, a)| a), Some(254));
+        assert_eq!(super::aged(with_right(None), 30).right, None);
+    }
+
+    #[test]
+    fn a_stale_or_missing_right_half_is_read_once_more() {
+        assert!(super::right_is_stale(&with_right(Some((false, 8)))));
+        assert!(super::right_is_stale(&with_right(None)));
+        assert!(!super::right_is_stale(&with_right(Some((true, 0)))));
+        assert!(!super::right_is_stale(&with_right(Some((
+            false,
+            super::STALE_AFTER_S
+        )))));
+    }
 }
 
 #[cfg(test)]

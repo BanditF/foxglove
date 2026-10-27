@@ -163,7 +163,7 @@ pub fn half_text(half: Option<&RgbHalf>, age: Option<u8>) -> String {
     } else {
         "off".to_string()
     };
-    if let Some(age) = age.filter(|a| *a > 3) {
+    if let Some(age) = age.filter(|a| *a > super::keyboard_settings::STALE_AFTER_S) {
         text.push_str(&format!(" · {age} s ago"));
     }
     text
