@@ -132,6 +132,18 @@ pub fn set_frame(
     Ok(protocol::FrameReply::parse(&r))
 }
 
+/// The board's LEDs per part (LAMP_PARTS, D7 10, HELLO bit 22, #561), in SET_FRAME's order.
+pub fn lamp_parts(t: &impl Transport) -> Result<crate::lamps::LampParts> {
+    let r = t.request(
+        &protocol::lamp_parts(),
+        protocol::SETTINGS,
+        protocol::settings::LAMP_PARTS,
+        Duration::from_millis(500),
+    )?;
+    protocol::parse_lamp_parts(&r)
+        .map_err(|status| anyhow::anyhow!("the keyboard didn't give its LEDs (status {status})"))
+}
+
 /// Hands both halves back to their own effect (SET_FRAME RELEASE).
 pub fn release_frame(t: &impl Transport) -> Result<protocol::FrameReply> {
     let r = t.request(

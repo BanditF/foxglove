@@ -3,6 +3,8 @@
     underglow_dim: underglow_dim {
         compatible = "foxglove,dim-strip";
         led-strip = <&led_strip>;
+        /* The board's led_strip chain (the Eyelash Corne's 21; dim_strip.c checks they match). A
+         * board with another chain overrides it: &underglow_dim { chain-length = <N>; }; */
         chain-length = <21>;
     };
 

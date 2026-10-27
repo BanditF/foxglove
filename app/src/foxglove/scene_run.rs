@@ -443,9 +443,9 @@ pub fn devices_changed() {
     tell(Ctl::Devices);
 }
 
-/// The keyboard's LEDs by part now: its board profile's (#561).
+/// The keyboard's LEDs by part now: its firmware's, else its board profile's (#561).
 fn keyboard_parts() -> digitalis::lamps::LampParts {
-    super::boards::lamp_parts(super::boards::current().as_ref())
+    super::devices::lamp_parts(super::boards::current().as_ref())
 }
 
 /// The room as it is now, the boards Foxglove drives in it and its Dynamic Lighting devices.

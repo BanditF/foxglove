@@ -1237,6 +1237,8 @@ void art_relay_rgb_verify(void) {
 #define EFFECT_STATUS_VERSION 8 // right status version with ART_RELAY_EFFECT / EFFECT_GO
 #define EFFECT_LAMPS_STATUS_VERSION 9 // ... whose copy of the wire holds the LED points (#550)
 BUILD_ASSERT(sizeof(struct lamp_effect_wire) <= 255, "ART_RELAY_EFFECT's offset is a u8");
+BUILD_ASSERT(LAMP_PARTS_MAX <= LAMP_PARTS_RELAY_MAX,
+             "a half's LEDs past what the relay carries (lamp_parts.h)");
 static bool effect_takes_right(void);
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
@@ -1264,7 +1266,8 @@ static atomic_t lamps_reset; // a new link: lamps_cb starts over
 // LAMPS_REQ_MAX of them) as a request; or a fill as one request.
 static int lamps_send(struct bt_conn *conn, const uint8_t frame[][3], int start, int n,
                       bool uniform) {
-    uint8_t buf[3 + 3 * ART_RELAY_LAMPS_MAX] = {ART_RELAY_LAMPS};
+    // Static: relay_q's alone (its stack is 1 KB), sized by the right's LEDs (lamp_parts.h).
+    static uint8_t buf[3 + 3 * ART_RELAY_LAMPS_MAX] = {ART_RELAY_LAMPS};
     if (uniform && n > 1) {
         buf[1] = start;
         buf[2] = 0x80 | n;
@@ -1328,7 +1331,7 @@ static void lamps_cb(struct k_work *work) {
         atomic_set(&lamps_right, ART_LAMPS_OK);
     }
     if (!err && host) {
-        uint8_t frame[ART_RELAY_LAMPS_MAX][3];
+        static uint8_t frame[ART_RELAY_LAMPS_MAX][3]; // relay_q's alone, off its 1 KB stack
         k_spinlock_key_t key = k_spin_lock(&lamps_lock);
         memcpy(frame, lamps_want, sizeof(frame));
         k_spin_unlock(&lamps_lock, key);
@@ -1436,9 +1439,10 @@ static int effect_send(struct bt_conn *conn) {
     k_spinlock_key_t key = k_spin_lock(&effect_lock);
     w = effect_want;
     k_spin_unlock(&effect_lock, key);
-    // A right before #550 has no room for the LED points: it keeps its own table.
+    // A right before #550 has no room for the LED points: it keeps its own table. Else the
+    // right's own LEDs (#561): the whole wire on halves that mirror each other.
     int size = right.version >= EFFECT_LAMPS_STATUS_VERSION
-                   ? (int)sizeof(w)
+                   ? (int)(offsetof(struct lamp_effect_wire, lamp) + 4 * ART_RELAY_LAMPS_MAX)
                    : (int)offsetof(struct lamp_effect_wire, lamps_set);
     int per = CLAMP((int)bt_gatt_get_mtu(conn) - 3 - 2, 1, size);
     for (int at = 0; at < size; at += per) {
