@@ -326,9 +326,10 @@ impl Wizard {
 /// Returns its id.
 ///
 /// The lease's colour is the keyboard's own lights from before (the user's, not a scene's):
-/// taking them sends the keyboard nothing new (no colour change racing the first frames to the
-/// right half), a hand-back mid-way (the dot stopped, the keyboard's timeout) shows the user's
-/// lights rather than a dim or dark board, and ending it has nothing to put back.
+/// taking them sends the keyboard nothing new when they were on (no colour change racing the
+/// first frames to the right half), a hand-back mid-way (the dot stopped, the keyboard's
+/// timeout) shows the user's lights rather than a dim board (dark only if they were off), and
+/// ending it puts back no more than the speed.
 ///
 /// The wizard's frames stay its own (it doesn't register them with `draws_frames`, which keeps
 /// one drawer a device: the scene's, so the scene is asked to draw again after). So a plugin
@@ -344,7 +345,8 @@ pub fn take(a: &mut Arbiter, device: &str, light: &dyn Lighting) -> Result<u64, 
             priority: Priority::High,
             hue: before.hue,
             sat: before.sat,
-            brightness: before.brightness,
+            // A lease's lights are on: lights that were off stay dark at no brightness.
+            brightness: if before.on { before.brightness } else { 0 },
             effect: before.effect.id,
         },
         light,
@@ -724,12 +726,18 @@ fn run(
                     }
                 });
             }
-            Err(e) => set(&|s| {
-                s.error = Some(e.clone());
-                if let Some(at) = step {
-                    s.step = at;
-                }
-            }),
+            Err(e) => {
+                // No keep-alive for a frame the keyboard didn't take (gone, not answering): a
+                // keyboard arriving or handing its lights back (Again) sends it again, or the
+                // dot's next step does. Else a past deadline would send it over and over.
+                keep = None;
+                set(&|s| {
+                    s.error = Some(e.clone());
+                    if let Some(at) = step {
+                        s.step = at;
+                    }
+                });
+            }
         }
     }
     if taken {
@@ -763,6 +771,8 @@ fn shown(reply: &digitalis::protocol::FrameReply, parts: usize) -> Shown {
 #[derive(Default)]
 pub struct AppKeyboard {
     lease: Option<u64>,
+    /// The keyboard the lease was taken on: a rest touches only it.
+    device: Option<String>,
     again: Option<Again>,
     /// The hand-back watch on the keyboard's link.
     tapped: Option<(
@@ -804,9 +814,14 @@ impl Target for AppKeyboard {
         use foxglove_devices::Device as _;
         let device = kb.info().id.to_string();
         let light = kb.lighting().ok_or("This keyboard has no lights.")?;
-        let id = super::lighting_leases::with(|a| take(a, &device, light))
-            .map_err(|e| format!("The keyboard didn't hand over its lights: {e}"))?;
+        let id = super::lighting_leases::with(|a| take(a, &device, light)).map_err(|e| {
+            // A lease added whose lights then didn't take would hold them with no one to end
+            // it: only this wizard takes leases on LEDMAP_CONN, and it holds none yet.
+            super::api::end_leases(|l| l.conn == LEDMAP_CONN);
+            format!("The keyboard didn't hand over its lights: {e}")
+        })?;
         self.lease = Some(id);
+        self.device = Some(device);
         Ok(())
     }
 
@@ -819,8 +834,13 @@ impl Target for AppKeyboard {
     }
 
     fn rest(&mut self) {
-        // The frame only: the lease stays, so nothing else draws meanwhile.
-        if let Some(kb) = super::devices::device() {
+        // The frame only: the lease stays, so nothing else draws meanwhile. Only on the keyboard
+        // the lease is on (another one plugged in meanwhile has no frame of ours).
+        use foxglove_devices::Device as _;
+        let ours = |kb: &Arc<digitalis::devices::DigitalisDevice>| {
+            self.device.as_ref() == Some(&kb.info().id.to_string())
+        };
+        if let Some(kb) = super::devices::device().filter(ours) {
             if let Err(e) = kb.release_frame() {
                 eprintln!("Foxglove: handing the LED map's frame back after the dot: {e}");
             }

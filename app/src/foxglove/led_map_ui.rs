@@ -42,6 +42,8 @@ pub struct View {
     pub lit: bool,
     /// The keyboard refused or isn't there.
     pub error: Option<String>,
+    /// A part that doesn't draw the frames (the other half not linked): its LEDs won't light.
+    pub warn: Option<String>,
 }
 
 impl View {
@@ -49,6 +51,7 @@ impl View {
         View {
             lit: status.shown.as_ref() == Some(&w.frame()),
             error: status.error.clone(),
+            warn: status.warn.clone(),
         }
     }
 }
@@ -220,6 +223,9 @@ fn status_line(ui: &mut egui::Ui, v: &View, w: &Wizard) {
             ui.spinner();
             ui.label(RichText::new("Lighting it…").color(p.muted));
         });
+    }
+    if let Some(warn) = v.warn.as_ref().filter(|_| v.error.is_none()) {
+        ui.add(egui::Label::new(RichText::new(warn).color(p.warn)).wrap());
     }
 }
 
@@ -984,7 +990,7 @@ pub mod tests {
         (
             View {
                 lit: true,
-                error: None,
+                ..Default::default()
             },
             w,
         )

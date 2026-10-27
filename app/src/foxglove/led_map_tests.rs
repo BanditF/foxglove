@@ -585,14 +585,72 @@ fn the_dot_runs_its_rounds_then_gives_the_lights_back_and_a_frame_stops_it() {
     wait_for(&woke, &status, |s| s.step.is_none());
     worker.end_and_wait();
     let log = rec.log.lock().unwrap();
-    assert_eq!(log.last().map(String::as_str), Some("give back"));
-    assert_eq!(log.iter().filter(|l| *l == "take").count(), 1);
-    assert_eq!(log.iter().filter(|l| *l == "rest").count(), 1);
     assert_eq!(
-        log.iter().filter(|l| *l == "show None").count(),
-        1,
-        "the plain frame"
+        log[8..],
+        ["show Some(0)", "show None", "give back"],
+        "nothing sent while resting: the next run, the plain frame, the end"
     );
+}
+
+/// A frame the keyboard didn't take (it went away) isn't kept alive: no deadline in the past
+/// sending it over and over. The keyboard coming back (Again) or the next step sends it again.
+#[test]
+fn a_frame_the_keyboard_refused_is_not_kept_alive() {
+    /// Takes the first frame, then is gone.
+    #[derive(Clone)]
+    struct Leaves(Recorder);
+    impl Target for Leaves {
+        fn take(&mut self, again: Again) -> Result<(), String> {
+            self.0.take(again)
+        }
+        fn show(&mut self, frame: &[Rgb]) -> Result<Shown, String> {
+            self.0.show(frame)?;
+            if self.0.log.lock().unwrap().len() > 2 {
+                return Err("gone".into());
+            }
+            Ok(Shown {
+                hold: Some(std::time::Duration::from_secs(30)),
+                missing: None,
+            })
+        }
+        fn rest(&mut self) {}
+        fn give_back(&mut self) {
+            self.0.give_back();
+        }
+    }
+    let t = Leaves(Recorder::default());
+    let log = t.0.log.clone();
+    let (tx, woke) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let clock = HandClock::new();
+    let started = clock.now();
+    let worker = Worker::spawn_on(Box::new(t), Box::new(clock.clone()), move || {
+        let _ = tx.lock().unwrap().send(());
+    });
+    let status = worker.status.clone();
+    worker.show(Wizard::new(&corne()).frame());
+    // Shown, then its keep-alive (the clock runs on to it) fails: nothing more is due, so the
+    // worker sleeps on its channel until the end.
+    wait_for(&woke, &status, |s| s.error.is_some());
+    worker.end_and_wait();
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["take", "show Some(0)", "show Some(0)", "give back"]
+    );
+    assert_eq!(clock.now() - started, std::time::Duration::from_secs(25));
+}
+
+/// Lights that were off before the test stay dark under it (the lease is on, at no brightness).
+#[test]
+fn lights_that_were_off_stay_dark_under_the_test() {
+    let light = Fake::new();
+    light.state.borrow_mut().on = false;
+    let mut a = Arbiter::default();
+    let id = take(&mut a, "kb", &light).unwrap();
+    assert_eq!(light.state.borrow().brightness, 0);
+    give_back(&mut a, id, &light);
+    let s = light.state.borrow();
+    assert_eq!((s.on, s.brightness), (false, 60), "as they were");
 }
 
 /// The drawing's dot moves when the keyboard has the frame, on the same clock as the dot: the
