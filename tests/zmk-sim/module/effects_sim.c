@@ -591,6 +591,10 @@ void effects_sim_driver(void) {
         wire(&w, 2, 3, stops, room, half);
         printk("effects: count 0 puts the left back on its table: %s\n",
                left_shows(&w, 0.0f) ? "yes" : "no");
+        // And the right, so the walk after this goes on with the built-in table.
+        const uint8_t back_right[] = {0xD7, 0x0F, 3, 1, 0, 0};
+        put(back_right, sizeof(back_right));
+        settle();
     }
     quiet = false;
     memcpy(printed, pixels, sizeof(pixels));
