@@ -1,8 +1,9 @@
 /*
  * SET_EFFECT (D7 0F, #490): the effect maths, the same as the desktop's crates/scene (effects.rs,
  * space.rs, colour.rs), so each half draws its own LEDs from their positions and the shared clock.
- * Pure C, no Zephyr: the simulator checks it against crates/scene's vectors
+ * The maths is pure C: the simulator checks it against crates/scene's vectors
  * (tests/zmk-sim/module/effect_vectors.inc, written by crates/scene/tests/keyboard_effect_vectors.rs).
+ * Its tables hold as many LEDs as the board's halves have (lamp_parts.h, #561).
  * SPDX-License-Identifier: MIT
  */
 
@@ -10,6 +11,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "lamp_parts.h"
 
 enum {
     LAMP_EFFECT_NONE = 0,
@@ -22,8 +25,8 @@ enum {
 
 #define LAMP_EFFECT_COLOURS 4
 
-// Lamps per half.
-#define LAMP_EFFECT_LAMPS 21
+// Lamps per half the tables hold: the most either half has (lamp_parts.h). A half draws its own.
+#define LAMP_EFFECT_LAMPS LAMP_PARTS_MAX
 // A lamp position the PC hasn't seen (EFFECT op LAMPS, #550): the half's centre.
 #define LAMP_EFFECT_UNSEEN 0xFFFF
 
@@ -62,6 +65,8 @@ struct lamp_effect {
 };
 
 // The built-in (provisional) table's lamp i, in the wire's thousandths; mirror: the right half.
+// The table is the Eyelash Corne's 21; a lamp past it sits at the half's centre until the PC
+// places it (EFFECT op LAMPS).
 void lamp_effect_table(int i, bool mirror, uint16_t out[2]);
 
 // Fills fx from w. mirror: the right half, whose keys (and LEDs) are the left's mirror image

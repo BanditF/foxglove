@@ -142,8 +142,9 @@ static bool parse_lamps(const uint8_t *d, int len) {
         return false;
     }
     uint8_t half = d[3], start = d[4], count = d[5];
-    if (half > 1 || count > LAMPS_MAX || start + count > LAMP_EFFECT_LAMPS ||
-        len < LAMPS_AT + 4 * count) {
+    // Each half's own LEDs (lamp_parts.h, #561); no right half without the relay.
+    int lamps = half == 0 ? LAMP_PARTS_OWN : (RIGHT && half == 1) ? LAMP_PARTS_RIGHT : 0;
+    if (lamps == 0 || count > LAMPS_MAX || start + count > lamps || len < LAMPS_AT + 4 * count) {
         return false;
     }
     for (int i = 0; i < count; i++) {

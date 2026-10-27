@@ -52,6 +52,9 @@ pub mod capabilities {
     pub const RIGHT_EVENTS: u32 = 1 << 20;
     /// Settings EFFECT op LAMPS (D7 0F 03): SET_EFFECT draws each LED where the PC says (#550).
     pub const EFFECT_LAMPS: u32 = 1 << 21;
+    /// Settings LAMP_PARTS (D7 10): the board's LEDs per part (#561). HELLO has no byte left for
+    /// them, so this bit says the keyboard answers them.
+    pub const LAMP_PARTS: u32 = 1 << 22;
 }
 pub const VERSION: u8 = 1;
 
@@ -113,6 +116,8 @@ pub mod settings {
     pub const BATTERY_DIM: u8 = 0x0E;
     /// Effects each half draws on its own (#490): see [`super::effect`].
     pub const EFFECT: u8 = 0x0F;
+    /// The board's LEDs per part (#561): see [`super::lamp_parts`].
+    pub const LAMP_PARTS: u8 = 0x10;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -635,6 +640,27 @@ pub fn frame(start: u8, colours: &[[u8; 3]]) -> Vec<Vec<u8>> {
 /// on its own after its timeout, a USB unplug or an endpoint change.
 pub fn is_frame_event(r: &[u8]) -> bool {
     is_reply(r, SETTINGS, settings::FRAME) && r.get(6).is_some_and(|&e| e != 0)
+}
+
+/// LAMP_PARTS (D7 10, HELLO bit 22): asks for the board's LEDs per part.
+pub fn lamp_parts() -> Vec<u8> {
+    vec![SETTINGS, settings::LAMP_PARTS]
+}
+
+/// The LAMP_PARTS reply (D7 90): status, parts n, then n counts, each part's LEDs in SET_FRAME's
+/// order. `Err` carries the status (4 not built in), or 5 for counts a frame can't carry.
+pub fn parse_lamp_parts(r: &[u8; REPORT]) -> std::result::Result<crate::lamps::LampParts, u8> {
+    if r[2] != 0 {
+        return Err(r[2]);
+    }
+    let n = usize::from(r[3]);
+    let counts: Vec<usize> = r
+        .get(4..4 + n)
+        .ok_or(5u8)?
+        .iter()
+        .map(|&c| usize::from(c))
+        .collect();
+    crate::lamps::LampParts::new(&counts).map_err(|_| 5)
 }
 
 /// FRAME RELEASE: both halves go back to their own effect.
@@ -1212,6 +1238,32 @@ mod tests {
         );
         r[9] = 0xff;
         assert_eq!(RgbState::parse(&r).right, None);
+    }
+
+    #[test]
+    fn lamp_parts_replies_give_the_boards_counts() {
+        assert_eq!(lamp_parts(), [0xD7, 0x10]);
+        let mut r = [0u8; REPORT];
+        r[..6].copy_from_slice(&[0xD7, 0x90, 0, 2, 21, 21]);
+        assert_eq!(
+            parse_lamp_parts(&r),
+            Ok(crate::lamps::LampParts::old_firmware())
+        );
+        // A split board of 30 + 24, and a one-piece board of 61.
+        r[3..6].copy_from_slice(&[2, 30, 24]);
+        assert_eq!(parse_lamp_parts(&r).unwrap().range(1), 30..54);
+        r[3..5].copy_from_slice(&[1, 61]);
+        assert_eq!(parse_lamp_parts(&r).unwrap().total(), 61);
+        // Not built in; no parts; a part without LEDs; more parts than the report holds.
+        r[2] = 4;
+        assert_eq!(parse_lamp_parts(&r), Err(4));
+        r[2] = 0;
+        r[3] = 0;
+        assert_eq!(parse_lamp_parts(&r), Err(5));
+        r[3..6].copy_from_slice(&[2, 21, 0]);
+        assert_eq!(parse_lamp_parts(&r), Err(5));
+        r[3] = 29;
+        assert_eq!(parse_lamp_parts(&r), Err(5));
     }
 
     #[test]

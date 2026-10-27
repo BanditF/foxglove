@@ -15,7 +15,7 @@
  * top-left corner, in chain order. PROVISIONAL (#529): the board profile's led_keys guess
  * (app/resources/boards/eyelash-corne.toml, a column snake) at the key centres of its drawing
  * (6.5 x 4.5 key units). The #90 row G sitting corrects both. The right half mirrors it. */
-static const uint16_t lamps_permille[LAMP_EFFECT_LAMPS][2] = {
+static const uint16_t lamps_permille[][2] = {
     {77, 222},  {77, 444},  {77, 667},  {231, 667}, {231, 444}, {231, 222}, {385, 167},
     {385, 389}, {385, 611}, {538, 556}, {538, 333}, {538, 111}, {692, 139}, {692, 361},
     {692, 583}, {846, 611}, {846, 389}, {846, 167}, {615, 889}, {769, 889}, {923, 889},
@@ -258,6 +258,10 @@ bool lamp_effect_prepare(struct lamp_effect *fx, const struct lamp_effect_wire *
 }
 
 void lamp_effect_table(int i, bool mirror, uint16_t out[2]) {
+    if (i < 0 || i >= (int)(sizeof(lamps_permille) / sizeof(lamps_permille[0]))) {
+        out[0] = out[1] = 500; // not in the table: the half's centre
+        return;
+    }
     out[0] = mirror ? 1000 - lamps_permille[i][0] : lamps_permille[i][0];
     out[1] = lamps_permille[i][1];
 }

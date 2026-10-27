@@ -28,7 +28,9 @@
  *                    17 LEFT_BATTERY (CONN_STATE byte 8 is the left's battery %),
  *                    18 BATTERY_DIM (D7 0E), 19 EFFECTS (D7 0F SET_EFFECT),
  *                    20 RIGHT_EVENTS (the right's on/off and power source reach the
- *                    PC as D7 83 / D7 8E events, #478), 21 EFFECT_LAMPS (D7 0F op 3, #550).
+ *                    PC as D7 83 / D7 8E events, #478), 21 EFFECT_LAMPS (D7 0F op 3, #550),
+ *                    22 LAMP_PARTS (D7 10: the LEDs per part, #561).
+ *      HELLO has no byte left for the LED counts: bit 22 says D7 10 answers them.
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
  *   02 FILL    colour (0 or 1)      fill the back buffer
@@ -163,13 +165,14 @@
  *      (CONFIG_FOXGLOVE_TEST_HOOKS=n, GA), 5 bad request, 6 bad or expired nonce.
  *   0C FRAME  flags u8, start u8, count u8 (<= 9), rgb[count * 3]          (HELLO bit 14, #272)
  *      reply (SHOW, RELEASE or an error only): D7 8C, status, owner, timeout s, right, event
- *      Per-LED colours from the PC for both halves. Lamps are index-ordered: 0-20 are the left
- *      strip's LEDs in chain order, 21-41 the right's (lamp 21 + i is the right's LED i). Which
- *      key each LED sits under isn't known yet (the #90 row G sitting); the PC keeps that map.
+ *      Per-LED colours from the PC for both halves. Lamps are index-ordered by part (D7 10): the
+ *      left strip's LEDs in chain order, then the right's (on the Eyelash Corne 0-20 the left,
+ *      21-41 the right: lamp 21 + i is the right's LED i). Which key each LED sits under is the
+ *      PC's map (the board profile).
  *      Colours are plain RGB 0-255; each half's battery dim (D7 0E) scales them on that half.
  *      flags: bit 0 SHOW draws the frame (send it on the last report), bit 1 RELEASE hands both
- *      halves back to their own effect (no pixels). A whole frame is 5 reports (start 0, 9, 18,
- *      27, 36); a report may also carry just the lamps that changed. Lamps keep their colour
+ *      halves back to their own effect (no pixels). A whole frame is ceil(lamps / 9) reports (the
+ *      Corne's 42: start 0, 9, 18, 27, 36); a report may also carry just the lamps that changed. Lamps keep their colour
  *      from one frame to the next; a take-over starts from black.
  *      The first SHOW takes the lights from the keyboard's effect (ZMK's underglow turns off,
  *      and idle/sync leave it alone; the user's on/off comes back on hand-back). They go back on
@@ -234,10 +237,17 @@
  *                     running effect redraws at once on the same clock. The left sends the right
  *                     its points with the effect; a right half whose firmware predates #550
  *                     (relay status version < 9) keeps the built-in table, so flash both halves.
- *                     Status 5 for a half > 1, count > 6, start + count > 21, a value > 1000
- *                     (other than 0xFFFF) or a short report.
- *      Each half draws its 21 LEDs at CONFIG_FOXGLOVE_HOST_EFFECTS_FRAME_MS (once for a still
- *      one), each LED where LAMPS put it, else at a provisional position (lamp_effect.c).
+ *                     Status 5 for a half the board hasn't, count > 6, start + count past the
+ *                     half's LEDs (D7 10: 21 on the Corne), a value > 1000 (other than 0xFFFF)
+ *                     or a short report.
+ *      Each half draws its LEDs at CONFIG_FOXGLOVE_HOST_EFFECTS_FRAME_MS (once for a still
+ *      one), each LED where LAMPS put it, else at a provisional position (lamp_effect.c: the
+ *      Corne's table, or the half's centre past it).
+ *   10 LAMP_PARTS  no payload                       (HELLO bit 22, #561)
+ *      reply: D7 90, status (0 ok, 4 not built in), parts n u8, then n counts u8: each part's
+ *      LEDs in SET_FRAME's order (the left's chain, then the right's; the Corne: 2, 21, 21). The
+ *      left's is its devicetree chain; the right's is CONFIG_FOXGLOVE_RIGHT_LAMPS, else the
+ *      left's own. SET_FRAME's lamps and EFFECT LAMPS' bounds are these counts.
  *      The left sends the right its copy over the art relay with the left's clock read just before
  *      the send, so both halves agree on the phase within the link's latency; again on link-up.
  *      The take-over and owner rules are SET_FRAME's, with no timeout and no hand-back on USB or
@@ -298,6 +308,8 @@
 #define HOST_LINK_CAP_RIGHT_EVENTS (1U << 20)
 // EFFECT op LAMPS: the PC's LED points for SET_EFFECT (#550).
 #define HOST_LINK_CAP_EFFECT_LAMPS (1U << 21)
+// D7 10 LAMP_PARTS: the LEDs per part (#561).
+#define HOST_LINK_CAP_LAMP_PARTS (1U << 22)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);

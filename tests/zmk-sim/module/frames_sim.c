@@ -113,6 +113,7 @@ uint8_t art_relay_lamps_right(void) { return ART_LAMPS_OK; }
 
 static uint32_t caps;
 static atomic_t replies;
+static uint8_t parts[8]; // the last D7 90 (LAMP_PARTS) reply
 
 static int frames_sent_listener(const zmk_event_t *eh) {
     const struct raw_hid_sent_event *ev = as_raw_hid_sent_event(eh);
@@ -121,6 +122,9 @@ static int frames_sent_listener(const zmk_event_t *eh) {
     }
     if (ev != NULL && ev->length >= 2 && ev->data[0] == 0xD7 && ev->data[1] == 0x8C) {
         atomic_inc(&replies);
+    }
+    if (ev != NULL && ev->length >= 4 && ev->data[0] == 0xD7 && ev->data[1] == 0x90) {
+        memcpy(parts, ev->data, MIN(ev->length, (int)sizeof(parts)));
     }
     return ZMK_EV_EVENT_BUBBLE;
 }
@@ -180,6 +184,15 @@ void frames_sim_driver(void) {
     }
     settle();
     printk("frames: caps bit 14 %d\n", (caps >> 14) & 1);
+    printk("frames: caps bit 22 %d\n", (caps >> 22) & 1);
+
+    note("lamp parts (D7 10, #561): the left's chain, then the right's");
+    {
+        const uint8_t d[] = {0xD7, 0x10};
+        put(d, sizeof(d));
+    }
+    settle();
+    printk("frames: parts status %d, %d parts: %d %d\n", parts[2], parts[3], parts[4], parts[5]);
 
     note("a chunk without SHOW: no reply, nothing drawn, the lights stay with the keyboard");
     lamps(0, 0, 9, 0x10, 0x20, 0x30);

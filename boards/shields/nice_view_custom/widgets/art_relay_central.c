@@ -1436,9 +1436,10 @@ static int effect_send(struct bt_conn *conn) {
     k_spinlock_key_t key = k_spin_lock(&effect_lock);
     w = effect_want;
     k_spin_unlock(&effect_lock, key);
-    // A right before #550 has no room for the LED points: it keeps its own table.
+    // A right before #550 has no room for the LED points: it keeps its own table. Else the
+    // right's own LEDs (#561): the whole wire on halves that mirror each other.
     int size = right.version >= EFFECT_LAMPS_STATUS_VERSION
-                   ? (int)sizeof(w)
+                   ? (int)(offsetof(struct lamp_effect_wire, lamp) + 4 * ART_RELAY_LAMPS_MAX)
                    : (int)offsetof(struct lamp_effect_wire, lamps_set);
     int per = CLAMP((int)bt_gatt_get_mtu(conn) - 3 - 2, 1, size);
     for (int at = 0; at < size; at += per) {

@@ -212,8 +212,9 @@ uint8_t art_relay_right_dim(struct battery_dim_wire *out, bool refresh);
 
 // SET_FRAME (#272): host says whether the PC draws the right's LEDs; rgb is the right's whole
 // frame (copied). Runs on the relay queue, newest frame wins; only lamps that changed since the
-// right's last acknowledged frame go over the link, and nothing when none did.
-#define ART_RELAY_LAMPS_MAX 21
+// right's last acknowledged frame go over the link, and nothing when none did. The right's LEDs
+// are the board's (lamp_parts.h, #561).
+#define ART_RELAY_LAMPS_MAX LAMP_PARTS_RIGHT
 void art_relay_lamps(bool host, const uint8_t rgb[ART_RELAY_LAMPS_MAX][3]);
 // Whether the right draws frames: 0 no relay link (or not read yet), 1 yes, 2 its firmware can't.
 enum { ART_LAMPS_NO_LINK, ART_LAMPS_OK, ART_LAMPS_UNSUPPORTED };

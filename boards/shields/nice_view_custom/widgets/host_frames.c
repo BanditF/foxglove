@@ -3,8 +3,9 @@
  * format is in host_link.h). Left half only.
  * SPDX-License-Identifier: MIT
  *
- * Reports fill a staging frame; SHOW draws it. The left's 21 lamps go to its strip at once
- * (lamp_strip.c, on ZMK's low-priority queue). The right's 21 go to the art relay at most every
+ * Reports fill a staging frame; SHOW draws it. The left's lamps (its chain, lamp_parts.h) go to
+ * its strip at once (lamp_strip.c, on ZMK's low-priority queue). The right's go to the art
+ * relay at most every
  * RIGHT_GAP_MS, newest first, and the relay sends only the lamps that changed since the right's
  * last acknowledged frame (art_relay_central.c), so a static frame costs the split link nothing.
  * Both halves draw through their dim_strip, so the battery dim (#465) applies on each half on top
@@ -142,6 +143,19 @@ static void release_event(void) {
 }
 
 static void timeout_cb(struct k_work *work) { release_event(); }
+
+int host_frames_parts(uint8_t *out, int max) {
+    int n = 0;
+    if (n < max) {
+        out[n++] = LEFT_LAMPS;
+    }
+#if RIGHT
+    if (n < max) {
+        out[n++] = ART_RELAY_LAMPS_MAX;
+    }
+#endif
+    return n;
+}
 
 void host_frames_yield(void) {
     k_spinlock_key_t key = k_spin_lock(&lock);

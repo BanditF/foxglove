@@ -194,14 +194,16 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
     case ART_RELAY_EFFECT: // offset, bytes: part of the effect, as write commands
-        if (len < 2 || d[1] + (len - 2) > sizeof(effect_rx)) {
+        if (len < 2 || d[1] > sizeof(effect_rx)) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
         }
         if (d[1] == 0) {
             // A new copy: a left before #550 sends no LED points, so none are kept from before.
             effect_rx.lamps_set = 0;
         }
-        memcpy((uint8_t *)&effect_rx + d[1], &d[2], len - 2);
+        // LED points past this half's own (a left set for more, #561) are no LEDs here.
+        memcpy((uint8_t *)&effect_rx + d[1], &d[2],
+               MIN((size_t)(len - 2), sizeof(effect_rx) - d[1]));
         break;
     case ART_RELAY_EFFECT_GO:
         if (len != 6) {

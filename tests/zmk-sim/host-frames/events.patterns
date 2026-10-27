@@ -1,4 +1,4 @@
-# SET_FRAME (module/frames_sim.c): HELLO bit 14; chunks don't reply; SHOW draws the left at once
+# SET_FRAME (module/frames_sim.c): HELLO bits 14 and 22, LAMP_PARTS (D7 10); chunks don't reply; SHOW draws the left at once
 # and sends the right only what changed (a fill for one colour, nothing for a static frame), at
 # most every 100 ms with the newest frame; bad requests answer 5; RELEASE, the timeout and an
 # endpoint change hand both halves back, the last two with an unsolicited D7 8C (event 1).
