@@ -11,6 +11,7 @@ keyboard). Everything else starts on demand.
 | App engineer | `app-engineer.md` | a job session per issue |
 | Firmware engineer | `firmware-engineer.md` | a job session per issue |
 | Art & content | `art.md` | a job session per issue |
+| Product designer (UX): flows, IA and naming, mockups, specs | `product-designer.md` | a job session per flow or audit (specs and issues, no production code) |
 | On-call: flashing, sittings, PC chores | `on-call.md` | the standing On-call session only, never a subagent |
 | Test lab | `test-lab.md` | a subagent, or a job session for harness work |
 | Scout: hardware and prior art | `scout.md` | a subagent (research comes back as a report) |
