@@ -460,7 +460,11 @@ fn the_dot_runs_its_rounds_then_goes_dark_and_a_frame_stops_it() {
         every: std::time::Duration::from_millis(5),
         rounds: 2,
     });
-    wait_for(&woke, &status, |s| s.played);
+    // Played, and its dark frame shown: the status says played just before that frame goes.
+    let dark = vec![Rgb { r: 0, g: 0, b: 0 }; 3];
+    wait_for(&woke, &status, |s| {
+        s.played && s.shown.as_ref() == Some(&dark)
+    });
     assert_eq!(status.lock().unwrap().step, None);
     let shown: Vec<String> = rec.log.lock().unwrap().clone();
     assert_eq!(
