@@ -46,6 +46,12 @@ fn scanline(width_mm: f32, period_ms: u32) -> Effect {
     }
 }
 
+/// The most an eased ambient light may change in one 33 ms frame, in any channel.
+const MAX_STEP: u8 = 12;
+
+/// The Scenes page's "Night" background.
+const NIGHT: Rgb = Rgb([6, 8, 18]);
+
 fn colour(f: &Frame, light: &str) -> Rgb {
     f.lights
         .iter()
@@ -92,8 +98,10 @@ fn the_interior_light_never_pings_when_a_scanline_passes() {
             width > 100.0 || fan_step >= 40,
             "{width} mm / {period} ms: the fans ping ({fan_step})"
         );
+        // At most one attack step: 33 ms of a 600 ms time constant, about 5 % of the way
+        // from night to full orange (a ping is the whole way in a frame or two).
         assert!(
-            amb_step <= 8,
+            amb_step <= MAX_STEP,
             "{width} mm / {period} ms: the interior light eases ({amb_step} per frame)"
         );
         assert!(
@@ -124,7 +132,7 @@ fn bench() -> RoomMap {
     }
 }
 
-/// A frame at `t` with the two point lights' colours and the ambient one at their average.
+/// A frame at `t` with the two point lights' colours and the ambient one at their peak.
 fn frame(room: &RoomMap, t: i64, a: Rgb, b: Rgb) -> Frame {
     let light = |id: &str, colour| FrameLight {
         device: "d".into(),
@@ -170,14 +178,15 @@ fn colour_of(f: &Frame, light: &str) -> Rgb {
 }
 
 #[test]
-fn it_follows_the_group_average_with_the_time_constants() {
+fn it_follows_the_group_peak_with_the_time_constants() {
     let room = bench();
     let (w, k) = (Rgb::WHITE, Rgb::BLACK);
-    // Its target is the group's average in linear light: half of white's light.
-    let half = Rgb::average([w, k]).unwrap();
-    assert_eq!(colour_of(&frame(&room, 0, w, k), "amb"), half);
+    // Its target is the group's peak, channel by channel: one lit light is enough.
+    assert_eq!(colour_of(&frame(&room, 0, w, k), "amb"), w);
+    let (a, b) = (Rgb([200, 40, 0]), Rgb([30, 90, 10]));
+    assert_eq!(colour_of(&frame(&room, 0, a, b), "amb"), Rgb([200, 90, 10]));
     // Eased in Oklab lightness, from black's (0).
-    let target = half.lab()[0];
+    let target = w.lab()[0];
 
     for dt in [10, 33, 100] {
         let mut amb = Ambient::new();
@@ -242,9 +251,78 @@ fn an_ambient_light_alone_shows_its_area_not_its_point() {
     let f = effect.render(&room, SceneTime(0));
     let c = colour_of(&f, "amb");
     assert!(c.0[0] > 100 && c.0[2] > 100, "both halves show: {c:?}");
-    // With point lights beside it, it is their average instead.
+    // With point lights beside it, it is their peak instead.
     let room = self::room();
     let f = scanline(80.0, 4_000).render(&room, SceneTime(1_000));
     let points = ["1", "5", "6", "7"].map(|z| colour(&f, z));
-    assert_eq!(Some(colour(&f, "2")), Rgb::average(points));
+    assert_eq!(Some(colour(&f, "2")), peak(points));
+}
+
+/// #546: the user's scene, a narrow orange scanline down the room over "Night" at speed 3,
+/// lights one fan at a time. The interior light glows while the band is in the case, as
+/// brightly as a lit fan, swells and fades smoothly, and never drops below the background.
+#[test]
+fn a_narrow_scanline_makes_the_interior_light_glow_through_the_case() {
+    let room = room();
+    let period = 7_000;
+    let effect = Effect::Scanline {
+        colour: Rgb([229, 115, 43]),
+        background: NIGHT,
+        angle_deg: 90.0,
+        width_mm: 108.0,
+        period_ms: period,
+    };
+    let (mut ambient, mut averaged) = (Ambient::new(), Ambient::new());
+    let (mut amb_step, mut fan_max, mut amb_max, mut amb_min) = (0u8, 0u8, 0u8, u8::MAX);
+    let mut avg_max = 0u8;
+    let mut prev: Option<Rgb> = None;
+    for k in 0..(3 * period / 33) {
+        let mut f = effect.render(&room, SceneTime(i64::from(k) * 33));
+        // What it was before #546: the eased average of the case's lights.
+        let mut avg = f.clone();
+        let points = ["1", "5", "6", "7"].map(|z| colour(&avg, z));
+        for l in avg.lights.iter_mut().filter(|l| l.light == "2") {
+            l.colour = Rgb::average(points).unwrap();
+        }
+        averaged.apply(&mut avg, &room);
+        ambient.apply(&mut f, &room);
+        let amb = colour(&f, "2");
+        if let Some(p) = prev {
+            amb_step = amb_step.max(step(p, amb));
+        }
+        prev = Some(amb);
+        if k >= period / 33 {
+            for fan in ["1", "5", "6", "7"] {
+                fan_max = fan_max.max(colour(&f, fan).0[0]);
+            }
+            amb_max = amb_max.max(amb.0[0]);
+            avg_max = avg_max.max(colour(&avg, "2").0[0]);
+            amb_min = amb_min.min(amb.0[0]);
+            for i in 0..3 {
+                assert!(
+                    amb.0[i] >= NIGHT.0[i],
+                    "never below the background: {amb:?}"
+                );
+            }
+        }
+    }
+    assert!(fan_max >= 200, "the band lights the fans ({fan_max})");
+    assert!(
+        u32::from(amb_max) * 2 >= u32::from(fan_max),
+        "it glows half as bright as a lit fan or more ({amb_max} of {fan_max})"
+    );
+    // In light, three times the average's glow or more (152 against 81 in sRGB red).
+    let light = |v: u8| Rgb([v, 0, 0]).linear()[0];
+    assert!(
+        light(amb_max) >= 3.0 * light(avg_max),
+        "far brighter than the average, which read as off ({amb_max} vs {avg_max})"
+    );
+    assert!(
+        amb_min <= 40,
+        "and fades once the band leaves the case ({amb_min})"
+    );
+    assert!(
+        amb_step <= MAX_STEP,
+        "smoothly, without a ping ({amb_step} per frame)"
+    );
 }
