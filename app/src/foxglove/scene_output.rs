@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use foxglove_scene::scheduler::Pacing;
-use foxglove_scene::{Effect, Rgb, RoomMap, SceneTime};
+use foxglove_scene::{Burst, Bursts, Effect, Rgb, RoomMap, SceneTime};
 
 /// The keyboard's output id in [`Pacing`].
 pub const KEYBOARD: &str = "keyboard";
@@ -169,6 +169,8 @@ pub struct Outputs {
     /// Set from elsewhere (the keyboard handed its frames back): send the keyboard's next frame
     /// in full even though nothing changed.
     keyboard_again: Arc<AtomicBool>,
+    /// Rings and sweeps over the scene (#489), drawn by these same frames.
+    bursts: Bursts,
 }
 
 impl Outputs {
@@ -182,9 +184,25 @@ impl Outputs {
             sent_case: BTreeMap::new(),
             sent_keyboard: None,
             keyboard_again: Arc::default(),
+            bursts: Bursts::default(),
         };
         o.set_room(room, cases);
         o
+    }
+
+    /// A ring or sweep over the scene from its next frame on (at most four at once).
+    pub fn burst(&mut self, b: Burst) {
+        self.bursts.add(b);
+    }
+
+    /// The room the scene is placed in now.
+    pub fn room(&self) -> &RoomMap {
+        &self.room
+    }
+
+    /// The scene's effect now.
+    pub fn effect(&self) -> &Effect {
+        &self.effect
     }
 
     /// A flag that sends the keyboard its next frame again, set from any thread: SET_FRAME's
@@ -237,7 +255,14 @@ impl Outputs {
         if due.is_empty() {
             return Vec::new();
         }
-        let frame = self.effect.render(&self.room, t);
+        let mut frame = self.effect.render(&self.room, t);
+        if self.bursts.prune(t) {
+            // `render` lists the lights device by device, in the room's order.
+            let places = self.room.devices.iter().flat_map(|d| d.lights.iter());
+            for (l, place) in frame.lights.iter_mut().zip(places) {
+                l.colour = self.bursts.over(l.colour, place.at, t, &self.room.bounds);
+            }
+        }
         let mut out = Vec::new();
         for id in due {
             if id == KEYBOARD {
@@ -522,6 +547,49 @@ mod tests {
         o.keyboard_again().store(true, Ordering::Relaxed);
         assert_eq!(kb(o.frame(SceneTime(400))), 1);
         assert_eq!(kb(o.frame(SceneTime(600))), 0);
+    }
+
+    /// A key ripple (#489) over a still scene: the keyboard changes while the ring passes, then
+    /// gets the scene's own colours back, and nothing is sent after that.
+    #[test]
+    fn a_ripple_draws_over_the_scene_and_then_gives_way() {
+        use foxglove_scene::burst::Shape;
+        let (room, cases) = desk();
+        let still = Effect::Gradient {
+            stops: vec![ORANGE, Rgb([0, 0, 255])],
+            angle_deg: 90.0,
+        };
+        let key = room
+            .devices
+            .iter()
+            .find(|d| d.id == "keyboard:left")
+            .unwrap()
+            .rect
+            .centre();
+        let mut o = Outputs::new(still, room, cases);
+        let frames = |outs: Vec<Out>| -> Vec<KeyboardFrame> {
+            outs.into_iter()
+                .filter_map(|o| match o {
+                    Out::Keyboard(f) => Some(f),
+                    _ => None,
+                })
+                .collect()
+        };
+        let before = frames(o.frame(SceneTime(0)));
+        assert_eq!(before.len(), 1);
+        o.burst(Burst {
+            shape: Shape::Ring { origin: key },
+            colour: Rgb([255, 255, 255]),
+            start: SceneTime(200),
+            duration_ms: 1000,
+            width_mm: 60.0,
+        });
+        let during = frames(o.frame(SceneTime(200)));
+        assert_eq!(during.len(), 1, "the ring changes the keyboard");
+        assert_ne!(during[0], before[0]);
+        let after = frames(o.frame(SceneTime(1400)));
+        assert_eq!(after, before, "the scene's colours again once it is gone");
+        assert!(frames(o.frame(SceneTime(1600))).is_empty());
     }
 
     #[test]

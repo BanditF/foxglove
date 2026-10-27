@@ -316,6 +316,17 @@ scanline can run down the monitors, through the case's fans and on into the keys
   Wallpaper Engine showing a Bandit wallpaper, the wallpaper follows the scene's clock as soon
   as it starts or its look changes.
 
+- **Triggers** (under Effect, each for the profile you are in):
+  - **Start with this profile:** switching to this profile starts its scene, and switching to a
+    profile without the box stops it again, unless you pressed Start yourself. With program
+    rules (Settings, Profile, "Switch profile by program") a game can bring its own scene. On
+    Base settings it starts the scene when Foxglove starts.
+  - **Ripple on key press:** each key you press sends one ring of the scene's colour out from
+    that key. Foxglove only learns where the key is, never what it types.
+  - **Sweep on layer change:** changing layer sends one sweep across the room in that layer's
+    overlay colour.
+  - Ripples and sweeps show only while a scene runs.
+
 Each profile keeps its own scene, so switching to Game can bring a different look; your saved
 presets are the same in every profile.
 

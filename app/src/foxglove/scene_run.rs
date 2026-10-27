@@ -84,6 +84,10 @@ enum Ctl {
     Devices,
     /// Another look for the running scene, and its name.
     Effect(String, Box<Effect>),
+    /// A key was pressed at this row and column (#489): a ring from it.
+    KeyRipple(usize, usize),
+    /// The top layer changed (#489): a sweep in this colour.
+    LayerSweep(Rgb),
     Stop,
 }
 
@@ -264,6 +268,17 @@ fn tell(ctl: Ctl) {
     }
 }
 
+/// A key press for "Ripple on key press" (#489): its row and column only. A no-op when no
+/// scene runs.
+pub fn key_ripple(row: usize, col: usize) {
+    tell(Ctl::KeyRipple(row, col));
+}
+
+/// A layer change for "Sweep on layer change" (#489), in that layer's colour.
+pub fn layer_sweep(colour: Rgb) {
+    tell(Ctl::LayerSweep(colour));
+}
+
 /// Foxglove paused or resumed (#404).
 pub fn pause_changed(paused: bool) {
     tell(Ctl::Paused(paused));
@@ -367,6 +382,22 @@ fn control(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .set_room(room, cases);
+        }
+        Ctl::KeyRipple(row, col) => {
+            let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
+            let keys = super::scene_triggers::keys();
+            let ring =
+                super::scene_triggers::ripple(&keys, row, col, o.room(), o.effect(), clock.now());
+            if let Some(ring) = ring {
+                o.burst(ring);
+            }
+        }
+        Ctl::LayerSweep(colour) => {
+            let sweep = super::scene_triggers::sweep(colour, clock.now());
+            outputs
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .burst(sweep);
         }
         Ctl::Effect(name, effect) => {
             // The wallpapers draw the new look on the same clock (#493).

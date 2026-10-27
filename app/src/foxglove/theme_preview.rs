@@ -1274,6 +1274,18 @@ fn scenes_wallpaper_presets_render() {
     assert_ne!(running, picked);
 }
 
+/// The Triggers card (#489) under Effect: the Game profile starting its scene with key
+/// ripples on, and the base settings with every box off.
+#[test]
+fn scenes_triggers_render() {
+    use crate::foxglove::shell::Page;
+    let on = shell_preview_with(Page::Scenes, &Samples::full(), 1200.0);
+    let off = shell_preview_with(Page::Scenes, &Samples::none(), 1200.0);
+    keep("ui-scenes-triggers.png", &on);
+    keep("ui-scenes-triggers-none.png", &off);
+    assert_ne!(on, off);
+}
+
 /// The review sheet for #488: each Bandit wallpaper's look rendered from the real effect code
 /// over a room (a monitor above the keyboard), six moments of one cycle per row, and a GIF of
 /// each look's cycle. Written only with FOXGLOVE_UI_PREVIEW_DIR set.
