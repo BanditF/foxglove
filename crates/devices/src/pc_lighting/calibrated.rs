@@ -226,6 +226,7 @@ mod tests {
                 id: 1,
                 name: "Diamond".into(),
                 position: None,
+                role: Default::default(),
             }],
             Box::new(rec.clone()),
         )
@@ -242,6 +243,7 @@ mod tests {
                 id: 1,
                 name: "Diamond".into(),
                 position: None,
+                role: Default::default(),
             }],
             Some(model.clone()),
         );

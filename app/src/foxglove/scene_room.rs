@@ -16,8 +16,10 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
-use foxglove_devices::pc_lighting::{Control, Protocol};
-use foxglove_scene::{DeviceInfo, DeviceKind, Layout, LightSpec, MonitorInfo, Point, RoomMap};
+use foxglove_devices::pc_lighting::{Control, Protocol, ZoneRole};
+use foxglove_scene::{
+    DeviceInfo, DeviceKind, Layout, LightRole, LightSpec, MonitorInfo, Point, RoomMap,
+};
 
 use super::boards::{Board, Drawing};
 use super::pc_lights::{LampLayout, Row};
@@ -151,10 +153,10 @@ fn leds(board: Option<&Board>, drawing: &Drawing, right: bool) -> Option<Vec<Lig
         .enumerate()
         .map(|(i, &k)| {
             let c = keys.get(usize::from(k))?.center();
-            Some(LightSpec {
-                id: i.to_string(),
-                at: Some(Point::new(c.x * KEY_MM, c.y * KEY_MM)),
-            })
+            Some(LightSpec::point(
+                i.to_string(),
+                Some(Point::new(c.x * KEY_MM, c.y * KEY_MM)),
+            ))
         })
         .collect()
 }
@@ -171,7 +173,8 @@ fn size(s: Option<[u16; 2]>) -> Option<Point> {
     s.map(|[w, h]| Point::new(f32::from(w), f32::from(h)))
 }
 
-/// A catalog board: one light per zone, where the catalog puts it.
+/// A catalog board: one light per zone, where the catalog puts it, in the role it gives (the
+/// OMEN 45L's interior light is ambient).
 fn zones(row: &Row, protocol: Protocol) -> DeviceInfo {
     let kind = match protocol {
         Protocol::OmenTracer => DeviceKind::Case,
@@ -181,9 +184,16 @@ fn zones(row: &Row, protocol: Protocol) -> DeviceInfo {
         .zone_ids
         .iter()
         .enumerate()
-        .map(|(i, id)| LightSpec {
-            id: id.clone(),
-            at: size(row.zone_positions.get(i).copied().flatten()),
+        .map(|(i, id)| {
+            let role = match row.zone_roles.get(i) {
+                Some(ZoneRole::Ambient) => LightRole::Ambient,
+                _ => LightRole::Point,
+            };
+            LightSpec::point(
+                id.clone(),
+                size(row.zone_positions.get(i).copied().flatten()),
+            )
+            .with_role(role)
         })
         .collect();
     DeviceInfo {
@@ -218,9 +228,8 @@ fn lamp_array(row: &Row, layout: Option<&LampLayout>) -> DeviceInfo {
             .lamps
             .iter()
             .enumerate()
-            .map(|(i, &[x, y])| LightSpec {
-                id: i.to_string(),
-                at: positioned.then_some(Point::new(x, y)),
+            .map(|(i, &[x, y])| {
+                LightSpec::point(i.to_string(), positioned.then_some(Point::new(x, y)))
             })
             .collect(),
     }
@@ -456,6 +465,7 @@ pub(crate) mod tests {
             calibrated: false,
             size: d.size,
             zone_positions: d.zones.iter().map(|z| z.position).collect(),
+            zone_roles: d.zones.iter().map(|z| z.role).collect(),
         }
     }
 
@@ -473,6 +483,7 @@ pub(crate) mod tests {
             calibrated: false,
             size: None,
             zone_positions: vec![],
+            zone_roles: vec![],
         }
     }
 
@@ -518,6 +529,22 @@ pub(crate) mod tests {
         assert_eq!(case.size, Some(Point::new(205.0, 475.0)));
         assert_eq!(case.lights.len(), 5);
         assert!(case.lights.iter().all(|l| l.at.is_some()));
+        // Its interior light (zone 2) is an area light; the fans and the diamond are points.
+        let roles: Vec<_> = case
+            .lights
+            .iter()
+            .map(|l| (l.id.as_str(), l.role))
+            .collect();
+        assert_eq!(
+            roles,
+            [
+                ("1", LightRole::Point),
+                ("2", LightRole::Ambient),
+                ("5", LightRole::Point),
+                ("6", LightRole::Point),
+                ("7", LightRole::Point),
+            ]
+        );
         // The G502's lamps where Windows says.
         assert_eq!(devices[3].lights[1].at, Some(Point::new(34.0, 100.0)));
 

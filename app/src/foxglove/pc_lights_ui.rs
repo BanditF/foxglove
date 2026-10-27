@@ -519,6 +519,7 @@ pub mod tests {
             calibrated: false,
             size: None,
             zone_positions: vec![],
+            zone_roles: vec![],
         }
     }
 
@@ -584,6 +585,7 @@ pub mod tests {
                         calibrated: false,
                         size: None,
                         zone_positions: vec![],
+                        zone_roles: vec![],
                     },
                     Row {
                         key: "046d:c332".into(),
@@ -603,6 +605,7 @@ pub mod tests {
                         calibrated: false,
                         size: None,
                         zone_positions: vec![],
+                        zone_roles: vec![],
                     },
                 ],
                 light_studio: true,

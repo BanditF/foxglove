@@ -8,6 +8,11 @@ It has no UI and makes no OS calls, so everything in it runs headless in tests.
   from Windows, the keyboard halves (whole strip for now), the mouse, the case's zones and any
   other lighting device. Defaults need no user input; a user's drag is an offset per device in
   `Layout`, which the app stores.
+  Each light has a role: `point` (the effect sampled where it is) or `ambient`, an area light
+  such as a case's interior light (`LightRole`).
+- `ambient`: an ambient light shows the average of its device's point lights (in linear light)
+  and eases towards it in Oklab, 600 ms up and 1.5 s down (`Ambient`), so it swells and fades
+  with its neighbours instead of pinging as a scanline passes.
 - `clock`: one clock in milliseconds since an epoch on the system clock (Unix ms). A clock can
   start now or align to an external epoch (the start time Foxglove hands a wallpaper), so both
   compute the same phase: `phase = ((now_ms - epoch_ms) mod period_ms) / period_ms`.

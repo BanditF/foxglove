@@ -47,6 +47,18 @@ impl Protocol {
     }
 }
 
+/// How a zone takes a scene's light (`foxglove_scene::LightRole`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ZoneRole {
+    /// Lit at its position: a fan, a logo, a strip.
+    #[default]
+    Point,
+    /// An area light (a case's interior light): the average of the device's other zones,
+    /// fading in and out with them.
+    Ambient,
+}
+
 /// One zone: the board's own zone number and what it lights.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,6 +69,9 @@ pub struct ZoneSpec {
     /// (x right, y down), for scenes' room map (#483). Unset zones are spread evenly.
     #[serde(default)]
     pub position: Option<[u16; 2]>,
+    /// `role = "ambient"` for an area light; a point light when unset.
+    #[serde(default)]
+    pub role: ZoneRole,
 }
 
 /// One known board.
@@ -165,8 +180,12 @@ impl CatalogDevice {
                     .position
                     .map(|[x, y]| format!(", position = [{x}, {y}]"))
                     .unwrap_or_default();
+                let role = match z.role {
+                    ZoneRole::Point => "",
+                    ZoneRole::Ambient => ", role = \"ambient\"",
+                };
                 out.push_str(&format!(
-                    "    {{ id = {}, name = {}{at} }},\n",
+                    "    {{ id = {}, name = {}{at}{role} }},\n",
                     z.id,
                     quote(&z.name)
                 ));
@@ -271,6 +290,14 @@ mod tests {
                 (7, "Front top fan"),
             ]
         );
+        // The interior light fills the case: an area light, not a point (the fans are).
+        let ambient: Vec<u8> = case
+            .zones
+            .iter()
+            .filter(|z| z.role == ZoneRole::Ambient)
+            .map(|z| z.id)
+            .collect();
+        assert_eq!(ambient, [2]);
         assert_eq!(
             c.find(0x03f0, 0x7397).map(|d| d.protocol),
             Some(Protocol::None)
@@ -335,6 +362,7 @@ mod tests {
                 id: 3,
                 name: "Logo".into(),
                 position: Some([40, 12]),
+                role: ZoneRole::Ambient,
             }],
         );
         let mut local = Catalog::default();
@@ -346,7 +374,7 @@ mod tests {
         assert!(text.contains("vid = 0x103C"), "{text}");
         let back = Catalog::parse(&text).expect("its own output parses");
         assert_eq!(back.devices[0].name, mine.name);
-        assert_eq!(back.devices[0].zones, mine.zones, "positions too");
+        assert_eq!(back.devices[0].zones, mine.zones, "positions and roles too");
         assert_eq!(back.devices[0].size, Some([200, 450]));
         let merged = Catalog::bundled().with_local(&back);
         let case = merged.find(0x103c, 0x84fd).unwrap();
