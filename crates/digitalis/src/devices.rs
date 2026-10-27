@@ -380,6 +380,30 @@ impl DigitalisDevice {
         }
     }
 
+    /// SET_FRAME (#272): per-LED colours from lamp `start` on (0-20 left, 21-41 right, in each
+    /// strip's chain order). The first frame takes both halves' lights from the keyboard's own
+    /// effect until [`Self::release_frame`] or the keyboard's timeout (the reply says how long).
+    /// The colours go as they are, without the colour calibration. Unsupported on firmware
+    /// without [`capabilities::FRAMES`] (GA builds keep [`Lighting::set_color`]).
+    pub fn set_frame(
+        &self,
+        start: u8,
+        colours: &[[u8; 3]],
+    ) -> PResult<crate::protocol::FrameReply> {
+        if !self.has(capabilities::FRAMES) {
+            return Err(DeviceError::Unsupported);
+        }
+        frame_status(settings::set_frame(&*self.link, start, colours).map_err(err)?)
+    }
+
+    /// Both halves back to their own effect after [`Self::set_frame`].
+    pub fn release_frame(&self) -> PResult<crate::protocol::FrameReply> {
+        if !self.has(capabilities::FRAMES) {
+            return Err(DeviceError::Unsupported);
+        }
+        frame_status(settings::release_frame(&*self.link).map_err(err)?)
+    }
+
     /// The PC panel's size: from the keyboard's screen descriptors when it has them (#289),
     /// read once, else from HELLO.
     fn panel_size(&self) -> (usize, usize) {
@@ -472,6 +496,17 @@ impl Behaviors for DigitalisDevice {
         let a = checked.action();
         let id = u16::try_from(a.id).map_err(|_| DeviceError::Unsupported)?;
         status(settings::invoke(&*self.link, id, a.param1, a.param2, a.hold_ms).map_err(err)?)
+    }
+}
+
+/// The keyboard's answer to FRAME as a device-layer result.
+fn frame_status(r: crate::protocol::FrameReply) -> PResult<crate::protocol::FrameReply> {
+    match r.status {
+        0 => Ok(r),
+        4 => Err(DeviceError::Unsupported),
+        s => Err(err(anyhow::anyhow!(
+            "the keyboard refused the frame (status {s})"
+        ))),
     }
 }
 

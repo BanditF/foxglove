@@ -81,6 +81,7 @@ static int8_t discovery = ART_DISCOVERY_IDLE;
 static uint8_t discovery_tries;
 static struct k_work_delayable discover_work;
 static void rgb_sync_link_up(void);
+static void lamps_link_up(void);
 
 // Tries again a little later, in case ZMK's own setup of the link got in the way.
 static void discovery_failed(int8_t result) {
@@ -107,6 +108,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         if (data_handle && status_handle) {
             discovery = ART_DISCOVERY_DONE;
             rgb_sync_link_up();
+            lamps_link_up();
             host_link_art_status();
         } else {
             discovery_failed(ART_DISCOVERY_NO_CHRC);
@@ -132,6 +134,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         discovery = ART_DISCOVERY_DONE;
         atomic_clear(&discovering); // Zephyr gets no callback after a STOP
         rgb_sync_link_up();
+        lamps_link_up();
         host_link_art_status();
         return BT_GATT_ITER_STOP;
     }
@@ -977,7 +980,9 @@ static void rgb_sync_cb(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
     bool on;
     bool synced = true;
-    if (zmk_rgb_underglow_get_state(&on) == 0) {
+    // Under the PC's frames the user's on/off, not ZMK's: a right that can't draw frames keeps
+    // its own effect (and one that can comes back lit).
+    if (rgb_idle_get_on(&on) == 0) {
         uint8_t buf[sizeof(rgb_sent)] = {ART_RELAY_RGB, on, rgb_idle_sync()};
         uint8_t len = 3;
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
@@ -1126,8 +1131,167 @@ void art_relay_rgb_verify(void) {
         k_work_reschedule_for_queue(&relay_q, &verify_work, RGB_VERIFY_AFTER);
     }
 }
+
+/* SET_FRAME (#272): the PC's frames for the right half. host_frames.c on the left hands over
+ * each frame at most every 100 ms (newest wins); this sends what changed since the frame the
+ * right last acknowledged. The take-over is a write request (ART_RELAY_LAMP_HOST); a frame's lamps
+ * go as write commands with the last one, or a one-colour fill, as a write request: ATT keeps
+ * their order, so its response acknowledges the whole frame. A static frame sends nothing.
+ *
+ * Start/stop: a job starts on a frame, a take-over or hand-back, or link-up while the PC has the
+ * lights; it stops when the right has acknowledged, the link is gone, or after LAMPS_RETRIES
+ * failed tries (the next frame starts over in full). */
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+#define LAMPS_RETRY K_MSEC(100)
+#define LAMPS_RETRIES 3 // a frame: the next frame heals a lost one anyway
+// A hand-back has no next frame to heal it: the RGB sync's budget (10 x 1 s).
+#define LAMPS_BACK_RETRY RGB_RETRY
+#define LAMPS_BACK_RETRIES RGB_RETRIES
+#define LAMPS_STATUS_VERSION 7 // right status version with ART_RELAY_LAMPS / LAMP_HOST
+#define LAMPS_REQ_MAX 5        // lamps in one write request (write_req copies up to 20 bytes)
+BUILD_ASSERT(3 + 3 * LAMPS_REQ_MAX <= 20, "write_req's copy holds the last chunk");
+
+static struct k_spinlock lamps_lock;
+static uint8_t lamps_want[ART_RELAY_LAMPS_MAX][3]; // under lamps_lock
+static atomic_t lamps_host;
+// On relay_q only:
+static uint8_t lamps_acked[ART_RELAY_LAMPS_MAX][3];
+static bool lamps_acked_valid;
+static int8_t lamps_host_sent = -1; // the LAMP_HOST the right last acknowledged, -1 unknown
+static uint8_t lamps_tries, lamps_busy;
+static atomic_t lamps_right; // ART_LAMPS_*
+static atomic_t lamps_reset; // a new link: lamps_cb starts over
+
+// The lamps start..start+n-1 of frame: all but the last as commands, then the last (up to
+// LAMPS_REQ_MAX of them) as a request; or a fill as one request.
+static int lamps_send(struct bt_conn *conn, const uint8_t frame[][3], int start, int n,
+                      bool uniform) {
+    uint8_t buf[3 + 3 * ART_RELAY_LAMPS_MAX] = {ART_RELAY_LAMPS};
+    if (uniform && n > 1) {
+        buf[1] = start;
+        buf[2] = 0x80 | n;
+        memcpy(&buf[3], frame[start], 3);
+        return write_req(conn, buf, 6);
+    }
+    int per = CLAMP(((int)bt_gatt_get_mtu(conn) - 3 - 3) / 3, 1, ART_RELAY_LAMPS_MAX);
+    int tail = MIN(n, LAMPS_REQ_MAX);
+    for (int at = start; at < start + n - tail; at += per) {
+        int k = MIN(per, start + n - tail - at);
+        buf[1] = at;
+        buf[2] = k;
+        memcpy(&buf[3], frame[at], 3 * k);
+        int err = write_cmd(conn, buf, 3 + 3 * k);
+        if (err) {
+            return err;
+        }
+    }
+    buf[1] = start + n - tail;
+    buf[2] = tail;
+    memcpy(&buf[3], frame[start + n - tail], 3 * tail);
+    return write_req(conn, buf, 3 + 3 * tail);
+}
+
+static void lamps_cb(struct k_work *work) {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    if (atomic_cas(&lamps_reset, 1, 0)) {
+        lamps_host_sent = -1; // the right handed its LEDs back when the old link dropped
+        lamps_acked_valid = false;
+        lamps_tries = 0;
+        lamps_busy = 0;
+    }
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        return; // lamps_link_up starts over
+    }
+    int err = 0;
+    if (right_read_at == 0) {
+        err = read_status(conn); // the right's version says whether it draws frames
+    }
+    if (!err && right.version < LAMPS_STATUS_VERSION) {
+        atomic_set(&lamps_right, ART_LAMPS_UNSUPPORTED); // its own effect stays
+        bt_conn_unref(conn);
+        return;
+    }
+    bool host = atomic_get(&lamps_host);
+    if (!err && (host ? lamps_host_sent != 1 : lamps_host_sent == 1)) {
+        const uint8_t op[] = {ART_RELAY_LAMP_HOST, host};
+        err = write_req(conn, op, sizeof(op));
+        if (!err) {
+            lamps_host_sent = host;
+            lamps_acked_valid = false; // the right starts from black: send it all
+        }
+    }
+    if (!err) {
+        atomic_set(&lamps_right, ART_LAMPS_OK);
+    }
+    if (!err && host) {
+        uint8_t frame[ART_RELAY_LAMPS_MAX][3];
+        k_spinlock_key_t key = k_spin_lock(&lamps_lock);
+        memcpy(frame, lamps_want, sizeof(frame));
+        k_spin_unlock(&lamps_lock, key);
+        int start = 0;
+        bool uniform = true;
+        int n = ART_RELAY_LAMPS_MAX;
+        if (lamps_acked_valid) {
+            n = art_relay_lamp_span(lamps_acked, frame, ART_RELAY_LAMPS_MAX, &start, &uniform);
+        } else {
+            for (int i = 1; i < n && uniform; i++) {
+                uniform = memcmp(frame[i], frame[0], 3) == 0;
+            }
+        }
+        if (n > 0) {
+            lamps_acked_valid = false; // until the right acknowledges this one
+            err = lamps_send(conn, frame, start, n, uniform);
+            if (!err) {
+                memcpy(lamps_acked, frame, sizeof(frame));
+                lamps_acked_valid = true;
+            }
+        }
+    }
+    bt_conn_unref(conn);
+    if (err == -EBUSY && lamps_busy++ < BUSY_WAITS) {
+        k_work_reschedule_for_queue(&relay_q, dwork, HSB_BUSY_RETRY); // a status read is out
+        return;
+    }
+    lamps_busy = 0;
+    if (err && lamps_tries++ < (host ? LAMPS_RETRIES : LAMPS_BACK_RETRIES)) {
+        k_work_reschedule_for_queue(&relay_q, dwork, host ? LAMPS_RETRY : LAMPS_BACK_RETRY);
+        return;
+    }
+    lamps_tries = 0;
+}
+static K_WORK_DELAYABLE_DEFINE(lamps_work, lamps_cb);
+
+void art_relay_lamps(bool host, const uint8_t rgb[ART_RELAY_LAMPS_MAX][3]) {
+    k_spinlock_key_t key = k_spin_lock(&lamps_lock);
+    memcpy(lamps_want, rgb, sizeof(lamps_want));
+    k_spin_unlock(&lamps_lock, key);
+    atomic_set(&lamps_host, host);
+    if (art_relay_link() == 2) {
+        // Not reschedule: a retry that's waiting keeps its slot and then sends the newest frame.
+        k_work_schedule_for_queue(&relay_q, &lamps_work, K_NO_WAIT);
+    }
+}
+
+uint8_t art_relay_lamps_right(void) {
+    return art_relay_link() == 2 ? atomic_get(&lamps_right) : ART_LAMPS_NO_LINK;
+}
+
+// From the discovery callback (Bluetooth thread); the relay queue's state resets in lamps_cb.
+static void lamps_link_up(void) {
+    atomic_set(&lamps_reset, 1);
+    atomic_set(&lamps_right, ART_LAMPS_NO_LINK);
+    if (atomic_get(&lamps_host)) {
+        k_work_reschedule_for_queue(&relay_q, &lamps_work, RGB_SETTLE);
+    }
+}
+#else
+static void lamps_link_up(void) {}
+#endif
 #else
 static void rgb_sync_link_up(void) {}
+static void lamps_link_up(void) {}
 void art_relay_rgb_kick(void) {}
 int art_relay_rgb_hsb(uint16_t hue, uint8_t saturation, uint8_t brightness) { return -ENOTSUP; }
 void art_relay_rgb_verify(void) {}

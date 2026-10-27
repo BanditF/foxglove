@@ -22,6 +22,9 @@ struct rgb_idle_wire {
 
 // This half's underglow. Any thread.
 void rgb_idle_state(struct rgb_idle_wire *out);
+// Whether the underglow is on as the user sees it: ZMK's state, or under the PC's frames
+// (SET_FRAME) the on/off that comes back on hand-back. 0 or ZMK's error. Any thread.
+int rgb_idle_get_on(bool *on);
 
 // An rgb_ug binding may just have run (a key, an encoder, a PC invoke): look at the underglow's
 // on/off soon. Any thread.
@@ -34,5 +37,8 @@ void rgb_idle_set_sync(bool sync);
 // Right: the left's underglow state, from the art relay link. follow = false hands the right its
 // own idle auto-off back.
 void rgb_idle_remote(bool on, bool follow);
+// The PC draws this half's LEDs (SET_FRAME, lamp_strip.c): idle, sync and key toggles leave
+// ZMK's underglow alone until it hands back, which re-applies the user's on/off. Any thread.
+void rgb_idle_host_control(bool on);
 // Right: the split link dropped; go by the right's own activity until the left is back.
 void rgb_idle_remote_lost(void);

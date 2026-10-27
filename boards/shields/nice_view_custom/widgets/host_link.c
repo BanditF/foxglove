@@ -37,6 +37,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "rgb_idle.h"
 #include "battery_dim.h"
 #include "behavior_safety.h"
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+#include "host_frames.h"
+#endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 #include "test_hooks.h"
 #endif
@@ -60,7 +63,7 @@ enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE,
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
        SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B, // 0x0A: LAMP_TEST (#115 branch)
-       SETTING_ART_KEYS = 0x0D,                      // 0x0C: FRAME (#272 branch)
+       SETTING_FRAME = 0x0C, SETTING_ART_KEYS = 0x0D,
        SETTING_BATTERY_DIM = 0x0E };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
@@ -216,6 +219,9 @@ static void hello_reply(void) {
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
     caps |= HOST_LINK_CAP_BATTERY_DIM;
+#endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+    caps |= HOST_LINK_CAP_FRAMES;
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) && DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_art_step)
     caps |= HOST_LINK_CAP_ART_KEYS;
@@ -681,6 +687,17 @@ static void settings_command(const uint8_t *d, int len) {
         return;
     }
     switch (d[1]) {
+    case SETTING_FRAME: {
+        uint8_t r[7] = {HOST_LINK_SETTINGS, 0x80 | SETTING_FRAME, 4}; // not built in
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
+        BUILD_ASSERT(sizeof(r) == HOST_FRAMES_REPLY_SIZE, "the D7 8C reply");
+        if (!host_frames_command(d, len, r)) {
+            break;
+        }
+#endif
+        reply(r, sizeof(r));
+        break;
+    }
     case SETTING_ART_KEYS: {
         atomic_set(&art_keys, len >= 3 && d[2] != 0);
         uint8_t r[4] = {HOST_LINK_SETTINGS, 0x80 | SETTING_ART_KEYS, 0, atomic_get(&art_keys)};

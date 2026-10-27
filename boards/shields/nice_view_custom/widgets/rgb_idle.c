@@ -48,6 +48,7 @@ static bool loaded;      // wanted came from the settings
 static bool sync = true; // left: the right follows the left, saved
 static bool following;   // right: the left's state is in charge
 static bool remote_on;   // right: the left's state
+static atomic_t host_drawn; // the PC draws this half's LEDs (SET_FRAME, lamp_strip.c)
 
 static bool active(void) { return zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE; }
 
@@ -95,9 +96,18 @@ static void speed_ready_cb(struct k_work *work) {
 }
 static K_WORK_DELAYABLE_DEFINE(speed_ready_work, speed_ready_cb);
 
+int rgb_idle_get_on(bool *on) {
+    if (atomic_get(&host_drawn)) {
+        // ZMK's underglow is off under the PC's frames: say what hand-back will show.
+        *on = following ? remote_on : wanted && active();
+        return 0;
+    }
+    return zmk_rgb_underglow_get_state(on);
+}
+
 void rgb_idle_state(struct rgb_idle_wire *out) {
     bool on = false;
-    zmk_rgb_underglow_get_state(&on);
+    rgb_idle_get_on(&on);
     struct zmk_led_hsb hsb = zmk_rgb_underglow_calc_hue(0);
     *out = (struct rgb_idle_wire){
         .on = on,
@@ -127,6 +137,9 @@ static void save(void) { k_work_reschedule(&save_work, SAVE_DELAY); }
 // The work items below all run on the system work queue, one at a time.
 
 static void apply_cb(struct k_work *work) {
+    if (atomic_get(&host_drawn)) {
+        return; // ZMK's underglow stays off under the PC's frames; this runs again on hand-back
+    }
     bool on;
     bool target = following ? remote_on : wanted && active();
     if (zmk_rgb_underglow_get_state(&on) == 0 && on != target) {
@@ -147,7 +160,9 @@ static K_WORK_DEFINE(apply_work, apply_cb);
 
 static void check_cb(struct k_work *work) {
     bool on;
-    if (!following && zmk_rgb_underglow_get_state(&on) == 0 && on != wanted) {
+    // Under the PC's frames ZMK's underglow is off on purpose: that's not the user's choice.
+    if (!following && !atomic_get(&host_drawn) && zmk_rgb_underglow_get_state(&on) == 0 &&
+        on != wanted) {
         wanted = on; // toggled with a key
         save();
 #if HOST_CENTRAL
@@ -198,6 +213,22 @@ void rgb_idle_remote(bool on, bool follow) {
     remote_on = on;
     following = follow;
     k_work_submit(&apply_work);
+}
+
+// Hand-back clears the flag on the system queue, where check_cb and apply_cb run, so a key's
+// check can't see ZMK still off without the flag and save that as the user's choice.
+static void host_back_cb(struct k_work *work) {
+    atomic_set(&host_drawn, 0);
+    apply_cb(work);
+}
+static K_WORK_DEFINE(host_back_work, host_back_cb);
+
+void rgb_idle_host_control(bool on) {
+    if (on) {
+        atomic_set(&host_drawn, 1); // at once: nothing may turn ZMK's underglow back on
+        return;
+    }
+    k_work_submit(&host_back_work);
 }
 
 void rgb_idle_remote_lost(void) {

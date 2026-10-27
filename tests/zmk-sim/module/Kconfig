@@ -27,6 +27,18 @@ config FOXGLOVE_SIM_ART_KEYS
 config FOXGLOVE_SIM_PANEL_STREAM
     bool "Simulator: left panel stream case (module/panel_stream_sim.c) instead of the protocol walk"
 
+config FOXGLOVE_SIM_FRAMES
+    bool "Simulator: SET_FRAME case (host_frames.c with a fake strip and relay, module/frames_sim.c)"
+
+config FOXGLOVE_HOST_FRAMES
+    bool
+    default y if FOXGLOVE_SIM_FRAMES
+
+config FOXGLOVE_HOST_FRAMES_TIMEOUT_S
+    int
+    default 3
+    depends on FOXGLOVE_HOST_FRAMES
+
 config FOXGLOVE_TEST_HOOKS
     bool "Test hooks (as in dev firmware)"
     default y

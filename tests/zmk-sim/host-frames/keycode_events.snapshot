@@ -1,0 +1,71 @@
+frames: -- hello: capability bit 14 FRAMES
+frames: caps bit 14 1
+frames: -- a chunk without SHOW: no reply, nothing drawn, the lights stay with the keyboard
+frames: replies so far 0
+frames: -- a whole frame (5 reports): lamp 3 red on the left, lamp 30 green on the right
+frames: left taken from its effect
+frames: left draws 3=FF0000
+frames: right taken from its effect
+frames: right link sends 21 lamps from 21
+frames: right draws 30=00FF00
+hostlink: rx D7 8C 00 03 03 01
+frames: -- one lamp changes on the right: only it goes over the link
+frames: left draws 3=FF0000
+frames: right link sends 1 lamps from 30
+frames: right draws 30=0000FF
+hostlink: rx D7 8C 00 03 03 01
+frames: -- the same frame again: nothing goes over the link
+frames: left draws 3=FF0000
+frames: right link sends nothing (no change)
+hostlink: rx D7 8C 00 03 03 01
+frames: -- one colour per half (the scene fallback): left orange, right blue, as a fill
+frames: left draws 0-20=FF8000
+frames: right link sends a fill of 21 lamps from 21: 0000FF
+frames: right draws 21-41=0000FF
+hostlink: rx D7 8C 00 03 03 01
+frames: -- a burst of 5 frames: the left draws each, the right the first and the newest only
+frames: left draws 0-20=FF8000
+frames: right link sends 1 lamps from 21
+frames: right draws 21=001000 22-41=0000FF
+hostlink: rx D7 8C 00 03 03 01
+frames: left draws 0-20=FF8000
+hostlink: rx D7 8C 00 03 03 01
+frames: left draws 0-20=FF8000
+hostlink: rx D7 8C 00 03 03 01
+frames: left draws 0-20=FF8000
+hostlink: rx D7 8C 00 03 03 01
+frames: left draws 0-20=FF8000
+hostlink: rx D7 8C 00 03 03 01
+frames: right link sends 1 lamps from 21
+frames: right draws 21=005000 22-41=0000FF
+frames: -- bad requests: 10 lamps, lamps past 41, a report cut short
+hostlink: rx D7 8C 05 03 03 01
+hostlink: rx D7 8C 05 03 03 01
+hostlink: rx D7 8C 05 03 03 01
+frames: -- RELEASE: both halves back to their effect
+frames: left back to its effect
+frames: right back to its effect
+hostlink: rx D7 8C 00 00 03 01
+frames: -- a frame, then silence: the timeout hands back and says so (event 1)
+frames: left taken from its effect
+frames: left draws 0=FFFFFF
+frames: right taken from its effect
+frames: right link sends a fill of 21 lamps from 21: 000000
+frames: right draws black
+hostlink: rx D7 8C 00 03 03 01
+frames: left back to its effect
+frames: right back to its effect
+hostlink: rx D7 8C 00 00 03 01 01
+frames: -- a frame, then the endpoint changes: hands back and says so
+frames: left taken from its effect
+frames: left draws black
+frames: right taken from its effect
+frames: right link sends 21 lamps from 21
+frames: right draws 41=FFFFFF
+hostlink: rx D7 8C 00 03 03 01
+frames: left back to its effect
+frames: right back to its effect
+hostlink: rx D7 8C 00 00 03 01 01
+frames: -- RELEASE with nothing taken: ok, owner none, no change
+hostlink: rx D7 8C 00 00 03 01
+frames: -- done

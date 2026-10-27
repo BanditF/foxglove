@@ -63,6 +63,11 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
   if(CONFIG_FOXGLOVE_SIM_PANEL_STREAM)
     zephyr_library_sources(panel_stream_sim.c)
   endif()
+  if(CONFIG_FOXGLOVE_SIM_FRAMES)
+    # SET_FRAME (#272): the real host_frames.c; the strip and the relay are faked (21 lamps each).
+    zephyr_library_compile_definitions(LAMP_STRIP_LEN=21)
+    zephyr_library_sources(${FOXGLOVE_WIDGETS}/host_frames.c frames_sim.c)
+  endif()
   if(CONFIG_FOXGLOVE_SIM_ART_KEYS)
     # &art_next / &art_prev (#60): the real behaviour; the board-side step prints instead.
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/art_keys.c art_keys_sim.c)

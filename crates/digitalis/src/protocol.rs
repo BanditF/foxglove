@@ -31,6 +31,8 @@ pub mod capabilities {
     pub const BUILD_INFO: u32 = 1 << 12;
     /// Panel SCREENS (D5 06): the board's screens, panels and art areas.
     pub const SCREENS: u32 = 1 << 13;
+    /// Settings FRAME (D7 0C): per-LED frames for both halves (#272).
+    pub const FRAMES: u32 = 1 << 14;
     /// Settings BOOTLOADER (D7 08), pre-GA test builds only.
     pub const BOOTLOADER: u32 = 1 << 9;
     /// Art SAVE / SLOT / ERASE (D6 06 / 07 / 08), flash slots on the right half.
@@ -97,6 +99,8 @@ pub mod settings {
     pub const BOOTLOADER: u8 = 0x08;
     /// A half's firmware version, profile and git SHA (firmware #133).
     pub const BUILD_INFO: u8 = 0x09;
+    /// Per-LED frames for both halves (#272): see [`super::frame`].
+    pub const FRAME: u8 = 0x0C;
     /// The underglow's levels by power state (on USB, on battery, low battery), per half.
     pub const BATTERY_DIM: u8 = 0x0E;
     /// The longest hold INVOKE accepts.
@@ -579,6 +583,104 @@ impl BatteryDim {
     }
 }
 
+/// SET_FRAME (D7 0C, #272): per-LED colours for both halves.
+///
+/// Lamps are index-ordered: 0-20 are the left strip's LEDs in chain order, 21-41 the right's.
+/// Which key each LED sits under isn't known yet (the #90 row G sitting), so that map belongs in
+/// the board profile, not here. Colours are plain RGB; each half's battery dim scales them.
+pub mod frame {
+    /// Flag: draw the frame (on the last report of one).
+    pub const SHOW: u8 = 1 << 0;
+    /// Flag: hand both halves back to their own effect.
+    pub const RELEASE: u8 = 1 << 1;
+    /// Lamps per report: 27 bytes of RGB after the 5-byte header.
+    pub const MAX_LAMPS: usize = 9;
+    /// Lamps per half on the Eyelash Corne.
+    pub const HALF_LAMPS: usize = 21;
+}
+
+/// FRAME reports for lamps `start..start + colours.len()`, [`frame::MAX_LAMPS`] per report,
+/// with SHOW on the last. Lamps not sent keep their colour from the last frame.
+pub fn frame(start: u8, colours: &[[u8; 3]]) -> Vec<Vec<u8>> {
+    let chunks: Vec<&[[u8; 3]]> = colours.chunks(frame::MAX_LAMPS).collect();
+    let mut at = start;
+    chunks
+        .iter()
+        .enumerate()
+        .map(|(i, chunk)| {
+            let flags = if i + 1 == chunks.len() {
+                frame::SHOW
+            } else {
+                0
+            };
+            let mut r = vec![SETTINGS, settings::FRAME, flags, at, chunk.len() as u8];
+            r.extend(chunk.iter().flatten());
+            at = at.wrapping_add(chunk.len() as u8);
+            r
+        })
+        .collect()
+}
+
+/// Whether `r` is SET_FRAME's hand-back event (D7 8C with byte 6 = 1), which the keyboard sends
+/// on its own after its timeout, a USB unplug or an endpoint change.
+pub fn is_frame_event(r: &[u8]) -> bool {
+    is_reply(r, SETTINGS, settings::FRAME) && r.get(6).is_some_and(|&e| e != 0)
+}
+
+/// FRAME RELEASE: both halves go back to their own effect.
+pub fn frame_release() -> Vec<u8> {
+    vec![SETTINGS, settings::FRAME, frame::RELEASE]
+}
+
+/// Whether the right half draws frames (the D7 8C reply's byte 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameRight {
+    /// No relay link to the right yet.
+    NoLink,
+    Draws,
+    /// The right's firmware can't: it keeps its own effect.
+    Unsupported,
+}
+
+/// The reply to FRAME (D7 8C), and the hand-back event (`event`) the keyboard sends on its own
+/// after its timeout, a USB unplug or an endpoint change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FrameReply {
+    /// 0 ok, 4 not built in, 5 bad request.
+    pub status: u8,
+    /// [`FrameReply::OWNER_HOST_LINK`] while the PC's frames show; 0 is the keyboard's effect.
+    pub owner: u8,
+    /// Seconds without a FRAME report before the keyboard takes its lights back; 0 = never.
+    pub timeout_s: u8,
+    pub right: FrameRight,
+    /// Sent by the keyboard on its own, not a reply.
+    pub event: bool,
+}
+
+impl FrameReply {
+    /// The owner byte when the host link has the lights.
+    pub const OWNER_HOST_LINK: u8 = 3;
+
+    pub fn parse(r: &[u8; REPORT]) -> Self {
+        Self {
+            status: r[2],
+            owner: r[3],
+            timeout_s: r[4],
+            right: match r[5] {
+                1 => FrameRight::Draws,
+                2 => FrameRight::Unsupported,
+                _ => FrameRight::NoLink,
+            },
+            event: r[6] != 0,
+        }
+    }
+
+    /// Whether the PC's frames are showing.
+    pub fn held(&self) -> bool {
+        self.owner == Self::OWNER_HOST_LINK
+    }
+}
+
 /// What the keyboard said to HELLO.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Hello {
@@ -907,6 +1009,52 @@ mod tests {
         );
         r[9] = 0xff;
         assert_eq!(RgbState::parse(&r).right, None);
+    }
+
+    #[test]
+    fn frame_reports() {
+        // A whole frame: 42 lamps in 5 reports, SHOW on the last.
+        let lamps: Vec<[u8; 3]> = (0..42u8).map(|i| [i, 0, 255 - i]).collect();
+        let reports = frame(0, &lamps);
+        assert_eq!(reports.len(), 5);
+        assert_eq!(
+            reports
+                .iter()
+                .map(|r| (r[2], r[3], r[4]))
+                .collect::<Vec<_>>(),
+            [(0, 0, 9), (0, 9, 9), (0, 18, 9), (0, 27, 9), (1, 36, 6)]
+        );
+        assert!(reports.iter().all(|r| r.len() <= REPORT));
+        assert_eq!(&reports[1][..8], [0xD7, 0x0C, 0, 9, 9, 9, 0, 246]);
+        // One lamp that changed: one report that shows.
+        assert_eq!(
+            frame(30, &[[0, 0, 255]]),
+            [vec![0xD7, 0x0C, 1, 30, 1, 0, 0, 255]]
+        );
+        assert_eq!(frame_release(), [0xD7, 0x0C, 2]);
+
+        let mut r = [0u8; REPORT];
+        r[..6].copy_from_slice(&[0xD7, 0x8C, 0, 3, 30, 1]);
+        let reply = FrameReply::parse(&r);
+        assert_eq!(
+            reply,
+            FrameReply {
+                status: 0,
+                owner: 3,
+                timeout_s: 30,
+                right: FrameRight::Draws,
+                event: false
+            }
+        );
+        assert!(reply.held());
+        // The timeout's hand-back: the keyboard's own effect, sent unasked.
+        r[..7].copy_from_slice(&[0xD7, 0x8C, 0, 0, 30, 2, 1]);
+        let back = FrameReply::parse(&r);
+        assert!(!back.held() && back.event);
+        assert_eq!(back.right, FrameRight::Unsupported);
+        assert!(is_frame_event(&r));
+        r[6] = 0;
+        assert!(!is_frame_event(&r));
     }
 
     #[test]

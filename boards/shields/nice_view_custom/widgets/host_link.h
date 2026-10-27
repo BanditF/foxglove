@@ -24,6 +24,7 @@
  *                    9 BOOTLOADER (D7 08; only when test hooks are built),
  *                    10 flash art slots (D6 06/07/08), 11 unsolicited RGB_STATE (D7 83),
  *                    12 BUILD_INFO (D7 09; HELLO bytes 27-30), 13 SCREENS (D5 06),
+ *                    14 FRAMES (D7 0C SET_FRAME), 15 PANEL_HOLD, 16 ART_KEYS (D7 0D),
  *                    17 LEFT_BATTERY (CONN_STATE byte 8 is the left's battery %),
  *                    18 BATTERY_DIM (D7 0E).
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
@@ -153,6 +154,33 @@
  *      once the right has answered, and the right reboots into its bootloader ~300 ms after.
  *      Status: 0 ok, 2 no relay link (right), 3 relay timeout (3 s), 4 not built in
  *      (CONFIG_FOXGLOVE_TEST_HOOKS=n, GA), 5 bad request, 6 bad or expired nonce.
+ *   0C FRAME  flags u8, start u8, count u8 (<= 9), rgb[count * 3]          (HELLO bit 14, #272)
+ *      reply (SHOW, RELEASE or an error only): D7 8C, status, owner, timeout s, right, event
+ *      Per-LED colours from the PC for both halves. Lamps are index-ordered: 0-20 are the left
+ *      strip's LEDs in chain order, 21-41 the right's (lamp 21 + i is the right's LED i). Which
+ *      key each LED sits under isn't known yet (the #90 row G sitting); the PC keeps that map.
+ *      Colours are plain RGB 0-255; each half's battery dim (D7 0E) scales them on that half.
+ *      flags: bit 0 SHOW draws the frame (send it on the last report), bit 1 RELEASE hands both
+ *      halves back to their own effect (no pixels). A whole frame is 5 reports (start 0, 9, 18,
+ *      27, 36); a report may also carry just the lamps that changed. Lamps keep their colour
+ *      from one frame to the next; a take-over starts from black.
+ *      The first SHOW takes the lights from the keyboard's effect (ZMK's underglow turns off,
+ *      and idle/sync leave it alone; the user's on/off comes back on hand-back). They go back on
+ *      RELEASE, after `timeout s` (CONFIG_FOXGLOVE_HOST_FRAMES_TIMEOUT_S, 0 = never) without a
+ *      FRAME report, on a USB unplug while USB is the endpoint, or on an endpoint change; those
+ *      three send D7 8C 00 00 ... with event = 1 (no reply comes for them otherwise). A PC with
+ *      a static frame and the timeout on sends the frame again when that event comes.
+ *      The left draws each SHOW at once. The right draws at most 10 frames a second, newest
+ *      first, over the split link: only the lamps that changed since the right's last
+ *      acknowledged frame go (one colour as a fill), the last write acknowledged, so a static
+ *      frame sends nothing.
+ *      Status: 0 ok, 4 not built in, 5 bad request (count > 9, short report, lamps past the end).
+ *      While frames hold, RGB_STATE and the right's sync report the user's on/off (what comes
+ *      back), not ZMK's off; an &rgb_ug key that turns ZMK's underglow on mixes its effect with
+ *      the frames until RELEASE.
+ *      Owner: 0 none (the keyboard's own effect), 3 the host link (1 and 2 are kept for a HID
+ *      LampArray over USB and BLE). Right: 0 no relay link yet, 1 the right draws frames,
+ *      2 the right's firmware can't (it keeps its own effect).
  *   0D ART_KEYS on u8                                      reply: D7 8D, 00, on
  *      The PC takes the &art_next / &art_prev keys (#60, HELLO bit 16): while on, each press
  *      sends D7 8D, 01, dir (i8: 1 next, -1 previous) and the PC steps its hotlist. Off, or after
@@ -203,7 +231,8 @@
 #define HOST_LINK_CAP_RGB_STATE_EVENT (1U << 11)
 #define HOST_LINK_CAP_BUILD_INFO (1U << 12)
 #define HOST_LINK_CAP_SCREENS (1U << 13)
-// 14: FRAMES (#272 branch)
+// D7 0C SET_FRAME: per-LED frames for both halves (#272).
+#define HOST_LINK_CAP_FRAMES (1U << 14)
 // The panel stays until RELEASE and keeps its last frame when the PC or the cable goes away; the
 // PC sends no keep-alive (#279). Set when the panel timeout (bytes 25-26) is 0.
 #define HOST_LINK_CAP_PANEL_HOLD (1U << 15)

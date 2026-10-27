@@ -58,7 +58,13 @@ enum art_relay_op {
     ART_RELAY_SAVE = 9,  // slot u8, name[16]: save the shown pushed set to flash (write request)
     ART_RELAY_ERASE = 10, // slot u8: empty a flash slot (write request)
     ART_RELAY_BOOT = 8, // "BOOT", write request: reboot into the bootloader (test hooks only)
-    // 11, 12: LampArray (#115 branch)
+    // SET_FRAME (#272, FOXGLOVE_HOST_FRAMES; status version >= 7):
+    ART_RELAY_LAMPS = 11,     // start u8, n u8, n x (r, g, b): colours for lamps start..start+n-1;
+                              // with n bit 7 set, one (r, g, b) for all n & 0x7f of them. Chunks
+                              // go as write commands; the right draws on a write request, the
+                              // last of a frame, whose response acknowledges the whole frame.
+    ART_RELAY_LAMP_HOST = 12, // on u8 (write request): the PC draws the right's LEDs, or hands
+                              // them back to its own effect
     ART_RELAY_RGB_HSB = 13, // hue u16, saturation u8, brightness u8 (write request): the PC's
                             // colour, applied at once; status version >= 5 (#266)
 };
@@ -182,6 +188,44 @@ int art_relay_build_info(void);
 // refresh, asks for a fresher read, which sends D7 8E unsolicited (host_link_battery_dim_changed)
 // if it differs.
 uint8_t art_relay_right_dim(struct battery_dim_wire *out, bool refresh);
+
+// SET_FRAME (#272): host says whether the PC draws the right's LEDs; rgb is the right's whole
+// frame (copied). Runs on the relay queue, newest frame wins; only lamps that changed since the
+// right's last acknowledged frame go over the link, and nothing when none did.
+#define ART_RELAY_LAMPS_MAX 21
+void art_relay_lamps(bool host, const uint8_t rgb[ART_RELAY_LAMPS_MAX][3]);
+// Whether the right draws frames: 0 no relay link (or not read yet), 1 yes, 2 its firmware can't.
+enum { ART_LAMPS_NO_LINK, ART_LAMPS_OK, ART_LAMPS_UNSUPPORTED };
+uint8_t art_relay_lamps_right(void);
+
+// The span of lamps that differ between two frames of n lamps: *start and the returned count
+// (0 when they're equal); *uniform says whether the span is all one colour (sent as a fill).
+static inline int art_relay_lamp_span(const uint8_t a[][3], const uint8_t b[][3], int n,
+                                      int *start, bool *uniform) {
+    int first = 0, last = n - 1;
+    while (first < n && a[first][0] == b[first][0] && a[first][1] == b[first][1] &&
+           a[first][2] == b[first][2]) {
+        first++;
+    }
+    if (first == n) {
+        *start = 0;
+        *uniform = false;
+        return 0;
+    }
+    while (last > first && a[last][0] == b[last][0] && a[last][1] == b[last][1] &&
+           a[last][2] == b[last][2]) {
+        last--;
+    }
+    *start = first;
+    *uniform = true;
+    for (int i = first + 1; i <= last; i++) {
+        if (b[i][0] != b[first][0] || b[i][1] != b[first][1] || b[i][2] != b[first][2]) {
+            *uniform = false;
+            break;
+        }
+    }
+    return last - first + 1;
+}
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 void art_relay_press(uint8_t pos, uint8_t state);

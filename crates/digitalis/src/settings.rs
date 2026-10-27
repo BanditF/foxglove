@@ -99,6 +99,48 @@ pub fn enter_bootloader(t: &impl Transport, half: u8) -> Result<()> {
     }
 }
 
+/// SET_FRAME (#272): colours for lamps `start..` (0-20 left, 21-41 right), drawn at once on the
+/// left and within 100 ms on the right. Chunks go without a reply; the last one shows the frame
+/// and waits for the keyboard's answer, so a caller that sends its next frame after this returns
+/// keeps one frame in flight. Lamps not sent keep their colour. The keyboard's hand-back event
+/// ([`protocol::is_frame_event`]) reaches [`crate::link::Link::subscribe_reports`] observers.
+pub fn set_frame(
+    t: &impl Transport,
+    start: u8,
+    colours: &[[u8; 3]],
+) -> Result<protocol::FrameReply> {
+    anyhow::ensure!(
+        usize::from(start) + colours.len() <= 2 * protocol::frame::HALF_LAMPS,
+        "lamps {start}..{} are past the keyboard's 42",
+        usize::from(start) + colours.len()
+    );
+    let reports = protocol::frame(start, colours);
+    let (last, chunks) = reports
+        .split_last()
+        .ok_or_else(|| anyhow::anyhow!("a frame needs at least one lamp"))?;
+    for r in chunks {
+        t.send(r)?;
+    }
+    let r = t.request(
+        last,
+        protocol::SETTINGS,
+        protocol::settings::FRAME,
+        Duration::from_millis(500),
+    )?;
+    Ok(protocol::FrameReply::parse(&r))
+}
+
+/// Hands both halves back to their own effect (SET_FRAME RELEASE).
+pub fn release_frame(t: &impl Transport) -> Result<protocol::FrameReply> {
+    let r = t.request(
+        &protocol::frame_release(),
+        protocol::SETTINGS,
+        protocol::settings::FRAME,
+        Duration::from_millis(500),
+    )?;
+    Ok(protocol::FrameReply::parse(&r))
+}
+
 /// Reads the active Bluetooth profile and selected typing endpoint.
 pub fn conn_state(t: &impl Transport) -> Result<protocol::ConnState> {
     let r = t.request(
@@ -183,6 +225,49 @@ mod tests {
             r[..8].copy_from_slice(&[0xd7, 0x84, 2, 1, 1, 0, 1, 4]);
             Ok(r)
         }
+    }
+
+    /// Records FRAME reports; answers the one that asks with an ok reply.
+    #[derive(Default)]
+    struct Frames(std::cell::RefCell<Vec<(Vec<u8>, bool)>>);
+    impl Transport for Frames {
+        fn send(&self, report: &[u8]) -> Result<()> {
+            self.0.borrow_mut().push((report.to_vec(), false));
+            Ok(())
+        }
+        fn request(
+            &self,
+            report: &[u8],
+            proto: u8,
+            cmd: u8,
+            _: Duration,
+        ) -> Result<[u8; protocol::REPORT]> {
+            assert_eq!((proto, cmd), (0xd7, 0x0c));
+            self.0.borrow_mut().push((report.to_vec(), true));
+            let owner = if report[2] & protocol::frame::RELEASE != 0 {
+                0
+            } else {
+                3
+            };
+            let mut r = [0; protocol::REPORT];
+            r[..6].copy_from_slice(&[0xd7, 0x8c, 0, owner, 30, 1]);
+            Ok(r)
+        }
+    }
+
+    #[test]
+    fn a_frame_sends_its_chunks_and_waits_for_the_last() {
+        let t = Frames::default();
+        assert!(set_frame(&t, 0, &[[255, 128, 0]; 42]).unwrap().held());
+        let asked: Vec<(u8, bool)> = t.0.borrow().iter().map(|(r, a)| (r[3], *a)).collect();
+        assert_eq!(
+            asked,
+            [(0, false), (9, false), (18, false), (27, false), (36, true)]
+        );
+        assert!(set_frame(&t, 0, &[]).is_err());
+        assert!(set_frame(&t, 40, &[[1, 2, 3]; 3]).is_err(), "past lamp 41");
+        assert_eq!(t.0.borrow().len(), 5, "nothing sent for a bad frame");
+        assert!(!release_frame(&t).unwrap().held());
     }
 
     #[test]
