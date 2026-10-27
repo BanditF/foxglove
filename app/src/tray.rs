@@ -101,6 +101,7 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
                         crate::foxglove::screens::stop();
                         crate::foxglove::art_service::stop();
                         crate::foxglove::calibrate_ui::cancel(); // Foxglove: mid-calibration
+                        crate::foxglove::scene_run::stop(); // Foxglove (#485): lights back
                         process::exit(0)
                     }
                     _ => crate::foxglove::tray::event(event.id.0.as_str()),

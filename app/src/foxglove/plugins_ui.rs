@@ -183,6 +183,9 @@ pub fn lights_line(h: &super::lighting_leases::Holders, name: impl Fn(u64) -> St
 
 /// A connection's plugin by its name in its manifest, or "a tool" for the local API's clients.
 fn holder_name(conn: u64, installed: &[Installed]) -> String {
+    if conn == super::scene_run::SCENE_CONN {
+        return "a scene".into();
+    }
     match foxglove_plugin_host::plugin_of(conn) {
         Some(id) => installed
             .iter()
