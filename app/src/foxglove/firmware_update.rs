@@ -1,4 +1,4 @@
-//! "Update keyboard" (#382): both halves from the app, with the safe flasher's rules
+//! "Update firmware" (#382): both halves from the app, with the safe flasher's rules
 //! (`foxglove_flash`, the same rules as `scripts/flash/foxglove_flash.py`).
 //!
 //! The Firmware card's button picks a folder with the new firmware (a release's
@@ -45,7 +45,7 @@ pub enum View {
 /// A click in the update's part of the card.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Intent {
-    /// "Update keyboard…": pick the firmware folder.
+    /// "Update firmware…": pick the firmware folder.
     Start,
     AllowDowngrade(bool),
     Confirm,
@@ -821,7 +821,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
     match v {
         View::Idle => {
             if ui
-                .button("Update keyboard…")
+                .button("Update firmware…")
                 .on_hover_text("Pick a folder with new firmware for both halves")
                 .clicked()
             {
@@ -840,7 +840,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
             downgrade,
             allow_downgrade,
         } => {
-            ui.label(RichText::new("Update keyboard").strong());
+            ui.label(RichText::new("Update firmware").strong());
             for l in lines {
                 ui.label(RichText::new(l).font(super::theme::mono(12.5)));
             }

@@ -159,7 +159,7 @@ pub fn report(f: &Facts, personal: &Personal) -> String {
         "Keyboard",
         f.keyboard.as_deref().unwrap_or("none connected"),
     );
-    line("Board profile", f.board.as_deref().unwrap_or("none"));
+    line("Board type", f.board.as_deref().unwrap_or("none"));
     line("Connection", &f.connection);
     line("Left firmware", &f.left_firmware);
     line("Right firmware", &f.right_firmware);

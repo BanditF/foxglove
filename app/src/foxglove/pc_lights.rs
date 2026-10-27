@@ -1,4 +1,4 @@
-//! PC & peripherals lighting (#423): the OMEN 45L case and other lights that aren't the
+//! Other devices' lighting (#423): the OMEN 45L case and other lights that aren't the
 //! keyboard, through the device layer's `pc_lighting` discovery and drivers.
 //!
 //! One worker thread owns the drivers and blocks on its queue. It scans when the app starts,

@@ -1,5 +1,5 @@
 //! The layout guard: every sidebar page, the tray panel and the wizards (Calibrate, Add a
-//! device, Update keyboard), laid out off-screen at the window's minimum size, its default
+//! device, Update firmware), laid out off-screen at the window's minimum size, its default
 //! size and a wide one, at 100% and 150% scale. A case fails when two lines of text overlap,
 //! text runs into a control it isn't part of, two controls overlap, a card overlaps another
 //! card, something sticks out of its card, or text is cut off at the side.
@@ -437,7 +437,7 @@ fn wizards_lay_out_without_overlaps() {
     ] {
         let mut s = Samples::full();
         s.keyboard.update = view;
-        found.extend(page_cases(&format!("Update keyboard: {name}"), Page::Keyboard, &s, None));
+        found.extend(page_cases(&format!("Update firmware: {name}"), Page::Keyboard, &s, None));
     }
     report(&found);
 }

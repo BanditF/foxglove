@@ -224,7 +224,7 @@ fn state(ctx: &egui::Context) -> DimState {
     s
 }
 
-/// The switch and its levels, inside the Underglow card.
+/// The switch and its levels, inside the Lights page's Keyboard card.
 pub fn show(ui: &mut egui::Ui) {
     #[cfg(test)]
     if let Some((s, mut d)) = PREVIEW.with_borrow(|v| *v) {
@@ -303,11 +303,7 @@ pub fn draw(ui: &mut egui::Ui, s: &DimState, draft: &mut Draft) -> Vec<Intent> {
             };
             ui.horizontal_wrapped(|ui| {
                 ui.weak(text);
-                if ui
-                    .small_button("↻")
-                    .on_hover_text("Ask the keyboard again")
-                    .clicked()
-                {
+                if ui.small_button("↻").on_hover_text("Refresh").clicked() {
                     out.push(Intent::Ask);
                 }
             });

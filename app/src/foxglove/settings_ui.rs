@@ -102,8 +102,10 @@ enum Style {
 /// The name a section's card shows, where the canvas names it differently from the section.
 fn shown_title(title: &str) -> &str {
     match title {
+        "Connection" => "Keymap source",
         "Overlay Appearance" => "Layer overlay",
-        "Theme" => "Colours and layers",
+        "Theme" => "Layer colours",
+        "Other keyboards (VIA)" => "Other keyboards",
         "Profile" => "Profiles",
         other => other,
     }
@@ -118,7 +120,8 @@ fn style(title: &str) -> Style {
         | "On this PC"
         | "Left screen"
         | "Profile"
-        | "Theme and updates"
+        | "Appearance"
+        | "Startup and updates"
         | "Other keyboards (VIA)" => Style::Card,
         "Overlay Appearance" => Style::CardTop,
         "Theme" => Style::CardBottom,

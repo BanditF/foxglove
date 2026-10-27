@@ -44,7 +44,7 @@ impl Page {
             Page::Scenes => "Scenes",
             Page::Screens => "Screens",
             Page::Plugins => "Plugins",
-            Page::Settings => "Settings",
+            Page::Settings => "App",
         }
     }
 
@@ -61,7 +61,7 @@ impl Page {
 
 /// Every settings section by title, and the page it lives on (#385). A new section goes in
 /// here too; the `every_section_has_a_page` test finds the ones that don't.
-pub const SECTIONS: [(&str, Page); 15] = [
+pub const SECTIONS: [(&str, Page); 16] = [
     ("Connection", Page::Keyboard),
     ("Keyboard", Page::Keyboard),
     ("Lights", Page::Lights),
@@ -75,13 +75,14 @@ pub const SECTIONS: [(&str, Page); 15] = [
     ("Overlay Appearance", Page::Settings),
     ("Theme", Page::Settings),
     ("Profile", Page::Settings),
-    ("Theme and updates", Page::Settings),
+    ("Appearance", Page::Settings),
+    ("Startup and updates", Page::Settings),
     ("Other keyboards (VIA)", Page::Settings),
     // The links, credits and version at the end of the window.
     ("About", Page::Settings),
 ];
 
-/// The Settings page's column for each of its sections (#390): the layer overlay's card on the
+/// The App page's column for each of its sections (#390): the layer overlay's card on the
 /// left, the shorter cards stacked on the right. Unlisted sections go on the right.
 const COLUMNS: [(&str, usize); 2] = [("Overlay Appearance", 0), ("Theme", 0)];
 
@@ -92,7 +93,7 @@ fn column_of(title: &str) -> usize {
         .map_or(1, |(_, c)| *c)
 }
 
-/// The page a section goes on. An unknown title lands on Settings, so it is never lost.
+/// The page a section goes on. An unknown title lands on App, so it is never lost.
 pub fn page_of(title: &str) -> Page {
     SECTIONS
         .iter()
@@ -560,7 +561,7 @@ pub fn chips(s: &StripState) -> Vec<Chip> {
         out.push(Chip {
             tone: None,
             name: "",
-            text: format!("Bluetooth profile {}{whose}", active.saturating_add(1)),
+            text: format!("Bluetooth slot {}{whose}", active.saturating_add(1)),
             hover: None,
         });
     }
@@ -788,7 +789,8 @@ mod tests {
             ("Overlay Appearance", Page::Settings),
             ("Theme", Page::Settings),
             ("Profile", Page::Settings),
-            ("Theme and updates", Page::Settings),
+            ("Appearance", Page::Settings),
+            ("Startup and updates", Page::Settings),
             ("Other keyboards (VIA)", Page::Settings),
         ] {
             assert_eq!(page_of(title), page, "{title}");
@@ -850,12 +852,18 @@ mod tests {
         SHOWING.set(Some(Page::Settings));
         COLUMN.set(Some(0));
         assert!(shows("Overlay Appearance") && shows("Theme"));
-        assert!(!shows("Profile") && !shows("Theme and updates") && !shows("About"));
+        assert!(
+            !shows("Profile")
+                && !shows("Appearance")
+                && !shows("Startup and updates")
+                && !shows("About")
+        );
         COLUMN.set(Some(1));
         assert!(!shows("Overlay Appearance"));
         assert!(
             shows("Profile")
-                && shows("Theme and updates")
+                && shows("Appearance")
+                && shows("Startup and updates")
                 && shows("Other keyboards (VIA)")
                 && shows("About")
         );
@@ -927,7 +935,7 @@ mod tests {
             (c[1].tone, c[1].text.as_str()),
             (Some(Tone::Warn), "no reply yet · battery 61%")
         );
-        assert_eq!(c[2].text, "Bluetooth profile 1 · this PC");
+        assert_eq!(c[2].text, "Bluetooth slot 1 · this PC");
         assert_eq!(c.len(), 3, "no warning while it's safe to unplug");
     }
 
@@ -954,14 +962,14 @@ mod tests {
             usb: Some(true),
             profile: Some(1),
             this_pc: Some(0),
-            unplug_warning: Some("select profile 1".into()),
+            unplug_warning: Some("select Bluetooth slot 1".into()),
             ..Default::default()
         };
         let c = chips(&s);
-        assert_eq!(c[2].text, "Bluetooth profile 2 · another PC");
+        assert_eq!(c[2].text, "Bluetooth slot 2 · another PC");
         let warn = c.last().unwrap();
         assert_eq!(warn.tone, Some(Tone::Warn));
-        assert_eq!(warn.hover.as_deref(), Some("select profile 1"));
+        assert_eq!(warn.hover.as_deref(), Some("select Bluetooth slot 1"));
         assert_eq!(c[1].text, "asking…");
     }
 }

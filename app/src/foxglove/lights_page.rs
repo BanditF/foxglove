@@ -1,6 +1,6 @@
-//! The Lights page (#387, epic #393), as the approved canvas draws it: an Underglow card
+//! The Lights page (#387, epic #393), as the approved canvas draws it: a Keyboard card
 //! (effect pills, colour swatches and a custom colour, brightness and speed, the accent and
-//! right-half switches, Apply colour) beside a Lighting presets card and both halves' state.
+//! right-half switches, Apply colour) beside a Presets card and both halves' state.
 //!
 //! [`show`] gathers the cached state and acts on clicks; [`draw`] paints a [`View`] and returns
 //! [`Intent`]s, so the previews and tests draw it with no keyboard. Every change is a click or
@@ -201,7 +201,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     let mut out = Vec::new();
     let gap = 16.0;
     let width = ui.available_width();
-    // Side by side only when both columns have room for their rows: the Underglow card's
+    // Side by side only when both columns have room for their rows: the Keyboard card's
     // colour row and the halves' longest line. Narrower, the cards stack.
     let wide = width >= TWO_COLUMNS;
     let left_w = if wide {
@@ -216,7 +216,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.set_width(left_w);
-                card(ui, "Underglow", |ui| underglow(ui, v, draft, &mut out));
+                card(ui, "Keyboard", |ui| underglow(ui, v, draft, &mut out));
             },
         );
         if wide {
@@ -241,7 +241,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
 
 /// The right-hand column: presets, then both halves as the keyboard reports them.
 fn side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
-    card(ui, "Lighting presets", |ui| {
+    card(ui, "Presets", |ui| {
         ui.weak(
             "Looks that match the Bandit wallpapers, with their right-screen art if you want it.",
         );
@@ -271,7 +271,7 @@ fn side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
         }
         ui.add_space(2.0);
         if ui
-            .button("Refresh lights")
+            .button("Refresh")
             .on_hover_text("Ask both halves for their lights again")
             .clicked()
         {
@@ -416,7 +416,7 @@ fn follow_row(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
             }
         }
         if !matches!(v.sync, RgbSync::Unknown | RgbSync::Asking)
-            && ui.small_button("↻").on_hover_text("Ask the keyboard again").clicked()
+            && ui.small_button("↻").on_hover_text("Refresh").clicked()
         {
             out.push(Intent::AskFollow);
         }

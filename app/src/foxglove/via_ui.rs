@@ -46,7 +46,7 @@ pub fn group(ui: &mut egui::Ui) {
                     if ui.button("Add VIA definition (JSON)…").clicked() {
                         state.dialog.pick_file();
                     }
-                    if ui.button("Rescan").clicked() {
+                    if ui.button("Refresh").clicked() {
                         via_host::rescan();
                     }
                 });
@@ -58,7 +58,7 @@ pub fn group(ui: &mut egui::Ui) {
                             (Err(e), _) => ui.weak(format!("{}: {e}", f.name)),
                         };
                         if let Some(key) = &f.key {
-                            let (text, pause) = if f.paused { ("Resume", false) } else { ("Pause Foxglove for this keyboard", true) };
+                            let (text, pause) = if f.paused { ("Resume", false) } else { ("Let other apps use it", true) };
                             if ui.small_button(text).on_hover_text("Closes Foxglove's connection to it, so only one app talks to it at a time.").clicked() {
                                 state.message = via_host::set_paused(key, pause).err();
                                 state.settings = None;

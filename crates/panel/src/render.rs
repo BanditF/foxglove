@@ -206,6 +206,40 @@ pub fn draw(p: &mut Panel, v: &View, tick: u32) {
     }
 }
 
+/// The PC load layout (#506): CPU, GPU and memory, each a line with its name and percentage over
+/// a bar as wide as the panel. A value not known yet reads `--` over an empty bar.
+pub fn draw_stats(p: &mut Panel, s: &crate::stats::Stats) {
+    p.clear();
+    let on = BinaryColor::On;
+    let w = p.width as i32;
+    let rows = [("CPU", s.cpu), ("GPU", s.gpu), ("RAM", s.ram)];
+    // Rows of 17 points on the Corne's 52: 8 of text, a gap, a 6-point bar, a gap.
+    let pitch = (p.height as i32 / rows.len() as i32).clamp(16, 24);
+    let style = MonoTextStyle::new(&FONT_5X8, on);
+    for (n, (name, value)) in rows.into_iter().enumerate() {
+        let y = n as i32 * pitch;
+        Text::with_baseline(name, Point::new(0, y), style, Baseline::Top)
+            .draw(p)
+            .ok();
+        let number = value.map_or_else(|| "--".to_string(), |v| format!("{v}%"));
+        let x = w - text_width(&FONT_5X8, &number);
+        Text::with_baseline(&number, Point::new(x, y), style, Baseline::Top)
+            .draw(p)
+            .ok();
+        Rectangle::new(Point::new(0, y + 9), Size::new(w as u32, 6))
+            .into_styled(PrimitiveStyle::with_stroke(on, 1))
+            .draw(p)
+            .ok();
+        let inner = (w - 4) * i32::from(value.unwrap_or(0).min(100)) / 100;
+        if inner > 0 {
+            Rectangle::new(Point::new(2, y + 11), Size::new(inner as u32, 2))
+                .into_styled(PrimitiveStyle::with_fill(on))
+                .draw(p)
+                .ok();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +325,58 @@ mod tests {
         assert_eq!(fitting_mark("12:59", "p.m.", 64), "pm");
         assert_eq!(fitting_mark("2:05", "p.m.", 64), "p.m.");
         assert_eq!(fitting_mark("12:59", "nachm.", 64), "n");
+    }
+    /// The PC load layout (#506) fits the Corne's 64×52 panel: three rows, numbers inside the
+    /// edge, and an unknown value draws `--` with an empty bar.
+    #[test]
+    fn stats_fit_the_panel() {
+        use crate::stats::Stats;
+        let ink = |p: &Panel| p.bits.iter().map(|b| b.count_ones()).sum::<u32>();
+        let mut full = Panel::new(64, 52);
+        draw_stats(
+            &mut full,
+            &Stats {
+                cpu: Some(100),
+                gpu: Some(100),
+                ram: Some(100),
+            },
+        );
+        let mut empty = Panel::new(64, 52);
+        draw_stats(&mut empty, &Stats::default());
+        let mut half = Panel::new(64, 52);
+        draw_stats(
+            &mut half,
+            &Stats {
+                cpu: Some(37),
+                gpu: Some(5),
+                ram: Some(62),
+            },
+        );
+        assert!(ink(&full) > ink(&half) && ink(&half) > ink(&empty));
+        // Nothing below the third bar: rows end at 3 × 17 - 2.
+        let stride = full.stride;
+        assert!(full.bits[51 * stride..].iter().all(|&b| b == 0));
+        // A value change touches only its own row's lines (small panel writes).
+        let mut cpu_up = Panel::new(64, 52);
+        draw_stats(
+            &mut cpu_up,
+            &Stats {
+                cpu: Some(38),
+                ..Stats {
+                    cpu: Some(37),
+                    gpu: Some(5),
+                    ram: Some(62),
+                }
+            },
+        );
+        let changed: Vec<usize> = (0..52)
+            .filter(|y| {
+                half.bits[y * stride..(y + 1) * stride] != cpu_up.bits[y * stride..(y + 1) * stride]
+            })
+            .collect();
+        assert!(
+            !changed.is_empty() && changed.iter().all(|y| *y < 17),
+            "{changed:?}"
+        );
     }
 }
