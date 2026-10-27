@@ -5,6 +5,7 @@
 //! command, and replies come back with byte 1 = command | 0x80.
 //!
 //! - [`protocol`]: report builders and reply parsers, no I/O
+//! - [`lamps`]: a keyboard's LEDs by part, in SET_FRAME's order
 //! - [`Transport`]: what the senders need from a connection; [`hid`] has the hidapi one
 //! - [`link`]: one shared owner of the connection, for apps where several parts talk to the board
 //! - [`panel`]: the 1-bit panel image and sending it
@@ -17,6 +18,7 @@ pub mod art;
 pub mod devices;
 #[cfg(feature = "hid")]
 pub mod hid;
+pub mod lamps;
 pub mod link;
 pub mod panel;
 pub mod protocol;

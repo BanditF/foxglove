@@ -7,10 +7,10 @@
 //!   each half draws it from its LEDs' places on the scene's clock ([`keyboard_effect`]), so no
 //!   keyboard frames go out while it runs. Scanline, sweep (1-4 stops), ripple and breathe map
 //!   one to one; gradient and noise, and any ripple or sweep burst drawn over the scene (#489),
-//!   take the frames path while they show. Else a frame of both halves' LEDs (#529), each half
+//!   take the frames path while they show. Else a frame of every part's LEDs (#529), each part
 //!   its own colour, or each LED its own once the board profile places them; and the whole
-//!   frame as one colour (the halves mixed) for firmware without SET_FRAME, which takes one
-//!   `&rgb_ug` colour.
+//!   frame as one colour (the parts mixed) for firmware without SET_FRAME, which takes one
+//!   `&rgb_ug` colour. How many LEDs each part has is the board's ([`LampParts`], #561).
 //!
 //! - Dynamic Lighting devices (any LampArray Windows lists, #503): a colour per lamp, each lamp
 //!   at the place its own attributes give it in the room; one colour for all until those are
@@ -27,16 +27,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use digitalis::lamps::LampParts;
 use digitalis::protocol::MmRect;
 use foxglove_scene::scheduler::Pacing;
 use foxglove_scene::{Ambient, Burst, Bursts, Effect, LightRole, Rgb, RoomMap, SceneTime};
 
 /// The keyboard's output id in [`Pacing`].
 pub const KEYBOARD: &str = "keyboard";
-
-/// LEDs per keyboard half in a frame (the Eyelash Corne's strip, SET_FRAME's lamps 0-20 and
-/// 21-41).
-pub const HALF_LAMPS: usize = digitalis::protocol::frame::HALF_LAMPS;
 
 /// The keyboard gets at most 10 colours a second (host link, then BLE to the right half).
 pub const KEYBOARD_INTERVAL: Duration = Duration::from_millis(100);
@@ -119,26 +116,33 @@ pub enum Out {
     Lamps { key: String, colors: Vec<[u8; 3]> },
 }
 
-/// The scene as one SET_EFFECT (#542): each half draws it from its LEDs' places.
+/// The scene as one SET_EFFECT (#542): each part draws it from its LEDs' places.
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeyboardEffect {
     /// In the wire's units. `clock_ms` is 0 here: the writer fills it in from the scene's clock
-    /// just before it goes ([`KeyboardEffect::at`]), so the halves run in phase with the case
+    /// just before it goes ([`KeyboardEffect::at`]), so the parts run in phase with the case
     /// and the wallpapers.
     pub effect: digitalis::protocol::Effect,
-    /// The room's bounds, and each half's place in it (mm), for EFFECT PLACE.
+    /// The room's bounds (mm), for EFFECT PLACE.
     pub room: MmRect,
-    pub left: MmRect,
-    pub right: MmRect,
+    /// Each part's place in the room (mm), in frame order: the left half then the right, or
+    /// the one piece.
+    pub parts: Vec<MmRect>,
     /// The effect's colours as one, for the lease (what shows when the effect is handed back).
     pub mix: Hsb,
-    /// Each half's LEDs where the room has them, in strip order and thousandths of the half
-    /// (EFFECT LAMPS, #550), when every LED of both halves is placed; `None` leaves the
+    /// Each part's LEDs where the room has them, in strip order and thousandths of the part
+    /// (EFFECT LAMPS, #550), when every LED of every part is placed; `None` leaves the
     /// firmware's built-in table.
-    pub lamps: Option<[Vec<[u16; 2]>; 2]>,
+    pub lamps: Option<Vec<Vec<[u16; 2]>>>,
 }
 
 impl KeyboardEffect {
+    /// EFFECT PLACE's two rectangles: the left and right halves, or the one piece in both.
+    pub fn place(&self) -> (MmRect, MmRect) {
+        let first = self.parts.first().copied().unwrap_or_default();
+        (first, self.parts.get(1).copied().unwrap_or(first))
+    }
+
     /// The effect to send at scene time `t`: its clock is `t` modulo the period.
     pub fn at(&self, t: SceneTime) -> digitalis::protocol::Effect {
         let period = i64::from(self.effect.period_ms);
@@ -163,33 +167,27 @@ fn mm_rect(r: &foxglove_scene::Rect) -> MmRect {
     [mm(r.x), mm(r.y), mm(r.w), mm(r.h)]
 }
 
-/// Where each keyboard half sits in the room: the placed halves, or a one-piece keyboard's
-/// rectangle split down the middle. `None` without a keyboard (or with one half only).
-fn keyboard_halves(room: &RoomMap) -> Option<(MmRect, MmRect)> {
-    let rect = |id: &str| room.devices.iter().find(|d| d.id == id).map(|d| d.rect);
-    if let (Some(l), Some(r)) = (rect("keyboard:left"), rect("keyboard:right")) {
-        return Some((mm_rect(&l), mm_rect(&r)));
+/// The keyboard's parts in the room, in frame order: the left and right halves, or the one
+/// piece. `None` without a keyboard (or with one half only).
+fn keyboard_parts(room: &RoomMap) -> Option<Vec<&foxglove_scene::room::Placed>> {
+    let device = |id: &str| room.devices.iter().find(|d| d.id == id);
+    if let (Some(l), Some(r)) = (device("keyboard:left"), device("keyboard:right")) {
+        return Some(vec![l, r]);
     }
-    let whole = rect(KEYBOARD)?;
-    let w = whole.w / 2.0;
-    Some((
-        mm_rect(&foxglove_scene::Rect::new(whole.x, whole.y, w, whole.h)),
-        mm_rect(&foxglove_scene::Rect::new(whole.x + w, whole.y, w, whole.h)),
-    ))
+    device(KEYBOARD).map(|d| vec![d])
 }
 
-/// One half's LEDs as EFFECT LAMPS points: each numbered light ("0", "1", ...) of the placed
-/// half, in thousandths of the half from its top-left corner. `None` unless the half has
-/// exactly [`HALF_LAMPS`] of them (one light per half: no map).
-fn half_lamps(room: &RoomMap, id: &str) -> Option<Vec<[u16; 2]>> {
-    let d = room.devices.iter().find(|d| d.id == id)?;
-    if d.lights.len() != HALF_LAMPS || d.rect.w <= 0.0 || d.rect.h <= 0.0 {
+/// One part's LEDs as EFFECT LAMPS points: each numbered light ("0", "1", ...) of the placed
+/// part, in thousandths of the part from its top-left corner. `None` unless the part has
+/// exactly `count` of them, its LEDs in the board's frame (one light per part: no map).
+fn part_lamps(d: &foxglove_scene::room::Placed, count: usize) -> Option<Vec<[u16; 2]>> {
+    if count == 0 || d.lights.len() != count || d.rect.w <= 0.0 || d.rect.h <= 0.0 {
         return None;
     }
     let per = |v: f32, from: f32, size: f32| {
         ((v - from) / size * 1000.0).round().clamp(0.0, 1000.0) as u16
     };
-    (0..HALF_LAMPS)
+    (0..count)
         .map(|i| {
             let l = d.lights.iter().find(|l| l.id == i.to_string())?;
             Some([
@@ -202,10 +200,14 @@ fn half_lamps(room: &RoomMap, id: &str) -> Option<Vec<[u16; 2]>> {
 
 /// The scene's effect as the keyboard's own (#542), or `None` when it doesn't map (gradient,
 /// noise, a sweep of more than 4 stops, a period past the wire's) or there is no keyboard in
-/// the room: those take the frames path.
-pub fn keyboard_effect(effect: &Effect, room: &RoomMap) -> Option<KeyboardEffect> {
+/// the room: those take the frames path. `lamps` is the board's LEDs by part.
+pub fn keyboard_effect(
+    effect: &Effect,
+    room: &RoomMap,
+    lamps: &LampParts,
+) -> Option<KeyboardEffect> {
     use digitalis::protocol::EffectKind;
-    let (left, right) = keyboard_halves(room)?;
+    let placed = keyboard_parts(room)?;
     let c = |c: &Rgb| c.0;
     // Kind, colours, period, angle, width, origin.
     let (kind, colours, period_ms, angle_deg, width_mm, origin) = match effect {
@@ -279,44 +281,55 @@ pub fn keyboard_effect(effect: &Effect, room: &RoomMap) -> Option<KeyboardEffect
         mix: hsb(mixed(&all)?),
         effect: wire,
         room: mm_rect(&room.bounds),
-        left,
-        right,
-        lamps: half_lamps(room, "keyboard:left")
-            .zip(half_lamps(room, "keyboard:right"))
-            .map(|(l, r)| [l, r]),
+        parts: placed.iter().map(|d| mm_rect(&d.rect)).collect(),
+        lamps: (placed.len() == lamps.len())
+            .then(|| {
+                placed
+                    .iter()
+                    .enumerate()
+                    .map(|(p, d)| part_lamps(d, lamps.count(p)))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .flatten(),
     })
 }
 
 /// One frame for the keyboard.
 #[derive(Clone, Debug, PartialEq)]
 pub struct KeyboardFrame {
-    /// Both halves' LEDs in strip order: [`HALF_LAMPS`] for the left, then the right's.
+    /// Every part's LEDs in strip order, part by part ([`LampParts`]): the left half's, then the
+    /// right's, or the one piece's.
     pub lamps: Vec<Rgb>,
     /// All of it as one colour, for firmware without SET_FRAME.
     pub mix: Hsb,
 }
 
-/// The room id of a keyboard light's half: the left's LEDs come first in a frame.
-fn half_of(device: &str) -> Option<usize> {
+/// The part of the board a keyboard light's room device is, in frame order: the left half's
+/// LEDs come first; a one-piece keyboard is its only part.
+fn part_of(device: &str, parts: &LampParts) -> Option<usize> {
     match device {
         "keyboard:left" => Some(0),
         "keyboard:right" => Some(1),
+        KEYBOARD if parts.len() == 1 => Some(0),
         _ => None,
     }
 }
 
-/// The keyboard's lights in a rendered frame as one SET_FRAME frame. A light whose id is an LED
-/// number (the board profile's LED map) colours that LED; any other light (a half lit as one)
-/// colours every LED of its half that no numbered light covers. A one-piece keyboard, or a
-/// half missing from the room, gets the mix of everything.
-pub(crate) fn keyboard_frame(lights: &[(&str, &str, Rgb)]) -> Option<KeyboardFrame> {
+/// The keyboard's lights in a rendered frame as one SET_FRAME frame of `parts`' LEDs. A light
+/// whose id is an LED number (the board profile's LED map) colours that LED of its part; any
+/// other light (a part lit as one) colours every LED of its part that no numbered light covers.
+/// A part missing from the room gets the mix of everything.
+pub(crate) fn keyboard_frame(
+    lights: &[(&str, &str, Rgb)],
+    parts: &LampParts,
+) -> Option<KeyboardFrame> {
     let all: Vec<Rgb> = lights.iter().map(|(_, _, c)| *c).collect();
     let mix = mixed(&all)?;
-    let mut lamps = vec![mix; HALF_LAMPS * 2];
-    for half in 0..2 {
+    let mut lamps = vec![mix; parts.total()];
+    for part in 0..parts.len() {
         let own: Vec<(&str, Rgb)> = lights
             .iter()
-            .filter(|(d, _, _)| half_of(d) == Some(half))
+            .filter(|(d, _, _)| part_of(d, parts) == Some(part))
             .map(|(_, l, c)| (*l, *c))
             .collect();
         let whole: Vec<Rgb> = own
@@ -329,11 +342,11 @@ pub(crate) fn keyboard_frame(lights: &[(&str, &str, Rgb)]) -> Option<KeyboardFra
         let Some(fill) = fill else {
             continue;
         };
-        let slots = &mut lamps[half * HALF_LAMPS..(half + 1) * HALF_LAMPS];
+        let slots = &mut lamps[parts.range(part)];
         slots.fill(fill);
         for (l, c) in &own {
-            if let Some(i) = l.parse::<usize>().ok().filter(|i| *i < HALF_LAMPS) {
-                slots[i] = *c;
+            if let Some(slot) = l.parse::<usize>().ok().and_then(|i| slots.get_mut(i)) {
+                *slot = *c;
             }
         }
     }
@@ -393,6 +406,8 @@ pub struct Outputs {
     /// Dynamic Lighting devices, as Foxglove found them (only those in the room get frames).
     lamps: Vec<LampTarget>,
     keyboard: bool,
+    /// The keyboard's LEDs by part: the size of its frames (#561).
+    keyboard_parts: LampParts,
     pacing: Pacing,
     sent_case: BTreeMap<String, Vec<(usize, [u8; 3])>>,
     sent_lamps: BTreeMap<String, Vec<[u8; 3]>>,
@@ -421,6 +436,7 @@ impl Outputs {
             cases: Vec::new(),
             lamps: Vec::new(),
             keyboard: false,
+            keyboard_parts: LampParts::old_firmware(),
             pacing: Pacing::default(),
             sent_case: BTreeMap::new(),
             sent_lamps: BTreeMap::new(),
@@ -480,7 +496,19 @@ impl Outputs {
         self.cases = cases;
         self.repace();
         // Placed again: a drag or a monitor change moves the effect too.
-        self.keyboard_effect = keyboard_effect(&self.effect, &self.room);
+        self.keyboard_effect = keyboard_effect(&self.effect, &self.room, &self.keyboard_parts);
+        self.effect_sent = false;
+    }
+
+    /// The keyboard's LEDs by part (the board profile's, `boards::lamp_parts`): its frames and
+    /// its effect's LED points take that many. The keyboard's next frame goes in full.
+    pub fn set_keyboard_parts(&mut self, parts: LampParts) {
+        if parts == self.keyboard_parts {
+            return;
+        }
+        self.keyboard_parts = parts;
+        self.sent_keyboard = None;
+        self.keyboard_effect = keyboard_effect(&self.effect, &self.room, &self.keyboard_parts);
         self.effect_sent = false;
     }
 
@@ -527,7 +555,7 @@ impl Outputs {
         self.sent_case.clear();
         self.sent_lamps.clear();
         self.sent_keyboard = None;
-        self.keyboard_effect = keyboard_effect(&self.effect, &self.room);
+        self.keyboard_effect = keyboard_effect(&self.effect, &self.room, &self.keyboard_parts);
         self.effect_sent = false;
     }
 
@@ -585,7 +613,7 @@ impl Outputs {
                     .filter(|l| l.device.starts_with(KEYBOARD))
                     .map(|l| (l.device.as_str(), l.light.as_str(), l.colour))
                     .collect();
-                let Some(f) = keyboard_frame(&lights) else {
+                let Some(f) = keyboard_frame(&lights, &self.keyboard_parts) else {
                     continue;
                 };
                 if self.sent_keyboard.as_ref() != Some(&f) {
@@ -978,7 +1006,7 @@ mod tests {
                     colors: (0..5).map(|i| (i, ORANGE.0)).collect(),
                 },
                 Out::Keyboard(KeyboardFrame {
-                    lamps: vec![ORANGE; 2 * HALF_LAMPS],
+                    lamps: vec![ORANGE; corne().total()],
                     mix: hsb(ORANGE),
                 }),
             ]
@@ -1027,8 +1055,17 @@ mod tests {
         assert!(at(0) < at(1) && at(1) < at(2), "{first_lit:?}");
     }
 
+    /// The Eyelash Corne's LEDs: two halves of 21.
+    fn corne() -> LampParts {
+        crate::foxglove::boards::lamp_parts(Some(&crate::foxglove::fixtures::users_desk::board()))
+    }
+
+    /// The one-piece Plank 3's 61 LEDs, from its profile.
+    fn plank() -> LampParts {
+        crate::foxglove::boards::lamp_parts(Some(&crate::foxglove::fixtures::second_desk::board()))
+    }
+
     #[test]
-    #[ignore = "#561"]
     fn the_second_desks_keyboard_frame_has_one_colour_per_led() {
         let (room, cases) = second_desk();
         let still = Effect::Breathe {
@@ -1037,6 +1074,7 @@ mod tests {
             period_ms: 1000,
         };
         let mut o = Outputs::new(still, room, cases);
+        o.set_keyboard_parts(plank());
         let frame = o.frame(SceneTime(0)).into_iter().find_map(|o| match o {
             Out::Keyboard(f) => Some(f),
             _ => None,
@@ -1046,36 +1084,98 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "#561"]
     fn the_second_desks_keyboard_effect_places_every_led() {
         let (room, _) = second_desk();
-        let e = keyboard_effect(&scanline(), &room).expect("a scanline maps");
+        let e = keyboard_effect(&scanline(), &room, &plank()).expect("a scanline maps");
         let lamps = crate::foxglove::fixtures::second_desk::LAMPS;
-        let placed = e.lamps.map(|[l, r]| l.len() + r.len());
+        let placed = e
+            .lamps
+            .as_ref()
+            .map(|parts| parts.iter().map(Vec::len).sum::<usize>());
         assert_eq!(placed, Some(lamps), "every LED of the one piece");
+        // The one piece is one part, placed whole.
+        let whole = room.device(KEYBOARD).unwrap().rect;
+        assert_eq!(e.parts, [mm_rect(&whole)]);
+        assert_eq!(e.place(), (mm_rect(&whole), mm_rect(&whole)));
+    }
+
+    /// A ripple through the one-piece board: 61-LED frames whose colours move with the ring.
+    #[test]
+    fn a_ripple_on_the_second_desk_draws_every_led_of_the_one_piece() {
+        let (room, cases) = second_desk();
+        let kb = room.device(KEYBOARD).unwrap().rect;
+        let ripple = Effect::Ripple {
+            origin: foxglove_scene::Point::new(kb.x + kb.w / 2.0, kb.y + kb.h / 2.0),
+            colour: ORANGE,
+            background: Rgb::BLACK,
+            width_mm: 40.0,
+            period_ms: 2000,
+        };
+        let mut o = Outputs::new(ripple, room, cases);
+        o.set_keyboard_parts(plank());
+        let frames: Vec<KeyboardFrame> = (0..10)
+            .flat_map(|i| o.frame(SceneTime(i * 100)))
+            .filter_map(|o| match o {
+                Out::Keyboard(f) => Some(f),
+                _ => None,
+            })
+            .collect();
+        assert!(frames.len() > 3, "{}", frames.len());
+        assert!(frames.iter().all(|f| f.lamps.len() == 61));
+        assert!(
+            frames
+                .iter()
+                .any(|f| f.lamps.iter().any(|c| *c != f.lamps[0])),
+            "the ring lights some LEDs and not others"
+        );
+    }
+
+    /// A split board whose halves differ (30 + 24): each half's LEDs in its own part of the
+    /// frame, nothing of one half spilling into the other.
+    #[test]
+    fn uneven_halves_get_frames_of_their_own_size() {
+        let (red, blue) = (Rgb([255, 0, 0]), Rgb([0, 0, 255]));
+        let parts = LampParts::new(&[30, 24]).unwrap();
+        let mut lights: Vec<(&str, &str, Rgb)> = Vec::new();
+        let ids: Vec<String> = (0..30).map(|i| i.to_string()).collect();
+        for id in &ids {
+            lights.push(("keyboard:left", id, red));
+        }
+        for id in &ids[..24] {
+            lights.push(("keyboard:right", id, blue));
+        }
+        let f = keyboard_frame(&lights, &parts).unwrap();
+        assert_eq!(f.lamps.len(), 54);
+        assert_eq!(f.lamps[..30], [red; 30]);
+        assert_eq!(f.lamps[30..], [blue; 24]);
     }
 
     #[test]
     fn each_half_gets_its_own_colour_and_numbered_leds_their_own() {
         let (red, blue, green) = (Rgb([255, 0, 0]), Rgb([0, 0, 255]), Rgb([0, 255, 0]));
+        let corne = corne();
+        let half = corne.count(0);
         // Per half (the default): the left's 21 LEDs red, the right's blue, one colour mixed.
-        let f = keyboard_frame(&[
-            ("keyboard:left", "all", red),
-            ("keyboard:right", "all", blue),
-        ])
+        let f = keyboard_frame(
+            &[
+                ("keyboard:left", "all", red),
+                ("keyboard:right", "all", blue),
+            ],
+            &corne,
+        )
         .unwrap();
-        assert_eq!(f.lamps[..HALF_LAMPS], [red; HALF_LAMPS]);
-        assert_eq!(f.lamps[HALF_LAMPS..], [blue; HALF_LAMPS]);
+        assert_eq!(f.lamps[..half], vec![red; half]);
+        assert_eq!(f.lamps[half..], vec![blue; half]);
         assert_eq!(f.mix, hsb(red.mix(blue, 0.5)));
         // Per LED (a board profile with an LED map): each numbered light its LED; LEDs the map
         // leaves out get the half's mix.
         let mut lights: Vec<(&str, &str, Rgb)> = Vec::new();
-        let ids: Vec<String> = (0..HALF_LAMPS).map(|i| i.to_string()).collect();
+        let ids: Vec<String> = (0..half).map(|i| i.to_string()).collect();
         for (i, id) in ids.iter().enumerate().take(20) {
             lights.push(("keyboard:left", id, if i == 3 { green } else { red }));
         }
         lights.push(("keyboard:right", "all", blue));
-        let f = keyboard_frame(&lights).unwrap();
+        let f = keyboard_frame(&lights, &corne).unwrap();
         assert_eq!(f.lamps[3], green);
         assert_eq!(f.lamps[0], red);
         let left: Vec<Rgb> = lights
@@ -1084,11 +1184,11 @@ mod tests {
             .map(|(_, _, c)| *c)
             .collect();
         assert_eq!(f.lamps[20], mixed(&left).unwrap(), "the half's mix");
-        assert_eq!(f.lamps[HALF_LAMPS], blue);
-        // A one-piece keyboard (or one half placed): the mix everywhere.
-        let f = keyboard_frame(&[("keyboard", "all", green)]).unwrap();
-        assert_eq!(f.lamps, vec![green; 2 * HALF_LAMPS]);
-        assert!(keyboard_frame(&[]).is_none());
+        assert_eq!(f.lamps[half], blue);
+        // A one-piece keyboard on split firmware (or one half placed): the mix everywhere.
+        let f = keyboard_frame(&[("keyboard", "all", green)], &corne).unwrap();
+        assert_eq!(f.lamps, vec![green; corne.total()]);
+        assert!(keyboard_frame(&[], &corne).is_none());
     }
 
     #[test]
@@ -1161,6 +1261,8 @@ mod tests {
     fn scenes_map_onto_the_keyboards_own_effects() {
         use digitalis::protocol::EffectKind;
         let (room, _) = desk();
+        let corne = corne();
+        let keyboard_effect = |e: &Effect, room: &RoomMap| keyboard_effect(e, room, &corne);
         let e = keyboard_effect(&scanline(), &room).expect("a scanline maps");
         assert_eq!(e.effect.kind, EffectKind::Scanline);
         assert_eq!(e.effect.colours, [ORANGE.0, [0, 0, 0]]);
@@ -1171,8 +1273,8 @@ mod tests {
             let r = room.devices.iter().find(|d| d.id == id).unwrap().rect;
             [r.x, r.y, r.w, r.h].map(|v| v.round() as i16)
         };
-        assert_eq!(e.left, rect("keyboard:left"));
-        assert_eq!(e.right, rect("keyboard:right"));
+        assert_eq!(e.parts, [rect("keyboard:left"), rect("keyboard:right")]);
+        assert_eq!(e.place(), (rect("keyboard:left"), rect("keyboard:right")));
         let b = room.bounds;
         assert_eq!(e.room, [b.x, b.y, b.w, b.h].map(|v| v.round() as i16));
         assert_eq!(e.mix, hsb(ORANGE.mix(Rgb::BLACK, 0.5)));
@@ -1245,7 +1347,8 @@ mod tests {
     #[test]
     fn the_effects_clock_is_the_scenes_phase() {
         let (room, _) = desk();
-        let e = keyboard_effect(&scanline(), &room).unwrap();
+        let corne = corne();
+        let e = keyboard_effect(&scanline(), &room, &corne).unwrap();
         assert_eq!(e.at(SceneTime(0)).clock_ms, 0);
         assert_eq!(e.at(SceneTime(10_500)).clock_ms, 2500);
         assert_eq!(e.at(SceneTime(-500)).clock_ms, 3500, "before the epoch");
@@ -1254,9 +1357,9 @@ mod tests {
             to: ORANGE,
             period_ms: 0,
         };
-        let s = keyboard_effect(&still, &room).unwrap();
+        let s = keyboard_effect(&still, &room, &corne).unwrap();
         assert_eq!(s.at(SceneTime(1234)).clock_ms, 0);
-        // A one-piece keyboard is split down the middle.
+        // A one-piece keyboard is one part, placed whole (PLACE's two rectangles both it).
         let mut one = room.clone();
         let left = one
             .devices
@@ -1266,8 +1369,9 @@ mod tests {
         one.devices.retain(|d| d.id != "keyboard:right");
         one.devices[left].id = KEYBOARD.into();
         one.devices[left].rect = foxglove_scene::Rect::new(0.0, 500.0, 300.0, 90.0);
-        let e = keyboard_effect(&scanline(), &one).unwrap();
-        assert_eq!((e.left, e.right), ([0, 500, 150, 90], [150, 500, 150, 90]));
+        let e = keyboard_effect(&scanline(), &one, &plank()).unwrap();
+        assert_eq!(e.parts, [[0, 500, 300, 90]]);
+        assert_eq!(e.place(), ([0, 500, 300, 90], [0, 500, 300, 90]));
     }
 
     #[test]

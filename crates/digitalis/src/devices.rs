@@ -21,6 +21,7 @@ use foxglove_devices::{
     Power, PowerInfo, Screens, Value, Zone,
 };
 
+use crate::lamps::LampParts;
 use crate::link::{Event, EventSubscription, Link};
 use crate::protocol::{capabilities, Hello, InvokeStatus, RgbHalf, RgbState};
 use crate::{art, panel, settings};
@@ -188,6 +189,9 @@ pub struct DigitalisDevice {
     /// Its key in the colour calibration registry: underglow colours go through that
     /// calibration (`calibration::send_hsb`).
     calibration_key: Mutex<String>,
+    /// Its LEDs by part, in SET_FRAME's order (#561): what the app learnt from the board
+    /// profile, else the old firmware's.
+    lamp_parts: Mutex<LampParts>,
     _events: EventSubscription,
     _reports: EventSubscription,
 }
@@ -279,6 +283,7 @@ impl DigitalisDevice {
             caps: caps(&hello),
             hello: Mutex::new(hello),
             panel_size: Mutex::new(None),
+            lamp_parts: Mutex::new(LampParts::old_firmware()),
             sink,
             layers,
             behaviors: Mutex::new(Vec::new()),
@@ -300,6 +305,19 @@ impl DigitalisDevice {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// Its LEDs by part, in SET_FRAME's order (#561).
+    pub fn lamp_parts(&self) -> LampParts {
+        self.lamp_parts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The board's LEDs by part, from its profile: frames are split (and calibrated) by them.
+    pub fn set_lamp_parts(&self, parts: LampParts) {
+        *self.lamp_parts.lock().unwrap_or_else(|e| e.into_inner()) = parts;
     }
 
     /// Stores its calibration under another key.
@@ -380,8 +398,8 @@ impl DigitalisDevice {
         }
     }
 
-    /// SET_FRAME (#272): per-LED colours from lamp `start` on (0-20 left, 21-41 right, in each
-    /// strip's chain order). The first frame takes both halves' lights from the keyboard's own
+    /// SET_FRAME (#272): per-LED colours from lamp `start` on, part by part in each strip's chain
+    /// order ([`Self::lamp_parts`]). The first frame takes both halves' lights from the keyboard's own
     /// effect until [`Self::release_frame`] or the keyboard's timeout (the reply says how long).
     /// The colours go as they are, without the colour calibration. Unsupported on firmware
     /// without [`capabilities::FRAMES`] (GA builds keep [`Lighting::set_color`]).
@@ -697,17 +715,27 @@ impl Lighting for DigitalisDevice {
         Ok(())
     }
 
-    /// SET_FRAME (#272): both halves' LEDs in strip order (0-20 left, 21-41 right), each half
-    /// through its own colour calibration (the zone `left` or `right`, else the keyboard's).
+    /// SET_FRAME (#272): every part's LEDs in strip order ([`DigitalisDevice::lamp_parts`]); a
+    /// split board's halves each through their own colour calibration (the zone `left` or
+    /// `right`), a one-piece board's through the keyboard's. A frame past what a frame
+    /// addresses is refused.
     fn set_frame(&self, frame: &[foxglove_devices::Rgb]) -> PResult<()> {
+        if frame.len() > crate::lamps::MAX_LAMPS {
+            return Err(err(crate::lamps::LampsError::TooMany(frame.len()).into()));
+        }
         let key = self.calibration_key();
-        let half = crate::protocol::frame::HALF_LAMPS;
+        let parts = self.lamp_parts();
         let colours: Vec<[u8; 3]> = frame
             .iter()
             .enumerate()
             .map(|(i, &c)| {
-                let zone = if i < half { "left" } else { "right" };
-                let c = calibration::global().rgb(&key, Some(zone), None, c);
+                let part = parts.part_of(i).map(|(p, _)| p);
+                let zone = match (parts.len(), part) {
+                    (2, Some(0)) => Some("left"),
+                    (2, _) => Some("right"),
+                    _ => None,
+                };
+                let c = calibration::global().rgb(&key, zone, None, c);
                 [c.r, c.g, c.b]
             })
             .collect();
@@ -1098,6 +1126,34 @@ mod tests {
                 (protocol::frame::RELEASE, 0, vec![]),
             ]
         );
+    }
+
+    #[test]
+    fn a_frame_takes_the_boards_own_lamp_count() {
+        // Not the Corne: a split board of 30 + 24 LEDs, then a one-piece board of 61.
+        let (dev, fake, _bus) = device(capabilities::SETTINGS_RGB | capabilities::FRAMES);
+        assert_eq!(dev.lamp_parts(), LampParts::old_firmware());
+        dev.set_lamp_parts(LampParts::new(&[30, 24]).unwrap());
+        let light = dev.lighting().unwrap();
+        let red = foxglove_devices::Rgb { r: 255, g: 0, b: 0 };
+        light.set_frame(&[red; 54]).unwrap();
+        dev.set_lamp_parts(LampParts::new(&[61]).unwrap());
+        light.set_frame(&[red; 61]).unwrap();
+        let starts: Vec<(u8, u8, u8)> = fake
+            .written
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| r[..2] == [protocol::SETTINGS, protocol::settings::FRAME])
+            .map(|r| (r[2], r[3], r[4]))
+            .collect();
+        let show = protocol::frame::SHOW;
+        assert_eq!(starts[5], (show, 45, 9), "54 lamps: 6 reports");
+        assert_eq!(starts[12], (show, 54, 7), "61 lamps: 7 reports");
+        // Past one byte of lamp index: refused, nothing sent.
+        let before = fake.written.lock().unwrap().len();
+        assert!(light.set_frame(&[red; 257]).is_err());
+        assert_eq!(fake.written.lock().unwrap().len(), before);
     }
 
     #[test]

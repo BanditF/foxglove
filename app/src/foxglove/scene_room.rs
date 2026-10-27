@@ -116,7 +116,11 @@ fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
     if board.is_some_and(|b| b.halves == 1) {
         // A one-piece board's drawing is its left half; the right is the mirror.
         let whole = Point::new(half.x * 2.0, half.y);
-        return vec![DeviceInfo::whole("keyboard", name, DeviceKind::Keyboard).with_size(whole)];
+        let mut one = DeviceInfo::whole("keyboard", name, DeviceKind::Keyboard).with_size(whole);
+        if let Some(lights) = leds(board, &drawing, 0) {
+            one.lights = lights;
+        }
+        return vec![one];
     }
     let mut halves = vec![
         DeviceInfo::whole(
@@ -133,31 +137,31 @@ fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
         .with_size(half),
     ];
     for (i, d) in halves.iter_mut().enumerate() {
-        if let Some(lights) = leds(board, &drawing, i == 1) {
+        if let Some(lights) = leds(board, &drawing, i) {
             d.lights = lights;
         }
     }
     halves
 }
 
-/// One half's LEDs at their keys, numbered in strip order (the scene output's SET_FRAME lamps),
-/// from the board profile's LED map once it is checked on the board (#90 row G) or shipped with
-/// the profile. `None` (one light for the half) without such a map, or when it names a key the
-/// drawing hasn't.
-fn leds(board: Option<&Board>, drawing: &Drawing, right: bool) -> Option<Vec<LightSpec>> {
+/// One part's LEDs at their keys (part 0 the left half or the one piece, 1 the right half),
+/// numbered in its strip's order (the scene output's SET_FRAME lamps of that part), from the
+/// board profile's LED map once it is checked on the board (#90 row G) or shipped with the
+/// profile. As many as the profile gives the part (#561). `None` (one light for the part)
+/// without such a map, or when it names a key the drawing hasn't.
+fn leds(board: Option<&Board>, drawing: &Drawing, part: usize) -> Option<Vec<LightSpec>> {
     let b = board?;
     let l = b.lighting.as_ref()?;
     if !l.led_map_usable() {
         return None;
     }
+    let parts = l.lamp_parts(b.halves)?;
     if !l.led_points.is_empty() {
-        return found_leds(l, b.halves, drawing, right);
+        return found_leds(l, &parts, drawing, part);
     }
-    if l.led_keys.is_empty() {
-        return None;
-    }
-    let keys = drawing.keys(right);
-    l.led_keys
+    let led_keys = l.part_keys(&parts, part).filter(|k| !k.is_empty())?;
+    let keys = drawing.keys(part == 1);
+    led_keys
         .iter()
         .enumerate()
         .map(|(i, &k)| {
@@ -170,18 +174,16 @@ fn leds(board: Option<&Board>, drawing: &Drawing, right: bool) -> Option<Vec<Lig
         .collect()
 }
 
-/// One half's LEDs where "Find my LEDs" saw them (points on the half's drawing, key units),
-/// numbered in strip order. One the user couldn't see sits in the half's centre, so it takes
-/// the colour of the middle of the half rather than a random spot.
+/// One part's LEDs where "Find my LEDs" saw them (points on the part's drawing, key units),
+/// numbered in strip order. One the user couldn't see sits in the part's centre, so it takes
+/// the colour of the middle of the part rather than a random spot.
 fn found_leds(
     l: &super::boards::Lighting,
-    halves: u8,
+    parts: &digitalis::lamps::LampParts,
     drawing: &Drawing,
-    right: bool,
+    part: usize,
 ) -> Option<Vec<LightSpec>> {
-    let per_half = l.per_half(halves);
-    let first = if right { per_half } else { 0 };
-    let points = l.led_points.get(first..first + per_half)?;
+    let points = l.led_points.get(parts.range(part))?;
     let (w, h) = drawing.size();
     Some(
         points
@@ -547,7 +549,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[ignore = "#561"]
     fn a_one_piece_board_lights_each_of_its_leds_at_its_key() {
         let devices = second_desk_devices();
         let board = &devices[0];
@@ -712,6 +713,24 @@ pub(crate) mod tests {
             .is_some_and(|p| p.x > 0.0 && p.x < size.x && p.y < size.y)));
         // A map naming a key the drawing hasn't: one light per half again.
         board.lighting.as_mut().unwrap().led_keys[3] = 99;
+        assert!(keyboard(Some(&board)).iter().all(|d| d.lights.len() == 1));
+    }
+
+    #[test]
+    fn uneven_halves_light_each_halfs_own_leds() {
+        // Not the Corne's 21 + 21: a split board of 21 + 18, its map listing every LED.
+        let mut board = users_desk::board();
+        let lighting = board.lighting.as_mut().unwrap();
+        lighting.led_map = super::super::boards::LED_MAP_CHECKED.into();
+        let left = lighting.led_keys.clone();
+        lighting.led_keys.extend_from_slice(&left[..18]);
+        (lighting.lamps, lighting.parts) = (39, vec![21, 18]);
+        let halves = keyboard(Some(&board));
+        assert_eq!((halves[0].lights.len(), halves[1].lights.len()), (21, 18));
+        assert_eq!(halves[1].lights[17].id, "17");
+        // Parts that don't add up to the lamps: shared out evenly, and the map fits neither.
+        let lighting = board.lighting.as_mut().unwrap();
+        (lighting.lamps, lighting.parts) = (40, vec![30, 30]);
         assert!(keyboard(Some(&board)).iter().all(|d| d.lights.len() == 1));
     }
 

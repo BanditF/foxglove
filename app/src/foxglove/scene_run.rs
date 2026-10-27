@@ -443,6 +443,11 @@ pub fn devices_changed() {
     tell(Ctl::Devices);
 }
 
+/// The keyboard's LEDs by part now: its board profile's (#561).
+fn keyboard_parts() -> digitalis::lamps::LampParts {
+    super::boards::lamp_parts(super::boards::current().as_ref())
+}
+
 /// The room as it is now, the boards Foxglove drives in it and its Dynamic Lighting devices.
 fn gather() -> (foxglove_scene::RoomMap, Vec<CaseTarget>, Vec<LampTarget>) {
     use foxglove_devices::pc_lighting::Control;
@@ -502,10 +507,11 @@ fn control(
     // The room as last placed, for the wallpapers when the look changes.
     let mut placed = room.clone();
     let outputs = Arc::new(Mutex::new(Outputs::new(effect, room, cases)));
-    outputs
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .set_lamps(lamp_targets);
+    {
+        let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
+        o.set_keyboard_parts(keyboard_parts());
+        o.set_lamps(lamp_targets);
+    }
     // Declared after `give_back`, so dropped before it (a panic too): lets every Dynamic
     // Lighting device go before the end is reported. Package identity is read here once, off
     // the UI thread, for the Scenes page.
@@ -575,6 +581,7 @@ fn control(
             placed = room.clone();
             lamp_writer.devices_changed();
             let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
+            o.set_keyboard_parts(keyboard_parts());
             o.set_room(room, cases);
             o.set_lamps(lamp_targets);
         }
@@ -834,7 +841,7 @@ struct KeyboardLease {
     effect_on: bool,
     /// The LED points (EFFECT LAMPS, #550) this keyboard last took: sent again only when they
     /// change, or after a reconnect (the keyboard forgets them on a reboot).
-    lamps_sent: Option<Option<[Vec<[u16; 2]>; 2]>>,
+    lamps_sent: Option<Option<Vec<Vec<[u16; 2]>>>>,
 }
 
 /// Where the keyboard's effect goes: the host-link keyboard, or a fake in tests.
@@ -860,16 +867,18 @@ impl EffectTarget for digitalis::devices::DigitalisDevice {
     }
 }
 
-/// EFFECT LAMPS for both halves: the room's points, or the firmware's table again without
+/// EFFECT LAMPS for every part: the room's points, or the firmware's table again without
 /// them. Firmware that takes no points keeps its table (the scene then uses frames for a map
 /// from "Find my LEDs", led_map::effects_place_leds).
 fn send_lamps(target: &dyn EffectTarget, e: &KeyboardEffect) -> Result<(), DeviceError> {
-    for half in 0..2u8 {
+    for part in 0..e.parts.len() {
         let points = e
             .lamps
             .as_ref()
-            .map_or(&[][..], |l| &l[usize::from(half)][..]);
-        match target.lamps(half, points) {
+            .and_then(|l| l.get(part))
+            .map_or(&[][..], |p| &p[..]);
+        let Ok(part) = u8::try_from(part) else { break };
+        match target.lamps(part, points) {
             Ok(()) | Err(DeviceError::Unsupported) => {}
             Err(err) => return Err(err),
         }
@@ -945,8 +954,9 @@ impl KeyboardLease {
         } else {
             send_lamps(target, e).inspect(|()| self.lamps_sent = Some(e.lamps.clone()))
         };
+        let (left, right) = e.place();
         let sent = lamps
-            .and_then(|()| target.place(e.room, e.left, e.right))
+            .and_then(|()| target.place(e.room, left, right))
             .and_then(|()| target.run(&e.at(clock.now())));
         match sent {
             Ok(()) => {
@@ -1424,7 +1434,8 @@ mod tests {
         }
     }
 
-    const HALF: usize = super::super::scene_output::HALF_LAMPS;
+    /// The test keyboard's LEDs per half (its frame is two of them).
+    const HALF: usize = 21;
 
     impl Lighting for Fake {
         fn layout(&self) -> foxglove_devices::Result<Vec<Zone>> {
@@ -1529,8 +1540,7 @@ mod tests {
                 origin_mm: [0, 0],
             },
             room: [0, 0, 600, 700],
-            left: [100, 500, 124, 86],
-            right: [304, 500, 124, 86],
+            parts: vec![[100, 500, 124, 86], [304, 500, 124, 86]],
             mix,
             lamps: None,
         }
@@ -1560,7 +1570,7 @@ mod tests {
         );
         // With the user's LED map (#550), both halves' points go first, every time.
         let mut mapped = scan_effect(c(30));
-        mapped.lamps = Some([vec![[100, 200]; 21], vec![[900, 200]; 21]]);
+        mapped.lamps = Some(vec![vec![[100, 200]; HALF], vec![[900, 200]; HALF]]);
         kb.effect_ops.lock().unwrap().clear();
         scene
             .show_effect(&mut a, "kb", &kb, &kb, &mapped, &clock, &again)

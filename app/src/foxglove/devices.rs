@@ -63,6 +63,8 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
         let (actions, underglow) = ACTIONS.lock().unwrap_or_else(|e| e.into_inner()).clone();
         device.set_behaviors(actions);
         device.set_underglow(underglow);
+        // Its LEDs by part, from the profile just read (#561): frames are that size.
+        device.set_lamp_parts(super::boards::lamp_parts(super::boards::current().as_ref()));
         device
     });
     let out = cached.clone();
