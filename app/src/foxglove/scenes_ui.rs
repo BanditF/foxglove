@@ -803,6 +803,11 @@ fn room_map(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent
         painter.rect_stroke(r, 3.0, Stroke::new(1.0, p.line), egui::StrokeKind::Inside);
     }
     let mut frame = effect.render(&room, v.t);
+    if v.look.kind == Kind::Gradient {
+        // A still look asks for no more frames, so nothing would finish the fade: show where
+        // it settles.
+        draft.ambient.reset();
+    }
     draft.ambient.apply(&mut frame, &room);
     let keyboard = super::scene_output::mixed(
         &frame

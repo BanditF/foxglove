@@ -408,7 +408,8 @@ impl Outputs {
     }
 
     /// Another look while the scene runs (the Scenes page, #487): every device gets the next
-    /// frame in full.
+    /// frame in full. The ambient lights fade across to the new look rather than jumping (so
+    /// the case is written at its own rate until they settle, a few seconds).
     pub fn set_effect(&mut self, effect: Effect) {
         self.effect = effect;
         self.sent_case.clear();
@@ -646,7 +647,10 @@ mod tests {
             interior <= 12,
             "the interior light eases: {interior} per write"
         );
-        assert!(high - low >= 10, "and fades in and out: {low}..{high}");
+        assert!(
+            high.saturating_sub(low) >= 10,
+            "and fades in and out: {low}..{high}"
+        );
     }
 
     #[test]
