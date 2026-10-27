@@ -151,6 +151,7 @@ pub fn set_page(page: Page) {
     if page != Page::Lights {
         // Leaving the Lights page ends the colour calibrator as Cancel would.
         super::calibrate_ui::cancel();
+        super::led_map_ui::cancel();
     }
     CURRENT.set(Some(page));
     if let Err(e) = super::store::save("window", &WindowSettings { page }) {

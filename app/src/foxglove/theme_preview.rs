@@ -571,6 +571,11 @@ struct Samples {
         crate::foxglove::calibrate_ui::View,
         crate::foxglove::calibrate_ui::Wizard,
     )>,
+    /// "Find my LEDs", open in place of the Lights page's cards.
+    leds: Option<(
+        crate::foxglove::led_map_ui::View,
+        crate::foxglove::led_map::Wizard,
+    )>,
     screens: Option<crate::foxglove::screens::Snapshot>,
     art: Option<(
         crate::foxglove::art_service::Snapshot,
@@ -597,6 +602,7 @@ impl Samples {
             pc: crate::foxglove::pc_lights_ui::tests::sample(),
             wizard: Default::default(),
             calibrate: None,
+            leds: None,
             screens: Some(sample_screens()),
             art: Some(crate::foxglove::art_ui::tests::sample()),
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -619,6 +625,7 @@ impl Samples {
             pc: Default::default(),
             wizard: Default::default(),
             calibrate: None,
+            leds: None,
             screens: None,
             art: None,
             plugins: crate::foxglove::plugins_ui::tests::sample(),
@@ -685,6 +692,7 @@ fn show_samples(page: crate::foxglove::shell::Page, samples: &Samples) {
     crate::foxglove::battery_dim_ui::PREVIEW.set(Some(samples.battery_dim));
     crate::foxglove::pc_lights_ui::PREVIEW.set(Some((samples.pc.clone(), samples.wizard.clone())));
     crate::foxglove::calibrate_ui::PREVIEW.set(samples.calibrate.clone());
+    crate::foxglove::led_map_ui::PREVIEW.set(samples.leds.clone());
     crate::foxglove::screens_ui::PREVIEW.set(Some(samples.screens.clone().unwrap_or_default()));
     crate::foxglove::art_ui::PREVIEW.set(Some(samples.art.clone().unwrap_or_default()));
     crate::foxglove::plugins_ui::PREVIEW.set(Some(samples.plugins.clone()));
@@ -698,6 +706,7 @@ fn clear_samples() {
     crate::foxglove::battery_dim_ui::PREVIEW.set(None);
     crate::foxglove::pc_lights_ui::PREVIEW.set(None);
     crate::foxglove::calibrate_ui::PREVIEW.set(None);
+    crate::foxglove::led_map_ui::PREVIEW.set(None);
     crate::foxglove::screens_ui::PREVIEW.set(None);
     crate::foxglove::art_ui::PREVIEW.set(None);
     crate::foxglove::plugins_ui::PREVIEW.set(None);
@@ -1443,6 +1452,54 @@ fn pc_lights_render() {
     assert!(count(&fresh, DARK.warn) < count(&with, DARK.warn));
     assert_ne!(with, fresh);
     assert_ne!(fresh, none);
+}
+
+/// "Find my LEDs" (#90 row G): the Keyboard card's entry, the first LED while it lights, one
+/// mid-way on each half with the LEDs placed so far, the end with Save, and the Scenes page's
+/// prompt while the LEDs aren't placed.
+#[test]
+fn led_map_renders() {
+    use crate::foxglove::led_map_ui::tests::sample;
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    let entry = shell_preview_with(Page::Lights, &Samples::full(), 1180.0);
+    keep("ui-ledmap-entry.png", &entry);
+    let mut shots = Vec::new();
+    for (name, answered, lit) in [
+        ("first", 0, false),
+        ("left", 9, true),
+        ("right", 30, true),
+        ("done", 42, true),
+    ] {
+        let mut s = Samples::full();
+        let (mut v, w) = sample(answered);
+        v.lit = lit;
+        s.leds = Some((v, w));
+        let img = shell_preview_with(Page::Lights, &s, 900.0);
+        keep(&format!("ui-ledmap-{name}.png"), &img);
+        shots.push(img);
+    }
+    // The LEDs placed so far are accent dots: more of them as it goes on.
+    let dots: Vec<usize> = shots.iter().map(|i| count(i, DARK.accent)).collect();
+    assert!(dots[1] > dots[0] && dots[2] > dots[1], "{dots:?}");
+    for pair in shots.windows(2) {
+        assert_ne!(pair[0], pair[1]);
+    }
+    let mut s = Samples::full();
+    s.scenes.0.keyboard_frames = true;
+    s.scenes.0.leds_placed = false;
+    let prompt = shell_preview_with(Page::Scenes, &s, 1000.0);
+    keep("ui-ledmap-scenes-prompt.png", &prompt);
+    let placed = shell_preview_with(Page::Scenes, &Samples::full(), 1000.0);
+    assert!(
+        count(&prompt, DARK.warn) > count(&placed, DARK.warn),
+        "the prompt"
+    );
 }
 
 /// The colour calibrator on the Lights page: the device list with "Calibrate…", then each of

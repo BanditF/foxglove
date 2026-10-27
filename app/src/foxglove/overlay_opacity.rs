@@ -114,7 +114,8 @@ fn hold(id: egui::Id, dragging: bool) -> bool {
     }
 }
 
-/// Settings closed (or was minimized, which closes it): no slider is dragged any more.
+/// Settings closed (or was minimized, which closes it) or lost the focus: no slider is dragged
+/// any more.
 pub fn release_preview() {
     PREVIEW.set(None);
 }

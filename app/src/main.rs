@@ -71,6 +71,7 @@ fn main() {
     foxglove::autostart::start(); // Foxglove: Start with Windows
     let result = platform::run(settings, available_devices);
     foxglove::calibrate_ui::cancel(); // Foxglove: quitting mid-calibration puts the colours back
+    foxglove::led_map_ui::quit(); // Foxglove: quitting mid "Find my LEDs" gives the lights back
     foxglove::scenes_ui::quitting(); // Foxglove (#489): no profile starts a scene now
     foxglove::scene_run::quit(); // Foxglove (#485, #542): a running scene gives the lights back (or keeps its keyboard effect)
     foxglove::live_feed::stop(); // Foxglove (#499)

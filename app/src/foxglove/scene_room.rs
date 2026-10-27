@@ -143,8 +143,15 @@ fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
 /// from the board profile's LED map once it is checked on the board (#90 row G). `None` (one
 /// light for the half) without a checked map, or when it names a key the drawing hasn't.
 fn leds(board: Option<&Board>, drawing: &Drawing, right: bool) -> Option<Vec<LightSpec>> {
-    let l = board?.lighting.as_ref()?;
-    if l.led_map != super::boards::LED_MAP_CHECKED || l.led_keys.is_empty() {
+    let b = board?;
+    let l = b.lighting.as_ref()?;
+    if l.led_map != super::boards::LED_MAP_CHECKED {
+        return None;
+    }
+    if !l.led_points.is_empty() {
+        return found_leds(l, b.halves, drawing, right);
+    }
+    if l.led_keys.is_empty() {
         return None;
     }
     let keys = drawing.keys(right);
@@ -159,6 +166,31 @@ fn leds(board: Option<&Board>, drawing: &Drawing, right: bool) -> Option<Vec<Lig
             ))
         })
         .collect()
+}
+
+/// One half's LEDs where "Find my LEDs" saw them (points on the half's drawing, key units),
+/// numbered in strip order. One the user couldn't see sits in the half's centre, so it takes
+/// the colour of the middle of the half rather than a random spot.
+fn found_leds(
+    l: &super::boards::Lighting,
+    halves: u8,
+    drawing: &Drawing,
+    right: bool,
+) -> Option<Vec<LightSpec>> {
+    let per_half = l.per_half(halves);
+    let first = if right { per_half } else { 0 };
+    let points = l.led_points.get(first..first + per_half)?;
+    let (w, h) = drawing.size();
+    Some(
+        points
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let [x, y] = p.unwrap_or([w / 2.0, h / 2.0]);
+                LightSpec::point(i.to_string(), Some(Point::new(x * KEY_MM, y * KEY_MM)))
+            })
+            .collect(),
+    )
 }
 
 /// The `vvvv:pppp` a lighting device's key starts with.

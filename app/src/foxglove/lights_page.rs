@@ -43,6 +43,8 @@ pub struct View {
     pub controls: bool,
     /// A change is being sent.
     pub busy: bool,
+    /// "Find my LEDs…" can run (frames and a board profile), and the LEDs are placed.
+    pub leds: (bool, bool),
 }
 
 /// What the user is choosing but hasn't sent: the colour until Apply, the speed until the
@@ -80,6 +82,7 @@ pub enum Intent {
     Follow(bool),
     AskFollow,
     Refresh,
+    FindLeds,
 }
 
 static DRAFT: Mutex<Draft> = Mutex::new(Draft {
@@ -96,6 +99,10 @@ thread_local! {
 
 /// The Lights section: the page, and what its clicks do.
 pub fn show(ui: &mut egui::Ui) {
+    // "Find my LEDs…" replaces the page's cards while it's open.
+    if super::led_map_ui::show(ui) {
+        return;
+    }
     #[cfg(test)]
     if let Some(v) = PREVIEW.with_borrow(|v| v.clone()) {
         let mut draft = Draft::default();
@@ -117,6 +124,10 @@ pub fn show(ui: &mut egui::Ui) {
         accent: super::accent::enabled(),
         controls: super::keyboard_actions::underglow_behavior().is_some(),
         busy: ks::invoking(),
+        leds: (
+            super::led_map_ui::available(),
+            super::led_map::checked(super::boards::current().as_ref()),
+        ),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     draft.settle(view.state.as_ref());
@@ -138,6 +149,11 @@ pub fn show(ui: &mut egui::Ui) {
             Intent::AskFollow => ks::ask_rgb_sync(None, ctx.clone()),
             Intent::Refresh => {
                 ks::refresh_rgb_state();
+                ctx.request_repaint();
+            }
+            Intent::FindLeds => {
+                super::calibrate_ui::cancel();
+                super::led_map_ui::open(&ctx);
                 ctx.request_repaint();
             }
         }
@@ -380,6 +396,10 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
     // Dimming on battery (firmware D7 0E), kept apart so the page stays as it was.
     ui.add_space(4.0);
     super::battery_dim_ui::show(ui);
+    ui.add_space(4.0);
+    if super::led_map_ui::entry(ui, v.leds.0, v.leds.1) {
+        out.push(Intent::FindLeds);
+    }
     if !v.controls {
         ui.add_space(2.0);
         ui.weak("The controls need an RGB key (&rgb_ug) somewhere in the keymap.");
@@ -547,6 +567,7 @@ pub mod tests {
             accent: false,
             controls: true,
             busy: false,
+            leds: (true, false),
         }
     }
 
@@ -558,6 +579,7 @@ pub mod tests {
             accent: false,
             controls: false,
             busy: false,
+            leds: (false, false),
         }
     }
 }

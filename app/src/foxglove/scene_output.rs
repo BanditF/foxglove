@@ -643,8 +643,10 @@ mod tests {
             }
         }
         assert!(fans >= 40, "the fans ping: {fans}");
+        // The case writes every 60 ms or more, so a write carries two frames of easing at most:
+        // about 10 % of the way from black to full orange (a ping is the whole way at once).
         assert!(
-            interior <= 12,
+            interior <= 24,
             "the interior light eases: {interior} per write"
         );
         assert!(

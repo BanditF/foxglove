@@ -299,6 +299,12 @@ scanline can run down the monitors, through the case's fans and on into the keys
   which devices the scene lights: today the case (a colour per zone) and the keyboard (a colour
   per half on firmware with per-LED frames, otherwise one colour for both halves). Others, such
   as a Logitech mouse, are shown only.
+- **Find my LEDs…** (Lights page, Keyboard card; the Scenes page offers it too while the
+  keyboard lights a colour per half): once per keyboard, Foxglove lights one LED at a time in
+  bright white. Click where you see it on the drawing, under a key or between keys; **Can't see
+  it** skips one, **Back** lights the one before again, and the count shows how far along you
+  are. **Save** at the end, and scenes light every LED where it is. Cancel (or leaving the
+  page) gives the lights back as they were. To do it again, open it again.
 - **Effect:** Scanline, Sweep, Ripple, Breathe, Gradient or Drift, then its colour (and
   background) or palette, speed, direction and width. Changes show on the map at once, and on
   the lights too while the scene runs.
