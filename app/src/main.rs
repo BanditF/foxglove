@@ -55,6 +55,7 @@ fn main() {
     foxglove::battery::start(); // Foxglove (#372, #373)
     foxglove::via_host::start();
     foxglove::pc_lights::start(); // Foxglove (#423): case and peripheral lights
+    foxglove::scene_run::start_from_env(); // Foxglove (#485): the live check's demo scene
     foxglove::plugin_install::autoinstall();
     foxglove::plugin_runner::sync();
     foxglove::plugin_actions::start();
@@ -66,5 +67,6 @@ fn main() {
     foxglove::autostart::start(); // Foxglove: Start with Windows
     let result = platform::run(settings, available_devices);
     foxglove::calibrate_ui::cancel(); // Foxglove: quitting mid-calibration puts the colours back
+    foxglove::scene_run::stop(); // Foxglove (#485): a running scene gives the lights back
     foxglove::startup::finish(result)
 }

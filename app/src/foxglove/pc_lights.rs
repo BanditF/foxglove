@@ -116,6 +116,17 @@ pub enum Msg {
     },
     /// The device's calibration changed: its colours again, through the new calibration.
     Recalibrate(String),
+    /// A scene takes the lights (#485): each board's colours now are kept for [`Msg::SceneEnd`].
+    SceneStart,
+    /// One scene frame for a board: every zone (index, colour); only changed zones are
+    /// written. A burst for one board writes only the last; none while paused.
+    SceneFrame {
+        key: String,
+        colors: Vec<(usize, [u8; 3])>,
+    },
+    /// The scene ended: each board gets back the colours from before it (or the ones the user
+    /// picked meanwhile, or the keyboard's colour it follows).
+    SceneEnd,
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -232,6 +243,10 @@ pub struct Worker {
     status: Option<String>,
     /// Settings changed and need saving.
     pub dirty: bool,
+    /// A scene holds the lights: each board's colours from before it, by key.
+    scene: Option<BTreeMap<String, Vec<Option<Rgb>>>>,
+    /// A scene write failed once already (logged once per scene).
+    scene_error: bool,
 }
 
 impl Worker {
@@ -269,6 +284,8 @@ impl Worker {
             light_studio: false,
             status: None,
             dirty: false,
+            scene: None,
+            scene_error: false,
         }
     }
 
@@ -393,6 +410,11 @@ impl Worker {
     /// Handles one request. `paused` refuses writes (#404); `wait` sleeps between identify
     /// steps.
     pub fn handle(&mut self, msg: Msg, paused: bool, wait: &mut dyn FnMut(std::time::Duration)) {
+        // Scene frames stop quietly while paused; the scene's end gives the colours back even
+        // then, as leases do (#404).
+        if paused && matches!(msg, Msg::SceneFrame { .. }) {
+            return;
+        }
         let writes = !matches!(
             msg,
             Msg::Scan
@@ -400,6 +422,8 @@ impl Worker {
                 | Msg::Match(_, false)
                 | Msg::SaveLocal(_)
                 | Msg::RemoveLocal(..)
+                | Msg::SceneStart
+                | Msg::SceneEnd
         );
         if paused && writes {
             self.status = Some(super::pause::REFUSED.replace("the keyboard", "the lights"));
@@ -409,9 +433,31 @@ impl Worker {
             Msg::Scan => {}
             Msg::Set { key, colors } => {
                 let colors: Vec<_> = colors.into_iter().map(|(i, c)| (i, rgb(c))).collect();
+                self.scene_keeps(&key, &colors);
                 self.write(&key, "Colours set", |d| d.set_zones(&colors), true);
             }
-            Msg::Off(key) => self.write(&key, "Lights off", |d| d.off(), true),
+            Msg::Off(key) => {
+                let zones = self.drivers.get(&key).map_or(0, |d| d.zones().len());
+                let dark: Vec<_> = (0..zones).map(|i| (i, pcl::BLACK)).collect();
+                self.scene_keeps(&key, &dark);
+                self.write(&key, "Lights off", |d| d.off(), true);
+            }
+            Msg::SceneStart => {
+                if self.scene.is_none() {
+                    let before = self
+                        .drivers
+                        .iter()
+                        .map(|(k, d)| (k.clone(), d.colors()))
+                        .collect();
+                    self.scene = Some(before);
+                    self.scene_error = false;
+                }
+            }
+            Msg::SceneFrame { key, colors } => self.scene_frame(&key, &colors),
+            Msg::SceneEnd => {
+                self.scene_end();
+                scene_ended();
+            }
             Msg::Show { key, colors } => {
                 let colors: Vec<_> = colors.into_iter().map(|(i, c)| (i, rgb(c))).collect();
                 self.write(&key, "Showing", |d| d.set_zones(&colors), false);
@@ -452,7 +498,8 @@ impl Worker {
                     .or_default()
                     .match_keyboard = on;
                 self.dirty = true;
-                if let (true, Some(c)) = (on, self.follow) {
+                // A scene holds the lights: its end puts the followed colour on.
+                if let (true, Some(c), None) = (on, self.follow, &self.scene) {
                     self.write(&key, "Matching the keyboard", |d| d.set_all(rgb(c)), false);
                 }
             }
@@ -462,6 +509,9 @@ impl Worker {
                     return;
                 }
                 self.follow = Some(c);
+                if self.scene.is_some() {
+                    return;
+                }
                 let keys: Vec<String> = self
                     .settings
                     .devices
@@ -512,6 +562,78 @@ impl Worker {
         }
     }
 
+    /// The user set colours on a board a scene holds: those go back on at the scene's end.
+    fn scene_keeps(&mut self, key: &str, colors: &[(usize, Rgb)]) {
+        let Some(before) = self.scene.as_mut().and_then(|s| s.get_mut(key)) else {
+            return;
+        };
+        for &(i, c) in colors {
+            if let Some(slot) = before.get_mut(i) {
+                *slot = Some(c);
+            }
+        }
+    }
+
+    /// Writes the zones of a scene frame that differ from what the board shows. Ignored with
+    /// no scene running.
+    fn scene_frame(&mut self, key: &str, colors: &[(usize, [u8; 3])]) {
+        let Some(scene) = self.scene.as_mut() else {
+            return;
+        };
+        let Some(d) = self.drivers.get_mut(key) else {
+            return;
+        };
+        let shown = d.colors();
+        // A board that arrived during the scene: what it got on arrival comes back after.
+        scene
+            .entry(key.to_string())
+            .or_insert_with(|| shown.clone());
+        let changed: Vec<(usize, Rgb)> = colors
+            .iter()
+            .map(|&(i, c)| (i, rgb(c)))
+            .filter(|&(i, c)| shown.get(i).copied().flatten() != Some(c))
+            .collect();
+        if changed.is_empty() {
+            return;
+        }
+        if let Err(e) = d.set_zones(&changed) {
+            if !std::mem::replace(&mut self.scene_error, true) {
+                eprintln!("Foxglove: scene frame to {}: {e}", d.name());
+            }
+        }
+    }
+
+    /// The scene ended: each board it held gets its colours back.
+    fn scene_end(&mut self) {
+        let Some(before) = self.scene.take() else {
+            return;
+        };
+        for (key, before) in before {
+            let Some(f) = self.found.iter().find(|f| f.key == key).cloned() else {
+                continue;
+            };
+            let saved = self.saved_colors(&f);
+            let follows = self
+                .settings
+                .devices
+                .get(&key)
+                .is_some_and(|s| s.match_keyboard)
+                && self.follow.is_some();
+            // Following the keyboard: its colour now. Else the colours from before (white
+            // where none was known: never dark).
+            let colors = if follows {
+                pcl::restore_colors(&saved, &[])
+            } else {
+                pcl::restore_colors(&before, &saved)
+            };
+            if let Some(d) = self.drivers.get_mut(&key) {
+                if let Err(e) = d.set_zones(&colors) {
+                    eprintln!("Foxglove: {}: colours back after the scene: {e}", f.name);
+                }
+            }
+        }
+    }
+
     /// Runs one driver call; `manual` saves the colours and stops matching the keyboard.
     fn write(
         &mut self,
@@ -525,7 +647,11 @@ impl Worker {
             return;
         };
         let result = call(d.as_mut());
-        let colors = d.colors();
+        // Under a scene, the other zones show its frame: the user's colours are the kept ones.
+        let colors = match self.scene.as_ref().and_then(|s| s.get(key)) {
+            Some(kept) if manual => kept.clone(),
+            _ => d.colors(),
+        };
         let name = d.name().to_string();
         self.status = Some(match &result {
             Ok(()) => format!("{name}: {}", done.to_lowercase()),
@@ -669,24 +795,62 @@ pub fn start() {
             if let Some(ctx) = CTX.get() {
                 ctx.request_repaint();
             }
+            // A running scene places the boards found now (#485).
+            if scanned {
+                super::scene_run::devices_changed();
+            }
         }
     });
 }
 
-/// Drops every [`Msg::Show`] a later one for the same device replaces: the calibrator's
-/// sliders can ask faster than a board writes, and only the newest colour matters.
+/// Drops every [`Msg::Show`] (and [`Msg::SceneFrame`]) a later one for the same device
+/// replaces: the calibrator's sliders and a scene can ask faster than a board writes, and only
+/// the newest colour matters.
 pub fn latest_shows(batch: Vec<Msg>) -> Vec<Msg> {
     let mut seen = std::collections::BTreeSet::new();
+    let mut frames = std::collections::BTreeSet::new();
     let mut out: Vec<Msg> = batch
         .into_iter()
         .rev()
         .filter(|m| match m {
             Msg::Show { key, .. } => seen.insert(key.clone()),
+            Msg::SceneFrame { key, .. } => frames.insert(key.clone()),
             _ => true,
         })
         .collect();
     out.reverse();
     out
+}
+
+/// How many scene ends the worker has handled, for [`end_scene`] to wait on.
+static SCENE_ENDS: (Mutex<u64>, std::sync::Condvar) = (Mutex::new(0), std::sync::Condvar::new());
+
+fn scene_ended() {
+    let (count, changed) = &SCENE_ENDS;
+    *count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    changed.notify_all();
+}
+
+/// Ends a scene on the boards and waits (at most `timeout`) until their colours are back, so
+/// quitting right after still restores them. False if it didn't finish in time.
+pub fn end_scene(timeout: std::time::Duration) -> bool {
+    let (count, changed) = &SCENE_ENDS;
+    let before = *count.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(q) = QUEUE.get() else {
+        return true;
+    };
+    if q.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .send(Msg::SceneEnd)
+        .is_err()
+    {
+        return true;
+    }
+    let guard = count.lock().unwrap_or_else(|e| e.into_inner());
+    let (_count, wait) = changed
+        .wait_timeout_while(guard, timeout, |n| *n == before)
+        .unwrap_or_else(|e| e.into_inner());
+    !wait.timed_out()
 }
 
 fn scan(worker: &mut Worker, restore: bool) {
@@ -1352,5 +1516,169 @@ mod tests {
             &mut no_wait(),
         );
         assert_eq!(*sent.lock().unwrap().last().unwrap(), report(2, [9, 8, 7]));
+    }
+    /// Every zone of the 45L (zones 1, 2, 5, 6, 7) one colour, as a scene frame.
+    fn frame(key: &str, c: [u8; 3]) -> Msg {
+        Msg::SceneFrame {
+            key: key.into(),
+            colors: (0..5).map(|i| (i, c)).collect(),
+        }
+    }
+
+    /// #485: a scene takes the case, writes only changed zones, and its end puts back the
+    /// colours from before it; nothing is saved as the user's.
+    #[test]
+    fn a_scene_takes_the_case_and_gives_its_colours_back() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), false, false, true);
+        let key = "103c:84fd".to_string();
+        w.handle(
+            Msg::Set {
+                key: key.clone(),
+                colors: (0..5).map(|i| (i, [10, 20, 30])).collect(),
+            },
+            false,
+            &mut no_wait(),
+        );
+        w.dirty = false;
+        sent.lock().unwrap().clear();
+        // No scene: a stray frame writes nothing.
+        w.handle(frame(&key, [1, 1, 1]), false, &mut no_wait());
+        assert!(sent.lock().unwrap().is_empty());
+        w.handle(Msg::SceneStart, false, &mut no_wait());
+        w.handle(frame(&key, [200, 100, 0]), false, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 5);
+        // One zone changes: one report.
+        let mut colors: Vec<(usize, [u8; 3])> = (0..5).map(|i| (i, [200, 100, 0])).collect();
+        colors[4].1 = [255, 255, 0];
+        w.handle(
+            Msg::SceneFrame {
+                key: key.clone(),
+                colors,
+            },
+            false,
+            &mut no_wait(),
+        );
+        assert_eq!(sent.lock().unwrap().len(), 6);
+        assert_eq!(sent.lock().unwrap()[5], report(7, [255, 255, 0]));
+        // Paused: frames stop quietly (no status line).
+        let status = w.snapshot().status;
+        w.handle(frame(&key, [9, 9, 9]), true, &mut no_wait());
+        assert_eq!(sent.lock().unwrap().len(), 6);
+        assert_eq!(w.snapshot().status, status);
+        sent.lock().unwrap().clear();
+        w.handle(Msg::SceneEnd, false, &mut no_wait());
+        let back = sent.lock().unwrap().clone();
+        assert_eq!(back.len(), 5);
+        assert_eq!(back[0], report(1, [10, 20, 30]));
+        assert_eq!(back[4], report(7, [10, 20, 30]));
+        assert!(!w.dirty, "the scene's colours were never the user's");
+        // Over: frames write nothing again, and a second end does nothing.
+        sent.lock().unwrap().clear();
+        w.handle(frame(&key, [1, 1, 1]), false, &mut no_wait());
+        w.handle(Msg::SceneEnd, false, &mut no_wait());
+        assert!(sent.lock().unwrap().is_empty());
+    }
+
+    /// While a scene runs, the user's pick is what comes back after it, the followed keyboard
+    /// colour waits for its end, and a board with nothing known goes back to white, not dark.
+    #[test]
+    fn picks_and_follows_during_a_scene_come_back_after_it() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), false, false, true);
+        let key = "103c:84fd".to_string();
+        w.handle(Msg::SceneStart, false, &mut no_wait());
+        w.handle(frame(&key, [50, 50, 50]), false, &mut no_wait());
+        w.handle(
+            Msg::Set {
+                key: key.clone(),
+                colors: vec![(0, [1, 2, 3])],
+            },
+            false,
+            &mut no_wait(),
+        );
+        assert_eq!(w.settings.devices[&key].colors["1"], "#010203", "saved");
+        sent.lock().unwrap().clear();
+        w.handle(Msg::SceneEnd, false, &mut no_wait());
+        let back = sent.lock().unwrap().clone();
+        assert_eq!(back[0], report(1, [1, 2, 3]), "the pick");
+        assert_eq!(back[1], report(2, [255, 255, 255]), "unknown before: white");
+
+        // Matching the keyboard: a colour change during the scene isn't written until it ends.
+        w.handle(Msg::Match(key.clone(), true), false, &mut no_wait());
+        w.handle(Msg::Follow([0, 0, 255]), false, &mut no_wait());
+        w.handle(Msg::SceneStart, false, &mut no_wait());
+        sent.lock().unwrap().clear();
+        w.handle(Msg::Follow([255, 0, 0]), false, &mut no_wait());
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "the scene holds the lights"
+        );
+        // Paused at the end: the colours still go back, like leases.
+        w.handle(Msg::SceneEnd, true, &mut no_wait());
+        let back = sent.lock().unwrap().clone();
+        assert_eq!(back.len(), 5);
+        assert!(back
+            .iter()
+            .zip([1, 2, 5, 6, 7])
+            .all(|(r, z)| *r == report(z, [255, 0, 0])));
+    }
+
+    /// A board that arrives during a scene gets its saved colours back at the end, and the
+    /// user's Off during a scene is what comes back.
+    #[test]
+    fn a_board_arriving_mid_scene_and_off_during_one() {
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            "103c:84fd".into(),
+            Saved {
+                colors: (1..=7)
+                    .map(|z| (z.to_string(), "#0a0b0c".to_string()))
+                    .collect(),
+                match_keyboard: false,
+            },
+        );
+        let (mut w, sent) = worker(settings);
+        let key = "103c:84fd".to_string();
+        w.handle(Msg::SceneStart, false, &mut no_wait());
+        w.scan(&case_hid(), false, false, true);
+        w.handle(frame(&key, [90, 90, 90]), false, &mut no_wait());
+        sent.lock().unwrap().clear();
+        w.handle(Msg::SceneEnd, false, &mut no_wait());
+        assert_eq!(
+            sent.lock().unwrap()[0],
+            report(1, [10, 11, 12]),
+            "its saved colour"
+        );
+
+        w.handle(Msg::SceneStart, false, &mut no_wait());
+        w.handle(frame(&key, [90, 90, 90]), false, &mut no_wait());
+        w.handle(Msg::Off(key.clone()), false, &mut no_wait());
+        assert_eq!(w.settings.devices[&key].colors["7"], "#000000");
+        sent.lock().unwrap().clear();
+        w.handle(Msg::SceneEnd, false, &mut no_wait());
+        assert!(sent
+            .lock()
+            .unwrap()
+            .iter()
+            .zip([1, 2, 5, 6, 7])
+            .all(|(r, z)| *r == report(z, [0, 0, 0])));
+    }
+
+    #[test]
+    fn a_burst_of_scene_frames_writes_only_the_newest() {
+        let a = |c: u8| frame("a", [c, c, c]);
+        let batch = latest_shows(vec![
+            a(1),
+            frame("b", [5, 5, 5]),
+            Msg::SceneStart,
+            a(2),
+            a(3),
+        ]);
+        assert_eq!(batch, vec![frame("b", [5, 5, 5]), Msg::SceneStart, a(3)]);
+        assert!(
+            end_scene(std::time::Duration::from_millis(10)),
+            "no worker: nothing to wait for"
+        );
     }
 }

@@ -31,6 +31,8 @@ pub fn set(paused: bool) {
     super::screens::pause_changed();
     // Plugin leases give the lights back, or show again (on their own thread).
     super::api::pause_leases();
+    // A running scene stops drawing, or draws again (#485).
+    super::scene_run::pause_changed(paused);
     if !paused {
         super::accent::wake();
         if let Some(h) = super::art_service::handle() {
