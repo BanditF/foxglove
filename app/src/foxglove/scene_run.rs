@@ -61,7 +61,10 @@ use foxglove_scene::{Clock, Effect, Rgb};
 use serde::{Deserialize, Serialize};
 
 use super::lighting_leases::{Arbiter, Lease, Priority};
-use super::scene_output::{CaseTarget, Hsb, KeyboardEffect, KeyboardFrame, Out, Outputs};
+use super::scene_lamps::{LampStatus, LampWriter, Poster};
+use super::scene_output::{
+    CaseTarget, Hsb, KeyboardEffect, KeyboardFrame, LampTarget, Out, Outputs,
+};
 
 /// The lighting-lease connection a scene holds the keyboard under (no plugin has it: plugin
 /// connections count up from 1).
@@ -272,6 +275,15 @@ enum KeyboardPath {
     OneColour,
 }
 
+/// The running scene's Dynamic Lighting devices (#503), for the Scenes page and diagnostics.
+static LAMPS: std::sync::LazyLock<super::scene_lamps::Status> =
+    std::sync::LazyLock::new(super::scene_lamps::Status::default);
+
+/// What the running scene's Dynamic Lighting devices are doing.
+pub fn lamps() -> LampStatus {
+    LAMPS.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
 fn status() -> std::sync::MutexGuard<'static, Status> {
     STATUS.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -290,7 +302,15 @@ pub fn summary() -> String {
         ),
         _ => format!("keyboard: one colour ({} colours)", s.keyboard_frames),
     };
-    let sent = format!("{} case frames, {keyboard}", s.case_frames);
+    let l = lamps();
+    let sent = format!(
+        "{} case frames, {keyboard}, Dynamic Lighting: {} frames, {} showing, {} waiting (package identity: {})",
+        s.case_frames,
+        l.frames,
+        l.showing.len(),
+        l.waiting.len(),
+        if super::scene_lamps::identity() { "yes" } else { "no" }
+    );
     match (&s.name, s.started) {
         (Some(name), Some(at)) => format!("{name} running {} s, {sent}", at.elapsed().as_secs()),
         _ => match &s.last {
@@ -423,18 +443,33 @@ pub fn devices_changed() {
     tell(Ctl::Devices);
 }
 
-/// The room as it is now, and the boards Foxglove drives in it.
-fn gather() -> (foxglove_scene::RoomMap, Vec<CaseTarget>) {
-    let cases = super::pc_lights::snapshot()
-        .devices
-        .into_iter()
-        .filter(|r| matches!(r.control, foxglove_devices::pc_lighting::Control::Driver(_)))
+/// The room as it is now, the boards Foxglove drives in it and its Dynamic Lighting devices.
+fn gather() -> (foxglove_scene::RoomMap, Vec<CaseTarget>, Vec<LampTarget>) {
+    use foxglove_devices::pc_lighting::Control;
+    let rows = super::pc_lights::snapshot().devices;
+    let cases = rows
+        .iter()
+        .filter(|r| matches!(r.control, Control::Driver(_)))
         .map(|r| CaseTarget {
-            key: r.key,
-            zone_ids: r.zone_ids,
+            key: r.key.clone(),
+            zone_ids: r.zone_ids.clone(),
         })
         .collect();
-    (super::scene_room::room(), cases)
+    let lamps = rows.iter().filter_map(lamp_target).collect();
+    (super::scene_room::room(), cases, lamps)
+}
+
+/// A Lights page row as a Dynamic Lighting output: any LampArray, by its own attributes.
+fn lamp_target(r: &super::pc_lights::Row) -> Option<LampTarget> {
+    (r.control == foxglove_devices::pc_lighting::Control::LampArray).then(|| LampTarget {
+        key: r.key.clone(),
+        lamps: r.caps.count as usize,
+        min_interval: r
+            .caps
+            .fps
+            .filter(|f| *f > 0)
+            .map(|f| Duration::from_micros(1_000_000 / u64::from(f))),
+    })
 }
 
 /// One scene, start to end, on its control thread.
@@ -461,12 +496,19 @@ fn control(
         ended: "it failed",
     };
     super::pc_lights::send(super::pc_lights::Msg::SceneStart);
-    let (room, cases) = gather();
+    let (room, cases, lamp_targets) = gather();
     eprintln!("Foxglove: scene {name} started; room: {}", room.summary());
     super::wallpaper_sync::scene_started(name, &effect, clock, room.clone());
     // The room as last placed, for the wallpapers when the look changes.
     let mut placed = room.clone();
     let outputs = Arc::new(Mutex::new(Outputs::new(effect, room, cases)));
+    outputs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .set_lamps(lamp_targets);
+    // Dropped before `give_back` (declared later): lets every Dynamic Lighting device go.
+    let lamp_writer = LampWriter::spawn(Box::new(super::scene_lamps::WindowsLamps), LAMPS.clone());
+    let lamp_poster = lamp_writer.poster();
     let (again, effects) = {
         let o = outputs.lock().unwrap_or_else(|e| e.into_inner());
         (o.keyboard_again(), o.keyboard_effects())
@@ -483,7 +525,7 @@ fn control(
     let mailbox = keyboard.mailbox.clone();
     let scheduler = Scheduler::new(clock, MIN_INTERVAL, move |t| {
         let outs = frames.lock().unwrap_or_else(|e| e.into_inner()).frame(t);
-        send(outs, &mailbox);
+        send(outs, &mailbox, &lamp_poster);
     });
     let away_tx = own.clone();
     let away = super::away::subscribe(move |a| {
@@ -501,8 +543,11 @@ fn control(
             scheduler.set(Gate::Away, a);
             if a {
                 // Nothing draws while away: the keyboard shows the lease's colour, not a
-                // frame that stopped.
+                // frame that stopped, and Dynamic Lighting devices Windows' own lights.
                 keyboard.mailbox.release();
+                lamp_writer.release();
+            } else {
+                redraw_lamps(&outputs);
             }
         }
         Ctl::Paused(p) => {
@@ -510,17 +555,22 @@ fn control(
             // lights); resuming draws again.
             if !p {
                 again.store(true, Ordering::Relaxed);
+                redraw_lamps(&outputs);
             }
             scheduler.set(Gate::Paused, p);
+            if p {
+                // Paused: Windows' own lights on Dynamic Lighting devices.
+                lamp_writer.release();
+            }
         }
         Ctl::Devices => {
-            let (room, cases) = gather();
+            let (room, cases, lamp_targets) = gather();
             super::wallpaper_sync::scene_room(room.clone());
             placed = room.clone();
-            outputs
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .set_room(room, cases);
+            lamp_writer.devices_changed();
+            let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
+            o.set_room(room, cases);
+            o.set_lamps(lamp_targets);
         }
         Ctl::KeyRipple(row, col) => {
             let mut o = outputs.lock().unwrap_or_else(|e| e.into_inner());
@@ -555,6 +605,16 @@ fn control(
     drop(scheduler);
     // Closes the keyboard writer, which gives the keyboard back.
     drop(keyboard);
+    // Lets every Dynamic Lighting device go: Windows' own lighting comes back.
+    drop(lamp_writer);
+}
+
+/// Dynamic Lighting devices let go while paused or away get their next frame in full.
+fn redraw_lamps(outputs: &Mutex<Outputs>) {
+    outputs
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .redraw_lamps();
 }
 
 /// A scene's end: the keyboard's lease and the case's colours back, however it ended.
@@ -599,8 +659,9 @@ impl Drop for GiveBack {
     }
 }
 
-/// Sends a frame's writes: the case's to the Lights worker, the keyboard's to its writer.
-fn send(outs: Vec<Out>, keyboard: &Mailbox) {
+/// Sends a frame's writes: the case's to the Lights worker, the keyboard's to its writer, the
+/// Dynamic Lighting devices' to theirs.
+fn send(outs: Vec<Out>, keyboard: &Mailbox, lamps: &Poster) {
     for out in outs {
         match out {
             Out::Case { key, colors } => {
@@ -609,6 +670,7 @@ fn send(outs: Vec<Out>, keyboard: &Mailbox) {
             }
             Out::Keyboard(f) => keyboard.post(Draw::Frame(f)),
             Out::KeyboardEffect(e) => keyboard.post(Draw::Effect(e)),
+            Out::Lamps { key, colors } => lamps.post(key, colors),
         }
     }
 }

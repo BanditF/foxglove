@@ -12,6 +12,11 @@
 //!   frame as one colour (the halves mixed) for firmware without SET_FRAME, which takes one
 //!   `&rgb_ug` colour.
 //!
+//! - Dynamic Lighting devices (any LampArray Windows lists, #503): a colour per lamp, each lamp
+//!   at the place its own attributes give it in the room; one colour for all until those are
+//!   read. Nothing here depends on the vendor or the kind: the room map places the device by its
+//!   LampArray kind, and the writer (`scene_lamps`) goes through `Windows.Devices.Lights`.
+//!
 //! Each output has its own interval (never faster than the scheduler's 30 fps cap): the case
 //! [`CASE_INTERVAL`], the keyboard [`KEYBOARD_INTERVAL`], since its colour goes over the host
 //! link and on to the right half over BLE through the relay. A device gets a frame only when
@@ -39,6 +44,51 @@ pub const KEYBOARD_INTERVAL: Duration = Duration::from_millis(100);
 /// A case board gets at most 15 frames a second (one 59-byte report per changed zone).
 pub const CASE_INTERVAL: Duration = Duration::from_millis(66);
 
+/// A Dynamic Lighting device gets at most 20 frames a second, however fast its attributes say
+/// it takes them: each frame crosses Windows' lighting service and often a vendor's (#313).
+pub const LAMP_INTERVAL: Duration = Duration::from_millis(50);
+
+/// A Dynamic Lighting (LampArray) device a scene drives through Windows: any vendor, any kind.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LampTarget {
+    /// The Lights page's key (`vvvv:pppp`, maybe with a serial).
+    pub key: String,
+    /// Its lamp count; 0 until Windows' attributes are read (then one colour for all).
+    pub lamps: usize,
+    /// The shortest update interval its attributes give.
+    pub min_interval: Option<Duration>,
+}
+
+impl LampTarget {
+    fn room_id(&self) -> String {
+        format!("light:{}", self.key)
+    }
+
+    /// Its own interval, never under [`LAMP_INTERVAL`].
+    pub fn interval(&self) -> Duration {
+        self.min_interval
+            .map_or(LAMP_INTERVAL, |m| m.max(LAMP_INTERVAL))
+    }
+}
+
+/// A Dynamic Lighting device's colours from its lights in a frame: one per lamp in index order.
+/// A numbered light colours that lamp; lamps no numbered light reaches (or a device still lit
+/// as one) take the mix of all. Unknown lamp count: one colour for the whole device.
+pub(crate) fn lamp_colours(target: &LampTarget, lights: &[(&str, Rgb)]) -> Option<Vec<[u8; 3]>> {
+    let all: Vec<Rgb> = lights.iter().map(|(_, c)| *c).collect();
+    let mix = mixed(&all)?;
+    if target.lamps == 0 {
+        return Some(vec![mix.0]);
+    }
+    let mut out = vec![mix.0; target.lamps];
+    for (l, c) in lights {
+        if let Some(i) = l.parse::<usize>().ok().filter(|i| *i < target.lamps) {
+            out[i] = c.0;
+        }
+    }
+    Some(out)
+}
+
 /// A board the Lights worker drives: its key and each zone's id, in the driver's zone order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CaseTarget {
@@ -65,6 +115,8 @@ pub enum Out {
     Keyboard(KeyboardFrame),
     /// The keyboard draws the scene itself from now on (SET_EFFECT).
     KeyboardEffect(KeyboardEffect),
+    /// A Dynamic Lighting device's colours, one per lamp (or one for all, see [`lamp_colours`]).
+    Lamps { key: String, colors: Vec<[u8; 3]> },
 }
 
 /// The scene as one SET_EFFECT (#542): each half draws it from its LEDs' places.
@@ -338,9 +390,12 @@ pub struct Outputs {
     effect: Effect,
     room: RoomMap,
     cases: Vec<CaseTarget>,
+    /// Dynamic Lighting devices, as Foxglove found them (only those in the room get frames).
+    lamps: Vec<LampTarget>,
     keyboard: bool,
     pacing: Pacing,
     sent_case: BTreeMap<String, Vec<(usize, [u8; 3])>>,
+    sent_lamps: BTreeMap<String, Vec<[u8; 3]>>,
     sent_keyboard: Option<KeyboardFrame>,
     /// The scene as the keyboard's own effect, when it maps (#542).
     keyboard_effect: Option<KeyboardEffect>,
@@ -364,9 +419,11 @@ impl Outputs {
             effect,
             room: RoomMap::default(),
             cases: Vec::new(),
+            lamps: Vec::new(),
             keyboard: false,
             pacing: Pacing::default(),
             sent_case: BTreeMap::new(),
+            sent_lamps: BTreeMap::new(),
             sent_keyboard: None,
             keyboard_effect: None,
             effect_sent: false,
@@ -419,21 +476,47 @@ impl Outputs {
             .devices
             .iter()
             .any(|d| d.id.starts_with(KEYBOARD) && !d.lights.is_empty());
-        let mut paced: Vec<(String, Option<Duration>)> = cases
+        self.room = room;
+        self.cases = cases;
+        self.repace();
+        // Placed again: a drag or a monitor change moves the effect too.
+        self.keyboard_effect = keyboard_effect(&self.effect, &self.room);
+        self.effect_sent = false;
+    }
+
+    /// The Dynamic Lighting devices found now (#503). Each one in the room gets its next frame
+    /// in full.
+    pub fn set_lamps(&mut self, lamps: Vec<LampTarget>) {
+        self.lamps = lamps;
+        self.repace();
+    }
+
+    /// The Dynamic Lighting devices' next frames go in full: they were let go (pause, away)
+    /// and show Windows' own lights until then.
+    pub fn redraw_lamps(&mut self) {
+        self.sent_lamps.clear();
+    }
+
+    /// Each output's pacing from the room and the targets; every device's next frame in full.
+    fn repace(&mut self) {
+        let mut paced: Vec<(String, Option<Duration>)> = self
+            .cases
             .iter()
             .map(|c| (c.room_id(), Some(CASE_INTERVAL)))
             .collect();
+        paced.extend(
+            self.lamps
+                .iter()
+                .filter(|l| self.room.device(&l.room_id()).is_some())
+                .map(|l| (l.room_id(), Some(l.interval()))),
+        );
         if self.keyboard {
             paced.push((KEYBOARD.into(), Some(KEYBOARD_INTERVAL)));
         }
         self.pacing = Pacing::new(paced);
         self.sent_case.clear();
+        self.sent_lamps.clear();
         self.sent_keyboard = None;
-        self.room = room;
-        self.cases = cases;
-        // Placed again: a drag or a monitor change moves the effect too.
-        self.keyboard_effect = keyboard_effect(&self.effect, &self.room);
-        self.effect_sent = false;
     }
 
     /// Another look while the scene runs (the Scenes page, #487): every device gets the next
@@ -442,6 +525,7 @@ impl Outputs {
     pub fn set_effect(&mut self, effect: Effect) {
         self.effect = effect;
         self.sent_case.clear();
+        self.sent_lamps.clear();
         self.sent_keyboard = None;
         self.keyboard_effect = keyboard_effect(&self.effect, &self.room);
         self.effect_sent = false;
@@ -507,6 +591,25 @@ impl Outputs {
                 if self.sent_keyboard.as_ref() != Some(&f) {
                     self.sent_keyboard = Some(f.clone());
                     out.push(Out::Keyboard(f));
+                }
+                continue;
+            }
+            if let Some(target) = self.lamps.iter().find(|l| l.room_id() == id) {
+                let lights: Vec<(&str, Rgb)> = frame
+                    .lights
+                    .iter()
+                    .filter(|l| l.device == id)
+                    .map(|l| (l.light.as_str(), l.colour))
+                    .collect();
+                let Some(colors) = lamp_colours(target, &lights) else {
+                    continue;
+                };
+                if self.sent_lamps.get(&target.key) != Some(&colors) {
+                    self.sent_lamps.insert(target.key.clone(), colors.clone());
+                    out.push(Out::Lamps {
+                        key: target.key.clone(),
+                        colors,
+                    });
                 }
                 continue;
             }
@@ -590,6 +693,110 @@ mod tests {
         }
     }
 
+    /// A Dynamic Lighting device of no particular vendor: a headset-kind array of 8 lamps in a
+    /// row, placed by the room map as any "other" device.
+    fn desk_with_a_lamparray() -> (RoomMap, LampTarget) {
+        let devices = [DeviceInfo {
+            id: "light:2a5f:0101".into(),
+            name: "Desk headset".into(),
+            kind: DeviceKind::Other,
+            size: Some(Point::new(160.0, 40.0)),
+            lights: (0..8)
+                .map(|i| LightSpec::point(i.to_string(), Some(Point::new(20.0 * i as f32, 20.0))))
+                .collect(),
+        }];
+        let room = RoomMap::build(&[], &devices, &Default::default());
+        let target = LampTarget {
+            key: "2a5f:0101".into(),
+            lamps: 8,
+            // It says it takes 100 frames a second: still paced at LAMP_INTERVAL.
+            min_interval: Some(Duration::from_millis(10)),
+        };
+        (room, target)
+    }
+
+    #[test]
+    fn a_lamparray_gets_a_colour_per_lamp_paced_and_only_on_change() {
+        let (room, target) = desk_with_a_lamparray();
+        let sweep = Effect::Sweep {
+            stops: vec![ORANGE, Rgb([0x20, 0x40, 0xf0])],
+            angle_deg: 0.0,
+            period_ms: 2000,
+        };
+        let mut o = Outputs::new(sweep, room.clone(), Vec::new());
+        o.set_lamps(vec![target.clone()]);
+        let mut sent: Vec<(i64, Vec<[u8; 3]>)> = Vec::new();
+        for ms in (0..2000).step_by(10) {
+            for out in o.frame(SceneTime(ms)) {
+                if let Out::Lamps { key, colors } = out {
+                    assert_eq!(key, "2a5f:0101");
+                    sent.push((ms, colors));
+                }
+            }
+        }
+        assert!(!sent.is_empty());
+        assert!(sent.iter().all(|(_, c)| c.len() == 8), "a colour per lamp");
+        assert!(
+            sent.windows(2).all(|w| w[1].0 - w[0].0 >= 45),
+            "never faster than LAMP_INTERVAL"
+        );
+        assert!(sent.len() <= 40, "{} frames in 2 s", sent.len());
+        assert!(sent[0].1[0] != sent[0].1[7], "lamps at their own places");
+        // A still look: one frame, then nothing until something changes.
+        let still = Effect::Breathe {
+            from: ORANGE,
+            to: ORANGE,
+            period_ms: 4000,
+        };
+        let mut o = Outputs::new(still, room, Vec::new());
+        o.set_lamps(vec![target]);
+        let count = |o: &mut Outputs, from: i64| {
+            (from..from + 1000)
+                .step_by(10)
+                .flat_map(|ms| o.frame(SceneTime(ms)))
+                .filter(|out| matches!(out, Out::Lamps { .. }))
+                .count()
+        };
+        assert_eq!(count(&mut o, 0), 1);
+        assert_eq!(count(&mut o, 1000), 0);
+        // Let go while paused: the next frame goes in full.
+        o.redraw_lamps();
+        assert_eq!(count(&mut o, 2000), 1);
+    }
+
+    #[test]
+    fn lamp_colours_fill_unplaced_lamps_and_unknown_counts() {
+        let t = |lamps| LampTarget {
+            key: "k".into(),
+            lamps,
+            min_interval: None,
+        };
+        let red = Rgb([255, 0, 0]);
+        // Not read yet: one colour for the whole device.
+        assert_eq!(
+            lamp_colours(&t(0), &[("all", red)]),
+            Some(vec![[255, 0, 0]])
+        );
+        // Read, lit as one: every lamp.
+        assert_eq!(
+            lamp_colours(&t(3), &[("all", red)]),
+            Some(vec![[255, 0, 0]; 3])
+        );
+        // Numbered lights colour their lamps; one past the count is ignored.
+        let c = lamp_colours(&t(2), &[("0", red), ("1", Rgb::BLACK), ("5", red)]).unwrap();
+        assert_eq!(c[0], [255, 0, 0]);
+        assert_eq!(c[1], [0, 0, 0]);
+        assert_eq!(t(0).interval(), LAMP_INTERVAL);
+        assert_eq!(
+            LampTarget {
+                min_interval: Some(Duration::from_millis(80)),
+                ..t(1)
+            }
+            .interval(),
+            Duration::from_millis(80)
+        );
+    }
+
     #[test]
     fn colours_convert_to_the_keyboards_hsb() {
         let hb = |r, g, b| {
@@ -629,6 +836,7 @@ mod tests {
                         }
                     }
                     Out::KeyboardEffect(_) => unreachable!("no SET_EFFECT keyboard here"),
+                    Out::Lamps { .. } => unreachable!("no Dynamic Lighting device here"),
                 }
             }
         }
@@ -695,6 +903,7 @@ mod tests {
                 match out {
                     Out::Case { .. } => case_t.push(ms),
                     Out::Keyboard(_) | Out::KeyboardEffect(_) => kb_t.push(ms),
+                    Out::Lamps { .. } => unreachable!("no Dynamic Lighting device here"),
                 }
             }
         }
@@ -1050,7 +1259,7 @@ mod tests {
                 .filter_map(|o| match o {
                     Out::Keyboard(_) => Some("frame"),
                     Out::KeyboardEffect(_) => Some("effect"),
-                    Out::Case { .. } => None,
+                    Out::Case { .. } | Out::Lamps { .. } => None,
                 })
                 .collect()
         };

@@ -73,6 +73,7 @@ pub mod plugins_ui;
 pub mod profiles_ui;
 pub mod reconnect;
 pub mod repaint_trace;
+pub mod scene_lamps;
 pub mod scene_looks;
 pub mod scene_output;
 pub mod scene_room;
