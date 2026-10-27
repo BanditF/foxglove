@@ -132,11 +132,16 @@ fn fits(keys: &[u8], drawing: &Drawing, per_half: usize) -> bool {
 
 impl Confirm {
     /// The dot test for a board profile: its found map, its own map, or a guess. `None` when
-    /// there's nothing to propose (the LEDs aren't one per key): "Find my LEDs" instead.
+    /// there's nothing to propose (the LEDs aren't one per key, or the halves have different
+    /// counts, so the dot can't run along both at once): "Find my LEDs" instead.
     pub fn new(board: &Board) -> Option<Confirm> {
         let halves = if board.halves == 1 { 1 } else { 2 };
         let lighting = board.lighting.as_ref()?;
-        let per_half = lighting.per_half(halves);
+        let parts = lighting.lamp_parts(halves)?;
+        if !parts.even_split() {
+            return None;
+        }
+        let per_half = parts.count(0);
         let drawing = board.drawing.clone().unwrap_or_default();
         let mut c = Confirm {
             board: board.id.clone(),
@@ -374,6 +379,10 @@ mod tests {
         assert_eq!(Confirm::new(&board).unwrap().source, Source::Guess);
         // Underglow that isn't one LED per key: no proposal (Find my LEDs).
         board.lighting.as_mut().unwrap().lamps = 12;
+        assert!(Confirm::new(&board).is_none());
+        // Halves of different counts (21 + 18): no dot along both at once (Find my LEDs).
+        let l = board.lighting.as_mut().unwrap();
+        (l.lamps, l.parts) = (39, vec![21, 18]);
         assert!(Confirm::new(&board).is_none());
         // A found map: shown, not correctable.
         let mut board = corne();

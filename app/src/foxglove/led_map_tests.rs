@@ -16,7 +16,7 @@ fn white() -> Rgb {
 #[test]
 fn the_wizard_lights_each_led_in_turn_and_back_undoes() {
     let mut w = Wizard::new(&corne());
-    assert_eq!((w.halves, w.per_half, w.total()), (2, 21, 42));
+    assert_eq!((w.halves, w.parts.count(1), w.total()), (2, 21, 42));
     let s = w.step().unwrap();
     assert_eq!((s.lamp, s.half, s.index), (0, 0, 0));
     let f = w.frame();
@@ -299,9 +299,10 @@ impl Target for Recorder {
     }
 }
 
-/// Waits for the worker's status to change (it calls `wake`), with a deadline.
+/// Waits for the worker's status to change (it calls `wake`), with a deadline only as the
+/// fallback for a worker that never answers.
 fn wait_for(rx: &mpsc::Receiver<()>, status: &Mutex<Status>, done: impl Fn(&Status) -> bool) {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !done(&status.lock().unwrap()) {
         let left = until.saturating_duration_since(std::time::Instant::now());
         assert!(rx.recv_timeout(left).is_ok(), "the worker went quiet");
@@ -399,7 +400,7 @@ fn the_second_desks_board_is_one_strip_of_61() {
     let plank = second_desk::board();
     let mut w = Wizard::new(&plank);
     assert_eq!(
-        (w.halves, w.per_half, w.total()),
+        (w.halves, w.parts.count(0), w.total()),
         (1, second_desk::LAMPS, second_desk::LAMPS)
     );
     assert_eq!(w.frame().len(), second_desk::LAMPS);
@@ -431,7 +432,7 @@ fn a_one_piece_board_is_one_strip() {
     let mut b = corne();
     b.halves = 1;
     let w = Wizard::new(&b);
-    assert_eq!((w.halves, w.per_half, w.total()), (1, 42, 42));
+    assert_eq!((w.halves, w.parts.count(0), w.total()), (1, 42, 42));
     assert_eq!(w.step().unwrap().half, 0);
     // No profile lighting: the Corne's 42.
     let mut bare = corne();
@@ -439,12 +440,78 @@ fn a_one_piece_board_is_one_strip() {
     assert_eq!(Wizard::new(&bare).total(), 42);
 }
 
+/// A split board whose halves differ (30 + 24, the profile's `parts`): the right half starts
+/// at lamp 30, and every frame is the board's 54.
+#[test]
+fn uneven_halves_are_found_half_by_half() {
+    let mut b = corne();
+    let lighting = b.lighting.as_mut().unwrap();
+    (lighting.lamps, lighting.parts) = (54, vec![30, 24]);
+    let mut w = Wizard::new(&b);
+    assert_eq!(w.frame().len(), 54);
+    while w.answers.len() < 30 {
+        w.skip();
+    }
+    let s = w.step().unwrap();
+    assert_eq!((s.lamp, s.half, s.index), (30, 1, 0));
+    while !w.done() {
+        w.place([0.5, 0.5]);
+    }
+    assert_eq!(w.result().lamps, 54);
+    assert_eq!(w.part_of(53), 1);
+}
+
+/// A hand-wound clock for the dot test: no real time passes. Running, it jumps straight to the
+/// next step whenever the worker has no job waiting; held, time stands still and the worker
+/// waits for a job.
+#[derive(Clone)]
+struct HandClock {
+    now: Arc<Mutex<Instant>>,
+    held: Arc<AtomicBool>,
+}
+
+impl HandClock {
+    fn new() -> HandClock {
+        HandClock {
+            now: Arc::new(Mutex::new(Instant::now())),
+            held: Arc::default(),
+        }
+    }
+}
+
+impl DotClock for HandClock {
+    fn now(&self) -> Instant {
+        *self.now.lock().unwrap()
+    }
+
+    fn recv_until(
+        &self,
+        rx: &mpsc::Receiver<Job>,
+        until: Instant,
+    ) -> Result<Job, RecvTimeoutError> {
+        if self.held.load(Ordering::SeqCst) {
+            return rx.recv().map_err(|_| RecvTimeoutError::Disconnected);
+        }
+        match rx.try_recv() {
+            Ok(job) => Ok(job),
+            Err(mpsc::TryRecvError::Disconnected) => Err(RecvTimeoutError::Disconnected),
+            Err(mpsc::TryRecvError::Empty) => {
+                let mut now = self.now.lock().unwrap();
+                *now = (*now).max(until);
+                Err(RecvTimeoutError::Timeout)
+            }
+        }
+    }
+}
+
 #[test]
 fn the_dot_runs_its_rounds_then_goes_dark_and_a_frame_stops_it() {
     let rec = Recorder::default();
     let (tx, woke) = mpsc::channel();
     let tx = Mutex::new(tx);
-    let worker = Worker::spawn(Box::new(rec.clone()), move || {
+    let clock = HandClock::new();
+    let started = clock.now();
+    let worker = Worker::spawn_on(Box::new(rec.clone()), Box::new(clock.clone()), move || {
         let _ = tx.lock().unwrap().send(());
     });
     let frames: Vec<Vec<Rgb>> = (0..3)
@@ -481,7 +548,10 @@ fn the_dot_runs_its_rounds_then_goes_dark_and_a_frame_stops_it() {
         ],
         "two rounds, then all off"
     );
-    // A new run starts over; a plain frame ends it at once.
+    // Six steps of 5 ms on the dot's clock: five to the second round's last LED, one to dark.
+    assert_eq!(clock.now() - started, std::time::Duration::from_millis(30));
+    // A new run starts over; a plain frame ends it at once (time stands still meanwhile).
+    clock.held.store(true, Ordering::SeqCst);
     worker.play(Play {
         frames,
         every: std::time::Duration::from_secs(60),

@@ -79,9 +79,9 @@ enum Command {
     Lamp {
         #[arg(long, value_parser = ["left", "right"])]
         half: String,
-        /// The LED's place on its half's strip, 0-20; "off"; or "walk": 0 to 20 in turn, each in
-        /// the next colour of red, green, blue, white, so the person reading the keys off in
-        /// order can keep count, then off.
+        /// The LED's place on its half's strip, from 0 (the Corne: 0-20); "off"; or "walk": each
+        /// LED of the half in turn, each in the next colour of red, green, blue, white, so the
+        /// person reading the keys off in order can keep count, then off.
         #[arg(long)]
         index: String,
         /// Colour as RRGGBB (one index; walk uses its own colours).
@@ -91,8 +91,8 @@ enum Command {
         #[arg(long, default_value_t = 3000)]
         hold_ms: u64,
     },
-    /// The LampArray sitting (#272): a white dot through lamps 0-41 with SET_FRAME (D7 0C), one
-    /// frame per acknowledgement, then RELEASE. Needs HELLO bit 14 (FRAMES).
+    /// The LampArray sitting (#272): a white dot through every lamp of the board with SET_FRAME
+    /// (D7 0C), one frame per acknowledgement, then RELEASE. Needs HELLO bit 14 (FRAMES).
     FrameDot {
         /// How long each lamp stays lit.
         #[arg(long, default_value_t = 400)]
@@ -104,7 +104,6 @@ const SETTINGS: u8 = 0xD7;
 const LAMP_TEST: u8 = 0x0A;
 const FRAME: u8 = 0x0C;
 const FRAMES_CAP: u32 = 1 << 14;
-const LAMPS: usize = 42;
 
 fn rgb_arg(s: &str) -> Result<[u8; 3]> {
     let v = u32::from_str_radix(s.trim_start_matches('#'), 16)?;
@@ -115,13 +114,19 @@ fn rgb_arg(s: &str) -> Result<[u8; 3]> {
     Ok([(v >> 16) as u8, (v >> 8) as u8, v as u8])
 }
 
-/// One whole frame (5 reports of up to 9 lamps), SHOW on the last; returns the D7 8C reply.
-fn send_frame(link: &Link, rgb: &[[u8; 3]; LAMPS]) -> Result<[u8; digitalis::protocol::REPORT]> {
+/// One whole frame (reports of up to 9 lamps), SHOW on the last; returns the D7 8C reply.
+fn send_frame(link: &Link, rgb: &[[u8; 3]]) -> Result<[u8; digitalis::protocol::REPORT]> {
     use digitalis::Transport;
+    ensure!(
+        !rgb.is_empty() && rgb.len() <= digitalis::lamps::MAX_LAMPS,
+        "a frame has 1-{} lamps",
+        digitalis::lamps::MAX_LAMPS
+    );
+    let lamps = rgb.len();
     let mut start = 0;
     loop {
-        let n = (LAMPS - start).min(9);
-        let last = start + n == LAMPS;
+        let n = (lamps - start).min(9);
+        let last = start + n == lamps;
         let mut r = vec![SETTINGS, FRAME, u8::from(last), start as u8, n as u8];
         for c in &rgb[start..start + n] {
             r.extend_from_slice(c);
@@ -198,6 +203,9 @@ fn main() -> Result<std::process::ExitCode> {
         let link = connect(cli.product.clone())?;
         link.wait_connected(Duration::from_secs(10))?;
         let half_id = u8::from(half == "right");
+        // The half's LEDs: what firmware that doesn't report them has (#561).
+        let count = digitalis::lamps::LampParts::old_firmware().count(usize::from(half_id));
+        let last = u8::try_from(count.saturating_sub(1)).unwrap_or(u8::MAX);
         let light = |i: u8, c: [u8; 3]| -> Result<u8> {
             let r = link.request(
                 &[SETTINGS, LAMP_TEST, half_id, i, c[0], c[1], c[2]],
@@ -216,14 +224,14 @@ fn main() -> Result<std::process::ExitCode> {
                     ("blue", [0, 0, 255]),
                     ("white", [255, 255, 255]),
                 ];
-                (0..=20u8)
+                (0..=last)
                     .map(|i| (i, COLOURS[usize::from(i) % COLOURS.len()].1))
                     .chain(std::iter::once((0xff, [0; 3])))
                     .collect()
             }
             n => {
                 let i: u8 = n.parse()?;
-                ensure!(i <= 20, "index is 0-20, off or walk");
+                ensure!(i <= last, "index is 0-{last}, off or walk");
                 vec![(i, rgb_arg(rgb)?)]
             }
         };
@@ -264,8 +272,10 @@ fn main() -> Result<std::process::ExitCode> {
             eprintln!("this firmware has no SET_FRAME (no HELLO bit 14)");
             return Ok(std::process::ExitCode::from(4));
         }
-        for i in 0..LAMPS {
-            let mut frame = [[0u8; 3]; LAMPS];
+        // The board's LEDs by part: what firmware that doesn't report them has (#561).
+        let parts = digitalis::lamps::LampParts::old_firmware();
+        for i in 0..parts.total() {
+            let mut frame = vec![[0u8; 3]; parts.total()];
             frame[i] = [255, 255, 255];
             let r = send_frame(&link, &frame)?;
             if r[2] != 0 {
@@ -277,7 +287,7 @@ fn main() -> Result<std::process::ExitCode> {
             }
             println!(
                 "{}",
-                serde_json::json!({"lamp": i, "half": if i < 21 { "left" } else { "right" }})
+                serde_json::json!({"lamp": i, "part": parts.part_of(i).map(|(p, _)| p)})
             );
             std::thread::sleep(Duration::from_millis(*step_ms));
         }

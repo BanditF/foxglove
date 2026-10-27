@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use digitalis::lamps::LampParts;
 use serde::Deserialize;
 
 const FORMAT: &str = "foxglove-board";
@@ -79,10 +80,16 @@ pub struct Screen {
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 pub struct Lighting {
     pub lamps: u16,
+    /// Each part's LEDs in SET_FRAME order (the left half's first) when the halves differ, e.g.
+    /// `[30, 24]`; empty shares `lamps` out evenly between the board's halves (#561).
+    #[serde(default)]
+    pub parts: Vec<u16>,
     #[serde(default)]
     pub layout: String,
-    /// Which key each LED of the left half's strip sits under, in chain order: an index into
-    /// [`Drawing::keys`]. The right half mirrors it. Scenes place LEDs by it (#529).
+    /// Which key each LED sits under, in chain order: an index into [`Drawing::keys`]. Either
+    /// one half's strip, which the other half mirrors (halves of the same count), or every LED
+    /// of the board part by part, each part's into its own drawing. Scenes place LEDs by it
+    /// (#529).
     #[serde(default)]
     pub led_keys: Vec<u8>,
     /// [`LED_MAP_CHECKED`] once `led_keys` is confirmed on the board (a sitting, the dot test, or
@@ -104,10 +111,32 @@ impl Lighting {
         self.led_map == LED_MAP_CHECKED || self.led_map == LED_MAP_SHIPPED
     }
 
-    /// LEDs per half: the profile's lamps shared out between `halves`.
-    pub fn per_half(&self, halves: u8) -> usize {
-        usize::from(self.lamps) / usize::from(halves.max(1))
+    /// The LEDs by part: `parts` when it adds up to `lamps`, else `lamps` shared out evenly
+    /// between `halves`. `None` for a profile whose counts a frame can't carry.
+    pub fn lamp_parts(&self, halves: u8) -> Option<LampParts> {
+        let given: Vec<usize> = self.parts.iter().map(|&n| usize::from(n)).collect();
+        if !given.is_empty() && given.iter().sum::<usize>() == usize::from(self.lamps) {
+            return LampParts::new(&given).ok();
+        }
+        LampParts::even(usize::from(self.lamps), usize::from(halves.max(1))).ok()
     }
+
+    /// The keys LED by LED of part `part` (of `parts`): its share of a whole-board map, or the
+    /// one-half map every half of that count mirrors. `None` when the map is neither.
+    pub fn part_keys(&self, parts: &LampParts, part: usize) -> Option<&[u8]> {
+        if self.led_keys.len() == parts.total() {
+            return self.led_keys.get(parts.range(part));
+        }
+        (self.led_keys.len() == parts.count(part)).then_some(&self.led_keys[..])
+    }
+}
+
+/// The keyboard's LEDs by part: the board profile's, else what firmware that doesn't report
+/// them has (the Eyelash Corne's, `digitalis::lamps`).
+pub fn lamp_parts(board: Option<&Board>) -> LampParts {
+    board
+        .and_then(|b| b.lighting.as_ref()?.lamp_parts(b.halves))
+        .unwrap_or_else(LampParts::old_firmware)
 }
 
 /// [`Lighting::led_map`] for an LED map confirmed on the board.

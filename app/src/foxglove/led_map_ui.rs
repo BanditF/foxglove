@@ -279,7 +279,7 @@ fn board(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
     let newest = w.answers.iter().rposition(Option::is_some);
     for (i, a) in w.answers.iter().enumerate() {
         let Some(at) = a else { continue };
-        let half = i / w.per_half.max(1);
+        let half = w.part_of(i);
         let c = g.screen(half.min(areas - 1), *at);
         painter.circle_filled(c, 4.0, p.accent);
         if Some(i) == newest && step.is_some() {
@@ -854,7 +854,7 @@ pub mod tests {
         let keys_l = w.drawing.keys(false);
         let keys_r = w.drawing.keys(true);
         for i in 0..answered {
-            let half = i / w.per_half;
+            let half = w.part_of(i);
             let keys = if half == 0 { &keys_l } else { &keys_r };
             let k = keys[i % keys.len()];
             if i % 3 == 2 {

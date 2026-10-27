@@ -594,11 +594,12 @@ impl BatteryDim {
     }
 }
 
-/// SET_FRAME (D7 0C, #272): per-LED colours for both halves.
+/// SET_FRAME (D7 0C, #272): per-LED colours for every part of the board.
 ///
-/// Lamps are index-ordered: 0-20 are the left strip's LEDs in chain order, 21-41 the right's.
-/// Which key each LED sits under isn't known yet (the #90 row G sitting), so that map belongs in
-/// the board profile, not here. Colours are plain RGB; each half's battery dim scales them.
+/// Lamps are index-ordered by part ([`crate::lamps::LampParts`]): the first part's strip in
+/// chain order, then the next's (on the Eyelash Corne 0-20 the left, 21-41 the right). Which key
+/// each LED sits under belongs in the board profile, not here. Colours are plain RGB; each
+/// half's battery dim scales them.
 pub mod frame {
     /// Flag: draw the frame (on the last report of one).
     pub const SHOW: u8 = 1 << 0;
@@ -606,8 +607,6 @@ pub mod frame {
     pub const RELEASE: u8 = 1 << 1;
     /// Lamps per report: 27 bytes of RGB after the 5-byte header.
     pub const MAX_LAMPS: usize = 9;
-    /// Lamps per half on the Eyelash Corne.
-    pub const HALF_LAMPS: usize = 21;
 }
 
 /// FRAME reports for lamps `start..start + colours.len()`, [`frame::MAX_LAMPS`] per report,
@@ -703,8 +702,6 @@ pub mod effect {
     pub const LAMPS: u8 = 3;
     /// LED points one LAMPS report carries at most.
     pub const LAMPS_PER_REPORT: usize = 6;
-    /// LEDs per half that LAMPS places (the Corne's 21).
-    pub const HALF_LAMPS: usize = 21;
     /// A LAMPS point the PC hasn't seen: the firmware puts that LED at its half's centre.
     pub const UNSEEN: [u16; 2] = [0xFFFF, 0xFFFF];
     /// Colours an effect carries at most (a sweep's stops).
@@ -757,14 +754,15 @@ pub fn effect_place(room: MmRect, left: MmRect, right: MmRect) -> Vec<u8> {
     r
 }
 
-/// EFFECT LAMPS: where LEDs `start..start + points.len()` of `half` (0 left, 1 right) sit, each
-/// (x, y) in thousandths of that half's width and height from its top-left corner (the half's
-/// own points, never mirrored; [`effect::UNSEEN`] for one not seen). Values past 1000 are held
-/// to 1000. `None` for more than [`effect::LAMPS_PER_REPORT`] points or past the half's LEDs.
+/// EFFECT LAMPS: where LEDs `start..start + points.len()` of part `half` (0 the left half or
+/// the one piece, 1 the right half) sit, each (x, y) in thousandths of that part's width and
+/// height from its top-left corner (the part's own points, never mirrored; [`effect::UNSEEN`]
+/// for one not seen). Values past 1000 are held to 1000. `None` for more than
+/// [`effect::LAMPS_PER_REPORT`] points or past one byte of LED index; the keyboard refuses
+/// LEDs past its part's own count (status 5).
 pub fn effect_lamps(half: u8, start: u8, points: &[[u16; 2]]) -> Option<Vec<u8>> {
-    if half > 1
-        || points.len() > effect::LAMPS_PER_REPORT
-        || usize::from(start) + points.len() > effect::HALF_LAMPS
+    if points.len() > effect::LAMPS_PER_REPORT
+        || usize::from(start) + points.len() > crate::lamps::MAX_LAMPS
     {
         return None;
     }
@@ -788,13 +786,13 @@ pub fn effect_lamps(half: u8, start: u8, points: &[[u16; 2]]) -> Option<Vec<u8>>
     Some(r)
 }
 
-/// Every LAMPS report for one half's points (up to [`effect::HALF_LAMPS`]); an empty list puts
-/// the half back on the firmware's built-in table (count 0).
+/// Every LAMPS report for one part's points (up to [`crate::lamps::MAX_LAMPS`]); an empty list
+/// puts the part back on the firmware's built-in table (count 0).
 pub fn effect_lamps_reports(half: u8, points: &[[u16; 2]]) -> Option<Vec<Vec<u8>>> {
     if points.is_empty() {
         return effect_lamps(half, 0, &[]).map(|r| vec![r]);
     }
-    if points.len() > effect::HALF_LAMPS {
+    if points.len() > crate::lamps::MAX_LAMPS {
         return None;
     }
     points
@@ -1225,11 +1223,13 @@ mod tests {
             [0xD7, 0x0F, 3, 1, 3, 3, 0, 0, 0xE8, 3, 0xE8, 3, 77, 0, 0xFF, 0xFF, 0xFF, 0xFF]
         );
         assert!(r.len() <= REPORT);
-        // Six fill a report exactly; a seventh, a third half or past LED 20 don't fit.
+        // Six fill a report exactly; a seventh, or past one byte of LED index, don't fit. The
+        // part's own count is the keyboard's to check: a one-piece board of 61 goes past 21.
         assert_eq!(effect_lamps(0, 0, &[[1, 2]; 6]).unwrap().len(), 30);
         assert!(effect_lamps(0, 0, &[[1, 2]; 7]).is_none());
-        assert!(effect_lamps(2, 0, &[[1, 2]]).is_none());
-        assert!(effect_lamps(0, 20, &[[1, 2]; 2]).is_none());
+        assert!(effect_lamps(0, 20, &[[1, 2]; 2]).is_some());
+        assert!(effect_lamps(0, 255, &[[1, 2]]).is_some());
+        assert!(effect_lamps(0, 255, &[[1, 2]; 2]).is_none());
         // A whole half: 21 points in reports of 6, 6, 6 and 3, each starting where it should.
         let all: Vec<[u16; 2]> = (0..21).map(|i| [i * 10, 500]).collect();
         let reports = effect_lamps_reports(0, &all).unwrap();
@@ -1243,7 +1243,10 @@ mod tests {
             effect_lamps_reports(1, &[]).unwrap(),
             [vec![0xD7, 0x0F, 3, 1, 0, 0]]
         );
-        assert!(effect_lamps_reports(0, &[[0, 0]; 22]).is_none());
+        // A one-piece board's 61 in 11 reports, the last at LED 60.
+        let reports = effect_lamps_reports(0, &[[0, 0]; 61]).unwrap();
+        assert_eq!(reports.last().map(|r| (r[4], r[5])), Some((60, 1)));
+        assert!(effect_lamps_reports(0, &[[0, 0]; 257]).is_none());
     }
 
     #[test]

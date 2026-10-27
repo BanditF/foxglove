@@ -22,9 +22,12 @@
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
+use digitalis::lamps::LampParts;
 use foxglove_devices::{DeviceError, Lighting, Rgb};
 use serde::{Deserialize, Serialize};
 
@@ -39,9 +42,6 @@ pub const LEDMAP_CONN: u64 = u64::MAX - 2;
 
 /// The lit LED's colour: bright white.
 pub const LIT: [u8; 3] = [255, 255, 255];
-
-/// Lamps a frame has when the profile doesn't say (the Corne's 21 a half).
-const DEFAULT_LAMPS: u16 = 42;
 
 /// The store's `[led_map]`: each board's map, by profile id.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -196,7 +196,8 @@ pub struct Wizard {
     pub drawing: Drawing,
     /// 1 for a one-piece board, else 2.
     pub halves: u8,
-    pub per_half: usize,
+    /// The board's LEDs by part, in frame order (#561).
+    pub parts: LampParts,
     /// One answer per LED so far, in order: where it was seen, or `None` ("Can't see it").
     pub answers: Vec<Option<[f32; 2]>>,
     /// A problem to show (a failed save).
@@ -215,33 +216,37 @@ pub struct Step {
 }
 
 impl Wizard {
-    /// Starts on a board profile: every LED of the frame, the left half's first.
+    /// Starts on a board profile: every LED of the frame (as many as the board has, #561), the
+    /// left half's first.
     pub fn new(board: &Board) -> Wizard {
         let halves = if board.halves == 1 { 1 } else { 2 };
-        let lamps = board.lighting.as_ref().map_or(DEFAULT_LAMPS, |l| l.lamps);
+        let mut profile = board.clone();
+        profile.halves = halves;
         Wizard {
             board: board.id.clone(),
             name: board.name.clone(),
             drawing: board.drawing.clone().unwrap_or_default(),
             halves,
-            per_half: usize::from(lamps) / usize::from(halves),
+            parts: super::boards::lamp_parts(Some(&profile)),
             answers: Vec::new(),
             note: None,
         }
     }
 
     pub fn total(&self) -> usize {
-        self.per_half * usize::from(self.halves)
+        self.parts.total()
+    }
+
+    /// The part a frame lamp is on (0 for one past the last).
+    pub fn part_of(&self, lamp: usize) -> usize {
+        self.parts.part_of(lamp).map_or(0, |(p, _)| p)
     }
 
     /// The LED lit now; `None` once every one is answered.
     pub fn step(&self) -> Option<Step> {
         let lamp = self.answers.len();
-        (lamp < self.total()).then(|| Step {
-            lamp,
-            half: lamp / self.per_half.max(1),
-            index: lamp % self.per_half.max(1),
-        })
+        let (half, index) = self.parts.part_of(lamp)?;
+        Some(Step { lamp, half, index })
     }
 
     /// The user clicked where the lit LED is (a point on its half, key units).
@@ -387,6 +392,32 @@ pub trait Target: Send {
 /// Asks the worker to send its frame again.
 pub type Again = Arc<dyn Fn() + Send + Sync>;
 
+/// The dot test's clock, the worker's only timer: the wall clock in the app, a hand-wound one in
+/// tests (so they never sleep or race the machine's load).
+trait DotClock: Send {
+    fn now(&self) -> Instant;
+    /// The next job, or `Timeout` once `until` has come.
+    fn recv_until(&self, rx: &mpsc::Receiver<Job>, until: Instant)
+        -> Result<Job, RecvTimeoutError>;
+}
+
+/// Real time: the worker sleeps on its channel until the next step is due.
+struct WallClock;
+
+impl DotClock for WallClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn recv_until(
+        &self,
+        rx: &mpsc::Receiver<Job>,
+        until: Instant,
+    ) -> Result<Job, RecvTimeoutError> {
+        rx.recv_timeout(until.saturating_duration_since(Instant::now()))
+    }
+}
+
 /// The worker that holds the lights while the wizard runs.
 pub struct Worker {
     tx: mpsc::Sender<Job>,
@@ -404,6 +435,15 @@ static CURRENT: Mutex<Option<mpsc::Sender<Job>>> = Mutex::new(None);
 impl Worker {
     /// Starts the worker; `wake` repaints the page when its status changes.
     pub fn spawn(target: Box<dyn Target>, wake: impl Fn() + Send + 'static) -> Worker {
+        Worker::spawn_on(target, Box::new(WallClock), wake)
+    }
+
+    /// [`Worker::spawn`] on its own clock.
+    fn spawn_on(
+        target: Box<dyn Target>,
+        clock: Box<dyn DotClock>,
+        wake: impl Fn() + Send + 'static,
+    ) -> Worker {
         let (tx, rx) = mpsc::channel();
         let status = Arc::new(Mutex::new(Status::default()));
         let st = status.clone();
@@ -419,7 +459,7 @@ impl Worker {
             if let Some(t) = before {
                 let _ = t.join();
             }
-            run(target, &rx, again, &st, &wake);
+            run(target, &*clock, &rx, again, &st, &wake);
         });
         *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
         Worker {
@@ -491,16 +531,16 @@ fn newest(job: Job, next: Job) -> Job {
 struct Running {
     play: Play,
     at: usize,
-    next: std::time::Instant,
+    next: Instant,
 }
 
 impl Running {
-    /// The frame for the step now due; `None` once every round is done.
-    fn advance(&mut self) -> Option<Vec<Rgb>> {
+    /// The frame for the step now due (it is `now`); `None` once every round is done.
+    fn advance(&mut self, now: Instant) -> Option<Vec<Rgb>> {
         let n = self.play.frames.len().max(1);
         self.at += 1;
         // From now if a slow send made the step late, so the dot never rushes to catch up.
-        self.next = self.next.max(std::time::Instant::now()) + self.play.every;
+        self.next = self.next.max(now) + self.play.every;
         if self.at >= n * self.play.rounds.max(1) as usize {
             return None;
         }
@@ -514,6 +554,7 @@ impl Running {
 
 fn run(
     mut target: Box<dyn Target>,
+    clock: &dyn DotClock,
     rx: &mpsc::Receiver<Job>,
     again: Again,
     status: &Mutex<Status>,
@@ -530,14 +571,11 @@ fn run(
     let mut running: Option<Running> = None;
     loop {
         let first = match &running {
-            Some(r) => {
-                let wait = r.next.saturating_duration_since(std::time::Instant::now());
-                match rx.recv_timeout(wait) {
-                    Ok(job) => Some(job),
-                    Err(mpsc::RecvTimeoutError::Timeout) => None,
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                }
-            }
+            Some(r) => match clock.recv_until(rx, r.next) {
+                Ok(job) => Some(job),
+                Err(RecvTimeoutError::Timeout) => None,
+                Err(RecvTimeoutError::Disconnected) => break,
+            },
             None => match rx.recv() {
                 Ok(job) => Some(job),
                 Err(_) => break,
@@ -547,7 +585,7 @@ fn run(
             // The dot's next step is due.
             None => {
                 let Some(r) = running.as_mut() else { continue };
-                match r.advance() {
+                match r.advance(clock.now()) {
                     Some(f) => {
                         let step = r.step();
                         frame = Some(f);
@@ -581,7 +619,7 @@ fn run(
                     Job::Play(p) => {
                         frame = p.frames.first().cloned();
                         running = frame.as_ref().map(|_| Running {
-                            next: std::time::Instant::now() + p.every,
+                            next: clock.now() + p.every,
                             play: p,
                             at: 0,
                         });
