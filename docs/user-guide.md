@@ -144,7 +144,9 @@ Open it from the tray: **Open Foxglove**. The sidebar has six pages, top to bott
   - **Showing now:** the left screen and the right screen side by side, each with its name and
     what happens after the keyboard restarts, **‹ Previous** / **Next ›**, and **Rotation**.
     **Change…** under the left screen picks what it shows, with a preview of each: **Clock and
-    status** (the keyboard's own), **Clock, media and hints**, or **Wallpaper animation**.
+    status** (the keyboard's own), **Clock, media and hints**, **Wallpaper animation**, or **PC load**: CPU, graphics and
+    memory use as bars, read from Windows once a second only while it shows, and not while the PC
+    is locked or the screen is off. No temperatures: those need a driver.
   - **On the keyboard:** "Kept: 5 of 8 places" and the pieces kept there (they play without
     this PC), then the pieces that **come with the keyboard**. Click one to show it.
   - **On this PC:** every piece on this PC once, with one badge: **ON KEYBOARD**, **THIS PC**,

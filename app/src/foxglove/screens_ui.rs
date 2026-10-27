@@ -95,6 +95,7 @@ pub fn left_words(settings: &ScreensSettings, paused: bool) -> (&'static str, &'
     let name = match settings.layout {
         Layout::Info => "Clock, media and hints",
         Layout::Wallpaper => "Wallpaper animation",
+        Layout::Stats => "PC load",
     };
     if paused {
         (name, "Paused: the keyboard shows its own screen meanwhile.")
@@ -176,13 +177,16 @@ pub enum LeftChoice {
     KeyboardOwn,
     Info,
     Wallpaper,
+    /// CPU, GPU and memory use (#506).
+    Stats,
 }
 
 impl LeftChoice {
-    pub const ALL: [LeftChoice; 3] = [
+    pub const ALL: [LeftChoice; 4] = [
         LeftChoice::KeyboardOwn,
         LeftChoice::Info,
         LeftChoice::Wallpaper,
+        LeftChoice::Stats,
     ];
 
     pub fn of(settings: &ScreensSettings) -> LeftChoice {
@@ -191,6 +195,7 @@ impl LeftChoice {
             (false, _) => LeftChoice::KeyboardOwn,
             (true, Layout::Info) => LeftChoice::Info,
             (true, Layout::Wallpaper) => LeftChoice::Wallpaper,
+            (true, Layout::Stats) => LeftChoice::Stats,
         }
     }
 
@@ -205,6 +210,10 @@ impl LeftChoice {
             LeftChoice::Wallpaper => {
                 settings.drive_left = true;
                 settings.layout = Layout::Wallpaper;
+            }
+            LeftChoice::Stats => {
+                settings.drive_left = true;
+                settings.layout = Layout::Stats;
             }
         }
     }
@@ -224,7 +233,20 @@ impl LeftChoice {
                 "Wallpaper animation",
                 "The wallpaper's own left frames, while Foxglove runs; the clock when it has none.",
             ),
+            LeftChoice::Stats => (
+                "PC load",
+                "CPU, graphics and memory use, once a second while it shows. Stops while the PC is locked or the screen is off.",
+            ),
         }
+    }
+}
+
+/// The PC load the previews show.
+pub fn sample_stats() -> foxglove_panel::stats::Stats {
+    foxglove_panel::stats::Stats {
+        cpu: Some(37),
+        gpu: Some(64),
+        ram: Some(52),
     }
 }
 
@@ -264,6 +286,7 @@ fn left_preview(choice: LeftChoice) -> egui::ColorImage {
                 ),
             }
         }
+        LeftChoice::Stats => render::draw_stats(&mut panel, &sample_stats()),
         LeftChoice::KeyboardOwn => {}
     }
     frame_image(&Frame {
@@ -436,6 +459,7 @@ pub fn group(ui: &mut egui::Ui) {
                         let shown = match settings.layout {
                             Layout::Info => "Clock, media and hints",
                             Layout::Wallpaper => "Wallpaper animation",
+                            Layout::Stats => "PC load",
                         };
                         egui::ComboBox::from_id_salt("screens-show").selected_text(shown).show_ui(ui, |ui| {
                             changed |= ui.selectable_value(&mut settings.layout, Layout::Info, "Clock, media and hints").changed();
@@ -444,6 +468,10 @@ pub fn group(ui: &mut egui::Ui) {
                                 .on_hover_text(
                                     "The left frames of the wallpaper on screen (wallpapers.json in the art folder); the clock when it has none. Works best with Wallpaper Engine; without it, the Windows desktop wallpaper stands in.",
                                 )
+                                .changed();
+                            changed |= ui
+                                .selectable_value(&mut settings.layout, Layout::Stats, "PC load")
+                                .on_hover_text("CPU, graphics and memory use, once a second while it shows")
                                 .changed();
                         });
                     });

@@ -1625,6 +1625,69 @@ fn peripheral_batteries_render() {
     assert!(count(&img, DARK.warn) > count(&bare, DARK.warn));
 }
 
+/// The PC load layout (#506): the 1-bit panel as the keyboard gets it (enlarged 6×, one pixel a
+/// square), its first second (values not known yet), and the Change… list with it chosen.
+#[test]
+fn left_screen_stats_render() {
+    use foxglove_panel::render::{draw_stats, Panel};
+    use foxglove_panel::stats::Stats;
+    let panel = |stats: &Stats| {
+        let mut p = Panel::new(64, 52);
+        draw_stats(&mut p, stats);
+        let scale = 6;
+        let mut img = image::RgbaImage::from_pixel(
+            64 * scale + 24,
+            52 * scale + 24,
+            image::Rgba([0x09, 0x0a, 0x0c, 0xff]),
+        );
+        for y in 0..52usize {
+            for x in 0..64usize {
+                let on = p.bits[y * p.stride + x / 8] & (0x80 >> (x % 8)) != 0;
+                let c = if on {
+                    [0xe8, 0xea, 0xe9, 0xff]
+                } else {
+                    [0, 0, 0, 0xff]
+                };
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        img.put_pixel(
+                            12 + x as u32 * scale + dx,
+                            12 + y as u32 * scale + dy,
+                            image::Rgba(c),
+                        );
+                    }
+                }
+            }
+        }
+        (img, p.bits)
+    };
+    let (shown, bits) = panel(&crate::foxglove::screens_ui::sample_stats());
+    keep("left-screen-stats-1-panel.png", &shown);
+    let (starting, empty_bits) = panel(&Stats::default());
+    keep("left-screen-stats-2-first-second.png", &starting);
+    assert_ne!(bits, empty_bits);
+
+    let ctx = preview_ctx();
+    let img = render_ui(
+        &ctx,
+        egui::vec2(460.0, 440.0),
+        Color32::from_rgb(0x09, 0x0a, 0x0c),
+        |ui| {
+            egui::Frame::new()
+                .inner_margin(egui::Margin::same(16))
+                .show(ui, |ui| {
+                    ui.label(crate::foxglove::theme::heading(ui, "Left screen: Change…"));
+                    ui.add_space(6.0);
+                    crate::foxglove::screens_ui::left_choices(
+                        ui,
+                        crate::foxglove::screens_ui::LeftChoice::Stats,
+                    );
+                });
+        },
+    );
+    keep("left-screen-stats-3-picker.png", &img);
+}
+
 /// The sidebar's Bandit fox mark, whole and enlarged (it matches the tray glyph).
 #[test]
 fn sidebar_fox_renders() {

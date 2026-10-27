@@ -29,6 +29,8 @@ pub enum Layout {
     /// The wallpaper's left frames (art/wallpapers.json): Wallpaper Engine's, or the Windows
     /// desktop wallpaper's without it (#446); Info when it has none.
     Wallpaper,
+    /// PC load (#506): CPU, GPU and memory use, sampled about once a second only while shown.
+    Stats,
 }
 
 impl Default for ScreensSettings {
