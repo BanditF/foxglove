@@ -171,6 +171,27 @@ pub fn place_effect(
     effect_request(t, &protocol::effect_place(room, left, right))
 }
 
+/// SET_EFFECT LAMPS: where each LED of `half` sits (see [`protocol::effect_lamps`]), all of the
+/// half's points in as many reports as they take; the last reply. Send before
+/// [`place_effect`]: the keyboard keeps them until a reboot.
+pub fn lamps_effect(
+    t: &impl Transport,
+    half: u8,
+    points: &[[u16; 2]],
+) -> Result<protocol::EffectReply> {
+    let reports = protocol::effect_lamps_reports(half, points)
+        .ok_or_else(|| anyhow::anyhow!("the LED points don't fit the wire"))?;
+    let mut last = None;
+    for report in reports {
+        let r = effect_request(t, &report)?;
+        if r.status != 0 {
+            return Ok(r);
+        }
+        last = Some(r);
+    }
+    last.ok_or_else(|| anyhow::anyhow!("no LAMPS report"))
+}
+
 /// SET_EFFECT RELEASE: both halves back to their own effect.
 pub fn release_effect(t: &impl Transport) -> Result<protocol::EffectReply> {
     effect_request(t, &protocol::effect_release())

@@ -230,7 +230,7 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_FRAMES;
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
-    caps |= HOST_LINK_CAP_EFFECTS;
+    caps |= HOST_LINK_CAP_EFFECTS | HOST_LINK_CAP_EFFECT_LAMPS;
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) && DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_art_step)
     caps |= HOST_LINK_CAP_ART_KEYS;

@@ -56,8 +56,9 @@ static uint32_t rx_crc;
 
 static struct art_relay_status status = {
     // 5: ART_RELAY_RGB_HSB, 6: battery dim (config in RGB, state after build), 7: SET_FRAME's
-    // ART_RELAY_LAMPS / LAMP_HOST (#272), 8: SET_EFFECT's ART_RELAY_EFFECT / EFFECT_GO (#490)
-    .version = IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS) ? 8
+    // ART_RELAY_LAMPS / LAMP_HOST (#272), 8: SET_EFFECT's ART_RELAY_EFFECT / EFFECT_GO (#490),
+    // 9: ART_RELAY_EFFECT takes the whole wire, with the PC's LED points (#550)
+    .version = IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS) ? 9
                : IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES) ? 7
                                                          : 6,
     .capacity = CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE,

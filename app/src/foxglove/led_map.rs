@@ -146,11 +146,13 @@ fn placed(board: Option<&Board>) -> bool {
         .is_some_and(|l| !l.led_points.is_empty())
 }
 
-/// Whether the firmware's own effects (SET_EFFECT) put the LEDs where they are. Not once the
-/// user found them: the firmware places them by its built-in table and takes no positions from
-/// the PC yet, so scenes send frames, which do. Never looks anything up (frame threads ask).
-pub fn effects_place_leds() -> bool {
-    !PLACED.load(Ordering::Relaxed)
+/// Whether the firmware's own effects (SET_EFFECT) put the LEDs where they are: always with
+/// firmware that takes the PC's points (`takes_points`, EFFECT LAMPS, HELLO bit 21, #550), since
+/// the scene sends them. Without it, not once the user found them: that firmware places them by
+/// its built-in table, so scenes send frames, which do. Never looks anything up (frame threads
+/// ask).
+pub fn effects_place_leds(takes_points: bool) -> bool {
+    takes_points || !PLACED.load(Ordering::Relaxed)
 }
 
 /// Whether the connected keyboard's LEDs are placed (checked in its profile or found here), so

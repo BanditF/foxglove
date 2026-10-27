@@ -50,6 +50,8 @@ pub mod capabilities {
     /// The relayed right half's on/off (D7 83) and power source (D7 8E) changes arrive as
     /// events (#478): no extra read after an underglow change is needed.
     pub const RIGHT_EVENTS: u32 = 1 << 20;
+    /// Settings EFFECT op LAMPS (D7 0F 03): SET_EFFECT draws each LED where the PC says (#550).
+    pub const EFFECT_LAMPS: u32 = 1 << 21;
 }
 pub const VERSION: u8 = 1;
 
@@ -698,6 +700,13 @@ pub mod effect {
     pub const RELEASE: u8 = 0;
     pub const PLACE: u8 = 1;
     pub const EFFECT: u8 = 2;
+    pub const LAMPS: u8 = 3;
+    /// LED points one LAMPS report carries at most.
+    pub const LAMPS_PER_REPORT: usize = 6;
+    /// LEDs per half that LAMPS places (the Corne's 21).
+    pub const HALF_LAMPS: usize = 21;
+    /// A LAMPS point the PC hasn't seen: the firmware puts that LED at its half's centre.
+    pub const UNSEEN: [u16; 2] = [0xFFFF, 0xFFFF];
     /// Colours an effect carries at most (a sweep's stops).
     pub const MAX_COLOURS: usize = 4;
     /// The longest period (and clock) the wire carries: 24 bits of milliseconds.
@@ -746,6 +755,53 @@ pub fn effect_place(room: MmRect, left: MmRect, right: MmRect) -> Vec<u8> {
         r.extend(v.to_le_bytes());
     }
     r
+}
+
+/// EFFECT LAMPS: where LEDs `start..start + points.len()` of `half` (0 left, 1 right) sit, each
+/// (x, y) in thousandths of that half's width and height from its top-left corner (the half's
+/// own points, never mirrored; [`effect::UNSEEN`] for one not seen). Values past 1000 are held
+/// to 1000. `None` for more than [`effect::LAMPS_PER_REPORT`] points or past the half's LEDs.
+pub fn effect_lamps(half: u8, start: u8, points: &[[u16; 2]]) -> Option<Vec<u8>> {
+    if half > 1
+        || points.len() > effect::LAMPS_PER_REPORT
+        || usize::from(start) + points.len() > effect::HALF_LAMPS
+    {
+        return None;
+    }
+    let mut r = vec![
+        SETTINGS,
+        settings::EFFECT,
+        effect::LAMPS,
+        half,
+        start,
+        points.len() as u8,
+    ];
+    for p in points {
+        let p = if *p == effect::UNSEEN {
+            *p
+        } else {
+            p.map(|v| v.min(1000))
+        };
+        r.extend(p[0].to_le_bytes());
+        r.extend(p[1].to_le_bytes());
+    }
+    Some(r)
+}
+
+/// Every LAMPS report for one half's points (up to [`effect::HALF_LAMPS`]); an empty list puts
+/// the half back on the firmware's built-in table (count 0).
+pub fn effect_lamps_reports(half: u8, points: &[[u16; 2]]) -> Option<Vec<Vec<u8>>> {
+    if points.is_empty() {
+        return effect_lamps(half, 0, &[]).map(|r| vec![r]);
+    }
+    if points.len() > effect::HALF_LAMPS {
+        return None;
+    }
+    points
+        .chunks(effect::LAMPS_PER_REPORT)
+        .enumerate()
+        .map(|(i, c)| effect_lamps(half, (i * effect::LAMPS_PER_REPORT) as u8, c))
+        .collect()
 }
 
 /// EFFECT: draws `e` on both halves. `None` when it doesn't fit the wire (colour count, period).
@@ -1158,6 +1214,38 @@ mod tests {
         );
         r[9] = 0xff;
         assert_eq!(RgbState::parse(&r).right, None);
+    }
+
+    #[test]
+    fn effect_lamps_reports_carry_each_halfs_points() {
+        // One report: header, then x, y u16 LE; past 1000 held to 1000, UNSEEN kept.
+        let r = effect_lamps(1, 3, &[[0, 1000], [1500, 77], effect::UNSEEN]).unwrap();
+        assert_eq!(
+            r,
+            [
+                0xD7, 0x0F, 3, 1, 3, 3, 0, 0, 0xE8, 3, 0xE8, 3, 77, 0, 0xFF, 0xFF, 0xFF, 0xFF
+            ]
+        );
+        assert!(r.len() <= REPORT);
+        // Six fill a report exactly; a seventh, a third half or past LED 20 don't fit.
+        assert_eq!(effect_lamps(0, 0, &[[1, 2]; 6]).unwrap().len(), 30);
+        assert!(effect_lamps(0, 0, &[[1, 2]; 7]).is_none());
+        assert!(effect_lamps(2, 0, &[[1, 2]]).is_none());
+        assert!(effect_lamps(0, 20, &[[1, 2]; 2]).is_none());
+        // A whole half: 21 points in reports of 6, 6, 6 and 3, each starting where it should.
+        let all: Vec<[u16; 2]> = (0..21).map(|i| [i * 10, 500]).collect();
+        let reports = effect_lamps_reports(0, &all).unwrap();
+        assert_eq!(
+            reports.iter().map(|r| (r[4], r[5])).collect::<Vec<_>>(),
+            [(0, 6), (6, 6), (12, 6), (18, 3)]
+        );
+        assert_eq!(&reports[3][6..8], 180u16.to_le_bytes());
+        // None: back to the firmware's table, count 0.
+        assert_eq!(
+            effect_lamps_reports(1, &[]).unwrap(),
+            [vec![0xD7, 0x0F, 3, 1, 0, 0]]
+        );
+        assert!(effect_lamps_reports(0, &[[0, 0]; 22]).is_none());
     }
 
     #[test]

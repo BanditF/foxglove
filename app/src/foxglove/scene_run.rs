@@ -474,7 +474,8 @@ fn control(
     // What the keyboard found last says (the writer corrects it), so the first send is
     // already the effect rather than a frame.
     effects.store(
-        super::devices::effects() && super::led_map::effects_place_leds(),
+        super::devices::effects()
+            && super::led_map::effects_place_leds(super::devices::effect_lamps()),
         Ordering::Relaxed,
     );
     let keyboard = KeyboardOut::spawn(Box::new(AppKeyboard::new(again.clone(), effects, clock)));
@@ -771,6 +772,9 @@ trait EffectTarget {
     fn place(&self, room: MmRect, left: MmRect, right: MmRect) -> Result<(), DeviceError>;
     /// EFFECT, with the keyboard's colour calibration on its colours.
     fn run(&self, e: &digitalis::protocol::Effect) -> Result<(), DeviceError>;
+    /// EFFECT LAMPS: where each LED of `half` sits; empty puts the half back on the firmware's
+    /// table. Unsupported on firmware without HELLO bit 21 (#550).
+    fn lamps(&self, half: u8, points: &[[u16; 2]]) -> Result<(), DeviceError>;
 }
 
 impl EffectTarget for digitalis::devices::DigitalisDevice {
@@ -780,6 +784,26 @@ impl EffectTarget for digitalis::devices::DigitalisDevice {
     fn run(&self, e: &digitalis::protocol::Effect) -> Result<(), DeviceError> {
         self.show_effect(e).map(|_| ())
     }
+    fn lamps(&self, half: u8, points: &[[u16; 2]]) -> Result<(), DeviceError> {
+        self.place_effect_lamps(half, points).map(|_| ())
+    }
+}
+
+/// EFFECT LAMPS for both halves: the room's points, or the firmware's table again without
+/// them. Firmware that takes no points keeps its table (the scene then uses frames for a map
+/// from "Find my LEDs", led_map::effects_place_leds).
+fn send_lamps(target: &dyn EffectTarget, e: &KeyboardEffect) -> Result<(), DeviceError> {
+    for half in 0..2u8 {
+        let points = e
+            .lamps
+            .as_ref()
+            .map_or(&[][..], |l| &l[usize::from(half)][..]);
+        match target.lamps(half, points) {
+            Ok(()) | Err(DeviceError::Unsupported) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 /// What sending the effect came to.
@@ -822,8 +846,9 @@ impl KeyboardLease {
     }
 
     /// The effect for a keyboard that draws it itself: the lease holds its colours' mix (what
-    /// shows when it is handed back), and while the lease shows, PLACE then EFFECT go out with
-    /// the clock read just before. PLACE goes each time, since a reboot forgets it.
+    /// shows when it is handed back), and while the lease shows, LAMPS, PLACE then EFFECT go
+    /// out with the clock read just before. LAMPS and PLACE go each time, since a reboot
+    /// forgets them.
     #[allow(clippy::too_many_arguments)]
     fn show_effect(
         &mut self,
@@ -844,8 +869,8 @@ impl KeyboardLease {
             self.effect_on = false;
             return Ok(EffectSent::Waiting);
         }
-        let sent = target
-            .place(e.room, e.left, e.right)
+        let sent = send_lamps(target, e)
+            .and_then(|()| target.place(e.room, e.left, e.right))
             .and_then(|()| target.run(&e.at(clock.now())));
         match sent {
             Ok(()) => {
@@ -1054,9 +1079,11 @@ impl AppKeyboard {
         self.device = Some(device.clone());
         self.tap(&kb);
         // The firmware may have changed under the same id (a flash): the scene follows it.
-        // A map from "Find my LEDs" needs frames: the firmware's effects place LEDs by its own
-        // built-in table (led_map::effects_place_leds).
-        let effects = kb.effects() && !self.effects_failed && super::led_map::effects_place_leds();
+        // A map from "Find my LEDs" needs frames unless the firmware takes the LEDs' points
+        // for its effects (EFFECT LAMPS, #550; led_map::effects_place_leds).
+        let effects = kb.effects()
+            && !self.effects_failed
+            && super::led_map::effects_place_leds(kb.effect_lamps());
         if self.effects.swap(effects, Ordering::Relaxed) != effects {
             self.again.store(true, Ordering::Relaxed);
         }
@@ -1398,6 +1425,18 @@ mod tests {
             *self.effect.lock().unwrap() = Some(e.clone());
             Ok(())
         }
+        fn lamps(&self, half: u8, points: &[[u16; 2]]) -> Result<(), DeviceError> {
+            if !self.effects {
+                return Err(DeviceError::Unsupported);
+            }
+            if !points.is_empty() {
+                self.effect_ops
+                    .lock()
+                    .unwrap()
+                    .push(if half == 0 { 'l' } else { 'r' });
+            }
+            Ok(())
+        }
     }
 
     /// A 4 s scanline on both halves, as `scene_output::keyboard_effect` makes it.
@@ -1416,6 +1455,7 @@ mod tests {
             left: [100, 500, 124, 86],
             right: [304, 500, 124, 86],
             mix,
+            lamps: None,
         }
     }
 
@@ -1441,6 +1481,18 @@ mod tests {
             ['P', 'E'],
             "placed, then the effect"
         );
+        // With the user's LED map (#550), both halves' points go first, every time.
+        let mut mapped = scan_effect(c(30));
+        mapped.lamps = Some([vec![[100, 200]; 21], vec![[900, 200]; 21]]);
+        kb.effect_ops.lock().unwrap().clear();
+        scene
+            .show_effect(&mut a, "kb", &kb, &kb, &mapped, &clock, &again)
+            .unwrap();
+        assert_eq!(*kb.effect_ops.lock().unwrap(), ['l', 'r', 'P', 'E']);
+        kb.effect_ops.lock().unwrap().clear();
+        scene
+            .show_effect(&mut a, "kb", &kb, &kb, &e, &clock, &again)
+            .unwrap();
         let running = kb.running().expect("the effect runs");
         assert!(
             (2500..2700).contains(&running.clock_ms),

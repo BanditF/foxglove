@@ -22,6 +22,11 @@ enum {
 
 #define LAMP_EFFECT_COLOURS 4
 
+// Lamps per half.
+#define LAMP_EFFECT_LAMPS 21
+// A lamp position the PC hasn't seen (EFFECT op LAMPS, #550): the half's centre.
+#define LAMP_EFFECT_UNSEEN 0xFFFF
+
 // One effect for one half, as the left keeps it and as it goes to the right over the relay
 // (art_relay.h ART_RELAY_EFFECT). All little endian; mm are room millimetres (crates/scene's
 // space.rs: x to the right, y down).
@@ -35,10 +40,12 @@ struct lamp_effect_wire {
     uint8_t rgb[LAMP_EFFECT_COLOURS][3];
     uint8_t room[8];       // i16 x, y, w, h (mm): the room's bounds
     uint8_t half[8];       // i16 x, y, w, h (mm): this half in the room
+    // Appended for EFFECT op LAMPS (#550); zero from a left without it. lamps_set: lamp holds
+    // this half's own points (u16 x, y in thousandths of the half's width and height from its
+    // top-left, LAMP_EFFECT_UNSEEN for its centre; never mirrored). Else the built-in table.
+    uint8_t lamps_set;
+    uint8_t lamp[LAMP_EFFECT_LAMPS][4];
 } __attribute__((packed));
-
-// Lamps per half, and where the provisional table puts them.
-#define LAMP_EFFECT_LAMPS 21
 
 // The prepared effect: floats worked out once per SET_EFFECT, so a frame is a few sums a lamp.
 struct lamp_effect {
@@ -54,7 +61,11 @@ struct lamp_effect {
     float lamp[LAMP_EFFECT_LAMPS][2]; // each lamp's room position
 };
 
-// Fills fx from w. mirror: the right half, whose keys (and LEDs) are the left's mirror image.
+// The built-in (provisional) table's lamp i, in the wire's thousandths; mirror: the right half.
+void lamp_effect_table(int i, bool mirror, uint16_t out[2]);
+
+// Fills fx from w. mirror: the right half, whose keys (and LEDs) are the left's mirror image
+// (the built-in table only: the PC's own points, lamps_set, are the half's as they are).
 // Returns false (fx untouched) for a kind or colour count it doesn't know. w must not be in fx.
 bool lamp_effect_prepare(struct lamp_effect *fx, const struct lamp_effect_wire *w, bool mirror);
 

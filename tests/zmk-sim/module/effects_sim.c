@@ -170,6 +170,11 @@ void art_relay_effect(bool run, bool tell, const struct lamp_effect_wire *w) {
            (int16_t)sys_get_le16(&w->half[0]), (int16_t)sys_get_le16(&w->half[2]),
            (int16_t)sys_get_le16(&w->half[4]), (int16_t)sys_get_le16(&w->half[6]),
            (int16_t)sys_get_le16(&w->room[4]), (int16_t)sys_get_le16(&w->room[6]));
+    if (w->lamps_set) { // the PC's LED points for the right (EFFECT op LAMPS, #550)
+        printk("effects: right's LEDs from the PC: 0 at %d,%d; 1 at %d,%d\n",
+               sys_get_le16(&w->lamp[0][0]), sys_get_le16(&w->lamp[0][2]),
+               sys_get_le16(&w->lamp[1][0]), sys_get_le16(&w->lamp[1][2]));
+    }
 }
 
 uint8_t art_relay_effect_right(void) { return ART_LAMPS_OK; }
@@ -535,6 +540,60 @@ void effects_sim_driver(void) {
         put(op, sizeof(op));
     }
     settle();
+
+    note("LAMPS: the PC's LED points (HELLO bit 21); bad ones answer 5");
+    printk("effects: caps bit 21 %d\n", (caps >> 21) & 1);
+    quiet = true; // the sweep redraws on each LAMPS: checked below, not printed
+    {
+        // Half 2, past lamp 20, a value past 1000, a report cut short.
+        const uint8_t bad_half[] = {0xD7, 0x0F, 3, 2, 0, 1, 0, 0, 0, 0};
+        put(bad_half, sizeof(bad_half));
+        const uint8_t past[] = {0xD7, 0x0F, 3, 0, 20, 2, 0, 0, 0, 0, 0, 0, 0, 0};
+        put(past, sizeof(past));
+        const uint8_t big[] = {0xD7, 0x0F, 3, 0, 0, 1, 0xE9, 0x03, 0, 0};
+        put(big, sizeof(big));
+        const uint8_t cut[] = {0xD7, 0x0F, 3, 0, 0, 1, 0, 0};
+        put_len(cut, sizeof(cut), sizeof(cut));
+        // The left's 21 LEDs all on its left edge, half way down: four reports.
+        for (int start = 0; start < LAMP_EFFECT_LAMPS; start += 6) {
+            uint8_t d[32] = {0xD7, 0x0F, 3, 0, start, MIN(6, LAMP_EFFECT_LAMPS - start)};
+            for (int i = 0; i < d[5]; i++) {
+                sys_put_le16(0, &d[6 + 4 * i]);
+                sys_put_le16(500, &d[8 + 4 * i]);
+            }
+            put(d, sizeof(d));
+        }
+    }
+    settle();
+    {
+        const int16_t room[4] = {0, 0, 500, 120}, half[4] = {0, 10, 120, 90};
+        struct lamp_effect_wire w;
+        wire(&w, 2, 3, stops, room, half);
+        w.lamps_set = 1;
+        for (int i = 0; i < LAMP_EFFECT_LAMPS; i++) {
+            sys_put_le16(0, &w.lamp[i][0]);
+            sys_put_le16(500, &w.lamp[i][2]);
+        }
+        printk("effects: the left draws its LEDs where LAMPS put them: %s\n",
+               left_shows(&w, 0.0f) ? "yes" : "no");
+    }
+    {
+        // The right's LED 0 at its own top-left (not mirrored); the others keep the table's.
+        const uint8_t d[] = {0xD7, 0x0F, 3, 1, 0, 1, 0, 0, 0, 0};
+        put(d, sizeof(d));
+        settle();
+        // count 0: the left back on the built-in table.
+        const uint8_t back[] = {0xD7, 0x0F, 3, 0, 0, 0};
+        put(back, sizeof(back));
+        settle();
+        const int16_t room[4] = {0, 0, 500, 120}, half[4] = {0, 10, 120, 90};
+        struct lamp_effect_wire w;
+        wire(&w, 2, 3, stops, room, half);
+        printk("effects: count 0 puts the left back on its table: %s\n",
+               left_shows(&w, 0.0f) ? "yes" : "no");
+    }
+    quiet = false;
+    memcpy(printed, pixels, sizeof(pixels));
 
     note("RELEASE: both halves back to their own effect");
     release();

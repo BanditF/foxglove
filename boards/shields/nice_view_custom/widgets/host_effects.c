@@ -35,7 +35,7 @@
 // The right half goes through the art relay (which the simulator fakes).
 #define RIGHT (IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) || IS_ENABLED(CONFIG_FOXGLOVE_SIM_HOSTLINK))
 
-enum { OP_RELEASE = 0, OP_PLACE = 1, OP_EFFECT = 2 };
+enum { OP_RELEASE = 0, OP_PLACE = 1, OP_EFFECT = 2, OP_LAMPS = 3 };
 enum { STATUS_OK = 0, STATUS_BAD = 5 };
 enum { ROOM, LEFT, RIGHT_HALF };
 
@@ -48,6 +48,14 @@ static struct lamp_effect_wire effect; // the PC's effect; room and half filled 
 // room just them.
 static int16_t place[3][4] = {{0, 0, 328, 86}, {0, 0, 124, 86}, {204, 0, 124, 86}};
 static bool running;
+// EFFECT op LAMPS (#550): each half's own LED points from the PC, once any came (else the
+// built-in table). RAM only, like PLACE: the PC sends them before PLACE, and a reboot ends the
+// effect anyway (a right that reboots gets them again from here on link-up).
+static uint8_t lamp_pts[2][LAMP_EFFECT_LAMPS][4];
+static bool lamps_on[2];
+
+#define LAMPS_AT 6
+#define LAMPS_MAX ((CONFIG_RAW_HID_REPORT_SIZE - LAMPS_AT) / 4)
 
 static uint8_t right_state(void) {
 #if RIGHT
@@ -73,11 +81,15 @@ static void for_half(struct lamp_effect_wire *w, int half) {
         sys_put_le16(place[ROOM][i], &w->room[2 * i]);
         sys_put_le16(place[half][i], &w->half[2 * i]);
     }
+    w->lamps_set = lamps_on[half - LEFT];
+    if (w->lamps_set) {
+        memcpy(w->lamp, lamp_pts[half - LEFT], sizeof(w->lamp));
+    }
 }
 
 // Draws the effect on both halves, the clock at at_ms now. Under lock.
 static void run(uint32_t at_ms) {
-    struct lamp_effect_wire w;
+    static struct lamp_effect_wire w; // under lock: one at a time, off the caller's stack
     running = true;
 #if RIGHT
     for_half(&w, RIGHT_HALF);
@@ -123,6 +135,47 @@ static bool parse_effect(const uint8_t *d, int len, struct lamp_effect_wire *e, 
     return true;
 }
 
+// LAMPS: half u8, start u8, count u8, then count x (x, y) u16 LE, thousandths of the half from
+// its top-left (LAMP_EFFECT_UNSEEN: not seen). count 0 puts the half back on the built-in table.
+static bool parse_lamps(const uint8_t *d, int len) {
+    if (len < LAMPS_AT) {
+        return false;
+    }
+    uint8_t half = d[3], start = d[4], count = d[5];
+    if (half > 1 || count > LAMPS_MAX || start + count > LAMP_EFFECT_LAMPS ||
+        len < LAMPS_AT + 4 * count) {
+        return false;
+    }
+    for (int i = 0; i < count; i++) {
+        for (int k = 0; k < 2; k++) {
+            uint16_t v = sys_get_le16(&d[LAMPS_AT + 4 * i + 2 * k]);
+            if (v > 1000 && v != LAMP_EFFECT_UNSEEN) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+// Under lock; d passed parse_lamps.
+static void take_lamps(const uint8_t *d) {
+    uint8_t half = d[3], start = d[4], count = d[5];
+    if (count == 0) {
+        lamps_on[half] = false;
+        return;
+    }
+    if (!lamps_on[half]) { // the lamps not sent stay where the table has them
+        for (int i = 0; i < LAMP_EFFECT_LAMPS; i++) {
+            uint16_t pm[2];
+            lamp_effect_table(i, half == 1, pm);
+            sys_put_le16(pm[0], &lamp_pts[half][i][0]);
+            sys_put_le16(pm[1], &lamp_pts[half][i][2]);
+        }
+        lamps_on[half] = true;
+    }
+    memcpy(lamp_pts[half][start], &d[LAMPS_AT], 4 * count);
+}
+
 static bool parse_place(const uint8_t *d, int len, int16_t out[3][4]) {
     if (len < PLACE_LEN) {
         return false;
@@ -145,7 +198,8 @@ void host_effects_command(const uint8_t *d, int len, uint8_t r[HOST_EFFECTS_REPL
     int16_t p[3][4];
     uint32_t at = 0;
     bool ok = op == OP_RELEASE || (op == OP_PLACE && parse_place(d, len, p)) ||
-              (op == OP_EFFECT && parse_effect(d, len, &e, &at));
+              (op == OP_EFFECT && parse_effect(d, len, &e, &at)) ||
+              (op == OP_LAMPS && parse_lamps(d, len));
     if (ok && op == OP_EFFECT) {
         // The PC's frames give way first (not under our lock: SET_FRAME takes its lock, then ours).
         host_frames_yield();
@@ -153,6 +207,11 @@ void host_effects_command(const uint8_t *d, int len, uint8_t r[HOST_EFFECTS_REPL
     k_spinlock_key_t key = k_spin_lock(&lock);
     if (ok && op == OP_RELEASE) {
         stop(true);
+    } else if (ok && op == OP_LAMPS) {
+        take_lamps(d);
+        if (running) {
+            run(effect_run_clock()); // the LEDs moved: same effect, same clock
+        }
     } else if (ok && op == OP_PLACE) {
         memcpy(place, p, sizeof(place));
         if (running) {
