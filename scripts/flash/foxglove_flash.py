@@ -30,6 +30,8 @@ SERIALS = local_config.serials()
 LIMIT = 0xAD000
 LATE_ENTRY_SECONDS = 15  # after an unanswered hands-free request, before prompting a double tap
 RELAY_WAIT_SECONDS = 60  # before the right's D7 08, for the relay to come back
+ENTRY_RETRY_SECONDS = 60  # the right's D7 08 is retried this long, as the split re-links (#545)
+ENTRY_RETRY_PAUSE = 5  # between the right's D7 08 attempts
 SETTLE_SECONDS = 3  # after the bootloader drive appears, before writing
 START = 0x26000  # All inspected real builds, including settings reset, start here.
 ROLLBACK = local_config.get('flash.rollback')
@@ -432,6 +434,28 @@ def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=t
         sleep(2)
 
 
+def enter_with_retries(half, backend, log, clock=time.monotonic, sleep=time.sleep):
+    """Asks `half` to enter its bootloader (D7 08). The left is asked once. The right is asked
+    again every few seconds for up to ENTRY_RETRY_SECONDS, waiting for the split to be linked
+    (right link 2) before each retry (#545). Returns (entered, attempted)."""
+    deadline = clock() + (ENTRY_RETRY_SECONDS if half == 'right' else 0)
+    retrying = False
+    while True:
+        if backend.enter_bootloader(half, log):
+            return True, True
+        if clock() >= deadline:
+            return False, True
+        if not retrying:
+            retrying = True
+            log(f'{half}: retrying the bootloader request for up to {ENTRY_RETRY_SECONDS} s while the split re-links.')
+        sleep(ENTRY_RETRY_PAUSE)
+        try:
+            wait_for(lambda: backend.right_link() == 2, max(0, deadline - clock()),
+                     'split not re-linked', clock, sleep)
+        except TimeoutError:
+            return False, True
+
+
 def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
           settings_reset=False, allow_unknown_half=False, clock=time.monotonic, sleep=time.sleep,
           allow_profile_mix=False, yes=False, force=False):
@@ -458,20 +482,15 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         if not settings_reset:
             # The right goes through the left's relay, which comes back about 20-40 s after the
             # left reboots (#122, #184): wait for it (HELLO right link 2, up to 60 s) before
-            # asking, then try twice before falling back to a double tap.
+            # asking. A request the left can't relay yet is retried for up to a minute, each
+            # time once the split is linked again (#545), before falling back to a double tap.
             if half == 'right':
                 try:
                     wait_for(lambda: backend.right_link() == 2, RELAY_WAIT_SECONDS,
                              'relay to the right not up', clock, sleep)
                 except TimeoutError:
                     log(f'right: the relay to the right half is not up after {RELAY_WAIT_SECONDS} s; trying anyway.')
-            for attempt in range(2 if half == 'right' else 1):
-                if attempt:
-                    sleep(5)
-                attempted = True
-                entered = backend.enter_bootloader(half, log)
-                if entered:
-                    break
+            entered, attempted = enter_with_retries(half, backend, log, clock, sleep)
         asked = entered or (attempted and not settings_reset)
         if entered:
             log(f'Asked the {half} half to enter its bootloader. Waiting up to {seconds:g} seconds for its drive.')

@@ -196,8 +196,15 @@ class FlashTests(unittest.TestCase):
     def test_right_entry_retries_then_falls_back_to_double_tap(self):
         backend = FakeOS(['35B4541F78DE9CF8'])
         self.run_flash(backend, ('FLASH',), {'right': uf2(b'FOXGLOVE_HALF=right')})
-        self.assertEqual(backend.entered, ['right'] * 2)
+        # Every ENTRY_RETRY_PAUSE s for ENTRY_RETRY_SECONDS, plus the first ask (#545).
+        tries = f.ENTRY_RETRY_SECONDS // f.ENTRY_RETRY_PAUSE + 1
+        self.assertEqual(backend.entered, ['right'] * tries)
         self.assertEqual(len(backend.writes), 1)
+
+    def test_left_entry_is_asked_once(self):
+        backend = FakeOS()
+        self.run_flash(backend)
+        self.assertEqual(backend.entered, ['left'])
 
     def test_settings_reset_never_uses_hands_free_entry(self):
         backend = FakeOS()
@@ -586,6 +593,32 @@ class RelayWaitTests(unittest.TestCase):
                 ask=lambda p: self.fail(p), log=lambda m: None, clock=clock.clock, sleep=clock.sleep, yes=True)
         self.assertEqual(backend.link_polls, 5)
         self.assertEqual(backend.entered, ['right'], 'asked once, after the relay was up')
+
+
+class EntryRetryTests(unittest.TestCase):
+    def test_right_request_lands_once_the_split_relinks(self):
+        # #545: the left can't relay D7 08 at first; the split drops and comes back, then it can.
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        answers = [False, False, True]
+        backend.enter_bootloader = lambda half, log: (backend.entered.append(half), answers.pop(0))[1]
+        backend.links = [2, 0, 1, 2, 2]  # up before the first ask, then drops and re-links
+        logs = []
+        clock = Clock()
+        f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 2, stdin=io.StringIO(''),
+                ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
+        self.assertEqual(backend.entered, ['right'] * 3)
+        self.assertEqual(backend.link_polls, 5, 'each retry waits for the link')
+        self.assertFalse(any(m.startswith('Double-tap reset on') or 'late entry' in m for m in logs), logs)
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_retries_stop_when_the_split_stays_down(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        backend.links = [0] * 1000  # the split never re-links after the first ask
+        clock = Clock()
+        entered, attempted = f.enter_with_retries('right', backend, lambda m: None, clock.clock, clock.sleep)
+        self.assertEqual((entered, attempted), (False, True))
+        self.assertEqual(backend.entered, ['right'])
+        self.assertLessEqual(clock.now, f.ENTRY_RETRY_SECONDS + 1)
 
 
 class LateEntryTests(unittest.TestCase):
