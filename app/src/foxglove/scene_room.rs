@@ -13,6 +13,7 @@
 //! runs before something asks for the room.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use foxglove_devices::pc_lighting::{Control, Protocol};
@@ -28,6 +29,20 @@ pub const SECTION: &str = "scene";
 const KEY_MM: f32 = 19.05;
 
 static MONITORS: Mutex<Option<Vec<MonitorInfo>>> = Mutex::new(None);
+
+/// Counts changes to what the room is built from (displays, devices, the user's drags), so the
+/// Scenes page builds its map again only after one.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Something the room is built from changed.
+pub fn changed() {
+    GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The count of changes so far; a different value means the room may have changed.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Relaxed)
+}
 
 /// The user's layout changes, or none.
 pub fn layout() -> Layout {
@@ -64,6 +79,7 @@ fn display_changed() {
             "Foxglove: displays changed, the room map has {} monitor(s)",
             now.len()
         );
+        changed();
     }
     *known = Some(now);
 }
@@ -339,9 +355,58 @@ mod imp {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use foxglove_devices::pc_lighting::{Catalog, LightCaps};
+
+    /// The user's room for the Scenes page's previews: a 27" 1440p monitor and a 1080p one to
+    /// its left, the Corne, the OMEN 45L and the G502.
+    pub(crate) fn sample_room() -> RoomMap {
+        let rows = [row_from_catalog(0x103c, 0x84fd), g502_row()];
+        let mut lamps = BTreeMap::new();
+        lamps.insert(
+            (0x046d, 0xc332),
+            LampLayout {
+                kind: 2,
+                size_mm: [68.0, 132.0],
+                lamps: vec![[34.0, 40.0], [34.0, 100.0]],
+            },
+        );
+        let monitors = [
+            MonitorInfo {
+                id: r"\\.\DISPLAY1".into(),
+                primary: true,
+                rect_px: [0, 0, 2560, 1440],
+                raw_dpi: Some(109),
+                dpi: 96,
+            },
+            MonitorInfo {
+                id: r"\\.\DISPLAY2".into(),
+                primary: false,
+                rect_px: [-1920, 360, 0, 1440],
+                raw_dpi: Some(92),
+                dpi: 96,
+            },
+        ];
+        let board = corne();
+        RoomMap::build(
+            &monitors,
+            &devices(Some(&board), &rows, &lamps),
+            &Layout::default(),
+        )
+    }
+
+    /// No displays read and no lighting devices: the keyboard alone.
+    pub(crate) fn sample_room_empty() -> RoomMap {
+        RoomMap::build(
+            &[],
+            &devices(None, &[], &BTreeMap::new()),
+            &Layout::default(),
+        )
+    }
+
+    /// The case's room id in [`sample_room`].
+    pub(crate) const SAMPLE_CASE: &str = "light:103c:84fd";
 
     /// A Lights page row from the bundled catalog's entry, as the worker builds it.
     fn row_from_catalog(vid: u16, pid: u16) -> Row {

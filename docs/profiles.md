@@ -25,7 +25,8 @@ export.
 
 - **New file:** `%APPDATA%\Foxglove\foxglove.toml`, with `schema = 1` at the top. Each Foxglove
   feature owns one table: `[screens]`, `[art]`, `[art.cycle]`, `[lighting]`, `[updates]`,
-  `[connection]`, `[layers]`, `[plugins]`, `[profiles]`.
+  `[connection]`, `[layers]`, `[plugins]`, `[profiles]`, and for Scenes `[scenes]` (the chosen
+  look, which a profile may override), `[scene_presets]` and `[scene]` (the room map's drags).
 - **Module:** `foxglove::store` loads the file once and hands each feature a typed section
   (serde, with defaults).
 - **Writes:** atomic (temp file and rename). External edits are picked up by the existing file
