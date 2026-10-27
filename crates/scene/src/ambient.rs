@@ -8,8 +8,9 @@
 //! The peak, not the average: a narrow scanline lights one fan at a time, and the average of
 //! one lit fan and three dark ones over a dark background is too dim to see (#546). The peak
 //! is the brightest of each channel across the group, so it never drops below what every
-//! member shows: the scene's background when the light is elsewhere, so it never goes dark
-//! mid-scene unless the background is black. The easing is exponential in Oklab,
+//! member shows: for an effect with a background (a scanline, a sweep), that background when
+//! the light is elsewhere, so it never goes dark mid-scene unless the background is black.
+//! The easing is exponential in Oklab,
 //! where equal steps look equal (in linear light the first steps up from a dark colour look
 //! like a jump), with a quicker attack than decay, the way a room's glow follows its lights.
 
@@ -58,6 +59,7 @@ pub fn group(frame: &mut Frame, room: &RoomMap) {
 
 /// The brightest of each channel across `colours`; `None` for none. Channel by channel (not
 /// the brightest colour whole), so it changes smoothly as the light moves between members.
+/// Members of different hues mix: a red fan and a blue one give a magenta glow.
 fn peak(colours: impl IntoIterator<Item = Rgb>) -> Option<Rgb> {
     colours
         .into_iter()

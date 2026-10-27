@@ -258,11 +258,11 @@ fn an_ambient_light_alone_shows_its_area_not_its_point() {
     assert_eq!(Some(colour(&f, "2")), peak(points));
 }
 
-/// #546: the user's scene, a narrow orange scanline down the room over "Night" at speed 3,
-/// lights one fan at a time. The interior light glows while the band is in the case, as
+/// #546: the user's scene, an orange scanline down the room over "Night" at speed 3, narrower
+/// (108 mm) than the 120 mm between fans, lights one fan at a time. The interior light glows while the band is in the case, as
 /// brightly as a lit fan, swells and fades smoothly, and never drops below the background.
 #[test]
-fn a_narrow_scanline_makes_the_interior_light_glow_through_the_case() {
+fn a_scanline_lighting_one_fan_at_a_time_makes_the_interior_light_glow() {
     let room = room();
     let period = 7_000;
     let effect = Effect::Scanline {
@@ -311,7 +311,7 @@ fn a_narrow_scanline_makes_the_interior_light_glow_through_the_case() {
         u32::from(amb_max) * 2 >= u32::from(fan_max),
         "it glows half as bright as a lit fan or more ({amb_max} of {fan_max})"
     );
-    // In light, three times the average's glow or more (152 against 81 in sRGB red).
+    // In light, three times the average's glow or more.
     let light = |v: u8| Rgb([v, 0, 0]).linear()[0];
     assert!(
         light(amb_max) >= 3.0 * light(avg_max),
