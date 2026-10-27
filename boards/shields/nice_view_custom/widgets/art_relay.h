@@ -9,10 +9,11 @@
  *      until ready. Long reads use offsets into the frozen image; CRC excludes the 6-byte header.
  *   status (read, notify)                    struct art_relay_status
  *      Notify (#478): one byte, ART_RELAY_RANG_*, when the right's underglow on/off or its power
- *      source (battery dim state) changed on its own. A doorbell only: the left reads the status
- *      (and the dim state) again, and the PC hears from those reads. The CCC follows the status
- *      value (its handle + 1); the left subscribes after discovery, and a right without it
- *      answers that write with an ATT error.
+ *      source (battery dim state) changed, whatever changed it. A doorbell only: the left reads
+ *      the status (and the dim state) again, and the PC hears from those reads. Invariant: the
+ *      CCC is the attribute right after the status value (its handle + 1, the 6th attribute of the
+ *      service), where the left subscribes after discovery; a right without it answers that
+ *      write with an ATT error, and the left doesn't try again on that link.
  * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set |
  *      RGB on u8, follow u8 [, battery dim config (5 B)] | PRESS position u8, state u8
  * PRESS is exactly three bytes: 06, global keymap position, state (1 down, 0 up).

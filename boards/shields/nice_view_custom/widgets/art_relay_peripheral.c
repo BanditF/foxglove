@@ -415,8 +415,8 @@ BT_GATT_SERVICE_DEFINE(
     BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_SCREEN_UUID), BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ_ENCRYPT, screen_read, NULL, NULL), );
 
-/* The doorbell (#478): this half's underglow on/off or power source changed on its own (its own
- * idle with sync off, a key, the cable). One notify of the status value, the bits of what changed;
+/* The doorbell (#478): this half's underglow on/off or power source changed (following the left,
+ * its own idle with sync off, a key, the cable, new levels). One notify of the status value, the bits of what changed;
  * the left reads again and tells the PC. Start/stop: starts on a change; stops once sent, when
  * nobody is subscribed (old left firmware, no link), or after RING_TRIES when the radio has no
  * buffer. */
@@ -430,10 +430,11 @@ static uint8_t ring_tries;
 
 static void ring_cb(struct k_work *work) {
     uint8_t what = atomic_get(&rang);
-    if (what == 0) {
-        return;
+    const struct bt_gatt_attr *status_attr = &art_relay_svc.attrs[STATUS_VALUE];
+    if (what == 0 || bt_uuid_cmp(status_attr->uuid, BT_UUID_DECLARE_128(ART_RELAY_STATUS_UUID))) {
+        return; // the table moved: never notify another attribute
     }
-    int err = bt_gatt_notify(NULL, &art_relay_svc.attrs[STATUS_VALUE], &what, sizeof(what));
+    int err = bt_gatt_notify(NULL, status_attr, &what, sizeof(what));
     if (err == -ENOMEM && ring_tries++ < RING_TRIES) {
         k_work_reschedule(k_work_delayable_from_work(work), RING_RETRY);
         return;

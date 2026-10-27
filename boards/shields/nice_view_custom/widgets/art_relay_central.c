@@ -238,6 +238,7 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     }
     if (was_ready) {
         host_link_art_status();
+        host_link_rgb_right_changed(); // the right's state isn't known any more (#478)
     }
 }
 
@@ -971,21 +972,23 @@ void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]) {
  * again, and those reads tell the PC (D7 83 when the on/off differs, D7 8E when the dim state
  * does). A right without the CCC answers the subscribe with an ATT error and is just read as before.
  *
- * Start/stop: the subscribe starts on link-up (one write, no retry: a lost one only costs the
- * events); a ring starts one status read (and a dim read for power). The subscription goes with
- * the link (volatile). */
+ * Start/stop: the subscribe starts on link-up: one write, not retried when refused (an older
+ * right) or lost (that only costs the events). Only while the old link's subscription hasn't
+ * ended yet (the right rebooted: the new link came first) does it wait, DOORBELL_WAITS x 1 s at
+ * most. A ring starts one status read (and a dim read for power); one that comes during an art
+ * push is dropped (the push's own status read has the on/off). The subscription goes with the
+ * link (volatile). */
+
+#define DOORBELL_WAITS 3
 
 static struct bt_gatt_subscribe_params doorbell;
-static atomic_t doorbell_live; // doorbell belongs to Zephyr until the link drops
-static struct k_work_delayable doorbell_work;
+static atomic_t doorbell_live; // doorbell belongs to Zephyr until its subscription ends
+static uint8_t doorbell_waits;
 
 static uint8_t doorbell_rang(struct bt_conn *conn, struct bt_gatt_subscribe_params *params,
                              const void *data, uint16_t length) {
-    if (data == NULL) { // unsubscribed (the link went)
+    if (data == NULL) { // unsubscribed: the link went, or a right without the CCC refused
         atomic_clear(&doorbell_live);
-        if (art_relay_link() == 2) { // a new link came before the old one's end
-            k_work_reschedule_for_queue(&relay_q, &doorbell_work, K_MSEC(300));
-        }
         return BT_GATT_ITER_STOP;
     }
     uint8_t what = length >= 1 ? ((const uint8_t *)data)[0] : ART_RELAY_RANG_RGB;
@@ -1008,7 +1011,12 @@ static void doorbell_cb(struct k_work *work) {
     if (conn == NULL) {
         return;
     }
-    if (atomic_cas(&doorbell_live, 0, 1)) {
+    if (!atomic_cas(&doorbell_live, 0, 1)) {
+        if (doorbell_waits++ < DOORBELL_WAITS) { // the old link's subscription hasn't ended
+            k_work_reschedule_for_queue(&relay_q, k_work_delayable_from_work(work), K_SECONDS(1));
+        }
+    } else {
+        doorbell_waits = 0;
         doorbell = (struct bt_gatt_subscribe_params){
             .notify = doorbell_rang,
             .subscribe = doorbell_subscribed,
@@ -1027,6 +1035,7 @@ static K_WORK_DELAYABLE_DEFINE(doorbell_work, doorbell_cb);
 
 // From the discovery callback (Bluetooth thread). After the RGB sync's first write.
 static void doorbell_link_up(void) {
+    doorbell_waits = 0;
     k_work_reschedule_for_queue(&relay_q, &doorbell_work, K_MSEC(300));
 }
 
