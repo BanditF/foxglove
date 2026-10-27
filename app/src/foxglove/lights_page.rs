@@ -1,6 +1,8 @@
-//! The Lights page (#387, epic #393), as the approved canvas draws it: a Keyboard card
-//! (effect pills, colour swatches and a custom colour, brightness and speed, the accent and
-//! right-half switches, Apply colour) beside a Presets card and both halves' state.
+//! The Lights page (#387, epic #393), by device (#533): the Keyboard card (effect pills, colour
+//! swatches and a custom colour, brightness and speed, the accent and right-half switches,
+//! Apply colour, and both halves' state with Refresh), then Other devices
+//! ([`super::pc_lights_ui`]). The keyboard shows once on the page. Presets (#306) go between
+//! the two once there are any; while there are none the page has no Presets card.
 //!
 //! [`show`] gathers the cached state and acts on clicks; [`draw`] paints a [`View`] and returns
 //! [`Intent`]s, so the previews and tests draw it with no keyboard. Every change is a click or
@@ -18,7 +20,8 @@ use super::theme;
 
 pub const EFFECTS: [&str; 4] = ["Solid", "Breathe", "Spectrum", "Swirl"];
 
-/// The page's width, in points, from which the cards sit in two columns.
+/// The width, in points, from which a page's cards (or the Keyboard card's contents) sit in
+/// two columns.
 pub const TWO_COLUMNS: f32 = 760.0;
 
 /// The canvas's swatches: (name, sRGB).
@@ -45,6 +48,8 @@ pub struct View {
     pub busy: bool,
     /// "Find my LEDs…" can run (frames and a board profile), and how far the LED map is known.
     pub leds: (bool, super::led_map::MapState),
+    /// The keyboard can be calibrated (it's connected), and whether it has been.
+    pub calibration: Option<bool>,
 }
 
 /// What the user is choosing but hasn't sent: the colour until Apply, the speed until the
@@ -77,12 +82,18 @@ pub enum Intent {
     Lights(bool),
     Effect(u8),
     Speed(u8),
-    Apply { hue: u16, sat: u8, brightness: u8 },
+    Apply {
+        hue: u16,
+        sat: u8,
+        brightness: u8,
+    },
     Accent(bool),
     Follow(bool),
     AskFollow,
     Refresh,
     FindLeds,
+    /// Open the colour calibrator on the keyboard.
+    Calibrate,
 }
 
 static DRAFT: Mutex<Draft> = Mutex::new(Draft {
@@ -108,9 +119,8 @@ pub fn show(ui: &mut egui::Ui) {
         let mut draft = Draft::default();
         draft.settle(v.state.as_ref());
         draw(ui, &v, &mut draft);
-        if !super::calibrate_ui::show(ui) {
-            super::pc_lights_ui::show(ui);
-        }
+        super::pc_lights_ui::show(ui);
+        super::calibrate_ui::dialog(ui.ctx());
         return;
     }
     let ctx = ui.ctx().clone();
@@ -128,6 +138,8 @@ pub fn show(ui: &mut egui::Ui) {
             super::led_map_ui::available(),
             super::led_map::state(super::boards::current().as_ref()),
         ),
+        calibration: super::devices::keyboard_key()
+            .map(|k| foxglove_devices::calibration::global().device(&k).is_some()),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     draft.settle(view.state.as_ref());
@@ -156,13 +168,17 @@ pub fn show(ui: &mut egui::Ui) {
                 super::led_map_ui::open(&ctx);
                 ctx.request_repaint();
             }
+            Intent::Calibrate => {
+                if let Some(t) = super::calibrate_ui::keyboard_target() {
+                    super::calibrate_ui::open(t);
+                }
+            }
         }
     }
     drop(draft);
-    // The case and other lights (#423), or the colour calibrator while it's open.
-    if !super::calibrate_ui::show(ui) {
-        super::pc_lights_ui::show(ui);
-    }
+    // The case and other lights (#423), and the colour calibrator over the page while it's open.
+    super::pc_lights_ui::show(ui);
+    super::calibrate_ui::dialog(&ctx);
 }
 
 /// A half's lights in words: "on · Solid · 80% · speed 3", "off", or "no data yet".
@@ -215,77 +231,65 @@ pub(crate) fn shown_color(hue: u16, sat: u8, brightness: u8) -> Color32 {
 /// Paints the page; returns what was asked for this frame.
 pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     let mut out = Vec::new();
-    let gap = 16.0;
-    let width = ui.available_width();
-    // Side by side only when both columns have room for their rows: the Keyboard card's
-    // colour row and the halves' longest line. Narrower, the cards stack.
-    let wide = width >= TWO_COLUMNS;
-    let left_w = if wide {
-        ((width - gap) * 0.6).floor()
-    } else {
-        width
-    };
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = gap;
-        ui.allocate_ui_with_layout(
-            egui::vec2(left_w, 0.0),
-            egui::Layout::top_down(egui::Align::Min),
-            |ui| {
-                ui.set_width(left_w);
-                card(ui, "Keyboard", |ui| underglow(ui, v, draft, &mut out));
-            },
-        );
-        if wide {
+    card(ui, "Keyboard", |ui| {
+        let gap = 24.0;
+        let width = ui.available_width();
+        // Wide, the card has two columns: the colour controls, and the halves' state with the
+        // keyboard's switches. Narrower, they stack.
+        if width >= TWO_COLUMNS {
+            let left_w = ((width - gap) * 0.6).floor();
             let right_w = width - left_w - gap;
-            ui.allocate_ui_with_layout(
-                egui::vec2(right_w, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.set_width(right_w);
-                    side(ui, v, &mut out);
-                },
-            );
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for (w, controls) in [(left_w, true), (right_w, false)] {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(w, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.set_width(w);
+                            if controls {
+                                underglow(ui, v, draft, &mut out);
+                            } else {
+                                keyboard_side(ui, v, &mut out);
+                            }
+                        },
+                    );
+                }
+            });
+        } else {
+            underglow(ui, v, draft, &mut out);
+            ui.add_space(8.0);
+            keyboard_side(ui, v, &mut out);
         }
     });
-    if !wide {
-        ui.add_space(10.0);
-        side(ui, v, &mut out);
-    }
-    ui.add_space(6.0);
+    ui.add_space(10.0);
     out
 }
 
-/// The right-hand column: presets, then both halves as the keyboard reports them.
-fn side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
-    card(ui, "Presets", |ui| {
-        ui.weak(
-            "Looks that match the Bandit wallpapers, with their right-screen art if you want it.",
-        );
-        ui.add_space(2.0);
-        // The presets' apply path is #306; until it lands there are none to list.
-        ui.label(RichText::new("No presets in this version yet.").color(theme::palette(ui).muted));
-    });
-    ui.add_space(10.0);
-    card(ui, "Both halves now", |ui| {
-        let right = v.state.and_then(|s| s.right);
-        for (name, half, age) in [
-            ("Left", v.state.map(|s| s.left), None),
-            ("Right", right.map(|(h, _)| h), right.map(|(_, a)| a)),
-        ] {
-            super::settings_ui::pair(ui, 52.0, name, |ui| {
-                if let Some(h) = half {
-                    let color = if h.on {
-                        shown_color(h.hue, h.sat, h.brightness)
-                    } else {
-                        Color32::from_gray(20)
-                    };
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
-                    ui.painter().rect_filled(rect, 3.0, color);
-                }
-                ui.add(egui::Label::new(half_text(half.as_ref(), age)).wrap());
-            });
-        }
-        ui.add_space(2.0);
+/// The Keyboard card's other column: both halves as the keyboard reports them, with Refresh
+/// and Calibrate…, then the switches that are saved on the keyboard.
+fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
+    ui.label(theme::caps_label(ui, "Both halves now"));
+    let right = v.state.and_then(|s| s.right);
+    for (name, half, age) in [
+        ("Left", v.state.map(|s| s.left), None),
+        ("Right", right.map(|(h, _)| h), right.map(|(_, a)| a)),
+    ] {
+        super::settings_ui::pair(ui, 52.0, name, |ui| {
+            if let Some(h) = half {
+                let color = if h.on {
+                    shown_color(h.hue, h.sat, h.brightness)
+                } else {
+                    Color32::from_gray(20)
+                };
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
+                ui.painter().rect_filled(rect, 3.0, color);
+            }
+            ui.add(egui::Label::new(half_text(half.as_ref(), age)).wrap());
+        });
+    }
+    ui.add_space(2.0);
+    ui.horizontal_wrapped(|ui| {
         if ui
             .button("Refresh")
             .on_hover_text("Ask both halves for their lights again")
@@ -293,7 +297,31 @@ fn side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
         {
             out.push(Intent::Refresh);
         }
+        if let Some(calibrated) = v.calibration {
+            if ui
+                .button("Calibrate…")
+                .on_hover_text(
+                    "Match how the keyboard shows colours to your screen or another device: \
+                     white, red, green, blue and grey, about a minute",
+                )
+                .clicked()
+            {
+                out.push(Intent::Calibrate);
+            }
+            if calibrated {
+                ui.label(RichText::new("calibrated").color(theme::palette(ui).muted));
+            }
+        }
     });
+    ui.add_space(6.0);
+    follow_row(ui, v, out);
+    // Dimming on battery (firmware D7 0E).
+    ui.add_space(4.0);
+    super::battery_dim_ui::show(ui);
+    ui.add_space(4.0);
+    if super::led_map_ui::entry(ui, v.leds.0, v.leds.1) {
+        out.push(Intent::FindLeds);
+    }
 }
 
 fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>) {
@@ -392,14 +420,6 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             out.push(Intent::Apply { hue: *hue, sat: *sat, brightness: *brightness });
         }
     });
-    follow_row(ui, v, out);
-    // Dimming on battery (firmware D7 0E), kept apart so the page stays as it was.
-    ui.add_space(4.0);
-    super::battery_dim_ui::show(ui);
-    ui.add_space(4.0);
-    if super::led_map_ui::entry(ui, v.leds.0, v.leds.1) {
-        out.push(Intent::FindLeds);
-    }
     if !v.controls {
         ui.add_space(2.0);
         ui.weak("The controls need an RGB key (&rgb_ug) somewhere in the keymap.");
@@ -556,6 +576,53 @@ pub mod tests {
         assert_eq!(d.speed, None, "the keyboard caught up");
     }
 
+    /// The page by device (#533): one Keyboard card holding the halves' state, Refresh and the
+    /// keyboard's Calibrate…; no Presets card while there are none, no separate halves card.
+    #[test]
+    fn the_keyboard_card_holds_the_halves_state() {
+        let ctx = super::super::pc_lights_ui::tests::test_ctx();
+        let mut text = String::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                draw(ui, &sample(), &mut Draft::default());
+            });
+            out.textures_delta.clear();
+            text.clear();
+            for clipped in &out.shapes {
+                collect(&clipped.shape, &mut text);
+            }
+        }
+        for want in [
+            "Keyboard",
+            "BOTH HALVES NOW",
+            "Refresh",
+            "Calibrate…",
+            "calibrated",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
+        assert!(
+            !text.contains("Presets") && !text.contains("No presets"),
+            "{text}"
+        );
+        assert_eq!(
+            text.lines().filter(|l| *l == "Keyboard").count(),
+            1,
+            "one card title: {text}"
+        );
+    }
+
+    fn collect(shape: &egui::Shape, out: &mut String) {
+        match shape {
+            egui::Shape::Text(t) => {
+                out.push_str(t.galley.text());
+                out.push('\n');
+            }
+            egui::Shape::Vec(v) => v.iter().for_each(|s| collect(s, out)),
+            _ => {}
+        }
+    }
+
     /// The previews' sample: both halves on, the right one reporting a few seconds late.
     pub fn sample() -> View {
         View {
@@ -568,6 +635,7 @@ pub mod tests {
             controls: true,
             busy: false,
             leds: (true, super::super::led_map::MapState::Shipped),
+            calibration: Some(true),
         }
     }
 
@@ -580,6 +648,7 @@ pub mod tests {
             controls: false,
             busy: false,
             leds: (false, super::super::led_map::MapState::Unknown),
+            calibration: None,
         }
     }
 }

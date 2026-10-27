@@ -186,7 +186,7 @@ pub fn top(ui: &mut egui::Ui) -> Option<Page> {
 /// The keyboard's cards, acting on their clicks.
 fn show(ui: &mut egui::Ui) {
     super::firmware_update::update_dialog(ui.ctx());
-    // #504: the controllers' levels stay fresh while the Devices card is on screen.
+    // #504: the controllers' levels stay fresh while the Batteries card is on screen.
     super::peripherals::visible(ui.ctx());
     let view = view(ui.ctx());
     match draw(ui, &view) {
@@ -298,10 +298,11 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
     intent
 }
 
-/// Foxglove (#504): the Devices card, the batteries of what else is connected to this PC.
+/// Foxglove (#504): the Batteries card, the batteries of what else is connected to this PC.
+/// Named for what it shows (#533): "devices" on the Lights page means devices with lights.
 fn devices(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
     let mut intent = None;
-    card(ui, "Devices", |ui| {
+    card(ui, "Batteries", |ui| {
         let p = theme::palette(ui);
         ui.label(
             RichText::new(

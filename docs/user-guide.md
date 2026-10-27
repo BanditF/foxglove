@@ -129,16 +129,18 @@ Open it from the tray: **Open Foxglove**. The sidebar has six pages, top to bott
     bootloader) need a second click.
   - **Connection:** whether the left half is on USB or Bluetooth, the active Bluetooth slot,
     and this PC's slot.
-  - **Devices:** the batteries of the Bluetooth devices and game controllers connected to this
+  - **Batteries:** the batteries of the Bluetooth devices and game controllers connected to this
     PC (a mouse, headphones, a wireless controller), with **Tell me when a device's battery runs
     low** (on by default; one notification below 15% and one below 5%). Devices that don't
     report a battery aren't listed, and the keyboard has its own lines. The tray panel shows the
-    same list under **Devices** when one reports.
+    same list under **Batteries** when one reports.
   - **Keymap source:** the keyboard the layer overlay reads (**Device**, **Connect**).
 - **Lights.** **Keyboard** sets the colour, effect, brightness and speed of the keyboard's
   lights. **Follow the Windows accent colour** makes them take Windows' accent colour whenever
-  you change it, keeping your brightness. These controls need an RGB key in the keymap.
-  **Other devices** lists the rest of the PC's lights ([below](#the-pcs-case-lights-hp-omen-45l)).
+  you change it, keeping your brightness. These controls need an RGB key in the keymap. The
+  same card shows what both halves report now (**Refresh** asks them again) and
+  **Calibrate…** for the keyboard. **Other devices** lists the rest of the PC's lights
+  ([below](#the-pcs-case-lights-hp-omen-45l)); the keyboard is only in its own card.
 - **Scenes.** One effect across every light at once ([below](#scenes-light-that-travels-through-the-room)).
 - **Screens.** Both screens and all the right screen's art, from the top:
   - **Showing now:** the left screen and the right screen side by side, each with its name and
@@ -280,8 +282,12 @@ yours, give it a name, and pick the protocol it speaks if it's one Foxglove know
 device, and type what lit up (leave it empty if nothing did). Each zone blinks for a moment
 and goes back to how it was (dark if Foxglove never set it). Nothing is sent to the device
 until you click. **Save** keeps the entry in `lighting-catalog.local.toml` next to your
-settings; **Copy entry** on the device copies it to share, or to send to Foxglove so everyone
-gets it.
+settings; **More ▸ → Copy entry** on the device copies it to share, or to send to Foxglove so
+everyone gets it, and **More ▸ → Remove…** forgets it (it asks again first).
+
+**Calibrate…** on a device opens the colour calibrator as a dialog over the page. **Save**
+keeps your matches; **Cancel**, Escape, leaving the page or closing the window puts the
+previous calibration and colours back.
 
 **Retiring OMEN Light Studio.** While Light Studio runs, the page says so: it may put its own
 colours back over Foxglove's. Once the case looks right from Foxglove, remove it in

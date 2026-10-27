@@ -1,4 +1,4 @@
-//! The colour calibrator: "Calibrate…" on a device of the Lights page.
+//! The colour calibrator: "Calibrate…" on a device of the Lights page, as a dialog over it.
 //!
 //! Calibration here is a set of matches the user confirms, never a measurement of what a colour
 //! "really" is. For each test colour the device shows it and the reference (the screen, as a
@@ -842,30 +842,79 @@ pub fn open_at(target: Target, zone: Option<String>, color: Option<[u8; 3]>) {
     *OPEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
 }
 
-/// The calibrator in place of the "Other devices" card, while it's open; false when it
-/// isn't.
-pub fn show(ui: &mut egui::Ui) -> bool {
+/// The dialog's backdrop over the page (the layout guard knows it by this colour).
+pub const BACKDROP: Color32 = Color32::from_black_alpha(140);
+
+/// Where the dialog's frame was last drawn, kept in the context's temp data: the frame takes
+/// the clicks between its controls, so the layout guard counts it as their container.
+#[cfg(test)]
+pub fn dialog_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp(egui::Id::new(DIALOG_RECT)))
+}
+
+const DIALOG_RECT: &str = "foxglove-calibrate-rect";
+
+/// The calibrator as a dialog over the Lights page (#533), while it's open. Escape cancels it,
+/// as Cancel does; a click on the page behind it does nothing, so a stray click keeps the
+/// matches made so far.
+pub fn dialog(ctx: &egui::Context) {
     #[cfg(test)]
     if let Some((v, mut w)) = PREVIEW.with_borrow(|v| v.clone()) {
-        draw(ui, &v, &mut w);
-        return true;
+        modal(ctx, |ui| draw(ui, &v, &mut w));
+        return;
     }
     let mut guard = OPEN.lock().unwrap_or_else(|e| e.into_inner());
     let Some(w) = guard.as_mut() else {
-        return false;
+        return;
     };
     let view = View {
         others: others(&w.target),
         moving: moving(w),
     };
-    let out = draw(ui, &view, w);
+    let (mut out, escape) = modal(ctx, |ui| draw(ui, &view, w));
+    if escape {
+        // A Save clicked in the same frame wins.
+        out.done.get_or_insert(Done::Cancel);
+    }
     if let Some(text) = out.copy.clone() {
-        ui.ctx().copy_text(text);
+        ctx.copy_text(text);
     }
     if act(w, out) {
         *guard = None;
     }
-    true
+}
+
+/// Draws `body` in a modal dialog, centred, as wide as the window allows (up to 720 points)
+/// and scrolling when it's taller than the window. True with it when Escape was pressed.
+fn modal<R>(ctx: &egui::Context, body: impl FnOnce(&mut egui::Ui) -> R) -> (R, bool) {
+    // Escape in the import box only leaves the box (egui doesn't consume the key there).
+    let typing = ctx
+        .memory(|m| m.focused())
+        .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some());
+    let screen = ctx.content_rect();
+    let width = (screen.width() - 48.0).clamp(240.0, 720.0);
+    let height = (screen.height() - 48.0).max(160.0);
+    let r = egui::Modal::new(egui::Id::new("foxglove-calibrate"))
+        .backdrop_color(BACKDROP)
+        .frame(egui::Frame::NONE)
+        .show(ctx, |ui| {
+            // The area's room is last frame's size: set both, so the dialog can grow back.
+            ui.set_width(width);
+            ui.set_max_height(height);
+            let shown = egui::ScrollArea::vertical()
+                .max_height(height)
+                .auto_shrink([false, true])
+                .show(ui, body);
+            let rect = shown.inner_rect;
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new(DIALOG_RECT), rect));
+            shown.inner
+        });
+    let escape = r.is_top_modal
+        && !r.any_popup_open
+        && !typing
+        && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+    (r.inner, escape)
 }
 
 /// Ends an open calibrator as Cancel does: the Lights page was left, the settings window

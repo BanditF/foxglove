@@ -529,7 +529,7 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             });
             // #504: the other devices' batteries, only when one reports.
             if !v.devices.is_empty() {
-                part(ui, "Devices", |_| {}, |ui| {
+                part(ui, "Batteries", |_| {}, |ui| {
                     for (name, level, low) in &v.devices {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(name).color(p.text));

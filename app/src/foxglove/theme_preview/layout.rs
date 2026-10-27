@@ -18,6 +18,7 @@ use egui::epaint::{ClippedShape, Shape};
 use egui::{Color32, Rect};
 
 use super::{clear_samples, keep, paint, preview_ctx, run_frames, sections, show_samples, Samples};
+use crate::foxglove::calibrate_ui::BACKDROP;
 use crate::foxglove::settings_window::{DEFAULT_SIZE, MIN_SIZE};
 use crate::foxglove::shell::Page;
 use crate::foxglove::theme::DARK;
@@ -75,6 +76,10 @@ fn collect(shape: &Shape, clip: Rect, d: &mut Drawn) {
                 });
             }
         }
+        // A dialog's backdrop (#533) covers the page: only what's drawn over it is checked.
+        Shape::Rect(r) if r.fill == BACKDROP && r.rect.area() > MARK_AREA => {
+            *d = Drawn::default();
+        }
         Shape::Rect(r)
             if r.fill == DARK.surface && r.stroke.color == DARK.line && r.stroke.width == 1.0 =>
         {
@@ -100,12 +105,21 @@ fn drawn(ctx: &egui::Context, shapes: &[ClippedShape]) -> Drawn {
     }
     // Controls: whatever takes a click or a drag (buttons, pills, checkboxes, sliders, text
     // fields, selectable labels). Containers that take a drag hold their contents, which the
-    // checks allow.
+    // checks allow. With a dialog open, only its controls count, less its backdrop (which takes
+    // the clicks on the page behind it).
+    let modal = ctx.memory(|m| m.top_modal_layer());
+    let screen = ctx.content_rect();
+    let dialog = crate::foxglove::calibrate_ui::dialog_rect(ctx);
     d.controls = ctx.viewport(|v| {
         v.prev_pass
             .widgets
             .layers()
+            .filter(|(layer, _)| modal.is_none_or(|m| **layer == m))
             .flat_map(|(_, w)| w.iter())
+            .filter(|w| {
+                modal.is_none()
+                    || !(w.rect.contains_rect(screen) || dialog.is_some_and(|r| same(w.rect, r)))
+            })
             .filter(|w| (w.sense.senses_click() || w.sense.senses_drag()) && w.rect.is_positive())
             .map(|w| w.rect)
             .collect()
