@@ -17,6 +17,9 @@
 //! - Test hook: `FOXGLOVE_WALLPAPER_OVERRIDE=<file>` replaces Wallpaper Engine's config with
 //!   that file, which holds one wallpaper id or Wallpaper Engine path. It's watched the same
 //!   way, so rewriting it switches the wallpaper; the monitor setting doesn't apply.
+//! - Wallpapers that describe themselves (`foxglove.json`, #562, `wallpaper_manifest`) are
+//!   gathered on each change too: the Scenes page offers their looks and marks the ones on
+//!   screen, and wallpaper sync (#493) reaches the monitors showing one that supports it.
 
 use std::path::PathBuf;
 
@@ -24,6 +27,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::art_service::Choice;
+use super::wallpaper_manifest::Manifest;
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Wallpaper {
@@ -264,16 +268,27 @@ fn find_in(
     find(index, &on_screen(text, source), monitor).cloned()
 }
 
-/// The monitors whose wallpaper is in the index (a Bandit wallpaper): Wallpaper Engine's key and
-/// the wallpaper's file. None from any other source.
-fn bandit_monitors(index: &[Wallpaper], text: &str, source: &Source) -> Vec<(String, String)> {
+/// The monitors whose wallpaper reads Foxglove's properties (its manifest's `supports`):
+/// Wallpaper Engine's key, the wallpaper's file and what it supports. None from any other
+/// source, since only Wallpaper Engine's command line reaches a wallpaper.
+fn sync_targets(
+    manifests: &[Manifest],
+    text: &str,
+    source: &Source,
+) -> Vec<super::wallpaper_sync::Target> {
     if !matches!(source, Source::Engine(_)) {
         return Vec::new();
     }
-    let on = selected(text);
-    on.iter()
-        .filter(|(m, _)| find(index, &on, Some(m)).is_some())
-        .cloned()
+    selected(text)
+        .into_iter()
+        .filter_map(|(location, file)| {
+            let supports = super::wallpaper_manifest::for_file(manifests, &file)?.supports;
+            supports.any().then_some(super::wallpaper_sync::Target {
+                location,
+                file,
+                supports,
+            })
+        })
         .collect()
 }
 
@@ -309,27 +324,38 @@ fn watched_with(
     }
 }
 
-/// The ids of the indexed wallpapers on screen, on any monitor (the Scenes page marks their
-/// looks, #488). Set by the wallpaper service on each change.
+/// The ids of the wallpapers with a manifest on screen, on any monitor (the Scenes page marks
+/// their looks, #488, #562). Set by the wallpaper service on each change.
 static ON_SCREEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
-/// The indexed wallpapers on screen now (ids), as the wallpaper service last saw them.
+/// The wallpapers with a manifest on screen now (ids), as the wallpaper service last saw them.
 pub fn on_screen_ids() -> Vec<String> {
     ON_SCREEN.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// Every indexed wallpaper in `text`, each once, in monitor order.
-fn ids_on_screen(index: &[Wallpaper], text: &str, source: &Source) -> Vec<String> {
+/// Every wallpaper with a manifest in `text`, each once, in monitor order.
+fn ids_on_screen(manifests: &[Manifest], text: &str, source: &Source) -> Vec<String> {
     let mut ids: Vec<String> = Vec::new();
-    for one in on_screen(text, source) {
-        if let Some(w) = find(index, std::slice::from_ref(&one), None) {
-            if !ids.contains(&w.id) {
-                ids.push(w.id.clone());
+    for (_, file) in on_screen(text, source) {
+        if let Some(m) = super::wallpaper_manifest::for_file(manifests, &file) {
+            if !ids.contains(&m.id) {
+                ids.push(m.id.clone());
             }
         }
     }
     ids
 }
+
+/// The folders of the wallpapers on screen, where a manifest may be.
+fn folders_on_screen(text: &str, source: &Source) -> Vec<PathBuf> {
+    on_screen(text, source)
+        .iter()
+        .filter_map(|(_, file)| super::wallpaper_manifest::folder_of(file))
+        .collect()
+}
+
+/// Refresh asks for Wallpaper Engine's folders to be read again, changed or not.
+static RESCAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Wakes the wallpaper service: a watched folder changed, or the user pressed Refresh.
 static WAKE: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> = std::sync::Mutex::new(None);
@@ -338,6 +364,7 @@ static WAKE: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> = std::sync::
 /// also watches its folder from now on if it was installed or moved. Without the service,
 /// just look again.
 pub fn refresh() {
+    RESCAN.store(true, std::sync::atomic::Ordering::Relaxed);
     let sent = WAKE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -377,6 +404,7 @@ pub fn start() {
         let mut paths = watched(&engine);
         let mut watches = watch(&paths);
         let mut last: Option<String> = None;
+        let mut scanner = super::wallpaper_manifest::Scanner::default();
         // Check once at start, then on each change in a watched folder or Refresh.
         for (n, ()) in std::iter::once(()).chain(rx.iter()).enumerate() {
             let engine = if n == 0 {
@@ -392,21 +420,34 @@ pub fn start() {
                 paths = now;
             }
             let source = source(&engine);
-            let Some(text) = read(&source) else {
+            let text = read(&source);
+            // The wallpapers that describe themselves (#562): Wallpaper Engine's folders, read
+            // again when they changed, and the folders on screen.
+            let force = RESCAN.swap(false, std::sync::atomic::Ordering::Relaxed);
+            let found = scanner.scan(&super::wallpaper_manifest::roots(&engine), force);
+            let shown = text
+                .as_deref()
+                .map_or_else(Vec::new, |t| folders_on_screen(t, &source));
+            let manifests = super::wallpaper_manifest::gather(found, &shown);
+            let mut repaint = super::wallpaper_manifest::set(&manifests);
+            let Some(text) = text else {
+                if repaint {
+                    super::scene_run::repaint_page();
+                }
                 continue;
             };
-            let index = index();
-            // Wallpaper sync (#493): the monitors showing a Bandit wallpaper get the layer and
-            // the scene clock; a new wallpaper gets them at once.
-            super::wallpaper_sync::wallpapers(bandit_monitors(&index, &text, &source));
-            let ids = ids_on_screen(&index, &text, &source);
-            let changed = {
+            // Wallpaper sync (#493): the monitors showing a wallpaper that reads Foxglove's
+            // properties get them; a new wallpaper gets them at once.
+            super::wallpaper_sync::wallpapers(sync_targets(&manifests, &text, &source));
+            let ids = ids_on_screen(&manifests, &text, &source);
+            repaint |= {
                 let mut on = ON_SCREEN.lock().unwrap_or_else(|e| e.into_inner());
                 std::mem::replace(&mut *on, ids.clone()) != ids
             };
-            if changed {
+            if repaint {
                 super::scene_run::repaint_page();
             }
+            let index = index();
             let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
             let Some(w) = find_in(&index, &text, &source, monitor.as_deref()) else {
                 continue;
@@ -434,31 +475,56 @@ mod tests {
         {"id":"fury-stars","title":"Stars","workshop_id":null,"match":["projects/myprojects/bandit-fury-stars/"],
          "right":{"builtin":null,"library":"fury-stars.bin","bytes":10},"left":{"bin":"x","frames":1,"fps":0,"order":[0]}}]}"#;
 
+    /// Only monitors showing a wallpaper whose manifest supports Foxglove's properties get
+    /// wallpaper sync, with what it supports; "On screen" knows every wallpaper with a manifest.
+    /// The wallpapers are a fake third-party pack (#562).
     #[test]
-    fn only_monitors_with_a_bandit_wallpaper_get_wallpaper_sync() {
-        let index = parse_index(INDEX).unwrap();
-        let config = r#"{"fuchs":{"general":{"wallpaperconfig":{"selectedwallpapers":{
-            "//?/DISPLAY#DEL40EA#1":{"file":"C:/WE/projects/myprojects/bandit-fury-stars/index.html"},
-            "//?/DISPLAY#SAM0E3C#2":{"file":"C:/WE/projects/myprojects/bandit-hud/index.html"},
+    fn wallpapers_are_known_by_their_manifests() {
+        use super::super::wallpaper_manifest::{tests::fake_manifests, Supports};
+        let ms = fake_manifests();
+        let config = r#"{"me":{"general":{"wallpaperconfig":{"selectedwallpapers":{
+            "//?/DISPLAY#DEL40EA#1":{"file":"C:/WE/projects/myprojects/reef/index.html"},
+            "//?/DISPLAY#SAM0E3C#2":{"file":"D:/Lib/steamapps/workshop/content/431960/777/scene.pkg"},
             "Monitor0":{"file":"C:/WE/workshop/content/431960/3000562427/scene.pkg"}}}}}}"#;
         let engine = Source::Engine(PathBuf::new());
-        let keys: Vec<String> = bandit_monitors(&index, config, &engine)
-            .into_iter()
-            .map(|(m, _)| m)
-            .collect();
-        assert_eq!(keys, ["//?/DISPLAY#DEL40EA#1", "//?/DISPLAY#SAM0E3C#2"]);
-        assert!(bandit_monitors(&index, "hud", &Source::Override(PathBuf::new())).is_empty());
-        assert!(bandit_monitors(&index, config, &Source::Desktop).is_empty());
-        // The Scenes page's "On screen": every Bandit wallpaper shown, once each, from any source.
+        let targets = sync_targets(&ms, config, &engine);
         assert_eq!(
-            ids_on_screen(&index, config, &engine),
-            ["fury-stars", "hud"]
+            targets.len(),
+            1,
+            "the lighthouse reads nothing, the other has no manifest"
         );
-        let twice = config.replace("bandit-fury-stars", "bandit-hud");
-        assert_eq!(ids_on_screen(&index, &twice, &engine), ["hud"]);
+        assert_eq!(targets[0].location, "//?/DISPLAY#DEL40EA#1");
+        assert_eq!(
+            targets[0].supports,
+            Supports {
+                clock: true,
+                live: true,
+                ..Supports::default()
+            }
+        );
         let o = Source::Override(PathBuf::new());
-        assert_eq!(ids_on_screen(&index, "fury-stars", &o), ["fury-stars"]);
-        assert!(ids_on_screen(&index, "nothing", &o).is_empty());
+        assert!(sync_targets(&ms, "tidepool.reef", &o).is_empty());
+        assert!(sync_targets(&ms, config, &Source::Desktop).is_empty());
+        // The Scenes page's "On screen": every wallpaper with a manifest, once each, from any
+        // source.
+        assert_eq!(
+            ids_on_screen(&ms, config, &engine),
+            ["tidepool.reef", "tidepool.lighthouse"]
+        );
+        let twice = config.replace(
+            "D:/Lib/steamapps/workshop/content/431960/777/scene.pkg",
+            "C:/WE/projects/myprojects/reef/index.html",
+        );
+        assert_eq!(ids_on_screen(&ms, &twice, &engine), ["tidepool.reef"]);
+        assert_eq!(ids_on_screen(&ms, "tidepool.reef", &o), ["tidepool.reef"]);
+        assert!(ids_on_screen(&ms, "nothing", &o).is_empty());
+        // No manifests: no wallpaper is known, nothing is synced.
+        assert!(ids_on_screen(&[], config, &engine).is_empty());
+        assert!(sync_targets(&[], config, &engine).is_empty());
+        assert_eq!(
+            folders_on_screen(config, &engine)[0],
+            PathBuf::from("C:/WE/projects/myprojects/reef")
+        );
     }
 
     #[test]

@@ -29,7 +29,8 @@ use foxglove_scene::{
 
 use super::lights_page::{full_slider, swatch, value_row, SWATCHES, TWO_COLUMNS};
 use super::scene_looks::{
-    self as looks, Background, Chosen, Direction, Kind, Look, Preset, Saved, PALETTES,
+    self as looks, Background, Chosen, Direction, Kind, Look, Preset, Saved, WallpaperLook,
+    PALETTES,
 };
 use super::settings_ui::{card, split_row};
 use super::theme;
@@ -60,7 +61,9 @@ pub struct View {
     pub t: SceneTime,
     /// "Right screen too": a wallpaper's look also shows its right-screen art (#488).
     pub with_art: bool,
-    /// The Bandit wallpapers on screen now (ids), so their looks say "On screen".
+    /// The looks of the wallpapers that describe themselves (#562); none hides the group.
+    pub wallpapers: Vec<WallpaperLook>,
+    /// The wallpapers on screen now (ids), so their looks say "On screen".
     pub on_screen: Vec<String>,
     /// The Triggers card's boxes (#489), the active profile's.
     pub triggers: Triggers,
@@ -236,6 +239,7 @@ fn show(ui: &mut egui::Ui) {
         moved: st.moved,
         t,
         with_art: st.chosen.with_art,
+        wallpapers: looks::scenes().looks.clone(),
         on_screen: super::wallpaper::on_screen_ids(),
         triggers: Triggers::of(&st.chosen),
         profile: st.profile.clone().unwrap_or_else(|| "Base settings".into()),
@@ -1294,11 +1298,12 @@ fn save_row(ui: &mut egui::Ui, draft: &mut Draft, out: &mut Vec<Intent>) {
     }
 }
 
-/// The presets: the Bandit wallpapers' looks, one per effect, then the user's own.
+/// The presets: the wallpapers' looks (only when some wallpaper describes itself, #562), one per
+/// effect, then the user's own.
 fn presets(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
-    let wallpapers = &looks::scenes().looks;
+    let wallpapers = &v.wallpapers;
     if !wallpapers.is_empty() {
-        ui.label(theme::caps_label(ui, "Bandit wallpapers"));
+        ui.label(theme::caps_label(ui, "Wallpapers"));
         let mut with_art = v.with_art;
         if ui
             .checkbox(&mut with_art, "Right screen too")
@@ -1316,14 +1321,14 @@ fn presets(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
                 v.look == w.preset.look,
                 false,
                 tag,
-                &w.motif,
+                &w.hint(),
                 out,
             );
         }
         ui.add_space(6.0);
         ui.label(theme::caps_label(ui, "Effects"));
     }
-    for p in looks::built_in().iter().skip(wallpapers.len()) {
+    for p in &looks::effect_presets() {
         preset_row(
             ui,
             p,
@@ -1413,7 +1418,8 @@ pub(crate) mod tests {
             // The band on the case's middle fans, on its way to the keys.
             t: SceneTime(2300),
             with_art: false,
-            on_screen: vec!["hud".into()],
+            wallpapers: looks::scenes().looks.clone(),
+            on_screen: vec!["tidepool.lighthouse".into()],
             triggers: Triggers {
                 start_with_profile: true,
                 ripple_keys: true,
@@ -1446,6 +1452,7 @@ pub(crate) mod tests {
             moved: false,
             t: SceneTime(5000),
             with_art: false,
+            wallpapers: looks::scenes().looks.clone(),
             on_screen: vec![],
             triggers: Triggers::default(),
             profile: "Base settings".into(),
@@ -1637,20 +1644,57 @@ pub(crate) mod tests {
         );
     }
 
-    /// The Bandit wallpapers' looks (#488): a row picks the look, and "Right screen too"
-    /// switches their art on and off.
+    /// Whether the page draws `label`.
+    fn shows(v: &View, label: &str) -> bool {
+        let ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        crate::platform::add_phosphor_to_fonts(&mut fonts);
+        theme::add_fonts(&mut fonts);
+        ctx.set_fonts(fonts);
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                Pos2::ZERO,
+                egui::vec2(900.0, 1100.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(raw, |ui| {
+            draw(ui, v, &mut Draft::default());
+        });
+        out.textures_delta.clear();
+        text_at(&out.shapes, label).is_some()
+    }
+
+    /// With no wallpaper that describes itself, only the effects show (#562).
+    #[test]
+    fn no_wallpapers_no_wallpaper_group() {
+        let none = View {
+            wallpapers: vec![],
+            ..sample()
+        };
+        assert!(shows(&sample(), "WALLPAPERS"));
+        assert!(shows(&sample(), "Right screen too"));
+        assert!(!shows(&none, "WALLPAPERS"));
+        assert!(!shows(&none, "Right screen too"));
+        assert!(!shows(&none, "Reef drift"));
+        assert!(shows(&none, "Steel sweep"), "the effects stay");
+    }
+
+    /// A wallpaper's looks (#488, #562; here a fake third-party pack): a row picks the look,
+    /// and "Right screen too" switches their art on and off.
     #[test]
     fn a_wallpaper_look_is_picked_and_its_art_switched() {
-        let fury = looks::scenes()
-            .looks
+        let v = sample_none();
+        let reef = v
+            .wallpapers
             .iter()
-            .find(|w| w.wallpaper == "fury-chase")
+            .find(|w| w.wallpaper == "tidepool.reef")
             .unwrap();
-        let picked = click(&sample_none(), "FURY Chase");
+        let picked = click(&v, "Reef drift");
         assert_eq!(
             picked,
             vec![Intent::Look {
-                look: fury.preset.look.clone(),
+                look: reef.preset.look.clone(),
                 save: true
             }]
         );
@@ -1664,13 +1708,8 @@ pub(crate) mod tests {
         };
         assert_eq!(click(&on, "Right screen too"), vec![Intent::WithArt(false)]);
         // The wallpaper's own palette is a pill while its look is chosen, and only then.
-        let moon = looks::scenes()
-            .looks
-            .iter()
-            .find(|w| w.wallpaper == "hearth-moongarden")
-            .unwrap();
         let v = View {
-            look: moon.preset.look.clone(),
+            look: reef.preset.look.clone(),
             ..sample_none()
         };
         let forest = click(&v, "Forest");
@@ -1678,6 +1717,6 @@ pub(crate) mod tests {
             matches!(&forest[..], [Intent::Look { look, .. }] if look.palette == "Forest"),
             "{forest:?}"
         );
-        assert!(click(&sample_none(), "Moon garden").is_empty());
+        assert!(click(&sample_none(), "Reef").is_empty());
     }
 }

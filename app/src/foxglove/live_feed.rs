@@ -14,8 +14,10 @@
 //!   wallpaper gets at most 60 frames a second. The full-screen check runs when the program in
 //!   front changes and at the start of a burst of typing, never on a clock.
 //! - **Telling the wallpaper:** the feed's port goes out as the `foxglove_live` property through
-//!   Wallpaper Engine's command line (`wallpaper_sync`), so a Bandit wallpaper connects when it
-//!   comes up instead of retrying on a timer. The token never goes on a command line.
+//!   Wallpaper Engine's command line (`wallpaper_sync`) to each wallpaper whose `foxglove.json`
+//!   supports `foxglove_live` (#562), so it connects when it comes up instead of retrying on a
+//!   timer. The token never goes on a command line. Any wallpaper or program may be a client
+//!   (docs/live-feed.md).
 //!
 //! Later topics (PC stats, notifications) are new `t` values in `live_wire`; the gates, the
 //! pairing and the hub stay as they are.
@@ -764,7 +766,7 @@ fn new_token() -> Result<(), String> {
 }
 
 /// What the settings card says the feed sends.
-pub const EXPLAINER: &str = "A Bandit wallpaper on this PC shows your typing as ripples, with the layer, the right screen's art, battery and connection. It gets which key position was pressed and when, never the letter or keycode, and only with the pairing token. Someone who knows your keymap could still tell the keys apart. Nothing is sent while Foxglove is paused, the PC is locked, the screen is off or a full-screen game runs.";
+pub const EXPLAINER: &str = "A live wallpaper paired with Foxglove shows your typing as ripples, with the layer, the right screen's art, battery and connection. It gets which key position was pressed and when, never the letter or keycode, and only with the pairing token. Someone who knows your keymap could still tell the keys apart. Nothing is sent while Foxglove is paused, the PC is locked, the screen is off or a full-screen game runs.";
 
 /// The settings card.
 pub fn group(ui: &mut egui::Ui) {
@@ -867,6 +869,7 @@ mod tests {
         let parsed: LiveSettings = toml::from_str("").unwrap();
         assert!(!parsed.enabled);
         assert!(EXPLAINER.contains("never the letter or keycode"));
+        assert!(!EXPLAINER.contains("Bandit"), "any paired wallpaper (#562)");
     }
 
     #[test]
