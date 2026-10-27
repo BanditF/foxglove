@@ -680,7 +680,7 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         } else {
             (
                 "Find my LEDs…",
-                "A dot runs along the LEDs; say whether it follows the drawing: under a minute",
+                "Show Foxglove where each LED is, so scenes light every LED in its place",
                 "The keyboard lights a colour per half until Foxglove knows where its LEDs are.",
                 p.warn,
             )

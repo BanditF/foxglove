@@ -605,9 +605,11 @@ pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<C
         check_board(ui, v, c);
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
+            let ready = v.started && v.error.is_none();
             if ui
-                .add(theme::primary_button(ui, "Matches"))
+                .add_enabled(ready, theme::primary_button(ui, "Matches"))
                 .on_hover_text("Keep this map; scenes light each LED in its place")
+                .on_disabled_hover_text("Wait for the dot on the keyboard")
                 .clicked()
             {
                 out = Some(CheckIntent::Answer(Answer::Matches));
@@ -812,8 +814,7 @@ pub fn entry(ui: &mut egui::Ui, available: bool, state: MapState) -> bool {
                 ),
                 (true, MapState::Unknown) => (
                     "Find my LEDs…",
-                    "A dot runs along the LEDs; say whether it follows the drawing, so scenes light \
-                     every LED in its place",
+                    "Show Foxglove where each LED is, so scenes light every LED in its place",
                 ),
                 (true, _) => (
                     "Check LED map…",

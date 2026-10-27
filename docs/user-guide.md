@@ -299,8 +299,8 @@ scanline can run down the monitors, through the case's fans and on into the keys
   which devices the scene lights: today the case (a colour per zone) and the keyboard (a colour
   per half on firmware with per-LED frames, otherwise one colour for both halves). Others, such
   as a Logitech mouse, are shown only.
-- **Check LED map…** (Lights page, Keyboard card; the Scenes page asks once while the map
-  isn't checked): a white dot runs along the keyboard's LEDs on both halves, and the drawing
+- **Check LED map…** (Lights page, Keyboard card; the Scenes page shows it until the map is
+  checked): a white dot runs along the keyboard's LEDs on both halves, and the drawing
   shows where Foxglove thinks it is. Answer **Matches**, or say how it differs: **Runs
   backwards**, **Mirrored** (it starts on the other side of the half) or **Rows flipped** (it
   goes up where the drawing goes down); the dot runs again on the corrected map, so one to
@@ -313,7 +313,9 @@ scanline can run down the monitors, through the case's fans and on into the keys
   it** skips one, **Back** lights the one before again, and the count shows how far along you
   are. **Save** at the end, and scenes light every LED where it is (on firmware that takes the
   LEDs' places, the keyboard keeps drawing the scene that way with Foxglove closed too). Cancel (or leaving the
-  page) gives the lights back as they were. To check the map again, open **Check LED map…**.
+  page) gives the lights back as they were. To check the map again, open **Check LED map…**:
+  once saved, the map is yours (a later Foxglove's map for the board doesn't replace it), and
+  to start over, **Click each LED instead…**.
 - **Effect:** Scanline, Sweep, Ripple, Breathe, Gradient or Drift, then its colour (and
   background) or palette, speed, direction and width. Changes show on the map at once, and on
   the lights too while the scene runs.

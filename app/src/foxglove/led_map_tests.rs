@@ -97,7 +97,8 @@ fn the_map_keeps_only_the_leds_seen_and_goes_back_into_the_profile() {
     assert_eq!(l.led_points, points);
     assert!(checked(Some(&board)));
     assert!(placed(Some(&board)), "frames, not the firmware's table");
-    assert!(!placed(Some(&corne())) && !placed(None));
+    // The shipped map places them too; no board doesn't.
+    assert!(placed(Some(&corne())) && !placed(None));
 
     // A map found with another lamp count doesn't fit the profile any more.
     let mut other = corne();
@@ -460,10 +461,14 @@ fn the_dot_runs_its_rounds_then_goes_dark_and_a_frame_stops_it() {
 fn a_shipped_map_is_used_and_asked_about_a_checked_one_is_not() {
     let mut b = corne();
     assert_eq!(state(Some(&b)), MapState::Shipped);
+    // A shipped map places the LEDs: firmware without EFFECT LAMPS gets frames, as the room has
+    // them, not its own built-in table.
+    assert!(placed(Some(&b)));
     b.lighting.as_mut().unwrap().led_map = LED_MAP_CHECKED.into();
     assert_eq!(state(Some(&b)), MapState::Checked);
     b.lighting.as_mut().unwrap().led_map = "provisional".into();
     assert_eq!(state(Some(&b)), MapState::Unknown);
+    assert!(!placed(Some(&b)), "a provisional map isn't used");
     assert_eq!(state(None), MapState::Unknown);
     // A saved map (found, or confirmed by the dot test) marks it checked.
     let mut b = corne();

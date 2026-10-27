@@ -139,17 +139,20 @@ pub fn note_current(board: Option<&Board>) {
     PLACED.store(placed(board), Ordering::Relaxed);
 }
 
-/// Whether a profile has a map from "Find my LEDs".
+/// Whether a profile places its LEDs itself: a map from "Find my LEDs" or the dot test, or a
+/// key map scenes use (shipped or checked). Then the scene's positions are the map's, which
+/// firmware without EFFECT LAMPS can't take, so scenes send frames there.
 fn placed(board: Option<&Board>) -> bool {
     board
         .and_then(|b| b.lighting.as_ref())
-        .is_some_and(|l| !l.led_points.is_empty())
+        .is_some_and(|l| !l.led_points.is_empty() || (l.led_map_usable() && !l.led_keys.is_empty()))
 }
 
 /// Whether the firmware's own effects (SET_EFFECT) put the LEDs where they are: always with
 /// firmware that takes the PC's points (`takes_points`, EFFECT LAMPS, HELLO bit 21, #550), since
-/// the scene sends them. Without it, not once the user found them: that firmware places them by
-/// its built-in table, so scenes send frames, which do. Never looks anything up (frame threads
+/// the scene sends them. Without it, not once the profile places them (found, confirmed, or a
+/// shipped map): that firmware places them by its built-in table, so scenes send frames, which
+/// do. Never looks anything up (frame threads
 /// ask).
 pub fn effects_place_leds(takes_points: bool) -> bool {
     takes_points || !PLACED.load(Ordering::Relaxed)
@@ -496,7 +499,8 @@ impl Running {
     fn advance(&mut self) -> Option<Vec<Rgb>> {
         let n = self.play.frames.len().max(1);
         self.at += 1;
-        self.next += self.play.every;
+        // From now if a slow send made the step late, so the dot never rushes to catch up.
+        self.next = self.next.max(std::time::Instant::now()) + self.play.every;
         if self.at >= n * self.play.rounds.max(1) as usize {
             return None;
         }
