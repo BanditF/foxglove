@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use egui::{Color32, Pos2, Rect, TextureId};
 
+mod art_flow;
 mod layout;
 mod overlay;
 

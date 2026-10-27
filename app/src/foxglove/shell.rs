@@ -56,12 +56,15 @@ impl Page {
 
 /// Every settings section by title, and the page it lives on (#385). A new section goes in
 /// here too; the `every_section_has_a_page` test finds the ones that don't.
-pub const SECTIONS: [(&str, Page); 12] = [
+pub const SECTIONS: [(&str, Page); 14] = [
     ("Connection", Page::Keyboard),
     ("Keyboard", Page::Keyboard),
     ("Lights", Page::Lights),
-    ("Left screen · PC panel", Page::Screens),
-    ("Right screen art", Page::Screens),
+    // The art flow's tiers (#516), then the left screen's own settings.
+    ("Showing now", Page::Screens),
+    ("On the keyboard", Page::Screens),
+    ("On this PC", Page::Screens),
+    ("Left screen", Page::Screens),
     ("Plugins", Page::Plugins),
     ("Overlay Appearance", Page::Settings),
     ("Theme", Page::Settings),
@@ -226,7 +229,7 @@ pub fn frame(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui)) {
                         go = super::keyboard_page::top(ui);
                     }
                     if page == Page::Screens {
-                        // Two cards side by side (#388).
+                        // Showing now, On the keyboard, On this PC, the left screen (#516).
                         super::screens_ui::page(ui);
                     }
                     // A grid of cards (#390): each column draws only its own sections. The left one
@@ -766,8 +769,10 @@ mod tests {
         for (title, page) in [
             ("Keyboard", Page::Keyboard),
             ("Lights", Page::Lights),
-            ("Left screen · PC panel", Page::Screens),
-            ("Right screen art", Page::Screens),
+            ("Showing now", Page::Screens),
+            ("On the keyboard", Page::Screens),
+            ("On this PC", Page::Screens),
+            ("Left screen", Page::Screens),
             ("Plugins", Page::Plugins),
             ("Overlay Appearance", Page::Settings),
             ("Theme", Page::Settings),

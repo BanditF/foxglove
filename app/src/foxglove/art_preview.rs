@@ -55,7 +55,7 @@ pub fn first_frame(blob: &[u8]) -> Result<egui::ColorImage, &'static str> {
     Ok(egui::ColorImage::new([w, h], pixels))
 }
 
-fn apply(mut data: &[u8], bits: &mut [u8]) -> Result<(), &'static str> {
+pub(crate) fn apply(mut data: &[u8], bits: &mut [u8]) -> Result<(), &'static str> {
     let bad = "Invalid NVA1 delta";
     let mut pos = 0;
     while let Some((&control, rest)) = data.split_first() {

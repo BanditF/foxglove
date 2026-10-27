@@ -152,6 +152,8 @@ auto_link_exclude_list = [
 [dev-dependencies]
 # Foxglove: checks that the built-in plugin icons render (the resvg egui_extras uses).
 resvg = { version = "0.45", default-features = false }
+# Foxglove: a fake keyboard for the art tests answers digitalis' Transport, whose results are anyhow's.
+anyhow = "1"
 
 # Foxglove: smaller dev/test builds (same as the root workspace; see its Cargo.toml).
 [profile.dev]

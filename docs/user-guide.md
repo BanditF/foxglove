@@ -116,7 +116,7 @@ From top to bottom:
 ![Bandit idle, one of the built-in animations](images/right-screen-bandit-idle.gif)
 
 The right screen plays an animation. Several are built into the firmware, and Foxglove can send
-others (see **Right screen art** below). The battery and connection strip sits above it.
+others (see **Screens** below). The battery and connection strip sits above it.
 
 ## 5. Settings tour
 
@@ -135,17 +135,17 @@ Open it from the tray: **Settings...**. From the top:
     keymap.
   - **Actions.** Things the keyboard's own keys can do, as buttons. Risky ones (resets,
     bootloader) need a second click.
-- **Screens.** The left screen's PC panel:
-  - **Drive left screen** turns the panel on or off, and **Pause** freezes it.
-  - **frames per second** sets how often it redraws.
-  - **Show** picks the clock, media and hints, or the current wallpaper's animation (works
-    best with Wallpaper Engine).
-  - **Game hints** show a short note while a given program is in front.
-  - The panel status shows the right half's link and battery.
-- **Right screen art.** What plays on the right:
-  - choose a built-in animation, or push one from a file;
-  - **Saved on the keyboard** keeps a pushed animation on the keyboard itself;
-  - **Hotlist** and **Art library…**: see [Lights and art that go together](#8-lights-and-art-that-go-together).
+- **Screens.** Both screens and all the right screen's art, from the top:
+  - **Showing now:** the left screen and the right screen side by side, each with its name and
+    what happens after the keyboard restarts, **‹ Previous** / **Next ›**, and **Rotation**.
+  - **On the keyboard:** "Kept: 5 of 8 places" and the pieces kept there (they play without
+    this PC), then the pieces that **come with the keyboard**. Click one to show it.
+  - **On this PC:** every piece on this PC once, with one badge: **ON KEYBOARD**, **THIS PC**,
+    **SENDING n%** or **TOO BIG**. Click one to show it until the keyboard restarts;
+    **Keep on keyboard** keeps it. **Add art…** adds a file (or a folder of frames).
+  - **Left screen:** **Drive left screen**, **Pause**, what it shows (the clock, media and
+    hints, or the wallpaper's animation), how often it redraws, and **game hints**.
+  See [Lights and art that go together](#8-lights-and-art-that-go-together).
 - **Other keyboards (VIA).** Read-only support for VIA/QMK keyboards: see
   [Other keyboards](#10-other-keyboards-via).
 - **Plugins.** Optional add-ons (Pomodoro, Mic mute, Broadcast Status, OpenRGB): see
@@ -275,15 +275,18 @@ performance modes, not the case lights. The pump's LCD screen is separate and ke
 
 ### Cycling the right screen's art
 
-**Settings → Right screen art → Hotlist** is your list of favourites.
-- **Next entry** steps the list on any of these, in any mix:
+**Screens → Showing now → Rotation** steps through what the keyboard holds: the pieces that
+come with it, then the ones you kept on it. There is no separate list: to change what Rotation
+shows, keep or remove pieces on the keyboard. (A playlist of art that only this PC has is a
+later idea, #522.)
+- **Next piece** comes on any of these, in any mix:
   - **on the art key** *(after 0.1, next app update)*: hold SYSTEM (both middle thumbs + Tab),
     then **P** for next and **O** for previous. Without the app, the keyboard steps through its
     own built-ins and saved slots. *(next app update)* The left screen shows **ART 3/7** and the
     name for a second.
-  - **when the lights wake**: the next entry each time the underglow comes back on.
+  - **Lights wake**: the next piece each time the underglow comes back on.
   - **every N minutes**.
-- **Follow the wallpaper:** the right screen shows the art that goes with the wallpaper on
+- **Wallpaper:** the right screen shows the art that goes with the wallpaper on
   screen. It works best with Wallpaper Engine, found in any Steam library. Without it, or while
   it isn't running, your Windows desktop wallpaper counts: name the image after a wallpaper in
   the art folder's `wallpapers.json` (for example `fury-stars.png`). If Wallpaper Engine is
@@ -292,28 +295,29 @@ performance modes, not the case lights. The pump's LCD screen is separate and ke
 - **Layer art:** give a layer its own art, for example Bandit Radar for GAME. It shows while you
   hold the layer (after 0.4 s, so a quick tap doesn't flash it), then the art before comes back.
 - **Priority:** your own pick (or an art-key press) wins, then layer art, then preset art, then
-  the wallpaper, then the hotlist.
+  the wallpaper, then Rotation.
 
-### The art library
+### Keeping art on the keyboard
 
-**Settings → Right screen art → Art library…** opens one grid of every animation Foxglove
-knows: the keyboard's built-ins, what's saved on it, your library folder, the sets that come with
-the app, and your source folders. The same art in two places shows once.
-- **Each card shows:**
-  - whether it's **on screen**;
-  - where it lives (built-in, saved slot, library, bundled, source);
-  - whether it's pinned, in the hotlist, or a layer's art;
-  - its size; anything over 16 KiB is too big to send.
-- **Actions:**
-  - **Show** shows it now (built-ins and slots at once; files are sent over);
-  - ☆ adds it to the hotlist;
-  - **Clear slot** frees a saved slot (two clicks);
-  - **Recycle** moves a library file to the Recycle Bin.
-- **Stand in for…** (on a saved slot): the slot replaces a built-in everywhere that names it,
-  in the hotlist, layer art and presets. The built-in's card says "replaced by slot N" and
-  has **Undo stand-in**. The firmware itself doesn't change.
-- **Source folders:** add folders of `frame_N.png` + `meta.txt` sets (like `art-src\bandit\out`).
-  Each set shows with a thumbnail, and **Show** or **Add to library** converts it in the app.
+The right half keeps up to 8 pieces of your own, and they play without this PC. **Screens → On
+the keyboard** shows how full it is ("Kept: 5 of 8 places") and what each place holds.
+- **Show a piece from this PC:** click it under **On this PC**. It shows until the keyboard
+  restarts (the badge says **SHOWING UNTIL RESTART**); Foxglove sends it again after a restart
+  while it runs.
+- **Keep on keyboard:** one click on the piece (or under **Showing now**). Foxglove sends it,
+  keeps it in a free place and shows it from there. When all places are full, it asks which
+  piece to replace, says whether this PC still has a copy of it and whether a layer uses it, or
+  offers **Just show it for now**.
+- **Remove from keyboard:** right-click a kept piece. It asks first, and warns when this PC has
+  no copy (the keyboard can't send a piece back).
+- **Use instead of…** (right-click a kept piece): it shows wherever a built-in is chosen, in
+  layer art and presets. The firmware itself doesn't change.
+- **Add art… → A folder of frames…** adds folders of `frame_N.png` + `meta.txt` sets (like
+  `art-src\bandit\out`); each set shows under **On this PC** and is converted when you show or
+  keep it.
+- **The strip** under Showing now (and in the tray) says what is being sent, how it ended, and
+  what to do when something goes wrong, for example "The right half is asleep. Press any key on
+  it, then: Try again".
 
 ## 9. Plugins
 

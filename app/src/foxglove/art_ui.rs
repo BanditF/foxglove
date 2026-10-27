@@ -1,95 +1,247 @@
-//! The Right screen art card on the Screens page (#388, epic #393), and the file picker shared
-//! with the tray.
+//! The right screen's art on the Screens page (#516, epic #515), in three tiers:
+//! - **Showing now:** the right screen's piece, its badge, what happens after a restart,
+//!   Previous / Next, and Rotation beside it (the left screen's column is `screens_ui`'s);
+//! - **On the keyboard:** the kept places with the "Kept: n of 8 places" meter, and the pieces
+//!   that come with the keyboard, with their pictures (`art_builtins`);
+//! - **On this PC:** every piece once with one badge (`art_pieces`), Add art… and the filters.
 //!
-//! As the approved canvas draws it: what's playing (with its saved slot), the library as small
-//! 1-bit thumbnails drawn the way the right screen shows them, Push file..., the saved slots
-//! behind a one-line summary, and the hotlist as pills. Clicks become [`Act`]s that the art
-//! service carries out, so the previews draw the card with no keyboard.
+//! Clicks become [`Act`]s the art service carries out, so the previews draw the page with no
+//! keyboard. One sending strip (`art_words::strip`) shows what runs and how it ended, on the
+//! page and in the tray. Keep on keyboard is one click; a full keyboard asks what to replace
+//! (#517).
 use super::art_cycle::{Cycle, Follow, Item, Step};
-use super::{art_library, art_service};
+use super::art_pieces::{self, Filter, Kept, PcPiece};
+use super::art_service::{self, Choice, Retry, Snapshot};
+use super::art_words::{self, Badge, Showing, Tone};
+use super::{art_library, theme};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use egui::{Color32, CornerRadius, RichText, Sense, Stroke};
 
+/// What Add art… is picking.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Pick {
+    #[default]
+    File,
+    Folder,
+}
+
+/// "The keyboard is full": the piece to keep and the place picked to replace.
+#[derive(Clone, Debug, PartialEq)]
+struct Replace {
+    file: PathBuf,
+    name: String,
+    slot: Option<u8>,
+}
+
 #[derive(Default)]
 struct UiState {
     dialog: egui_file_dialog::FileDialog,
-    /// Thumbnail textures by file, made once per library scan.
-    textures: Vec<(PathBuf, egui::TextureHandle)>,
-    save_slot: u8,
-    save_name: String,
-    /// The file name the Save box started from when it was longer than a slot name holds.
-    save_name_cut: Option<String>,
-    /// The slot whose Erase was clicked once and waits for the second click.
-    confirm_erase: Option<u8>,
-    /// The saved slots' list is open.
-    slots_open: bool,
+    picking: Pick,
+    filter: Filter,
+    search: String,
+    replace: Option<Replace>,
+    /// The kept place whose Remove waits for the answer.
+    remove: Option<u8>,
+    /// A copy or add that failed, in words.
+    message: Option<String>,
 }
 thread_local! { static UI: std::cell::RefCell<UiState> = std::cell::RefCell::new(UiState::default()); }
 
+/// Runs every frame of the settings window: Add art…'s file dialog.
 pub fn update(ctx: &egui::Context) {
     art_service::set_wake(crate::ui_wake::UiWake::from_ctx(ctx));
     UI.with_borrow_mut(|state| {
         if art_library::PICK_FILE.swap(false, Ordering::Relaxed) {
+            state.picking = Pick::File;
             state.dialog.pick_file();
         }
         state.dialog.update(ctx);
-        if let Some(path) = state.dialog.take_picked() {
-            if let Some(h) = art_service::handle() {
-                h.push(path);
+        let Some(path) = state.dialog.take_picked() else {
+            return;
+        };
+        match state.picking {
+            Pick::Folder => {
+                super::art_sources::add_source(path);
+                art_library::refresh();
             }
+            // Add art…: into the library, then shown (#520).
+            Pick::File => match art_pieces::add_file(&path) {
+                Ok(file) => {
+                    state.message = None;
+                    if let Some(h) = art_service::handle() {
+                        h.push(file);
+                    }
+                }
+                Err(e) => state.message = Some(add_failed(&e, &path)),
+            },
         }
     });
 }
 
-/// What a click on the card asks the art service (or the library) to do.
+fn add_failed(error: &str, path: &std::path::Path) -> String {
+    let name = art_service::file_name(path);
+    match art_words::problem(error, None) {
+        art_words::Problem::NotArt => format!("{name} isn't art for the right screen."),
+        _ => format!("Couldn't add {name} to this PC."),
+    }
+}
+
+/// What a click asks the art service (or the library) to do.
 #[derive(Clone, Debug, PartialEq)]
 enum Act {
-    Select(i8),
+    Show(Choice),
+    /// Show a PC piece (index into the PC tier): sent until the keyboard restarts.
+    ShowPiece(usize),
+    /// Keep a PC piece on the keyboard: a free place, or the replace choice when full.
+    KeepPiece(usize),
+    /// Keep the piece sent from this file, now on screen.
+    KeepFile(PathBuf),
+    /// Keep `file` in place `slot` (the replace choice's answer).
+    KeepIn(PathBuf, u8),
     Push(PathBuf),
+    Remove(u8),
     Delete(PathBuf),
     Refresh,
-    PlaySlot(u8),
-    Save(u8, String),
-    Erase(u8),
     Cycle(Cycle),
     Next,
+    Previous,
     Cancel,
+    Again(Retry),
+    AddFile,
+    AddFolder,
+    RemoveSource(PathBuf),
+    StandIn(String, Option<u8>),
 }
 
 #[cfg(test)]
 thread_local! {
     /// The previews' art state and library, so they never ask a real keyboard.
-    pub static PREVIEW: std::cell::RefCell<Option<(art_service::Snapshot, art_library::Library)>> =
+    pub static PREVIEW: std::cell::RefCell<Option<(Snapshot, art_library::Library)>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// The Right screen art card; nothing until a keyboard with the art relay answers.
-pub fn group(ui: &mut egui::Ui) {
+/// Opens (or closes) the full-keyboard choice for the previews.
+#[cfg(test)]
+pub fn preview_replace(file: Option<(&str, Option<u8>)>) {
+    UI.with_borrow_mut(|u| {
+        u.replace = file.map(|(name, slot)| Replace {
+            file: PathBuf::from(format!("art/{name}.bin")),
+            name: name.into(),
+            slot,
+        })
+    });
+}
+
+/// The art as the page draws it this frame.
+pub struct Art {
+    pub s: Snapshot,
+    pub library: art_library::Library,
+    pub pcs: Vec<PcPiece>,
+    pub kept: Vec<Option<Kept>>,
+    pub unreadable: Vec<String>,
+}
+
+impl Art {
+    pub fn new(s: Snapshot, library: art_library::Library) -> Art {
+        let (found, unreadable) = art_pieces::found(&library);
+        let looks = art_pieces::wallpaper_files();
+        let is_wallpaper = |file: &str| looks.contains(&file.to_lowercase());
+        let pcs = art_pieces::pc_pieces(found, &is_wallpaper);
+        let kept = art_pieces::kept(&s, &pcs);
+        Art {
+            s,
+            library,
+            pcs,
+            kept,
+            unreadable,
+        }
+    }
+
+    /// What the right screen shows: its name and its picture, when Foxglove has one.
+    pub fn showing(&self) -> (String, Option<(u64, Arc<egui::ColorImage>)>) {
+        (
+            art_pieces::showing_name(&self.s),
+            art_pieces::showing_picture(&self.s, &self.pcs),
+        )
+    }
+}
+
+/// This frame's art, or `None` before the art service starts.
+pub fn current() -> Option<Art> {
     #[cfg(test)]
     if let Some((s, library)) = PREVIEW.with_borrow(|p| p.clone()) {
-        if s.connected {
-            card(ui, &s, &library);
-        }
+        return Some(Art::new(s, library));
+    }
+    let h = art_service::handle()?;
+    Some(Art::new(h.snapshot(), art_library::snapshot()))
+}
+
+/// Carries out the page's clicks.
+fn act(art: &Art, acts: Vec<Act>) {
+    #[cfg(test)]
+    if PREVIEW.with_borrow(|p| p.is_some()) {
         return;
     }
     let Some(h) = art_service::handle() else {
         return;
     };
-    let s = h.snapshot();
-    if !s.connected {
-        return;
-    }
-    let library = art_library::snapshot();
-    for act in card(ui, &s, &library) {
-        match act {
-            Act::Select(n) => {
-                let _ = h.select(n);
+    let keep = |file: PathBuf, name: String| match art_pieces::first_free(&art.s) {
+        Some(slot) => {
+            h.keep(file, slot);
+        }
+        None => UI.with_borrow_mut(|u| {
+            u.replace = Some(Replace {
+                file,
+                name,
+                slot: None,
+            })
+        }),
+    };
+    let to_library = |i: usize| {
+        let piece = art.pcs.get(i)?;
+        match art_pieces::to_library(piece, &art.library) {
+            Ok(p) => Some((p, piece.name.clone())),
+            Err(e) => {
+                UI.with_borrow_mut(|u| {
+                    u.message = Some(format!("Couldn't copy {} to this PC.", piece.name))
+                });
+                eprintln!("Foxglove: art: {e}");
+                None
+            }
+        }
+    };
+    for a in acts {
+        match a {
+            Act::Show(c) => {
+                let _ = match c {
+                    Choice::BuiltIn(n) => h.select(n),
+                    Choice::Slot(n) => h.play_slot(n),
+                    Choice::File(p) => h.push(p),
+                };
+            }
+            Act::ShowPiece(i) => {
+                if let Some((p, _)) = to_library(i) {
+                    h.push(p);
+                }
+            }
+            Act::KeepPiece(i) => {
+                if let Some((p, name)) = to_library(i) {
+                    keep(p, name);
+                }
+            }
+            Act::KeepFile(p) => keep(p.clone(), art_service::file_name(&p)),
+            Act::KeepIn(p, slot) => {
+                h.keep(p, slot);
             }
             Act::Push(p) => {
-                let _ = h.push(p);
+                h.push(p);
+            }
+            Act::Remove(n) => {
+                h.erase_slot(n);
             }
             Act::Delete(p) => art_library::delete(p),
             Act::Refresh => {
@@ -98,85 +250,63 @@ pub fn group(ui: &mut egui::Ui) {
                 // for on the wallpaper service's thread, not this one.
                 super::wallpaper::refresh();
                 art_library::refresh();
-                UI.with_borrow_mut(|s| s.textures.clear());
-            }
-            Act::PlaySlot(n) => {
-                let _ = h.play_slot(n);
-            }
-            Act::Save(n, name) => {
-                let _ = h.save_to_slot(n, name);
-            }
-            Act::Erase(n) => {
-                let _ = h.erase_slot(n);
             }
             Act::Cycle(c) => {
                 if let Err(e) = h.set_cycle(c) {
-                    eprintln!("Foxglove: can't save the hotlist: {e}");
+                    eprintln!("Foxglove: can't save Rotation: {e}");
                 }
             }
             Act::Next => {
-                let _ = h.next();
+                h.next();
+            }
+            Act::Previous => {
+                h.previous();
             }
             Act::Cancel => h.cancel(),
-        }
-    }
-    super::art_library_view::window(ui.ctx(), &h, &s);
-}
-
-fn card(ui: &mut egui::Ui, s: &art_service::Snapshot, library: &art_library::Library) -> Vec<Act> {
-    let mut acts = Vec::new();
-    super::settings_ui::section(ui, "Right screen art", |ui| {
-        UI.with_borrow_mut(|state| draw(ui, s, library, state, &mut acts));
-    });
-    acts
-}
-
-/// One library piece as the card shows it.
-#[derive(Clone)]
-pub struct Tile {
-    pub path: PathBuf,
-    pub name: String,
-    /// The first frame as stored (turned 90°), white = lit.
-    pub image: Arc<egui::ColorImage>,
-}
-
-/// The library as tiles: each piece once (by content, then by name), sorted by name; files that
-/// can't be read are left out and named in the second list, never shown as rows (#388, #367).
-pub fn tiles(entries: &[art_library::Entry]) -> (Vec<Tile>, Vec<String>) {
-    let mut out: Vec<Tile> = Vec::new();
-    let mut unreadable = Vec::new();
-    let mut hashes = std::collections::HashSet::new();
-    let mut sorted: Vec<&art_library::Entry> = entries.iter().collect();
-    sorted.sort_by_key(|e| {
-        e.path
-            .file_stem()
-            .map(|n| n.to_string_lossy().to_lowercase())
-    });
-    for e in sorted {
-        if !art_library::is_right_art_file(&e.path) {
-            continue;
-        }
-        let name = e
-            .path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned();
-        match &e.preview {
-            Err(_) => unreadable.push(name),
-            Ok(image) => {
-                let same_name = out.iter().any(|t| t.name.eq_ignore_ascii_case(&name));
-                if hashes.insert(e.hash) && !same_name {
-                    out.push(Tile {
-                        path: e.path.clone(),
-                        name,
-                        image: image.clone(),
-                    });
-                }
+            Act::Again(r) => {
+                h.again(r);
             }
+            Act::AddFile => art_library::PICK_FILE.store(true, Ordering::Relaxed),
+            Act::AddFolder => UI.with_borrow_mut(|u| {
+                u.picking = Pick::Folder;
+                u.dialog.pick_directory();
+            }),
+            Act::RemoveSource(f) => {
+                super::art_sources::remove_source(&f);
+                art_library::refresh();
+            }
+            Act::StandIn(builtin, slot) => super::art_sources::set_stand_in(&builtin, slot),
         }
     }
-    (out, unreadable)
+}
+
+/// The textures of the art pictures, kept in the context they were made for (a new context,
+/// as a preview makes, starts empty) and keyed by the picture's content, so a file replaced
+/// under the same name gets its new picture.
+pub fn texture(
+    ctx: &egui::Context,
+    key: u64,
+    half: bool,
+    stored: &egui::ColorImage,
+) -> egui::TextureHandle {
+    type Cache = HashMap<(u64, bool), egui::TextureHandle>;
+    let id = egui::Id::new("foxglove-art-textures");
+    if let Some(t) = ctx.data(|d| {
+        d.get_temp::<Cache>(id)
+            .and_then(|c| c.get(&(key, half)).cloned())
+    }) {
+        return t;
+    }
+    let t = ctx.load_texture(
+        format!("art-{key:x}-{half}"),
+        thumbnail(stored, half),
+        egui::TextureOptions::NEAREST,
+    );
+    ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<Cache>(id)
+            .insert((key, half), t.clone())
+    });
+    t
 }
 
 /// The right screen's tones: lit pixels light grey, the rest near black.
@@ -222,88 +352,240 @@ pub fn thumbnail(stored: &egui::ColorImage, half: bool) -> egui::ColorImage {
     egui::ColorImage::new([tw, th], pixels)
 }
 
-/// What plays on the right now: (name, where it comes from).
-pub fn playing(s: &art_service::Snapshot) -> (String, String) {
-    let Some(st) = s.status else {
-        return ("…".into(), "Waiting for the keyboard".into());
+/// What the right screen shows now, for the keyboard page and the tray: its name and picture.
+pub fn showing_now(
+    s: &Snapshot,
+    library: &art_library::Library,
+) -> (String, Option<Arc<egui::ColorImage>>) {
+    if !s.connected {
+        return ("…".into(), None);
+    }
+    let (name, picture) = Art::new(s.clone(), library.clone()).showing();
+    (name, picture.map(|(_, image)| image))
+}
+
+fn tone_color(ui: &egui::Ui, tone: Tone) -> Color32 {
+    let p = theme::palette(ui);
+    match tone {
+        Tone::Busy => p.accent,
+        Tone::Ok => p.ok,
+        Tone::Warn => p.warn,
+        Tone::Error => p.danger,
+        Tone::Plain => p.muted,
+    }
+}
+
+/// A badge: its words in the mono face inside a thin rounded line.
+pub fn badge_ui(ui: &mut egui::Ui, badge: Badge) -> egui::Response {
+    let color = tone_color(ui, badge.tone());
+    let galley = ui
+        .painter()
+        .layout_no_wrap(badge.text(), theme::mono(10.5), color);
+    let (rect, r) = ui.allocate_exact_size(galley.size() + egui::vec2(10.0, 4.0), Sense::hover());
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(3),
+        Stroke::new(1.0, color),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter()
+        .galley(rect.min + egui::vec2(5.0, 2.0), galley, color);
+    r
+}
+
+/// The sending strip (#518), on the page and in the tray: a coloured edge, the sentence, a
+/// smaller line, a bar while sending, and one button. Returns the button when clicked.
+pub fn strip_ui(ui: &mut egui::Ui, strip: &art_words::Strip) -> Option<art_words::Button> {
+    let p = theme::palette(ui);
+    let edge = tone_color(ui, strip.tone);
+    let mut clicked = None;
+    let r = egui::Frame::new()
+        .fill(p.well)
+        .stroke(Stroke::new(1.0, p.line))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin {
+            left: 14,
+            right: 10,
+            top: 8,
+            bottom: 8,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_max_width((ui.available_width() - 96.0).max(120.0));
+                    ui.label(RichText::new(&strip.text).color(p.text_strong));
+                    if let Some(d) = &strip.detail {
+                        ui.label(RichText::new(d).small().color(p.muted));
+                    }
+                    if let Some(f) = strip.progress {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::ProgressBar::new(f)
+                                    .desired_width(200.0)
+                                    .fill(p.accent),
+                            );
+                            ui.label(
+                                RichText::new(format!("{}%", (f * 100.0) as u32))
+                                    .small()
+                                    .color(p.muted),
+                            );
+                        });
+                    }
+                });
+                if let Some(button) = strip.button {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let text = match button {
+                            art_words::Button::Cancel => "Cancel",
+                            art_words::Button::TryAgain => "Try again",
+                        };
+                        if ui.button(text).clicked() {
+                            clicked = Some(button);
+                        }
+                    });
+                }
+            });
+        })
+        .response;
+    let bar = egui::Rect::from_min_size(r.rect.min, egui::vec2(4.0, r.rect.height()));
+    ui.painter().rect_filled(
+        bar,
+        CornerRadius {
+            nw: 6,
+            sw: 6,
+            ne: 0,
+            se: 0,
+        },
+        edge,
+    );
+    clicked
+}
+
+/// The strip for this snapshot, with its click turned into an act. A success line fades: one
+/// repaint is asked for when it is due to go, not a timer.
+fn strip(ui: &mut egui::Ui, s: &Snapshot, acts: &mut Vec<Act>) {
+    let Some(strip) = art_words::strip(s) else {
+        return;
     };
-    let count = i16::from(st.right_set_count);
-    let set = i16::from(st.right_set);
-    if st.flash_slots > 0 && set >= count && set < count + i16::from(st.flash_slots) {
-        let slot = (set - count) as u8;
-        let name = s
-            .slots
-            .iter()
-            .find(|i| i.slot == slot && i.used)
-            .map_or_else(|| format!("slot {}", slot + 1), |i| i.name.clone());
-        return (name, format!("Saved on the keyboard · slot {}", slot + 1));
+    if let Some(o) = s.outcome.as_ref().filter(|o| o.result.is_ok() && !s.busy) {
+        ui.ctx()
+            .request_repaint_after(art_words::DONE_FOR.saturating_sub(o.at.elapsed()));
     }
-    if let Some(n) = s.showing_built_in() {
-        let name = s
-            .built_ins()
-            .into_iter()
-            .find(|(i, _)| *i == n)
-            .map_or_else(|| format!("Set {n}"), |(_, name)| name);
-        return (name, "Built in".into());
+    ui.add_space(6.0);
+    match strip_ui(ui, &strip) {
+        Some(art_words::Button::Cancel) => acts.push(Act::Cancel),
+        Some(art_words::Button::TryAgain) => {
+            if let Some(r) = s.outcome.as_ref().and_then(|o| o.job.again.clone()) {
+                acts.push(Act::Again(r));
+            }
+        }
+        None => {}
     }
-    if let Some(p) = s.showing_file() {
-        return (
-            p.file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned(),
-            "Pushed from this PC".into(),
+}
+
+/// A picture tile: the art (or a dark box with words), its name under it, and an orange ring
+/// when it is on the right screen.
+fn tile(
+    ui: &mut egui::Ui,
+    picture: Option<&egui::TextureHandle>,
+    name: &str,
+    on: bool,
+    empty: Option<&str>,
+) -> egui::Response {
+    let p = theme::palette(ui);
+    let pic = egui::vec2(34.0, 70.0);
+    let size = egui::vec2(pic.x + 50.0, pic.y + 26.0);
+    let sense = if empty.is_some() {
+        Sense::hover()
+    } else {
+        Sense::click()
+    };
+    let (rect, r) = ui.allocate_exact_size(size, sense);
+    let painter = ui.painter();
+    let frame = egui::Rect::from_center_size(
+        egui::pos2(rect.center().x, rect.top() + 4.0 + pic.y / 2.0),
+        pic + egui::vec2(6.0, 6.0),
+    );
+    let line = if on {
+        p.accent
+    } else if r.hovered() && empty.is_none() {
+        p.control_line.gamma_multiply(1.6)
+    } else {
+        p.control_line
+    };
+    painter.rect(
+        frame,
+        CornerRadius::same(4),
+        if empty.is_some() { p.surface } else { OFF },
+        Stroke::new(if on { 2.0 } else { 1.0 }, line),
+        egui::StrokeKind::Inside,
+    );
+    let inner = egui::Rect::from_center_size(frame.center(), pic);
+    match (picture, empty) {
+        (Some(t), _) => {
+            painter.image(
+                t.id(),
+                inner,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+        (None, words) => {
+            painter.text(
+                inner.center(),
+                egui::Align2::CENTER_CENTER,
+                words.unwrap_or("ART"),
+                theme::body(11.0),
+                p.muted,
+            );
+        }
+    }
+    if empty.is_none() {
+        let shown: String = if name.chars().count() > 12 {
+            name.chars().take(11).chain(['…']).collect()
+        } else {
+            name.to_string()
+        };
+        painter.text(
+            egui::pos2(rect.center().x, rect.bottom() - 2.0),
+            egui::Align2::CENTER_BOTTOM,
+            shown,
+            theme::body(11.5),
+            p.text,
         );
     }
-    let state = digitalis::protocol::RIGHT_STATES
-        .get(usize::from(st.right_state))
-        .copied()
-        .unwrap_or("busy");
-    ("…".into(), format!("The right half is {state}"))
+    r
 }
 
-fn texture(ui: &egui::Ui, state: &mut UiState, tile: &Tile, half: bool) -> egui::TextureHandle {
-    let key = if half {
-        tile.path.with_extension("thumb")
-    } else {
-        tile.path.clone()
+/// The right screen's column of Showing now: the picture, its name and badge, the restart
+/// line, Previous / Next, and Keep on keyboard for a piece that isn't kept.
+pub fn now_right(ui: &mut egui::Ui) {
+    let Some(art) = current() else {
+        return;
     };
-    if let Some((_, t)) = state.textures.iter().find(|(p, _)| *p == key) {
-        return t.clone();
-    }
-    let t = ui.ctx().load_texture(
-        format!("art-{}", key.display()),
-        thumbnail(&tile.image, half),
-        egui::TextureOptions::NEAREST,
-    );
-    state.textures.push((key, t.clone()));
-    t
+    let mut acts = Vec::new();
+    draw_now_right(ui, &art, &mut acts);
+    act(&art, acts);
 }
 
-fn draw(
-    ui: &mut egui::Ui,
-    s: &art_service::Snapshot,
-    library: &art_library::Library,
-    state: &mut UiState,
-    acts: &mut Vec<Act>,
-) {
-    let p = super::theme::palette(ui);
-    let (tiles, unreadable) = tiles(&library.entries);
-    let showing = s.showing_file().cloned();
-
-    // Playing now: the picture, its name and where it comes from.
-    let (name, from) = playing(s);
-    ui.horizontal(|ui| {
-        let playing_tile = showing
-            .as_ref()
-            .and_then(|path| tiles.iter().find(|t| t.path == *path));
-        match playing_tile {
-            Some(tile) => {
-                let t = texture(ui, state, tile, false);
-                ui.add(egui::Image::new((t.id(), t.size_vec2())).corner_radius(3));
+fn draw_now_right(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
+    let p = theme::palette(ui);
+    let s = &art.s;
+    ui.label(theme::caps_label(ui, "Right screen"));
+    if !s.connected {
+        ui.weak("Waiting for the keyboard.");
+        return;
+    }
+    let (name, picture) = art.showing();
+    ui.horizontal_top(|ui| {
+        let size = egui::vec2(68.0, 140.0);
+        match &picture {
+            Some((key, image)) => {
+                let t = texture(ui.ctx(), *key, false, image);
+                ui.add(egui::Image::new((t.id(), size)).corner_radius(3));
             }
             None => {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(68.0, 140.0), Sense::hover());
+                let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
                 ui.painter().rect(
                     rect,
                     CornerRadius::same(3),
@@ -315,344 +597,117 @@ fn draw(
                     rect.center(),
                     egui::Align2::CENTER_CENTER,
                     "ART",
-                    super::theme::mono(11.0),
+                    theme::mono(11.0),
                     p.muted,
                 );
             }
         }
         ui.vertical(|ui| {
-            ui.label(super::theme::caps_label(ui, "Playing"));
             ui.label(
-                RichText::new(name)
-                    .font(super::theme::hud(16.0))
+                RichText::new(&name)
+                    .font(theme::hud(17.0))
                     .color(p.text_strong),
             );
-            ui.weak(from);
-            if s.pinned.is_some() {
-                ui.weak("Comes back after the keyboard restarts.");
+            let Some(st) = s.status else {
+                return;
+            };
+            let now = art_words::showing(&st);
+            if let Some(b) = art_words::showing_badge(now) {
+                badge_ui(ui, b);
             }
-            ui.add_space(6.0);
-            ui.add_enabled_ui(!s.busy, |ui| built_in_picker(ui, s, acts));
-        });
-    });
-
-    ui.add_space(6.0);
-    ui.label(super::theme::caps_label(ui, "Library"));
-    if tiles.is_empty() {
-        ui.weak("No art in the library yet. Push a file to add one.");
-    }
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-        for tile in &tiles {
-            let on = showing.as_ref() == Some(&tile.path);
-            let t = texture(ui, state, tile, true);
-            let r = library_tile(ui, &t, &tile.name, on);
-            if r.clicked() && !on && !s.busy {
-                acts.push(Act::Push(tile.path.clone()));
-            }
-            r.on_hover_text(if on {
-                "On the keyboard now"
-            } else {
-                "Click to show it on the right screen"
-            })
-            .context_menu(|ui| {
-                if ui.button("Move to the Recycle Bin").clicked() {
-                    acts.push(Act::Delete(tile.path.clone()));
-                    ui.close();
-                }
+            let remembered = s.pinned.as_ref().is_some_and(|pin| match (pin, now) {
+                (Choice::BuiltIn(n), Showing::BuiltIn(m)) => *n == m,
+                (Choice::Slot(n), Showing::Kept(m)) => *n == m,
+                (Choice::File(_), Showing::Sent) => s.showing_file().is_some(),
+                _ => false,
             });
-        }
-    });
-    if !unreadable.is_empty() {
-        ui.weak(format!(
-            "{} file(s) in the art folder couldn't be read.",
-            unreadable.len()
-        ))
-        .on_hover_text(unreadable.join(", "));
-    }
-    if let Some(error) = &library.error {
-        ui.colored_label(p.danger, error);
-    }
-
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        ui.add_enabled_ui(!s.busy, |ui| {
-            if ui.button("Push file...").clicked() {
-                art_library::PICK_FILE.store(true, Ordering::Relaxed);
-            }
-        });
-        let refresh = ui.button("Refresh");
-        let refresh = match art_library::folder() {
-            Some(folder) => refresh.on_hover_text(format!("Art folder: {}", folder.display())),
-            None => refresh,
-        };
-        if refresh.clicked() {
-            acts.push(Act::Refresh);
-        }
-        super::art_library_view::button(ui);
-    });
-
-    slots(ui, s, state, acts);
-    hotlist(ui, s, &tiles, acts);
-
-    if s.busy {
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            match s.progress() {
-                Some((done, total)) => {
-                    let f = if total == 0 {
-                        0.0
-                    } else {
-                        f32::from(done) / f32::from(total)
-                    };
-                    ui.add(
-                        egui::ProgressBar::new(f)
-                            .desired_width(180.0)
-                            .text(format!("{done} / {total} bytes")),
-                    );
-                }
-                None => {
-                    ui.spinner();
-                }
-            }
-            if ui.button("Cancel").clicked() {
-                acts.push(Act::Cancel);
-            }
-        });
-    }
-    if s.cancelled {
-        ui.weak("Cancelled");
-    }
-    if let Some(error) = &s.error {
-        ui.colored_label(p.danger, error);
-    }
-}
-
-/// A library tile: the half-size picture over its name; an orange ring when it's on the keyboard.
-fn library_tile(
-    ui: &mut egui::Ui,
-    t: &egui::TextureHandle,
-    name: &str,
-    on: bool,
-) -> egui::Response {
-    let p = super::theme::palette(ui);
-    let size = egui::vec2(t.size_vec2().x.max(64.0) + 12.0, t.size_vec2().y + 30.0);
-    let (rect, r) = ui.allocate_exact_size(size, Sense::click());
-    let line = if on {
-        p.accent
-    } else if r.hovered() || r.has_focus() {
-        p.control_line.gamma_multiply(1.6)
-    } else {
-        p.line
-    };
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        CornerRadius::same(6),
-        p.control,
-        Stroke::new(if on { 2.0 } else { 1.0 }, line),
-        egui::StrokeKind::Inside,
-    );
-    let img = egui::Rect::from_min_size(
-        egui::pos2(rect.center().x - t.size_vec2().x / 2.0, rect.top() + 6.0),
-        t.size_vec2(),
-    );
-    painter.image(
-        t.id(),
-        img,
-        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-        Color32::WHITE,
-    );
-    let shown: String = if name.chars().count() > 11 {
-        name.chars().take(10).chain(['…']).collect()
-    } else {
-        name.to_string()
-    };
-    painter.text(
-        egui::pos2(rect.center().x, rect.bottom() - 7.0),
-        egui::Align2::CENTER_BOTTOM,
-        shown,
-        super::theme::body(11.5),
-        p.text,
-    );
-    r
-}
-
-fn built_in_picker(ui: &mut egui::Ui, s: &art_service::Snapshot, acts: &mut Vec<Act>) {
-    let built_ins = s.built_ins();
-    if built_ins.is_empty() {
-        return;
-    }
-    let showing = s.showing_built_in();
-    let current = built_ins
-        .iter()
-        .find(|(n, _)| Some(*n) == showing)
-        .map_or_else(|| "Choose built-in".to_string(), |(_, name)| name.clone());
-    egui::ComboBox::from_id_salt("right-art-built-in")
-        .selected_text(current)
-        .show_ui(ui, |ui| {
-            if ui.selectable_label(false, "Random").clicked() {
-                acts.push(Act::Select(-1));
-            }
-            for (n, name) in built_ins {
-                // Selected = what the right half shows now.
-                if ui.selectable_label(Some(n) == showing, name).clicked() {
-                    acts.push(Act::Select(n));
-                }
-            }
-        });
-}
-
-/// The right half's flash slots (firmware #123): one summary line, the list behind a click.
-fn slots(ui: &mut egui::Ui, s: &art_service::Snapshot, state: &mut UiState, acts: &mut Vec<Act>) {
-    use digitalis::protocol::right_state;
-    let Some(st) = s.status.filter(|st| st.flash_slots > 0) else {
-        return;
-    };
-    let used = s.slots.iter().filter(|i| i.used).count();
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label(format!(
-            "Saved on the keyboard: {used} of {}",
-            st.flash_slots
-        ));
-        let text = if state.slots_open {
-            "Hide slots"
-        } else {
-            "Show slots"
-        };
-        if ui.small_button(text).clicked() {
-            state.slots_open = !state.slots_open;
-        }
-    });
-    if !state.slots_open {
-        return;
-    }
-    ui.add_enabled_ui(!s.busy, |ui| {
-        for info in s.slots.iter().filter(|i| i.used) {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{}", info.slot + 1)).font(super::theme::mono(12.5)));
-                ui.label(&info.name);
-                let playing = i16::from(st.right_set) == i16::from(st.right_set_count) + i16::from(info.slot);
-                if playing {
-                    ui.weak("playing");
-                } else if ui.small_button("Play").clicked() {
-                    acts.push(Act::PlaySlot(info.slot));
-                }
-                let confirming = state.confirm_erase == Some(info.slot);
-                if ui.small_button(if confirming { "Erase? Click again" } else { "Erase" }).clicked() {
-                    if confirming {
-                        state.confirm_erase = None;
-                        acts.push(Act::Erase(info.slot));
-                    } else {
-                        state.confirm_erase = Some(info.slot);
-                    }
-                }
-            });
-        }
-        let empty = usize::from(st.flash_slots).saturating_sub(used);
-        if empty > 0 {
-            ui.weak(format!("{empty} empty"));
-        }
-        // Saving copies the pushed set now playing on the right into flash.
-        let can_save = st.right_state == right_state::PLAYING;
-        ui.add_enabled_ui(can_save, |ui| {
+            match art_words::after_restart(now, remembered) {
+                Some(line) => ui.weak(line),
+                None => ui.weak(art_words::right_state_words(st.right_state)),
+            };
+            ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
-                ui.label("Save what's playing to");
-                egui::ComboBox::from_id_salt("art-save-slot")
-                    .selected_text(format!("slot {}", state.save_slot + 1))
-                    .show_ui(ui, |ui| {
-                        for n in 0..st.flash_slots {
-                            let taken = st.flash_used & (1 << n) != 0;
-                            let text = format!("slot {}{}", n + 1, if taken { " (replace)" } else { "" });
-                            ui.selectable_value(&mut state.save_slot, n, text);
-                        }
-                    });
-                if state.save_name.is_empty() {
-                    if let Some(art_service::Choice::File(p)) = &s.pinned {
-                        let stem = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
-                        let (name, cut) = fit_save_name(&stem);
-                        state.save_name = name;
-                        state.save_name_cut = cut;
+                ui.add_enabled_ui(!s.busy, |ui| {
+                    if ui.button("‹ Previous").clicked() {
+                        acts.push(Act::Previous);
                     }
-                }
-                let edit = ui.add(egui::TextEdit::singleline(&mut state.save_name).hint_text("name").desired_width(120.0));
-                if edit.changed() {
-                    state.save_name = fit_save_name(&state.save_name).0;
-                    state.save_name_cut = None;
-                }
-                let used = state.save_name.len();
-                let full = digitalis::protocol::art::NAME_LEN;
-                let counter = format!("{used}/{full}");
-                if used >= full {
-                    ui.colored_label(ui.visuals().warn_fg_color, counter)
-                        .on_hover_text("A slot name holds 16 characters; it can't take more.");
-                } else {
-                    ui.weak(counter);
-                }
-                if ui.button("Save").clicked() {
-                    acts.push(Act::Save(state.save_slot, state.save_name.trim().to_string()));
-                }
+                    if ui.button("Next ›").clicked() {
+                        acts.push(Act::Next);
+                    }
+                    if let (Showing::Sent, Some(file)) = (now, s.showing_file()) {
+                        if st.flash_slots > 0
+                            && ui
+                                .add(theme::primary_button(ui, "Keep on keyboard"))
+                                .clicked()
+                        {
+                            acts.push(Act::KeepFile(file.clone()));
+                        }
+                    }
+                });
             });
         });
-        if let Some(from) = &state.save_name_cut {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                format!("\"{from}\" is longer than the 16 characters a slot name holds; edit the name above if you like."),
-            );
-        }
-        if !can_save {
-            ui.weak("Push a file first; saving copies the set now playing on the right.");
-        }
     });
+    strip(ui, s, acts);
 }
 
-/// `name` cut to what a slot keeps, and the original when something was cut.
-fn fit_save_name(name: &str) -> (String, Option<String>) {
-    let fit = digitalis::protocol::art_name_fit(name);
-    (
-        fit.to_string(),
-        (fit.len() < name.len()).then(|| name.to_string()),
-    )
-}
-
-/// Which hotlist pills are lit, from the cycle settings.
-pub fn hotlist_pills(c: &Cycle) -> [bool; 5] {
-    let cycles = c.steps_on(Step::Minutes)
-        || c.steps_on(Step::LightsWake)
-        || c.steps_on(Step::Key)
-        || c.follow == Follow::Wallpaper;
+/// Which Rotation pills are lit, from its settings: Off, Every n min, Lights wake, Match the
+/// wallpaper.
+pub fn rotation_pills(c: &Cycle) -> [bool; 4] {
+    let moves =
+        c.steps_on(Step::Minutes) || c.steps_on(Step::LightsWake) || c.follow == Follow::Wallpaper;
     [
-        !cycles,
+        !moves,
         c.steps_on(Step::Minutes),
-        c.follow == Follow::Wallpaper,
         c.steps_on(Step::LightsWake),
-        c.steps_on(Step::Key),
+        c.follow == Follow::Wallpaper,
     ]
 }
 
-/// The hotlist (#60) as the canvas draws it: what moves it on as pills, then the list and Next.
-fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &mut Vec<Act>) {
+/// Rotation's column of Showing now: what changes the right screen, and when. It steps through
+/// what the keyboard holds (`art_cycle::rotation`), so it has no list of its own.
+pub fn rotation(ui: &mut egui::Ui) {
+    let Some(art) = current() else {
+        return;
+    };
+    if !art.s.connected {
+        return;
+    }
+    let mut acts = Vec::new();
+    draw_rotation(ui, &art, &mut acts);
+    act(&art, acts);
+}
+
+fn draw_rotation(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
+    let s = &art.s;
     let Some(st) = s.status else {
         return;
     };
-    ui.add_space(6.0);
-    ui.label(super::theme::caps_label(ui, "Hotlist"));
+    ui.label(theme::caps_label(ui, "Rotation"));
+    ui.label("Changes the right screen");
     let mut cycle = s.cycle.clone();
     let mut changed = false;
-    let lit = hotlist_pills(&cycle);
+    let lit = rotation_pills(&cycle);
     ui.horizontal_wrapped(|ui| {
         // A pill that doesn't fit moves to the next row rather than wrapping its words.
         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-        if super::theme::pill(ui, lit[0], "Don't cycle").clicked() && !lit[0] {
-            for step in [Step::Minutes, Step::LightsWake, Step::Key] {
+        if theme::pill(ui, lit[0], "Off").clicked() && !lit[0] {
+            for step in [Step::Minutes, Step::LightsWake] {
                 cycle.set_step(step, false);
             }
             cycle.follow = Follow::Nothing;
             changed = true;
         }
-        if super::theme::pill(ui, lit[1], &format!("Every {} min", cycle.minutes)).clicked() {
+        if theme::pill(ui, lit[1], &format!("Every {} min", cycle.minutes)).clicked() {
             cycle.set_step(Step::Minutes, !lit[1]);
+            changed = true;
+        }
+        let wake = ui.add_enabled(s.wake_events, theme::pill_button(ui, lit[2], "Lights wake"));
+        if wake
+            .on_hover_text("Steps when the keyboard's lights come back on.")
+            .on_disabled_hover_text("Needs keyboard firmware that reports when the lights come back on.")
+            .clicked()
+        {
+            cycle.set_step(Step::LightsWake, !lit[2]);
             changed = true;
         }
         let engine = super::wallpaper_engine::presence();
@@ -661,20 +716,10 @@ fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &
         } else {
             "Shows the art that goes with your Windows desktop wallpaper, when its file is named after a wallpaper in the art folder's wallpapers.json. Works best with Wallpaper Engine."
         };
-        if super::theme::pill(ui, lit[2], "Match the wallpaper")
-            .on_hover_text(hover)
-            .clicked()
-        {
-            cycle.follow = if lit[2] { Follow::Nothing } else { Follow::Wallpaper };
+        if theme::pill(ui, lit[3], "Wallpaper").on_hover_text(hover).clicked() {
+            cycle.follow = if lit[3] { Follow::Nothing } else { Follow::Wallpaper };
             changed = true;
         }
-        let wake = ui.add_enabled(s.wake_events, super::theme::pill_button(ui, lit[3], "When the lights wake"));
-        if wake.on_disabled_hover_text("Needs keyboard firmware that reports when the lights come back on.").clicked() {
-            cycle.set_step(Step::LightsWake, !lit[3]);
-            changed = true;
-        }
-        ui.add_enabled(false, super::theme::pill_button(ui, lit[4], "On the art key"))
-            .on_disabled_hover_text("Needs keyboard firmware with the &art_next key.");
     });
     if lit[1] {
         ui.horizontal(|ui| {
@@ -689,124 +734,58 @@ fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &
         });
     }
     // Wallpaper Engine's monitors, only when it's here; otherwise one short hint (#446).
-    let monitors = if cycle.follow == Follow::Wallpaper {
-        super::wallpaper::monitors()
-    } else {
-        Vec::new()
-    };
-    if cycle.follow == Follow::Wallpaper && !monitors.is_empty() {
-        ui.horizontal(|ui| {
-            ui.label("Wallpaper of");
-            // "//?/DISPLAY#DEL40EA#..." -> "DEL40EA" (the monitor's model).
-            let short = |m: &str| m.split('#').nth(1).unwrap_or(m).to_string();
-            let shown = cycle
-                .wallpaper_monitor
-                .as_deref()
-                .map_or_else(|| "any monitor".into(), short);
-            egui::ComboBox::from_id_salt("art-wallpaper-monitor")
-                .selected_text(shown)
-                .show_ui(ui, |ui| {
-                    changed |= ui
-                        .selectable_value(&mut cycle.wallpaper_monitor, None, "any monitor")
-                        .changed();
-                    for m in monitors {
-                        let label = short(&m);
-                        changed |= ui
-                            .selectable_value(&mut cycle.wallpaper_monitor, Some(m), label)
-                            .changed();
-                    }
-                });
-        });
-    }
     if cycle.follow == Follow::Wallpaper {
+        let monitors = super::wallpaper::monitors();
+        if !monitors.is_empty() {
+            ui.horizontal(|ui| {
+                ui.label("Wallpaper of");
+                // "//?/DISPLAY#DEL40EA#..." -> "DEL40EA" (the monitor's model).
+                let short = |m: &str| m.split('#').nth(1).unwrap_or(m).to_string();
+                let shown = cycle
+                    .wallpaper_monitor
+                    .as_deref()
+                    .map_or_else(|| "any monitor".into(), short);
+                egui::ComboBox::from_id_salt("art-wallpaper-monitor")
+                    .selected_text(shown)
+                    .show_ui(ui, |ui| {
+                        changed |= ui
+                            .selectable_value(&mut cycle.wallpaper_monitor, None, "any monitor")
+                            .changed();
+                        for m in monitors {
+                            let label = short(&m);
+                            changed |= ui
+                                .selectable_value(&mut cycle.wallpaper_monitor, Some(m), label)
+                                .changed();
+                        }
+                    });
+            });
+        }
         if let Some(hint) = super::wallpaper_engine::presence().hint() {
             ui.weak(hint);
         }
     }
+    let pieces = super::art_cycle::rotation(&st).len();
+    ui.weak(format!(
+        "Steps through the keyboard's {pieces} pieces. Its art keys step through the same ones."
+    ));
+    layer_art(ui, art, &mut cycle, &mut changed);
+    if changed {
+        acts.push(Act::Cycle(cycle));
+    }
+}
 
-    let names = super::art_manifest::sets(st.right_set_count);
+/// Art for a layer while it's active, over everything else (art_triggers).
+fn layer_art(ui: &mut egui::Ui, art: &Art, cycle: &mut Cycle, changed: &mut bool) {
+    let s = &art.s;
+    let count = s.status.map_or(0, |st| st.right_set_count);
+    let names = super::art_manifest::sets(count);
     let label = |item: &Item| match item {
         Item::BuiltIn(name) => names
             .and_then(|sets| sets.iter().find(|set| &set.name == name))
             .map_or_else(|| name.clone(), |set| set.label.clone()),
-        Item::Slot(n) => s.slots.iter().find(|i| i.slot == *n && i.used).map_or_else(
-            || format!("slot {} (empty)", n + 1),
-            |i| format!("saved \"{}\"", i.name),
-        ),
-        Item::File(p) => p
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
+        Item::Slot(n) => art_service::name_of(&Choice::Slot(*n), s),
+        Item::File(p) => art_service::file_name(p),
     };
-    let mut remove = None;
-    ui.add_space(2.0);
-    ui.horizontal_wrapped(|ui| {
-        for (i, item) in cycle.items.iter().enumerate() {
-            let text = if i == cycle.position {
-                format!("▶ {}", label(item))
-            } else {
-                label(item)
-            };
-            let r = ui
-                .add(egui::Button::new(text).small())
-                .on_hover_text("Click to take it off the hotlist");
-            if r.clicked() {
-                remove = Some(i);
-            }
-        }
-        if cycle.items.is_empty() {
-            ui.weak("Nothing on the hotlist yet.");
-        }
-    });
-    if let Some(i) = remove {
-        cycle.items.remove(i);
-        cycle.position = cycle.position.min(cycle.items.len().saturating_sub(1));
-        changed = true;
-    }
-    ui.horizontal(|ui| {
-        let mut add = None;
-        egui::ComboBox::from_id_salt("art-hotlist-add")
-            .selected_text("Add to hotlist")
-            .show_ui(ui, |ui| {
-                for set in names.unwrap_or_default() {
-                    if ui.selectable_label(false, &set.label).clicked() {
-                        add = Some(Item::BuiltIn(set.name.clone()));
-                    }
-                }
-                for info in s.slots.iter().filter(|i| i.used) {
-                    if ui
-                        .selectable_label(false, format!("saved \"{}\"", info.name))
-                        .clicked()
-                    {
-                        add = Some(Item::Slot(info.slot));
-                    }
-                }
-                for tile in tiles {
-                    if ui.selectable_label(false, &tile.name).clicked() {
-                        add = Some(Item::File(tile.path.clone()));
-                    }
-                }
-            });
-        if let Some(item) = add.filter(|i| !cycle.items.contains(i)) {
-            cycle.items.push(item);
-            changed = true;
-        }
-        if ui
-            .add_enabled(
-                !cycle.items.is_empty() && !s.busy,
-                egui::Button::new("Next"),
-            )
-            .clicked()
-        {
-            acts.push(Act::Next);
-        }
-    });
-    if names.is_none() {
-        ui.weak("Built-ins can be added once the art manifest matches this keyboard's firmware.");
-    }
-
-    // Art for a layer while it's active, over everything else (art_triggers).
     egui::CollapsingHeader::new("Layer art").id_salt("art-layer-art").show(ui, |ui| {
         ui.weak("Shown while that layer is active (after 0.4 s, so a quick tap doesn't flash it), then the art before comes back.");
         let layer_names = super::layer_names::remembered();
@@ -828,14 +807,14 @@ fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &
                             }
                         }
                         for info in s.slots.iter().filter(|i| i.used) {
-                            if ui.selectable_label(false, format!("saved \"{}\"", info.name)).clicked() {
+                            if ui.selectable_label(false, &info.name).clicked() {
                                 picked = Some(Some(Item::Slot(info.slot)));
                             }
                         }
                     });
-                if let Some(art) = picked {
-                    cycle.set_layer_art(layer, art);
-                    changed = true;
+                if let Some(a) = picked {
+                    cycle.set_layer_art(layer, a);
+                    *changed = true;
                 }
                 ui.end_row();
             }
@@ -844,63 +823,487 @@ fn hotlist(ui: &mut egui::Ui, s: &art_service::Snapshot, tiles: &[Tile], acts: &
             ui.weak("Layers appear once the keymap has been read.");
         }
     });
+}
 
-    if changed {
-        acts.push(Act::Cycle(cycle));
+/// The meter: "Kept: n of m places" and a box per place, lit when used.
+fn meter(ui: &mut egui::Ui, used: usize, total: usize) {
+    let p = theme::palette(ui);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(format!("Kept: {used} of {total} places")).color(p.text_strong));
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(total as f32 * 26.0, 12.0), Sense::hover());
+        for i in 0..total {
+            let r = egui::Rect::from_min_size(
+                rect.min + egui::vec2(i as f32 * 26.0, 0.0),
+                egui::vec2(22.0, 12.0),
+            );
+            let (fill, line) = if i < used {
+                (p.accent, p.accent)
+            } else {
+                (p.surface, p.control_line)
+            };
+            ui.painter().rect(
+                r,
+                CornerRadius::same(2),
+                fill,
+                Stroke::new(1.0, line),
+                egui::StrokeKind::Inside,
+            );
+        }
+    });
+}
+
+/// "On the keyboard": the kept places and the pieces that come with the keyboard, as the
+/// keyboard reports them (read on connect).
+pub fn keyboard_card(ui: &mut egui::Ui) {
+    let Some(art) = current() else {
+        return;
+    };
+    if !art.s.connected {
+        return;
     }
+    let mut acts = Vec::new();
+    super::settings_ui::section(ui, "On the keyboard", |ui| {
+        UI.with_borrow_mut(|state| draw_keyboard(ui, &art, state, &mut acts));
+    });
+    act(&art, acts);
+}
+
+fn draw_keyboard(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act>) {
+    let s = &art.s;
+    let Some(st) = s.status else {
+        ui.weak("Reading the keyboard…");
+        return;
+    };
+    if let Some((used, total)) = art_pieces::meter(s) {
+        meter(ui, used, total);
+    }
+    ui.weak("Plays without this PC.");
+    let now = art_words::showing(&st);
+    if !art.kept.is_empty() {
+        ui.add_space(6.0);
+        ui.label(theme::caps_label(ui, "Kept on the keyboard (yours)"));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            for (n, place) in art.kept.iter().enumerate() {
+                let Some(k) = place else {
+                    tile(ui, None, "", false, Some("free"));
+                    continue;
+                };
+                let piece = k.piece.and_then(|i| art.pcs.get(i));
+                let t = piece.map(|p| texture(ui.ctx(), p.key, true, &p.image));
+                let on = now == Showing::Kept(n as u8);
+                let r = tile(ui, t.as_ref(), &k.name, on, None);
+                if r.clicked() && !on && !s.busy {
+                    acts.push(Act::Show(Choice::Slot(k.slot)));
+                }
+                let hover = if piece.is_some() {
+                    "Click to show it. Right-click for more."
+                } else {
+                    "Click to show it. This PC has no copy of it. Right-click for more."
+                };
+                r.on_hover_text(hover).context_menu(|ui| {
+                    if ui.button("Show now").clicked() {
+                        acts.push(Act::Show(Choice::Slot(k.slot)));
+                        ui.close();
+                    }
+                    if ui.button("Remove from keyboard…").clicked() {
+                        state.remove = Some(k.slot);
+                        ui.close();
+                    }
+                    stand_in_menu(ui, s, k.slot, acts);
+                });
+            }
+        });
+    }
+    let built_ins = s.built_ins();
+    if !built_ins.is_empty() {
+        ui.add_space(6.0);
+        ui.label(theme::caps_label(ui, "Comes with the keyboard"));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            for (n, name) in &built_ins {
+                let picture = super::art_builtins::picture(*n, st.right_set_count);
+                let t = picture
+                    .as_ref()
+                    .map(|p| texture(ui.ctx(), p.key, true, &p.image));
+                let on = now == Showing::BuiltIn(*n);
+                let r = tile(ui, t.as_ref(), name, on, None);
+                if r.clicked() && !on && !s.busy {
+                    acts.push(Act::Show(Choice::BuiltIn(*n)));
+                }
+                r.on_hover_text("Click to show it");
+            }
+        });
+        if super::art_manifest::sets(st.right_set_count).is_none() {
+            ui.weak("This keyboard runs firmware Foxglove doesn't know, so its own pieces have no names or pictures here.");
+        }
+    }
+    ui.add_space(4.0);
+    ui.weak("Click a piece to show it. Right-click a kept one to remove it.");
+    remove_dialog(ui, art, state, acts);
+    replace_dialog(ui, art, state, acts);
+}
+
+/// "Use instead of a built-in": a kept place shown wherever that built-in is chosen (a pin, a
+/// layer, a preset), app-side (`art_sources` stand-ins).
+fn stand_in_menu(ui: &mut egui::Ui, s: &Snapshot, slot: u8, acts: &mut Vec<Act>) {
+    let names = super::art_manifest::sets(s.status.map_or(0, |st| st.right_set_count));
+    let Some(sets) = names else {
+        return;
+    };
+    ui.menu_button("Use instead of…", |ui| {
+        for set in sets {
+            let current = super::art_sources::stand_in(&set.name) == Some(slot);
+            if ui.selectable_label(current, &set.label).clicked() {
+                acts.push(Act::StandIn(set.name.clone(), (!current).then_some(slot)));
+                ui.close();
+            }
+        }
+    });
+}
+
+/// Remove from keyboard asks first, and says plainly when the keyboard holds the only copy
+/// (a kept place can't be read back to this PC).
+fn remove_dialog(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act>) {
+    let Some(slot) = state.remove else {
+        return;
+    };
+    let Some(k) = art.kept.iter().flatten().find(|k| k.slot == slot) else {
+        state.remove = None;
+        return;
+    };
+    let mut open = true;
+    egui::Window::new(format!("Remove {} from the keyboard?", k.name))
+        .id(egui::Id::new("art-remove"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .open(&mut open)
+        .show(ui.ctx(), |ui| {
+            if k.piece.is_some() {
+                ui.label("It stays on this PC; you can keep it again later.");
+            } else {
+                ui.colored_label(
+                    theme::palette(ui).warn,
+                    "This PC has no copy of it, and the keyboard can't send it back: removing it loses it.",
+                );
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.add(theme::primary_button(ui, "Remove")).clicked() {
+                    acts.push(Act::Remove(slot));
+                    state.remove = None;
+                }
+                if ui.button("Cancel").clicked() {
+                    state.remove = None;
+                }
+            });
+        });
+    if !open {
+        state.remove = None;
+    }
+}
+
+/// What a kept place is used for, in a line for the replace choice.
+fn used_for(s: &Snapshot, slot: u8) -> Option<String> {
+    let mut uses = Vec::new();
+    if s.pinned == Some(Choice::Slot(slot)) {
+        uses.push("shown after a restart".to_string());
+    }
+    for l in s.cycle.layers.iter().filter(|l| l.art == Item::Slot(slot)) {
+        let name = super::layer_names::remembered()
+            .get(usize::from(l.layer))
+            .cloned()
+            .flatten()
+            .unwrap_or_else(|| format!("layer {}", l.layer));
+        uses.push(format!("the art for {name}"));
+    }
+    (!uses.is_empty()).then(|| format!("Used as {}.", uses.join(" and ")))
+}
+
+/// "The keyboard is full" (#517): pick a place to replace, or just show the piece for now.
+/// Nothing is overwritten without this.
+fn replace_dialog(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act>) {
+    let Some(mut replace) = state.replace.clone() else {
+        return;
+    };
+    let s = &art.s;
+    let p = theme::palette(ui);
+    let mut close = false;
+    let mut open = true;
+    egui::Window::new("The keyboard is full")
+        .id(egui::Id::new("art-replace"))
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .open(&mut open)
+        .show(ui.ctx(), |ui| {
+            ui.set_min_width(690.0);
+            let total = art.kept.len();
+            ui.label(format!(
+                "It keeps {total} pieces. Pick one to replace with {}.",
+                replace.name
+            ));
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                for k in art.kept.iter().flatten() {
+                    let piece = k.piece.and_then(|i| art.pcs.get(i));
+                    let t = piece.map(|pc| texture(ui.ctx(), pc.key, true, &pc.image));
+                    if tile(ui, t.as_ref(), &k.name, replace.slot == Some(k.slot), None).clicked() {
+                        replace.slot = Some(k.slot);
+                    }
+                }
+            });
+            let picked = replace
+                .slot
+                .and_then(|n| art.kept.iter().flatten().find(|k| k.slot == n));
+            if let Some(k) = picked {
+                if k.piece.is_some() {
+                    ui.weak(format!(
+                        "{} stays on this PC; you can keep it again later.",
+                        k.name
+                    ));
+                } else {
+                    ui.colored_label(
+                        p.warn,
+                        format!("This PC has no copy of {}: replacing it loses it.", k.name),
+                    );
+                }
+                match used_for(s, k.slot) {
+                    Some(line) => ui.colored_label(p.warn, line),
+                    None => ui.colored_label(p.ok, "Not used by a layer or after a restart."),
+                };
+            }
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if let Some(k) = picked {
+                    if ui
+                        .add(theme::primary_button(ui, &format!("Replace {}", k.name)))
+                        .clicked()
+                    {
+                        acts.push(Act::KeepIn(replace.file.clone(), k.slot));
+                        close = true;
+                    }
+                }
+                if ui.button("Just show it for now").clicked() {
+                    acts.push(Act::Push(replace.file.clone()));
+                    close = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            });
+        });
+    state.replace = (!close && open).then_some(replace);
+    let _ = s;
+}
+
+/// "On this PC": every piece once with one badge, Add art…, the filters and search.
+pub fn pc_card(ui: &mut egui::Ui) {
+    let Some(art) = current() else {
+        return;
+    };
+    let mut acts = Vec::new();
+    super::settings_ui::section(ui, "On this PC", |ui| {
+        UI.with_borrow_mut(|state| draw_pc(ui, &art, state, &mut acts));
+    });
+    act(&art, acts);
+}
+
+fn draw_pc(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut Vec<Act>) {
+    let p = theme::palette(ui);
+    let s = &art.s;
+    let can_send = s.connected && !s.busy;
+    let has_places = art_pieces::meter(s).is_some();
+    ui.horizontal_wrapped(|ui| {
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+        for (f, text) in Filter::ALL {
+            if theme::pill(ui, state.filter == f, text).clicked() {
+                state.filter = f;
+            }
+        }
+        ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("Search").desired_width(140.0));
+        {
+            ui.menu_button("Add art…", |ui| {
+                if ui.button("A file…").clicked() {
+                    acts.push(Act::AddFile);
+                    ui.close();
+                }
+                if ui
+                    .button("A folder of frames…")
+                    .on_hover_text("Folders of frame_N.png + meta.txt sets (like art-src/bandit/out), converted when you show or keep one.")
+                    .clicked()
+                {
+                    acts.push(Act::AddFolder);
+                    ui.close();
+                }
+            })
+            .response
+            .on_hover_text("Adds art to this PC and shows it on the right screen.");
+            if ui.button("Refresh").clicked() {
+                acts.push(Act::Refresh);
+            }
+        }
+    });
+    if let Some(m) = &state.message {
+        ui.colored_label(p.warn, m);
+    }
+    ui.add_space(6.0);
+    let shown: Vec<(usize, Badge)> = art
+        .pcs
+        .iter()
+        .enumerate()
+        .map(|(i, piece)| (i, art_pieces::badge(s, piece, &art.kept, i)))
+        .filter(|(i, b)| state.filter.keeps(&art.pcs[*i], *b, &state.search))
+        .collect();
+    if art.pcs.is_empty() {
+        ui.weak("No art on this PC yet. Add art… adds a .bin file and shows it.");
+    } else if shown.is_empty() {
+        ui.weak("Nothing matches.");
+    }
+    // Rows of cards: egui wraps single widgets, not framed groups, so the rows are counted.
+    let gap = 8.0;
+    let per_row = (((ui.available_width() + gap) / (PC_TILE + gap)).floor() as usize).max(1);
+    for row in shown.chunks(per_row) {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
+            for (i, badge) in row {
+                let piece = &art.pcs[*i];
+                let on = art_pieces::on_screen(s, piece, &art.kept, *i);
+                pc_tile(ui, piece, *i, *badge, on, can_send, has_places, acts);
+            }
+        });
+        ui.add_space(gap / 2.0);
+    }
+    if !art.unreadable.is_empty() {
+        ui.weak(format!(
+            "{} file(s) in the art folder couldn't be read.",
+            art.unreadable.len()
+        ))
+        .on_hover_text(art.unreadable.join(", "));
+    }
+    if art.library.error.is_some() {
+        ui.colored_label(p.warn, "Couldn't read the art folder on this PC.");
+    }
+    let sources = super::art_sources::load().sources;
+    if !sources.is_empty() {
+        egui::CollapsingHeader::new("Folders of frames")
+            .id_salt("art-sources")
+            .show(ui, |ui| {
+                for folder in sources {
+                    ui.horizontal(|ui| {
+                        let n = art
+                            .library
+                            .sources
+                            .iter()
+                            .filter(|s| s.folder.starts_with(&folder))
+                            .count();
+                        ui.label(format!("{} ({n} pieces)", folder.display()));
+                        if ui.small_button("Remove").clicked() {
+                            acts.push(Act::RemoveSource(folder.clone()));
+                        }
+                    });
+                }
+            });
+    }
+}
+
+/// A PC card's outer width: its content, margins and line.
+const PC_TILE: f32 = 136.0;
+
+/// A PC piece's card: the picture, its name, its one badge, and Keep on keyboard.
+#[allow(clippy::too_many_arguments)]
+fn pc_tile(
+    ui: &mut egui::Ui,
+    piece: &PcPiece,
+    index: usize,
+    badge: Badge,
+    on: bool,
+    can_send: bool,
+    has_places: bool,
+    acts: &mut Vec<Act>,
+) {
+    let p = theme::palette(ui);
+    let line = if on { p.accent } else { p.line };
+    let r = egui::Frame::new()
+        .fill(p.surface_raised)
+        .stroke(Stroke::new(if on { 2.0 } else { 1.0 }, line))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(8, 8))
+        .show(ui, |ui| {
+            ui.set_width(PC_TILE - 18.0);
+            ui.vertical_centered(|ui| {
+                let t = texture(ui.ctx(), piece.key, true, &piece.image);
+                ui.add(egui::Image::new((t.id(), egui::vec2(34.0, 70.0))));
+                ui.label(RichText::new(&piece.name).color(p.text_strong));
+                badge_ui(ui, badge);
+                match badge {
+                    Badge::Sending(n) => {
+                        ui.add(
+                            egui::ProgressBar::new(f32::from(n) / 100.0)
+                                .desired_width(90.0)
+                                .fill(p.accent),
+                        );
+                    }
+                    Badge::TooBig => {
+                        ui.label(RichText::new("over 16 KiB").small().color(p.danger));
+                    }
+                    Badge::ThisPc
+                        if has_places
+                            && ui
+                                .add_enabled(can_send, egui::Button::new("Keep on keyboard"))
+                                .clicked() =>
+                    {
+                        acts.push(Act::KeepPiece(index));
+                    }
+                    _ => {}
+                }
+            });
+        })
+        .response;
+    let r = ui.interact(r.rect, ui.id().with(("art-pc", piece.key)), Sense::click());
+    let showable = can_send && !matches!(badge, Badge::TooBig | Badge::Sending(_));
+    if r.clicked() && showable && !on {
+        acts.push(Act::ShowPiece(index));
+    }
+    r.on_hover_text(if on {
+        "On the right screen now"
+    } else {
+        "Click to show it on the right screen until the keyboard restarts"
+    })
+    .context_menu(|ui| {
+        if ui
+            .add_enabled(showable, egui::Button::new("Show now"))
+            .clicked()
+        {
+            acts.push(Act::ShowPiece(index));
+            ui.close();
+        }
+        if has_places
+            && badge == Badge::ThisPc
+            && ui
+                .add_enabled(can_send, egui::Button::new("Keep on keyboard"))
+                .clicked()
+        {
+            acts.push(Act::KeepPiece(index));
+            ui.close();
+        }
+        if let Some(file) = piece.file() {
+            if ui
+                .button(RichText::new("Move to the Recycle Bin").color(p.danger))
+                .clicked()
+            {
+                acts.push(Act::Delete(file.clone()));
+                ui.close();
+            }
+        }
+    });
 }
 
 #[cfg(test)]
 pub mod tests {
     use super::*;
-
-    #[test]
-    fn long_names_are_cut_visibly_and_short_ones_left_alone() {
-        assert_eq!(
-            fit_save_name("hearth-moongarden"),
-            ("hearth-moongarde".into(), Some("hearth-moongarden".into()))
-        );
-        assert_eq!(fit_save_name("fury"), ("fury".into(), None));
-        assert_eq!(
-            fit_save_name("exactly 16 chars"),
-            ("exactly 16 chars".into(), None)
-        );
-    }
-
-    fn entry(path: &str, hash: u64, ok: bool) -> art_library::Entry {
-        let image = Arc::new(egui::ColorImage::new([4, 2], vec![Color32::WHITE; 8]));
-        art_library::Entry {
-            path: PathBuf::from(path),
-            preview: if ok {
-                Ok(image)
-            } else {
-                Err("Invalid NVA1 art blob".into())
-            },
-            bytes: 10,
-            hash,
-        }
-    }
-
-    /// Each piece once, no `.left` companions and no "Invalid NVA1 art blob" rows (#388).
-    #[test]
-    fn the_library_lists_each_piece_once() {
-        let (tiles, unreadable) = tiles(&[
-            entry("art/hud.bin", 1, true),
-            entry("art/hud.left.bin", 2, false),
-            entry("art/courier.bin", 3, true),
-            entry("art/Courier copy.bin", 3, true),
-            entry("art/HUD.BIN", 4, true),
-            entry("art/broken.bin", 5, false),
-            entry("art/notes.txt", 6, true),
-        ]);
-        let names: Vec<_> = tiles.iter().map(|t| t.name.as_str()).collect();
-        assert_eq!(names, ["courier", "hud"]);
-        assert_eq!(
-            unreadable,
-            ["broken"],
-            "the .left companion never shows, even as unreadable"
-        );
-    }
 
     #[test]
     fn thumbnails_are_upright_and_one_bit() {
@@ -944,70 +1347,99 @@ pub mod tests {
     }
 
     #[test]
-    fn hotlist_pills_follow_the_cycle() {
+    fn rotation_pills_follow_its_settings() {
         let mut c = Cycle::default();
-        assert_eq!(hotlist_pills(&c), [true, false, false, false, false]);
+        assert_eq!(rotation_pills(&c), [true, false, false, false]);
         c.set_step(Step::Minutes, true);
         c.follow = Follow::Wallpaper;
-        assert_eq!(hotlist_pills(&c), [false, true, true, false, false]);
+        assert_eq!(rotation_pills(&c), [false, true, false, true]);
     }
 
-    /// The previews' art state: the right half playing "hearth" from the library; "fury" saved in slot 1.
-    pub fn sample() -> (art_service::Snapshot, art_library::Library) {
-        let blob = |name: &str| -> Vec<u8> {
-            std::fs::read(
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("resources/lighting/art")
-                    .join(name),
-            )
-            .expect("bundled art")
-        };
-        let entries = [
+    /// The pictures' textures live in the context they were made in, keyed by content: a new
+    /// context (as each preview makes) gets its own, which the page's blank thumbnails in the
+    /// art-flow audit's renders lacked.
+    #[test]
+    fn textures_belong_to_their_context() {
+        let image = egui::ColorImage::new([4, 2], vec![Color32::WHITE; 8]);
+        let a = egui::Context::default();
+        let first = texture(&a, 7, true, &image);
+        assert_eq!(texture(&a, 7, true, &image).id(), first.id(), "made once");
+        assert_ne!(
+            texture(&a, 8, true, &image).id(),
+            first.id(),
+            "new content, new picture"
+        );
+        let b = egui::Context::default();
+        let other = texture(&b, 7, true, &image);
+        assert!(
+            b.tex_manager().read().meta(other.id()).is_some(),
+            "a second context makes its own texture"
+        );
+    }
+
+    fn bundled(name: &str) -> Vec<u8> {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("resources/lighting/art")
+                .join(name),
+        )
+        .expect("bundled art")
+    }
+
+    /// The previews' art: 17 built-ins (the bundled manifest, so names and pictures), five kept
+    /// places, "hearth" sent from this PC and showing.
+    pub fn sample() -> (Snapshot, art_library::Library) {
+        let files = [
             "constellations.bin",
             "fury.bin",
             "hearth.bin",
             "moon-garden.bin",
-        ]
-        .into_iter()
-        .map(|name| {
-            let bytes = blob(name);
-            art_library::Entry {
-                path: PathBuf::from("art").join(name),
-                preview: super::super::art_preview::first_frame(&bytes)
-                    .map(Arc::new)
-                    .map_err(str::to_owned),
-                bytes: bytes.len(),
-                hash: art_library::blob_hash(&bytes),
-            }
-        })
-        .collect();
+        ];
+        let entries = files
+            .into_iter()
+            .map(|name| {
+                let bytes = bundled(name);
+                art_library::Entry {
+                    path: PathBuf::from("art").join(name),
+                    preview: super::super::art_preview::first_frame(&bytes)
+                        .map(Arc::new)
+                        .map_err(str::to_owned),
+                    bytes: bytes.len(),
+                    hash: art_library::blob_hash(&bytes),
+                }
+            })
+            .collect();
+        let slot = |n: u8, name: &str, len: usize| digitalis::protocol::SlotInfo {
+            slot: n,
+            used: true,
+            writes: 1,
+            len: len as u16,
+            name: name.into(),
+        };
+        let slots = vec![
+            slot(0, "fury", bundled("fury.bin").len()),
+            slot(1, "constellations", bundled("constellations.bin").len()),
+            slot(2, "bandit-radar", 3600),
+            slot(3, "moon-garden", bundled("moon-garden.bin").len()),
+            slot(4, "skyline", 4100),
+        ];
         let status = digitalis::protocol::ArtStatus {
             link: 2,
             right_state: digitalis::protocol::right_state::PLAYING,
-            right_set: 2,
-            right_set_count: 6,
+            right_set: -1,
+            right_set_count: 17,
+            right_capacity: 16384,
             flash_slots: 8,
-            flash_used: 1,
+            flash_used: 0b1_1111,
             ..Default::default()
         };
         let mut cycle = Cycle::default();
         cycle.set_step(Step::LightsWake, true);
-        cycle.items = vec![
-            Item::File(PathBuf::from("art/fury.bin")),
-            Item::File(PathBuf::from("art/hearth.bin")),
-        ];
-        cycle.position = 1;
-        let snapshot = art_service::Snapshot {
+        let snapshot = Snapshot {
             connected: true,
             status: Some(status),
-            pinned: Some(art_service::Choice::File(PathBuf::from("art/hearth.bin"))),
-            slots: vec![digitalis::protocol::SlotInfo {
-                slot: 0,
-                used: true,
-                writes: 1,
-                len: 3599,
-                name: "fury".into(),
-            }],
+            pinned: Some(Choice::File(PathBuf::from("art/hearth.bin"))),
+            slots,
             cycle,
             wake_events: true,
             ..Default::default()

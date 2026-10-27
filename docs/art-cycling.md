@@ -1,6 +1,8 @@
 # Right-screen art cycling (#60)
 
-Status: spec for review. Today's hotlist (`app/src/foxglove/art_cycle.rs`, `[art.cycle]` in the
+Status: since #515 the list Rotation steps is the keyboard's own art (built-ins, then kept
+places), not a separate hotlist; `items` is kept for a playlist (#522). The rest is the original
+spec, for history. Today's hotlist (`app/src/foxglove/art_cycle.rs`, `[art.cycle]` in the
 store, profiled) has four modes: **Don't cycle**, **Every N minutes**, **When the lights wake**,
 and **Match the wallpaper**. This adds three event-driven triggers (**on a key**, **on a
 layer**, **on a preset**) and sets the rules all modes share.
