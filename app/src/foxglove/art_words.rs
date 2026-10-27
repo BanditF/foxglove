@@ -315,7 +315,10 @@ impl Problem {
             ),
             Problem::KeepFailed => (
                 format!("The keyboard couldn't keep {name}."),
-                Some("Its storage reported an error. What it kept before is still there.".into()),
+                Some(
+                    "Its storage reported an error; the place it was saving to may now be empty."
+                        .into(),
+                ),
                 again,
             ),
             Problem::NotArt => (

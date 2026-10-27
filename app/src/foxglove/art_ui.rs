@@ -170,8 +170,23 @@ impl Art {
     }
 }
 
-/// This frame's art, or `None` before the art service starts.
-pub fn current() -> Option<Art> {
+/// This frame's art, or `None` before the art service starts. Sorted once per frame and
+/// shared by the page's parts (kept in the context, so each preview's context has its own).
+pub fn current(ctx: &egui::Context) -> Option<Arc<Art>> {
+    let id = egui::Id::new("foxglove-art-this-frame");
+    let frame = ctx.cumulative_frame_nr();
+    if let Some((_, art)) = ctx
+        .data(|d| d.get_temp::<(u64, Arc<Art>)>(id))
+        .filter(|(n, _)| *n == frame)
+    {
+        return Some(art);
+    }
+    let art = Arc::new(build()?);
+    ctx.data_mut(|d| d.insert_temp(id, (frame, art.clone())));
+    Some(art)
+}
+
+fn build() -> Option<Art> {
     #[cfg(test)]
     if let Some((s, library)) = PREVIEW.with_borrow(|p| p.clone()) {
         return Some(Art::new(s, library));
@@ -303,8 +318,12 @@ pub fn texture(
         egui::TextureOptions::NEAREST,
     );
     ctx.data_mut(|d| {
-        d.get_temp_mut_or_default::<Cache>(id)
-            .insert((key, half), t.clone())
+        let cache = d.get_temp_mut_or_default::<Cache>(id);
+        // Old pictures (files edited or removed) go now and then; the page remakes what it shows.
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        cache.insert((key, half), t.clone())
     });
     t
 }
@@ -560,7 +579,7 @@ fn tile(
 /// The right screen's column of Showing now: the picture, its name and badge, the restart
 /// line, Previous / Next, and Keep on keyboard for a piece that isn't kept.
 pub fn now_right(ui: &mut egui::Ui) {
-    let Some(art) = current() else {
+    let Some(art) = current(ui.ctx()) else {
         return;
     };
     let mut acts = Vec::new();
@@ -666,7 +685,7 @@ pub fn rotation_pills(c: &Cycle) -> [bool; 4] {
 /// Rotation's column of Showing now: what changes the right screen, and when. It steps through
 /// what the keyboard holds (`art_cycle::rotation`), so it has no list of its own.
 pub fn rotation(ui: &mut egui::Ui) {
-    let Some(art) = current() else {
+    let Some(art) = current(ui.ctx()) else {
         return;
     };
     if !art.s.connected {
@@ -856,7 +875,7 @@ fn meter(ui: &mut egui::Ui, used: usize, total: usize) {
 /// "On the keyboard": the kept places and the pieces that come with the keyboard, as the
 /// keyboard reports them (read on connect).
 pub fn keyboard_card(ui: &mut egui::Ui) {
-    let Some(art) = current() else {
+    let Some(art) = current(ui.ctx()) else {
         return;
     };
     if !art.s.connected {
@@ -982,7 +1001,7 @@ fn remove_dialog(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut V
         .open(&mut open)
         .show(ui.ctx(), |ui| {
             if k.piece.is_some() {
-                ui.label("It stays on this PC; you can keep it again later.");
+                ui.label("This PC has a copy (same name and size); you can keep it again later.");
             } else {
                 ui.colored_label(
                     theme::palette(ui).warn,
@@ -1061,7 +1080,7 @@ fn replace_dialog(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut 
             if let Some(k) = picked {
                 if k.piece.is_some() {
                     ui.weak(format!(
-                        "{} stays on this PC; you can keep it again later.",
+                        "This PC has a copy of {} (same name and size); you can keep it again later.",
                         k.name
                     ));
                 } else {
@@ -1101,7 +1120,7 @@ fn replace_dialog(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut 
 
 /// "On this PC": every piece once with one badge, Add art…, the filters and search.
 pub fn pc_card(ui: &mut egui::Ui) {
-    let Some(art) = current() else {
+    let Some(art) = current(ui.ctx()) else {
         return;
     };
     let mut acts = Vec::new();
@@ -1439,6 +1458,7 @@ pub mod tests {
             connected: true,
             status: Some(status),
             pinned: Some(Choice::File(PathBuf::from("art/hearth.bin"))),
+            sent: Some((PathBuf::from("art/hearth.bin"), 0)),
             slots,
             cycle,
             wake_events: true,

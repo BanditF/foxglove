@@ -48,7 +48,7 @@ pub fn page(ui: &mut egui::Ui) {
 /// the window is narrow. Drawn once either screen's keyboard answers.
 fn showing_now(ui: &mut egui::Ui) {
     let left = snapshot().hello.is_some();
-    let right = super::art_ui::current().is_some_and(|a| a.s.connected);
+    let right = super::art_ui::current(ui.ctx()).is_some_and(|a| a.s.connected);
     if !left && !right {
         return;
     }

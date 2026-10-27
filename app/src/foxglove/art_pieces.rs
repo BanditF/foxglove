@@ -628,7 +628,7 @@ pub mod tests {
             right_set: -1,
             ..status(0b1)
         });
-        s.pinned = Some(Choice::File("art/Orbit.bin".into()));
+        s.sent = Some(("art/Orbit.bin".into(), 2));
         let k = kept(&s, &pcs);
         assert!(on_screen(&s, &pcs[0], &k, 0), "Orbit sent from this PC");
         assert_eq!(showing_name(&s), "Orbit");

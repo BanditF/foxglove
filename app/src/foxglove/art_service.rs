@@ -40,6 +40,9 @@ pub struct Snapshot {
     pub cycle: Cycle,
     /// The keyboard reports its lights turning on and off (HELLO RGB_STATE_EVENT).
     pub wake_events: bool,
+    /// The file Foxglove last sent and a hash of its bytes, while the right half plays it from
+    /// memory (whoever asked: a click, a layer, a preset). Cleared by a select and a disconnect.
+    pub sent: Option<(PathBuf, u64)>,
     /// What runs now, named for the sending strip (#518).
     pub job: Option<Job>,
     /// How the last job ended; the strip says so until the next one starts.
@@ -165,8 +168,15 @@ impl Snapshot {
 
     /// The library file the right half plays now: the pinned file, while it plays a pushed set.
     pub fn showing_file(&self) -> Option<&PathBuf> {
-        match (&self.pinned, self.status) {
-            (Some(Choice::File(p)), Some(s)) if s.right_state == 2 => Some(p),
+        match (&self.sent, self.status) {
+            (Some((p, _)), Some(s))
+                if matches!(
+                    s.right_state,
+                    protocol::right_state::PLAYING | protocol::right_state::SAVED
+                ) =>
+            {
+                Some(p)
+            }
             _ => None,
         }
     }
@@ -461,16 +471,18 @@ fn choose(link: &impl Transport, h: &Handle, choice: &Choice) -> Result<ArtStatu
     match choice {
         // Settled: the select's own reply names the set from before it, which left the
         // tray panel and the Screens page showing the old art.
-        Choice::BuiltIn(set) => {
-            art::select_settled(link, *set, SELECT_SETTLE).map_err(|e| e.to_string())
-        }
+        Choice::BuiltIn(set) => art::select_settled(link, *set, SELECT_SETTLE)
+            .map_err(|e| e.to_string())
+            .inspect(|_| h.update(|s| s.sent = None)),
         Choice::Slot(slot) => {
             let count = h
                 .snapshot()
                 .status
                 .map(|s| s.right_set_count)
                 .ok_or("No art status yet")?;
-            art::select_slot(link, count, *slot).map_err(|e| e.to_string())
+            art::select_slot(link, count, *slot)
+                .map_err(|e| e.to_string())
+                .inspect(|_| h.update(|s| s.sent = None))
         }
         Choice::File(path) => {
             let mut blob = Vec::new();
@@ -495,13 +507,19 @@ fn choose(link: &impl Transport, h: &Handle, choice: &Choice) -> Result<ArtStatu
                 || h.cancelled(),
             )
             .map_err(|e| e.to_string())
+            .inspect(|_| {
+                let hash = super::art_library::blob_hash(&blob);
+                h.update(|s| s.sent = Some((path.clone(), hash)))
+            })
         }
     }
 }
 
-/// Keep on keyboard (#517): send `file` unless it is the piece showing now, save it into
-/// `slot` (SAVE stores the set on the right), then show it from the place, which also checks
-/// that the place reads back. The kept places are read again at the end.
+/// Keep on keyboard (#517): send `file` unless the right half plays these very bytes from
+/// memory now, save it into `slot` (SAVE stores the set the right half has in memory), then
+/// show it from the place, which also checks that the place reads back. The kept places are
+/// read again at the end, and after a failed save too (the firmware empties a place before it
+/// writes it).
 fn keep(
     link: &impl Transport,
     h: &Handle,
@@ -510,22 +528,25 @@ fn keep(
     name: &str,
 ) -> Result<ArtStatus, String> {
     let snap = h.snapshot();
-    let showing_it = snap.pinned.as_ref() == Some(&Choice::File(file.to_path_buf()))
-        && snap.status.is_some_and(|s| {
-            matches!(
-                s.right_state,
-                protocol::right_state::PLAYING | protocol::right_state::SAVED
-            )
-        });
-    if !showing_it {
+    let hash = std::fs::read(file)
+        .map(|b| super::art_library::blob_hash(&b))
+        .map_err(|e| format!("reading {}: {e}", file.display()))?;
+    let in_memory = snap.showing_file().map(PathBuf::as_path) == Some(file)
+        && snap.sent.as_ref().is_some_and(|(_, h)| *h == hash);
+    if !in_memory {
         choose(link, h, &Choice::File(file.to_path_buf()))?;
     }
-    if h.cancelled() {
-        return Err("cancelled".into());
-    }
-    // The saving step: no byte count any more.
+    // The saving step: no byte count, and no Cancel (the send is done; the save is short).
     h.update(|s| s.push_progress = None);
-    let saved = art::save(link, slot, name).map_err(|e| e.to_string())?;
+    let saved = match art::save(link, slot, name) {
+        Ok(st) => st,
+        Err(e) => {
+            if let Some(st) = h.snapshot().status {
+                read_slots(link, h, &st);
+            }
+            return Err(e.to_string());
+        }
+    };
     h.update(|s| s.status = Some(saved));
     let st = art::select_slot(link, saved.right_set_count, slot).map_err(|e| e.to_string())?;
     read_slots(link, h, &st);
@@ -875,6 +896,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     h.update(|s| {
                         s.connected = false;
                         s.status = None;
+                        s.sent = None;
                     });
                 }
                 if state.connected.is_none() || current == Some((id, state.generation)) {
@@ -1218,18 +1240,42 @@ mod tests {
     fn keep_of_the_piece_on_screen_skips_the_send() {
         let kb = FakeKeyboard::default();
         kb.right.set(right_state::PLAYING);
-        let h = idle_handle(Snapshot {
-            pinned: Some(Choice::File(fury())),
+        let hash = super::super::art_library::blob_hash(&std::fs::read(fury()).unwrap());
+        let playing = Snapshot {
+            sent: Some((fury(), hash)),
             status: Some(ArtStatus {
                 right_state: right_state::PLAYING,
                 ..Default::default()
             }),
             ..Default::default()
+        };
+        let h = idle_handle(playing.clone());
+        keep(&kb, &h, &fury(), 0, "fury").expect("kept");
+        assert!(
+            !kb.log.borrow().contains(&cmd::BEGIN),
+            "{:?}",
+            kb.log.borrow()
+        );
+        assert_eq!(kb.log.borrow()[0], cmd::SAVE);
+
+        // The pin names fury, but a layer sent other bytes since: Keep sends fury first, so
+        // the place never gets the wrong piece under fury's name.
+        let kb = FakeKeyboard::default();
+        let h = idle_handle(Snapshot {
+            pinned: Some(Choice::File(fury())),
+            sent: Some((PathBuf::from("art/radar.bin"), 1)),
+            ..playing.clone()
         });
         keep(&kb, &h, &fury(), 0, "fury").expect("kept");
-        let log = kb.log.borrow();
-        assert!(!log.contains(&cmd::BEGIN), "{log:?}");
-        assert_eq!(log[0], cmd::SAVE);
+        assert_eq!(kb.log.borrow()[0], cmd::BEGIN);
+        // Same path, edited since it was sent: sent again.
+        let kb = FakeKeyboard::default();
+        let h = idle_handle(Snapshot {
+            sent: Some((fury(), hash ^ 1)),
+            ..playing
+        });
+        keep(&kb, &h, &fury(), 0, "fury").expect("kept");
+        assert_eq!(kb.log.borrow()[0], cmd::BEGIN);
     }
 
     /// A failed save says so in words, and leaves the places as they were.
@@ -1248,6 +1294,10 @@ mod tests {
         );
         assert!(!kb.log.borrow().contains(&cmd::SELECT));
         assert!(kb.kept.borrow().is_empty());
+        assert!(
+            kb.log.borrow().contains(&cmd::SLOT),
+            "the places are read again: the firmware empties one before it writes it"
+        );
     }
 
     #[test]
