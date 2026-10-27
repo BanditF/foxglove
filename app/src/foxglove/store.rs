@@ -367,11 +367,22 @@ fn keep_profiled(profile: &Value) -> Value {
     Value::Table(t)
 }
 
-/// Reads a `.foxprofile`: the profile names it holds, and which already exist here.
+/// The name an imported profile gets: its own, except one called "Default" (any case), which
+/// would look like the built-in Default (#535) and becomes "Default (imported)".
+pub fn imported_name(name: &str) -> String {
+    if name.trim().eq_ignore_ascii_case("default") {
+        format!("{} (imported)", name.trim())
+    } else {
+        name.to_string()
+    }
+}
+
+/// Reads a `.foxprofile`: the profile names it holds (as they'll be imported), and which
+/// already exist here.
 pub fn import_names(text: &str) -> Result<(Vec<String>, Vec<String>), String> {
     let (incoming, _) = parse_export(text)?;
     let existing = profiles().0;
-    let names: Vec<String> = incoming.keys().cloned().collect();
+    let names: Vec<String> = incoming.keys().map(|n| imported_name(n)).collect();
     let clashes = names
         .iter()
         .filter(|n| existing.contains(n))
@@ -416,12 +427,19 @@ pub fn import(text: &str) -> Result<Vec<String>, String> {
 }
 
 fn import_into(table: &mut Table, text: &str) -> Result<Vec<String>, String> {
-    let (incoming, rules) = parse_export(text)?;
+    let (incoming, mut rules) = parse_export(text)?;
     let mut names = Vec::new();
     for (name, profile) in incoming {
         if name.is_empty() || name.contains('.') {
             return Err(format!("bad profile name {name:?}"));
         }
+        let name = {
+            let to = imported_name(&name);
+            for r in rules.iter_mut().filter(|r| r.profile == name) {
+                r.profile.clone_from(&to);
+            }
+            to
+        };
         set(
             table,
             &format!("profiles.list.{name}"),
@@ -757,5 +775,26 @@ mod tests {
         assert_eq!(rules_in(&fresh).1.len(), 1);
         assert!(import_into(&mut t, "format = \"other\"").is_err());
         assert!(import_into(&mut t, "format = \"foxglove-profile\"\nversion = 2").is_err());
+    }
+
+    /// An imported profile called "Default" can't pass for the built-in Default (#535): it
+    /// comes in as "Default (imported)", and its program rules follow it.
+    #[test]
+    fn an_imported_default_gets_its_own_name() {
+        assert_eq!(imported_name("Default"), "Default (imported)");
+        assert_eq!(imported_name("default "), "default (imported)");
+        assert_eq!(imported_name("Game"), "Game");
+        let source: Table = toml::from_str(
+            "[profiles.list.Default.screens]\nfps = 5\n[[profiles.rules]]\nprogram = \"code.exe\"\nprofile = \"Default\"\n",
+        )
+        .unwrap();
+        let text = export_from(&source, &["Default".into()]).unwrap();
+        let mut fresh = Table::new();
+        assert_eq!(
+            import_into(&mut fresh, &text).unwrap(),
+            vec!["Default (imported)".to_string()]
+        );
+        assert!(get(&fresh, "profiles.list.Default").is_none());
+        assert_eq!(rules_in(&fresh).1[0].profile, "Default (imported)");
     }
 }

@@ -22,14 +22,6 @@ struct UiState {
 
 thread_local! { static UI: RefCell<UiState> = RefCell::new(UiState::default()); }
 
-fn right_link(link: u8) -> &'static str {
-    match link {
-        0 => "not connected",
-        1 => "connected",
-        _ => "connected, art relay ready",
-    }
-}
-
 #[cfg(test)]
 thread_local! {
     /// The previews' keyboard, so they never ask a real one.
@@ -434,10 +426,10 @@ pub(super) fn snapshot() -> screens::Snapshot {
 /// The left screen's card: the live preview, its switches, and the app hints.
 pub fn group(ui: &mut egui::Ui) {
     let snap = snapshot();
-    let Some(hello) = snap.hello else {
+    if snap.hello.is_none() {
         UI.with_borrow_mut(|s| s.settings = None);
         return;
-    };
+    }
     super::settings_ui::section(ui, "Left screen", |ui| {
         UI.with_borrow_mut(|state| {
             let settings = state.settings.get_or_insert_with(ScreensSettings::load);
@@ -521,45 +513,6 @@ pub fn group(ui: &mut egui::Ui) {
                     state.new_exe.clone_from(exe);
                 }
             }
-
-            // What the keyboard said, for when something looks wrong.
-            egui::CollapsingHeader::new("Details").id_salt("screens-details").show(ui, |ui| {
-                ui.weak(screens::status());
-                egui::Grid::new("screens-status").num_columns(2).show(ui, |ui| {
-                    ui.weak("Keyboard");
-                    ui.label(format!("{} · host link v{}", snap.product, hello.version));
-                    ui.end_row();
-                    // The board profile (#75): what Foxglove knows beyond the firmware.
-                    ui.weak("Board type");
-                    ui.label(match super::boards::current() {
-                        Some(b) if b.status == super::boards::Status::Tested => b.name,
-                        Some(b) => format!("{} (untested)", b.name),
-                        None => "none: only what the firmware says".into(),
-                    });
-                    ui.end_row();
-                    ui.weak("Right half");
-                    ui.label(right_link(hello.right_link));
-                    ui.end_row();
-                    ui.weak("Right battery");
-                    ui.label(hello.right_battery.map_or("unknown".into(), |b| format!("{b}%")));
-                    ui.end_row();
-                });
-                ui.weak(format!("Relay discovery: {} ({} tries)", hello.discovery_text(), hello.discovery_tries));
-                ui.weak(format!("Relay counters: {:?}", hello.debug));
-                ui.weak(format!("Capabilities: {:#x}", hello.capabilities));
-                for s in &snap.screens {
-                    use digitalis::protocol::ScreenKind;
-                    let kind = match s.kind {
-                        ScreenKind::Display => "display",
-                        ScreenKind::Panel => "PC panel",
-                        ScreenKind::Art => "art area",
-                        ScreenKind::Other(_) => "other",
-                    };
-                    let half = if s.half == 0 { "left" } else { "right" };
-                    let on = s.parent.map_or(String::new(), |p| format!(" at ({}, {}) on screen {p}", s.x, s.y));
-                    ui.weak(format!("Screen {}: {half} {kind}, {}×{}, {}{on}", s.id, s.width, s.height, s.format_name()));
-                }
-            });
 
             if changed {
                 match settings.save() {
