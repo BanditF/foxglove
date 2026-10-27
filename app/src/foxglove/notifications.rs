@@ -415,6 +415,131 @@ pub fn quit() {
     }
 }
 
+/// The service's state between events.
+struct Service {
+    settings: NotifySettings,
+    core: Core,
+    arrivals: Option<super::notify_windows::Arrivals>,
+    /// Access and the watch are tried once, then again after a change to these settings or
+    /// the page's Try again.
+    tried: bool,
+    read_at: Option<Instant>,
+    cue: Cue,
+    wake: Arc<dyn Fn() + Send + Sync>,
+}
+
+impl Service {
+    /// Off: drops the watch and what was seen. On and not yet tried: checks access and watches.
+    fn settle(&mut self) {
+        if !self.settings.enabled {
+            if self.arrivals.take().is_some() || self.read_at.is_some() {
+                super::screens::clear_notice();
+            }
+            self.read_at = None;
+            self.core.forget();
+            set_state(State::Off);
+        } else if self.arrivals.is_none() && !self.tried {
+            self.tried = true;
+            // Never asked from here: Windows' own page decides (the card links to it).
+            match super::notify_windows::access() {
+                Access::Allowed => match super::notify_windows::watch(self.wake.clone()) {
+                    Ok(a) => {
+                        set_state(State::Listening {
+                            by_event: a.by_event,
+                        });
+                        self.arrivals = Some(a);
+                        self.core.forget();
+                        // The first read primes: what's there already doesn't show.
+                        self.read_at = Some(Instant::now());
+                    }
+                    Err(e) => set_state(State::Unavailable(e)),
+                },
+                Access::Denied | Access::Unasked => set_state(State::NoAccess),
+                Access::Unavailable(e) => set_state(State::Unavailable(e)),
+            }
+        }
+        let may_cue =
+            self.settings.enabled && self.settings.light_cue && !super::away::away() && !paused();
+        if self.cue.ends(Instant::now(), may_cue) {
+            cue_end();
+        }
+    }
+
+    /// The next deadline: a due read or the cue's end.
+    fn next(&self) -> Option<Instant> {
+        [self.read_at, self.cue.deadline()]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    fn on_event(&mut self, event: Event) {
+        match event {
+            Event::Wake if self.arrivals.is_some() && !super::away::away() => {
+                self.read_at.get_or_insert_with(|| Instant::now() + SETTLE);
+            }
+            Event::Wake => {}
+            Event::Settings => {
+                if let Some(s) = NotifySettings::try_load() {
+                    if s != self.settings {
+                        self.tried = false;
+                    }
+                    self.settings = s;
+                }
+            }
+            Event::Retry => self.tried = false,
+            Event::Hold => {
+                if paused() {
+                    super::screens::clear_notice();
+                }
+            }
+            Event::Away => {
+                if super::away::away() {
+                    super::screens::clear_notice();
+                    self.core.forget();
+                    self.read_at = None;
+                } else if self.arrivals.is_some() {
+                    // Back: prime again, so what arrived meanwhile never shows.
+                    self.read_at = Some(Instant::now());
+                }
+            }
+        }
+    }
+
+    /// Reads the notifications when the read is due.
+    fn read_if_due(&mut self) {
+        let now = Instant::now();
+        if !self.read_at.is_some_and(|t| t <= now) {
+            return;
+        }
+        self.read_at = None;
+        if super::away::away() {
+            self.core.forget();
+            return;
+        }
+        match self.core.read(&mut Windows, &self.settings, paused(), now) {
+            Read::Nothing => {}
+            Read::Restless => {
+                eprintln!("Foxglove notifications: the folder keeps changing; stopped");
+                self.arrivals = None;
+                set_state(State::Unavailable(
+                    "Windows' notification folder keeps changing; turn this off and on to try again".into(),
+                ));
+            }
+            Read::Show(shown) => {
+                note_recent(
+                    &mut RECENT.lock().unwrap_or_else(|e| e.into_inner()),
+                    shown.apps,
+                );
+                super::screens::show_notice(shown.notice, now + self.settings.shown_for());
+                if shown.cue {
+                    self.cue.shown(Instant::now(), cue_start);
+                }
+            }
+        }
+    }
+}
+
 fn run() {
     let (tx, rx) = mpsc::channel();
     *EVENTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
@@ -431,14 +556,6 @@ fn run() {
     let _away = super::away::subscribe(move |_| {
         let _ = away_tx.send(Event::Away);
     });
-    let mut settings = NotifySettings::load();
-    let mut core = Core::default();
-    let mut arrivals: Option<super::notify_windows::Arrivals> = None;
-    // Access and the watch are tried once, then again after a change to these settings or
-    // the page's Try again.
-    let mut tried = false;
-    let mut read_at: Option<Instant> = None;
-    let mut cue = Cue::default();
     let wake: Arc<dyn Fn() + Send + Sync> = {
         let tx = Mutex::new(tx.clone());
         Arc::new(move || {
@@ -449,42 +566,19 @@ fn run() {
         })
     };
     drop(tx);
+    let mut service = Service {
+        settings: NotifySettings::load(),
+        core: Core::default(),
+        arrivals: None,
+        tried: false,
+        read_at: None,
+        cue: Cue::default(),
+        wake,
+    };
 
     loop {
-        if !settings.enabled {
-            if arrivals.take().is_some() || read_at.is_some() {
-                super::screens::clear_notice();
-            }
-            read_at = None;
-            core.forget();
-            set_state(State::Off);
-        } else if arrivals.is_none() && !tried {
-            tried = true;
-            // Never asked from here: Windows' own page decides (the card links to it).
-            match super::notify_windows::access() {
-                Access::Allowed => match super::notify_windows::watch(wake.clone()) {
-                    Ok(a) => {
-                        set_state(State::Listening {
-                            by_event: a.by_event,
-                        });
-                        arrivals = Some(a);
-                        core.forget();
-                        // The first read primes: what's there already doesn't show.
-                        read_at = Some(Instant::now());
-                    }
-                    Err(e) => set_state(State::Unavailable(e)),
-                },
-                Access::Denied | Access::Unasked => set_state(State::NoAccess),
-                Access::Unavailable(e) => set_state(State::Unavailable(e)),
-            }
-        }
-        let may_cue = settings.enabled && settings.light_cue && !super::away::away() && !paused();
-        if cue.ends(Instant::now(), may_cue) {
-            cue_end();
-        }
-
-        let next = [read_at, cue.deadline()].into_iter().flatten().min();
-        let event = match next {
+        service.settle();
+        let event = match service.next() {
             Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
                 Ok(e) => Some(e),
                 Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -495,66 +589,10 @@ fn run() {
                 Err(_) => return,
             },
         };
-        match event {
-            Some(Event::Wake) if arrivals.is_some() && !super::away::away() => {
-                read_at.get_or_insert_with(|| Instant::now() + SETTLE);
-            }
-            Some(Event::Wake) => {}
-            Some(Event::Settings) => {
-                if let Some(s) = NotifySettings::try_load() {
-                    if s != settings {
-                        tried = false;
-                    }
-                    settings = s;
-                }
-            }
-            Some(Event::Retry) => tried = false,
-            Some(Event::Hold) => {
-                if paused() {
-                    super::screens::clear_notice();
-                }
-            }
-            Some(Event::Away) => {
-                if super::away::away() {
-                    super::screens::clear_notice();
-                    core.forget();
-                    read_at = None;
-                } else if arrivals.is_some() {
-                    // Back: prime again, so what arrived meanwhile never shows.
-                    read_at = Some(Instant::now());
-                }
-            }
-            None => {}
+        if let Some(event) = event {
+            service.on_event(event);
         }
-
-        let now = Instant::now();
-        if read_at.is_some_and(|t| t <= now) {
-            read_at = None;
-            if super::away::away() {
-                core.forget();
-                continue;
-            }
-            match core.read(&mut Windows, &settings, paused(), now) {
-                Read::Nothing => {}
-                Read::Restless => {
-                    eprintln!("Foxglove notifications: the folder keeps changing; stopped");
-                    arrivals = None;
-                    set_state(State::Unavailable(
-                        "Windows' notification folder keeps changing; turn this off and on to try again".into(),
-                    ));
-                }
-                Read::Show(shown) => {
-                    note_recent(
-                        &mut RECENT.lock().unwrap_or_else(|e| e.into_inner()),
-                        shown.apps,
-                    );
-                    super::screens::show_notice(shown.notice, now + settings.shown_for());
-                    if shown.cue {
-                        cue.shown(Instant::now(), cue_start);
-                    }
-                }
-            }
-        }
+        service.read_if_due();
     }
 }
 
