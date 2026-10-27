@@ -1400,6 +1400,45 @@ mod tests {
         assert!(s.unknown.is_empty(), "all three are placed");
     }
 
+    /// The second desk (`fixtures`): another vendor's case board with no driver yet, and a
+    /// lightbar on Dynamic Lighting, from the same scan code.
+    #[test]
+    fn the_second_desks_devices_are_found_and_described() {
+        use crate::foxglove::fixtures::second_desk as desk;
+        let sent: Sent = Arc::default();
+        let s = sent.clone();
+        let writers: Writers =
+            Box::new(move |_path: &str| Ok(Box::new(Recorder(s.clone())) as Box<dyn HidWriter>));
+        let lamps: LampArrays =
+            Box::new(|| vec![(desk::LIGHTBAR.0, desk::LIGHTBAR.1, desk::lightbar_info())]);
+        let mut w = Worker::new(desk::catalog(), None, Settings::default(), writers, lamps);
+        w.scan(&desk::hid(), false, false, true);
+        let snap = w.snapshot();
+        let rows: Vec<_> = snap
+            .devices
+            .iter()
+            .map(|r| (r.name.as_str(), r.control, r.zones.len()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("Nimbus Strata case lights", Control::NotYet, 4),
+                ("Lumen desk lightbar", Control::LampArray, 0),
+            ]
+        );
+        assert_eq!(
+            snap.devices[0].caps.chips(false),
+            vec!["Per-zone RGB · 4 zones"]
+        );
+        assert_eq!(
+            snap.devices[1].caps.chips(false)[0],
+            "Per-LED RGB · 12 lamps · up to 50 fps"
+        );
+        assert_eq!(snap.devices[0].size, Some([230, 500]));
+        assert!(snap.unknown.is_empty(), "both are placed");
+        assert!(sent.lock().unwrap().is_empty(), "nothing written");
+    }
+
     #[test]
     fn a_hand_added_board_is_saved_found_and_tested_only_on_request() {
         let dir = crate::foxglove::store::test_config_dir().join("pc-lights-local");

@@ -599,6 +599,48 @@ pub mod tests {
         }
     }
 
+    /// The second desk (`fixtures`): another vendor's case board driven by a fake driver, and
+    /// a lightbar on Dynamic Lighting. (The keyboard has the page's own card, #533.)
+    pub fn sample_second_desk() -> View {
+        use crate::foxglove::fixtures::second_desk as desk;
+        let mut bar = desk::lightbar_row();
+        bar.caps = LightCaps::from_lamp_array(desk::lightbar_info());
+        View {
+            pc: Snapshot {
+                devices: vec![desk::case_row(), bar],
+                ..Default::default()
+            },
+        }
+    }
+
+    #[test]
+    fn the_second_desk_shows_its_own_devices_and_no_one_elses() {
+        let v = sample_second_desk();
+        let text = shown(&v);
+        for want in [
+            "Nimbus Strata case lights",
+            "Top light bar",
+            "Glass glow",
+            "Lumen desk lightbar",
+            "Windows lighting",
+            // The fake driver: shown as driven, with its zone pickers.
+            "Built-in support",
+            "Apply colours",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
+        for not in [
+            "OMEN",
+            "Light Studio",
+            "Corne",
+            "G502",
+            "left half",
+            "right half",
+        ] {
+            assert!(!text.contains(not), "{not}: {text}");
+        }
+    }
+
     #[test]
     fn apply_sends_only_the_zones_that_changed() {
         let row = case([Some([1, 1, 1]), None, None, None, None], false);

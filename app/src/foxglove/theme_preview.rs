@@ -1453,6 +1453,16 @@ fn pc_lights_render() {
     let with = shell_preview_with(Page::Lights, &Samples::full(), 1180.0);
     let fresh = shell_preview_with(Page::Lights, &fresh, 1180.0);
     let none = shell_preview_with(Page::Lights, &Samples::none(), 1180.0);
+    // The second desk (#557): another vendor's case, a lightbar and the one-piece Plank 3.
+    let mut second = Samples::full();
+    second.pc = crate::foxglove::pc_lights_ui::tests::sample_second_desk();
+    let second = shell_preview_with(Page::Lights, &second, 1180.0);
+    keep("ui-557-pc-lights-second-desk.png", &second);
+    assert!(
+        count(&second, DARK.warn) < count(&with, DARK.warn),
+        "no vendor's note"
+    );
+    assert_ne!(second, with);
     keep("ui-423-pc-lights.png", &with);
     keep("ui-423-pc-lights-fresh.png", &fresh);
     keep("ui-423-pc-lights-none.png", &none);
