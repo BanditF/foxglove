@@ -112,7 +112,7 @@ pub enum LightRole {
     #[default]
     Point,
     /// An area light that fills a space (a case's interior light): it isn't sampled at a
-    /// point but takes the average of its device's point lights, eased in and out
+    /// point but follows the peak of its device's point lights, eased in and out
     /// ([`crate::ambient`]), so it swells and fades with them instead of pinging.
     Ambient,
 }

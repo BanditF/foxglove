@@ -1,11 +1,16 @@
 //! Ambient lights: area lights, such as a case's interior light, that fill a space rather than
 //! sit at a point. A scanline that pings each fan as it passes would ping an ambient light
 //! too if it were sampled at its position, which reads wrong for a light that washes the whole
-//! case. So an ambient light takes the average of its device's point lights
-//! ([`group`], which [`crate::Effect::render`] applies) and eases towards it ([`Ambient`]):
-//! it swells as the light crosses its neighbours and fades after them.
+//! case. So an ambient light follows the peak of its device's point lights ([`group`], which
+//! [`crate::Effect::render`] applies) and eases towards it ([`Ambient`]): it swells as the
+//! light crosses its neighbours and fades after them.
 //!
-//! The average is taken in linear light (light adds up); the easing is exponential in Oklab,
+//! The peak, not the average: a narrow scanline lights one fan at a time, and the average of
+//! one lit fan and three dark ones over a dark background is too dim to see (#546). The peak
+//! is the brightest of each channel across the group, so it never drops below what every
+//! member shows: for an effect with a background (a scanline, a sweep), that background when
+//! the light is elsewhere, so it never goes dark mid-scene unless the background is black.
+//! The easing is exponential in Oklab,
 //! where equal steps look equal (in linear light the first steps up from a dark colour look
 //! like a jump), with a quicker attack than decay, the way a room's glow follows its lights.
 
@@ -25,8 +30,9 @@ pub const DECAY_MS: f32 = 1500.0;
 /// target instead of easing from a colour that is long gone.
 const GAP_MS: i64 = 2_000;
 
-/// Sets each ambient light in `frame` to the average of its device's point lights as they
-/// are in it. A device with ambient lights only keeps the colours `frame` has for them.
+/// Sets each ambient light in `frame` to the peak of its device's point lights as they are in
+/// it: the brightest of each channel across them. A device with ambient lights only keeps the
+/// colours `frame` has for them.
 /// Call it again after changing point lights in a frame (a burst over the scene).
 pub fn group(frame: &mut Frame, room: &RoomMap) {
     for d in &room.devices {
@@ -40,15 +46,24 @@ pub fn group(frame: &mut Frame, room: &RoomMap) {
             .iter()
             .filter(|l| l.device == d.id && is(&l.light, LightRole::Point))
             .map(|l| l.colour);
-        let Some(average) = Rgb::average(points) else {
+        let Some(peak) = peak(points) else {
             continue;
         };
         for l in frame.lights.iter_mut() {
             if l.device == d.id && is(&l.light, LightRole::Ambient) {
-                l.colour = average;
+                l.colour = peak;
             }
         }
     }
+}
+
+/// The brightest of each channel across `colours`; `None` for none. Channel by channel (not
+/// the brightest colour whole), so it changes smoothly as the light moves between members.
+/// Members of different hues mix: a red fan and a blue one give a magenta glow.
+fn peak(colours: impl IntoIterator<Item = Rgb>) -> Option<Rgb> {
+    colours
+        .into_iter()
+        .reduce(|a, b| Rgb([0, 1, 2].map(|i| a.0[i].max(b.0[i]))))
 }
 
 /// Eases ambient lights from frame to frame. Keep one per stream of frames (a running scene,

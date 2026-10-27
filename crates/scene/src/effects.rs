@@ -193,9 +193,9 @@ impl Effect {
 
     /// Every light in the room at `t`. Monitors have no lights, so they're not in it.
     ///
-    /// A point light shows the effect where it is. An ambient light shows the average of its
-    /// device's point lights (or, on a device with none, of the effect across the device);
-    /// this is its target, which [`crate::Ambient`] eases it towards over time.
+    /// A point light shows the effect where it is. An ambient light shows the peak of its
+    /// device's point lights (or, on a device with none, the effect's average across the
+    /// device); this is its target, which [`crate::Ambient`] eases it towards over time.
     pub fn render(&self, room: &RoomMap, t: SceneTime) -> Frame {
         let perlin = self.perlin();
         let lights = room
