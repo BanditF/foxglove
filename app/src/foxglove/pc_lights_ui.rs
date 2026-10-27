@@ -50,7 +50,7 @@ pub enum Intent {
         protocol: Protocol,
         zone: u8,
     },
-    Save(CatalogDevice),
+    Save(Box<CatalogDevice>),
     Remove(u16, u16),
     /// Put text on the clipboard (a catalog entry to share).
     Copy(String),
@@ -515,6 +515,8 @@ pub mod tests {
             zone_ids: ["1", "2", "5", "6", "7"].map(String::from).to_vec(),
             calibration: Some(Default::default()),
             calibrated: false,
+            size: None,
+            zone_positions: vec![],
         }
     }
 
@@ -578,6 +580,8 @@ pub mod tests {
                         zone_ids: vec![],
                         calibration: None,
                         calibrated: false,
+                        size: None,
+                        zone_positions: vec![],
                     },
                     Row {
                         key: "046d:c332".into(),
@@ -595,6 +599,8 @@ pub mod tests {
                         zone_ids: vec![],
                         calibration: None,
                         calibrated: false,
+                        size: None,
+                        zone_positions: vec![],
                     },
                 ],
                 light_studio: true,
