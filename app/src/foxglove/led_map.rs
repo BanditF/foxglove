@@ -280,6 +280,11 @@ impl Wizard {
 
 /// Takes the keyboard's lights for the wizard: a high-priority lease (dim white, solid) over
 /// whatever holds them, so a scene's frames or effect are handed back first. Returns its id.
+///
+/// The wizard's frames stay its own (it doesn't register them with `draws_frames`, which keeps
+/// one drawer a device: the scene's, so the scene is asked to draw again after). So a plugin
+/// notification that starts mid-wizard shows under the lit LED until the wizard ends; the
+/// wizard is short and the user is watching it.
 pub fn take(a: &mut Arbiter, device: &str, light: &dyn Lighting) -> Result<u64, DeviceError> {
     a.add(
         Lease {

@@ -627,7 +627,7 @@ pub mod tests {
     fn a_click_places_the_lit_led_and_the_buttons_skip_and_undo() {
         let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
         let (v, mut w) = sample(0);
-        let (_, drawing) = frame(&ctx, &v, &mut w, Vec::new());
+        frame(&ctx, &v, &mut w, Vec::new());
         let (_, drawing) = frame(&ctx, &v, &mut w, Vec::new());
         let g = Geometry::new(&w.drawing, 2, drawing.expect("the drawing").shrink(12.0));
         let out = clicked(&ctx, &v, &mut w, g.screen(0, [1.5, 1.5]));
