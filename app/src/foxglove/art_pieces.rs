@@ -448,11 +448,13 @@ pub fn bundled_file(name: &str) -> Result<PathBuf, String> {
 
 fn write_to_library(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     let folder = art_library::folder().ok_or("No settings directory")?;
-    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     let path = folder.join(name);
-    if !path.exists() {
-        std::fs::write(&path, bytes).map_err(|e| format!("couldn't copy {name}: {e}"))?;
+    if path.exists() {
+        return Ok(path);
     }
+    std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    std::fs::write(&path, bytes).map_err(|e| format!("couldn't copy {name}: {e}"))?;
+    // Only a new file changes the library.
     art_library::refresh();
     Ok(path)
 }
