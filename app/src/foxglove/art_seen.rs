@@ -23,6 +23,10 @@ impl Seen {
     /// What `s` reports now, once its kept places have been read; `None` before.
     pub fn of(s: &Snapshot) -> Option<Seen> {
         let st = s.status?;
+        // Until the right half is linked the left reports it zeroed: no built-ins, no places.
+        if st.link != 2 || st.right_set_count == 0 {
+            return None;
+        }
         if st.flash_slots > 0 && s.slots.len() < usize::from(st.flash_slots.min(8)) {
             return None; // the places aren't read yet
         }
@@ -148,8 +152,17 @@ mod tests {
 
     #[test]
     fn seen_waits_for_the_places() {
+        let unlinked = Snapshot {
+            status: Some(digitalis::protocol::ArtStatus {
+                link: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(Seen::of(&unlinked), None, "the right half isn't linked yet");
         let mut s = Snapshot {
             status: Some(digitalis::protocol::ArtStatus {
+                link: 2,
                 right_set_count: 2,
                 flash_slots: 8,
                 ..Default::default()

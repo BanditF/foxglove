@@ -278,12 +278,28 @@ fn left_preview(choice: LeftChoice) -> egui::ColorImage {
 fn change_picker(ui: &mut egui::Ui, settings: &ScreensSettings) -> Option<LeftChoice> {
     let mut picked = None;
     let now = LeftChoice::of(settings);
+    // The previews are made when the list opens (the wallpaper's may have changed since).
+    let open_id = egui::Id::new("left-picker-open");
+    let was_open = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(open_id))
+        .unwrap_or(false);
+    let mut open = false;
     ui.menu_button("Change…", |ui| {
+        open = true;
+        if !was_open {
+            ui.ctx().data_mut(|d| {
+                for choice in LeftChoice::ALL {
+                    d.remove::<egui::TextureHandle>(egui::Id::new(("left-preview", choice as u8)));
+                }
+            });
+        }
         picked = left_choices(ui, now);
         if picked.is_some() {
             ui.close();
         }
     });
+    ui.ctx().data_mut(|d| d.insert_temp(open_id, open));
     picked
 }
 
@@ -363,7 +379,8 @@ pub(crate) fn left_choices(ui: &mut egui::Ui, now: LeftChoice) -> Option<LeftCho
     picked
 }
 
-/// The left screen's settings as last loaded or saved here, for the tray panel's line.
+/// The left screen's settings as last loaded or saved here, for the tray panel's line. Only
+/// the line's words come from it; a change made outside Foxglove's pages shows after a restart.
 static LEFT: std::sync::Mutex<Option<ScreensSettings>> = std::sync::Mutex::new(None);
 
 fn remember(settings: &ScreensSettings) {
@@ -371,13 +388,14 @@ fn remember(settings: &ScreensSettings) {
 }
 
 /// What the left screen shows, in words, without reading the store every frame.
-pub fn left_now() -> (&'static str, &'static str) {
+pub fn left_now() -> (&'static str, &'static str, bool) {
     let settings = LEFT
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get_or_insert_with(ScreensSettings::load)
         .clone();
-    left_words(&settings, screens::paused())
+    let (name, line) = left_words(&settings, screens::paused());
+    (name, line, settings.drive_left)
 }
 
 fn snapshot() -> screens::Snapshot {

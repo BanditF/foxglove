@@ -455,27 +455,30 @@ struct ArtSettings {
 }
 
 /// A pinned built-in, followed by name to its index on this firmware (`None` when the
-/// firmware no longer has it); anything else as pinned.
+/// firmware's manifest no longer has it); anything else as pinned. `index_of` answers
+/// `None` when no manifest knows the firmware: then the saved index stands.
 pub fn pin_for(
     pinned: &Option<Choice>,
     name: Option<&str>,
-    index_of: impl Fn(&str) -> Option<u8>,
+    index_of: impl Fn(&str) -> Option<Option<u8>>,
 ) -> Option<Choice> {
     match (pinned, name) {
-        (Some(Choice::BuiltIn(n)), Some(name)) if *n >= 0 => index_of(name)
-            .and_then(|i| i8::try_from(i).ok())
-            .map(Choice::BuiltIn),
+        (Some(Choice::BuiltIn(n)), Some(name)) if *n >= 0 => match index_of(name) {
+            None => pinned.clone(),
+            Some(found) => found
+                .and_then(|i| i8::try_from(i).ok())
+                .map(Choice::BuiltIn),
+        },
         _ => pinned.clone(),
     }
 }
 
-/// A built-in's index by manifest name, on firmware with `set_count` built-ins.
-fn manifest_index(set_count: u8) -> impl Fn(&str) -> Option<u8> {
+/// A built-in's index by manifest name, on firmware with `set_count` built-ins; `None` when
+/// no manifest matches that firmware.
+fn manifest_index(set_count: u8) -> impl Fn(&str) -> Option<Option<u8>> {
     move |name| {
-        super::art_manifest::sets(set_count)?
-            .iter()
-            .find(|s| s.name == name)
-            .map(|s| s.index)
+        let sets = super::art_manifest::sets(set_count)?;
+        Some(sets.iter().find(|s| s.name == name).map(|s| s.index))
     }
 }
 
@@ -509,6 +512,9 @@ fn note_seen(h: &Handle, announce: bool) {
         return;
     };
     let before = super::art_seen::load();
+    if before.as_ref() == Some(&now) {
+        return;
+    }
     if announce {
         if let Some(line) = before.and_then(|b| super::art_seen::change(&b, &now)) {
             h.update(|s| s.notice = Some(line));
@@ -991,6 +997,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                         s.connected = false;
                         s.status = None;
                         s.sent = None;
+                        // Read again on the next connect; never taken for that keyboard's.
+                        s.slots = Vec::new();
                     });
                 }
                 if state.connected.is_none() || current == Some((id, state.generation)) {
@@ -1386,37 +1394,36 @@ mod tests {
     /// set moved from index 3 to 5, and a firmware without it.
     #[test]
     fn a_pinned_built_in_follows_its_name() {
-        let old = |name: &str| {
-            ["A", "B", "C", "Bandit_Gem"]
-                .iter()
-                .position(|n| *n == name)
+        let old: &'static [&str] = &["A", "B", "C", "Bandit_Gem"];
+        let new: &'static [&str] = &["A", "B", "C", "D", "E", "Bandit_Gem"];
+        let look = |sets: &'static [&'static str]| {
+            move |name: &str| Some(sets.iter().position(|n| *n == name).map(|i| i as u8))
         };
-        let new = |name: &str| {
-            ["A", "B", "C", "D", "E", "Bandit_Gem"]
-                .iter()
-                .position(|n| *n == name)
-        };
-        let to_u8 = |f: fn(&str) -> Option<usize>| move |n: &str| f(n).map(|i| i as u8);
         let pin = Some(Choice::BuiltIn(3));
-        assert_eq!(pin_for(&pin, Some("Bandit_Gem"), to_u8(old)), pin);
+        assert_eq!(pin_for(&pin, Some("Bandit_Gem"), look(old)), pin);
         assert_eq!(
-            pin_for(&pin, Some("Bandit_Gem"), to_u8(new)),
+            pin_for(&pin, Some("Bandit_Gem"), look(new)),
             Some(Choice::BuiltIn(5))
         );
         assert_eq!(
-            pin_for(&pin, Some("Bandit_Gem"), |_| None),
+            pin_for(&pin, Some("Bandit_Gem"), look(&["A"])),
             None,
-            "gone: no pin"
+            "gone from a known firmware: no pin"
         );
         assert_eq!(
-            pin_for(&pin, None, |_| None),
+            pin_for(&pin, Some("Bandit_Gem"), |_| None),
+            pin,
+            "unknown firmware: the saved index stands"
+        );
+        assert_eq!(
+            pin_for(&pin, None, look(new)),
             pin,
             "an old pin without a name"
         );
         let random = Some(Choice::BuiltIn(-1));
-        assert_eq!(pin_for(&random, Some("x"), |_| None), random);
+        assert_eq!(pin_for(&random, Some("x"), look(new)), random);
         let slot = Some(Choice::Slot(2));
-        assert_eq!(pin_for(&slot, Some("x"), |_| None), slot);
+        assert_eq!(pin_for(&slot, Some("x"), look(new)), slot);
     }
 
     #[test]

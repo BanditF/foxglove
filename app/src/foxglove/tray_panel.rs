@@ -158,6 +158,8 @@ pub struct View {
     pub art_ready: bool,
     /// What the left screen shows, in a few words.
     pub left_name: String,
+    /// Foxglove draws the left screen (so Pause means something).
+    pub left_driven: bool,
     pub panel_paused: bool,
     /// Foxglove is paused (#404).
     pub paused: bool,
@@ -262,7 +264,7 @@ fn view(ctx: &egui::Context) -> View {
         Some(h) => art(&h.snapshot(), &super::art_library::snapshot()),
         None => art(&Default::default(), &Default::default()),
     };
-    let (left, _) = super::screens_ui::left_now();
+    let (left, _, left_driven) = super::screens_ui::left_now();
     while_paused(View {
         halves: halves(&super::shell::strip_state(ctx)),
         profiles,
@@ -275,6 +277,7 @@ fn view(ctx: &egui::Context) -> View {
         art_strip: a.strip,
         art_ready: a.ready,
         left_name: left.to_string(),
+        left_driven,
         panel_paused: super::screens::paused(),
         paused: super::pause::paused(),
         update: super::update::available_version().map(|v| format!("Update available: v{v}")),
@@ -528,7 +531,7 @@ pub fn panel(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let text = if v.panel_paused { "Resume" } else { "Pause" };
                         if ui
-                            .add_enabled(!v.paused, egui::Button::new(text).small())
+                            .add_enabled(!v.paused && v.left_driven, egui::Button::new(text).small())
                             .on_hover_text("The keyboard shows its own left screen meanwhile")
                             .clicked()
                         {
@@ -948,6 +951,7 @@ pub mod tests {
             art_strip: None,
             art_ready: true,
             left_name: "Clock, media and hints".into(),
+            left_driven: true,
             panel_paused: false,
             paused: false,
             update: Some("Update available: v0.2.1".into()),
