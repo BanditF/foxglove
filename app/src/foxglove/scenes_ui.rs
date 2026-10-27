@@ -167,6 +167,8 @@ static STOPPING: AtomicBool = AtomicBool::new(false);
 static BY_PROFILE: AtomicBool = AtomicBool::new(false);
 /// Foxglove has started its services, so a profile switch may start a scene.
 static READY: AtomicBool = AtomicBool::new(false);
+/// A profile switch came while a stop was ending a scene: decide again after it.
+static RECHECK: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
 thread_local! {
@@ -289,9 +291,14 @@ pub fn profile_changed() {
         super::scene_triggers::ProfileAction::Start => start_by_profile(&chosen),
         super::scene_triggers::ProfileAction::Stop => {
             BY_PROFILE.store(false, Ordering::Relaxed);
+            RECHECK.store(true, Ordering::Relaxed);
             stop_scene();
         }
         super::scene_triggers::ProfileAction::Restyle => {
+            // A stop still on its way ends this scene: decide again once it has.
+            if STOPPING.load(Ordering::Relaxed) {
+                RECHECK.store(true, Ordering::Relaxed);
+            }
             let saved = looks::load_saved().presets;
             let room = super::scene_room::room();
             super::scene_run::set_effect(
@@ -312,6 +319,9 @@ fn start_by_profile(chosen: &Chosen) {
     if super::scene_run::start(&name, chosen.look.effect(&room), None) {
         BY_PROFILE.store(true, Ordering::Relaxed);
         show_art(chosen);
+    } else {
+        // A scene is still ending: start once it has (the stop thread decides again).
+        RECHECK.store(true, Ordering::Relaxed);
     }
 }
 
@@ -319,11 +329,16 @@ fn start_by_profile(chosen: &Chosen) {
 /// scene starts when it has "Start with this profile" on.
 pub fn startup() {
     READY.store(true, Ordering::Relaxed);
-    let chosen = looks::load_chosen();
-    super::scene_triggers::set_flags(&chosen);
-    if chosen.start_with_profile && super::scene_run::running().is_none() {
-        start_by_profile(&chosen);
+    // The same decision as a switch (it reads the active profile as it is now), unless the
+    // demo scene already runs.
+    if super::scene_run::running().is_none() {
+        profile_changed();
     }
+}
+
+/// Quitting: profile switches no longer start scenes (called before the scene stops).
+pub fn quitting() {
+    READY.store(false, Ordering::Relaxed);
 }
 
 /// Repaints the page when the PC comes back (unlocked, display on), since the preview asks for
@@ -419,6 +434,14 @@ fn stop_scene() {
         super::services::spawn_named("scene-stop", move || {
             super::scene_run::stop();
             STOPPING.store(false, Ordering::Relaxed);
+            // A profile switch while this stop ran (quick switches back to a game) gets its
+            // scene now that the lights are back.
+            if super::scene_triggers::restart_after_stop(
+                RECHECK.swap(false, Ordering::Relaxed),
+                READY.load(Ordering::Relaxed),
+            ) {
+                profile_changed();
+            }
             super::scene_run::repaint_page();
         });
     }

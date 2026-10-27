@@ -54,6 +54,18 @@ pub fn on_profile(running: bool, by_profile: bool, start: bool) -> ProfileAction
     }
 }
 
+/// After a stop: decide the profile's scene again when a switch came while it ran (`recheck`)
+/// and Foxglove isn't quitting (`ready`).
+pub fn restart_after_stop(recheck: bool, ready: bool) -> bool {
+    recheck && ready
+}
+
+/// A new `keyboard.layer` value against the last: whether it sends a sweep (a real change,
+/// not the first value after a connect), and the value to keep.
+pub fn layer_sweep_due(last: Option<i64>, now: Option<i64>) -> (bool, Option<i64>) {
+    (last.is_some() && now.is_some() && now != last, now)
+}
+
 /// A key's place in the keyboard's layout, in key units (KeyPeek's layout).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KeyPlace {
@@ -198,26 +210,22 @@ pub fn key(row: usize, col: usize, pressed: bool) {
 /// Follows the top layer (the `keyboard.layer` fact) for "Sweep on layer change". One thread,
 /// blocked on the fact's changes.
 pub fn start() {
-    let facts = super::devices::bus().facts();
-    let changes = facts.subscribe("keyboard.layer");
-    let mut last = match facts.get("keyboard.layer") {
-        Some(foxglove_devices::facts::Value::Int(l)) => Some(l),
-        _ => None,
-    };
-    super::services::spawn_named("scene-triggers", move || {
+    // Supervised: a panic here (reading the overlay's settings) restarts the follower.
+    super::services::spawn_supervised("scene-triggers", || {
+        let int = |v: Option<foxglove_devices::facts::Value>| match v {
+            Some(foxglove_devices::facts::Value::Int(l)) => Some(l),
+            _ => None,
+        };
+        let facts = super::devices::bus().facts();
+        let changes = facts.subscribe("keyboard.layer");
+        let mut last = int(facts.get("keyboard.layer"));
         for change in changes {
-            let now = match change.value {
-                Some(foxglove_devices::facts::Value::Int(l)) => Some(l),
-                _ => None,
-            };
-            let (Some(layer), true) = (now, now != last) else {
-                last = now;
+            let (due, keep) = layer_sweep_due(last, int(change.value));
+            last = keep;
+            let Some(layer) = last.filter(|_| due) else {
                 continue;
             };
-            // The first layer after a (re)connect is no change.
-            let first = last.is_none();
-            last = now;
-            if first || !SWEEP.load(Ordering::Relaxed) || super::scene_run::running().is_none() {
+            if !SWEEP.load(Ordering::Relaxed) || super::scene_run::running().is_none() {
                 continue;
             }
             let theme = crate::settings::Settings::load()
@@ -381,6 +389,40 @@ mod tests {
         assert!(ripple(&corne(), 7, 7, &room, &effect, SceneTime(0)).is_none());
         let s = sweep(Rgb([0, 255, 0]), SceneTime(0));
         assert_eq!(s.shape, Shape::Sweep { angle_deg: 0.0 });
+    }
+
+    /// Quick switches A (start on), B (off), A while B's stop still ends A's scene: the stop
+    /// thread decides again, so A's scene runs once the lights are back.
+    #[test]
+    fn a_quick_switch_back_starts_the_scene_after_the_stop() {
+        use ProfileAction::*;
+        // A to B: the profile's scene stops (a stop thread is now ending it).
+        assert_eq!(on_profile(true, true, false), Stop);
+        // Back to A before the stop took the scene: by_profile was cleared, so Restyle, and
+        // the switch asks for a recheck since a stop is on its way.
+        assert_eq!(on_profile(true, false, true), Restyle);
+        // The stop ends; the recheck sees nothing running and A's box on.
+        assert!(restart_after_stop(true, true));
+        assert_eq!(on_profile(false, false, true), Start);
+        // Not while quitting, and not after a hand Stop with no switch meanwhile.
+        assert!(!restart_after_stop(true, false));
+        assert!(!restart_after_stop(false, true));
+    }
+
+    #[test]
+    fn only_a_real_layer_change_sweeps() {
+        assert_eq!(layer_sweep_due(Some(0), Some(2)), (true, Some(2)));
+        assert_eq!(layer_sweep_due(Some(2), Some(2)), (false, Some(2)));
+        assert_eq!(
+            layer_sweep_due(None, Some(3)),
+            (false, Some(3)),
+            "the first after a connect"
+        );
+        assert_eq!(
+            layer_sweep_due(Some(3), None),
+            (false, None),
+            "disconnected"
+        );
     }
 
     #[test]
