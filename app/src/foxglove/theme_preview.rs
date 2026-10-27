@@ -566,7 +566,7 @@ struct Samples {
     ),
     pc: crate::foxglove::pc_lights_ui::View,
     wizard: crate::foxglove::pc_lights_add::Wizard,
-    /// The colour calibrator, open in place of the PC card.
+    /// The colour calibrator, open as a dialog over the Lights page.
     calibrate: Option<(
         crate::foxglove::calibrate_ui::View,
         crate::foxglove::calibrate_ui::Wizard,
@@ -1717,7 +1717,7 @@ fn battery_notice_switch_renders() {
     keep("ui-372-battery-notice.png", &img);
 }
 
-/// The other devices' batteries (#504): the Keyboard page's Devices card with a mouse and a
+/// The other devices' batteries (#504): the Keyboard page's Batteries card with a mouse and a
 /// low controller, the same card with none, and the tray panel's Devices part.
 #[test]
 fn peripheral_batteries_render() {

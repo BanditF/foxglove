@@ -14,21 +14,18 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use egui::{Color32, RichText, Sense, Stroke};
-use foxglove_devices::pc_lighting::{CatalogDevice, Control, LightCaps, Protocol};
+use foxglove_devices::pc_lighting::{CatalogDevice, Control, Protocol};
 
 use super::pc_lights::{self, Msg, Row, Snapshot};
 use super::pc_lights_add::{self as add, Wizard};
 use super::settings_ui::card;
 use super::theme;
 
-/// What the card shows: the worker's snapshot and the keyboard with Foxglove's firmware.
+/// What the card shows: the worker's snapshot. The keyboard isn't listed: it has the page's
+/// Keyboard card (#533).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct View {
     pub pc: Snapshot,
-    /// The keyboard's name and what it said it can do (HELLO and its screens).
-    pub keyboard: Option<(String, LightCaps)>,
-    /// The keyboard can be calibrated (it's connected), and whether it has been.
-    pub keyboard_calibration: Option<bool>,
 }
 
 /// What a click asks for.
@@ -58,14 +55,14 @@ pub enum Intent {
     Calibrate(String),
     /// Open it at a picked colour on a zone, to add a match for it.
     CalibrateColor(String, Option<String>, [u8; 3]),
-    /// Open the colour calibrator on the keyboard.
-    CalibrateKeyboard,
 }
 
 /// The colours being picked per device (by key), until Apply.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Draft {
     pub colors: BTreeMap<String, Vec<Option<[u8; 3]>>>,
+    /// The device whose "Remove" was clicked in its More menu, waiting for the second click.
+    pub removing: Option<String>,
 }
 
 impl Draft {
@@ -99,12 +96,8 @@ pub fn show(ui: &mut egui::Ui) {
         return;
     }
     pc_lights::page_shown(ui.ctx());
-    let keyboard_key = super::devices::keyboard_key();
     let view = View {
         pc: pc_lights::snapshot(),
-        keyboard: keyboard_caps(),
-        keyboard_calibration: keyboard_key
-            .map(|k| foxglove_devices::calibration::global().device(&k).is_some()),
     };
     let mut guard = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let (draft, wizard) = guard.get_or_insert_with(Default::default);
@@ -154,25 +147,8 @@ pub fn show(ui: &mut egui::Ui) {
                     super::calibrate_ui::open_at(target, zone, Some(color));
                 }
             }
-            Intent::CalibrateKeyboard => {
-                if let Some(t) = super::calibrate_ui::keyboard_target() {
-                    super::calibrate_ui::open(t);
-                }
-            }
         }
     }
-}
-
-/// The keyboard with Foxglove's firmware, from what it said when it connected.
-fn keyboard_caps() -> Option<(String, LightCaps)> {
-    let s = super::screens::snapshot();
-    let hello = s.hello?;
-    let name = if s.product.is_empty() {
-        "Keyboard".to_string()
-    } else {
-        s.product.clone()
-    };
-    Some((name, digitalis::devices::light_caps(&hello, &s.screens)))
 }
 
 /// What "Match keyboard" starts from: the Windows accent when the keyboard follows it, else
@@ -219,30 +195,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
                  OMEN Command Center stays: it runs the fans and performance modes.",
             );
         }
-        if let Some((name, caps)) = &v.keyboard {
-            ui.add_space(8.0);
-            ui.separator();
-            super::settings_ui::split_row(
-                ui,
-                |ui| {
-                    if v.keyboard_calibration.is_some() && calibrate_button(ui).clicked() {
-                        out.push(Intent::CalibrateKeyboard);
-                    }
-                },
-                |ui| {
-                    ui.label(RichText::new(name).color(p.text_strong).strong());
-                    ui.label(RichText::new("Foxglove firmware").color(p.muted));
-                    if v.keyboard_calibration == Some(true) {
-                        ui.label(RichText::new("· calibrated").color(p.muted));
-                    }
-                },
-            );
-            chips(ui, &caps.chips(true));
-            ui.weak(
-                "Its lights are in the Keyboard card above; its screens are on the Screens page.",
-            );
-        }
-        if s.devices.is_empty() && v.keyboard.is_none() {
+        if s.devices.is_empty() {
             ui.add_space(4.0);
             ui.label(RichText::new("No PC or peripheral lights found.").color(p.muted));
         }
@@ -283,10 +236,14 @@ pub fn chips(ui: &mut egui::Ui, chips: &[String]) {
 fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut Vec<Intent>) {
     let p = theme::palette(ui);
     let driven = matches!(row.control, Control::Driver(_));
-    // The buttons at the right; the name and its notes wrap in the room left of them.
+    // The buttons at the right (right to left: More ▸ last); the name and its notes wrap in the
+    // room left of them.
     super::settings_ui::split_row(
         ui,
         |ui| {
+            if let Some(entry) = &row.entry {
+                more(ui, row, entry, draft, out);
+            }
             if driven && row.caps.switchable() {
                 ui.add_enabled_ui(!busy, |ui| {
                     if row.caps.takes_color() && calibrate_button(ui).clicked() {
@@ -334,29 +291,49 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
             ui.weak("Found, not controllable yet.");
         }
     }
-    if let Some(entry) = &row.entry {
-        ui.horizontal(|ui| {
-            if ui
-                .small_button("Copy entry")
-                .on_hover_text(
-                    "Copy this device's catalog entry (TOML) to share it, or to contribute it \
-                     to Foxglove's lighting-catalog.toml",
-                )
-                .clicked()
-            {
-                out.push(Intent::Copy(entry.clone()));
-            }
-            if let Some(device) = add::parse_entry(entry) {
-                if ui
-                    .small_button("Remove")
-                    .on_hover_text("Forget your entry for this device")
-                    .clicked()
-                {
+    // Remove's second click: the device's entry goes only once it's confirmed here.
+    if draft.removing.as_deref() == Some(row.key.as_str()) {
+        let device = row.entry.as_deref().and_then(add::parse_entry);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Forget your entry for this device?").color(p.warn));
+            if let Some(device) = &device {
+                if ui.button("Remove").clicked() {
+                    draft.removing = None;
                     out.push(Intent::Remove(device.vid, device.pid));
                 }
             }
+            if ui.button("Keep").clicked() {
+                draft.removing = None;
+            }
         });
     }
+}
+
+/// "More ▸": the device's less used actions, for a device you added (Copy entry, Remove).
+/// Remove asks again under the device before it forgets the entry.
+fn more(ui: &mut egui::Ui, row: &Row, entry: &str, draft: &mut Draft, out: &mut Vec<Intent>) {
+    ui.menu_button("More ▸", |ui| {
+        if ui
+            .button("Copy entry")
+            .on_hover_text(
+                "Copy this device's catalog entry (TOML) to share it, or to contribute it \
+                 to Foxglove's lighting-catalog.toml",
+            )
+            .clicked()
+        {
+            out.push(Intent::Copy(entry.to_string()));
+        }
+        if add::parse_entry(entry).is_some()
+            && ui
+                .button("Remove…")
+                .on_hover_text("Forget your entry for this device")
+                .clicked()
+        {
+            draft.removing = Some(row.key.clone());
+        }
+    })
+    .response
+    .on_hover_text("Copy entry, Remove");
 }
 
 fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut Vec<Intent>) {
@@ -484,7 +461,7 @@ fn swatch(ui: &mut egui::Ui, color: Color32, selected: bool) -> egui::Response {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use foxglove_devices::pc_lighting::{Color, LampArrayInfo, Screen, Unknown};
+    use foxglove_devices::pc_lighting::{Color, LampArrayInfo, LightCaps, Screen, Unknown};
 
     fn case(colors: [Option<[u8; 3]>; 5], matching: bool) -> Row {
         let names = [
@@ -521,29 +498,6 @@ pub mod tests {
             zone_positions: vec![],
             zone_roles: vec![],
         }
-    }
-
-    fn corne() -> (String, LightCaps) {
-        (
-            "Eyelash Corne".into(),
-            LightCaps {
-                color: Color::Single,
-                effects: ["Solid", "Breathe", "Spectrum", "Swirl"]
-                    .map(String::from)
-                    .to_vec(),
-                brightness: true,
-                screens: vec![Screen {
-                    width: Some(160),
-                    height: Some(68),
-                    depth: Some(1),
-                    images: true,
-                    animations: true,
-                    stream: true,
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-        )
     }
 
     pub fn unknown_strip() -> Unknown {
@@ -625,8 +579,6 @@ pub mod tests {
                     r"C:\Users\you\AppData\Roaming\Foxglove\lighting-catalog.local.toml".into(),
                 ),
             },
-            keyboard: Some(corne()),
-            keyboard_calibration: Some(true),
         }
     }
 
@@ -637,8 +589,6 @@ pub mod tests {
                 devices: vec![case([None; 5], true)],
                 ..Default::default()
             },
-            keyboard: None,
-            keyboard_calibration: None,
         }
     }
 
@@ -683,15 +633,19 @@ pub mod tests {
 
     /// Draws the card once headless and returns the labels and buttons it showed.
     fn shown(v: &View) -> String {
+        shown_with(v, &mut Draft::default())
+    }
+
+    fn shown_with(v: &View, draft: &mut Draft) -> String {
         let ctx = test_ctx();
         let mut text = String::new();
         // The first frame lays out; the second's shapes carry every label's text.
         let mut first = ctx.run_ui(egui::RawInput::default(), |ui| {
-            draw(ui, v, &mut Draft::default(), &mut Wizard::default());
+            draw(ui, v, draft, &mut Wizard::default());
         });
         first.textures_delta.clear();
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            draw(ui, v, &mut Draft::default(), &mut Wizard::default());
+            draw(ui, v, draft, &mut Wizard::default());
         });
         out.textures_delta.clear();
         for clipped in &out.shapes {
@@ -732,5 +686,29 @@ pub mod tests {
         assert!(!text.contains("Match keyboard") && !text.contains("Identify"));
         assert!(!text.contains("Calibrate…"));
         assert!(text.contains("No lights Foxglove knows of"));
+    }
+
+    /// The keyboard has its own card (#533): no "Foxglove firmware" row here. A device you added
+    /// keeps Copy entry and Remove behind More ▸, and Remove asks again before it forgets.
+    #[test]
+    fn the_keyboard_is_not_listed_and_more_holds_the_entry_actions() {
+        let mut v = sample();
+        let text = shown(&v);
+        assert!(!text.contains("Foxglove firmware"), "{text}");
+        // Any text: the menu shows for an entry; Remove… only for one that parses.
+        v.pc.devices[0].entry = Some("[[device]]".into());
+        let text = shown(&v);
+        assert!(text.contains("More ▸"), "{text}");
+        assert!(!text.contains("Copy entry") && !text.contains("Forget your entry"));
+        let mut draft = Draft {
+            removing: Some(v.pc.devices[0].key.clone()),
+            ..Draft::default()
+        };
+        let text = shown_with(&v, &mut draft);
+        assert!(
+            text.contains("Forget your entry for this device?"),
+            "{text}"
+        );
+        assert!(text.contains("Keep"));
     }
 }
