@@ -61,6 +61,10 @@ pub struct Row {
     pub calibration: Option<foxglove_devices::calibration::Calibration>,
     /// The user calibrated this device.
     pub calibrated: bool,
+    /// Its front in millimetres and each zone's position on it (in zone order), from the
+    /// catalog, for scenes' room map (#483).
+    pub size: Option<[u16; 2]>,
+    pub zone_positions: Vec<Option<[u16; 2]>>,
 }
 
 /// What the page shows.
@@ -101,7 +105,7 @@ pub enum Msg {
         zone: u8,
     },
     /// Add a device: save (or replace) the user's own catalog entry.
-    SaveLocal(CatalogDevice),
+    SaveLocal(Box<CatalogDevice>),
     /// Remove the user's own entry for this VID/PID.
     RemoveLocal(u16, u16),
     /// Shows colours without saving them as the user's (the calibrator's steps, and putting
@@ -496,7 +500,7 @@ impl Worker {
                 self.status = Some(format!("{}: saved as your own device", device.name));
                 self.local.put(CatalogDevice {
                     local: true,
-                    ..device
+                    ..*device
                 });
                 self.save_local();
             }
@@ -584,6 +588,8 @@ impl Worker {
                     calibrated: foxglove_devices::calibration::global()
                         .device(&f.key)
                         .is_some(),
+                    size: f.size,
+                    zone_positions: f.zones.iter().map(|z| z.position).collect(),
                 }
             })
             .collect();
@@ -695,9 +701,28 @@ fn scan(worker: &mut Worker, restore: bool) {
     }
 }
 
+/// A LampArray's shape for scenes' room map (#483): its kind, its bounding box and each lamp's
+/// position on it, in millimetres (x right, y down from the box's corner).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LampLayout {
+    pub kind: u32,
+    pub size_mm: [f32; 2],
+    pub lamps: Vec<[f32; 2]>,
+}
+
+static LAMP_LAYOUTS: Mutex<BTreeMap<(u16, u16), LampLayout>> = Mutex::new(BTreeMap::new());
+
+/// Each LampArray's shape by VID/PID, as the last read of its attributes found it.
+pub fn lamp_layouts() -> BTreeMap<(u16, u16), LampLayout> {
+    LAMP_LAYOUTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 /// Every LampArray's attributes, through Windows' Dynamic Lighting API: lamp count, whether
 /// lamps have positions, the update interval and kind. Read once per new LampArray on a scan;
-/// nothing is written to it.
+/// nothing is written to it. Each one's shape is kept for [`lamp_layouts`].
 #[cfg(target_os = "windows")]
 pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
     use windows::Devices::Enumeration::DeviceInformation;
@@ -711,15 +736,34 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
                 continue;
             };
             let count = lamps.LampCount().unwrap_or(0).max(0);
-            let positions = (0..count.min(512)).any(|i| {
-                lamps
-                    .GetLampInfo(i)
-                    .and_then(|l| l.Position())
-                    .is_ok_and(|p| p.X != 0.0 || p.Y != 0.0 || p.Z != 0.0)
-            });
+            // Windows gives metres.
+            let at: Vec<_> = (0..count.min(512))
+                .map(|i| lamps.GetLampInfo(i).and_then(|l| l.Position()).ok())
+                .collect();
+            let positions = at
+                .iter()
+                .flatten()
+                .any(|p| p.X != 0.0 || p.Y != 0.0 || p.Z != 0.0);
+            let kind = lamps.LampArrayKind().map_or(0, |k| k.0 as u32);
+            let (vid, pid) = (lamps.HardwareVendorId()?, lamps.HardwareProductId()?);
+            let size_mm = lamps
+                .BoundingBox()
+                .map_or([0.0; 2], |b| [b.X * 1000.0, b.Y * 1000.0]);
+            let layout = LampLayout {
+                kind,
+                size_mm,
+                lamps: at
+                    .iter()
+                    .map(|p| p.map_or([0.0; 2], |p| [p.X * 1000.0, p.Y * 1000.0]))
+                    .collect(),
+            };
+            LAMP_LAYOUTS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert((vid, pid), layout);
             out.push((
-                lamps.HardwareVendorId()?,
-                lamps.HardwareProductId()?,
+                vid,
+                pid,
                 LampArrayInfo {
                     lamp_count: count as u32,
                     positions,
@@ -727,7 +771,7 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
                     min_update_us: lamps
                         .MinUpdateInterval()
                         .map_or(0, |t| (t.Duration.max(0) / 10) as u64),
-                    kind: lamps.LampArrayKind().map_or(0, |k| k.0 as u32),
+                    kind,
                 },
             ));
         }
@@ -1251,9 +1295,10 @@ mod tests {
             vec![ZoneSpec {
                 id: 2,
                 name: "Shelf".into(),
+                position: None,
             }],
         );
-        w.handle(Msg::SaveLocal(entry), false, &mut no_wait());
+        w.handle(Msg::SaveLocal(Box::new(entry)), false, &mut no_wait());
         assert!(w.rescan);
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(text.contains("name = \"Shelf\""), "{text}");
