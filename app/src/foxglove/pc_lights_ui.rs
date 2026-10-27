@@ -56,6 +56,8 @@ pub enum Intent {
     Copy(String),
     /// Open the colour calibrator on a device (by key).
     Calibrate(String),
+    /// Open it at a picked colour on a zone, to add a match for it.
+    CalibrateColor(String, Option<String>, [u8; 3]),
     /// Open the colour calibrator on the keyboard.
     CalibrateKeyboard,
 }
@@ -144,6 +146,12 @@ pub fn show(ui: &mut egui::Ui) {
             Intent::Calibrate(key) => {
                 if let Some(row) = view.pc.devices.iter().find(|r| r.key == key) {
                     super::calibrate_ui::open(super::calibrate_ui::lights_target(row));
+                }
+            }
+            Intent::CalibrateColor(key, zone, color) => {
+                if let Some(row) = view.pc.devices.iter().find(|r| r.key == key) {
+                    let target = super::calibrate_ui::lights_target(row);
+                    super::calibrate_ui::open_at(target, zone, Some(color));
                 }
             }
             Intent::CalibrateKeyboard => {
@@ -363,13 +371,16 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
                 ui.vertical(|ui| {
                     ui.set_width(118.0);
                     let shown = picks[i].or(*now);
-                    let mut color = shown.unwrap_or([0x80, 0x80, 0x80]);
+                    // Drawn through the device's screen side; a pick stands for what it's sent.
+                    let zone = row.zone_ids.get(i).map(String::as_str);
+                    let drawn = shown.unwrap_or([0x80; 3]);
+                    let mut color = super::calibrate::on_screen(&row.key, zone, drawn);
                     ui.horizontal(|ui| {
                         if egui::widgets::color_picker::color_edit_button_srgb(ui, &mut color)
                             .on_hover_text(format!("{name}: pick a colour, then Apply"))
                             .changed()
                         {
-                            picks[i] = Some(color);
+                            picks[i] = Some(super::calibrate::from_screen(&row.key, zone, color));
                         }
                         if shown.is_none() {
                             ui.weak("not set");
@@ -378,6 +389,12 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
                         }
                     });
                     ui.label(RichText::new(name).size(12.5));
+                    if let Some(c) = shown {
+                        if super::calibrate_ui::not_matched(ui, &row.key, zone, c) {
+                            let zone = zone.map(String::from);
+                            out.push(Intent::CalibrateColor(row.key.clone(), zone, c));
+                        }
+                    }
                 });
             }
         });
@@ -395,7 +412,7 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
         ));
         for (name, rgb) in super::lights_page::SWATCHES {
             let all = picks.iter().all(|c| *c == Some(rgb));
-            if swatch(ui, Color32::from_rgb(rgb[0], rgb[1], rgb[2]), all)
+            if swatch(ui, super::calibrate::screen_color(&row.key, None, rgb), all)
                 .on_hover_text(name)
                 .clicked()
             {

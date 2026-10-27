@@ -14,6 +14,16 @@
 //! → white balance gain × relative brightness → clamp → sRGB → 1D curve (optional). Gamma
 //! comes before the gains, so it bends the mid-tones without moving white: white balance and
 //! brightness stay put when gamma changes. The neutral calibration changes nothing.
+//!
+//! **Matches.** On top of those values, a device keeps the matches its user confirmed: a test
+//! colour, the value its light was sent and the value the screen drew, which the user said look
+//! alike ([`Match`]). Nothing here decides what a colour "really" is: the user's match is taken as
+//! it is. Each match has two sides, kept together and applied at the same time: the **light**
+//! (applied to what goes to the device) and the **screen preview** (applied to every swatch,
+//! preview and picker colour Foxglove draws for the device), so blue down 30% on the light and
+//! up 5% on the screen are both kept. [`Fit`] turns the matches into a transform per side: a
+//! matched colour maps exactly to its match, and colours between matches are interpolated.
+//! Calibrations from before matches load unchanged, as light-only values.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -232,79 +242,326 @@ impl Calibration {
 
     /// Calibrates an RGB colour, as a driver sends it.
     pub fn apply_rgb(&self, c: Rgb) -> Rgb {
-        if self.is_neutral() {
-            return c;
-        }
-        let out = self.apply([c.r, c.g, c.b].map(|v| f32::from(v) / 255.0));
-        let byte = |v: f32| (clamp01(v) * 255.0).round() as u8;
-        Rgb {
-            r: byte(out[0]),
-            g: byte(out[1]),
-            b: byte(out[2]),
-        }
+        apply_rgb(self, c)
     }
 
     /// Calibrates a hue (0-359), saturation and brightness (0-100), as a keyboard's underglow
     /// takes them. A colour that comes out grey keeps its hue, so the keyboard doesn't jump.
     pub fn apply_hsb(&self, hue: u16, sat: u8, brightness: u8) -> (u16, u8, u8) {
-        let (hue, sat, brightness) = (hue.min(359), sat.min(100), brightness.min(100));
-        if self.is_neutral() {
-            return (hue, sat, brightness);
-        }
-        let rgb = hsv_to_rgb(
-            f32::from(hue),
-            f32::from(sat) / 100.0,
-            f32::from(brightness) / 100.0,
-        );
-        let (h, s, v) = rgb_to_hsv(self.apply(rgb));
-        let s = (s * 100.0).round() as u8;
-        let h = if s == 0 {
-            hue
-        } else {
-            (h.round() as u16) % 360
-        };
-        (h, s.min(100), ((v * 100.0).round() as u8).min(100))
+        apply_hsb(self, (hue, sat, brightness))
     }
-}
 
-impl Calibration {
     /// The colour that calibrates to `c`, near enough (sRGB-encoded, each channel 0-1): what
     /// the palette asked for, from what a device shows. Colours the calibration can't reach
     /// (brighter than its white) come back as the nearest it can.
     pub fn invert(&self, c: [f32; 3]) -> [f32; 3] {
-        let target = c.map(clamp01);
-        if self.is_neutral() {
-            return target;
-        }
-        // Damped fixed-point steps: the transform rises in each channel, so this settles.
-        let mut x = target;
-        for _ in 0..80 {
-            let y = self.apply(x);
-            for i in 0..3 {
-                x[i] = clamp01(x[i] + 0.8 * (target[i] - y[i]));
-            }
-        }
-        x
+        invert(self, c)
     }
 
     /// [`Self::invert`] for a hue, saturation and brightness; a grey keeps its hue.
-    pub fn invert_hsb(&self, (hue, sat, brightness): Hsb) -> Hsb {
-        if self.is_neutral() {
-            return (hue, sat, brightness);
+    pub fn invert_hsb(&self, hsb: Hsb) -> Hsb {
+        invert_hsb(self, hsb)
+    }
+}
+
+/// A colour transform: [`Calibration`] (a device's values) or [`Light`] (its matches too).
+trait Transform {
+    fn neutral(&self) -> bool;
+    /// One sRGB-encoded colour (each channel 0-1).
+    fn map(&self, c: [f32; 3]) -> [f32; 3];
+}
+
+impl Transform for Calibration {
+    fn neutral(&self) -> bool {
+        self.is_neutral()
+    }
+    fn map(&self, c: [f32; 3]) -> [f32; 3] {
+        self.apply(c)
+    }
+}
+
+fn apply_rgb(t: &impl Transform, c: Rgb) -> Rgb {
+    if t.neutral() {
+        return c;
+    }
+    to_rgb(t.map(from_rgb(c)))
+}
+
+fn apply_hsb(t: &impl Transform, (hue, sat, brightness): Hsb) -> Hsb {
+    let (hue, sat, brightness) = (hue.min(359), sat.min(100), brightness.min(100));
+    if t.neutral() {
+        return (hue, sat, brightness);
+    }
+    let rgb = hsv_to_rgb(
+        f32::from(hue),
+        f32::from(sat) / 100.0,
+        f32::from(brightness) / 100.0,
+    );
+    let (h, s, v) = rgb_to_hsv(t.map(rgb));
+    let s = (s * 100.0).round() as u8;
+    let h = if s == 0 {
+        hue
+    } else {
+        (h.round() as u16) % 360
+    };
+    (h, s.min(100), ((v * 100.0).round() as u8).min(100))
+}
+
+fn invert(t: &impl Transform, c: [f32; 3]) -> [f32; 3] {
+    let target = c.map(clamp01);
+    if t.neutral() {
+        return target;
+    }
+    // Damped fixed-point steps: the transform rises in each channel, so this settles.
+    let mut x = target;
+    for _ in 0..80 {
+        let y = t.map(x);
+        for i in 0..3 {
+            x[i] = clamp01(x[i] + 0.8 * (target[i] - y[i]));
         }
-        let rgb = hsv_to_rgb(
-            f32::from(hue.min(359)),
-            f32::from(sat.min(100)) / 100.0,
-            f32::from(brightness.min(100)) / 100.0,
-        );
-        let (h, s, v) = rgb_to_hsv(self.invert(rgb));
-        let s = ((s * 100.0).round() as u8).min(100);
-        let h = if s == 0 {
-            hue
-        } else {
-            (h.round() as u16) % 360
-        };
-        (h, s, ((v * 100.0).round() as u8).min(100))
+    }
+    x
+}
+
+fn invert_hsb(t: &impl Transform, (hue, sat, brightness): Hsb) -> Hsb {
+    if t.neutral() {
+        return (hue, sat, brightness);
+    }
+    let rgb = hsv_to_rgb(
+        f32::from(hue.min(359)),
+        f32::from(sat.min(100)) / 100.0,
+        f32::from(brightness.min(100)) / 100.0,
+    );
+    let (h, s, v) = rgb_to_hsv(invert(t, rgb));
+    let s = ((s * 100.0).round() as u8).min(100);
+    let h = if s == 0 {
+        hue
+    } else {
+        (h.round() as u16) % 360
+    };
+    (h, s, ((v * 100.0).round() as u8).min(100))
+}
+
+/// What a zone of a device is sent through: the light side of its matches, then its values.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Light {
+    pub fit: Fit,
+    pub values: Calibration,
+}
+
+impl Transform for Light {
+    fn neutral(&self) -> bool {
+        self.is_neutral()
+    }
+    fn map(&self, c: [f32; 3]) -> [f32; 3] {
+        self.apply(c)
+    }
+}
+
+impl Light {
+    pub fn is_neutral(&self) -> bool {
+        self.fit.is_neutral() && self.values.is_neutral()
+    }
+
+    /// One sRGB-encoded colour (each channel 0-1).
+    pub fn apply(&self, c: [f32; 3]) -> [f32; 3] {
+        self.values.apply(self.fit.apply(c))
+    }
+
+    /// See [`Calibration::apply_rgb`].
+    pub fn apply_rgb(&self, c: Rgb) -> Rgb {
+        apply_rgb(self, c)
+    }
+
+    /// See [`Calibration::apply_hsb`].
+    pub fn apply_hsb(&self, hue: u16, sat: u8, brightness: u8) -> Hsb {
+        apply_hsb(self, (hue, sat, brightness))
+    }
+
+    /// See [`Calibration::invert_hsb`].
+    pub fn invert_hsb(&self, hsb: Hsb) -> Hsb {
+        invert_hsb(self, hsb)
+    }
+}
+
+fn from_rgb(c: Rgb) -> [f32; 3] {
+    [c.r, c.g, c.b].map(|v| f32::from(v) / 255.0)
+}
+
+fn to_rgb(c: [f32; 3]) -> Rgb {
+    let byte = |v: f32| (clamp01(v) * 255.0).round() as u8;
+    Rgb {
+        r: byte(c[0]),
+        g: byte(c[1]),
+        b: byte(c[2]),
+    }
+}
+
+/// One side of a match: the light (what the device is sent) or the screen preview (what
+/// Foxglove draws for the device).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Side {
+    #[default]
+    Light,
+    Screen,
+}
+
+/// A match the user confirmed: with the device sent `light` and the screen drawing `screen`
+/// for the test colour `color`, the two looked alike to them.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Match {
+    /// The test colour (sRGB), as the palette asks for it.
+    pub color: [u8; 3],
+    /// What the device was sent for it (before the device's values, if it has any).
+    pub light: [u8; 3],
+    /// What the screen drew for it.
+    pub screen: [u8; 3],
+    /// The zone it was made on (by id); `None` is every zone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
+}
+
+impl Match {
+    /// A match that changes neither side: the starting point for a test colour.
+    pub fn plain(color: [u8; 3]) -> Self {
+        Self {
+            color,
+            light: color,
+            screen: color,
+            zone: None,
+        }
+    }
+
+    pub fn side(&self, side: Side) -> [u8; 3] {
+        match side {
+            Side::Light => self.light,
+            Side::Screen => self.screen,
+        }
+    }
+
+    pub fn side_mut(&mut self, side: Side) -> &mut [u8; 3] {
+        match side {
+            Side::Light => &mut self.light,
+            Side::Screen => &mut self.screen,
+        }
+    }
+}
+
+/// How far a picked colour can be from every match (in hue and saturation, see [`Fit`]) and
+/// still count as matched.
+const COVERED: f32 = 0.15;
+
+/// One side's transform, fitted to the matches: each output channel is the colour's own times
+/// a gain, and the gain is interpolated between the matches' gains by inverse squared distance
+/// (Shepard). So a matched colour maps exactly to its match, black stays black, and a colour
+/// between matches takes gains between theirs. A channel a match doesn't light (0 in its test
+/// colour) says nothing about that channel's gain.
+///
+/// Distance is mostly hue and saturation (each colour scaled to its brightest channel), plus
+/// half the brightness difference: a brighter red follows the red match, and grey and white,
+/// which share a hue, still tell apart by brightness.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Fit {
+    /// Each match's test colour (0-1) and gains per channel (`None`: that channel is dark).
+    points: Vec<([f32; 3], [Option<f32>; 3])>,
+}
+
+fn chroma(c: [f32; 3]) -> ([f32; 3], f32) {
+    let max = c[0].max(c[1]).max(c[2]);
+    if max <= f32::EPSILON {
+        ([0.0; 3], 0.0)
+    } else {
+        (c.map(|v| v / max), max)
+    }
+}
+
+fn hue_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let ((na, _), (nb, _)) = (chroma(a), chroma(b));
+    (0..3).map(|i| (na[i] - nb[i]).powi(2)).sum::<f32>().sqrt()
+}
+
+impl Fit {
+    /// One side of these matches.
+    pub fn new<'a>(matches: impl IntoIterator<Item = &'a Match>, side: Side) -> Self {
+        let points = matches
+            .into_iter()
+            .map(|m| {
+                let color = m.color.map(|v| f32::from(v) / 255.0);
+                let out = m.side(side);
+                let gains = [0, 1, 2]
+                    .map(|i| (m.color[i] > 0).then(|| f32::from(out[i]) / f32::from(m.color[i])));
+                (color, gains)
+            })
+            .collect();
+        Self { points }
+    }
+
+    /// No match changes anything on this side.
+    pub fn is_neutral(&self) -> bool {
+        self.points
+            .iter()
+            .all(|(_, g)| g.iter().flatten().all(|g| near(*g, 1.0)))
+    }
+
+    /// Each channel's gain for a colour (sRGB, 0-1).
+    pub fn gains(&self, c: [f32; 3]) -> [f32; 3] {
+        let (_, bright) = chroma(c);
+        [0, 1, 2].map(|i| {
+            let (mut sum, mut weights) = (0.0f32, 0.0f32);
+            for (m, gains) in &self.points {
+                let Some(g) = gains[i] else { continue };
+                let d = hue_distance(c, *m) + 0.5 * (bright - chroma(*m).1).abs();
+                if d < 1e-4 {
+                    return g;
+                }
+                let w = 1.0 / (d * d);
+                sum += w * g;
+                weights += w;
+            }
+            if weights > 0.0 {
+                sum / weights
+            } else {
+                1.0
+            }
+        })
+    }
+
+    /// A colour (sRGB, 0-1) through this side.
+    pub fn apply(&self, c: [f32; 3]) -> [f32; 3] {
+        let c = c.map(clamp01);
+        if self.points.is_empty() {
+            return c;
+        }
+        let g = self.gains(c);
+        [0, 1, 2].map(|i| clamp01(c[i] * g[i]))
+    }
+
+    /// A colour through this side, as bytes.
+    pub fn apply_rgb(&self, c: Rgb) -> Rgb {
+        to_rgb(self.apply(from_rgb(c)))
+    }
+
+    /// The colour this side maps to `out`, near enough (a picker drawn through the screen side
+    /// stands for this colour).
+    pub fn invert_rgb(&self, out: Rgb) -> Rgb {
+        let target = from_rgb(out);
+        let mut x = target;
+        for _ in 0..40 {
+            let g = self.gains(x);
+            x = [0, 1, 2].map(|i| clamp01(target[i] / g[i].max(0.01)));
+        }
+        to_rgb(x)
+    }
+
+    /// Whether a colour lies within what the matches cover (near one of them in hue and
+    /// saturation); black is always covered. No matches cover nothing.
+    pub fn covers(&self, c: [f32; 3]) -> bool {
+        chroma(c).1 <= f32::EPSILON
+            || self
+                .points
+                .iter()
+                .any(|(m, _)| hue_distance(c, *m) <= COVERED)
     }
 }
 
@@ -355,7 +612,8 @@ pub fn rgb_to_hsv(c: [f32; 3]) -> (f32, f32, f32) {
     (h, s, max)
 }
 
-/// One device's calibration: one for every zone, and optionally a zone's own.
+/// One device's calibration: its values (one for every zone, and optionally a zone's own) and
+/// the matches its user confirmed. Settings from before matches read as values only.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DeviceCalibration {
@@ -365,12 +623,39 @@ pub struct DeviceCalibration {
     pub device: Calibration,
     /// A zone's own calibration (by the zone's id), replacing [`Self::device`] for that zone.
     pub zones: BTreeMap<String, Calibration>,
+    /// The matches, oldest first. Not written while empty, so a calibration without them
+    /// saves as before.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub matches: Vec<Match>,
 }
 
 impl DeviceCalibration {
-    /// The calibration a zone uses: its own, else the device's.
+    /// The values a zone uses: its own, else the device's.
     pub fn zone(&self, zone: Option<&str>) -> &Calibration {
         zone.and_then(|z| self.zones.get(z)).unwrap_or(&self.device)
+    }
+
+    /// The matches a zone uses: its own when it has any, else the ones for every zone.
+    pub fn zone_matches<'a>(&'a self, zone: Option<&'a str>) -> impl Iterator<Item = &'a Match> {
+        let own = zone.is_some() && self.matches.iter().any(|m| m.zone.as_deref() == zone);
+        let pick = if own { zone } else { None };
+        self.matches
+            .iter()
+            .filter(move |m| m.zone.as_deref() == pick)
+    }
+
+    /// One side of a zone's matches, fitted.
+    pub fn fit(&self, zone: Option<&str>, side: Side) -> Fit {
+        Fit::new(self.zone_matches(zone), side)
+    }
+
+    /// What a zone of this device is sent through: the light side of its matches, then its
+    /// values.
+    pub fn light(&self, zone: Option<&str>) -> Light {
+        Light {
+            fit: self.fit(zone, Side::Light),
+            values: self.zone(zone).clone(),
+        }
     }
 
     pub fn sanitized(self) -> Self {
@@ -385,9 +670,12 @@ impl DeviceCalibration {
         }
     }
 
-    /// Changes nothing on any zone.
+    /// Changes nothing on any zone, on either side.
     pub fn is_neutral(&self) -> bool {
-        self.device.is_neutral() && self.zones.values().all(Calibration::is_neutral)
+        self.device.is_neutral()
+            && self.zones.values().all(Calibration::is_neutral)
+            && Fit::new(&self.matches, Side::Light).is_neutral()
+            && Fit::new(&self.matches, Side::Screen).is_neutral()
     }
 }
 
@@ -422,20 +710,19 @@ impl Calibrations {
         }
     }
 
-    /// What a zone of a device uses: the zone's own, else the device's, else the model's
-    /// default (from the catalog), else neutral.
-    pub fn lookup(
-        &self,
-        key: &str,
-        zone: Option<&str>,
-        default: Option<&Calibration>,
-    ) -> Calibration {
+    /// What a zone of a device is sent through: its matches' light side and its values (the
+    /// zone's own, else the device's), else the model's default (from the catalog), else
+    /// neutral.
+    pub fn lookup(&self, key: &str, zone: Option<&str>, default: Option<&Calibration>) -> Light {
         match self.devices.get(key) {
-            Some(d) => d.zone(zone).clone(),
-            None => default
-                .cloned()
-                .map(Calibration::sanitized)
-                .unwrap_or_default(),
+            Some(d) => d.light(zone),
+            None => Light {
+                values: default
+                    .cloned()
+                    .map(Calibration::sanitized)
+                    .unwrap_or_default(),
+                ..Default::default()
+            },
         }
     }
 }
@@ -526,6 +813,8 @@ struct Export {
     device: Calibration,
     #[serde(default)]
     zones: BTreeMap<String, Calibration>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    matches: Vec<Match>,
 }
 
 /// A device's calibration as TOML, to save or share.
@@ -536,6 +825,7 @@ pub fn export(key: &str, cal: &DeviceCalibration) -> Result<String, String> {
         name: cal.name.clone(),
         device: cal.device.clone(),
         zones: cal.zones.clone(),
+        matches: cal.matches.clone(),
     };
     let body = toml::to_string(&file).map_err(|e| e.to_string())?;
     Ok(format!("# Foxglove colour calibration\n{body}"))
@@ -557,6 +847,7 @@ pub fn import(text: &str) -> Result<(String, DeviceCalibration), String> {
             name: file.name,
             device: file.device,
             zones: file.zones,
+            matches: file.matches,
         }
         .sanitized(),
     ))
@@ -610,13 +901,40 @@ impl Registry {
     }
 
     /// What a zone of a device uses (see [`Calibrations::lookup`]).
-    pub fn get(&self, key: &str, zone: Option<&str>, default: Option<&Calibration>) -> Calibration {
+    pub fn get(&self, key: &str, zone: Option<&str>, default: Option<&Calibration>) -> Light {
         self.read().lookup(key, zone, default)
     }
 
     /// The driver boundary for RGB drivers: the colour this zone of this device is sent.
     pub fn rgb(&self, key: &str, zone: Option<&str>, default: Option<&Calibration>, c: Rgb) -> Rgb {
         self.get(key, zone, default).apply_rgb(c)
+    }
+
+    /// The screen preview side of a zone of a device (no matches: neutral).
+    pub fn screen(&self, key: &str, zone: Option<&str>) -> Fit {
+        self.read()
+            .devices
+            .get(key)
+            .map(|d| d.fit(zone, Side::Screen))
+            .unwrap_or_default()
+    }
+
+    /// A colour as Foxglove draws it for a device: through its screen preview side.
+    pub fn on_screen(&self, key: &str, zone: Option<&str>, c: Rgb) -> Rgb {
+        self.screen(key, zone).apply_rgb(c)
+    }
+
+    /// The colour a picker drawn through [`Self::on_screen`] stands for: what to send.
+    pub fn from_screen(&self, key: &str, zone: Option<&str>, c: Rgb) -> Rgb {
+        self.screen(key, zone).invert_rgb(c)
+    }
+
+    /// Whether the device's matches cover a colour: `None` when it has no matches.
+    pub fn covers(&self, key: &str, zone: Option<&str>, c: Rgb) -> Option<bool> {
+        let all = self.read();
+        let d = all.devices.get(key)?;
+        let fit = d.fit(zone, Side::Light);
+        (!fit.points.is_empty()).then(|| fit.covers(from_rgb(c)))
     }
 
     /// The driver boundary for hue/saturation/brightness drivers (a keyboard's underglow).
@@ -874,7 +1192,7 @@ mod tests {
         };
         let mut all = Calibrations::default();
         assert_eq!(
-            all.lookup("103c:84fd", Some("5"), Some(&model)),
+            all.lookup("103c:84fd", Some("5"), Some(&model)).values,
             model,
             "model default"
         );
@@ -883,7 +1201,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            all.lookup("x", None, Some(&wild)).gain[0],
+            all.lookup("x", None, Some(&wild)).values.gain[0],
             2.0,
             "a catalog default is kept in range too"
         );
@@ -905,11 +1223,15 @@ mod tests {
                 name: "case".into(),
                 device: device.clone(),
                 zones: [("5".to_string(), fan.clone())].into(),
+                ..Default::default()
             },
         );
-        assert_eq!(all.lookup("103c:84fd", Some("5"), Some(&model)), fan);
-        assert_eq!(all.lookup("103c:84fd", Some("1"), Some(&model)), device);
-        assert_eq!(all.lookup("103c:84fd", None, Some(&model)), device);
+        assert_eq!(all.lookup("103c:84fd", Some("5"), Some(&model)).values, fan);
+        assert_eq!(
+            all.lookup("103c:84fd", Some("1"), Some(&model)).values,
+            device
+        );
+        assert_eq!(all.lookup("103c:84fd", None, Some(&model)).values, device);
     }
 
     #[test]
@@ -931,8 +1253,15 @@ mod tests {
                 },
             )]
             .into(),
+            matches: vec![Match {
+                color: [0, 0, 153],
+                light: [0, 0, 107],
+                screen: [0, 0, 161],
+                zone: None,
+            }],
         };
         let text = export("103c:84fd", &cal).unwrap();
+        assert!(text.contains("[[matches]]"), "{text}");
         assert!(
             text.starts_with("# Foxglove colour calibration\nversion = 1\n"),
             "{text}"
@@ -1091,12 +1420,281 @@ mod tests {
                     ..Default::default()
                 },
                 zones: BTreeMap::new(),
+                matches: Vec::new(),
+            },
+        );
+        let text = toml::to_string(&all).unwrap();
+        assert!(
+            !text.contains("matches"),
+            "no matches aren't written: {text}"
+        );
+        let back: Calibrations = toml::from_str(&text).unwrap();
+        assert_eq!(back, all);
+        let empty: Calibrations = toml::from_str("").unwrap();
+        assert_eq!(empty.version, VERSION);
+    }
+
+    /// Blue down 30% on the light, up 5% on the screen: both kept, side by side.
+    fn blue_match() -> Match {
+        Match {
+            color: [0, 0, 153],
+            light: [0, 0, 107],
+            screen: [0, 0, 161],
+            zone: None,
+        }
+    }
+
+    #[test]
+    fn matches_persist_with_both_sides() {
+        let mut all = Calibrations::default();
+        let white = Match {
+            color: [153; 3],
+            light: [153, 147, 120],
+            screen: [153; 3],
+            zone: None,
+        };
+        let fan = Match {
+            zone: Some("5".into()),
+            ..white.clone()
+        };
+        all.devices.insert(
+            "103c:84fd".into(),
+            DeviceCalibration {
+                name: "HP OMEN 45L case lights".into(),
+                matches: vec![blue_match(), white, fan],
+                ..Default::default()
             },
         );
         let text = toml::to_string(&all).unwrap();
         let back: Calibrations = toml::from_str(&text).unwrap();
         assert_eq!(back, all);
-        let empty: Calibrations = toml::from_str("").unwrap();
-        assert_eq!(empty.version, VERSION);
+        let m = &back.devices["103c:84fd"].matches[0];
+        assert_eq!((m.light, m.screen), ([0, 0, 107], [0, 0, 161]));
+        assert_eq!(
+            back.devices["103c:84fd"].matches[2].zone.as_deref(),
+            Some("5")
+        );
+        // A registry loaded from them sends and draws both sides.
+        let r = Registry::default();
+        r.replace(back);
+        let blue = Rgb { r: 0, g: 0, b: 153 };
+        assert_eq!(
+            r.rgb("103c:84fd", None, None, blue),
+            Rgb { r: 0, g: 0, b: 107 }
+        );
+        assert_eq!(
+            r.on_screen("103c:84fd", None, blue),
+            Rgb { r: 0, g: 0, b: 161 }
+        );
+    }
+
+    #[test]
+    fn settings_from_before_matches_load_as_light_only_values() {
+        let old = "version = 1\n\
+                   [devices.\"103c:84fd\"]\n\
+                   name = \"HP OMEN 45L case lights\"\n\
+                   [devices.\"103c:84fd\".device]\n\
+                   gain = [1.0, 0.9, 0.7]\n\
+                   brightness = 0.8\n\
+                   [devices.\"103c:84fd\".zones.\"5\"]\n\
+                   brightness = 0.6\n";
+        let all: Calibrations = toml::from_str(old).unwrap();
+        let d = &all.devices["103c:84fd"];
+        assert_eq!(d.device.gain, [1.0, 0.9, 0.7]);
+        assert_eq!(d.zones["5"].brightness, 0.6);
+        assert!(d.matches.is_empty());
+        assert!(d.fit(None, Side::Screen).is_neutral(), "light only");
+        // Sent as before, drawn as is.
+        let r = Registry::default();
+        r.replace(all.clone());
+        assert_eq!(
+            r.rgb("103c:84fd", None, None, ORANGE),
+            d.device.apply_rgb(ORANGE)
+        );
+        assert_eq!(r.on_screen("103c:84fd", None, ORANGE), ORANGE);
+        assert_eq!(r.covers("103c:84fd", None, ORANGE), None);
+        // Written back, it's the same settings: nothing new appears.
+        let text = toml::to_string(&all).unwrap();
+        assert!(!text.contains("matches"), "{text}");
+        assert_eq!(toml::from_str::<Calibrations>(&text).unwrap(), all);
+        let (_, cal) =
+            import("version = 1\nkey = \"x\"\n[device]\ngain = [1.0, 1.0, 0.7]\n").unwrap();
+        assert_eq!(cal.device.gain[2], 0.7);
+        assert!(cal.matches.is_empty());
+    }
+
+    fn grey(v: u8) -> Rgb {
+        Rgb { r: v, g: v, b: v }
+    }
+
+    #[test]
+    fn the_fit_is_exact_at_every_match() {
+        let matches = vec![
+            Match {
+                color: [153; 3],
+                light: [150, 140, 110],
+                screen: [153, 153, 158],
+                zone: None,
+            },
+            Match {
+                color: [128; 3],
+                light: [126, 120, 96],
+                screen: [128; 3],
+                zone: None,
+            },
+            Match {
+                color: [153, 0, 0],
+                light: [120, 0, 0],
+                screen: [160, 0, 0],
+                zone: None,
+            },
+            blue_match(),
+            Match {
+                color: [153, 112, 92],
+                light: [140, 100, 70],
+                screen: [153, 115, 92],
+                zone: None,
+            },
+        ];
+        for side in [Side::Light, Side::Screen] {
+            let fit = Fit::new(&matches, side);
+            for m in &matches {
+                let c = Rgb {
+                    r: m.color[0],
+                    g: m.color[1],
+                    b: m.color[2],
+                };
+                let out = fit.apply_rgb(c);
+                assert_eq!([out.r, out.g, out.b], m.side(side), "{side:?} {m:?}");
+            }
+            assert_eq!(fit.apply_rgb(grey(0)), grey(0), "black stays black");
+        }
+        // Through the registry too: what the driver sends for a matched colour is the match.
+        let r = Registry::default();
+        r.set_device(
+            "k",
+            Some(DeviceCalibration {
+                matches: matches.clone(),
+                ..Default::default()
+            }),
+        );
+        let red = r.rgb("k", Some("1"), None, Rgb { r: 153, g: 0, b: 0 });
+        assert_eq!(red, Rgb { r: 120, g: 0, b: 0 });
+        let (h, s, b) = r.hsb("k", None, None, (0, 100, 60));
+        assert_eq!((h, s), (0, 100));
+        assert_eq!(b, (120.0f32 / 255.0 * 100.0).round() as u8);
+    }
+
+    #[test]
+    fn the_fit_is_monotonic_between_matches() {
+        let matches = [
+            Match {
+                color: [128; 3],
+                light: [124, 118, 100],
+                screen: [128, 128, 131],
+                zone: None,
+            },
+            Match {
+                color: [153; 3],
+                light: [150, 140, 115],
+                screen: [153, 153, 160],
+                zone: None,
+            },
+        ];
+        for side in [Side::Light, Side::Screen] {
+            let fit = Fit::new(&matches, side);
+            let mut last = grey(0);
+            for v in 0..=255u8 {
+                let out = fit.apply_rgb(grey(v));
+                assert!(
+                    out.r >= last.r && out.g >= last.g && out.b >= last.b,
+                    "{side:?} at {v}: {last:?} then {out:?}"
+                );
+                last = out;
+            }
+            // Between the two greys, each channel lies between the two matches'.
+            let mid = fit.apply_rgb(grey(140));
+            for i in 0..3 {
+                let v = [mid.r, mid.g, mid.b][i];
+                let (a, b) = (matches[0].side(side)[i], matches[1].side(side)[i]);
+                assert!((a.min(b)..=a.max(b)).contains(&v), "{side:?} {i}: {v}");
+            }
+        }
+        // A brighter red than the one matched follows the red match's gains.
+        let red = [Match {
+            color: [153, 0, 0],
+            light: [107, 0, 0],
+            screen: [153, 0, 0],
+            zone: None,
+        }];
+        let fit = Fit::new(&red, Side::Light);
+        assert_eq!(fit.apply_rgb(Rgb { r: 250, g: 0, b: 0 }).r, 175);
+    }
+
+    #[test]
+    fn the_light_and_the_screen_sides_apply_together() {
+        let r = Registry::default();
+        let values = Calibration {
+            brightness: 0.9,
+            ..Default::default()
+        };
+        r.set_device(
+            "case",
+            Some(DeviceCalibration {
+                device: values.clone(),
+                matches: vec![blue_match()],
+                ..Default::default()
+            }),
+        );
+        let blue = Rgb { r: 0, g: 0, b: 153 };
+        // The device gets the light side, then its values; the screen draws the screen side.
+        let sent = r.rgb("case", Some("1"), None, blue);
+        assert_eq!(sent, values.apply_rgb(Rgb { r: 0, g: 0, b: 107 }));
+        assert_eq!(r.on_screen("case", None, blue), Rgb { r: 0, g: 0, b: 161 });
+        // A picker drawn on screen stands for the colour it was drawn from.
+        let back = r.from_screen("case", None, Rgb { r: 0, g: 0, b: 161 });
+        assert!(back.b.abs_diff(153) <= 1 && back.r == 0, "{back:?}");
+        // Another device: drawn as is.
+        assert_eq!(r.on_screen("other", None, blue), blue);
+        assert_eq!(r.from_screen("other", None, blue), blue);
+        // A zone with matches of its own uses those; the others use the device's.
+        let mut d = r.device("case").unwrap();
+        d.matches.push(Match {
+            color: [0, 0, 153],
+            light: [0, 0, 153],
+            screen: [0, 0, 140],
+            zone: Some("5".into()),
+        });
+        r.set_device("case", Some(d));
+        assert_eq!(r.on_screen("case", Some("5"), blue).b, 140);
+        assert_eq!(r.on_screen("case", Some("1"), blue).b, 161);
+    }
+
+    #[test]
+    fn colours_far_from_every_match_are_not_matched_yet() {
+        let r = Registry::default();
+        assert_eq!(r.covers("k", None, ORANGE), None, "no matches: no hint");
+        r.set_device(
+            "k",
+            Some(DeviceCalibration {
+                matches: vec![blue_match()],
+                ..Default::default()
+            }),
+        );
+        assert_eq!(r.covers("k", None, Rgb { r: 0, g: 0, b: 255 }), Some(true));
+        assert_eq!(
+            r.covers(
+                "k",
+                None,
+                Rgb {
+                    r: 10,
+                    g: 10,
+                    b: 200
+                }
+            ),
+            Some(true)
+        );
+        assert_eq!(r.covers("k", None, ORANGE), Some(false));
+        assert_eq!(r.covers("k", None, grey(0)), Some(true));
     }
 }
