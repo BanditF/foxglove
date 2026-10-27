@@ -78,7 +78,8 @@
  *   01 RGB_SYNC  0 = off, 1 = on, 0xff = just read     reply: sync (0/1, 0xff = not built in),
  *                                                     left underglow on, right link
  *      On: the right half's underglow follows the left's on/off (default). Off: each half turns
- *      its underglow off on its own idle.
+ *      its underglow off on its own idle. "Left underglow on" is the user's on/off with idle, as
+ *      in RGB_STATE; under SET_FRAME or SET_EFFECT, the on/off hand-back will show (#542).
  *   02 INVOKE    behavior local id u16, param1 u32, param2 u32, hold ms u16 (0 = tap)
  *                                                     reply: status, local id u16
  *      Presses and releases the binding as a key would, on the left; allowed global behaviors
@@ -231,9 +232,9 @@
  *      The take-over and owner rules are SET_FRAME's, with no timeout and no hand-back on USB or
  *      endpoint changes: the effect ends on RELEASE, when a SET_FRAME SHOW takes the lights (the
  *      frames draw over it, both halves; owner 3 in D7 8C), or on a reboot. An effect replaces held
- *      frames quietly (no D7 8C event). While it runs, each half draws only while its underglow is
- *      on as the user set it (dark while idle or off; RGB_STATE reports that on/off), and its
- *      battery dim (D7 0E) scales it.
+ *      frames quietly (no D7 8C event). The effect owns the lights, as frames do: each half draws
+ *      it whatever its underglow on/off and idle (#542), RELEASE puts that on/off back (RGB_STATE
+ *      and RGB_SYNC report it meanwhile), and its battery dim (D7 0E) scales it.
  *      Owner: 0 the keyboard's own effect, 3 the host link's effect. Kind: the one running (0
  *      none). Right: as SET_FRAME's (0 no relay link yet, 1 the right draws it, 2 its firmware
  *      can't and keeps its own effect). Event: always 0 (no unsolicited D7 8F).
