@@ -114,6 +114,7 @@ fn the_map_keeps_only_the_leds_seen_and_goes_back_into_the_profile() {
     let odd = BoardLeds {
         lamps: 2,
         halves: 2,
+        parts: Vec::new(),
         leds: vec![
             Seen {
                 lamp: 7,
@@ -434,10 +435,13 @@ fn a_one_piece_board_is_one_strip() {
     let w = Wizard::new(&b);
     assert_eq!((w.halves, w.parts.count(0), w.total()), (1, 42, 42));
     assert_eq!(w.step().unwrap().half, 0);
-    // No profile lighting: the Corne's 42.
+    // No profile lighting: the Corne's 42 (as one strip on a one-piece board).
     let mut bare = corne();
     bare.lighting = None;
     assert_eq!(Wizard::new(&bare).total(), 42);
+    bare.halves = 1;
+    let w = Wizard::new(&bare);
+    assert_eq!((w.parts.len(), w.total()), (1, 42));
 }
 
 /// A split board whose halves differ (30 + 24, the profile's `parts`): the right half starts
@@ -457,8 +461,16 @@ fn uneven_halves_are_found_half_by_half() {
     while !w.done() {
         w.place([0.5, 0.5]);
     }
-    assert_eq!(w.result().lamps, 54);
+    let r = w.result();
+    assert_eq!((r.lamps, &r.parts[..]), (54, &[30, 24][..]));
     assert_eq!(w.part_of(53), 1);
+    // The same 54 split another way since: the map no longer fits.
+    let mut other = b.clone();
+    other.lighting.as_mut().unwrap().parts = vec![27, 27];
+    apply_leds(&mut other, &r);
+    assert!(!checked(Some(&other)));
+    apply_leds(&mut b, &r);
+    assert!(checked(Some(&b)));
 }
 
 /// A hand-wound clock for the dot test: no real time passes. Running, it jumps straight to the

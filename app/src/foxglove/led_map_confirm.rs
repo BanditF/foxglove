@@ -250,6 +250,7 @@ impl Confirm {
         BoardLeds {
             lamps: u16::try_from(self.total()).unwrap_or(u16::MAX),
             halves: self.halves,
+            parts: vec![u16::try_from(self.per_half).unwrap_or(u16::MAX); usize::from(self.halves)],
             leds,
         }
     }

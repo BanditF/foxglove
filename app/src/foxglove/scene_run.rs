@@ -871,7 +871,7 @@ impl EffectTarget for digitalis::devices::DigitalisDevice {
 /// them. Firmware that takes no points keeps its table (the scene then uses frames for a map
 /// from "Find my LEDs", led_map::effects_place_leds).
 fn send_lamps(target: &dyn EffectTarget, e: &KeyboardEffect) -> Result<(), DeviceError> {
-    for (part, _) in e.parts.iter().enumerate() {
+    for part in 0..e.parts.len() {
         let points = e
             .lamps
             .as_ref()

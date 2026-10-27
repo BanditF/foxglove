@@ -56,6 +56,10 @@ pub struct BoardLeds {
     /// The frame's lamps when they were found: a profile with another count ignores the map.
     pub lamps: u16,
     pub halves: u8,
+    /// Each part's LEDs when they were found (#561): a profile that splits them otherwise
+    /// ignores the map. Empty in maps saved before, which shared the lamps out evenly.
+    #[serde(default)]
+    pub parts: Vec<u16>,
     /// Each LED the user saw; one they couldn't see is left out.
     #[serde(default)]
     pub leds: Vec<Seen>,
@@ -109,10 +113,13 @@ fn apply_leds(board: &mut Board, leds: &BoardLeds) {
             lamps: leds.lamps,
             ..Default::default()
         });
-    if lighting.lamps != leds.lamps || board.halves != leds.halves {
+    let split = |parts: &LampParts| parts.counts().map(|n| n as u16).collect::<Vec<u16>>();
+    let parts_now = lighting.lamp_parts(board.halves).map(|p| split(&p));
+    let other_split = !leds.parts.is_empty() && parts_now.as_ref() != Some(&leds.parts);
+    if lighting.lamps != leds.lamps || board.halves != leds.halves || other_split {
         eprintln!(
-            "Foxglove: the LED map for {} was found with {} LEDs on {} half(s); the profile now says {} on {}: find them again",
-            board.id, leds.lamps, leds.halves, lighting.lamps, board.halves
+            "Foxglove: the LED map for {} was found with {} LEDs ({:?}) on {} half(s); the profile now says {} ({:?}) on {}: find them again",
+            board.id, leds.lamps, leds.parts, leds.halves, lighting.lamps, parts_now, board.halves
         );
         return;
     }
@@ -222,12 +229,13 @@ impl Wizard {
         let halves = if board.halves == 1 { 1 } else { 2 };
         let mut profile = board.clone();
         profile.halves = halves;
+        let parts = super::boards::lamp_parts(Some(&profile));
         Wizard {
             board: board.id.clone(),
             name: board.name.clone(),
             drawing: board.drawing.clone().unwrap_or_default(),
             halves,
-            parts: super::boards::lamp_parts(Some(&profile)),
+            parts,
             answers: Vec::new(),
             note: None,
         }
@@ -292,6 +300,7 @@ impl Wizard {
         BoardLeds {
             lamps: u16::try_from(self.total()).unwrap_or(u16::MAX),
             halves: self.halves,
+            parts: self.parts.counts().map(|n| n as u16).collect(),
             leds: self
                 .answers
                 .iter()

@@ -132,11 +132,37 @@ impl Lighting {
 }
 
 /// The keyboard's LEDs by part: the board profile's, else what firmware that doesn't report
-/// them has (the Eyelash Corne's, `digitalis::lamps`).
+/// them has (the Eyelash Corne's, `digitalis::lamps`), as one strip on a one-piece board.
 pub fn lamp_parts(board: Option<&Board>) -> LampParts {
-    board
-        .and_then(|b| b.lighting.as_ref()?.lamp_parts(b.halves))
-        .unwrap_or_else(LampParts::old_firmware)
+    if let Some(parts) = board.and_then(|b| b.lighting.as_ref()?.lamp_parts(b.halves)) {
+        return parts;
+    }
+    let old = LampParts::old_firmware();
+    match board {
+        Some(b) if b.halves == 1 => LampParts::even(old.total(), 1).unwrap_or(old),
+        _ => old,
+    }
+}
+
+/// What is wrong with a profile's LED counts, if anything (#561): `parts` that don't add up to
+/// `lamps`, or more LEDs than a frame addresses. Said once when the keyboard connects.
+fn lamps_problem(board: &Board) -> Option<String> {
+    let l = board.lighting.as_ref()?;
+    let given: u32 = l.parts.iter().map(|&n| u32::from(n)).sum();
+    if !l.parts.is_empty() && given != u32::from(l.lamps) {
+        return Some(format!(
+            "its parts {:?} add up to {given} LEDs, not its {} lamps: shared out evenly instead",
+            l.parts, l.lamps
+        ));
+    }
+    if l.lamp_parts(board.halves).is_none() {
+        return Some(format!(
+            "its {} lamps are more than a frame addresses ({}): the old firmware's count instead",
+            l.lamps,
+            digitalis::lamps::MAX_LAMPS
+        ));
+    }
+    None
 }
 
 /// [`Lighting::led_map`] for an LED map confirmed on the board.
@@ -395,6 +421,12 @@ pub fn connected(vid: u16, pid: u16, product: &str) {
     if board.is_none() {
         eprintln!("Foxglove: no board profile for {vid:04x}:{pid:04x} \"{product}\"; using only what the firmware says");
     }
+    if let Some(problem) = board.as_ref().and_then(lamps_problem) {
+        eprintln!(
+            "Foxglove: the board profile {}: {problem}",
+            board.as_ref().map_or("", |b| b.id.as_str())
+        );
+    }
     super::led_map::note_current(board.as_ref());
     *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = board;
 }
@@ -476,6 +508,31 @@ mod tests {
         // ZMK's shared ids alone match nothing.
         assert!(find_in(&all, 0x1d50, 0x615e, "Some Other Board").is_none());
         assert!(find_in(&all, 0x3434, 0x0250, "Eyelash Corne").is_none());
+    }
+
+    /// The LED counts by part (#561): the profile's own split, an even share, a one-piece
+    /// board's single strip, and a profile whose counts don't hold up, which is said.
+    #[test]
+    fn lamp_parts_come_from_the_profile() {
+        let all = load(None);
+        let mut b = find_in(&all, 0x1d50, 0x615e, "Eyelash Corne").unwrap();
+        let counts = |b: &Board| lamp_parts(Some(b)).counts().collect::<Vec<_>>();
+        assert_eq!(counts(&b), [21, 21]);
+        assert_eq!(lamps_problem(&b), None);
+        let l = b.lighting.as_mut().unwrap();
+        (l.lamps, l.parts) = (54, vec![30, 24]);
+        assert_eq!(counts(&b), [30, 24]);
+        b.lighting.as_mut().unwrap().parts = vec![30, 30];
+        assert_eq!(counts(&b), [27, 27], "parts that don't add up: shared out");
+        assert!(lamps_problem(&b).is_some_and(|p| p.contains("add up to 60")));
+        let l = b.lighting.as_mut().unwrap();
+        (l.lamps, l.parts) = (300, Vec::new());
+        assert_eq!(counts(&b), [21, 21], "past a frame: the old firmware's");
+        assert!(lamps_problem(&b).is_some_and(|p| p.contains("300")));
+        b.halves = 1;
+        b.lighting = None;
+        assert_eq!(counts(&b), [42], "one strip on a one-piece board");
+        assert_eq!(lamp_parts(None).counts().collect::<Vec<_>>(), [21, 21]);
     }
 
     #[test]
