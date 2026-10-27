@@ -69,6 +69,9 @@ pub(crate) fn contents(
             if ui.button("Open Windows settings").clicked() {
                 open_privacy_settings();
             }
+            if ui.button("Try again").clicked() {
+                notifications::retry();
+            }
         });
     } else if let Some(line) = state_line(state).filter(|_| settings.enabled) {
         ui.weak(line);

@@ -10,6 +10,9 @@
 //! folder (`%LOCALAPPDATA%\Microsoft\Windows\Notifications`), which Windows makes when a toast
 //! arrives or goes. Each wake leads to one read (`notifications` settles and bounds them).
 //!
+//! **Access.** Read, never requested: `RequestAccessAsync` belongs on a UI thread and may wait
+//! on the user, so the Screens page links to Windows' own notification privacy page instead.
+//!
 //! **Quiet.** Do not disturb / Focus assist comes from the shell's own quiet-hours state
 //! (WNF, read through ntdll; undocumented but stable since Windows 10 1803, and only read when a
 //! notification arrives), and full screen, presentation mode and quiet time from
@@ -26,7 +29,7 @@ pub struct Arrivals {
     _inner: imp::Inner,
 }
 
-pub use imp::{access, quiet, request_access, toasts};
+pub use imp::{access, quiet, toasts};
 
 /// Wakes `wake` when notifications may have changed: the listener's event when Windows allows
 /// it, else the database folder. `Err` when neither is there.
@@ -76,11 +79,6 @@ mod imp {
 
     pub fn access() -> Access {
         status(UserNotificationListener::Current().and_then(|l| l.GetAccessStatus()))
-    }
-
-    /// Asks Windows for access (it may ask the user once) and waits for the answer.
-    pub fn request_access() -> Access {
-        status(UserNotificationListener::Current().and_then(|l| l.RequestAccessAsync()?.join()))
     }
 
     pub fn watch(wake: Arc<dyn Fn() + Send + Sync>) -> Result<Arrivals, String> {
@@ -250,9 +248,6 @@ mod imp {
 
     pub fn access() -> Access {
         Access::Unavailable("not on Windows".into())
-    }
-    pub fn request_access() -> Access {
-        access()
     }
     pub fn watch(_: Arc<dyn Fn() + Send + Sync>) -> Result<Arrivals, String> {
         Err("not on Windows".into())

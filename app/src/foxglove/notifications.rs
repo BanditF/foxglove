@@ -18,6 +18,7 @@
 //!   turned on again.
 
 use std::collections::{BTreeSet, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -225,25 +226,27 @@ pub struct Core {
 }
 
 impl Core {
-    /// Forget what was seen: the next read only primes. Away, paused or off: what arrives
-    /// meanwhile never shows later.
+    /// Forget what was seen: the next read only primes. Away or off: what arrives meanwhile
+    /// never shows later.
     pub fn forget(&mut self) {
         self.seen = None;
         self.idle_reads = 0;
     }
 
+    /// Reads after a wake. `paused`: what's new is taken as seen and nothing shows, so it
+    /// doesn't show after the resume either, and the first arrival after it does.
     pub fn read(
         &mut self,
         src: &mut dyn Source,
         s: &NotifySettings,
-        holding: bool,
+        paused: bool,
         now: Instant,
     ) -> Read {
-        if !s.enabled || holding {
+        if !s.enabled {
             self.forget();
             return Read::Nothing;
         }
-        let text_for = |app: &str| s.text_apps.contains(app);
+        let text_for = |app: &str| !paused && s.text_apps.contains(app);
         let toasts = match src.toasts(&text_for) {
             Ok(t) => t,
             Err(e) => {
@@ -273,8 +276,8 @@ impl Core {
             };
         }
         self.idle_reads = 0;
-        let apps = new.iter().map(|t| t.app.clone()).collect();
-        if src.quiet().is_some() {
+        let apps: Vec<String> = new.iter().map(|t| t.app.clone()).collect();
+        if paused || src.quiet().is_some() {
             note_recent(&mut RECENT.lock().unwrap_or_else(|e| e.into_inner()), apps);
             return Read::Nothing;
         }
@@ -289,15 +292,69 @@ impl Core {
     }
 }
 
-/// Whether nothing may show now: locked or display off, Foxglove or the left screen paused.
-fn holding() -> bool {
-    super::away::away() || super::pause::paused() || super::screens::paused()
+/// The light cue's clock: a shown notice starts it (or extends one showing); it ends when its
+/// time is up or when it may not show any more (off, away, paused).
+#[derive(Debug, Default)]
+pub struct Cue {
+    until: Option<Instant>,
+}
+
+impl Cue {
+    /// A notice with a cue at `now`: a showing cue runs on, else `take` takes the lights.
+    pub fn shown(&mut self, now: Instant, take: impl FnOnce() -> bool) {
+        if self.until.is_some() || take() {
+            self.until = Some(now + CUE);
+        }
+    }
+
+    /// Whether the cue ends now; the caller then gives the lights back.
+    pub fn ends(&mut self, now: Instant, may_show: bool) -> bool {
+        match self.until {
+            Some(t) if t <= now || !may_show => {
+                self.until = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn deadline(&self) -> Option<Instant> {
+        self.until
+    }
+}
+
+/// Foxglove or the left screen paused: nothing shows, and no cue.
+fn paused() -> bool {
+    super::pause::paused() || super::screens::paused()
 }
 
 enum Event {
     Wake,
     Settings,
     Away,
+    /// Paused or resumed.
+    Hold,
+    /// Check access again (the Screens page's Try again).
+    Retry,
+}
+
+static EVENTS: Mutex<Option<mpsc::Sender<Event>>> = Mutex::new(None);
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+fn send(e: Event) {
+    if let Some(tx) = EVENTS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send(e);
+    }
+}
+
+/// Foxglove or the left screen paused or resumed.
+pub fn pause_changed() {
+    send(Event::Hold);
+}
+
+/// Checks Windows' access again, after the user changed it.
+pub fn retry() {
+    send(Event::Retry);
 }
 
 pub fn start() {
@@ -307,10 +364,11 @@ pub fn start() {
     let _ = super::services::spawn_supervised("notifications", run);
 }
 
-/// Takes the keyboard's lights for the cue; false when there's no keyboard or it's paused.
+/// Takes the keyboard's lights for the cue; false when there's no keyboard, it's paused or
+/// quitting, or the keyboard refused (whatever was taken is given back).
 fn cue_start() -> bool {
     use foxglove_devices::Device as _;
-    if super::pause::paused() {
+    if super::pause::paused() || QUITTING.load(Ordering::SeqCst) {
         return false;
     }
     let Some(kb) = super::devices::device() else {
@@ -334,6 +392,8 @@ fn cue_start() -> bool {
         Ok(_) => true,
         Err(e) => {
             eprintln!("Foxglove notifications: the light cue: {e}");
+            // The arbiter keeps a lease whose first show failed: end it now.
+            cue_end();
             false
         }
     }
@@ -344,8 +404,9 @@ pub fn cue_end() {
     super::api::end_leases(|l| l.conn == NOTIFY_CONN);
 }
 
-/// Quitting: a cue that's showing gives the lights back.
+/// Quitting: no new cue starts, and one that's showing gives the lights back.
 pub fn quit() {
+    QUITTING.store(true, Ordering::SeqCst);
     if super::lighting_leases::holders()
         .iter()
         .any(|(_, conn, _)| *conn == NOTIFY_CONN)
@@ -356,6 +417,7 @@ pub fn quit() {
 
 fn run() {
     let (tx, rx) = mpsc::channel();
+    *EVENTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
     let settings_tx = tx.clone();
     let _settings_watch = super::store::path().and_then(|p| {
         super::screens_watch::settings(
@@ -372,10 +434,11 @@ fn run() {
     let mut settings = NotifySettings::load();
     let mut core = Core::default();
     let mut arrivals: Option<super::notify_windows::Arrivals> = None;
-    // Access and the watch are tried once, then again after a settings change.
+    // Access and the watch are tried once, then again after a change to these settings or
+    // the page's Try again.
     let mut tried = false;
     let mut read_at: Option<Instant> = None;
-    let mut cue_until: Option<Instant> = None;
+    let mut cue = Cue::default();
     let wake: Arc<dyn Fn() + Send + Sync> = {
         let tx = Mutex::new(tx.clone());
         Arc::new(move || {
@@ -393,16 +456,12 @@ fn run() {
                 super::screens::clear_notice();
             }
             read_at = None;
-            tried = false;
             core.forget();
             set_state(State::Off);
         } else if arrivals.is_none() && !tried {
             tried = true;
-            let mut access = super::notify_windows::access();
-            if access == Access::Unasked {
-                access = super::notify_windows::request_access();
-            }
-            match access {
+            // Never asked from here: Windows' own page decides (the card links to it).
+            match super::notify_windows::access() {
                 Access::Allowed => match super::notify_windows::watch(wake.clone()) {
                     Ok(a) => {
                         set_state(State::Listening {
@@ -419,11 +478,12 @@ fn run() {
                 Access::Unavailable(e) => set_state(State::Unavailable(e)),
             }
         }
-        if cue_until.is_some() && (!settings.enabled || !settings.light_cue || holding()) {
-            cue_until = Some(Instant::now());
+        let may_cue = settings.enabled && settings.light_cue && !super::away::away() && !paused();
+        if cue.ends(Instant::now(), may_cue) {
+            cue_end();
         }
 
-        let next = [read_at, cue_until].into_iter().flatten().min();
+        let next = [read_at, cue.deadline()].into_iter().flatten().min();
         let event = match next {
             Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
                 Ok(e) => Some(e),
@@ -436,21 +496,26 @@ fn run() {
             },
         };
         match event {
-            Some(Event::Wake) if arrivals.is_some() => {
+            Some(Event::Wake) if arrivals.is_some() && !super::away::away() => {
                 read_at.get_or_insert_with(|| Instant::now() + SETTLE);
             }
             Some(Event::Wake) => {}
             Some(Event::Settings) => {
                 if let Some(s) = NotifySettings::try_load() {
-                    // Not listening (no access, say): any change tries again.
-                    if arrivals.is_none() {
+                    if s != settings {
                         tried = false;
                     }
                     settings = s;
                 }
             }
+            Some(Event::Retry) => tried = false,
+            Some(Event::Hold) => {
+                if paused() {
+                    super::screens::clear_notice();
+                }
+            }
             Some(Event::Away) => {
-                if holding() {
+                if super::away::away() {
                     super::screens::clear_notice();
                     core.forget();
                     read_at = None;
@@ -465,7 +530,11 @@ fn run() {
         let now = Instant::now();
         if read_at.is_some_and(|t| t <= now) {
             read_at = None;
-            match core.read(&mut Windows, &settings, holding(), now) {
+            if super::away::away() {
+                core.forget();
+                continue;
+            }
+            match core.read(&mut Windows, &settings, paused(), now) {
                 Read::Nothing => {}
                 Read::Restless => {
                     eprintln!("Foxglove notifications: the folder keeps changing; stopped");
@@ -480,15 +549,11 @@ fn run() {
                         shown.apps,
                     );
                     super::screens::show_notice(shown.notice, now + settings.shown_for());
-                    if shown.cue && (cue_until.is_some() || cue_start()) {
-                        cue_until = Some(Instant::now() + CUE);
+                    if shown.cue {
+                        cue.shown(Instant::now(), cue_start);
                     }
                 }
             }
-        }
-        if cue_until.is_some_and(|t| t <= Instant::now()) {
-            cue_until = None;
-            cue_end();
         }
     }
 }
@@ -644,14 +709,9 @@ mod tests {
             Read::Nothing,
             "a notification held back by Do not disturb doesn't show after"
         );
-        // Away or paused: nothing is read, and the next read primes.
-        let reads = fake.reads;
+        // Away: the service doesn't read and forgets; back, the next read primes.
         fake.add(2, "Teams", &[]);
-        assert_eq!(
-            core.read(&mut fake, &on(), true, t + Duration::from_secs(9)),
-            Read::Nothing
-        );
-        assert_eq!(fake.reads, reads, "nothing is read while away");
+        core.forget();
         assert_eq!(
             core.read(&mut fake, &on(), false, t + Duration::from_secs(12)),
             Read::Nothing,
@@ -664,6 +724,60 @@ mod tests {
                 .app,
             "Slack"
         );
+        // Paused: read and taken as seen, no text asked, nothing shown; resumed, the next
+        // arrival shows at once.
+        let mut s = on();
+        s.text_apps.insert("Teams".into());
+        fake.add(4, "Teams", &["Hidden"]);
+        assert_eq!(
+            core.read(&mut fake, &s, true, t + Duration::from_secs(18)),
+            Read::Nothing
+        );
+        assert!(fake.text_asked.is_empty(), "no text read while paused");
+        assert_eq!(
+            core.read(&mut fake, &s, false, t + Duration::from_secs(21)),
+            Read::Nothing,
+            "the paused one doesn't show after"
+        );
+        fake.add(5, "Slack", &[]);
+        assert_eq!(
+            shown(core.read(&mut fake, &s, false, t + Duration::from_secs(24)))
+                .notice
+                .app,
+            "Slack"
+        );
+    }
+
+    /// The light cue: one lease per run of notices, ended by its time, and at once when it may
+    /// not show (turned off, away, paused); a refused take leaves nothing running.
+    #[test]
+    fn the_cue_starts_once_extends_and_always_ends() {
+        let t = Instant::now();
+        let takes = std::cell::Cell::new(0);
+        let take = || {
+            takes.set(takes.get() + 1);
+            true
+        };
+        let mut cue = Cue::default();
+        assert!(!cue.ends(t, true), "nothing showing");
+        cue.shown(t, take);
+        assert_eq!(cue.deadline(), Some(t + CUE));
+        // Another notice mid-cue: runs on, no second lease.
+        let mid = t + CUE / 2;
+        cue.shown(mid, take);
+        assert_eq!((takes.get(), cue.deadline()), (1, Some(mid + CUE)));
+        assert!(!cue.ends(mid + CUE / 2, true));
+        assert!(cue.ends(mid + CUE, true), "its time is up");
+        assert!(!cue.ends(mid + CUE, true), "ended once");
+        // Turned off, away or paused mid-cue: ends at once.
+        cue.shown(t, take);
+        assert!(cue.ends(t, false));
+        assert_eq!(cue.deadline(), None);
+        // The keyboard refused: nothing to end.
+        let mut refused = Cue::default();
+        refused.shown(t, || false);
+        assert_eq!(refused.deadline(), None);
+        assert!(!refused.ends(t + CUE, false));
     }
 
     /// A folder that keeps changing with nothing new stops the watch; reads far apart don't.

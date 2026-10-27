@@ -27,6 +27,7 @@ pub fn paused() -> bool {
 pub fn set_paused(value: bool) {
     PAUSED.store(value, Ordering::Relaxed);
     wake();
+    super::notifications::pause_changed();
 }
 
 /// Foxglove paused or resumed (#404): the service hands the panel back or draws again.
