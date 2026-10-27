@@ -36,12 +36,14 @@ thread_local! {
     pub static PREVIEW: RefCell<Option<screens::Snapshot>> = const { RefCell::new(None) };
 }
 
-/// The Screens page: Showing now, On the keyboard, On this PC, then the left screen's card.
+/// The Screens page: Showing now, On the keyboard, On this PC, then the left screen's card and
+/// Notifications (#507).
 pub fn page(ui: &mut egui::Ui) {
     showing_now(ui);
     super::art_ui::keyboard_card(ui);
     super::art_ui::pc_card(ui);
     group(ui);
+    super::notifications_ui::card(ui);
 }
 
 /// Showing now: the left screen, the right screen and Rotation in three columns, stacked when
@@ -421,7 +423,7 @@ pub fn left_now() -> (&'static str, &'static str, bool) {
     (name, line, settings.drive_left)
 }
 
-fn snapshot() -> screens::Snapshot {
+pub(super) fn snapshot() -> screens::Snapshot {
     #[cfg(test)]
     if let Some(s) = PREVIEW.with_borrow(|s| s.clone()) {
         return s;

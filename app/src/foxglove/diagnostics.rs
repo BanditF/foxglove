@@ -296,6 +296,8 @@ pub fn collect(ctx: &egui::Context) -> Facts {
         .map(|(device, conn, priority)| {
             let who = if conn == super::scene_run::SCENE_CONN {
                 "a scene".to_string()
+            } else if conn == super::notifications::NOTIFY_CONN {
+                "a notification".to_string()
             } else {
                 foxglove_plugin_host::plugin_of(conn)
                     .unwrap_or_else(|| format!("a tool (connection {conn})"))

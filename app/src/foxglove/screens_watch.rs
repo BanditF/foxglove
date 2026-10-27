@@ -101,6 +101,22 @@ mod imp {
         .ok()?;
         watch(h, true, wake)
     }
+    /// Writes in an existing folder (never created here), such as Windows' notification
+    /// database's (#507).
+    pub fn folder(dir: &std::path::Path, wake: Arc<dyn Fn() + Send + Sync>) -> Option<Watch> {
+        if !dir.is_dir() {
+            return None;
+        }
+        let h = unsafe {
+            FindFirstChangeNotificationW(
+                &HSTRING::from(dir),
+                false,
+                FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SIZE,
+            )
+        }
+        .ok()?;
+        watch(h, true, wake)
+    }
     pub fn panel(wake: Arc<dyn Fn() + Send + Sync>) -> Option<Watch> {
         let h = unsafe {
             CreateMutexW(
@@ -183,6 +199,9 @@ mod imp {
         None
     }
     pub fn panel(_: std::sync::Arc<dyn Fn() + Send + Sync>) -> Option<Watch> {
+        None
+    }
+    pub fn folder(_: &std::path::Path, _: std::sync::Arc<dyn Fn() + Send + Sync>) -> Option<Watch> {
         None
     }
 }
