@@ -362,15 +362,9 @@ fn board_view(ctx: &egui::Context) -> BoardView {
     if let Some(h) = super::art_service::handle() {
         let s = h.snapshot();
         if s.connected {
-            art_name = Some(super::art_ui::playing(&s).0);
-            let library = super::art_library::snapshot();
-            art = s.showing_file().and_then(|path| {
-                super::art_ui::tiles(&library.entries)
-                    .0
-                    .into_iter()
-                    .find(|t| t.path == *path)
-                    .map(|t| t.image)
-            });
+            let (name, image) = super::art_ui::showing_now(&s, &super::art_library::snapshot());
+            art_name = Some(name);
+            art = image;
         }
     }
     let glow = ks::rgb_state(ctx)
@@ -735,13 +729,7 @@ pub mod tests {
         let corne =
             super::super::boards::find(0x1d50, 0x615e, "Eyelash Corne").and_then(|b| b.drawing);
         let (art, library) = super::super::art_ui::tests::sample();
-        let image = art.showing_file().and_then(|p| {
-            super::super::art_ui::tiles(&library.entries)
-                .0
-                .into_iter()
-                .find(|t| t.path == *p)
-                .map(|t| t.image)
-        });
+        let (_, image) = super::super::art_ui::showing_now(&art, &library);
         BoardView {
             drawing: corne.unwrap_or_default(),
             panel: super::super::theme_preview::sample_screens().frame,

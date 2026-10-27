@@ -1,6 +1,7 @@
-//! The Screens page (#13, redesigned in #388): the left screen's card (a live preview, its
-//! switches and the per-game hints) beside the right screen's art (`art_ui`). Shown only while
-//! a keyboard with the host link has answered HELLO.
+//! The Screens page (#13, #388; the art flow's tiers in #516): **Showing now** with both
+//! screens side by side and Rotation, then the right screen's art on the keyboard and on this
+//! PC (`art_ui`), then the left screen's settings (its switches and the per-game hints). The
+//! left screen's parts show only while a keyboard with the host link has answered HELLO.
 //!
 //! Changes are saved to `screens.ini`, which the panel service watches, so the service never
 //! needs a channel from the UI. The preview redraws at the panel's own rate only while this
@@ -11,14 +12,10 @@ use std::cell::RefCell;
 use super::screens::{self, Frame};
 use super::screens_settings::ScreensSettings;
 
-/// The preview's scale: the 64x52 panel at 3x.
-const SCALE: f32 = 3.0;
-
 #[derive(Default)]
 struct UiState {
     /// The settings as last loaded or saved; reloaded when the section opens.
     settings: Option<ScreensSettings>,
-    texture: Option<(Frame, egui::TextureHandle)>,
     new_exe: String,
     new_hint: String,
 }
@@ -39,34 +36,125 @@ thread_local! {
     pub static PREVIEW: RefCell<Option<screens::Snapshot>> = const { RefCell::new(None) };
 }
 
-/// The Screens page (#388): the left screen's card and the right screen's art side by side,
-/// stacked when the window is narrow.
+/// The Screens page: Showing now, On the keyboard, On this PC, then the left screen's card.
 pub fn page(ui: &mut egui::Ui) {
-    let gap = 16.0;
-    let width = ui.available_width();
-    if width < 760.0 {
-        group(ui);
-        ui.add_space(10.0);
-        super::art_ui::group(ui);
+    showing_now(ui);
+    super::art_ui::keyboard_card(ui);
+    super::art_ui::pc_card(ui);
+    group(ui);
+}
+
+/// Showing now: the left screen, the right screen and Rotation in three columns, stacked when
+/// the window is narrow. Drawn once either screen's keyboard answers.
+fn showing_now(ui: &mut egui::Ui) {
+    let left = snapshot().hello.is_some();
+    let right = super::art_ui::current(ui.ctx()).is_some_and(|a| a.s.connected);
+    if !left && !right {
         return;
     }
-    let half = ((width - gap) / 2.0).floor();
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = gap;
-        for i in 0..2 {
-            ui.allocate_ui_with_layout(
-                egui::vec2(half, 0.0),
-                egui::Layout::top_down(egui::Align::Min),
-                |ui| {
-                    ui.set_width(half);
-                    if i == 0 {
-                        group(ui);
-                    } else {
-                        super::art_ui::group(ui);
-                    }
-                },
-            );
+    super::settings_ui::section(ui, "Showing now", |ui| {
+        let gap = 18.0;
+        let width = ui.available_width();
+        type Part = fn(&mut egui::Ui);
+        let parts: [(f32, Part); 3] = [
+            (0.27, now_left),
+            (0.43, super::art_ui::now_right),
+            (0.30, super::art_ui::rotation),
+        ];
+        if width < 720.0 {
+            for (_, part) in parts {
+                part(ui);
+                ui.add_space(10.0);
+            }
+            return;
         }
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            let room = width - gap * 2.0;
+            for (share, part) in parts {
+                let w = (room * share).floor();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(w, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_width(w);
+                        part(ui);
+                    },
+                );
+            }
+        });
+    });
+}
+
+/// What the left screen shows, in a name and a line.
+pub fn left_words(settings: &ScreensSettings, paused: bool) -> (&'static str, &'static str) {
+    use super::screens_settings::Layout;
+    if !settings.drive_left {
+        return ("Clock and status", "The keyboard's own screen.");
+    }
+    let name = match settings.layout {
+        Layout::Info => "Clock, media and hints",
+        Layout::Wallpaper => "Wallpaper animation",
+    };
+    if paused {
+        (name, "Paused: the keyboard shows its own screen meanwhile.")
+    } else {
+        (name, "Drawn by Foxglove while it runs on this PC.")
+    }
+}
+
+/// The left screen's column of Showing now: its live picture and what it shows.
+fn now_left(ui: &mut egui::Ui) {
+    let snap = snapshot();
+    let p = super::theme::palette(ui);
+    ui.label(super::theme::caps_label(ui, "Left screen"));
+    if snap.hello.is_none() {
+        ui.weak("Waiting for the keyboard.");
+        return;
+    }
+    UI.with_borrow_mut(|state| {
+        let settings = state
+            .settings
+            .get_or_insert_with(ScreensSettings::load)
+            .clone();
+        match snap.frame.as_ref().filter(|_| settings.drive_left) {
+            Some(frame) => {
+                let t = frame_texture_here(ui.ctx(), frame);
+                ui.add(egui::Image::new((t.id(), t.size_vec2() * 2.0)).corner_radius(3));
+                // Repainted when the panel gets a new frame, only while this part is drawn.
+                super::screens::want_preview(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
+            }
+            None => {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(64.0, 52.0) * 2.0, egui::Sense::hover());
+                ui.painter().rect(
+                    rect,
+                    4.0,
+                    egui::Color32::BLACK,
+                    egui::Stroke::new(1.0, p.control_line),
+                    egui::StrokeKind::Inside,
+                );
+                let words = if settings.drive_left {
+                    "No picture yet"
+                } else {
+                    "Keyboard's own"
+                };
+                ui.painter().text(
+                    rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    words,
+                    super::theme::body(12.0),
+                    p.muted,
+                );
+            }
+        }
+        let (name, line) = left_words(&settings, screens::paused());
+        ui.label(
+            egui::RichText::new(name)
+                .font(super::theme::hud(15.0))
+                .color(p.text_strong),
+        );
+        ui.weak(line);
     });
 }
 
@@ -85,27 +173,10 @@ pub fn group(ui: &mut egui::Ui) {
         UI.with_borrow_mut(|s| s.settings = None);
         return;
     };
-    super::settings_ui::section(ui, "Left screen · PC panel", |ui| {
+    super::settings_ui::section(ui, "Left screen", |ui| {
         UI.with_borrow_mut(|state| {
-            let p = super::theme::palette(ui);
             let settings = state.settings.get_or_insert_with(ScreensSettings::load);
             let mut changed = false;
-
-            // The live preview, as the panel shows it, centred in a dark frame.
-            ui.vertical_centered(|ui| match snap.frame.as_ref().filter(|_| settings.drive_left) {
-                Some(frame) => {
-                    preview(ui, frame_texture(ui.ctx(), &mut state.texture, frame));
-                    // Repainted when the panel gets a new frame, only while this card is drawn.
-                    super::screens::want_preview(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
-                }
-                None => {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(64.0, 52.0) * SCALE, egui::Sense::hover());
-                    ui.painter().rect(rect, 4.0, egui::Color32::BLACK, egui::Stroke::new(1.0, p.control_line), egui::StrokeKind::Inside);
-                    let words = if settings.drive_left { "No frame yet" } else { "Foxglove isn't driving it" };
-                    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, words, super::theme::body(12.0), p.muted);
-                }
-            });
-            ui.add_space(6.0);
 
             ui.horizontal(|ui| {
                 changed |= ui.checkbox(&mut settings.drive_left, "Drive left screen").changed();
@@ -243,9 +314,16 @@ pub(crate) fn frame_texture<'a>(
     &cached.as_ref().unwrap().1
 }
 
-fn preview(ui: &mut egui::Ui, texture: &egui::TextureHandle) {
-    let size = texture.size_vec2() * SCALE;
-    ui.add(egui::Image::new((texture.id(), size)));
+/// [`frame_texture`] with the cache kept in the context it was made for, so a fresh context
+/// (each preview's) never draws another's texture.
+fn frame_texture_here(ctx: &egui::Context, frame: &Frame) -> egui::TextureHandle {
+    let id = egui::Id::new("foxglove-left-screen-texture");
+    let mut cached = ctx
+        .data(|d| d.get_temp::<Option<(Frame, egui::TextureHandle)>>(id))
+        .flatten();
+    let t = frame_texture(ctx, &mut cached, frame).clone();
+    ctx.data_mut(|d| d.insert_temp(id, cached));
+    t
 }
 
 /// The panel's 1-bit rows (MSB first) as an image: ink white on black, like the nice!view.

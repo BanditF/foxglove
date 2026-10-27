@@ -223,20 +223,11 @@ pub fn halves(s: &StripState) -> [(Tone, String); 2] {
 /// frame (the art service's wake), so the panel follows the keyboard.
 fn art(
     s: &super::art_service::Snapshot,
-    library: &[super::art_library::Entry],
+    library: &super::art_library::Library,
 ) -> (String, Option<Arc<egui::ColorImage>>, bool) {
     let ready = s.connected && !s.busy;
-    if !s.connected {
-        return ("…".to_string(), None, ready);
-    }
-    let image = s.showing_file().and_then(|path| {
-        super::art_ui::tiles(library)
-            .0
-            .into_iter()
-            .find(|t| t.path == *path)
-            .map(|t| t.image)
-    });
-    (super::art_ui::playing(s).0, image, ready)
+    let (name, image) = super::art_ui::showing_now(s, library);
+    (name, image, ready)
 }
 
 fn view(ctx: &egui::Context) -> View {
@@ -245,7 +236,7 @@ fn view(ctx: &egui::Context) -> View {
     let lights_ready = super::keyboard_actions::underglow_behavior().is_some()
         && !super::keyboard_settings::invoking();
     let (art_name, art_image, art_ready) = match super::art_service::handle() {
-        Some(h) => art(&h.snapshot(), &super::art_library::snapshot().entries),
+        Some(h) => art(&h.snapshot(), &super::art_library::snapshot()),
         None => ("…".to_string(), None, false),
     };
     while_paused(View {
@@ -771,15 +762,16 @@ pub mod tests {
             status: Some(status(1)),
             ..Default::default()
         };
-        let before = art(&s, &[]).0;
+        let none = crate::foxglove::art_library::Library::default();
+        let before = art(&s, &none).0;
         s.status = Some(status(4));
-        let after = art(&s, &[]).0;
+        let after = art(&s, &none).0;
         assert_ne!(before, after);
-        assert_eq!(after, crate::foxglove::art_ui::playing(&s).0);
+        assert_eq!(after, crate::foxglove::art_pieces::showing_name(&s));
         s.busy = true;
-        assert!(!art(&s, &[]).2, "no clicks while the art is being sent");
+        assert!(!art(&s, &none).2, "no clicks while the art is being sent");
         s.connected = false;
-        assert_eq!(art(&s, &[]).0, "…");
+        assert_eq!(art(&s, &none).0, "…");
     }
 
     #[test]
@@ -855,13 +847,7 @@ pub mod tests {
     /// The previews' panel: both halves seen, two profiles, the lights on, art playing.
     pub fn sample() -> View {
         let (snapshot, library) = super::super::art_ui::tests::sample();
-        let image = snapshot.showing_file().and_then(|p| {
-            super::super::art_ui::tiles(&library.entries)
-                .0
-                .into_iter()
-                .find(|t| t.path == *p)
-                .map(|t| t.image)
-        });
+        let (art_name, image) = super::super::art_ui::showing_now(&snapshot, &library);
         View {
             halves: [
                 (Tone::Ok, "on USB".into()),
@@ -878,7 +864,7 @@ pub mod tests {
                 speed: 3,
             }),
             lights_ready: true,
-            art_name: super::super::art_ui::playing(&snapshot).0,
+            art_name,
             art_image: image,
             art_ready: true,
             panel_paused: false,

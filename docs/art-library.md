@@ -1,3 +1,6 @@
+> **Since #516** this view lives on the Screens page (Showing now · On the keyboard · On this PC);
+> the separate window is gone. Below is the original design, for history.
+
 # Art library view (#59)
 
 Status: design spec for review. Today **Settings → Right screen art** shows the status, the

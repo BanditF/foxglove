@@ -13,6 +13,7 @@ use super::art_triggers::{Change, Triggers};
 use digitalis::art;
 use digitalis::link::{Event as LinkEvent, EventSubscription, Link};
 use digitalis::protocol::{self, ArtStatus, SlotInfo};
+use digitalis::Transport;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -39,6 +40,108 @@ pub struct Snapshot {
     pub cycle: Cycle,
     /// The keyboard reports its lights turning on and off (HELLO RGB_STATE_EVENT).
     pub wake_events: bool,
+    /// The file Foxglove last sent and a hash of its bytes, while the right half plays it from
+    /// memory (whoever asked: a click, a layer, a preset). Cleared by a select and a disconnect.
+    pub sent: Option<(PathBuf, u64)>,
+    /// What runs now, named for the sending strip (#518).
+    pub job: Option<Job>,
+    /// How the last job ended; the strip says so until the next one starts.
+    pub outcome: Option<Outcome>,
+}
+
+/// What a job does, for the strip's words (`art_words`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobKind {
+    /// Shows a piece: a built-in, a kept place, or one sent from this PC.
+    Show,
+    /// Sends a piece if it isn't showing, then keeps it in a place (#517).
+    Keep,
+    Remove,
+    /// Reads the keyboard's art and its kept places.
+    Read,
+}
+
+/// How to run a job again (the strip's Try again).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Retry {
+    Choose(Choice),
+    Keep { file: PathBuf, slot: u8 },
+    Erase(u8),
+    Status,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Job {
+    pub kind: JobKind,
+    /// The piece's name as the user knows it.
+    pub name: String,
+    /// Started by Foxglove itself (Rotation, a put-back after a restart): no success line.
+    pub quiet: bool,
+    pub again: Option<Retry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Outcome {
+    pub job: Job,
+    /// The error as the service has it; `art_words` turns it into words.
+    pub result: Result<(), String>,
+    pub at: Instant,
+}
+
+/// The piece `choice` names, in the user's words.
+pub fn name_of(choice: &Choice, s: &Snapshot) -> String {
+    match choice {
+        Choice::BuiltIn(-1) => "a piece of the keyboard's own".into(),
+        Choice::BuiltIn(n) => s
+            .built_ins()
+            .into_iter()
+            .find(|(i, _)| i == n)
+            .map_or_else(|| format!("piece {}", n + 1), |(_, name)| name),
+        Choice::Slot(n) => s
+            .slots
+            .iter()
+            .find(|i| i.slot == *n && i.used)
+            .map_or_else(|| format!("kept piece {}", n + 1), |i| i.name.clone()),
+        Choice::File(p) => file_name(p),
+    }
+}
+
+/// A library file's name as the page shows it.
+pub fn file_name(p: &std::path::Path) -> String {
+    p.file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The job a command from the UI (or the service's own triggers, `quiet`) starts.
+fn job_for(command: &Command, s: &Snapshot, quiet: bool) -> Option<Job> {
+    let (kind, name, again) = match command {
+        Command::Choose(c) | Command::Show(c) => {
+            (JobKind::Show, name_of(c, s), Retry::Choose(c.clone()))
+        }
+        Command::Keep { file, slot, name } => (
+            JobKind::Keep,
+            name.clone(),
+            Retry::Keep {
+                file: file.clone(),
+                slot: *slot,
+            },
+        ),
+        Command::Erase(n) => (
+            JobKind::Remove,
+            name_of(&Choice::Slot(*n), s),
+            Retry::Erase(*n),
+        ),
+        Command::Status => (JobKind::Read, String::new(), Retry::Status),
+        _ => return None,
+    };
+    Some(Job {
+        kind,
+        name,
+        quiet,
+        again: Some(again),
+    })
 }
 
 impl Snapshot {
@@ -65,8 +168,15 @@ impl Snapshot {
 
     /// The library file the right half plays now: the pinned file, while it plays a pushed set.
     pub fn showing_file(&self) -> Option<&PathBuf> {
-        match (&self.pinned, self.status) {
-            (Some(Choice::File(p)), Some(s)) if s.right_state == 2 => Some(p),
+        match (&self.sent, self.status) {
+            (Some((p, _)), Some(s))
+                if matches!(
+                    s.right_state,
+                    protocol::right_state::PLAYING | protocol::right_state::SAVED
+                ) =>
+            {
+                Some(p)
+            }
             _ => None,
         }
     }
@@ -86,13 +196,18 @@ enum Command {
     Link(Weak<Link>, LinkEvent),
     Status,
     Choose(Choice),
-    Save {
+    /// Keep `file` in place `slot` under `name`: send it unless it shows now, save, show it
+    /// from the place (#517).
+    Keep {
+        file: PathBuf,
         slot: u8,
         name: String,
     },
     Erase(u8),
-    /// Show the hotlist's next entry (timer, lights wake, or the UI's "Next").
+    /// Show Rotation's next piece: the keyboard's own art (timer, lights wake, or Next).
     Next,
+    /// Show Rotation's piece before the one on screen (the UI's ‹).
+    Previous,
     /// The hotlist or its mode changed: reschedule.
     CycleChanged,
     /// The left's underglow is on or off (an RGB_STATE report, firmware #130).
@@ -164,6 +279,7 @@ impl Handle {
         state.cancelled = false;
         state.error = None;
         state.push_progress = None;
+        state.outcome = None;
         true
     }
 
@@ -184,13 +300,31 @@ impl Handle {
         self.submit(Command::Choose(Choice::Slot(slot)))
     }
 
-    /// Saves the pushed set now playing on the right into flash slot `slot`.
-    pub fn save_to_slot(&self, slot: u8, name: String) -> bool {
-        self.submit(Command::Save { slot, name })
+    /// Keeps library file `file` on the keyboard in place `slot` (replacing what it holds),
+    /// named after the file: one job that sends it if needed, saves it and shows it from there.
+    pub fn keep(&self, file: PathBuf, slot: u8) -> bool {
+        let name = digitalis::protocol::art_name_fit(&file_name(&file)).to_string();
+        self.submit(Command::Keep { file, slot, name })
     }
 
     pub fn erase_slot(&self, slot: u8) -> bool {
         self.submit(Command::Erase(slot))
+    }
+
+    /// Runs a job again (the strip's Try again).
+    pub fn again(&self, retry: Retry) -> bool {
+        match retry {
+            Retry::Choose(c) => self.submit(Command::Choose(c)),
+            Retry::Keep { file, slot } => self.keep(file, slot),
+            Retry::Erase(n) => self.erase_slot(n),
+            Retry::Status => self.refresh(),
+        }
+    }
+
+    /// Shows Rotation's piece before the one on screen.
+    pub fn previous(&self) -> bool {
+        let _ = self.commands.send(Command::Previous);
+        true
     }
 
     /// Replaces the hotlist and its mode, saves them, and reschedules the cycling.
@@ -217,7 +351,7 @@ impl Handle {
         let _ = self.commands.send(Command::Resume);
     }
 
-    /// Shows the hotlist's next entry now.
+    /// Shows Rotation's next piece now.
     pub fn next(&self) -> bool {
         let _ = self.commands.send(Command::Next);
         true
@@ -330,23 +464,25 @@ fn fresh_status(link: &Link, h: &Handle) -> Result<ArtStatus, String> {
 /// How long after a SELECT the right half has switched sets (its display queue runs it).
 const SELECT_SETTLE: Duration = Duration::from_millis(300);
 
-fn choose(link: &Link, h: &Handle, choice: &Choice) -> Result<ArtStatus, String> {
+fn choose(link: &impl Transport, h: &Handle, choice: &Choice) -> Result<ArtStatus, String> {
     if h.cancelled() {
         return Err("cancelled".into());
     }
     match choice {
         // Settled: the select's own reply names the set from before it, which left the
         // tray panel and the Screens page showing the old art.
-        Choice::BuiltIn(set) => {
-            art::select_settled(link, *set, SELECT_SETTLE).map_err(|e| e.to_string())
-        }
+        Choice::BuiltIn(set) => art::select_settled(link, *set, SELECT_SETTLE)
+            .map_err(|e| e.to_string())
+            .inspect(|_| h.update(|s| s.sent = None)),
         Choice::Slot(slot) => {
             let count = h
                 .snapshot()
                 .status
                 .map(|s| s.right_set_count)
                 .ok_or("No art status yet")?;
-            art::select_slot(link, count, *slot).map_err(|e| e.to_string())
+            art::select_slot(link, count, *slot)
+                .map_err(|e| e.to_string())
+                .inspect(|_| h.update(|s| s.sent = None))
         }
         Choice::File(path) => {
             let mut blob = Vec::new();
@@ -371,12 +507,54 @@ fn choose(link: &Link, h: &Handle, choice: &Choice) -> Result<ArtStatus, String>
                 || h.cancelled(),
             )
             .map_err(|e| e.to_string())
+            .inspect(|_| {
+                let hash = super::art_library::blob_hash(&blob);
+                h.update(|s| s.sent = Some((path.clone(), hash)))
+            })
         }
     }
 }
 
+/// Keep on keyboard (#517): send `file` unless the right half plays these very bytes from
+/// memory now, save it into `slot` (SAVE stores the set the right half has in memory), then
+/// show it from the place, which also checks that the place reads back. The kept places are
+/// read again at the end, and after a failed save too (the firmware empties a place before it
+/// writes it).
+fn keep(
+    link: &impl Transport,
+    h: &Handle,
+    file: &std::path::Path,
+    slot: u8,
+    name: &str,
+) -> Result<ArtStatus, String> {
+    let snap = h.snapshot();
+    let hash = std::fs::read(file)
+        .map(|b| super::art_library::blob_hash(&b))
+        .map_err(|e| format!("reading {}: {e}", file.display()))?;
+    let in_memory = snap.showing_file().map(PathBuf::as_path) == Some(file)
+        && snap.sent.as_ref().is_some_and(|(_, h)| *h == hash);
+    if !in_memory {
+        choose(link, h, &Choice::File(file.to_path_buf()))?;
+    }
+    // The saving step: no byte count, and no Cancel (the send is done; the save is short).
+    h.update(|s| s.push_progress = None);
+    let saved = match art::save(link, slot, name) {
+        Ok(st) => st,
+        Err(e) => {
+            if let Ok(st) = art::status(link) {
+                read_slots(link, h, &st);
+            }
+            return Err(e.to_string());
+        }
+    };
+    h.update(|s| s.status = Some(saved));
+    let st = art::select_slot(link, saved.right_set_count, slot).map_err(|e| e.to_string())?;
+    read_slots(link, h, &st);
+    Ok(st)
+}
+
 /// Reads every flash slot the right half has; none on firmware without them.
-fn read_slots(link: &Link, h: &Handle, st: &ArtStatus) {
+fn read_slots(link: &impl Transport, h: &Handle, st: &ArtStatus) {
     let mut slots = Vec::new();
     for n in 0..st.flash_slots {
         if h.cancelled() {
@@ -470,6 +648,11 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
+        // Clicked in the UI: these say how they went; Foxglove's own changes stay quiet.
+        let from_ui = matches!(
+            command,
+            Command::Choose(_) | Command::Keep { .. } | Command::Erase(_) | Command::Status
+        );
         // What a trigger change means on screen: its art, or the next one down / the pin.
         let shown = |change: Change, triggers: &Triggers| -> Option<Command> {
             let snap = h.snapshot();
@@ -633,7 +816,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 }
                 continue;
             }
-            Command::Next => {
+            Command::Next | Command::Previous => {
+                let forward = matches!(command, Command::Next);
                 // Paused, or away (#410): the timer stops instead of firing to no effect;
                 // resuming or coming back (Command::Resume) starts it again.
                 if super::pause::paused() || super::away::away() {
@@ -645,21 +829,22 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
                     continue;
                 };
-                // The hotlist waits while layer or preset art is on top.
+                // Rotation waits while layer or preset art is on top.
                 if triggers.top(&snap.cycle).is_some() {
                     continue;
                 }
-                let mut cycle = snap.cycle;
-                let Some(choice) = cycle
-                    .advance(|item| art_cycle::resolve(item, st.right_set_count, st.flash_used))
-                else {
+                // Rotation is the keyboard's own art (#515): what it stores is what it steps.
+                let Some(choice) = art_cycle::step(
+                    &art_cycle::rotation(&st),
+                    art_cycle::on_screen(&st),
+                    forward,
+                ) else {
                     continue;
                 };
-                let _ = cycle.save();
                 h.update(|s| {
-                    s.cycle = cycle;
                     s.busy = true;
                     s.error = None;
+                    s.outcome = None;
                 });
                 h.cancel.store(false, Ordering::Relaxed);
                 Command::Choose(choice)
@@ -711,6 +896,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     h.update(|s| {
                         s.connected = false;
                         s.status = None;
+                        s.sent = None;
                     });
                 }
                 if state.connected.is_none() || current == Some((id, state.generation)) {
@@ -775,8 +961,12 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 s.push_progress = None;
             });
         }
+        if !automatic {
+            let job = job_for(&command, &h.snapshot(), !from_ui);
+            h.update(|s| s.job = job);
+        }
         let result = if let Some((id, _)) = current {
-            let link = &links[id].0;
+            let link: &Link = links[id].0.as_ref();
             if automatic {
                 reported
                     .map(Ok)
@@ -797,6 +987,14 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                                 })
                                 .or(snap.pinned);
                             if let Some(choice) = restore(&wanted, st) {
+                                h.update(|s| {
+                                    s.job = Some(Job {
+                                        kind: JobKind::Show,
+                                        name: name_of(&choice, s),
+                                        quiet: true,
+                                        again: Some(Retry::Choose(choice.clone())),
+                                    })
+                                });
                                 return choose(link, h, &choice);
                             }
                         }
@@ -805,10 +1003,26 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             } else {
                 match command {
                     Command::Status => fresh_status(link, h).inspect(|st| read_slots(link, h, st)),
-                    Command::Save { slot, name } => art::save(link.as_ref(), slot, &name)
-                        .map_err(|e| e.to_string())
-                        .inspect(|st| read_slots(link, h, st)),
-                    Command::Erase(slot) => art::erase(link.as_ref(), slot)
+                    Command::Keep { file, slot, name } => {
+                        keep(link, h, &file, slot, &name).and_then(|st| {
+                            // Pinned to the place: after a restart it shows from there, with no
+                            // send.
+                            let choice = Choice::Slot(slot);
+                            h.update(|s| {
+                                s.status = Some(st);
+                                s.pinned = Some(choice.clone());
+                            });
+                            super::store::save(
+                                "art",
+                                &ArtSettings {
+                                    pinned: Some(choice),
+                                },
+                            )
+                            .map_err(|e| format!("saving pinned art: {e}"))?;
+                            Ok(st)
+                        })
+                    }
+                    Command::Erase(slot) => art::erase(link, slot)
                         .map_err(|e| e.to_string())
                         .inspect(|st| read_slots(link, h, st)),
                     Command::Show(choice) => choose(link, h, &choice),
@@ -833,9 +1047,14 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         if queued_command {
             continue;
         }
+        if let Err(e) = &result {
+            // The UI shows words for it (art_words); the raw error is for the log.
+            eprintln!("Foxglove: art: {e}");
+        }
         h.update(|s| {
             s.busy = false;
             s.cancelled = h.cancelled();
+            let job = s.job.take();
             match result {
                 Ok(st) => {
                     if s.push_progress.is_some() {
@@ -843,8 +1062,30 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     }
                     s.status = Some(st);
                     s.error = None;
+                    // A status the keyboard sent on its own leaves the last outcome standing.
+                    if let Some(job) = job {
+                        s.outcome = Some(Outcome {
+                            job,
+                            result: Ok(()),
+                            at: Instant::now(),
+                        });
+                    }
                 }
-                Err(e) => s.error = Some(e),
+                Err(e) => {
+                    s.error = Some(e.clone());
+                    // A failed read on connect has no job of its own: name it one.
+                    let job = job.unwrap_or(Job {
+                        kind: JobKind::Read,
+                        name: String::new(),
+                        quiet: true,
+                        again: Some(Retry::Status),
+                    });
+                    s.outcome = Some(Outcome {
+                        job,
+                        result: Err(e),
+                        at: Instant::now(),
+                    });
+                }
             }
         });
     }
@@ -853,13 +1094,243 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use digitalis::protocol::{art as cmd, left_state, right_state, REPORT};
+    use std::cell::{Cell, RefCell};
+
+    /// The keyboard on the far side of the link, answering the art relay as the firmware does
+    /// (art_relay_central.c / art_relay_peripheral.c), with a log of the commands it got.
+    #[derive(Default)]
+    struct FakeKeyboard {
+        log: RefCell<Vec<u8>>,
+        left: Cell<u8>,
+        right: Cell<u8>,
+        set: Cell<i8>,
+        used: Cell<u8>,
+        pushed: Cell<u16>,
+        kept: RefCell<Vec<(u8, String, u16)>>,
+        save_fails: bool,
+    }
+
+    impl FakeKeyboard {
+        fn status(&self, command: u8) -> [u8; REPORT] {
+            let mut r = [0u8; REPORT];
+            r[0] = protocol::ART;
+            r[1] = 0x80 | command;
+            r[2] = self.left.get();
+            r[8] = 2; // link: relay ready
+            r[9] = 3; // right status version with places
+            r[10] = self.right.get();
+            r[13..15].copy_from_slice(&16384u16.to_le_bytes());
+            r[15] = self.set.get() as u8;
+            r[16] = 17;
+            r[24] = 8;
+            r[25] = self.used.get();
+            r
+        }
+    }
+
+    impl digitalis::Transport for FakeKeyboard {
+        fn send(&self, _: &[u8]) -> anyhow::Result<()> {
+            Ok(()) // DATA: nothing to answer
+        }
+
+        fn request(
+            &self,
+            report: &[u8],
+            _: u8,
+            command: u8,
+            _: Duration,
+        ) -> anyhow::Result<[u8; REPORT]> {
+            self.log.borrow_mut().push(command);
+            match command {
+                cmd::BEGIN => {
+                    self.pushed.set(u16::from_le_bytes([report[2], report[3]]));
+                    self.left.set(left_state::RECEIVING);
+                }
+                cmd::COMMIT => {
+                    self.left.set(left_state::DONE);
+                    self.right.set(right_state::PLAYING);
+                    self.set.set(-1);
+                }
+                cmd::SAVE => {
+                    let slot = report[2];
+                    if self.save_fails {
+                        self.right.set(right_state::SAVE_FAILED);
+                    } else {
+                        let name: Vec<u8> = report[3..]
+                            .iter()
+                            .copied()
+                            .take_while(|b| *b != 0)
+                            .collect();
+                        let name = String::from_utf8_lossy(&name).into_owned();
+                        self.kept.borrow_mut().push((slot, name, self.pushed.get()));
+                        self.used.set(self.used.get() | 1 << slot);
+                        self.right.set(right_state::SAVED);
+                    }
+                }
+                cmd::SELECT => {
+                    self.set.set(report[2] as i8);
+                    self.right.set(right_state::BUILT_IN);
+                }
+                cmd::SLOT => {
+                    let n = report[2];
+                    let mut r = [0u8; REPORT];
+                    r[0] = protocol::ART;
+                    r[1] = 0x80 | cmd::SLOT;
+                    r[3] = n;
+                    if let Some((_, name, len)) = self.kept.borrow().iter().find(|k| k.0 == n) {
+                        r[4] = 1;
+                        r[9..11].copy_from_slice(&len.to_le_bytes());
+                        r[11..11 + name.len()].copy_from_slice(name.as_bytes());
+                    }
+                    return Ok(r);
+                }
+                _ => {}
+            }
+            Ok(self.status(command))
+        }
+    }
+
+    fn idle_handle(s: Snapshot) -> Handle {
+        let (commands, _) = mpsc::channel();
+        Handle {
+            commands,
+            state: Arc::new(Mutex::new(s)),
+            cancel: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn fury() -> PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/lighting/art/fury.bin")
+    }
+
+    /// Keep on keyboard from this PC (#517): send, save into the place, show it from there,
+    /// read the places again: one job, in that order.
+    #[test]
+    fn keep_sends_saves_shows_and_rereads() {
+        let kb = FakeKeyboard::default();
+        let h = idle_handle(Snapshot::default());
+        let st = keep(&kb, &h, &fury(), 2, "fury").expect("kept");
+        let log = kb.log.borrow().clone();
+        let first = |c: u8| log.iter().position(|x| *x == c).unwrap();
+        assert!(first(cmd::BEGIN) < first(cmd::COMMIT));
+        assert!(first(cmd::COMMIT) < first(cmd::SAVE));
+        assert!(first(cmd::SAVE) < first(cmd::SELECT));
+        assert!(first(cmd::SELECT) < first(cmd::SLOT));
+        assert_eq!(
+            log.iter().filter(|c| **c == cmd::SLOT).count(),
+            8,
+            "all places re-read"
+        );
+        assert_eq!(
+            crate::foxglove::art_words::showing(&st),
+            crate::foxglove::art_words::Showing::Kept(2),
+            "shown from the place, not the sent copy"
+        );
+        let s = h.snapshot();
+        let place = s.slots.iter().find(|i| i.slot == 2).unwrap();
+        assert!(place.used);
+        assert_eq!(place.name, "fury");
+        assert_eq!(usize::from(place.len), std::fs::read(fury()).unwrap().len());
+    }
+
+    /// The piece already on screen from this file is saved as it is: no second send.
+    #[test]
+    fn keep_of_the_piece_on_screen_skips_the_send() {
+        let kb = FakeKeyboard::default();
+        kb.right.set(right_state::PLAYING);
+        let hash = super::super::art_library::blob_hash(&std::fs::read(fury()).unwrap());
+        let playing = Snapshot {
+            sent: Some((fury(), hash)),
+            status: Some(ArtStatus {
+                right_state: right_state::PLAYING,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let h = idle_handle(playing.clone());
+        keep(&kb, &h, &fury(), 0, "fury").expect("kept");
+        assert!(
+            !kb.log.borrow().contains(&cmd::BEGIN),
+            "{:?}",
+            kb.log.borrow()
+        );
+        assert_eq!(kb.log.borrow()[0], cmd::SAVE);
+
+        // The pin names fury, but a layer sent other bytes since: Keep sends fury first, so
+        // the place never gets the wrong piece under fury's name.
+        let kb = FakeKeyboard::default();
+        let h = idle_handle(Snapshot {
+            pinned: Some(Choice::File(fury())),
+            sent: Some((PathBuf::from("art/radar.bin"), 1)),
+            ..playing.clone()
+        });
+        keep(&kb, &h, &fury(), 0, "fury").expect("kept");
+        assert_eq!(kb.log.borrow()[0], cmd::BEGIN);
+        // Same path, edited since it was sent: sent again.
+        let kb = FakeKeyboard::default();
+        let h = idle_handle(Snapshot {
+            sent: Some((fury(), hash ^ 1)),
+            ..playing
+        });
+        keep(&kb, &h, &fury(), 0, "fury").expect("kept");
+        assert_eq!(kb.log.borrow()[0], cmd::BEGIN);
+    }
+
+    /// A failed save says so in words, and leaves the places as they were.
+    #[test]
+    fn a_failed_keep_is_named_and_changes_no_place() {
+        let kb = FakeKeyboard {
+            save_fails: true,
+            ..Default::default()
+        };
+        let h = idle_handle(Snapshot::default());
+        let e = keep(&kb, &h, &fury(), 1, "fury").unwrap_err();
+        let st = ArtStatus::parse(&kb.status(cmd::STATUS));
+        assert_eq!(
+            crate::foxglove::art_words::problem(&e, Some(&st)),
+            crate::foxglove::art_words::Problem::KeepFailed
+        );
+        assert!(!kb.log.borrow().contains(&cmd::SELECT));
+        assert!(kb.kept.borrow().is_empty());
+        assert!(
+            kb.log.borrow().contains(&cmd::SLOT),
+            "the places are read again: the firmware empties one before it writes it"
+        );
+    }
+
+    #[test]
+    fn jobs_are_named_for_the_strip() {
+        let s = Snapshot {
+            slots: vec![SlotInfo {
+                slot: 3,
+                used: true,
+                name: "Signal".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let job = job_for(&Command::Erase(3), &s, false).unwrap();
+        assert_eq!((job.kind, job.name.as_str()), (JobKind::Remove, "Signal"));
+        assert_eq!(job.again, Some(Retry::Erase(3)));
+        let orbit = Command::Choose(Choice::File("art/Orbit.bin".into()));
+        let job = job_for(&orbit, &s, true).unwrap();
+        assert_eq!(
+            (job.kind, job.name.as_str(), job.quiet),
+            (JobKind::Show, "Orbit", true)
+        );
+        assert_eq!(name_of(&Choice::Slot(5), &s), "kept piece 6");
+        assert!(job_for(&Command::Next, &s, false).is_none());
+    }
 
     #[test]
     fn paused_the_ui_may_only_read() {
         assert!(allowed(&Command::Status, true));
         for c in [
             Command::Choose(Choice::BuiltIn(1)),
-            Command::Save {
+            Command::Keep {
+                file: "x.bin".into(),
                 slot: 0,
                 name: "x".into(),
             },

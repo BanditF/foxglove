@@ -113,8 +113,10 @@ fn style(title: &str) -> Style {
     match title {
         "Keyboard" | "Lights" | "Plugins" => Style::Bare,
         "Connection"
-        | "Left screen · PC panel"
-        | "Right screen art"
+        | "Showing now"
+        | "On the keyboard"
+        | "On this PC"
+        | "Left screen"
         | "Profile"
         | "Theme and updates"
         | "Other keyboards (VIA)" => Style::Card,
@@ -194,13 +196,7 @@ fn open_by_default(title: &str) -> bool {
     // A page with one or two sections opens them (#385).
     matches!(
         title,
-        "Connection"
-            | "Overlay Appearance"
-            | "Keyboard"
-            | "Lights"
-            | "Screens"
-            | "Right screen art"
-            | "Plugins"
+        "Connection" | "Overlay Appearance" | "Keyboard" | "Lights" | "Screens" | "Plugins"
     )
 }
 

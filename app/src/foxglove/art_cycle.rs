@@ -1,6 +1,10 @@
-//! The right art hotlist and how it cycles (#60), saved in the settings store's `[art.cycle]`
-//! (profiled: each profile can have its own). The art service does the cycling; this module
-//! only holds the list and picks the next entry.
+//! Rotation: what changes the right screen's art and when (#60), saved in the settings store's
+//! `[art.cycle]` (profiled: each profile can have its own). The art service does the stepping.
+//!
+//! Rotation steps through the keyboard's own art, the pieces that come with it and then the
+//! kept places, the order its art keys use without Foxglove (#515: "the hotlist and stored on
+//! the device should be one and the same"). `items` is the old hotlist, kept for the playlist
+//! idea (#522) and not stepped.
 //!
 //! Built-ins are stored by their manifest name (the stable id), not their index, so a firmware
 //! that reorders its sets still shows the same art.
@@ -11,6 +15,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::art_service::Choice;
+use digitalis::protocol::ArtStatus;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Item {
@@ -69,6 +74,7 @@ pub struct Cycle {
     /// Read from earlier builds only; `load` moves it into `step` and `follow`.
     #[serde(skip_serializing)]
     pub mode: Mode,
+    /// The old hotlist: no longer stepped (see the module), kept for a playlist (#522).
     pub items: Vec<Item>,
     /// The entry shown last, so a restart carries on where it left off.
     #[serde(default)]
@@ -162,22 +168,43 @@ impl Cycle {
 
     /// How long until the next timed change; `None` when not cycling on a timer.
     pub fn period(&self) -> Option<Duration> {
-        (self.steps_on(Step::Minutes) && !self.items.is_empty())
+        self.steps_on(Step::Minutes)
             .then(|| Duration::from_secs(u64::from(self.minutes.max(1)) * 60))
     }
+}
 
-    /// Moves to the next entry the keyboard can show and returns it as a choice. Entries that
-    /// can't be shown now (a built-in this firmware lacks, an empty slot, a missing file) are
-    /// skipped; `None` if none can.
-    pub fn advance(&mut self, resolve: impl Fn(&Item) -> Option<Choice>) -> Option<Choice> {
-        let n = self.items.len();
-        (1..=n).find_map(|step| {
-            let i = (self.position + step) % n;
-            let choice = resolve(&self.items[i])?;
-            self.position = i;
-            Some(choice)
-        })
+/// Rotation's pieces on the keyboard as it reports itself: its own built-ins, then the kept
+/// places that hold a piece.
+pub fn rotation(st: &ArtStatus) -> Vec<Choice> {
+    let built_ins = (0..st.right_set_count.min(127)).map(|n| Choice::BuiltIn(n as i8));
+    let kept = (0..st.flash_slots.min(8))
+        .filter(|n| st.flash_used & (1 << n) != 0)
+        .map(Choice::Slot);
+    built_ins.chain(kept).collect()
+}
+
+/// The piece on screen as a rotation entry, when it is one of the keyboard's own.
+pub fn on_screen(st: &ArtStatus) -> Option<Choice> {
+    match super::art_words::showing(st) {
+        super::art_words::Showing::BuiltIn(n) => Some(Choice::BuiltIn(n)),
+        super::art_words::Showing::Kept(n) => Some(Choice::Slot(n)),
+        _ => None,
     }
+}
+
+/// The piece after (or before) `current` in `list`, wrapping round; from something not in
+/// the list, the first (or the last). `None` when there is nothing else to show.
+pub fn step(list: &[Choice], current: Option<Choice>, forward: bool) -> Option<Choice> {
+    let n = list.len();
+    let at = current.and_then(|c| list.iter().position(|x| *x == c));
+    let next = match (at, forward) {
+        (Some(i), true) => (i + 1) % n.max(1),
+        (Some(i), false) => (i + n - 1) % n.max(1),
+        (None, true) => 0,
+        (None, false) => n.checked_sub(1)?,
+    };
+    let choice = list.get(next)?.clone();
+    (Some(&choice) != at.map(|i| &list[i])).then_some(choice)
 }
 
 /// What an entry means on the keyboard as it is now: built-in names through the art manifest
@@ -211,23 +238,76 @@ pub fn resolve_with(
 mod tests {
     use super::*;
 
+    fn status(set: i8, state: u8, used: u8) -> ArtStatus {
+        ArtStatus {
+            link: 2,
+            right_state: state,
+            right_set: set,
+            right_set_count: 3,
+            flash_slots: 8,
+            flash_used: used,
+            ..ArtStatus::default()
+        }
+    }
+
+    /// Rotation is the keyboard's art: built-ins, then the kept places that hold a piece, the
+    /// order the keyboard's own art keys use.
     #[test]
-    fn advances_round_robin_and_skips_what_cannot_show() {
-        let mut c = Cycle {
-            items: vec![Item::Slot(0), Item::Slot(1), Item::Slot(2)],
-            step: vec![Step::Minutes],
-            ..Cycle::default()
+    fn rotation_is_what_the_keyboard_keeps() {
+        let st = status(1, 0, 0b101); // place 2 (index 1) is free
+        assert_eq!(
+            rotation(&st),
+            vec![
+                Choice::BuiltIn(0),
+                Choice::BuiltIn(1),
+                Choice::BuiltIn(2),
+                Choice::Slot(0),
+                Choice::Slot(2)
+            ]
+        );
+        let old = ArtStatus {
+            flash_slots: 0,
+            ..st
         };
-        let used = 0b101; // slot 1 is empty
-        let r = |i: &Item| match i {
-            Item::Slot(n) => (used & (1 << n) != 0).then_some(Choice::Slot(*n)),
-            _ => None,
-        };
-        assert_eq!(c.advance(r), Some(Choice::Slot(2)));
-        assert_eq!(c.advance(r), Some(Choice::Slot(0)));
-        assert_eq!(c.position, 0);
-        assert_eq!(c.advance(|_| None), None, "nothing showable");
-        assert_eq!(c.period(), Some(Duration::from_secs(300)));
+        assert_eq!(rotation(&old).len(), 3, "firmware without places");
+    }
+
+    #[test]
+    fn steps_wrap_both_ways() {
+        let list = rotation(&status(0, 0, 0b1));
+        let next = |c, f| step(&list, c, f);
+        assert_eq!(
+            next(Some(Choice::BuiltIn(0)), true),
+            Some(Choice::BuiltIn(1))
+        );
+        assert_eq!(next(Some(Choice::Slot(0)), true), Some(Choice::BuiltIn(0)));
+        assert_eq!(next(Some(Choice::BuiltIn(0)), false), Some(Choice::Slot(0)));
+        assert_eq!(
+            next(None, true),
+            Some(Choice::BuiltIn(0)),
+            "from a sent piece"
+        );
+        assert_eq!(next(None, false), Some(Choice::Slot(0)));
+        assert_eq!(step(&[], None, true), None);
+        assert_eq!(
+            step(&[Choice::BuiltIn(0)], Some(Choice::BuiltIn(0)), true),
+            None
+        );
+        // On screen: a kept place shows as set count + place, in state 0 after a select.
+        assert_eq!(on_screen(&status(3, 0, 0b1)), Some(Choice::Slot(0)));
+        assert_eq!(on_screen(&status(2, 0, 0b1)), Some(Choice::BuiltIn(2)));
+        assert_eq!(on_screen(&status(-1, 2, 0b1)), None, "a sent piece");
+    }
+
+    #[test]
+    fn the_timer_runs_while_minutes_is_on() {
+        let mut c = Cycle::default();
+        c.set_step(Step::Minutes, true);
+        assert_eq!(
+            c.period(),
+            Some(Duration::from_secs(300)),
+            "no list needed any more"
+        );
         c.set_step(Step::Minutes, false);
         c.set_step(Step::LightsWake, true);
         assert_eq!(c.period(), None);
