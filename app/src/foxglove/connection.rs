@@ -404,6 +404,22 @@ impl BleEvents {
     }
 }
 
+/// Foxglove (#504): the container ids of the remembered keyboard's devices, so the peripheral
+/// batteries leave out the keyboard (its halves have their own lines). Enumerates the present
+/// devices once: call it off the UI thread.
+#[cfg(target_os = "windows")]
+pub(crate) fn keyboard_containers() -> Vec<u128> {
+    match super::last_device::remembered() {
+        Some(crate::protocols::ConnectionSpec::Zmk { vid, pid, .. }) => {
+            windows_status::containers(vid, pid)
+                .into_iter()
+                .map(|g| g.to_u128())
+                .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod windows_status {
     use std::sync::mpsc::Sender;
@@ -559,7 +575,7 @@ mod windows_status {
         Ok(Watch(watcher, state))
     }
 
-    fn containers(vid: u16, pid: u16) -> Vec<GUID> {
+    pub(crate) fn containers(vid: u16, pid: u16) -> Vec<GUID> {
         let mut found = Vec::new();
         unsafe {
             let Ok(set) =

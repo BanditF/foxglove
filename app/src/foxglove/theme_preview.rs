@@ -1463,6 +1463,53 @@ fn battery_notice_switch_renders() {
     keep("ui-372-battery-notice.png", &img);
 }
 
+/// The other devices' batteries (#504): the Keyboard page's Devices card with a mouse and a
+/// low controller, the same card with none, and the tray panel's Devices part.
+#[test]
+fn peripheral_batteries_render() {
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    let with = shell_preview_with(Page::Keyboard, &Samples::full(), 1300.0);
+    keep("ui-batteries-1-keyboard.png", &with);
+    let mut none = Samples::full();
+    none.keyboard.devices.clear();
+    let without = shell_preview_with(Page::Keyboard, &none, 1300.0);
+    keep("ui-batteries-2-none.png", &without);
+    // The low controller's level is amber.
+    assert!(count(&with, DARK.warn) > count(&without, DARK.warn));
+
+    let tray = |v: &crate::foxglove::tray_panel::View| {
+        let ctx = preview_ctx();
+        let size = egui::vec2(crate::foxglove::tray_panel::WIDTH + 40.0, 820.0);
+        render(&ctx, size, Color32::from_rgb(0x09, 0x0a, 0x0c), |ctx| {
+            egui::Area::new(egui::Id::new("tray-panel-preview"))
+                .fixed_pos(egui::pos2(20.0, 20.0))
+                .show(ctx, |ui| {
+                    crate::foxglove::tray_panel::panel(
+                        ui,
+                        v,
+                        &mut Default::default(),
+                        &mut Vec::new(),
+                    );
+                });
+        })
+    };
+    let v = crate::foxglove::tray_panel::tests::sample();
+    let img = tray(&v);
+    keep("ui-batteries-3-tray.png", &img);
+    let bare = tray(&crate::foxglove::tray_panel::View {
+        devices: Vec::new(),
+        ..v
+    });
+    assert_ne!(img, bare, "the Devices part shows only with a device");
+    assert!(count(&img, DARK.warn) > count(&bare, DARK.warn));
+}
+
 /// The sidebar's Bandit fox mark, whole and enlarged (it matches the tray glyph).
 #[test]
 fn sidebar_fox_renders() {
