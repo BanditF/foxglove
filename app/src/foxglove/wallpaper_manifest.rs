@@ -97,6 +97,9 @@ pub struct Manifest {
     pub dir: PathBuf,
     pub supports: Supports,
     pub palette: Option<NamedPalette>,
+    /// The palette's accent, which "Lights follow the wallpaper" puts on the lights: its
+    /// `accent`, else its most colourful stop. None without a palette.
+    pub accent: Option<Rgb>,
     pub motifs: Vec<Motif>,
     pub art: Art,
 }
@@ -124,6 +127,8 @@ struct FileManifest {
 struct FilePalette {
     name: String,
     stops: Vec<String>,
+    #[serde(default)]
+    accent: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -210,22 +215,27 @@ pub fn parse(text: &str, dir: &Path, project_title: Option<&str>) -> Result<Mani
         .as_deref()
         .map(|p| shown_name(p, "pack"))
         .transpose()?;
-    let palette = match f.palette {
+    let (palette, accent) = match f.palette {
         Some(p) => {
             if p.stops.len() < 2 {
                 return Err(format!("palette {} needs two colours", p.name));
             }
-            let stops = p
+            let stops: Vec<Rgb> = p
                 .stops
                 .iter()
                 .map(|s| looks::hex(s).map(Rgb))
                 .collect::<Result<_, _>>()?;
-            Some(NamedPalette {
+            let accent = match p.accent.as_deref() {
+                Some(a) => Some(Rgb(looks::hex(a).map_err(|e| format!("accent: {e}"))?)),
+                None => most_colourful(&stops),
+            };
+            let palette = NamedPalette {
                 name: shown_name(&p.name, "palette")?,
                 stops,
-            })
+            };
+            (Some(palette), accent)
         }
-        None => None,
+        None => (None, None),
     };
     if f.motifs.len() > MAX_MOTIFS {
         return Err(format!("at most {MAX_MOTIFS} motifs"));
@@ -269,6 +279,7 @@ pub fn parse(text: &str, dir: &Path, project_title: Option<&str>) -> Result<Mani
         dir: dir.to_path_buf(),
         supports: Supports::from_names(&f.supports),
         palette,
+        accent,
         motifs,
         art: Art {
             builtin: a.builtin,
@@ -278,6 +289,16 @@ pub fn parse(text: &str, dir: &Path, project_title: Option<&str>) -> Result<Mani
             fallback: a.fallback,
         },
     })
+}
+
+/// The stop with the most colour (the widest spread between its channels), the first among
+/// equals: a palette's accent when it names none.
+fn most_colourful(stops: &[Rgb]) -> Option<Rgb> {
+    let chroma = |c: &Rgb| {
+        let [r, g, b] = c.0;
+        r.max(g).max(b) - r.min(g).min(b)
+    };
+    stops.iter().rev().max_by_key(|c| chroma(c)).copied()
 }
 
 /// The manifest in `dir`, if it has one. A broken one is logged once per read and skipped.
@@ -561,6 +582,24 @@ pub(crate) mod tests {
         );
         assert_eq!(reef.motifs[0].look.kind, Kind::Drift);
         assert_eq!(light.title, "Lighthouse");
+        // The accent: the palette's most colourful stop (teal over sand and navy), or the one it
+        // names; none without a palette.
+        assert_eq!(reef.accent, Some(Rgb([0x0f, 0xb5, 0xae])));
+        assert_eq!(light.accent, None);
+        let named = REEF.replace("\"stops\": [", "\"accent\": \"#f2e8cf\", \"stops\": [");
+        let named = parse(&named, Path::new("x"), None).unwrap();
+        assert_eq!(named.accent, Some(Rgb([0xf2, 0xe8, 0xcf])));
+        let bad = REEF.replace("\"stops\": [", "\"accent\": \"teal\", \"stops\": [");
+        assert!(
+            parse(&bad, Path::new("x"), None).is_err(),
+            "an accent that isn't #rrggbb"
+        );
+        let even = [Rgb([9, 9, 9]), Rgb([40, 0, 0]), Rgb([0, 40, 0])];
+        assert_eq!(
+            most_colourful(&even),
+            Some(Rgb([40, 0, 0])),
+            "the first of equals"
+        );
         // A borrowed project.json title is cut to fit, a blank one gives way to the id.
         let long = "A Very Long Workshop Title That Goes On And On Forever";
         let m = parse(
