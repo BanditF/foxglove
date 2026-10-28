@@ -243,6 +243,8 @@ enum Command {
     Show(Choice),
     /// Foxglove resumed (#404): show the art skipped while paused.
     Resume,
+    /// An event that can have lost the right screen's art (`reassert.rs`).
+    Reassert(super::reassert::Trigger),
 }
 
 /// Whether the UI may send `command` (#404): while Foxglove is paused only reads go out.
@@ -413,6 +415,13 @@ pub fn start() {
             stop: Arc::new(AtomicBool::new(false)),
         };
         forward_events(&h);
+        let reassert = Mutex::new(h.commands.clone());
+        super::reassert::register("art", move |t| {
+            let _ = reassert
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .send(Command::Reassert(t));
+        });
         // Supervised (#587): a panic restarts the worker with backoff (it used to restart at
         // once, without a limit). The command queue outlives the attempt.
         let worker = h.clone();
@@ -544,6 +553,12 @@ fn load_art_settings() -> ArtSettings {
             vec![json],
         ))
     })
+}
+
+/// What a re-apply (#618) shows: as [`restore`], but nothing when the right half already shows
+/// it (a SELECT restarts the animation, and a pushed file costs a send).
+fn reapply(wanted: &Option<Choice>, status: ArtStatus) -> Option<Choice> {
+    restore(wanted, status).filter(|c| art_cycle::on_screen(&status).as_ref() != Some(c))
 }
 
 fn restore(pinned: &Option<Choice>, status: ArtStatus) -> Option<Choice> {
@@ -977,6 +992,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             other => other,
         };
         let mut reported = None;
+        // Set for a re-apply (`reassert.rs`): what asked.
+        let mut reassert = None;
         // On a new connection, the flash slots are read once its status is in.
         let mut connected_now = false;
         let automatic = match &command {
@@ -1068,6 +1085,16 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 reported = Some(ArtStatus::parse(report));
                 true
             }
+            // PC back, a display change or a taskbar restart (#618): read the status and put
+            // the art back if the right half lost it. Link events already do that above (a
+            // connect, and the relay-ready STATUS event), so their re-apply is theirs.
+            Command::Reassert(trigger) => {
+                if trigger.is_link() || current.is_none() {
+                    continue;
+                }
+                reassert = Some(*trigger);
+                true
+            }
             _ => false,
         };
         // Paused (#404): a new connection gets its art back on resume instead.
@@ -1116,7 +1143,17 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                                     art_cycle::resolve(&i, st.right_set_count, st.flash_used)
                                 })
                                 .or(snap.pin_now());
-                            if let Some(choice) = restore(&wanted, st) {
+                            let choice = match reassert {
+                                // A re-apply (#618) leaves art the right half shows alone.
+                                Some(t) => reapply(&wanted, st).inspect(|_| {
+                                    eprintln!(
+                                        "{}",
+                                        super::reassert::line("the right screen's art", t)
+                                    );
+                                }),
+                                None => restore(&wanted, st),
+                            };
+                            if let Some(choice) = choice {
                                 h.update(|s| {
                                     s.job = Some(Job {
                                         kind: JobKind::Show,
@@ -1625,6 +1662,41 @@ mod tests {
         assert_eq!(restore(&pinned, st), None);
         st.right_state = 0;
         assert_eq!(restore(&None, st), None);
+    }
+
+    /// A re-apply (#618) leaves the right half's art alone when it shows what's wanted, and
+    /// puts it back when the right half fell back to a piece of its own.
+    #[test]
+    fn a_reapply_skips_art_that_already_shows() {
+        let mut st = ArtStatus {
+            link: 2,
+            right_state: 0,
+            right_set_count: 8,
+            right_set: 3,
+            ..ArtStatus::default()
+        };
+        let three = Some(Choice::BuiltIn(3));
+        assert_eq!(reapply(&three, st), None, "showing it");
+        st.right_set = 5;
+        assert_eq!(reapply(&three, st), three, "the right half picked its own");
+        // A sent file the right half lost (it shows a built-in) goes out again.
+        let file = Some(Choice::File("art.bin".into()));
+        assert_eq!(reapply(&file, st), file);
+        // No relay, or nothing wanted: nothing.
+        st.link = 1;
+        assert_eq!(reapply(&three, st), None);
+        st.link = 2;
+        assert_eq!(reapply(&None, st), None);
+        // A kept place that plays is left alone.
+        let mut kept = ArtStatus {
+            flash_slots: 4,
+            flash_used: 0b10,
+            right_set: 9,
+            ..st
+        };
+        assert_eq!(reapply(&Some(Choice::Slot(1)), kept), None);
+        kept.right_set = 2;
+        assert_eq!(reapply(&Some(Choice::Slot(1)), kept), Some(Choice::Slot(1)));
     }
 
     #[test]

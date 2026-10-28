@@ -79,6 +79,7 @@ pub mod plugin_settings;
 pub mod plugin_trust;
 pub mod plugins_ui;
 pub mod profiles_ui;
+pub mod reassert;
 pub mod reconnect;
 pub mod repaint_trace;
 pub mod scene_lamps;

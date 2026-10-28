@@ -98,6 +98,12 @@ pub fn request(trigger: Trigger) {
         .unwrap_or_else(|e| e.into_inner())
         .get_or_insert(trigger);
     super::tray_panel::wake();
+    // The same events can lose device state too (#618): the re-apply hooks hear them.
+    match trigger {
+        Trigger::DisplayChange => super::reassert::fire(super::reassert::Trigger::DisplayChange),
+        Trigger::TaskbarRestart => super::reassert::fire(super::reassert::Trigger::TaskbarRestart),
+        Trigger::TrayClick => {}
+    }
 }
 
 /// The waiting check, if any (clears it).
