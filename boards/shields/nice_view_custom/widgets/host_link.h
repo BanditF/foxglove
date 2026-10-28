@@ -162,7 +162,17 @@
  *      UF2 bootloader ~300 ms later. half 1 = right: the left relays art op BOOT; the reply comes
  *      once the right has answered, and the right reboots into its bootloader ~300 ms after.
  *      Status: 0 ok, 2 no relay link (right), 3 relay timeout (3 s), 4 not built in
- *      (CONFIG_FOXGLOVE_TEST_HOOKS=n, GA), 5 bad request, 6 bad or expired nonce.
+ *      (CONFIG_FOXGLOVE_TEST_HOOKS=n, GA), 5 bad request, 6 bad or expired nonce, 7 right:
+ *      sent over ZMK's split link, not acknowledged (#545).
+ *      Status 7: when the relay can't take BOOT (no relay link yet: an older right, or the
+ *      ~20-40 s after the split links before discovery finds it; or the request failed or went
+ *      unanswered), the left invokes ZMK's &bootloader on the right instead, which every right
+ *      firmware has, GA included (as its &bootloader key does). Nothing confirms that write:
+ *      watch for the right's bootloader drive, and ask again or fall back to a double tap if it
+ *      doesn't come. It is sent only once the split link has been encrypted for 5 s (ZMK's own
+ *      setup); before that the reply is 2. A right that refuses BOOT (4) gets no fallback. The
+ *      relay coming up sends D6 85 with link 2 (capability bit 3): a host can wait on that
+ *      event instead of asking again on a timer.
  *   0C FRAME  flags u8, start u8, count u8 (<= 9), rgb[count * 3]          (HELLO bit 14, #272)
  *      reply (SHOW, RELEASE or an error only): D7 8C, status, owner, timeout s, right, event
  *      Per-LED colours from the PC for both halves. Lamps are index-ordered by part (D7 10): the
