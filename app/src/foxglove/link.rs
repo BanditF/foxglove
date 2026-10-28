@@ -20,8 +20,14 @@ static LISTENERS: OnceLock<Mutex<Vec<Listener>>> = OnceLock::new();
 /// created concurrently cannot be missed. Keep the returned token to stay subscribed.
 /// Listeners must only enqueue work.
 pub fn subscribe_links(notify: impl Fn(Arc<Link>) + Send + 'static) -> Arc<()> {
-    let links = LINKS.get_or_init(Default::default).lock().unwrap();
-    let mut listeners = LISTENERS.get_or_init(Default::default).lock().unwrap();
+    let links = LINKS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut listeners = LISTENERS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     for link in links.values().filter_map(Weak::upgrade) {
         notify(link);
     }

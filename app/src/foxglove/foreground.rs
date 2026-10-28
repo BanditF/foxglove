@@ -43,7 +43,8 @@ pub fn start() {
     if super::repaint_trace::disabled("foreground") {
         return;
     }
-    super::services::spawn_named("foreground", || {
+    // Supervised (#587): the watch and its channel are made inside, so a restart has its own.
+    let _ = super::services::spawn_supervised("foreground", || {
         let (tx, rx) = mpsc::channel::<()>();
         let _changes = foxglove_panel::changes::Changes::new(std::sync::Arc::new(move || {
             let _ = tx.send(());

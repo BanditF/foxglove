@@ -38,23 +38,26 @@ pub struct Action {
     pub risky: bool,
 }
 
+#[derive(Default)]
 struct Known {
     actions: Vec<Action>,
     /// The `&rgb_ug` behavior's id, for setting colour and effect directly.
     underglow: Option<u16>,
 }
 
+/// Poisoned (a panic while learning), it resets to nothing learned: every action is refused
+/// until the keymap is read again (#587).
 static KNOWN: Mutex<Known> = Mutex::new(Known {
     actions: Vec::new(),
     underglow: None,
 });
 
 pub fn actions() -> Vec<Action> {
-    KNOWN.lock().unwrap().actions.clone()
+    super::services::lock_or_reset(&KNOWN).actions.clone()
 }
 
 pub fn underglow_behavior() -> Option<u16> {
-    KNOWN.lock().unwrap().underglow
+    super::services::lock_or_reset(&KNOWN).underglow
 }
 
 /// Learns the actions from a keymap (the resolved bindings for meaning, the raw ones for ids).
@@ -109,14 +112,14 @@ pub fn learn(resolved: &[ResolvedLayer], raw: &Keymap) {
         })
         .collect();
     super::devices::set_actions(allowed, underglow);
-    *KNOWN.lock().unwrap() = Known { actions, underglow };
+    *super::services::lock_or_reset(&KNOWN) = Known { actions, underglow };
 }
 
 /// Learns the actions from keyboard `vid:pid`'s cached keymap when nothing has been learned yet,
 /// so lighting and actions work for plugins and the local API before the overlay opens the
 /// keymap (a fresh config, or the overlay pointed at another keyboard). True when it learned.
 pub fn learn_cached(vid: u16, pid: u16) -> bool {
-    if !KNOWN.lock().unwrap().actions.is_empty() {
+    if !super::services::lock_or_reset(&KNOWN).actions.is_empty() {
         return false;
     }
     let Some(data) = super::keymap_cache::replay(vid, pid)
@@ -240,7 +243,7 @@ mod tests {
 
 /// Only bindings learned as safe actions (or direct RGB commands) may be sent.
 pub fn permitted(binding: (u16, u32, u32)) -> bool {
-    let known = KNOWN.lock().unwrap();
+    let known = super::services::lock_or_reset(&KNOWN);
     known.actions.iter().any(|a| a.binding == binding) || known.underglow == Some(binding.0)
 }
 

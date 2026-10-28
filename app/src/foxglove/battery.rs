@@ -257,8 +257,12 @@ const HOST_KEYBOARD: &str = "zmk";
 pub fn start() {
     // The tooltip: a repaint on each battery fact that changes (set from the first reading
     // after a connect, cleared on a disconnect), so the tray reads it at once.
-    let changes = super::devices::bus().facts().subscribe("keyboard.*");
-    super::services::spawn_named("battery-tooltip", move || {
+    // Supervised (#587): the subscriptions made here go to the first attempt (nothing is
+    // missed before it starts); a restart subscribes again.
+    let changes =
+        super::services::First::new(super::devices::bus().facts().subscribe("keyboard.*"));
+    let _ = super::services::spawn_supervised("battery-tooltip", move || {
+        let changes = changes.take_or(|| super::devices::bus().facts().subscribe("keyboard.*"));
         for change in changes {
             if is_level(&change.key) {
                 if let Some(w) = WAKE.get() {
@@ -267,8 +271,9 @@ pub fn start() {
             }
         }
     });
-    let events = super::devices::bus().subscribe(false);
-    super::services::spawn_named("battery", move || {
+    let events = super::services::First::new(super::devices::bus().subscribe(false));
+    let _ = super::services::spawn_supervised("battery", move || {
+        let events = events.take_or(|| super::devices::bus().subscribe(false));
         let mut alerts = Alerts::default();
         for e in events {
             if e.device.backend.0 != HOST_KEYBOARD {

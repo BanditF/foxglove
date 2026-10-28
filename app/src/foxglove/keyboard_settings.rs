@@ -65,7 +65,7 @@ static LAST_ACTION: Mutex<Option<(String, String)>> = Mutex::new(None);
 static INVOKING: AtomicBool = AtomicBool::new(false);
 
 pub fn last_action() -> Option<(String, String)> {
-    LAST_ACTION.lock().unwrap().clone()
+    super::services::lock_or_reset(&LAST_ACTION).clone()
 }
 
 pub fn invoking() -> bool {
@@ -77,7 +77,8 @@ pub fn invoking() -> bool {
 /// the panel's confirmation, so they go out confirmed.
 pub fn invoke(label: String, binding: (u16, u32, u32), ctx: egui::Context) {
     if !super::keyboard_actions::permitted(binding) {
-        *LAST_ACTION.lock().unwrap() = Some((label, "refused: unsafe or unknown behavior".into()));
+        *super::services::lock_or_reset(&LAST_ACTION) =
+            Some((label, "refused: unsafe or unknown behavior".into()));
         return;
     }
     let (id, p1, p2) = binding;
@@ -98,23 +99,25 @@ fn run(
         + 'static,
 ) {
     if super::pause::paused() {
-        *LAST_ACTION.lock().unwrap() = Some((label, super::pause::REFUSED.into()));
+        *super::services::lock_or_reset(&LAST_ACTION) = Some((label, super::pause::REFUSED.into()));
         ctx.request_repaint();
         return;
     }
     if INVOKING.swap(true, Ordering::Relaxed) {
         return;
     }
-    *LAST_ACTION.lock().unwrap() = Some((label.clone(), "sending…".into()));
+    *super::services::lock_or_reset(&LAST_ACTION) = Some((label.clone(), "sending…".into()));
     super::services::spawn_named("keyboard-command", move || {
-        let result = match device() {
+        // A panic in the command still frees the next action (#587).
+        let result = super::services::guard("keyboard-command", || match device() {
             None => "no keyboard with Foxglove's firmware found".to_string(),
             Some(d) => match command(&d) {
                 Ok(()) => "done".to_string(),
                 Err(e) => describe(&e),
             },
-        };
-        *LAST_ACTION.lock().unwrap() = Some((label, result));
+        })
+        .unwrap_or_else(|| "failed: Foxglove hit an internal error".into());
+        *super::services::lock_or_reset(&LAST_ACTION) = Some((label, result));
         INVOKING.store(false, Ordering::Relaxed);
         refresh_rgb_state(); // show the effect right away
         ctx.request_repaint();
@@ -147,36 +150,43 @@ pub fn lights_changed() {
     super::tray_panel::wake();
 }
 
+/// Both halves' lights, read from the keyboard; `RIGHT_LIVE` follows the reply.
+fn read_rgb_state() -> Option<RgbState> {
+    // Read from the link: the device layer's lighting state has no per-half age yet.
+    // In the palette's colours: what Foxglove asked for, not its calibrated form.
+    let read = || {
+        device().and_then(|d| {
+            let mut s = digitalis::settings::rgb_state(d.link().as_ref()).ok()?;
+            d.asked_state(&mut s);
+            Some((s, d.right_events()))
+        })
+    };
+    let first = read();
+    let right_events = first.is_some_and(|(_, events)| events);
+    let mut state = first.map(|(s, _)| s);
+    // The right's half is the relay's last read, and each RGB_STATE starts a fresh one
+    // that this reply can't carry (firmware art_relay_right_rgb). Firmware with HELLO
+    // bit 20 (#543) sends RGB_STATE when that read changes anything, so the event
+    // brings it (lights_changed). Older firmware: a stale or missing right half
+    // ("off · 8 s ago" while it was lit, 2026-10-26) is asked once more, after the
+    // relay read has had time to land. Bounded: two reads per refresh.
+    if !right_events && state.as_ref().is_some_and(right_is_stale) {
+        std::thread::sleep(RIGHT_READ_SETTLE);
+        state = read().map(|(s, _)| s).or(state);
+    }
+    RIGHT_LIVE.store(right_events, Ordering::Relaxed);
+    state
+}
+
 /// Returns the cached state and reads it in the background when requested.
 pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
     if RGB_REFRESH.load(Ordering::Relaxed) && !RGB_POLLING.swap(true, Ordering::Relaxed) {
         RGB_REFRESH.store(false, Ordering::Relaxed);
         let ctx = ctx.clone();
         super::services::spawn_named("rgb-state", move || {
-            // Read from the link: the device layer's lighting state has no per-half age yet.
-            // In the palette's colours: what Foxglove asked for, not its calibrated form.
-            let read = || {
-                device().and_then(|d| {
-                    let mut s = digitalis::settings::rgb_state(d.link().as_ref()).ok()?;
-                    d.asked_state(&mut s);
-                    Some((s, d.right_events()))
-                })
-            };
-            let first = read();
-            let right_events = first.is_some_and(|(_, events)| events);
-            let mut state = first.map(|(s, _)| s);
-            // The right's half is the relay's last read, and each RGB_STATE starts a fresh one
-            // that this reply can't carry (firmware art_relay_right_rgb). Firmware with HELLO
-            // bit 20 (#543) sends RGB_STATE when that read changes anything, so the event
-            // brings it (lights_changed). Older firmware: a stale or missing right half
-            // ("off · 8 s ago" while it was lit, 2026-10-26) is asked once more, after the
-            // relay read has had time to land. Bounded: two reads per refresh.
-            if !right_events && state.as_ref().is_some_and(right_is_stale) {
-                std::thread::sleep(RIGHT_READ_SETTLE);
-                state = read().map(|(s, _)| s).or(state);
-            }
-            RIGHT_LIVE.store(right_events, Ordering::Relaxed);
-            *RGB_STATE.lock().unwrap() = state;
+            // A panic in the read still frees the next refresh (#587).
+            let state = super::services::guard("rgb-state", read_rgb_state).flatten();
+            *super::services::lock_or_reset(&RGB_STATE) = state;
             *RGB_READ_AT.lock().unwrap_or_else(|e| e.into_inner()) =
                 Some(std::time::Instant::now());
             RGB_POLLING.store(false, Ordering::Relaxed);

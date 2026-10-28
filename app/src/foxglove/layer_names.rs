@@ -60,7 +60,7 @@ fn names() -> &'static Mutex<Vec<Option<String>>> {
 
 /// Stores the connected keyboard's names, writing only when they changed.
 pub fn remember(new: &[Option<String>]) {
-    let mut names = names().lock().unwrap();
+    let mut names = names().lock().unwrap_or_else(|e| e.into_inner());
     if names.as_slice() == new {
         return;
     }
@@ -72,7 +72,7 @@ pub fn remember(new: &[Option<String>]) {
 
 /// The names from the last connection.
 pub fn remembered() -> Vec<Option<String>> {
-    names().lock().unwrap().clone()
+    names().lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[cfg(test)]

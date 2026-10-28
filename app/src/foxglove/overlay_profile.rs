@@ -108,10 +108,12 @@ static WATCH: OnceLock<()> = OnceLock::new();
 /// settings). The first call starts listening and asks for a repaint on each switch.
 pub fn switched(ctx: &egui::Context, seen: &mut u64) -> bool {
     WATCH.get_or_init(|| {
-        let changes = super::devices::bus().facts().subscribe("profile.active");
+        let subscribe = || super::devices::bus().facts().subscribe("profile.active");
+        let changes = super::services::First::new(subscribe());
         let ctx = ctx.clone();
-        super::services::spawn_named("overlay-profile", move || {
-            for _ in changes {
+        // Supervised (#587); a restart subscribes again.
+        let _ = super::services::spawn_supervised("overlay-profile", move || {
+            for _ in changes.take_or(subscribe) {
                 GENERATION.fetch_add(1, Ordering::Relaxed);
                 ctx.request_repaint();
             }

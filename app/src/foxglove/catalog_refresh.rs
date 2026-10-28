@@ -130,7 +130,7 @@ pub fn start() {
     if due(Trigger::Startup, now(), &state) {
         super::services::spawn_named("catalog-refresh", || {
             std::thread::sleep(jitter());
-            run(Trigger::Startup);
+            run_guarded(Trigger::Startup);
         });
     }
 }
@@ -143,7 +143,15 @@ pub fn request(trigger: Trigger) {
     let state: State = super::store::try_load("plugins.refresh").unwrap_or_default();
     if due(trigger, now(), &state) {
         set_status(Status::Checking);
-        super::services::spawn_named("catalog-refresh", move || run(trigger));
+        super::services::spawn_named("catalog-refresh", move || run_guarded(trigger));
+    }
+}
+
+/// One check behind a panic boundary (#587). It isn't restarted (the next trigger checks
+/// again), but "Checking" can't stick, which would refuse every later check.
+fn run_guarded(trigger: Trigger) {
+    if super::services::guard("catalog-refresh", || run(trigger)).is_none() {
+        set_status(Status::Failed("Foxglove hit an internal error".into()));
     }
 }
 
