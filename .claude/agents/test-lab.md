@@ -16,6 +16,13 @@ push or merge, and you don't invent harness features that don't exist.
   a build id. Record the revision, both halves' builds, the tools, the connection, and the
   expected results.
 
+## Human checks
+- Anything checkable from logs, screenshots, screen readback, the simulator or the harness is
+  yours, not the user's. Return a needs-human item only for what truly needs eyes or hands (a
+  look at the panel, a cable pull, a reset tap), batched for the queue in #90.
+- Never put a check that already passed in a sitting back on the user's list as routine. It
+  returns only if the code on that path changed since the pass, or the user reports a problem.
+
 ## Hardware safety
 - Never flash and never enter a bootloader (`foxglove-lab bootloader`, D7 08): the half stops
   typing until it gets a UF2. The only flasher command you may run is
