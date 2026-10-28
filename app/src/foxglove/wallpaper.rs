@@ -106,6 +106,14 @@ pub fn index() -> Vec<Wallpaper> {
         .unwrap_or_default()
 }
 
+/// Whether `text` from `source` can be read whole: Wallpaper Engine's config must parse, since
+/// one read in the middle of its write would say no wallpaper is on screen (and wallpaper sync
+/// would send everything again on the next read). The end of the write wakes us again.
+fn readable(text: &str, source: &Source) -> bool {
+    !matches!(source, Source::Engine(_))
+        || serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')).is_ok()
+}
+
 /// Each monitor's wallpaper file from Wallpaper Engine's config, sorted by monitor key.
 pub fn selected(config: &str) -> Vec<(String, String)> {
     let Ok(v) = serde_json::from_str::<Value>(config.trim_start_matches('\u{feff}')) else {
@@ -442,6 +450,12 @@ pub fn start() {
                 }
                 continue;
             };
+            if !readable(&text, &source) {
+                if repaint {
+                    super::scene_run::repaint_page();
+                }
+                continue;
+            }
             // Wallpaper sync (#493): the monitors showing a wallpaper that reads Foxglove's
             // properties get them; a new wallpaper gets them at once.
             super::wallpaper_sync::wallpapers(sync_targets(&manifests, &text, &source));
@@ -531,6 +545,21 @@ mod tests {
             folders_on_screen(config, &engine)[0],
             PathBuf::from("C:/WE/projects/myprojects/reef")
         );
+    }
+
+    /// A config read while Wallpaper Engine writes it is skipped, not taken as "no wallpapers"
+    /// (which made wallpaper sync send every monitor the same values again).
+    #[test]
+    fn a_half_written_config_is_skipped() {
+        let engine = Source::Engine(PathBuf::new());
+        let whole = r#"{"me":{"general":{"wallpaperconfig":{"selectedwallpapers":{}}}}}"#;
+        assert!(readable(whole, &engine));
+        assert!(readable(&format!("\u{feff}{whole}"), &engine));
+        assert!(!readable(&whole[..whole.len() / 2], &engine));
+        assert!(!readable("", &engine));
+        // The override file and the desktop wallpaper are plain text.
+        assert!(readable("fury-stars", &Source::Override(PathBuf::new())));
+        assert!(readable(r"C:\Pictures\a.jpg", &Source::Desktop));
     }
 
     #[test]
