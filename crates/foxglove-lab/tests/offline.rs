@@ -146,7 +146,7 @@ fn parses_seed_suites_and_all_step_kinds() {
         .any(spec::non_typing_key));
     assert_eq!(
         spec::load(&root.join("release.toml")).unwrap().cases.len(),
-        23
+        24
     );
     for text in [
         "[{press_position={pos=12,state='down'}}]",
@@ -1027,4 +1027,87 @@ fn replug_hello_case_finds_the_redrawn_left_panel_after_a_replug() {
             );
         }
     }
+}
+
+/// #613: the right-art-select-golden case compares the right's readback after a built-in SELECT
+/// with goldens rendered from the firmware's own custom_art.c. A regenerated art file must come
+/// with new goldens, or the hardware case would fail on a correct board.
+#[test]
+fn right_art_goldens_match_the_firmware_art() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let suite = spec::load(&root.join("tests/hil/screens.toml")).unwrap();
+    let case = suite
+        .cases
+        .iter()
+        .find(|c| c.name == "right-art-select-golden")
+        .unwrap();
+    let src =
+        std::fs::read_to_string(root.join("boards/shields/nice_view_custom/widgets/custom_art.c"))
+            .unwrap();
+    let array = |name: &str| -> Vec<u8> {
+        let head = format!("static const uint8_t {name}[] = {{");
+        let start = src.find(&head).unwrap() + head.len();
+        let body = &src[start..start + src[start..].find("};").unwrap()];
+        body.split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(|t| match t.strip_prefix("0x") {
+                Some(hex) => u8::from_str_radix(hex, 16).unwrap(),
+                None => t.parse().unwrap(),
+            })
+            .collect()
+    };
+    // The art's first frame, unpacked as peripheral_status.c's art_apply does.
+    let frame = |set: usize| -> Vec<u8> {
+        let mut buf = vec![0u8; 18 * 68];
+        let first = array(&format!("set_{set}_order"))[0];
+        for k in 0..=usize::from(first) {
+            let d = array(&format!("set_{set}_delta_{k}"));
+            let (mut i, mut at) = (0, 0);
+            while at < buf.len() {
+                let c = d[i];
+                i += 1;
+                let n = (usize::from(c & 0x3f) + 1).min(buf.len() - at);
+                for j in 0..n {
+                    buf[at + j] ^= match c >> 6 {
+                        0 => d[i + j],
+                        1 => 0,
+                        2 => 0xff,
+                        _ => d[i],
+                    };
+                }
+                i += match c >> 6 {
+                    0 => n,
+                    3 => 1,
+                    _ => 0,
+                };
+                at += n;
+            }
+        }
+        buf
+    };
+    let mut checked = 0;
+    for step in &case.steps {
+        let Step::Screen(s) = step else { continue };
+        let set = if s.golden.ends_with("set0.png") { 0 } else { 1 };
+        // The right's readback: the art at native x 0..139, a blank status strip after it.
+        let art = frame(set);
+        let mut native = vec![0u8; 1360];
+        for y in 0..68 {
+            for x in 0..140 {
+                if art[y * 18 + x / 8] & (0x80 >> (x % 8)) != 0 {
+                    native[y * 20 + x / 8] |= 0x80 >> (x % 8);
+                }
+            }
+        }
+        let actual = foxglove_lab::screen::portrait(&native).unwrap();
+        let golden = std::fs::read(root.join("tests/hil").join(&s.golden)).unwrap();
+        let c = foxglove_lab::screen::compare(&actual, &golden, &s.mask).unwrap();
+        assert_eq!(c.different, 0, "{} is set {set}'s first frame", s.golden);
+        let blank = foxglove_lab::screen::portrait(&[0; 1360]).unwrap();
+        let c = foxglove_lab::screen::compare(&blank, &golden, &s.mask).unwrap();
+        assert!(c.different > 500, "{} is a picture, not a blank", s.golden);
+        checked += 1;
+    }
+    assert_eq!(checked, 2);
 }

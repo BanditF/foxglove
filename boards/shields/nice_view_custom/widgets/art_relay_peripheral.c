@@ -121,6 +121,8 @@ static void play_cb(struct k_work *work) {
         status.set = art_builtin_index(select_set);
         art_play(&custom_art_sets[status.set]);
     }
+    // The art alone rewrites its rows; this also covers a panel that lost power since (#613).
+    art_redraw_all();
 }
 static K_WORK_DEFINE(play_work, play_cb);
 
@@ -133,6 +135,7 @@ static void play(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
 static void rgb_disconnected(struct bt_conn *conn, uint8_t reason) {
     rgb_idle_remote_lost();
+    art_redraw_all(); // the right's own idle state may switch the panel's power back on (#613)
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
     effect_run_stop(true); // the left sends it again when the link is back
 #endif
@@ -190,6 +193,7 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         effect_run_stop(false); // the frames take over from an effect, or hand back below
 #endif
         lamp_strip_host(d[1] != 0);
+        art_redraw_all(); // taking or handing back the LEDs switches the panel's power (#613)
         break;
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
@@ -217,6 +221,7 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
             effect_run_stop(true);
             lamp_strip_host(false); // also after frames the effect never replaced
         }
+        art_redraw_all(); // as for LAMP_HOST (#613)
         break;
 #endif
     case ART_RELAY_BOOT:
@@ -377,6 +382,7 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
         rgb_idle_remote(d[1] != 0, len < 3 || d[2] != 0);
 #endif
+        art_redraw_all(); // following the left's on/off switches the panel's power (#613)
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
         if (len >= 3 + sizeof(struct battery_dim_config)) {
             struct battery_dim_config c;
@@ -491,6 +497,8 @@ static void ring_cb(struct k_work *work) {
 static K_WORK_DELAYABLE_DEFINE(ring_work, ring_cb);
 
 void art_relay_right_rang(uint8_t what) {
+    // The underglow went on or off, or the cable came or went: the panel's power may be back.
+    art_redraw_all(); // #613
     atomic_or(&rang, what);
     k_work_reschedule(&ring_work, K_NO_WAIT);
 }

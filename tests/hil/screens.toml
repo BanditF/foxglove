@@ -58,3 +58,19 @@ steps = [
   { press_position = { pos = 43, state = "up" } },
   { expect_layer = { top = 0 } },
 ]
+
+[[cases]]
+name = "right-art-select-golden"
+description = "#613: a built-in SELECT redraws the right screen with that set. Selects ZMK_1 (set 0), then ZMK_2 (set 1), both still pictures, and compares the right's readback (D7 06/07 through the relay) with the set's first frame rendered from custom_art.c. The status strip (portrait y 0-19) is masked. Readback is LVGL's own image, not the panel's pixels: noise from a panel power cycle needs eyes (On-call). Leaves set 1 on the right; refuses (BLOCKED) when pushed art is showing"
+tags = ["screens", "art", "release"]
+requires = ["screen_readback"]
+steps = [
+  { art_select = { set = 0, restore = false } },
+  { screen = { half = "right", golden = "golden/right-art-set0.png", mask = [
+    { x = 0, y = 0, width = 68, height = 20 },
+  ] } },
+  { art_select = { set = 1, restore = false } },
+  { screen = { half = "right", golden = "golden/right-art-set1.png", mask = [
+    { x = 0, y = 0, width = 68, height = 20 },
+  ] } },
+]
