@@ -217,9 +217,9 @@ static uint32_t boot_nonce; // 0 = not armed
 static int64_t boot_armed_at;
 static atomic_t boot_relaying;
 
-void test_hooks_boot_relay_done(uint8_t status, uint8_t route) {
+void test_hooks_boot_relay_done(uint8_t status) {
     atomic_clear(&boot_relaying);
-    host_link_bootloader_reply(status, 1, route);
+    host_link_bootloader_reply(status, 1);
 }
 
 bool test_hooks_bootloader(const uint8_t *d, int len, uint8_t r[7]) {

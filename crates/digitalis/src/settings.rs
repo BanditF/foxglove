@@ -74,6 +74,9 @@ pub fn enter_bootloader(t: &impl Transport, half: u8) -> Result<()> {
         4 => anyhow::bail!("bootloader command not built into this firmware"),
         5 => anyhow::bail!("bootloader command rejected as malformed"),
         6 => anyhow::bail!("bootloader nonce wrong or expired"),
+        // #545: the left had no relay to the right and used ZMK's split link; nothing confirms
+        // it, so callers keep treating it as "not entered" and watch for the drive.
+        7 => anyhow::bail!("sent to the right over ZMK's split link, unconfirmed; watch for its bootloader drive"),
         s => anyhow::bail!("bootloader command failed with status {s}"),
     };
     let wait = Duration::from_millis(1500);
@@ -426,6 +429,18 @@ mod tests {
         );
         assert!(enter_bootloader(&right, 1).is_err());
         assert!(enter_bootloader(&right, 2).is_err());
+        // #545: sent over ZMK's split, unconfirmed: still "not entered", so callers watch the drive.
+        let split = Boot(
+            Default::default(),
+            vec![
+                boot_reply(&[0xd7, 0x88, 0, 1, 2, 3, 4]),
+                boot_reply(&[0xd7, 0x88, 7, 1]),
+            ],
+        );
+        assert!(enter_bootloader(&split, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("unconfirmed"));
     }
 
     /// Scripted BUILD_INFO replies; records the timeout of each request.

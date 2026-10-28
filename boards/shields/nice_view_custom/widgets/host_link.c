@@ -478,8 +478,8 @@ static uint8_t invoke(const uint8_t *d, int len) {
 #endif
 }
 
-void host_link_bootloader_reply(uint8_t status, uint8_t half, uint8_t route) {
-    const uint8_t r[] = {HOST_LINK_SETTINGS, 0x80 | SETTING_BOOTLOADER, status, half, route};
+void host_link_bootloader_reply(uint8_t status, uint8_t half) {
+    const uint8_t r[] = {HOST_LINK_SETTINGS, 0x80 | SETTING_BOOTLOADER, status, half};
     reply(r, sizeof(r));
 }
 

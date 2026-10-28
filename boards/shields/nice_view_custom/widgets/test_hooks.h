@@ -11,7 +11,7 @@ void test_hooks_host_seen(void);
 bool test_hooks_bootloader(const uint8_t *d, int len, uint8_t reply[7]);
 /* Right: art relay op BOOT accepted; reboots into the bootloader after the ATT reply. */
 void test_hooks_reboot_soon(void);
-/* Left: the answer to BOOT for the right; route says how it went (HOST_LINK_BOOT_ROUTE_*). */
-void test_hooks_boot_relay_done(uint8_t status, uint8_t route);
+/* Left: the relay's answer to BOOT. */
+void test_hooks_boot_relay_done(uint8_t status);
 /* Relay completion is returned to the system queue before touching injected state. */
 void test_hooks_relay_done(uint8_t status);

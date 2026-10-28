@@ -452,7 +452,9 @@ void art_relay_press(uint8_t pos, uint8_t state) {
  * ours. It is a write without response, so nothing confirms it: the right's bootloader drive
  * does. ZMK finds its own characteristics after the link is encrypted and drops the write until
  * then, so it is only sent once the link has been encrypted for SPLIT_SETTLE_MS; before that the
- * PC hears status 2 and asks again (on D6 85, or after a pause). One send per D7 08, no retry. */
+ * PC hears status 2 and asks again (on D6 85, or after a pause). One send per D7 08, no retry.
+ * ZMK's split run queue holds 5: when it is full, the call waits up to 100 ms here (relay_q) and
+ * then drops the oldest entry, as any of ZMK's own split invokes would. */
 #define SPLIT_SETTLE_MS 5000
 #define SPLIT_RIGHT_SOURCE 0 // the right is ZMK's first (only) peripheral
 
@@ -477,7 +479,6 @@ static bool boot_via_split(void) {
 
 static void boot_cb(struct k_work *work) {
     uint8_t status = 2;
-    uint8_t route = HOST_LINK_BOOT_ROUTE_RELAY;
     struct bt_conn *conn = job_conn();
     if (conn != NULL) {
         const uint8_t d[] = {ART_RELAY_BOOT, 'B', 'O', 'O', 'T'};
@@ -490,10 +491,9 @@ static void boot_cb(struct k_work *work) {
     }
     // A timeout may have landed too; a second ask of a right already rebooting is harmless.
     if ((status == 2 || status == 3) && boot_via_split()) {
-        status = 0;
-        route = HOST_LINK_BOOT_ROUTE_SPLIT;
+        status = 7; // sent, unacknowledged: the PC watches for the drive (host_link.h)
     }
-    test_hooks_boot_relay_done(status, route);
+    test_hooks_boot_relay_done(status);
 }
 static K_WORK_DEFINE(boot_work, boot_cb);
 void art_relay_boot(void) { k_work_submit_to_queue(&relay_q, &boot_work); }

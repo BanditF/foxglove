@@ -1592,25 +1592,12 @@ pub const CAP_CONN_STATE: u32 = capabilities::CONN_STATE;
 
 // BOOTLOADER layout (host_link.h, #111):
 //   ARM      D7 08 00                    -> D7 88 status nonce u32 LE
-//   TRIGGER  D7 08 01 half nonce u32 LE  -> D7 88 status half route
+//   TRIGGER  D7 08 01 half nonce u32 LE  -> D7 88 status half
 // status: 0 ok, 2 no relay link (right), 3 relay timeout, 4 not built in, 5 bad request,
-// 6 wrong/expired nonce. The left reboots ~300 ms after its TRIGGER reply.
-// route (right, #545): 0 the relay (the right answered), 1 ZMK's own split link, used when the
-// relay can't take it (an older right, or before the relay is up). Route 1 is not acknowledged:
-// only the right's bootloader drive appearing confirms it. Older firmware sends 0.
+// 6 wrong/expired nonce, 7 (right, #545) sent over ZMK's split link without the relay, not
+// acknowledged: watch for the bootloader drive. The left reboots ~300 ms after its TRIGGER reply.
 pub const BOOTLOADER_ARM: u8 = 0x00;
 pub const BOOTLOADER_TRIGGER: u8 = 0x01;
-pub const BOOTLOADER_ROUTE_RELAY: u8 = 0;
-pub const BOOTLOADER_ROUTE_SPLIT: u8 = 1;
-
-/// Whether a TRIGGER reply says the request went through ZMK's split link, unacknowledged
-/// (`BOOTLOADER_ROUTE_SPLIT`): wait for the bootloader drive rather than trusting the status.
-pub fn bootloader_via_split(r: &[u8; REPORT]) -> bool {
-    r[0] == SETTINGS
-        && r[1] == 0x80 | settings::BOOTLOADER
-        && r[2] == 0
-        && r[4] == BOOTLOADER_ROUTE_SPLIT
-}
 
 pub fn bootloader_arm() -> Vec<u8> {
     vec![SETTINGS, settings::BOOTLOADER, BOOTLOADER_ARM]
@@ -1661,21 +1648,6 @@ impl ConnState {
 #[cfg(test)]
 mod connection_tests {
     use super::*;
-
-    #[test]
-    fn bootloader_route_split_is_byte_4_of_an_ok_trigger_reply() {
-        let mut r = [0; REPORT];
-        r[..5].copy_from_slice(&[0xd7, 0x88, 0, 1, BOOTLOADER_ROUTE_SPLIT]);
-        assert!(bootloader_via_split(&r));
-        r[4] = BOOTLOADER_ROUTE_RELAY;
-        assert!(!bootloader_via_split(&r), "the relay's answer, as older firmware sends");
-        r[2] = 2;
-        r[4] = BOOTLOADER_ROUTE_SPLIT;
-        assert!(!bootloader_via_split(&r), "not sent at all");
-        r[2] = 0;
-        r[1] = 0x89;
-        assert!(!bootloader_via_split(&r), "another reply");
-    }
 
     #[test]
     fn connection_wire_format_and_capabilities() {
