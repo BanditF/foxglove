@@ -47,7 +47,7 @@ fn stopped_services(ui: &mut egui::Ui, stopped: &[&str]) {
 fn stopped_note(stopped: &[&str]) -> Option<String> {
     (!stopped.is_empty()).then(|| {
         format!(
-            "Service stopped: {}. It kept failing, so Foxglove left it off; restart Foxglove to              try again, and copy the diagnostics for a bug report.",
+            "Service stopped: {}. It kept failing, so Foxglove left it off; restart Foxglove to try again, and copy the diagnostics for a bug report.",
             stopped.join(", ")
         )
     })

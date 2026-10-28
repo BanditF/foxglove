@@ -331,9 +331,11 @@ pub fn stop() {
     // With the wake-up delivered, the accept thread ends at once and drops the listener. Not
     // while its supervisor waits out a restart's backoff (up to a minute, #587): the next
     // attempt takes the wake-up and ends then.
+    // A `listen` right after this can then find the port still held ("Can't listen"), only
+    // after an accept panic; the next attempt frees it.
     let backing_off = super::services::status()
         .get("live-accept")
-        .is_some_and(|s| !s.running && !s.stopped);
+        .is_some_and(|s| s.restarting);
     if let Some(accept) = r.accept.filter(|_| woke.is_ok() && !backing_off) {
         let _ = accept.join();
     }
@@ -366,8 +368,12 @@ fn listen(s: &LiveSettings) -> Result<(), String> {
     forward_facts(facts, "keyboard.*", &tx, || Msg::State);
     forward_facts(facts, "app.foreground", &tx, || Msg::Foreground);
     let rx = Mutex::new(rx);
+    // Key generations count across hub restarts, so a restarted hub never takes keys still
+    // queued by the forwarder of the one that panicked.
+    let key_generation = Arc::new(AtomicU64::new(0));
     let _ = super::services::spawn_supervised("live-hub", move || {
-        run(&rx.lock().unwrap_or_else(|e| e.into_inner()), &tx)
+        let rx = rx.lock().unwrap_or_else(|e| e.into_inner());
+        run(&rx, &tx, &key_generation)
     });
     super::wallpaper_sync::live(Some(s.port));
     Ok(())
@@ -478,7 +484,7 @@ fn handshake(stream: &mut TcpStream, token: &str) -> Result<(), String> {
 }
 
 /// The hub: owns the wallpapers' streams, the state and the gates.
-fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>) {
+fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>, key_generation: &Arc<AtomicU64>) {
     let facts = super::devices::bus().facts();
     let _away = super::away::subscribe({
         let tx = tx.clone();
@@ -498,7 +504,7 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>) {
     hub.quiet = wire::quiet(super::pause::paused(), super::away::away(), fullscreen);
     let mut batch_started: Option<Instant> = None;
     let mut last_key: Option<Instant> = None;
-    let mut keys = KeyTap::default();
+    let mut keys = KeyTap::new(key_generation.clone());
     loop {
         let msg = match batch_started {
             Some(started) => {
@@ -631,19 +637,34 @@ impl Drop for Clients {
         for c in &self.0 {
             let _ = c.stream.shutdown(Shutdown::Both);
         }
-        CONNECTED.store(0, Ordering::Relaxed);
+        if CONNECTED.swap(0, Ordering::Relaxed) != 0 {
+            super::tray_panel::wake();
+        }
     }
 }
 
 /// The key-event subscription, held only while it's wanted: each start is a new generation,
 /// and a forwarder of an old one ends at its next event (dropping the bus's queue with it).
-#[derive(Default)]
+/// Dropped (the hub stopped or panicked), it ends its forwarder the same way (#587).
 struct KeyTap {
     on: bool,
     generation: Arc<AtomicU64>,
 }
 
+impl Drop for KeyTap {
+    fn drop(&mut self) {
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 impl KeyTap {
+    fn new(generation: Arc<AtomicU64>) -> KeyTap {
+        KeyTap {
+            on: false,
+            generation,
+        }
+    }
+
     fn generation(&self) -> u64 {
         self.generation.load(Ordering::SeqCst)
     }
@@ -864,6 +885,19 @@ pub fn group(ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #587: a hub that panics drops its tap, which moves the shared generation on, so the old
+    /// forwarder ends and the restarted hub's first tap can't match its queued keys.
+    #[test]
+    fn a_dropped_key_tap_retires_its_generation() {
+        let generation = Arc::new(AtomicU64::new(0));
+        let tap = KeyTap::new(generation.clone());
+        assert_eq!(tap.generation(), 0);
+        drop(tap);
+        let restarted = KeyTap::new(generation.clone());
+        assert_eq!(restarted.generation(), 1);
+        assert_eq!(generation.load(Ordering::SeqCst), 1);
+    }
     use std::collections::HashMap;
 
     /// Records what each wallpaper was sent; `dead` ones fail.

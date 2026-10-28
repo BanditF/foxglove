@@ -19,6 +19,18 @@ pub struct ServiceStatus {
     pub last_failure: Option<String>,
     /// Gave up after [`MAX_CRASHES`] quick failures: the feature is off until Foxglove restarts.
     pub stopped: bool,
+    /// Failed and waiting out the backoff before the next attempt.
+    pub restarting: bool,
+}
+
+/// Where a service is, for [`record`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Running,
+    /// Returned, or a one-shot job that panicked: nothing is coming back.
+    Ended,
+    Restarting,
+    Stopped,
 }
 
 static STATUS: Mutex<BTreeMap<&'static str, ServiceStatus>> = Mutex::new(BTreeMap::new());
@@ -60,11 +72,12 @@ pub fn stopped() -> Vec<&'static str> {
         .collect()
 }
 
-fn record(name: &'static str, running: bool, failure: Option<String>, stopped: bool) {
+fn record(name: &'static str, phase: Phase, failure: Option<String>) {
     let mut statuses = STATUS.lock().unwrap_or_else(|e| e.into_inner());
     let status = statuses.entry(name).or_default();
-    status.running = running;
-    status.stopped = stopped;
+    status.running = phase == Phase::Running;
+    status.stopped = phase == Phase::Stopped;
+    status.restarting = phase == Phase::Restarting;
     if let Some(failure) = failure {
         status.failures += 1;
         status.last_failure = Some(failure);
@@ -118,7 +131,7 @@ pub fn guard<R>(name: &'static str, job: impl FnOnce() -> R) -> Option<R> {
         Err(payload) => {
             let failure = panic_text(&*payload);
             eprintln!("Foxglove {name}: {failure}");
-            record(name, false, Some(failure), false);
+            record(name, Phase::Ended, Some(failure));
             None
         }
     }
@@ -176,7 +189,7 @@ fn spawn_with(
         Err(e) => {
             let failure = format!("Could not start supervisor: {e}");
             eprintln!("Foxglove {name}: {failure}; service stopped");
-            record(name, false, Some(failure), true);
+            record(name, Phase::Stopped, Some(failure));
             None
         }
     }
@@ -192,14 +205,14 @@ fn supervise(
     loop {
         let started = Instant::now();
         let run = run.clone();
-        record(name, true, None, false);
+        record(name, Phase::Running, None);
         let failure = match thread::Builder::new()
             .name(format!("foxglove-{name}"))
             .spawn(move || catch_unwind(AssertUnwindSafe(|| run())))
         {
             Ok(child) => match child.join() {
                 Ok(Ok(())) => {
-                    record(name, false, None, false);
+                    record(name, Phase::Ended, None);
                     return;
                 }
                 Ok(Err(payload)) | Err(payload) => panic_text(&*payload),
@@ -218,7 +231,7 @@ fn supervise(
             eprintln!(
                 "Foxglove {name}: {failure}; service stopped after {MAX_CRASHES} failures in ten minutes"
             );
-            record(name, false, Some(failure), true);
+            record(name, Phase::Stopped, Some(failure));
             return;
         }
         let delay = backoff.failed(started.elapsed());
@@ -226,7 +239,7 @@ fn supervise(
             "Foxglove {name}: {failure}; restarting in {} s",
             delay.as_secs()
         );
-        record(name, false, Some(failure), false);
+        record(name, Phase::Restarting, Some(failure));
         sleep(delay);
     }
 }
@@ -289,14 +302,15 @@ mod tests {
                 }
             }),
             |delay| {
-                assert!(!status()["restart-test"].running);
+                let service = &status()["restart-test"];
+                assert!(!service.running && service.restarting);
                 delays.push(delay);
             },
         );
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
         assert_eq!(delays, [Duration::from_secs(1), Duration::from_secs(2)]);
         let service = &status()["restart-test"];
-        assert!(!service.running && !service.stopped);
+        assert!(!service.running && !service.stopped && !service.restarting);
         assert_eq!(service.failures, 2);
         assert_eq!(
             service.last_failure.as_deref(),
