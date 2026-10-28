@@ -102,9 +102,14 @@ pub fn wallpaper_changed(accent: Option<[u8; 3]>) {
         &mut *ON_SCREEN.lock().unwrap_or_else(|e| e.into_inner()),
         accent,
     );
-    if before != accent && wallpaper_enabled() {
+    if wakes(before, accent, wallpaper_enabled()) {
         wake();
     }
+}
+
+/// Whether a new accent on screen needs the follower: it changed, and the lights follow it.
+fn wakes(before: Option<[u8; 3]>, now: Option<[u8; 3]>, following: bool) -> bool {
+    following && before != now
 }
 
 /// Applies the colour again (turned on, the wallpaper changed, or Foxglove resumed, #404).
@@ -287,8 +292,10 @@ mod windows_impl {
                 // An effect a quit left running (#542) would hide the colour.
                 crate::foxglove::scene_run::release_left_effect(&d);
                 let device = d.info().id.to_string();
+                // Read outside the arbiter's lock: it is a keyboard round trip.
+                let brightness = lighting.state().map_or(100, |s| s.brightness);
                 match crate::foxglove::lighting_leases::with(|a| {
-                    a.follow(&device, hue, sat, lighting)
+                    a.follow(&device, (hue, sat, brightness), lighting)
                 }) {
                     Ok(_) => applied = Some((hue, sat)),
                     Err(e) => eprintln!(
@@ -334,6 +341,15 @@ mod tests {
             pick(s(false, true), Some(teal), || panic!("not asked")),
             Some(teal)
         );
+    }
+
+    #[test]
+    fn only_a_new_accent_wakes_the_follower() {
+        let teal = Some([0x0f, 0xb5, 0xae]);
+        assert!(wakes(None, teal, true));
+        assert!(wakes(teal, None, true), "back to the Windows accent");
+        assert!(!wakes(teal, teal, true), "unchanged");
+        assert!(!wakes(None, teal, false), "not following the wallpaper");
     }
 
     /// The old store keeps working: a section without the new key follows no wallpaper.

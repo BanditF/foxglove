@@ -460,18 +460,21 @@ pub fn start() {
                 // and art now.
                 super::scenes_ui::wallpapers_changed();
             }
-            let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
-            // Lights follow the wallpaper (#70): the accent on screen now, none without one.
-            super::accent::wallpaper_changed(
-                text.as_deref()
-                    .and_then(|t| accent_on_screen(&manifests, t, &source, monitor.as_deref())),
-            );
             let Some(text) = text else {
+                super::accent::wallpaper_changed(None);
                 if repaint {
                     super::scene_run::repaint_page();
                 }
                 continue;
             };
+            let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
+            // Lights follow the wallpaper (#70): the accent on screen now, none without one.
+            super::accent::wallpaper_changed(accent_on_screen(
+                &manifests,
+                &text,
+                &source,
+                monitor.as_deref(),
+            ));
             // Wallpaper sync (#493): the monitors showing a wallpaper that reads Foxglove's
             // properties get them; a new wallpaper gets them at once.
             super::wallpaper_sync::wallpapers(sync_targets(&manifests, &text, &source));

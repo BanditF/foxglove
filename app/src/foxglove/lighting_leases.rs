@@ -320,21 +320,19 @@ impl Arbiter {
     }
 
     /// A colour the lights follow (the wallpaper's accent, Windows' accent, #70, #93) for
-    /// `device`: its hue and saturation go on now, at the lights' own brightness, unless a lease
-    /// holds them (a running scene, a notification), which wins: then they are only what comes
-    /// back when it ends. True when sent.
+    /// `device`: its hue and saturation go on now, at `brightness` (the lights' own, read by the
+    /// caller outside the lock), unless a lease holds them (a running scene, a notification),
+    /// which wins: then they are only what comes back when it ends. True when sent.
     pub fn follow(
         &mut self,
         device: &str,
-        hue: u16,
-        sat: u8,
+        (hue, sat, brightness): (u16, u8, u8),
         light: &dyn Lighting,
     ) -> Result<bool, DeviceError> {
         self.user_changed(device, |s| (s.hue, s.sat) = (hue, sat));
         if self.leases.iter().any(|l| l.device == device) {
             return Ok(false);
         }
-        let brightness = light.state().map_or(100, |s| s.brightness);
         light.set_color(hue, sat, brightness.max(1))?;
         Ok(true)
     }
@@ -683,7 +681,7 @@ mod tests {
     fn a_followed_colour_waits_for_a_lease_to_end() {
         let kb = Fake::new();
         let mut a = Arbiter::default();
-        assert_eq!(a.follow("kb", 180, 90, &kb), Ok(true));
+        assert_eq!(a.follow("kb", (180, 90, 40), &kb), Ok(true));
         assert_eq!(
             all(&kb),
             (false, 180, 90, 40, "3".into(), 1),
@@ -691,7 +689,11 @@ mod tests {
         );
         let scene = a.add(lease(7, Priority::Low, 30), &kb).unwrap();
         assert_eq!(hue(&kb), (true, 30));
-        assert_eq!(a.follow("kb", 210, 70, &kb), Ok(false), "the scene wins");
+        assert_eq!(
+            a.follow("kb", (210, 70, 40), &kb),
+            Ok(false),
+            "the scene wins"
+        );
         assert_eq!(hue(&kb), (true, 30));
         for d in a.end(|l| l.id == scene) {
             a.apply(&d, &kb).unwrap();
