@@ -186,5 +186,20 @@
 
             sensor-bindings = <&scroll_encoder>;
         };
+
+        // Spare layers for ZMK Studio's "Add layer" (#580): Studio can only enable layers the
+        // keymap reserves. They come after SYSTEM so indexes 0-6 never move; a regular
+        // (non-Studio) build, like the right half's, leaves them out.
+        extra_1 {
+            status = "reserved";
+        };
+
+        extra_2 {
+            status = "reserved";
+        };
+
+        extra_3 {
+            status = "reserved";
+        };
     };
 };

@@ -123,3 +123,41 @@ they go in as one feature at a time behind the store, starting with screens.
    effect, leaving the colour to the board?
 3. **Overlay in profiles:** should profiles override the overlay's look (colours, size,
    position), or only which layers it shows and when?
+
+## Board profiles: ZMK Studio facts (#580)
+
+Settings profiles above are the user's moods; a *board profile* (`app/resources/boards/*.toml`,
+or one in the `boards` folder next to the settings, #75) describes a keyboard. Each ZMK board
+profile can state what its firmware build lets ZMK Studio do, in a `[studio]` table. Absent means
+unknown. Once a Studio session is open, the board's own answers win (its keymap's
+`available_layers`, its lock state).
+
+```toml
+[studio]
+editing = true          # built with CONFIG_ZMK_STUDIO=y
+locking = false         # CONFIG_ZMK_STUDIO_LOCKING (ZMK's default is true)
+reserved_layers = 3     # keymap layers with status = "reserved"
+zmk = "v0.3.0"          # the ZMK release the firmware builds on
+```
+
+- **`reserved_layers`:** Studio's "Add layer" can only enable layers the keymap reserves
+  (ZMK's own mechanism, docs/features/studio.md "Including Extra Layers"); with none it answers
+  `NO_SPACE`, and the keymap editor says so. Reserved layers go after the last real layer, so
+  no layer index moves, and a non-Studio build (a split's peripheral) leaves them out. ZMK allows
+  32 layers in all.
+- **`zmk`:** ZMK v0.3 and older can't save more than 190 keys from Studio (fixed on main, zmk
+  #3431); the keymap editor warns for such a board when its keymap is bigger.
+- **Shown:** Troubleshooting has a "ZMK Studio" row; the keymap editor's More menu lists what
+  the build can't do.
+
+Our boards: the Eyelash Corne's left (Studio) build reserves 3 layers after SYSTEM (ids 7-9),
+locking off; the Toucan2's vendor keymap reserves 2, locking on.
+
+Cost on a nice!nano v2 (nRF52840, 256 KB RAM, 1 MB flash), from ZMK v0.3.0's `keymap.c` for the
+Corne's 48 keys: each reserved layer adds a 48-binding row (16 bytes each) to the editable keymap
+in RAM and to the stock keymap in flash, a sensor binding, a 20-byte name and 6 bytes of pending
+flags: about 0.8 KB of RAM and 0.8 KB of flash a layer. Measured in CI (the left Studio builds,
+three layers): RAM +2,536 B (49.3% to 50.3% of 256 KB), flash +2,408 B (65.3% to 65.8% of
+540 KB); the right half's builds are byte for byte the same size. Settings
+storage (NVS, 32 KB on the Eyelash Corne) only grows when a reserved layer is used: one entry
+per changed key (up to 48 a layer), plus its name and the layer order.

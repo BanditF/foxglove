@@ -67,3 +67,15 @@ columns = 6
 rows = 3
 thumbs = 3
 stagger = [0.5, 0.5, 0.25, 0.0, 0.125, 0.25]
+
+# What the firmware build lets ZMK Studio do (#580), as data; the board's own answers win once a
+# Studio session is open. `editing`: built with CONFIG_ZMK_STUDIO=y (the left half's Studio
+# build). `locking`: CONFIG_ZMK_STUDIO_LOCKING (ZMK's default is on; ours is off).
+# `reserved_layers`: keymap layers with status = "reserved", all Studio's "Add layer" can enable
+# (none means NO_SPACE). `zmk`: the ZMK release it builds on; v0.3 can't save more than 190 keys
+# from Studio (fixed on ZMK main, zmk #3431).
+[studio]
+editing = true
+locking = false
+reserved_layers = 3
+zmk = "v0.3.0"

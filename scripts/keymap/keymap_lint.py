@@ -32,13 +32,22 @@ class Keymap:
     source: str
     layers: list
     conditions: list
+    # Empty layers with status = "reserved" (#580): ZMK Studio's spares, absent from regular
+    # builds. They come after every real layer, so no layer index moves.
+    reserved: int = 0
 
 
 def parse(source):
     source = strip_comments(source)
     body = node(source, 'keymap')
     layers = []
+    reserved = 0
     for layer in re.findall(r'\w+\s*\{([^{}]*)\}', body, re.S):
+        if re.search(r'status\s*=\s*"reserved"', layer):
+            reserved += 1
+            continue
+        if reserved:
+            raise ValueError('Reserved layers must come after every real layer')
         name = re.search(r'display-name\s*=\s*"([^"]+)"', layer)
         bindings = re.search(r'(?<![\w-])bindings\s*=\s*<(.*?)>;', layer, re.S)
         if not bindings:
@@ -54,7 +63,7 @@ def parse(source):
         if not before or not after:
             raise ValueError('Malformed conditional layer rule')
         conditions.append((tuple(map(int, before[1].split())), int(after[1])))
-    return Keymap(source, layers, conditions)
+    return Keymap(source, layers, conditions, reserved)
 
 
 def check_binding_counts(km):
