@@ -29,9 +29,28 @@ pub fn group(ui: &mut egui::Ui) {
                 super::app_log::open_folder();
             }
         });
+        stopped_services(ui, &super::services::stopped());
         ui.add_space(6.0);
         details(ui, &super::screens_ui::snapshot());
     });
+}
+
+/// The services that gave up after failing again and again (#587), so a feature that went quiet
+/// says why. Restarting Foxglove starts them again.
+fn stopped_services(ui: &mut egui::Ui, stopped: &[&str]) {
+    if let Some(note) = stopped_note(stopped) {
+        ui.add_space(6.0);
+        ui.add(egui::Label::new(RichText::new(note).color(theme::palette(ui).warn)).wrap());
+    }
+}
+
+fn stopped_note(stopped: &[&str]) -> Option<String> {
+    (!stopped.is_empty()).then(|| {
+        format!(
+            "Service stopped: {}. It kept failing, so Foxglove left it off; restart Foxglove to              try again, and copy the diagnostics for a bug report.",
+            stopped.join(", ")
+        )
+    })
 }
 
 /// "Copy diagnostics" (#371): copies the report; it reads "Copied" until the pointer leaves it.
@@ -154,5 +173,12 @@ mod tests {
         assert_eq!(right_link(0), "not connected");
         assert_eq!(right_link(1), "connected");
         assert_eq!(right_link(2), "connected, art relay ready");
+    }
+
+    #[test]
+    fn a_stopped_service_is_named() {
+        assert_eq!(stopped_note(&[]), None);
+        let note = stopped_note(&["pc-lights", "battery"]).unwrap();
+        assert!(note.starts_with("Service stopped: pc-lights, battery."));
     }
 }

@@ -230,7 +230,7 @@ pub trait Output {
 
 /// The worker: applies each change, publishes the list when it changes, and tells each
 /// threshold crossing once. Returns when every sender is gone.
-pub fn run(rx: Receiver<Msg>, controllers: &dyn Controllers, out: &mut dyn Output) {
+pub fn run(rx: &Receiver<Msg>, controllers: &dyn Controllers, out: &mut dyn Output) {
     let mut list = List::default();
     let mut alerts = Alerts::default();
     let mut hidden = Vec::new();
@@ -351,9 +351,13 @@ pub fn start() {
     if TX.set(Mutex::new(tx.clone())).is_err() {
         return;
     }
-    super::services::spawn_named("peripherals", move || {
+    // Supervised (#587): the queue outlives a panicking attempt, so `TX` stays good; a restart
+    // watches again and starts from an empty list.
+    let rx = Mutex::new(rx);
+    let _ = super::services::spawn_supervised("peripherals", move || {
+        let rx = rx.lock().unwrap_or_else(|e| e.into_inner());
         #[cfg(windows)]
-        let _watch = match imp::watch(tx) {
+        let _watch = match imp::watch(tx.clone()) {
             Ok(w) => Some(w),
             Err(e) => {
                 eprintln!("Foxglove: can't watch the Bluetooth batteries: {e}");
@@ -361,8 +365,8 @@ pub fn start() {
             }
         };
         #[cfg(not(windows))]
-        drop(tx);
-        run(rx, &imp::GameInput, &mut AppOutput);
+        let _ = &tx;
+        run(&rx, &imp::GameInput, &mut AppOutput);
     });
 }
 
@@ -630,7 +634,7 @@ pub mod tests {
             hidden: hidden.iter().map(|h| h.to_string()).collect(),
             ..Default::default()
         };
-        run(rx, pads, &mut out);
+        run(&rx, pads, &mut out);
         out
     }
 

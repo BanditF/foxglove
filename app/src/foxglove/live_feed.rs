@@ -257,8 +257,9 @@ struct Running {
     tx: Sender<Msg>,
     stop: Arc<AtomicBool>,
     port: u16,
-    /// The accept thread, joined on stop so the port is free before it's bound again.
-    accept: std::thread::JoinHandle<()>,
+    /// The accept thread's supervisor, joined on stop so the port is free before it's bound
+    /// again.
+    accept: Option<std::thread::JoinHandle<()>>,
 }
 
 static RUNNING: Mutex<Option<Running>> = Mutex::new(None);
@@ -327,9 +328,14 @@ pub fn stop() {
         &std::net::SocketAddr::from(([127, 0, 0, 1], r.port)),
         Duration::from_millis(500),
     );
-    // With the wake-up delivered, the accept thread ends at once and drops the listener.
-    if woke.is_ok() {
-        let _ = r.accept.join();
+    // With the wake-up delivered, the accept thread ends at once and drops the listener. Not
+    // while its supervisor waits out a restart's backoff (up to a minute, #587): the next
+    // attempt takes the wake-up and ends then.
+    let backing_off = super::services::status()
+        .get("live-accept")
+        .is_some_and(|s| !s.running && !s.stopped);
+    if let Some(accept) = r.accept.filter(|_| woke.is_ok() && !backing_off) {
+        let _ = accept.join();
     }
     super::wallpaper_sync::live(None);
     set_status("");
@@ -345,7 +351,9 @@ fn listen(s: &LiveSettings) -> Result<(), String> {
     eprintln!("Foxglove: live feed on 127.0.0.1:{}", s.port);
     let token = s.token.clone();
     let (accept_tx, accept_stop) = (tx.clone(), stop.clone());
-    let accept = super::services::spawn_named("live-accept", move || {
+    // Both supervised (#587). The hub's queue outlives a panicking attempt, so the accept
+    // thread, the clients and `send` keep a good sender.
+    let accept = super::services::spawn_supervised("live-accept", move || {
         accept_loop(&listener, &accept_stop, &accept_tx, &token)
     });
     *RUNNING.lock().unwrap_or_else(|e| e.into_inner()) = Some(Running {
@@ -354,7 +362,13 @@ fn listen(s: &LiveSettings) -> Result<(), String> {
         port: s.port,
         accept,
     });
-    super::services::spawn_named("live-hub", move || run(&rx, &tx));
+    let facts = super::devices::bus().facts();
+    forward_facts(facts, "keyboard.*", &tx, || Msg::State);
+    forward_facts(facts, "app.foreground", &tx, || Msg::Foreground);
+    let rx = Mutex::new(rx);
+    let _ = super::services::spawn_supervised("live-hub", move || {
+        run(&rx.lock().unwrap_or_else(|e| e.into_inner()), &tx)
+    });
     super::wallpaper_sync::live(Some(s.port));
     Ok(())
 }
@@ -472,11 +486,9 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>) {
             let _ = tx.send(Msg::Gates);
         }
     });
-    forward_facts(facts, "keyboard.*", tx, || Msg::State);
-    forward_facts(facts, "app.foreground", tx, || Msg::Foreground);
 
     let epoch = Instant::now();
-    let mut clients: Vec<Client> = Vec::new();
+    let mut clients = Clients(Vec::new());
     let mut hub = Hub {
         state: read_state(facts),
         board: GEOMETRY.lock().unwrap_or_else(|e| e.into_inner()).clone(),
@@ -589,12 +601,38 @@ fn run(rx: &Receiver<Msg>, tx: &Sender<Msg>) {
             let _ = stream.shutdown(Shutdown::Both);
         }
     }
-    for mut c in clients {
+    for mut c in clients.0.drain(..) {
         let _ = ws::write_frame(&mut c.stream, ws::CLOSE, &1001u16.to_be_bytes());
         let _ = c.stream.flush();
         let _ = c.stream.shutdown(Shutdown::Both);
     }
     CONNECTED.store(0, Ordering::Relaxed);
+}
+
+/// The hub's wallpapers. A hub that panics lets them go on the way out, so each one reconnects
+/// to the restarted hub instead of waiting on a connection nobody writes to (#587).
+struct Clients(Vec<Client>);
+
+impl std::ops::Deref for Clients {
+    type Target = Vec<Client>;
+    fn deref(&self) -> &Vec<Client> {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Clients {
+    fn deref_mut(&mut self) -> &mut Vec<Client> {
+        &mut self.0
+    }
+}
+
+impl Drop for Clients {
+    fn drop(&mut self) {
+        for c in &self.0 {
+            let _ = c.stream.shutdown(Shutdown::Both);
+        }
+        CONNECTED.store(0, Ordering::Relaxed);
+    }
 }
 
 /// The key-event subscription, held only while it's wanted: each start is a new generation,

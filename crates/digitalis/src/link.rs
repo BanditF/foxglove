@@ -20,12 +20,17 @@
 //! on the wire at a time; later ones wait their turn, and a request whose caller has given up is
 //! never sent. The link reconnects by itself; whatever was queued for a lost connection is
 //! dropped, never sent to the next one.
+//!
+//! A callback that panics (an event sink, a report observer or a subscriber's filter) is dropped
+//! on the spot: it can't take the link thread down or poison the lists (#587). A poisoned lock
+//! is recovered; a poisoned state also reconnects, so the state is read afresh.
 
 use std::collections::{HashMap, VecDeque};
 use std::ops::Deref;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -178,6 +183,21 @@ impl Drop for Subscription {
 
 type ReportListener = (Box<dyn Fn(u64, &Report) + Send>, Arc<AtomicBool>);
 
+/// Locks `m`, recovering it if a panic poisoned it: the lists and handles it guards are
+/// whole between operations.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Runs a callback; false if it panicked, so the caller drops it.
+fn survives(name: &str, callback: impl FnOnce()) -> bool {
+    let ok = catch_unwind(AssertUnwindSafe(callback)).is_ok();
+    if !ok {
+        eprintln!("Digitalis: a {name} panicked and was unsubscribed");
+    }
+    ok
+}
+
 struct Shared {
     state: Mutex<State>,
     subscribers: Mutex<Vec<Subscriber>>,
@@ -233,14 +253,14 @@ impl Link {
     /// Re-enumerate after a device-interface change, preferring the current transport. No I/O on the caller.
     pub fn reconnect(&self) {
         self.shared.reconnect.store(true, Ordering::Relaxed);
-        let _ = self.commands.lock().unwrap().send(Message::Wake);
+        let _ = lock(&self.commands).send(Message::Wake);
         if let Some(thread) = &self.thread {
             thread.thread().unpark();
         }
     }
 
     pub fn state(&self) -> State {
-        self.shared.state.lock().unwrap().clone()
+        self.shared.state().clone()
     }
 
     /// Waits until the link is connected, for one-shot tools.
@@ -265,7 +285,7 @@ impl Link {
     pub fn subscribe(&self, filter: impl Fn(&[u8]) -> bool + Send + 'static) -> Subscription {
         let (tx, rx) = mpsc::sync_channel(SUBSCRIBER_BUFFER);
         let alive = Arc::new(AtomicBool::new(true));
-        self.shared.subscribers.lock().unwrap().push(Subscriber {
+        lock(&self.shared.subscribers).push(Subscriber {
             filter: Box::new(filter),
             tx,
             alive: alive.clone(),
@@ -276,10 +296,14 @@ impl Link {
     /// Registers a nonblocking event sink and immediately sends the current state. The sink
     /// runs on the link thread: only enqueue events here, never perform I/O or call the link.
     pub fn subscribe_events(&self, notify: impl Fn(Event) + Send + 'static) -> EventSubscription {
-        let state = self.shared.state.lock().unwrap();
-        let mut events = self.shared.events.lock().unwrap();
+        let state = self.shared.state();
+        let mut events = lock(&self.shared.events);
         let alive = Arc::new(AtomicBool::new(true));
-        notify(Event::State(state.clone()));
+        let current = Event::State(state.clone());
+        if !survives("link event sink", || notify(current)) {
+            alive.store(false, Ordering::Relaxed);
+            return EventSubscription(alive);
+        }
         events.push(EventSubscriber {
             notify: Box::new(notify),
             alive: alive.clone(),
@@ -294,21 +318,15 @@ impl Link {
         notify: impl Fn(u64, &Report) + Send + 'static,
     ) -> EventSubscription {
         let alive = Arc::new(AtomicBool::new(true));
-        self.shared
-            .reports
-            .lock()
-            .unwrap()
-            .push((Box::new(notify), alive.clone()));
+        lock(&self.shared.reports).push((Box::new(notify), alive.clone()));
         EventSubscription(alive)
     }
 
     fn queue(&self, command: Command) -> Result<()> {
-        if self.shared.state.lock().unwrap().connected.is_none() {
+        if self.shared.state().connected.is_none() {
             return Err(anyhow!("keyboard not connected"));
         }
-        self.commands
-            .lock()
-            .unwrap()
+        lock(&self.commands)
             .send(Message::Command(command))
             .map_err(|_| anyhow!("link stopped"))
     }
@@ -346,7 +364,7 @@ impl Transport for Link {
 impl Drop for Link {
     fn drop(&mut self) {
         self.shared.stop.store(true, Ordering::Relaxed);
-        let _ = self.commands.lock().unwrap().send(Message::Wake);
+        let _ = lock(&self.commands).send(Message::Wake);
         if let Some(t) = self.thread.take() {
             t.thread().unpark();
             let _ = t.join();
@@ -354,8 +372,20 @@ impl Drop for Link {
     }
 }
 
+impl Shared {
+    /// The state, recovered if a panic poisoned it; the link then reconnects, so a state left
+    /// half-written is replaced by a fresh connection's.
+    fn state(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(|e| {
+            self.state.clear_poison();
+            self.reconnect.store(true, Ordering::Relaxed);
+            e.into_inner()
+        })
+    }
+}
+
 fn set_state(shared: &Shared, f: impl FnOnce(&mut State)) {
-    let mut state = shared.state.lock().unwrap();
+    let mut state = shared.state();
     let before = state.clone();
     f(&mut state);
     if state.connected != before.connected || state.generation != before.generation {
@@ -364,12 +394,8 @@ fn set_state(shared: &Shared, f: impl FnOnce(&mut State)) {
 }
 
 fn publish(shared: &Shared, event: Event) {
-    shared.events.lock().unwrap().retain(|s| {
-        if !s.alive.load(Ordering::Relaxed) {
-            return false;
-        }
-        (s.notify)(event.clone());
-        true
+    lock(&shared.events).retain(|s| {
+        s.alive.load(Ordering::Relaxed) && survives("link event sink", || (s.notify)(event.clone()))
     });
 }
 
@@ -573,13 +599,9 @@ fn write_loop(dev: &dyn RawHid, commands: &Receiver<Message>, shared: &Shared) -
 
 fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
     requests.expire(Instant::now());
-    let generation = shared.state.lock().unwrap().generation;
-    shared.reports.lock().unwrap().retain(|(notify, alive)| {
-        if !alive.load(Ordering::Relaxed) {
-            return false;
-        }
-        notify(generation, r);
-        true
+    let generation = shared.state().generation;
+    lock(&shared.reports).retain(|(notify, alive)| {
+        alive.load(Ordering::Relaxed) && survives("report observer", || notify(generation, r))
     });
     if matches!(r[0], protocol::PANEL | protocol::ART | protocol::SETTINGS) && r[1] & 0x80 != 0 {
         // A reply goes to its request. Unasked art STATUS may be a firmware notification;
@@ -602,7 +624,7 @@ fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
         }
     }
     if r[0] == protocol::ART && r[1] & 0x7f == protocol::art::STATUS {
-        let generation = shared.state.lock().unwrap().generation;
+        let generation = shared.state().generation;
         publish(
             shared,
             Event::ArtStatus {
@@ -611,11 +633,15 @@ fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
             },
         );
     }
-    shared.subscribers.lock().unwrap().retain(|s| {
+    lock(&shared.subscribers).retain(|s| {
         if !s.alive.load(Ordering::Relaxed) {
             return false;
         }
-        if !(s.filter)(r) {
+        let mut wanted = false;
+        if !survives("report filter", || wanted = (s.filter)(r)) {
+            return false;
+        }
+        if !wanted {
             return true;
         }
         // A subscriber that has fallen far behind misses this one but stays subscribed.
@@ -645,7 +671,7 @@ mod hid_open {
         }
 
         fn write(&self, report: &[u8]) -> Result<()> {
-            Transport::send(&*self.writer.lock().unwrap(), report)
+            Transport::send(&*lock(&self.writer), report)
         }
     }
 
@@ -663,7 +689,7 @@ mod hid_open {
             if self.interrupted.load(Ordering::Relaxed) {
                 return Ok(0);
             }
-            self.keyboard.lock().unwrap().read_timeout(buf, 10)
+            lock(&self.keyboard).read_timeout(buf, 10)
         }
 
         fn interrupt(&self) {
@@ -671,7 +697,7 @@ mod hid_open {
         }
 
         fn write(&self, report: &[u8]) -> Result<()> {
-            Transport::send(&*self.keyboard.lock().unwrap(), report)
+            Transport::send(&*lock(&self.keyboard), report)
         }
     }
 
@@ -972,6 +998,50 @@ mod tests {
         drop(subscription);
         assert_eq!(status(&l, 43, WAIT).unwrap(), 43);
         assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
+    }
+
+    /// #587: a callback that panics is dropped; the link keeps serving requests, and later
+    /// subscriptions (which used to panic on the poisoned list) work.
+    #[test]
+    fn a_panicking_callback_is_dropped_and_the_link_keeps_going() {
+        let fake = Fake::default();
+        let l = link(&fake);
+        let _bad_reports = l.subscribe_reports(|_, r| {
+            if r[0] == protocol::ART {
+                panic!("deliberate observer failure");
+            }
+        });
+        let (fired_tx, fired) = mpsc::channel();
+        let _bad_events = l.subscribe_events(move |event| {
+            if matches!(event, Event::ArtStatus { .. }) {
+                let _ = fired_tx.send(());
+                panic!("deliberate sink failure");
+            }
+        });
+        let _bad_filter = l.subscribe(|r| r[0] == 0xFF && panic!("deliberate filter failure"));
+        // Unasked art STATUS reaches the observers and the event sinks, before any request.
+        fake.push(&[protocol::ART, 0x80 | art::STATUS, 9]);
+        fired.recv_timeout(WAIT).unwrap();
+        assert_eq!(status(&l, 1, WAIT).unwrap(), 1);
+        let (tx, rx) = mpsc::channel();
+        let _good = l.subscribe_reports(move |_, r| {
+            if r[0] == protocol::ART && r[2] == 2 {
+                let _ = tx.send(r[2]);
+            }
+        });
+        assert_eq!(status(&l, 2, WAIT).unwrap(), 2);
+        assert_eq!(rx.recv_timeout(WAIT).unwrap(), 2);
+        assert!(l.state().connected.is_some());
+        assert!(!l.shared.reports.is_poisoned() && !l.shared.events.is_poisoned());
+        assert_eq!(
+            lock(&l.shared.reports).len(),
+            1,
+            "the panicking observer was dropped"
+        );
+        assert!(
+            lock(&l.shared.subscribers).is_empty(),
+            "the panicking filter was dropped"
+        );
     }
 
     #[test]

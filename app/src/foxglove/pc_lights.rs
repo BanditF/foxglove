@@ -798,8 +798,12 @@ pub fn start() {
     if QUEUE.set(Mutex::new(tx.clone())).is_err() {
         return;
     }
-    let settings = super::store::try_load::<Settings>("pc_lighting").unwrap_or_default();
-    super::services::spawn_named("pc-lights", move || {
+    // Supervised (#587): the queue outlives a panicking attempt, so `QUEUE` stays good and
+    // nothing queued is lost; a restart reloads the settings and scans again.
+    let rx = Mutex::new(rx);
+    let _ = super::services::spawn_supervised("pc-lights", move || {
+        let rx = rx.lock().unwrap_or_else(|e| e.into_inner());
+        let settings = super::store::try_load::<Settings>("pc_lighting").unwrap_or_default();
         #[cfg(target_os = "windows")]
         let _watch = {
             let tx = tx.clone();

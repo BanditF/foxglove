@@ -412,27 +412,27 @@ pub fn start() {
             cancel: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
         };
+        forward_events(&h);
+        // Supervised (#587): a panic restarts the worker with backoff (it used to restart at
+        // once, without a limit). The command queue outlives the attempt.
         let worker = h.clone();
-        if let Err(e) = std::thread::Builder::new()
-            .name("foxglove-art".into())
-            .spawn(move || {
-                while !worker.stop.load(Ordering::Relaxed) {
-                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        run(&worker, &receiver)
-                    }))
-                    .is_ok()
-                    {
-                        break;
-                    }
-                    worker.update(|s| {
-                        s.busy = false;
-                        s.connected = false;
-                        s.error = Some("Art worker panicked; restarting".into());
-                    });
-                }
-            })
-        {
-            h.update(|s| s.error = Some(e.to_string()));
+        let receiver = Mutex::new(receiver);
+        let restarted = AtomicBool::new(false);
+        let started = super::services::spawn_supervised("art", move || {
+            if worker.stop.load(Ordering::Relaxed) {
+                return;
+            }
+            if restarted.swap(true, Ordering::Relaxed) {
+                worker.update(|s| {
+                    s.busy = false;
+                    s.connected = false;
+                    s.error = Some("Art worker panicked; restarted".into());
+                });
+            }
+            run(&worker, &receiver.lock().unwrap_or_else(|e| e.into_inner()));
+        });
+        if started.is_none() {
+            h.update(|s| s.error = Some("Can't start the art worker".into()));
         }
         h
     });
@@ -672,33 +672,38 @@ fn read_slots(link: &impl Transport, h: &Handle, st: &ArtStatus) {
     h.update(|s| s.slots = slots);
 }
 
+/// Profile switches and layer changes (layer art, #60) into the worker's queue, straight from
+/// the facts and the device events. Started once: the queue outlives a worker restart, so a
+/// restarted worker doesn't add a second pair (it did, each time it panicked).
+fn forward_events(h: &Handle) {
+    let subscribe = || super::devices::bus().facts().subscribe("profile.active");
+    let (profile, profile_tx) = (super::services::First::new(subscribe()), h.commands.clone());
+    let _ = super::services::spawn_supervised("art-profile", move || {
+        for _ in profile.take_or(subscribe) {
+            if profile_tx.send(Command::ProfileChanged).is_err() {
+                return;
+            }
+        }
+    });
+    let subscribe = || super::devices::bus().subscribe(false);
+    let (events, layers_tx) = (super::services::First::new(subscribe()), h.commands.clone());
+    let _ = super::services::spawn_supervised("art-layers", move || {
+        for event in events.take_or(subscribe) {
+            if let foxglove_devices::DeviceEvent::LayerChanged { active } = event.event {
+                if layers_tx.send(Command::Layers(active)).is_err() {
+                    return;
+                }
+            }
+        }
+    });
+}
+
 fn run(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let (pinned, pinned_name) = load_pinned();
     h.update(|s| {
         s.pinned = pinned;
         s.pinned_name = pinned_name;
         s.cycle = Cycle::load();
-    });
-    let profile_tx = h.commands.clone();
-    let profile = super::devices::bus().facts().subscribe("profile.active");
-    super::services::spawn_named("art-profile", move || {
-        for _ in profile {
-            if profile_tx.send(Command::ProfileChanged).is_err() {
-                break;
-            }
-        }
-    });
-    // Layer changes for layer art (#60), straight from the device events.
-    let layers_tx = h.commands.clone();
-    let events = super::devices::bus().subscribe(false);
-    super::services::spawn_named("art-layers", move || {
-        for event in events {
-            if let foxglove_devices::DeviceEvent::LayerChanged { active } = event.event {
-                if layers_tx.send(Command::Layers(active)).is_err() {
-                    break;
-                }
-            }
-        }
     });
     let notifications = h.commands.clone();
     let _subscription = super::link::subscribe_links(move |link| {

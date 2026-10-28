@@ -17,8 +17,9 @@ pub fn start() {
         return;
     }
     restore_on_connect();
+    // Supervised (#587): a restart opens the pipe again.
     #[cfg(windows)]
-    super::services::spawn_named("api-pipe", || {
+    let _ = super::services::spawn_supervised("api-pipe", || {
         let result = foxglove_plugin_host::pipe::listen(|| Context {
             facts: super::devices::bus().facts().clone(),
             devices: Arc::new(AppDevices),
@@ -35,8 +36,9 @@ pub fn start() {
 /// A keyboard (re)connecting gets back lights whose restore didn't take (#293): the retry is
 /// started by the connection and stopped by the readback.
 fn restore_on_connect() {
-    let events = super::devices::bus().subscribe(false);
-    super::services::spawn_named("lease-restore", move || {
+    let events = super::services::First::new(super::devices::bus().subscribe(false));
+    let _ = super::services::spawn_supervised("lease-restore", move || {
+        let events = events.take_or(|| super::devices::bus().subscribe(false));
         for e in events {
             if e.event != foxglove_devices::DeviceEvent::Connected {
                 continue;

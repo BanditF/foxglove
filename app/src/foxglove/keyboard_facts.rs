@@ -18,8 +18,10 @@ use foxglove_devices::DeviceEvent;
 const HOST_KEYBOARD: &str = "zmk";
 
 pub fn start() {
-    let events = super::devices::bus().subscribe(false);
-    super::services::spawn_named("keyboard-facts", move || {
+    // Supervised (#587): the first attempt gets the subscription made here, a restart its own.
+    let events = super::services::First::new(super::devices::bus().subscribe(false));
+    let _ = super::services::spawn_supervised("keyboard-facts", move || {
+        let events = events.take_or(|| super::devices::bus().subscribe(false));
         let facts = super::devices::bus().facts();
         for e in events {
             if e.device.backend.0 != HOST_KEYBOARD {
