@@ -156,6 +156,8 @@ locking off; the Toucan2's vendor keymap reserves 2, locking on.
 Cost on a nice!nano v2 (nRF52840, 256 KB RAM, 1 MB flash), from ZMK v0.3.0's `keymap.c` for the
 Corne's 48 keys: each reserved layer adds a 48-binding row (16 bytes each) to the editable keymap
 in RAM and to the stock keymap in flash, a sensor binding, a 20-byte name and 6 bytes of pending
-flags: about 0.8 KB of RAM and 0.8 KB of flash a layer, 2.5 KB of each for three. Settings
+flags: about 0.8 KB of RAM and 0.8 KB of flash a layer. Measured in CI (the left Studio builds,
+three layers): RAM +2,536 B (49.3% to 50.3% of 256 KB), flash +2,408 B (65.3% to 65.8% of
+540 KB); the right half's builds are byte for byte the same size. Settings
 storage (NVS, 32 KB on the Eyelash Corne) only grows when a reserved layer is used: one entry
 per changed key (up to 48 a layer), plus its name and the layer order.
