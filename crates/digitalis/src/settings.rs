@@ -76,7 +76,9 @@ pub fn enter_bootloader(t: &impl Transport, half: u8) -> Result<()> {
         6 => anyhow::bail!("bootloader nonce wrong or expired"),
         // #545: the left had no relay to the right and used ZMK's split link; nothing confirms
         // it, so callers keep treating it as "not entered" and watch for the drive.
-        7 => anyhow::bail!("sent to the right over ZMK's split link, unconfirmed; watch for its bootloader drive"),
+        7 => anyhow::bail!(
+            "sent to the right over ZMK's split link, unconfirmed; watch for its bootloader drive"
+        ),
         s => anyhow::bail!("bootloader command failed with status {s}"),
     };
     let wait = Duration::from_millis(1500);
