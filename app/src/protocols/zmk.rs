@@ -1,6 +1,7 @@
 use super::layout_geometry::flattened_top_left_after_center_rotation;
-use super::zmk_rpc::{self, ZmkData, ZmkStudioSession, ZmkTransport};
+use super::zmk_rpc::{self, ZmkData, ZmkTransport};
 use super::{Key, KeyboardDefinition, KeyboardLayout, KeyboardProtocol, Reopener, WriteSupport};
+use crate::foxglove::studio_session::{StudioDone, StudioEditor, StudioRequest};
 use crate::key_action::{KeyAction, KeymapSnapshot, LayerInfo};
 use digitalis::link::{Event as LinkEvent, EventSubscription, Link};
 use std::collections::{HashMap, HashSet};
@@ -8,7 +9,7 @@ use std::error::Error;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use zmk_studio_api::{BehaviorBindingParametersSet, BehaviorRole, ClientError, ResolvedLayer};
+use zmk_studio_api::{BehaviorBindingParametersSet, BehaviorRole, ResolvedLayer};
 
 struct ZmkLayout {
     definition: KeyboardDefinition,
@@ -17,10 +18,12 @@ struct ZmkLayout {
     behavior_metadata: HashMap<BehaviorRole, Vec<BehaviorBindingParametersSet>>,
 }
 
-/// What the keyboard reader is woken for (#282): a report, or the link going away.
+/// What the keyboard reader is woken for (#282): a report, the link going away, or (#578) a
+/// keymap command waiting to run.
 enum Incoming {
     Report([u8; digitalis::protocol::REPORT]),
     Disconnected,
+    Wake,
 }
 
 pub struct ZmkProtocol {
@@ -29,10 +32,12 @@ pub struct ZmkProtocol {
     // keyboard costs no wakeups (#282). Dropping the protocol ends both taps.
     link: Arc<Link>,
     reports: Receiver<Incoming>,
+    wake: mpsc::Sender<Incoming>,
     _taps: (EventSubscription, EventSubscription),
     layout: Arc<ZmkLayout>,
     transport: ZmkTransport,
-    session: Option<ZmkStudioSession>,
+    // Foxglove (#578): the Studio edit session (lock, Save/Discard, restore stock).
+    studio: StudioEditor,
 }
 
 struct ZmkReopener {
@@ -107,6 +112,7 @@ impl ZmkProtocol {
         // Subscribe before waiting, so reports sent while the link connects aren't missed.
         let (tx, reports) = mpsc::channel();
         let report_tx = tx.clone();
+        let wake = tx.clone();
         let report_tap = link.subscribe_reports(move |_, r| {
             let _ = report_tx.send(Incoming::Report(*r));
         });
@@ -123,28 +129,12 @@ impl ZmkProtocol {
         Ok(Self {
             link,
             reports,
+            wake,
             _taps: (report_tap, state_tap),
             layout,
+            studio: StudioEditor::new(zmk_rpc::studio_opener(transport.clone())),
             transport,
-            session: None,
         })
-    }
-
-    /// Executes an operation with an active ZMK studio session.
-    fn with_session<T>(
-        &mut self,
-        write: impl FnOnce(&mut ZmkStudioSession) -> Result<T, Box<dyn Error>>,
-    ) -> Result<T, Box<dyn Error>> {
-        if self.session.is_none() {
-            self.session = Some(ZmkStudioSession::open(&self.transport)?);
-        }
-        let result = write(self.session.as_mut().unwrap());
-        if let Err(ref err) = result {
-            if should_drop_session(err.as_ref()) {
-                self.session = None;
-            }
-        }
-        result
     }
 
     fn update_cached_action(&self, layer_index: usize, row: usize, col: usize, action: KeyAction) {
@@ -158,27 +148,6 @@ impl ZmkProtocol {
             *cell = Some(action);
         }
     }
-}
-
-/// Returns true if the RPC error requires dropping the session.
-fn should_drop_session(err: &(dyn Error + 'static)) -> bool {
-    let Some(client_err) = err.downcast_ref::<ClientError>() else {
-        return true;
-    };
-    !matches!(
-        client_err,
-        ClientError::SetLayerBindingFailed(_)
-            | ClientError::SaveChangesFailed(_)
-            | ClientError::SetActivePhysicalLayoutFailed(_)
-            | ClientError::MoveLayerFailed(_)
-            | ClientError::AddLayerFailed(_)
-            | ClientError::RemoveLayerFailed(_)
-            | ClientError::RestoreLayerFailed(_)
-            | ClientError::SetLayerPropsFailed(_)
-            | ClientError::InvalidLayerOrPosition { .. }
-            | ClientError::MissingBehaviorRole(_)
-            | ClientError::BehaviorIdOutOfRange { .. }
-    )
 }
 
 impl KeyboardProtocol for ZmkProtocol {
@@ -199,6 +168,7 @@ impl KeyboardProtocol for ZmkProtocol {
         }
         match self.reports.recv() {
             Ok(Incoming::Report(report)) => Ok(report.to_vec()),
+            Ok(Incoming::Wake) => Ok(Vec::new()),
             Ok(Incoming::Disconnected) | Err(_) => gone(),
         }
     }
@@ -225,21 +195,38 @@ impl KeyboardProtocol for ZmkProtocol {
 
         // ZMK's matrix is 1×N: the column is the key position, and the write
         // RPC addresses layers by their stable id.
-        self.with_session(|session| session.set_key(layer.id, col as i32, behavior))?;
+        self.studio.set_key(layer.id, col as i32, behavior)?;
         self.update_cached_action(layer_index, row, col, action.clone());
         Ok(())
     }
 
     fn save_keymap(&mut self) -> Result<(), Box<dyn Error>> {
-        self.with_session(|session| session.save())
-    }
-
-    fn open_edit_session(&mut self) -> Result<(), Box<dyn Error>> {
-        self.with_session(|_session| Ok(()))
+        self.studio.save()
     }
 
     fn end_edit_session(&mut self) {
-        self.session = None;
+        self.studio.end();
+    }
+
+    fn studio(&mut self, request: StudioRequest, done: StudioDone) {
+        // Foxglove (#578): a discard or restore changes the keymap; the overlay, the bindings
+        // the app can invoke and this protocol's copy follow it.
+        let layout = &self.layout;
+        let keys = layout.definition.cols;
+        self.studio.handle(request, done, |layers, raw| {
+            crate::foxglove::keyboard_actions::learn(layers, raw);
+            crate::foxglove::layer_access::learn(layers);
+            let snapshot = snapshot_from_resolved(layers, keys);
+            *layout.snapshot.lock().unwrap() = snapshot.clone();
+            snapshot
+        });
+    }
+
+    fn reader_waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        let wake = self.wake.clone();
+        Some(Arc::new(move || {
+            let _ = wake.send(Incoming::Wake);
+        }))
     }
 
     fn reopener(&self) -> Option<Arc<dyn Reopener>> {
@@ -343,7 +330,10 @@ fn build_from_zmk_data(vid: u16, pid: u16, data: ZmkData) -> Result<ZmkLayout, B
 /// Builds a keymap snapshot from the device's resolved layers. Bindings beyond
 /// `num_keys` are dropped and short layers are padded with `None`, matching the
 /// matrix dimensions.
-fn snapshot_from_resolved(resolved: &[ResolvedLayer], num_keys: usize) -> KeymapSnapshot {
+pub(crate) fn snapshot_from_resolved(
+    resolved: &[ResolvedLayer],
+    num_keys: usize,
+) -> KeymapSnapshot {
     let layers = resolved
         .iter()
         .map(|layer| LayerInfo {
