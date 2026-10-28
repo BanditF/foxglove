@@ -44,6 +44,7 @@ pub mod keyboard_facts;
 pub mod keyboard_page;
 pub mod keyboard_settings;
 pub mod keymap_cache;
+pub mod keymap_session;
 pub mod last_device;
 pub mod layer_access;
 pub mod layer_names;
@@ -98,6 +99,9 @@ pub mod shell;
 pub mod single_instance;
 pub mod startup;
 pub mod store;
+#[cfg(test)]
+pub(crate) mod studio_fake;
+pub mod studio_session;
 pub mod taskbar;
 pub mod theme;
 #[cfg(test)]

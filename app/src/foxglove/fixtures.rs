@@ -73,6 +73,8 @@ pub(crate) mod users_desk {
     pub(crate) const COOLER: (u16, u16) = (0x03f0, 0x7397);
     /// The mouse's VID/PID (a Logitech G502 on Dynamic Lighting).
     pub(crate) const MOUSE: (u16, u16) = (0x046d, 0xc332);
+    /// The Corne's keys, as its Studio keymap counts them (both halves).
+    pub(crate) const KEYS: usize = 42;
 
     /// The Eyelash Corne's built-in profile.
     pub(crate) fn board() -> Board {
@@ -189,6 +191,8 @@ thumbs = 1
     /// Plank 3's LEDs and screens.
     pub(crate) const LAMPS: usize = 61;
     pub(crate) const SCREENS: usize = 3;
+    /// Plank 3's keys, as its Studio keymap counts them.
+    pub(crate) const KEYS: usize = 61;
 
     /// Lighting devices from made-up vendors: a case board Foxglove has no driver for, and a
     /// lightbar that only Windows Dynamic Lighting knows (it needs no catalog entry).

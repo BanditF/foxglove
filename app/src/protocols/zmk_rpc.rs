@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::time::Duration;
 use zmk_studio_api::proto::zmk::{core, keymap};
 use zmk_studio_api::transport::{serial::SerialTransport, BleDiscoveryMode, PlatformBleTransport};
-use zmk_studio_api::{Behavior, ClientError, ResolvedLayer, StudioClient};
+use zmk_studio_api::{ClientError, ResolvedLayer, StudioClient};
 
 pub struct ZmkSerialDevice {
     pub port_name: String,
@@ -116,76 +116,41 @@ pub struct ZmkData {
     pub raw_keymap: keymap::Keymap,
 }
 
-/// ZMK Studio RPC connection session.
-pub enum ZmkStudioSession {
-    Serial(StudioClient<SerialTransport>),
-    Ble(StudioClient<PlatformBleTransport>),
+/// Foxglove (#578): opens Studio links on `transport` for the edit session, locked or not (the
+/// session handles the lock: `crate::foxglove::studio_session`).
+pub fn studio_opener(transport: ZmkTransport) -> crate::foxglove::studio_session::Opener {
+    Box::new(move || open_studio_link(&transport))
 }
 
-impl ZmkStudioSession {
-    /// Opens a ZMK Studio session on the specified transport.
-    pub fn open(transport: &ZmkTransport) -> Result<Self, Box<dyn Error>> {
-        let mut session = match transport {
-            ZmkTransport::SerialPort(port_name) => {
-                Self::Serial(StudioClient::open_serial(port_name).map_err(|e| {
-                    format!(
-                        "Failed to open serial port '{port_name}': {e}. \
-                         The port may be in use by another application such as ZMK Studio."
-                    )
-                })?)
-            }
-            ZmkTransport::BleDevice(device_id) => Self::Ble(
-                StudioClient::<PlatformBleTransport>::open_ble(device_id).map_err(|e| {
-                    format!(
-                        "Failed to connect to BLE device '{device_id}': {e}. \
+fn open_studio_link(
+    transport: &ZmkTransport,
+) -> Result<crate::foxglove::studio_session::Link, Box<dyn Error>> {
+    use crate::foxglove::studio_session::Link;
+    match transport {
+        ZmkTransport::SerialPort(port_name) => {
+            let line = SerialTransport::open(port_name).map_err(|e| {
+                format!(
+                    "Failed to open serial port '{port_name}': {e}. \
+                     The port may be in use by another application such as ZMK Studio."
+                )
+            })?;
+            // As `StudioClient::open_serial` does.
+            let mut link = Link::new(line);
+            link.client().drain_stale_input(Duration::from_secs(1));
+            Ok(link)
+        }
+        ZmkTransport::BleDevice(device_id) => {
+            let line = PlatformBleTransport::connect_device(device_id).map_err(|e| {
+                format!(
+                    "Failed to connect to BLE device '{device_id}': {e}. \
                      Make sure the keyboard is paired in your OS Bluetooth settings."
-                    )
-                })?,
-            ),
-        };
-
-        if session.lock_state()? == core::LockState::ZmkStudioCoreLockStateLocked {
-            return Err(Box::new(DeviceLocked));
+                )
+            })?;
+            // As `StudioClient::open_ble` does.
+            let mut link = Link::new(line);
+            link.client().set_call_timeout(Duration::from_secs(8));
+            Ok(link)
         }
-        session.ensure_behavior_catalog()?;
-
-        Ok(session)
-    }
-
-    fn lock_state(&mut self) -> Result<core::LockState, Box<dyn Error>> {
-        Ok(match self {
-            Self::Serial(client) => client.get_lock_state()?,
-            Self::Ble(client) => client.get_lock_state()?,
-        })
-    }
-
-    fn ensure_behavior_catalog(&mut self) -> Result<(), Box<dyn Error>> {
-        match self {
-            Self::Serial(client) => client.ensure_behavior_catalog()?,
-            Self::Ble(client) => client.ensure_behavior_catalog()?,
-        }
-        Ok(())
-    }
-
-    pub fn set_key(
-        &mut self,
-        layer_id: u32,
-        key_position: i32,
-        behavior: Behavior,
-    ) -> Result<(), Box<dyn Error>> {
-        match self {
-            Self::Serial(client) => client.set_key_at(layer_id, key_position, behavior)?,
-            Self::Ble(client) => client.set_key_at(layer_id, key_position, behavior)?,
-        }
-        Ok(())
-    }
-
-    pub fn save(&mut self) -> Result<(), Box<dyn Error>> {
-        match self {
-            Self::Serial(client) => client.save_changes()?,
-            Self::Ble(client) => client.save_changes()?,
-        }
-        Ok(())
     }
 }
 

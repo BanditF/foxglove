@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use egui::{Color32, Pos2, Rect, TextureId};
 
 mod art_flow;
+mod keymap_session;
 mod layout;
 mod overlay;
 

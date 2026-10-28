@@ -42,7 +42,6 @@ impl EditTarget {
 /// Operation type of an active background task.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PendingKind {
-    Open,
     Set,
     Save,
 }
@@ -72,6 +71,8 @@ pub enum EditorOverlay {
     Connecting,
     Saving,
     Failed,
+    /// Foxglove (#578): the Studio session's prompt (`foxglove::keymap_session`).
+    Session,
 }
 
 /// Editor window state, owned by `OverlayApp`.
@@ -96,6 +97,8 @@ pub struct EditorState {
     pub closing: bool,
     /// Active search filter for key candidate groups.
     pub search_query: String,
+    /// Foxglove (#578): the Studio session: lock, undo history, prompts.
+    pub studio: crate::foxglove::keymap_session::KeymapSession,
 }
 
 impl Default for EditorState {
@@ -111,6 +114,7 @@ impl Default for EditorState {
             zmk_session: ZmkSessionState::Idle,
             closing: false,
             search_query: String::new(),
+            studio: Default::default(),
         }
     }
 }
@@ -129,6 +133,8 @@ impl EditorState {
     pub fn overlay(&self) -> Option<EditorOverlay> {
         if self.closing {
             Some(EditorOverlay::Saving)
+        } else if self.studio.covers_editor() {
+            Some(EditorOverlay::Session)
         } else if self.zmk_session == ZmkSessionState::Opening {
             Some(EditorOverlay::Connecting)
         } else if self.zmk_session == ZmkSessionState::Failed {
@@ -147,30 +153,34 @@ impl EditorState {
     /// Updates session or dirty flags upon successful completion of a background operation.
     pub fn complete_task(&mut self, kind: PendingKind) {
         match kind {
-            PendingKind::Open => self.zmk_session = ZmkSessionState::Ready,
-            PendingKind::Set => self.zmk_dirty = true,
+            PendingKind::Set => {
+                self.zmk_dirty = true;
+                self.studio.write_done();
+            }
             PendingKind::Save => self.zmk_dirty = false,
         }
     }
 
     /// Clears the active background task and records an error, cancelling queued and closing states.
     pub fn fail_task(&mut self, error: impl Into<String>) {
-        if let Some(task) = self.pending.take() {
-            if task.kind == PendingKind::Open {
-                self.zmk_session = ZmkSessionState::Failed;
-            }
-        }
+        self.pending = None;
         self.queued = None;
         self.closing = false;
-        self.error = Some(error.into());
+        let error = error.into();
+        // Foxglove (#578): a locked board gets the unlock prompt, not an error.
+        if !self.studio.write_failed(&error) {
+            self.error = Some(error);
+        }
     }
 
-    /// Requests window close. If ZMK has unsaved changes, starts a save operation
-    /// before closing. Returns `true` if closed immediately.
+    /// Requests window close. Foxglove (#578): with unsaved ZMK changes it asks first
+    /// (Save, Discard or Keep editing); a locked board closes as it is. Returns `true` if
+    /// closed immediately.
     pub fn request_close(&mut self) -> bool {
         self.error = None;
-        if self.zmk_dirty {
-            self.closing = true;
+        use crate::foxglove::keymap_session::{Lock, Prompt};
+        if self.zmk_dirty && self.studio.lock != Lock::Locked {
+            self.studio.prompt = Some(Prompt::Close);
             false
         } else {
             self.reset();
@@ -329,6 +339,11 @@ impl EditorState {
         keyboard: &Keyboard,
         style: &crate::key_paint::KeyPaintStyle,
     ) {
+        // Foxglove (#578): the Studio session's answers (open, unlock, discard, restore); an
+        // undo may move the editor to the key it changed.
+        if self.target.is_none() || self.poll_studio(keyboard) {
+            return;
+        }
         let Some(target) = self.target else {
             return;
         };
@@ -367,6 +382,10 @@ impl EditorState {
 
             let is_enabled = self.overlay().is_none();
             ui.add_enabled_ui(is_enabled, |ui| {
+                if keyboard.write_support() == WriteSupport::Session {
+                    self.draw_session_bar(ui, keyboard); // Foxglove (#578)
+                    ui.add_space(6.0);
+                }
                 let target = self.draw_editor_header(ui, keyboard, target, style);
 
                 let write_support = keyboard.write_support();
@@ -387,6 +406,7 @@ impl EditorState {
             });
 
             self.draw_editor_overlay(ui);
+            self.draw_session_prompt(ui, keyboard); // Foxglove (#578)
         });
 
         if !open && self.request_close() {
@@ -463,6 +483,7 @@ impl EditorState {
             EditorOverlay::Saving => ("Saving…", true, false),
             EditorOverlay::Connecting => ("Connecting…", true, false),
             EditorOverlay::Failed => ("Connection failed", false, true),
+            EditorOverlay::Session => return,
         };
 
         let window_rect = ui.max_rect();
@@ -486,7 +507,7 @@ impl EditorState {
         });
     }
 
-    fn start_save(&mut self, keyboard: &Keyboard) {
+    pub(crate) fn start_save(&mut self, keyboard: &Keyboard) {
         if self.pending.is_some() {
             return;
         }
@@ -495,19 +516,24 @@ impl EditorState {
 
     /// Starts the ZMK Studio session connection if idle.
     fn ensure_zmk_session(&mut self, keyboard: &Keyboard) {
-        if self.zmk_session != ZmkSessionState::Idle || self.pending.is_some() {
+        if self.zmk_session != ZmkSessionState::Idle || self.session_busy() {
             return;
         }
-        self.zmk_session = ZmkSessionState::Opening;
-        self.start_task(PendingKind::Open, keyboard.open_edit_session());
+        self.open_studio(keyboard); // Foxglove (#578): lock state and unsaved changes too
     }
 
     /// Sends a write command to the device, or queues it if an operation is in progress.
-    fn apply_write(&mut self, keyboard: &Keyboard, target: EditTarget, action: KeyAction) {
+    pub(crate) fn apply_write(
+        &mut self,
+        keyboard: &Keyboard,
+        target: EditTarget,
+        action: KeyAction,
+    ) {
         if self.pending.is_some() {
             self.queued = Some((target, action));
             return;
         }
+        self.studio.begin_edit(keyboard, target, &action); // Foxglove (#578): for undo
         let receiver = target.set_key(keyboard, action);
         self.start_task(PendingKind::Set, receiver);
     }
@@ -521,6 +547,11 @@ impl EditorState {
             Ok(Ok(())) => {
                 if let Some(task) = self.pending.take() {
                     self.complete_task(task.kind);
+                }
+                // Foxglove (#578): an undo or redo shows the key it changed.
+                if let Some(target) = self.studio.take_jump() {
+                    self.retarget(keyboard, target);
+                    ctx.request_repaint();
                 }
                 if let Some((target, action)) = self.queued.take() {
                     self.apply_write(keyboard, target, action);

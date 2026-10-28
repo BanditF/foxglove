@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use crate::key_action::KeyAction;
 use crate::key_matrix::{BoundKey, KeyMatrix};
 use crate::layout_key::LayoutKey;
-use crate::protocols::{DeviceLocked, KeyboardLayout, KeyboardProtocol, WriteSupport};
+use crate::protocols::{KeyboardLayout, KeyboardProtocol, WriteSupport};
 use crate::ui_wake::UiWake;
 use std::error::Error;
 
@@ -157,15 +157,13 @@ pub struct Keyboard {
     write_support: WriteSupport,
     _keepalive: Option<(mpsc::Sender<()>, crate::foxglove::away::Subscription)>,
     action_filter: Option<crate::protocols::ActionFilter>,
+    /// Foxglove (#578): wakes the reader so a command runs without waiting for a report.
+    reader_waker: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// A keymap command for the protocol, executed on the reader thread so writes
 /// and reads never race the same HID handle.
 pub enum KeymapCommand {
-    /// Opens the transient write session ahead of the first write (ZMK).
-    OpenEditSession {
-        respond: mpsc::Sender<Result<(), String>>,
-    },
     SetKey {
         layer_index: usize,
         row: usize,
@@ -178,33 +176,29 @@ pub enum KeymapCommand {
     },
     /// Fire-and-forget; closes any transient write connection.
     EndEditSession,
+    /// Foxglove (#578): a ZMK Studio session request.
+    Studio {
+        request: crate::foxglove::studio_session::StudioRequest,
+        respond: mpsc::Sender<Result<crate::foxglove::studio_session::Status, String>>,
+    },
 }
 
 /// The error text shown for a failed write. Locked ZMK devices get a
 /// retryable message instead of the raw RPC error.
 fn write_error_text(error: Box<dyn Error>) -> String {
-    if error.is::<DeviceLocked>() {
-        "Device is locked. Press the ZMK Studio unlock key combination on your keyboard, \
-         then try again."
-            .to_string()
-    } else {
-        error.to_string()
-    }
+    // Foxglove (#578): the editor shows its unlock prompt for this text.
+    crate::foxglove::studio_session::error_text(error)
 }
 
 /// Executes one command on the protocol. Runs on the reader thread.
 fn run_keymap_command(
     protocol: &mut dyn KeyboardProtocol,
     command: KeymapCommand,
-    layer_names: &[String],
+    layer_names: &mut Vec<String>,
     matrix: &Arc<Mutex<KeyMatrix>>,
     ui_wake: &UiWake,
 ) {
     match command {
-        KeymapCommand::OpenEditSession { respond } => {
-            let result = protocol.open_edit_session().map_err(write_error_text);
-            let _ = respond.send(result);
-        }
         KeymapCommand::SetKey {
             layer_index,
             row,
@@ -248,6 +242,21 @@ fn run_keymap_command(
             let _ = respond.send(result);
         }
         KeymapCommand::EndEditSession => protocol.end_edit_session(),
+        KeymapCommand::Studio { request, respond } => {
+            let done = crate::foxglove::studio_session::StudioDone::new(
+                respond,
+                ui_wake.clone(),
+                Arc::clone(matrix),
+            );
+            protocol.studio(request, done);
+            // A discard or restore may have renamed layers.
+            let guard = matrix.lock().unwrap_or_else(|e| e.into_inner());
+            *layer_names = guard
+                .layer_infos()
+                .iter()
+                .map(|l| l.name.clone().unwrap_or_default())
+                .collect();
+        }
     }
 }
 
@@ -323,6 +332,7 @@ impl Keyboard {
             });
 
         let action_filter = protocol.action_filter();
+        let reader_waker = protocol.reader_waker();
         let keyboard = Keyboard {
             layout: Mutex::new(layout),
             matrix: Arc::clone(&matrix),
@@ -335,6 +345,7 @@ impl Keyboard {
             write_support,
             _keepalive: keepalive,
             action_filter,
+            reader_waker,
         };
 
         let layer_state_clone = Arc::clone(&keyboard.layer_state);
@@ -346,6 +357,7 @@ impl Keyboard {
 
         crate::foxglove::services::spawn_named("keyboard-reader", move || {
             let mut protocol = protocol;
+            let mut layer_names = layer_names;
             // A dropped link (sleep, BLE/USB disconnect) makes `hid_read` error repeatedly.
             // Mark the connection dead after a few consecutive errors to trigger reconnect.
             const MAX_CONSECUTIVE_ERRORS: u32 = 5;
@@ -439,7 +451,7 @@ impl Keyboard {
                         Ok(command) => run_keymap_command(
                             protocol.as_mut(),
                             command,
-                            &layer_names,
+                            &mut layer_names,
                             &matrix_clone,
                             &ui_wake,
                         ),
@@ -551,14 +563,35 @@ impl Keyboard {
         self.send_keymap_command(|respond| KeymapCommand::Save { respond })
     }
 
-    /// Opens the write session in the background to prepare for key editing.
-    pub fn open_edit_session(&self) -> mpsc::Receiver<Result<(), String>> {
-        self.send_keymap_command(|respond| KeymapCommand::OpenEditSession { respond })
-    }
-
     /// Closes any active edit session on the keyboard protocol.
     pub fn end_edit_session(&self) {
         let _ = self.command_tx.send(KeymapCommand::EndEditSession);
+        self.wake_reader();
+    }
+
+    /// Foxglove (#578): sends a ZMK Studio session request; the reply wakes the UI.
+    pub fn studio(
+        &self,
+        request: crate::foxglove::studio_session::StudioRequest,
+    ) -> mpsc::Receiver<Result<crate::foxglove::studio_session::Status, String>> {
+        let (respond, receiver) = mpsc::channel();
+        if let Err(e) = self
+            .command_tx
+            .send(KeymapCommand::Studio { request, respond })
+        {
+            if let KeymapCommand::Studio { respond, .. } = e.0 {
+                let _ = respond.send(Err("Connection lost".to_string()));
+            }
+        }
+        self.wake_reader();
+        receiver
+    }
+
+    /// Foxglove (#578): runs queued commands now on a reader that sleeps until a report.
+    fn wake_reader(&self) {
+        if let Some(wake) = &self.reader_waker {
+            wake();
+        }
     }
 
     /// Sends a command to the keyboard communication thread and returns a response receiver.
@@ -571,14 +604,16 @@ impl Keyboard {
 
         if let Err(send_error) = self.command_tx.send(command) {
             match send_error.0 {
-                KeymapCommand::SetKey { respond, .. }
-                | KeymapCommand::Save { respond }
-                | KeymapCommand::OpenEditSession { respond } => {
+                KeymapCommand::SetKey { respond, .. } | KeymapCommand::Save { respond } => {
                     let _ = respond.send(Err("Connection lost".to_string()));
                 }
                 KeymapCommand::EndEditSession => {}
+                KeymapCommand::Studio { respond, .. } => {
+                    let _ = respond.send(Err("Connection lost".to_string()));
+                }
             }
         }
+        self.wake_reader();
         receiver
     }
 
