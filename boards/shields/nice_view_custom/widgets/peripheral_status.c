@@ -245,6 +245,58 @@ void art_play(const struct custom_art_set *set) {
 #endif
 }
 
+/* Whole-screen redraw (#613). The nice!view runs off the nice!nano's switched VCC, the rail ZMK's
+ * underglow off cuts (CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER): idle-off, sync from the left, the PC
+ * taking the LEDs and handing them back (lamp_strip.c) all switch it. A Sharp memory LCD that
+ * loses power comes back up full of noise, and LVGL only flushes what it knows is dirty, so a
+ * still picture (a 1-frame set, or any set while idle) stayed noise until something happened to
+ * redraw. Every event that can bring the panel's power back, and every art change, calls this:
+ * the whole screen is invalidated so the next flush rewrites every pixel.
+ * Start: art_redraw_all() (the events above). Stop: after REDRAW_SHOTS rewrites; a new event
+ * starts over (reschedule, so a burst of events is one redraw). The first shot comes once the
+ * work that switches the power has run on its own queue, the second catches a slow one. */
+#define REDRAW_FIRST K_MSEC(100)
+#define REDRAW_AGAIN K_MSEC(900)
+#define REDRAW_SHOTS 2
+
+static atomic_t redraw_left;
+
+static void redraw_cb(struct k_work *work) {
+    lv_obj_t *screen = lv_scr_act();
+    if (screen != NULL) {
+        lv_obj_invalidate(screen);
+    }
+    if (atomic_dec(&redraw_left) > 1) {
+        k_work_reschedule_for_queue(zmk_display_work_q(), k_work_delayable_from_work(work),
+                                    REDRAW_AGAIN);
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(redraw_work, redraw_cb);
+
+void art_redraw_all(void) {
+    if (!zmk_display_is_initialized()) {
+        return; // the first load draws everything anyway
+    }
+    atomic_set(&redraw_left, REDRAW_SHOTS);
+    k_work_reschedule_for_queue(zmk_display_work_q(), &redraw_work, REDRAW_FIRST);
+}
+
+// This half waking (a key: rgb_idle turns the underglow, and so the panel, back on) or its cable
+// coming or going.
+static int redraw_listener(const zmk_event_t *eh) {
+    const struct zmk_activity_state_changed *activity = as_zmk_activity_state_changed(eh);
+    if (activity == NULL || activity->state == ZMK_ACTIVITY_ACTIVE) {
+        art_redraw_all();
+    }
+    return ZMK_EV_EVENT_BUBBLE;
+}
+
+ZMK_LISTENER(art_redraw, redraw_listener);
+ZMK_SUBSCRIPTION(art_redraw, zmk_activity_state_changed);
+#if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
+ZMK_SUBSCRIPTION(art_redraw, zmk_usb_conn_state_changed);
+#endif
+
 int art_builtin_index(int index) {
     if (index < 0 || index >= custom_art_set_count) {
         index = sys_rand32_get() % custom_art_set_count;
