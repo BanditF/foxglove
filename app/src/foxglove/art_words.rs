@@ -2,7 +2,7 @@
 //! the sending strip's sentences. Each comes from one table here, so the Screens page and the
 //! tray panel say the same thing, and no relay state name or raw error reaches the UI.
 
-use digitalis::protocol::{right_state, ArtStatus};
+use foxglove_link::protocol::{right_state, ArtStatus};
 
 use super::art_service::{Job, JobKind, Snapshot};
 
@@ -158,7 +158,7 @@ pub enum Problem {
     Other,
 }
 
-/// The relay's error codes (`ERRORS` in digitalis' protocol).
+/// The relay's error codes (`ERRORS` in foxglove-link's protocol).
 mod relay_error {
     pub const NOT_CONNECTED: u8 = 1;
     pub const TOO_BIG: u8 = 2;
@@ -169,7 +169,7 @@ mod relay_error {
     pub const REJECTED: u8 = 7;
 }
 
-/// Sorts an art service error (the strings `art_service` and digitalis make) into a cause.
+/// Sorts an art service error (the strings `art_service` and foxglove-link make) into a cause.
 pub fn problem(error: &str, status: Option<&ArtStatus>) -> Problem {
     let e = error.to_ascii_lowercase();
     let has = |s: &str| e.contains(s);
@@ -465,7 +465,7 @@ pub fn strip(s: &Snapshot) -> Option<Strip> {
 mod tests {
     use super::*;
     use crate::foxglove::art_service::{Choice, Outcome, Retry};
-    use digitalis::protocol::{ERRORS, RIGHT_STATES};
+    use foxglove_link::protocol::{ERRORS, RIGHT_STATES};
     use std::time::{Duration, Instant};
 
     /// Relay words that mean nothing to a user (the plain ones, like "too big", may stay).
@@ -616,7 +616,7 @@ mod tests {
         assert_eq!(right(8), Problem::KeepFailed);
     }
 
-    /// Each error string the art service and digitalis make, one by one.
+    /// Each error string the art service and foxglove-link make, one by one.
     #[test]
     fn service_errors_map_to_causes() {
         let cases = [

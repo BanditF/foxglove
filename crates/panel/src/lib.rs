@@ -1,5 +1,5 @@
 //! The left screen's host panel, shared by Foxglove and the standalone hostpanel:
-//! - [`render`]: the layout, drawn onto a `digitalis` panel image
+//! - [`render`]: the layout, drawn onto a `foxglove-link` panel image
 //! - [`clock`]: the time and date in the user's region formats
 //! - [`providers`]: clock, volume, media and the foreground program, read from Windows
 //! - [`Sources`]: keeps a [`render::View`] up to date from the providers

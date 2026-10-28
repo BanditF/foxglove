@@ -10,7 +10,7 @@ The app grew around one keyboard. Each feature talks to its own thing:
 | Today | Talks to | Shape |
 |---|---|---|
 | Overlay + keymap editor | `app/src/protocols` (`KeyboardProtocol`, upstream KeyPeek) | keymap read/write, `hid_read()` |
-| Screens, art, 0xD7 settings/behaviors | `digitalis::link` (`Link`, `Transport`) | one Raw HID owner, request/reply |
+| Screens, art, 0xD7 settings/behaviors | `foxglove_link::link` (`Link`, `Transport`) | one Raw HID owner, request/reply |
 | RGB | `keyboard_settings` over 0xD7 | Corne only |
 | Providers (clock, media, volume, app) | `crates/panel` | Windows-only, in-process |
 
@@ -18,7 +18,7 @@ The growth list (QMK, VIA/Vial, other keyboards, six RGB SDKs, plugins, profiles
 that. Without one seam, every new feature has to know every backend, and every backend every
 feature. The proposal is two seams:
 
-- **Devices** (`crates/devices`): the device layer. One interface every backend implements: ZMK/Digitalis, QMK Raw HID,
+- **Devices** (`crates/devices`): the device layer. One interface every backend implements: ZMK/Foxglove link, QMK Raw HID,
   VIA/Vial, and lighting SDKs. Features ask a device what it *can* do, never what it *is*.
 - **Plugins**: out-of-process programs with a versioned JSON-RPC API, declared permissions
   and a supervisor. A Plugin can add facts, panel layouts, lighting effects, actions, or a whole
@@ -40,7 +40,7 @@ is an identity plus a set of capabilities, each its own small trait. Callers ask
 `device.lighting()` and get `Option<&dyn Lighting>`.
 
 ```rust
-// crates/devices (MIT, no UI, no OS providers; like digitalis)
+// crates/devices (MIT, no UI, no OS providers; like foxglove-link)
 pub struct DeviceInfo {
     pub id: DeviceId,          // stable across reconnects: backend + vid:pid + serial/path
     pub backend: BackendId,    // "zmk", "qmk", "via", "vial", "openrgb", "dynamic-lighting", ...
@@ -73,7 +73,7 @@ pub trait Device: Send {
   the `EventSink` into the **facts store** (#17) under `device.<id>.*`, plus a typed event stream
   for things that are not facts (key events). Nothing polls a device from the UI thread.
 - **One owner per handle.** Each opened device runs as an actor: one thread owns the handle,
-  commands come in on a queue, replies on oneshots. This is `digitalis::link::Link`, generalized;
+  commands come in on a queue, replies on oneshots. This is `foxglove_link::link::Link`, generalized;
   the ZMK backend *is* `Link` underneath.
 - **Errors** are typed: `Unsupported`, `Disconnected`, `Busy` (someone else owns it), `Timeout`,
   `Denied` (permission), `Backend(String)`. The UI can say something useful for each.
@@ -135,7 +135,7 @@ Lights that aren't a keyboard (case boards, coolers, mice) go through `pc_lighti
   (`color`, `effects`, `brightness`, `[[device.screen]]`), a LampArray's own attributes (read
   through Windows' `LampArray` API when one arrives: lamp count, positions, update interval,
   kind; nothing is written), and the keyboard's HELLO and screen descriptors
-  (`digitalis::devices::light_caps`). The Lights page shows them as chips
+  (`foxglove_link::devices::light_caps`). The Lights page shows them as chips
   ("Per-zone RGB · 5 zones", "Screen 160×68 · 1-bit · images, animations & live"), and the
   controls follow them: zone pickers only for per-zone or per-LED colour, a colour only where
   the device takes one, Off and Identify only where the lights switch.
@@ -154,7 +154,7 @@ cycle, themes), and the OMEN liquid cooler (`03F0:7397`), which is listed as fou
 
 | Backend | Capabilities | In-process or plugin | Notes |
 |---|---|---|---|
-| **ZMK + Digitalis** (Eyelash Corne) | keymap (Studio RPC), layers, behaviors, lighting (0xD7), screens, power, settings | in-process | Wraps today's `ZmkProtocol` + `Link`. HELLO capability bits (#20) map straight to `Caps` |
+| **ZMK + Foxglove link** (Eyelash Corne) | keymap (Studio RPC), layers, behaviors, lighting (0xD7), screens, power, settings | in-process | Wraps today's `ZmkProtocol` + `Link`. HELLO capability bits (#20) map straight to `Caps` |
 | **QMK Raw HID** | layers + key events (the KeyPeek 0xC0 subscription) | in-process | Any QMK board with the KeyPeek module. Never sends 0xAA–0xAB or reset/bootloader/factory commands (#74) |
 | **VIA** | keymap r/w, layers, RGB out (VIA custom values: RGB Matrix / underglow / backlight channels) | in-process | VIA protocol over Raw HID, USB only; layouts from VIA JSON definitions. Test board: Keychron K5 Pro. Same command blocklist as QMK Raw HID; doesn't run alongside VIA, Keychron Launcher or OpenRGB |
 | **Vial** | VIA + embedded layout | in-process | Out of scope for now (the K5 Pro would need a reflash) |
@@ -183,7 +183,7 @@ screens) are Foxglove code in `crates/devices` and `app/src/foxglove`.
 
 ### General keyboards
 
-- **Identification:** VID/PID + usage page, then the backend's own probe (Digitalis HELLO, Vial
+- **Identification:** VID/PID + usage page, then the backend's own probe (Foxglove link HELLO, Vial
   magic, VIA protocol version, ZMK Studio). First matching backend in a fixed order wins; the
   user can override per device.
 - **Layouts:** Vial embeds them; VIA uses its JSON definitions (bundled index + "load file");
@@ -345,7 +345,7 @@ Each phase leaves the app shippable. Codex writes the code, one worktree per job
 
 | # | Phase | Delivers | Done when |
 |---|---|---|---|
-| 1 | **Device-layer core** | `crates/devices` (types, capability traits, registry, actor helper, mock backend, a contract test suite every backend must pass); facts store (#17) as the device layer's event target; ZMK/Digitalis and `KeyPeekKeymap` adapters | Overlay, screens, art, RGB sync run through the device layer with **no visible change**; contract tests pass for mock + ZMK |
+| 1 | **Device-layer core** | `crates/devices` (types, capability traits, registry, actor helper, mock backend, a contract test suite every backend must pass); facts store (#17) as the device layer's event target; ZMK/Foxglove link and `KeyPeekKeymap` adapters | Overlay, screens, art, RGB sync run through the device layer with **no visible change**; contract tests pass for mock + ZMK |
 | 2 | **QMK, VIA, Vial** | Backends + identification + VIA JSON definitions + grid fallback; VIA lighting channels | A QMK/VIA board shows its layers in the overlay and its RGB in the Lighting tab (test board: the user's Keychron K5 Pro, read-only until the user OKs a flash) |
 | 3 | **Local API + Plugins v1** | JSON-RPC schema v1, named pipe, stdio plugins, manifest, permissions, Job Objects, Plugins tab, Rust SDK, an example plugin | A sample weather plugin puts a fact on the panel; killing it never affects the overlay |
 | 4 | **Lighting** | `Lighting` + arbiter; OpenRGB and Dynamic Lighting in-process; Chroma, LIGHTSYNC, iCUE as plugins after a license check; SignalRGB after research | One effect paints the Corne and an OpenRGB device in sync, and gives them back on exit |

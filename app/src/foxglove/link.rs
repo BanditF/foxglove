@@ -1,13 +1,13 @@
-//! One shared `digitalis` link per keyboard: the overlay, the screen panel and art pushes all go
+//! One shared `foxglove-link` link per keyboard: the overlay, the screen panel and art pushes all go
 //! through the same Raw HID handle instead of each opening their own.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 
-use digitalis::hid::Match;
-use digitalis::link::Link;
-use digitalis::protocol::Hello;
+use foxglove_link::hid::Match;
+use foxglove_link::link::Link;
+use foxglove_link::protocol::Hello;
 
 /// Live links by VID/PID; a link stops once its last holder drops it.
 type Links = HashMap<(u16, u16), Weak<Link>>;
@@ -77,8 +77,8 @@ fn keyboards() -> Option<std::collections::BTreeSet<(u16, u16)>> {
     let keyboards: std::collections::BTreeSet<(u16, u16)> = api
         .device_list()
         .filter(|d| {
-            d.usage_page() == digitalis::protocol::USAGE_PAGE
-                && d.usage() == digitalis::protocol::USAGE
+            d.usage_page() == foxglove_link::protocol::USAGE_PAGE
+                && d.usage() == foxglove_link::protocol::USAGE
         })
         .map(|d| (d.vendor_id(), d.product_id()))
         .collect();
@@ -94,7 +94,7 @@ pub fn ask_hello(link: &Link) -> Option<Hello> {
             return Some(h);
         }
     }
-    (0..3).find_map(|_| digitalis::panel::hello(link).ok().filter(usable))
+    (0..3).find_map(|_| foxglove_link::panel::hello(link).ok().filter(usable))
 }
 
 /// The link to keyboard `vid:pid`, started on first use and kept while anyone holds it. It also

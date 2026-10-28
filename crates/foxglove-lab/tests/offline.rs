@@ -1,14 +1,14 @@
 //! No device enumeration or OS keyboard injection in these tests.
 use anyhow::Result;
-use digitalis::{
-    protocol::{Hello, REPORT},
-    Transport,
-};
 use foxglove_lab::{
     behaviors::Catalog,
     report::{Report, Status},
     runner::{Device, Runner},
     spec::{self, Case, Step},
+};
+use foxglove_link::{
+    protocol::{Hello, REPORT},
+    Transport,
 };
 use std::{
     cell::RefCell,
@@ -386,8 +386,8 @@ fn typing_validation_prevents_non_keypress_injection() {
 
 #[test]
 fn real_link_routes_scripted_layer_reports_and_rejects_reconnection() {
-    use digitalis::link::{Connected, Link, RawHid};
     use foxglove_lab::runner::Hardware;
+    use foxglove_link::link::{Connected, Link, RawHid};
     use std::sync::Mutex;
     // Blocks like the real reader: waits for a scripted report or for `interrupt`.
     #[derive(Default)]
@@ -439,7 +439,7 @@ fn real_link_routes_scripted_layer_reports_and_rejects_reconnection() {
                     version: 1,
                     ..Default::default()
                 }),
-                bus: digitalis::link::Bus::Unknown,
+                bus: foxglove_link::link::Bus::Unknown,
             },
         ))
     }));
@@ -750,7 +750,7 @@ fn hello_profile_and_split_guard_drops() {
 /// (D7 06/07) from `screen`, and its cable can be pulled and plugged back in.
 mod left_half {
     use super::*;
-    use digitalis::link::{Connected, Link, RawHid};
+    use foxglove_link::link::{Connected, Link, RawHid};
     use std::sync::{Condvar, Mutex};
 
     #[derive(Default)]
@@ -845,7 +845,7 @@ mod left_half {
                             capabilities: 1 << 6,
                             ..Default::default()
                         }),
-                        bus: digitalis::link::Bus::Unknown,
+                        bus: foxglove_link::link::Bus::Unknown,
                     },
                 ))
             }));

@@ -923,18 +923,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "digitalis"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "crc32fast",
- "embedded-graphics",
- "foxglove-devices",
- "hidapi",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "directories"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1605,7 +1593,6 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
- "digitalis",
  "directories",
  "eframe",
  "egui 0.36.1",
@@ -1615,6 +1602,7 @@ dependencies = [
  "egui_glow",
  "foxglove-devices",
  "foxglove-flash",
+ "foxglove-link",
  "foxglove-panel",
  "foxglove-plugin",
  "foxglove-plugin-api",
@@ -1670,12 +1658,24 @@ name = "foxglove-flash"
 version = "0.2.0"
 
 [[package]]
+name = "foxglove-link"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "crc32fast",
+ "embedded-graphics",
+ "foxglove-devices",
+ "hidapi",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "foxglove-panel"
 version = "0.2.0"
 dependencies = [
  "chrono",
- "digitalis",
  "embedded-graphics",
+ "foxglove-link",
  "windows 0.62.2",
  "windows-core",
 ]

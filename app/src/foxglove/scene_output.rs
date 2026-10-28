@@ -27,8 +27,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use digitalis::lamps::LampParts;
-use digitalis::protocol::MmRect;
+use foxglove_link::lamps::LampParts;
+use foxglove_link::protocol::MmRect;
 use foxglove_scene::scheduler::Pacing;
 use foxglove_scene::{Ambient, Burst, Bursts, Effect, LightRole, Rgb, RoomMap, SceneTime};
 
@@ -122,7 +122,7 @@ pub struct KeyboardEffect {
     /// In the wire's units. `clock_ms` is 0 here: the writer fills it in from the scene's clock
     /// just before it goes ([`KeyboardEffect::at`]), so the parts run in phase with the case
     /// and the wallpapers.
-    pub effect: digitalis::protocol::Effect,
+    pub effect: foxglove_link::protocol::Effect,
     /// The room's bounds (mm), for EFFECT PLACE.
     pub room: MmRect,
     /// Each part's place in the room (mm), in frame order: the left half then the right, or
@@ -144,14 +144,14 @@ impl KeyboardEffect {
     }
 
     /// The effect to send at scene time `t`: its clock is `t` modulo the period.
-    pub fn at(&self, t: SceneTime) -> digitalis::protocol::Effect {
+    pub fn at(&self, t: SceneTime) -> foxglove_link::protocol::Effect {
         let period = i64::from(self.effect.period_ms);
         let clock_ms = if period == 0 {
             0
         } else {
             t.ms().rem_euclid(period) as u32
         };
-        digitalis::protocol::Effect {
+        foxglove_link::protocol::Effect {
             clock_ms,
             ..self.effect.clone()
         }
@@ -206,7 +206,7 @@ pub fn keyboard_effect(
     room: &RoomMap,
     lamps: &LampParts,
 ) -> Option<KeyboardEffect> {
-    use digitalis::protocol::EffectKind;
+    use foxglove_link::protocol::EffectKind;
     let placed = keyboard_parts(room)?;
     let c = |c: &Rgb| c.0;
     // Kind, colours, period, angle, width, origin.
@@ -265,7 +265,7 @@ pub fn keyboard_effect(
         ),
         Effect::Gradient { .. } | Effect::Noise { .. } => return None,
     };
-    let wire = digitalis::protocol::Effect {
+    let wire = foxglove_link::protocol::Effect {
         kind,
         colours,
         clock_ms: 0,
@@ -275,7 +275,7 @@ pub fn keyboard_effect(
         origin_mm: origin,
     };
     // What the wire can't carry (colour count, period) stays on frames.
-    digitalis::protocol::effect(&wire)?;
+    foxglove_link::protocol::effect(&wire)?;
     let all: Vec<Rgb> = wire.colours.iter().map(|&c| Rgb(c)).collect();
     Some(KeyboardEffect {
         mix: hsb(mixed(&all)?),
@@ -1259,7 +1259,7 @@ mod tests {
     /// noise and a sweep the wire can't carry stay on frames.
     #[test]
     fn scenes_map_onto_the_keyboards_own_effects() {
-        use digitalis::protocol::EffectKind;
+        use foxglove_link::protocol::EffectKind;
         let (room, _) = desk();
         let corne = corne();
         let keyboard_effect = |e: &Effect, room: &RoomMap| keyboard_effect(e, room, &corne);

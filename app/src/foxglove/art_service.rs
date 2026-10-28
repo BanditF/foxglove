@@ -10,10 +10,10 @@ use std::time::{Duration, Instant};
 use super::art_cycle::{self, Cycle};
 use super::art_triggers::{Change, Triggers};
 
-use digitalis::art;
-use digitalis::link::{Event as LinkEvent, EventSubscription, Link};
-use digitalis::protocol::{self, ArtStatus, SlotInfo};
-use digitalis::Transport;
+use foxglove_link::art;
+use foxglove_link::link::{Event as LinkEvent, EventSubscription, Link};
+use foxglove_link::protocol::{self, ArtStatus, SlotInfo};
+use foxglove_link::Transport;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -322,7 +322,7 @@ impl Handle {
     /// Keeps library file `file` on the keyboard in place `slot` (replacing what it holds),
     /// named after the file: one job that sends it if needed, saves it and shows it from there.
     pub fn keep(&self, file: PathBuf, slot: u8) -> bool {
-        let name = digitalis::protocol::art_name_fit(&file_name(&file)).to_string();
+        let name = foxglove_link::protocol::art_name_fit(&file_name(&file)).to_string();
         self.submit(Command::Keep { file, slot, name })
     }
 
@@ -1211,7 +1211,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use digitalis::protocol::{art as cmd, left_state, right_state, REPORT};
+    use foxglove_link::protocol::{art as cmd, left_state, right_state, REPORT};
     use std::cell::{Cell, RefCell};
 
     /// The right half's own switch (HELLO bit 20 sends it as an RGB_STATE event, #543) reads
@@ -1278,7 +1278,7 @@ mod tests {
         }
     }
 
-    impl digitalis::Transport for FakeKeyboard {
+    impl foxglove_link::Transport for FakeKeyboard {
         fn send(&self, _: &[u8]) -> anyhow::Result<()> {
             Ok(()) // DATA: nothing to answer
         }

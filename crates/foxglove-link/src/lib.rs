@@ -1,4 +1,4 @@
-//! Digitalis: Foxglove's link to the keyboard.
+//! Foxglove link: the PC's link to the keyboard (formerly called Digitalis).
 //!
 //! The protocol is the firmware's host link (boards/shields/nice_view_custom/widgets/host_link.h):
 //! 32-byte Raw HID reports, byte 0 picks the protocol (0xD5 host panel, 0xD6 art relay), byte 1 the

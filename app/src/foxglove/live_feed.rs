@@ -1281,8 +1281,8 @@ mod tests {
         assert_eq!(showing_name(&s), None, "no keyboard");
         s.connected = true;
         s.sent = Some((std::path::PathBuf::from("C:/art/Fox run.nva"), 1));
-        s.status = Some(digitalis::protocol::ArtStatus {
-            right_state: digitalis::protocol::right_state::PLAYING,
+        s.status = Some(foxglove_link::protocol::ArtStatus {
+            right_state: foxglove_link::protocol::right_state::PLAYING,
             right_set_count: 4,
             ..Default::default()
         });

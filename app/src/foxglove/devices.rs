@@ -4,11 +4,11 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use digitalis::devices::DigitalisDevice;
 use foxglove_devices::{BackendId, BehaviorInfo, DeviceId, DeviceInfo, DeviceKind, EventBus};
+use foxglove_link::devices::FoxgloveLinkDevice;
 
 static BUS: OnceLock<EventBus> = OnceLock::new();
-static DEVICE: Mutex<Option<Arc<DigitalisDevice>>> = Mutex::new(None);
+static DEVICE: Mutex<Option<Arc<FoxgloveLinkDevice>>> = Mutex::new(None);
 /// The actions learned from the keymap and its `&rgb_ug` id, kept for the next device.
 static ACTIONS: Mutex<(Vec<BehaviorInfo>, Option<u16>)> = Mutex::new((Vec::new(), None));
 
@@ -19,7 +19,7 @@ pub fn bus() -> &'static EventBus {
 
 /// The keyboard with Foxglove's host link, found once and kept while it stays connected. May
 /// block on discovery: call it off the UI thread.
-pub fn device() -> Option<Arc<DigitalisDevice>> {
+pub fn device() -> Option<Arc<FoxgloveLinkDevice>> {
     let mut cached = DEVICE.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(d) = cached
         .as_ref()
@@ -29,7 +29,7 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
     }
     let mut found = None;
     let mut name = String::new();
-    let mut route = digitalis::link::Bus::Unknown;
+    let mut route = foxglove_link::link::Bus::Unknown;
     *cached = super::link::host_keyboard().map(|((vid, pid), link, hello)| {
         found = Some((vid, pid));
         let backend = BackendId("zmk".into());
@@ -56,7 +56,7 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
             kind: DeviceKind::Keyboard,
             firmware: None,
         };
-        let device = Arc::new(DigitalisDevice::new(info, link, hello, bus().sink(id)));
+        let device = Arc::new(FoxgloveLinkDevice::new(info, link, hello, bus().sink(id)));
         FRAMES.store(device.frames(), std::sync::atomic::Ordering::Relaxed);
         EFFECTS.store(device.effects(), std::sync::atomic::Ordering::Relaxed);
         EFFECT_LAMPS.store(device.effect_lamps(), std::sync::atomic::Ordering::Relaxed);
@@ -96,11 +96,11 @@ pub fn device() -> Option<Arc<DigitalisDevice>> {
 
 /// The LEDs per part the keyboard found last reported (LAMP_PARTS, HELLO bit 22, #561); `None`
 /// for firmware that doesn't say.
-static FIRMWARE_PARTS: Mutex<Option<digitalis::lamps::LampParts>> = Mutex::new(None);
+static FIRMWARE_PARTS: Mutex<Option<foxglove_link::lamps::LampParts>> = Mutex::new(None);
 
 /// A keyboard connected: its own LED counts, when its firmware gives them, win over the profile's.
 /// One request, on the connect.
-fn learn_lamp_parts(d: &DigitalisDevice) {
+fn learn_lamp_parts(d: &FoxgloveLinkDevice) {
     let parts = match d.read_lamp_parts() {
         Ok(p) => Some(p),
         Err(foxglove_devices::DeviceError::Unsupported) => None,
@@ -117,7 +117,7 @@ fn learn_lamp_parts(d: &DigitalisDevice) {
 /// The keyboard's LEDs by part (#561): what its firmware said when it connected, when that has
 /// as many parts as `board` has halves; else the board profile's (`boards::lamp_parts`). Never
 /// looks for a keyboard.
-pub fn lamp_parts(board: Option<&super::boards::Board>) -> digitalis::lamps::LampParts {
+pub fn lamp_parts(board: Option<&super::boards::Board>) -> foxglove_link::lamps::LampParts {
     let firmware = FIRMWARE_PARTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -127,9 +127,9 @@ pub fn lamp_parts(board: Option<&super::boards::Board>) -> digitalis::lamps::Lam
 
 /// The firmware's parts when they fit the board's halves, else the profile's.
 fn choose_parts(
-    firmware: Option<digitalis::lamps::LampParts>,
+    firmware: Option<foxglove_link::lamps::LampParts>,
     board: Option<&super::boards::Board>,
-) -> digitalis::lamps::LampParts {
+) -> foxglove_link::lamps::LampParts {
     let halves = board.map_or(2, |b| if b.halves == 1 { 1 } else { 2 });
     firmware
         .filter(|p| p.len() == halves)
@@ -209,7 +209,7 @@ fn connected_line(transport: &str, product: &str) -> String {
 /// no wake-ups.
 pub fn start() {
     enum Msg {
-        Link(Arc<digitalis::link::Link>),
+        Link(Arc<foxglove_link::link::Link>),
         Connected,
     }
     let (tx, rx) = std::sync::mpsc::channel();
@@ -225,7 +225,7 @@ pub fn start() {
                 Msg::Link(link) => {
                     let tx = tx.clone();
                     subscriptions.push(link.subscribe_events(move |event| {
-                        if let digitalis::link::Event::State(s) = event {
+                        if let foxglove_link::link::Event::State(s) = event {
                             if s.connected.is_some() {
                                 let _ = tx.send(Msg::Connected);
                             }
@@ -286,7 +286,7 @@ pub fn describe(e: &foxglove_devices::DeviceError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use digitalis::lamps::LampParts;
+    use foxglove_link::lamps::LampParts;
 
     /// The firmware's LED counts (#561) win when they fit the board's halves; else the
     /// profile's, as for firmware that doesn't say.

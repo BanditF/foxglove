@@ -1,5 +1,5 @@
 [package]
-name = "digitalis"
+name = "foxglove-link"
 version = "0.2.0"
 edition = "2021"
 description = "Foxglove's link to the keyboard: the host panel and art relay protocol over Raw HID"
@@ -9,7 +9,7 @@ license = "MIT"
 default = ["hid"]
 # The hidapi transport; leave it out to use the protocol with your own transport.
 hid = ["dep:hidapi", "dep:windows-sys"]
-# A Devices device and backend for Digitalis keyboards (crates/devices).
+# A Devices device and backend for Foxglove link keyboards (crates/devices).
 devices = ["dep:foxglove-devices"]
 
 [dependencies]

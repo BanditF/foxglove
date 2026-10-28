@@ -2,7 +2,7 @@
 //! split-link drop, and panel frames shown, flooded and released, as the PC side would do them when
 //! the app dies or misbehaves.
 use anyhow::{bail, ensure, Result};
-use digitalis::{
+use foxglove_link::{
     protocol::{self, left_state, ArtStatus},
     Transport,
 };

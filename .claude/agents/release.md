@@ -34,7 +34,7 @@ separately authorized; tag pushes can themselves publish releases.
   gaps. Current workflows use Rust `stable`; do not claim exact reproducibility
   without pinning/evidence. Do not silently modify release inputs to fix gaps.
 - Run `powershell -ExecutionPolicy Bypass -File scripts/check.ps1` and record
-  workspace/app clippy and tests plus Digitalis without default features.
+  workspace/app clippy and tests plus Foxglove link without default features.
 - Verify CI artifacts correspond to the candidate commit. App CI runs manually
   or on `app-v*`; Rust crates CI is manual. Firmware uses the ZMK reusable
   workflow at `v0.3.0`; inspect its actual runs/artifacts. Do not assume a

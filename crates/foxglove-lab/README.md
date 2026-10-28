@@ -170,7 +170,7 @@ cases are SKIPPED and excluded from that rule. A blocked release-tagged manual
 case still prevents overall PASS and a successful exit. The bundled smoke suite
 therefore cannot currently certify a release: refusal support is unknown.
 
-Dependencies: `digitalis` for the existing link; `serde`, `serde_json`, `toml` for
+Dependencies: `foxglove-link` for the existing link; `serde`, `serde_json`, `toml` for
 specs/reports; `clap` for CLI validation; `chrono` for UTC report paths; `prost`
 for minimal offline Studio metadata; PNG-only `image` for tested bitmap/diffs;
 `base64` for self-contained HTML; `windows` for the native sink, mutex and Ctrl-C

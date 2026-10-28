@@ -121,8 +121,8 @@ pub fn require_hid(vid: u16, pid: u16) -> Result<(), String> {
 
 fn hid_matches(expected: (u16, u16), actual: (u16, u16), page: u16, usage: u16) -> bool {
     expected == actual
-        && page == digitalis::protocol::USAGE_PAGE
-        && usage == digitalis::protocol::USAGE
+        && page == foxglove_link::protocol::USAGE_PAGE
+        && usage == foxglove_link::protocol::USAGE
 }
 
 #[cfg(test)]

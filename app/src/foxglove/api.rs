@@ -121,7 +121,7 @@ fn device_error(e: foxglove_devices::DeviceError) -> Error {
 /// The host-link keyboard, found now if nothing has looked for it yet: plugins and tools must
 /// see it without the Keyboard panel or another feature having connected first. API calls run
 /// on their connection's own thread, so the discovery can wait there.
-fn keyboard() -> Option<std::sync::Arc<digitalis::devices::DigitalisDevice>> {
+fn keyboard() -> Option<std::sync::Arc<foxglove_link::devices::FoxgloveLinkDevice>> {
     super::devices::device()
 }
 

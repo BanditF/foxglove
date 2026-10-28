@@ -31,7 +31,7 @@ pub use catalog::{Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRo
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;
 pub const LAMP_ARRAY_USAGE: u16 = 0x0001;
-/// The Raw HID usage page ZMK (Digitalis), QMK and VIA keyboards use.
+/// The Raw HID usage page ZMK (Foxglove link), QMK and VIA keyboards use.
 pub const RAW_HID_USAGE_PAGE: u16 = 0xFF60;
 
 /// How Foxglove controls a found device.
@@ -106,7 +106,7 @@ pub fn unknown(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Unknown> {
                 && o.usage == LAMP_ARRAY_USAGE
         })
     };
-    // Keyboards with a Raw HID interface (ZMK with Digitalis, QMK, VIA) have their own
+    // Keyboards with a Raw HID interface (ZMK with Foxglove link, QMK, VIA) have their own
     // backends, and a test report must never reach them: keyboard first.
     let raw_hid_keyboard = |vid, pid| {
         hid.iter()

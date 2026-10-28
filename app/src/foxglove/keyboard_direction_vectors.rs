@@ -1,5 +1,5 @@
 //! The Scenes page's directions on the keyboard, end to end: a look's direction (scene_looks),
-//! its SET_EFFECT and PLACE as the app sends them (scene_output, Digitalis's builders), each
+//! its SET_EFFECT and PLACE as the app sends them (scene_output, Foxglove link's builders), each
 //! LED's place from the board profile (scene_room), and the colour crates/scene gives each LED.
 //! The ZMK simulator (tests/zmk-sim/host-effects) renders the same reports on both halves with
 //! the firmware's lamp table and mirror (lamp_effect.c) and holds every LED to these colours.
@@ -52,7 +52,7 @@ fn board() -> Board {
 }
 
 /// The Corne's LEDs by part, from its profile.
-fn parts() -> digitalis::lamps::LampParts {
+fn parts() -> foxglove_link::lamps::LampParts {
     super::boards::lamp_parts(Some(&board()))
 }
 
@@ -131,7 +131,7 @@ fn generate() -> String {
             .map(i16::to_string)
             .collect();
         for t in times(ke.effect.period_ms) {
-            let report = digitalis::protocol::effect(&ke.at(SceneTime(t))).expect("it fits");
+            let report = foxglove_link::protocol::effect(&ke.at(SceneTime(t))).expect("it fits");
             let mut report32 = report.clone();
             report32.resize(32, 0);
             let frame = effect.render(&room, SceneTime(t));

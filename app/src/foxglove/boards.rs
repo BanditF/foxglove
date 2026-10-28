@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use digitalis::lamps::LampParts;
+use foxglove_link::lamps::LampParts;
 use serde::Deserialize;
 
 const FORMAT: &str = "foxglove-board";
@@ -141,7 +141,7 @@ impl Lighting {
 }
 
 /// The keyboard's LEDs by part: the board profile's, else what firmware that doesn't report
-/// them has (the Eyelash Corne's, `digitalis::lamps`), as one strip on a one-piece board.
+/// them has (the Eyelash Corne's, `foxglove_link::lamps`), as one strip on a one-piece board.
 pub fn lamp_parts(board: Option<&Board>) -> LampParts {
     if let Some(parts) = board.and_then(|b| b.lighting.as_ref()?.lamp_parts(b.halves)) {
         return parts;

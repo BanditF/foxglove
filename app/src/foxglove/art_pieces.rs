@@ -239,7 +239,7 @@ pub fn kept(s: &Snapshot, pcs: &[PcPiece]) -> Vec<Option<Kept>> {
         .map(|n| {
             let info = s.slots.iter().find(|i| i.slot == n && i.used)?;
             let piece = pcs.iter().position(|p| {
-                digitalis::protocol::art_name_fit(&p.name) == info.name
+                foxglove_link::protocol::art_name_fit(&p.name) == info.name
                     && p.bytes == usize::from(info.len)
             });
             Some(Kept {
@@ -462,7 +462,7 @@ fn write_to_library(name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use digitalis::protocol::{ArtStatus, SlotInfo};
+    use foxglove_link::protocol::{ArtStatus, SlotInfo};
 
     fn image() -> Arc<egui::ColorImage> {
         Arc::new(egui::ColorImage::new([2, 2], vec![egui::Color32::WHITE; 4]))

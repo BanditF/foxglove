@@ -4,7 +4,7 @@ Firmware and desktop tooling for an Eyelash Peripherals Corne (ZMK v0.3, nice!na
 
 - **Firmware**: the keymap, the `nice_view_custom` shield (framed left screen, animated art on
   the right) and the PC link, all at the repo root, where ZMK's build expects them.
-- **Digitalis**: the link between the PC and the keyboard over Raw HID. The PC draws a 64x52
+- **Foxglove link**: the link between the PC and the keyboard over Raw HID. The PC draws a 64x52
   panel on the left screen (`0xD5`), and pushes art to the right screen through the left half and
   the BLE split link (`0xD6`). The protocol is in
   [`host_link.h`](boards/shields/nice_view_custom/widgets/host_link.h) and
@@ -12,11 +12,11 @@ Firmware and desktop tooling for an Eyelash Peripherals Corne (ZMK v0.3, nice!na
 - **App**: the Foxglove tray app in `app/`, the layer overlay from
   [KeyPeek](https://github.com/srwi/keypeek) by Stephan Rumswinkel, absorbed and growing the screen
   panel and art features ([docs/proposal.md](docs/proposal.md),
-  [keeping up with KeyPeek](docs/keypeek-sync.md)). `crates/` holds `digitalis`, the plugin
+  [keeping up with KeyPeek](docs/keypeek-sync.md)). `crates/` holds `foxglove-link`, the plugin
   crates and `foxglove-cli`; `hostpanel` is kept only for a few CLI commands (its tray is retired).
 
-The name: Digitalis, "of the finger", is the Latin name the botanist Leonhart Fuchs gave the
-foxglove in 1542.
+The name: Foxglove link was called Digitalis until #463; Digitalis ("of the finger", the Latin
+name Leonhart Fuchs gave the foxglove in 1542) is now kept for a future flagship keyboard.
 
 **This board is not foostan's Corne.** Standard `corne` firmware does not work on it.
 
@@ -48,7 +48,7 @@ and updating the firmware.
 | `scripts/flipper_art.py` | builds the right-hand art (`custom_art.c`, or a `.bin` blob to push) |
 | `keymap-drawer/` | keymap diagram, redrawn by CI |
 | `app/` | the Foxglove app (KeyPeek absorbed; own Cargo workspace): `cargo run --manifest-path app/Cargo.toml` |
-| `crates/` | `digitalis` (the PC end of the link), `scene` (room map, clock, effects), `foxglove-cli`, the plugin crates, and `hostpanel` (retired tray; CLI for push-art/select/preview) |
+| `crates/` | `foxglove-link` (the PC end of the link), `scene` (room map, clock, effects), `foxglove-cli`, the plugin crates, and `hostpanel` (retired tray; CLI for push-art/select/preview) |
 | `scripts/check.ps1` | lint and tests for `crates/` and `app/`: run it before pushing desktop changes |
 | `docs/` | design notes; [`docs/upstream/`](docs/upstream/README_EN.md) has the vendor's original README |
 

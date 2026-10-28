@@ -53,7 +53,7 @@ Local sources live in `C:\Users\fuchs\splitkeeb\art-src` (not in any repo) unles
   binary) a GPL-3.0 combination, so anyone receiving that firmware is entitled to the
   corresponding source. Foxglove's firmware is public source, so that's met as long as the
   repo's licensing is stated per directory and the art keeps its notices. Keep GPL art out of the
-  MIT `crates/digitalis` and out of anything we'd want to stay permissive.
+  MIT `crates/foxglove-link` and out of anything we'd want to stay permissive.
 - **MPL-2.0 art** (kainsamara): file-level copyleft. The MPL files themselves stay MPL and must be
   made available, unmodified or with modifications shared. Other files in the same build are not
   affected.

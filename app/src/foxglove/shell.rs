@@ -644,7 +644,7 @@ pub fn strip_state(ctx: &egui::Context) -> StripState {
     let link = super::connection::summary(ctx);
     let (left_build, right_build) = match super::keyboard_settings::firmware(ctx) {
         super::keyboard_settings::Firmware::Known { left, right } => {
-            let text = |r: Result<digitalis::protocol::BuildInfo, String>| {
+            let text = |r: Result<foxglove_link::protocol::BuildInfo, String>| {
                 r.map(|b| format!("{} · {}", b.version, b.sha))
             };
             (Some(text(left)), Some(text(right)))

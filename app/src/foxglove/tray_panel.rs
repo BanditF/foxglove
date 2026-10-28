@@ -12,8 +12,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use digitalis::protocol::RgbHalf;
 use egui::{pos2, Color32, CornerRadius, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use foxglove_link::protocol::RgbHalf;
 
 use super::shell::{StripState, Tone};
 use super::theme;
@@ -851,7 +851,7 @@ pub mod tests {
     /// it names the new set, not the one the panel opened with.
     #[test]
     fn the_art_part_follows_the_art_snapshot() {
-        use digitalis::protocol::ArtStatus;
+        use foxglove_link::protocol::ArtStatus;
         let status = |set| ArtStatus {
             link: 2,
             right_state: 0,

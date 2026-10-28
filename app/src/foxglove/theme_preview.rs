@@ -919,7 +919,7 @@ pub(crate) fn sample_screens() -> crate::foxglove::screens::Snapshot {
     }
     crate::foxglove::screens::Snapshot {
         product: "Eyelash Corne".into(),
-        hello: Some(digitalis::protocol::Hello {
+        hello: Some(foxglove_link::protocol::Hello {
             version: 3,
             right_link: 2,
             right_battery: Some(61),
@@ -1429,7 +1429,7 @@ fn the_scenes_preview_repaints_only_on_its_page() {
 fn battery_dim_renders() {
     use crate::foxglove::battery_dim_ui::{tests, DimState, Draft};
     use crate::foxglove::shell::Page;
-    use digitalis::protocol::BatteryDimConfig;
+    use foxglove_link::protocol::BatteryDimConfig;
     let open = Draft {
         config: None,
         open: true,

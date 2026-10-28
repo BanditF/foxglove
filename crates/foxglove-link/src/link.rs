@@ -193,7 +193,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 fn survives(name: &str, callback: impl FnOnce()) -> bool {
     let ok = catch_unwind(AssertUnwindSafe(callback)).is_ok();
     if !ok {
-        eprintln!("Digitalis: a {name} panicked and was unsubscribed");
+        eprintln!("Foxglove link: a {name} panicked and was unsubscribed");
     }
     ok
 }
@@ -237,7 +237,7 @@ impl Link {
         });
         let thread_shared = shared.clone();
         let thread = std::thread::Builder::new()
-            .name("digitalis-link".into())
+            .name("foxglove-link".into())
             .spawn({
                 let tx = tx.clone();
                 move || run(open, rx, tx, &thread_shared, retry)

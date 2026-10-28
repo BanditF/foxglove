@@ -4,8 +4,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use digitalis::protocol::RgbState;
 use foxglove_devices::{Device, Value};
+use foxglove_link::protocol::RgbState;
 
 use super::devices::{describe, device};
 
@@ -94,7 +94,7 @@ pub fn invoke(label: String, binding: (u16, u32, u32), ctx: egui::Context) {
 fn run(
     label: String,
     ctx: egui::Context,
-    command: impl FnOnce(&digitalis::devices::DigitalisDevice) -> foxglove_devices::Result<()>
+    command: impl FnOnce(&foxglove_link::devices::FoxgloveLinkDevice) -> foxglove_devices::Result<()>
         + Send
         + 'static,
 ) {
@@ -156,7 +156,7 @@ fn read_rgb_state() -> Option<RgbState> {
     // In the palette's colours: what Foxglove asked for, not its calibrated form.
     let read = || {
         device().and_then(|d| {
-            let mut s = digitalis::settings::rgb_state(d.link().as_ref()).ok()?;
+            let mut s = foxglove_link::settings::rgb_state(d.link().as_ref()).ok()?;
             d.asked_state(&mut s);
             Some((s, d.right_events()))
         })
@@ -318,8 +318,8 @@ pub enum Firmware {
     /// The firmware doesn't report its build.
     NotReported,
     Known {
-        left: Result<digitalis::protocol::BuildInfo, String>,
-        right: Result<digitalis::protocol::BuildInfo, String>,
+        left: Result<foxglove_link::protocol::BuildInfo, String>,
+        right: Result<foxglove_link::protocol::BuildInfo, String>,
     },
 }
 
@@ -369,11 +369,12 @@ pub fn firmware(ctx: &egui::Context) -> Firmware {
                         .connected
                         .and_then(|c| c.hello)
                         .map_or(0, |h| h.capabilities);
-                    let firmware = if caps & digitalis::protocol::capabilities::BUILD_INFO == 0 {
+                    let firmware = if caps & foxglove_link::protocol::capabilities::BUILD_INFO == 0
+                    {
                         Firmware::NotReported
                     } else {
                         let half = |n| {
-                            digitalis::settings::build_info(link.as_ref(), n)
+                            foxglove_link::settings::build_info(link.as_ref(), n)
                                 .map_err(|e| e.to_string())
                         };
                         Firmware::Known {
@@ -393,7 +394,7 @@ pub fn firmware(ctx: &egui::Context) -> Firmware {
 
 #[cfg(test)]
 mod rgb_state_tests {
-    use digitalis::protocol::{RgbHalf, RgbState};
+    use foxglove_link::protocol::{RgbHalf, RgbState};
 
     fn with_right(right: Option<(bool, u8)>) -> RgbState {
         RgbState {

@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn interrupt_cancels_and_finishes_a_pending_read() {
-        let name: Vec<u16> = format!(r"\\.\pipe\digitalis-read-test-{}", std::process::id())
+        let name: Vec<u16> = format!(r"\\.\pipe\foxglove-link-read-test-{}", std::process::id())
             .encode_utf16()
             .chain(Some(0))
             .collect();

@@ -54,8 +54,8 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use digitalis::protocol::MmRect;
 use foxglove_devices::{DeviceError, Lighting};
+use foxglove_link::protocol::MmRect;
 use foxglove_scene::scheduler::{Gate, Scheduler, MIN_INTERVAL};
 use foxglove_scene::{Clock, Effect, Rgb};
 use serde::{Deserialize, Serialize};
@@ -133,7 +133,7 @@ pub fn set_keep_on_quit(on: bool) {
 
 /// Before Foxglove changes the keyboard's lights itself (the Lights page): an effect a quit
 /// left running would hide the change, so it is handed back first. Once: the mark goes with it.
-pub fn release_left_effect(kb: &digitalis::devices::DigitalisDevice) {
+pub fn release_left_effect(kb: &foxglove_link::devices::FoxgloveLinkDevice) {
     let k = keep();
     if !k.left_running || running().is_some() || QUITTING.load(Ordering::Relaxed) {
         return;
@@ -444,7 +444,7 @@ pub fn devices_changed() {
 }
 
 /// The keyboard's LEDs by part now: its firmware's, else its board profile's (#561).
-fn keyboard_parts() -> digitalis::lamps::LampParts {
+fn keyboard_parts() -> foxglove_link::lamps::LampParts {
     super::devices::lamp_parts(super::boards::current().as_ref())
 }
 
@@ -849,17 +849,17 @@ trait EffectTarget {
     /// EFFECT PLACE: the room's bounds and each half's place in it.
     fn place(&self, room: MmRect, left: MmRect, right: MmRect) -> Result<(), DeviceError>;
     /// EFFECT, with the keyboard's colour calibration on its colours.
-    fn run(&self, e: &digitalis::protocol::Effect) -> Result<(), DeviceError>;
+    fn run(&self, e: &foxglove_link::protocol::Effect) -> Result<(), DeviceError>;
     /// EFFECT LAMPS: where each LED of `half` sits; empty puts the half back on the firmware's
     /// table. Unsupported on firmware without HELLO bit 21 (#550).
     fn lamps(&self, half: u8, points: &[[u16; 2]]) -> Result<(), DeviceError>;
 }
 
-impl EffectTarget for digitalis::devices::DigitalisDevice {
+impl EffectTarget for foxglove_link::devices::FoxgloveLinkDevice {
     fn place(&self, room: MmRect, left: MmRect, right: MmRect) -> Result<(), DeviceError> {
         self.place_effect(room, left, right).map(|_| ())
     }
-    fn run(&self, e: &digitalis::protocol::Effect) -> Result<(), DeviceError> {
+    fn run(&self, e: &foxglove_link::protocol::Effect) -> Result<(), DeviceError> {
         self.show_effect(e).map(|_| ())
     }
     fn lamps(&self, half: u8, points: &[[u16; 2]]) -> Result<(), DeviceError> {
@@ -1093,9 +1093,9 @@ impl KeyboardLease {
 /// The keyboard's own hand-back of the frames (D7 8C event: its timeout, an unplug, an output
 /// change): the scene sends its frame again on its next tick. Runs on the link's reader thread,
 /// so it only sets the flag.
-fn hand_back_tap(again: Arc<AtomicBool>) -> impl Fn(u64, &digitalis::link::Report) + Send {
+fn hand_back_tap(again: Arc<AtomicBool>) -> impl Fn(u64, &foxglove_link::link::Report) + Send {
     move |_, r| {
-        if digitalis::protocol::is_frame_event(r) {
+        if foxglove_link::protocol::is_frame_event(r) {
             again.store(true, Ordering::Relaxed);
             status().hand_backs += 1;
         }
@@ -1121,8 +1121,8 @@ struct AppKeyboard {
     left_checked: bool,
     /// The link whose hand-back events [`hand_back_tap`] watches, and the watch.
     tapped: Option<(
-        Arc<digitalis::link::Link>,
-        digitalis::link::EventSubscription,
+        Arc<foxglove_link::link::Link>,
+        foxglove_link::link::EventSubscription,
     )>,
 }
 
@@ -1144,7 +1144,7 @@ impl AppKeyboard {
 
     /// The keyboard to draw on, with its device id; takes care of another keyboard (the old
     /// one's lease ends) and of the hand-back watch. `None` while there is none.
-    fn keyboard(&mut self) -> Option<(Arc<digitalis::devices::DigitalisDevice>, String)> {
+    fn keyboard(&mut self) -> Option<(Arc<foxglove_link::devices::FoxgloveLinkDevice>, String)> {
         self.take_arrival();
         if self.next_look.is_some_and(|t| Instant::now() < t) {
             return None;
@@ -1202,7 +1202,7 @@ impl AppKeyboard {
     }
 
     /// Watches this keyboard's link for the frames' hand-back, once per link.
-    fn tap(&mut self, kb: &digitalis::devices::DigitalisDevice) {
+    fn tap(&mut self, kb: &foxglove_link::devices::FoxgloveLinkDevice) {
         if !kb.frames() {
             self.tapped = None;
             return;
@@ -1362,7 +1362,7 @@ mod tests {
         /// It draws SET_EFFECT effects (HELLO bit 19).
         effects: bool,
         /// The effect running, if any (a frame or a release ends it).
-        effect: Mutex<Option<digitalis::protocol::Effect>>,
+        effect: Mutex<Option<foxglove_link::protocol::Effect>>,
         /// Every PLACE and EFFECT, in order ('P', 'E').
         effect_ops: Mutex<Vec<char>>,
         /// Effects to fail (no answer) before taking them.
@@ -1405,7 +1405,7 @@ mod tests {
             }
         }
 
-        fn running(&self) -> Option<digitalis::protocol::Effect> {
+        fn running(&self) -> Option<foxglove_link::protocol::Effect> {
             self.effect.lock().unwrap().clone()
         }
 
@@ -1483,7 +1483,7 @@ mod tests {
         fn release(&self) -> foxglove_devices::Result<()> {
             self.releases.fetch_add(1, Ordering::SeqCst);
             *self.frame.lock().unwrap() = None;
-            // DigitalisDevice's release ends an effect too.
+            // FoxgloveLinkDevice's release ends an effect too.
             *self.effect.lock().unwrap() = None;
             Ok(())
         }
@@ -1497,7 +1497,7 @@ mod tests {
             self.effect_ops.lock().unwrap().push('P');
             Ok(())
         }
-        fn run(&self, e: &digitalis::protocol::Effect) -> Result<(), DeviceError> {
+        fn run(&self, e: &foxglove_link::protocol::Effect) -> Result<(), DeviceError> {
             if !self.effects {
                 return Err(DeviceError::Unsupported);
             }
@@ -1530,8 +1530,8 @@ mod tests {
     /// A 4 s scanline on both halves, as `scene_output::keyboard_effect` makes it.
     fn scan_effect(mix: Hsb) -> KeyboardEffect {
         KeyboardEffect {
-            effect: digitalis::protocol::Effect {
-                kind: digitalis::protocol::EffectKind::Scanline,
+            effect: foxglove_link::protocol::Effect {
+                kind: foxglove_link::protocol::EffectKind::Scanline,
                 colours: vec![RED, BLUE],
                 clock_ms: 0,
                 period_ms: 4000,
@@ -1974,7 +1974,7 @@ mod tests {
     fn the_keyboards_own_hand_back_asks_for_the_frame_again() {
         let again = Arc::new(AtomicBool::new(false));
         let tap = hand_back_tap(again.clone());
-        let mut r = [0u8; digitalis::protocol::REPORT];
+        let mut r = [0u8; foxglove_link::protocol::REPORT];
         // A frame's own reply is not a hand-back.
         r[..7].copy_from_slice(&[0xD7, 0x8C, 0, 3, 30, 1, 0]);
         tap(1, &r);

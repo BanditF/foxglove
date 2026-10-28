@@ -373,18 +373,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "digitalis"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "crc32fast",
- "embedded-graphics",
- "foxglove-devices",
- "hidapi",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "dirs"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -538,7 +526,7 @@ dependencies = [
  "chrono",
  "clap",
  "crc32fast",
- "digitalis",
+ "foxglove-link",
  "image",
  "libc",
  "prost",
@@ -549,12 +537,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "foxglove-link"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "crc32fast",
+ "embedded-graphics",
+ "foxglove-devices",
+ "hidapi",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "foxglove-panel"
 version = "0.2.0"
 dependencies = [
  "chrono",
- "digitalis",
  "embedded-graphics",
+ "foxglove-link",
  "windows",
  "windows-core",
 ]
@@ -967,8 +967,8 @@ dependencies = [
  "anyhow",
  "chrono",
  "clap",
- "digitalis",
  "dirs",
+ "foxglove-link",
  "foxglove-panel",
  "hidapi",
  "serde",

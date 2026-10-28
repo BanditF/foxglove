@@ -1,4 +1,4 @@
-//! device-layer device for a Digitalis keyboard (feature `devices`): everything the host link can do, behind
+//! device-layer device for a Foxglove link keyboard (feature `devices`): everything the host link can do, behind
 //! the device layer's capability traits. The keymap is not here: ZMK keymaps come over Studio RPC, and the
 //! app adds them on top of this device.
 //!
@@ -174,12 +174,12 @@ fn halves_agree(rgb: &RgbState) -> bool {
         && l.effect == r.effect
 }
 
-/// A Digitalis keyboard as a device-layer device. Events reach the sink for as long as it lives.
-pub struct DigitalisDevice {
+/// A Foxglove link keyboard as a device-layer device. Events reach the sink for as long as it lives.
+pub struct FoxgloveLinkDevice {
     info: DeviceInfo,
     link: Arc<Link>,
     hello: Mutex<Hello>,
-    /// The PC panel's size, once asked ([`DigitalisDevice::panel_size`]).
+    /// The PC panel's size, once asked ([`FoxgloveLinkDevice::panel_size`]).
     panel_size: Mutex<Option<(usize, usize)>>,
     caps: Caps,
     sink: EventSink,
@@ -196,7 +196,7 @@ pub struct DigitalisDevice {
     _reports: EventSubscription,
 }
 
-impl DigitalisDevice {
+impl FoxgloveLinkDevice {
     /// Wraps a connected link; `hello` is what the keyboard answered when it connected.
     pub fn new(info: DeviceInfo, link: Arc<Link>, hello: Hello, sink: EventSink) -> Self {
         let events_sink = sink.clone();
@@ -276,7 +276,7 @@ impl DigitalisDevice {
                 percent,
             });
         }
-        DigitalisDevice {
+        FoxgloveLinkDevice {
             calibration_key: Mutex::new(calibration::key_for(&info.id)),
             info,
             link,
@@ -546,7 +546,7 @@ impl DigitalisDevice {
     }
 }
 
-impl Device for DigitalisDevice {
+impl Device for FoxgloveLinkDevice {
     fn info(&self) -> &DeviceInfo {
         &self.info
     }
@@ -588,7 +588,7 @@ impl Device for DigitalisDevice {
     }
 }
 
-impl Layers for DigitalisDevice {
+impl Layers for FoxgloveLinkDevice {
     fn active(&self) -> PResult<Vec<u8>> {
         Ok(self
             .layers
@@ -598,7 +598,7 @@ impl Layers for DigitalisDevice {
     }
 }
 
-impl Behaviors for DigitalisDevice {
+impl Behaviors for FoxgloveLinkDevice {
     fn list(&self) -> PResult<Vec<BehaviorInfo>> {
         Ok(self
             .behaviors
@@ -659,7 +659,7 @@ const RGB_EFFECT_SET: u32 = 13;
 const SPEED_STEPS: u32 = 5;
 const RGB_COLOR_HSB: u32 = 14;
 
-impl Lighting for DigitalisDevice {
+impl Lighting for FoxgloveLinkDevice {
     fn layout(&self) -> PResult<Vec<Zone>> {
         let rgb = settings::rgb_state(&*self.link).map_err(err)?;
         let zone = |name: &str, id| Zone {
@@ -725,7 +725,7 @@ impl Lighting for DigitalisDevice {
         Ok(())
     }
 
-    /// SET_FRAME (#272): every part's LEDs in strip order ([`DigitalisDevice::lamp_parts`]); a
+    /// SET_FRAME (#272): every part's LEDs in strip order ([`FoxgloveLinkDevice::lamp_parts`]); a
     /// split board's halves each through their own colour calibration (the zone `left` or
     /// `right`), a one-piece board's through the keyboard's. A frame past what a frame
     /// addresses is refused.
@@ -751,10 +751,10 @@ impl Lighting for DigitalisDevice {
     }
 }
 
-impl DigitalisDevice {
+impl FoxgloveLinkDevice {
     /// [`Lighting::set_frame`] with the keyboard's reply: how long it holds a frame without
     /// another ([`crate::protocol::FrameReply::timeout_s`]) and whether the right half draws
-    /// it. Every part's LEDs in strip order ([`DigitalisDevice::lamp_parts`]); a split board's
+    /// it. Every part's LEDs in strip order ([`FoxgloveLinkDevice::lamp_parts`]); a split board's
     /// halves each through their own colour calibration (the zone `left` or `right`), a
     /// one-piece board's through the keyboard's. A frame past what a frame addresses is
     /// refused.
@@ -781,11 +781,11 @@ impl DigitalisDevice {
                 [c.r, c.g, c.b]
             })
             .collect();
-        DigitalisDevice::set_frame(self, 0, &colours)
+        FoxgloveLinkDevice::set_frame(self, 0, &colours)
     }
 }
 
-impl Screens for DigitalisDevice {
+impl Screens for FoxgloveLinkDevice {
     fn send_panel(&self, bitmap: &[u8], w: u16, h: u16) -> PResult<()> {
         let (width, height) = self.panel_size();
         let stride = (w as usize).div_ceil(8);
@@ -834,7 +834,7 @@ impl Screens for DigitalisDevice {
     }
 }
 
-impl Power for DigitalisDevice {
+impl Power for FoxgloveLinkDevice {
     fn batteries(&self) -> PResult<Vec<(String, u8)>> {
         let fresh = panel::hello(&*self.link).map_err(err)?;
         let mut hello = self.hello.lock().unwrap_or_else(|e| e.into_inner());
@@ -867,7 +867,7 @@ impl Power for DigitalisDevice {
     }
 }
 
-impl DevSettings for DigitalisDevice {
+impl DevSettings for FoxgloveLinkDevice {
     fn get(&self, key: &str) -> PResult<Option<Value>> {
         match key {
             "rgb_sync" => Ok(settings::rgb_sync(&*self.link, None)
@@ -896,14 +896,14 @@ mod backend {
     use foxglove_devices::{Backend, BackendId, DeviceId, DeviceKind};
     use std::time::Duration;
 
-    /// Finds Digitalis keyboards over hidapi; backend id `zmk`.
+    /// Finds Foxglove link keyboards over hidapi; backend id `zmk`.
     #[derive(Default)]
-    pub struct DigitalisBackend {
+    pub struct FoxgloveLinkBackend {
         /// Narrows discovery (product name, VID/PID); the default takes any Raw HID keyboard.
         pub filter: Match,
     }
 
-    impl Backend for DigitalisBackend {
+    impl Backend for FoxgloveLinkBackend {
         fn id(&self) -> BackendId {
             BackendId("zmk".into())
         }
@@ -950,7 +950,7 @@ mod backend {
             let link = Arc::new(Link::hid(m).map_err(err)?);
             let connected = link.wait_connected(Duration::from_secs(3)).map_err(err)?;
             let hello = connected.hello.ok_or(DeviceError::Unsupported)?;
-            Ok(Box::new(DigitalisDevice::new(
+            Ok(Box::new(FoxgloveLinkDevice::new(
                 info.clone(),
                 link,
                 hello,
@@ -961,7 +961,7 @@ mod backend {
 }
 
 #[cfg(feature = "hid")]
-pub use backend::DigitalisBackend;
+pub use backend::FoxgloveLinkBackend;
 
 #[cfg(test)]
 mod tests {
@@ -1079,7 +1079,7 @@ mod tests {
         }
     }
 
-    fn device(capabilities: u32) -> (DigitalisDevice, Fake, EventBus) {
+    fn device(capabilities: u32) -> (FoxgloveLinkDevice, Fake, EventBus) {
         let fake = Fake::default();
         let opener_fake = fake.clone();
         let link = Arc::new(Link::start(Box::new(move || {
@@ -1100,7 +1100,7 @@ mod tests {
             firmware: None,
         };
         let bus = EventBus::default();
-        let dev = DigitalisDevice::new(info, link, hello(capabilities), bus.sink(id));
+        let dev = FoxgloveLinkDevice::new(info, link, hello(capabilities), bus.sink(id));
         (dev, fake, bus)
     }
 
@@ -1473,7 +1473,7 @@ mod tests {
             "1d50:615e",
             "an untrusted serial isn't used"
         );
-        let key = "digitalis-calibration-test".to_string();
+        let key = "foxglove-link-calibration-test".to_string();
         dev.set_calibration_key(key.clone());
         dev.set_underglow(Some(7));
         let warm = Calibration {

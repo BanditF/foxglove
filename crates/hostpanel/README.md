@@ -9,7 +9,7 @@
 Drives the Eyelash Corne's nice!view screens from the PC over Raw HID (usage page 0xFF60), so new
 screen content is a PC-side change instead of a reflash. Needs the Foxglove firmware from this repo;
 the protocol is in `boards/shields/nice_view_custom/widgets/host_link.h`, and the PC side of it is
-the [`digitalis`](../digitalis) crate.
+the [`foxglove-link`](../foxglove-link) crate.
 
 - **Left screen:** a 64x52 panel in place of the WPM chart showing the clock, volume, the media
   title (scrolling) and a per-game hint. The PC draws every pixel, so changing the layout

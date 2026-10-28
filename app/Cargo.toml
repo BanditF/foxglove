@@ -12,7 +12,7 @@ edition = "2021"
 foxglove-update = { path = "../crates/foxglove-update" }
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }
 # Foxglove: the shared link to the keyboard (MIT).
-digitalis = { path = "../crates/digitalis", features = ["devices"] }
+foxglove-link = { path = "../crates/foxglove-link", features = ["devices"] }
 # Foxglove: the device layer (MIT).
 foxglove-devices = { path = "../crates/devices", features = ["hid"] }
 foxglove-scene = { path = "../crates/scene" }
@@ -162,7 +162,7 @@ auto_link_exclude_list = [
 [dev-dependencies]
 # Foxglove: checks that the built-in plugin icons render (the resvg egui_extras uses).
 resvg = { version = "0.45", default-features = false }
-# Foxglove: a fake keyboard for the art tests answers digitalis' Transport, whose results are anyhow's.
+# Foxglove: a fake keyboard for the art tests answers foxglove-link's Transport, whose results are anyhow's.
 anyhow = "1"
 
 # Foxglove: smaller dev/test builds (same as the root workspace; see its Cargo.toml).

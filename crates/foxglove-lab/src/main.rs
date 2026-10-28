@@ -1,13 +1,15 @@
 //! Hardware entry point. Listing and behavior resolution never open a device.
 use anyhow::{ensure, Result};
 use clap::{Parser, Subcommand};
-use digitalis::{art::RelayWait, hid::Match, link::Link, panel, protocol::capabilities, settings};
 use foxglove_lab::{
     behaviors::Catalog,
     platform,
     report::Report,
     runner::{Hardware, Runner},
     spec,
+};
+use foxglove_link::{
+    art::RelayWait, hid::Match, link::Link, panel, protocol::capabilities, settings,
 };
 use std::{collections::BTreeMap, path::PathBuf, sync::atomic::Ordering, time::Duration};
 
@@ -123,12 +125,12 @@ fn rgb_arg(s: &str) -> Result<[u8; 3]> {
 }
 
 /// One whole frame (reports of up to 9 lamps), SHOW on the last; returns the D7 8C reply.
-fn send_frame(link: &Link, rgb: &[[u8; 3]]) -> Result<[u8; digitalis::protocol::REPORT]> {
-    use digitalis::Transport;
+fn send_frame(link: &Link, rgb: &[[u8; 3]]) -> Result<[u8; foxglove_link::protocol::REPORT]> {
+    use foxglove_link::Transport;
     ensure!(
-        !rgb.is_empty() && rgb.len() <= digitalis::lamps::MAX_LAMPS,
+        !rgb.is_empty() && rgb.len() <= foxglove_link::lamps::MAX_LAMPS,
         "a frame has 1-{} lamps",
-        digitalis::lamps::MAX_LAMPS
+        foxglove_link::lamps::MAX_LAMPS
     );
     let lamps = rgb.len();
     let mut start = 0;
@@ -155,25 +157,25 @@ fn sha() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|| "unknown".into())
 }
-fn firmware(h: digitalis::protocol::Hello) -> serde_json::Value {
+fn firmware(h: foxglove_link::protocol::Hello) -> serde_json::Value {
     serde_json::json!({"hello_version":h.version,"panel_width":h.width,"panel_height":h.height,"right_link":h.right_link,"right_battery":h.right_battery,"discovery":h.discovery,"discovery_tries":h.discovery_tries,"debug":h.debug,"capabilities":h.capabilities})
 }
 /// The board's LEDs by part (#561): what it reports (LAMP_PARTS, HELLO bit 22), else what
 /// firmware that doesn't report them has.
 fn board_parts(
     link: &Link,
-    hello: Option<&digitalis::protocol::Hello>,
-) -> digitalis::lamps::LampParts {
-    let reports =
-        hello.is_some_and(|h| h.capabilities & digitalis::protocol::capabilities::LAMP_PARTS != 0);
-    let read = reports.then(|| digitalis::settings::lamp_parts(link));
+    hello: Option<&foxglove_link::protocol::Hello>,
+) -> foxglove_link::lamps::LampParts {
+    let reports = hello
+        .is_some_and(|h| h.capabilities & foxglove_link::protocol::capabilities::LAMP_PARTS != 0);
+    let read = reports.then(|| foxglove_link::settings::lamp_parts(link));
     match read {
         Some(Ok(parts)) => parts,
         Some(Err(e)) => {
             eprintln!("reading the board's LED counts: {e}; using the old firmware's");
-            digitalis::lamps::LampParts::old_firmware()
+            foxglove_link::lamps::LampParts::old_firmware()
         }
-        None => digitalis::lamps::LampParts::old_firmware(),
+        None => foxglove_link::lamps::LampParts::old_firmware(),
     }
 }
 
@@ -224,7 +226,7 @@ fn main() -> Result<std::process::ExitCode> {
         hold_ms,
     } = &cli.command
     {
-        use digitalis::Transport;
+        use foxglove_link::Transport;
         let _guard = platform::guard(cli.allow_app)?;
         let _lab = platform::lab_lock(Duration::from_secs(300))?;
         let link = connect(cli.product.clone())?;
@@ -318,7 +320,7 @@ fn main() -> Result<std::process::ExitCode> {
             );
             std::thread::sleep(Duration::from_millis(*step_ms));
         }
-        use digitalis::Transport;
+        use foxglove_link::Transport;
         let r = link.request(
             &[SETTINGS, FRAME, 2],
             SETTINGS,
@@ -337,7 +339,7 @@ fn main() -> Result<std::process::ExitCode> {
         let link = connect(cli.product.clone())?;
         let c = link.wait_connected(Duration::from_secs(10))?;
         let caps = c.hello.map_or(0, |h| h.capabilities);
-        if caps & digitalis::protocol::capabilities::BUILD_INFO == 0 {
+        if caps & foxglove_link::protocol::capabilities::BUILD_INFO == 0 {
             eprintln!("this firmware doesn't report its build (no HELLO bit 12)");
             return Ok(std::process::ExitCode::from(4));
         }
@@ -372,8 +374,8 @@ fn main() -> Result<std::process::ExitCode> {
             eprintln!("this firmware sends no relay-ready event (HELLO bits 3 and 20)");
             return Ok(std::process::ExitCode::from(4));
         }
-        let text = |s: Option<digitalis::protocol::ArtStatus>| serde_json::json!({"right_link": s.map(|s| s.link), "text": s.map(|s| s.to_string())});
-        return match digitalis::art::wait_relay_ready(&link, Duration::from_secs(*timeout_s))? {
+        let text = |s: Option<foxglove_link::protocol::ArtStatus>| serde_json::json!({"right_link": s.map(|s| s.link), "text": s.map(|s| s.to_string())});
+        return match foxglove_link::art::wait_relay_ready(&link, Duration::from_secs(*timeout_s))? {
             RelayWait::Ready(s) => {
                 println!("{}", text(Some(s)));
                 Ok(std::process::ExitCode::SUCCESS)
@@ -394,7 +396,7 @@ fn main() -> Result<std::process::ExitCode> {
         let link = connect(cli.product.clone())?;
         let c = link.wait_connected(Duration::from_secs(10))?;
         let caps = c.hello.map_or(0, |h| h.capabilities);
-        if caps & digitalis::protocol::capabilities::BOOTLOADER == 0 {
+        if caps & foxglove_link::protocol::capabilities::BOOTLOADER == 0 {
             eprintln!(
                 "this firmware has no bootloader command (HELLO bit 9); double-tap reset instead"
             );
@@ -449,9 +451,9 @@ fn main() -> Result<std::process::ExitCode> {
     if matches!(cli.command, Command::ArtStatus) {
         let link = connect(cli.product)?;
         link.wait_connected(Duration::from_secs(10))?;
-        digitalis::art::status(&link)?;
+        foxglove_link::art::status(&link)?;
         std::thread::sleep(Duration::from_millis(300));
-        let s = digitalis::art::status(&link)?;
+        let s = foxglove_link::art::status(&link)?;
         println!(
             "{}",
             serde_json::json!({"left_state": s.state, "error": s.error, "length": s.length, "right_state": s.right_state, "right_set": s.right_set, "right_set_count": s.right_set_count, "text": s.to_string()})
@@ -554,7 +556,7 @@ fn main() -> Result<std::process::ExitCode> {
     match connected {
         Ok((device, hello, product)) => {
             report.firmware.hello = firmware(hello);
-            if hello.capabilities & digitalis::protocol::capabilities::BUILD_INFO != 0 {
+            if hello.capabilities & foxglove_link::protocol::capabilities::BUILD_INFO != 0 {
                 let build = |half| {
                     settings::build_info(&device, half).ok().map(|b| {
                         let v = b.version;

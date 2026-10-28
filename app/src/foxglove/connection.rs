@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 
 use crate::protocols::{ConnectionSpec, ZmkTransportConfig};
-use digitalis::protocol::{ConnState, CAP_CONN_STATE};
+use foxglove_link::protocol::{ConnState, CAP_CONN_STATE};
 
 #[derive(Clone, Default, PartialEq)]
 struct Status {
@@ -64,7 +64,7 @@ pub fn start(ctx: &egui::Context) {
             #[cfg(target_os = "windows")]
             let mut watched = None;
             let mut subscriptions = Vec::new();
-            let mut links: Vec<Arc<digitalis::link::Link>> = Vec::new();
+            let mut links: Vec<Arc<foxglove_link::link::Link>> = Vec::new();
             let mut force = true;
             let mut previous_link = None;
             let mut ble_before = None;
@@ -84,7 +84,7 @@ pub fn start(ctx: &egui::Context) {
                 while let Ok(link) = links_rx.try_recv() {
                     let tx = wake.clone();
                     subscriptions.push(link.subscribe_events(move |event| {
-                        if matches!(event, digitalis::link::Event::State(_)) {
+                        if matches!(event, foxglove_link::link::Event::State(_)) {
                             let _ = tx.send(false);
                         }
                     }));
@@ -183,7 +183,7 @@ fn read(
         link.and_then(|link| {
             let hello = link.state().connected?.hello?;
             (hello.capabilities & CAP_CONN_STATE != 0)
-                .then(|| digitalis::settings::conn_state(link.as_ref()).ok())
+                .then(|| foxglove_link::settings::conn_state(link.as_ref()).ok())
                 .flatten()
         })
     };

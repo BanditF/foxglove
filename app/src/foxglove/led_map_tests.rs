@@ -795,7 +795,7 @@ fn a_held_frame_goes_again_before_the_keyboard_lets_go() {
 /// What the keyboard's answer means: its hold, and a split's other half that doesn't draw.
 #[test]
 fn the_keyboards_answer_gives_the_hold_and_a_missing_half() {
-    use digitalis::protocol::{FrameReply, FrameRight};
+    use foxglove_link::protocol::{FrameReply, FrameRight};
     let reply = |timeout_s, right| FrameReply {
         status: 0,
         owner: FrameReply::OWNER_HOST_LINK,
