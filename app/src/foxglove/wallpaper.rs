@@ -20,6 +20,8 @@
 //! - Wallpapers that describe themselves (`foxglove.json`, #562, `wallpaper_manifest`) are
 //!   gathered on each change too: the Scenes page offers their looks and marks the ones on
 //!   screen, and wallpaper sync (#493) reaches the monitors showing one that supports it.
+//! - "Lights follow the wallpaper" (#70) gets the accent of the wallpaper on screen from its
+//!   manifest's palette on each of those changes (`accent::wallpaper_changed`).
 
 use std::path::PathBuf;
 
@@ -355,6 +357,28 @@ fn ids_on_screen(manifests: &[Manifest], text: &str, source: &Source) -> Vec<Str
     ids
 }
 
+/// The accent of the wallpaper on screen, from its manifest's palette ("Lights follow the
+/// wallpaper", #70): on the monitor the setting names (Wallpaper Engine's only, as for the art),
+/// else the first monitor whose wallpaper has one. None when no wallpaper on screen has a
+/// palette, so the lights fall back to the Windows accent.
+fn accent_on_screen(
+    manifests: &[Manifest],
+    text: &str,
+    source: &Source,
+    monitor: Option<&str>,
+) -> Option<[u8; 3]> {
+    let engine = matches!(source, Source::Engine(_));
+    let monitor = monitor.filter(|_| engine);
+    on_screen(text, source)
+        .iter()
+        .filter(|(m, _)| monitor.is_none_or(|want| want == m))
+        .find_map(|(_, file)| {
+            super::wallpaper_manifest::for_file(manifests, file, !engine)?
+                .accent
+                .map(|c| c.0)
+        })
+}
+
 /// The folders of the wallpapers on screen, where a manifest may be.
 fn folders_on_screen(text: &str, source: &Source) -> Vec<PathBuf> {
     on_screen(text, source)
@@ -445,6 +469,7 @@ pub fn start() {
                 super::scenes_ui::wallpapers_changed();
             }
             let Some(text) = text else {
+                super::accent::wallpaper_changed(None);
                 if repaint {
                     super::scene_run::repaint_page();
                 }
@@ -456,6 +481,14 @@ pub fn start() {
                 }
                 continue;
             }
+            let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
+            // Lights follow the wallpaper (#70): the accent on screen now, none without one.
+            super::accent::wallpaper_changed(accent_on_screen(
+                &manifests,
+                &text,
+                &source,
+                monitor.as_deref(),
+            ));
             // Wallpaper sync (#493): the monitors showing a wallpaper that reads Foxglove's
             // properties get them; a new wallpaper gets them at once.
             super::wallpaper_sync::wallpapers(sync_targets(&manifests, &text, &source));
@@ -468,7 +501,6 @@ pub fn start() {
                 super::scene_run::repaint_page();
             }
             let index = index();
-            let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
             let Some(w) = find_in(&index, &text, &source, monitor.as_deref()) else {
                 continue;
             };
@@ -525,6 +557,31 @@ mod tests {
         let o = Source::Override(PathBuf::new());
         assert!(sync_targets(&ms, "tidepool.reef", &o).is_empty());
         assert!(sync_targets(&ms, config, &Source::Desktop).is_empty());
+        // Lights follow the wallpaper (#70): the first monitor's wallpaper with a palette, or
+        // the monitor the setting names; a wallpaper without a manifest gives none.
+        assert_eq!(
+            accent_on_screen(&ms, config, &engine, None),
+            Some([0x0f, 0xb5, 0xae])
+        );
+        assert_eq!(
+            accent_on_screen(&ms, config, &engine, Some("//?/DISPLAY#SAM0E3C#2")),
+            None,
+            "the lighthouse has no palette"
+        );
+        assert_eq!(
+            accent_on_screen(&ms, config, &engine, Some("Monitor0")),
+            None,
+            "no manifest"
+        );
+        assert_eq!(
+            accent_on_screen(&ms, "tidepool.reef", &o, Some("Monitor0")),
+            Some([0x0f, 0xb5, 0xae]),
+            "the test hook is matched by id, and the monitor setting doesn't apply"
+        );
+        assert_eq!(
+            accent_on_screen(&ms, "C:/Pictures/beach.jpg", &Source::Desktop, None),
+            None
+        );
         // The Scenes page's "On screen": every wallpaper with a manifest, once each, from any
         // source.
         assert_eq!(

@@ -158,13 +158,11 @@ pub fn show(ui: &mut egui::Ui) {
     }
 }
 
-/// What "Match keyboard" starts from: the Windows accent when the keyboard follows it, else
-/// the keyboard's colour as last read.
+/// What "Match keyboard" starts from: the colour the keyboard follows (the wallpaper's or the
+/// Windows accent) when it follows one, else the keyboard's colour as last read.
 fn follow_color() -> Option<[u8; 3]> {
-    if super::accent::enabled() {
-        if let Some(c) = super::accent::current() {
-            return Some(c);
-        }
+    if let Some(c) = super::accent::followed() {
+        return Some(c);
     }
     let left = super::keyboard_settings::cached_rgb_state()?.left;
     Some(pc_lights::hsv_rgb(left.hue, left.sat, left.brightness))
@@ -423,8 +421,9 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
                 if ui
                     .checkbox(&mut matching, "Match keyboard")
                     .on_hover_text(
-                        "Follow the keyboard's underglow colour when Foxglove sets it, or the Windows \
-                         accent colour when the keyboard follows that. Picking a colour here stops it.",
+                        "Follow the keyboard's underglow colour when Foxglove sets it, or the wallpaper's \
+                         or the Windows accent colour when the keyboard follows that. Picking a colour \
+                         here stops it.",
                     )
                     .changed()
                 {
