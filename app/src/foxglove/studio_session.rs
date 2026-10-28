@@ -224,7 +224,12 @@ pub struct StudioEditor {
     link: Option<Link>,
     parked: Option<Parked>,
     status: Status,
+    settled: Option<Settled>,
 }
+
+/// Told the keymap (and physical layouts) a board keeps after Save, Discard or Restore stock
+/// (#592): the saved keymap copy follows it (`keymap_cache::refresh`).
+pub type Settled = Box<dyn FnMut(&keymap::Keymap, &keymap::PhysicalLayouts) + Send>;
 
 impl StudioEditor {
     pub fn new(opener: Opener) -> Self {
@@ -233,7 +238,35 @@ impl StudioEditor {
             link: None,
             parked: None,
             status: Status::default(),
+            settled: None,
         }
+    }
+
+    /// Calls `settled` after each Save, Discard and Restore stock that the board accepted.
+    pub fn on_settled(mut self, settled: Settled) -> Self {
+        self.settled = Some(settled);
+        self
+    }
+
+    /// Tells the `settled` hook what the board keeps now: Save, Discard and Restore stock all
+    /// leave its live keymap equal to its saved one. `raw` is the keymap if just read. A read
+    /// that fails only costs the copy this update; the request itself succeeded.
+    fn settle(&mut self, raw: Option<keymap::Keymap>) {
+        let Some(mut settled) = self.settled.take() else {
+            return;
+        };
+        let read = self.run(|c| {
+            let raw = match raw {
+                Some(raw) => raw,
+                None => c.get_keymap()?,
+            };
+            Ok((raw, c.get_physical_layouts()?))
+        });
+        match read {
+            Ok((raw, layouts)) => settled(&raw, &layouts),
+            Err(e) => eprintln!("Foxglove: can't read the keymap for its saved copy: {e}"),
+        }
+        self.settled = Some(settled);
     }
 
     #[cfg(test)]
@@ -349,6 +382,7 @@ impl StudioEditor {
     pub fn save(&mut self) -> Result<(), Box<dyn Error>> {
         self.run(|c| c.save_changes())?;
         self.status.unsaved = false;
+        self.settle(None);
         Ok(())
     }
 
@@ -388,7 +422,10 @@ impl StudioEditor {
             }),
         };
         match changed.and_then(|()| self.reread()) {
-            Ok((layers, raw)) => done.send_with_keymap(self.status, keymap(&layers, &raw)),
+            Ok((layers, raw)) => {
+                done.send_with_keymap(self.status, keymap(&layers, &raw));
+                self.settle(Some(raw));
+            }
             Err(e) => done.send(Err(error_text(e))),
         }
     }

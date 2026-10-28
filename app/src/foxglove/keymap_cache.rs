@@ -10,12 +10,13 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use prost::Message;
+use zmk_studio_api::proto::zmk::keymap;
 use zmk_studio_api::proto::zmk::studio::{response, Request, Response};
 use zmk_studio_api::transport::serial::{SerialTransport, SerialTransportError};
 use zmk_studio_api::StudioClient;
@@ -303,26 +304,94 @@ fn replays_as(exchanges: &[Exchange], live: &ZmkData) -> bool {
 
 /// Keeps `recording` as keyboard `vid:pid`'s keymap, but only if replaying it gives exactly
 /// `live` (what the keyboard just said), so an incomplete recording never replaces a good one.
-/// Written to a temporary file and renamed, so an interruption can't leave half a file.
 pub fn save(vid: u16, pid: u16, recording: &Recording, live: &ZmkData) {
-    let exchanges = recording.exchanges();
-    let Some(path) = path(vid, pid) else {
-        return;
-    };
-    if !replays_as(&exchanges, live) {
+    if let Some(path) = path(vid, pid) {
+        save_at(&path, &recording.exchanges(), live);
+    }
+}
+
+fn save_at(path: &Path, exchanges: &[Exchange], live: &ZmkData) {
+    if !replays_as(exchanges, live) {
         eprintln!("Foxglove: the keymap recording doesn't replay the same; keeping the old one");
         return;
     }
+    write_file(path, exchanges);
+}
+
+/// Written to a temporary file and renamed, so an interruption can't leave half a file.
+fn write_file(path: &Path, exchanges: &[Exchange]) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let tmp = path.with_extension("studio.tmp");
     let written =
-        std::fs::write(&tmp, to_file(&exchanges)).and_then(|()| std::fs::rename(&tmp, &path));
+        std::fs::write(&tmp, to_file(exchanges)).and_then(|()| std::fs::rename(&tmp, path));
     if let Err(e) = written {
         let _ = std::fs::remove_file(&tmp);
         eprintln!("Foxglove: can't save the keymap to {}: {e}", path.display());
     }
+}
+
+/// `exchanges` with every `get_keymap` and `get_physical_layouts` reply replaced by `raw` and
+/// `layouts`. A full read records the board's whole behaviour catalogue, so the copy can still
+/// answer for behaviours the new keymap uses and the old one didn't.
+fn with_keymap(
+    exchanges: &[Exchange],
+    raw: &keymap::Keymap,
+    layouts: &keymap::PhysicalLayouts,
+) -> Vec<Exchange> {
+    use keymap::request::RequestType as Q;
+    use keymap::response::ResponseType as R;
+    use zmk_studio_api::proto::zmk::studio::request::Subsystem as Asked;
+    use zmk_studio_api::proto::zmk::studio::request_response::Subsystem as Answered;
+    exchanges
+        .iter()
+        .cloned()
+        .map(|mut e| {
+            let fresh = match &e.request.subsystem {
+                Some(Asked::Keymap(keymap::Request {
+                    request_type: Some(Q::GetKeymap(_)),
+                })) => Some(R::GetKeymap(raw.clone())),
+                Some(Asked::Keymap(keymap::Request {
+                    request_type: Some(Q::GetPhysicalLayouts(_)),
+                })) => Some(R::GetPhysicalLayouts(layouts.clone())),
+                _ => None,
+            };
+            if let (Some(fresh), Some(response::Type::RequestResponse(rr))) =
+                (fresh, &mut e.reply.r#type)
+            {
+                rr.subsystem = Some(Answered::Keymap(keymap::Response {
+                    response_type: Some(fresh),
+                }));
+            }
+            e
+        })
+        .collect()
+}
+
+/// After Save, Discard or Restore stock (#592): puts the keymap the board now keeps (`raw`, on
+/// `layouts`) in keyboard `vid:pid`'s saved copy, so the overlay never starts from an older one
+/// when Studio can't be asked. Without a saved copy there's nothing to update: the next full
+/// read over USB makes one.
+pub fn refresh(vid: u16, pid: u16, raw: &keymap::Keymap, layouts: &keymap::PhysicalLayouts) {
+    if let Some(path) = path(vid, pid) {
+        refresh_at(&path, raw, layouts);
+    }
+}
+
+fn refresh_at(path: &Path, raw: &keymap::Keymap, layouts: &keymap::PhysicalLayouts) {
+    let Some(old) = std::fs::read(path).ok().and_then(|b| from_file(&b)) else {
+        return;
+    };
+    let exchanges = with_keymap(&old, raw, layouts);
+    // Kept only if it replays as exactly this keymap.
+    let replays = fetch_zmk_data_from_client(client_for(exchanges.clone()))
+        .is_ok_and(|r| r.raw_keymap == *raw && r.physical_layouts == *layouts);
+    if !replays {
+        eprintln!("Foxglove: the saved keymap can't take the new one; keeping the old copy");
+        return;
+    }
+    write_file(path, &exchanges);
 }
 
 /// A Studio client that answers from keyboard `vid:pid`'s saved keymap, if there is one.
@@ -438,6 +507,100 @@ mod tests {
             r.read(&mut buf).unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof
         );
+    }
+
+    /// #592: the saved copy follows Save, Discard and Restore stock, on each desk's board.
+    #[test]
+    fn the_saved_copy_follows_save_discard_and_restore_stock() {
+        use crate::foxglove::studio_fake::FakeBoard;
+        use crate::foxglove::studio_session::{Link, StudioDone, StudioEditor, StudioRequest};
+        use crate::key_action::KeymapSnapshot;
+        use crate::key_matrix::KeyMatrix;
+        use zmk_studio_api::{Behavior, HidUsage};
+
+        fn key(usage: u16) -> Behavior {
+            Behavior::KeyPress(HidUsage::from_encoded(0x07_0000 | usage as u32))
+        }
+        fn copy(path: &Path) -> ZmkData {
+            let exchanges = from_file(&std::fs::read(path).unwrap()).unwrap();
+            fetch_zmk_data_from_client(client_for(exchanges)).expect("the copy replays")
+        }
+        fn copied_param(path: &Path, layer: usize, pos: usize) -> u32 {
+            copy(path).raw_keymap.layers[layer].bindings[pos].param1
+        }
+        fn ask(editor: &mut StudioEditor, request: StudioRequest) {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let empty = || KeymapSnapshot {
+                layers: vec![],
+                actions: vec![],
+            };
+            let matrix = Arc::new(Mutex::new(KeyMatrix::from_snapshot(empty(), 1, 1)));
+            let wake = crate::ui_wake::UiWake::new(Arc::new(|| {}));
+            editor.handle(request, StudioDone::new(tx, wake, matrix), |_, _| empty());
+            rx.recv_timeout(Duration::from_secs(10)).unwrap().unwrap();
+        }
+
+        let dir = std::env::temp_dir().join(format!("foxglove-592-{}", std::process::id()));
+        for (n, board) in [FakeBoard::corne(), FakeBoard::plank3()]
+            .into_iter()
+            .enumerate()
+        {
+            board.unlock();
+            let path = dir.join(format!("keymap-{n}.studio"));
+            let stock = (board.saved_param(0, 0), board.saved_param(1, 2));
+
+            // A full read, recorded and kept, as `fetch_and_save` does over USB.
+            let recording = Recording::default();
+            recording.on.store(true, Ordering::Relaxed);
+            let live = fetch_zmk_data_from_client(StudioClient::new(Recorder {
+                inner: board.line(),
+                recording: recording.clone(),
+            }))
+            .unwrap();
+            save_at(&path, &recording.exchanges(), &live);
+            assert_eq!(copied_param(&path, 0, 0), stock.0);
+
+            let hooked = |board: &FakeBoard| {
+                let (board, path) = (board.clone(), path.clone());
+                StudioEditor::new(Box::new(move || Ok(Link::new(board.line())))).on_settled(
+                    Box::new(move |raw, layouts| refresh_at(&path, raw, layouts)),
+                )
+            };
+            let mut editor = hooked(&board);
+            ask(&mut editor, StudioRequest::Open);
+
+            // Save: unsaved writes stay out of the copy; saved ones go in.
+            editor.set_key(0, 0, key(0x29)).unwrap();
+            assert_eq!(copied_param(&path, 0, 0), stock.0, "unsaved");
+            editor.save().unwrap();
+            assert_eq!(copied_param(&path, 0, 0), 0x07_0029, "after Save");
+            assert_eq!(copy(&path).resolved_layers, board.resolved());
+            editor.end();
+
+            // Saved elsewhere (another tool), so the copy is behind: Discard brings it up.
+            let mut other = StudioEditor::new({
+                let board = board.clone();
+                Box::new(move || Ok(Link::new(board.line())))
+            });
+            ask(&mut other, StudioRequest::Open);
+            other.set_key(1, 2, key(0x2c)).unwrap();
+            other.save().unwrap();
+            other.end();
+            assert_eq!(copied_param(&path, 1, 2), stock.1);
+            ask(&mut editor, StudioRequest::Open);
+            editor.set_key(1, 2, key(0x04)).unwrap();
+            ask(&mut editor, StudioRequest::Discard);
+            assert_eq!(copied_param(&path, 1, 2), 0x07_002c, "after Discard");
+            assert_eq!(copy(&path).resolved_layers, board.resolved());
+
+            // Restore stock: back to the built keymap.
+            ask(&mut editor, StudioRequest::RestoreStock);
+            assert_eq!(copied_param(&path, 0, 0), stock.0, "after Restore stock");
+            assert_eq!(copied_param(&path, 1, 2), stock.1, "after Restore stock");
+            assert_eq!(copy(&path).resolved_layers, board.resolved());
+            editor.end();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

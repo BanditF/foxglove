@@ -132,7 +132,12 @@ impl ZmkProtocol {
             wake,
             _taps: (report_tap, state_tap),
             layout,
-            studio: StudioEditor::new(zmk_rpc::studio_opener(transport.clone())),
+            // #592: the saved keymap copy follows Save, Discard and Restore stock.
+            studio: StudioEditor::new(zmk_rpc::studio_opener(transport.clone())).on_settled(
+                Box::new(move |raw, layouts| {
+                    crate::foxglove::keymap_cache::refresh(vid, pid, raw, layouts);
+                }),
+            ),
             transport,
         })
     }
