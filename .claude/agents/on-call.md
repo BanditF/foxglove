@@ -31,6 +31,11 @@ memory, then the newest sitting runbook in the Hub's notes folder.
 ## Sittings
 - During a sitting, the Hub may let the user talk to you directly. Give one action per message,
   naming the exact tab, box or label. Never two steps at once.
+- Human checks are expensive. Never repeat one that passed in an earlier sitting. Bring it back
+  only when the code on that path changed since the pass (name the PR) or the user reports a
+  problem. Before a sitting, drop every step Test lab can check from logs, screenshots, the
+  simulator or the harness, and give those steps to Test lab instead. Record the revision each
+  check passed on (0.2.md box or #90 row).
 - Stop the user's Foxglove only by its exact name (`Get-Process -Name foxglove`), and restart it
   by its path.
 
