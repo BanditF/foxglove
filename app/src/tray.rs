@@ -127,6 +127,8 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
             } = event
             {
                 let size = [f64::from(rect.size.width), f64::from(rect.size.height)];
+                // Foxglove (#612): the panel draws in the overlay, so un-minimize it first.
+                crate::foxglove::overlay_restore::request(crate::foxglove::overlay_restore::Trigger::TrayClick);
                 crate::foxglove::tray_panel::clicked([rect.position.x, rect.position.y], size);
             }
         }
@@ -161,7 +163,12 @@ impl Tray {
         #[cfg(not(target_os = "linux"))]
         {
             // Foxglove: the taskbar started (sign-in, Explorer restart): make a missing icon.
-            if crate::foxglove::taskbar::take() && self.icon.taskbar_created(build_tray_icon) {
+            let taskbar_started = crate::foxglove::taskbar::take();
+            if taskbar_started {
+                // Foxglove (#612): bring the overlay back if Explorer's restart left it minimized.
+                crate::foxglove::overlay_restore::request(crate::foxglove::overlay_restore::Trigger::TaskbarRestart);
+            }
+            if taskbar_started && self.icon.taskbar_created(build_tray_icon) {
                 self.glyph = crate::foxglove::tray::Glyph::Disconnected;
                 self.tooltip = "Foxglove".into();
             }
