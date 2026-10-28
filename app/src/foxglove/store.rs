@@ -95,11 +95,17 @@ fn set(table: &mut Table, section: &str, value: Value) {
     let last = parts.pop().expect("a section name");
     let mut t = table;
     for part in parts {
-        t = t
-            .entry(part)
-            .or_insert_with(|| Value::Table(Table::new()))
-            .as_table_mut()
-            .expect("sections are tables");
+        let entry = t.entry(part).or_insert_with(|| Value::Table(Table::new()));
+        if !entry.is_table() {
+            // A hand edit left a value where a section belongs (`scenes = 1`): the section
+            // takes its place instead of every save panicking.
+            eprintln!("Foxglove: settings: `{part}` wasn't a section; it is one again");
+            *entry = Value::Table(Table::new());
+        }
+        let Value::Table(next) = entry else {
+            unreachable!("made a table above")
+        };
+        t = next;
     }
     t.insert(last.into(), value);
 }
@@ -731,6 +737,20 @@ mod tests {
         let mut merged = base.clone();
         merge(&mut merged, d);
         assert_eq!(merged, new);
+    }
+
+    /// A hand-edited file with a value where a section belongs saves instead of panicking.
+    #[test]
+    fn a_value_where_a_section_belongs_is_replaced() {
+        let mut t: Table = toml::from_str(
+            "scenes = 1
+keep = true
+",
+        )
+        .unwrap();
+        set(&mut t, "scenes.look", Value::Integer(5));
+        assert_eq!(get(&t, "scenes.look").and_then(Value::as_integer), Some(5));
+        assert_eq!(t.get("keep").and_then(Value::as_bool), Some(true));
     }
 
     #[test]

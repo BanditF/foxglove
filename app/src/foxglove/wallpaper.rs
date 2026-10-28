@@ -334,6 +334,34 @@ fn watched_with(
     }
 }
 
+/// What a wake can have changed: each watched file's (and wallpaper folder's) write time and
+/// size, and whether Wallpaper Engine runs. The watches are on whole folders, so Wallpaper
+/// Engine's own log.txt (beside its config, up to a line a second) wakes the service too; a wake
+/// that changes none of these is skipped instead of looking for Wallpaper Engine and reading its
+/// config again.
+#[derive(Clone, Debug, PartialEq)]
+struct Stamp {
+    files: Vec<Option<(std::time::SystemTime, u64)>>,
+    running: bool,
+    /// The desktop wallpaper as the registry names it: Windows may rewrite its file before the
+    /// registry, so the file alone could match while the name is still to change.
+    desktop: Option<String>,
+}
+
+fn stamp(paths: &[PathBuf], running: bool, desktop: Option<String>) -> Stamp {
+    Stamp {
+        desktop,
+        files: paths
+            .iter()
+            .map(|p| {
+                let m = std::fs::metadata(p).ok()?;
+                Some((m.modified().ok()?, m.len()))
+            })
+            .collect(),
+        running,
+    }
+}
+
 /// The ids of the wallpapers with a manifest on screen, on any monitor (the Scenes page marks
 /// their looks, #488, #562). Set by the wallpaper service on each change.
 static ON_SCREEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -416,7 +444,9 @@ pub fn start() {
     if super::repaint_trace::disabled("wallpaper") {
         return;
     }
-    super::services::spawn_named("wallpaper", move || {
+    // Supervised: a panic (a wallpaper's manifest, a config Wallpaper Engine wrote oddly)
+    // restarts the service, which reads everything afresh.
+    super::services::spawn_supervised("wallpaper", || {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         *WAKE.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
         let watch = |paths: &[PathBuf]| -> Vec<_> {
@@ -438,8 +468,22 @@ pub fn start() {
         let mut watches = watch(&paths);
         let mut last: Option<String> = None;
         let mut scanner = super::wallpaper_manifest::Scanner::default();
+        let mut seen: Option<Stamp> = None;
+        // The wallpaper folders the manifests come from: a wallpaper added or removed there
+        // changes their write time, so it counts as a change too.
+        let mut roots = super::wallpaper_manifest::roots(&engine);
         // Check once at start, then on each change in a watched folder or Refresh.
         for (n, ()) in std::iter::once(()).chain(rx.iter()).enumerate() {
+            let now = stamp(
+                &[paths.as_slice(), roots.as_slice()].concat(),
+                super::wallpaper_engine::running_now(),
+                desktop_wallpaper(),
+            );
+            let refresh = RESCAN.load(std::sync::atomic::Ordering::Relaxed);
+            if n > 0 && !refresh && seen.as_ref() == Some(&now) {
+                continue;
+            }
+            seen = Some(now);
             let engine = if n == 0 {
                 engine.clone()
             } else {
@@ -451,13 +495,16 @@ pub fn start() {
                 watches.clear();
                 watches = watch(&now);
                 paths = now;
+                // Other files: the next wake compares against them.
+                seen = None;
             }
             let source = source(&engine);
             let text = read(&source);
             // The wallpapers that describe themselves (#562): Wallpaper Engine's folders, read
             // again when they changed, and the folders on screen.
             let force = RESCAN.swap(false, std::sync::atomic::Ordering::Relaxed);
-            let found = scanner.scan(&super::wallpaper_manifest::roots(&engine), force);
+            roots = super::wallpaper_manifest::roots(&engine);
+            let found = scanner.scan(&roots, force);
             let shown = text
                 .as_deref()
                 .map_or_else(Vec::new, |t| folders_on_screen(t, &source));
@@ -617,6 +664,29 @@ mod tests {
         // The override file and the desktop wallpaper are plain text.
         assert!(readable("fury-stars", &Source::Override(PathBuf::new())));
         assert!(readable(r"C:\Pictures\a.jpg", &Source::Desktop));
+    }
+
+    /// Wallpaper Engine's log.txt beside its config wakes the service; only a change to a
+    /// watched file, or Wallpaper Engine starting or quitting, is worth a look.
+    #[test]
+    fn only_a_change_to_what_is_read_counts() {
+        let dir = std::env::temp_dir().join(format!("foxglove-wp-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("config.json");
+        std::fs::write(&config, "{}").unwrap();
+        let paths = vec![config.clone(), dir.join("missing")];
+        let before = stamp(&paths, true, None);
+        std::fs::write(dir.join("log.txt"), "icon create err: 1008.").unwrap();
+        assert_eq!(stamp(&paths, true, None), before, "its log isn't read");
+        assert_ne!(stamp(&paths, false, None), before, "it quit");
+        assert_ne!(
+            stamp(&paths, true, Some("C:/a.jpg".into())),
+            before,
+            "the desktop wallpaper's name changed"
+        );
+        std::fs::write(&config, r#"{"me":{}}"#).unwrap();
+        assert_ne!(stamp(&paths, true, None), before, "its config changed");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
