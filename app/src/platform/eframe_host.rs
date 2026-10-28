@@ -87,6 +87,9 @@ struct EframeApp {
     placement_tries: u32,
     #[cfg(target_os = "windows")]
     displays_checked: Option<std::time::Instant>,
+    // Foxglove (#612): whether the overlay window was minimized at the last frame.
+    #[cfg(target_os = "windows")]
+    was_iconic: bool,
 }
 
 impl eframe::App for EframeApp {
@@ -152,6 +155,18 @@ impl EframeApp {
         let Some(hwnd) = self.hwnd else {
             return;
         };
+        // Foxglove (#612): a tray click, a display change or a taskbar restart un-minimizes the
+        // overlay (and moves it onto a live display) before this frame draws the panel.
+        if let Some(placed) = crate::foxglove::overlay_restore::frame(
+            hwnd,
+            &mut self.was_iconic,
+            self.app.monitor(),
+            place_window,
+        ) {
+            self.monitor_rect = placed;
+            self.placement_tries = 1;
+            ctx.request_repaint();
+        }
         let chosen_changed = self.placed_on_monitor != self.app.monitor();
         let due = self
             .displays_checked
@@ -425,6 +440,8 @@ fn run_inner(
                 placement_tries: 0,
                 #[cfg(target_os = "windows")]
                 displays_checked: None,
+                #[cfg(target_os = "windows")]
+                was_iconic: false,
             }))
         }),
     )
