@@ -1594,7 +1594,8 @@ pub const CAP_CONN_STATE: u32 = capabilities::CONN_STATE;
 //   ARM      D7 08 00                    -> D7 88 status nonce u32 LE
 //   TRIGGER  D7 08 01 half nonce u32 LE  -> D7 88 status half
 // status: 0 ok, 2 no relay link (right), 3 relay timeout, 4 not built in, 5 bad request,
-// 6 wrong/expired nonce. The left reboots ~300 ms after its TRIGGER reply.
+// 6 wrong/expired nonce, 7 (right, #545) sent over ZMK's split link without the relay, not
+// acknowledged: watch for the bootloader drive. The left reboots ~300 ms after its TRIGGER reply.
 pub const BOOTLOADER_ARM: u8 = 0x00;
 pub const BOOTLOADER_TRIGGER: u8 = 0x01;
 

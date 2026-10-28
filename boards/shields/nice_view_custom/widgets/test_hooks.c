@@ -261,7 +261,8 @@ bool test_hooks_bootloader(const uint8_t *d, int len, uint8_t r[7]) {
         return false;
     }
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
-    if (art_relay_link() == 2 && atomic_cas(&boot_relaying, 0, 1)) {
+    // Without a relay link too: the relay queue falls back to ZMK's own split link (#545).
+    if (atomic_cas(&boot_relaying, 0, 1)) {
         art_relay_boot();
         return true;
     }

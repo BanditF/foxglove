@@ -266,6 +266,7 @@ void art_relay_right_rang(uint8_t what);
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 void art_relay_press(uint8_t pos, uint8_t state);
-// Asks the right half to reboot into its bootloader; answers test_hooks_boot_relay_done().
+// Asks the right half to reboot into its bootloader, through the relay or, without a usable relay
+// link, ZMK's own split (#545); answers test_hooks_boot_relay_done().
 void art_relay_boot(void);
 #endif
