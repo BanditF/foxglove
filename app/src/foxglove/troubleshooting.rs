@@ -105,6 +105,12 @@ fn details(ui: &mut egui::Ui, snap: &Snapshot) {
                 .wrap(),
             );
             ui.end_row();
+            // What its firmware lets ZMK Studio do, as the profile says (#580).
+            if let Some(studio) = super::boards::current().and_then(|b| b.studio) {
+                ui.weak("ZMK Studio");
+                ui.add(egui::Label::new(studio.summary()).wrap());
+                ui.end_row();
+            }
             // The other half of a split (#559): a one-piece board has none.
             let parts = super::parts::Parts::current().seen(if hello.right_battery.is_some() {
                 2

@@ -20,3 +20,11 @@ half = "left"
 width = 144
 height = 168
 format = "1bit"
+
+# ZMK Studio (#580): the vendor's Studio build on the left, locking at ZMK's default (on), and
+# two reserved layers (extra_2, extra_3) in its keymap. See eyelash-corne.toml for the fields.
+[studio]
+editing = true
+locking = true
+reserved_layers = 2
+zmk = "v0.3.0"

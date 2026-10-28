@@ -352,6 +352,11 @@ impl EditorState {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_enabled_ui(!busy, |ui| {
                     ui.menu_button(RichText::new(icon::DOTS_THREE).size(15.0), |ui| {
+                        // What the board's Studio build can't do, from its profile (#580).
+                        for note in crate::foxglove::boards::studio_notes() {
+                            ui.add(egui::Label::new(RichText::new(note).weak()).wrap());
+                            ui.separator();
+                        }
                         if ui
                             .button("Restore stock keymap…")
                             .on_hover_text(

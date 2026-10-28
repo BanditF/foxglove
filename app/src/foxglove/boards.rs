@@ -1,7 +1,8 @@
 //! Board profiles (#75): what Foxglove knows about a keyboard beyond what its firmware says,
 //! as data. A profile names the board, how to recognise it (USB ids and product name; ZMK
 //! boards share one vid:pid), its protocol and halves, the screens to expect (the firmware's
-//! own descriptors win), its lights, and the keymap source behind the layer-access hints.
+//! own descriptors win), its lights, the keymap source behind the layer-access hints, and what
+//! its firmware build lets ZMK Studio do (`[studio]`, #580).
 //!
 //! Built-in profiles ship in `resources/boards`; more go in the `boards` folder next to
 //! Foxglove's settings, which wins over a built-in one with the same id. Profiles are read when
@@ -179,6 +180,85 @@ fn lamps_problem(board: &Board) -> Option<String> {
             l.lamps, board.halves
         )
     })
+}
+
+/// What a ZMK board's firmware build lets ZMK Studio do (#580), as the profile states it: the
+/// build's Kconfig and keymap, which the board doesn't report until a Studio session is open.
+/// The board's own answers win once it does (its keymap's `available_layers`, its lock state).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Studio {
+    /// The build has `CONFIG_ZMK_STUDIO=y`: its keymap can be edited from the PC.
+    #[serde(default)]
+    pub editing: bool,
+    /// `CONFIG_ZMK_STUDIO_LOCKING` (ZMK's default is on): writes wait for the unlock key.
+    #[serde(default)]
+    pub locking: bool,
+    /// Keymap layers with `status = "reserved"`: how many Studio's "Add layer" can enable.
+    /// Studio can't add a layer beyond these (it answers NO_SPACE).
+    #[serde(default)]
+    pub reserved_layers: u8,
+    /// The ZMK release the firmware builds on (`v0.3.0`, `main`), for fixes only some have.
+    #[serde(default)]
+    pub zmk: String,
+}
+
+/// The most keys ZMK v0.3 saves from Studio: more fail to save until ZMK main (zmk #3431).
+pub const STUDIO_SAVE_KEY_LIMIT: usize = 190;
+
+impl Studio {
+    /// Whether saving a keymap of `keys` keys from Studio fails on this build: more than
+    /// [`STUDIO_SAVE_KEY_LIMIT`] on a ZMK release before the fix (v0.3 and older). Unknown
+    /// releases are assumed fixed.
+    pub fn save_fails(&self, keys: usize) -> bool {
+        let release = self.zmk.trim().trim_start_matches('v');
+        let old = release
+            .split('.')
+            .take(2)
+            .map(|n| n.parse::<u32>().ok())
+            .collect::<Option<Vec<_>>>()
+            .is_some_and(|v| v.first() == Some(&0) && v.get(1).is_some_and(|m| *m <= 3));
+        old && keys > STUDIO_SAVE_KEY_LIMIT
+    }
+
+    /// What the keymap editor should say about this build, for a keymap of `keys` keys (0 when
+    /// not read yet): no spare layers to add, and a save that would fail.
+    pub fn notes(&self, keys: usize) -> Vec<String> {
+        let mut notes = Vec::new();
+        if !self.editing {
+            return notes;
+        }
+        if self.reserved_layers == 0 {
+            notes.push(
+                "This board's keymap reserves no spare layers, so layers can't be added here.                  Its firmware needs layers with status = \"reserved\"."
+                    .into(),
+            );
+        }
+        if self.save_fails(keys) {
+            notes.push(format!(
+                "Saving more than {STUDIO_SAVE_KEY_LIMIT} keys needs firmware built on ZMK main                  or later; this board's is on ZMK {}.",
+                self.zmk.trim()
+            ));
+        }
+        notes
+    }
+
+    /// One line for Troubleshooting: "editing on, unlocked, 3 spare layers".
+    pub fn summary(&self) -> String {
+        if !self.editing {
+            return "editing off".into();
+        }
+        let lock = if self.locking {
+            "unlock key needed"
+        } else {
+            "no unlock key"
+        };
+        let spare = match self.reserved_layers {
+            0 => "no spare layers".to_string(),
+            1 => "1 spare layer".to_string(),
+            n => format!("{n} spare layers"),
+        };
+        format!("editing on, {lock}, {spare}")
+    }
 }
 
 /// The widest grid a drawing may have: a whole full-size board.
@@ -407,6 +487,9 @@ pub struct Board {
     /// How the Keyboard page draws it (#392); a plain key grid when absent ([`drawing`]).
     #[serde(default)]
     pub drawing: Option<Drawing>,
+    /// What its firmware lets ZMK Studio do (#580); unknown when absent.
+    #[serde(default)]
+    pub studio: Option<Studio>,
     /// The folder of a user profile, for its keymap file.
     #[serde(skip)]
     pub dir: Option<PathBuf>,
@@ -566,6 +649,15 @@ pub fn keymap_keys(n: usize) {
     KEYMAP_KEYS.store(n, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// What the keymap editor should say about the connected board's Studio build (#580), from its
+/// profile: empty without a profile or a `[studio]` table.
+pub fn studio_notes() -> Vec<String> {
+    current()
+        .and_then(|b| b.studio)
+        .map(|s| s.notes(KEYMAP_KEYS.load(std::sync::atomic::Ordering::Relaxed)))
+        .unwrap_or_default()
+}
+
 /// How a board is drawn: its profile's drawing, else a plain grid of its keymap's keys (#559),
 /// shared out between a split's halves (the drawing is one half).
 pub fn drawing(board: Option<&Board>) -> Drawing {
@@ -653,6 +745,56 @@ mod tests {
         // ZMK's shared ids alone match nothing.
         assert!(find_in(&all, 0x1d50, 0x615e, "Some Other Board").is_none());
         assert!(find_in(&all, 0x3434, 0x0250, "Eyelash Corne").is_none());
+    }
+
+    /// The Studio facts (#580): each built-in ZMK profile with a keymap states them, our boards
+    /// reserve spare layers, and the notes say what a build can't do.
+    #[test]
+    fn studio_facts_come_from_the_profile() {
+        let all = load(None);
+        let studio = |name: &str| find_in(&all, 0x1d50, 0x615e, name).and_then(|b| b.studio);
+        let corne = studio("Eyelash Corne").expect("the Corne states its Studio facts");
+        assert_eq!(
+            (corne.editing, corne.locking, corne.reserved_layers),
+            (true, false, 3)
+        );
+        assert_eq!(corne.summary(), "editing on, no unlock key, 3 spare layers");
+        assert!(corne.notes(48).is_empty());
+        let toucan = studio("Toucan").expect("the Toucan2 states its Studio facts");
+        assert_eq!(
+            (toucan.editing, toucan.locking, toucan.reserved_layers),
+            (true, true, 2)
+        );
+        // The reserved layers in each keymap source match what the profile says.
+        for b in all.iter().filter(|b| b.studio.is_some()) {
+            let source = b.keymap_source().expect("a keymap source");
+            let reserved = source.matches("status = \"reserved\"").count();
+            assert_eq!(
+                reserved,
+                usize::from(b.studio.as_ref().unwrap().reserved_layers),
+                "{}",
+                b.id
+            );
+        }
+        let none = Studio {
+            editing: true,
+            zmk: "v0.3.0".into(),
+            ..Studio::default()
+        };
+        assert_eq!(none.notes(48).len(), 1, "no spare layers");
+        assert!(none.notes(48)[0].contains("reserves no spare layers"));
+        assert!(none.save_fails(191) && !none.save_fails(190));
+        assert_eq!(none.notes(200).len(), 2);
+        for fixed in ["main", "v0.4.0", "0.4", ""] {
+            let s = Studio {
+                zmk: fixed.into(),
+                ..none.clone()
+            };
+            assert!(!s.save_fails(500), "{fixed}");
+        }
+        let off = Studio::default();
+        assert!(off.notes(500).is_empty(), "no Studio, nothing to say");
+        assert_eq!(off.summary(), "editing off");
     }
 
     /// The LED counts by part (#561): the profile's own split, an even share, a one-piece
