@@ -99,9 +99,9 @@ pub mod shell;
 pub mod single_instance;
 pub mod startup;
 pub mod store;
-pub mod studio_session;
 #[cfg(test)]
 pub(crate) mod studio_fake;
+pub mod studio_session;
 pub mod taskbar;
 pub mod theme;
 #[cfg(test)]

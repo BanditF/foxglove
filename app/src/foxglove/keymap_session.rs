@@ -313,8 +313,8 @@ impl EditorState {
         let can_redo = !busy && self.studio.history.next_redo().is_some();
         let (mut undo, mut redo, mut save, mut discard, mut restore) =
             (false, false, false, false, false);
-        // The shortcuts work unless a text box (the search) has the keyboard.
-        if ui.ctx().memory(|m| m.focused().is_none()) {
+        // The shortcuts work unless a text box (the search) has the keyboard or a prompt is up.
+        if self.overlay().is_none() && ui.ctx().memory(|m| m.focused().is_none()) {
             use egui::{Key, KeyboardShortcut, Modifiers};
             ui.input_mut(|i| {
                 let shift = Modifiers::COMMAND | Modifiers::SHIFT;

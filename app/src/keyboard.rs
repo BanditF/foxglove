@@ -250,7 +250,7 @@ fn run_keymap_command(
             );
             protocol.studio(request, done);
             // A discard or restore may have renamed layers.
-            let guard = matrix.lock().unwrap();
+            let guard = matrix.lock().unwrap_or_else(|e| e.into_inner());
             *layer_names = guard
                 .layer_infos()
                 .iter()

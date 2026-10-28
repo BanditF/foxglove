@@ -251,13 +251,15 @@ impl StudioEditor {
             Ok((link, status)) => {
                 self.status = status;
                 self.link = link;
+                parked.gate.stop.store(false, Ordering::Release);
             }
+            // Left stopped: the stuck thread lets go of the link at its next read.
             Err(_) => {
                 eprintln!("Foxglove: the Studio unlock wait didn't hand the link back");
                 self.link = None;
+                self.status = Status::default();
             }
         }
-        parked.gate.stop.store(false, Ordering::Release);
     }
 
     /// The open link, opened (and its lock state read) if needed.
@@ -405,9 +407,9 @@ impl StudioEditor {
         *link.gate.until() = Some(Instant::now() + UNLOCK_WAIT_LIMIT);
         let gate = Arc::clone(&link.gate);
         let (back_tx, back) = mpsc::channel();
-        let status = self.status;
+        let mut status = self.status;
         crate::foxglove::services::spawn_named("studio-unlock-wait", move || {
-            let result = wait_for_unlock(&mut link);
+            let result = wait_for_unlock(&mut link, &mut status);
             *link.gate.until() = None;
             let (link, status) = match &result {
                 Ok(status) => (Some(link), *status),
@@ -459,15 +461,17 @@ impl WaitError {
     }
 }
 
-/// Blocks on the board's notifications until it reports `unlocked`, then gets the session
-/// ready as [`StudioEditor::open`] does.
-fn wait_for_unlock(link: &mut Link) -> Result<Status, WaitError> {
+/// Blocks on the board's notifications until it reports `unlocked` (noted in `status`, so a
+/// stop after it still hands the link back as unlocked), then gets the session ready as
+/// [`StudioEditor::open`] does.
+fn wait_for_unlock(link: &mut Link, status: &mut Status) -> Result<Status, WaitError> {
     loop {
         let n = link
             .client
             .read_notification_blocking()
             .map_err(WaitError::from_client)?;
         if lock_change(&n) == Some(false) {
+            status.locked = false;
             break;
         }
     }

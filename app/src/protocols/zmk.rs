@@ -217,7 +217,7 @@ impl KeyboardProtocol for ZmkProtocol {
             crate::foxglove::keyboard_actions::learn(layers, raw);
             crate::foxglove::layer_access::learn(layers);
             let snapshot = snapshot_from_resolved(layers, keys);
-            *layout.snapshot.lock().unwrap() = snapshot.clone();
+            *layout.snapshot.lock().unwrap_or_else(|e| e.into_inner()) = snapshot.clone();
             snapshot
         });
     }
