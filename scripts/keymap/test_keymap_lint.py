@@ -48,6 +48,14 @@ class KeymapTests(unittest.TestCase):
         self.assertTrue(any('Q+S+Z' in s for s in k.lint(modified)))
         self.assertEqual(k.lint(self.source + '\n/* &mo 999 */ // &to 999\n'), [])
 
+    def test_reserved_layers_come_last(self):
+        # Studio's spare layers (#580): the real layers keep their indexes 0-6.
+        self.assertEqual(self.km.reserved, 3)
+        self.assertEqual([name for name, _ in self.km.layers][-1], 'SYSTEM')
+        early = self.source.replace('default_layer {', 'spare { status = "reserved"; };\n        default_layer {', 1)
+        with self.assertRaises(ValueError):
+            k.parse(early)
+
     def test_real_keymap(self):
         self.assertEqual(k.lint(self.source), [])
 
