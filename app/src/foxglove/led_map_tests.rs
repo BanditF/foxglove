@@ -527,7 +527,11 @@ impl HandClock {
         let (count, ready) = &*self.ticks;
         let mut n = count.lock().unwrap();
         while *n == Some(0) {
-            n = ready.wait(n).unwrap();
+            let (next, waited) = ready
+                .wait_timeout(n, std::time::Duration::from_secs(60))
+                .unwrap();
+            assert!(!waited.timed_out(), "the test never ticked the clock");
+            n = next;
         }
         if let Some(n) = n.as_mut() {
             *n -= 1;

@@ -99,6 +99,7 @@ fn set(table: &mut Table, section: &str, value: Value) {
         if !entry.is_table() {
             // A hand edit left a value where a section belongs (`scenes = 1`): the section
             // takes its place instead of every save panicking.
+            eprintln!("Foxglove: settings: `{part}` wasn't a section; it is one again");
             *entry = Value::Table(Table::new());
         }
         let Value::Table(next) = entry else {

@@ -334,18 +334,23 @@ fn watched_with(
     }
 }
 
-/// What a wake can have changed: each watched file's write time and size, and whether Wallpaper
-/// Engine runs. The watches are on whole folders, so Wallpaper Engine's own log.txt (beside its
-/// config, up to a line a second) wakes the service too; a wake that changes none of these is
-/// skipped instead of looking for Wallpaper Engine and reading its config again.
+/// What a wake can have changed: each watched file's (and wallpaper folder's) write time and
+/// size, and whether Wallpaper Engine runs. The watches are on whole folders, so Wallpaper
+/// Engine's own log.txt (beside its config, up to a line a second) wakes the service too; a wake
+/// that changes none of these is skipped instead of looking for Wallpaper Engine and reading its
+/// config again.
 #[derive(Clone, Debug, PartialEq)]
 struct Stamp {
     files: Vec<Option<(std::time::SystemTime, u64)>>,
     running: bool,
+    /// The desktop wallpaper as the registry names it: Windows may rewrite its file before the
+    /// registry, so the file alone could match while the name is still to change.
+    desktop: Option<String>,
 }
 
-fn stamp(paths: &[PathBuf], running: bool) -> Stamp {
+fn stamp(paths: &[PathBuf], running: bool, desktop: Option<String>) -> Stamp {
     Stamp {
+        desktop,
         files: paths
             .iter()
             .map(|p| {
@@ -464,9 +469,16 @@ pub fn start() {
         let mut last: Option<String> = None;
         let mut scanner = super::wallpaper_manifest::Scanner::default();
         let mut seen: Option<Stamp> = None;
+        // The wallpaper folders the manifests come from: a wallpaper added or removed there
+        // changes their write time, so it counts as a change too.
+        let mut roots = super::wallpaper_manifest::roots(&engine);
         // Check once at start, then on each change in a watched folder or Refresh.
         for (n, ()) in std::iter::once(()).chain(rx.iter()).enumerate() {
-            let now = stamp(&paths, super::wallpaper_engine::running_now());
+            let now = stamp(
+                &[paths.as_slice(), roots.as_slice()].concat(),
+                super::wallpaper_engine::running_now(),
+                desktop_wallpaper(),
+            );
             let refresh = RESCAN.load(std::sync::atomic::Ordering::Relaxed);
             if n > 0 && !refresh && seen.as_ref() == Some(&now) {
                 continue;
@@ -491,7 +503,8 @@ pub fn start() {
             // The wallpapers that describe themselves (#562): Wallpaper Engine's folders, read
             // again when they changed, and the folders on screen.
             let force = RESCAN.swap(false, std::sync::atomic::Ordering::Relaxed);
-            let found = scanner.scan(&super::wallpaper_manifest::roots(&engine), force);
+            roots = super::wallpaper_manifest::roots(&engine);
+            let found = scanner.scan(&roots, force);
             let shown = text
                 .as_deref()
                 .map_or_else(Vec::new, |t| folders_on_screen(t, &source));
@@ -662,12 +675,17 @@ mod tests {
         let config = dir.join("config.json");
         std::fs::write(&config, "{}").unwrap();
         let paths = vec![config.clone(), dir.join("missing")];
-        let before = stamp(&paths, true);
+        let before = stamp(&paths, true, None);
         std::fs::write(dir.join("log.txt"), "icon create err: 1008.").unwrap();
-        assert_eq!(stamp(&paths, true), before, "its log isn't read");
-        assert_ne!(stamp(&paths, false), before, "it quit");
+        assert_eq!(stamp(&paths, true, None), before, "its log isn't read");
+        assert_ne!(stamp(&paths, false, None), before, "it quit");
+        assert_ne!(
+            stamp(&paths, true, Some("C:/a.jpg".into())),
+            before,
+            "the desktop wallpaper's name changed"
+        );
         std::fs::write(&config, r#"{"me":{}}"#).unwrap();
-        assert_ne!(stamp(&paths, true), before, "its config changed");
+        assert_ne!(stamp(&paths, true, None), before, "its config changed");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
