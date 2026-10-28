@@ -471,6 +471,29 @@ def wait_relay(backend, seconds, clock=time.monotonic, sleep=time.sleep, or_boot
     return True
 
 
+def check_right_typing(backend, log, clock=time.monotonic, sleep=time.sleep):
+    """After the right is flashed: its typing check goes through the left's relay, so wait for
+    the relay first (the relay-ready event with HELLO bit 20, #594; else HELLO right link 2; up
+    to RELAY_WAIT_SECONDS) instead of a fixed sleep (#600). A check that gets no reply is tried
+    once more after the next relay-ready wait before the #122 hint. Never fatal. Returns the last
+    typing_check answer (True, False, or None when the PC had no window focus)."""
+    for attempt in (1, 2):
+        if not wait_relay(backend, RELAY_WAIT_SECONDS, clock, sleep):
+            log(f'right: the relay to the right half is not up after {RELAY_WAIT_SECONDS} s; '
+                'checking typing anyway.')
+        typed = backend.typing_check('right', log)
+        if typed is None:
+            log('right: typing not checked (no window focus: is the PC locked?).')
+            return None
+        if typed:
+            return True
+        if attempt == 1:
+            log('right: no reply to the typing check; trying once more once the relay is ready.')
+    log('right: typing over the split link not confirmed yet; check it by hand '
+        '(one tap on the LEFT reset is the known fix, #122).')
+    return False
+
+
 def enter_with_retries(half, backend, log, clock=time.monotonic, sleep=time.sleep):
     """Asks `half` to enter its bootloader (D7 08). The left is asked once. The right is asked
     again every few seconds for up to ENTRY_RETRY_SECONDS, waiting for the relay to the right
@@ -615,7 +638,7 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
             continue
         if yes:
             # The right is flashed only after the left is proven to type. The right's own check
-            # needs its relay up again, so give it a moment and report rather than fail.
+            # needs its relay up again, so it waits for that (#600) and reports rather than fails.
             if half == 'left':
                 typed = backend.typing_check('left', log)
                 if typed is None:
@@ -625,13 +648,7 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
                     raise FlashFailed('the left half did not type after flashing; not touching the right. '
                                       'Rollback: ' + ROLLBACK)
             if half == 'right':
-                sleep(20)
-                typed = backend.typing_check('right', log)
-                if typed is None:
-                    log('right: typing not checked (no window focus: is the PC locked?).')
-                elif not typed:
-                    log('right: typing over the split link not confirmed yet; check it by hand '
-                        '(one tap on the LEFT reset is the known fix, #122).')
+                check_right_typing(backend, log, clock, sleep)
         elif half == 'left':
             confirm('Test the left keyboard in a text editor. If it types, enter TYPES here: ', 'TYPES', stdin, ask)
 
