@@ -43,6 +43,18 @@ class FakeOS:
         self.types = {}
         self.build_calls = []
         self.entered = []
+        # Relay-ready event waits (#594): each answer is True (event came), False (timed out)
+        # or None (no relay events: poll HELLO). Empty: None, the older firmware's path.
+        self.relay = []
+        self.relay_waits = []
+        self.clock = None
+
+    def wait_relay_ready(self, seconds):
+        self.relay_waits.append(seconds)
+        answer = self.relay.pop(0) if self.relay else None
+        if answer is False and self.clock:
+            self.clock.now += seconds  # waited out the whole timeout
+        return answer
 
     def enumerate_bootloaders(self):
         return self.serials
@@ -602,6 +614,96 @@ class RelayWaitTests(unittest.TestCase):
                 ask=lambda p: self.fail(p), log=lambda m: None, clock=clock.clock, sleep=clock.sleep, yes=True)
         self.assertEqual(backend.link_polls, 5)
         self.assertEqual(backend.entered, ['right'], 'asked once, after the relay was up')
+
+
+class RelayEventTests(unittest.TestCase):
+    """Firmware with relay events (HELLO bit 20): the flasher waits on the relay-ready event
+    (D6 85) instead of asking HELLO every second (#594)."""
+
+    def run_right(self, backend, logs):
+        clock = Clock()
+        backend.clock = clock
+        f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 2, stdin=io.StringIO(''),
+                ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
+        return clock
+
+    def test_first_request_waits_on_the_event_not_the_poll(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        backend.auto = True
+        backend.relay = [True]
+        self.run_right(backend, [])
+        self.assertEqual(backend.relay_waits, [f.RELAY_WAIT_SECONDS])
+        self.assertEqual(backend.link_polls, 0, 'no HELLO polling')
+        self.assertEqual(backend.entered, ['right'])
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_no_event_in_time_still_asks_once(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        backend.auto = True
+        backend.relay = [False]
+        logs = []
+        self.run_right(backend, logs)
+        self.assertTrue(any('trying anyway' in m for m in logs), logs)
+        self.assertEqual(backend.link_polls, 0)
+        self.assertEqual(backend.entered, ['right'])
+
+    def test_each_retry_waits_for_the_next_relay_ready_event(self):
+        # #545: the first request can't be relayed; the relay comes back, the second lands.
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        answers = [False, True]
+        backend.enter_bootloader = lambda half, log: (backend.entered.append(half), answers.pop(0))[1]
+        real = backend.enumerate_bootloaders
+        backend.enumerate_bootloaders = lambda: real() if not answers else []
+        backend.relay = [True, True]
+        logs = []
+        self.run_right(backend, logs)
+        self.assertEqual(backend.entered, ['right'] * 2)
+        self.assertEqual(len(backend.relay_waits), 2)
+        self.assertLessEqual(backend.relay_waits[1], f.ENTRY_RETRY_SECONDS - f.ENTRY_RETRY_PAUSE)
+        self.assertEqual(backend.link_polls, 0)
+        self.assertFalse(any(m.startswith('Double-tap reset on') or 'late entry' in m for m in logs), logs)
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_retries_end_when_the_event_never_comes(self):
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        backend.relay = [False]
+        clock = Clock()
+        backend.clock = clock
+        backend.enumerate_bootloaders = lambda: []
+        entered, attempted = f.enter_with_retries('right', backend, lambda m: None, clock.clock, clock.sleep)
+        self.assertEqual((entered, attempted), (False, True))
+        self.assertEqual(backend.entered, ['right'], 'one ask, then one bounded wait')
+        self.assertEqual(backend.relay_waits, [f.ENTRY_RETRY_SECONDS - f.ENTRY_RETRY_PAUSE])
+        self.assertLessEqual(clock.now, f.ENTRY_RETRY_SECONDS + 1)
+
+    def test_a_drive_after_the_pause_skips_the_wait(self):
+        # #585: an unconfirmed send over ZMK's split did reboot the right.
+        backend = FakeOS(['35B4541F78DE9CF8'])
+        clock = Clock()
+        backend.clock = clock
+        real = backend.enumerate_bootloaders
+        backend.enumerate_bootloaders = lambda: real() if clock.now >= f.ENTRY_RETRY_PAUSE else []
+        entered, attempted = f.enter_with_retries('right', backend, lambda m: None, clock.clock, clock.sleep)
+        self.assertEqual((entered, attempted), (False, True))
+        self.assertEqual(backend.relay_waits, [])
+
+    def test_windows_backend_maps_relay_wait_exit_codes(self):
+        backend = f.WindowsOS()
+        done = lambda code: unittest.mock.Mock(returncode=code, stdout='', stderr='')
+        with patch.object(f, 'lab_binary', return_value=Path('foxglove-lab.exe')):
+            with patch.object(f.subprocess, 'run', return_value=done(0)) as run:
+                self.assertIs(backend.wait_relay_ready(12.2), True)
+                self.assertEqual(run.call_args.args[0][-3:], ['relay-wait', '--timeout-s', '13'])
+            with patch.object(f.subprocess, 'run', return_value=done(3)):
+                self.assertIs(backend.wait_relay_ready(5), False)
+            with patch.object(f.subprocess, 'run', return_value=done(1)):
+                self.assertIsNone(backend.wait_relay_ready(5))
+            with patch.object(f.subprocess, 'run', return_value=done(4)):
+                self.assertIsNone(backend.wait_relay_ready(5))
+            with patch.object(f.subprocess, 'run', side_effect=AssertionError('asked again')):
+                self.assertIsNone(backend.wait_relay_ready(5), 'no relay events: not asked again')
+        with patch.object(f, 'lab_binary', return_value=None):
+            self.assertIsNone(f.WindowsOS().wait_relay_ready(5))
 
 
 class EntryRetryTests(unittest.TestCase):

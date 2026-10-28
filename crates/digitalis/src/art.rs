@@ -162,6 +162,64 @@ pub fn slot(t: &impl Transport, slot: u8) -> Result<SlotInfo> {
     })
 }
 
+/// How [`wait_relay_ready`] ended.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RelayWait {
+    /// The relay to the right half is up (link 2): the status that said so.
+    Ready(ArtStatus),
+    /// The deadline passed first; the last status heard, if any.
+    TimedOut(Option<ArtStatus>),
+}
+
+/// Waits until the left's relay to the right half is up (art STATUS link 2), for at most
+/// `timeout`. It asks STATUS once (that is host traffic, which the firmware needs before it sends
+/// events, and it gives the state now), then sleeps on the link's events until the left sends
+/// the relay-ready event (D6 85 with link 2, firmware with HELLO bits 3 and 20) or the deadline.
+/// A reconnect asks STATUS again. No timer besides the deadline (#594).
+pub fn wait_relay_ready(link: &crate::link::Link, timeout: Duration) -> Result<RelayWait> {
+    use crate::link::Event;
+    use std::sync::mpsc;
+
+    let end = Instant::now() + timeout;
+    // Subscribed before asking, so an event between the reply and the wait isn't missed.
+    let (tx, rx) = mpsc::channel();
+    let _events = link.subscribe_events(move |e| {
+        let _ = tx.send(e);
+    });
+    let mut generation = link.state().generation;
+    let mut last = None;
+    let mut ask = true;
+    loop {
+        if std::mem::take(&mut ask) {
+            if let Ok(s) = status(link) {
+                if s.link == 2 {
+                    return Ok(RelayWait::Ready(s));
+                }
+                last = Some(s);
+            }
+        }
+        let left = end.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(Event::ArtStatus { report, .. }) => {
+                let s = ArtStatus::parse(&report);
+                if s.link == 2 {
+                    return Ok(RelayWait::Ready(s));
+                }
+                last = Some(s);
+            }
+            Ok(Event::State(s)) => {
+                // A new connection: the firmware needs host traffic again before it sends events.
+                if s.connected.is_some() && s.generation != generation {
+                    generation = s.generation;
+                    ask = true;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => return Ok(RelayWait::TimedOut(last)),
+            Err(mpsc::RecvTimeoutError::Disconnected) => bail!("link stopped"),
+        }
+    }
+}
+
 /// Plays flash slot `slot` (SELECT set_count + slot).
 pub fn select_slot(t: &impl Transport, set_count: u8, slot: u8) -> Result<ArtStatus> {
     let set = i8::try_from(u16::from(set_count) + u16::from(slot))
@@ -296,6 +354,172 @@ mod tests {
             .borrow_mut()
             .push_back(reply(art::SELECT, left_state::FAILED));
         assert!(select(&t, 3).is_err());
+    }
+
+    /// A left half in memory for [`wait_relay_ready`]: reads block on a condvar (no polling),
+    /// STATUS answers with this connection's link byte, and each STATUS can be followed by the
+    /// unsolicited D6 85 reports in `events`, or by the connection dropping.
+    mod relay {
+        use super::super::*;
+        use crate::link::{Connected, Link, RawHid, Report};
+        use std::collections::VecDeque;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, Condvar, Mutex};
+
+        #[derive(Default)]
+        struct Left {
+            inbox: Mutex<VecDeque<Report>>,
+            ready: Condvar,
+            stopped: AtomicBool,
+            dead: AtomicBool,
+            link: u8,
+            events: Vec<u8>,
+            drop_after_status: bool,
+            statuses: Arc<AtomicUsize>,
+        }
+
+        fn status_report(link: u8, cmd: u8) -> Report {
+            let mut r = [0u8; protocol::REPORT];
+            r[0] = protocol::ART;
+            r[1] = 0x80 | cmd;
+            r[2 + 6] = link;
+            r
+        }
+
+        impl Left {
+            fn push(&self, r: Report) {
+                self.inbox.lock().unwrap().push_back(r);
+                self.ready.notify_all();
+            }
+        }
+
+        impl RawHid for Left {
+            fn read(&self, buf: &mut Report) -> Result<usize> {
+                let mut inbox = self.inbox.lock().unwrap();
+                loop {
+                    if self.stopped.load(Ordering::Relaxed) {
+                        return Ok(0);
+                    }
+                    if let Some(r) = inbox.pop_front() {
+                        *buf = r;
+                        return Ok(protocol::REPORT);
+                    }
+                    if self.dead.load(Ordering::Relaxed) {
+                        anyhow::bail!("device gone");
+                    }
+                    inbox = self.ready.wait(inbox).unwrap();
+                }
+            }
+            fn interrupt(&self) {
+                let _inbox = self.inbox.lock().unwrap();
+                self.stopped.store(true, Ordering::Relaxed);
+                self.ready.notify_all();
+            }
+            fn write(&self, out: &[u8]) -> Result<()> {
+                if out[..2] == [protocol::ART, art::STATUS] {
+                    self.statuses.fetch_add(1, Ordering::Relaxed);
+                    self.push(status_report(self.link, art::STATUS));
+                    for &link in &self.events {
+                        self.push(status_report(link, art::STATUS));
+                    }
+                    if self.drop_after_status {
+                        let _inbox = self.inbox.lock().unwrap();
+                        self.dead.store(true, Ordering::Relaxed);
+                        self.ready.notify_all();
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        /// A link whose n-th connection is `connections[n]`.
+        fn start(connections: Vec<Left>) -> (Link, Arc<AtomicUsize>) {
+            let statuses = Arc::new(AtomicUsize::new(0));
+            let mut connections: VecDeque<Left> = connections
+                .into_iter()
+                .map(|c| Left {
+                    statuses: statuses.clone(),
+                    ..c
+                })
+                .collect();
+            let link = Link::start(Box::new(move || {
+                let left = connections
+                    .pop_front()
+                    .ok_or_else(|| anyhow::anyhow!("no keyboard"))?;
+                let connected = Connected {
+                    product: "Fake left".into(),
+                    hello: None,
+                    bus: Default::default(),
+                };
+                Ok((Box::new(left) as Box<dyn RawHid>, connected))
+            }));
+            link.wait_connected(Duration::from_secs(2)).unwrap();
+            (link, statuses)
+        }
+
+        #[test]
+        fn a_relay_already_up_needs_no_event() {
+            let (link, statuses) = start(vec![Left {
+                link: 2,
+                ..Default::default()
+            }]);
+            let got = wait_relay_ready(&link, Duration::from_secs(5)).unwrap();
+            assert!(matches!(got, RelayWait::Ready(s) if s.link == 2));
+            assert_eq!(statuses.load(Ordering::Relaxed), 1);
+        }
+
+        #[test]
+        fn the_relay_ready_event_ends_the_wait() {
+            // Split only (1), then the relay is lost (0) and comes up (2) as events.
+            let (link, statuses) = start(vec![Left {
+                link: 1,
+                events: vec![0, 2],
+                ..Default::default()
+            }]);
+            let got = wait_relay_ready(&link, Duration::from_secs(5)).unwrap();
+            assert!(matches!(got, RelayWait::Ready(s) if s.link == 2));
+            assert_eq!(
+                statuses.load(Ordering::Relaxed),
+                1,
+                "asked once, then events"
+            );
+        }
+
+        #[test]
+        fn no_event_times_out_with_the_last_status() {
+            let (link, statuses) = start(vec![Left {
+                link: 1,
+                ..Default::default()
+            }]);
+            let started = Instant::now();
+            let got = wait_relay_ready(&link, Duration::from_millis(150)).unwrap();
+            assert!(matches!(got, RelayWait::TimedOut(Some(s)) if s.link == 1));
+            assert!(started.elapsed() >= Duration::from_millis(150));
+            assert_eq!(
+                statuses.load(Ordering::Relaxed),
+                1,
+                "no re-asking on a timer"
+            );
+        }
+
+        #[test]
+        fn a_reconnect_asks_again() {
+            // The left drops after answering; the next connection has the relay up.
+            let (link, statuses) = start(vec![
+                Left {
+                    link: 1,
+                    drop_after_status: true,
+                    ..Default::default()
+                },
+                Left {
+                    link: 2,
+                    ..Default::default()
+                },
+            ]);
+            let got = wait_relay_ready(&link, Duration::from_secs(5)).unwrap();
+            assert!(matches!(got, RelayWait::Ready(s) if s.link == 2));
+            assert_eq!(statuses.load(Ordering::Relaxed), 2);
+        }
     }
 
     #[test]

@@ -281,6 +281,24 @@ class WindowsOS:
         found = re.search(r'"right_link":(\d+)', out)
         return int(found.group(1)) if found else None
 
+    def wait_relay_ready(self, seconds):
+        """Waits up to `seconds` for the left's relay-ready event (D6 85 with right link 2,
+        HELLO bit 20, #594). True: the relay is up; False: it didn't come up in time; None: this
+        can't tell (no relay events in this firmware, no foxglove-lab, left not connected), so
+        the caller asks HELLO's right link instead."""
+        exe = lab_binary()
+        if exe is None or getattr(self, 'no_relay_events', False):
+            return None
+        seconds = max(0, int(seconds + 0.999))
+        try:
+            result = subprocess.run([str(exe), '--allow-app', 'relay-wait', '--timeout-s', str(seconds)],
+                                    capture_output=True, text=True, timeout=seconds + 30)
+        except subprocess.TimeoutExpired:
+            return None
+        if result.returncode == 4:
+            self.no_relay_events = True  # the left, flashed first, stays as it is now
+        return {0: True, 3: False}.get(result.returncode)
+
     def build_info(self, half):
         """The running build of `half` from the keyboard (D7 09) as a dict with version, profile
         and sha, or None when it can't tell (old firmware, right not reachable, no foxglove-lab)."""
@@ -434,10 +452,30 @@ def verify_build(half, expected_sha, backend, log, clock=time.monotonic, sleep=t
         sleep(2)
 
 
+def wait_relay(backend, seconds, clock=time.monotonic, sleep=time.sleep, or_bootloader=False):
+    """Waits up to `seconds` for the left's relay to the right (right link 2). With relay events
+    (HELLO bit 20) it waits on the relay-ready event (#594); older firmware is asked for HELLO's
+    right link every second, as before (and, with `or_bootloader`, a bootloader drive ends that
+    wait too). True when the relay is up (or a drive showed up while polling)."""
+    waited = backend.wait_relay_ready(seconds)
+    if waited is not None:
+        return waited
+    if or_bootloader:
+        up = lambda: backend.right_link() == 2 or bool(backend.enumerate_bootloaders())
+    else:
+        up = lambda: backend.right_link() == 2
+    try:
+        wait_for(up, seconds, 'relay to the right not up', clock, sleep)
+    except TimeoutError:
+        return False
+    return True
+
+
 def enter_with_retries(half, backend, log, clock=time.monotonic, sleep=time.sleep):
     """Asks `half` to enter its bootloader (D7 08). The left is asked once. The right is asked
-    again every few seconds for up to ENTRY_RETRY_SECONDS, waiting for the split to be linked
-    (right link 2) before each retry (#545). Returns (entered, attempted)."""
+    again every few seconds for up to ENTRY_RETRY_SECONDS, waiting for the relay to the right
+    (right link 2; with relay events, the relay-ready event, #594) before each retry (#545).
+    Returns (entered, attempted)."""
     deadline = clock() + (ENTRY_RETRY_SECONDS if half == 'right' else 0)
     retrying = False
     while True:
@@ -449,12 +487,11 @@ def enter_with_retries(half, backend, log, clock=time.monotonic, sleep=time.slee
             retrying = True
             log(f'{half}: retrying the bootloader request for up to {ENTRY_RETRY_SECONDS} s while the split re-links.')
         sleep(ENTRY_RETRY_PAUSE)
-        # An earlier request may land late (#111): a bootloader showing up ends the retries, and
-        # the late-entry watch takes it from there.
-        try:
-            wait_for(lambda: backend.right_link() == 2 or bool(backend.enumerate_bootloaders()),
-                     max(0, deadline - clock()), 'split not re-linked', clock, sleep)
-        except TimeoutError:
+        # An earlier request may land late (#111; or #585's unconfirmed send over ZMK's split):
+        # a bootloader showing up ends the retries, and the late-entry watch takes it from there.
+        if backend.enumerate_bootloaders():
+            return False, True
+        if not wait_relay(backend, max(0, deadline - clock()), clock, sleep, or_bootloader=True):
             return False, True
         if backend.enumerate_bootloaders():
             return False, True
@@ -485,15 +522,12 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         entered = attempted = False
         if not settings_reset:
             # The right goes through the left's relay, which comes back about 20-40 s after the
-            # left reboots (#122, #184): wait for it (HELLO right link 2, up to 60 s) before
-            # asking. A request the left can't relay yet is retried for up to a minute, each
-            # time once the split is linked again (#545), before falling back to a double tap.
-            if half == 'right':
-                try:
-                    wait_for(lambda: backend.right_link() == 2, RELAY_WAIT_SECONDS,
-                             'relay to the right not up', clock, sleep)
-                except TimeoutError:
-                    log(f'right: the relay to the right half is not up after {RELAY_WAIT_SECONDS} s; trying anyway.')
+            # left reboots (#122, #184): wait for it (the relay-ready event with HELLO bit 20,
+            # #594; else HELLO right link 2; up to 60 s) before asking. A request the left can't
+            # relay yet is retried for up to a minute, each time once the relay is up again
+            # (#545), before falling back to a double tap.
+            if half == 'right' and not wait_relay(backend, RELAY_WAIT_SECONDS, clock, sleep):
+                log(f'right: the relay to the right half is not up after {RELAY_WAIT_SECONDS} s; trying anyway.')
             entered, attempted = enter_with_retries(half, backend, log, clock, sleep)
         asked = entered or (attempted and not settings_reset)
         if entered:
