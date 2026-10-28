@@ -487,11 +487,14 @@ fn uneven_halves_are_found_half_by_half() {
 
 /// A hand-wound clock for the dot test: no real time passes. Running, it jumps straight to the
 /// next step whenever the worker has no job waiting; held, time stands still and the worker
-/// waits for a job.
+/// waits for a job; stepped, each jump waits for the test's [`HandClock::tick`], so the test
+/// sees every step whatever the machine's load.
 #[derive(Clone)]
 struct HandClock {
     now: Arc<Mutex<Instant>>,
     held: Arc<AtomicBool>,
+    /// Stepped: the jumps the test has allowed and not yet used (`None`: running freely).
+    ticks: Arc<(Mutex<Option<u32>>, std::sync::Condvar)>,
 }
 
 impl HandClock {
@@ -499,6 +502,35 @@ impl HandClock {
         HandClock {
             now: Arc::new(Mutex::new(Instant::now())),
             held: Arc::default(),
+            ticks: Arc::default(),
+        }
+    }
+
+    /// A clock that jumps only when the test ticks it.
+    fn stepped() -> HandClock {
+        let c = HandClock::new();
+        *c.ticks.0.lock().unwrap() = Some(0);
+        c
+    }
+
+    /// Lets a stepped clock make one jump.
+    fn tick(&self) {
+        let (count, ready) = &*self.ticks;
+        if let Some(n) = count.lock().unwrap().as_mut() {
+            *n += 1;
+        }
+        ready.notify_all();
+    }
+
+    /// Stepped: blocks until the test allows a jump, and uses it.
+    fn wait_for_tick(&self) {
+        let (count, ready) = &*self.ticks;
+        let mut n = count.lock().unwrap();
+        while *n == Some(0) {
+            n = ready.wait(n).unwrap();
+        }
+        if let Some(n) = n.as_mut() {
+            *n -= 1;
         }
     }
 }
@@ -520,6 +552,7 @@ impl DotClock for HandClock {
             Ok(job) => Ok(job),
             Err(mpsc::TryRecvError::Disconnected) => Err(RecvTimeoutError::Disconnected),
             Err(mpsc::TryRecvError::Empty) => {
+                self.wait_for_tick();
                 let mut now = self.now.lock().unwrap();
                 *now = (*now).max(until);
                 Err(RecvTimeoutError::Timeout)
@@ -661,7 +694,9 @@ fn the_page_shows_the_step_the_keyboard_has() {
     let log = rec.log.clone();
     let (tx, woke) = mpsc::channel();
     let tx = Mutex::new(tx);
-    let clock = HandClock::new();
+    // Stepped: the dot moves only when the test has looked at the page, so no step goes by
+    // unseen (a free-running clock let the whole run finish before the test first looked).
+    let clock = HandClock::stepped();
     let worker = Worker::spawn_on(Box::new(rec), Box::new(clock.clone()), move || {
         let _ = tx.lock().unwrap().send(());
     });
@@ -680,7 +715,7 @@ fn the_page_shows_the_step_the_keyboard_has() {
     });
     let mut seen = Vec::new();
     // Every time the page wakes, the step it shows has gone to the keyboard: the page is never
-    // ahead of it (the keyboard may be a step on by the time the status is read).
+    // ahead of it. The test looks, then lets the dot take one step.
     while !status.lock().unwrap().played {
         assert!(woke
             .recv_timeout(std::time::Duration::from_secs(60))
@@ -697,11 +732,11 @@ fn the_page_shows_the_step_the_keyboard_has() {
             );
             if seen.last() != Some(&step) {
                 seen.push(step);
+                clock.tick();
             }
         }
     }
-    assert!(seen.windows(2).all(|w| w[0] < w[1]), "{seen:?}");
-    assert!(!seen.is_empty());
+    assert_eq!(seen, [0, 1, 2, 3], "every step, in order");
     worker.end_and_wait();
 }
 
