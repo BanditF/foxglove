@@ -48,6 +48,9 @@ class FakeOS:
         self.relay = []
         self.relay_waits = []
         self.clock = None
+        # Snapshot at the first image write, so entry tests don't count the post-flash typing
+        # check's relay wait (#600).
+        self.at_write = None
 
     def wait_relay_ready(self, seconds):
         self.relay_waits.append(seconds)
@@ -70,6 +73,9 @@ class FakeOS:
 
     def write_file(self, path, data):
         self.writes.append((path, data))
+        if self.at_write is None:
+            self.at_write = {'link_polls': self.link_polls, 'relay_waits': list(self.relay_waits),
+                             'now': self.clock.now if self.clock else None}
         if self.gone_mid_write:
             self.present = False
             raise f.DriveGone(512, len(data), OSError('WinError 433'))
@@ -438,7 +444,7 @@ class YesTests(unittest.TestCase):
         backend = FakeOS(['35B4541F78DE9CF8'])
         backend.types = {'right': False}
         self.run_yes(backend, {'right': uf2(b'FOXGLOVE_HALF=right')})
-        self.assertEqual(backend.typing, ['right'])
+        self.assertEqual(backend.typing, ['right', 'right'], 'one retry after the relay wait (#600)')
 
 
 class SkipSameBuildTests(unittest.TestCase):
@@ -612,7 +618,7 @@ class RelayWaitTests(unittest.TestCase):
         clock = Clock()
         f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 2, stdin=io.StringIO(''),
                 ask=lambda p: self.fail(p), log=lambda m: None, clock=clock.clock, sleep=clock.sleep, yes=True)
-        self.assertEqual(backend.link_polls, 5)
+        self.assertEqual(backend.at_write['link_polls'], 5)
         self.assertEqual(backend.entered, ['right'], 'asked once, after the relay was up')
 
 
@@ -630,9 +636,10 @@ class RelayEventTests(unittest.TestCase):
     def test_first_request_waits_on_the_event_not_the_poll(self):
         backend = FakeOS(['35B4541F78DE9CF8'])
         backend.auto = True
-        backend.relay = [True]
+        backend.relay = [True, True]
         self.run_right(backend, [])
-        self.assertEqual(backend.relay_waits, [f.RELAY_WAIT_SECONDS])
+        # Before the D7 08, and again before the typing check (#600).
+        self.assertEqual(backend.relay_waits, [f.RELAY_WAIT_SECONDS] * 2)
         self.assertEqual(backend.link_polls, 0, 'no HELLO polling')
         self.assertEqual(backend.entered, ['right'])
         self.assertEqual(len(backend.writes), 1)
@@ -640,7 +647,7 @@ class RelayEventTests(unittest.TestCase):
     def test_no_event_in_time_still_asks_once(self):
         backend = FakeOS(['35B4541F78DE9CF8'])
         backend.auto = True
-        backend.relay = [False]
+        backend.relay = [False, True]
         logs = []
         self.run_right(backend, logs)
         self.assertTrue(any('trying anyway' in m for m in logs), logs)
@@ -654,11 +661,12 @@ class RelayEventTests(unittest.TestCase):
         backend.enter_bootloader = lambda half, log: (backend.entered.append(half), answers.pop(0))[1]
         real = backend.enumerate_bootloaders
         backend.enumerate_bootloaders = lambda: real() if not answers else []
-        backend.relay = [True, True]
+        backend.relay = [True, True, True]
         logs = []
         self.run_right(backend, logs)
         self.assertEqual(backend.entered, ['right'] * 2)
-        self.assertEqual(len(backend.relay_waits), 2)
+        self.assertEqual(len(backend.at_write['relay_waits']), 2)
+        self.assertEqual(len(backend.relay_waits), 3, 'and one before the typing check (#600)')
         self.assertLessEqual(backend.relay_waits[1], f.ENTRY_RETRY_SECONDS - f.ENTRY_RETRY_PAUSE)
         self.assertEqual(backend.link_polls, 0)
         self.assertFalse(any(m.startswith('Double-tap reset on') or 'late entry' in m for m in logs), logs)
@@ -706,6 +714,100 @@ class RelayEventTests(unittest.TestCase):
             self.assertIsNone(f.WindowsOS().wait_relay_ready(5))
 
 
+class RightTypingRelayTests(unittest.TestCase):
+    """#600: the right's typing check waits for the relay (the relay-ready event, #594) instead of
+    a fixed 20 s sleep, and a check with no reply is tried once more after the next relay-ready
+    wait before the #122 hint. A fake relay comes up RELAY_DELAY s after the first wait starts;
+    the fake keyboard only answers once it is up. No hardware."""
+    RELAY_DELAY = 35
+
+    def setUp(self):
+        self.clock = Clock()
+        self.events = []
+        self.relay_up_at = None
+        self.backend = FakeOS(['35B4541F78DE9CF8'])
+        self.backend.clock = self.clock
+        self.backend.wait_relay_ready = self.fake_relay_wait
+        self.backend.typing_check = self.fake_typing
+        self.replies = None  # None: answer when the relay is up; else a list of answers
+        self.logs = []
+
+    def fake_relay_wait(self, seconds):
+        self.events.append(('relay-wait', self.clock.now))
+        if self.relay_up_at is None:
+            self.relay_up_at = self.clock.now + self.RELAY_DELAY
+        if self.relay_up_at - self.clock.now > seconds:
+            self.clock.now += seconds
+            return False
+        self.clock.now = max(self.clock.now, self.relay_up_at)  # blocks until the event
+        return True
+
+    def fake_typing(self, half, log):
+        self.events.append(('typing', self.clock.now))
+        if self.replies is not None:
+            return self.replies.pop(0)
+        return self.relay_up_at is not None and self.clock.now >= self.relay_up_at
+
+    def check(self):
+        return f.check_right_typing(self.backend, self.logs.append, self.clock.clock, self.clock.sleep)
+
+    def hinted(self):
+        return any('#122' in m for m in self.logs)
+
+    def test_waits_for_the_relay_ready_event_not_a_fixed_sleep(self):
+        self.assertIs(self.check(), True)
+        self.assertEqual(self.events, [('relay-wait', 0), ('typing', self.RELAY_DELAY)])
+        self.assertFalse(self.hinted(), self.logs)
+
+    def test_relay_already_up_checks_at_once(self):
+        self.relay_up_at = 0
+        self.assertIs(self.check(), True)
+        self.assertEqual(self.events, [('relay-wait', 0), ('typing', 0)], 'no 20 s sleep')
+
+    def test_no_reply_is_retried_once_after_the_next_relay_ready(self):
+        self.replies = [False, True]
+        self.assertIs(self.check(), True)
+        self.assertEqual([e for e, _ in self.events], ['relay-wait', 'typing', 'relay-wait', 'typing'])
+        self.assertFalse(self.hinted(), self.logs)
+
+    def test_two_no_replies_give_the_122_hint_not_a_failure(self):
+        self.replies = [False, False]
+        self.assertIs(self.check(), False)
+        self.assertEqual([e for e, _ in self.events], ['relay-wait', 'typing', 'relay-wait', 'typing'])
+        self.assertTrue(self.hinted(), self.logs)
+
+    def test_no_focus_is_not_retried(self):
+        self.replies = [None]
+        self.assertIsNone(self.check())
+        self.assertEqual([e for e, _ in self.events], ['relay-wait', 'typing'])
+        self.assertFalse(self.hinted())
+
+    def test_relay_wait_is_bounded(self):
+        self.RELAY_DELAY = 10 * f.RELAY_WAIT_SECONDS  # never in time
+        self.assertIs(self.check(), False)
+        self.assertEqual(self.clock.now, 2 * f.RELAY_WAIT_SECONDS, 'two bounded waits, then the hint')
+        self.assertTrue(any('not up after' in m for m in self.logs))
+        self.assertTrue(self.hinted())
+
+    def test_older_firmware_falls_back_to_the_hello_wait(self):
+        backend = FakeOS()  # wait_relay_ready answers None: no relay events
+        backend.links = [0, 1, 2]
+        typed = f.check_right_typing(backend, self.logs.append, self.clock.clock, self.clock.sleep)
+        self.assertIs(typed, True)
+        self.assertEqual(backend.link_polls, 3)
+        self.assertEqual(backend.typing, ['right'])
+
+    def test_flash_runs_it_after_the_right_is_written(self):
+        self.backend.auto = True
+        self.relay_up_at = 0  # up for the D7 08
+        f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, self.backend, 2, stdin=io.StringIO(''),
+                ask=lambda p: self.fail(p), log=self.logs.append, clock=self.clock.clock,
+                sleep=self.clock.sleep, yes=True)
+        self.assertEqual([e for e, _ in self.events], ['relay-wait', 'relay-wait', 'typing'])
+        self.assertEqual(len(self.backend.writes), 1)
+        self.assertFalse(self.hinted(), self.logs)
+
+
 class EntryRetryTests(unittest.TestCase):
     def test_right_request_lands_once_the_split_relinks(self):
         # #545: the left can't relay D7 08 at first; the split drops and comes back, then it can.
@@ -720,7 +822,7 @@ class EntryRetryTests(unittest.TestCase):
         f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 2, stdin=io.StringIO(''),
                 ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
         self.assertEqual(backend.entered, ['right'] * 3)
-        self.assertEqual(backend.link_polls, 5, 'each retry waits for the link')
+        self.assertEqual(backend.at_write['link_polls'], 5, 'each retry waits for the link')
         self.assertFalse(any(m.startswith('Double-tap reset on') or 'late entry' in m for m in logs), logs)
         self.assertEqual(len(backend.writes), 1)
 
@@ -729,12 +831,13 @@ class EntryRetryTests(unittest.TestCase):
         backend.links = [2] + [0] * 1000  # up for the first ask, then down for good
         real = backend.enumerate_bootloaders
         clock = Clock()
+        backend.clock = clock
         backend.enumerate_bootloaders = lambda: real() if clock.now >= 10 else []  # lands ~10 s in
         logs = []
         f.flash({'right': uf2(b'FOXGLOVE_HALF=right')}, backend, 2, stdin=io.StringIO(''),
                 ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True)
         self.assertEqual(backend.entered, ['right'], 'no retry once the drive is there')
-        self.assertLess(clock.now, 40)
+        self.assertLess(backend.at_write['now'], 40)
         self.assertFalse(any(m.startswith('Double-tap reset on') for m in logs), logs)
         self.assertEqual(len(backend.writes), 1)
 

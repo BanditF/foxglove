@@ -98,8 +98,10 @@ Every automatic check still runs:
 
 Instead of `TYPES`, foxglove-lab types into its own window. For the left half that's INVOKE
 `&kp`; for the right half it's key-position presses over the split link. The flasher never
-touches the right half if the left doesn't type afterwards. A failed right-half typing check
-is reported, with the known fix (one tap on the left reset), rather than treated as fatal.
+touches the right half if the left doesn't type afterwards. The right-half typing check waits
+for the relay to the right first (the relay-ready event, up to a minute, #600), and a check
+with no reply is tried once more after the next relay-ready wait. If that fails too it is
+reported, with the known fix (one tap on the left reset), rather than treated as fatal.
 
 ## One flasher at a time
 
