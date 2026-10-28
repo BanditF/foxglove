@@ -1,7 +1,7 @@
 //! Hardware entry point. Listing and behavior resolution never open a device.
 use anyhow::{ensure, Result};
 use clap::{Parser, Subcommand};
-use digitalis::{hid::Match, link::Link, panel, settings};
+use digitalis::{art::RelayWait, hid::Match, link::Link, panel, protocol::capabilities, settings};
 use foxglove_lab::{
     behaviors::Catalog,
     platform,
@@ -67,6 +67,14 @@ enum Command {
     },
     /// Prints the art relay's status (D6 STATUS, asked twice so the right's part is fresh).
     ArtStatus,
+    /// Waits for the left's relay to the right half to be up: asks STATUS once, then waits for
+    /// the relay-ready event (D6 85 with link 2) up to the timeout (#594). For scripts/flash.
+    /// Exit code 0: up (JSON out); 3: timed out; 4: the firmware sends no relay events (no
+    /// HELLO bits 3 and 20), so ask HELLO's right link instead.
+    RelayWait {
+        #[arg(long, default_value_t = 60)]
+        timeout_s: u64,
+    },
     /// Prints one half's running firmware build (D7 09) as JSON. Exit code 4: the firmware
     /// can't tell (no HELLO bit 12, or the right is not reachable).
     Build {
@@ -350,6 +358,29 @@ fn main() -> Result<std::process::ExitCode> {
             Err(e) => {
                 eprintln!("{half}: {e:#}");
                 Ok(std::process::ExitCode::from(4))
+            }
+        };
+    }
+    if let Command::RelayWait { timeout_s } = &cli.command {
+        let _guard = platform::guard(cli.allow_app)?;
+        let _lab = platform::lab_lock(Duration::from_secs(120))?;
+        let link = connect(cli.product.clone())?;
+        let c = link.wait_connected(Duration::from_secs(10))?;
+        let caps = c.hello.map_or(0, |h| h.capabilities);
+        let events = capabilities::ART_STATUS_EVENT | capabilities::RIGHT_EVENTS;
+        if caps & events != events {
+            eprintln!("this firmware sends no relay-ready event (HELLO bits 3 and 20)");
+            return Ok(std::process::ExitCode::from(4));
+        }
+        let text = |s: Option<digitalis::protocol::ArtStatus>| serde_json::json!({"right_link": s.map(|s| s.link), "text": s.map(|s| s.to_string())});
+        return match digitalis::art::wait_relay_ready(&link, Duration::from_secs(*timeout_s))? {
+            RelayWait::Ready(s) => {
+                println!("{}", text(Some(s)));
+                Ok(std::process::ExitCode::SUCCESS)
+            }
+            RelayWait::TimedOut(s) => {
+                eprintln!("relay to the right not up after {timeout_s} s: {}", text(s));
+                Ok(std::process::ExitCode::from(3))
             }
         };
     }
