@@ -50,6 +50,7 @@ fn main() {
     foxglove::accent::start();
     foxglove::wallpaper::start();
     foxglove::api::start();
+    foxglove::reassert::start(); // Foxglove (#618): re-apply device state after events that lose it
     foxglove::devices::start(); // Foxglove: find the host-link keyboard whenever a link connects
     foxglove::keyboard_facts::start();
     foxglove::battery::start(); // Foxglove (#372, #373)

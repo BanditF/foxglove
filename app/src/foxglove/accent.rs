@@ -9,8 +9,11 @@
 //! Event-driven: Windows' UISettings.ColorValuesChanged (accent or theme changed), the
 //! wallpaper service's pass over a change (Wallpaper Engine's config or the desktop wallpaper
 //! rewritten, a manifest found; `wallpaper.rs`), a profile switch, resuming (#404), and the
-//! device layer's Connected event (a keyboard came, so it gets the current colour). Nothing
-//! polls.
+//! shared re-apply triggers (`reassert.rs`): a keyboard connecting, the right half's relay
+//! coming up, the PC coming back, a display change and a taskbar restart. On those the colour
+//! goes out again when the keyboard doesn't report it, and always after a push that failed
+//! (#601: a push right after the left reboots can fail until `&rgb_ug` resolves, and used to
+//! wait for the next colour change). Nothing polls.
 //!
 //! Only the hue and saturation follow; the board keeps its own brightness. The case's "Match
 //! keyboard" follows the same colour (#423). A lighting lease wins (a running scene, a
@@ -21,7 +24,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 
-use foxglove_devices::{Device as _, DeviceEvent};
+#[cfg(windows)]
+use foxglove_devices::Device as _;
 
 static ACCENT: AtomicBool = AtomicBool::new(false);
 static WALLPAPER: AtomicBool = AtomicBool::new(false);
@@ -34,8 +38,84 @@ static WAKE: OnceLock<Mutex<mpsc::Sender<Wake>>> = OnceLock::new();
 enum Wake {
     /// The colour may have changed (or the settings): send it if it did.
     Changed,
-    /// A keyboard connected: send it the colour, changed or not.
-    Arrived,
+    /// The keyboard may have lost it (`reassert.rs`): send it unless the keyboard reports it.
+    Reassert(super::reassert::Trigger),
+}
+
+/// What the follower knows about the colour on the keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Follower {
+    /// The hue and saturation last sent (or found on the keyboard).
+    applied: Option<(u16, u8)>,
+    /// The last push failed: the next wake sends again, whatever it is (#601).
+    failed: bool,
+}
+
+/// What the keyboard reports of its lights.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Reported {
+    hue: u16,
+    sat: u8,
+    brightness: u8,
+    /// Both halves of a split keyboard agree (`LightingState::settled`).
+    settled: bool,
+}
+
+/// How one wake ended.
+#[derive(Debug, PartialEq)]
+enum Step {
+    /// Nothing to send: already applied, or the keyboard reports it.
+    Skipped,
+    /// Sent now (`true`), or kept for when a lighting lease ends (`false`).
+    Sent(bool),
+    Failed(String),
+}
+
+impl Follower {
+    /// Whether a colour change can stop before any keyboard traffic: `want` went out already.
+    fn applied_already(&self, why: Wake, want: (u16, u8)) -> bool {
+        why == Wake::Changed && !self.failed && self.applied == Some(want)
+    }
+
+    /// Handles one wake for colour `want`. `read` reads the keyboard (asked at most once);
+    /// `push` sends at a brightness and says whether it went out now (a lease may hold the
+    /// lights).
+    fn step(
+        &mut self,
+        why: Wake,
+        want: (u16, u8),
+        read: impl FnOnce() -> Option<Reported>,
+        push: impl FnOnce(u8) -> Result<bool, String>,
+    ) -> Step {
+        if self.applied_already(why, want) {
+            return Step::Skipped;
+        }
+        let reported = read();
+        // Idempotent: a re-apply skips a colour the keyboard reports, unless the last push
+        // failed (it may have reached one half only). When the right half just linked, its
+        // half has to agree too (`settled`): it may have missed a push while it was away.
+        let shows = reported.is_some_and(|r| {
+            (r.hue, r.sat) == want
+                && (r.settled || why != Wake::Reassert(super::reassert::Trigger::RightRelayReady))
+        });
+        if matches!(why, Wake::Reassert(_)) && !self.failed && shows {
+            self.applied = Some(want);
+            return Step::Skipped;
+        }
+        match push(reported.map_or(100, |r| r.brightness)) {
+            Ok(now) => {
+                *self = Follower {
+                    applied: Some(want),
+                    failed: false,
+                };
+                Step::Sent(now)
+            }
+            Err(e) => {
+                self.failed = true;
+                Step::Failed(e)
+            }
+        }
+    }
 }
 
 /// The `[lighting]` section of the settings store.
@@ -238,15 +318,14 @@ mod windows_impl {
                 }
             }
         });
-        // Keyboard arrivals: apply the current colour to a newly connected board.
-        let arrivals = tx.clone();
-        let events = crate::foxglove::devices::bus().subscribe(false);
-        crate::foxglove::services::spawn_named("accent-arrivals", move || {
-            for e in events {
-                if e.event == DeviceEvent::Connected && arrivals.send(Wake::Arrived).is_err() {
-                    break;
-                }
-            }
+        // Keyboard arrivals, the right half's relay coming up, coming back and the rest
+        // (`reassert.rs`): the colour goes out again where the keyboard lost it.
+        let reassert = Mutex::new(tx.clone());
+        crate::foxglove::reassert::register("accent", move |t| {
+            let _ = reassert
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .send(Wake::Reassert(t));
         });
         crate::foxglove::services::spawn_named("accent", move || {
             let Ok(ui) = UISettings::new() else { return };
@@ -257,14 +336,11 @@ mod windows_impl {
                 let _ = changed.send(Wake::Changed);
                 Ok(())
             }));
-            let mut applied: Option<(u16, u8)> = None;
+            let mut follower = Follower::default();
             for why in rx {
-                if why == Wake::Arrived {
-                    applied = None;
-                }
                 // Paused (#404): nothing goes out; resuming wakes this again.
                 if crate::foxglove::pause::paused() {
-                    applied = None;
+                    follower.applied = None;
                     continue;
                 }
                 let windows = || {
@@ -273,13 +349,13 @@ mod windows_impl {
                 };
                 let wallpaper = *ON_SCREEN.lock().unwrap_or_else(|e| e.into_inner());
                 let Some(c) = pick(settings(), wallpaper, windows) else {
-                    applied = None;
+                    follower.applied = None;
                     continue;
                 };
                 // The case's "Match keyboard" follows it too (#423).
                 crate::foxglove::pc_lights::send(crate::foxglove::pc_lights::Msg::Follow(c));
-                let (hue, sat) = hue_sat(c[0], c[1], c[2]);
-                if applied == Some((hue, sat)) {
+                let want = hue_sat(c[0], c[1], c[2]);
+                if follower.applied_already(why, want) {
                     continue;
                 }
                 // device() may discover a keyboard; this thread can wait for it.
@@ -289,19 +365,33 @@ mod windows_impl {
                 let Some(lighting) = d.lighting() else {
                     continue;
                 };
-                // An effect a quit left running (#542) would hide the colour.
-                crate::foxglove::scene_run::release_left_effect(&d);
                 let device = d.info().id.to_string();
                 // Read outside the arbiter's lock: it is a keyboard round trip.
-                let brightness = lighting.state().map_or(100, |s| s.brightness);
-                match crate::foxglove::lighting_leases::with(|a| {
-                    a.follow(&device, (hue, sat, brightness), lighting)
-                }) {
-                    Ok(_) => applied = Some((hue, sat)),
-                    Err(e) => eprintln!(
-                        "Foxglove accent: {}",
-                        crate::foxglove::devices::describe(&e)
-                    ),
+                let read = || {
+                    lighting.state().ok().map(|s| Reported {
+                        hue: s.hue,
+                        sat: s.sat,
+                        brightness: s.brightness,
+                        settled: s.settled,
+                    })
+                };
+                let push = |brightness| {
+                    // An effect a quit left running (#542) would hide the colour.
+                    crate::foxglove::scene_run::release_left_effect(&d);
+                    crate::foxglove::lighting_leases::with(|a| {
+                        a.follow(&device, (want.0, want.1, brightness), lighting)
+                    })
+                    .map_err(|e| crate::foxglove::devices::describe(&e))
+                };
+                match (follower.step(why, want, read, push), why) {
+                    (Step::Sent(true), Wake::Reassert(t)) => {
+                        eprintln!(
+                            "{}",
+                            crate::foxglove::reassert::line("the accent colour", t)
+                        );
+                    }
+                    (Step::Failed(e), _) => eprintln!("Foxglove accent: {e}"),
+                    _ => {}
                 }
             }
         });
@@ -350,6 +440,206 @@ mod tests {
         assert!(wakes(teal, None, true), "back to the Windows accent");
         assert!(!wakes(teal, teal, true), "unchanged");
         assert!(!wakes(None, teal, false), "not following the wallpaper");
+    }
+
+    use crate::foxglove::reassert::Trigger;
+    use std::cell::{Cell, RefCell};
+
+    /// A keyboard in memory: the hue, saturation and brightness it reports (None: unreadable),
+    /// whether its right half agrees, the pushes it got, and whether the next push fails (a
+    /// reconnect before `&rgb_ug` resolves, #601).
+    struct FakeBoard {
+        colour: RefCell<Option<(u16, u8, u8)>>,
+        right_agrees: Cell<bool>,
+        pushes: Cell<u32>,
+        fail_next: Cell<bool>,
+    }
+
+    impl FakeBoard {
+        fn new(colour: Option<(u16, u8, u8)>) -> FakeBoard {
+            FakeBoard {
+                colour: RefCell::new(colour),
+                right_agrees: Cell::new(true),
+                pushes: Cell::new(0),
+                fail_next: Cell::new(false),
+            }
+        }
+
+        fn wake(&self, f: &mut Follower, why: Wake, want: (u16, u8)) -> Step {
+            let reported = self.colour.borrow().map(|(hue, sat, brightness)| Reported {
+                hue,
+                sat,
+                brightness,
+                settled: self.right_agrees.get(),
+            });
+            f.step(
+                why,
+                want,
+                || reported,
+                |brightness| {
+                    self.pushes.set(self.pushes.get() + 1);
+                    if self.fail_next.take() {
+                        return Err("the keyboard doesn't know that behavior".into());
+                    }
+                    *self.colour.borrow_mut() = Some((want.0, want.1, brightness));
+                    self.right_agrees.set(true);
+                    Ok(true)
+                },
+            )
+        }
+    }
+
+    /// #601: a push that fails at the left's reconnect goes out again at the next link event
+    /// (the right half's relay coming up), once; more events while the keyboard shows it send
+    /// nothing.
+    #[test]
+    fn a_failed_push_is_retried_once_at_the_next_link_event() {
+        let blue = hue_sat(0, 120, 215);
+        let board = FakeBoard::new(Some((0, 100, 60)));
+        board.fail_next.set(true);
+        let mut f = Follower::default();
+        let first = board.wake(&mut f, Wake::Reassert(Trigger::KeyboardConnected), blue);
+        assert!(matches!(first, Step::Failed(_)), "{first:?}");
+        assert!(f.failed);
+        assert_eq!(board.pushes.get(), 1);
+        assert_eq!(
+            board.wake(&mut f, Wake::Reassert(Trigger::RightRelayReady), blue),
+            Step::Sent(true),
+            "retried at the relay-ready event"
+        );
+        assert_eq!(board.pushes.get(), 2);
+        assert_eq!(
+            *board.colour.borrow(),
+            Some((blue.0, blue.1, 60)),
+            "the board keeps its own brightness"
+        );
+        for _ in 0..3 {
+            for t in Trigger::ALL {
+                assert_eq!(board.wake(&mut f, Wake::Reassert(t), blue), Step::Skipped);
+            }
+            assert_eq!(board.wake(&mut f, Wake::Changed, blue), Step::Skipped);
+        }
+        assert_eq!(board.pushes.get(), 2, "no spam once the keyboard shows it");
+    }
+
+    /// A push that keeps failing is tried once per event, not in a loop.
+    #[test]
+    fn a_failing_keyboard_gets_one_try_per_event() {
+        let blue = hue_sat(0, 120, 215);
+        let board = FakeBoard::new(None);
+        let mut f = Follower::default();
+        for n in 1..=3 {
+            board.fail_next.set(true);
+            let step = board.wake(&mut f, Wake::Reassert(Trigger::RightRelayReady), blue);
+            assert!(matches!(step, Step::Failed(_)));
+            assert_eq!(board.pushes.get(), n);
+        }
+        assert_eq!(
+            board.wake(&mut f, Wake::Reassert(Trigger::KeyboardConnected), blue),
+            Step::Sent(true)
+        );
+        assert!(!f.failed);
+    }
+
+    /// After a failure, a re-apply sends even when the keyboard reports the colour (the push
+    /// may have reached one half only), and the same colour coming again sends too.
+    #[test]
+    fn a_failure_overrides_the_readback() {
+        let blue = hue_sat(0, 120, 215);
+        let board = FakeBoard::new(Some((blue.0, blue.1, 80)));
+        let mut f = Follower {
+            applied: Some(blue),
+            failed: true,
+        };
+        assert_eq!(
+            board.wake(&mut f, Wake::Reassert(Trigger::PcBack), blue),
+            Step::Sent(true)
+        );
+        assert_eq!(board.pushes.get(), 1);
+        let mut f = Follower {
+            applied: Some(blue),
+            failed: true,
+        };
+        assert_eq!(board.wake(&mut f, Wake::Changed, blue), Step::Sent(true));
+    }
+
+    /// A re-apply sends a colour the keyboard lost (it rebooted to its saved one) and skips one
+    /// it shows; an unreadable keyboard gets it at full brightness, as before.
+    #[test]
+    fn a_reassert_sends_only_what_the_keyboard_lost() {
+        let blue = hue_sat(0, 120, 215);
+        let board = FakeBoard::new(Some((blue.0, blue.1, 50)));
+        let mut f = Follower::default();
+        assert_eq!(
+            board.wake(&mut f, Wake::Reassert(Trigger::PcBack), blue),
+            Step::Skipped
+        );
+        assert_eq!(f.applied, Some(blue), "found on the keyboard");
+        *board.colour.borrow_mut() = Some((0, 0, 50));
+        assert_eq!(
+            board.wake(&mut f, Wake::Reassert(Trigger::DisplayChange), blue),
+            Step::Sent(true)
+        );
+        assert_eq!(board.pushes.get(), 1);
+        let unread = FakeBoard::new(None);
+        let mut f = Follower::default();
+        assert_eq!(
+            unread.wake(&mut f, Wake::Reassert(Trigger::TaskbarRestart), blue),
+            Step::Sent(true)
+        );
+        assert_eq!(*unread.colour.borrow(), Some((blue.0, blue.1, 100)));
+    }
+
+    /// The right half linking again re-sends a colour its half missed (the halves disagree),
+    /// even when the left shows it; other triggers go by the left's report.
+    #[test]
+    fn a_right_half_that_missed_the_colour_gets_it_at_relay_ready() {
+        let blue = hue_sat(0, 120, 215);
+        let board = FakeBoard::new(Some((blue.0, blue.1, 50)));
+        board.right_agrees.set(false);
+        let mut f = Follower {
+            applied: Some(blue),
+            failed: false,
+        };
+        assert_eq!(
+            board.wake(&mut f, Wake::Reassert(Trigger::PcBack), blue),
+            Step::Skipped
+        );
+        assert_eq!(
+            board.wake(&mut f, Wake::Reassert(Trigger::RightRelayReady), blue),
+            Step::Sent(true)
+        );
+        assert_eq!(
+            board.wake(&mut f, Wake::Reassert(Trigger::RightRelayReady), blue),
+            Step::Skipped,
+            "once the halves agree"
+        );
+        assert_eq!(board.pushes.get(), 1);
+    }
+
+    /// A colour change already applied touches no keyboard; a lease holding the lights still
+    /// counts as applied (the colour comes back when it ends).
+    #[test]
+    fn a_change_sends_a_new_colour_only() {
+        let (blue, red) = (hue_sat(0, 120, 215), hue_sat(255, 0, 0));
+        let mut f = Follower {
+            applied: Some(blue),
+            failed: false,
+        };
+        assert_eq!(
+            f.step(
+                Wake::Changed,
+                blue,
+                || panic!("not read"),
+                |_| panic!("not sent")
+            ),
+            Step::Skipped
+        );
+        assert_eq!(
+            f.step(Wake::Changed, red, || None, |_| Ok(false)),
+            Step::Sent(false)
+        );
+        assert_eq!(f.applied, Some(red));
     }
 
     /// The old store keeps working: a section without the new key follows no wallpaper.

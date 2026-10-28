@@ -219,6 +219,54 @@ impl Arbiter {
         Ok(())
     }
 
+    /// The devices whose lights the arbiter owns now: leased, or with a restore to finish.
+    pub fn devices(&self) -> Vec<String> {
+        let mut devices: Vec<String> = self
+            .leases
+            .iter()
+            .map(|l| l.device.clone())
+            .chain(self.base.keys().cloned())
+            .collect();
+        devices.sort();
+        devices.dedup();
+        devices
+    }
+
+    /// A re-apply (`reassert.rs`, #618): the winning lease shows again when `device`'s lights
+    /// don't show it (a reboot or a re-link lost it), and a restore that didn't take is tried
+    /// again, unless the lights already show it. A keyboard connecting retries the restore
+    /// through [`Arbiter::connected`], so `connected` says not to here. Leases drawing frames
+    /// keep their own path. True when something was sent.
+    pub fn reassert(
+        &mut self,
+        device: &str,
+        light: &dyn Lighting,
+        connected: bool,
+    ) -> Result<bool, DeviceError> {
+        if self.frames.contains_key(device) {
+            return Ok(false);
+        }
+        match self.target(device) {
+            Target::Lease(l) => {
+                if light.state().is_ok_and(|s| shows(&s, &Want::lease(l))) {
+                    return Ok(false);
+                }
+            }
+            Target::Restore(_) if connected => return Ok(false),
+            Target::Restore(base) => {
+                if light
+                    .state()
+                    .is_ok_and(|s| s.settled && shows(&s, &Want::restore(&base)))
+                {
+                    self.base.remove(device);
+                    return Ok(false);
+                }
+            }
+            Target::Nothing => return Ok(false),
+        }
+        self.apply(device, light).map(|()| true)
+    }
+
     /// Lease `id` draws frames on its device (#529). `again` asks it for a frame once its lease
     /// shows again (a notification ended, Foxglove resumed, the keyboard reconnected); it runs
     /// under the arbiter's lock, so it must only flag work.
@@ -455,6 +503,48 @@ fn show(light: &dyn Lighting, want: &Want, settle: bool) -> Result<bool, DeviceE
             std::thread::sleep(SETTLE_STEP);
         }
     }
+}
+
+/// Registers the lights' re-apply hook (`reassert.rs`): each trigger goes to a thread that
+/// sleeps on its channel and runs [`Arbiter::reassert`] for every device the arbiter owns.
+pub fn register_reassert() {
+    use super::reassert::{self, Trigger};
+    let (tx, rx) = std::sync::mpsc::channel::<Trigger>();
+    let tx = Mutex::new(tx);
+    reassert::register("lights", move |t| {
+        let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(t);
+    });
+    super::services::spawn_named("reassert-lights", move || {
+        for t in rx {
+            with(|a| {
+                for device in a.devices() {
+                    let shown = with_light(&device, |light| {
+                        a.reassert(&device, light, t == Trigger::KeyboardConnected)
+                    });
+                    match shown {
+                        Some(Ok(true)) => {
+                            eprintln!("{}", reassert::line(&format!("{device}'s lights"), t));
+                        }
+                        Some(Err(e)) => eprintln!(
+                            "Foxglove: re-applying {device}'s lights ({}): {}",
+                            t.label(),
+                            super::devices::describe(&e)
+                        ),
+                        _ => {}
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// Runs `f` on the lights of device `id`: the host-link keyboard or a VIA one.
+fn with_light<R>(id: &str, f: impl FnOnce(&dyn Lighting) -> R) -> Option<R> {
+    use foxglove_devices::Device as _;
+    if let Some(d) = super::devices::device().filter(|d| d.info().id.to_string() == id) {
+        return d.lighting().map(f);
+    }
+    super::via_host::with_device(id, |d| d.lighting().map(f)).flatten()
 }
 
 pub static ARBITER: Mutex<Option<Arbiter>> = Mutex::new(None);
@@ -815,6 +905,40 @@ mod tests {
         assert!(a.base.is_empty());
         // Nothing to do on a later connection.
         a.connected("kb", &kb).unwrap();
+    }
+
+    /// A re-apply (#618) shows the lease again only when the keyboard lost it, and retries a
+    /// restore that didn't take, except on a connect (which `connected` covers).
+    #[test]
+    fn a_reassert_puts_back_only_what_the_keyboard_lost() {
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        assert_eq!(a.devices(), Vec::<String>::new());
+        a.add(lease(1, Priority::Normal, 0), &kb).unwrap();
+        assert_eq!(a.devices(), ["kb"]);
+        assert!(!a.reassert("kb", &kb, false).unwrap(), "shows it already");
+        // The keyboard rebooted to its saved lights.
+        {
+            let mut s = kb.state.borrow_mut();
+            (s.on, s.hue) = (false, 160);
+        }
+        assert!(a.reassert("kb", &kb, false).unwrap());
+        assert_eq!(hue(&kb), (true, 0));
+        for connected in [true, false, false] {
+            assert!(!a.reassert("kb", &kb, connected).unwrap(), "no spam");
+        }
+        // A restore that didn't take: a connect leaves it to `connected`, others retry it.
+        *kb.stuck_effect.borrow_mut() = true;
+        for d in a.end(|_| true) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert!(a.base.contains_key("kb"));
+        assert!(!a.reassert("kb", &kb, true).unwrap());
+        *kb.stuck_effect.borrow_mut() = false;
+        assert!(a.reassert("kb", &kb, false).unwrap());
+        assert!(a.base.is_empty(), "restored");
+        assert!(!a.reassert("kb", &kb, false).unwrap(), "nothing left to do");
+        assert_eq!(a.devices(), Vec::<String>::new());
     }
 
     #[test]
