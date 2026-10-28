@@ -3,7 +3,7 @@ use super::zmk_rpc::{self, ZmkData, ZmkTransport};
 use super::{Key, KeyboardDefinition, KeyboardLayout, KeyboardProtocol, Reopener, WriteSupport};
 use crate::foxglove::studio_session::{StudioDone, StudioEditor, StudioRequest};
 use crate::key_action::{KeyAction, KeymapSnapshot, LayerInfo};
-use digitalis::link::{Event as LinkEvent, EventSubscription, Link};
+use foxglove_link::link::{Event as LinkEvent, EventSubscription, Link};
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::mpsc::{self, Receiver};
@@ -21,7 +21,7 @@ struct ZmkLayout {
 /// What the keyboard reader is woken for (#282): a report, the link going away, or (#578) a
 /// keymap command waiting to run.
 enum Incoming {
-    Report([u8; digitalis::protocol::REPORT]),
+    Report([u8; foxglove_link::protocol::REPORT]),
     Disconnected,
     Wake,
 }

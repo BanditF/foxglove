@@ -10,9 +10,9 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
-use digitalis::link::{EventSubscription, Link};
-use digitalis::protocol::{self, BatteryDim, BatteryDimConfig, BatteryDimHalf};
 use egui::RichText;
+use foxglove_link::link::{EventSubscription, Link};
+use foxglove_link::protocol::{self, BatteryDim, BatteryDimConfig, BatteryDimHalf};
 
 use super::theme;
 

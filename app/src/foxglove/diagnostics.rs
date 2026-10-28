@@ -43,7 +43,7 @@ pub struct Facts {
     pub right_battery: Option<i64>,
     /// The left's own level (firmware with LEFT_BATTERY).
     pub left_battery: Option<i64>,
-    pub hello: Option<digitalis::protocol::Hello>,
+    pub hello: Option<foxglove_link::protocol::Hello>,
     pub plugins: Vec<Plugin>,
     /// Who holds each device's lights: `device: plugin (priority)`.
     pub lights: Vec<String>,
@@ -113,7 +113,7 @@ fn replace_ignore_case(text: &str, needle: &str, with: &str) -> String {
 
 /// The names of the HELLO capability bits that are set, then any unnamed ones.
 fn capability_names(bits: u32) -> String {
-    use digitalis::protocol::capabilities as c;
+    use foxglove_link::protocol::capabilities as c;
     let named = [
         (c::PANEL, "PANEL"),
         (c::ART_RELAY, "ART_RELAY"),
@@ -279,7 +279,7 @@ pub fn collect(ctx: &egui::Context) -> Facts {
     );
     let (left_firmware, right_firmware) = match super::keyboard_settings::firmware(ctx) {
         super::keyboard_settings::Firmware::Known { left, right } => {
-            let text = |r: Result<digitalis::protocol::BuildInfo, String>| match r {
+            let text = |r: Result<foxglove_link::protocol::BuildInfo, String>| match r {
                 Ok(b) => format!("{} · {}", b.version, b.sha),
                 Err(e) => format!("unknown ({e})"),
             };
@@ -398,12 +398,12 @@ pub(crate) fn sample() -> Facts {
         right_firmware: "0.1.0 dev · 2ae9522".into(),
         right_battery: Some(61),
         left_battery: Some(95),
-        hello: Some(digitalis::protocol::Hello {
+        hello: Some(foxglove_link::protocol::Hello {
             version: 3,
             width: 64,
             height: 52,
             right_link: 2,
-            capabilities: digitalis::protocol::capabilities::PANEL | digitalis::protocol::capabilities::BUILD_INFO | (1 << 30),
+            capabilities: foxglove_link::protocol::capabilities::PANEL | foxglove_link::protocol::capabilities::BUILD_INFO | (1 << 30),
             ..Default::default()
         }),
         plugins: vec![
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn capability_bits_are_named() {
-        use digitalis::protocol::capabilities as c;
+        use foxglove_link::protocol::capabilities as c;
         assert_eq!(capability_names(0), "none");
         assert_eq!(
             capability_names(c::PANEL | c::PANEL_HOLD),

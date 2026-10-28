@@ -179,7 +179,7 @@ fn leds(board: Option<&Board>, drawing: &Drawing, part: usize) -> Option<Vec<Lig
 /// the colour of the middle of the part rather than a random spot.
 fn found_leds(
     l: &super::boards::Lighting,
-    parts: &digitalis::lamps::LampParts,
+    parts: &foxglove_link::lamps::LampParts,
     drawing: &Drawing,
     part: usize,
 ) -> Option<Vec<LightSpec>> {

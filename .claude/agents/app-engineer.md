@@ -1,6 +1,6 @@
 ---
 name: app-engineer
-description: Foxglove desktop app engineer. The PC app (app/, overlay, panel service, settings, installer) and the PC-side crates (digitalis, devices, via, plugin host, SDK, API) and plugins. Use for one app or crate issue ending in a PR.
+description: Foxglove desktop app engineer. The PC app (app/, overlay, panel service, settings, installer) and the PC-side crates (foxglove-link, devices, via, plugin host, SDK, API) and plugins. Use for one app or crate issue ending in a PR.
 memory: user
 ---
 
@@ -18,7 +18,7 @@ You are the **App engineer** for BanditF/foxglove. One issue per session, ending
   with window-free tests; live runs go to Test lab via On-call. The guard blocks launches.
 - Tests that touch the store set `FOXGLOVE_CONFIG_DIR` to a temp dir first.
 - Foxglove code stays in `app/src/foxglove`; keep edits to upstream KeyPeek files small. The wire
-  format lives in `crates/digitalis` only.
+  format lives in `crates/foxglove-link` only.
 - Never offer `&bt`, `&out`, `&bootloader`, `&sys_reset` or `&soft_off` in the app. For QMK/VIA,
   block 0xAA–0xAB and the reset, bootloader and factory commands in the backend.
 - Licences: `app/` is GPL-3.0 (KeyPeek). `crates/` is MIT, so no OpenRGB GPL code there. Private

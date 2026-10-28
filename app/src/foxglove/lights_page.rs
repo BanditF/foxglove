@@ -11,8 +11,8 @@
 
 use std::sync::Mutex;
 
-use digitalis::protocol::{RgbHalf, RgbState};
 use egui::{Color32, RichText, Sense, Stroke};
+use foxglove_link::protocol::{RgbHalf, RgbState};
 
 use super::keyboard_settings::{self as ks, RgbSync};
 use super::settings_ui::card;

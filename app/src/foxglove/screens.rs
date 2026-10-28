@@ -7,10 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use digitalis::link::{EventSubscription, Link};
-use digitalis::panel;
-use digitalis::protocol::Hello;
-use digitalis::{protocol, Transport};
+use foxglove_link::link::{EventSubscription, Link};
+use foxglove_link::panel;
+use foxglove_link::protocol::Hello;
+use foxglove_link::{protocol, Transport};
 use foxglove_panel::panel_lock::PanelLock;
 use foxglove_panel::render::{self, Panel, View};
 use foxglove_panel::stats::{Sample, Sampler, Stats};
@@ -198,7 +198,7 @@ enum Event {
     PanelAvailable,
     Settings,
     Available(Arc<Link>),
-    Report(usize, u64, digitalis::link::Report),
+    Report(usize, u64, foxglove_link::link::Report),
 }
 static EVENTS: OnceLock<Mutex<Option<mpsc::Sender<Event>>>> = OnceLock::new();
 

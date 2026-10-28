@@ -7,7 +7,7 @@
 //! Every string that names a screen comes from here, so a board with one screen, or three of
 //! different sizes, reads right.
 
-use digitalis::protocol::{ScreenDescriptor, ScreenKind};
+use foxglove_link::protocol::{ScreenDescriptor, ScreenKind};
 
 use super::boards::Board;
 

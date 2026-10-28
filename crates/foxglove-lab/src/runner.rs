@@ -7,7 +7,7 @@ use crate::{
     spec::{Case, Invoke, Step},
 };
 use anyhow::{bail, ensure, Result};
-use digitalis::{
+use foxglove_link::{
     art,
     link::{Link, Subscription},
     panel,
@@ -56,7 +56,7 @@ pub trait Device: Transport {
 /// Reports collected from the link until dropped.
 pub struct Events {
     pub rx: std::sync::mpsc::Receiver<[u8; 32]>,
-    _watch: digitalis::link::EventSubscription,
+    _watch: foxglove_link::link::EventSubscription,
 }
 pub struct Hardware {
     pub link: Link,
@@ -600,7 +600,7 @@ impl<'a, D: Device> Runner<'a, D> {
     /// first, so the harness never presses on a half-set-up split link (#122: poking it there
     /// once left the board not typing).
     fn right_ready(&self) -> Result<()> {
-        let h = digitalis::panel::hello(self.device)?;
+        let h = foxglove_link::panel::hello(self.device)?;
         if h.right_link == 2 && h.discovery == 4 {
             return Ok(());
         }

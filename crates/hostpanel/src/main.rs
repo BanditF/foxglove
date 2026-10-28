@@ -16,9 +16,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use hidapi::HidApi;
 
-use digitalis::hid::{Keyboard, Match};
-use digitalis::link::Link;
-use digitalis::{art, panel};
+use foxglove_link::hid::{Keyboard, Match};
+use foxglove_link::link::Link;
+use foxglove_link::{art, panel};
 use foxglove_panel::render::{self, Panel, View};
 use foxglove_panel::{panel_lock, providers, Sources};
 

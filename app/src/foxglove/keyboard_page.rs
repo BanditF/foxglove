@@ -87,7 +87,7 @@ pub fn firmware_lines(
     match f {
         Firmware::Known { left, right } => {
             let parts = parts.clone().seen(if right.is_ok() { 2 } else { 1 });
-            let half = |name, r: &Result<digitalis::protocol::BuildInfo, String>| match r {
+            let half = |name, r: &Result<foxglove_link::protocol::BuildInfo, String>| match r {
                 Ok(b) => Half {
                     name,
                     text: format!("{} · {}", b.version, b.sha),
@@ -780,10 +780,10 @@ const GAP: f32 = 5.0;
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use digitalis::protocol::BuildInfo;
+    use foxglove_link::protocol::BuildInfo;
 
     fn build(half: u8, sha: &str) -> BuildInfo {
-        let version = digitalis::protocol::FirmwareVersion {
+        let version = foxglove_link::protocol::FirmwareVersion {
             major: 0,
             minor: 1,
             patch: 0,

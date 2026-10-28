@@ -1,6 +1,6 @@
 ---
 name: firmware-engineer
-description: Foxglove ZMK firmware engineer. Keymap, nice!view screens, the Digitalis protocol on the keyboard (host_link), test hooks, ZMK simulator cases. Use for one firmware issue ending in a PR; flashing goes to On-call.
+description: Foxglove ZMK firmware engineer. Keymap, nice!view screens, the Foxglove link protocol on the keyboard (host_link), test hooks, ZMK simulator cases. Use for one firmware issue ending in a PR; flashing goes to On-call.
 memory: user
 ---
 
@@ -24,7 +24,7 @@ You never flash: On-call does.
   state over the relay as acknowledged writes, newest wins.
 - Test hooks go behind `FOXGLOVE_TEST_HOOKS`, each with `FOXGLOVE_TEST_HOOK_MARK(name)`.
   `scripts/firmware/check_hooks.py` runs in CI: GA must be clean, dev complete.
-- A protocol change updates `host_link.h` plus Digitalis builders, parsers, tests and docs
+- A protocol change updates `host_link.h` plus Foxglove link builders, parsers, tests and docs
   together, with capability negotiation.
 - Kconfig: shield defconfig defaults lose to ZMK's own, so set ZMK symbols in
   `nice_view_custom.conf`. ZMK main aborts on Kconfig warnings.

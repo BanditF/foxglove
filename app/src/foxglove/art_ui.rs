@@ -1490,7 +1490,7 @@ pub mod tests {
                 }
             })
             .collect();
-        let slot = |n: u8, name: &str, len: usize| digitalis::protocol::SlotInfo {
+        let slot = |n: u8, name: &str, len: usize| foxglove_link::protocol::SlotInfo {
             slot: n,
             used: true,
             writes: 1,
@@ -1504,9 +1504,9 @@ pub mod tests {
             slot(3, "moon-garden", bundled("moon-garden.bin").len()),
             slot(4, "skyline", 4100),
         ];
-        let status = digitalis::protocol::ArtStatus {
+        let status = foxglove_link::protocol::ArtStatus {
             link: 2,
-            right_state: digitalis::protocol::right_state::PLAYING,
+            right_state: foxglove_link::protocol::right_state::PLAYING,
             right_set: -1,
             right_set_count: 17,
             right_capacity: 16384,

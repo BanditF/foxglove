@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::art_service::Choice;
-use digitalis::protocol::ArtStatus;
+use foxglove_link::protocol::ArtStatus;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Item {

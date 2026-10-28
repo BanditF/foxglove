@@ -76,7 +76,7 @@ Firmware builds and all steps below still need CI/hardware verification.
    and no ready event should be sent. Reboot the left: the host-traffic guard must reset.
 
 Events use the existing bounded, nonblocking reply queue and may be dropped under a flood.
-An explicit STATUS request remains available to resynchronize. The current Digitalis HidLink
+An explicit STATUS request remains available to resynchronize. The current Foxglove link HidLink
 dispatcher drops unsolicited replies; consuming these events in the app needs a separate host
 dispatch change. Use a raw HID capture for these checks. No new SYS_INIT work or
 settings reads are involved.

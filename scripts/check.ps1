@@ -37,8 +37,8 @@ try {
         if (!$LASTEXITCODE) { cargo deny --log-level error --manifest-path app/Cargo.toml check }
     }    Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
     Step 'crates: tests' { cargo test --workspace }
-    Step 'digitalis without hidapi' { cargo build -p digitalis --no-default-features }
-    Step 'digitalis Devices device' { cargo clippy -p digitalis --features devices --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p digitalis --features devices } }
+    Step 'foxglove-link without hidapi' { cargo build -p foxglove-link --no-default-features }
+    Step 'foxglove-link Devices device' { cargo clippy -p foxglove-link --features devices --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p foxglove-link --features devices } }
     Step 'app: clippy' { cargo clippy --manifest-path app/Cargo.toml --all-targets -- -D warnings }
     Step 'app: tests' { cargo test --manifest-path app/Cargo.toml }
     Write-Host ("All checks passed in {0:N0} s." -f ((Get-Date) - $start).TotalSeconds) -ForegroundColor Green

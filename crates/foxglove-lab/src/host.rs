@@ -1,4 +1,4 @@
-//! Host-side checks that don't go through the Digitalis link: how each half shows up on USB,
+//! Host-side checks that don't go through the Foxglove link: how each half shows up on USB,
 //! and how much CPU the app burns while idle. They read Windows' device list and process
 //! times through PowerShell; on other systems they fail with a clear message.
 use anyhow::{ensure, Context, Result};

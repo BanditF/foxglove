@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn seen_waits_for_the_places() {
         let unlinked = Snapshot {
-            status: Some(digitalis::protocol::ArtStatus {
+            status: Some(foxglove_link::protocol::ArtStatus {
                 link: 1,
                 ..Default::default()
             }),
@@ -161,7 +161,7 @@ mod tests {
         };
         assert_eq!(Seen::of(&unlinked), None, "the right half isn't linked yet");
         let mut s = Snapshot {
-            status: Some(digitalis::protocol::ArtStatus {
+            status: Some(foxglove_link::protocol::ArtStatus {
                 link: 2,
                 right_set_count: 2,
                 flash_slots: 8,
@@ -171,7 +171,7 @@ mod tests {
         };
         assert_eq!(Seen::of(&s), None, "places not read yet");
         s.slots = (0..8)
-            .map(|n| digitalis::protocol::SlotInfo {
+            .map(|n| foxglove_link::protocol::SlotInfo {
                 slot: n,
                 used: n == 1,
                 name: "fury".into(),

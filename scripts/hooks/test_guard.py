@@ -192,7 +192,7 @@ class Cargo(unittest.TestCase):
     def test_slotted_or_light_fine(self):
         for cmd in ['powershell -File scripts/build-slot.ps1 cargo build --release',
                     'powershell -ExecutionPolicy Bypass -File scripts/check.ps1',
-                    'cargo fmt --all', 'cargo metadata --format-version 1', 'cargo --version', 'cargo tree -p digitalis']:
+                    'cargo fmt --all', 'cargo metadata --format-version 1', 'cargo --version', 'cargo tree -p foxglove-link']:
             self.assertIsNone(blocked(cmd), cmd)
 
 

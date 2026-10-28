@@ -64,7 +64,7 @@ fn art_flow_pages_render() {
     st.flash_used = 0xff;
     s.status = Some(st);
     for (n, name) in [(5, "vitals"), (6, "lock"), (7, "route")] {
-        s.slots.push(digitalis::protocol::SlotInfo {
+        s.slots.push(foxglove_link::protocol::SlotInfo {
             slot: n,
             used: true,
             writes: 1,

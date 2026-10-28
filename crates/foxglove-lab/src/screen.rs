@@ -4,7 +4,7 @@
 //! image rotated 90 degrees counterclockwise, portrait (x, y) = (native y, 159 - native x).
 use crate::spec::Rect;
 use anyhow::{bail, ensure, Result};
-use digitalis::{protocol, Transport};
+use foxglove_link::{protocol, Transport};
 use image::{GrayImage, ImageFormat, Rgb, RgbImage};
 use std::{io::Cursor, time::Duration};
 

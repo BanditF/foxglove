@@ -10,7 +10,7 @@ anyhow = "1"
 chrono = "0.4"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
-digitalis = { path = "../digitalis" }
+foxglove-link = { path = "../foxglove-link" }
 foxglove-panel = { path = "../panel" }
 hidapi = "2.6"
 serde = { version = "1", features = ["derive"] }

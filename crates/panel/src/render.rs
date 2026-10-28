@@ -1,6 +1,5 @@
-//! Draws the panel's layout onto a digitalis Panel.
+//! Draws the panel's layout onto a foxglove-link Panel.
 
-pub use digitalis::panel::Panel;
 use embedded_graphics::{
     mono_font::{
         // Latin-1, so region formats and titles with accents draw (#445).
@@ -13,6 +12,7 @@ use embedded_graphics::{
     primitives::{Line, PrimitiveStyle, Rectangle, Triangle},
     text::{Baseline, Text},
 };
+pub use foxglove_link::panel::Panel;
 
 /// Everything the panel shows; the providers fill it in.
 #[derive(Clone, Debug, Default, PartialEq)]

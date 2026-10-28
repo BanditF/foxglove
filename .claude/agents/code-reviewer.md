@@ -23,12 +23,12 @@ commit, push, or merge. The only file you write is your memory file. The Planner
   transfers; never display partial buffers or corrupt blobs.
 - Keep Foxglove additions in `app/src/foxglove`; minimize edits to upstream
   KeyPeek files and preserve subtree synchronization. Keep modules cohesive.
-- `crates/digitalis` owns protocol builders/parsers and transport; avoid duplicate
-  wire formats in the UI or hostpanel and keep UI/OS providers out of Digitalis.
+- `crates/foxglove-link` owns protocol builders/parsers and transport; avoid duplicate
+  wire formats in the UI or hostpanel and keep UI/OS providers out of Foxglove link.
 - Require unit tests for pure logic, especially report parsing/building, bounds,
   state transitions, and malformed data. Identify missing regression coverage.
 - Run `powershell -ExecutionPolicy Bypass -File scripts/check.ps1` when feasible:
-  workspace clippy/tests, Digitalis without default features, app clippy/tests.
+  workspace clippy/tests, Foxglove link without default features, app clippy/tests.
   Record exact failures or unavailable prerequisites; never imply checks ran.
 - Call out hardware-untested behavior explicitly; simulator/unit success does
   not establish USB, BLE, display, sleep/resume, or split-link correctness.
@@ -63,9 +63,9 @@ commit, push, or merge. The only file you write is your memory file. The Planner
   the bounded nonblocking queue (`K_NO_WAIT`); never stall ZMK split traffic.
   Check worker stack use, large locals, connection references, and timeouts.
 - Protocol changes must update `boards/shields/nice_view_custom/widgets/host_link.h`
-  and Digitalis documentation/builders/parsers/tests together; preserve compatible
+  and Foxglove link documentation/builders/parsers/tests together; preserve compatible
   layouts and capability negotiation. Update affected user/runbook docs.
-- Use Foxglove for the app/project, Digitalis for the link/protocol; retain
+- Use Foxglove for the app/project, Foxglove link for the link/protocol; retain
   firmware `host_link` filenames. New names should suit fingers, forest, foxes,
   and old technical names without obscuring purpose.
 

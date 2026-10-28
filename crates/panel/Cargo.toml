@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 chrono = "0.4"
-digitalis = { path = "../digitalis", default-features = false }
+foxglove-link = { path = "../foxglove-link", default-features = false }
 embedded-graphics = "0.8"
 
 [target.'cfg(windows)'.dependencies]

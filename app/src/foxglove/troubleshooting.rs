@@ -138,7 +138,7 @@ fn details(ui: &mut egui::Ui, snap: &Snapshot) {
     line(ui, format!("Relay counters: {:?}", hello.debug));
     line(ui, format!("Capabilities: {:#x}", hello.capabilities));
     for s in &snap.screens {
-        use digitalis::protocol::ScreenKind;
+        use foxglove_link::protocol::ScreenKind;
         let kind = match s.kind {
             ScreenKind::Display => "display",
             ScreenKind::Panel => "PC panel",

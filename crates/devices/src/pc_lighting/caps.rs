@@ -4,7 +4,7 @@
 //! stream).
 //!
 //! It comes from the catalog (`lighting-catalog.toml`), from a LampArray's own attributes
-//! ([`LampArrayInfo`]), or from a keyboard's HELLO (Digitalis builds it there).
+//! ([`LampArrayInfo`]), or from a keyboard's HELLO (Foxglove link builds it there).
 
 use serde::Deserialize;
 

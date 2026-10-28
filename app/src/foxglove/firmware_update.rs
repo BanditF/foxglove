@@ -591,8 +591,8 @@ fn board_id_line(text: &str) -> Result<String, String> {
 #[cfg(windows)]
 mod windows_board {
     use super::*;
-    use digitalis::protocol;
     use foxglove_flash::{Board, Build, WriteError};
+    use foxglove_link::protocol;
     use std::sync::mpsc;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -602,7 +602,7 @@ mod windows_board {
     const VOLUMES: u128 = 0x53f5630d_b6bf_11d0_94f2_00a0c91efb8b;
 
     pub struct WindowsBoard {
-        link: Arc<digitalis::link::Link>,
+        link: Arc<foxglove_link::link::Link>,
         hello: protocol::Hello,
         /// The running keyboard's USB id, for finding the left by serial.
         id: (u16, u16),
@@ -658,7 +658,7 @@ mod windows_board {
             cmd: u8,
             timeout: Duration,
         ) -> Option<[u8; protocol::REPORT]> {
-            use digitalis::Transport;
+            use foxglove_link::Transport;
             self.link
                 .request(report, protocol::SETTINGS, cmd, timeout)
                 .ok()
@@ -731,7 +731,7 @@ mod windows_board {
         }
 
         fn right_battery(&self) -> Option<u8> {
-            digitalis::panel::hello(self.link.as_ref())
+            foxglove_link::panel::hello(self.link.as_ref())
                 .ok()
                 .and_then(|h| h.right_battery)
                 .or(self.hello.right_battery)
@@ -873,7 +873,8 @@ mod windows_board {
             // it is or `timeout` (#122: 20-40 s).
             let end = Instant::now() + timeout;
             loop {
-                if digitalis::panel::hello(self.link.as_ref()).is_ok_and(|h| h.right_link == 2) {
+                if foxglove_link::panel::hello(self.link.as_ref()).is_ok_and(|h| h.right_link == 2)
+                {
                     return true;
                 }
                 if Instant::now() >= end {

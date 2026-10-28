@@ -27,8 +27,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use digitalis::lamps::LampParts;
 use foxglove_devices::{DeviceError, Lighting, Rgb};
+use foxglove_link::lamps::LampParts;
 use serde::{Deserialize, Serialize};
 
 use super::boards::{Board, Drawing, LED_MAP_CHECKED, LED_MAP_SHIPPED};
@@ -747,8 +747,8 @@ fn run(
 
 /// What a keyboard's answer to a frame means for the wizard: how long it holds the frame, and
 /// whether a split board's other half draws it (`parts`: the board's parts).
-fn shown(reply: &digitalis::protocol::FrameReply, parts: usize) -> Shown {
-    use digitalis::protocol::FrameRight;
+fn shown(reply: &foxglove_link::protocol::FrameReply, parts: usize) -> Shown {
+    use foxglove_link::protocol::FrameRight;
     let missing = match (parts > 1, reply.right) {
         (false, _) | (true, FrameRight::Draws) => None,
         (true, FrameRight::NoLink) => Some(
@@ -776,14 +776,14 @@ pub struct AppKeyboard {
     again: Option<Again>,
     /// The hand-back watch on the keyboard's link.
     tapped: Option<(
-        Arc<digitalis::link::Link>,
-        digitalis::link::EventSubscription,
+        Arc<foxglove_link::link::Link>,
+        foxglove_link::link::EventSubscription,
     )>,
 }
 
 impl AppKeyboard {
     /// The keyboard, with the hand-back watch on its link (again after a reconnect).
-    fn keyboard(&mut self) -> Result<Arc<digitalis::devices::DigitalisDevice>, String> {
+    fn keyboard(&mut self) -> Result<Arc<foxglove_link::devices::FoxgloveLinkDevice>, String> {
         let kb = super::devices::device().ok_or("No keyboard with Foxglove's firmware answers.")?;
         if !kb.frames() {
             return Err("This keyboard's firmware can't light one LED at a time.".into());
@@ -794,7 +794,7 @@ impl AppKeyboard {
             .is_some_and(|(l, _)| Arc::ptr_eq(l, kb.link()));
         if let (false, Some(again)) = (same, self.again.clone()) {
             let watch = kb.link().subscribe_reports(move |_, r| {
-                if digitalis::protocol::is_frame_event(r) {
+                if foxglove_link::protocol::is_frame_event(r) {
                     again();
                 }
             });
@@ -837,7 +837,7 @@ impl Target for AppKeyboard {
         // The frame only: the lease stays, so nothing else draws meanwhile. Only on the keyboard
         // the lease is on (another one plugged in meanwhile has no frame of ours).
         use foxglove_devices::Device as _;
-        let ours = |kb: &Arc<digitalis::devices::DigitalisDevice>| {
+        let ours = |kb: &Arc<foxglove_link::devices::FoxgloveLinkDevice>| {
             self.device.as_ref() == Some(&kb.info().id.to_string())
         };
         if let Some(kb) = super::devices::device().filter(ours) {

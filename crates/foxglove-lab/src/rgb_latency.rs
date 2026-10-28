@@ -3,7 +3,7 @@
 //! is polled at 4 Hz and unsolicited D7 83 reports are collected. A write counts as shown on a half
 //! at the first report carrying its hue; one never reported on the right is lost.
 use anyhow::{ensure, Result};
-use digitalis::{link::Link, protocol, settings};
+use foxglove_link::{link::Link, protocol, settings};
 use serde::Serialize;
 use std::{
     sync::mpsc,

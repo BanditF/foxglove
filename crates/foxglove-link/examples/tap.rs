@@ -1,11 +1,11 @@
 //! Prints every report the keyboard sends that isn't a reply: layer state (0xFF), key events
 //! (0xF1) and anything else. Run it, then hold a layer key:
-//!   cargo run -p digitalis --example tap [product filter] [seconds]
+//!   cargo run -p foxglove-link --example tap [product filter] [seconds]
 
 use std::time::{Duration, Instant};
 
-use digitalis::hid::Match;
-use digitalis::link::Link;
+use foxglove_link::hid::Match;
+use foxglove_link::link::Link;
 
 fn main() -> anyhow::Result<()> {
     let mut args = std::env::args().skip(1);
