@@ -19,6 +19,10 @@ if(NOT FOXGLOVE_FW_VERSION_OK)
   message(FATAL_ERROR "FIRMWARE_VERSION must be X.Y.Z, not '${FOXGLOVE_FW_VERSION}'")
 endif()
 zephyr_library_sources(${CMAKE_CURRENT_LIST_DIR}/widgets/half_marker.c)
+# A cable or a host arriving counts as activity (#432); both shields, wherever USB is built.
+if(CONFIG_USB_DEVICE_STACK)
+  zephyr_library_sources(${CMAKE_CURRENT_LIST_DIR}/widgets/usb_wake.c)
+endif()
 # Library-wide on purpose: a source property set here wouldn't reach the app library's target
 # (it lives in another CMake directory), which is why the SHA used to read 'unknown'.
 zephyr_library_compile_definitions(

@@ -54,10 +54,6 @@ endif()
 if(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
   zephyr_library_sources(widgets/dim_strip.c widgets/battery_dim.c)
 endif()
-# Not a display feature either: a cable or a host arriving counts as activity (#432).
-if(CONFIG_USB_DEVICE_STACK)
-  zephyr_library_sources(widgets/usb_wake.c)
-endif()
 
 # Version, SHA and half marker, shared with the foxglove_link shield.
 include(${CMAKE_CURRENT_LIST_DIR}/foxglove_common.cmake)
