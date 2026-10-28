@@ -77,6 +77,12 @@ mod imp {
     // SAFETY: PDH handles may be used from any thread; the sampler is used by one at a time.
     unsafe impl Send for Sampler {}
 
+    impl Default for Sampler {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl Sampler {
         /// Opens the counters and takes the first collection (rates need two). Without PDH
         /// (or a counter this PC lacks) those values stay unknown.
@@ -208,6 +214,7 @@ mod imp {
 
 /// Elsewhere there are no counters: every value stays unknown.
 #[cfg(not(windows))]
+#[derive(Default)]
 pub struct Sampler;
 
 #[cfg(not(windows))]

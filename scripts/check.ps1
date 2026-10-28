@@ -29,13 +29,15 @@ try {
     Step 'format' {
         cargo fmt --all --check
         if (!$LASTEXITCODE) { rustfmt --check --edition 2021 (Get-ChildItem -Recurse app/src/foxglove -Filter *.rs).FullName }
-    }    # Licences, advisories, banned sources (deny.toml for the MIT crates, app/deny.toml for the
+    }
+    # Licences, advisories, banned sources (deny.toml for the MIT crates, app/deny.toml for the
     # GPL app). Needs cargo-deny: cargo install --locked cargo-deny
     Step 'licences and advisories' {
         if (-not (Get-Command cargo-deny -ErrorAction SilentlyContinue)) { throw 'cargo-deny is not installed: cargo install --locked cargo-deny' }
         cargo deny --log-level error check
         if (!$LASTEXITCODE) { cargo deny --log-level error --manifest-path app/Cargo.toml check }
-    }    Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
+    }
+    Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
     Step 'crates: tests' { cargo test --workspace }
     Step 'foxglove-link without hidapi' { cargo build -p foxglove-link --no-default-features }
     Step 'foxglove-link Devices device' { cargo clippy -p foxglove-link --features devices --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p foxglove-link --features devices } }
