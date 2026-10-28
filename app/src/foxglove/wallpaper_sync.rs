@@ -17,6 +17,11 @@
 //!   wallpapers on screen change (a new wallpaper gets the current state). A push goes out only
 //!   when a monitor's properties differ from what it was last sent, and one push runs at a time:
 //!   changes that arrive meanwhile collapse to the newest.
+//! - **Settled:** a layer change waits [`SETTLE`] for the next one before it is sent, so a layer
+//!   held for a moment and let go (GAME+ for Win+Tab or Win+1 in a game, a thumb for NUMBER)
+//!   sends nothing: each push starts a Wallpaper Engine process, and these landed just as it
+//!   brought a wallpaper back from a full-screen game. Scene, live-feed and wallpaper changes
+//!   go at once.
 //! - **Facts only:** command lines are visible to other processes, so the properties are the
 //!   layer's name, a bool and the scene's timing, colours and geometry. Never a token.
 //! - **Optional:** without Wallpaper Engine, or while it isn't running, nothing is sent and no
@@ -29,9 +34,9 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use foxglove_scene::{Clock, Effect, Rect, RoomMap, WallpaperScene};
 
@@ -50,6 +55,11 @@ pub const LIVE: &str = "foxglove_live";
 const PUSH_LIMIT: Duration = Duration::from_secs(5);
 /// How long quitting waits for the wallpapers to be told Foxglove has gone.
 const QUIT_LIMIT: Duration = Duration::from_secs(6);
+/// A layer change waits this long for the next one before it is sent (a one-shot deadline per
+/// change, never a timer).
+pub const SETTLE: Duration = Duration::from_millis(400);
+/// A run of layer changes is sent at the latest this long after its first.
+pub const SETTLE_MAX: Duration = Duration::from_secs(2);
 
 /// A running scene, as the wallpapers need it.
 #[derive(Clone, Debug, PartialEq)]
@@ -279,8 +289,71 @@ impl<A: Apply> Pusher<A> {
 // ------------------------------------------------------------------------- the app's worker
 
 enum Wake {
+    /// A scene, the live feed or the wallpapers on screen changed: sent at once.
     Changed,
+    /// The keyboard's layers changed: sent once they settle.
+    Layer,
     Quit(Sender<()>),
+}
+
+/// How long a layer change waits for the next, and a run of them at most.
+#[derive(Clone, Copy, Debug)]
+struct Settle {
+    layer: Duration,
+    max: Duration,
+}
+
+impl Settle {
+    const APP: Settle = Settle {
+        layer: SETTLE,
+        max: SETTLE_MAX,
+    };
+}
+
+/// What the worker does next.
+enum Next {
+    Sync,
+    Quit(Sender<()>),
+    /// Every sender has gone.
+    Closed,
+}
+
+/// Blocks for the next change, then takes the run it starts. A layer change moves the deadline
+/// to `settle.layer` from now (never past `settle.max` from the first change); any other change
+/// clears the deadline, so the run syncs once the queue is empty; quitting wins. The waits are
+/// one-shot deadlines on the channel: nothing wakes without a change.
+fn next(rx: &Receiver<Wake>, settle: Settle) -> Next {
+    let Ok(first) = rx.recv() else {
+        return Next::Closed;
+    };
+    let cap = Instant::now() + settle.max;
+    let mut deadline = match first {
+        Wake::Quit(ack) => return Next::Quit(ack),
+        Wake::Layer => Some(Instant::now() + settle.layer),
+        Wake::Changed => None,
+    };
+    loop {
+        let got = match deadline {
+            None => match rx.try_recv() {
+                Ok(w) => w,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Next::Sync,
+            },
+            Some(at) => {
+                match rx.recv_timeout(at.min(cap).saturating_duration_since(Instant::now())) {
+                    Ok(w) => w,
+                    Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
+                        return Next::Sync
+                    }
+                }
+            }
+        };
+        deadline = match got {
+            Wake::Quit(ack) => return Next::Quit(ack),
+            // Once cleared, the deadline stays cleared for the rest of the run.
+            Wake::Layer => deadline.map(|_| Instant::now() + settle.layer),
+            Wake::Changed => None,
+        };
+    }
 }
 
 #[derive(Default)]
@@ -288,7 +361,9 @@ struct Shared {
     state: State,
     /// The monitors showing a wallpaper that reads Foxglove's properties.
     targets: Vec<Target>,
-    wake: Option<Sender<Wake>>,
+    /// The worker's channel, with the worker's number (a dead worker is forgotten by number).
+    wake: Option<(u64, Sender<Wake>)>,
+    workers: u64,
     /// Foxglove is quitting: no worker starts again.
     quitting: bool,
     placements: u64,
@@ -306,8 +381,25 @@ fn changed(f: impl FnOnce(&mut Shared)) {
         f(s);
         s.wake.clone()
     });
-    if let Some(w) = wake {
-        let _ = w.send(Wake::Changed);
+    if let Some((worker, w)) = wake {
+        if w.send(Wake::Changed).is_err() {
+            forget(worker);
+        }
+    }
+}
+
+/// The worker `worker` ended (a panic): forget it, so the next wallpapers on screen start
+/// another one instead of every change going nowhere. A newer worker is kept.
+fn forget(worker: u64) {
+    let forgot = with(|s| {
+        let dead = s.wake.as_ref().is_some_and(|(n, _)| *n == worker);
+        if dead {
+            s.wake = None;
+        }
+        dead
+    });
+    if forgot {
+        eprintln!("Foxglove: wallpaper sync: the worker stopped; the next wallpaper change starts it again");
     }
 }
 
@@ -364,7 +456,7 @@ pub fn wallpapers(targets: Vec<Target>) {
 /// Quitting: tells the wallpapers Foxglove has gone (bounded), so they don't keep showing a
 /// layer that no longer is.
 pub fn quit() {
-    let Some(wake) = with(|s| {
+    let Some((_, wake)) = with(|s| {
         s.quitting = true;
         s.wake.take()
     }) else {
@@ -385,7 +477,10 @@ fn start_worker() {
         Some(foxglove_devices::facts::Value::Bytes(b)) => Some(b),
         _ => None,
     });
-    with(|s| s.wake = Some(tx.clone()));
+    with(|s| {
+        s.workers += 1;
+        s.wake = Some((s.workers, tx.clone()));
+    });
     let forward = tx.clone();
     super::services::spawn_named("wallpaper-sync-layers", move || {
         for change in layers {
@@ -393,12 +488,19 @@ fn start_worker() {
                 Some(foxglove_devices::facts::Value::Bytes(b)) => Some(b),
                 _ => None,
             });
-            if forward.send(Wake::Changed).is_err() {
+            if forward.send(Wake::Layer).is_err() {
                 break;
             }
         }
     });
-    super::services::spawn_named("wallpaper-sync", move || run(&rx, Cli::default()));
+    super::services::spawn_named("wallpaper-sync", move || {
+        run(
+            &rx,
+            Cli::default(),
+            || with(|s| (s.state.clone(), s.targets.clone())),
+            Settle::APP,
+        );
+    });
     let _ = tx.send(Wake::Changed);
 }
 
@@ -410,26 +512,27 @@ fn set_layers(active: Option<Vec<u8>>) {
     });
 }
 
-/// The worker: waits for a change, takes every change waiting (newest wins), pushes.
-fn run(rx: &Receiver<Wake>, apply: impl Apply) {
+/// The worker: waits for a change and the run it starts ([`next`]), then pushes the newest
+/// state from `read`.
+fn run(
+    rx: &Receiver<Wake>,
+    apply: impl Apply,
+    read: impl Fn() -> (State, Vec<Target>),
+    settle: Settle,
+) {
     let mut pusher = Pusher::new(apply);
     let mut last_scene: Option<(String, i64)> = None;
-    while let Ok(first) = rx.recv() {
-        let mut quit = match first {
-            Wake::Quit(ack) => Some(ack),
-            Wake::Changed => None,
-        };
-        while let Ok(next) = rx.try_recv() {
-            if let Wake::Quit(ack) = next {
-                quit = Some(ack);
+    loop {
+        match next(rx, settle) {
+            Next::Sync => {}
+            Next::Quit(ack) => {
+                pusher.quit();
+                let _ = ack.send(());
+                return;
             }
+            Next::Closed => return,
         }
-        if let Some(ack) = quit {
-            pusher.quit();
-            let _ = ack.send(());
-            return;
-        }
-        let (state, targets) = with(|s| (s.state.clone(), s.targets.clone()));
+        let (state, targets) = read();
         let pushed = pusher.sync(&state, &targets);
         let scene = state
             .scene
@@ -443,6 +546,14 @@ fn run(rx: &Receiver<Wake>, apply: impl Apply) {
                 None => eprintln!("Foxglove: wallpaper sync: no scene, sent to {pushed} monitor(s)"),
             }
             last_scene = scene;
+        } else if pushed > 0 {
+            // Every push starts a Wallpaper Engine process: each one shows in the log, so a
+            // flicker can be lined up with them.
+            eprintln!(
+                "Foxglove: wallpaper sync: sent to {pushed} monitor(s): layer {}, game mode {}",
+                state.layer.as_deref().unwrap_or("none"),
+                if state.game { "on" } else { "off" }
+            );
         }
     }
 }
@@ -854,5 +965,171 @@ mod tests {
                 r#"{"foxglove_live":0,"foxglove_scene":""}"#
             ]
         );
+    }
+
+    fn quick() -> Settle {
+        Settle {
+            layer: Duration::from_millis(150),
+            max: Duration::from_secs(5),
+        }
+    }
+
+    /// Long enough that a test only sees it pass if the change went at once.
+    fn slow() -> Settle {
+        Settle {
+            layer: Duration::from_secs(60),
+            max: Duration::from_secs(60),
+        }
+    }
+
+    #[test]
+    fn a_run_of_layer_changes_settles_into_one_sync() {
+        let (tx, rx) = mpsc::channel();
+        for _ in 0..3 {
+            tx.send(Wake::Layer).unwrap();
+        }
+        let t = Instant::now();
+        assert!(matches!(next(&rx, quick()), Next::Sync));
+        let took = t.elapsed();
+        assert!(took >= Duration::from_millis(150), "{took:?}");
+        assert!(rx.try_recv().is_err(), "the whole run is taken at once");
+        // A scene, the live feed or the wallpapers changing goes at once, even mid-run, and a
+        // layer change after it doesn't hold it back.
+        tx.send(Wake::Layer).unwrap();
+        tx.send(Wake::Changed).unwrap();
+        tx.send(Wake::Layer).unwrap();
+        let t = Instant::now();
+        assert!(matches!(next(&rx, slow()), Next::Sync));
+        assert!(t.elapsed() < Duration::from_secs(30));
+        assert!(rx.try_recv().is_err());
+        // Quitting wins over a run.
+        let (ack, _acked) = mpsc::channel();
+        tx.send(Wake::Layer).unwrap();
+        tx.send(Wake::Quit(ack)).unwrap();
+        assert!(matches!(next(&rx, slow()), Next::Quit(_)));
+        drop(tx);
+        assert!(matches!(next(&rx, quick()), Next::Closed));
+    }
+
+    #[test]
+    fn a_run_that_keeps_going_is_sent_at_its_cap() {
+        use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+        let (tx, rx) = mpsc::channel();
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let typing = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                // Layers changing for up to 5 s, faster than they settle.
+                let end = Instant::now() + Duration::from_secs(5);
+                while Instant::now() < end && !stop.load(Relaxed) {
+                    if tx.send(Wake::Layer).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            })
+        };
+        let settle = Settle {
+            layer: Duration::from_millis(100),
+            max: Duration::from_millis(300),
+        };
+        let t = Instant::now();
+        assert!(matches!(next(&rx, settle), Next::Sync));
+        let took = t.elapsed();
+        stop.store(true, Relaxed);
+        typing.join().unwrap();
+        assert!(took >= Duration::from_millis(300), "{took:?}");
+        assert!(took < Duration::from_secs(4), "{took:?}");
+    }
+
+    /// Wallpaper Engine's command line as a channel.
+    struct Wire(Sender<String>);
+
+    impl Apply for Wire {
+        fn ready(&mut self) -> bool {
+            true
+        }
+        fn apply(&mut self, _location: &str, props: &str) -> Result<(), String> {
+            let _ = self.0.send(props.to_string());
+            Ok(())
+        }
+        fn interfaces(&mut self) -> Vec<(String, String)> {
+            ifaces()
+        }
+    }
+
+    /// The user's report: in a game, Win+Tab (GAME+ held for Tab) and back. Wallpaper Engine
+    /// hears nothing for a layer held and let go; a layer that stays is sent once.
+    #[test]
+    fn a_layer_held_for_the_win_key_sends_nothing() {
+        let state = std::sync::Arc::new(Mutex::new(State {
+            layer: Some("GAME".into()),
+            game: true,
+            ..State::default()
+        }));
+        let (pushes_tx, pushes) = mpsc::channel();
+        let (tx, rx) = mpsc::channel();
+        // Settles long enough that a stalled test thread can't split a hold in two.
+        let settle = Settle {
+            layer: Duration::from_millis(800),
+            max: Duration::from_secs(10),
+        };
+        let worker = {
+            let state = state.clone();
+            std::thread::spawn(move || {
+                let read = move || {
+                    let s = state.lock().unwrap().clone();
+                    (s, vec![target(WE_LEFT, "hud"), target(WE_RIGHT, "stars")])
+                };
+                run(&rx, Wire(pushes_tx), read, settle);
+            })
+        };
+        let set = |layer: &str| state.lock().unwrap().layer = Some(layer.into());
+        let wait = Duration::from_secs(5);
+        tx.send(Wake::Changed).unwrap();
+        for _ in 0..2 {
+            let first = pushes.recv_timeout(wait).expect("the first state goes out");
+            assert!(first.contains(r#""foxglove_layer":"GAME""#), "{first}");
+        }
+
+        // Hold GAME+ for Tab, then let go: the same as before, so nothing is sent.
+        set("GAME+");
+        tx.send(Wake::Layer).unwrap();
+        set("GAME");
+        tx.send(Wake::Layer).unwrap();
+        assert!(
+            pushes.recv_timeout(Duration::from_secs(2)).is_err(),
+            "Wallpaper Engine hears nothing"
+        );
+
+        // A layer that stays goes out once per monitor.
+        set("GAME+");
+        tx.send(Wake::Layer).unwrap();
+        for _ in 0..2 {
+            let held = pushes.recv_timeout(wait).expect("a settled layer goes out");
+            assert!(held.contains(r#""foxglove_layer":"GAME+""#), "{held}");
+        }
+        assert!(pushes.recv_timeout(Duration::from_millis(300)).is_err());
+
+        let (ack, acked) = mpsc::channel();
+        tx.send(Wake::Quit(ack)).unwrap();
+        acked.recv_timeout(wait).expect("quit answers");
+        assert_eq!(pushes.recv_timeout(wait).unwrap(), gone(Supports::ALL));
+        worker.join().unwrap();
+    }
+
+    /// A worker that died is forgotten, so the next wallpapers start another; a newer one is
+    /// kept even if a late change still finds the old channel closed.
+    #[test]
+    fn a_dead_worker_is_forgotten_by_number() {
+        let (old, _) = mpsc::channel::<Wake>();
+        let (new, _keep) = mpsc::channel::<Wake>();
+        with(|s| s.wake = Some((7, old)));
+        forget(7);
+        assert!(with(|s| s.wake.is_none()));
+        with(|s| s.wake = Some((8, new)));
+        forget(7);
+        assert!(with(|s| s.wake.as_ref().is_some_and(|(n, _)| *n == 8)));
+        with(|s| s.wake = None);
     }
 }
