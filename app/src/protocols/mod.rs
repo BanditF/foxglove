@@ -118,15 +118,24 @@ pub trait KeyboardProtocol: Send {
         Ok(())
     }
 
-    /// Opens the transient write session ahead of the first write (ZMK Studio
-    /// client), so the first key change does not wait on a connection.
-    /// Protocols without a session are already ready.
-    fn open_edit_session(&mut self) -> Result<(), Box<dyn Error>> {
-        Ok(())
-    }
-
     /// Closes any transient write connection (ZMK Studio client).
     fn end_edit_session(&mut self) {}
+
+    /// Foxglove (#578): a ZMK Studio session request (open, unlock wait, discard, restore
+    /// stock). Opening ahead of the first write replaces KeyPeek's `open_edit_session`. `done` answers it, now or later. Protocols without a session say so.
+    fn studio(
+        &mut self,
+        _request: crate::foxglove::studio_session::StudioRequest,
+        done: crate::foxglove::studio_session::StudioDone,
+    ) {
+        done.send(Err("This keyboard has no Studio session".into()));
+    }
+
+    /// Foxglove (#578): wakes a `hid_read` that blocks until a report, so a queued keymap
+    /// command runs at once instead of after the next report.
+    fn reader_waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+        None
+    }
 
     fn subscription_sender(&self) -> Result<Option<Box<dyn SubscriptionSender>>, Box<dyn Error>> {
         Ok(None)

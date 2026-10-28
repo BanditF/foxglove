@@ -9,6 +9,8 @@
 //! frame (the card surface with its line). The page's scroll area lays out the whole page
 //! however short the window is, so the parts below the fold are checked too.
 //!
+//! The keymap editor's session bar and prompts (#578) are checked in `keymap_session.rs`.
+//!
 //! With `FOXGLOVE_UI_PREVIEW_DIR` set, the Lights and Scenes pages are also kept at every size
 //! and scale as `ui-layout-lights-<w>x<h>@<scale>.png` and `ui-scenes-layout-<w>x<h>@<scale>.png`.
 
@@ -29,7 +31,7 @@ const SLACK: f32 = 1.0;
 
 const SIZES: [egui::Vec2; 3] = [MIN_SIZE, DEFAULT_SIZE, egui::vec2(1440.0, 900.0)];
 /// 100%, the common 125% and 150% (the user's display).
-const SCALES: [f32; 3] = [1.0, 1.25, 1.5];
+pub(super) const SCALES: [f32; 3] = [1.0, 1.25, 1.5];
 /// A mark (a colour chip, a swatch, a dot) is a filled shape at most this big, in points².
 const MARK_AREA: f32 = 2500.0;
 
@@ -255,7 +257,7 @@ fn problems(d: &Drawn) -> Vec<String> {
 /// One case: `draw` on a fresh context at `size` and `ppp`; the problems, prefixed with `name`.
 /// With `cards`, finding no card at all is a problem too (the card checks would see nothing if
 /// the cards' look changed). Keeps a PNG named `png` when the preview folder is set.
-fn check(
+pub(super) fn check(
     name: &str,
     size: egui::Vec2,
     ppp: f32,
@@ -312,7 +314,7 @@ fn page_cases(name: &str, page: Page, samples: &Samples, png: Option<&str>) -> V
     out
 }
 
-fn report(found: &[String]) {
+pub(super) fn report(found: &[String]) {
     assert!(
         found.is_empty(),
         "{} layout problems:\n{}",

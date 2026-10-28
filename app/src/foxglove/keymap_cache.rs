@@ -29,14 +29,14 @@ const EOF: u8 = 0xAD;
 
 /// Splits a byte stream into Studio frames.
 #[derive(Default)]
-struct Frames {
+pub(crate) struct Frames {
     data: Vec<u8>,
     in_frame: bool,
     escaped: bool,
 }
 
 impl Frames {
-    fn push(&mut self, chunk: &[u8]) -> Vec<Vec<u8>> {
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> Vec<Vec<u8>> {
         let mut frames = Vec::new();
         for &b in chunk {
             if self.escaped {
@@ -60,7 +60,7 @@ impl Frames {
     }
 }
 
-fn encode_frame(payload: &[u8]) -> Vec<u8> {
+pub(crate) fn encode_frame(payload: &[u8]) -> Vec<u8> {
     let mut out = vec![SOF];
     for &b in payload {
         if matches!(b, SOF | ESC | EOF) {

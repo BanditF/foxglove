@@ -86,6 +86,18 @@ The keyboard has seven layers. You reach most of them by holding a thumb key.
 
 The full map, including the reset and bootloader keys, is in [layers.md](layers.md).
 
+### Changing a key
+
+Click a key on the layer overlay to open **Edit key**. On a ZMK keyboard each change is on the
+keyboard at once, but only until it restarts:
+- **Save** (Ctrl+S) keeps your changes; **Discard** goes back to what you last saved. While
+  something isn't saved, the window says **Unsaved changes**.
+- **Undo** and **Redo** (Ctrl+Z, Ctrl+Y) step through this session's changes.
+- Closing the window with unsaved changes asks: **Save**, **Discard** or **Keep editing**.
+- **⋯ → Restore stock keymap…** puts back the keymap the firmware was built with, after asking.
+- A keyboard built with Studio locking asks you to press its unlock key first (the key your
+  keymap gives to `&studio_unlock`). The Corne's firmware has locking off.
+
 ## 4. The screens
 
 ### Left screen
