@@ -217,9 +217,9 @@ static uint32_t boot_nonce; // 0 = not armed
 static int64_t boot_armed_at;
 static atomic_t boot_relaying;
 
-void test_hooks_boot_relay_done(uint8_t status) {
+void test_hooks_boot_relay_done(uint8_t status, uint8_t route) {
     atomic_clear(&boot_relaying);
-    host_link_bootloader_reply(status, 1);
+    host_link_bootloader_reply(status, 1, route);
 }
 
 bool test_hooks_bootloader(const uint8_t *d, int len, uint8_t r[7]) {
@@ -261,7 +261,8 @@ bool test_hooks_bootloader(const uint8_t *d, int len, uint8_t r[7]) {
         return false;
     }
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
-    if (art_relay_link() == 2 && atomic_cas(&boot_relaying, 0, 1)) {
+    // Without a relay link too: the relay queue falls back to ZMK's own split link (#545).
+    if (atomic_cas(&boot_relaying, 0, 1)) {
         art_relay_boot();
         return true;
     }
