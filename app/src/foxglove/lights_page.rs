@@ -42,6 +42,8 @@ pub struct View {
     pub sync: RgbSync,
     /// "Follow the Windows accent colour".
     pub accent: bool,
+    /// "Lights follow the wallpaper" (#70).
+    pub wallpaper: bool,
     /// The keymap has an RGB key (`&rgb_ug`), which the controls go through.
     pub controls: bool,
     /// A change is being sent.
@@ -90,6 +92,8 @@ pub enum Intent {
         brightness: u8,
     },
     Accent(bool),
+    /// "Lights follow the wallpaper" (#70).
+    Wallpaper(bool),
     Follow(bool),
     AskFollow,
     Refresh,
@@ -134,6 +138,7 @@ pub fn show(ui: &mut egui::Ui) {
         state: ks::rgb_state(&ctx),
         sync,
         accent: super::accent::enabled(),
+        wallpaper: super::accent::wallpaper_enabled(),
         controls: super::keyboard_actions::underglow_behavior().is_some(),
         busy: ks::invoking(),
         leds: (
@@ -158,6 +163,10 @@ pub fn show(ui: &mut egui::Ui) {
             } => ks::set_color(hue, sat, brightness, ctx.clone()),
             Intent::Accent(on) => {
                 super::accent::set_enabled(on);
+                ks::refresh_rgb_state();
+            }
+            Intent::Wallpaper(on) => {
+                super::accent::set_wallpaper(on);
                 ks::refresh_rgb_state();
             }
             Intent::Follow(on) => ks::ask_rgb_sync(Some(on), ctx.clone()),
@@ -410,6 +419,7 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         }
         ui.add_space(4.0);
         let mut accent = v.accent;
+        let mut wallpaper = v.wallpaper;
         let mut apply = false;
         super::settings_ui::split_row(
             ui,
@@ -428,6 +438,18 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     .changed()
                 {
                     out.push(Intent::Accent(accent));
+                }
+                if ui
+                    .checkbox(&mut wallpaper, "Lights follow the wallpaper")
+                    .on_hover_text(
+                        "The underglow, and the lights set to match the keyboard, take the accent of the \
+                         wallpaper on screen whenever it changes. It comes from the wallpaper's Foxglove \
+                         palette (foxglove.json); a wallpaper without one gives the Windows accent colour. \
+                         A running scene keeps the lights until it ends.",
+                    )
+                    .changed()
+                {
+                    out.push(Intent::Wallpaper(wallpaper));
                 }
             },
         );
@@ -658,6 +680,7 @@ pub mod tests {
             }),
             sync: RgbSync::Known { on: true },
             accent: false,
+            wallpaper: false,
             controls: true,
             busy: false,
             leds: (true, super::super::led_map::MapState::Shipped),
@@ -672,6 +695,7 @@ pub mod tests {
             state: None,
             sync: RgbSync::NoKeyboard,
             accent: false,
+            wallpaper: false,
             controls: false,
             busy: false,
             leds: (false, super::super::led_map::MapState::Unknown),

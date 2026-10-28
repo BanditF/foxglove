@@ -20,6 +20,8 @@
 //! - Wallpapers that describe themselves (`foxglove.json`, #562, `wallpaper_manifest`) are
 //!   gathered on each change too: the Scenes page offers their looks and marks the ones on
 //!   screen, and wallpaper sync (#493) reaches the monitors showing one that supports it.
+//! - "Lights follow the wallpaper" (#70) gets the accent of the wallpaper on screen from its
+//!   manifest's palette on each of those changes (`accent::wallpaper_changed`).
 
 use std::path::PathBuf;
 
@@ -104,6 +106,14 @@ pub fn index() -> Vec<Wallpaper> {
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|t| parse_index(&t).ok())
         .unwrap_or_default()
+}
+
+/// Whether `text` from `source` can be read whole: Wallpaper Engine's config must parse, since
+/// one read in the middle of its write would say no wallpaper is on screen (and wallpaper sync
+/// would send everything again on the next read). The end of the write wakes us again.
+fn readable(text: &str, source: &Source) -> bool {
+    !matches!(source, Source::Engine(_))
+        || serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')).is_ok()
 }
 
 /// Each monitor's wallpaper file from Wallpaper Engine's config, sorted by monitor key.
@@ -324,6 +334,34 @@ fn watched_with(
     }
 }
 
+/// What a wake can have changed: each watched file's (and wallpaper folder's) write time and
+/// size, and whether Wallpaper Engine runs. The watches are on whole folders, so Wallpaper
+/// Engine's own log.txt (beside its config, up to a line a second) wakes the service too; a wake
+/// that changes none of these is skipped instead of looking for Wallpaper Engine and reading its
+/// config again.
+#[derive(Clone, Debug, PartialEq)]
+struct Stamp {
+    files: Vec<Option<(std::time::SystemTime, u64)>>,
+    running: bool,
+    /// The desktop wallpaper as the registry names it: Windows may rewrite its file before the
+    /// registry, so the file alone could match while the name is still to change.
+    desktop: Option<String>,
+}
+
+fn stamp(paths: &[PathBuf], running: bool, desktop: Option<String>) -> Stamp {
+    Stamp {
+        desktop,
+        files: paths
+            .iter()
+            .map(|p| {
+                let m = std::fs::metadata(p).ok()?;
+                Some((m.modified().ok()?, m.len()))
+            })
+            .collect(),
+        running,
+    }
+}
+
 /// The ids of the wallpapers with a manifest on screen, on any monitor (the Scenes page marks
 /// their looks, #488, #562). Set by the wallpaper service on each change.
 static ON_SCREEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -345,6 +383,28 @@ fn ids_on_screen(manifests: &[Manifest], text: &str, source: &Source) -> Vec<Str
         }
     }
     ids
+}
+
+/// The accent of the wallpaper on screen, from its manifest's palette ("Lights follow the
+/// wallpaper", #70): on the monitor the setting names (Wallpaper Engine's only, as for the art),
+/// else the first monitor whose wallpaper has one. None when no wallpaper on screen has a
+/// palette, so the lights fall back to the Windows accent.
+fn accent_on_screen(
+    manifests: &[Manifest],
+    text: &str,
+    source: &Source,
+    monitor: Option<&str>,
+) -> Option<[u8; 3]> {
+    let engine = matches!(source, Source::Engine(_));
+    let monitor = monitor.filter(|_| engine);
+    on_screen(text, source)
+        .iter()
+        .filter(|(m, _)| monitor.is_none_or(|want| want == m))
+        .find_map(|(_, file)| {
+            super::wallpaper_manifest::for_file(manifests, file, !engine)?
+                .accent
+                .map(|c| c.0)
+        })
 }
 
 /// The folders of the wallpapers on screen, where a manifest may be.
@@ -384,7 +444,9 @@ pub fn start() {
     if super::repaint_trace::disabled("wallpaper") {
         return;
     }
-    super::services::spawn_named("wallpaper", move || {
+    // Supervised: a panic (a wallpaper's manifest, a config Wallpaper Engine wrote oddly)
+    // restarts the service, which reads everything afresh.
+    super::services::spawn_supervised("wallpaper", || {
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         *WAKE.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx.clone());
         let watch = |paths: &[PathBuf]| -> Vec<_> {
@@ -406,8 +468,22 @@ pub fn start() {
         let mut watches = watch(&paths);
         let mut last: Option<String> = None;
         let mut scanner = super::wallpaper_manifest::Scanner::default();
+        let mut seen: Option<Stamp> = None;
+        // The wallpaper folders the manifests come from: a wallpaper added or removed there
+        // changes their write time, so it counts as a change too.
+        let mut roots = super::wallpaper_manifest::roots(&engine);
         // Check once at start, then on each change in a watched folder or Refresh.
         for (n, ()) in std::iter::once(()).chain(rx.iter()).enumerate() {
+            let now = stamp(
+                &[paths.as_slice(), roots.as_slice()].concat(),
+                super::wallpaper_engine::running_now(),
+                desktop_wallpaper(),
+            );
+            let refresh = RESCAN.load(std::sync::atomic::Ordering::Relaxed);
+            if n > 0 && !refresh && seen.as_ref() == Some(&now) {
+                continue;
+            }
+            seen = Some(now);
             let engine = if n == 0 {
                 engine.clone()
             } else {
@@ -419,13 +495,16 @@ pub fn start() {
                 watches.clear();
                 watches = watch(&now);
                 paths = now;
+                // Other files: the next wake compares against them.
+                seen = None;
             }
             let source = source(&engine);
             let text = read(&source);
             // The wallpapers that describe themselves (#562): Wallpaper Engine's folders, read
             // again when they changed, and the folders on screen.
             let force = RESCAN.swap(false, std::sync::atomic::Ordering::Relaxed);
-            let found = scanner.scan(&super::wallpaper_manifest::roots(&engine), force);
+            roots = super::wallpaper_manifest::roots(&engine);
+            let found = scanner.scan(&roots, force);
             let shown = text
                 .as_deref()
                 .map_or_else(Vec::new, |t| folders_on_screen(t, &source));
@@ -437,11 +516,26 @@ pub fn start() {
                 super::scenes_ui::wallpapers_changed();
             }
             let Some(text) = text else {
+                super::accent::wallpaper_changed(None);
                 if repaint {
                     super::scene_run::repaint_page();
                 }
                 continue;
             };
+            if !readable(&text, &source) {
+                if repaint {
+                    super::scene_run::repaint_page();
+                }
+                continue;
+            }
+            let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
+            // Lights follow the wallpaper (#70): the accent on screen now, none without one.
+            super::accent::wallpaper_changed(accent_on_screen(
+                &manifests,
+                &text,
+                &source,
+                monitor.as_deref(),
+            ));
             // Wallpaper sync (#493): the monitors showing a wallpaper that reads Foxglove's
             // properties get them; a new wallpaper gets them at once.
             super::wallpaper_sync::wallpapers(sync_targets(&manifests, &text, &source));
@@ -454,7 +548,6 @@ pub fn start() {
                 super::scene_run::repaint_page();
             }
             let index = index();
-            let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
             let Some(w) = find_in(&index, &text, &source, monitor.as_deref()) else {
                 continue;
             };
@@ -511,6 +604,31 @@ mod tests {
         let o = Source::Override(PathBuf::new());
         assert!(sync_targets(&ms, "tidepool.reef", &o).is_empty());
         assert!(sync_targets(&ms, config, &Source::Desktop).is_empty());
+        // Lights follow the wallpaper (#70): the first monitor's wallpaper with a palette, or
+        // the monitor the setting names; a wallpaper without a manifest gives none.
+        assert_eq!(
+            accent_on_screen(&ms, config, &engine, None),
+            Some([0x0f, 0xb5, 0xae])
+        );
+        assert_eq!(
+            accent_on_screen(&ms, config, &engine, Some("//?/DISPLAY#SAM0E3C#2")),
+            None,
+            "the lighthouse has no palette"
+        );
+        assert_eq!(
+            accent_on_screen(&ms, config, &engine, Some("Monitor0")),
+            None,
+            "no manifest"
+        );
+        assert_eq!(
+            accent_on_screen(&ms, "tidepool.reef", &o, Some("Monitor0")),
+            Some([0x0f, 0xb5, 0xae]),
+            "the test hook is matched by id, and the monitor setting doesn't apply"
+        );
+        assert_eq!(
+            accent_on_screen(&ms, "C:/Pictures/beach.jpg", &Source::Desktop, None),
+            None
+        );
         // The Scenes page's "On screen": every wallpaper with a manifest, once each, from any
         // source.
         assert_eq!(
@@ -531,6 +649,44 @@ mod tests {
             folders_on_screen(config, &engine)[0],
             PathBuf::from("C:/WE/projects/myprojects/reef")
         );
+    }
+
+    /// A config read while Wallpaper Engine writes it is skipped, not taken as "no wallpapers"
+    /// (which made wallpaper sync send every monitor the same values again).
+    #[test]
+    fn a_half_written_config_is_skipped() {
+        let engine = Source::Engine(PathBuf::new());
+        let whole = r#"{"me":{"general":{"wallpaperconfig":{"selectedwallpapers":{}}}}}"#;
+        assert!(readable(whole, &engine));
+        assert!(readable(&format!("\u{feff}{whole}"), &engine));
+        assert!(!readable(&whole[..whole.len() / 2], &engine));
+        assert!(!readable("", &engine));
+        // The override file and the desktop wallpaper are plain text.
+        assert!(readable("fury-stars", &Source::Override(PathBuf::new())));
+        assert!(readable(r"C:\Pictures\a.jpg", &Source::Desktop));
+    }
+
+    /// Wallpaper Engine's log.txt beside its config wakes the service; only a change to a
+    /// watched file, or Wallpaper Engine starting or quitting, is worth a look.
+    #[test]
+    fn only_a_change_to_what_is_read_counts() {
+        let dir = std::env::temp_dir().join(format!("foxglove-wp-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("config.json");
+        std::fs::write(&config, "{}").unwrap();
+        let paths = vec![config.clone(), dir.join("missing")];
+        let before = stamp(&paths, true, None);
+        std::fs::write(dir.join("log.txt"), "icon create err: 1008.").unwrap();
+        assert_eq!(stamp(&paths, true, None), before, "its log isn't read");
+        assert_ne!(stamp(&paths, false, None), before, "it quit");
+        assert_ne!(
+            stamp(&paths, true, Some("C:/a.jpg".into())),
+            before,
+            "the desktop wallpaper's name changed"
+        );
+        std::fs::write(&config, r#"{"me":{}}"#).unwrap();
+        assert_ne!(stamp(&paths, true, None), before, "its config changed");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

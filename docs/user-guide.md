@@ -159,7 +159,11 @@ The sidebar has six pages, top to bottom:
     [Other keyboards](#10-other-keyboards-via).
 - **Lights.** **Keyboard** sets the colour, effect, brightness and speed of the keyboard's
   lights. **Follow the Windows accent colour** makes them take Windows' accent colour whenever
-  you change it, keeping your brightness. These controls need an RGB key in the keymap. The
+  you change it, keeping your brightness. **Lights follow the wallpaper** (off by default) makes
+  them take the accent of the wallpaper on screen whenever it changes: a wallpaper that comes
+  with a `foxglove.json` palette gives its own accent, any other the Windows accent colour. The
+  lights set to **Match keyboard** follow along, and a running scene keeps the lights until it
+  ends. These controls need an RGB key in the keymap. The
   same card shows what both halves report now (**Refresh** asks them again) and
   **Calibrate…** for the keyboard. **Other devices** lists the rest of the PC's lights
   ([below](#the-pcs-case-lights-hp-omen-45l)); the keyboard is only in its own card.

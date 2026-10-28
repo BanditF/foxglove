@@ -39,6 +39,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "host_link.h"
 #include "screen_snap.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
+#include <zmk/behavior.h>
+#include <zmk/split/central.h>
+
 #include "test_hooks.h"
 #endif
 
@@ -60,6 +63,7 @@ static uint16_t right_len;   // bytes of it the last status read filled
 static int64_t right_read_at; // uptime of that read, 0 = never
 
 static struct bt_conn *peer;
+static int64_t peer_secure_at; // uptime peer was first seen encrypted, 0 = not yet
 static uint16_t data_handle, status_handle, screen_handle;
 
 static const struct bt_uuid_128 service_uuid = BT_UUID_INIT_128(ART_RELAY_SERVICE_UUID);
@@ -210,6 +214,7 @@ static void drop_peer(void) {
         bt_conn_unref(peer);
         peer = NULL;
     }
+    peer_secure_at = 0;
     data_handle = status_handle = screen_handle = 0;
     discovery = ART_DISCOVERY_IDLE;
     discovery_tries = 0;
@@ -240,6 +245,7 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     peer = bt_conn_ref(conn);
     guard_arm();
     if (bt_conn_get_security(conn) >= BT_SECURITY_L2) { // already encrypted: no security_changed
+        peer_secure_at = k_uptime_get();
         k_work_reschedule(&discover_work, DISCOVER_DELAY);
     }
     if (was_ready) {
@@ -250,6 +256,9 @@ static void connected(struct bt_conn *conn, uint8_t err) {
 
 static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_security_err err) {
     if (conn == peer && !err && level >= BT_SECURITY_L2) {
+        if (peer_secure_at == 0) {
+            peer_secure_at = k_uptime_get();
+        }
         guard_cancel(true);
         if (!(data_handle && status_handle)) {
             k_work_reschedule(&discover_work, DISCOVER_DELAY);
@@ -436,6 +445,38 @@ void art_relay_press(uint8_t pos, uint8_t state) {
     k_work_submit_to_queue(&relay_q, &press_work);
 }
 
+/* BOOT through ZMK's own split link (#545), for when the relay can't take it: no relay link yet
+ * (an older right whose relay the left can't use, or the ~20-40 s before discovery finds it), or a
+ * request that failed or went unanswered. Every right firmware has ZMK's &bootloader ("bootload",
+ * reset.dtsi, invoked on the event's source), and the split's run-behavior write needs nothing of
+ * ours. It is a write without response, so nothing confirms it: the right's bootloader drive
+ * does. ZMK finds its own characteristics after the link is encrypted and drops the write until
+ * then, so it is only sent once the link has been encrypted for SPLIT_SETTLE_MS; before that the
+ * PC hears status 2 and asks again (on D6 85, or after a pause). One send per D7 08, no retry.
+ * ZMK's split run queue holds 5: when it is full, the call waits up to 100 ms here (relay_q) and
+ * then drops the oldest entry, as any of ZMK's own split invokes would. */
+#define SPLIT_SETTLE_MS 5000
+#define SPLIT_RIGHT_SOURCE 0 // the right is ZMK's first (only) peripheral
+
+static bool boot_via_split(void) {
+    unsigned int key = irq_lock(); // connected()/disconnected() run on the Bluetooth thread
+    bool settled = peer != NULL && peer_secure_at != 0 &&
+                   k_uptime_get() - peer_secure_at >= SPLIT_SETTLE_MS;
+    irq_unlock(key);
+    if (!settled) {
+        return false;
+    }
+    struct zmk_behavior_binding binding = {.behavior_dev = "bootload"};
+    struct zmk_behavior_binding_event event = {
+        .position = 0,
+        .timestamp = k_uptime_get(),
+        .source = SPLIT_RIGHT_SOURCE,
+    };
+    int err = zmk_split_central_invoke_behavior(SPLIT_RIGHT_SOURCE, &binding, event, true);
+    LOG_INF("art relay: BOOT through ZMK's split (%d)", err);
+    return err == 0;
+}
+
 static void boot_cb(struct k_work *work) {
     uint8_t status = 2;
     struct bt_conn *conn = job_conn();
@@ -444,9 +485,13 @@ static void boot_cb(struct k_work *work) {
         int err = write_req(conn, d, sizeof(d));
         status = err == 0 ? 0 : err == -ETIMEDOUT ? 3 : 2;
         if (err == -EIO && gatt_err == 0x84) {
-            status = 4; // the right's firmware has no test hooks
+            status = 4; // the right's firmware has no test hooks: it said no, so no fallback
         }
         bt_conn_unref(conn);
+    }
+    // A timeout may have landed too; a second ask of a right already rebooting is harmless.
+    if ((status == 2 || status == 3) && boot_via_split()) {
+        status = 7; // sent, unacknowledged: the PC watches for the drive (host_link.h)
     }
     test_hooks_boot_relay_done(status);
 }
