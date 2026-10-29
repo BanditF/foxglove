@@ -34,6 +34,7 @@ LATE_ENTRY_SECONDS = 15  # after an unanswered hands-free request, before prompt
 RELAY_WAIT_SECONDS = 60  # before the right's D7 08, for the relay to come back
 ENTRY_RETRY_SECONDS = 60  # the right's D7 08 is retried this long, as the split re-links (#545)
 ENTRY_RETRY_PAUSE = 5  # between the right's D7 08 attempts
+APP_DEVICE = 'USB\\VID_1D50&PID_615E\\'  # a half's running firmware on USB, + its serial
 SETTLE_SECONDS = 3  # after the bootloader drive appears, before writing
 # The drive lookup right after a new disk arrives can be slow (WMI is busy mounting it; #654):
 # up to FIND_TRIES tries of at most FIND_TIMEOUT s each, FIND_PAUSE s apart, each one logged.
@@ -428,6 +429,14 @@ class WindowsOS:
         instance = 'USB\\VID_1D50&PID_615E\\' + serial
         return bool(self._ps(r"ConvertTo-Json -Compress -InputObject @(Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -eq '" + instance + r"' -and $_.Status -eq 'OK' } | ForEach-Object { $_.InstanceId })"))
 
+    def usb_device(self, serial):
+        """The status of this half's running-firmware USB device (USB\\VID_1D50&PID_615E\\<serial>)
+        when it is present, any status ('OK', or 'Error' for the right half on USB power, problem
+        28), else None: the half isn't on USB (battery only, or its port dropped)."""
+        instance = APP_DEVICE + serial
+        rows = self._ps(r"ConvertTo-Json -Compress -InputObject @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -eq '" + instance + r"' } | ForEach-Object { [string]$_.Status })")
+        return rows[0] if rows else None
+
     def write_file(self, path, data):
         # An error is expected only AFTER the complete last block was accepted.
         written = 0
@@ -555,6 +564,34 @@ def check_right_typing(backend, log, clock=time.monotonic, sleep=time.sleep):
     return False
 
 
+def usb_presence(backend, half):
+    """(serial, status) of `half`'s running-firmware USB device, or (serials, None) when none of
+    its known serials is present on USB. A bootloader can only be reached over USB, so a half
+    that isn't on USB must not be asked into one (#654: the right never came back)."""
+    serials = [s for s, h in SERIALS.items() if h == half]
+    for serial in serials:
+        try:
+            status = backend.usb_device(serial)
+        except (subprocess.SubprocessError, OSError, ValueError) as exc:
+            raise Refused(f"couldn't check whether the {half} half is on USB ({exc}); nothing was changed.") from exc
+        if status is not None:
+            return serial, status
+    return serials, None
+
+
+def describe_usb(half, presence):
+    serial, status = presence
+    if status is None:
+        return f"{half}: not on USB (no {' or '.join(APP_DEVICE + s for s in serial) or 'known serial'} present)"
+    return f'{half}: on USB ({APP_DEVICE}{serial}, status {status})'
+
+
+def require_usb(half, presence):
+    if presence[1] is None:
+        raise Refused(f"the {half} half isn't on USB; plug its cable in, then run again. "
+                      f'It was not asked into its bootloader.')
+
+
 def enter_with_retries(half, backend, log, clock=time.monotonic, sleep=time.sleep):
     """Asks `half` to enter its bootloader (D7 08). The left is asked once. The right is asked
     again every few seconds for up to ENTRY_RETRY_SECONDS, waiting for the relay to the right
@@ -600,6 +637,11 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         if not images:
             log('Nothing to flash: both selected halves already run these builds.')
             return
+    # Pre-flight: each half's USB presence (#654). Logged for both halves; required before a
+    # half is asked into its bootloader, checked below.
+    usb = {half: usb_presence(backend, half) for half in ('left', 'right')}
+    for half in ('left', 'right'):
+        log(describe_usb(half, usb[half]))
     if yes:
         log('--yes: the user has said go; no prompts. Every automatic check still applies.')
     else:
@@ -744,6 +786,17 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
             break
         else:
             half = pending[0]
+            if not settings_reset:
+                # A half is asked in only while it's on USB (any status): the first ask checks
+                # every half this run will ask, so a missing right refuses before the left is
+                # touched; later asks look again.
+                if not done:
+                    for h in pending:
+                        require_usb(h, usb[h])
+                else:
+                    presence = usb_presence(backend, half)
+                    log(describe_usb(half, presence))
+                    require_usb(half, presence)
         one(half, resumed=bool(stranded))
         done.add(half)
     if present:

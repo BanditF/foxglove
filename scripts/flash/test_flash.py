@@ -55,6 +55,14 @@ class FakeOS:
         # Snapshot at the first image write, so entry tests don't count the post-flash typing
         # check's relay wait (#600).
         self.at_write = None
+        # Each half's running-firmware USB device (#654): its status, or None when it isn't on
+        # USB. Both present by default; the right on USB power shows problem 28 ('Error').
+        self.usb = {'left': 'OK', 'right': 'Error'}
+        self.usb_checks = []
+
+    def usb_device(self, serial):
+        self.usb_checks.append(serial)
+        return self.usb.get(f.SERIALS[serial])
 
     def wait_relay_ready(self, seconds):
         self.relay_waits.append(seconds)
@@ -1105,3 +1113,112 @@ class ResumeTests(unittest.TestCase):
                     patch('sys.stdout', new_callable=io.StringIO):
                 f.main(['--left', str(paths['left']), '--half', 'left', '--resume', '--yes'])
                 self.assertTrue(flash.call_args.kwargs['resume'])
+
+
+class UsbPresenceTests(unittest.TestCase):
+    """#654, second incident: a half is asked into its bootloader only while its running
+    firmware's USB device (1D50:615E with its serial, any status) is present, because the
+    bootloader can only be reached over USB. Otherwise the run refuses and changes nothing."""
+    IMAGES = ResumeTests.IMAGES
+
+    def run_yes(self, backend, images=None, **kwargs):
+        clock = Clock()
+        logs = []
+        f.flash(images or dict(self.IMAGES), backend, 120, stdin=io.StringIO(''),
+                ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep,
+                yes=True, **kwargs)
+        return logs
+
+    def refused(self, backend, images=None):
+        logs = []
+        with self.assertRaisesRegex(f.Refused, r"isn't on USB; plug its cable in, then run again") as caught:
+            logs = self.run_yes(backend, images)
+        return str(caught.exception), logs
+
+    def test_right_not_on_usb_refuses_before_any_entry(self):
+        for images in (dict(self.IMAGES), {'right': self.IMAGES['right']}):
+            with self.subTest(halves=sorted(images)):
+                backend = BootloaderOS()
+                backend.usb['right'] = None
+                message, _ = self.refused(backend, images)
+                self.assertIn('the right half', message)
+                self.assertEqual(backend.entered, [], 'no half asked in, not even the left')
+                self.assertEqual(backend.writes, [])
+
+    def test_right_present_with_problem_28_proceeds(self):
+        backend = BootloaderOS()
+        logs = self.run_yes(backend)
+        self.assertEqual(backend.entered, ['left', 'right'])
+        self.assertEqual([h for _, h, _ in ResumeTests.written(self, backend)], ['left', 'right'])
+        self.assertIn(f'right: on USB ({f.APP_DEVICE}{RIGHT}, status Error)', logs)
+        self.assertIn(f'left: on USB ({f.APP_DEVICE}{LEFT}, status OK)', logs)
+
+    def test_left_not_on_usb_refuses_before_entry(self):
+        for images in (dict(self.IMAGES), {'left': self.IMAGES['left']}):
+            with self.subTest(halves=sorted(images)):
+                backend = BootloaderOS()
+                backend.usb['left'] = None
+                message, _ = self.refused(backend, images)
+                self.assertIn('the left half', message)
+                self.assertEqual((backend.entered, backend.writes), ([], []))
+
+    def test_left_present_proceeds(self):
+        backend = BootloaderOS()
+        self.run_yes(backend, {'left': self.IMAGES['left']})
+        self.assertEqual(backend.entered, ['left'])
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_summary_logs_a_missing_half_even_when_not_flashing_it(self):
+        backend = BootloaderOS()
+        backend.usb['right'] = None
+        logs = self.run_yes(backend, {'left': self.IMAGES['left']})
+        self.assertIn(f'right: not on USB (no {f.APP_DEVICE}{RIGHT} present)', logs)
+        self.assertEqual(backend.entered, ['left'])
+
+    def test_right_dropping_off_usb_after_the_left_is_checked_again(self):
+        backend = BootloaderOS()
+        write = backend.write_file
+        def write_then_drop(path, data):
+            write(path, data)
+            backend.usb['right'] = None  # the right's port went away while the left was flashed
+        backend.write_file = write_then_drop
+        message, _ = self.refused(backend)
+        self.assertIn('the right half', message)
+        self.assertEqual(backend.entered, ['left'], 'the right was not asked in')
+        self.assertEqual([s for s, _ in backend.writes], [LEFT])
+
+    def test_a_stranded_half_needs_no_app_device(self):
+        # In its bootloader the half has no 1D50:615E device; it's written, not asked in.
+        backend = BootloaderOS([RIGHT])
+        backend.usb['right'] = None
+        self.run_yes(backend, {'right': self.IMAGES['right']})
+        self.assertEqual(backend.entered, [])
+        self.assertEqual([s for s, _ in backend.writes], [RIGHT])
+
+    def test_settings_reset_double_tap_is_not_gated(self):
+        backend = FakeOS()
+        backend.usb['left'] = None
+        FlashTests.run_flash(self, backend, ('FLASH', 'ERASE SETTINGS'), {'left': uf2(b'SETTINGS RESET')},
+                             settings_reset=True)
+        self.assertEqual(len(backend.writes), 1)
+
+    def test_windows_backend_reads_any_status_present_only(self):
+        backend = f.WindowsOS(log=lambda m: None)
+        scripts = []
+        with patch.object(backend, '_ps', side_effect=lambda s, **k: (scripts.append(s), ['Error'])[1]):
+            self.assertEqual(backend.usb_device(RIGHT), 'Error')
+        self.assertIn('-PresentOnly', scripts[0])
+        self.assertIn(f"-eq '{f.APP_DEVICE}{RIGHT}'", scripts[0])
+        self.assertEqual(f.APP_DEVICE, 'USB' + chr(92) + 'VID_1D50&PID_615E' + chr(92))
+        self.assertNotIn("Status -eq 'OK'", scripts[0])
+        with patch.object(backend, '_ps', return_value=[]):
+            self.assertIsNone(backend.usb_device(RIGHT))
+
+    def test_a_failed_presence_query_refuses_untouched(self):
+        backend = BootloaderOS()
+        def broken(serial):
+            raise f.subprocess.CalledProcessError(1, 'powershell')
+        backend.usb_device = broken
+        with self.assertRaisesRegex(f.Refused, "couldn't check whether the left half is on USB"):
+            self.run_yes(backend)
+        self.assertEqual((backend.entered, backend.writes), ([], []))
