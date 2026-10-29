@@ -13,6 +13,6 @@ $RelaySimDefines = @(
     "CONFIG_ZMK_LOG_LEVEL=0"
 )
 # Gating: each must pass on this tree.
-$RelaySimScenarios = @("wake", "wake-app", "stall", "stall-app", "relink-shown")
+$RelaySimScenarios = @("wake", "wake-app", "stall", "stall-app", "relink-shown", "push-relink-tap")
 # Diagnostic only (bisect.ps1 runs them too): a request answered late, or never.
 $RelaySimInfo = @("late", "lost")

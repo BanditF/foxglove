@@ -361,6 +361,43 @@ static void relink_shown(void) {
     debug_line("at the end");
 }
 
+// The resilience suite's order: pushes (r2b-r2d), a push with the split link dropped mid-relay
+// (r5a), then rgb-state-follows-the-leds: tap the left, RGB_STATE must show the right's shown
+// block (lit) within the step's 3 s.
+static void push_relink_tap(void) {
+    wait_relay(40);
+    char why[160];
+    check("push", lab_push(3599, why, sizeof(why)), "%s", why);
+    bool on, valid, lit;
+    rgb_state(&on, &valid, &lit);
+    printf("  after the push: right shown block %s\n", valid ? "present" : "missing");
+    // r5a: BEGIN, DATA, COMMIT, and the link drops while the left pushes.
+    static uint8_t blob[3599];
+    art_relay_begin(sizeof(blob), crc32_ieee(blob, sizeof(blob)));
+    for (int at = 0; at < (int)sizeof(blob); at += 27) {
+        art_relay_data(at, &blob[at], (uint8_t)MIN(27, (int)sizeof(blob) - at));
+    }
+    art_relay_commit();
+    k_msleep(50);
+    sim_bt_drop(2000000);
+    k_msleep(3000);
+    wait_relay(40);
+    check("relay-back", art_relay_link() == 2, "link %d", art_relay_link());
+    k_msleep(2000); // the case's own steps before its tap
+    left_activity(ZMK_ACTIVITY_ACTIVE);
+    int64_t start = k_uptime_get();
+    while (k_uptime_get() - start < 3000) {
+        rgb_state(&on, &valid, &lit);
+        if (on && valid && lit) {
+            break;
+        }
+        k_msleep(100);
+    }
+    check("rgb-state-shown", on && valid && lit, "right on %d, shown %s, lit %d after %lld ms", on,
+          valid ? "present" : "missing", lit, (long long)(k_uptime_get() - start));
+    debug_line("at the end");
+}
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -376,6 +413,8 @@ static void lab_thread(void *arg) {
         late_answer();
     } else if (!strcmp(scenario, "lost")) {
         lost_answer();
+    } else if (!strcmp(scenario, "push-relink-tap")) {
+        push_relink_tap();
     } else if (!strcmp(scenario, "relink-shown")) {
         relink_shown();
     } else {

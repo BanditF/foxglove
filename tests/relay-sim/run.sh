@@ -23,7 +23,7 @@ DEFINES=(
     -DCONFIG_FOXGLOVE_RIGHT_LAMPS=21
     -DCONFIG_ZMK_LOG_LEVEL=0
 )
-SCENARIOS=(wake wake-app stall stall-app relink-shown)
+SCENARIOS=(wake wake-app stall stall-app relink-shown push-relink-tap)
 if [ "$#" -gt 0 ]; then
     SCENARIOS=("$@")
 fi

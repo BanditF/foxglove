@@ -26,6 +26,7 @@ get tested.
 | `stall` | `wake`, but at the second tap the left's TX stalls: nothing it sends goes on the air until the link drops, while the right's PDUs still arrive. HELLO's relay debug then reads "timeouts 1, in flight 1" with the bearer alive, as in the #618 gate and soak runs | the relay comes back on its own within 45 s, then the pushes, SELECT and snapshot work |
 | `stall-app` | `stall` with the app's traffic | as `stall` |
 | `relink-shown` | a re-link, then RGB_STATE (rgb-state-follows-the-leds) | the right's shown block is back after the re-link |
+| `push-relink-tap` | the resilience suite's order: a push, a push with the link dropped mid-relay (r5a), then rgb-state-follows-the-leds' tap | RGB_STATE has the right's shown block (lit) within the step's 3 s |
 | `late` (diagnostic) | one request answered 4.5 s late (past the 3 s GATT timeout), user commands meanwhile | not gating |
 | `lost` (diagnostic) | one request never answered | not gating |
 
