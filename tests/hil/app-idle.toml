@@ -1,15 +1,17 @@
 schema = 1
 
 # The app's own behaviour with the keyboard attached. Needs Foxglove running: use --allow-app.
+# The idle case comes first, so nothing the lab did through the app (the art select below, or the
+# smoke cases' requests, whose replies the app reads too) is measured as its idle (#618).
+
+[[cases]]
+name = "app-idle-cpu"
+description = "Foxglove idle for 20 s with nothing pressed uses at most 60 ms CPU (0.3 % of one core; #100), measured once it has run 2 minutes (settle_s, from its start: the release gate restarts it after the resilience stage, #618). The step names the left-screen layout it drew (stats samples once a second, info redraws once a minute, the keyboard's own screen is nothing)"
+tags = ["app", "release"]
+steps = [{ idle_cpu = { seconds = 20, max_cpu_ms = 60, settle_s = 120 } }]
 
 [[cases]]
 name = "art-select-builtin"
 description = "Select built-in art set 1 on the right through the art relay, see the right report it, restore the previous set"
 tags = ["app", "release"]
 steps = [{ art_select = { set = 1 } }]
-
-[[cases]]
-name = "app-idle-cpu"
-description = "Foxglove idle for 20 s with nothing pressed uses at most 60 ms CPU (0.3 % of one core; #100)"
-tags = ["app", "release"]
-steps = [{ idle_cpu = { seconds = 20, max_cpu_ms = 60 } }]

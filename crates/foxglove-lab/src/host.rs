@@ -258,6 +258,77 @@ pub fn process_cpu_ms(name: &str) -> Result<f64> {
     Ok(ms.parse()?)
 }
 
+/// Seconds since the youngest process with this name started; errors if none runs.
+pub fn process_age_s(name: &str) -> Result<f64> {
+    ensure!(
+        name.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "bad process name {name:?}"
+    );
+    let s = powershell(&format!(
+        "$p = Get-Process -Name {name} -ErrorAction Stop | Sort-Object StartTime -Descending | \
+         Select-Object -First 1; [string][math]::Round(((Get-Date) - $p.StartTime).TotalSeconds, 1)"
+    ))
+    .with_context(|| format!("{name} is not running"))?;
+    Ok(s.trim().replace(',', ".").parse()?)
+}
+
+/// The app's settings store (foxglove.toml), where the app finds it: in FOXGLOVE_CONFIG_DIR
+/// when set, else `%APPDATA%\Foxglove` (the folder above its `config\settings.ini`).
+pub fn store_path() -> Option<std::path::PathBuf> {
+    if let Some(dir) = std::env::var_os("FOXGLOVE_CONFIG_DIR") {
+        return Some(std::path::PathBuf::from(dir).join("foxglove.toml"));
+    }
+    std::env::var_os("APPDATA").map(|d| {
+        std::path::PathBuf::from(d)
+            .join("Foxglove")
+            .join("foxglove.toml")
+    })
+}
+
+/// What the left screen shows, from the store's text, as the app reads it
+/// (screens_settings.rs, store.rs): `[screens]` with the active profile's overrides on top;
+/// drive_left false is the keyboard's own screen, else the layout (info when unset).
+pub fn left_layout(text: &str) -> String {
+    let Ok(doc) = text.parse::<toml::Table>() else {
+        return "unknown (foxglove.toml isn't valid TOML)".into();
+    };
+    let get = |path: &[&str]| -> Option<&toml::Value> {
+        let mut v = doc.get(path[0])?;
+        for p in &path[1..] {
+            v = v.as_table()?.get(*p)?;
+        }
+        Some(v)
+    };
+    let profile = get(&["profiles", "active"])
+        .and_then(|v| v.as_str())
+        .filter(|n| get(&["profiles", "list", n]).is_some());
+    let key = |k: &str| {
+        profile
+            .and_then(|n| get(&["profiles", "list", n, "screens", k]))
+            .or_else(|| get(&["screens", k]))
+    };
+    if key("drive_left").and_then(|v| v.as_bool()) == Some(false) {
+        return "the keyboard's own screen (drive_left = false: Foxglove draws nothing)".into();
+    }
+    let layout = key("layout").and_then(|v| v.as_str()).unwrap_or("info");
+    match profile {
+        Some(n) => format!("{layout} (profile {n})"),
+        None => layout.into(),
+    }
+}
+
+/// The left screen's layout as saved now, with where it was read, for the report.
+pub fn left_layout_now() -> String {
+    match store_path() {
+        Some(p) => match std::fs::read_to_string(&p) {
+            Ok(text) => format!("{} (from {})", left_layout(&text), p.display()),
+            Err(_) => format!("info (no {}: the defaults)", p.display()),
+        },
+        None => "unknown (no settings folder)".into(),
+    }
+}
+
 /// Replaces `%NAME%` with environment variables (unknown names stay as written).
 pub fn expand_env(text: &str) -> String {
     let parts: Vec<&str> = text.split('%').collect();
@@ -411,6 +482,23 @@ mod tests {
         assert_eq!(out["screens"]["drive_left"].as_bool(), Some(false));
         assert!(set_store_screens("", "layout", "sideways").is_err());
         assert!(set_store_screens("", "fps", "fast").is_err());
+    }
+
+    #[test]
+    fn left_layout_reads_screens_and_the_active_profile() {
+        assert_eq!(left_layout(""), "info");
+        assert_eq!(left_layout("[screens]\nlayout = \"stats\"\n"), "stats");
+        assert!(
+            left_layout("[screens]\ndrive_left = false\nlayout = \"stats\"\n")
+                .starts_with("the keyboard's own screen")
+        );
+        let profiled = "[screens]\nlayout = \"info\"\n[profiles]\nactive = \"Game\"\n\
+                        [profiles.list.Game.screens]\nlayout = \"wallpaper\"\n";
+        assert_eq!(left_layout(profiled), "wallpaper (profile Game)");
+        // A profile that's gone doesn't count.
+        let gone = "[screens]\nlayout = \"stats\"\n[profiles]\nactive = \"Work\"\n";
+        assert_eq!(left_layout(gone), "stats");
+        assert!(left_layout("not = [toml").starts_with("unknown"));
     }
 
     #[test]

@@ -8,11 +8,11 @@ Both halves are read back with RGB_STATE; the right half takes seconds to follow
     python scripts/lab/leases.py --app <foxglove.exe>      (exit 0 PASS, 1 FAIL)
 """
 import argparse, sys, time
-from labkit import App, Checks, TARGET, connect, hue_is, rgb, same, temp_config, wait
+from labkit import App, tool_arg, Checks, TARGET, connect, hue_is, rgb, same, temp_config, wait
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-ap.add_argument('--app', required=True)
-ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'))
+ap.add_argument('--app', required=True, type=tool_arg('--app'))
+ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'), type=tool_arg('--lab'))
 args = ap.parse_args()
 
 cfg = temp_config('foxglove-leases-')

@@ -3,10 +3,14 @@
 # 1. UF2 preflight of both halves (scripts/flash, --dry-run: reads files only, never flashes).
 # 2. The ZMK simulator's CI run for this commit (zmk-sim.yml, read with gh; #627's activity-relay).
 # 3. How each half shows up on USB (foxglove-lab usb).
-# 4. The release suite on the keyboard (foxglove-lab run --suite release).
-# 5. The resilience suite (tests/hil/resilience.toml, #618): it needs Foxglove quit, so a running
+# 4. The resilience suite (tests/hil/resilience.toml, #618): it needs Foxglove quit, so a running
 #    Foxglove is stopped by its exact name and started again by its path after, only with
-#    FOXGLOVE_APP_OK=1 (On-call); without it the stage is BLOCKED.
+#    FOXGLOVE_APP_OK=1 (On-call); without it the stage is BLOCKED. It runs before the app stages,
+#    once the app's processes have exited (a bounded wait on their exit, no timer), with
+#    right-follows-left-activity first: its 1 s wake limit failed after the app stages and the
+#    suite's own pushes and floods, and passed alone (986 ms) (#618 follow-up).
+# 5. The release suite on the keyboard (foxglove-lab run --suite release), with the app started
+#    again: its idle CPU case runs first and measures once the app has run 2 minutes (settle_s).
 # 6. With -App <foxglove.exe> and FOXGLOVE_APP_OK=1: the app-level lab cases of the stability pass
 #    (scripts/lab/overlay_tray.py: #612/#620, #601/#622, #618 agent controls; api_tools.py: #617/
 #    #623). They launch that build on a temp FOXGLOVE_CONFIG_DIR. Without them the stage is BLOCKED.
@@ -30,7 +34,23 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $env:PYTHONIOENCODING = 'utf-8'
 
-Push-Location (Split-Path -Parent $PSScriptRoot)
+$root = Split-Path -Parent $PSScriptRoot
+# Every tool path the gate hands on is absolute (relative ones are taken from the repo root): a
+# relative --lab made overlay_tray.py crash with FileNotFoundError mid-run, so its re-apply and
+# relink cases never ran (#618 follow-up).
+function Resolve-RepoPath([string]$Path, [string]$What, [switch]$Folder) {
+    $full = if ([IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path $root $Path }
+    $full = [IO.Path]::GetFullPath($full)
+    $type = if ($Folder) { 'Container' } else { 'Leaf' }
+    if (-not (Test-Path -LiteralPath $full -PathType $type)) {
+        throw "$What ${Path}: not found ($full; relative paths are from the repo root $root)"
+    }
+    $full
+}
+$Firmware = Resolve-RepoPath $Firmware '-Firmware' -Folder
+if ($App) { $App = Resolve-RepoPath $App '-App' }
+
+Push-Location $root
 try {
     $sha = (git rev-parse --short HEAD).Trim()
     $full = (git rev-parse HEAD).Trim()
@@ -59,19 +79,12 @@ try {
 
     & "$PSScriptRoot\build-slot.ps1" cargo build -q --release -p foxglove-lab
     if ($LASTEXITCODE) { throw 'foxglove-lab did not build' }
-    $lab = 'target/release/foxglove-lab.exe'
-    if ($env:CARGO_TARGET_DIR) { $lab = Join-Path $env:CARGO_TARGET_DIR 'release/foxglove-lab.exe' }
+    $target = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { 'target' }
+    $lab = Resolve-RepoPath (Join-Path $target 'release\foxglove-lab.exe') 'foxglove-lab'
 
     Write-Host '== USB halves' -ForegroundColor Cyan
     & $lab usb | Tee-Object -FilePath (Join-Path $out 'usb.txt')
     if ($LASTEXITCODE) { $failed += 'usb' }
-
-    Write-Host "== Suite $Suite" -ForegroundColor Cyan
-    $run = @('run', '--suite', $Suite, '--out', $out)
-    if ($AllowApp) { $run += '--allow-app' }
-    if ($NonInteractive) { $run += '--non-interactive' }
-    & $lab @run
-    if ($LASTEXITCODE) { $failed += "suite $Suite" }
 
     Write-Host '== Suite resilience (Foxglove quit)' -ForegroundColor Cyan
     # Exactly the app's process name: other sessions' test binaries must never be stopped.
@@ -79,26 +92,56 @@ try {
     if ($running -and -not $appOk) {
         $blocked += 'suite resilience (Foxglove runs; FOXGLOVE_APP_OK=1 lets this stop and restart it)'
     } else {
-        if ($running) {
-            Get-Process -Name foxglove -ErrorAction SilentlyContinue | Stop-Process -Confirm:$false
-            Start-Sleep -Seconds 2 # its HID handles close
-        }
+        $restarted = $false
         try {
-            $rout = Join-Path $out 'resilience'
-            $run = @('run', '--suite', 'tests/hil/resilience.toml', '--out', $rout)
-            if ($NonInteractive) { $run += '--non-interactive' }
-            & $lab @run
-            # A blocked case (a GA build without test hooks, the manual replug) isn't a failure:
-            # the summary names it, so On-call sees what didn't run.
-            $report = Get-Content (Join-Path $rout 'report.json') -Raw | ConvertFrom-Json
-            $bad = @($report.cases | Where-Object { $_.status -eq 'FAIL' } | ForEach-Object { $_.name })
-            $skip = @($report.cases | Where-Object { $_.status -eq 'BLOCKED' -and -not $_.manual } | ForEach-Object { $_.name })
-            if ($bad) { $failed += "suite resilience ($($bad -join ', '))" }
-            if ($skip) { $blocked += "suite resilience ($($skip -join ', '))" }
+            if ($running) {
+                $procs = @(Get-Process -Name foxglove -ErrorAction SilentlyContinue)
+                $procs | Stop-Process -Confirm:$false
+                $restarted = $true
+                # Quiet first: wait on the processes' exit (their HID handles close with them),
+                # bounded; the suite doesn't start while one is still there.
+                $procs | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue
+            }
+            if (Get-Process -Name foxglove -ErrorAction SilentlyContinue) {
+                $blocked += 'suite resilience (Foxglove did not exit within 20 s)'
+            } else {
+                $rout = Join-Path $out 'resilience'
+                $run = @('run', '--suite', 'tests/hil/resilience.toml', '--out', $rout)
+                if ($NonInteractive) { $run += '--non-interactive' }
+                & $lab @run
+                # A blocked case (a GA build without test hooks, the manual replug) isn't a failure:
+                # the summary names it, so On-call sees what didn't run.
+                $report = Get-Content (Join-Path $rout 'report.json') -Raw | ConvertFrom-Json
+                $bad = @($report.cases | Where-Object { $_.status -eq 'FAIL' } | ForEach-Object { $_.name })
+                $skip = @($report.cases | Where-Object { $_.status -eq 'BLOCKED' -and -not $_.manual } | ForEach-Object { $_.name })
+                if ($bad) { $failed += "suite resilience ($($bad -join ', '))" }
+                if ($skip) { $blocked += "suite resilience ($($skip -join ', '))" }
+            }
         } finally {
             foreach ($p in ($running | Select-Object -Unique)) { Start-Process -FilePath $p }
         }
+        if ($restarted) {
+            # The release suite sees the app as running only once it is up (its API, its panel),
+            # and its idle CPU case must not measure the startup: one timed wait until the app
+            # has run 2 minutes (the settle the solo idle run had), counted from its start.
+            $young = Get-Process -Name foxglove -ErrorAction SilentlyContinue |
+                Sort-Object StartTime -Descending | Select-Object -First 1
+            if ($young) {
+                $left = 120 - ((Get-Date) - $young.StartTime).TotalSeconds
+                if ($left -gt 0) {
+                    Write-Host ("Foxglove started again; settling {0:N0} s before the release suite" -f $left)
+                    Start-Sleep -Milliseconds ([int]($left * 1000))
+                }
+            }
+        }
     }
+
+    Write-Host "== Suite $Suite" -ForegroundColor Cyan
+    $run = @('run', '--suite', $Suite, '--out', $out)
+    if ($AllowApp) { $run += '--allow-app' }
+    if ($NonInteractive) { $run += '--non-interactive' }
+    & $lab @run
+    if ($LASTEXITCODE) { $failed += "suite $Suite" }
 
     Write-Host '== App lab cases (overlay, tray, re-apply, API)' -ForegroundColor Cyan
     if (-not $App) { $blocked += 'app lab cases (no -App <foxglove.exe>)' }

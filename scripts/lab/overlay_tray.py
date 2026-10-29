@@ -28,11 +28,11 @@ The keyboard cases need the keyboard (BLOCKED without it); the guard case a dev 
     FOXGLOVE_APP_OK=1 python scripts/lab/overlay_tray.py --app <foxglove.exe>  (exit 0 PASS, 1 FAIL, 2 BLOCKED)
 """
 import argparse, json, subprocess, time
-from labkit import App, Checks, REPO, TARGET, Windows, connect, log_lines, require_app_ok, temp_config, wait
+from labkit import App, tool_arg, Checks, REPO, TARGET, Windows, connect, log_lines, require_app_ok, temp_config, wait
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-ap.add_argument('--app', required=True, help='the Foxglove build under test')
-ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'))
+ap.add_argument('--app', required=True, type=tool_arg('--app'), help='the Foxglove build under test')
+ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'), type=tool_arg('--lab'))
 ap.add_argument('--skip-guard', action='store_true', help='leave out the split-link drop (GA build)')
 args = ap.parse_args()
 require_app_ok()

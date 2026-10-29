@@ -154,6 +154,7 @@ fn parses_seed_suites_and_all_step_kinds() {
         "[{screen={half='left',golden='golden/a.png',mask=[{x=0,y=0,width=4,height=5}]}}]",
         "[{expect_rgb={right_age_max_s=2,left_on=false,right_on=false,within_ms=45000}}]",
         "[{expect_screen_still={half='right',region={x=0,y=20,width=68,height=140},ms=3000}}]",
+        "[{idle_cpu={seconds=20,max_cpu_ms=60,settle_s=120}}]",
     ] {
         for s in case(text).steps {
             s.validate().unwrap();
@@ -168,6 +169,7 @@ fn validates_bad_specs() {
         "[{invoke={behavior='mo',hold_ms=10001}}]",
         "[{invoke={behavior='mo',expect_status='maybe'}}]",
         "[{expect_layer={top=32}}]",
+        "[{idle_cpu={seconds=20,max_cpu_ms=60,settle_s=601}}]",
         "[{expect_layer={top=0,within_ms=0}}]",
         "[{expect_conn={}}]",
         "[{screen={half='middle',golden='a.png'}}]",

@@ -8,8 +8,41 @@ from contextlib import contextmanager
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-TARGET = Path(os.environ.get('CARGO_TARGET_DIR', REPO / 'target'))
+# Absolute even when CARGO_TARGET_DIR is relative: it is relative to the repository root, as cargo
+# runs there (#618: a relative tool path crashed overlay_tray's lab cases).
+TARGET = REPO / os.environ.get('CARGO_TARGET_DIR', 'target')
 REAL_CONFIG = Path(os.environ['APPDATA']) / 'Foxglove' / 'config'
+
+
+def tool(path, flag='--lab', kind='file'):
+    """`path` (a build, a tool or a folder the lab runs) as an absolute path: relative paths are
+    taken from the repository root, whatever the caller's working directory (#618: release-test.ps1
+    passed `--lab target/release/foxglove-lab.exe`, and starting it from a child with another cwd
+    raised FileNotFoundError mid-run, so the later cases never ran). Raises ValueError naming the
+    flag when it isn't there."""
+    p = Path(path)
+    if not p.is_absolute():
+        p = REPO / p
+    p = Path(os.path.normpath(p))
+    ok = p.is_dir() if kind == 'dir' else p.is_file()
+    if not ok:
+        what = 'folder' if kind == 'dir' else 'file'
+        raise ValueError(f'{flag} {path}: no such {what} ({p}; relative paths are from the repo root {REPO})')
+    return p
+
+
+def tool_arg(flag, kind='file'):
+    """An argparse `type=` for `flag` through tool(): a missing path stops the script before
+    anything runs, with argparse's exit 2 (BLOCKED) and the error naming the flag."""
+    import argparse
+
+    def parse(value):
+        try:
+            return tool(value, flag, kind)
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(str(e)) from None
+    parse.__name__ = flag.lstrip('-')
+    return parse
 
 
 def utf8(stream):
@@ -257,7 +290,7 @@ class App:
     """Runs the build under test with `env`; stops the user's Foxglove for the duration."""
 
     def __init__(self, exe, cfg, env=None, plugins=()):
-        self.exe, self.cfg, self.plugins = exe, cfg, plugins
+        self.exe, self.cfg, self.plugins = tool(exe, '--app'), cfg, plugins
         self.env = {**os.environ, 'FOXGLOVE_CONFIG_DIR': str(cfg), **(env or {})}
 
     def __enter__(self):
@@ -290,7 +323,7 @@ class App:
 
 def rgb(lab, env):
     """Both halves' underglow as RGB_STATE reports it: [{on, hue, sat, brt, effect}] * 2."""
-    out = subprocess.run([str(lab), '--allow-app', 'status'], capture_output=True, text=True, encoding='utf-8',
+    out = subprocess.run([str(tool(lab)), '--allow-app', 'status'], capture_output=True, text=True, encoding='utf-8',
                          errors='replace', env=env, cwd=REPO).stdout
     line = next((l for l in out.splitlines() if l.startswith('RGB_STATE')), '')
     return [dict(on=h[0] == 'true', hue=int(h[1]), sat=int(h[2]), brt=int(h[3]), effect=int(h[4]))

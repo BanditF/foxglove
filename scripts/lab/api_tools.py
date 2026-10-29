@@ -17,7 +17,7 @@ per-plugin secret store (#213/#249).
 """
 import argparse, json, os, subprocess, tomllib
 from pathlib import Path
-from labkit import App, Checks, connect, temp_config, wait
+from labkit import App, tool_arg, Checks, connect, temp_config, wait
 
 COREAUDIO = Path(__file__).with_name('coreaudio.ps1')
 REAL_STORE = Path(os.environ['APPDATA']) / 'Foxglove' / 'foxglove.toml'
@@ -49,7 +49,7 @@ def audio(*a):
     return json.loads(r.stdout) if a[0] == 'get' else None
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-ap.add_argument('--app', required=True)
+ap.add_argument('--app', required=True, type=tool_arg('--app'))
 args = ap.parse_args()
 check = Checks()
 
