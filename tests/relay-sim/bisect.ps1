@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 $here = $PSScriptRoot
 $root = Resolve-Path (Join-Path $here "..\..")
 . (Join-Path $here "config.ps1")
-if (-not $Scenarios) { $Scenarios = ($RelaySimScenarios + $RelaySimInfo) -join "," }
+if (-not $Scenarios) { $Scenarios = ($RelaySimScenarios + $RelaySimKnownGaps + $RelaySimInfo) -join "," }
 $rows = @()
 foreach ($c in ($Commits -split ",")) {
     $sha = (git -C $root rev-parse --short $c).Trim()

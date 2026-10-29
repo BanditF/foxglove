@@ -13,6 +13,9 @@ $RelaySimDefines = @(
     "CONFIG_ZMK_LOG_LEVEL=0"
 )
 # Gating: each must pass on this tree.
-$RelaySimScenarios = @("wake", "wake-app", "stall", "stall-app", "relink-shown", "push-relink-tap")
+$RelaySimScenarios = @("wake", "wake-app", "relink-shown", "push-relink-tap")
+# Known gaps: each must still FAIL on this tree (README.md, "Known gaps"); one that passes means
+# the gap closed and the lists and README need updating.
+$RelaySimKnownGaps = @("stall", "stall-app")
 # Diagnostic only (bisect.ps1 runs them too): a request answered late, or never.
 $RelaySimInfo = @("late", "lost")

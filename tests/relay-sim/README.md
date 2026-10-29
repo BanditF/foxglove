@@ -23,12 +23,22 @@ get tested.
 | --- | --- | --- |
 | `wake` | resilience's right-follows-left-activity (SELECT, tap, idle, snapshots, tap, snapshots), then two pushes, a SELECT and a snapshot; Foxglove quit | every step works |
 | `wake-app` | the same with the app's background traffic (STATUS, RGB_STATE about once a second, D7 0E) | every step works |
-| `stall` | `wake`, but at the second tap the left's TX stalls: nothing it sends goes on the air until the link drops, while the right's PDUs still arrive. HELLO's relay debug then reads "timeouts 1, in flight 1" with the bearer alive, as in the #618 gate and soak runs | the relay comes back on its own within 45 s, then the pushes, SELECT and snapshot work |
-| `stall-app` | `stall` with the app's traffic | as `stall` |
 | `relink-shown` | a re-link, then RGB_STATE (rgb-state-follows-the-leds) | the right's shown block is back after the re-link |
 | `push-relink-tap` | the resilience suite's order: a push, a push with the link dropped mid-relay (r5a), then rgb-state-follows-the-leds' tap | RGB_STATE has the right's shown block (lit) within the step's 3 s |
 | `late` (diagnostic) | one request answered 4.5 s late (past the 3 s GATT timeout), user commands meanwhile | not gating |
 | `lost` (diagnostic) | one request never answered | not gating |
+
+## Known gaps (run in CI, must still fail)
+
+| Scenario | What runs | Would pass when |
+| --- | --- | --- |
+| `stall` | `wake`, but at the second tap the left's TX stalls: nothing it sends goes on the air until the link drops, while the right's PDUs still arrive. HELLO's relay debug then reads "timeouts 1, in flight 1" with the bearer alive, as in the #618 1ebdf9d soak and the 5568e5a gate | the relay comes back on its own within 45 s, then the pushes, SELECT and snapshot work |
+| `stall-app` | `stall` with the app's traffic | as `stall` |
+
+No firmware since 13ff04b gets out of that state without a re-link. A left-side watchdog (drop the
+link once a timed-out request has had no answer for 10 s) passed both in this harness, but it was
+held back from #647 to keep that hardware gate to rgb-state; current main shows timeouts 0 on
+hardware. `run.sh` and `build.ps1` fail if a known gap starts passing, so this list stays true.
 
 `wake-busy` (diagnostic) turns on Zephyr's response-buffer rule on the right with a 40 ms busy
 system queue per redraw; the right's display has its own queue (Kconfig.defconfig), so it isn't

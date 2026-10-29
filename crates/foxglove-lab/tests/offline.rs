@@ -280,6 +280,32 @@ fn rgb_on_off_is_checked_per_half() {
     }
 }
 
+/// #618: wait_relay reads HELLO until the left's relay is up (right link 2, discovery done), and
+/// fails "relay not up" when it never comes within its time.
+#[test]
+fn wait_relay_waits_for_the_relay_and_names_it_when_it_never_comes() {
+    let mut up = reply(&[0xd5, 0x81, 1]);
+    up[7] = 2; // right link: relay up
+    up[9] = 4; // discovery done
+    let mut down = reply(&[0xd5, 0x81, 1]);
+    down[7] = 1; // connected, relay not found yet
+    down[9] = 1; // discovery running
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([down, down, up]);
+    let result = run_with(&fake, &case("[{wait_relay={within_ms=5000}}]"), 0);
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    assert!(result.steps[0].actual.starts_with("relay up after"));
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([down, down, down, down]);
+    let result = run_with(&fake, &case("[{wait_relay={within_ms=600}}]"), 0);
+    assert_eq!(result.status, Status::Fail);
+    assert!(
+        result.message.contains("relay not up within 600 ms (right link 1, discovery 1"),
+        "{}",
+        result.message
+    );
+}
+
 /// D7 8E with the right's redraw count (#618): `known` byte 16, the count in bytes 17-20.
 fn dim_with_redraws(known: bool, n: u32) -> [u8; REPORT] {
     let mut r = reply(&[0xd7, 0x8e, 0]);

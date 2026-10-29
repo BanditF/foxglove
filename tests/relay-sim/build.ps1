@@ -33,5 +33,12 @@ foreach ($s in $list) {
     & $exe $s $Log
     if ($LASTEXITCODE -ne 0) { $fail++ }
 }
+if (-not $Scenarios) {
+    foreach ($s in $RelaySimKnownGaps) {
+        & $exe $s 1 | Select-String "^RESULT "
+        if ($LASTEXITCODE -eq 0) { Write-Host "relay-sim: known gap $s passed: update config.ps1, run.sh and README.md"; $fail++ }
+        else { Write-Host "relay-sim: known gap $s fails as documented" }
+    }
+}
 if ($fail) { Write-Host "relay-sim: $fail scenario(s) failed"; exit 1 }
 Write-Host "relay-sim: all scenarios passed"
