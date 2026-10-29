@@ -614,7 +614,8 @@ pub fn load(path: &Path) -> Result<Suite> {
                     "screen_readback",
                     "invoke_refusal",
                     "build_info",
-                    "unlocked"
+                    "unlocked",
+                    "activity_relay"
                 ]
                 .contains(&r.as_str())
                     || r.strip_prefix("host_link>=")
