@@ -614,9 +614,9 @@ impl<'a, D: Device> Runner<'a, D> {
             .into());
         }
         let count = before.right_set_count;
-        let (path, actual) = self.select_built_in(a.set, count, a.within_ms)?;
+        let (path, actual) = self.select_built_in(a.set, count, a.within_ms, a.direct)?;
         if a.restore && before.right_set >= 0 && before.right_set != a.set {
-            self.select_built_in(before.right_set, count, a.within_ms)?;
+            self.select_built_in(before.right_set, count, a.within_ms, a.direct)?;
             return Ok(format!(
                 "{path}: {waited}{actual}; restored set {}",
                 before.right_set
@@ -627,19 +627,29 @@ impl<'a, D: Device> Runner<'a, D> {
     /// Selects built-in `set` and checks the right shows it; answers with the path taken and
     /// what was read back. While the app runs (`self.app`), through its `art.select`, which
     /// answers once its art job ended, then one fresh D6 STATUS pair and `art.status`;
-    /// otherwise the D6 SELECT itself, then STATUS until the right shows the set.
-    fn select_built_in(&self, set: i8, count: u8, ms: u64) -> Result<(String, String)> {
-        let Some(app) = self.app else {
+    /// otherwise, or when `direct` forces it (a select behind the app's back), the D6 SELECT
+    /// itself, then STATUS until the right shows the set.
+    fn select_built_in(
+        &self,
+        set: i8,
+        count: u8,
+        ms: u64,
+        direct: bool,
+    ) -> Result<(String, String)> {
+        let app = self.app.filter(|_| !direct);
+        let Some(app) = app else {
             art::select(self.device, set)?;
             let actual = self.wait(ms, || {
                 std::thread::sleep(Duration::from_millis(250));
                 let s = art::status(self.device)?;
                 Ok((s.right_set == set, s.to_string()))
             })?;
-            return Ok((
-                "direct SELECT (D6 04; the app isn't running)".into(),
-                actual,
-            ));
+            let path = if self.app.is_some() {
+                "direct (forced) SELECT (D6 04, direct = true; the app is running)"
+            } else {
+                "direct SELECT (D6 04; the app isn't running)"
+            };
+            return Ok((path.into(), actual));
         };
         let label = crate::app_api::built_in_label(count, set);
         let path = format!("through the app's API (art.select {label:?}; the app is running)");
@@ -1483,5 +1493,28 @@ impl<D> Drop for Runner<'_, D> {
         if let Some(end) = self.held_until.take() {
             std::thread::sleep(end.saturating_duration_since(Instant::now()));
         }
+    }
+}
+
+/// The report's `art_select_path` (#618): how the suite's art selects reach the keyboard.
+/// While the app runs they go through its `art.select`, except steps with `direct = true`,
+/// which always send the D6 SELECT ("direct (forced)", a select behind the app's back).
+pub fn art_select_path(app_running: bool, cases: &[crate::spec::Case]) -> String {
+    let selects: Vec<bool> = cases
+        .iter()
+        .flat_map(|c| &c.steps)
+        .filter_map(|s| match s {
+            Step::ArtSelect(a) => Some(a.direct),
+            _ => None,
+        })
+        .collect();
+    if !app_running {
+        "direct D6 SELECT (the app isn't running)".into()
+    } else if !selects.is_empty() && selects.iter().all(|d| *d) {
+        "direct (forced)".into()
+    } else if selects.iter().any(|d| *d) {
+        "app API art.select (the app is running); direct (forced) on direct = true steps".into()
+    } else {
+        "app API art.select (the app is running)".into()
     }
 }
