@@ -175,6 +175,11 @@ pub struct Art {
     /// RECEIVING; the app's re-apply after a re-link, #618), on the reports themselves.
     #[serde(default = "idle_timeout")]
     pub idle_within_ms: u64,
+    /// Always the firmware's D6 SELECT, even while the app runs (#618): a select made behind the
+    /// app's back, as another tool would, for cases that check the app puts its pin back (#622).
+    /// Off: through the app's `art.select` while it runs.
+    #[serde(default)]
+    pub direct: bool,
 }
 fn idle_timeout() -> u64 {
     30_000

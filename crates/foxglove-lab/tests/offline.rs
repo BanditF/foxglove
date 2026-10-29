@@ -1419,6 +1419,70 @@ fn run_app(fake: &Fake, app: Option<&FakeApp>, case: &Case) -> foxglove_lab::rep
     r.case(case, true)
 }
 
+/// #618: `direct = true` sends the D6 SELECT even while the app runs (a select behind the
+/// app's back, for the re-apply cases), never `art.select`, and says "direct (forced)".
+#[test]
+fn art_select_direct_forces_the_d6_select_while_the_app_runs() {
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([
+        hello(2, 4),
+        art(5, 0, 17),
+        art(5, 0, 17),
+        art(4, 1, 17),
+        art(5, 1, 17),
+    ]);
+    let app = FakeApp {
+        calls: RefCell::default(),
+        shows: Some("ZMK balloon".into()),
+        fails: false,
+    };
+    let result = run_app(
+        &fake,
+        Some(&app),
+        &case("[{art_select={set=1,restore=false,direct=true}}]"),
+    );
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    let actual = &result.steps[0].actual;
+    assert!(actual.starts_with("direct (forced) SELECT"), "{actual}");
+    assert_eq!(
+        fake.requests
+            .borrow()
+            .iter()
+            .filter(|r| r[..2] == [0xd6, 4])
+            .count(),
+        1
+    );
+    assert!(app.calls.borrow().is_empty(), "{:?}", app.calls.borrow());
+    // `direct` defaults to off and is checked as a known field.
+    assert!(toml::from_str::<Case>(
+        "name='x'
+description='x'
+steps=[{art_select={set=0,direkt=true}}]"
+    )
+    .is_err());
+}
+
+/// #618: the report's `art_select_path` follows the app and the steps' `direct`.
+#[test]
+fn art_select_path_says_direct_forced() {
+    let cases = |steps: &str| vec![case(steps)];
+    let path = foxglove_lab::runner::art_select_path;
+    let forced = cases("[{art_select={set=1,direct=true}}]");
+    let api = cases("[{art_select={set=1}}]");
+    let mixed = cases("[{art_select={set=1}},{art_select={set=0,direct=true}}]");
+    assert_eq!(path(true, &forced), "direct (forced)");
+    assert_eq!(path(true, &api), "app API art.select (the app is running)");
+    assert!(path(true, &mixed).contains("direct (forced) on direct = true steps"));
+    assert_eq!(
+        path(false, &forced),
+        "direct D6 SELECT (the app isn't running)"
+    );
+    assert_eq!(
+        path(false, &api),
+        "direct D6 SELECT (the app isn't running)"
+    );
+}
+
 /// #618: with the app running the select goes through `art.select` (the app would undo a
 /// direct SELECT, #622) and is read back with D6 STATUS and `art.status`; without it, the
 /// direct SELECT. The step says which path it took.

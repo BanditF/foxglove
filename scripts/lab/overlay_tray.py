@@ -15,9 +15,9 @@ and the re-apply hooks, read back through the local API (API 1.6) and the test a
 - agent controls (#618): tray.set_panel open/close and overlay.restore, one log line each; the
   tray's Next › and ‹ through art.select, read back with art.status, one "art … (api)" line each.
 - re-apply after a display change (#601/#622): a built-in pinned through the API, another set
-  selected behind the app's back (foxglove-lab), then WM_DISPLAYCHANGE: the pinned set comes back
-  with one "re-applied the right screen's art (display change)" line; a second display change
-  while it shows adds no line.
+  selected behind the app's back (foxglove-lab art_select with direct = true: the D6 SELECT even
+  while the app runs), then WM_DISPLAYCHANGE: the pinned set comes back with one "re-applied the
+  right screen's art (display change)" line; a second display change while it shows adds no line.
 - re-apply after relay-ready (#622): the split link dropped once by the dev build's guard hook
   (D7 0B, foxglove-lab split_guard_test); once the relay is back the pinned set still shows.
 
@@ -136,10 +136,10 @@ def keyboard_cases(api, cfg, env):
         return check('re-apply cases', False, 'needs two built-in sets showing (Next showed no built-in)', blocked=True)
     pinned = call(api, 'art.select', {'device': device, 'target': {'built_in': names[0]}})
     check('pin a built-in through the API', bool(pinned and pinned['built_in'] == names[0]), pinned)
-    status, detail = lab_case('lose-art', ['{ art_select = { set = 1, restore = false } }'], env)
+    status, detail = lab_case('lose-art', ['{ art_select = { set = 1, restore = false, direct = true } }'], env)
     lost = call(api, 'art.status', {'device': device})
     if lost and lost['built_in'] == names[0]:  # set 1 was the pinned one: lose it to set 0
-        status, detail = lab_case('lose-art', ['{ art_select = { set = 0, restore = false } }'], env)
+        status, detail = lab_case('lose-art', ['{ art_select = { set = 0, restore = false, direct = true } }'], env)
     check('lab: another set selected behind the app', status == 'PASS', detail)
     before = len(log_lines(cfg, "re-applied the right screen's art (display change)"))
     Windows(app.proc.pid).display_change()

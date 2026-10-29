@@ -626,12 +626,7 @@ fn main() -> Result<std::process::ExitCode> {
                 .then_some(&foxglove_lab::app_api::Pipe as &dyn foxglove_lab::app_api::AppArt);
             report.environment.insert(
                 "art_select_path".into(),
-                if runner.app.is_some() {
-                    "app API art.select (the app is running)"
-                } else {
-                    "direct D6 SELECT (the app isn't running)"
-                }
-                .into(),
+                foxglove_lab::runner::art_select_path(runner.app.is_some(), &suite.cases),
             );
             for c in &suite.cases {
                 let result = runner.case(c, only.as_ref().is_none_or(|n| c.name.contains(n)));
