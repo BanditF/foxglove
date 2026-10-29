@@ -16,6 +16,13 @@
 //!
 //! Nothing polls: each check is one event, and the settle window is a timestamp compared when
 //! the minimize event arrives, not a timer.
+//!
+//! "Away" is minimized, or parked where Windows keeps minimized windows (-32000) without the
+//! minimized flag: the #618 lab caught the overlay there, 160x28, mid-restore. The regular
+//! placement ([`place_due`]) leaves an away window alone, so only these checks bring it back,
+//! and a check restores any window that isn't on its chosen display's area ([`decide`]): onto
+//! that area, never at the size it had while away. Every restore and every placement logs one
+//! `Foxglove: overlay window …` line with the old and new rects and why.
 
 // The window side runs on Windows only; elsewhere only the tests use the decision.
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -45,13 +52,54 @@ impl Trigger {
     }
 }
 
+/// Why the window is restored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    Minimized,
+    /// At -32000 without the minimized flag (see the module docs).
+    Parked,
+    OffEveryDisplay,
+    /// On a display, but not covering the chosen display's area (e.g. 160x28 at 0,0).
+    Misplaced,
+}
+
+impl Why {
+    fn label(self) -> &'static str {
+        match self {
+            Why::Minimized => "minimized",
+            Why::Parked => "parked off screen",
+            Why::OffEveryDisplay => "off every display",
+            Why::Misplaced => "not covering its display",
+        }
+    }
+}
+
 /// What the check does with the overlay window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
-    /// It's shown on a live display: leave it.
+    /// It's shown, covering its display's area (or on a live display when none is known).
     Keep,
     /// Un-minimize it without taking the focus, then cover `to` (physical pixels) when known.
-    Restore { to: Option<[i32; 4]> },
+    Restore { to: Option<[i32; 4]>, why: Why },
+}
+
+/// Where Windows parks minimized windows; a window whose corner is there is away.
+const PARKED: i32 = -32000;
+
+/// Minimized, or parked at -32000 without the flag (a minimize or restore in progress).
+pub fn away(iconic: bool, rect: Option<[i32; 4]>) -> bool {
+    iconic || rect.is_some_and(|r| r[0] <= PARKED && r[1] <= PARKED)
+}
+
+/// How many times the regular placement covers one area before leaving the window as it is.
+pub const PLACEMENT_TRIES: u32 = 3;
+
+/// Whether the regular placement (`keep_on_monitor`) should cover `target` now: never while the
+/// window is away, since covering a minimized window un-minimizes it (#618: after the lab's
+/// second minimize it left the overlay parked, then at 160x28, with no line); the checks here
+/// bring an away window back.
+pub fn place_due(iconic: bool, rect: Option<[i32; 4]>, target: [i32; 4], tries: u32) -> bool {
+    !away(iconic, rect) && rect != Some(target) && tries < PLACEMENT_TRIES
 }
 
 /// How long after a display change the overlay becoming minimized counts as part of it.
@@ -59,8 +107,9 @@ pub const SETTLE: Duration = Duration::from_secs(10);
 
 /// The restore decision. `rect` is the window's outer rectangle (None when Windows didn't give
 /// one), `monitors` the live displays' areas and `target` the chosen display's area the overlay
-/// covers. A minimized window, or one that overlaps no live display, is restored onto `target`,
-/// or onto the first display when the chosen one isn't known.
+/// covers. A window that is away, overlaps no live display, or doesn't cover `target` is
+/// restored onto `target`, or onto the first display when the chosen one isn't known. The
+/// window's own size never goes into `to`: while away it is a placeholder (160x28).
 pub fn decide(
     iconic: bool,
     rect: Option<[i32; 4]>,
@@ -68,22 +117,49 @@ pub fn decide(
     target: Option<[i32; 4]>,
 ) -> Action {
     let on_a_display = rect.is_some_and(|r| monitors.iter().any(|m| overlaps(r, *m)));
-    if !iconic && on_a_display {
+    let why = if iconic {
+        Why::Minimized
+    } else if away(iconic, rect) {
+        Why::Parked
+    } else if !on_a_display {
+        Why::OffEveryDisplay
+    } else if target.is_some_and(|t| rect != Some(t)) {
+        Why::Misplaced
+    } else {
         return Action::Keep;
-    }
+    };
     Action::Restore {
         to: target.or_else(|| monitors.first().copied()),
+        why,
     }
 }
 
-/// Whether the overlay just becoming minimized (`was_iconic` → `iconic`) belongs to a display
+/// Whether the overlay just going away (`was_away` → `away`, see [`away`]) belongs to a display
 /// change `since_display_change` ago.
 pub fn minimized_by_display_change(
-    was_iconic: bool,
-    iconic: bool,
+    was_away: bool,
+    away: bool,
     since_display_change: Option<Duration>,
 ) -> bool {
-    !was_iconic && iconic && since_display_change.is_some_and(|d| d <= SETTLE)
+    !was_away && away && since_display_change.is_some_and(|d| d <= SETTLE)
+}
+
+/// One frame's check, window-free: the waiting trigger (or a display change's late minimize)
+/// and what to do with the window. `was_away` is its state at the last frame, updated here.
+pub fn check(
+    pending: Option<Trigger>,
+    was_away: &mut bool,
+    iconic: bool,
+    rect: Option<[i32; 4]>,
+    since_display_change: Option<Duration>,
+    monitors: &[[i32; 4]],
+    target: Option<[i32; 4]>,
+) -> Option<(Trigger, Action)> {
+    let now_away = away(iconic, rect);
+    let became_away = minimized_by_display_change(*was_away, now_away, since_display_change);
+    *was_away = now_away;
+    let trigger = pending.or(became_away.then_some(Trigger::DisplayChange))?;
+    Some((trigger, decide(iconic, rect, monitors, target)))
 }
 
 fn overlaps(a: [i32; 4], b: [i32; 4]) -> bool {
@@ -218,6 +294,12 @@ pub fn window_state() -> Option<WindowState> {
     }
 }
 
+/// Whether Windows has `hwnd` minimized (for the regular placement, [`place_due`]).
+#[cfg(windows)]
+pub fn is_iconic(hwnd: isize) -> bool {
+    imp::is_iconic(hwnd)
+}
+
 /// The waiting check, if any (clears it).
 pub fn take() -> Option<Trigger> {
     PENDING.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -230,23 +312,42 @@ fn since_display_change() -> Option<Duration> {
         .map(|at| at.elapsed())
 }
 
-/// The log line for a restore.
+fn rect_text(r: Option<[i32; 4]>) -> String {
+    r.map_or_else(|| "?".to_string(), |r| format!("{r:?}"))
+}
+
+/// The log line for a restore: the old rect, the area asked for and, when Windows put the window
+/// elsewhere, where it is now.
 fn restored_line(
     trigger: Trigger,
-    iconic: bool,
+    why: Why,
     from: Option<[i32; 4]>,
     to: Option<[i32; 4]>,
+    now: Option<[i32; 4]>,
 ) -> String {
-    let state = if iconic {
-        "minimized"
-    } else {
-        "off every display"
+    let asked = to.map_or_else(|| "its restore rect".to_string(), |r| format!("{r:?}"));
+    let landed = match (to, now) {
+        (Some(to), Some(now)) if now != to => format!(", now at {now:?}"),
+        _ => String::new(),
     };
-    let from = from.map_or_else(|| "?".to_string(), |r| format!("{r:?}"));
-    let to = to.map_or_else(|| "its restore rect".to_string(), |r| format!("{r:?}"));
     format!(
-        "Foxglove: overlay window {state} at {from}, restored to {to} ({})",
+        "Foxglove: overlay window {} at {}, restored to {asked}{landed} ({})",
+        why.label(),
+        rect_text(from),
         trigger.label()
+    )
+}
+
+/// The log line when the regular placement covers the chosen display's area (start, a changed
+/// display, scaling or layout).
+pub fn placed_line(from: Option<[i32; 4]>, to: [i32; 4], now: Option<[i32; 4]>) -> String {
+    let landed = match now {
+        Some(now) if now != to => format!(", now at {now:?}"),
+        _ => String::new(),
+    };
+    format!(
+        "Foxglove: overlay window at {}, placed at {to:?}{landed} (display area)",
+        rect_text(from)
     )
 }
 
@@ -259,27 +360,40 @@ pub fn target(monitors: &[crate::monitors::Monitor], monitor: &str) -> Option<[i
     })
 }
 
-/// Runs once per overlay frame, before anything is drawn. `was_iconic` is the window's state at
-/// the last frame (updated here); `monitor` is the chosen display; `place` covers an area.
-/// When the window was restored: `Some` of the area it now covers (None when no display is
-/// known). Displays are listed only when a check is due.
+/// Runs once per overlay frame, before anything is drawn. `was_away` is the window's state at
+/// the last frame (updated here, see [`away`]); `monitor` is the chosen display; `place` covers
+/// an area. When the window was restored: `Some` of the area it now covers (None when no display
+/// is known). Displays are listed only when a check is due.
 #[cfg(windows)]
 pub fn frame(
     hwnd: isize,
-    was_iconic: &mut bool,
+    was_away: &mut bool,
     monitor: &str,
-    place: impl FnOnce(isize, [i32; 4]),
+    place: impl Fn(isize, [i32; 4]),
 ) -> Option<Option<[i32; 4]>> {
     imp::watch();
     HWND.store(hwnd, Ordering::Relaxed);
     let iconic = imp::is_iconic(hwnd);
-    let became_minimized = minimized_by_display_change(*was_iconic, iconic, since_display_change());
-    *was_iconic = iconic;
-    let trigger = take().or(became_minimized.then_some(Trigger::DisplayChange))?;
     let rect = imp::window_rect(hwnd);
+    let pending = take();
+    let since = since_display_change();
+    if pending.is_none() && !minimized_by_display_change(*was_away, away(iconic, rect), since) {
+        *was_away = away(iconic, rect);
+        return None;
+    }
     let listed = crate::monitors::list();
     let monitors: Vec<[i32; 4]> = listed.iter().map(|m| m.work_area).collect();
-    let Action::Restore { to } = decide(iconic, rect, &monitors, target(&listed, monitor)) else {
+    let checked_now = check(
+        pending,
+        was_away,
+        iconic,
+        rect,
+        since,
+        &monitors,
+        target(&listed, monitor),
+    );
+    let (trigger, action) = checked_now?;
+    let Action::Restore { to, why } = action else {
         if trigger == Trigger::Api {
             let state = describe(iconic, imp::is_visible(hwnd), rect, &listed);
             eprintln!("{}", kept_line(&state));
@@ -290,9 +404,14 @@ pub fn frame(
     imp::show_no_activate(hwnd);
     if let Some(to) = to {
         place(hwnd, to);
+        // Un-minimizing can still be resizing the window after the first try (#618): once more.
+        if imp::window_rect(hwnd) != Some(to) {
+            place(hwnd, to);
+        }
     }
-    *was_iconic = imp::is_iconic(hwnd);
-    eprintln!("{}", restored_line(trigger, iconic, rect, to));
+    let now = imp::window_rect(hwnd);
+    *was_away = away(imp::is_iconic(hwnd), now);
+    eprintln!("{}", restored_line(trigger, why, rect, to, now));
     checked();
     Some(to)
 }
@@ -414,12 +533,9 @@ mod tests {
     #[test]
     fn a_shown_overlay_on_a_live_display_is_left_alone() {
         assert_eq!(decide(false, Some(MAIN), &[MAIN], Some(MAIN)), Action::Keep);
-        // Partly on a display still counts as on it.
+        // Partly on a display still counts as on it when no chosen area is known.
         let straddling = [2000, 0, 3000, 1400];
-        assert_eq!(
-            decide(false, Some(straddling), &[MAIN], Some(MAIN)),
-            Action::Keep
-        );
+        assert_eq!(decide(false, Some(straddling), &[MAIN], None), Action::Keep);
     }
 
     #[test]
@@ -427,12 +543,18 @@ mod tests {
         // The #612 capture: minimized at -32000 after the 4K display went away.
         assert_eq!(
             decide(true, Some(ICONIC_RECT), &[MAIN], Some(MAIN)),
-            Action::Restore { to: Some(MAIN) }
+            Action::Restore {
+                to: Some(MAIN),
+                why: Why::Minimized
+            }
         );
         // Minimized while its rect is still on a display (Show desktop): restored too.
         assert_eq!(
             decide(true, Some(MAIN), &[MAIN], Some(MAIN)),
-            Action::Restore { to: Some(MAIN) }
+            Action::Restore {
+                to: Some(MAIN),
+                why: Why::Minimized
+            }
         );
     }
 
@@ -440,17 +562,26 @@ mod tests {
     fn an_overlay_left_on_a_removed_display_is_moved_back() {
         assert_eq!(
             decide(false, Some(GONE_4K), &[MAIN], Some(MAIN)),
-            Action::Restore { to: Some(MAIN) }
+            Action::Restore {
+                to: Some(MAIN),
+                why: Why::OffEveryDisplay
+            }
         );
         // No chosen area known: the first live display.
         assert_eq!(
             decide(false, Some(GONE_4K), &[MAIN], None),
-            Action::Restore { to: Some(MAIN) }
+            Action::Restore {
+                to: Some(MAIN),
+                why: Why::OffEveryDisplay
+            }
         );
         // No rect from Windows counts as off every display.
         assert_eq!(
             decide(false, None, &[MAIN], Some(MAIN)),
-            Action::Restore { to: Some(MAIN) }
+            Action::Restore {
+                to: Some(MAIN),
+                why: Why::OffEveryDisplay
+            }
         );
     }
 
@@ -476,7 +607,10 @@ mod tests {
     fn with_no_display_known_it_is_only_un_minimized() {
         assert_eq!(
             decide(true, Some(ICONIC_RECT), &[], None),
-            Action::Restore { to: None }
+            Action::Restore {
+                to: None,
+                why: Why::Minimized
+            }
         );
     }
 
@@ -486,7 +620,10 @@ mod tests {
         assert!(!overlaps(right_of_main, MAIN));
         assert_eq!(
             decide(false, Some(right_of_main), &[MAIN], Some(MAIN)),
-            Action::Restore { to: Some(MAIN) }
+            Action::Restore {
+                to: Some(MAIN),
+                why: Why::OffEveryDisplay
+            }
         );
     }
 
@@ -593,14 +730,248 @@ mod tests {
     #[test]
     fn the_log_line_names_the_state_the_rects_and_the_trigger() {
         assert_eq!(
-            restored_line(Trigger::DisplayChange, true, Some(ICONIC_RECT), Some(MAIN)),
+            restored_line(
+                Trigger::DisplayChange,
+                Why::Minimized,
+                Some(ICONIC_RECT),
+                Some(MAIN),
+                Some(MAIN)
+            ),
             "Foxglove: overlay window minimized at [-32000, -32000, -31840, -31972], \
              restored to [0, 0, 2560, 1400] (display change)"
         );
         assert_eq!(
-            restored_line(Trigger::TrayClick, false, Some(GONE_4K), None),
+            restored_line(
+                Trigger::TrayClick,
+                Why::OffEveryDisplay,
+                Some(GONE_4K),
+                None,
+                None
+            ),
             "Foxglove: overlay window off every display at [2560, 0, 6400, 2159], \
              restored to its restore rect (tray click)"
         );
+        // Windows put it somewhere else: the line says where.
+        assert_eq!(
+            restored_line(
+                Trigger::Api,
+                Why::Misplaced,
+                Some(SMALL),
+                Some(MAIN),
+                Some(SMALL)
+            ),
+            "Foxglove: overlay window not covering its display at [0, 0, 160, 28], \
+             restored to [0, 0, 2560, 1400], now at [0, 0, 160, 28] (api)"
+        );
+        assert_eq!(
+            placed_line(Some([0, 0, 2576, 1416]), MAIN, Some(MAIN)),
+            "Foxglove: overlay window at [0, 0, 2576, 1416], placed at [0, 0, 2560, 1400] \
+             (display area)"
+        );
+    }
+
+    /// The minimized size moved onto the display: what the #618 lab read after the display
+    /// change on 9355cf2.
+    const SMALL: [i32; 4] = [0, 0, 160, 28];
+
+    /// #618: parked at -32000 without the minimized flag is away; anywhere else isn't.
+    #[test]
+    fn a_window_parked_at_minus_32000_is_away_even_when_not_flagged_minimized() {
+        assert!(away(true, Some(MAIN)));
+        assert!(away(false, Some(ICONIC_RECT)));
+        assert!(!away(false, Some(MAIN)));
+        assert!(!away(false, Some(SMALL)));
+        assert!(!away(false, Some(GONE_4K)));
+        assert!(!away(false, None));
+        assert_eq!(
+            decide(false, Some(ICONIC_RECT), &[MAIN], Some(MAIN)),
+            Action::Restore {
+                to: Some(MAIN),
+                why: Why::Parked
+            }
+        );
+    }
+
+    /// #618: on a display at the wrong size (the 160x28 placeholder) is restored onto the
+    /// chosen display's area, never kept at that size.
+    #[test]
+    fn a_placeholder_size_on_a_display_is_restored_to_the_full_area() {
+        assert_eq!(
+            decide(false, Some(SMALL), &[MAIN], Some(MAIN)),
+            Action::Restore {
+                to: Some(MAIN),
+                why: Why::Misplaced
+            }
+        );
+        // The area restored to comes from the displays, never from the window's own rect.
+        for rect in [Some(SMALL), Some(ICONIC_RECT), None] {
+            for iconic in [false, true] {
+                if let Action::Restore { to, .. } = decide(iconic, rect, &[MAIN], Some(MAIN)) {
+                    assert_eq!(to, Some(MAIN), "{iconic} {rect:?}");
+                }
+            }
+        }
+    }
+
+    /// #618: the regular placement never covers a minimized or parked window (that un-minimized
+    /// it behind the checks' back), and stops after its tries.
+    #[test]
+    fn the_regular_placement_leaves_an_away_window_to_the_checks() {
+        assert!(!place_due(true, Some(ICONIC_RECT), MAIN, 1), "minimized");
+        assert!(!place_due(true, Some(MAIN), MAIN, 0), "minimized in place");
+        assert!(!place_due(false, Some(ICONIC_RECT), MAIN, 1), "parked");
+        assert!(place_due(false, Some(SMALL), MAIN, 1));
+        assert!(place_due(false, Some(GONE_4K), MAIN, 0));
+        assert!(!place_due(false, Some(MAIN), MAIN, 0), "already there");
+        assert!(
+            !place_due(false, Some(SMALL), MAIN, PLACEMENT_TRIES),
+            "out of tries"
+        );
+    }
+
+    /// A window-free stand-in for the overlay window and its frame loop: the checks and the
+    /// regular placement as `frame` and `keep_on_monitor` run them, with the window's state set
+    /// by the test the way Windows set it in the #618 lab run. Restoring or placing covers the
+    /// area asked for; every restore and placement records its line.
+    struct Sim {
+        iconic: bool,
+        rect: Option<[i32; 4]>,
+        was_away: bool,
+        tries: u32,
+        lines: Vec<String>,
+    }
+
+    impl Sim {
+        fn frame(&mut self, pending: Option<Trigger>, since: Option<Duration>) {
+            let (iconic, rect) = (self.iconic, self.rect);
+            if let Some((trigger, Action::Restore { to, why })) = check(
+                pending,
+                &mut self.was_away,
+                iconic,
+                rect,
+                since,
+                &[MAIN],
+                Some(MAIN),
+            ) {
+                (self.iconic, self.rect) = (false, to);
+                self.was_away = away(self.iconic, self.rect);
+                self.tries = 1;
+                self.lines
+                    .push(restored_line(trigger, why, rect, to, self.rect));
+            }
+            if place_due(self.iconic, self.rect, MAIN, self.tries) {
+                self.tries += 1;
+                let from = self.rect;
+                (self.iconic, self.rect) = (false, Some(MAIN));
+                self.lines.push(placed_line(from, MAIN, self.rect));
+            }
+        }
+    }
+
+    /// #618, the 9355cf2 lab sequence: a tray-click restore, a second minimize that Windows left
+    /// parked (not flagged minimized, -32000) and then at 160x28, and a display change within
+    /// SETTLE. Every restore ends covering the display's area with one line each, and nothing
+    /// un-minimizes the window without a line.
+    #[test]
+    fn the_lab_sequence_ends_at_the_full_area_with_a_line_per_restore() {
+        let mut w = Sim {
+            iconic: false,
+            rect: Some(MAIN),
+            was_away: false,
+            tries: PLACEMENT_TRIES,
+            lines: vec![],
+        };
+        w.frame(None, None);
+        assert!(w.lines.is_empty(), "shown and in place: nothing");
+
+        // The lab minimizes; a tray click restores it.
+        (w.iconic, w.rect) = (true, Some(ICONIC_RECT));
+        w.frame(None, None);
+        assert!(w.lines.is_empty(), "no check yet");
+        w.frame(Some(Trigger::TrayClick), None);
+        assert_eq!((w.iconic, w.rect), (false, Some(MAIN)));
+        assert_eq!(w.lines.len(), 1);
+        assert!(
+            w.lines[0].contains("minimized at [-32000") && w.lines[0].ends_with("(tray click)")
+        );
+
+        // The second minimize: frames keep running, and the placement (tries reset to 1 by the
+        // restore) must not touch it.
+        (w.iconic, w.rect) = (true, Some(ICONIC_RECT));
+        for _ in 0..PLACEMENT_TRIES {
+            w.frame(None, None);
+        }
+        assert_eq!(
+            (w.iconic, w.rect),
+            (true, Some(ICONIC_RECT)),
+            "left minimized"
+        );
+        assert_eq!(w.lines.len(), 1, "no silent restore");
+
+        // Windows' intermediate states: parked without the flag, then the placeholder at 0,0.
+        (w.iconic, w.rect) = (false, Some(ICONIC_RECT));
+        w.frame(None, None);
+        assert_eq!(w.rect, Some(ICONIC_RECT), "parked: left to the checks");
+        assert_eq!(w.lines.len(), 1);
+
+        // The display change, 1 s after: restored from parked to the full area, with its line.
+        let just = Some(Duration::from_secs(1));
+        w.frame(Some(Trigger::DisplayChange), just);
+        assert_eq!((w.iconic, w.rect), (false, Some(MAIN)));
+        assert_eq!(w.lines.len(), 2);
+        assert!(
+            w.lines[1].contains("parked off screen at [-32000"),
+            "{}",
+            w.lines[1]
+        );
+        assert!(w.lines[1].ends_with("restored to [0, 0, 2560, 1400] (display change)"));
+
+        // Had Windows left it at 160x28 on the display instead: still restored, with a line.
+        w.rect = Some(SMALL);
+        w.frame(Some(Trigger::DisplayChange), just);
+        assert_eq!(w.rect, Some(MAIN));
+        assert_eq!(w.lines.len(), 3);
+        assert!(w.lines[2].contains("not covering its display at [0, 0, 160, 28]"));
+        assert!(w.lines[2].ends_with("(display change)"));
+
+        // Parked within SETTLE of a display change with no request: the late minimize counts.
+        w.rect = Some(ICONIC_RECT);
+        w.frame(None, just);
+        assert_eq!(w.rect, Some(MAIN));
+        assert_eq!(w.lines.len(), 4);
+        assert!(
+            w.lines[3].contains("parked off screen") && w.lines[3].ends_with("(display change)")
+        );
+
+        // The API's overlay.restore takes the same path: the placeholder comes back, one line.
+        w.rect = Some(SMALL);
+        w.frame(Some(Trigger::Api), None);
+        assert_eq!(w.rect, Some(MAIN));
+        assert_eq!(w.lines.len(), 5);
+        assert!(w.lines[4].ends_with("(api)"));
+
+        // And in place, a check does nothing (the API logs its own "nothing to restore").
+        w.frame(Some(Trigger::TrayClick), None);
+        assert_eq!(w.lines.len(), 5);
+        assert!(w
+            .lines
+            .iter()
+            .all(|l| l.starts_with("Foxglove: overlay window ")));
+    }
+
+    /// The regular placement's own moves are logged too (one per try).
+    #[test]
+    fn a_placement_after_a_display_layout_change_logs_its_line() {
+        let mut w = Sim {
+            iconic: false,
+            rect: Some([0, 0, 2576, 1416]),
+            was_away: false,
+            tries: 0,
+            lines: vec![],
+        };
+        w.frame(None, None);
+        assert_eq!(w.rect, Some(MAIN));
+        assert_eq!(w.lines.len(), 1);
+        assert!(w.lines[0].ends_with("(display area)"));
     }
 }
