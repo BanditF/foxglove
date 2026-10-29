@@ -1,12 +1,17 @@
 """App-level cases of the stability pass (#618) for the overlay, the tray panel, the agent controls
 and the re-apply hooks, read back through the local API (API 1.6) and the test app's log:
 
-- display change (#612/#620): the overlay minimized by the lab hook (ShowWindow), then
-  WM_DISPLAYCHANGE posted to the app's display watcher: overlay.window must say not minimized and
-  on a live display, and the log has the "(display change)" restore line.
-- tray click (#612/#620): the overlay minimized again, then the tray icon's left-button-up posted to
-  the icon's window (the shell's own callback message; the app reads the icon's real rect): the
-  panel must open (tray.panel, drawn inside the overlay's rect) and the log has "(tray click)".
+- tray click (#612/#620), first: the overlay minimized by the lab hook (ShowWindow), then the tray
+  icon's left-button-up posted to the icon's window (the shell's own callback message; the app
+  reads the icon's real rect): the panel must open (tray.panel, drawn inside the overlay's rect).
+  The "(tray click)" restore line is expected only when overlay.window said minimized just before
+  the click. It runs before the display change on purpose: the app counts a minimize within
+  SETTLE (10 s) of a display change as part of it and restores the overlay itself with a
+  "(display change)" line (overlay_restore::minimized_by_display_change), so a tray click after
+  one finds the overlay already shown and rightly logs nothing (#618 follow-up).
+- display change (#612/#620): the overlay minimized again, then WM_DISPLAYCHANGE posted to the
+  app's display watcher: overlay.window must say not minimized and on a live display, and the log
+  has the "(display change)" restore line.
 - agent controls (#618): tray.set_panel open/close and overlay.restore, one log line each; the
   tray's Next › and ‹ through art.select, read back with art.status, one "art … (api)" line each.
 - re-apply after a display change (#601/#622): a built-in pinned through the API, another set
@@ -50,10 +55,10 @@ def lab_case(name, steps, env):
     path = out.with_suffix('.toml')
     out.parent.mkdir(exist_ok=True)
     path.write_text(f'schema = 1\n[[cases]]\nname = "{name}"\ndescription = "{name}"\nsteps = [\n  ' +
-                    ',\n  '.join(steps) + ',\n]\n')
+                    ',\n  '.join(steps) + ',\n]\n', encoding='utf-8')
     subprocess.run([args.lab, '--allow-app', 'run', '--suite', str(path), '--non-interactive', '--out', str(out)],
-                   capture_output=True, text=True, env=env, cwd=REPO, timeout=180)
-    case = json.loads((out / 'report.json').read_text())['cases'][0]
+                   capture_output=True, text=True, encoding='utf-8', errors='replace', env=env, cwd=REPO, timeout=180)
+    case = json.loads((out / 'report.json').read_text(encoding='utf-8'))['cases'][0]
     return case['status'], [s['actual'] for s in case['steps']]
 
 
@@ -65,6 +70,24 @@ def overlay_cases(api, win, cfg):
     if not check('the lab finds the overlay window', hwnd is not None, f'rect {first["rect"]}'):
         return
 
+    # Tray click (#620): the full #612 path. First, before any display change: a minimize within
+    # SETTLE of one is restored by the app as part of that change (see the module docs).
+    win.minimize(hwnd)
+    minimized, o = wait(lambda: call(api, 'overlay.window'), lambda o: o and o['iconic'], 5)
+    check('lab hook: the overlay is minimized before the tray click', minimized, o)
+    before = len(log_lines(cfg, '(tray click)'))
+    check('tray click posted to the icon window', win.tray_click(), 'tray_icon_app')
+    ok, p = wait(lambda: call(api, 'tray.panel'), lambda p: p and p['open'] and p['rect'], 10)
+    check('tray click: the panel opens and is drawn', ok, p)
+    o = call(api, 'overlay.window')
+    inside = bool(ok and o and o['on_screen'] and o['rect'][0] <= p['rect'][0] and p['rect'][2] <= o['rect'][2]
+                  and o['rect'][1] <= p['rect'][1] and p['rect'][3] <= o['rect'][3])
+    check('tray click: the panel is inside the overlay, on screen', inside, {'panel': p, 'overlay': o})
+    if minimized:  # only a minimized overlay is restored, so only then is there a line
+        lines = log_lines(cfg, '(tray click)')[before:]
+        check('tray click: the restore line', any('restored to' in l for l in lines), lines[-1:])
+    call(api, 'tray.set_panel', {'open': False})
+
     # Display change (#620).
     win.minimize(hwnd)
     ok, o = wait(lambda: call(api, 'overlay.window'), lambda o: o and o['iconic'], 5)
@@ -75,20 +98,6 @@ def overlay_cases(api, win, cfg):
     check('display change: the overlay is back, on a live display', ok, o)
     lines = log_lines(cfg, '(display change)')[before:]
     check('display change: one restore line', any('restored to' in l for l in lines), lines[-2:])
-
-    # Tray click (#620): the full #612 path.
-    win.minimize(hwnd)
-    wait(lambda: call(api, 'overlay.window'), lambda o: o and o['iconic'], 5)
-    before = len(log_lines(cfg, '(tray click)'))
-    check('tray click posted to the icon window', win.tray_click(), 'tray_icon_app')
-    ok, p = wait(lambda: call(api, 'tray.panel'), lambda p: p and p['open'] and p['rect'], 10)
-    check('tray click: the panel opens and is drawn', ok, p)
-    o = call(api, 'overlay.window')
-    inside = bool(ok and o and o['on_screen'] and o['rect'][0] <= p['rect'][0] and p['rect'][2] <= o['rect'][2]
-                  and o['rect'][1] <= p['rect'][1] and p['rect'][3] <= o['rect'][3])
-    check('tray click: the panel is inside the overlay, on screen', inside, {'panel': p, 'overlay': o})
-    check('tray click: the restore line', len(log_lines(cfg, '(tray click)')) > before,
-          log_lines(cfg, '(tray click)')[-1:])
 
     # Agent controls (#618).
     p = call(api, 'tray.set_panel', {'open': False})

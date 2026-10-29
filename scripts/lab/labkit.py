@@ -4,6 +4,7 @@ Every check runs a Foxglove build on a temp FOXGLOVE_CONFIG_DIR; the user's real
 touched. Whatever Foxglove the user had running is stopped first and started again after, by path.
 """
 import ctypes, json, os, re, shutil, subprocess, sys, tempfile, time
+from contextlib import contextmanager
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -11,13 +12,141 @@ TARGET = Path(os.environ.get('CARGO_TARGET_DIR', REPO / 'target'))
 REAL_CONFIG = Path(os.environ['APPDATA']) / 'Foxglove' / 'config'
 
 
+def utf8(stream):
+    """`stream` writing UTF-8 (unencodable text replaced, never raised): a piped or redirected
+    console stream on Windows is cp1252, and a "→" in a log line crashed the checks (#618)."""
+    try:
+        stream.reconfigure(encoding='utf-8', errors='replace')
+    except (AttributeError, ValueError):  # not a TextIOWrapper, or already closed
+        pass
+    return stream
+
+
+utf8(sys.stdout)
+utf8(sys.stderr)
+
+
 def ps(script):
-    return subprocess.run(['powershell', '-NoProfile', '-Command', script], capture_output=True, text=True).stdout
+    """A PowerShell snippet's output, decoded as the UTF-8 it is told to write."""
+    script = '[Console]::OutputEncoding = [Text.Encoding]::UTF8; ' + script
+    return subprocess.run(['powershell', '-NoProfile', '-Command', script], capture_output=True, text=True,
+                          encoding='utf-8', errors='replace').stdout
 
 
 def locked():
     """A locked PC sends keys to the secure desktop: no global hotkey fires."""
     return not ctypes.windll.user32.OpenInputDesktop(0, False, 0x0100)
+
+
+# The harness's own input (#618). Some lab steps make Windows see input: foxglove-lab's key presses
+# through the keyboard (D7 05 positions, INVOKE, the typing sink) and these scripts' tray clicks and
+# window posts. GetLastInputInfo can't tell them from the user's, so the "the user is working" gate
+# (PC idle >= 2 min before a soak or a typing step) stopped the lab's own later steps. Every
+# injection is recorded here, by foxglove-lab and labkit alike, one line each:
+#     <start> <end> <the user's last input before it, or -> <what>     (Unix seconds)
+# The rule: input from the injection's start (less 0.1 s) to 2 s after its end is the harness's.
+# When the PC's last input falls in such a window, the user's last input is the one recorded when
+# that injection began. Any other input, before or after, is the user's and still blocks.
+INJECTIONS = Path(os.environ.get('FOXGLOVE_LAB_INJECTIONS') or
+                  Path(os.environ.get('LOCALAPPDATA', tempfile.gettempdir())) / 'Foxglove' / 'lab-injections.log')
+HARNESS_AFTER = 2.0
+HARNESS_BEFORE = 0.1
+KEEP = 3600  # records older than an hour are dropped when the file is rewritten
+
+
+def last_input():
+    """When this PC last had keyboard or mouse input (Unix seconds; GetLastInputInfo), or None."""
+    if not hasattr(ctypes, 'windll'):
+        return None
+
+    class LASTINPUTINFO(ctypes.Structure):
+        _fields_ = [('cbSize', ctypes.c_uint), ('dwTime', ctypes.c_uint)]
+    info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO), 0)
+    if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+        return None
+    ago = ((ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000.0
+    return time.time() - ago
+
+
+def _line(start, end, before, what):
+    return f"{start:.3f} {end:.3f} {'-' if before is None else f'{before:.3f}'} {what.replace(chr(10), ' ')}\n"
+
+
+def injections(path=None):
+    """The recorded injections, oldest first: [(start, end, user_last or None, what)]."""
+    try:
+        text = Path(path or INJECTIONS).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        parts = line.split(' ', 3)
+        try:
+            out.append((float(parts[0]), float(parts[1]), None if parts[2] == '-' else float(parts[2]),
+                        parts[3] if len(parts) > 3 else ''))
+        except (IndexError, ValueError):
+            continue
+    return out
+
+
+def user_last_input(raw, records):
+    """The user's last input given the PC's (`raw`) and the harness's `records`, by the rule
+    above: (when or None, the injection it was discounted for or None)."""
+    if raw is None:
+        return None, None
+    for r in reversed(records):  # newest first
+        start, end, before, _ = r
+        if start - HARNESS_BEFORE <= raw <= end + HARNESS_AFTER:
+            return before, r
+    return raw, None
+
+
+def user_idle(now=None, raw=None, path=None):
+    """Seconds since the user's own last input (the harness's left out) and the injection
+    discounted (or None). (None, None) when Windows can't say."""
+    now = time.time() if now is None else now
+    raw = last_input() if raw is None else raw
+    when, r = user_last_input(raw, injections(path))
+    if when is None:
+        # Nothing known before that injection: idle since it began, the cautious reading.
+        return (None, None) if r is None else (now - r[0], r)
+    return now - when, r
+
+
+def record_injection(start, end, before, what, path=None):
+    """Appends one injection record (and drops those older than KEEP once the file passes 64 KiB)."""
+    path = Path(path or INJECTIONS)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > 64 * 1024:
+            keep = [r for r in injections(path) if r[1] >= time.time() - KEEP]
+            path.write_text(''.join(_line(*r) for r in keep), encoding='utf-8')
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(_line(start, end, before, what))
+    except OSError as e:
+        print(f'  (could not record the injection in {path}: {e})', flush=True)
+
+
+@contextmanager
+def injecting(what, path=None):
+    """Records the input made inside the block as the harness's (the rule above)."""
+    before, _ = user_last_input(last_input(), injections(path))
+    start = time.time()
+    try:
+        yield
+    finally:
+        record_injection(start, time.time(), before, what, path)
+
+
+def require_user_idle(seconds):
+    """Exit 2 (BLOCKED) when the user had input within `seconds` (the harness's own left out)."""
+    idle, r = user_idle()
+    if idle is not None and idle < seconds:
+        print(f'BLOCKED: the PC had user input {idle:.0f} s ago (needs {seconds:.0f} s idle)', flush=True)
+        print('RESULT BLOCKED', flush=True)
+        sys.exit(2)
+    note = f" (later input was the harness's: {r[3]})" if r else ''
+    print(f'user idle: {"unknown" if idle is None else f"{idle:.0f} s"}{note}', flush=True)
 
 
 def temp_config(prefix, store=''):
@@ -82,21 +211,24 @@ class Windows:
         return next((h for h in self.find('Window Class') if self.rect(h) == rect), None)
 
     def minimize(self, hwnd):
-        return self.u.ShowWindow(hwnd, self.SW_MINIMIZE)
+        with injecting('overlay minimize (lab hook)'):
+            return self.u.ShowWindow(hwnd, self.SW_MINIMIZE)
 
     def display_change(self):
         """WM_DISPLAYCHANGE to the app's display watcher, as Windows sends it on a layout change."""
         hwnds = self.find('FoxgloveOverlayDisplays')
-        for h in hwnds:
-            self.u.PostMessageW(h, self.WM_DISPLAYCHANGE, 32, 0)
+        with injecting('WM_DISPLAYCHANGE (lab hook)'):
+            for h in hwnds:
+                self.u.PostMessageW(h, self.WM_DISPLAYCHANGE, 32, 0)
         return bool(hwnds)
 
     def tray_click(self):
         """The tray icon's left-button-up, as the shell posts it to the icon's window (tray-icon
         0.24's callback message); the app reads the icon's real rect and the cursor itself."""
         hwnds = self.find('tray_icon_app')
-        for h in hwnds:
-            self.u.PostMessageW(h, self.WM_USER_TRAYICON, 0, self.WM_LBUTTONUP)
+        with injecting('tray click (lab hook)'):
+            for h in hwnds:
+                self.u.PostMessageW(h, self.WM_USER_TRAYICON, 0, self.WM_LBUTTONUP)
         return bool(hwnds)
 
 
@@ -158,7 +290,8 @@ class App:
 
 def rgb(lab, env):
     """Both halves' underglow as RGB_STATE reports it: [{on, hue, sat, brt, effect}] * 2."""
-    out = subprocess.run([str(lab), '--allow-app', 'status'], capture_output=True, text=True, env=env, cwd=REPO).stdout
+    out = subprocess.run([str(lab), '--allow-app', 'status'], capture_output=True, text=True, encoding='utf-8',
+                         errors='replace', env=env, cwd=REPO).stdout
     line = next((l for l in out.splitlines() if l.startswith('RGB_STATE')), '')
     return [dict(on=h[0] == 'true', hue=int(h[1]), sat=int(h[2]), brt=int(h[3]), effect=int(h[4]))
             for h in re.findall(r'on: (\w+), hue: (\d+), sat: (\d+), brightness: (\d+), effect: (\d+)', line)]
@@ -243,3 +376,13 @@ def restore_lights(exe, lab, original):
         ok, s = wait(lambda: rgb(lab, app.env), lambda s: same(s, original), 10)
         api.close()
     print('lights restored' if ok else f'lights NOT restored: {s} (wanted {original})', flush=True)
+
+
+if __name__ == '__main__':
+    # The "user is working" gate On-call runs before a soak or a typing step, with the harness's
+    # own input left out:  python scripts/lab/labkit.py idle [--min 120]   (exit 0, or 2 BLOCKED)
+    import argparse
+    ap = argparse.ArgumentParser(description='labkit tools')
+    ap.add_argument('what', choices=['idle'])
+    ap.add_argument('--min', type=float, default=120, help='seconds of user idle needed')
+    require_user_idle(ap.parse_args().min)

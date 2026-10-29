@@ -159,7 +159,8 @@ pub struct Rect {
 }
 /// Shows built-in art set `set` on the right half through the relay, checks the right reports
 /// it, then puts the previous built-in set back. Pushed art lives in RAM and can't be restored,
-/// so the step refuses to replace it unless `replace_pushed` is set.
+/// so the step refuses to replace it unless `replace_pushed` is set. It first waits for the left's
+/// relay to finish another client's job (`idle_within_ms`).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Art {
@@ -170,6 +171,13 @@ pub struct Art {
     pub replace_pushed: bool,
     #[serde(default = "art_timeout")]
     pub within_ms: u64,
+    /// How long to wait first for the left's relay to finish another client's job (PUSHING or
+    /// RECEIVING; the app's re-apply after a re-link, #618), on the reports themselves.
+    #[serde(default = "idle_timeout")]
+    pub idle_within_ms: u64,
+}
+fn idle_timeout() -> u64 {
+    30_000
 }
 fn yes() -> bool {
     true
@@ -477,6 +485,7 @@ impl Step {
             }
             Self::ArtSelect(a) => {
                 wait(a.within_ms)?;
+                wait(a.idle_within_ms)?;
                 ensure!(a.set >= 0, "art_select needs a built-in set (0 or more)");
             }
             Self::UsbHalves(_) => {}

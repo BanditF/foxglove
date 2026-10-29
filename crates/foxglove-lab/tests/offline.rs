@@ -679,6 +679,121 @@ fn art_select_checks_and_restores() {
     );
 }
 
+/// A Fake that also hears art relay reports it didn't ask for (another client's STATUS reads).
+struct Overheard {
+    fake: Fake,
+    reports: RefCell<Vec<[u8; REPORT]>>,
+}
+impl Transport for Overheard {
+    fn send(&self, r: &[u8]) -> Result<()> {
+        self.fake.send(r)
+    }
+    fn request(&self, r: &[u8], p: u8, c: u8, t: Duration) -> Result<[u8; REPORT]> {
+        self.fake.request(r, p, c, t)
+    }
+}
+impl Device for Overheard {
+    fn layer(&self, t: Duration) -> Result<Option<u32>> {
+        self.fake.layer(t)
+    }
+    fn art_status_events(&self) -> Option<foxglove_lab::runner::Events> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for r in self.reports.borrow_mut().drain(..) {
+            tx.send(r).unwrap();
+        }
+        // The sender stays open past the reports, as a live link's would.
+        std::mem::forget(tx);
+        Some(foxglove_lab::runner::Events::from_channel(rx))
+    }
+}
+
+/// `art` with the left's relay in `state` (2 = pushing).
+fn art_in(state: u8, cmd: u8, set: i8, count: u8) -> [u8; REPORT] {
+    let mut r = art(cmd, set, count);
+    r[2] = state;
+    r
+}
+
+#[test]
+fn art_select_waits_for_the_left_to_finish_another_job() {
+    // #618: after a re-link the app re-applies the right's art, and the left reads PUSHING; a
+    // SELECT then is refused without an error. The step waits on the reports that arrive (the
+    // app's own STATUS reads) until one says the job ended, then selects.
+    let fake = Overheard {
+        fake: Fake::default(),
+        reports: RefCell::new(vec![
+            art_in(2, 5, 1, 4),            // the app's read: still pushing
+            art_in(1, 5, 1, 4),            // a BEGIN from another client: still busy
+            reply(&[0xd6, 0x87, 0, 3, 1]), // a SLOT reply: no relay status, ignored
+            art_in(3, 5, 1, 4),            // done
+        ]),
+    };
+    fake.fake.replies.borrow_mut().extend([
+        hello(2, 4),
+        art_in(2, 5, 1, 4), // fresh pair: busy
+        art_in(2, 5, 1, 4),
+        art_in(2, 5, 1, 4), // the read after subscribing: busy
+        art(5, 1, 4),       // fresh pair again: idle, set 1
+        art(5, 1, 4),
+        art(4, 0, 4), // select 0
+        art(5, 0, 4), // shows 0
+    ]);
+    let result = run(&fake, &case("[{art_select={set=0,restore=false}}]"));
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    assert!(
+        result.steps[0].actual.contains("the left was busy"),
+        "{}",
+        result.steps[0].actual
+    );
+    // One STATUS after subscribing, then nothing until the job ended: no reads on a timer.
+    let selects = fake
+        .fake
+        .requests
+        .borrow()
+        .iter()
+        .filter(|r| r[..2] == [0xd6, 4])
+        .count();
+    assert_eq!(selects, 1);
+    assert_eq!(fake.fake.requests.borrow().len(), 8);
+
+    // Still busy at the deadline: one last read, then FAIL (no SELECT sent).
+    let fake = Overheard {
+        fake: Fake::default(),
+        reports: RefCell::new(vec![art_in(2, 5, 1, 4)]),
+    };
+    fake.fake.replies.borrow_mut().extend([
+        hello(2, 4),
+        art_in(2, 5, 1, 4),
+        art_in(2, 5, 1, 4),
+        art_in(2, 5, 1, 4),
+        art_in(2, 5, 1, 4), // at the deadline
+    ]);
+    let started = std::time::Instant::now();
+    let result = run(
+        &fake,
+        &case("[{art_select={set=0,restore=false,idle_within_ms=200}}]"),
+    );
+    assert_eq!(result.status, Status::Fail);
+    assert!(result.message.contains("stayed busy"), "{}", result.message);
+    assert!(started.elapsed() >= Duration::from_millis(200));
+    assert!(!fake
+        .fake
+        .requests
+        .borrow()
+        .iter()
+        .any(|r| r[..2] == [0xd6, 4]));
+}
+
+#[test]
+fn art_status_reports_are_recognised() {
+    use foxglove_lab::runner::is_art_status;
+    assert!(is_art_status(&art(5, 0, 4)));
+    assert!(is_art_status(&art(4, 0, 4)));
+    assert!(!is_art_status(&reply(&[0xd6, 0x87, 0, 3])));
+    assert!(!is_art_status(&reply(&[0xd6, 0x05])));
+    assert!(!is_art_status(&reply(&[0xd7, 0x85])));
+}
+
 fn position(status: u8, pos: u8) -> [u8; REPORT] {
     reply(&[0xd7, 0x85, status, pos])
 }

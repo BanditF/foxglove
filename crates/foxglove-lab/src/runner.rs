@@ -52,11 +52,25 @@ pub trait Device: Transport {
     fn art_key_events(&self) -> Option<Events> {
         None
     }
+    /// Art relay reports (D6 8x with the relay status: STATUS, SELECT, COMMIT, ...) as they
+    /// arrive from now on: the left's relay events (HELLO bit 3) and the replies to every
+    /// client's art commands, which Windows hands to each open handle of the HID collection
+    /// (so the app's own push or select loop is heard too). `None` where the device can't
+    /// deliver reports it didn't ask for.
+    fn art_status_events(&self) -> Option<Events> {
+        None
+    }
 }
 /// Reports collected from the link until dropped.
 pub struct Events {
     pub rx: std::sync::mpsc::Receiver<[u8; 32]>,
-    _watch: foxglove_link::link::EventSubscription,
+    _watch: Option<foxglove_link::link::EventSubscription>,
+}
+impl Events {
+    /// Reports from a channel with no link behind it (offline tests' fake devices).
+    pub fn from_channel(rx: std::sync::mpsc::Receiver<[u8; 32]>) -> Self {
+        Self { rx, _watch: None }
+    }
 }
 pub struct Hardware {
     pub link: Link,
@@ -104,7 +118,22 @@ impl Device for Hardware {
                 let _ = tx.send(*r);
             }
         });
-        Some(Events { rx, _watch: watch })
+        Some(Events {
+            rx,
+            _watch: Some(watch),
+        })
+    }
+    fn art_status_events(&self) -> Option<Events> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let watch = self.link.subscribe_reports(move |_, r| {
+            if is_art_status(r) {
+                let _ = tx.send(*r);
+            }
+        });
+        Some(Events {
+            rx,
+            _watch: Some(watch),
+        })
     }
     fn layer(&self, timeout: Duration) -> Result<Option<u32>> {
         self.check_connection()?;
@@ -124,6 +153,31 @@ impl Device for Hardware {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+/// Whether `r` is an art relay reply that carries the relay status (art_command in host_link.c:
+/// every reply but SLOT's D6 87, which has its own layout; DATA has no reply).
+pub fn is_art_status(r: &[u8; 32]) -> bool {
+    use protocol::art;
+    r[0] == protocol::ART
+        && r[1] & 0x80 != 0
+        && [
+            art::BEGIN,
+            art::COMMIT,
+            art::SELECT,
+            art::STATUS,
+            art::SAVE,
+            art::ERASE,
+        ]
+        .contains(&(r[1] & 0x7f))
+}
+
+/// Whether the left's relay is in the middle of another job: a SELECT now would be refused
+/// (PUSHING, -EBUSY in art_relay_select, with no error in the reply) or would cut another
+/// client's blob short (RECEIVING).
+pub fn left_busy(s: &protocol::ArtStatus) -> bool {
+    use protocol::left_state;
+    s.state == left_state::PUSHING || s.state == left_state::RECEIVING
 }
 
 /// How long the right's redraw count must hold before note_right_redraws takes it (#618): longer
@@ -200,6 +254,9 @@ pub struct Runner<'a, D> {
     pub locked: fn() -> bool,
     /// The right's redraw count at the case's note_right_redraws (#618).
     redraw_note: Option<u32>,
+    /// Where key presses are recorded as the harness's own input (`injections`, #618); None
+    /// records nothing (offline tests). `foxglove-lab run` sets the shared file.
+    pub injections: Option<PathBuf>,
 }
 impl<'a, D: Device> Runner<'a, D> {
     pub fn new(
@@ -226,6 +283,7 @@ impl<'a, D: Device> Runner<'a, D> {
             screens_ini: None,
             locked: crate::platform::locked,
             redraw_note: None,
+            injections: None,
         }
     }
     fn check(&self) -> Result<()> {
@@ -291,6 +349,7 @@ impl<'a, D: Device> Runner<'a, D> {
         let prior_release = self.held_until;
         let deadline = Instant::now() + Duration::from_millis(u64::from(i.hold_ms) + 1500);
         self.held_until = Some(prior_release.map_or(deadline, |prior| prior.max(deadline)));
+        let _injecting = self.injecting(|| format!("invoke {id} param1={:#x}", i.param1));
         let status = settings::invoke(self.device, id, i.param1, i.param2, i.hold_ms)?;
         // The firmware schedules release even when the behavior press returns an error.
         if matches!(status, InvokeStatus::Ok | InvokeStatus::BehaviorFailed) {
@@ -517,9 +576,24 @@ impl<'a, D: Device> Runner<'a, D> {
             "pick a built-in set (0 or more) so the result can be checked"
         );
         // The left answers from its last relay read and asks again, so the second call is fresh.
-        art::status(self.device)?;
-        std::thread::sleep(Duration::from_millis(300));
-        let before = art::status(self.device)?;
+        let fresh = |runner: &Self| -> Result<protocol::ArtStatus> {
+            art::status(runner.device)?;
+            std::thread::sleep(Duration::from_millis(300));
+            art::status(runner.device)
+        };
+        let mut before = fresh(self)?;
+        let mut waited = String::new();
+        if left_busy(&before) {
+            // Another client's relay job (the app's re-apply after a re-link, #618): a SELECT
+            // now would be refused without an error, so wait for that job to end first.
+            let started = Instant::now();
+            self.left_idle(before, a.idle_within_ms)?;
+            waited = format!(
+                "the left was busy for {} ms first; ",
+                started.elapsed().as_millis()
+            );
+            before = fresh(self)?;
+        }
         ensure!(
             a.set < before.right_set_count as i8,
             "set {} out of range: the right has {} built-in sets ({before})",
@@ -542,9 +616,51 @@ impl<'a, D: Device> Runner<'a, D> {
         })?;
         if a.restore && before.right_set >= 0 && before.right_set != a.set {
             art::select(self.device, before.right_set)?;
-            return Ok(format!("{actual}; restored set {}", before.right_set));
+            return Ok(format!(
+                "{waited}{actual}; restored set {}",
+                before.right_set
+            ));
         }
-        Ok(actual)
+        Ok(format!("{waited}{actual}"))
+    }
+    /// Waits until the left's relay leaves another job (state PUSHING or RECEIVING) for at most
+    /// `ms`. The firmware sends no event when a job ends (host_link_art_status() fires on relay
+    /// up/down only), so this waits on the reports themselves: every art relay report that
+    /// arrives (the busy client's own STATUS reads while it waits for its job, relay events) is
+    /// checked, and nothing is read on a timer. One STATUS read after subscribing gives the
+    /// state now; one more at the deadline is the fallback (a job whose client stopped
+    /// reading). Fails when the left is still busy then.
+    fn left_idle(&self, last: protocol::ArtStatus, ms: u64) -> Result<protocol::ArtStatus> {
+        let end = Instant::now() + Duration::from_millis(ms);
+        // Subscribed before the read, so a report between the two isn't missed.
+        let events = self.device.art_status_events();
+        let now = art::status(self.device).unwrap_or(last);
+        if !left_busy(&now) {
+            return Ok(now);
+        }
+        if let Some(events) = &events {
+            loop {
+                self.check()?;
+                let left = end.saturating_duration_since(Instant::now());
+                match events.rx.recv_timeout(left) {
+                    Ok(r) => {
+                        let s = protocol::ArtStatus::parse(&r);
+                        if !left_busy(&s) {
+                            return Ok(s);
+                        }
+                    }
+                    Err(_) => break, // the deadline (or the link stopped)
+                }
+            }
+        } else {
+            std::thread::sleep(end.saturating_duration_since(Instant::now()));
+        }
+        let s = art::status(self.device)?;
+        ensure!(
+            !left_busy(&s),
+            "the left's relay stayed busy for {ms} ms (another client's job?): {s}"
+        );
+        Ok(s)
     }
     /// D7 05: presses or releases keymap position `p.pos` as if the key moved. Positions on the
     /// right half travel over the relay and come back through the split link.
@@ -576,6 +692,7 @@ impl<'a, D: Device> Runner<'a, D> {
             6 => "refused",
             _ => "unknown_status",
         };
+        let _injecting = self.injecting(|| format!("position {} {}", p.pos, p.state));
         let status = match p.state.as_str() {
             "down" => {
                 let s = send(1)?;
@@ -607,6 +724,12 @@ impl<'a, D: Device> Runner<'a, D> {
             name(status)
         );
         Ok(format!("position {} {}: {}", p.pos, p.state, name(status)))
+    }
+    /// Records the key press made while the guard lives as the harness's input (#618).
+    fn injecting(&self, what: impl FnOnce() -> String) -> Option<crate::injections::Injection> {
+        self.injections
+            .as_ref()
+            .map(|path| crate::injections::begin_at(path.clone(), what()))
     }
     /// Fails BLOCKED unless the left reports the right half's relay fully up (HELLO right link
     /// 2, relay discovery done). Steps that go to the right half over the relay check this
@@ -664,7 +787,9 @@ impl<'a, D: Device> Runner<'a, D> {
                 None => std::fs::remove_file(&path),
             };
         }
-        for pos in std::mem::take(&mut self.held_positions).into_iter().rev() {
+        let held = std::mem::take(&mut self.held_positions);
+        let _injecting = (!held.is_empty()).then(|| self.injecting(|| format!("release {held:?}")));
+        for pos in held.into_iter().rev() {
             // Best effort; the firmware also releases owned downs after 10 s.
             let _ = self.device.request(
                 &[protocol::SETTINGS, POSITION, pos, 0],
