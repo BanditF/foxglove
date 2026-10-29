@@ -3,9 +3,17 @@ runs on a temp FOXGLOVE_CONFIG_DIR with "Lights follow the wallpaper" on, and it
 hook (FOXGLOVE_WALLPAPER_OVERRIDE, wallpaper.rs: a watched file naming the wallpaper on screen)
 switches between installed Bandit wallpapers as Wallpaper Engine's config would. The manifests are
 the real ones in Wallpaper Engine's projects; nothing is sent to Wallpaper Engine (the hook has no
-monitors to sync). For each switch the underglow (RGB_STATE, both halves) must take the wallpaper's
-accent (palette.accent, else its most colourful stop) and the log must say "Foxglove accent:
-applied h/s"; a wallpaper without a palette gives the Windows accent. The lights are put back after.
+monitors to sync). For each switch the underglow (RGB_STATE, both halves) must take the colour
+Foxglove follows and the log must say "Foxglove accent: applied h/s":
+- a wallpaper with a palette: its accent (palette.accent, else its most colourful stop): the
+  fixture's colour, from its foxglove.json;
+- a wallpaper without one: the Windows accent, as accent.rs reads it: UISettings' Accent (the base
+  of the accent palette Windows derives from the picked colour), not DWM's AccentColor (the picked
+  colour itself). On 10/29 the pick was #d39f3f (39/70) and the accent Foxglove follows #9c6f05
+  (42/97): the run then expected 39/70 and failed on a correct 42/97.
+Each expectation prints its source. The temp store has no [calibration], so RGB_STATE shows the
+hue/sat Foxglove asked for; on the user's own app it shows them after the keyboard's calibration
+(gamma 2.5 there: 42/97 reads about 23/100). The lights are put back after.
 
 The case only follows with its "Match keyboard" on (off in the user's store), so it isn't checked
 here; whether the colours look like the wallpaper is the sitting's one eyes step (H5).
@@ -15,7 +23,7 @@ here; whether the colours look like the wallpaper is the sitting's one eyes step
 import argparse, json, os, re, tempfile, time
 from pathlib import Path
 from labkit import App, Checks, TARGET, log_lines, require_app_ok, restore_lights, rgb, temp_config, tool_arg, wait
-from wallpaper_check import STEAM_WE, hue_sat, manifest_accent
+from wallpaper_check import STEAM_WE, colour, expected, manifest_accent, picked_accent, windows_accent
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--app', required=True, type=tool_arg('--app'))
@@ -41,14 +49,6 @@ def manifests(we):
     return out
 
 
-def windows_accent():
-    """The Windows accent as (hue, sat): DWM's AccentColor (0xAABBGGRR)."""
-    import winreg
-    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\DWM') as k:
-        v = winreg.QueryValueEx(k, 'AccentColor')[0]
-    return hue_sat(v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF)
-
-
 def near(a, b, tol=3):
     return abs((a[0] - b[0] + 180) % 360 - 180) <= tol and abs(a[1] - b[1]) <= tol
 
@@ -59,11 +59,19 @@ missing = [w for w in args.walls if w not in found]
 if missing:
     check('the wallpapers are installed', False, f'{missing} not in {args.we}', blocked=True)
     check.finish()
-want = {w: (hue_sat(*manifest_accent(found[w])) if manifest_accent(found[w]) else windows_accent()) for w in args.walls}
+windows = windows_accent()
+sources = {w: expected(found[w], windows) for w in args.walls}
+want = {w: hs for w, (hs, _) in sources.items()}
+if windows[0] is None:
+    check('the Windows accent as Foxglove reads it', False, windows[1], blocked=True)
+    check.finish()
 if manifest_accent(found[none_id]) is not None or want[a_id] == want[b_id] or want[b_id] == want[none_id]:
     check('the three wallpapers give three different colours', False, want, blocked=True)
     check.finish()
-print('expected hue/sat:', want, flush=True)
+for w, (hs, source) in sources.items():
+    print(f'expected hue/sat for {w}: {hs[0]}/{hs[1]} = {source}', flush=True)
+print(f"  (the colour picked in Windows' Settings, DWM AccentColor, which Foxglove doesn't follow: "
+      f'{colour(picked_accent())})', flush=True)
 
 over = Path(tempfile.mkdtemp(prefix='foxglove-wallpaper-hook-')) / 'wallpaper.txt'
 over.write_text(a_id, encoding='utf-8')

@@ -117,6 +117,8 @@ impl OverlayApp {
             keyboard: Arc::new(connected.keyboard),
         };
         self.session.ever_connected = true;
+        // Foxglove (#618): the lab waits on this before the overlay's key checks (#549).
+        eprintln!("Foxglove: the overlay connected to the keyboard's keymap");
         // Foxglove: remembered for connecting by itself next time.
         if let Some(spec) = &self.session.last_spec {
             crate::foxglove::last_device::remember(spec);

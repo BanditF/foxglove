@@ -42,6 +42,10 @@ pub const DEFAULT_SIZE: egui::Vec2 = egui::vec2(880.0, 600.0);
 pub const MIN_SIZE: egui::Vec2 = egui::vec2(720.0, 420.0);
 /// The first opening takes at most this share of the display's work area, each way.
 pub const MAX_SHARE: f32 = 0.7;
+/// The log line when Settings closes (or is minimized, which closes it) before the overlay ever
+/// connected to a keyboard: Foxglove keeps running in the tray (KeyPeek quit here).
+pub const CLOSED_UNCONNECTED: &str =
+    "Foxglove: Settings closed before the overlay connected to a keyboard; still running in the tray";
 /// The store section with the last place.
 const SECTION: &str = "settings_window";
 /// How much of the title bar, in pixels, must be on a display for the old place to be used.
@@ -703,6 +707,33 @@ mod imp {
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    /// The #618 pre-sitting run: the lab minimized Settings in a test app whose overlay had no
+    /// remembered keyboard, and KeyPeek's "closed before ever connecting: quit" ended the whole
+    /// app (no log line; the lab's next API write hit a closed pipe). Closing Settings never
+    /// asks the host to close the overlay window, which is the app's only window loop.
+    #[test]
+    fn closing_settings_never_quits_the_app() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/overlay_window/ui_settings.rs"),
+        )
+        .unwrap();
+        let code: String = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("host.request_close()"),
+            "Settings closing must not end the app"
+        );
+        assert!(
+            code.contains("settings_window::CLOSED_UNCONNECTED"),
+            "it says so instead"
+        );
+        assert!(CLOSED_UNCONNECTED.starts_with("Foxglove: "));
+    }
 
     /// The window says "Foxglove" (#535), but it's found by a name the overlay's window can't
     /// have: the lookup can't hook the overlay, whose window eframe titles "Foxglove" too.
