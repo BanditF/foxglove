@@ -123,21 +123,25 @@ pub struct View {
 }
 
 /// What the user is choosing but hasn't sent: the colour until Apply, the speed until the
-/// keyboard reports it back (ZMK saves it late).
+/// keyboard reports it back (ZMK saves it late). Untouched, the colour and brightness show what
+/// the keyboard reports (#624: the page said 42 % while the keyboard reported 9 %).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Draft {
     /// Hue 0-359, saturation and brightness 0-100.
     pub color: Option<(u16, u8, u8)>,
+    /// The user moved the colour or brightness and hasn't applied it: keep it over the report.
+    pub edited: bool,
     pub speed: Option<u8>,
     /// The custom colour's hue and saturation sliders are open.
     pub custom_open: bool,
 }
 
 impl Draft {
-    /// Seeds the colour from the left half once, and drops a speed the keyboard now reports.
+    /// Follows the left half's reported colour and brightness unless the user is changing them,
+    /// and drops a speed the keyboard now reports.
     pub fn settle(&mut self, state: Option<&RgbState>) {
         let Some(s) = state else { return };
-        if self.color.is_none() {
+        if self.color.is_none() || !self.edited {
             self.color = Some((s.left.hue, s.left.sat, s.left.brightness));
         }
         if self.speed == Some(s.left.speed) {
@@ -170,6 +174,7 @@ pub enum Intent {
 
 static DRAFT: Mutex<Draft> = Mutex::new(Draft {
     color: None,
+    edited: false,
     speed: None,
     custom_open: false,
 });
@@ -444,6 +449,8 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         });
         ui.add_space(4.0);
         ui.label(theme::caps_label(ui, "Colour"));
+        let picked = draft.color;
+        let edited = &mut draft.edited;
         let Some((hue, sat, brightness)) = draft.color.as_mut() else {
             ui.weak("Waiting for the keyboard's colour…");
             return;
@@ -533,8 +540,14 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 }
             },
         );
+        // A swatch, slider or Custom change holds the pick until Apply; Apply hands the page
+        // back to the keyboard's report (#624).
+        if picked != Some((*hue, *sat, *brightness)) {
+            *edited = true;
+        }
         if apply {
             out.push(Intent::Apply { hue: *hue, sat: *sat, brightness: *brightness });
+            *edited = false;
         }
     });
     if !v.controls {
@@ -693,6 +706,7 @@ pub mod tests {
         d.settle(Some(&state));
         assert_eq!(d.color, Some((26, 76, 80)));
         d.color = Some((200, 50, 40));
+        d.edited = true;
         d.speed = Some(5);
         d.settle(Some(&state));
         assert_eq!(
@@ -706,6 +720,66 @@ pub mod tests {
             right: None,
         }));
         assert_eq!(d.speed, None, "the keyboard caught up");
+    }
+
+    /// #624: the page showed 42 % (the last command) while the keyboard reported 9 %. Untouched,
+    /// the brightness and colour on the page are the keyboard's report; a pick the user is making
+    /// stays until Apply, then the report shows again.
+    #[test]
+    fn the_page_shows_the_reported_brightness_not_the_last_command() {
+        let reported = |brightness| RgbState {
+            left: RgbHalf {
+                brightness,
+                effect: 2,
+                ..half(false, 4, 3)
+            },
+            right: Some((half(false, 4, 3), 0)),
+        };
+        // The page last sent 42 % (Swirl); the keyboard now reports off, Spectrum, 9 %.
+        let mut d = Draft {
+            color: Some((39, 70, 42)),
+            ..Draft::default()
+        };
+        d.settle(Some(&reported(9)));
+        assert_eq!(
+            d.color,
+            Some((4, 76, 9)),
+            "the report, not the last command"
+        );
+        let ctx = super::super::pc_lights_ui::tests::test_ctx();
+        let v = View {
+            state: Some(reported(9)),
+            ..sample()
+        };
+        let mut text = String::new();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                draw(ui, &v, &mut d);
+            });
+            out.textures_delta.clear();
+            text.clear();
+            for clipped in &out.shapes {
+                collect(&clipped.shape, &mut text);
+            }
+        }
+        assert!(text.contains("9%"), "{text}");
+        assert!(!text.contains("42%"), "{text}");
+        assert!(text.contains("off"), "the halves' row says off: {text}");
+        assert!(!d.edited, "drawing alone isn't an edit");
+        // The user drags the brightness: the pick stays over the next report until Apply.
+        d.color = Some((4, 76, 60));
+        d.edited = true;
+        d.settle(Some(&reported(9)));
+        assert_eq!(d.color, Some((4, 76, 60)));
+        d.edited = false; // Apply
+        d.settle(Some(&reported(60)));
+        assert_eq!(d.color, Some((4, 76, 60)));
+        d.settle(Some(&reported(12)));
+        assert_eq!(
+            d.color,
+            Some((4, 76, 12)),
+            "the keyboard dimmed it: the page follows"
+        );
     }
 
     /// The page by device (#533): one Keyboard card holding the halves' state, Refresh and the

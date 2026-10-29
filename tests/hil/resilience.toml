@@ -145,3 +145,18 @@ name = "r-cleanup-built-in-art"
 description = "Puts a built-in set back on the right (the pushes left test art)"
 tags = ["resilience"]
 steps = [{ art_select = { set = 0, restore = false, replace_pushed = true } }]
+
+[[cases]]
+name = "right-redraw-after-wake"
+description = "#613/#621 (PR 8 of #618): an idle-off then wake rewrites the whole right panel. Screen readback is LVGL's model and can't see noise from the panel's power cut, so this reads the right's whole-screen rewrite count instead (D7 8E bytes 16-20, HELLO bit 25; both halves on a build with it). Needs the underglow on with sync on (the right's panel power follows the left's lights) and Foxglove quit (its scenes own the lights). Taps the left's middle thumb (D7 05 pos 43, a layer key: types nothing), waits for the left's idle (RGB_STATE: both off, up to 45 s), notes the count once it holds for 1.2 s, taps again: RGB_STATE's right on within 2 s, and the count up by at least 1 within 5 s. Whether the panel looks clean still needs eyes or a camera once (the count proves the rewrite ran)"
+tags = ["resilience", "release"]
+requires = ["right_redraws", "position_press"]
+steps = [
+  { press_position = { pos = 43, state = "tap" } },
+  { expect_rgb = { right_age_max_s = 2, left_on = true, right_on = true, within_ms = 3000 } },
+  { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, within_ms = 45000 } },
+  { note_right_redraws = {} },
+  { press_position = { pos = 43, state = "tap" } },
+  { expect_rgb = { right_age_max_s = 2, right_on = true, within_ms = 2000 } },
+  { expect_right_redraws = { at_least = 1, within_ms = 5000 } },
+]

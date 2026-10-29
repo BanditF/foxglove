@@ -107,6 +107,108 @@ pub fn clicked(position: [f64; 2], size: [f64; 2]) {
     }
 }
 
+/// The tray icon as the last click had it, in screen points: an agent's open (`tray.set_panel`)
+/// places the panel there too.
+static LAST_ICON: Mutex<Option<Rect>> = Mutex::new(None);
+
+/// An agent's open or close (#618, the local API's `tray.set_panel`), carried out by the next
+/// frame like a click. `asked` counts requests and `done` the last one a frame carried out, so
+/// the caller sleeps on [`HANDLED`] until its own is done (no polling).
+#[derive(Debug, Default)]
+struct Requests {
+    want: Option<bool>,
+    asked: u64,
+    done: u64,
+}
+
+static REQUESTS: Mutex<Requests> = Mutex::new(Requests {
+    want: None,
+    asked: 0,
+    done: 0,
+});
+static HANDLED: std::sync::Condvar = std::sync::Condvar::new();
+
+/// Asks the next frame to open (true) or close the panel; returns the request's number.
+fn ask(open: bool) -> u64 {
+    let mut r = REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
+    r.want = Some(open);
+    r.asked += 1;
+    r.asked
+}
+
+/// The waiting request, for this frame: what it wants and the number to mark done.
+fn take_request() -> Option<(bool, u64)> {
+    let mut r = REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
+    let asked = r.asked;
+    r.want.take().map(|want| (want, asked))
+}
+
+/// Marks requests up to `n` done (when dropped: after the frame drew the panel or closed it).
+struct Done(u64);
+impl Drop for Done {
+    fn drop(&mut self) {
+        let mut r = REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
+        r.done = r.done.max(self.0);
+        HANDLED.notify_all();
+    }
+}
+
+/// Sleeps until request `n` was carried out, at most `timeout` (the fallback, when no frame
+/// comes). True when it was.
+fn wait_done(n: u64, timeout: std::time::Duration) -> bool {
+    let r = REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (r, _) = HANDLED
+        .wait_timeout_while(r, timeout, |r| r.done < n)
+        .unwrap_or_else(|e| e.into_inner());
+    r.done >= n
+}
+
+/// The tray icon an agent's open is placed by: the last click's, else a 24x32 icon just past the
+/// work area's bottom-right corner, where the taskbar's tray usually is.
+pub fn api_icon(last: Option<Rect>, work: Rect) -> Rect {
+    last.unwrap_or_else(|| {
+        Rect::from_min_size(
+            pos2(work.right() - 96.0, work.bottom() + 8.0),
+            egui::vec2(24.0, 32.0),
+        )
+    })
+}
+
+/// The log line for an agent's open or close: what it asked, what the panel was, what it is.
+pub fn request_line(want: bool, was_open: bool, open: bool) -> String {
+    let word = |o: bool| if o { "open" } else { "closed" };
+    format!(
+        "Foxglove: tray panel {} → {} (api asked {})",
+        word(was_open),
+        word(open),
+        if want { "open" } else { "close" }
+    )
+}
+
+/// The local API's `tray.set_panel` (#618): opens or closes the panel as a tray click does
+/// (an open first un-minimizes the overlay, #612), and answers once a frame carried it out, or
+/// after `timeout` with the panel as it is. Any thread but the UI's.
+pub fn set_open(open: bool, timeout: std::time::Duration) -> (bool, Option<[i32; 4]>) {
+    let n = ask(open);
+    if open {
+        super::overlay_restore::request(super::overlay_restore::Trigger::Api);
+    }
+    wake();
+    if !wait_done(n, timeout) {
+        eprintln!("Foxglove: tray panel: no overlay frame within {timeout:?} (api)");
+    }
+    state()
+}
+
+/// Whether the panel is open, and where it was last drawn in screen pixels.
+pub fn state() -> (bool, Option<[i32; 4]>) {
+    let open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
+    match open.as_ref() {
+        Some(o) => (true, o.screen),
+        None => (false, None),
+    }
+}
+
 /// The panel while it's open.
 struct Open {
     /// The tray icon, in screen points.
@@ -116,6 +218,8 @@ struct Open {
     draft: Draft,
     /// Where the panel was last drawn, in window points.
     rect: Option<Rect>,
+    /// The same in screen pixels (left, top, right, bottom), for the local API.
+    screen: Option<[i32; 4]>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -331,16 +435,43 @@ pub fn show(ctx: &egui::Context) -> bool {
             (icon.min.to_vec2() / ppp).to_pos2(),
             (icon.max.to_vec2() / ppp).to_pos2(),
         );
+        *LAST_ICON.lock().unwrap_or_else(|e| e.into_inner()) = Some(icon);
         *open = Some(Open {
             icon,
             focused: false,
             draft: Draft::default(),
             rect: None,
+            screen: None,
         });
         // Focus, so a click elsewhere (or Alt+Tab) closes the panel through the focus event.
         ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         ctx.request_repaint();
     }
+    // The work area the overlay covers, in screen points.
+    let work = ctx
+        .input(|i| i.viewport().inner_rect)
+        .unwrap_or_else(|| ctx.content_rect());
+    // An agent's open or close (#618), marked done when this frame ends.
+    let _done = take_request().map(|(want, n)| {
+        let mut open = OPEN.lock().unwrap_or_else(|e| e.into_inner());
+        let was_open = open.is_some();
+        if want && !was_open {
+            let last = *LAST_ICON.lock().unwrap_or_else(|e| e.into_inner());
+            *open = Some(Open {
+                icon: api_icon(last, work),
+                focused: false,
+                draft: Draft::default(),
+                rect: None,
+                screen: None,
+            });
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        } else if !want {
+            *open = None;
+        }
+        eprintln!("{}", request_line(want, was_open, open.is_some()));
+        ctx.request_repaint();
+        Done(n)
+    });
     let mut guard = OPEN.lock().unwrap_or_else(|e| e.into_inner());
     let Some(open) = guard.as_mut() else {
         return false;
@@ -357,10 +488,6 @@ pub fn show(ctx: &egui::Context) -> bool {
         *guard = None;
         return false;
     }
-    // The work area the overlay covers, in screen points.
-    let work = ctx
-        .input(|i| i.viewport().inner_rect)
-        .unwrap_or_else(|| ctx.content_rect());
     let id = egui::Id::new("foxglove-tray-panel");
     let size = egui::AreaState::load(ctx, id)
         .and_then(|s| s.size)
@@ -376,6 +503,8 @@ pub fn show(ctx: &egui::Context) -> bool {
         .show(ctx, |ui| panel(ui, &v, &mut open.draft, &mut intents))
         .response;
     open.rect = Some(response.rect);
+    let [l, t, r, b, _] = region(response.rect.translate(work.min.to_vec2()), ppp);
+    open.screen = Some([l, t, r, b]);
     let clicked_outside = ctx.input(|i| i.pointer.any_pressed())
         && ctx
             .input(|i| i.pointer.interact_pos())
@@ -836,6 +965,61 @@ pub mod tests {
         let small = r(0.0, 0.0, 300.0, 400.0);
         let at = place(r(280.0, 410.0, 16.0, 16.0), small, PANEL);
         assert!(at.y >= small.top() && at.x >= small.left(), "{at:?}");
+    }
+
+    /// #618: an agent's open goes by the last click's icon, else next to the work area's
+    /// bottom-right corner, so the panel opens against the taskbar like a click's.
+    #[test]
+    fn an_agent_open_is_placed_by_the_last_icon_or_the_tray_corner() {
+        let work = screen(Edge::Bottom);
+        let clicked = r(900.0, 1040.0, 24.0, 32.0);
+        assert_eq!(api_icon(Some(clicked), work), clicked);
+        let icon = api_icon(None, work);
+        assert_eq!(edge(icon, work), Edge::Bottom);
+        let at = place(icon, work, PANEL);
+        assert!(Rect::from_min_size(at, PANEL).max.x <= work.right());
+        assert_eq!(at, pos2(1920.0 - 400.0 - MARGIN, 1032.0 - 600.0 - MARGIN));
+    }
+
+    /// #618: an agent's open or close is carried out by the next frame and answered then; the
+    /// latest ask wins, and a wait without a frame ends at its timeout.
+    #[test]
+    fn an_agent_request_is_answered_once_a_frame_carries_it_out() {
+        use std::time::Duration;
+        let _ = take_request();
+        let first = ask(true);
+        let second = ask(false);
+        assert_eq!(second, first + 1);
+        assert!(
+            !wait_done(second, Duration::from_millis(20)),
+            "no frame yet"
+        );
+        let waiter = std::thread::spawn(move || wait_done(second, Duration::from_secs(10)));
+        let (want, n) = take_request().unwrap();
+        assert_eq!((want, n), (false, second), "the latest ask wins");
+        assert_eq!(take_request(), None, "taken once");
+        drop(Done(n));
+        assert!(
+            waiter.join().unwrap(),
+            "woken by the frame, not the timeout"
+        );
+        assert!(wait_done(first, Duration::ZERO));
+    }
+
+    #[test]
+    fn an_agent_request_logs_one_line() {
+        assert_eq!(
+            request_line(true, false, true),
+            "Foxglove: tray panel closed → open (api asked open)"
+        );
+        assert_eq!(
+            request_line(false, true, false),
+            "Foxglove: tray panel open → closed (api asked close)"
+        );
+        assert_eq!(
+            request_line(true, true, true),
+            "Foxglove: tray panel open → open (api asked open)"
+        );
     }
 
     #[test]

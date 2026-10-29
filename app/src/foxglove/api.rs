@@ -446,6 +446,78 @@ impl Devices for AppDevices {
                 })?;
                 Ok(json!(zone_readback(&after, &key, index, color)?))
             }
+            "art.status" => {
+                let p: methods::DeviceParams = params(_params)?;
+                let h = art_service(&p.device)?;
+                art_status(&h.snapshot())
+            }
+            "art.select" => {
+                let p: methods::ArtSelectParams = params(_params)?;
+                if super::pause::paused() {
+                    return Err(paused_error());
+                }
+                let h = art_service(&p.device)?;
+                let before = h.snapshot();
+                let what = art_words(&p.target);
+                let (started, timeout) = match &p.target {
+                    methods::ArtTarget::Next | methods::ArtTarget::Previous => {
+                        let forward = p.target == methods::ArtTarget::Next;
+                        h.step_now(forward).map_err(|e| Error {
+                            code: code::BUSY,
+                            message: e,
+                            data: None,
+                        })?;
+                        (true, ART_WAIT)
+                    }
+                    methods::ArtTarget::Random => (h.select(-1), ART_WAIT),
+                    methods::ArtTarget::BuiltIn(name) => {
+                        (h.select(built_in_index(&before, name)?), ART_WAIT)
+                    }
+                    methods::ArtTarget::Slot(n) => (h.play_slot(*n), ART_WAIT),
+                    methods::ArtTarget::File(path) => (h.push(path.into()), ART_PUSH_WAIT),
+                };
+                if !started {
+                    return Err(Error {
+                        code: code::BUSY,
+                        message: "another art job is running".into(),
+                        data: None,
+                    });
+                }
+                let after = h.wait_job(timeout);
+                eprintln!("{}", art_line(&what, &before, &after));
+                if let Some(Err(e)) = after.outcome.as_ref().map(|o| &o.result) {
+                    return Err(Error {
+                        code: code::BACKEND,
+                        message: e.clone(),
+                        data: None,
+                    });
+                }
+                art_status(&after)
+            }
+            "tray.panel" => {
+                let (open, rect) = super::tray_panel::state();
+                Ok(json!(methods::TrayPanel { open, rect }))
+            }
+            "tray.set_panel" => {
+                let p: methods::SetPanelParams = params(_params)?;
+                let (open, rect) = super::tray_panel::set_open(p.open, WINDOW_WAIT);
+                Ok(json!(methods::TrayPanel { open, rect }))
+            }
+            "overlay.window" => overlay_window(super::overlay_restore::window_state()),
+            "overlay.restore" => {
+                let ran = super::overlay_restore::request_and_wait(
+                    super::overlay_restore::Trigger::Api,
+                    WINDOW_WAIT,
+                );
+                if !ran {
+                    return Err(Error {
+                        code: code::TIMEOUT,
+                        message: "the overlay drew no frame to run the check".into(),
+                        data: None,
+                    });
+                }
+                overlay_window(super::overlay_restore::window_state())
+            }
             "profiles.list" => {
                 let (names, active) = super::store::profiles();
                 Ok(json!(methods::Profiles { names, active }))
@@ -480,6 +552,118 @@ impl Devices for AppDevices {
             }),
         }
     }
+}
+
+/// How long an agent's art change waits for the job's end (a built-in, a slot, Next), and a
+/// pushed file's; the fallbacks when the service never reports (#618).
+const ART_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+const ART_PUSH_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+/// How long a tray panel or overlay request waits for the overlay's frame.
+const WINDOW_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The art service, for an art call naming the host-link keyboard.
+fn art_service(device: &str) -> Result<super::art_service::Handle, Error> {
+    if !keyboard().is_some_and(|d| d.info().id.to_string() == device) {
+        return Err(Error {
+            code: code::DISCONNECTED,
+            message: format!("no keyboard {device} with Foxglove's host link"),
+            data: None,
+        });
+    }
+    super::art_service::handle().ok_or_else(|| Error {
+        code: code::UNSUPPORTED,
+        message: "the art service isn't running".into(),
+        data: None,
+    })
+}
+
+/// `art.status`: what the right screen shows, from the art service's snapshot.
+fn art_status(s: &super::art_service::Snapshot) -> Result<Value, Error> {
+    use super::art_words::Showing;
+    let st = s.status.filter(|_| s.connected).ok_or_else(|| Error {
+        code: code::DISCONNECTED,
+        message: "no art status from the keyboard yet".into(),
+        data: None,
+    })?;
+    let showing = super::art_words::showing(&st);
+    let built_in = match showing {
+        Showing::BuiltIn(n) => Some(super::art_service::name_of(
+            &super::art_service::Choice::BuiltIn(n),
+            s,
+        )),
+        _ => None,
+    };
+    Ok(json!(methods::ArtStatus {
+        built_in,
+        slot: match showing {
+            Showing::Kept(n) => Some(n),
+            _ => None,
+        },
+        pushed: matches!(showing, Showing::Sent),
+        flash_slots: st.flash_slots,
+        name: Some(super::art_pieces::showing_name(s)),
+    }))
+}
+
+/// A built-in set by its manifest name (any case), as `art.select` names it.
+fn built_in_index(s: &super::art_service::Snapshot, name: &str) -> Result<i8, Error> {
+    let sets = s.built_ins();
+    sets.iter()
+        .find(|(_, label)| label.eq_ignore_ascii_case(name.trim()))
+        .map(|(n, _)| *n)
+        .ok_or_else(|| {
+            let names: Vec<_> = sets.iter().map(|(_, l)| l.as_str()).collect();
+            invalid(format!(
+                "no built-in set {name:?}; the keyboard has: {}",
+                names.join(", ")
+            ))
+        })
+}
+
+/// What an `art.select` asked for, in the log line's words.
+fn art_words(target: &methods::ArtTarget) -> String {
+    match target {
+        methods::ArtTarget::Next => "Next ›".into(),
+        methods::ArtTarget::Previous => "‹ (previous)".into(),
+        methods::ArtTarget::Random => "a random built-in".into(),
+        methods::ArtTarget::BuiltIn(n) => format!("built-in {n:?}"),
+        methods::ArtTarget::Slot(n) => format!("kept piece {n}"),
+        methods::ArtTarget::File(p) => format!("file {p:?}"),
+    }
+}
+
+/// The one log line per `art.select`: what was asked, the piece before and after.
+fn art_line(
+    what: &str,
+    before: &super::art_service::Snapshot,
+    after: &super::art_service::Snapshot,
+) -> String {
+    let result = match after.outcome.as_ref().map(|o| &o.result) {
+        Some(Ok(())) => String::new(),
+        Some(Err(e)) => format!("; failed: {e}"),
+        None => "; no answer yet".into(),
+    };
+    format!(
+        "Foxglove: art {what} (api): {} → {}{result}",
+        super::art_pieces::showing_name(before),
+        super::art_pieces::showing_name(after)
+    )
+}
+
+/// `overlay.window`'s answer: the #612 window probe.
+fn overlay_window(state: Option<super::overlay_restore::WindowState>) -> Result<Value, Error> {
+    let s = state.ok_or_else(|| Error {
+        code: code::UNSUPPORTED,
+        message: "the overlay hasn't drawn its first frame (or this isn't Windows)".into(),
+        data: None,
+    })?;
+    Ok(json!(methods::OverlayWindow {
+        iconic: s.iconic,
+        visible: s.visible,
+        rect: s.rect,
+        display: s.display,
+        on_screen: s.on_screen,
+    }))
 }
 
 /// `lighting.sync`'s answer from what the keyboard read back.
@@ -866,6 +1050,121 @@ mod parity_tests {
         );
     }
 
+    fn art(set: i8, count: u8) -> crate::foxglove::art_service::Snapshot {
+        use foxglove_link::protocol::ArtStatus;
+        crate::foxglove::art_service::Snapshot {
+            connected: true,
+            status: Some(ArtStatus {
+                link: 2,
+                right_state: 0,
+                right_set: set,
+                right_set_count: count,
+                flash_slots: 4,
+                flash_used: 0b10,
+                ..ArtStatus::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// #618: `art.status` names the piece the tray names, a built-in by its manifest name, a kept
+    /// piece by its place; nothing before the keyboard's first status.
+    #[test]
+    fn art_status_reads_what_the_right_screen_shows() {
+        let s = art(1, 12);
+        let v: methods::ArtStatus = serde_json::from_value(art_status(&s).unwrap()).unwrap();
+        let name = crate::foxglove::art_pieces::showing_name(&s);
+        assert_eq!(v.built_in.as_deref(), Some(name.as_str()));
+        assert_eq!(v.name.as_deref(), Some(name.as_str()));
+        assert_eq!((v.slot, v.pushed, v.flash_slots), (None, false, 4));
+        // While kept place 1 plays, right_set is the count + 1.
+        let v: methods::ArtStatus =
+            serde_json::from_value(art_status(&art(13, 12)).unwrap()).unwrap();
+        assert_eq!((v.built_in, v.slot), (None, Some(1)));
+        let none = crate::foxglove::art_service::Snapshot::default();
+        assert_eq!(art_status(&none).unwrap_err().code, code::DISCONNECTED);
+    }
+
+    /// `art.select` takes a built-in by its manifest name in any case, and lists the names when
+    /// there is no such set; Next and ‹ parse as the tray's buttons.
+    #[test]
+    fn art_select_names_built_ins_and_the_tray_buttons() {
+        let s = art(0, 12);
+        let sets = s.built_ins();
+        let (n, label) = &sets[3];
+        assert_eq!(built_in_index(&s, &label.to_uppercase()).unwrap(), *n);
+        let e = built_in_index(&s, "no such art").unwrap_err();
+        assert_eq!(e.code, code::INVALID_PARAMS);
+        assert!(e.message.contains(sets[0].1.as_str()), "{}", e.message);
+        let p: methods::ArtSelectParams =
+            serde_json::from_value(json!({"device": "k", "target": "next"})).unwrap();
+        assert_eq!(p.target, methods::ArtTarget::Next);
+        let p: methods::ArtSelectParams =
+            serde_json::from_value(json!({"device": "k", "target": "previous"})).unwrap();
+        assert_eq!(art_words(&p.target), "‹ (previous)");
+    }
+
+    /// One log line per `art.select`: the piece before and after, and a failure's reason.
+    #[test]
+    fn art_select_logs_one_line_with_before_and_after() {
+        use crate::foxglove::art_service::{Job, JobKind, Outcome};
+        let before = art(0, 12);
+        let mut after = art(1, 12);
+        let name = |s| crate::foxglove::art_pieces::showing_name(s);
+        assert_eq!(
+            art_line("Next ›", &before, &after),
+            format!(
+                "Foxglove: art Next › (api): {} → {}; no answer yet",
+                name(&before),
+                name(&after)
+            )
+        );
+        after.outcome = Some(Outcome {
+            job: Job {
+                kind: JobKind::Show,
+                name: String::new(),
+                quiet: true,
+                again: None,
+            },
+            result: Err("Bluetooth write failed".into()),
+            at: std::time::Instant::now(),
+        });
+        assert!(art_line("Next ›", &before, &after).ends_with("; failed: Bluetooth write failed"));
+    }
+
+    /// #612/#618: the overlay probe as `overlay.window` answers it, and `tray.panel` with the
+    /// panel closed, through the API's own dispatch (no window, no frame).
+    #[test]
+    fn the_window_calls_answer_without_a_window() {
+        let state = crate::foxglove::overlay_restore::WindowState {
+            iconic: true,
+            visible: true,
+            rect: Some([-32000, -32000, -31840, -31972]),
+            display: None,
+            on_screen: false,
+        };
+        let v: methods::OverlayWindow =
+            serde_json::from_value(overlay_window(Some(state)).unwrap()).unwrap();
+        assert!(v.iconic && !v.on_screen && v.display.is_none());
+        assert_eq!(overlay_window(None).unwrap_err().code, code::UNSUPPORTED);
+        let v: methods::TrayPanel =
+            serde_json::from_value(AppDevices.call("tray.panel", json!({})).unwrap()).unwrap();
+        assert_eq!(
+            v,
+            methods::TrayPanel {
+                open: false,
+                rect: None
+            }
+        );
+        assert_eq!(
+            AppDevices
+                .call("art.status", json!({"device": "nothing"}))
+                .unwrap_err()
+                .code,
+            code::DISCONNECTED
+        );
+    }
+
     /// The new calls use the existing permissions: reads need `devices.read`, writes
     /// `lighting.write`.
     #[test]
@@ -875,6 +1174,14 @@ mod parity_tests {
         assert_eq!(need("lighting.sync"), Some("devices.read"));
         assert_eq!(need("pc_lighting.set_zone"), Some("lighting.write"));
         assert_eq!(need("lighting.set_sync"), Some("lighting.write"));
+        // API 1.6 (#618): the window reads need `devices.read`, the writes `app.windows`;
+        // art writes keep `art.write`.
+        assert_eq!(need("tray.panel"), Some("devices.read"));
+        assert_eq!(need("overlay.window"), Some("devices.read"));
+        assert_eq!(need("tray.set_panel"), Some("app.windows"));
+        assert_eq!(need("overlay.restore"), Some("app.windows"));
+        assert_eq!(need("art.select"), Some("art.write"));
+        assert!(!Permission::AppWindows.sensitive());
     }
 }
 

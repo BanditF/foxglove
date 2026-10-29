@@ -1,5 +1,5 @@
 {
-  "api": "1.5",
+  "api": "1.6",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -154,6 +154,16 @@
                   "file"
                 ],
                 "type": "object"
+              },
+              {
+                "const": "next",
+                "description": "The keyboard's next piece, as the tray panel's Next › (API 1.6, #618).",
+                "type": "string"
+              },
+              {
+                "const": "previous",
+                "description": "The piece before, as the tray panel's ‹ (API 1.6, #618).",
+                "type": "string"
               }
             ]
           }
@@ -190,6 +200,14 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "name": {
+            "default": null,
+            "description": "The piece shown, in the words the tray panel names it (API 1.6, #618).",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "pushed": {
             "description": "A pushed (RAM) set is shown.",
@@ -245,6 +263,14 @@
             "maximum": 255,
             "minimum": 0,
             "type": "integer"
+          },
+          "name": {
+            "default": null,
+            "description": "The piece shown, in the words the tray panel names it (API 1.6, #618).",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "pushed": {
             "description": "A pushed (RAM) set is shown.",
@@ -1582,6 +1608,114 @@
         "type": "object"
       }
     },
+    "overlay.restore": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "app.windows",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The overlay window as Windows has it (API 1.6, #612, #618). The tray panel draws inside it, so\na minimized overlay means a tray click opens nothing.",
+        "properties": {
+          "display": {
+            "description": "The display it covers most (`\\.\\DISPLAY1`), none when it's on no live display.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "iconic": {
+            "description": "Minimized (IsIconic).",
+            "type": "boolean"
+          },
+          "on_screen": {
+            "description": "Shown, not minimized, and on a live display.",
+            "type": "boolean"
+          },
+          "rect": {
+            "description": "The outer rectangle in screen pixels (left, top, right, bottom).",
+            "items": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "visible": {
+            "description": "Shown (IsWindowVisible).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "iconic",
+          "visible",
+          "on_screen"
+        ],
+        "title": "OverlayWindow",
+        "type": "object"
+      }
+    },
+    "overlay.window": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The overlay window as Windows has it (API 1.6, #612, #618). The tray panel draws inside it, so\na minimized overlay means a tray click opens nothing.",
+        "properties": {
+          "display": {
+            "description": "The display it covers most (`\\.\\DISPLAY1`), none when it's on no live display.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "iconic": {
+            "description": "Minimized (IsIconic).",
+            "type": "boolean"
+          },
+          "on_screen": {
+            "description": "Shown, not minimized, and on a live display.",
+            "type": "boolean"
+          },
+          "rect": {
+            "description": "The outer rectangle in screen pixels (left, top, right, bottom).",
+            "items": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "visible": {
+            "description": "Shown (IsWindowVisible).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "iconic",
+          "visible",
+          "on_screen"
+        ],
+        "title": "OverlayWindow",
+        "type": "object"
+      }
+    },
     "pc_lighting.list": {
       "kind": "call",
       "params": {
@@ -2145,6 +2279,85 @@
           "values"
         ],
         "title": "SettingValues",
+        "type": "object"
+      }
+    },
+    "tray.panel": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The tray panel (API 1.6, #618): whether it's open, and where it was last drawn, in screen\npixels (left, top, right, bottom).",
+        "properties": {
+          "open": {
+            "type": "boolean"
+          },
+          "rect": {
+            "items": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "open"
+        ],
+        "title": "TrayPanel",
+        "type": "object"
+      }
+    },
+    "tray.set_panel": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Opens or closes the tray panel, as a click on the tray icon does (API 1.6).",
+        "properties": {
+          "open": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "open"
+        ],
+        "title": "SetPanelParams",
+        "type": "object"
+      },
+      "permission": "app.windows",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The tray panel (API 1.6, #618): whether it's open, and where it was last drawn, in screen\npixels (left, top, right, bottom).",
+        "properties": {
+          "open": {
+            "type": "boolean"
+          },
+          "rect": {
+            "items": {
+              "format": "int32",
+              "type": "integer"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "open"
+        ],
+        "title": "TrayPanel",
         "type": "object"
       }
     }

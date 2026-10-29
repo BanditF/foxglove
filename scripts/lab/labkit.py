@@ -31,6 +31,75 @@ def temp_config(prefix, store=''):
     return cfg
 
 
+def require_app_ok():
+    """Lab cases that launch Foxglove run only with On-call's OK (FOXGLOVE_APP_OK=1): exit 2
+    (BLOCKED) otherwise, before anything starts."""
+    if os.environ.get('FOXGLOVE_APP_OK') != '1':
+        print('BLOCKED: this case launches Foxglove; On-call runs it with FOXGLOVE_APP_OK=1', flush=True)
+        print('RESULT BLOCKED', flush=True)
+        sys.exit(2)
+
+
+def log_lines(cfg, piece):
+    """The lines of the test app's foxglove.log (in its temp config) containing `piece`."""
+    log = Path(cfg) / 'logs' / 'foxglove.log'
+    return [l for l in log.read_text(encoding='utf-8', errors='replace').splitlines() if piece in l] if log.exists() else []
+
+
+class Windows:
+    """The test app's own windows, found by class among the top-level windows of its PID (the
+    lab hooks of #612/#618: no mouse, no focus taken from the user's windows by these posts)."""
+    WM_DISPLAYCHANGE, WM_LBUTTONUP, WM_USER_TRAYICON, SW_MINIMIZE = 0x007E, 0x0202, 6002, 6
+
+    def __init__(self, pid):
+        self.pid, self.u = pid, ctypes.windll.user32
+
+    def find(self, cls):
+        """The pid's top-level windows of class `cls` (shown or not)."""
+        from ctypes import wintypes
+        found = []
+        proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def each(hwnd, _):
+            pid = wintypes.DWORD()
+            self.u.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            name = ctypes.create_unicode_buffer(256)
+            self.u.GetClassNameW(hwnd, name, 256)
+            if pid.value == self.pid and name.value == cls:
+                found.append(hwnd)
+            return True
+        self.u.EnumWindows(proc(each), 0)
+        return found
+
+    def rect(self, hwnd):
+        from ctypes import wintypes
+        r = wintypes.RECT()
+        self.u.GetWindowRect(hwnd, ctypes.byref(r))
+        return [r.left, r.top, r.right, r.bottom]
+
+    def overlay(self, rect):
+        """The overlay: the winit window whose rect is the one overlay.window reports."""
+        return next((h for h in self.find('Window Class') if self.rect(h) == rect), None)
+
+    def minimize(self, hwnd):
+        return self.u.ShowWindow(hwnd, self.SW_MINIMIZE)
+
+    def display_change(self):
+        """WM_DISPLAYCHANGE to the app's display watcher, as Windows sends it on a layout change."""
+        hwnds = self.find('FoxgloveOverlayDisplays')
+        for h in hwnds:
+            self.u.PostMessageW(h, self.WM_DISPLAYCHANGE, 32, 0)
+        return bool(hwnds)
+
+    def tray_click(self):
+        """The tray icon's left-button-up, as the shell posts it to the icon's window (tray-icon
+        0.24's callback message); the app reads the icon's real rect and the cursor itself."""
+        hwnds = self.find('tray_icon_app')
+        for h in hwnds:
+            self.u.PostMessageW(h, self.WM_USER_TRAYICON, 0, self.WM_LBUTTONUP)
+        return bool(hwnds)
+
+
 def kill(name):
     ps(f'Get-Process {name} -ErrorAction SilentlyContinue | Stop-Process -Force')
 
@@ -60,6 +129,7 @@ class App:
         self.env = {**os.environ, 'FOXGLOVE_CONFIG_DIR': str(cfg), **(env or {})}
 
     def __enter__(self):
+        require_app_ok()  # every app-level case launches Foxglove: On-call's OK only
         # Exactly the app's process name: test binaries such as foxglove_plugin_host-*.exe are other
         # sessions' work and must never be stopped.
         self.previous = ps("Get-Process -Name foxglove -ErrorAction SilentlyContinue | "

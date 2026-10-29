@@ -721,6 +721,8 @@ int art_relay_build_info(void) {
 static struct battery_dim_wire right_dim;
 static int64_t right_dim_at; // uptime of the last good read, 0 = never
 static atomic_t dim_busy;
+static uint32_t right_redraws; // the right's whole-screen rewrites, as last read (#618)
+static bool right_redraws_ok;
 
 static void dim_read_job(struct k_work *work) {
     static struct bt_gatt_read_params params;
@@ -742,6 +744,19 @@ static void dim_read_job(struct k_work *work) {
             atomic_set(&in_flight, 1);
             err = wait_done(bt_gatt_read(conn, &params));
         }
+        bt_conn_unref(conn);
+    }
+    if (err == 0 && (conn = job_conn()) != NULL) {
+        // Its redraw count, right after the dim state; a right before it ends the value there.
+        static uint8_t count[sizeof(uint32_t)];
+        slot_got = 0;
+        ofs_buf = count;
+        ofs_len = sizeof(count);
+        params.single.offset = ART_RELAY_REDRAWS_AT;
+        k_sem_reset(&gatt_done);
+        atomic_set(&in_flight, 1);
+        right_redraws_ok = wait_done(bt_gatt_read(conn, &params)) == 0;
+        right_redraws = right_redraws_ok ? sys_get_le32(count) : 0;
         bt_conn_unref(conn);
     }
     if (err == 0) {
@@ -1009,6 +1024,11 @@ bool art_relay_right_shown(struct rgb_shown_wire *out) {
     }
     *out = right_shown;
     return true;
+}
+
+bool art_relay_right_redraws(uint32_t *out) {
+    *out = right_redraws;
+    return right_redraws_ok && art_relay_link() == 2 && right_dim_at != 0;
 }
 
 uint8_t art_relay_right_rgb(struct rgb_idle_wire *out) {

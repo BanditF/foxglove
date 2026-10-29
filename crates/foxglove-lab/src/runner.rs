@@ -126,6 +126,10 @@ impl Device for Hardware {
     }
 }
 
+/// How long the right's redraw count must hold before note_right_redraws takes it (#618): longer
+/// than the 900 ms between a redraw's two shots (peripheral_status.c).
+const REDRAW_SETTLE: Duration = Duration::from_millis(1200);
+
 /// Capabilities come only from HELLO's capability bits, never from the version number.
 /// Position presses also need the refusal bit: a press resolves through whatever layers are
 /// active, so the firmware must be known to refuse bt/out/reset/bootloader/soft_off.
@@ -153,6 +157,8 @@ pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
         "activity_relay" => "the left doesn't relay its activity to the right (HELLO bit 23, #603)",
         "rgb_shown" if has(caps::RGB_SHOWN) => return None,
         "rgb_shown" => "RGB_STATE doesn't say what the LEDs show (HELLO bit 24, #605)",
+        "right_redraws" if has(caps::RIGHT_REDRAWS) => return None,
+        "right_redraws" => "the left doesn't report the right's redraw count (HELLO bit 25, #618)",
         "art_keys" if hello.capabilities & ART_KEYS_CAP != 0 => return None,
         "art_keys" => "firmware has no art keys (HELLO bit 16, #302)",
         "position_press" if has(caps::POSITION) && has(caps::INVOKE_REFUSES) => return None,
@@ -192,6 +198,8 @@ pub struct Runner<'a, D> {
     baselines: std::collections::HashMap<String, image::GrayImage>,
     /// Whether the PC is locked, for cases that require "unlocked" (tests swap it out).
     pub locked: fn() -> bool,
+    /// The right's redraw count at the case's note_right_redraws (#618).
+    redraw_note: Option<u32>,
 }
 impl<'a, D: Device> Runner<'a, D> {
     pub fn new(
@@ -217,6 +225,7 @@ impl<'a, D: Device> Runner<'a, D> {
             case_name: String::new(),
             screens_ini: None,
             locked: crate::platform::locked,
+            redraw_note: None,
         }
     }
     fn check(&self) -> Result<()> {
@@ -629,6 +638,14 @@ impl<'a, D: Device> Runner<'a, D> {
         })?;
         screen::portrait(&bits)
     }
+    /// The right half's redraw count as the left last read it (D7 0E; each request starts a
+    /// fresher read). BLOCKED when the right doesn't report it (right firmware before #618).
+    fn right_redraws(&self) -> Result<u32> {
+        let d = settings::battery_dim(self.device, None)?;
+        d.right_redraws.ok_or_else(|| {
+            Blocked("the right half reports no redraw count (no relay read yet, or right firmware before #618)".into()).into()
+        })
+    }
     /// Saves a portrait capture as a 4x PNG next to the report and attaches it to the step.
     fn save_png(&mut self, stem: &str, image: &image::GrayImage) -> Result<String> {
         // Prefixed with the case so captures from different cases in one run never overwrite.
@@ -640,6 +657,7 @@ impl<'a, D: Device> Runner<'a, D> {
     /// Waits out the bounded firmware release even when cancelled; no unsupported release command.
     fn cleanup(&mut self) {
         self.baselines.clear();
+        self.redraw_note = None;
         if let Some((path, original)) = self.screens_ini.take() {
             let _ = match original {
                 Some(bytes) => std::fs::write(&path, bytes),
@@ -1032,6 +1050,49 @@ impl<'a, D: Device> Runner<'a, D> {
                 );
                 Ok(format!("matches {}", sc.golden))
             }
+            Step::NoteRightRedraws(_) => {
+                self.right_ready()?;
+                // The first answer is the left's last read; it asks the right again, so the
+                // next one is fresh. A redraw's second shot lands 1 s after its first (#621), so
+                // the count must hold for REDRAW_SETTLE before it's noted (at most 5 tries).
+                let _ = settings::battery_dim(self.device, None)?;
+                let mut n = None;
+                for _ in 0..5 {
+                    self.check()?;
+                    std::thread::sleep(REDRAW_SETTLE);
+                    let now = self.right_redraws()?;
+                    if n == Some(now) {
+                        self.redraw_note = Some(now);
+                        return Ok(format!("right redraws {now}"));
+                    }
+                    n = Some(now);
+                }
+                bail!("the right's redraw count kept changing: last {n:?}")
+            }
+            Step::ExpectRightRedraws(c) => {
+                let base = self
+                    .redraw_note
+                    .ok_or_else(|| anyhow::anyhow!("no note_right_redraws earlier in the case"))?;
+                let started = Instant::now();
+                let end = started + Duration::from_millis(c.within_ms);
+                loop {
+                    self.check()?;
+                    std::thread::sleep(Duration::from_millis(300));
+                    let n = self.right_redraws()?;
+                    if n >= base.saturating_add(c.at_least) {
+                        return Ok(format!(
+                            "right redraws {base} -> {n} after {} ms",
+                            started.elapsed().as_millis()
+                        ));
+                    }
+                    ensure!(
+                        Instant::now() < end,
+                        "right redraws {base} -> {n} within {} ms; expected at least +{}",
+                        c.within_ms,
+                        c.at_least
+                    );
+                }
+            }
             Step::ExpectScreenStill(c) => {
                 let first = match self.baselines.remove(&c.half) {
                     Some(image) => image,
@@ -1116,6 +1177,9 @@ impl<'a, D: Device> Runner<'a, D> {
                 | Step::CaptureScreen(_)
                 | Step::ExpectScreenChange(_)
                 | Step::ExpectScreenStill(_) => unsupported("screen_readback", &self.hello),
+                Step::NoteRightRedraws(_) | Step::ExpectRightRedraws(_) => {
+                    unsupported("right_redraws", &self.hello)
+                }
                 Step::PressPosition(p) => {
                     unsupported("position_press", &self.hello).or_else(|| {
                         (p.expect_status == "refused")

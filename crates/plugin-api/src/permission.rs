@@ -51,6 +51,8 @@ pub enum Permission {
     AudioInputsMute,
     /// Keep its own passwords and tokens in Windows' credential store (#213).
     Secrets,
+    /// Open and close Foxglove's tray panel and bring its overlay window back (API 1.6, #618).
+    AppWindows,
     /// Be told when a program's windows open and close (`apps.watch:<name>.exe`, API 1.3), so a
     /// plugin waits for an app instead of polling for it (#277).
     AppsWatch(String),
@@ -96,6 +98,7 @@ impl Permission {
                 "keep its passwords or tokens in Windows' credential store".into()
             }
             Permission::AppsWatch(exe) => format!("notice when {exe} opens or closes its windows"),
+            Permission::AppWindows => "open and close Foxglove's tray panel and overlay".into(),
         }
     }
 }
@@ -191,6 +194,7 @@ impl TryFrom<String> for Permission {
                 "audio.inputs.read" => Permission::AudioInputsRead,
                 "audio.inputs.mute" => Permission::AudioInputsMute,
                 "secrets" => Permission::Secrets,
+                "app.windows" => Permission::AppWindows,
                 _ => return Err(format!("unknown permission {text:?}")),
             },
         })
@@ -224,6 +228,7 @@ impl From<Permission> for String {
             Permission::AudioInputsMute => "audio.inputs.mute".into(),
             Permission::Secrets => "secrets".into(),
             Permission::AppsWatch(exe) => format!("apps.watch:{exe}"),
+            Permission::AppWindows => "app.windows".into(),
         }
     }
 }

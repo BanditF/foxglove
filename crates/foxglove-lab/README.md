@@ -77,6 +77,8 @@ Steps are single-key tables in an ordered `steps` array:
 | `screen` | `half = "left"` / `"right"`, `golden = "golden/left-base.png"`, `mask = [{ x = 0, y = 0, width = 20, height = 10 }]` |
 | `press_position` | `pos` (0–47), `state = "down"` / `"up"` |
 | `expect_screen_still` | `half`, optional `region` (portrait 68×160), `ms`: captures for `ms` and fails on any change there (a paused animation, #603); its last capture is the baseline for a following `expect_screen_change` |
+| `note_right_redraws` | `{}`: notes the right's whole-screen rewrites since its power-on (D7 8E bytes 16-20, HELLO bit 25, #618) once the count holds for 1.2 s |
+| `expect_right_redraws` | optional `at_least` (1), `within_ms` (5000): the count grew that much since the note; BLOCKED when the right doesn't report it |
 
 INVOKE status names: `ok` (0), `unknown_id` (1), `busy` (2), `failed` (3),
 `not_built_in` (4), `bad_length` (5), `refused` (6). Layer indices in the bundled
@@ -88,7 +90,8 @@ reports left over from an earlier invocation are discarded before the next.
 Requirements currently understood: `host_link>=N`, `invoke_refusal`,
 `screen_readback`, `position_press`, `activity_relay` (HELLO bit 23: the left
 relays its activity to the right, #603), `rgb_shown` (HELLO bit 24: RGB_STATE says what
-each half's LEDs show, #605). `split_guard_test` takes an optional `while_down` invoke,
+each half's LEDs show, #605), `right_redraws` (HELLO bit 25: D7 8E carries the
+right's redraw count, #618; `foxglove-lab status` prints it as `RIGHT_REDRAWS`). `split_guard_test` takes an optional `while_down` invoke,
 sent once while HELLO shows the split link down (right link 0), so only the left takes
 it (#624); the step is BLOCKED if the link never reads as down. Unsupported requirements block the **whole
 case before its first step**. `screen` and `press_position` also imply their

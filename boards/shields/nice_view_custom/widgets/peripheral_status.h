@@ -27,6 +27,9 @@ void art_hold(void);
 // Rewrite every pixel of the panel soon (#613): after anything that may have switched its power
 // back on, and after an art change. Any thread.
 void art_redraw_all(void);
+// Whole-screen rewrites since power-on (#618): the lab reads it through D7 0E (HELLO bit 25) to
+// see that a wake rewrote the panel, which screen readback (LVGL's model) can't show.
+uint32_t art_redraw_count(void);
 // The left's activity over the relay (#603): while it's active the art plays as if this half
 // were, without counting as activity here (this half's own idle, sleep and battery rules stay).
 // false when the left idles or the split link drops. Any thread.

@@ -584,13 +584,18 @@ pub fn chips(s: &StripState) -> Vec<Chip> {
         .unwrap_or_default();
     if parts.is_split() {
         out.push(match &s.right_build {
+            // Both halves' builds in the header (#624: the right's was only in the hover).
             Some(Ok(build)) => Chip {
                 hover: Some(build.clone()),
-                ..chip(Tone::Ok, &second, format!("linked{battery}"))
+                ..chip(Tone::Ok, &second, format!("linked · {build}{battery}"))
             },
             Some(Err(e)) => Chip {
                 hover: Some(e.clone()),
-                ..chip(Tone::Warn, &second, format!("no reply yet{battery}"))
+                ..chip(
+                    Tone::Warn,
+                    &second,
+                    format!("no reply yet · firmware unknown{battery}"),
+                )
             },
             None => chip(Tone::Off, &second, format!("asking…{battery}")),
         });
@@ -1030,8 +1035,24 @@ mod tests {
         );
         assert_eq!(
             (c[1].tone, c[1].text.as_str()),
-            (Some(Tone::Warn), "no reply yet · battery 61%")
+            (
+                Some(Tone::Warn),
+                "no reply yet · firmware unknown · battery 61%"
+            )
         );
+        // #624: the right's build shows in the header like the left's, not only in the hover.
+        let linked = chips(&StripState {
+            right_build: Some(Ok("0.1.0 (dev) · 35eae80".into())),
+            ..s.clone()
+        });
+        assert_eq!(
+            (linked[0].text.as_str(), linked[1].text.as_str()),
+            (
+                "on USB · 0.1.0 · e255d32 · battery 95%",
+                "linked · 0.1.0 (dev) · 35eae80 · battery 61%"
+            )
+        );
+        assert_eq!(linked[1].name, "Right");
         assert_eq!(c[2].text, "Bluetooth slot 1 · this PC");
         assert_eq!(c.len(), 3, "no warning while it's safe to unplug");
     }
