@@ -59,7 +59,11 @@ impl Reopener for ZmkReopener {
             }
             fetch_and_save(vid, pid, &self.transport)
                 .ok()
-                .and_then(|data| build_from_zmk_data(vid, pid, data).ok())
+                .and_then(|(data, build)| {
+                    // Read from the keyboard just now: its ids are this build's (#633).
+                    learn_ids(&data, build);
+                    build_from_zmk_data(vid, pid, data).ok()
+                })
         });
         let layout = fresh.map_or_else(|| Arc::clone(&self.layout), Arc::new);
         Ok(Box::new(ZmkProtocol::open_hid(
@@ -69,13 +73,24 @@ impl Reopener for ZmkReopener {
     }
 }
 
-/// Reads the keymap from the keyboard and keeps a copy of what it said (Foxglove).
-fn fetch_and_save(vid: u16, pid: u16, transport: &ZmkTransport) -> Result<ZmkData, Box<dyn Error>> {
+/// Reads the keymap from the keyboard and keeps a copy of what it said (Foxglove), with the
+/// firmware build it was read from (#633; `None` when that can't be read).
+fn fetch_and_save(
+    vid: u16,
+    pid: u16,
+    transport: &ZmkTransport,
+) -> Result<(ZmkData, Option<String>), Box<dyn Error>> {
     let (data, recording) = zmk_rpc::fetch_zmk_data(transport)?;
+    let build = crate::foxglove::devices::firmware_build();
     if let Some(recording) = recording {
-        crate::foxglove::keymap_cache::save(vid, pid, &recording, &data);
+        crate::foxglove::keymap_cache::save(vid, pid, &recording, &data, build.as_deref());
     }
-    Ok(data)
+    Ok((data, build))
+}
+
+/// Foxglove: what the app may invoke, from a keymap read under firmware `build` (#633).
+fn learn_ids(data: &ZmkData, build: Option<String>) {
+    crate::foxglove::keyboard_actions::learn(&data.resolved_layers, &data.raw_keymap, build);
 }
 
 impl ZmkProtocol {
@@ -88,10 +103,25 @@ impl ZmkProtocol {
         // Foxglove: when Studio can't be asked (Bluetooth only, locked), start from the keymap
         // it last sent, so the overlay works without a cable.
         let zmk_data = match fetch_and_save(vid, pid, transport) {
-            Ok(data) => data,
-            Err(e) => crate::foxglove::keymap_cache::replay(vid, pid)
-                .and_then(|client| zmk_rpc::fetch_zmk_data_from_client(client).ok())
-                .ok_or(e)?,
+            Ok((data, build)) => {
+                learn_ids(&data, build);
+                data
+            }
+            Err(e) => {
+                let Some((client, saved)) = crate::foxglove::keymap_cache::replay(vid, pid) else {
+                    return Err(e);
+                };
+                let Ok(data) = zmk_rpc::fetch_zmk_data_from_client(client) else {
+                    return Err(e);
+                };
+                // The saved copy is shown either way; its ids are used only while the keyboard
+                // runs the build it was read from (#633), else they wait for a keymap read.
+                let now = crate::foxglove::devices::firmware_build();
+                if saved.is_some() && saved == now {
+                    learn_ids(&data, now);
+                }
+                data
+            }
         };
         let layout = build_from_zmk_data(vid, pid, zmk_data)?;
         Self::open_hid(Arc::new(layout), transport.clone())
@@ -219,7 +249,9 @@ impl KeyboardProtocol for ZmkProtocol {
         let layout = &self.layout;
         let keys = layout.definition.cols;
         self.studio.handle(request, done, |layers, raw| {
-            crate::foxglove::keyboard_actions::learn(layers, raw);
+            // Read from the keyboard now (#633).
+            let build = crate::foxglove::devices::firmware_build();
+            crate::foxglove::keyboard_actions::learn(layers, raw, build);
             crate::foxglove::layer_access::learn(layers);
             let snapshot = snapshot_from_resolved(layers, keys);
             *layout.snapshot.lock().unwrap_or_else(|e| e.into_inner()) = snapshot.clone();
@@ -265,7 +297,7 @@ impl KeyboardProtocol for ZmkProtocol {
 
 fn build_from_zmk_data(vid: u16, pid: u16, data: ZmkData) -> Result<ZmkLayout, Box<dyn Error>> {
     const ACTIVE_LAYOUT_NAME: &str = "active physical layout";
-    crate::foxglove::keyboard_actions::learn(&data.resolved_layers, &data.raw_keymap);
+    // Foxglove: the invokable ids are learned by the caller, which knows their build (#633).
     crate::foxglove::layer_access::learn(&data.resolved_layers);
 
     let active_idx = data.physical_layouts.active_layout_index as usize;

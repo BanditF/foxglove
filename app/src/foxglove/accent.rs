@@ -813,6 +813,59 @@ mod tests {
         assert_eq!(board.pushes.get(), 1);
     }
 
+    /// #633 item 2, after a flash: the accent was applied on the old firmware (`&rgb_ug` was 4).
+    /// The new build drops the ids, so at the connect the lighting command is `Unknown`: nothing
+    /// is sent with the old id. The keymap read from the new build (id 9) wakes it with
+    /// LightingKnown, and the colour, lost in the flash, goes out once.
+    #[test]
+    fn after_a_flash_the_accent_waits_for_the_new_id_and_applies_once() {
+        let blue = hue_sat(0, 120, 215);
+        let board = FakeBoard::new(Some((0, 100, 60)));
+        let mut f = Follower::default();
+        assert_eq!(
+            board.wake(&mut f, Wake::Changed, blue),
+            Step::Sent(true),
+            "applied on the old build"
+        );
+        // The flash: the board forgets the colour, and the app the ids.
+        *board.colour.borrow_mut() = Some((0, 0, 60));
+        board.pushes.set(0);
+        board.reads.set(0);
+        for why in [
+            Wake::Reassert(Trigger::KeyboardConnected),
+            Wake::Reassert(Trigger::RightRelayReady),
+        ] {
+            assert_eq!(
+                board.wake_known(&mut f, why, blue, Underglow::Unknown),
+                Step::Waiting,
+                "{why:?}"
+            );
+        }
+        // A colour change to the same colour stops before any traffic, as always.
+        assert_eq!(
+            board.wake_known(&mut f, Wake::Changed, blue, Underglow::Unknown),
+            Step::Skipped
+        );
+        assert_eq!((board.reads.get(), board.pushes.get()), (0, 0));
+        assert_eq!(
+            board.wake_known(
+                &mut f,
+                Wake::Reassert(Trigger::LightingKnown),
+                blue,
+                Underglow::Known(9)
+            ),
+            Step::Sent(true)
+        );
+        for t in Trigger::ALL {
+            assert_eq!(
+                board.wake_known(&mut f, Wake::Reassert(t), blue, Underglow::Known(9)),
+                Step::Skipped,
+                "{t:?}"
+            );
+        }
+        assert_eq!(board.pushes.get(), 1, "applied once");
+    }
+
     /// The old store keeps working: a section without the new key follows no wallpaper.
     #[test]
     fn an_old_lighting_section_reads() {

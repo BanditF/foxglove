@@ -7,6 +7,9 @@
 //! starts every session at a random request id, and asks for behaviour details in no fixed
 //! order). No format of our own to keep in step with the library: a recording it can't use
 //! just fails, and Foxglove reports the original error.
+//!
+//! The copy also names the firmware build it was recorded from (#633): the behaviour ids in it
+//! are that build's, so the app only takes them from a copy whose build the keyboard still runs.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
@@ -242,12 +245,27 @@ fn path(vid: u16, pid: u16) -> Option<PathBuf> {
         .map(|p| p.with_file_name(format!("keymap-{vid:04X}-{pid:04X}.studio")))
 }
 
-const MAGIC: &[u8; 4] = b"FXK1";
+/// Copies from before #633, which don't say what build they came from.
+const MAGIC_V1: &[u8; 4] = b"FXK1";
+const MAGIC: &[u8; 4] = b"FXK2";
 
-/// The exchanges as a file: "FXK1", their count (u32, little endian), then for each the request
-/// and the reply, each as its length (u32, little endian) and its protobuf bytes.
-fn to_file(exchanges: &[Exchange]) -> Vec<u8> {
+/// A saved copy: the conversation and the firmware build it was recorded from.
+#[derive(Clone, Debug, PartialEq)]
+struct Saved {
+    /// `None`: not known (the build couldn't be read, or an FXK1 copy). Never trusted (#633).
+    build: Option<String>,
+    exchanges: Vec<Exchange>,
+}
+
+/// The exchanges as a file: "FXK2", the build (its length as a u32, little endian, 0 for not
+/// known, then its UTF-8), the exchanges' count (u32, little endian), then for each the request
+/// and the reply, each as its length (u32, little endian) and its protobuf bytes. "FXK1" files
+/// are the same without the build.
+fn to_file(build: Option<&str>, exchanges: &[Exchange]) -> Vec<u8> {
     let mut out = MAGIC.to_vec();
+    let build = build.unwrap_or_default().as_bytes();
+    out.extend_from_slice(&(build.len() as u32).to_le_bytes());
+    out.extend_from_slice(build);
     out.extend_from_slice(&(exchanges.len() as u32).to_le_bytes());
     for e in exchanges {
         for bytes in [e.request.encode_to_vec(), e.reply.encode_to_vec()] {
@@ -258,9 +276,16 @@ fn to_file(exchanges: &[Exchange]) -> Vec<u8> {
     out
 }
 
-/// The exchanges in a file written by [`to_file`]; `None` if it's damaged or cut short.
-fn from_file(bytes: &[u8]) -> Option<Vec<Exchange>> {
-    let mut bytes = bytes.strip_prefix(MAGIC)?;
+/// The copy in a file written by [`to_file`] (or an FXK1 one, with no build); `None` if it's
+/// damaged or cut short.
+fn from_file(bytes: &[u8]) -> Option<Saved> {
+    let (mut bytes, build) = if let Some(mut rest) = bytes.strip_prefix(MAGIC) {
+        let len = u32::from_le_bytes(next_u32(&mut rest)?) as usize;
+        let build = std::str::from_utf8(rest.get(..len)?).ok()?.to_string();
+        (&rest[len..], Some(build).filter(|b| !b.is_empty()))
+    } else {
+        (bytes.strip_prefix(MAGIC_V1)?, None)
+    };
     let count = u32::from_le_bytes(next_u32(&mut bytes)?) as usize;
     let mut next = || -> Option<&[u8]> {
         let len = u32::from_le_bytes(next_u32(&mut bytes)?) as usize;
@@ -276,7 +301,7 @@ fn from_file(bytes: &[u8]) -> Option<Vec<Exchange>> {
         });
     }
     // Whole only if nothing is left over either.
-    bytes.is_empty().then_some(exchanges)
+    bytes.is_empty().then_some(Saved { build, exchanges })
 }
 
 fn next_u32(bytes: &mut &[u8]) -> Option<[u8; 4]> {
@@ -304,28 +329,29 @@ fn replays_as(exchanges: &[Exchange], live: &ZmkData) -> bool {
 
 /// Keeps `recording` as keyboard `vid:pid`'s keymap, but only if replaying it gives exactly
 /// `live` (what the keyboard just said), so an incomplete recording never replaces a good one.
-pub fn save(vid: u16, pid: u16, recording: &Recording, live: &ZmkData) {
+/// `build` is the firmware build it was read from (`devices::firmware_build`; `None`: not known).
+pub fn save(vid: u16, pid: u16, recording: &Recording, live: &ZmkData, build: Option<&str>) {
     if let Some(path) = path(vid, pid) {
-        save_at(&path, &recording.exchanges(), live);
+        save_at(&path, &recording.exchanges(), live, build);
     }
 }
 
-fn save_at(path: &Path, exchanges: &[Exchange], live: &ZmkData) {
+fn save_at(path: &Path, exchanges: &[Exchange], live: &ZmkData, build: Option<&str>) {
     if !replays_as(exchanges, live) {
         eprintln!("Foxglove: the keymap recording doesn't replay the same; keeping the old one");
         return;
     }
-    write_file(path, exchanges);
+    write_file(path, build, exchanges);
 }
 
 /// Written to a temporary file and renamed, so an interruption can't leave half a file.
-fn write_file(path: &Path, exchanges: &[Exchange]) {
+fn write_file(path: &Path, build: Option<&str>, exchanges: &[Exchange]) {
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let tmp = path.with_extension("studio.tmp");
     let written =
-        std::fs::write(&tmp, to_file(exchanges)).and_then(|()| std::fs::rename(&tmp, path));
+        std::fs::write(&tmp, to_file(build, exchanges)).and_then(|()| std::fs::rename(&tmp, path));
     if let Err(e) = written {
         let _ = std::fs::remove_file(&tmp);
         eprintln!("Foxglove: can't save the keymap to {}: {e}", path.display());
@@ -383,7 +409,8 @@ fn refresh_at(path: &Path, raw: &keymap::Keymap, layouts: &keymap::PhysicalLayou
     let Some(old) = std::fs::read(path).ok().and_then(|b| from_file(&b)) else {
         return;
     };
-    let exchanges = with_keymap(&old, raw, layouts);
+    // The behaviour catalogue and its ids stay the old copy's, so its build does too.
+    let exchanges = with_keymap(&old.exchanges, raw, layouts);
     // Kept only if it replays as exactly this keymap.
     let replays = fetch_zmk_data_from_client(client_for(exchanges.clone()))
         .is_ok_and(|r| r.raw_keymap == *raw && r.physical_layouts == *layouts);
@@ -391,13 +418,38 @@ fn refresh_at(path: &Path, raw: &keymap::Keymap, layouts: &keymap::PhysicalLayou
         eprintln!("Foxglove: the saved keymap can't take the new one; keeping the old copy");
         return;
     }
-    write_file(path, &exchanges);
+    write_file(path, old.build.as_deref(), &exchanges);
 }
 
-/// A Studio client that answers from keyboard `vid:pid`'s saved keymap, if there is one.
-pub fn replay(vid: u16, pid: u16) -> Option<StudioClient<Replay>> {
-    let exchanges = from_file(&std::fs::read(path(vid, pid)?).ok()?)?;
-    Some(client_for(exchanges))
+/// A Studio client that answers from keyboard `vid:pid`'s saved keymap, if there is one, and the
+/// firmware build that copy was read from (`None`: not known, so its ids are never trusted).
+pub fn replay(vid: u16, pid: u16) -> Option<(StudioClient<Replay>, Option<String>)> {
+    let saved = from_file(&std::fs::read(path(vid, pid)?).ok()?)?;
+    Some((client_for(saved.exchanges), saved.build))
+}
+
+/// Saves a full read of the fake Corne (no `&rgb_ug`) as keyboard `vid:pid`'s copy, read from
+/// `build`; `old` writes it as an FXK1 copy from before #633.
+#[cfg(test)]
+pub(crate) fn save_fake(vid: u16, pid: u16, build: Option<&str>, old: bool) {
+    let board = super::studio_fake::FakeBoard::corne();
+    board.unlock();
+    let recording = Recording::default();
+    recording.on.store(true, Ordering::Relaxed);
+    let live = fetch_zmk_data_from_client(StudioClient::new(Recorder {
+        inner: board.line(),
+        recording: recording.clone(),
+    }))
+    .expect("the fake board reads");
+    let path = path(vid, pid).expect("a config dir");
+    save_at(&path, &recording.exchanges(), &live, build);
+    if old {
+        let new = std::fs::read(&path).unwrap();
+        let len = u32::from_le_bytes(new[4..8].try_into().unwrap()) as usize;
+        let mut v1 = MAGIC_V1.to_vec();
+        v1.extend_from_slice(&new[8 + len..]);
+        std::fs::write(&path, v1).unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -457,6 +509,25 @@ mod tests {
         assert_eq!(Frames::default().push(&stream), vec![payload.to_vec()]);
     }
 
+    /// #633: a copy names its build; one that couldn't read it, and every copy from before
+    /// (FXK1), has none, so the app never takes ids from it.
+    #[test]
+    fn a_copy_records_its_build_and_an_old_one_has_none() {
+        let exchanges = vec![Exchange {
+            request: get_keymap(8),
+            reply: reply(8, 6),
+        }];
+        let with = from_file(&to_file(Some("0.1.0-0-13ff04b"), &exchanges)).unwrap();
+        assert_eq!(with.build.as_deref(), Some("0.1.0-0-13ff04b"));
+        let unread = to_file(None, &exchanges);
+        assert_eq!(from_file(&unread).unwrap().build, None);
+        // The same copy as FXK1 wrote it: no build field.
+        let mut old = MAGIC_V1.to_vec();
+        old.extend_from_slice(&unread[8..]);
+        let old = from_file(&old).expect("an FXK1 copy still reads");
+        assert_eq!((old.build, old.exchanges), (None, exchanges));
+    }
+
     #[test]
     fn recording_pairs_requests_with_their_replies() {
         let recording = Recording::default();
@@ -476,8 +547,10 @@ mod tests {
         assert_eq!(exchanges.len(), 2);
         assert_eq!(exchanges[0].request, get_lock_state(7));
         assert_eq!(exchanges[1].reply, reply(8, 6));
-        let file = to_file(&exchanges);
-        assert_eq!(from_file(&file).unwrap(), exchanges);
+        let file = to_file(Some("0.1.0-0-13ff04b"), &exchanges);
+        let saved = from_file(&file).unwrap();
+        assert_eq!(saved.exchanges, exchanges);
+        assert_eq!(saved.build.as_deref(), Some("0.1.0-0-13ff04b"));
         // A file cut short anywhere is rejected, not half-used.
         for cut in 1..file.len() {
             assert_eq!(from_file(&file[..cut]), None, "cut at {cut}");
@@ -522,7 +595,7 @@ mod tests {
             Behavior::KeyPress(HidUsage::from_encoded(0x07_0000 | usage as u32))
         }
         fn copy(path: &Path) -> ZmkData {
-            let exchanges = from_file(&std::fs::read(path).unwrap()).unwrap();
+            let exchanges = from_file(&std::fs::read(path).unwrap()).unwrap().exchanges;
             fetch_zmk_data_from_client(client_for(exchanges)).expect("the copy replays")
         }
         fn copied_param(path: &Path, layer: usize, pos: usize) -> u32 {
@@ -557,7 +630,7 @@ mod tests {
                 recording: recording.clone(),
             }))
             .unwrap();
-            save_at(&path, &recording.exchanges(), &live);
+            save_at(&path, &recording.exchanges(), &live, Some("build-592"));
             assert_eq!(copied_param(&path, 0, 0), stock.0);
 
             let hooked = |board: &FakeBoard| {
@@ -599,6 +672,9 @@ mod tests {
             assert_eq!(copied_param(&path, 1, 2), stock.1, "after Restore stock");
             assert_eq!(copy(&path).resolved_layers, board.resolved());
             editor.end();
+            // #633: the copy keeps the build it was read from through every refresh.
+            let saved = from_file(&std::fs::read(&path).unwrap()).unwrap();
+            assert_eq!(saved.build.as_deref(), Some("build-592"));
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -616,7 +692,9 @@ mod hardware {
         let port = std::env::var("FOXGLOVE_TEST_PORT").unwrap_or_else(|_| "COM4".into());
         let (client, recording) = open_serial(&port).expect("open port");
         let live = fetch_zmk_data_from_client(client).expect("live keymap");
-        let exchanges = from_file(&to_file(&recording.exchanges())).expect("saved");
+        let exchanges = from_file(&to_file(None, &recording.exchanges()))
+            .expect("saved")
+            .exchanges;
         let replayed =
             fetch_zmk_data_from_client(StudioClient::new(Replay::new(exchanges.clone())))
                 .expect("replayed keymap");
