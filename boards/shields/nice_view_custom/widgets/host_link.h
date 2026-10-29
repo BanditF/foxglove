@@ -157,7 +157,7 @@
  *      n = min(1360-offset, report size-7); offset=1360 succeeds with n=0; larger is invalid.
  *      Reads the frozen local cache, including for half 1. Error replies have n=0.
  *      Status (both): 0 ok, 1 busy (retry), 2 no right relay/screen link, 3 right timeout
- *      (5 seconds including queue wait), 4 not built in, 5 bad request, 6 no snapshot yet (READ).
+ *      (3 seconds including queue wait), 4 not built in, 5 bad request, 6 no snapshot yet (READ).
  *      Capture/transfer makes READ busy. A failed partial transfer invalidates the cache;
  *      a request rejected before copying pixels preserves the previous snapshot.
  *      Image: native 160x68 panel coordinates, row-major, 20 bytes/row, MSB first, 1=black ink,
