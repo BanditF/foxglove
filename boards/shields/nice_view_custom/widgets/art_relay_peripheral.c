@@ -391,6 +391,11 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         }
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
         rgb_idle_remote(d[1] != 0, len < 3 || d[2] != 0);
+        // The left's look (#624): following it, the right shows the left's colour and effect,
+        // whatever it saved before a reboot or missed while the link was down.
+        if (len >= 3 + sizeof(struct battery_dim_config) + RGB_IDLE_LOOK_SIZE && d[2] != 0) {
+            rgb_idle_remote_look(&d[3 + sizeof(struct battery_dim_config)]);
+        }
 #endif
         art_redraw_all(); // following the left's on/off switches the panel's power (#613)
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
@@ -459,6 +464,14 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
     return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
 }
 
+// The left subscribed to the doorbell (each link, after discovery): it hears this half's state at
+// once (#605), not at its next read.
+static void doorbell_subscribed(const struct bt_gatt_attr *attr, uint16_t value) {
+    if (value & BT_GATT_CCC_NOTIFY) {
+        art_relay_right_rang(ART_RELAY_RANG_RGB);
+    }
+}
+
 static ssize_t screen_read(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
                            uint16_t len, uint16_t offset) {
     if (offset > SCREEN_SNAP_WIRE) {
@@ -477,7 +490,7 @@ BT_GATT_SERVICE_DEFINE(
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_READ_ENCRYPT,
                            status_read, NULL, NULL),
     // Right after the status value: the left subscribes at its handle + 1 (#478).
-    BT_GATT_CCC(NULL, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_ENCRYPT),
+    BT_GATT_CCC(doorbell_subscribed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_ENCRYPT),
     BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_SCREEN_UUID), BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ_ENCRYPT, screen_read, NULL, NULL), );
 
@@ -500,7 +513,21 @@ static void ring_cb(struct k_work *work) {
     if (what == 0 || bt_uuid_cmp(status_attr->uuid, BT_UUID_DECLARE_128(ART_RELAY_STATUS_UUID))) {
         return; // the table moved: never notify another attribute
     }
-    int err = bt_gatt_notify(NULL, status_attr, &what, sizeof(what));
+    // An RGB ring carries the state (#605): what, struct rgb_idle_wire, struct rgb_shown_wire.
+    uint8_t ring[1 + sizeof(struct rgb_idle_wire) + sizeof(struct rgb_shown_wire)] = {what};
+    uint16_t ring_len = 1;
+#if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+    if (what & ART_RELAY_RANG_RGB) {
+        struct rgb_idle_wire rgb;
+        struct rgb_shown_wire shown;
+        rgb_idle_state(&rgb);
+        rgb_idle_shown(&shown);
+        memcpy(&ring[1], &rgb, sizeof(rgb));
+        memcpy(&ring[1 + sizeof(rgb)], &shown, sizeof(shown));
+        ring_len = sizeof(ring);
+    }
+#endif
+    int err = bt_gatt_notify(NULL, status_attr, ring, ring_len);
     if (err == -ENOMEM && ring_tries++ < RING_TRIES) {
         k_work_reschedule(k_work_delayable_from_work(work), RING_RETRY);
         return;

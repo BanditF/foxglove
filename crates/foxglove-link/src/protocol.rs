@@ -58,6 +58,10 @@ pub mod capabilities {
     /// The left sends its activity state (active, idle) to the right half, whose art follows it
     /// at once (#603). Says nothing about the right's firmware: a right before it keeps its own.
     pub const ACTIVITY_RELAY: u32 = 1 << 23;
+    /// RGB_STATE (D7 83) bytes 17-28 say what each half's LEDs show (#605): lit after idle, sync,
+    /// the PC's frames and ext power, and the brightest LED's colour after the battery dim
+    /// ([`RgbOutput`]). With sync on the left also hands the right its colour and effect (#624).
+    pub const RGB_SHOWN: u32 = 1 << 24;
 }
 pub const VERSION: u8 = 1;
 
@@ -413,14 +417,19 @@ pub fn rgb_state() -> Vec<u8> {
 /// One half's underglow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RgbHalf {
+    /// Whether the LEDs are lit, when the keyboard reports what they show
+    /// ([`capabilities::RGB_SHOWN`], #605: after idle, sync, the PC's frames and ext power).
+    /// Firmware without it, or a right half not heard from yet, gives ZMK's on flag here (under
+    /// a scene, the on/off hand-back will show), which can read off while lit and on while dark.
     pub on: bool,
     /// 0-359
     pub hue: u16,
     /// 0-100
     pub sat: u8,
-    /// 0-100
+    /// 0-100, as stored: before the battery dim ([`RgbShown::value`] is what's emitted).
     pub brightness: u8,
-    /// 0 solid, 1 breathe, 2 spectrum, 3 swirl
+    /// 0 solid, 1 breathe, 2 spectrum, 3 swirl. Spectrum and swirl show other hues than the
+    /// stored one ([`RgbShown::hue`]).
     pub effect: u8,
     /// 1-5; ZMK's last saved value, which can lag a minute behind a change.
     pub speed: u8,
@@ -448,10 +457,85 @@ pub struct RgbState {
 }
 
 impl RgbState {
+    /// Each half's `on` is what its LEDs show when the report says so ([`RgbOutput`]).
     pub fn parse(r: &[u8; REPORT]) -> RgbState {
+        let shown = RgbOutput::parse(r);
+        let half = |b: &[u8], shown: Option<RgbShown>| {
+            let mut h = RgbHalf::parse(b);
+            if let Some(s) = shown {
+                h.on = s.lit;
+            }
+            h
+        };
         RgbState {
-            left: RgbHalf::parse(&r[2..9]),
-            right: (r[9] != 0xff).then(|| (RgbHalf::parse(&r[10..17]), r[9])),
+            left: half(&r[2..9], shown.left),
+            right: (r[9] != 0xff).then(|| (half(&r[10..17], shown.right), r[9])),
+        }
+    }
+}
+
+/// What one half's LEDs show (RGB_STATE bytes 17-22 and 23-28, [`capabilities::RGB_SHOWN`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RgbShown {
+    /// The LEDs are lit: after idle, sync, the PC's frames and ext power.
+    pub lit: bool,
+    /// The user's on/off as saved on that half (the left's is the keyboard's choice).
+    pub wanted: bool,
+    /// The PC draws that half's LEDs (SET_FRAME or SET_EFFECT).
+    pub host: bool,
+    /// That half's own activity is idle or asleep.
+    pub idle: bool,
+    /// Ext power is off: the LEDs have no power.
+    pub unpowered: bool,
+    /// The right half follows the left's on/off (sync).
+    pub following: bool,
+    /// The brightest LED in the last frame drawn (the first of equals): hue 0-359 and
+    /// saturation 0-100; `None` while dark or before a frame was drawn. On a Spectrum or Swirl
+    /// this is the hue on show; the right's is as of its last report (it reports when its LEDs
+    /// go lit or dark and on each link).
+    pub hue: Option<(u16, u8)>,
+    /// That LED's level as emitted, 0-100, after the battery dim; 0 with `hue` `None`.
+    pub value: u8,
+    /// The battery dim level in force, 1-100 (100 without dimming).
+    pub dim: u8,
+}
+
+impl RgbShown {
+    fn parse(b: &[u8]) -> Option<RgbShown> {
+        let flags = b[0];
+        if flags & 1 == 0 {
+            return None;
+        }
+        let drawn = flags & (1 << 6) != 0;
+        Some(RgbShown {
+            lit: flags & (1 << 1) != 0,
+            wanted: flags & (1 << 2) != 0,
+            host: flags & (1 << 3) != 0,
+            idle: flags & (1 << 4) != 0,
+            unpowered: flags & (1 << 5) != 0,
+            following: flags & (1 << 7) != 0,
+            hue: drawn.then(|| (u16::from_le_bytes([b[1], b[2]]), b[3])),
+            value: if drawn { b[4] } else { 0 },
+            dim: b[5],
+        })
+    }
+}
+
+/// Both halves' [`RgbShown`]; `None` for a half the keyboard can't say for (firmware without
+/// [`capabilities::RGB_SHOWN`], or a right half not heard from on this link).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RgbOutput {
+    pub left: Option<RgbShown>,
+    pub right: Option<RgbShown>,
+}
+
+impl RgbOutput {
+    pub fn parse(r: &[u8; REPORT]) -> RgbOutput {
+        RgbOutput {
+            left: RgbShown::parse(&r[17..23]),
+            right: (r[9] != 0xff)
+                .then(|| RgbShown::parse(&r[23..29]))
+                .flatten(),
         }
     }
 }
@@ -1241,6 +1325,76 @@ mod tests {
         );
         r[9] = 0xff;
         assert_eq!(RgbState::parse(&r).right, None);
+        assert_eq!(
+            RgbOutput::parse(&r),
+            RgbOutput::default(),
+            "older firmware: nothing shown"
+        );
+    }
+
+    #[test]
+    fn rgb_state_reports_what_the_leds_show_when_the_keyboard_says() {
+        // #605: ZMK's on flag says off (a scene lights the left; the right is dark with ext
+        // power off though its flag says on). Bytes 17-28 say what each half shows.
+        let mut r = [0u8; REPORT];
+        r[..17].copy_from_slice(&[
+            0xD7, 0x83, 0, 39, 0, 70, 42, 3, 3, 1, 1, 39, 0, 70, 42, 3, 3,
+        ]);
+        // Left: valid, lit, wanted, the PC draws, idle, drawn; hue 210, sat 80, value 33, dim 80.
+        r[17..23].copy_from_slice(&[0b0101_1111, 210, 0, 80, 33, 80]);
+        // Right: valid, wanted, unpowered, following; nothing drawn; dim 100.
+        r[23..29].copy_from_slice(&[0b1010_0101, 0xff, 0xff, 0, 0, 100]);
+        let s = RgbState::parse(&r);
+        assert!(
+            s.left.on,
+            "the left's on is what the LEDs show, not ZMK's flag"
+        );
+        assert_eq!(
+            (s.left.hue, s.left.brightness, s.left.effect),
+            (39, 42, 3),
+            "stored look"
+        );
+        let (right, age) = s.right.unwrap();
+        assert!(!right.on, "the right's LEDs are unpowered");
+        assert_eq!(age, 1);
+        let out = RgbOutput::parse(&r);
+        assert_eq!(
+            out.left,
+            Some(RgbShown {
+                lit: true,
+                wanted: true,
+                host: true,
+                idle: true,
+                unpowered: false,
+                following: false,
+                hue: Some((210, 80)),
+                value: 33,
+                dim: 80,
+            })
+        );
+        assert_eq!(
+            out.right,
+            Some(RgbShown {
+                lit: false,
+                wanted: true,
+                host: false,
+                idle: false,
+                unpowered: true,
+                following: true,
+                hue: None,
+                value: 0,
+                dim: 100,
+            })
+        );
+        // A right not heard from on this link: its flags are 0, its on stays ZMK's flag.
+        r[23] = 0;
+        let s = RgbState::parse(&r);
+        assert!(s.right.unwrap().0.on);
+        assert_eq!(RgbOutput::parse(&r).right, None);
+        // No right at all (age 0xff): nothing for it, whatever the bytes.
+        r[23] = 0b11;
+        r[9] = 0xff;
+        assert_eq!(RgbOutput::parse(&r).right, None);
     }
 
     #[test]

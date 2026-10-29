@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::protocol::{self, BatteryDim, BatteryDimConfig, InvokeStatus, RgbState, RgbSync};
+use crate::protocol::{
+    self, BatteryDim, BatteryDimConfig, InvokeStatus, RgbOutput, RgbState, RgbSync,
+};
 use crate::Transport;
 
 /// Reads "right half's underglow follows the left" (`set` = `None`) or sets it.
@@ -53,13 +55,18 @@ pub fn invoke(
 /// Both halves' underglow. The right half's comes from its last relayed status, and each call
 /// asks for a fresh one, so calling about once a second keeps it current.
 pub fn rgb_state(t: &impl Transport) -> Result<RgbState> {
+    Ok(rgb_output(t)?.0)
+}
+
+/// RGB_STATE with what each half's LEDs show (#605; `None` halves on older firmware).
+pub fn rgb_output(t: &impl Transport) -> Result<(RgbState, RgbOutput)> {
     let r = t.request(
         &protocol::rgb_state(),
         protocol::SETTINGS,
         protocol::settings::RGB_STATE,
         Duration::from_millis(500),
     )?;
-    Ok(RgbState::parse(&r))
+    Ok((RgbState::parse(&r), RgbOutput::parse(&r)))
 }
 
 /// Reboots `half` (0 left, 1 right; the right goes over the relay) into its UF2 bootloader:

@@ -151,6 +151,8 @@ pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
         "screen_readback" => "firmware has no screen readback (HELLO bit 6, #67)",
         "activity_relay" if has(caps::ACTIVITY_RELAY) => return None,
         "activity_relay" => "the left doesn't relay its activity to the right (HELLO bit 23, #603)",
+        "rgb_shown" if has(caps::RGB_SHOWN) => return None,
+        "rgb_shown" => "RGB_STATE doesn't say what the LEDs show (HELLO bit 24, #605)",
         "art_keys" if hello.capabilities & ART_KEYS_CAP != 0 => return None,
         "art_keys" => "firmware has no art keys (HELLO bit 16, #302)",
         "position_press" if has(caps::POSITION) && has(caps::INVOKE_REFUSES) => return None,
@@ -684,12 +686,22 @@ impl<'a, D: Device> Runner<'a, D> {
                 ))
             }),
             Step::ExpectRgb(r) => self.wait(r.within_ms, || {
-                let s = settings::rgb_state(self.device)?;
+                let (s, shown) = settings::rgb_output(self.device)?;
+                let look = |h: &protocol::RgbHalf| crate::spec::Look {
+                    hue: h.hue,
+                    sat: h.sat,
+                    brightness: h.brightness,
+                    effect: h.effect,
+                };
                 Ok((
                     s.right.is_some_and(|(right, age)| {
-                        age <= r.right_age_max_s && r.right_on.is_none_or(|on| on == right.on)
-                    }) && r.left_on.is_none_or(|on| on == s.left.on),
-                    format!("{s:?}"),
+                        age <= r.right_age_max_s
+                            && r.right_on.is_none_or(|on| on == right.on)
+                            && (!r.right_same_look || look(&right) == look(&s.left))
+                    }) && r.left_on.is_none_or(|on| on == s.left.on)
+                        && r.left_look.is_none_or(|l| l == look(&s.left))
+                        && (!r.shown || (shown.left.is_some() && shown.right.is_some())),
+                    format!("{s:?}, shown {shown:?}"),
                 ))
             }),
             Step::Prompt(p) => crate::platform::prompt(&p.ask, &self.cancelled),
@@ -877,6 +889,7 @@ impl<'a, D: Device> Runner<'a, D> {
                 let started = Instant::now();
                 let end = started + Duration::from_millis(g.within_ms);
                 let (mut dropped_at, mut lowest) = (None, 2u8);
+                let mut sent_down: Option<String> = None;
                 loop {
                     self.check()?;
                     std::thread::sleep(Duration::from_millis(500));
@@ -885,10 +898,20 @@ impl<'a, D: Device> Runner<'a, D> {
                         if link < 2 && dropped_at.is_none() {
                             dropped_at = Some(started.elapsed());
                         }
+                        // The split link is down: only the left takes this (#624).
+                        if let (0, Some(i), None) = (link, &g.while_down, &sent_down) {
+                            sent_down = Some(self.invoke(i, false)?);
+                        }
                         lowest = lowest.min(link);
                         if let (2, true, Some(dropped)) =
                             (link, drops == before.wrapping_add(1), dropped_at)
                         {
+                            if g.while_down.is_some() && sent_down.is_none() {
+                                return Err(Blocked(
+                                    "the split link never read as down (right link 0): while_down wasn't sent".into(),
+                                )
+                                .into());
+                            }
                             return Ok(format!(
                                 "guard drops {before} -> {drops}; link dropped after {:.1} s (lowest {lowest}), relay back after {:.1} s",
                                 dropped.as_secs_f32(),

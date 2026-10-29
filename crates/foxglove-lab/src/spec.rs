@@ -106,8 +106,26 @@ pub struct Rgb {
     /// the left's last read of it, so it's only as fresh as `right_age_max_s` allows.
     pub left_on: Option<bool>,
     pub right_on: Option<bool>,
+    /// Both halves' on/off must come from what their LEDs show (HELLO bit 24, #605): a half the
+    /// keyboard can't say that for fails the step.
+    #[serde(default)]
+    pub shown: bool,
+    /// The left's stored look must be this (#624).
+    pub left_look: Option<Look>,
+    /// The right's stored hue, saturation, brightness and effect must equal the left's (#624).
+    #[serde(default)]
+    pub right_same_look: bool,
     #[serde(default = "timeout")]
     pub within_ms: u64,
+}
+/// A half's stored underglow look, as RGB_STATE reports it.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Look {
+    pub hue: u16,
+    pub sat: u8,
+    pub brightness: u8,
+    pub effect: u8,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -215,6 +233,9 @@ pub struct NotBuiltIn {
 pub struct GuardTest {
     #[serde(default = "guard_timeout")]
     pub within_ms: u64,
+    /// Sent once while HELLO shows the split link down (right link 0), so only the left takes it
+    /// (#624: the right misses a change). BLOCKED when the link never reads as down.
+    pub while_down: Option<Invoke>,
 }
 fn guard_timeout() -> u64 {
     60_000
@@ -420,6 +441,12 @@ impl Step {
                     "expect_rgb within_ms must be 1..=120000"
                 );
                 ensure!(r.right_age_max_s < 255, "invalid RGB age");
+                if let Some(l) = r.left_look {
+                    ensure!(
+                        l.hue < 360 && l.sat <= 100 && l.brightness <= 100 && l.effect <= 3,
+                        "left_look: hue 0-359, sat and brightness 0-100, effect 0-3"
+                    );
+                }
             }
             Self::ArtSelect(a) => {
                 wait(a.within_ms)?;
@@ -441,10 +468,15 @@ impl Step {
                         && h.guard_drops_max.is_none()),
                 "expect_hello needs capability bits 0..31"
             ),
-            Self::SplitGuardTest(g) => ensure!(
-                (5_000..=120_000).contains(&g.within_ms),
-                "split_guard_test within_ms must be 5000..=120000"
-            ),
+            Self::SplitGuardTest(g) => {
+                ensure!(
+                    (5_000..=120_000).contains(&g.within_ms),
+                    "split_guard_test within_ms must be 5000..=120000"
+                );
+                if let Some(i) = &g.while_down {
+                    i.validate()?;
+                }
+            }
             Self::ExpectNotBuiltIn(n) => ensure!(
                 ["position", "bootloader"].contains(&n.command.as_str()),
                 "expect_not_built_in supports position and bootloader"
@@ -615,7 +647,8 @@ pub fn load(path: &Path) -> Result<Suite> {
                     "invoke_refusal",
                     "build_info",
                     "unlocked",
-                    "activity_relay"
+                    "activity_relay",
+                    "rgb_shown"
                 ]
                 .contains(&r.as_str())
                     || r.strip_prefix("host_link>=")

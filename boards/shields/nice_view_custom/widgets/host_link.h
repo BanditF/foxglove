@@ -31,7 +31,9 @@
  *                    PC as D7 83 / D7 8E events, #478), 21 EFFECT_LAMPS (D7 0F op 3, #550),
  *                    22 LAMP_PARTS (D7 10: the LEDs per part, #561),
  *                    23 ACTIVITY_RELAY (the left sends its activity state to the right,
- *                    whose art follows it, #603; a right before it keeps its own).
+ *                    whose art follows it, #603; a right before it keeps its own),
+ *                    24 RGB_SHOWN (RGB_STATE bytes 17-28: what each half's LEDs show, #605;
+ *                    with sync on the left also hands the right its colour and effect, #624).
  *      HELLO has no byte left for the LED counts: bit 22 says D7 10 answers them.
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
@@ -104,8 +106,22 @@
  *      read shows the right's on/off changed, or the right became known or unknown (the split
  *      link up or down); and the right rings the left (art_relay.h, status notify) when its on/off
  *      or power source changes on its own, so the left reads it and D7 83 or D7 8E follows.
- *      The right's state comes from the last relay status read (each request asks for a new one);
- *      age says how old it is.
+ *      The right's state comes from the last relay status read (each request asks for a new one)
+ *      or, with a right on firmware with bit 24, the state its doorbell carries; age says how old
+ *      it is.
+ *      Bytes 2-16 keep their meaning: "on" is ZMK's on flag (under SET_FRAME / SET_EFFECT, the
+ *      on/off hand-back will show), hue/saturation/brightness/effect are ZMK's stored values,
+ *      before the battery dim; a Spectrum or Swirl shows other hues than the stored one.
+ *      With capability bit 24 (#605) bytes 17-22 are the left's struct rgb_shown_wire
+ *      (rgb_idle.h) and bytes 23-28 the right's (flags 0: nothing known), what the LEDs show:
+ *      flags u8 (bit 0 valid, 1 lit: after idle, sync, the PC's frames and ext power, 2 the
+ *      user's on/off as saved on that half, 3 the PC draws, 4 that half's own activity is idle,
+ *      5 ext power off, 6 hue/saturation/value below come from a drawn frame, 7 the right follows
+ *      the left), hue u16 (0-359, 0xffff none), saturation (0-100) and value (0-100, after the
+ *      battery dim) of the brightest LED in the last frame drawn (the first of equals), and the
+ *      battery dim level in force (1-100). The right's comes from its doorbell (art_relay.h): sent
+ *      when its LEDs go lit or dark and when the left subscribes, so a Spectrum's hue there is as
+ *      of then. The unsolicited D7 83 also comes when either half's lit flag changes.
  *   04 CONN_STATE  no payload (request D7 04)          reply: D7 84, active BLE profile index u8,
  *                                                     connected (0/1), bonded (0/1),
  *                                                     selected endpoint (0 USB, 1 BLE),
@@ -324,6 +340,8 @@
 #define HOST_LINK_CAP_LAMP_PARTS (1U << 22)
 // The left relays its activity to the right (art relay op ACTIVITY, activity_relay.h, #603).
 #define HOST_LINK_CAP_ACTIVITY_RELAY (1U << 23)
+// RGB_STATE bytes 17-28: what each half's LEDs show (#605).
+#define HOST_LINK_CAP_RGB_SHOWN (1U << 24)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);

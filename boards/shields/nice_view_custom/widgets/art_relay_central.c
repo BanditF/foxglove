@@ -61,6 +61,10 @@ static uint8_t error;
 static struct art_relay_status right;
 static uint16_t right_len;   // bytes of it the last status read filled
 static int64_t right_read_at; // uptime of that read, 0 = never
+// What the right's LEDs show, from its last doorbell on this link (#605), while valid.
+static struct rgb_shown_wire right_shown;
+static atomic_t right_shown_valid;
+static void rgb_reconcile(void);
 
 static struct bt_conn *peer;
 static int64_t peer_secure_at; // uptime peer was first seen encrypted, 0 = not yet
@@ -222,6 +226,7 @@ static void drop_peer(void) {
     discovery = ART_DISCOVERY_IDLE;
     discovery_tries = 0;
     right_read_at = 0;
+    atomic_clear(&right_shown_valid);
     memset(&dbg, 0, sizeof(dbg));
 }
 
@@ -367,6 +372,7 @@ static uint8_t read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_pa
         if (right_rgb_known() != had || (had && right.rgb.on != was_on)) {
             host_link_rgb_right_changed(); // D7 83 (#478); nothing if the PC already has it
         }
+        rgb_reconcile();
         return BT_GATT_ITER_STOP;
     }
     request_done(err);
@@ -997,6 +1003,14 @@ uint8_t art_relay_right_dim(struct battery_dim_wire *out, bool refresh) {
     return MIN((k_uptime_get() - right_dim_at) / 1000, 254);
 }
 
+bool art_relay_right_shown(struct rgb_shown_wire *out) {
+    if (art_relay_link() < 2 || !atomic_get(&right_shown_valid)) {
+        return false;
+    }
+    *out = right_shown;
+    return true;
+}
+
 uint8_t art_relay_right_rgb(struct rgb_idle_wire *out) {
     if (state != ART_LEFT_PUSHING) {
         k_work_submit_to_queue(&relay_q, &status_work);
@@ -1045,7 +1059,28 @@ static uint8_t doorbell_rang(struct bt_conn *conn, struct bt_gatt_subscribe_para
         atomic_clear(&doorbell_live);
         return BT_GATT_ITER_STOP;
     }
-    uint8_t what = length >= 1 ? ((const uint8_t *)data)[0] : ART_RELAY_RANG_RGB;
+    const uint8_t *d = data;
+    uint8_t what = length >= 1 ? d[0] : ART_RELAY_RANG_RGB;
+    // Since #605 an RGB ring carries the right's state: no read needed, so no wait on relay_q.
+    bool carried = false;
+    if ((what & ART_RELAY_RANG_RGB) && right_rgb_known() &&
+        length >= 1 + sizeof(struct rgb_idle_wire) + sizeof(struct rgb_shown_wire)) {
+        uint8_t was_on = right.rgb.on;
+        bool was_lit = atomic_get(&right_shown_valid) && (right_shown.flags & RGB_SHOWN_LIT);
+        memcpy(&right.rgb, &d[1], sizeof(right.rgb));
+        memcpy(&right_shown, &d[1 + sizeof(right.rgb)], sizeof(right_shown));
+        atomic_set(&right_shown_valid, 1);
+        right_read_at = k_uptime_get();
+        bool lit = right_shown.flags & RGB_SHOWN_LIT;
+        if (right.rgb.on != was_on || lit != was_lit) {
+            host_link_rgb_right_changed(); // D7 83 at once (deduped)
+        }
+        carried = true;
+        rgb_reconcile();
+    }
+    if (carried && what == ART_RELAY_RANG_RGB) {
+        return BT_GATT_ITER_CONTINUE;
+    }
     if (state != ART_LEFT_PUSHING) {
         k_work_submit_to_queue(&relay_q, &status_work); // the on/off (and the version for the dim)
         if (what & ART_RELAY_RANG_POWER) {
@@ -1231,9 +1266,15 @@ SYS_INIT(art_relay_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 #define RGB_RETRY K_SECONDS(1)
 #define RGB_RETRIES 10
 
-// The last RGB op the right half confirmed: on, follow and the battery dim config.
-static uint8_t rgb_sent[3 + sizeof(struct battery_dim_config)];
+// The last RGB op the right half confirmed: on, follow, the battery dim config and the look.
+static uint8_t rgb_sent[3 + sizeof(struct battery_dim_config) + RGB_IDLE_LOOK_SIZE];
+#define RGB_LOOK_AT (3 + sizeof(struct battery_dim_config))
 static bool rgb_sent_valid;
+// A status read showed the right with another look than the left's (#624): send it again, once
+// per look of the left's (a right that ignores the look, older firmware, isn't asked forever).
+static atomic_t rgb_force;
+static uint8_t look_forced[RGB_IDLE_LOOK_SIZE];
+static atomic_t look_forced_valid;
 static uint8_t rgb_retries;
 static atomic_t hsb_sent = ATOMIC_INIT(-1); // the PC colour the right last acknowledged (#266)
 
@@ -1254,8 +1295,11 @@ static bool rgb_op(uint8_t buf[sizeof(rgb_sent)], uint8_t *len) {
     struct battery_dim_config dim;
     battery_dim_get_config(&dim);
     memcpy(&buf[3], &dim, sizeof(dim)); // the right takes the left's levels (status v6)
-    *len = sizeof(rgb_sent);
 #endif
+    // The left's look (#624): with follow on the right shows it, whatever it saved before. An
+    // older right stops reading at the dim config.
+    rgb_idle_look(&buf[RGB_LOOK_AT]);
+    *len = sizeof(rgb_sent);
     return true;
 }
 
@@ -1271,6 +1315,9 @@ static void lane_rgb(struct bt_conn *conn, uint16_t handle) {
 static void rgb_sync_cb(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
     bool synced = true;
+    if (atomic_clear(&rgb_force)) {
+        rgb_sent_valid = false; // the right doesn't show what it confirmed (#624)
+    }
     uint8_t buf[sizeof(rgb_sent)];
     uint8_t len;
     if (rgb_op(buf, &len)) {
@@ -1310,8 +1357,30 @@ static K_WORK_DELAYABLE_DEFINE(rgb_sync_work, rgb_sync_cb);
 static void rgb_sync_link_up(void) {
     rgb_sent_valid = false;
     rgb_retries = 0;
+    atomic_clear(&look_forced_valid); // a new link may need the look again
     atomic_set(&hsb_sent, -1); // a new link: the right may have rebooted
     k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, RGB_SETTLE);
+}
+
+// Bluetooth thread (a status read or a ring): with sync on, a right whose stored look isn't the
+// left's gets the RGB op again (#624). A reconcile on the right's reports, not a timer.
+static void rgb_reconcile(void) {
+    if (!rgb_idle_sync() || !right_rgb_known() || art_relay_link() < 2) {
+        return;
+    }
+    uint8_t look[RGB_IDLE_LOOK_SIZE];
+    rgb_idle_look(look);
+    if (sys_get_le16(look) == right.rgb.hue && look[2] == right.rgb.saturation &&
+        look[3] == right.rgb.brightness && look[4] == right.rgb.effect) {
+        return;
+    }
+    if (atomic_get(&look_forced_valid) && memcmp(look, look_forced, sizeof(look)) == 0) {
+        return; // sent once for this look already
+    }
+    memcpy(look_forced, look, sizeof(look));
+    atomic_set(&look_forced_valid, 1);
+    atomic_set(&rgb_force, 1);
+    k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, K_NO_WAIT);
 }
 
 void art_relay_rgb_kick(void) {
@@ -1751,6 +1820,7 @@ static void effect_link_up(void) {}
 #else
 static void lane_rgb(struct bt_conn *conn, uint16_t handle) {}
 static void rgb_sync_link_up(void) {}
+static void rgb_reconcile(void) {}
 static void lamps_link_up(void) {}
 static void effect_link_up(void) {}
 void art_relay_rgb_kick(void) {}
