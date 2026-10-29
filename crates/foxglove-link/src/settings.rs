@@ -69,6 +69,18 @@ pub fn rgb_output(t: &impl Transport) -> Result<(RgbState, RgbOutput)> {
     Ok((RgbState::parse(&r), RgbOutput::parse(&r)))
 }
 
+/// PC_STATE (D7 11, HELLO bit 26): sends `report` (`protocol::pc_read`, `pc_awake`, `pc_away`)
+/// and returns the keyboard's state after it.
+pub fn pc_state(t: &impl Transport, report: &[u8]) -> Result<protocol::PcState> {
+    let r = t.request(
+        report,
+        protocol::SETTINGS,
+        protocol::settings::PC_STATE,
+        Duration::from_millis(500),
+    )?;
+    protocol::PcState::parse(&r).ok_or_else(|| anyhow::anyhow!("not a PC_STATE reply"))
+}
+
 /// Reboots `half` (0 left, 1 right; the right goes over the relay) into its UF2 bootloader:
 /// ARM, then TRIGGER with the nonce ARM returned. Only for the flasher, after the user has
 /// confirmed the flash; firmware without HELLO capability bit 9 answers "not built in".

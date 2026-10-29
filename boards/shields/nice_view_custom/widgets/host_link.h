@@ -300,7 +300,9 @@
  *             USB idle time applies; 1 awake: a lease runs; 2 away), flags (bit 0 held: the hold
  *             keeps the left out of idle now, 1 USB: the left has USB power on a bus that isn't
  *             suspended, 2 keys: ZMK's own activity is active, 3 active: keys or held), lease
- *             seconds left u16 LE (0 without one)
+ *             seconds left u16 LE (0 without one), reason (byte 8, why the hold is on or off:
+ *             0 held by the lease, 1 held by the USB idle time, 2 off: no USB power or a
+ *             suspended bus, 3 off: away, 4 off: no lease and no USB idle time running)
  *      The PC's state (pc_state.h). Awake holds the keyboard out of idle (underglow, key
  *      backlight, the right's art) while the lease runs and the half has USB power; with the wake
  *      flag it also notes activity once, as a key does (the PC came back, #604). Away idles it at

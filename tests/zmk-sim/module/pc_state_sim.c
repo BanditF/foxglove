@@ -139,6 +139,9 @@ static void flags_text(uint8_t f, char out[32]) {
     }
 }
 
+static bool asked_83;     // the driver asked for RGB_STATE: print the reply, not the events
+static bool lease_hidden; // a read whose lease seconds depend on the driver's pace
+
 static int sent_listener(const zmk_event_t *eh) {
     const struct raw_hid_sent_event *ev = as_raw_hid_sent_event(eh);
     if (ev == NULL || ev->length < 8) {
@@ -151,8 +154,21 @@ static int sent_listener(const zmk_event_t *eh) {
     if (d[0] == 0xD7 && d[1] == 0x91) {
         char f[32];
         flags_text(d[5], f);
-        printk("pcstate: keyboard D7 91: status %u, event %u, state %u, flags%s, lease %u\n",
-               d[2], d[3], d[4], f, sys_get_le16(&d[6]));
+        if (lease_hidden) {
+            printk("pcstate: keyboard D7 91: status %u, event %u, state %u, flags%s, lease -, "
+                   "reason %u\n",
+                   d[2], d[3], d[4], f, d[8]);
+        } else {
+            printk("pcstate: keyboard D7 91: status %u, event %u, state %u, flags%s, lease %u, "
+                   "reason %u\n",
+                   d[2], d[3], d[4], f, sys_get_le16(&d[6]), d[8]);
+        }
+    }
+    if (asked_83 && ev->length >= 29 && d[0] == 0xD7 && d[1] == 0x83) {
+        asked_83 = false;
+        const uint8_t s = d[17]; // the left's RGB_SHOWN flags, as foxglove-lab status prints them
+        printk("pcstate: keyboard D7 83: left on %u; shown lit %d, wanted %d, idle %d\n", d[2],
+               !!(s & RGB_SHOWN_LIT), !!(s & RGB_SHOWN_WANTED), !!(s & RGB_SHOWN_IDLE));
     }
     return ZMK_EV_EVENT_BUBBLE;
 }
@@ -197,6 +213,26 @@ static void state(const char *when) {
     char f[32];
     flags_text(w.flags, f);
     printk("pcstate: %s: LEDs %s, state %u, flags%s\n", when, zmk_on ? "on" : "off", w.state, f);
+}
+
+// The user's &rgb_ug on/off key, as rgb_idle.c picks it up after a binding.
+static void user_rgb(bool on) {
+    printk("pcstate: -- the user turns the underglow %s\n", on ? "on" : "off");
+    leds(on);
+    rgb_idle_check();
+    k_msleep(200);
+}
+
+static void rgb_state(void) {
+    const uint8_t d[] = {0xD7, 0x03};
+    asked_83 = true;
+    put(d, sizeof(d));
+}
+
+static void read_pc_state(void) {
+    lease_hidden = true;
+    pc(PC_STATE_REQ_READ, 0, 0);
+    lease_hidden = false;
 }
 
 static void until(int64_t at_ms) { k_sleep(K_TIMEOUT_ABS_MS(at_ms)); }
@@ -273,6 +309,13 @@ void pc_state_sim_driver(void) {
     int64_t last = k_uptime_get(); // ZMK's last activity from here on
     until(last + 35000);
     state("held, 35 s after the wake");
+    note("#651's hardware reading: with the user's underglow off, RGB_STATE says off while the "
+         "hold runs; the shown idle flag and D7 91 tell the hold apart");
+    user_rgb(false);
+    rgb_state();
+    read_pc_state();
+    user_rgb(true);
+    rgb_state();
     cable(false, false);
     state("unplugged");
 

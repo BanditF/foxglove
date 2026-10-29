@@ -121,6 +121,7 @@ needs_eyes = "hands: holding a layer key and unplugging USB"
 [[step]]
 match = "The PC state, both halves on this build and the left on USB with Foxglove running"
 sim = ["pc-state"]
+lab = ["status", "pc-state", "rgb-watch"]
 api = ["lighting.state"]
 log = ["PC state to the keyboard:"]
 needs_eyes = "the PC itself: let the display go off and come back, lock and unlock, quit Foxglove for 10 minutes; and a look that both halves (the right's art too) dim and relight"

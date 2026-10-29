@@ -728,7 +728,7 @@ void host_link_battery_dim_changed(void) {
 
 /* D7 11 PC_STATE (#609, #604): the PC's state, its lease's asks (pc_state.c) */
 
-#define PC_STATE_SIZE (2 + 6)
+#define PC_STATE_SIZE (2 + 7)
 
 static void pc_state_fill(uint8_t r[PC_STATE_SIZE], const uint8_t *d, int len) {
     r[0] = HOST_LINK_SETTINGS;

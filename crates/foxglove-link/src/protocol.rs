@@ -758,6 +758,11 @@ pub mod pc_state {
     pub const LEASE_MAX_S: u16 = 3600;
 }
 
+/// PC_STATE read: the keyboard's state now, changing nothing.
+pub fn pc_read() -> Vec<u8> {
+    vec![SETTINGS, settings::PC_STATE, pc_state::READ, 0, 0, 0]
+}
+
 /// PC_STATE away: the PC sleeps or its display is off; the keyboard idles at once.
 pub fn pc_away() -> Vec<u8> {
     vec![SETTINGS, settings::PC_STATE, pc_state::AWAY, 0, 0, 0]
@@ -807,6 +812,8 @@ pub struct PcState {
     pub active: bool,
     /// Seconds left on the lease, 0 without one.
     pub lease_s: u16,
+    /// Why the hold is on or off (byte 8): see [`PcState::reason_text`].
+    pub reason: u8,
 }
 
 impl PcState {
@@ -829,7 +836,20 @@ impl PcState {
             keys: r[5] & 4 != 0,
             active: r[5] & 8 != 0,
             lease_s: u16::from_le_bytes([r[6], r[7]]),
+            reason: r[8],
         })
+    }
+
+    /// The reason byte in words (firmware enum pc_state_reason).
+    pub fn reason_text(&self) -> &'static str {
+        match self.reason {
+            0 => "held: the lease runs",
+            1 => "held: the USB idle time after the last key",
+            2 => "not held: no USB power, or the bus is suspended",
+            3 => "not held: away",
+            4 => "not held: no lease and no USB idle time running",
+            _ => "unknown",
+        }
     }
 }
 
@@ -1811,7 +1831,7 @@ mod tests {
         assert_eq!(pc_awake(u16::MAX, false)[4..], [0x10, 0x0e]);
 
         let mut r = [0u8; REPORT];
-        r[..8].copy_from_slice(&[0xD7, 0x91, 0, 0, 1, 0b1011, 0x58, 0x02]);
+        r[..9].copy_from_slice(&[0xD7, 0x91, 0, 0, 1, 0b1011, 0x58, 0x02, 0]);
         let s = PcState::parse(&r).unwrap();
         assert_eq!(
             s,
@@ -1824,8 +1844,14 @@ mod tests {
                 keys: false,
                 active: true,
                 lease_s: 600,
+                reason: 0,
             }
         );
+        assert_eq!(
+            PcState::parse(&r).unwrap().reason_text(),
+            "held: the lease runs"
+        );
+        assert_eq!(pc_read(), [0xD7, 0x11, 0xff, 0, 0, 0]);
         assert!(!is_pc_state_event(&r));
         r[3] = 1;
         r[6..8].copy_from_slice(&[60, 0]);

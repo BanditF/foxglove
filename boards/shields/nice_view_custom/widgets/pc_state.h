@@ -69,6 +69,16 @@ enum pc_state_kind {
 #define PC_STATE_KEYS BIT(2)     // ZMK's own activity is active (and not overruled by away)
 #define PC_STATE_ACTIVE BIT(3)   // the effective state: keys or held
 
+// D7 91 byte 8: why the hold is on or off now (a debug field for the hardware runs).
+enum pc_state_reason {
+    PC_STATE_HELD_LEASE = 0,    // held: the PC's lease runs
+    PC_STATE_HELD_USB_IDLE = 1, // held: no lease, within the USB idle time after the last key
+    PC_STATE_OFF_NO_USB = 2,    // not held: no USB power (the left: or a suspended bus)
+    PC_STATE_OFF_AWAY = 3,      // not held: away overrules (until a key or awake)
+    PC_STATE_OFF_TIMES_UP = 4,  // not held: no lease, and no USB idle time running (the keys
+                                // may still be active: it starts when ZMK idles)
+};
+
 // D7 91 PC_STATE reply and event, bytes 2-7.
 struct pc_state_wire {
     uint8_t status; // 0 ok, 5 bad request
@@ -76,6 +86,7 @@ struct pc_state_wire {
     uint8_t state;  // enum pc_state_kind
     uint8_t flags;  // PC_STATE_*
     uint16_t lease_s; // seconds left on the lease, 0 without one
+    uint8_t reason;   // enum pc_state_reason
 } __packed;
 
 // The art relay op PC_STATE (art_relay.h): state u8 (enum pc_state_kind), lease seconds u16 LE.

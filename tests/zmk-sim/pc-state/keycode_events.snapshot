@@ -21,29 +21,29 @@ pcstate: 10 min 5 s after it: LEDs off, state 0, flags usb
 pcstate: -- the app: the PC awake, with the wake (the app starting, or #604's back)
 pcstate: -- bad requests first: a lease of 0, an unknown state; nothing changes
 pcstate: PC sends D7 11 01 00 lease 0
-pcstate: keyboard D7 91: status 5, event 0, state 0, flags usb, lease 0
+pcstate: keyboard D7 91: status 5, event 0, state 0, flags usb, lease 0, reason 4
 pcstate: PC sends D7 11 03 00 lease 0
-pcstate: keyboard D7 91: status 5, event 0, state 0, flags usb, lease 0
+pcstate: keyboard D7 91: status 5, event 0, state 0, flags usb, lease 0, reason 4
 pcstate: PC sends D7 11 01 01 lease 600
 pcstate: to the right: 10 00
 pcstate: LEDs on
 pcstate: to the right: RGB on 1 (the left's own 1)
 pcstate: to the right: 11 01 lease 600
-pcstate: keyboard D7 91: status 0, event 0, state 1, flags held usb keys active, lease 600
+pcstate: keyboard D7 91: status 0, event 0, state 1, flags held usb keys active, lease 600, reason 0
 pcstate: to the right: 10 01
 pcstate: to the right: RGB on 0 (the left's own 1)
 pcstate: PC awake, 35 s after the wake: no idle at 30 s: LEDs on, state 1, flags held usb active
 pcstate: -- a minute before the lease ends the keyboard asks; the app, the PC awake, renews it
-pcstate: keyboard D7 91: status 0, event 1, state 1, flags held usb active, lease 60
+pcstate: keyboard D7 91: status 0, event 1, state 1, flags held usb active, lease 60, reason 0
 pcstate: PC sends D7 11 01 00 lease 600
 pcstate: to the right: 11 01 lease 600
-pcstate: keyboard D7 91: status 0, event 0, state 1, flags held usb active, lease 600
+pcstate: keyboard D7 91: status 0, event 0, state 1, flags held usb active, lease 600, reason 0
 pcstate: renewed: LEDs on, state 1, flags held usb active
 pcstate: -- away (the display goes off): idle at once
 pcstate: PC sends D7 11 00 00 lease 0
 pcstate: LEDs off
 pcstate: to the right: 11 02 lease 0
-pcstate: keyboard D7 91: status 0, event 0, state 2, flags usb, lease 0
+pcstate: keyboard D7 91: status 0, event 0, state 2, flags usb, lease 0, reason 3
 pcstate: away: LEDs off, state 2, flags usb
 pcstate: -- back (the display on, or an unlock): awake at once (#604)
 pcstate: PC sends D7 11 01 01 lease 600
@@ -51,7 +51,7 @@ pcstate: to the right: 10 00
 pcstate: LEDs on
 pcstate: to the right: RGB on 1 (the left's own 1)
 pcstate: to the right: 11 01 lease 600
-pcstate: keyboard D7 91: status 0, event 0, state 1, flags held usb keys active, lease 600
+pcstate: keyboard D7 91: status 0, event 0, state 1, flags held usb keys active, lease 600, reason 0
 pcstate: back: LEDs on, state 1, flags held usb keys active
 pcstate: -- away 5 s after a key: idle at once all the same
 pcstate: -- a key
@@ -60,7 +60,7 @@ pcstate: to the right: 10 01
 pcstate: LEDs off
 pcstate: to the right: RGB on 0 (the left's own 1)
 pcstate: to the right: 11 02 lease 0
-pcstate: keyboard D7 91: status 0, event 0, state 2, flags usb, lease 0
+pcstate: keyboard D7 91: status 0, event 0, state 2, flags usb, lease 0, reason 3
 pcstate: away within ZMK's 30 s: LEDs off, state 2, flags usb
 pcstate: -- a key ends away: lit again, the USB idle time's rules until the app says more
 pcstate: -- a key
@@ -71,7 +71,7 @@ pcstate: a key after away: LEDs on, state 0, flags usb keys active
 pcstate: -- the app closes mid-lease: no renewals; lit 10 minutes after the last key, then idle
 pcstate: PC sends D7 11 01 00 lease 300
 pcstate: to the right: 11 01 lease 300
-pcstate: keyboard D7 91: status 0, event 0, state 1, flags held usb keys active, lease 300
+pcstate: keyboard D7 91: status 0, event 0, state 1, flags held usb keys active, lease 300, reason 0
 pcstate: to the right: 10 01
 pcstate: to the right: RGB on 0 (the left's own 1)
 pcstate: -- a key
@@ -79,8 +79,8 @@ pcstate: to the right: 10 00
 pcstate: to the right: RGB on 1 (the left's own 1)
 pcstate: to the right: 10 01
 pcstate: to the right: RGB on 0 (the left's own 1)
-pcstate: keyboard D7 91: status 0, event 1, state 1, flags held usb active, lease 60
-pcstate: keyboard D7 91: status 0, event 1, state 1, flags held usb active, lease 20
+pcstate: keyboard D7 91: status 0, event 1, state 1, flags held usb active, lease 60, reason 0
+pcstate: keyboard D7 91: status 0, event 1, state 1, flags held usb active, lease 20, reason 0
 pcstate: the lease lapsed, 4 min 10 s after the last key: LEDs on, state 0, flags held usb active
 pcstate: 9 min 50 s after the last key: LEDs on, state 0, flags held usb active
 pcstate: LEDs off
@@ -91,10 +91,21 @@ pcstate: to the right: 10 00
 pcstate: LEDs on
 pcstate: to the right: RGB on 1 (the left's own 1)
 pcstate: to the right: 11 01 lease 600
-pcstate: keyboard D7 91: status 0, event 0, state 1, flags held usb keys active, lease 600
+pcstate: keyboard D7 91: status 0, event 0, state 1, flags held usb keys active, lease 600, reason 0
 pcstate: to the right: 10 01
 pcstate: to the right: RGB on 0 (the left's own 1)
 pcstate: held, 35 s after the wake: LEDs on, state 1, flags held usb active
+pcstate: -- #651's hardware reading: with the user's underglow off, RGB_STATE says off while the hold runs; the shown idle flag and D7 91 tell the hold apart
+pcstate: -- the user turns the underglow off
+pcstate: LEDs off
+pcstate: to the right: RGB on 0 (the left's own 0)
+pcstate: keyboard D7 83: left on 0; shown lit 0, wanted 0, idle 0
+pcstate: PC sends D7 11 FF 00 lease 0
+pcstate: keyboard D7 91: status 0, event 0, state 1, flags held usb active, lease -, reason 0
+pcstate: -- the user turns the underglow on
+pcstate: LEDs on
+pcstate: to the right: RGB on 0 (the left's own 1)
+pcstate: keyboard D7 83: left on 1; shown lit 1, wanted 1, idle 0
 pcstate: -- the cable comes out
 pcstate: LEDs off
 pcstate: unplugged: LEDs off, state 1, flags -

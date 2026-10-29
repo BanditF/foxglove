@@ -118,11 +118,17 @@ void pc_state_report(struct pc_state_wire *out) {
     bool lease = lease_runs(now);
     bool held = held_at(now, usb);
     bool keys = keys_locked() == ZMK_ACTIVITY_ACTIVE;
+    uint8_t reason = !usb           ? PC_STATE_OFF_NO_USB
+                     : forced_idle || kind == PC_STATE_AWAY ? PC_STATE_OFF_AWAY
+                     : lease        ? PC_STATE_HELD_LEASE
+                     : held         ? PC_STATE_HELD_USB_IDLE
+                                    : PC_STATE_OFF_TIMES_UP;
     *out = (struct pc_state_wire){
         .state = lease ? PC_STATE_AWAKE : kind == PC_STATE_AWAY ? PC_STATE_AWAY : PC_STATE_NONE,
         .flags = (held ? PC_STATE_HELD : 0) | (usb ? PC_STATE_USB : 0) |
                  (keys ? PC_STATE_KEYS : 0) | (keys || held ? PC_STATE_ACTIVE : 0),
         .lease_s = lease ? (uint16_t)DIV_ROUND_UP(lease_end - now, 1000) : 0,
+        .reason = reason,
     };
     k_spin_unlock(&lock, key);
 }
