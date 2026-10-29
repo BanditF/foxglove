@@ -15,9 +15,21 @@ structured report with reasons, end addresses, and headroom in KiB.
 For a real flash, use an interactive terminal and type `FLASH`. Double-tap reset
 on **left only** when prompted. Wait for its keyboard to reappear, test typing in
 a text editor, then enter `TYPES` in the terminal. Only then reset the right.
-If two bootloaders appear, unplug one. Unknown USB serials are refused. Volume
-letters are discovered using Windows PnP/CIM associations, never assumed.
+Unknown USB serials are refused. Two bootloaders with known serials are written one
+at a time, each half's drive found by its own serial (#654). Volume letters are
+discovered using Windows PnP/CIM associations, never assumed: up to 3 tries of
+30 s each, each logged, with a fallback that takes the volume with `INFO_UF2.TXT`
+on the disk whose device path has that half's serial. More than one match refuses.
 The mapped drive must have `INFO_UF2.TXT`; its Board-ID is logged.
+
+**A half stuck in its bootloader (#654).** Before asking any half into its
+bootloader, the flasher lists the bootloaders already connected. A half already
+in its bootloader (an earlier run stopped after the entry, or a double tap) is
+written first, scoped to its serial, and no other half is asked in while it is
+unresolved. So after a failed run, run the same command again. `--resume` is the
+doctor mode: it writes only the halves already in their bootloaders and asks none
+in (`Nothing to resume` when there are none). A bootloader whose half has no image
+in this run is reported and the run stops without asking another half in.
 
 Preflight checks every UF2 block's magic, family, flags, payload length, block
 numbers, and flash range `0x26000..0xAD000`. All 96 inspected local UF2s start at
