@@ -129,11 +129,7 @@ From top to bottom:
 ![Bandit idle, one of the built-in animations](images/right-screen-bandit-idle.gif)
 
 The right screen plays an animation. Several are built into the firmware, and Foxglove can send
-others (see **Screens** below). The strip above it uses the same icons as the left: the battery
-(with a bolt while charging), then the link to the left half: two boxes joined by a bar while the
-halves are linked, two empty boxes with the bar broken while they aren't.
-
-Both screens show light ink on a dark field.
+others (see **Screens** below). The battery and connection strip sits above it.
 
 ## 5. A tour of the window
 

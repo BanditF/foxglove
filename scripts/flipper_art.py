@@ -38,8 +38,10 @@ OUT.bin); the format is in boards/shields/nice_view_custom/widgets/art_relay.h.
 
 Bits: 1 = ink (#610), the same as the left's PC info screen. A source's black pixels are the ink
 and show lit (the theme's foreground; light on dark by default), its white pixels the field. Blobs
-carry ART_RELAY_FLAG_INK in header byte 7; blobs from before #610 (flags 0, background bits set)
-still play correctly on the keyboard, which inverts them.
+carry flag bit 0 (ink) in header byte 7. The firmware ignores that byte and draws every set bit in
+its foreground (#649's firmware part, which played older blobs inverted, is reverted for now), so
+blobs from before #610 (flags 0, field bits set) still show their field lit, as they always did.
+The built-ins in custom_art.c are still stored the old way round.
 
 The preview shows the screen as you see it on the keyboard: portrait, status strip on top, in the
 default dark theme (light ink on a dark field).
