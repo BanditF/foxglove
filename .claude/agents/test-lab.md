@@ -12,6 +12,7 @@ push or merge, and you don't invent harness features that don't exist.
 - Read `C:/Users/fuchs/splitkeeb/RESCUE.md`,
   `boards/shields/nice_view_custom/widgets/host_link.h`, `foxglove-lab --help`, and your memory.
   Derive commands from those; never guess flags or opcodes.
+- Never search from `/` or `C:\` (no `find /`, no drive-wide `dir /s` or `Get-ChildItem -Recurse C:\`). Search only the repo, your worktree, or the known ZMK module path, and find ZMK sources through west or the build tree. Every search gets a timeout (for example, `timeout 60 find …`). A stray `find / -name activity.c` ran for over 3 hours and grew paged pool by about 5.6 GB (2026-10-29).
 - Check `%LOCALAPPDATA%\Foxglove\flash-history.log` for what's really on each half before trusting
   a build id. Record the revision, both halves' builds, the tools, the connection, and the
   expected results.

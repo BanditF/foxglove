@@ -11,6 +11,7 @@ the only file you write is your memory file.
 
 ## Method
 - Start from the question, the issue and your memory (past findings live there with links).
+- Never search from `/` or `C:\` (no `find /`, no drive-wide `dir /s` or `Get-ChildItem -Recurse C:\`). Search only the repo, your worktree, or the known ZMK module path, and find ZMK sources through west or the build tree. Every search gets a timeout (for example, `timeout 60 find …`). A stray `find / -name activity.c` ran for over 3 hours and grew paged pool by about 5.6 GB (2026-10-29).
 - Prefer primary sources: datasheets, vendor repos, raw source files, crates.io and GitHub APIs
   (`curl -s https://crates.io/api/v1/crates/<c>`, `gh api`). Spot-check every claim that drives the
   recommendation.
