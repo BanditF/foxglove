@@ -92,6 +92,7 @@ fn catalog() -> Catalog {
             ("bootloader".into(), 44),
         ]),
         source: "fixture".into(),
+        ..Default::default()
     }
 }
 fn run<D: foxglove_lab::runner::Device>(fake: &D, case: &Case) -> foxglove_lab::report::CaseResult {
@@ -657,7 +658,7 @@ fn art_select_refuses_to_lose_pushed_art() {
 #[test]
 fn art_select_checks_and_restores() {
     let fake = Fake::default();
-    // status ×2 (before), select, status (shows 1), restore select.
+    // status ×2 (before), select, status (shows 1), restore select, status (shows 0 again).
     fake.replies.borrow_mut().extend([
         hello(2, 4),
         art(5, 0, 4),
@@ -665,6 +666,7 @@ fn art_select_checks_and_restores() {
         art(4, 1, 4),
         art(5, 1, 4),
         art(4, 0, 4),
+        art(5, 0, 4),
     ]);
     let result = run(&fake, &case("[{art_select={set=1}}]"));
     assert_eq!(result.status, Status::Pass, "{}", result.message);
@@ -1367,4 +1369,161 @@ fn right_art_goldens_match_the_firmware_art() {
         checked += 1;
     }
     assert_eq!(checked, 2);
+}
+
+/// The app's API for the art path (#618): records each call, answers as the app would.
+struct FakeApp {
+    calls: RefCell<Vec<String>>,
+    shows: Option<String>,
+    fails: bool,
+}
+impl foxglove_lab::app_api::AppArt for FakeApp {
+    fn select_built_in(
+        &self,
+        label: &str,
+        _: Duration,
+    ) -> Result<foxglove_plugin_api::methods::ArtStatus> {
+        self.calls.borrow_mut().push(format!("select {label}"));
+        anyhow::ensure!(!self.fails, "another art job is running (code 3)");
+        self.status(Duration::ZERO)
+    }
+    fn status(&self, _: Duration) -> Result<foxglove_plugin_api::methods::ArtStatus> {
+        self.calls.borrow_mut().push("status".into());
+        Ok(foxglove_plugin_api::methods::ArtStatus {
+            built_in: self.shows.clone(),
+            slot: None,
+            pushed: false,
+            flash_slots: 4,
+            name: self.shows.clone(),
+        })
+    }
+}
+fn run_app(fake: &Fake, app: Option<&FakeApp>, case: &Case) -> foxglove_lab::report::CaseResult {
+    let cat = catalog();
+    let dir = Temp::new();
+    let mut r = Runner::new(
+        fake,
+        &cat,
+        Hello {
+            version: 1,
+            capabilities: 20,
+            ..Default::default()
+        },
+        Arc::new(AtomicBool::new(false)),
+        true,
+        &dir.0,
+    );
+    r.app = app.map(|a| a as &dyn foxglove_lab::app_api::AppArt);
+    r.case(case, true)
+}
+
+/// #618: with the app running the select goes through `art.select` (the app would undo a
+/// direct SELECT, #622) and is read back with D6 STATUS and `art.status`; without it, the
+/// direct SELECT. The step says which path it took.
+#[test]
+fn art_select_goes_through_the_app_while_it_runs() {
+    let selects = |f: &Fake| {
+        f.requests
+            .borrow()
+            .iter()
+            .filter(|r| r[..2] == [0xd6, 4])
+            .count()
+    };
+    // 17 sets: the bundled manifest's labels.
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([
+        hello(2, 4),
+        art(5, 0, 17),
+        art(5, 0, 17),
+        art(5, 1, 17), // the fresh pair after art.select
+        art(5, 1, 17),
+    ]);
+    let app = FakeApp {
+        calls: RefCell::default(),
+        shows: Some("ZMK mountain".into()),
+        fails: false,
+    };
+    let result = run_app(
+        &fake,
+        Some(&app),
+        &case("[{art_select={set=1,restore=false}}]"),
+    );
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    let actual = &result.steps[0].actual;
+    assert!(
+        actual.contains("through the app's API (art.select \"ZMK mountain\""),
+        "{actual}"
+    );
+    assert!(actual.contains("art.status ZMK mountain"), "{actual}");
+    assert_eq!(selects(&fake), 0, "no direct SELECT while the app runs");
+    assert_eq!(app.calls.borrow()[0], "select ZMK mountain");
+
+    // The app said yes but the right shows another set: FAIL, naming the path.
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([
+        hello(2, 4),
+        art(5, 0, 17),
+        art(5, 0, 17),
+        art(5, 0, 17),
+        art(5, 0, 17),
+    ]);
+    let app = FakeApp {
+        calls: RefCell::default(),
+        shows: Some("ZMK balloon".into()),
+        fails: false,
+    };
+    let result = run_app(
+        &fake,
+        Some(&app),
+        &case("[{art_select={set=1,restore=false}}]"),
+    );
+    assert_eq!(result.status, Status::Fail);
+    assert!(
+        result.message.contains("through the app's API"),
+        "{}",
+        result.message
+    );
+
+    // The app refuses (another art job): FAIL with its words, and still no direct SELECT.
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([hello(2, 4), art(5, 0, 17), art(5, 0, 17)]);
+    let app = FakeApp {
+        calls: RefCell::default(),
+        shows: None,
+        fails: true,
+    };
+    let result = run_app(
+        &fake,
+        Some(&app),
+        &case("[{art_select={set=1,restore=false}}]"),
+    );
+    assert_eq!(result.status, Status::Fail);
+    assert!(
+        result.message.contains("another art job"),
+        "{}",
+        result.message
+    );
+    assert_eq!(selects(&fake), 0);
+
+    // No app: the direct SELECT, said so.
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([
+        hello(2, 4),
+        art(5, 0, 17),
+        art(5, 0, 17),
+        art(4, 1, 17),
+        art(5, 1, 17),
+    ]);
+    let result = run_app(&fake, None, &case("[{art_select={set=1,restore=false}}]"));
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    assert!(
+        result.steps[0]
+            .actual
+            .contains("direct SELECT (D6 04; the app isn't running)"),
+        "{}",
+        result.steps[0].actual
+    );
+    assert_eq!(selects(&fake), 1);
 }

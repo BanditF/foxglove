@@ -257,6 +257,10 @@ pub struct Runner<'a, D> {
     /// Where key presses are recorded as the harness's own input (`injections`, #618); None
     /// records nothing (offline tests). `foxglove-lab run` sets the shared file.
     pub injections: Option<PathBuf>,
+    /// The running app's local API, while the app runs (#618): built-in art selects go through
+    /// `art.select` then, because the app puts its own choice back after a direct SELECT (#622).
+    /// `None`: the app isn't running, so SELECT goes to the keyboard directly.
+    pub app: Option<&'a dyn crate::app_api::AppArt>,
 }
 impl<'a, D: Device> Runner<'a, D> {
     pub fn new(
@@ -284,6 +288,7 @@ impl<'a, D: Device> Runner<'a, D> {
             locked: crate::platform::locked,
             redraw_note: None,
             injections: None,
+            app: None,
         }
     }
     fn check(&self) -> Result<()> {
@@ -608,20 +613,59 @@ impl<'a, D: Device> Runner<'a, D> {
             )
             .into());
         }
-        art::select(self.device, a.set)?;
-        let actual = self.wait(a.within_ms, || {
-            std::thread::sleep(Duration::from_millis(250));
-            let s = art::status(self.device)?;
-            Ok((s.right_set == a.set, s.to_string()))
-        })?;
+        let count = before.right_set_count;
+        let (path, actual) = self.select_built_in(a.set, count, a.within_ms)?;
         if a.restore && before.right_set >= 0 && before.right_set != a.set {
-            art::select(self.device, before.right_set)?;
+            self.select_built_in(before.right_set, count, a.within_ms)?;
             return Ok(format!(
-                "{waited}{actual}; restored set {}",
+                "{path}: {waited}{actual}; restored set {}",
                 before.right_set
             ));
         }
-        Ok(format!("{waited}{actual}"))
+        Ok(format!("{path}: {waited}{actual}"))
+    }
+    /// Selects built-in `set` and checks the right shows it; answers with the path taken and
+    /// what was read back. While the app runs (`self.app`), through its `art.select`, which
+    /// answers once its art job ended, then one fresh D6 STATUS pair and `art.status`;
+    /// otherwise the D6 SELECT itself, then STATUS until the right shows the set.
+    fn select_built_in(&self, set: i8, count: u8, ms: u64) -> Result<(String, String)> {
+        let Some(app) = self.app else {
+            art::select(self.device, set)?;
+            let actual = self.wait(ms, || {
+                std::thread::sleep(Duration::from_millis(250));
+                let s = art::status(self.device)?;
+                Ok((s.right_set == set, s.to_string()))
+            })?;
+            return Ok((
+                "direct SELECT (D6 04; the app isn't running)".into(),
+                actual,
+            ));
+        };
+        let label = crate::app_api::built_in_label(count, set);
+        let path = format!("through the app's API (art.select {label:?}; the app is running)");
+        // The app's own wait for its job (20 s), plus the time asked for.
+        let limit = Duration::from_millis(ms) + Duration::from_secs(20);
+        app.select_built_in(&label, limit)
+            .map_err(|e| anyhow::anyhow!("{path}: {e:#}"))?;
+        art::status(self.device)?;
+        std::thread::sleep(Duration::from_millis(300));
+        let s = art::status(self.device)?;
+        let shown = app
+            .status(Duration::from_secs(5))
+            .map_err(|e| anyhow::anyhow!("{path}: art.status: {e:#}"))?;
+        let says = shown
+            .built_in
+            .clone()
+            .unwrap_or_else(|| format!("no built-in ({})", shown.name.as_deref().unwrap_or("?")));
+        ensure!(
+            s.right_set == set
+                && shown
+                    .built_in
+                    .as_deref()
+                    .is_some_and(|b| b.eq_ignore_ascii_case(&label)),
+            "{path}: the right doesn't show set {set}: D6 STATUS {s}; art.status {says}"
+        );
+        Ok((path, format!("{s}; art.status {says}")))
     }
     /// Waits until the left's relay leaves another job (state PUSHING or RECEIVING) for at most
     /// `ms`. The firmware sends no event when a job ends (host_link_art_status() fires on relay

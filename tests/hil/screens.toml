@@ -61,7 +61,7 @@ steps = [
 
 [[cases]]
 name = "right-art-select-golden"
-description = "#613: a built-in SELECT redraws the right screen with that set. Selects ZMK_1 (set 0), then ZMK_2 (set 1), both still pictures, and compares the right's readback (D7 06/07 through the relay) with the set's first frame rendered from custom_art.c. The status strip (portrait y 0-19) is masked. Readback is LVGL's own image, not the panel's pixels: noise from a panel power cycle needs eyes (On-call). Leaves set 1 on the right; refuses (BLOCKED) when pushed art is showing"
+description = "#613: a built-in SELECT redraws the right screen with that set. Selects ZMK_1 (set 0), then ZMK_2 (set 1), both still pictures, and compares the right's readback (D7 06/07 through the relay) with the set's first frame rendered from custom_art.c. The status strip (portrait y 0-19) is masked. Readback is LVGL's own image, not the panel's pixels: noise from a panel power cycle needs eyes (On-call). Leaves set 1 on the right; refuses (BLOCKED) when pushed art is showing. With the app running (--allow-app) each select goes through the app API art.select, read back with D6 STATUS and art.status, since the app puts its pinned set back after a direct SELECT (#622); with the app quit, the direct SELECT. Each step says which path it took"
 tags = ["screens", "art", "release"]
 requires = ["screen_readback"]
 steps = [
