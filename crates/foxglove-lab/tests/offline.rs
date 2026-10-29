@@ -300,7 +300,9 @@ fn wait_relay_waits_for_the_relay_and_names_it_when_it_never_comes() {
     let result = run_with(&fake, &case("[{wait_relay={within_ms=600}}]"), 0);
     assert_eq!(result.status, Status::Fail);
     assert!(
-        result.message.contains("relay not up within 600 ms (right link 1, discovery 1"),
+        result
+            .message
+            .contains("relay not up within 600 ms (right link 1, discovery 1"),
         "{}",
         result.message
     );
