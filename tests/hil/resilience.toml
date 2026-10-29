@@ -125,6 +125,9 @@ description = "#605 (PR 6b of #618): RGB_STATE's on/off is what each half's LEDs
 tags = ["resilience"]
 requires = ["rgb_shown", "position_press"]
 steps = [
+  # After r5a's drop the relay is back ~20 s later (reconnect, then discovery); the tap's 3 s
+  # budget only counts once it is up.
+  { wait_relay = { within_ms = 30000 } },
   { invoke = { behavior = "rgb_ug", param1 = 1 } },
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, shown = true, left_on = true, right_on = true, right_same_look = true, within_ms = 3000 } },
