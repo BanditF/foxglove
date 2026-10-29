@@ -25,8 +25,12 @@ def uf2(payload=b'FOXGLOVE_HALF=left', addr=f.START, family=0xADA52840,
 
 
 class FakeOS:
-    def __init__(self, serials=None):
+    """`serials` is what the bootloader enumeration shows once the half is asked in (or
+    double-tapped). Before that, the flasher's first look (#654: bootloaders already connected)
+    finds none, unless `stranded`."""
+    def __init__(self, serials=None, stranded=False):
         self.serials = serials or ['1E89EF085AA8A635']
+        self.looked = stranded
         self.present = True
         self.writes = []
         self.stays = False
@@ -60,6 +64,9 @@ class FakeOS:
         return answer
 
     def enumerate_bootloaders(self):
+        if not self.looked:
+            self.looked = True
+            return []
         return self.serials
 
     def find_volume(self, serial):
@@ -174,13 +181,24 @@ class FlashTests(unittest.TestCase):
                 ask=lambda prompt: next(answers), log=lambda message: None,
                 clock=clock.clock, sleep=clock.sleep, **kwargs)
 
-    def test_unknown_serial_and_two_bootloaders_never_write(self):
-        for serials, error in [(['unknown'], f.Refused), (list(f.SERIALS), TimeoutError),
+    def test_unknown_serial_and_wrong_half_never_write(self):
+        for serials, error in [(['unknown'], f.Refused), (['1E89EF085AA8A635', 'unknown'], f.Refused),
                                (['35B4541F78DE9CF8'], TimeoutError)]:
             backend = FakeOS(serials)
             with self.assertRaises(error):
                 self.run_flash(backend)
             self.assertEqual(backend.writes, [])
+
+    def test_two_known_bootloaders_write_only_this_half(self):
+        # #654: the serial map places each drive, so a second known bootloader no longer blocks.
+        backend = FakeOS(list(f.SERIALS))
+        volumes = []
+        backend.find_volume = lambda serial: (volumes.append(serial), Path('fake-volume'))[1]
+        # The right's bootloader stays and this run has no right image: said, not ignored.
+        with self.assertRaisesRegex(f.Refused, '--half right'):
+            self.run_flash(backend)
+        self.assertEqual(len(backend.writes), 1)
+        self.assertEqual(set(volumes), {'1E89EF085AA8A635'})
 
     def test_no_piped_confirmation(self):
         backend = FakeOS()
@@ -278,7 +296,7 @@ class FlashTests(unittest.TestCase):
 
     def test_identity_rechecked(self):
         backend = FakeOS()
-        replies = iter([backend.serials, ['35B4541F78DE9CF8']])
+        replies = iter([[], backend.serials, ['35B4541F78DE9CF8']])  # first look: none yet
         backend.enumerate_bootloaders = lambda: next(replies)
         with self.assertRaises(f.Refused):
             self.run_flash(backend)
@@ -686,7 +704,7 @@ class RelayEventTests(unittest.TestCase):
 
     def test_a_drive_after_the_pause_skips_the_wait(self):
         # #585: an unconfirmed send over ZMK's split did reboot the right.
-        backend = FakeOS(['35B4541F78DE9CF8'])
+        backend = FakeOS(['35B4541F78DE9CF8'], stranded=True)  # the lambda below sets the timing
         clock = Clock()
         backend.clock = clock
         real = backend.enumerate_bootloaders
@@ -883,3 +901,207 @@ class LateEntryTests(unittest.TestCase):
         prompt = next(i for i, m in enumerate(logs) if m.startswith('Double-tap reset on the right'))
         self.assertLess(watch, prompt)
         self.assertEqual(len(backend.writes), 1)
+
+
+LEFT, RIGHT = '1E89EF085AA8A635', '35B4541F78DE9CF8'
+
+
+class FindVolumeTests(unittest.TestCase):
+    """#654: one slow CIM query right after the drive arrived ended a run with the right half
+    left in its bootloader. The lookup is retried, each try bounded and logged, with an
+    INFO_UF2.TXT fallback scoped by the serial's disk."""
+    def lookup(self, replies, exists=True):
+        logs, sleeps, calls = [], [], []
+        backend = f.WindowsOS(log=logs.append, sleep=sleeps.append)
+        replies = list(replies)
+        def ps(script, timeout=20):
+            calls.append((script, timeout))
+            reply = replies.pop(0)
+            if isinstance(reply, BaseException):
+                raise reply
+            return reply
+        with patch.object(backend, '_ps', side_effect=ps), patch.object(backend, 'exists', return_value=exists):
+            try:
+                return backend.find_volume(RIGHT), logs, sleeps, calls
+            except Exception as exc:
+                exc.logs, exc.sleeps, exc.calls = logs, sleeps, calls
+                raise
+
+    def timeout(self):
+        return f.subprocess.TimeoutExpired(['powershell'], f.FIND_TIMEOUT)
+
+    def test_a_lookup_timeout_then_success(self):
+        volume, logs, sleeps, calls = self.lookup([self.timeout(), [], [{'Disk': 'd', 'Volume': 'X:'}]])
+        self.assertEqual(volume, Path('X:\\'))
+        self.assertTrue(any('drive lookup 1/3 (CIM)' in m and 'timed out' in m for m in logs), logs)
+        self.assertTrue(any('drive lookup 1/3 (INFO_UF2.TXT)' in m and 'no volume yet' in m for m in logs), logs)
+        self.assertTrue(any('drive found at' in m and 'try 2/3' in m for m in logs), logs)
+        self.assertEqual(sleeps, [f.FIND_PAUSE])
+        self.assertTrue(all(t == f.FIND_TIMEOUT for _, t in calls), 'every try is bounded')
+
+    def test_fallback_finds_the_uf2_volume_on_the_serials_disk(self):
+        volume, logs, _, calls = self.lookup([self.timeout(), [{'Disk': '3', 'Volume': 'E:', 'Label': 'NICENANO'}]])
+        self.assertEqual(volume, Path('E:\\'))
+        script = calls[1][0]
+        self.assertIn('INFO_UF2.TXT', script)
+        self.assertIn(RIGHT, script, "scoped to this half's serial")
+        self.assertNotIn(LEFT, script)
+        self.assertTrue(any('(INFO_UF2.TXT, try 1/3)' in m for m in logs), logs)
+
+    def test_every_try_times_out_bounded(self):
+        with self.assertRaises(TimeoutError) as ctx:
+            self.lookup([self.timeout()] * (2 * f.FIND_TRIES))
+        self.assertEqual(len(ctx.exception.calls), 2 * f.FIND_TRIES)
+        self.assertEqual(sum('timed out' in m for m in ctx.exception.logs), 2 * f.FIND_TRIES)
+        self.assertEqual(ctx.exception.sleeps, [f.FIND_PAUSE] * (f.FIND_TRIES - 1))
+
+    def test_ambiguous_mapping_refuses_at_once(self):
+        with self.assertRaises(f.Refused) as ctx:
+            self.lookup([self.timeout(), [{'Volume': 'X:'}, {'Volume': 'Y:'}]])
+        self.assertEqual(len(ctx.exception.calls), 2, 'never retried into a guess')
+
+    def test_no_volume_after_every_try_refuses(self):
+        with self.assertRaises(f.Refused):
+            self.lookup([[]] * (2 * f.FIND_TRIES))
+
+    def test_volume_without_info_uf2_refuses(self):
+        with self.assertRaises(f.Refused):
+            self.lookup([[{'Volume': 'X:'}]], exists=False)
+
+
+class BootloaderOS(FakeOS):
+    """Bootloaders that come and go: asking a half in adds its serial; a write the bootloader
+    takes removes it. Each half's drive is its own fake volume. `fail_lookup`: serials whose
+    drive lookup times out once (#654)."""
+    def __init__(self, present=()):
+        super().__init__(stranded=True)
+        self.present_serials = list(present)
+        self.serial_of = {half: serial for serial, half in f.SERIALS.items()}
+        self.auto = True
+        self.at_enter = []
+        self.lookups = []
+        self.fail_lookup = set()
+
+    def enumerate_bootloaders(self):
+        return list(self.present_serials)
+
+    def enter_bootloader(self, half, log):
+        self.entered.append(half)
+        self.at_enter.append(list(self.present_serials))
+        self.present_serials.append(self.serial_of[half])
+        return True
+
+    def find_volume(self, serial):
+        self.lookups.append(serial)
+        if serial in self.fail_lookup:
+            self.fail_lookup.discard(serial)
+            raise TimeoutError(f'the drive lookup for {serial} timed out {f.FIND_TRIES} times')
+        return Path('fake-' + serial)
+
+    def exists(self, path):
+        return Path(path).parts[0][len('fake-'):] in self.present_serials
+
+    def write_file(self, path, data):
+        serial = Path(path).parts[0][len('fake-'):]
+        self.writes.append((serial, data))
+        self.present_serials.remove(serial)
+
+
+class ResumeTests(unittest.TestCase):
+    """#654: a half already in its bootloader is written first, scoped to its serial, and no
+    half is asked into its bootloader while another one's is unresolved."""
+    IMAGES = {'left': uf2(b'FOXGLOVE_HALF=left'), 'right': uf2(b'FOXGLOVE_HALF=right')}
+
+    def run_yes(self, backend, images=None, **kwargs):
+        clock = Clock()
+        logs = []
+        f.flash(images or dict(self.IMAGES), backend, 120, stdin=io.StringIO(''),
+                ask=lambda p: self.fail(p), log=logs.append, clock=clock.clock, sleep=clock.sleep,
+                yes=True, **kwargs)
+        return logs
+
+    def assertNeverTwoOpen(self, backend):
+        self.assertTrue(all(not open_ for open_ in backend.at_enter),
+                        f'a half was asked in while a bootloader was open: {backend.at_enter}')
+
+    def written(self, backend):
+        return [(serial, f.SERIALS[serial], data) for serial, data in backend.writes]
+
+    def test_stranded_right_then_half_both(self):
+        # The incident: run 1 entered the right, then its drive lookup timed out.
+        backend = BootloaderOS()
+        backend.fail_lookup = {RIGHT}
+        with self.assertRaises(TimeoutError):
+            self.run_yes(backend)
+        self.assertEqual(backend.present_serials, [RIGHT], 'the right is stranded in its bootloader')
+        self.assertEqual([s for s, _ in backend.writes], [LEFT])
+        # Run 2, --half both: the stranded right is written first; only then is the left asked in.
+        backend.writes, backend.entered, backend.at_enter = [], [], []
+        logs = self.run_yes(backend)
+        self.assertEqual([(s, h) for s, h, _ in self.written(backend)], [(RIGHT, 'right'), (LEFT, 'left')])
+        self.assertEqual([d for _, _, d in self.written(backend)], [self.IMAGES['right'], self.IMAGES['left']])
+        self.assertEqual(backend.entered, ['left'], 'the right was not asked again')
+        self.assertNeverTwoOpen(backend)
+        self.assertEqual(backend.present_serials, [])
+        self.assertTrue(any(m.startswith('right: already in its bootloader') for m in logs), logs)
+        self.assertFalse(any('Unplug one' in m for m in logs), logs)
+
+    def test_two_known_bootloaders_are_written_one_at_a_time(self):
+        backend = BootloaderOS([RIGHT, LEFT])
+        logs = self.run_yes(backend)
+        self.assertEqual([(s, h) for s, h, _ in self.written(backend)], [(LEFT, 'left'), (RIGHT, 'right')])
+        self.assertEqual([d for _, _, d in self.written(backend)], [self.IMAGES['left'], self.IMAGES['right']])
+        self.assertEqual(backend.entered, [], 'no half asked in')
+        self.assertEqual(set(backend.lookups[:2]), {LEFT}, 'the left drive found by its own serial')
+        self.assertTrue(any('writing the left one only' in m for m in logs), logs)
+        self.assertEqual(backend.present_serials, [])
+
+    def test_unknown_serial_refuses_before_anything(self):
+        for present in (['DEADBEEF00000000'], [RIGHT, 'DEADBEEF00000000']):
+            with self.subTest(present=present):
+                backend = BootloaderOS(present)
+                with self.assertRaisesRegex(f.Refused, 'Unknown bootloader serial'):
+                    self.run_yes(backend)
+                self.assertEqual(backend.writes, [])
+                self.assertEqual(backend.entered, [])
+                self.assertEqual(backend.lookups, [])
+
+    def test_stranded_half_without_its_image_asks_no_other_half_in(self):
+        backend = BootloaderOS([RIGHT])
+        with self.assertRaisesRegex(f.Refused, '--half right'):
+            self.run_yes(backend, {'left': self.IMAGES['left']})
+        self.assertEqual(backend.entered, [])
+        self.assertEqual(backend.writes, [])
+
+    def test_resume_writes_only_the_stranded_half(self):
+        backend = BootloaderOS([RIGHT])
+        self.run_yes(backend, resume=True)
+        self.assertEqual([h for _, h, _ in self.written(backend)], ['right'])
+        self.assertEqual(backend.entered, [])
+
+    def test_resume_with_nothing_stranded_touches_nothing(self):
+        backend = BootloaderOS()
+        logs = self.run_yes(backend, resume=True)
+        self.assertEqual((backend.writes, backend.entered), ([], []))
+        self.assertTrue(any('Nothing to resume' in m for m in logs), logs)
+
+    def test_resume_keeps_the_image_half_check(self):
+        backend = BootloaderOS([RIGHT])
+        with self.assertRaises(f.Refused):
+            self.run_yes(backend, {'right': uf2(b'FOXGLOVE_HALF=left')}, resume=True)
+        self.assertEqual(backend.writes, [])
+
+    def test_resume_cli_dry_run_touches_no_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = {}
+            for half in ('left', 'right'):
+                paths[half] = Path(directory) / f'{half}.uf2'
+                paths[half].write_bytes(self.IMAGES[half])
+            with patch.object(f, 'WindowsOS', side_effect=AssertionError('device access')), \
+                    patch('sys.stdout', new_callable=io.StringIO):
+                self.assertEqual(f.main(['--left', str(paths['left']), '--right', str(paths['right']),
+                                         '--resume', '--dry-run']), 0)
+            with patch.object(f, 'FlashLock'), patch.object(f, 'flash') as flash, patch.object(f, 'WindowsOS'), \
+                    patch('sys.stdout', new_callable=io.StringIO):
+                f.main(['--left', str(paths['left']), '--half', 'left', '--resume', '--yes'])
+                self.assertTrue(flash.call_args.kwargs['resume'])

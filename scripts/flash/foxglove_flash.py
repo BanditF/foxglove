@@ -6,6 +6,8 @@ Real writes require a terminal and typing FLASH, unless --yes is given (the user
 no prompts; the automatic checks all stay, and a typing check by foxglove-lab replaces TYPES). When the running firmware supports it
 (HELLO bit 9, #111) each half is put into its bootloader over the link; otherwise double-tap
 reset when asked.
+A half left in its bootloader by an earlier run is written first (#654); --resume writes only
+such halves and asks none into its bootloader.
 Settings reset: supply its path with --left/--right, select --half, and add
 --settings-reset; this erases settings and requires a separate confirmation.
 """
@@ -33,6 +35,11 @@ RELAY_WAIT_SECONDS = 60  # before the right's D7 08, for the relay to come back
 ENTRY_RETRY_SECONDS = 60  # the right's D7 08 is retried this long, as the split re-links (#545)
 ENTRY_RETRY_PAUSE = 5  # between the right's D7 08 attempts
 SETTLE_SECONDS = 3  # after the bootloader drive appears, before writing
+# The drive lookup right after a new disk arrives can be slow (WMI is busy mounting it; #654):
+# up to FIND_TRIES tries of at most FIND_TIMEOUT s each, FIND_PAUSE s apart, each one logged.
+FIND_TRIES = 3
+FIND_TIMEOUT = 30
+FIND_PAUSE = 2
 START = 0x26000  # All inspected real builds, including settings reset, start here.
 ROLLBACK = local_config.get('flash.rollback')
 MARKER = re.compile(rb'FOXGLOVE_HALF=(?P<half>left|right)'
@@ -234,7 +241,12 @@ def lab_binary():
 
 
 class WindowsOS:
-    """OS boundary. One CIM query maps serial -> disk -> partition -> logical disk."""
+    """OS boundary. A CIM query maps serial -> disk -> partition -> logical disk; a Storage-module
+    query (volume with INFO_UF2.TXT -> partition -> disk whose path holds the serial) is the
+    fallback."""
+    def __init__(self, log=print, sleep=time.sleep):
+        self.log, self.sleep = log, sleep
+
     def typing_check(self, half, log):
         """Has foxglove-lab type into its own window through the left (INVOKE &kp for the left;
         key-position presses on the right half, over the split link, for the right). True only
@@ -330,25 +342,74 @@ class WindowsOS:
         reason = (result.stderr or result.stdout).strip().splitlines()
         log(f'{half}: hands-free entry unavailable ({reason[-1] if reason else result.returncode}).')
         return False
-    def _ps(self, script):
+    def _ps(self, script, timeout=20):
         result = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command',
                                  "$ErrorActionPreference='Stop'; " + script],
-                                capture_output=True, text=True, timeout=20, check=True)
+                                capture_output=True, text=True, timeout=timeout, check=True)
         return json.loads(result.stdout.strip() or '[]')
 
     def enumerate_bootloaders(self):
         return self._ps(r"ConvertTo-Json -Compress -InputObject @(Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -like 'USB\VID_239A&PID_00B3\*' } | ForEach-Object { $_.InstanceId.Split('\')[-1] })")
 
+    @staticmethod
+    def _cim_script(serial):
+        return (r"$disks = @(Get-CimInstance Win32_DiskDrive | Where-Object { $_.PNPDeviceID -match '" + serial
+                + r"' }); ConvertTo-Json -Compress -InputObject @($disks | Where-Object { $disks.Count -eq 1 } | ForEach-Object { $disk = $_; Get-CimAssociatedInstance -InputObject $disk -Association Win32_DiskDriveToDiskPartition | ForEach-Object { Get-CimAssociatedInstance -InputObject $_ -Association Win32_LogicalDiskToPartition | ForEach-Object { [pscustomobject]@{ Disk=$disk.DeviceID; Volume=$_.DeviceID } } } })")
+
+    @staticmethod
+    def _uf2_volume_script(serial):
+        # The fallback (#654): lettered volumes with INFO_UF2.TXT at their root (any UF2
+        # bootloader; nice!nano's is labelled NICENANO), each mapped to its disk, kept only when
+        # that disk's device path holds this half's USB serial. Exactly one disk may match.
+        # SERIALS holds plain letters and digits only (local_config), so it is safe in the script.
+        return r'''$rows = @(Get-Volume | Where-Object { $_.DriveLetter -and (Test-Path -LiteralPath "$($_.DriveLetter):\INFO_UF2.TXT") } | ForEach-Object { $v = $_; Get-Partition -DriveLetter $v.DriveLetter | Get-Disk | Where-Object { $_.Path -match '@SERIAL@' } | ForEach-Object { [pscustomobject]@{ Disk=[string]$_.Number; Volume="$($v.DriveLetter):"; Label=$v.FileSystemLabel } } }); ConvertTo-Json -Compress -InputObject @($rows | Where-Object { @($rows.Disk | Sort-Object -Unique).Count -eq 1 })'''.replace('@SERIAL@', serial)
+
+    def _lookup(self, serial, attempt, how, script):
+        """One bounded lookup. The rows, or None when it failed (logged)."""
+        try:
+            rows = self._ps(script, timeout=FIND_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            self.log(f'{SERIALS[serial]}: drive lookup {attempt}/{FIND_TRIES} ({how}) for {serial} '
+                     f'timed out after {FIND_TIMEOUT} s.')
+            return None
+        except (subprocess.CalledProcessError, ValueError) as exc:
+            detail = (getattr(exc, 'stderr', '') or str(exc)).strip().splitlines()
+            self.log(f'{SERIALS[serial]}: drive lookup {attempt}/{FIND_TRIES} ({how}) for {serial} failed: '
+                     f'{detail[-1] if detail else exc}')
+            return None
+        if len(rows) > 1:
+            # Never guess between drives: this is what keeps a UF2 off the wrong half.
+            raise Refused('Cannot map this serial to exactly one disk and volume. Unplug other bootloaders and try again.')
+        if not rows:
+            self.log(f'{SERIALS[serial]}: drive lookup {attempt}/{FIND_TRIES} ({how}) for {serial}: '
+                     'no volume yet.')
+        return rows
+
     def find_volume(self, serial):
+        """The bootloader volume of `serial`, by the CIM association, or by the INFO_UF2.TXT
+        fallback, retried FIND_TRIES times. Refuses an ambiguous mapping at once."""
         if serial not in SERIALS:
             raise Refused('Unknown bootloader serial')
-        rows = self._ps(r"$disks = @(Get-CimInstance Win32_DiskDrive | Where-Object { $_.PNPDeviceID -match '" + serial + r"' }); ConvertTo-Json -Compress -InputObject @($disks | Where-Object { $disks.Count -eq 1 } | ForEach-Object { $disk = $_; Get-CimAssociatedInstance -InputObject $disk -Association Win32_DiskDriveToDiskPartition | ForEach-Object { Get-CimAssociatedInstance -InputObject $_ -Association Win32_LogicalDiskToPartition | ForEach-Object { [pscustomobject]@{ Disk=$disk.DeviceID; Volume=$_.DeviceID } } } })")
-        if len(rows) != 1:
-            raise Refused('Cannot map this serial to exactly one disk and volume. Unplug other bootloaders and try again.')
-        volume = Path(rows[0]['Volume'] + '\\')
-        if not self.exists(volume / 'INFO_UF2.TXT'):
-            raise Refused('Mapped volume has no INFO_UF2.TXT')
-        return volume
+        timed_out = True
+        for attempt in range(1, FIND_TRIES + 1):
+            for how, script in (('CIM', self._cim_script(serial)),
+                                ('INFO_UF2.TXT', self._uf2_volume_script(serial))):
+                rows = self._lookup(serial, attempt, how, script)
+                if rows is None:
+                    continue
+                timed_out = False
+                if rows:
+                    volume = Path(rows[0]['Volume'] + '\\')
+                    if not self.exists(volume / 'INFO_UF2.TXT'):
+                        raise Refused('Mapped volume has no INFO_UF2.TXT')
+                    if attempt > 1 or how != 'CIM':
+                        self.log(f'{SERIALS[serial]}: drive found at {volume} ({how}, try {attempt}/{FIND_TRIES}).')
+                    return volume
+            if attempt < FIND_TRIES:
+                self.sleep(FIND_PAUSE)
+        if timed_out:
+            raise TimeoutError(f'the drive lookup for {serial} timed out {FIND_TRIES} times')
+        raise Refused('Cannot map this serial to exactly one disk and volume. Unplug other bootloaders and try again.')
 
     def exists(self, path):
         # Once the bootloader reboots, Windows answers a stat on its drive with WinError 433 or
@@ -522,7 +583,13 @@ def enter_with_retries(half, backend, log, clock=time.monotonic, sleep=time.slee
 
 def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
           settings_reset=False, allow_unknown_half=False, clock=time.monotonic, sleep=time.sleep,
-          allow_profile_mix=False, yes=False, force=False):
+          allow_profile_mix=False, yes=False, force=False, resume=False):
+    """Flashes the halves in `images`, left first. Resume (#654): before any half is asked into
+    its bootloader, the bootloaders already connected are listed. A half already in its
+    bootloader (a run that stopped after the entry, or a double tap) is written first, scoped to
+    its serial, and no half is asked in while another half's bootloader is unresolved. Two known
+    bootloaders are written one at a time, each scoped to its serial; an unknown serial refuses.
+    `resume`: only the halves already in their bootloaders are written; none is asked in."""
     log('Flash left first, check that it types, then flash right. Double-tap reset only on the requested half.')
     log('Rollback: known-good firmware is in ' + ROLLBACK)
     expected, same = check_builds(images, backend, log, allow_profile_mix, settings_reset)
@@ -539,11 +606,9 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         confirm('Type FLASH to continue: ', 'FLASH', stdin, ask)
         if settings_reset:
             confirm('This erases saved settings. Type ERASE SETTINGS to confirm: ', 'ERASE SETTINGS', stdin, ask)
-    for half in ('left', 'right'):
-        if half not in images:
-            continue
+    def one(half, resumed):
         entered = attempted = False
-        if not settings_reset:
+        if not settings_reset and not resumed:
             # The right goes through the left's relay, which comes back about 20-40 s after the
             # left reboots (#122, #184): wait for it (the relay-ready event with HELLO bit 20,
             # #594; else HELLO right link 2; up to 60 s) before asking. A request the left can't
@@ -556,18 +621,29 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         if entered:
             log(f'Asked the {half} half to enter its bootloader. Waiting up to {seconds:g} seconds for its drive.')
         chosen = []
+        said = set()
+        def note(message):  # once per wait, not once a second
+            if message not in said:
+                said.add(message)
+                log(message)
         def ready():
             serials = backend.enumerate_bootloaders()
-            if any(s not in SERIALS for s in serials):
-                raise Refused('Unknown bootloader serial; unplug it before proceeding.')
+            mine = known_bootloaders(serials).get(half, [])
+            if len(mine) > 1:
+                note(f'More than one {half} bootloader is connected ({", ".join(mine)}). Unplug one; '
+                     'no image will be written yet.')
+                return False
+            if not mine:
+                return False
             if len(serials) > 1:
-                log('Two bootloaders are connected. Unplug one; no image will be written yet.')
-                return False
-            if not serials or SERIALS[serials[0]] != half:
-                return False
-            chosen[:] = serials
+                # The serial map says which drive is which half (#654): write this half's only.
+                note(f'{len(serials)} bootloaders are connected; writing the {half} one only ({mine[0]}), '
+                     'scoped to its serial.')
+            chosen[:] = mine
             return True
-        if not entered:
+        if resumed:
+            pass
+        elif not entered:
             if asked:
                 # A hands-free request that got no reply may still land (#111: the right entered
                 # its bootloader after the double-tap prompt). Never ask the user while it might.
@@ -599,7 +675,8 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
         unconfirmed = False
         for attempt in (1, 2):
             # Recheck identity immediately before touching the drive.
-            if backend.enumerate_bootloaders() != chosen or backend.find_volume(chosen[0]) != volume:
+            if (known_bootloaders(backend.enumerate_bootloaders()).get(half, []) != chosen
+                    or backend.find_volume(chosen[0]) != volume):
                 raise Refused('Bootloader identity or volume changed before writing')
             try:
                 backend.write_file(volume / 'flash.uf2', images[half])
@@ -635,7 +712,7 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
             # The history says exactly what the console said.
             record(half, expected.get(half), 'verified' if verified else 'unverified')
         if settings_reset:
-            continue
+            return
         if yes:
             # The right is flashed only after the left is proven to type. The right's own check
             # needs its relay up again, so it waits for that (#600) and reports rather than fails.
@@ -651,6 +728,44 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
                 check_right_typing(backend, log, clock, sleep)
         elif half == 'left':
             confirm('Test the left keyboard in a text editor. If it types, enter TYPES here: ', 'TYPES', stdin, ask)
+
+    done = set()
+    while True:
+        # Listed again before each half: never ask a half into its bootloader while another
+        # one's bootloader is unresolved (#654: that stranded both halves).
+        present = {h: s for h, s in known_bootloaders(backend.enumerate_bootloaders()).items() if h not in done}
+        pending = [h for h in ('left', 'right') if h in images and h not in done]
+        stranded = [h for h in pending if h in present]
+        if stranded:
+            half = stranded[0]
+            log(f'{half}: already in its bootloader ({", ".join(present[half])}); writing it first, '
+                'without asking any half into its bootloader.')
+        elif resume or not pending or present:
+            break
+        else:
+            half = pending[0]
+        one(half, resumed=bool(stranded))
+        done.add(half)
+    if present:
+        # A bootloader this run has no image for: writing nothing to it, and asking no other half in.
+        for h, s in sorted(present.items()):
+            log(f'{h}: in its bootloader ({", ".join(s)}), and this run has no {h} image.')
+        which = next(iter(present)) if len(present) == 1 else 'both'
+        raise Refused(f'a half is still in its bootloader; no other half is asked in. Run again with '
+                      f'--half {which} (or --resume) to write it.')
+    if resume and not done:
+        log('Nothing to resume: no selected half is in its bootloader.')
+
+
+def known_bootloaders(serials):
+    """{half: [serials]} for the connected bootloaders. Refuses any serial this PC doesn't know:
+    a UF2 is never written to a drive the serial map can't place."""
+    if any(s not in SERIALS for s in serials):
+        raise Refused('Unknown bootloader serial; unplug it before proceeding.')
+    found = {}
+    for serial in serials:
+        found.setdefault(SERIALS[serial], []).append(serial)
+    return found
 
 
 def main(argv=None):
@@ -676,6 +791,11 @@ def main(argv=None):
                              'typing check in place of TYPES')
     parser.add_argument('--allow-profile-mix', action='store_true',
                         help='allow leaving one half dev and the other GA')
+    parser.add_argument('--resume', action='store_true',
+                        help='doctor mode (#654): write only the halves already in their bootloaders '
+                             '(stranded by an earlier run, or double-tapped), each scoped to its USB '
+                             'serial, and never ask a half into its bootloader. Normal runs resume too: '
+                             'a half already in its bootloader is written first')
     args = parser.parse_args(argv)
     if not math.isfinite(args.wait_seconds) or args.wait_seconds <= 0:
         parser.error('--wait-seconds must be positive and finite')
@@ -685,6 +805,7 @@ def main(argv=None):
         if not args.json:
             print(message, flush=True)
     code = 0
+    touched = False  # the run reached the devices
     try:
         images = {}
         for half in ('left', 'right'):
@@ -709,9 +830,11 @@ def main(argv=None):
                 print(prompt, end='', file=sys.stderr, flush=True)
                 return input()
             with FlashLock():
-                flash(images, WindowsOS(), args.wait_seconds, log=log, ask=ask_terminal,
+                touched = True
+                flash(images, WindowsOS(log=log), args.wait_seconds, log=log, ask=ask_terminal,
                       settings_reset=args.settings_reset, allow_unknown_half=args.allow_unknown_half,
-                      allow_profile_mix=args.allow_profile_mix, yes=args.yes, force=args.force)
+                      allow_profile_mix=args.allow_profile_mix, yes=args.yes, force=args.force,
+                      resume=args.resume)
     except (TimeoutError, subprocess.TimeoutExpired) as exc:
         code = 2
         log('TIMEOUT: ' + str(exc))
@@ -726,6 +849,9 @@ def main(argv=None):
         log('Stopped by user.')
     if code:
         log('Rollback: known-good firmware is in ' + ROLLBACK)
+        if touched:
+            log('If a half is still in its bootloader, run the same command again (or add --resume): '
+                'a half already in its bootloader is written first, and no other half is asked in.')
     if args.json:
         report['exit_code'] = code
         print(json.dumps(report))
