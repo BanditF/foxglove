@@ -5,6 +5,7 @@
 
 #include <zephyr/kernel.h>
 
+#include "util.h"
 #include "icons.h"
 
 #define STRIP_W 68

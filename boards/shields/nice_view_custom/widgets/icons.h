@@ -21,8 +21,6 @@
 
 #include <lvgl.h>
 
-#include "util.h"
-
 void icons_rect(lv_obj_t *c, int oy, int x, int y, int w, int h, int radius, bool filled,
                 bool outline, lv_color_t color);
 void icons_text(lv_obj_t *c, int oy, int x, int y, int w, const char *t, lv_color_t color,
