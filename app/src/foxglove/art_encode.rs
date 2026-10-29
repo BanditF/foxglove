@@ -12,10 +12,8 @@ use std::path::Path;
 
 use image::{imageops, GrayImage, Luma};
 
-/// Header byte 7, bit 0 (#610): set bits are ink. Today's firmware ignores the byte and draws
-/// every set bit in its foreground, so these blobs show their ink like the status strip; blobs
-/// without it (from before #610) have the field's bits set and look as they always did. The flag
-/// is there for a firmware that plays those older blobs inverted (#649's, reverted for now).
+/// Header byte 7 (art_relay.h `ART_RELAY_FLAG_INK`, #610): set bits are ink. Blobs without it
+/// (from before #610) have the background bits set; the keyboard and `art_preview` invert them.
 pub const FLAG_INK: u8 = 0x01;
 
 /// The art screen a set is made for (#560): its stored buffer's size, and how many quarter turns

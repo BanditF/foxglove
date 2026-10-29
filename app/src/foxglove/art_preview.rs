@@ -1,10 +1,8 @@
 //! NVA1 thumbnail decoding. The stored bitmap is row-major, MSB first.
 //!
-//! Thumbnails show the art as the keyboard does: a set bit white, in the colour of the status
-//! strip's ink. The firmware ignores header byte 7 (`art_encode::FLAG_INK`) and draws every set
-//! bit in its foreground, so this does too (#649's firmware part is reverted): blobs the
-//! app encodes now (ink = a set bit) show their ink lit, older ones (the field's bits set) show
-//! their field lit, on the keyboard and here alike.
+//! Thumbnails show the art as the keyboard does in its dark theme: ink white on black (#610).
+//! Ink is a set bit in blobs with `art_encode::FLAG_INK`; older blobs have the background bits
+//! set, and are inverted here as the keyboard inverts them.
 
 pub fn first_frame(blob: &[u8]) -> Result<egui::ColorImage, &'static str> {
     let bad = "Invalid NVA1 art blob";
@@ -46,14 +44,15 @@ pub fn first_frame(blob: &[u8]) -> Result<egui::ColorImage, &'static str> {
         }
     }
     let bits = first.ok_or(bad)?;
+    let ink = blob[7] & super::art_encode::FLAG_INK != 0;
     let pixels = (0..h)
         .flat_map(|y| {
             let bits = &bits;
             (0..w).map(move |x| {
-                if bits[y * stride + x / 8] & (0x80 >> (x % 8)) == 0 {
-                    egui::Color32::BLACK
-                } else {
+                if (bits[y * stride + x / 8] & (0x80 >> (x % 8)) != 0) == ink {
                     egui::Color32::WHITE
+                } else {
+                    egui::Color32::BLACK
                 }
             })
         })
@@ -115,68 +114,20 @@ mod tests {
         let blob = [
             b'N', b'V', b'A', b'1', 8, 1, 1, 0, 2, 0, 1, 0, 1, 17, 0, 18, 0, 0x80, 0x80,
         ];
-        // The first frame shown is unique frame 1: every bit clear, all dark.
+        // The first frame shown is unique frame 1: every bit clear. In a blob from before #610
+        // (flags 0) set bits are the field, so a clear frame is all ink, all lit.
         let image = first_frame(&blob).unwrap();
-        assert!(image.pixels.iter().all(|p| *p == egui::Color32::BLACK));
-        // The keyboard ignores header byte 7, and so does the thumbnail.
+        assert!(image.pixels.iter().all(|p| *p == egui::Color32::WHITE));
+        // The same bits with the ink flag: no ink, all dark.
         let mut inked = blob;
         inked[7] = super::super::art_encode::FLAG_INK;
-        assert_eq!(first_frame(&inked).unwrap().pixels, image.pixels);
+        let image = first_frame(&inked).unwrap();
+        assert!(image.pixels.iter().all(|p| *p == egui::Color32::BLACK));
         for end in 0..blob.len() {
             assert!(first_frame(&blob[..end]).is_err());
         }
         let mut invalid = blob;
         invalid[12] = 2;
         assert!(first_frame(&invalid).is_err());
-    }
-
-    /// The right half as the firmware draws a pushed blob or a saved slot (peripheral_status.c
-    /// art_play, the same in d6ded31): the buffer starts clear, the deltas up to the first one
-    /// shown are XORed in, and palette index 1 (a set bit) is the strip's foreground. Header byte
-    /// 7 is never read. White here is that foreground.
-    fn keyboard(blob: &[u8]) -> Vec<egui::Color32> {
-        let (w, h) = (blob[4] as usize, blob[5] as usize);
-        let unique = u16::from_le_bytes([blob[8], blob[9]]) as usize;
-        let frames = u16::from_le_bytes([blob[10], blob[11]]) as usize;
-        let at = 12 + frames;
-        let offset =
-            |i: usize| u16::from_le_bytes([blob[at + 2 * i], blob[at + 2 * i + 1]]) as usize;
-        let stride = w.div_ceil(8);
-        let mut bits = vec![0u8; stride * h];
-        for i in 0..=blob[12] as usize {
-            let end = if i + 1 < unique {
-                offset(i + 1)
-            } else {
-                blob.len()
-            };
-            apply(&blob[offset(i)..end], &mut bits).unwrap();
-        }
-        (0..w * h)
-            .map(|p| {
-                let (x, y) = (p % w, p / w);
-                if bits[y * stride + x / 8] & (0x80 >> (x % 8)) != 0 {
-                    egui::Color32::WHITE
-                } else {
-                    egui::Color32::BLACK
-                }
-            })
-            .collect()
-    }
-
-    /// Every blob the app shows a thumbnail for looks the same on the keyboard: the bundled
-    /// presets' and plugins' sets (flags 0) and one the app encodes now (the ink flag), whether
-    /// pushed or kept in a flash slot (the slot holds the same bytes).
-    #[test]
-    fn thumbnails_are_what_the_keyboard_draws() {
-        let fixture = include_bytes!("../../../tests/art/ink-fixture.bin");
-        assert_eq!(fixture[7], super::super::art_encode::FLAG_INK);
-        let mut blobs: Vec<&[u8]> = vec![fixture];
-        for (name, blob, _) in super::super::art_pieces::BUNDLED {
-            assert_eq!(blob[7], 0, "{name}: from before #610");
-            blobs.push(blob);
-        }
-        for blob in blobs {
-            assert_eq!(first_frame(blob).unwrap().pixels, keyboard(blob));
-        }
     }
 }

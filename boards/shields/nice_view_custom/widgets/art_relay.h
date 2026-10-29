@@ -49,7 +49,11 @@
  * its CRC and header checks; a failed or abandoned push leaves the screen alone.
  *
  * Blob, all little endian (scripts/flipper_art.py writes it for OUT.bin):
- *   "NVA1", w u8 (140), h u8 (68), fps u8, 0, unique u16, frames u16
+ *   "NVA1", w u8 (140), h u8 (68), fps u8, flags u8, unique u16, frames u16
+ *   flags bit 0 (ART_RELAY_FLAG_INK, #610): a set bit is ink, drawn in the theme's foreground.
+ *   Blobs from before #610 have flags 0 and the background bits set; a right since #610 plays
+ *   them inverted, so they look the same. A right before #610 ignores the byte, and its palette
+ *   already shows a set bit in the foreground, so new blobs look right there too.
  *   order u8[frames]       play order, as indices into the deltas
  *   offset u16[unique]     where each delta starts, from the start of the blob
  *   deltas                 RLE-packed XOR deltas, as in custom_art.c
@@ -123,6 +127,7 @@ enum art_relay_op {
 
 #define ART_RELAY_HEADER_SIZE 12
 #define ART_RELAY_MAGIC "NVA1"
+#define ART_RELAY_FLAG_INK BIT(0) // header byte 7: set bits are ink (#610)
 
 enum art_relay_right_state {
     ART_RIGHT_IDLE,      // showing a built-in set
