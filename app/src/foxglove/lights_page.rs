@@ -42,14 +42,6 @@ pub fn effect(n: u8) -> Option<&'static KeyboardEffect> {
     super::effect_controls::underglow(n)
 }
 
-/// Whether the colour controls apply to the effect shown: yes unless it is one that ignores
-/// the colour (an unknown effect or none read yet keeps them).
-pub fn colour_used(effect_now: Option<u8>) -> bool {
-    effect_now
-        .and_then(effect)
-        .is_none_or(KeyboardEffect::uses_colour)
-}
-
 /// The width, in points, from which a page's cards (or the Keyboard card's contents) sit in
 /// two columns.
 pub const TWO_COLUMNS: f32 = 760.0;

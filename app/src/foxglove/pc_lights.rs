@@ -1533,7 +1533,7 @@ mod tests {
     /// "Match keyboard" can copy.
     #[test]
     fn the_effect_table_decides_what_match_keyboard_copies() {
-        use super::super::lights_page::{colour_used, effect, EFFECTS};
+        use super::super::lights_page::{effect, EFFECTS};
         assert_eq!(EFFECTS, ["Solid", "Breathe", "Spectrum", "Swirl"]);
         let uses: Vec<bool> = (0..4).map(|n| effect(n).unwrap().uses_colour()).collect();
         assert_eq!(uses, [true, true, false, false]);
@@ -1546,13 +1546,6 @@ mod tests {
             "Spectrum (rainbow; colour not used yet)"
         );
         assert_eq!(effect(0).unwrap().label(), "Solid");
-        // The page's rule: colour controls only for an effect that uses the colour.
-        assert!(colour_used(Some(0)) && colour_used(Some(1)));
-        assert!(!colour_used(Some(2)) && !colour_used(Some(3)));
-        assert!(
-            colour_used(None) && colour_used(Some(9)),
-            "unknown: keep them"
-        );
         // The match decision.
         let breathe = KeyboardLights {
             effect: 1,
