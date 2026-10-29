@@ -460,6 +460,9 @@ pub struct BoardView {
     pub art: Option<std::sync::Arc<egui::ColorImage>>,
     /// The left half's underglow colour; `None` when it's off or not known yet.
     pub glow: Option<Color32>,
+    /// The left half plays an effect that makes its own colours (#670): the strip is a
+    /// rainbow, not `glow`'s stored colour.
+    pub glow_rainbow: bool,
     pub left_label: String,
     pub right_label: String,
     /// The info and art screens' shapes upright, from the keyboard's screens (#560); `None`
@@ -488,10 +491,12 @@ fn board_view(ctx: &egui::Context) -> BoardView {
             art = image;
         }
     }
-    let glow = ks::rgb_state(ctx)
-        .map(|s| s.left)
-        .filter(|l| l.on)
-        .map(|l| super::lights_page::shown_color(l.hue, l.sat, l.brightness));
+    let lit = ks::rgb_state(ctx).map(|s| s.left).filter(|l| l.on);
+    let glow = lit.map(|l| super::lights_page::shown_color(l.hue, l.sat, l.brightness));
+    let glow_rainbow = lit.is_some_and(|l| {
+        super::lights_page::effect(l.effect)
+            .is_some_and(super::lights_page::KeyboardEffect::rainbow)
+    });
     let link = super::connection::summary(ctx);
     let first = parts.short(0).to_uppercase();
     let left_label = match link.usb {
@@ -513,6 +518,7 @@ fn board_view(ctx: &egui::Context) -> BoardView {
         panel,
         art,
         glow,
+        glow_rainbow,
         left_label,
         right_label,
     }
@@ -713,6 +719,9 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
                 #[cfg(test)]
                 hits.glows.push(glow);
                 match v.glow {
+                    Some(_) if v.glow_rainbow => {
+                        super::effect_controls::paint_rainbow(ui.painter(), glow, true);
+                    }
                     Some(c) => {
                         ui.painter().rect_filled(
                             glow.expand(3.0),
@@ -968,6 +977,7 @@ pub mod tests {
             panel: super::super::theme_preview::sample_screens().frame,
             art: image,
             glow: Some(Color32::from_rgb(0xf0, 0x8a, 0x3c)),
+            glow_rainbow: false,
             left_label: "LEFT · USB".into(),
             right_label: "RIGHT · HEARTH".into(),
             panel_shape: None,

@@ -31,6 +31,7 @@ pub mod catalog_refresh;
 pub mod connection;
 pub mod devices;
 pub mod diagnostics;
+pub mod effect_controls;
 pub mod firmware_update;
 #[cfg(test)]
 pub(crate) mod fixtures;

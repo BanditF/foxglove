@@ -284,7 +284,7 @@ impl KeyboardLights {
     pub fn colors(&self, zones: usize) -> Option<Vec<[u8; 3]>> {
         let effect = super::lights_page::effect(self.effect)?;
         effect
-            .uses_colour
+            .uses_colour()
             .then(|| vec![hsv_rgb(self.hue, self.sat, self.brightness); zones])
     }
 
@@ -1535,7 +1535,7 @@ mod tests {
     fn the_effect_table_decides_what_match_keyboard_copies() {
         use super::super::lights_page::{colour_used, effect, EFFECTS};
         assert_eq!(EFFECTS, ["Solid", "Breathe", "Spectrum", "Swirl"]);
-        let uses: Vec<bool> = (0..4).map(|n| effect(n).unwrap().uses_colour).collect();
+        let uses: Vec<bool> = (0..4).map(|n| effect(n).unwrap().uses_colour()).collect();
         assert_eq!(uses, [true, true, false, false]);
         assert_eq!(
             effect(3).unwrap().label(),

@@ -1238,6 +1238,62 @@ fn lights_page_renders() {
     assert_ne!(with, without);
 }
 
+/// #670: the Lights page with `lights`, at the Lights page's wide size.
+fn effect_preview(name: &str, lights: crate::foxglove::lights_page::View) -> image::RgbaImage {
+    let mut samples = Samples::full();
+    samples.lights = lights;
+    let img = shell_preview_with(crate::foxglove::shell::Page::Lights, &samples, 980.0);
+    if !name.is_empty() {
+        keep(name, &img);
+    }
+    img
+}
+
+/// Pixels of a strong, bright green (hue 100-140°): the rainbow has them, the page's
+/// swatches and theme don't.
+fn rainbow_green(img: &image::RgbaImage) -> usize {
+    img.pixels()
+        .filter(|p| {
+            let [r, g, b, _] = p.0;
+            let hsv = egui::ecolor::Hsva::from(Color32::from_rgb(r, g, b));
+            let hue = hsv.h * 360.0;
+            hsv.s > 0.7 && hsv.v > 0.85 && (100.0..=140.0).contains(&hue)
+        })
+        .count()
+}
+
+/// #670: a colour effect (Breathe) shows the colour picker, brightness and speed.
+#[test]
+fn lights_colour_effect_renders() {
+    use crate::foxglove::lights_page::tests::sample_effect;
+    let img = effect_preview("ui-670-colour-effect.png", sample_effect(1, 26, 76));
+    assert_eq!(rainbow_green(&img), 0, "no rainbow under a colour effect");
+}
+
+/// #670: a colour-free effect (Swirl) shows a rainbow in place of the colour picker.
+#[test]
+fn lights_rainbow_effect_renders() {
+    use crate::foxglove::lights_page::tests::sample_effect;
+    let colour = effect_preview("", sample_effect(1, 26, 76));
+    let img = effect_preview("ui-670-rainbow-effect.png", sample_effect(3, 26, 76));
+    assert!(rainbow_green(&img) > 100, "the rainbow shows");
+    assert_ne!(img, colour);
+}
+
+/// #670: the board shows Swirl while Foxglove saved Solid amber: the rainbow, and a line
+/// naming the saved look.
+#[test]
+fn lights_board_differs_renders() {
+    use crate::foxglove::lights_page::tests::{sample_board_differs, sample_effect};
+    let plain = effect_preview("", sample_effect(3, 39, 70));
+    let img = effect_preview("ui-670-board-differs.png", sample_board_differs());
+    assert!(
+        rainbow_green(&img) > 100,
+        "the board's rainbow, not the saved amber"
+    );
+    assert_ne!(img, plain, "the saved look is named");
+}
+
 /// The Scenes page (#487): the user's room with a scene running (wide and at the window's
 /// default size), a scene being dragged, and an empty room with nothing running.
 #[test]

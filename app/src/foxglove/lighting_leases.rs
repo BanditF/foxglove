@@ -587,6 +587,25 @@ impl Arbiter {
     /// The user changed `device`'s lights (the Lights page, the followed accent): their
     /// choice from now on (#624), and, while leases hold the lights, what comes back when the
     /// last one ends, as for the case's colours under a scene.
+    /// The looks the user chose (#670): each device's effect and colour fields they set.
+    pub fn saved_looks(&self) -> Vec<(String, super::effect_controls::Saved)> {
+        let mut out: Vec<_> = self
+            .chosen
+            .iter()
+            .map(|(device, c)| {
+                let saved = super::effect_controls::Saved {
+                    effect: c.effect.as_deref().and_then(|e| e.parse().ok()),
+                    hue: c.hue,
+                    sat: c.sat,
+                };
+                (device.clone(), saved)
+            })
+            .filter(|(_, s)| *s != super::effect_controls::Saved::default())
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     pub fn user_changed(&mut self, device: &str, change: impl FnOnce(&mut LightingState)) {
         let chosen = self.chosen.entry(device.to_string()).or_default();
         let mut probe = chosen.probe();
@@ -784,7 +803,24 @@ pub fn with<R>(f: impl FnOnce(&mut Arbiter) -> R) -> R {
     let r = f(a);
     // Every lease grant, release and pause passes through here: that's the event (#376).
     publish(a, &HOLDING, WAKE.get());
+    // So does every choice of the user's: the Lights page reads it without this lock (#670).
+    let saved = a.saved_looks();
+    *SAVED.lock().unwrap_or_else(|e| e.into_inner()) = saved;
     r
+}
+
+/// Each device's saved look as of the last pass through [`with`] (#670).
+static SAVED: Mutex<Vec<(String, super::effect_controls::Saved)>> = Mutex::new(Vec::new());
+
+/// The look the user chose for `device` (the Lights page, the followed accent), without the
+/// arbiter's lock: the Lights page names it when the keyboard shows something else.
+pub fn saved(device: &str) -> Option<super::effect_controls::Saved> {
+    SAVED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(d, _)| d == device)
+        .map(|(_, s)| s.clone())
 }
 
 /// One device's leases, the one showing first: each one's connection and priority (#376).
@@ -1575,6 +1611,29 @@ mod tests {
         assert_eq!(
             (c.on, c.speed, c.hue, c.effect.as_deref()),
             (Some(false), Some(4), None, None)
+        );
+    }
+
+    /// #670: the saved look the Lights page names is the user's effect and colour fields, per
+    /// device; brightness or on/off alone save no look.
+    #[test]
+    fn the_saved_look_is_the_users_effect_and_colour() {
+        use crate::foxglove::effect_controls::Saved;
+        let mut a = Arbiter::default();
+        assert!(a.saved_looks().is_empty());
+        a.user_changed("mouse", |s| s.brightness = 20);
+        a.user_changed("kb", |s| (s.hue, s.sat) = (39, 70));
+        a.user_changed("kb", |s| s.effect.id = "0".into());
+        assert_eq!(
+            a.saved_looks(),
+            vec![(
+                "kb".to_string(),
+                Saved {
+                    effect: Some(0),
+                    hue: Some(39),
+                    sat: Some(70),
+                }
+            )]
         );
     }
 }

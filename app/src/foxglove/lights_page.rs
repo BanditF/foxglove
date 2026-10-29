@@ -14,58 +14,20 @@ use std::sync::Mutex;
 use egui::{Color32, RichText, Sense, Stroke};
 use foxglove_link::protocol::{RgbHalf, RgbState};
 
+use super::effect_controls::Showing;
 use super::keyboard_settings::{self as ks, RgbSync};
 use super::settings_ui::card;
 use super::theme;
 
 /// One of the keyboard's own effects (ZMK's underglow, by its number), as data: what it is
-/// called, and whether it shows the colour picked for it (#616). ZMK's Spectrum and Swirl cycle
-/// the hue themselves and ignore the colour, so the page greys the colour out for them, says
-/// so in their label, and the case's "Match keyboard" has no colour to copy from them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct KeyboardEffect {
-    pub name: &'static str,
-    /// It shows the chosen colour (hue and saturation).
-    pub uses_colour: bool,
-    /// What its name doesn't say, shown after it.
-    pub note: Option<&'static str>,
-}
-
-impl KeyboardEffect {
-    /// Its name with its note: "Swirl (rainbow; colour not used yet)".
-    pub fn label(&self) -> String {
-        match self.note {
-            Some(note) => format!("{} ({note})", self.name),
-            None => self.name.to_string(),
-        }
-    }
-}
+/// called and which controls it uses (#616, #670). The table is
+/// [`super::effect_controls::UNDERGLOW`]; Spectrum and Swirl make their own colours, so the
+/// page shows a rainbow for them in place of the colour picker, and the case's "Match
+/// keyboard" has no colour to copy from them.
+pub type KeyboardEffect = super::effect_controls::EffectSpec;
 
 /// The keyboard's effects by number: 0 solid, 1 breathe, 2 spectrum, 3 swirl.
-pub const EFFECT_TABLE: [KeyboardEffect; 4] = [
-    KeyboardEffect {
-        name: "Solid",
-        uses_colour: true,
-        note: None,
-    },
-    KeyboardEffect {
-        name: "Breathe",
-        uses_colour: true,
-        note: None,
-    },
-    KeyboardEffect {
-        name: "Spectrum",
-        uses_colour: false,
-        note: Some(RAINBOW),
-    },
-    KeyboardEffect {
-        name: "Swirl",
-        uses_colour: false,
-        note: Some(RAINBOW),
-    },
-];
-
-const RAINBOW: &str = "rainbow; colour not used yet";
+pub const EFFECT_TABLE: [KeyboardEffect; 4] = super::effect_controls::UNDERGLOW;
 
 /// The effects' names, in number order (the pills).
 pub const EFFECTS: [&str; 4] = [
@@ -77,13 +39,15 @@ pub const EFFECTS: [&str; 4] = [
 
 /// Effect number `n`, if the keyboard has it.
 pub fn effect(n: u8) -> Option<&'static KeyboardEffect> {
-    EFFECT_TABLE.get(usize::from(n))
+    super::effect_controls::underglow(n)
 }
 
 /// Whether the colour controls apply to the effect shown: yes unless it is one that ignores
 /// the colour (an unknown effect or none read yet keeps them).
 pub fn colour_used(effect_now: Option<u8>) -> bool {
-    effect_now.and_then(effect).is_none_or(|e| e.uses_colour)
+    effect_now
+        .and_then(effect)
+        .is_none_or(KeyboardEffect::uses_colour)
 }
 
 /// The width, in points, from which a page's cards (or the Keyboard card's contents) sit in
@@ -120,6 +84,8 @@ pub struct View {
     pub calibration: Option<bool>,
     /// The board's parts (#559): one row each, and the split-only switch on a split.
     pub parts: super::parts::Parts,
+    /// The look Foxglove saved for the keyboard (#670): named when the keyboard shows another.
+    pub saved: Option<super::effect_controls::Saved>,
 }
 
 /// What the user is choosing but hasn't sent: the colour until Apply, the speed until the
@@ -219,6 +185,7 @@ pub fn show(ui: &mut egui::Ui) {
         calibration: super::devices::keyboard_key()
             .map(|k| foxglove_devices::calibration::global().device(&k).is_some()),
         parts: super::parts::Parts::current(),
+        saved: super::devices::keyboard_id().and_then(|id| super::lighting_leases::saved(&id)),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     draft.settle(view.state.as_ref());
@@ -362,13 +329,7 @@ fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     for (name, half, age) in rows {
         super::settings_ui::pair(ui, 52.0, &name, |ui| {
             if let Some(h) = half {
-                let color = if h.on {
-                    shown_color(h.hue, h.sat, h.brightness)
-                } else {
-                    Color32::from_gray(20)
-                };
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
-                ui.painter().rect_filled(rect, 3.0, color);
+                preview_chip(ui, &h);
             }
             ui.add(egui::Label::new(half_text(half.as_ref(), age)).wrap());
         });
@@ -447,6 +408,24 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                 }
             }
         });
+        // What the keyboard shows decides the controls and the preview, never the saved
+        // look (#670); the saved one is only named when they differ.
+        let showing = Showing::new(v.state.as_ref());
+        if let (Some(shown), Some(saved)) = (
+            showing.effect,
+            showing.differs(v.state.as_ref(), v.saved.as_ref()),
+        ) {
+            let pick = if shown.uses_colour() {
+                "an effect or a colour"
+            } else {
+                "an effect"
+            };
+            ui.weak(format!(
+                "The keyboard shows {}; Foxglove saved {saved}. Pick {pick} to change it.",
+                shown.name
+            ));
+        }
+        let controls = showing.controls;
         ui.add_space(4.0);
         ui.label(theme::caps_label(ui, "Colour"));
         let picked = draft.color;
@@ -455,17 +434,8 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             ui.weak("Waiting for the keyboard's colour…");
             return;
         };
-        // An effect that ignores the colour greys the colour out and says why (#616).
-        let current = left.map(|l| l.effect);
-        let uses_colour = colour_used(current);
-        if let Some(e) = current.and_then(effect).filter(|_| !uses_colour) {
-            ui.weak(format!(
-                "{} is a rainbow: it doesn't use the colour yet. Brightness and speed still apply.",
-                e.name
-            ));
-        }
         let custom_open = &mut draft.custom_open;
-        ui.add_enabled_ui(uses_colour, |ui| {
+        if controls.colour() {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 for (name, rgb) in SWATCHES {
@@ -481,28 +451,47 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     *custom_open = !*custom_open;
                 }
             });
-            if *custom_open && uses_colour {
+            if *custom_open {
                 ui.add_space(2.0);
-                value_row(ui, "Hue", format!("{hue}°"));
-                full_slider(ui, egui::Slider::new(&mut *hue, 0..=359));
-                value_row(ui, "Saturation", format!("{sat}%"));
-                full_slider(ui, egui::Slider::new(&mut *sat, 0..=100));
+                if controls.hue {
+                    value_row(ui, "Hue", format!("{hue}°"));
+                    full_slider(ui, egui::Slider::new(&mut *hue, 0..=359));
+                }
+                if controls.sat {
+                    value_row(ui, "Saturation", format!("{sat}%"));
+                    full_slider(ui, egui::Slider::new(&mut *sat, 0..=100));
+                }
             }
-        });
-        ui.add_space(4.0);
-        value_row(ui, "Brightness", format!("{brightness}%"));
-        full_slider(ui, egui::Slider::new(brightness, 0..=100));
-
-        let reported = left.map(|l| l.speed).filter(|s| (1..=5).contains(s));
-        let mut speed = draft.speed.or(reported).unwrap_or(3);
-        value_row(ui, "Speed", speed.to_string());
-        let r = full_slider(ui, egui::Slider::new(&mut speed, 1..=5));
-        if r.changed() {
-            draft.speed = Some(speed);
+        } else {
+            // An effect that makes its own colours: a rainbow where the picker was, and why
+            // (#616, #670). Hue and saturation are hidden; brightness and speed stay.
+            let w = ui.available_width().min(360.0);
+            super::effect_controls::rainbow(ui, egui::vec2(w, 18.0));
+            if let Some(e) = showing.effect {
+                ui.weak(format!(
+                    "{} is a rainbow: it doesn't use the colour yet. Brightness and speed still apply.",
+                    e.name
+                ));
+            }
         }
-        // Sent when the drag ends (or on a key press), not on every step of a drag.
-        if (r.drag_stopped() || (r.changed() && !r.dragged())) && Some(speed) != reported {
-            out.push(Intent::Speed(speed));
+        if controls.brightness {
+            ui.add_space(4.0);
+            value_row(ui, "Brightness", format!("{brightness}%"));
+            full_slider(ui, egui::Slider::new(&mut *brightness, 0..=100));
+        }
+
+        if controls.speed {
+            let reported = left.map(|l| l.speed).filter(|s| (1..=5).contains(s));
+            let mut speed = draft.speed.or(reported).unwrap_or(3);
+            value_row(ui, "Speed", speed.to_string());
+            let r = full_slider(ui, egui::Slider::new(&mut speed, 1..=5));
+            if r.changed() {
+                draft.speed = Some(speed);
+            }
+            // Sent when the drag ends (or on a key press), not on every step of a drag.
+            if (r.drag_stopped() || (r.changed() && !r.dragged())) && Some(speed) != reported {
+                out.push(Intent::Speed(speed));
+            }
         }
         ui.add_space(4.0);
         let mut accent = v.accent;
@@ -511,9 +500,18 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         super::settings_ui::split_row(
             ui,
             |ui| {
-                apply = ui.add(theme::primary_button(ui, "Apply colour")).clicked();
+                let label = if controls.colour() {
+                    "Apply colour"
+                } else {
+                    "Apply brightness"
+                };
+                apply = ui.add(theme::primary_button(ui, label)).clicked();
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
-                ui.painter().rect_filled(rect, 3.0, shown_color(*hue, *sat, *brightness));
+                if controls.colour() {
+                    ui.painter().rect_filled(rect, 3.0, shown_color(*hue, *sat, *brightness));
+                } else {
+                    super::effect_controls::paint_rainbow(ui.painter(), rect, true);
+                }
             },
             |ui| {
                 if ui
@@ -606,6 +604,20 @@ fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mu
             out.push(Intent::AskFollow);
         }
     });
+}
+
+/// A half's lights as a small chip: its colour, a rainbow for an effect that makes its own
+/// colours, or dark (#670: what the keyboard reports it shows).
+fn preview_chip(ui: &mut egui::Ui, h: &RgbHalf) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
+    if !h.on {
+        ui.painter().rect_filled(rect, 3.0, Color32::from_gray(20));
+    } else if effect(h.effect).is_some_and(KeyboardEffect::rainbow) {
+        super::effect_controls::paint_rainbow(ui.painter(), rect, true);
+    } else {
+        ui.painter()
+            .rect_filled(rect, 3.0, shown_color(h.hue, h.sat, h.brightness));
+    }
 }
 
 /// A label with its value on the right, above a slider.
@@ -844,6 +856,7 @@ pub mod tests {
             leds: (true, super::super::led_map::MapState::Shipped),
             calibration: Some(true),
             parts: crate::foxglove::fixtures::users_desk::board().parts(),
+            saved: None,
         }
     }
 
@@ -859,6 +872,7 @@ pub mod tests {
             leds: (false, super::super::led_map::MapState::Unknown),
             calibration: None,
             parts: crate::foxglove::fixtures::users_desk::board().parts(),
+            saved: None,
         }
     }
 
@@ -943,5 +957,115 @@ pub mod tests {
             "Off: each half dims on its own idle timer. The left wakes for a key on either half; \
              the right only for its own keys."
         ));
+    }
+
+    /// The Lights page's keyboard showing `effect` in colour `hue`/`sat` on both halves
+    /// (#670's previews).
+    pub fn sample_effect(effect: u8, hue: u16, sat: u8) -> View {
+        let h = RgbHalf {
+            effect,
+            hue,
+            sat,
+            brightness: 42,
+            ..half(true, hue, 3)
+        };
+        View {
+            state: Some(RgbState {
+                left: h,
+                right: Some((h, 0)),
+            }),
+            ..sample()
+        }
+    }
+
+    /// #670's sitting case: the board shows a rainbow Swirl (set on the keyboard) while
+    /// Foxglove saved Solid amber.
+    pub fn sample_board_differs() -> View {
+        View {
+            saved: Some(crate::foxglove::effect_controls::Saved {
+                effect: Some(0),
+                hue: Some(39),
+                sat: Some(70),
+            }),
+            ..sample_effect(3, 39, 70)
+        }
+    }
+
+    fn page_text(v: &View) -> String {
+        let ctx = super::super::pc_lights_ui::tests::test_ctx();
+        let mut text = String::new();
+        for _ in 0..2 {
+            let mut draft = Draft::default();
+            draft.settle(v.state.as_ref());
+            draft.custom_open = true;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                draw(ui, v, &mut draft);
+            });
+            out.textures_delta.clear();
+            text.clear();
+            for clipped in &out.shapes {
+                collect(&clipped.shape, &mut text);
+            }
+        }
+        text
+    }
+
+    /// #670: the page shows only the controls the shown effect uses. Breathe: colour,
+    /// brightness and speed; Solid: no speed; Swirl: a rainbow, no hue or saturation (not even
+    /// with Custom open), brightness and speed.
+    #[test]
+    fn the_controls_follow_the_shown_effect() {
+        let breathe = page_text(&sample_effect(1, 26, 76));
+        for want in [
+            "Custom",
+            "Hue",
+            "Saturation",
+            "Brightness",
+            "Speed",
+            "Apply colour",
+        ] {
+            assert!(breathe.contains(want), "Breathe has {want}: {breathe}");
+        }
+        let solid = page_text(&sample_effect(0, 26, 76));
+        assert!(
+            solid.contains("Hue") && solid.contains("Brightness"),
+            "{solid}"
+        );
+        assert!(!solid.contains("Speed"), "Solid stands still: {solid}");
+        let swirl = page_text(&sample_effect(3, 26, 76));
+        for gone in ["Custom", "Hue", "Saturation", "Apply colour"] {
+            assert!(!swirl.contains(gone), "Swirl has no {gone}: {swirl}");
+        }
+        for want in [
+            "Brightness",
+            "Speed",
+            "Apply brightness",
+            "Swirl is a rainbow",
+        ] {
+            assert!(swirl.contains(want), "Swirl has {want}: {swirl}");
+        }
+    }
+
+    /// #670: the board shows Swirl while Foxglove saved Solid amber. The page shows Swirl's
+    /// controls and names the saved look; with the two agreeing it says nothing.
+    #[test]
+    fn the_board_wins_and_the_saved_look_is_named() {
+        let text = page_text(&sample_board_differs());
+        assert!(
+            text.contains("The keyboard shows Swirl; Foxglove saved Solid, amber."),
+            "{text}"
+        );
+        assert!(
+            text.contains("Apply brightness") && !text.contains("Custom"),
+            "{text}"
+        );
+        let agree = View {
+            saved: Some(crate::foxglove::effect_controls::Saved {
+                effect: Some(3),
+                ..Default::default()
+            }),
+            ..sample_effect(3, 39, 70)
+        };
+        assert!(!page_text(&agree).contains("Foxglove saved"));
     }
 }
