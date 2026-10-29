@@ -764,10 +764,7 @@ fn choose(link: &impl Transport, h: &Handle, choice: &Choice) -> Result<ArtStatu
                 .inspect(|_| h.update(|s| s.sent = None))
         }
         Choice::File(path) => {
-            let mut blob = Vec::new();
-            std::fs::File::open(path)
-                .and_then(|f| f.take(65536).read_to_end(&mut blob))
-                .map_err(|e| format!("reading {}: {e}", path.display()))?;
+            let blob = pushed_bytes(path)?;
             if !art::is_blob(&blob) {
                 return Err(format!("{} is not an art blob", path.display()));
             }
@@ -794,6 +791,16 @@ fn choose(link: &impl Transport, h: &Handle, choice: &Choice) -> Result<ArtStatu
     }
 }
 
+/// A blob file as it is sent: its bytes normalised to the piece's polarity (#666; Auto unless
+/// the art picker or a plugin chose otherwise), so the panel polarity alone decides its look.
+fn pushed_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let mut blob = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(65536).read_to_end(&mut blob))
+        .map_err(|e| format!("reading {}: {e}", path.display()))?;
+    Ok(super::art_polarity::blob(path, &blob))
+}
+
 /// Keep on keyboard (#517): send `file` unless the right half plays these very bytes from
 /// memory now, save it into `slot` (SAVE stores the set the right half has in memory), then
 /// show it from the place, which also checks that the place reads back. The kept places are
@@ -807,9 +814,7 @@ fn keep(
     name: &str,
 ) -> Result<ArtStatus, String> {
     let snap = h.snapshot();
-    let hash = std::fs::read(file)
-        .map(|b| super::art_library::blob_hash(&b))
-        .map_err(|e| format!("reading {}: {e}", file.display()))?;
+    let hash = super::art_library::blob_hash(&pushed_bytes(file)?);
     let in_memory = snap.showing_file().map(PathBuf::as_path) == Some(file)
         && snap.sent.as_ref().is_some_and(|(_, h)| *h == hash);
     if !in_memory {

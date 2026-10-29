@@ -589,7 +589,16 @@ impl Devices for AppDevices {
                         (h.select(built_in_index(&before, name)?), ART_WAIT)
                     }
                     methods::ArtTarget::Slot(n) => (h.play_slot(*n), ART_WAIT),
-                    methods::ArtTarget::File(path) => (h.push(path.into()), ART_PUSH_WAIT),
+                    methods::ArtTarget::File(path) => {
+                        if let Some(polarity) = p.polarity {
+                            // Kept for the file, as the art picker's choice is (#666).
+                            super::art_polarity::set(
+                                std::path::Path::new(path),
+                                art_polarity(polarity),
+                            );
+                        }
+                        (h.push(path.into()), ART_PUSH_WAIT)
+                    }
                 };
                 if !started {
                     return Err(Error {
@@ -790,6 +799,15 @@ fn art_status(s: &super::art_service::Snapshot) -> Result<Value, Error> {
         flash_slots: st.flash_slots,
         name: Some(super::art_pieces::showing_name(s)),
     }))
+}
+
+/// The API's polarity as the art encoder has it (#666).
+fn art_polarity(p: methods::ArtPolarity) -> super::art_encode::Polarity {
+    match p {
+        methods::ArtPolarity::Auto => super::art_encode::Polarity::Auto,
+        methods::ArtPolarity::AsIs => super::art_encode::Polarity::AsIs,
+        methods::ArtPolarity::Invert => super::art_encode::Polarity::Invert,
+    }
 }
 
 /// A built-in set by its manifest name (any case), as `art.select` names it.
@@ -1289,6 +1307,20 @@ mod parity_tests {
         let p: methods::ArtSelectParams =
             serde_json::from_value(json!({"device": "k", "target": "previous"})).unwrap();
         assert_eq!(art_words(&p.target), "‹ (previous)");
+        assert_eq!(p.polarity, None, "API 1.6 callers leave it out");
+        // API 1.7 (#666): a file's polarity, as the art picker's.
+        let p: methods::ArtSelectParams = serde_json::from_value(
+            json!({"device": "k", "target": {"file": "a.bin"}, "polarity": "as_is"}),
+        )
+        .unwrap();
+        assert_eq!(
+            p.polarity.map(art_polarity),
+            Some(super::super::art_encode::Polarity::AsIs)
+        );
+        assert_eq!(
+            art_polarity(methods::ArtPolarity::Invert),
+            super::super::art_encode::Polarity::Invert
+        );
     }
 
     /// One log line per `art.select`: the piece before and after, and a failure's reason.

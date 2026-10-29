@@ -84,6 +84,17 @@ impl PcPiece {
             _ => None,
         })
     }
+
+    /// Where its polarity choice is kept (#666, `art_polarity`): its library file, else its
+    /// folder of frames; a bundled set gets one once it is copied in.
+    pub fn polarity_path(&self) -> Option<&PathBuf> {
+        self.file().or_else(|| {
+            self.origins.iter().find_map(|o| match o {
+                Origin::Source(p) => Some(p),
+                _ => None,
+            })
+        })
+    }
 }
 
 /// A library file, a bundled set or a converted source folder, before merging.
@@ -158,8 +169,10 @@ fn bundled() -> &'static [(usize, Arc<egui::ColorImage>, u64)] {
             .iter()
             .enumerate()
             .filter_map(|(i, (_, bytes, _))| {
-                let image = super::art_preview::first_frame(bytes).ok()?;
-                Some((i, Arc::new(image), art_library::blob_hash(bytes)))
+                // As a library copy of it shows (Auto, #666), so the two are one piece.
+                let bytes = super::art_encode::normalise_blob(bytes, Default::default());
+                let image = super::art_preview::first_frame(&bytes).ok()?;
+                Some((i, Arc::new(image), art_library::blob_hash(&bytes)))
             })
             .collect()
     })
@@ -408,7 +421,10 @@ pub fn to_library(piece: &PcPiece, library: &art_library::Library) -> Result<Pat
                 .find(|s| &s.folder == folder)
                 .and_then(|s| s.blob.as_ref().ok())
                 .ok_or("that folder isn't converted yet")?;
-            write_to_library(&format!("{}.bin", piece.name), blob)
+            let file = write_to_library(&format!("{}.bin", piece.name), blob)?;
+            // The encode applied the folder's polarity already (#666): the copy goes as it is.
+            super::art_polarity::note(&file, super::art_encode::Polarity::AsIs);
+            Ok(file)
         }
         _ => Err("no file".into()),
     }

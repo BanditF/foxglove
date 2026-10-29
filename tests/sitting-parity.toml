@@ -127,6 +127,14 @@ log = ["PC state to the keyboard:"]
 needs_eyes = "the PC itself: let the display go off and come back, lock and unlock, quit Foxglove for 10 minutes; and a look that both halves (the right's art too) dim and relight"
 
 [[step]]
+match = "Dark / Light screens, both halves on this build"
+sim = ["panel-polarity"]
+api = ["art.select"]
+script = ["scripts/flipper_art.py"]
+log = ["panel polarity set to"]
+needs_eyes = "eyes: both halves' panels, every widget and the art, in each polarity; hands: a power cycle of each half and a re-link (relay-sim polarity-relink covers the relay's re-send)"
+
+[[step]]
 match = "SET_FRAME: both halves follow a moving dot"
 lab = ["frame-dot"]
 sim = ["host-frames"]

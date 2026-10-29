@@ -82,7 +82,10 @@ The params and results are in the schema. Notes:
   random, or a file. API 1.6 (#618) adds `"next"` and `"previous"`: the tray panel's Next › and
   ‹, the same command. The call answers once the art job ended (with its error, if it failed),
   and logs one `Foxglove: art … (api): <before> → <after>` line. `art.status` also gives `name`,
-  the piece as the tray panel names it.
+  the piece as the tray panel names it. API 1.7 (#666) adds `polarity` for a `file`: `"auto"`,
+  `"as_is"` or `"invert"`, kept for that file as the art picker's **Ink** choice is (left out:
+  the file's choice so far, auto unless one was made). Every file is sent normalised, so its
+  drawing is the ink; the keyboard's dark or light screens decide the look.
 - **The tray panel and the overlay window (#612, #618, API 1.6), for agents:** `tray.panel` says
   whether the panel is open and where it was last drawn (screen pixels). `tray.set_panel {open}`
   opens or closes it as a tray click does (an open first un-minimizes the overlay) and answers

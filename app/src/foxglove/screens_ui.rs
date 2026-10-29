@@ -128,6 +128,7 @@ fn showing_now(ui: &mut egui::Ui, has_info: bool, has_art: bool) {
                 part(ui);
                 ui.add_space(10.0);
             }
+            super::panel_polarity_ui::show(ui);
             return;
         }
         ui.horizontal_top(|ui| {
@@ -145,6 +146,8 @@ fn showing_now(ui: &mut egui::Ui, has_info: bool, has_art: bool) {
                 );
             }
         });
+        // Dark or light screens, both halves (#666): only with firmware that has it.
+        super::panel_polarity_ui::show(ui);
     });
 }
 

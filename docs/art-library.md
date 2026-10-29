@@ -71,6 +71,7 @@ Sources. Also a search box over the labels.
 | Show in folder | library, source | opens Explorer |
 | Rebuild | source | re-runs the converter |
 | Remove from library | library | moves the file to the Recycle Bin, never a hard delete |
+| Ink: Auto / As is / Invert | library, source | which way round the piece is drawn (#666): Auto finds its background from the edge pixels of every frame (a tie: all of them), so its drawing is the ink; As is takes its dark pixels as the drawing, Invert its light ones. Kept per file or folder (`[art.polarity]`); a folder's copy in the library goes as its encode made it. The keyboard's Screens: Dark / Light then decides the look |
 
 Risky actions (clear a slot, overwrite a slot) take a second click, like **Actions** in the
 Keyboard section.
