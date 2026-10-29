@@ -683,6 +683,66 @@ fn fresh_status(link: &Link, h: &Handle) -> Result<ArtStatus, String> {
 /// How long after a SELECT the right half has switched sets (its display queue runs it).
 const SELECT_SETTLE: Duration = Duration::from_millis(300);
 
+/// How long an art write waits for the right half's relay to come back (#662): a re-link (the
+/// relay's unstick dropping the split link, the right rebooting, a range blip) takes ~20 s from
+/// the drop to discovery done.
+#[cfg(not(test))]
+const RELAY_WAIT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const RELAY_WAIT: Duration = Duration::from_millis(900);
+
+/// The left's relay said the right half isn't there (art STATUS error 1, link below 2).
+fn relay_down(e: &str) -> bool {
+    e.contains(protocol::ERRORS[1])
+}
+
+/// Runs the art write `f` (a SELECT, a push, a keep) with the relay up (#662). While the right
+/// half re-links, a write failed at once with "right half not connected" (the 5a50426 gate's art
+/// Next › and ‹). Now, when the last status says the relay is down, or `f` fails that way, the
+/// worker waits for the relay-ready event (D6 85 with link 2; `art::wait_relay_ready` asks STATUS
+/// once and sleeps on the link's events, no polling) for at most `RELAY_WAIT`, then runs `f`
+/// (again). Only when the relay doesn't come back in time does the error stand, with one log
+/// line. Start: a write with the relay down. Stop: the relay-ready event, the deadline, the link
+/// stopping.
+fn with_relay(
+    link: &Link,
+    h: &Handle,
+    what: &str,
+    f: impl Fn() -> Result<ArtStatus, String>,
+) -> Result<ArtStatus, String> {
+    if h.snapshot().status.is_some_and(|s| s.link == 2) {
+        match f() {
+            Err(e) if relay_down(&e) => {}
+            done => return done,
+        }
+    }
+    if h.cancelled() {
+        return Err("cancelled".into());
+    }
+    match art::wait_relay_ready(link, RELAY_WAIT).map_err(|e| e.to_string())? {
+        art::RelayWait::Ready(st) => {
+            // Known before the relay-up notice reaches the worker: that notice then re-applies
+            // nothing over this write (came_up).
+            h.update(|s| s.status = Some(st));
+            if h.cancelled() {
+                return Err("cancelled".into());
+            }
+            f()
+        }
+        art::RelayWait::TimedOut(last) => {
+            eprintln!(
+                "Foxglove: art {what}: the right half's relay didn't come back within {} s ({})",
+                RELAY_WAIT.as_secs_f32(),
+                last.map_or_else(|| "no status".to_string(), |st| st.to_string())
+            );
+            if let Some(st) = last {
+                h.update(|s| s.status = Some(st));
+            }
+            f()
+        }
+    }
+}
+
 fn choose(link: &impl Transport, h: &Handle, choice: &Choice) -> Result<ArtStatus, String> {
     if h.cancelled() {
         return Err("cancelled".into());
@@ -1335,7 +1395,10 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 match command {
                     Command::Status => fresh_status(link, h).inspect(|st| read_slots(link, h, st)),
                     Command::Keep { file, slot, name } => {
-                        keep(link, h, &file, slot, &name).and_then(|st| {
+                        with_relay(link, h, &format!("keep {name}"), || {
+                            keep(link, h, &file, slot, &name)
+                        })
+                        .and_then(|st| {
                             // Pinned to the place: after a restart it shows from there, with no
                             // send.
                             h.update(|s| s.status = Some(st));
@@ -1354,13 +1417,19 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     Command::Show(_) | Command::Choose(_) if taken_over() => {
                         Err("taken over".into())
                     }
-                    Command::Show(choice) => choose(link, h, &choice),
+                    Command::Show(choice) => {
+                        let what = name_of(&choice, &h.snapshot());
+                        with_relay(link, h, &what, || choose(link, h, &choice))
+                    }
                     Command::Refused(e) => Err(e),
-                    Command::Choose(choice) => choose(link, h, &choice).and_then(|st| {
-                        h.update(|s| s.status = Some(st));
-                        save_pin(h, &choice)?;
-                        Ok(st)
-                    }),
+                    Command::Choose(choice) => {
+                        let what = name_of(&choice, &h.snapshot());
+                        with_relay(link, h, &what, || choose(link, h, &choice)).and_then(|st| {
+                            h.update(|s| s.status = Some(st));
+                            save_pin(h, &choice)?;
+                            Ok(st)
+                        })
+                    }
                     _ => unreachable!(),
                 }
             }
@@ -1983,7 +2052,7 @@ mod tests {
 mod contention_tests {
     use super::*;
     use foxglove_link::link::{Bus, Connected, RawHid, Report};
-    use foxglove_link::protocol::{Hello, REPORT};
+    use foxglove_link::protocol::{left_state, Hello, REPORT};
     use std::collections::VecDeque;
     use std::sync::atomic::AtomicU32;
     use std::sync::Condvar;
@@ -2078,8 +2147,15 @@ mod contention_tests {
                 }
                 (protocol::ART, protocol::art::SELECT) => {
                     b.selects.fetch_add(1, Ordering::SeqCst);
-                    *b.set.lock().unwrap() = out[2] as i8;
-                    b.push(b.status(protocol::art::SELECT, 0));
+                    let mut r = b.status(protocol::art::SELECT, 0);
+                    if *b.link.lock().unwrap() == 2 {
+                        *b.set.lock().unwrap() = out[2] as i8;
+                    } else {
+                        // The firmware: no relay to the right, the SELECT fails at once.
+                        r[2] = left_state::FAILED;
+                        r[3] = 1;
+                    }
+                    b.push(r);
                 }
                 _ => {
                     b.others.fetch_add(1, Ordering::SeqCst);
@@ -2339,5 +2415,93 @@ mod contention_tests {
         );
         assert!(!rig.h.select(1));
         rig.h.update(|s| s.busy = false);
+    }
+
+    /// #662: a choice while the right half re-links (the art Next › of the 5a50426 gate, right
+    /// after the relay's unstick dropped the split link) waits for the relay-ready event and
+    /// then shows, instead of failing with "right half not connected".
+    #[test]
+    fn a_choice_while_the_relay_relinks_waits_for_it() {
+        let rig = Rig::new(2, 2);
+        *rig.board.link.lock().unwrap() = 1;
+        rig.board.unasked(50);
+        rig.until("the relay is down", |s| {
+            !s.busy && s.status.is_some_and(|st| st.pushed == 50 && st.link == 1)
+        });
+        let board = rig.board.clone();
+        let back = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            *board.link.lock().unwrap() = 2;
+            board.unasked(51); // the firmware's relay-ready notice (D6 85, link 2)
+        });
+        let start = rig.board.requests();
+        assert!(rig.h.select(3));
+        let after = rig.h.wait_job(WAIT);
+        back.join().unwrap();
+        assert!(
+            matches!(after.outcome.as_ref().map(|o| &o.result), Some(Ok(()))),
+            "{:?}",
+            after.outcome
+        );
+        assert_eq!(*rig.board.set.lock().unwrap(), 3);
+        assert_eq!(
+            rig.board.requests().1 - start.1,
+            1,
+            "one SELECT, sent once the relay was back"
+        );
+        assert_eq!(after.pinned, Some(Choice::BuiltIn(3)));
+    }
+
+    /// #662: the relay drops while the app still thinks it's up (no notice yet): the SELECT
+    /// fails "not connected", the worker waits for the relay and sends it again, once.
+    #[test]
+    fn a_select_failing_not_connected_is_sent_again_after_the_relink() {
+        let rig = Rig::new(2, 2);
+        *rig.board.link.lock().unwrap() = 1; // the app's last status still says 2
+        let board = rig.board.clone();
+        let back = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            *board.link.lock().unwrap() = 2;
+            board.unasked(60);
+        });
+        let start = rig.board.requests();
+        assert!(rig.h.select(4));
+        let after = rig.h.wait_job(WAIT);
+        back.join().unwrap();
+        assert!(
+            matches!(after.outcome.as_ref().map(|o| &o.result), Some(Ok(()))),
+            "{:?}",
+            after.outcome
+        );
+        assert_eq!(*rig.board.set.lock().unwrap(), 4);
+        assert_eq!(
+            rig.board.requests().1 - start.1,
+            2,
+            "the failed SELECT and its one retry"
+        );
+    }
+
+    /// #662: a relay that doesn't come back within the bound: the error stands, after the wait
+    /// (bounded, not forever), and nothing on the right changed.
+    #[test]
+    fn a_relay_that_stays_down_fails_after_the_bound() {
+        let rig = Rig::new(2, 2);
+        *rig.board.link.lock().unwrap() = 1;
+        rig.board.unasked(70);
+        rig.until("the relay is down", |s| {
+            !s.busy && s.status.is_some_and(|st| st.pushed == 70 && st.link == 1)
+        });
+        let started = Instant::now();
+        assert!(rig.h.select(3));
+        let after = rig.h.wait_job(WAIT);
+        let took = started.elapsed();
+        let err = match after.outcome.as_ref().map(|o| &o.result) {
+            Some(Err(e)) => e.clone(),
+            other => panic!("expected the error, got {other:?}"),
+        };
+        assert!(relay_down(&err), "{err}");
+        assert!(took >= RELAY_WAIT, "waited {took:?}");
+        assert!(took < WAIT, "bounded: {took:?}");
+        assert_eq!(*rig.board.set.lock().unwrap(), 2);
     }
 }
