@@ -16,6 +16,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/sys/byteorder.h>
@@ -297,6 +298,81 @@ BT_CONN_CB_DEFINE(art_relay_conn_cb) = {
 
 /* GATT calls, made synchronous for the push work queue */
 
+/* A Bluetooth call on relay_q that doesn't return (#618). In the soak (#644) HELLO's relay debug
+ * read "in flight 1, answered 23, timeouts 1" twice, 41 s apart: relay_q was inside a
+ * bt_gatt_read or bt_gatt_write, after in_flight was set and before wait_done's timed wait. Zephyr
+ * 3.5 takes the PDU, its ATT meta data and the connection's TX context with K_FOREVER off the
+ * system workqueue (bt_att_chan_create_pdu, tx_meta_data_alloc, conn_tx_alloc), and gives the
+ * last two back on the system workqueue. When they run out, relay_q sleeps in the call, and
+ * nothing behind it runs: art selects and pushes, status reads, the colour, the screen readback.
+ * The app saw that as "Bluetooth write failed" and a right snapshot that timed out.
+ *
+ * Moving the calls to the system workqueue (where those two take K_NO_WAIT) isn't safe in 3.5:
+ * the ACL buffer itself is still taken with K_FOREVER there (net_buf_alloc has no syswq guard),
+ * and a system workqueue asleep on it would never free the TX contexts either. The call can't be
+ * taken back, and its params are Zephyr's until it returns, so in_flight can't be freed under
+ * it. What frees the buffers is the link going: the soak's re-link ended it (the count read 78
+ * after). So the rescue does exactly that, once: a call on relay_q still in progress RELAY_STUCK
+ * after it began drops the split link, logged. Zephyr flushes the link's queue, the call returns
+ * with an error, relay_q goes on, and ZMK reconnects (the right's keys pause for that, some 15 s,
+ * which is why it is a last resort and not a timeout).
+ *
+ * Start/stop: armed when a relay_q call begins, cancelled when it returns (no timer otherwise).
+ * One drop per stuck call; at most RESCUE_MAX_IN_ROW drops until a call succeeds again, then it
+ * only logs. lane_q's write commands aren't watched: one stuck there delays only the head start,
+ * and the request on relay_q still carries the state. */
+#define RELAY_STUCK K_SECONDS(10)
+#define RESCUE_MAX_IN_ROW 3
+
+K_THREAD_STACK_DEFINE(rescue_stack, 768);
+static struct k_work_q rescue_q; // its own: relay_q is the one stuck, and the system queue
+                                 // mustn't wait for bt_conn_disconnect
+static atomic_t calling;         // a relay_q Bluetooth call is in progress
+static atomic_t rescue_in_row;
+
+static void rescue_cb(struct k_work *work) {
+    if (!atomic_get(&calling)) {
+        return;
+    }
+    struct bt_conn *conn = NULL;
+    unsigned int key = irq_lock(); // disconnected() clears peer from the Bluetooth thread
+    if (peer != NULL) {
+        conn = bt_conn_ref(peer);
+    }
+    irq_unlock(key);
+    if (conn == NULL) {
+        return; // the link is gone already: that frees the call
+    }
+    if (atomic_get(&rescue_in_row) < RESCUE_MAX_IN_ROW) {
+        atomic_inc(&rescue_in_row);
+        LOG_WRN("art relay: a Bluetooth call on the relay queue hasn't returned in 10 s (no TX "
+                "buffer?); dropping the split link to free it (%d in a row)",
+                (int)atomic_get(&rescue_in_row));
+        bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    } else {
+        LOG_WRN("art relay: the relay queue is stuck in a Bluetooth call again; leaving the link");
+    }
+    bt_conn_unref(conn);
+}
+static K_WORK_DELAYABLE_DEFINE(rescue_work, rescue_cb);
+
+static void call_begin(void) {
+    atomic_set(&calling, 1);
+    k_work_reschedule_for_queue(&rescue_q, &rescue_work, RELAY_STUCK);
+}
+
+static int call_end(int ret) {
+    atomic_clear(&calling);
+    k_work_cancel_delayable(&rescue_work);
+    if (ret == 0) {
+        atomic_clear(&rescue_in_row);
+    }
+    return ret;
+}
+
+// A Bluetooth call on relay_q, watched by the rescue above.
+#define BT_CALL(expr) (call_begin(), call_end(expr))
+
 static K_SEM_DEFINE(gatt_done, 0, 1);
 static uint8_t gatt_err;
 // A request whose callback hasn't come yet; its params must not be reused until it does.
@@ -342,12 +418,12 @@ static int write_req(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
     params.length = len;
     k_sem_reset(&gatt_done);
     atomic_set(&in_flight, 1); // before the call: the callback can come before it returns
-    return wait_done(bt_gatt_write(conn, &params));
+    return wait_done(BT_CALL(bt_gatt_write(conn, &params)));
 }
 
 static int write_cmd(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
     for (int tries = 0; tries < 50; tries++) {
-        int err = bt_gatt_write_without_response(conn, data_handle, data, len, false);
+        int err = BT_CALL(bt_gatt_write_without_response(conn, data_handle, data, len, false));
         if (err != -ENOMEM && err != -EAGAIN) {
             return err;
         }
@@ -393,7 +469,7 @@ static int read_status(struct bt_conn *conn) {
     params.single.offset = 0;
     k_sem_reset(&gatt_done);
     atomic_set(&in_flight, 1);
-    return wait_done(bt_gatt_read(conn, &params));
+    return wait_done(BT_CALL(bt_gatt_read(conn, &params)));
 }
 
 /* Someone's own command (#618): a SELECT, SAVE or ERASE, a push, the screen readback. The relay
@@ -719,7 +795,7 @@ static void slot_read_job(struct k_work *work) {
                     sizeof(struct art_relay_status) + slot_index * sizeof(slot_info);
                 k_sem_reset(&gatt_done);
                 atomic_set(&in_flight, 1);
-                if (wait_done(bt_gatt_read(conn, &params)) == 0) {
+                if (wait_done(BT_CALL(bt_gatt_read(conn, &params))) == 0) {
                     status = 0;
                 }
             }
@@ -757,7 +833,7 @@ static void build_read_job(struct k_work *work) {
                                        ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info);
                 k_sem_reset(&gatt_done);
                 atomic_set(&in_flight, 1);
-                if (wait_done(bt_gatt_read(conn, &params)) == 0) {
+                if (wait_done(BT_CALL(bt_gatt_read(conn, &params))) == 0) {
                     status = 0;
                 }
             }
@@ -804,7 +880,7 @@ static void dim_read_job(struct k_work *work) {
                                    sizeof(struct foxglove_build_info);
             k_sem_reset(&gatt_done);
             atomic_set(&in_flight, 1);
-            err = wait_done(bt_gatt_read(conn, &params));
+            err = wait_done(BT_CALL(bt_gatt_read(conn, &params)));
         }
         bt_conn_unref(conn);
     }
@@ -817,7 +893,7 @@ static void dim_read_job(struct k_work *work) {
         params.single.offset = ART_RELAY_REDRAWS_AT;
         k_sem_reset(&gatt_done);
         atomic_set(&in_flight, 1);
-        right_redraws_ok = wait_done(bt_gatt_read(conn, &params)) == 0;
+        right_redraws_ok = wait_done(BT_CALL(bt_gatt_read(conn, &params))) == 0;
         right_redraws = right_redraws_ok ? sys_get_le32(count) : 0;
         bt_conn_unref(conn);
     }
@@ -1196,7 +1272,7 @@ static void doorbell_cb(struct k_work *work) {
             .value = BT_GATT_CCC_NOTIFY,
         };
         atomic_set_bit(doorbell.flags, BT_GATT_SUBSCRIBE_FLAG_VOLATILE);
-        if (bt_gatt_subscribe(conn, &doorbell) != 0) {
+        if (BT_CALL(bt_gatt_subscribe(conn, &doorbell)) != 0) {
             atomic_clear(&doorbell_live);
         }
     }
@@ -1333,6 +1409,9 @@ static int art_relay_init(void) {
                        K_LOWEST_APPLICATION_THREAD_PRIO, NULL);
     // Just above relay_q, so a head start never waits behind a relay job.
     k_work_queue_start(&lane_q, lane_stack, K_THREAD_STACK_SIZEOF(lane_stack),
+                       K_LOWEST_APPLICATION_THREAD_PRIO - 1, NULL);
+    // Above relay_q too: it runs while relay_q sleeps in a call (only then has it work).
+    k_work_queue_start(&rescue_q, rescue_stack, K_THREAD_STACK_SIZEOF(rescue_stack),
                        K_LOWEST_APPLICATION_THREAD_PRIO - 1, NULL);
     return 0;
 }
