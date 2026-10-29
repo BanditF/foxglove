@@ -14,7 +14,8 @@
  *      state too: bytes 1-7 struct rgb_idle_wire, 8-13 struct rgb_shown_wire (rgb_idle.h), and it
  *      also comes when the right's LEDs go lit or dark and when the left subscribes. A left that
  *      gets them takes them as the right's state and skips the read; an older left reads byte 0
- *      only. Invariant: the
+ *      only. The shown block is taken even before the left's first status read on a link (the
+ *      subscribe's ring comes first, #618; art_relay_doorbell.h). Invariant: the
  *      CCC is the attribute right after the status value (its handle + 1, the 6th attribute of the
  *      service), where the left subscribes after discovery; a right without it answers that
  *      write with an ATT error, and the left doesn't try again on that link.

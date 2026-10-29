@@ -2,6 +2,8 @@
 # the fake strip's last frame (what the LEDs show) through idle, wake, the PC's frames (lit while
 # ZMK's flag is off; dark while the on/off is on), a breathe at its darkest, and sync off and on;
 # the D7 83 event after each change and its lit; then #624: the left's look in the RGB op the
-# right is sent, and a right with an older saved look taking it (only what differs).
+# right is sent, and a right with an older saved look taking it (only what differs); #618: the
+# right's ring before the left's first status read keeps its shown block, and as the right the
+# LEDs go dark with the left's idle while the PC's traffic runs, lit again on a left key.
 /^rgbstate:/p
 s/.*hid_listener_keycode/kp/p
