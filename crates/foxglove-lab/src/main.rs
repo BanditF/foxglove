@@ -782,9 +782,5 @@ fn main() -> Result<std::process::ExitCode> {
     }
     report.write(&out)?;
     println!("Report: {}", out.join("report.html").display());
-    Ok(if report.exit_success() {
-        std::process::ExitCode::SUCCESS
-    } else {
-        std::process::ExitCode::FAILURE
-    })
+    Ok(std::process::ExitCode::from(report.exit_code()))
 }

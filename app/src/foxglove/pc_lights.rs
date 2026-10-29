@@ -1114,7 +1114,13 @@ pub fn end_scene(timeout: std::time::Duration) -> bool {
 }
 
 fn scan(worker: &mut Worker, restore: bool) {
-    match pcl::hid::enumerate() {
+    // Unit tests see no real lights (#667).
+    let found = if cfg!(test) {
+        Ok(Vec::new())
+    } else {
+        pcl::hid::enumerate()
+    };
+    match found {
         Ok(hid) => worker.scan(
             &hid,
             &mut |names| process_running(names),

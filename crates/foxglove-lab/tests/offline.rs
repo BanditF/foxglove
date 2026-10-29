@@ -518,6 +518,9 @@ fn reports_escape_markup_embed_images_and_apply_release_gate() {
     report.cases.push(blocked);
     assert!(!report.overall_pass());
     assert!(!report.exit_success());
+    // A blocked release case with nothing failed is BLOCKED (exit 2), not FAIL.
+    assert_eq!(report.verdict(), Status::Blocked);
+    assert_eq!(report.exit_code(), 2);
     report.write(&dir.0).unwrap();
     let json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.0.join("report.json")).unwrap()).unwrap();
@@ -533,7 +536,7 @@ fn reports_escape_markup_embed_images_and_apply_release_gate() {
     }
     assert_eq!(json["schema"], "foxglove-lab-report");
     assert_eq!(json["version"], 2);
-    assert_eq!(json["verdict"], "FAIL");
+    assert_eq!(json["verdict"], "BLOCKED");
     assert_eq!(json["areas"][0]["name"], "general");
     assert_eq!(json["areas"][0]["verdict"], "BLOCKED");
     assert_eq!(json["cases"][0]["area"], "general");
@@ -542,7 +545,7 @@ fn reports_escape_markup_embed_images_and_apply_release_gate() {
     assert!(junit.contains("<skipped message="));
     assert!(junit.contains("<testsuites name=\"foxglove-lab\""));
     assert!(junit.contains("classname=\"foxglove-lab.general\""));
-    assert!(junit.contains("<property name=\"verdict\" value=\"FAIL\"/>"));
+    assert!(junit.contains("<property name=\"verdict\" value=\"BLOCKED\"/>"));
     assert!(junit.contains("&lt;script&gt;&quot;&amp;"));
     let html = std::fs::read_to_string(dir.0.join("report.html")).unwrap();
     assert!(html.contains("data:image/png;base64,"));
@@ -552,8 +555,11 @@ fn reports_escape_markup_embed_images_and_apply_release_gate() {
     assert!(report.overall_pass());
     report.cases[0].manual = false;
     assert!(!report.exit_success());
+    assert_eq!(report.exit_code(), 2);
     report.cases[0].status = Status::Fail;
     assert!(!report.overall_pass());
+    assert_eq!(report.verdict(), Status::Fail);
+    assert_eq!(report.exit_code(), 1);
     report.write(&dir.0).unwrap();
     assert!(std::fs::read_to_string(dir.0.join("junit.xml"))
         .unwrap()
