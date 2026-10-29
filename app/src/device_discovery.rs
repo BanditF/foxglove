@@ -17,6 +17,10 @@ struct HidInfo {
 }
 
 fn scan_all_hid() -> Vec<HidInfo> {
+    // Unit tests see no real devices (#667).
+    if cfg!(test) {
+        return Vec::new();
+    }
     let Ok(api) = hidapi::HidApi::new() else {
         return Vec::new();
     };

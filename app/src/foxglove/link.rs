@@ -73,6 +73,11 @@ pub fn discover_links() -> Vec<Arc<Link>> {
 }
 
 fn keyboards() -> Option<std::collections::BTreeSet<(u16, u16)>> {
+    // Unit tests never reach the keyboard on this PC: its LED counts leaked into led_map's
+    // tests, and a lab run on the keyboard must not see a second host (#667).
+    if cfg!(test) {
+        return Some(Default::default());
+    }
     let api = hidapi::HidApi::new().ok()?;
     let keyboards: std::collections::BTreeSet<(u16, u16)> = api
         .device_list()
@@ -100,6 +105,9 @@ pub fn ask_hello(link: &Link) -> Option<Hello> {
 /// The link to keyboard `vid:pid`, started on first use and kept while anyone holds it. It also
 /// takes keyboards without Foxglove's host link, so the overlay works on any ZMK board.
 pub fn shared(vid: u16, pid: u16) -> Result<Arc<Link>, String> {
+    if cfg!(test) {
+        return Err("unit tests open no keyboard".into());
+    }
     let mut links = LINKS
         .get_or_init(Default::default)
         .lock()

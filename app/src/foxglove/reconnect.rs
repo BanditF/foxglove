@@ -105,6 +105,10 @@ mod tests {
 
 /// Check the current interfaces once; arrival notifications and the reconnect loop retry later.
 pub fn require_hid(vid: u16, pid: u16) -> Result<(), String> {
+    // Unit tests see no real devices (#667).
+    if cfg!(test) {
+        return Err("unit tests open no keyboard".into());
+    }
     let api = hidapi::HidApi::new().map_err(|e| e.to_string())?;
     let present = api.device_list().any(|d| {
         hid_matches(
