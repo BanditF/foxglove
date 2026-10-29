@@ -439,6 +439,18 @@ impl Handle {
         self.snapshot()
     }
 
+    /// The snapshot once the keyboard's first art status is in, at most `timeout` (#618: a
+    /// Foxglove just started answered `art.status` with "no art status from the keyboard yet"
+    /// while its connect read was still on the way). Woken by each snapshot change, no polling;
+    /// at once when a status is there.
+    pub fn wait_status(&self, timeout: Duration) -> Snapshot {
+        let changes = CHANGES.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = CHANGED
+            .wait_timeout_while(changes, timeout, |_| self.snapshot().status.is_none())
+            .unwrap_or_else(|e| e.into_inner());
+        self.snapshot()
+    }
+
     /// Shows Rotation's next piece now.
     pub fn next(&self) -> bool {
         let _ = self.commands.send(Command::Next);
@@ -2166,6 +2178,39 @@ mod contention_tests {
                 let _ = w.join();
             }
         }
+    }
+
+    /// #618: `art.status` right after a start waits for the connect's status read (woken by the
+    /// snapshot change), and with no keyboard it gives up after its bound.
+    #[test]
+    fn art_status_waits_for_the_first_status_bounded() {
+        let (commands, _receiver) = mpsc::channel();
+        let h = Handle {
+            commands,
+            state: Arc::new(Mutex::new(Snapshot::default())),
+            cancel: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        let started = Instant::now();
+        assert!(h.wait_status(Duration::from_millis(150)).status.is_none());
+        assert!(started.elapsed() >= Duration::from_millis(150));
+
+        let w = h.clone();
+        let arrives = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            w.update(|s| s.status = Some(ArtStatus::default()));
+        });
+        let started = Instant::now();
+        assert!(h.wait_status(WAIT).status.is_some());
+        assert!(
+            started.elapsed() < WAIT,
+            "woken by the status, not the bound"
+        );
+        arrives.join().unwrap();
+        // A status already there: at once.
+        let started = Instant::now();
+        assert!(h.wait_status(WAIT).status.is_some());
+        assert!(started.elapsed() < Duration::from_millis(100));
     }
 
     /// A connect asks a bounded, counted number of requests: one fresh status read (two

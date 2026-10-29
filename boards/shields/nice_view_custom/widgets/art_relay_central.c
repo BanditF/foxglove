@@ -51,7 +51,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define DISCOVER_DELAY K_SECONDS(15)
 #define DISCOVER_RETRY K_SECONDS(5)
 #define DISCOVER_TRIES 20
-#define GATT_TIMEOUT K_SECONDS(3)
+#define GATT_TIMEOUT_MS 3000
+#define GATT_TIMEOUT K_MSEC(GATT_TIMEOUT_MS)
 
 static uint8_t blob[CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE];
 static uint16_t blob_len;
@@ -385,6 +386,7 @@ static int read_status(struct bt_conn *conn) {
     if (atomic_get(&in_flight)) {
         return -EBUSY;
     }
+    gatt_err = 0; // as write_req: a call that fails reads as never sent (user_req)
     params.func = read_cb;
     params.handle_count = 1;
     params.single.handle = status_handle;
@@ -393,6 +395,58 @@ static int read_status(struct bt_conn *conn) {
     atomic_set(&in_flight, 1);
     return wait_done(bt_gatt_read(conn, &params));
 }
+
+/* Someone's own command (#618): a SELECT, SAVE or ERASE, a push, the screen readback. The relay
+ * also carries Foxglove's background traffic (status, dim and slot reads, the colour, the
+ * activity and underglow state), and a request of that which timed out stays out on the link
+ * (in_flight) until its late answer. A user's command used to fail at once on it, as "Bluetooth
+ * write failed" in the app. Now it waits for that answer first, and a write that didn't get out
+ * (that request still in the way, or no buffer for the call) is tried once more, logged.
+ *
+ * Start/stop: starts with the command's job on relay_q. The wait ends on the late request's
+ * callback (request_done gives gatt_done) or the job's deadline, USER_JOB_MS after it started,
+ * below the PC's 10 s wait for a SELECT. One retry, only while the deadline leaves room for it.
+ * A link that drops ends the request in the way with an error, so the wait ends then too. */
+#define USER_JOB_MS 8000
+
+// Waits, on its callback, for a request still out on the link; -EBUSY if it's there at `end`.
+static int wait_idle(int64_t end) {
+    while (atomic_get(&in_flight)) {
+        int64_t left = end - k_uptime_get();
+        if (left <= 0) {
+            return -EBUSY;
+        }
+        k_sem_take(&gatt_done, K_MSEC(left)); // request_done gives it; then look again
+    }
+    return 0;
+}
+
+// The request never went out: another was in the way, or the call itself failed (no buffer).
+// An ATT error is the right's answer and a timeout went out; neither is "never sent".
+static bool not_sent(int err) { return err == -EBUSY || (err == -EIO && gatt_err == 0); }
+
+// A user's request (write_req, or read_status when `data` is NULL): after the request in the way,
+// and once more on a send that didn't go out. `again_after_timeout` also retries one that went out
+// unanswered, for commands that are the same done twice (SELECT of a set, a status read).
+static int user_req(struct bt_conn *conn, const uint8_t *data, uint16_t len, int64_t end,
+                    bool again_after_timeout) {
+    int err = 0;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        err = wait_idle(end);
+        if (!err) {
+            err = data != NULL ? write_req(conn, data, len) : read_status(conn);
+        }
+        bool retry = not_sent(err) || (again_after_timeout && err == -ETIMEDOUT);
+        if (!err || !retry || attempt > 0 || k_uptime_get() + GATT_TIMEOUT_MS > end) {
+            break;
+        }
+        LOG_WRN("art relay: %s to the right failed (%d, in flight %d), trying once more",
+                data != NULL ? "write" : "status read", err, (int)atomic_get(&in_flight));
+    }
+    return err;
+}
+
+static int64_t user_deadline(void) { return k_uptime_get() + USER_JOB_MS; }
 
 /* Pushes */
 
@@ -511,10 +565,12 @@ void art_relay_boot(void) { k_work_submit_to_queue(&relay_q, &boot_work); }
 
 static int push(struct bt_conn *conn) {
     uint8_t buf[3 + 244];
+    int64_t end = user_deadline();
     buf[0] = ART_RELAY_BEGIN;
     sys_put_le16(blob_len, &buf[1]);
     sys_put_le32(blob_crc, &buf[3]);
-    if (write_req(conn, buf, 7)) {
+    // BEGIN starts the right's receive over, so one that went out unanswered can go again.
+    if (user_req(conn, buf, 7, end, true)) {
         return ART_ERR_BLE;
     }
     int chunk = CLAMP((int)bt_gatt_get_mtu(conn) - 3 - 3, 16, (int)sizeof(buf) - 3);
@@ -529,7 +585,8 @@ static int push(struct bt_conn *conn) {
         pushed += n;
     }
     buf[0] = ART_RELAY_COMMIT;
-    if (write_req(conn, buf, 1) || read_status(conn)) {
+    end = user_deadline(); // the data took its own time
+    if (user_req(conn, buf, 1, end, false) || user_req(conn, NULL, 0, end, true)) {
         return ART_ERR_BLE;
     }
     return right.state == ART_RIGHT_PLAYING ? ART_ERR_NONE : ART_ERR_RIGHT;
@@ -558,7 +615,8 @@ static void select_cb(struct k_work *work) {
         return;
     }
     uint8_t buf[] = {ART_RELAY_SELECT, select_set};
-    bool err = write_req(conn, buf, sizeof(buf)) || read_status(conn);
+    int64_t end = user_deadline();
+    bool err = user_req(conn, buf, sizeof(buf), end, true) || user_req(conn, NULL, 0, end, true);
     bt_conn_unref(conn);
     if (err) {
         fail(ART_ERR_BLE);
@@ -579,7 +637,10 @@ static void slot_op_cb(struct k_work *work) {
         fail(ART_ERR_NO_LINK);
         return;
     }
-    bool err = write_req(conn, slot_op, slot_op_len) || read_status(conn);
+    // SAVE and ERASE aren't sent again once out: a second one finds the right saving (0x82).
+    int64_t end = user_deadline();
+    bool err = user_req(conn, slot_op, slot_op_len, end, false) ||
+               user_req(conn, NULL, 0, end, true);
     bt_conn_unref(conn);
     if (err) {
         fail(ART_ERR_RIGHT);

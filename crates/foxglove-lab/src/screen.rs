@@ -58,8 +58,19 @@ fn status_error(status: u8) -> SnapError {
 }
 
 /// Takes a fresh snapshot of `half` (0 left, 1 right) and reads it out, checking the CRC.
-/// Returns the native 1360-byte image.
+/// Returns the native 1360-byte image. A right snapshot that times out in the relay (its
+/// transfer shares the split link with the app's traffic, #618) is taken once more, logged.
 pub fn snapshot(t: &impl Transport, half: u8) -> Result<Vec<u8>> {
+    match snapshot_once(t, half) {
+        Err(e) if half == 1 && e.downcast_ref::<SnapError>() == Some(&SnapError::RightTimeout) => {
+            eprintln!("foxglove-lab: right screen snapshot: {e}; taking it once more");
+            snapshot_once(t, half)
+        }
+        other => other,
+    }
+}
+
+fn snapshot_once(t: &impl Transport, half: u8) -> Result<Vec<u8>> {
     let request = |report: &[u8], cmd: u8, timeout| -> Result<[u8; protocol::REPORT]> {
         for _ in 0..50 {
             let r = t.request(report, protocol::SETTINGS, cmd, timeout)?;
@@ -70,7 +81,8 @@ pub fn snapshot(t: &impl Transport, half: u8) -> Result<Vec<u8>> {
         }
         Err(SnapError::Busy.into())
     };
-    // The right reply waits for the relay transfer (up to 3 s in the firmware).
+    // The right reply waits for the relay transfer (up to 5 s in the firmware since #618, 3 s
+    // before).
     let meta = request(
         &[protocol::SETTINGS, SNAP, half],
         SNAP,
