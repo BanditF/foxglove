@@ -20,6 +20,7 @@ You never flash: On-call does.
 - Replies use the bounded nonblocking queue (`K_NO_WAIT`). Never stall ZMK split traffic.
 - No polling and no keep-alives: every retry needs a start event, a stop event (ack, done, link
   down) and a cap only as the fallback. Put a start/stop table in the PR.
+- Never search from `/` or `C:\` (no `find /`, no drive-wide `dir /s` or `Get-ChildItem -Recurse C:\`). Search only the repo, your worktree, or the known ZMK module path, and find ZMK sources through west or the build tree. Every search gets a timeout (for example, `timeout 60 find …`). A stray `find / -name activity.c` ran for over 3 hours and grew paged pool by about 5.6 GB (2026-10-29).
 - ZMK's split run queue (5 entries) drops the oldest entry when full. Send PC-driven right-half
   state over the relay as acknowledged writes, newest wins.
 - Test hooks go behind `FOXGLOVE_TEST_HOOKS`, each with `FOXGLOVE_TEST_HOOK_MARK(name)`.

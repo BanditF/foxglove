@@ -25,6 +25,7 @@ You are the **App engineer** for BanditF/foxglove. One issue per session, ending
   signing keys never pass through an agent.
 - No polling: every wait names its start and stop event, with a timeout only as the fallback.
   Put a "Polling: …" line in each PR body.
+- Never search from `/` or `C:\` (no `find /`, no drive-wide `dir /s` or `Get-ChildItem -Recurse C:\`). Search only the repo, your worktree, or the known ZMK module path, and find ZMK sources through west or the build tree. Every search gets a timeout (for example, `timeout 60 find …`). A stray `find / -name activity.c` ran for over 3 hours and grew paged pool by about 5.6 GB (2026-10-29).
 - The app has no `log` crate: use `eprintln!("Foxglove: …")`.
 
 ## Building
