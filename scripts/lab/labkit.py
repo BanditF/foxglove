@@ -212,9 +212,17 @@ class Windows:
     """The test app's own windows, found by class among the top-level windows of its PID (the
     lab hooks of #612/#618: no mouse, no focus taken from the user's windows by these posts)."""
     WM_DISPLAYCHANGE, WM_LBUTTONUP, WM_USER_TRAYICON, SW_MINIMIZE = 0x007E, 0x0202, 6002, 6
+    GWL_EXSTYLE, GA_ROOT = -20, 2
 
     def __init__(self, pid):
         self.pid, self.u = pid, ctypes.windll.user32
+        # Physical pixels, as the per-monitor-aware app reports its rects (#549 probes): an unaware
+        # lab process would get scaled coordinates on a 125/150 % display. Fails harmlessly when
+        # the awareness is already set.
+        try:
+            self.u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        except (AttributeError, OSError):
+            pass
 
     def find(self, cls):
         """The pid's top-level windows of class `cls` (shown or not)."""
@@ -238,6 +246,54 @@ class Windows:
         r = wintypes.RECT()
         self.u.GetWindowRect(hwnd, ctypes.byref(r))
         return [r.left, r.top, r.right, r.bottom]
+
+    def exstyle(self, hwnd):
+        """The window's extended style (GWL_EXSTYLE): WS_EX_TRANSPARENT | WS_EX_LAYERED is how
+        winit makes a window click-through (set_cursor_hittest(false))."""
+        f = self.u.GetWindowLongPtrW
+        f.restype, f.argtypes = ctypes.c_ssize_t, [ctypes.c_void_p, ctypes.c_int]
+        return f(hwnd, self.GWL_EXSTYLE) & 0xFFFFFFFF
+
+    def visible(self, hwnd):
+        return bool(self.u.IsWindowVisible(hwnd))
+
+    def region_box(self, hwnd):
+        """The window region's bounding box in screen pixels (SetWindowRgn, #405), or None when
+        the window has no region (the whole window hit-tests)."""
+        from ctypes import wintypes
+        gdi = ctypes.windll.gdi32
+        rgn = gdi.CreateRectRgn(0, 0, 0, 0)
+        try:
+            if self.u.GetWindowRgn(hwnd, rgn) in (0, 1):  # ERROR (no region) or NULLREGION
+                return None
+            r = wintypes.RECT()
+            gdi.GetRgnBox(rgn, ctypes.byref(r))
+        finally:
+            gdi.DeleteObject(rgn)
+        left, top = self.rect(hwnd)[:2]
+        return [r.left + left, r.top + top, r.right + left, r.bottom + top]
+
+    def at(self, x, y):
+        """The top-level window a click at (x, y) would reach: WindowFromPoint, which hit-tests as
+        the mouse does (it skips WS_EX_TRANSPARENT layered windows and honours window regions)."""
+        from ctypes import wintypes
+        f = self.u.WindowFromPoint
+        f.restype, f.argtypes = ctypes.c_void_p, [wintypes.POINT]
+        hwnd = f(wintypes.POINT(int(x), int(y)))
+        if not hwnd:
+            return None
+        g = self.u.GetAncestor
+        g.restype, g.argtypes = ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_uint]
+        return g(hwnd, self.GA_ROOT)
+
+    def foreground(self):
+        f = self.u.GetForegroundWindow
+        f.restype = ctypes.c_void_p
+        return f()
+
+    def others(self, overlay):
+        """The pid's other shown winit windows (Settings, the editor): not the overlay."""
+        return [h for h in self.find('Window Class') if h != overlay and self.visible(h)]
 
     def overlay(self, rect):
         """The overlay: the winit window whose rect is the one overlay.window reports."""
@@ -263,6 +319,40 @@ class Windows:
             for h in hwnds:
                 self.u.PostMessageW(h, self.WM_USER_TRAYICON, 0, self.WM_LBUTTONUP)
         return bool(hwnds)
+
+
+WS_EX_TRANSPARENT, WS_EX_LAYERED = 0x20, 0x80000
+
+
+def click_through(exstyle, visible=True):
+    """A window clicks pass through (#549): hidden, or transparent and layered (winit's
+    set_cursor_hittest(false))."""
+    both = WS_EX_TRANSPARENT | WS_EX_LAYERED
+    return not visible or exstyle & both == both
+
+
+def same_box(a, b, tolerance=2):
+    """Two [left, top, right, bottom] boxes equal within `tolerance` pixels (the panel's region is
+    its rect rounded outward, tray_panel::region)."""
+    return a is not None and b is not None and all(abs(x - y) <= tolerance for x, y in zip(a, b))
+
+
+def centre(box):
+    return ((box[0] + box[2]) // 2, (box[1] + box[3]) // 2)
+
+
+def outside(box, rect, margin=40):
+    """A point inside `rect` (the overlay) but at least `margin` px outside `box` (the panel), or
+    None: the corner of the overlay farthest from the panel."""
+    corners = [(rect[0] + margin, rect[1] + margin), (rect[2] - margin, rect[1] + margin),
+               (rect[0] + margin, rect[3] - margin), (rect[2] - margin, rect[3] - margin)]
+
+    def gap(p):
+        dx = max(box[0] - p[0], 0, p[0] - box[2])
+        dy = max(box[1] - p[1], 0, p[1] - box[3])
+        return max(dx, dy)
+    best = max(corners, key=gap)
+    return best if gap(best) >= margin else None
 
 
 def kill(name):

@@ -7,7 +7,9 @@
 #
 # Per step:
 #   match       a piece of the step's text in 0.2.md (exactly one step), or
-#   row         a #90 row letter (see [queue] below)
+#   row         a #90 row letter (see [queue] below), or
+#   batch       a step id of the resumed sitting's re-cut (docs/test-lab/sitting-0.2-h-i-r.md):
+#               a user step (H1) needs a needs_eyes reason, an agent step (HA1) checks only
 #   api         local API methods (crates/plugin-api METHODS)
 #   cli         foxglove-cli commands
 #   lab         foxglove-lab commands (kebab-case)
@@ -239,8 +241,11 @@ needs_eyes = "starting and stopping Wallpaper Engine and changing wallpapers are
 
 [[step]]
 match = "Sync: `-location` and the `RAW~(...)~END` argument"
-log = ["wallpaper sync: scene", "wallpaper sync: sent to"]
-needs_eyes = "the wallpaper's devlog and reload behaviour are in Wallpaper Engine; the Win key in a full-screen game"
+log = ["wallpaper sync: scene", "wallpaper sync: sent to", "game mode"]
+hil = ["sitting/game-layer-on", "sitting/game-layer-off"]
+script = ["scripts/lab/wallpaper_check.py"]
+note = "#586/#527 (sitting HA1-HA2): the devlog's snapshots and Wallpaper Engine's log.txt say whether a reloaded wallpaper kept game mode and whether a -control command was dropped"
+needs_eyes = "the Win key in a full-screen game and whether the HUD flickers (sitting H1-H3); the 50 ms phase needs a scene, which no API starts"
 
 [[step]]
 match = "Live feed: one run inside Wallpaper Engine"
@@ -256,14 +261,19 @@ needs_eyes = "switching wallpapers in Wallpaper Engine is a GUI action; \"On scr
 
 [[step]]
 match = "the Presets card lists the wallpapers"
-needs_eyes = "the Presets card is UI only"
+script = ["scripts/lab/wallpaper_check.py"]
+note = "wallpaper_check.py state prints the names the card should list, from the installed manifests (sitting HA0, HA3)"
+needs_eyes = "the Presets card is UI only (sitting H4)"
 
 [[step]]
 match = "Lights follow the wallpaper (#70)"
 api = ["lighting.state", "pc_lighting.list"]
 cli = ["lights"]
 lab = ["status"]
-needs_eyes = "switching wallpapers in Wallpaper Engine and the Windows desktop wallpaper are GUI actions"
+script = ["scripts/lab/wallpaper_follow.py"]
+log = ["Foxglove accent: applied"]
+note = "sitting HA4: the wallpaper test hook switches palette, palette, no palette (Windows accent) on a test app; the case follows only with Match keyboard on"
+needs_eyes = "whether the underglow looks like the wallpaper's colour (sitting H5); a running scene keeping the lights needs a scene, which no API starts; the Windows desktop wallpaper without Wallpaper Engine is a GUI action"
 
 # --- Overlay and windows ---
 
@@ -281,7 +291,10 @@ needs_eyes = "eyes: dragging the overlay, its opacity over a real desktop, the s
 
 [[step]]
 match = "Overlay clickable only while Settings has focus"
-needs_eyes = "clicking through the overlay in a game and alt-tab are the user's desktop"
+api = ["overlay.window", "overlay.restore"]
+script = ["scripts/lab/overlay_tray.py"]
+note = "sitting IA1-IA2: WS_EX_TRANSPARENT and WindowFromPoint with Settings closed, focused (a second launch) and minimized"
+needs_eyes = "a real click reaching the desktop through the overlay (sitting I2); a game in front, alt-tab and dragging across displays are the user's desktop"
 
 [[step]]
 match = "Tray: the icon and paused glyph at each scale"
@@ -290,7 +303,7 @@ cli = ["panel", "overlay"]
 script = ["scripts/lab/overlay_tray.py"]
 log = ["the taskbar is up; tray icon added", "tray panel ", "restored to"]
 note = "#618: overlay_tray.py posts the shell's own tray-click message (the app reads the real icon's rect) and reads the panel's rect and the overlay's display back"
-needs_eyes = "eyes: the icon and paused glyph at each scale, the panel's look and mixed-DPI placement; a real click outside reaching the window underneath at 125/150 %"
+needs_eyes = "eyes: the icon and paused glyph at each scale, the panel's look and mixed-DPI placement; a real click outside at 125/150 % (at 100 % overlay_tray.py hit-tests the panel's window region and its close on focus loss, sitting IA1-IA2)"
 
 [[step]]
 match = "Every page in the live window with the keyboard"
@@ -406,3 +419,127 @@ needs_eyes = "the user's call on legacy Logitech Options"
 [[step]]
 row = "O"
 needs_eyes = "iCUE and the user's Corsair gear"
+
+# --- The resumed sitting's re-cut (docs/test-lab/sitting-0.2-h-i-r.md) ---
+# Batch H: wallpaper (#586, #527, #70, #571)
+
+[[step]]
+batch = "HA0"
+script = ["scripts/lab/wallpaper_check.py"]
+lab = ["status"]
+log = ["wallpaper sync: sent to"]
+
+[[step]]
+batch = "HA4"
+script = ["scripts/lab/wallpaper_follow.py"]
+lab = ["status"]
+log = ["Foxglove accent: applied"]
+
+[[step]]
+batch = "HA1"
+hil = ["sitting/game-layer-on"]
+script = ["scripts/lab/wallpaper_check.py"]
+log = ["game mode"]
+
+[[step]]
+batch = "H1"
+needs_eyes = "hands: starting the user's own full-screen game is a GUI launch on the user's desktop"
+
+[[step]]
+batch = "H2"
+needs_eyes = "eyes: whether the HUD flickers when the Win key leaves the game (#586); no readback sees the screen"
+
+[[step]]
+batch = "H3"
+needs_eyes = "hands: closing the user's game (agents never stop the user's programs)"
+
+[[step]]
+batch = "HA2"
+script = ["scripts/lab/wallpaper_check.py"]
+hil = ["sitting/game-layer-off"]
+log = ["wallpaper sync: sent to"]
+
+[[step]]
+batch = "H4"
+needs_eyes = "eyes: the Presets card is UI only, with no API or readback (#571)"
+
+[[step]]
+batch = "H5"
+needs_eyes = "eyes: whether the underglow's gold looks like the wallpaper's (#70); RGB_STATE says what was sent, not how it looks"
+
+[[step]]
+batch = "HA3"
+script = ["scripts/lab/wallpaper_check.py"]
+
+# Batch I: overlay and tray (#549, #405/#406)
+
+[[step]]
+batch = "IA1"
+script = ["scripts/lab/overlay_tray.py"]
+api = ["overlay.window", "overlay.restore", "tray.set_panel", "tray.panel"]
+log = ["tray panel "]
+
+[[step]]
+batch = "IA2"
+script = ["scripts/lab/overlay_tray.py"]
+api = ["tray.panel", "overlay.window"]
+
+[[step]]
+batch = "I1"
+needs_eyes = "hands: minimizing the user's own Settings window, the #549 repro on the real app (the lab does it on a test app)"
+
+[[step]]
+batch = "I2"
+needs_eyes = "eyes and hands: a real click reaching the desktop through the overlay (#549)"
+
+[[step]]
+batch = "I3"
+needs_eyes = "hands: a real tray click, only when IA2's focus case was BLOCKED by Windows' foreground lock"
+
+[[step]]
+batch = "I4"
+needs_eyes = "eyes and hands: a real click on another window closing the panel (#406), only when IA2 was BLOCKED"
+
+# Batch R: right screen after #621 (#613)
+
+[[step]]
+batch = "RA1"
+hil = ["sitting/right-redraw-after-select-while-idle"]
+lab = ["status"]
+
+[[step]]
+batch = "RA2"
+script = ["scripts/lab/right_redraws.py"]
+lab = ["frame-dot", "status"]
+
+[[step]]
+batch = "RA3"
+hil = ["resilience/right-redraw-after-wake"]
+
+[[step]]
+batch = "R1"
+needs_eyes = "eyes: what the unpowered panel shows (blank, frozen or static) is the ext-power decision (#621 check 5); the panel is write-only"
+
+[[step]]
+batch = "R2"
+needs_eyes = "eyes: a clean picture after the wake; the redraw count (RA3) proves the rewrite ran, not the pixels"
+
+[[step]]
+batch = "R3"
+needs_eyes = "hands: unplugging the right's cable (the lab can't cut USB power)"
+
+[[step]]
+batch = "R4"
+needs_eyes = "eyes: what the panel shows while dark, on battery"
+
+[[step]]
+batch = "R5"
+needs_eyes = "eyes: a clean picture after the wake, on battery"
+
+# Z: case zone 1 back to its colour
+
+[[step]]
+batch = "ZA1"
+cli = ["lights", "light"]
+api = ["pc_lighting.set_zone", "pc_lighting.list"]
+log = ["zone colours of"]

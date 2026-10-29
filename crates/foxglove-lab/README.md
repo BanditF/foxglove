@@ -133,6 +133,8 @@ These steps don't press anything. They use Windows' device list and process time
 
 `tests/hil/app-idle.toml` holds the app checks; `release.toml` includes it first (its idle case must not measure the other cases' traffic), then `smoke.toml`.
 
+`tests/hil/sitting.toml` holds the agent steps of the resumed 0.2 sitting (docs/test-lab/sitting-0.2-h-i-r.md): the GAME layer on and off for the wallpaper batch, and a SELECT made while the right is dark (#621). Run each with `--only`, as On-call's run list says. It isn't part of the release gate.
+
 ## Safety and manual tests
 
 Outside the sink, only cached, recognized non-typing behaviors (`mo`, `tog`,

@@ -1646,3 +1646,43 @@ fn art_select_goes_through_the_app_while_it_runs() {
     );
     assert_eq!(selects(&fake), 1);
 }
+
+/// The resumed 0.2 sitting's agent steps (docs/test-lab/sitting-0.2-h-i-r.md): tests/hil/sitting.toml
+/// parses, its steps validate, the GAME toggle is a layer toggle (never a typing key), and the
+/// right-screen case reads the redraw count and compares with a golden that exists.
+#[test]
+fn the_sitting_suite_parses_and_stays_safe() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil");
+    let suite = spec::load(&root.join("sitting.toml")).unwrap();
+    let names: Vec<&str> = suite.cases.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "game-layer-on",
+            "game-layer-off",
+            "right-redraw-after-select-while-idle"
+        ]
+    );
+    for c in &suite.cases {
+        for s in &c.steps {
+            s.validate().unwrap();
+            if let Step::Invoke(i) = s {
+                assert_eq!(i.behavior.as_deref(), Some("tog"), "{}", c.name);
+                assert_eq!(i.param1, 3, "GAME is layer 3 (docs/layers.md)");
+            }
+        }
+    }
+    let right = &suite.cases[2];
+    for need in ["right_redraws", "position_press", "screen_readback"] {
+        assert!(right.requires.iter().any(|r| r == need), "{need}");
+    }
+    assert!(right
+        .steps
+        .iter()
+        .any(|s| matches!(s, Step::ExpectRightRedraws(_))));
+    for s in &right.steps {
+        if let Step::Screen(g) = s {
+            assert!(root.join(&g.golden).is_file(), "{}", g.golden);
+        }
+    }
+}
