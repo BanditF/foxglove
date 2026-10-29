@@ -33,6 +33,7 @@ class AppLaunchesNeedOnCall(unittest.TestCase):
         self.assertIn('RESULT BLOCKED', r.stdout)
 
     def test_every_app_run_needs_the_ok(self):
+        os.environ.setdefault('APPDATA', str(Path.home()))  # labkit reads it at import (CI is Linux)
         sys.path.insert(0, str(LAB))
         try:
             import labkit
