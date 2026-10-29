@@ -232,6 +232,9 @@ pub struct ArtStatus {
     /// A pushed (RAM) set is shown.
     pub pushed: bool,
     pub flash_slots: u8,
+    /// The piece shown, in the words the tray panel names it (API 1.6, #618).
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -243,6 +246,10 @@ pub enum ArtTarget {
     Slot(u8),
     /// An art blob file (NVA1) on this PC.
     File(String),
+    /// The keyboard's next piece, as the tray panel's Next › (API 1.6, #618).
+    Next,
+    /// The piece before, as the tray panel's ‹ (API 1.6, #618).
+    Previous,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -304,6 +311,36 @@ pub struct AppWindows {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SettingValues {
     pub values: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The tray panel (API 1.6, #618): whether it's open, and where it was last drawn, in screen
+/// pixels (left, top, right, bottom).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TrayPanel {
+    pub open: bool,
+    pub rect: Option<[i32; 4]>,
+}
+
+/// Opens or closes the tray panel, as a click on the tray icon does (API 1.6).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SetPanelParams {
+    pub open: bool,
+}
+
+/// The overlay window as Windows has it (API 1.6, #612, #618). The tray panel draws inside it, so
+/// a minimized overlay means a tray click opens nothing.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct OverlayWindow {
+    /// Minimized (IsIconic).
+    pub iconic: bool,
+    /// Shown (IsWindowVisible).
+    pub visible: bool,
+    /// The outer rectangle in screen pixels (left, top, right, bottom).
+    pub rect: Option<[i32; 4]>,
+    /// The display it covers most (`\.\DISPLAY1`), none when it's on no live display.
+    pub display: Option<String>,
+    /// Shown, not minimized, and on a live display.
+    pub on_screen: bool,
 }
 
 /// A split keyboard's "right half's lights follow the left", saved on the keyboard (#617, API 1.5):
@@ -757,6 +794,35 @@ pub const METHODS: &[Method] = &[
         permission: Some("lighting.write"),
         params: schema!(SetZoneParams),
         result: Some(schema!(PcDevices)),
+    },
+    // The tray panel and the overlay window, as a sitting uses them (#618, API 1.6).
+    Method {
+        name: "tray.panel",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(Empty),
+        result: Some(schema!(TrayPanel)),
+    },
+    Method {
+        name: "tray.set_panel",
+        kind: Kind::Call,
+        permission: Some("app.windows"),
+        params: schema!(SetPanelParams),
+        result: Some(schema!(TrayPanel)),
+    },
+    Method {
+        name: "overlay.window",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(Empty),
+        result: Some(schema!(OverlayWindow)),
+    },
+    Method {
+        name: "overlay.restore",
+        kind: Kind::Call,
+        permission: Some("app.windows"),
+        params: schema!(Empty),
+        result: Some(schema!(OverlayWindow)),
     },
     // Hold and give back the lights (#236).
     Method {

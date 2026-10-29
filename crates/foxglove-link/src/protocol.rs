@@ -62,6 +62,9 @@ pub mod capabilities {
     /// the PC's frames and ext power, and the brightest LED's colour after the battery dim
     /// ([`RgbOutput`]). With sync on the left also hands the right its colour and effect (#624).
     pub const RGB_SHOWN: u32 = 1 << 24;
+    /// BATTERY_DIM (D7 8E) also carries the right half's whole-screen rewrites since its
+    /// power-on ([`super::BatteryDim::right_redraws`], #618).
+    pub const RIGHT_REDRAWS: u32 = 1 << 25;
 }
 pub const VERSION: u8 = 1;
 
@@ -671,6 +674,9 @@ pub struct BatteryDim {
     pub right: Option<(BatteryDimHalf, u8)>,
     /// The right half has the left's levels.
     pub right_synced: bool,
+    /// The right half's whole-screen rewrites since its power-on, from the same read as its
+    /// state (HELLO bit 25, #618); `None` from firmware without it or before the first read.
+    pub right_redraws: Option<u32>,
 }
 
 impl BatteryDim {
@@ -682,6 +688,7 @@ impl BatteryDim {
             left: BatteryDimHalf::parse(&r[8..11]),
             right,
             right_synced: right.is_some() && r[15] != 0,
+            right_redraws: (r[16] == 1).then(|| u32::from_le_bytes([r[17], r[18], r[19], r[20]])),
         }
     }
 }
@@ -1631,6 +1638,37 @@ mod tests {
         let d = BatteryDim::parse(&r);
         assert_eq!(d.right, None);
         assert!(!d.right_synced, "no right, nothing to be in sync with");
+        // #618: firmware before HELLO bit 25 leaves bytes 16-20 zero: no count.
+        assert_eq!(d.right_redraws, None);
+        r[16..21].copy_from_slice(&[1, 0x2a, 0x01, 0, 0]);
+        assert_eq!(BatteryDim::parse(&r).right_redraws, Some(298));
+        r[16] = 0;
+        assert_eq!(BatteryDim::parse(&r).right_redraws, None, "known flag off");
+    }
+
+    /// Every HELLO capability is its own bit (#618 moved RIGHT_REDRAWS to 25 after #629 took 24
+    /// for RGB_SHOWN).
+    #[test]
+    fn capability_bits_are_distinct() {
+        use capabilities::*;
+        assert_eq!((RGB_SHOWN, RIGHT_REDRAWS), (1 << 24, 1 << 25));
+        let all = [
+            PANEL,
+            ART_RELAY,
+            SETTINGS_RGB,
+            ACTIVITY_RELAY,
+            LAMP_PARTS,
+            EFFECT_LAMPS,
+            RIGHT_EVENTS,
+            RGB_SHOWN,
+            RIGHT_REDRAWS,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            assert_eq!(a.count_ones(), 1);
+            for b in &all[i + 1..] {
+                assert_eq!(a & b, 0, "{a:#x} and {b:#x} overlap");
+            }
+        }
     }
 
     #[test]

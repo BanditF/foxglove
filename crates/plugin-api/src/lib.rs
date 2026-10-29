@@ -14,7 +14,7 @@ pub mod permission;
 pub mod rpc;
 
 /// The API version this crate describes. Minor versions only add; a major version breaks.
-pub const API_VERSION: Version = Version { major: 1, minor: 5 };
+pub const API_VERSION: Version = Version { major: 1, minor: 6 };
 
 /// An API version as `major.minor`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -61,7 +61,7 @@ mod tests {
         assert!(!v("1.4").served_by(v("1.3")));
         assert!(!v("2.0").served_by(v("1.9")));
         assert_eq!(Version::parse("1"), None);
-        assert_eq!(API_VERSION.to_string(), "1.5");
+        assert_eq!(API_VERSION.to_string(), "1.6");
     }
 
     /// `schema/v1.json` must match the types. After an intended change, regenerate it with

@@ -276,6 +276,9 @@ impl Handle {
 
     fn update(&self, f: impl FnOnce(&mut Snapshot)) {
         f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()));
+        // An agent waiting for a job's end (`wait_job`) looks again.
+        *CHANGES.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        CHANGED.notify_all();
         // The live wallpaper feed names the piece on the right screen (#499).
         super::live_feed::art_changed();
         if let Some(wake) = WAKE.get() {
@@ -377,6 +380,50 @@ impl Handle {
         let _ = self.commands.send(Command::Resume);
     }
 
+    /// The tray panel's Next › (`forward`) or ‹ for an agent (#618, the local API's
+    /// `art.select`): the same command, once it's known that it would show something. Err says
+    /// why not. Wait for the piece with [`Self::wait_job`].
+    pub fn step_now(&self, forward: bool) -> Result<(), String> {
+        if super::pause::paused() {
+            return Err(super::pause::REFUSED.into());
+        }
+        let s = self.snapshot();
+        let st = s
+            .status
+            .filter(|_| s.connected)
+            .ok_or("no keyboard with the art relay")?;
+        if s.busy {
+            return Err("another art job is running".into());
+        }
+        art_cycle::step(
+            &art_cycle::rotation(&st),
+            art_cycle::on_screen(&st),
+            forward,
+        )
+        .ok_or("the keyboard has nothing else to show")?;
+        // Cleared, so the wait sees this job's end and not the last one's.
+        self.update(|s| s.outcome = None);
+        if forward {
+            self.next()
+        } else {
+            self.previous()
+        };
+        Ok(())
+    }
+
+    /// Sleeps until the job just asked for has ended (no job running, its outcome in), at most
+    /// `timeout`; woken by each snapshot change, no polling. The snapshot then.
+    pub fn wait_job(&self, timeout: Duration) -> Snapshot {
+        let changes = CHANGES.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = CHANGED
+            .wait_timeout_while(changes, timeout, |_| {
+                let s = self.snapshot();
+                s.busy || s.outcome.is_none()
+            })
+            .unwrap_or_else(|e| e.into_inner());
+        self.snapshot()
+    }
+
     /// Shows Rotation's next piece now.
     pub fn next(&self) -> bool {
         let _ = self.commands.send(Command::Next);
@@ -394,6 +441,9 @@ impl Handle {
 }
 
 static SERVICE: OnceLock<Handle> = OnceLock::new();
+/// Snapshot changes so far, and the condvar [`Handle::wait_job`] sleeps on.
+static CHANGES: Mutex<u64> = Mutex::new(0);
+static CHANGED: std::sync::Condvar = std::sync::Condvar::new();
 static WAKE: OnceLock<crate::ui_wake::UiWake> = OnceLock::new();
 
 /// Repaints the UI (settings, tray) whenever the snapshot changes, so it needn't poll.
@@ -1662,6 +1712,76 @@ mod tests {
         assert_eq!(restore(&pinned, st), None);
         st.right_state = 0;
         assert_eq!(restore(&None, st), None);
+    }
+
+    /// #618: an agent's Next sends the tray's own Next once it would show something, and the
+    /// wait ends with that job's outcome (woken by the snapshot change, not a timeout).
+    #[test]
+    fn an_agent_step_sends_next_and_waits_for_the_job() {
+        let (commands, receiver) = mpsc::channel();
+        let st = ArtStatus {
+            link: 2,
+            right_state: 0,
+            right_set_count: 4,
+            right_set: 1,
+            ..ArtStatus::default()
+        };
+        let job = Job {
+            kind: JobKind::Show,
+            name: "ZMK_2".into(),
+            quiet: true,
+            again: None,
+        };
+        let done = |job: &Job| Outcome {
+            job: job.clone(),
+            result: Ok(()),
+            at: Instant::now(),
+        };
+        let h = Handle {
+            commands,
+            state: Arc::new(Mutex::new(Snapshot {
+                connected: true,
+                status: Some(st),
+                outcome: Some(done(&job)),
+                ..Snapshot::default()
+            })),
+            cancel: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(AtomicBool::new(false)),
+        };
+        h.step_now(true).unwrap();
+        assert!(matches!(receiver.try_recv(), Ok(Command::Next)));
+        assert!(
+            h.snapshot().outcome.is_none(),
+            "the last job's outcome is cleared"
+        );
+        let worker = h.clone();
+        let ended = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            worker.update(|s| s.busy = true);
+            worker.update(|s| {
+                s.busy = false;
+                if let Some(st) = s.status.as_mut() {
+                    st.right_set = 2;
+                }
+                s.outcome = Some(done(&job));
+            });
+        });
+        let started = Instant::now();
+        let s = h.wait_job(Duration::from_secs(10));
+        ended.join().unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "woken, not timed out"
+        );
+        assert_eq!(s.status.map(|st| st.right_set), Some(2));
+        h.step_now(false).unwrap();
+        assert!(matches!(receiver.try_recv(), Ok(Command::Previous)));
+        // Busy or without the keyboard: refused with a reason, nothing sent.
+        h.update(|s| s.busy = true);
+        assert_eq!(h.step_now(true), Err("another art job is running".into()));
+        h.update(|s| s.connected = false);
+        assert!(h.step_now(true).unwrap_err().contains("no keyboard"));
+        assert!(receiver.try_recv().is_err());
     }
 
     /// A re-apply (#618) leaves the right half's art alone when it shows what's wanted, and

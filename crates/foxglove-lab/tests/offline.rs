@@ -130,7 +130,7 @@ fn parses_seed_suites_and_all_step_kinds() {
             .unwrap()
             .cases
             .len(),
-        13
+        14
     );
     assert_eq!(
         spec::load(&root.join("app-actions.toml"))
@@ -277,6 +277,75 @@ fn rgb_on_off_is_checked_per_half() {
     }
 }
 
+/// D7 8E with the right's redraw count (#618): `known` byte 16, the count in bytes 17-20.
+fn dim_with_redraws(known: bool, n: u32) -> [u8; REPORT] {
+    let mut r = reply(&[0xd7, 0x8e, 0]);
+    r[11] = 1; // the right's dim state is 1 s old
+    r[16] = u8::from(known);
+    r[17..21].copy_from_slice(&n.to_le_bytes());
+    r
+}
+
+/// #618: note_right_redraws reads the count twice (the second is fresh), and
+/// expect_right_redraws passes once it grew by at_least; a right without it is BLOCKED, and a
+/// count that doesn't grow fails.
+#[test]
+fn right_redraws_are_noted_and_must_grow() {
+    const REDRAWS: u32 = 1 << 25;
+    let mut hello = reply(&[0xd5, 0x81, 1]);
+    hello[7] = 2; // right link: relay up
+    hello[9] = 4; // discovery done
+    let steps = "[{note_right_redraws={}}, {expect_right_redraws={at_least=2,within_ms=3000}}]";
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([
+        hello,
+        dim_with_redraws(true, 3),
+        dim_with_redraws(true, 4), // still settling from the idle-off's redraw
+        dim_with_redraws(true, 5),
+        dim_with_redraws(true, 5),
+        dim_with_redraws(true, 6),
+        dim_with_redraws(true, 7),
+    ]);
+    let result = run_with(&fake, &case(steps), REDRAWS);
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    assert_eq!(result.steps[0].actual, "right redraws 5");
+    assert!(result.steps[1].actual.starts_with("right redraws 5 -> 7"));
+    let requests = fake.requests.borrow();
+    assert!(
+        requests[1..].iter().all(|r| r[..3] == [0xd7, 0x0e, 0]),
+        "reads only"
+    );
+    // A right before #618 reports nothing: BLOCKED, not a failure.
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([
+        hello,
+        dim_with_redraws(false, 0),
+        dim_with_redraws(false, 0),
+    ]);
+    assert_eq!(
+        run_with(&fake, &case(steps), REDRAWS).status,
+        Status::Blocked
+    );
+    // No rewrite after the wake: fails at the timeout.
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([hello]);
+    fake.replies
+        .borrow_mut()
+        .extend(std::iter::repeat_n(dim_with_redraws(true, 5), 8));
+    let c = case("[{note_right_redraws={}}, {expect_right_redraws={within_ms=500}}]");
+    let result = run_with(&fake, &c, REDRAWS);
+    assert_eq!(result.status, Status::Fail);
+    assert!(
+        result.message.contains("expected at least +1"),
+        "{}",
+        result.message
+    );
+    // Without HELLO bit 25 nothing is asked.
+    let fake = Fake::default();
+    assert_eq!(run_with(&fake, &case(steps), 0).status, Status::Blocked);
+    assert!(fake.requests.borrow().is_empty());
+}
+
 #[test]
 fn rgb_look_and_shown_are_checked_per_half() {
     // RGB_STATE: both halves Swirl, hue 39, sat 70, 42 % (#624), each saying what it shows (#605).
@@ -329,6 +398,8 @@ fn capabilities_and_refusal_gate_before_any_request() {
         (vec!["activity_relay"], "[{expect_layer={top=0}}]"),
         // HELLO bit 24 (#605): RGB_STATE says what the LEDs show.
         (vec!["rgb_shown"], "[{expect_layer={top=0}}]"),
+        // HELLO bit 25 (#618): the right's redraw count.
+        (vec!["right_redraws"], "[{expect_layer={top=0}}]"),
         (
             vec![],
             "[{invoke={behavior='mo'}},{screen={half='left',golden='a.png'}}]",

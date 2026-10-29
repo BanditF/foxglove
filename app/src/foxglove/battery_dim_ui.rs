@@ -439,6 +439,7 @@ pub mod tests {
             left: half(true, false, 100, Some(95)),
             right: Some((half(false, false, 80, Some(61)), 1)),
             right_synced: true,
+            right_redraws: None,
         })
     }
 

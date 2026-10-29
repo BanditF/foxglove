@@ -56,6 +56,7 @@
 
 #include "activity_relay.h"
 #include "battery_dim.h"
+#include "half_marker.h"
 #include "lamp_effect.h"
 #include "rgb_idle.h"
 
@@ -224,6 +225,14 @@ int art_relay_build_info(void);
 // refresh, asks for a fresher read, which sends D7 8E unsolicited (host_link_battery_dim_changed)
 // if it differs.
 uint8_t art_relay_right_dim(struct battery_dim_wire *out, bool refresh);
+// The right's whole-screen rewrites since its power-on (u32 LE, #618) follow its battery dim state
+// in the status value; read with the dim state. False when unknown (no read yet, or a right
+// before it: the read past the end fails).
+#define ART_RELAY_REDRAWS_AT                                                                       \
+    (sizeof(struct art_relay_status) +                                                             \
+     ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info) +                                  \
+     sizeof(struct foxglove_build_info) + sizeof(struct battery_dim_wire))
+bool art_relay_right_redraws(uint32_t *out);
 
 // SET_FRAME (#272): host says whether the PC draws the right's LEDs; rgb is the right's whole
 // frame (copied). Runs on the relay queue, newest frame wins; only lamps that changed since the

@@ -55,6 +55,8 @@ pub enum Step {
     PanelFlood(PanelFlood),
     PanelRelease(PanelRelease),
     ArtKey(ArtKey),
+    NoteRightRedraws(NoteRedraws),
+    ExpectRightRedraws(RightRedraws),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -371,6 +373,31 @@ pub struct ScreenStill {
     pub ms: u64,
 }
 
+/// Notes the right half's whole-screen rewrites since its power-on (D7 8E bytes 16-20, HELLO bit
+/// 24, #618) for a following expect_right_redraws. Readback is LVGL's model, so it can't show
+/// panel noise after a power cut; this count shows the panel was rewritten.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoteRedraws {}
+
+/// The right's redraw count grew by at least `at_least` since the case's note_right_redraws,
+/// within `within_ms` (the D7 0E read is asked every 300 ms; each answer is the left's last read
+/// of the right, so allow a second for it).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RightRedraws {
+    #[serde(default = "one")]
+    pub at_least: u32,
+    #[serde(default = "redraw_timeout")]
+    pub within_ms: u64,
+}
+fn one() -> u32 {
+    1
+}
+fn redraw_timeout() -> u64 {
+    5000
+}
+
 /// F13–F24 as `&kp` params (HID keyboard page 7, usages 0x68–0x73, no modifiers). They type
 /// nothing, so a short tap is safe outside the typing sink: it's how a test presses a key bound
 /// to a plugin action (#212).
@@ -590,6 +617,17 @@ impl Step {
                     );
                 }
             }
+            Self::NoteRightRedraws(_) => {}
+            Self::ExpectRightRedraws(r) => {
+                ensure!(
+                    (1..=60_000).contains(&r.within_ms),
+                    "expect_right_redraws within_ms must be 1..=60000"
+                );
+                ensure!(
+                    r.at_least >= 1,
+                    "expect_right_redraws at_least must be 1 or more"
+                );
+            }
             Self::ExpectScreenStill(c) => {
                 ensure!(["left", "right"].contains(&c.half.as_str()), "invalid half");
                 ensure!(
@@ -648,7 +686,8 @@ pub fn load(path: &Path) -> Result<Suite> {
                     "build_info",
                     "unlocked",
                     "activity_relay",
-                    "rgb_shown"
+                    "rgb_shown",
+                    "right_redraws"
                 ]
                 .contains(&r.as_str())
                     || r.strip_prefix("host_link>=")

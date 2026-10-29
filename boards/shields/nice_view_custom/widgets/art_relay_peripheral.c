@@ -444,7 +444,8 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
 #define SLOTS_AT sizeof(status)
 #define BUILD_AT (SLOTS_AT + ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info))
 #define DIM_AT (BUILD_AT + sizeof(struct foxglove_build_info))
-    static uint8_t value[DIM_AT + sizeof(struct battery_dim_wire)];
+    BUILD_ASSERT(DIM_AT + sizeof(struct battery_dim_wire) == ART_RELAY_REDRAWS_AT, "art_relay.h");
+    static uint8_t value[ART_RELAY_REDRAWS_AT + sizeof(uint32_t)];
     memcpy(value, &status, sizeof(status));
     if (offset + len > sizeof(status)) {
         for (int i = 0; i < ART_RELAY_FLASH_SLOTS; i++) {
@@ -460,6 +461,7 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
         battery_dim_state(&dim);
 #endif
         memcpy(&value[DIM_AT], &dim, sizeof(dim));
+        sys_put_le32(art_redraw_count(), &value[ART_RELAY_REDRAWS_AT]);
     }
     return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
 }

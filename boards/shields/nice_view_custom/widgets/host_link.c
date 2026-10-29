@@ -223,6 +223,9 @@ static void hello_reply(void) {
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
     caps |= HOST_LINK_CAP_BATTERY_DIM;
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    caps |= HOST_LINK_CAP_RIGHT_REDRAWS;
+#endif
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) && IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
     caps |= HOST_LINK_CAP_RIGHT_EVENTS;
@@ -652,7 +655,8 @@ void host_link_rgb_changed(void) {
 
 /* D7 0E BATTERY_DIM: the underglow's levels by power state, per half (battery_dim.c) */
 
-#define BATTERY_DIM_SIZE 16
+#define BATTERY_DIM_SIZE 21
+#define BATTERY_DIM_CMP 16 // the unsolicited reply goes by these bytes (not the redraw count)
 
 // The D7 8E reply. refresh: also ask the right for a fresher state (a PC request); the unsolicited
 // one is the answer to such a read, so it doesn't ask again.
@@ -679,6 +683,11 @@ static void battery_dim_fill(uint8_t r[BATTERY_DIM_SIZE], uint8_t status, bool r
         r[14] = right.soc;
         r[15] = memcmp(&right.config, &left.config, sizeof(left.config)) == 0;
     }
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    uint32_t redraws;
+    r[16] = art_relay_right_redraws(&redraws); // #618, HELLO bit 25
+    sys_put_le32(redraws, &r[17]);
+#endif
 #endif
 }
 
@@ -694,7 +703,7 @@ static void battery_dim_event_cb(struct k_work *work) {
     battery_dim_fill(r, 0, false);
     memcpy(cmp, r, sizeof(cmp));
     cmp[11] = cmp[11] == 0xff ? 0xff : 0;
-    if (memcmp(cmp, battery_dim_sent, sizeof(cmp)) != 0) {
+    if (memcmp(cmp, battery_dim_sent, BATTERY_DIM_CMP) != 0) {
         memcpy(battery_dim_sent, cmp, sizeof(cmp));
         reply(r, sizeof(r));
     }

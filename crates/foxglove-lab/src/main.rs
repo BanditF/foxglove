@@ -463,13 +463,27 @@ fn main() -> Result<std::process::ExitCode> {
     if matches!(cli.command, Command::Status) {
         let link = connect(cli.product)?;
         let c = link.wait_connected(Duration::from_secs(10))?;
+        let hello = panel::hello(&link)?;
         println!(
             "{}\nHELLO: {}\nCONN_STATE: {:?}\nRGB_STATE: {:?}",
             c.product,
-            firmware(panel::hello(&link)?),
+            firmware(hello),
             settings::conn_state(&link)?,
             settings::rgb_state(&link)?
         );
+        // The right's whole-screen rewrites since its power-on (#618), as the left last read
+        // them; asked twice so the second answer is fresh.
+        if hello.capabilities & foxglove_link::protocol::capabilities::RIGHT_REDRAWS != 0 {
+            let _ = settings::battery_dim(&link, None);
+            std::thread::sleep(Duration::from_millis(400));
+            match settings::battery_dim(&link, None).map(|d| d.right_redraws) {
+                Ok(Some(n)) => println!("RIGHT_REDRAWS: {n}"),
+                Ok(None) => println!("RIGHT_REDRAWS: unknown"),
+                Err(e) => println!("RIGHT_REDRAWS: error {e}"),
+            }
+        } else {
+            println!("RIGHT_REDRAWS: unknown (no HELLO bit 25)");
+        }
         return Ok(std::process::ExitCode::SUCCESS);
     }
     if let Command::RgbLatency {

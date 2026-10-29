@@ -49,6 +49,8 @@ same messages.
 | `profiles.list` / `profiles.activate` | call | — / `profiles.write` (API 1.1) |
 | `lighting.sync` / `lighting.set_sync` | call | `devices.read` / `lighting.write` (API 1.5) |
 | `pc_lighting.list` / `pc_lighting.set_zone` | call | `devices.read` / `lighting.write` (API 1.5) |
+| `tray.panel` / `tray.set_panel` | call | `devices.read` / `app.windows` (API 1.6) |
+| `overlay.window` / `overlay.restore` | call | `devices.read` / `app.windows` (API 1.6) |
 
 The params and results are in the schema. Notes:
 
@@ -64,7 +66,18 @@ The params and results are in the schema. Notes:
   soft-off from the PC altogether.
 - **`screens.panel_override`** lasts at most 60 s; the panel then returns to Foxglove's own drawing.
 - **`art.select` names built-ins by their manifest name** (stable across firmware), plus slots,
-  random, or a file.
+  random, or a file. API 1.6 (#618) adds `"next"` and `"previous"`: the tray panel's Next › and
+  ‹, the same command. The call answers once the art job ended (with its error, if it failed),
+  and logs one `Foxglove: art … (api): <before> → <after>` line. `art.status` also gives `name`,
+  the piece as the tray panel names it.
+- **The tray panel and the overlay window (#612, #618, API 1.6), for agents:** `tray.panel` says
+  whether the panel is open and where it was last drawn (screen pixels). `tray.set_panel {open}`
+  opens or closes it as a tray click does (an open first un-minimizes the overlay) and answers
+  once the overlay's frame did it; one `Foxglove: tray panel … (api asked …)` line each.
+  `overlay.window` is the #612 window probe: minimized, shown, the outer rect, the display it
+  covers most, and on screen or not. `overlay.restore` runs the overlay's restore check now and
+  answers with the probe; it logs the restore line, or `… nothing to restore (api)`. The writes
+  need `app.windows`. `foxglove-cli art`, `panel` and `overlay` use them.
 - **Case zones and the sync (#617, API 1.5):** `pc_lighting.list` gives each PC lighting
   device (by its key, `vvvv:pppp` plus a serial), its zones with `#rrggbb` colours, whether
   Foxglove writes it, the apps that may fight it, and the last write's status.

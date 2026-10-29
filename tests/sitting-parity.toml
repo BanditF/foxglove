@@ -187,8 +187,12 @@ needs_eyes = "hands: a power cycle of the right with a kept piece; Keep is a Scr
 [[step]]
 match = "Art across a firmware update, the five steps"
 lab = ["art-status"]
-api = ["art.status"]
-needs_eyes = "the tray's ‹ / Next ›, Art… and the Change… picker have no API or CLI call (#618 theme C)"
+api = ["art.status", "art.select", "tray.set_panel", "tray.panel"]
+cli = ["art", "panel"]
+script = ["scripts/lab/overlay_tray.py"]
+log = ["(api): "]
+note = "#618: the tray's Next › and ‹ are art.select next/previous (the same command), the panel's name is art.status name; the flash is On-call's"
+needs_eyes = "Art… and the Change… picker open UI that is only seen (no API for the picker)"
 
 [[step]]
 match = "Keymap editor on the Corne over USB and over Bluetooth"
@@ -246,7 +250,7 @@ needs_eyes = "one run inside Wallpaper Engine (CEF); keys over USB and BLE need 
 [[step]]
 match = "The right screen shows each wallpaper's art"
 api = ["art.status", "profiles.activate"]
-cli = ["profile"]
+cli = ["profile", "art"]
 lab = ["art-status"]
 needs_eyes = "switching wallpapers in Wallpaper Engine is a GUI action; \"On screen\" is a UI label"
 
@@ -266,10 +270,13 @@ needs_eyes = "switching wallpapers in Wallpaper Engine and the Windows desktop w
 [[step]]
 match = "Settings window: drag between the displays"
 log = ["displays changed, the room map has"]
-needs_eyes = "window behaviour across displays (drag, rescale, Alt+Tab, title bar) is seen; no window-state probe yet (#612)"
+needs_eyes = "the Settings window's behaviour across displays (drag, rescale, Alt+Tab, title bar) is seen; the window probe (overlay.window, #618) covers the overlay only"
 
 [[step]]
 match = "Layer overlay: drag across the displays"
+api = ["overlay.window"]
+cli = ["overlay"]
+note = "#618: where the overlay is (rect, display) after a restart is overlay.window"
 needs_eyes = "eyes: dragging the overlay, its opacity over a real desktop, the slider's live preview"
 
 [[step]]
@@ -278,8 +285,12 @@ needs_eyes = "clicking through the overlay in a game and alt-tab are the user's 
 
 [[step]]
 match = "Tray: the icon and paused glyph at each scale"
-log = ["the taskbar is up; tray icon added"]
-needs_eyes = "eyes: the icon and panel at each scale; clicks outside the panel"
+api = ["tray.panel", "tray.set_panel", "overlay.window", "overlay.restore"]
+cli = ["panel", "overlay"]
+script = ["scripts/lab/overlay_tray.py"]
+log = ["the taskbar is up; tray icon added", "tray panel ", "restored to"]
+note = "#618: overlay_tray.py posts the shell's own tray-click message (the app reads the real icon's rect) and reads the panel's rect and the overlay's display back"
+needs_eyes = "eyes: the icon and paused glyph at each scale, the panel's look and mixed-DPI placement; a real click outside reaching the window underneath at 125/150 %"
 
 [[step]]
 match = "Every page in the live window with the keyboard"

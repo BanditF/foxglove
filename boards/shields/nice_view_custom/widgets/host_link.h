@@ -33,7 +33,8 @@
  *                    23 ACTIVITY_RELAY (the left sends its activity state to the right,
  *                    whose art follows it, #603; a right before it keeps its own),
  *                    24 RGB_SHOWN (RGB_STATE bytes 17-28: what each half's LEDs show, #605;
- *                    with sync on the left also hands the right its colour and effect, #624).
+ *                    with sync on the left also hands the right its colour and effect, #624),
+ *                    25 RIGHT_REDRAWS (D7 8E bytes 16-20: the right's redraw count, #618).
  *      HELLO has no byte left for the LED counts: bit 22 says D7 10 answers them.
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
@@ -230,7 +231,10 @@
  *             config (5 B, bytes 3-7, as in force on the left), the left's state (bytes 8-10:
  *             flags (bit 0 on USB, bit 1 at the low level), level % now, charge % (0 unknown)),
  *             right age s (byte 11; 0xff = none), the right's state (bytes 12-14, as the left's),
- *             the right's config matches the left's (byte 15: 0/1)
+ *             the right's config matches the left's (byte 15: 0/1); with capability bit 25
+ *             (#618) the right's whole-screen rewrites since its power-on: known (byte 16: 0/1),
+ *             count u32 LE (bytes 17-20), from the same read as its state. A right before it
+ *             leaves byte 16 at 0. Bytes 16-20 never cause an unsolicited D7 8E.
  *      Each half caps its own underglow from its own cable and charge (battery_dim.c): on USB at
  *      the on-power level, on battery at the on-battery level, below the threshold at the low
  *      level. Saved on both halves; the left sends its config to the right with the underglow
@@ -342,6 +346,8 @@
 #define HOST_LINK_CAP_ACTIVITY_RELAY (1U << 23)
 // RGB_STATE bytes 17-28: what each half's LEDs show (#605).
 #define HOST_LINK_CAP_RGB_SHOWN (1U << 24)
+// D7 8E bytes 16-20 carry the right's whole-screen rewrites since its power-on (#618)
+#define HOST_LINK_CAP_RIGHT_REDRAWS (1U << 25)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);

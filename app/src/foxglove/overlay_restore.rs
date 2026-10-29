@@ -9,7 +9,10 @@
 //! - a display change (`WM_DISPLAYCHANGE`, to a hidden window whose thread sleeps in
 //!   `GetMessageW`), and the overlay becoming minimized within [`SETTLE`] of one, since Windows
 //!   can minimize it after the broadcast;
-//! - the taskbar starting (Explorer restarted), from the tray's taskbar event.
+//! - the taskbar starting (Explorer restarted), from the tray's taskbar event;
+//! - an agent (#618): the local API's `overlay.restore` and `tray.set_panel`, which answer once
+//!   the frame ran the check ([`request_and_wait`]). `overlay.window` reads the window's state
+//!   ([`window_state`], the #612 probe) from the API's own thread.
 //!
 //! Nothing polls: each check is one event, and the settle window is a timestamp compared when
 //! the minimize event arrives, not a timer.
@@ -17,7 +20,8 @@
 // The window side runs on Windows only; elsewhere only the tests use the decision.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 /// What asked for the check.
@@ -26,6 +30,8 @@ pub enum Trigger {
     TrayClick,
     DisplayChange,
     TaskbarRestart,
+    /// The local API (#618): `overlay.restore`, or `tray.set_panel` opening the panel.
+    Api,
 }
 
 impl Trigger {
@@ -34,6 +40,7 @@ impl Trigger {
             Trigger::TrayClick => "tray click",
             Trigger::DisplayChange => "display change",
             Trigger::TaskbarRestart => "taskbar restart",
+            Trigger::Api => "api",
         }
     }
 }
@@ -83,8 +90,61 @@ fn overlaps(a: [i32; 4], b: [i32; 4]) -> bool {
     a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]
 }
 
+/// The overlay window's state as [`window_state`] reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowState {
+    pub iconic: bool,
+    pub visible: bool,
+    pub rect: Option<[i32; 4]>,
+    /// The display it overlaps most.
+    pub display: Option<String>,
+    /// Shown, not minimized, and on a live display.
+    pub on_screen: bool,
+}
+
+/// The overlay's state from what Windows says about it and the live displays: the display is
+/// the one whose work area it overlaps most.
+pub fn describe(
+    iconic: bool,
+    visible: bool,
+    rect: Option<[i32; 4]>,
+    monitors: &[crate::monitors::Monitor],
+) -> WindowState {
+    let area = |a: [i32; 4], b: [i32; 4]| {
+        let w = i64::from(a[2].min(b[2]) - a[0].max(b[0]));
+        let h = i64::from(a[3].min(b[3]) - a[1].max(b[1]));
+        if w > 0 && h > 0 {
+            w * h
+        } else {
+            0
+        }
+    };
+    let display = rect.and_then(|r| {
+        monitors
+            .iter()
+            .map(|m| (area(r, m.work_area), m))
+            .filter(|(a, _)| *a > 0)
+            .max_by_key(|(a, _)| *a)
+            .map(|(_, m)| m.id.clone())
+    });
+    WindowState {
+        iconic,
+        visible,
+        rect,
+        on_screen: !iconic && visible && display.is_some(),
+        display,
+    }
+}
+
+/// The overlay window, from its first frame on (0 before).
+static HWND: AtomicIsize = AtomicIsize::new(0);
+
 /// The check waiting for the overlay's next frame (the first trigger wins until it's taken).
 static PENDING: Mutex<Option<Trigger>> = Mutex::new(None);
+/// Requests asked and checks run, so an agent's request is answered once its frame ran
+/// ([`request_and_wait`]); sleeps on [`CHECKED`], no polling.
+static SERVED: Mutex<(u64, u64)> = Mutex::new((0, 0));
+static CHECKED: Condvar = Condvar::new();
 /// The last display change.
 static DISPLAY_CHANGED_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -97,12 +157,64 @@ pub fn request(trigger: Trigger) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get_or_insert(trigger);
+    SERVED.lock().unwrap_or_else(|e| e.into_inner()).0 += 1;
     super::tray_panel::wake();
     // The same events can lose device state too (#618): the re-apply hooks hear them.
     match trigger {
         Trigger::DisplayChange => super::reassert::fire(super::reassert::Trigger::DisplayChange),
         Trigger::TaskbarRestart => super::reassert::fire(super::reassert::Trigger::TaskbarRestart),
-        Trigger::TrayClick => {}
+        Trigger::TrayClick | Trigger::Api => {}
+    }
+}
+
+/// Every check asked so far was run (a frame took it): wakes the agents waiting.
+fn checked() {
+    let mut s = SERVED.lock().unwrap_or_else(|e| e.into_inner());
+    s.1 = s.0;
+    CHECKED.notify_all();
+}
+
+/// Asks for a check as [`request`] does, then sleeps until a frame ran it, at most `timeout`
+/// (the fallback when no frame comes, e.g. the overlay isn't up). True when it ran.
+pub fn request_and_wait(trigger: Trigger, timeout: Duration) -> bool {
+    request(trigger);
+    let s = SERVED.lock().unwrap_or_else(|e| e.into_inner());
+    let n = s.0;
+    let (s, _) = CHECKED
+        .wait_timeout_while(s, timeout, |s| s.1 < n)
+        .unwrap_or_else(|e| e.into_inner());
+    s.1 >= n
+}
+
+/// The log line when an agent's check finds nothing to do.
+fn kept_line(state: &WindowState) -> String {
+    let rect = state
+        .rect
+        .map_or_else(|| "?".to_string(), |r| format!("{r:?}"));
+    let display = state.display.as_deref().unwrap_or("no display");
+    format!("Foxglove: overlay window shown at {rect} on {display}, nothing to restore (api)")
+}
+
+/// The overlay window's state now (the #612 probe), from any thread; None before its first
+/// frame or off Windows.
+pub fn window_state() -> Option<WindowState> {
+    #[cfg(windows)]
+    {
+        let hwnd = HWND.load(Ordering::Relaxed);
+        if hwnd == 0 {
+            return None;
+        }
+        Some(describe(
+            imp::is_iconic(hwnd),
+            imp::is_visible(hwnd),
+            imp::window_rect(hwnd),
+            &crate::monitors::list(),
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = HWND.load(Ordering::Relaxed);
+        None
     }
 }
 
@@ -159,6 +271,7 @@ pub fn frame(
     place: impl FnOnce(isize, [i32; 4]),
 ) -> Option<Option<[i32; 4]>> {
     imp::watch();
+    HWND.store(hwnd, Ordering::Relaxed);
     let iconic = imp::is_iconic(hwnd);
     let became_minimized = minimized_by_display_change(*was_iconic, iconic, since_display_change());
     *was_iconic = iconic;
@@ -167,6 +280,11 @@ pub fn frame(
     let listed = crate::monitors::list();
     let monitors: Vec<[i32; 4]> = listed.iter().map(|m| m.work_area).collect();
     let Action::Restore { to } = decide(iconic, rect, &monitors, target(&listed, monitor)) else {
+        if trigger == Trigger::Api {
+            let state = describe(iconic, imp::is_visible(hwnd), rect, &listed);
+            eprintln!("{}", kept_line(&state));
+        }
+        checked();
         return None;
     };
     imp::show_no_activate(hwnd);
@@ -175,6 +293,7 @@ pub fn frame(
     }
     *was_iconic = imp::is_iconic(hwnd);
     eprintln!("{}", restored_line(trigger, iconic, rect, to));
+    checked();
     Some(to)
 }
 
@@ -185,8 +304,8 @@ mod imp {
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowRect, IsIconic,
-        RegisterClassW, ShowWindow, MSG, SW_SHOWNOACTIVATE, WINDOW_STYLE, WM_DISPLAYCHANGE,
-        WNDCLASSW, WS_EX_TOOLWINDOW,
+        IsWindowVisible, RegisterClassW, ShowWindow, MSG, SW_SHOWNOACTIVATE, WINDOW_STYLE,
+        WM_DISPLAYCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW,
     };
 
     fn hwnd(h: isize) -> HWND {
@@ -196,6 +315,11 @@ mod imp {
     pub fn is_iconic(h: isize) -> bool {
         // SAFETY: a state query on the overlay window, alive while its frames run.
         unsafe { IsIconic(hwnd(h)) }.as_bool()
+    }
+
+    pub fn is_visible(h: isize) -> bool {
+        // SAFETY: a state query; a stale handle just answers false.
+        unsafe { IsWindowVisible(hwnd(h)) }.as_bool()
     }
 
     pub fn window_rect(h: isize) -> Option<[i32; 4]> {
@@ -383,8 +507,12 @@ mod tests {
         assert!(!minimized_by_display_change(true, false, just));
     }
 
+    /// The tests that take requests share PENDING: one at a time.
+    static REQUESTS: Mutex<()> = Mutex::new(());
+
     #[test]
     fn a_request_is_taken_once_and_the_first_trigger_wins() {
+        let _one = REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
         let _ = take();
         request(Trigger::TrayClick);
         request(Trigger::TaskbarRestart);
@@ -393,6 +521,73 @@ mod tests {
         request(Trigger::DisplayChange);
         assert!(since_display_change().is_some_and(|d| d <= SETTLE));
         assert_eq!(take(), Some(Trigger::DisplayChange));
+    }
+
+    fn monitor(id: &str, work_area: [i32; 4]) -> crate::monitors::Monitor {
+        crate::monitors::Monitor {
+            id: id.into(),
+            label: id.into(),
+            primary: false,
+            work_area,
+            dpi: 96,
+        }
+    }
+
+    /// #618: the window probe as the API reads it: minimized at -32000 is on no display, a
+    /// window straddling two displays is on the one it covers most, a hidden one isn't on screen.
+    #[test]
+    fn the_window_state_names_the_display_it_covers_most() {
+        let both = [
+            monitor(r"\\.\DISPLAY1", MAIN),
+            monitor(r"\\.\DISPLAY2", GONE_4K),
+        ];
+        let s = describe(true, true, Some(ICONIC_RECT), &both);
+        assert_eq!((s.display, s.on_screen), (None, false));
+        let s = describe(false, true, Some(MAIN), &both);
+        assert_eq!(s.display.as_deref(), Some(r"\\.\DISPLAY1"));
+        assert!(s.on_screen);
+        let mostly_right = [2000, 0, 4000, 1400];
+        let s = describe(false, true, Some(mostly_right), &both);
+        assert_eq!(s.display.as_deref(), Some(r"\\.\DISPLAY2"));
+        assert!(
+            !describe(false, false, Some(MAIN), &both).on_screen,
+            "hidden"
+        );
+        assert!(!describe(false, true, None, &both).on_screen, "no rect");
+        assert!(
+            !describe(false, true, Some(GONE_4K), &both[..1]).on_screen,
+            "display gone"
+        );
+        assert_eq!(
+            kept_line(&describe(false, true, Some(MAIN), &both)),
+            "Foxglove: overlay window shown at [0, 0, 2560, 1400] on \\\\.\\DISPLAY1, nothing to restore (api)"
+        );
+    }
+
+    /// An agent's request is answered once a frame ran the check, or at the timeout without one.
+    #[test]
+    fn an_agent_check_is_answered_when_the_frame_ran_it() {
+        let _one = REQUESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = take();
+        // Taken and run by a "frame" on another thread.
+        let frame = std::thread::spawn(|| {
+            for _ in 0..200 {
+                if take() == Some(Trigger::Api) {
+                    checked();
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            false
+        });
+        assert!(request_and_wait(Trigger::Api, Duration::from_secs(10)));
+        assert!(frame.join().unwrap());
+        assert!(
+            !request_and_wait(Trigger::Api, Duration::from_millis(20)),
+            "no frame: timeout"
+        );
+        let _ = take();
+        checked();
     }
 
     #[test]

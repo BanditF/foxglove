@@ -293,11 +293,15 @@ void art_play(const struct custom_art_set *set) {
 #define REDRAW_SHOTS 2
 
 static atomic_t redraw_left;
+static atomic_t redraws; // whole-screen rewrites since power-on (#618)
+
+uint32_t art_redraw_count(void) { return (uint32_t)atomic_get(&redraws); }
 
 static void redraw_cb(struct k_work *work) {
     lv_obj_t *screen = lv_scr_act();
     if (screen != NULL) {
         lv_obj_invalidate(screen);
+        atomic_inc(&redraws);
     }
     if (atomic_dec(&redraw_left) > 1) {
         k_work_reschedule_for_queue(zmk_display_work_q(), k_work_delayable_from_work(work),
