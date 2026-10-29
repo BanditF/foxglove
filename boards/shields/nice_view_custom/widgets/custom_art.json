@@ -1,125 +1,13 @@
 {
   "format": "foxglove-builtin-art",
   "version": 1,
-  "set_count": 17,
+  "set_count": 1,
   "sets": [
     {
       "index": 0,
-      "name": "ZMK_1",
-      "label": "ZMK balloon",
-      "frames": 1,
-      "fps": 0
-    },
-    {
-      "index": 1,
-      "name": "ZMK_2",
-      "label": "ZMK mountain",
-      "frames": 1,
-      "fps": 0
-    },
-    {
-      "index": 2,
-      "name": "Corro_urchin",
-      "label": "Corro the urchin",
-      "frames": 12,
-      "fps": 1
-    },
-    {
-      "index": 3,
-      "name": "Bandit_Gem",
-      "label": "Bandit gem",
-      "frames": 16,
-      "fps": 4
-    },
-    {
-      "index": 4,
-      "name": "Bandit_Boot",
-      "label": "Bandit boot",
-      "frames": 42,
-      "fps": 4
-    },
-    {
-      "index": 5,
-      "name": "Bandit_Idle",
-      "label": "Bandit idle",
-      "frames": 16,
-      "fps": 4
-    },
-    {
-      "index": 6,
-      "name": "Bandit_Lock",
-      "label": "Bandit lock",
-      "frames": 19,
-      "fps": 4
-    },
-    {
-      "index": 7,
       "name": "Bandit_Emblem",
       "label": "Bandit emblem",
       "frames": 12,
-      "fps": 4
-    },
-    {
-      "index": 8,
-      "name": "Bandit_Radar",
-      "label": "Bandit radar",
-      "frames": 12,
-      "fps": 4
-    },
-    {
-      "index": 9,
-      "name": "Bandit_Signal",
-      "label": "Bandit signal",
-      "frames": 30,
-      "fps": 4
-    },
-    {
-      "index": 10,
-      "name": "Bandit_Decrypt",
-      "label": "Bandit decrypt",
-      "frames": 25,
-      "fps": 4
-    },
-    {
-      "index": 11,
-      "name": "Bandit_Uplink",
-      "label": "Bandit uplink",
-      "frames": 23,
-      "fps": 4
-    },
-    {
-      "index": 12,
-      "name": "Bandit_Vitals",
-      "label": "Bandit vitals",
-      "frames": 8,
-      "fps": 4
-    },
-    {
-      "index": 13,
-      "name": "Bandit_Route",
-      "label": "Bandit route",
-      "frames": 23,
-      "fps": 4
-    },
-    {
-      "index": 14,
-      "name": "Bandit_Dossier",
-      "label": "Bandit dossier",
-      "frames": 16,
-      "fps": 4
-    },
-    {
-      "index": 15,
-      "name": "Bandit_Standby",
-      "label": "Bandit standby",
-      "frames": 12,
-      "fps": 2
-    },
-    {
-      "index": 16,
-      "name": "Bandit_Skyline",
-      "label": "Bandit skyline",
-      "frames": 16,
       "fps": 4
     }
   ]

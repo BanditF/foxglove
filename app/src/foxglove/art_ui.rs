@@ -1497,7 +1497,7 @@ pub mod tests {
         .expect("bundled art")
     }
 
-    /// The previews' art: 17 built-ins (the bundled manifest, so names and pictures), five kept
+    /// The previews' art: the one built-in (the bundled manifest, so names and pictures), five kept
     /// places, "hearth" sent from this PC and showing.
     pub fn sample() -> (Snapshot, art_library::Library) {
         let files = [
@@ -1538,7 +1538,7 @@ pub mod tests {
             link: 2,
             right_state: foxglove_link::protocol::right_state::PLAYING,
             right_set: -1,
-            right_set_count: 17,
+            right_set_count: 1,
             right_capacity: 16384,
             flash_slots: 8,
             flash_used: 0b1_1111,

@@ -25,7 +25,7 @@
         "bandit-skyline"
       ],
       "art": {
-        "builtin": "Bandit_Idle"
+        "builtin": "Bandit_Emblem"
       }
     },
     {
@@ -127,7 +127,7 @@
         "courier"
       ],
       "art": {
-        "builtin": "Bandit_Uplink"
+        "builtin": "Bandit_Emblem"
       }
     },
     {
@@ -143,7 +143,7 @@
       "swatch": "#e5732b",
       "wallpapers": [],
       "art": {
-        "builtin": "Bandit_Signal"
+        "builtin": "Bandit_Emblem"
       }
     }
   ]

@@ -166,10 +166,11 @@ mod tests {
 
     #[test]
     fn labels_come_from_the_manifest_when_the_count_matches() {
-        assert_eq!(built_in_label(17, 0), "ZMK balloon");
-        assert_eq!(built_in_label(17, 1), "ZMK mountain");
-        // Other firmware: the app's own fallback names.
+        // One built-in since #671.
+        assert_eq!(built_in_label(1, 0), "Bandit emblem");
+        // Other firmware (the 17 sets before #671 too): the app's own fallback names.
+        assert_eq!(built_in_label(17, 0), "Set 0");
         assert_eq!(built_in_label(5, 1), "Set 1");
-        assert_eq!(built_in_label(17, 40), "Set 40");
+        assert_eq!(built_in_label(1, 40), "Set 40");
     }
 }

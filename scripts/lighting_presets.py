@@ -21,7 +21,7 @@ EFFECTS = ["solid", "breathe", "spectrum", "swirl"]  # index = the keyboard's ef
 PRESETS = [
     {"id": "bandit", "name": "Bandit", "description": "The Bandit orange of the fox and the HUD.",
      "color": {"hue": 22, "saturation": 92, "brightness": 60}, "effect": "solid", "swatch": "#e5732b",
-     "wallpapers": ["hud", "bandit-radar", "bandit-skyline"], "art": {"builtin": "Bandit_Idle"}},
+     "wallpapers": ["hud", "bandit-radar", "bandit-skyline"], "art": {"builtin": "Bandit_Emblem"}},
     {"id": "fury", "name": "Fury", "description": "Linocut red, breathing slowly like ink on a press.",
      "color": {"hue": 2, "saturation": 95, "brightness": 60}, "effect": "breathe", "swatch": "#c8342b",
      "wallpapers": ["fury-print", "fury-chase", "fury-pattern", "fury-forest"], "art": {"file": "fury.bin", "from_wallpaper": "fury-print", "fallback": "Bandit_Emblem"}},
@@ -36,10 +36,10 @@ PRESETS = [
      "wallpapers": ["hearth-moongarden"], "art": {"file": "moon-garden.bin", "from_wallpaper": "hearth-moongarden", "fallback": "Bandit_Emblem"}},
     {"id": "courier", "name": "Courier", "description": "Dossier paper: a quiet warm white.",
      "color": {"hue": 35, "saturation": 25, "brightness": 35}, "effect": "solid", "swatch": "#e6e1d6",
-     "wallpapers": ["courier"], "art": {"builtin": "Bandit_Uplink"}},
+     "wallpapers": ["courier"], "art": {"builtin": "Bandit_Emblem"}},
     {"id": "signal", "name": "Signal", "description": "Every colour, swirling: for parties and demos.",
      "color": {"hue": 22, "saturation": 100, "brightness": 50}, "effect": "swirl", "swatch": "#e5732b",
-     "wallpapers": [], "art": {"builtin": "Bandit_Signal"}},
+     "wallpapers": [], "art": {"builtin": "Bandit_Emblem"}},
 ]
 
 

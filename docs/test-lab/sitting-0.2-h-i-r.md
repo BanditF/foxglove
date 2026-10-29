@@ -90,7 +90,7 @@ Needs main firmware with HELLO bit 25 on both halves (1ebdf9d or later). On 13ff
 On-call's old note.
 
 Agent, before the sitting (Foxglove quit):
-- `RA1` `sitting/right-redraw-after-select-while-idle`: a SELECT while the right is dark is drawn when a LEFT tap wakes it: RGB_STATE right on, the redraw count up, readback ZMK_2 (old R4–R6, #621 check 3).
+- `RA1` `sitting/right-redraw-after-select-while-idle`: a SELECT while the right is dark is drawn when a LEFT tap wakes it: RGB_STATE right on, the redraw count up, readback Bandit_Emblem, the one built-in since #671 (old R4–R6, #621 check 3).
 - `RA2` `right_redraws.py`: three take-and-hand-back cycles of the LEDs (SET_FRAME, as the window's preview does) each rewrite the right panel (old R7–R8, #621 check 4).
 - `RA3` `resilience/right-redraw-after-wake`: an idle-off and a LEFT tap rewrite the panel (the count behind `R2`).
 

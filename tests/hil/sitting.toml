@@ -25,20 +25,20 @@ steps = [
 
 [[cases]]
 name = "right-redraw-after-select-while-idle"
-description = "#613/#621 check 3 (the sitting's old R4-R6): a built-in SELECT made while the right's LEDs, and so its screen's power, are idle-off is drawn once the right wakes from a tap on the LEFT, with no key on the right. Needs both halves on a build with the right's redraw count (HELLO bit 25; main firmware since 1ebdf9d, not 13ff04b), the underglow on with sync on, and Foxglove quit. Selects ZMK_1 (set 0) while awake, taps the left's middle thumb (D7 05 pos 43, a layer key: types nothing), waits for the left's idle (both dark, up to 45 s), selects ZMK_2 (set 1) while dark, notes the redraw count once it holds, taps again: the right on within 2 s, the count up within 5 s, and the right's readback is ZMK_2 (status strip masked). Readback is LVGL's model: whether the panel looks clean is the sitting's R2 look. Leaves set 1 (ZMK_2) on the right"
+description = "#613/#621 check 3 (the sitting's old R4-R6): a built-in SELECT made while the right's LEDs, and so its screen's power, are idle-off is drawn once the right wakes from a tap on the LEFT, with no key on the right. Needs both halves on a build with the right's redraw count (HELLO bit 25; main firmware since 1ebdf9d, not 13ff04b), the underglow on with sync on, and Foxglove quit. The firmware has one built-in since #671 (Bandit_Emblem, set 0), so the change made while dark is from pushed art back to it: pushes a bundled set (fury.bin, RAM only) while awake, taps the left's middle thumb (D7 05 pos 43, a layer key: types nothing), waits for the left's idle (both dark, up to 45 s), selects Bandit_Emblem (set 0) while dark, notes the redraw count once it holds, taps again: the right on within 2 s, the count up within 5 s, and the right's readback is Bandit_Emblem's first frame (status strip masked). Readback is LVGL's model: whether the panel looks clean is the sitting's R2 look. Leaves set 0 (Bandit_Emblem) on the right"
 tags = ["sitting", "screens"]
 requires = ["right_redraws", "position_press", "screen_readback"]
 steps = [
-  { art_select = { set = 0, restore = false, replace_pushed = true } },
+  { art_push = { blob = "app/resources/lighting/art/fury.bin", expect_left_state = 3, expect_right_state = 2, within_ms = 60000 } },
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, left_on = true, right_on = true, within_ms = 3000 } },
   { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, pc_away = true, within_ms = 45000 } },
-  { art_select = { set = 1, restore = false } },
+  { art_select = { set = 0, restore = false, replace_pushed = true } },
   { note_right_redraws = {} },
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, right_on = true, within_ms = 2000 } },
   { expect_right_redraws = { at_least = 1, within_ms = 5000 } },
-  { screen = { half = "right", golden = "golden/right-art-set1.png", mask = [
+  { screen = { half = "right", golden = "golden/right-art-set0.png", mask = [
     { x = 0, y = 0, width = 68, height = 20 },
   ] } },
 ]

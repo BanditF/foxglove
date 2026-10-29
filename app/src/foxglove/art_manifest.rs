@@ -44,8 +44,8 @@ fn parse(text: &str) -> Option<Vec<Set>> {
         .then_some(m.sets)
 }
 
-/// The sets for firmware with `set_count` built-ins, if a manifest matches it.
-pub fn sets(set_count: u8) -> Option<&'static [Set]> {
+/// The manifests Foxglove knows: the art folder's `builtins.json` first, then the bundled one.
+fn manifests() -> impl Iterator<Item = &'static Vec<Set>> {
     static OVERRIDE: OnceLock<Option<Vec<Set>>> = OnceLock::new();
     static BUNDLED_SETS: OnceLock<Option<Vec<Set>>> = OnceLock::new();
     let custom = OVERRIDE.get_or_init(|| {
@@ -53,16 +53,33 @@ pub fn sets(set_count: u8) -> Option<&'static [Set]> {
         parse(&std::fs::read_to_string(path).ok()?)
     });
     let bundled = BUNDLED_SETS.get_or_init(|| parse(BUNDLED));
-    [custom, bundled]
-        .into_iter()
-        .flatten()
+    [custom, bundled].into_iter().flatten()
+}
+
+/// The sets for firmware with `set_count` built-ins, if a manifest matches it.
+pub fn sets(set_count: u8) -> Option<&'static [Set]> {
+    manifests()
         .find(|sets| sets.len() == usize::from(set_count))
         .map(Vec::as_slice)
+}
+
+/// Whether a known manifest has a built-in named `name`. Since #671 the firmware keeps one
+/// built-in (`Bandit_Emblem`), so data that names another one (a wallpaper's `builtin`) goes on
+/// to its file instead of a set the keyboard doesn't have.
+pub fn known(name: &str) -> bool {
+    manifests().any(|sets| sets.iter().any(|s| s.name == name))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_one_built_in_is_known() {
+        assert!(known("Bandit_Emblem"), "the fallback built-in since #671");
+        assert!(!known("ZMK_1"), "ZMK's stock art left the firmware (#671)");
+        assert!(!known("Bandit_Idle"));
+    }
 
     #[test]
     fn bundled_manifest_parses_in_order() {

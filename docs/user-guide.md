@@ -126,12 +126,14 @@ From top to bottom:
 
 ### Right screen
 
-![Bandit idle, one of the built-in animations](images/right-screen-bandit-idle.gif)
+![The Bandit emblem, the animation built into the firmware](images/right-screen-bandit-emblem.gif)
 
-The right screen plays an animation. Several are built into the firmware, and Foxglove can send
-others (see **Screens** below). The strip above it uses the same icons as the left: the battery
-(with a bolt while charging), then the link to the left half: two boxes joined by a bar while the
-halves are linked, two empty boxes with the bar broken while they aren't.
+The right screen plays an animation. One is built into the firmware, the Bandit emblem ("STEEL
+FOR GOOD"), so the screen is never blank before Foxglove sends art; the rest comes from Foxglove
+(see **Screens** below), and pieces you keep on the keyboard play without the PC. The strip above
+it uses the same icons as the left: the battery (with a bolt while charging), then the link to the
+left half: two boxes joined by a bar while the halves are linked, two empty boxes with the bar
+broken while they aren't.
 
 Both screens show light ink on a dark field, or dark ink on a light one: **Screens: Dark /
 Light** on the Screens page (Showing now) sets both halves, every widget and every piece of art,
@@ -393,8 +395,10 @@ presets are the same in every profile.
 
 ### Cycling the right screen's art
 
-**Screens → Showing now → Rotation** steps through what the keyboard holds: the pieces that
-come with it, then the ones you kept on it. There is no separate list: to change what Rotation
+**Screens → Showing now → Rotation** steps through what the keyboard holds: the piece that
+comes with it (the Bandit emblem), then the ones you kept on it. With nothing kept, **Next ›**
+from a piece sent from this PC shows the emblem, and from the emblem there is nothing else to
+show. There is no separate list: to change what Rotation
 shows, keep or remove pieces on the keyboard. (A playlist of art that only this PC has is a
 later idea, #522.)
 - **Next piece** comes on any of these, in any mix:

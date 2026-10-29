@@ -618,7 +618,12 @@ mod tests {
             );
             sets += 1;
         }
-        assert!(sets > 10, "found the built-ins ({sets})");
+        // One built-in since #671 (Bandit_Emblem); every set the file declares was checked.
+        let declared = format!("const int custom_art_set_count = {sets};");
+        assert!(
+            sets >= 1 && src.contains(&declared),
+            "found the built-ins ({sets})"
+        );
     }
 }
 
