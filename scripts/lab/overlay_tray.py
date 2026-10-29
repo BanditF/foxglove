@@ -21,21 +21,38 @@ and the re-apply hooks, read back through the local API (API 1.6) and the test a
 - re-apply after relay-ready (#622): the split link dropped once by the dev build's guard hook
   (D7 0B, foxglove-lab split_guard_test); once the relay is back the pinned set still shows.
 
+- click-through (#549, #405/#406; the sitting's batch I): the overlay's window style and Windows'
+  own hit test (WindowFromPoint, which routes a click as the mouse does). With Settings closed the
+  overlay is WS_EX_TRANSPARENT | WS_EX_LAYERED and a click on it reaches the window underneath;
+  with the tray panel open only the panel's window region takes clicks (a click beside it goes
+  underneath). With --focus (it takes the focus: the PC unlocked and the user away 2 min, else
+  BLOCKED): a second launch shows Settings, which arms the overlay over the keys; minimizing
+  Settings (ShowWindow, the user's #549 report) makes it click-through again; and the tray panel,
+  opened by the tray click, closes when the focus goes to Settings (a second launch). A focus
+  case is BLOCKED, not FAIL, when Windows' foreground lock keeps the focus where it was (a posted
+  message or a launch from a background process carries no foreground right): then the sitting
+  keeps its eyes step for it.
+
 It launches the build under test on a temp FOXGLOVE_CONFIG_DIR (the user's Foxglove is stopped by
 its exact name and started again by its path), so it runs only with FOXGLOVE_APP_OK=1 (On-call).
 The keyboard cases need the keyboard (BLOCKED without it); the guard case a dev build.
 
-    FOXGLOVE_APP_OK=1 python scripts/lab/overlay_tray.py --app <foxglove.exe>  (exit 0 PASS, 1 FAIL, 2 BLOCKED)
+    FOXGLOVE_APP_OK=1 python scripts/lab/overlay_tray.py --app <foxglove.exe> [--focus]  (exit 0 PASS, 1 FAIL, 2 BLOCKED)
 """
 import argparse, json, subprocess, time
-from labkit import App, tool_arg, Checks, REPO, TARGET, Windows, connect, log_lines, require_app_ok, temp_config, wait
+from labkit import (App, tool_arg, Checks, REPO, TARGET, Windows, centre, click_through, connect, injecting,
+                    log_lines, outside, require_app_ok, require_user_idle, same_box, temp_config, wait)
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--app', required=True, type=tool_arg('--app'), help='the Foxglove build under test')
 ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'), type=tool_arg('--lab'))
 ap.add_argument('--skip-guard', action='store_true', help='leave out the split-link drop (GA build)')
+ap.add_argument('--focus', action='store_true',
+                help='also the cases that move the focus (Settings shown by a second launch): PC unlocked, user away')
 args = ap.parse_args()
 require_app_ok()
+if args.focus:
+    require_user_idle(120)
 check = Checks()
 PERMISSIONS = ['devices.read', 'app.windows', 'art.write']
 
@@ -114,6 +131,102 @@ def overlay_cases(api, win, cfg):
           log_lines(cfg, '(api)')[-1:])
 
 
+def click_cases(api, win):
+    """#549 and #405/#406 by the window style and Windows' own hit test (no mouse, no clicks)."""
+    call(api, 'tray.set_panel', {'open': False})
+    o = call(api, 'overlay.restore')
+    hwnd = win.overlay(o['rect']) if o else None
+    if not check('click-through: the lab finds the overlay', hwnd is not None, o):
+        return None
+    rect = o['rect']
+
+    # Settings closed: the overlay passes every click on.
+    ok, style = wait(lambda: win.exstyle(hwnd), lambda s: click_through(s, win.visible(hwnd)), 5)
+    check('Settings closed: the overlay is click-through (WS_EX_TRANSPARENT | WS_EX_LAYERED)', ok, hex(style))
+    x, y = centre(rect)
+    under = win.at(x, y)
+    check('Settings closed: a click on the overlay reaches the window underneath (WindowFromPoint)',
+          under is not None and under != hwnd, f'({x}, {y}) -> {under} (overlay {hwnd})')
+
+    # The tray panel open: only the panel takes clicks (#405), the rest goes underneath (#406).
+    p = call(api, 'tray.set_panel', {'open': True})
+    if check('panel open for the hit test', bool(p and p['open'] and p['rect']), p):
+        ok, box = wait(lambda: win.region_box(hwnd), lambda b: same_box(b, p['rect']), 5)
+        check("panel open: the overlay's window region is the panel", ok, {'region': box, 'panel': p['rect']})
+        check('panel open: the overlay takes the mouse (not transparent)',
+              not click_through(win.exstyle(hwnd), win.visible(hwnd)), hex(win.exstyle(hwnd)))
+        px, py = centre(p['rect'])
+        check('panel open: a click on the panel reaches the panel', win.at(px, py) == hwnd, f'({px}, {py})')
+        pt = outside(p['rect'], rect)
+        if pt is None:
+            check('panel open: a click beside the panel', False, 'no point of the overlay away from the panel', blocked=True)
+        else:
+            under = win.at(*pt)
+            check('panel open: a click beside the panel reaches the window underneath',
+                  under is not None and under != hwnd, f'{pt} -> {under} (overlay {hwnd})')
+    call(api, 'tray.set_panel', {'open': False})
+    return hwnd
+
+
+def show_settings(win, hwnd):
+    """A second launch shows the running test app's Settings (#345) and gives it the focus when
+    Windows lets it: (the Settings window or None, whether it got the foreground)."""
+    with injecting('second launch shows Settings (lab hook)'):
+        subprocess.run([str(app.exe)], env=app.env, timeout=30, capture_output=True)
+    ok, shown = wait(lambda: win.others(hwnd), lambda s: bool(s), 10)
+    if not ok:
+        return None, False
+    settings = shown[0]
+    focused, _ = wait(lambda: win.foreground(), lambda f: f == settings, 5)
+    return settings, focused
+
+
+def focus_cases(api, win, hwnd):
+    """#549 with Settings really focused, then minimized; #406 the panel closing on focus loss."""
+    settings, focused = show_settings(win, hwnd)
+    if not check('second launch: Settings shows', settings is not None, settings):
+        return
+    if not focused:
+        check('Settings focused: the overlay arms over the keys', False,
+              "Settings didn't get the foreground (Windows' foreground lock); the sitting keeps I1-I2", blocked=True)
+    else:
+        ok, style = wait(lambda: win.exstyle(hwnd), lambda s: not click_through(s, win.visible(hwnd)), 5)
+        check('Settings focused: the overlay takes the mouse', ok, hex(style))
+        box = win.region_box(hwnd)
+        check('Settings focused: only over the keys (a window region)', box is not None, box)
+        with injecting('Settings minimize (lab hook)'):
+            win.u.ShowWindow(settings, win.SW_MINIMIZE)
+        ok, style = wait(lambda: win.exstyle(hwnd), lambda s: click_through(s, win.visible(hwnd)), 5)
+        check('Settings minimized: the overlay is click-through again (#549)', ok, hex(style))
+        o = call(api, 'overlay.window')
+        if o:
+            x, y = centre(o['rect'])
+            under = win.at(x, y)
+            check('Settings minimized: a click on the overlay reaches the window underneath',
+                  under is not None and under != hwnd, f'({x}, {y}) -> {under}')
+
+    # #406: the panel closes when the overlay loses the focus.
+    win.tray_click()
+    ok, p = wait(lambda: call(api, 'tray.panel'), lambda p: p and p['open'], 10)
+    if not check('tray click: the panel opens', ok, p):
+        return
+    got, _ = wait(lambda: win.foreground(), lambda f: f == hwnd, 3)
+    if not got:
+        call(api, 'tray.set_panel', {'open': False})
+        return check('focus loss closes the panel', False,
+                     'the overlay never got the foreground from a posted tray click; the sitting keeps I3-I4',
+                     blocked=True)
+    settings, focused = show_settings(win, hwnd)
+    if not focused:
+        call(api, 'tray.set_panel', {'open': False})
+        return check('focus loss closes the panel', False,
+                     "Settings didn't get the foreground; the sitting keeps I3-I4", blocked=True)
+    ok, p = wait(lambda: call(api, 'tray.panel'), lambda p: p and not p['open'], 5)
+    check('focus to another window: the panel closes (#406)', ok, p)
+    with injecting('Settings minimize (lab hook)'):
+        win.u.ShowWindow(settings, win.SW_MINIMIZE)
+
+
 def keyboard_cases(api, cfg, env):
     devices = (call(api, 'devices.list') or {}).get('devices', [])
     if not devices:
@@ -171,6 +284,9 @@ with App(args.app, cfg) as app:
     granted = set(api.granted)
     if check('API 1.6 grants the window and art writes', {'app.windows', 'art.write'} <= granted, sorted(granted)):
         overlay_cases(api, Windows(app.proc.pid), cfg)
+        hwnd = click_cases(api, Windows(app.proc.pid))
+        if args.focus and hwnd:
+            focus_cases(api, Windows(app.proc.pid), hwnd)
         keyboard_cases(api, cfg, app.env)
     api.close()
 check.finish()
