@@ -628,6 +628,13 @@ fn main() -> Result<std::process::ExitCode> {
                 "art_select_path".into(),
                 foxglove_lab::runner::art_select_path(runner.app.is_some(), &suite.cases),
             );
+            // The look the keyboard had goes back when the suite ends, however it ends: the
+            // guard restores on drop (a `?` out of this loop, Ctrl-C, a panic). A keymap without
+            // `&rgb_ug` has nothing to restore.
+            let _lights = catalog
+                .ids
+                .get("rgb_ug")
+                .and_then(|&id| foxglove_lab::lights::Saved::save(&device.link, id));
             for c in &suite.cases {
                 let result = runner.case(c, only.as_ref().is_none_or(|n| c.name.contains(n)));
                 println!("{} {}", result.status, result.name);
