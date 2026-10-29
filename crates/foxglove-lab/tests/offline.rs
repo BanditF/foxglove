@@ -1714,3 +1714,87 @@ fn the_sitting_suite_parses_and_stays_safe() {
         }
     }
 }
+
+// The typing sink and the app's Settings window (6a2632f gate: typing-abc and typing-both-halves
+// failed on focus because the test app's Settings, opened at its start, kept the foreground).
+mod sink_focus {
+    use foxglove_lab::platform::{
+        focus_blocked, front_move, is_app_image, moved_note, FrontMove, MAX_MOVED,
+    };
+
+    #[test]
+    fn only_the_app_itself_is_the_app() {
+        assert!(is_app_image(
+            r"C:\Users\x\worktrees\oncall\app\target\release\foxglove.exe"
+        ));
+        assert!(is_app_image(r"C:\Program Files\Foxglove\FOXGLOVE.EXE"));
+        assert!(is_app_image("foxglove.exe"));
+        assert!(!is_app_image(r"C:\x\target\release\foxglove-lab.exe"));
+        assert!(!is_app_image(r"C:\x\target\release\foxglove-cli.exe"));
+        assert!(!is_app_image(r"C:\Windows\explorer.exe"));
+        assert!(!is_app_image(r"C:\foxglove.exe\WindowsTerminal.exe"));
+        assert!(!is_app_image(""));
+    }
+
+    #[test]
+    fn settings_in_front_is_minimized_once_then_the_sink_asks() {
+        let app = Some(r"C:\a\foxglove.exe");
+        assert_eq!(front_move(app, false, false, 0), FrontMove::MinimizeApp);
+        // The same window again (still in front while the app closes it): no second minimize.
+        assert_eq!(front_move(app, false, true, 1), FrontMove::Ask);
+        // A different app window after one: still moved, up to the cap.
+        assert_eq!(front_move(app, false, false, 1), FrontMove::MinimizeApp);
+        assert_eq!(front_move(app, false, false, MAX_MOVED), FrontMove::Ask);
+    }
+
+    #[test]
+    fn other_windows_and_the_overlay_are_never_touched() {
+        // The user's programs: only asked over, never minimized.
+        for other in [
+            r"C:\Windows\explorer.exe",
+            r"C:\x\WindowsTerminal.exe",
+            r"C:\x\foxglove-lab.exe",
+        ] {
+            assert_eq!(
+                front_move(Some(other), false, false, 0),
+                FrontMove::Ask,
+                "{other}"
+            );
+        }
+        // The overlay is topmost; the app restores it when minimized (#612).
+        assert_eq!(
+            front_move(Some(r"C:\a\foxglove.exe"), true, false, 0),
+            FrontMove::Ask
+        );
+        // No front window, or an owner Windows won't name.
+        assert_eq!(front_move(None, false, false, 0), FrontMove::Ask);
+    }
+
+    #[test]
+    fn a_focus_failure_is_blocked_with_who_kept_it() {
+        let plain = focus_blocked("explorer.exe \"\"", &[]);
+        // The flasher's typing check keys on this phrase (foxglove_flash.py).
+        assert!(plain.contains("foreground focus"));
+        assert!(plain.contains("explorer.exe"));
+        assert!(!plain.contains("minimized first"));
+        let moved = focus_blocked(
+            "foxglove.exe \"Foxglove\"",
+            &["foxglove.exe \"Foxglove\"".to_string()],
+        );
+        assert!(moved.contains("minimized first: foxglove.exe \"Foxglove\""));
+        assert!(moved.contains("not the keyboard"));
+    }
+
+    #[test]
+    fn the_note_says_what_the_sink_moved_and_put_back() {
+        assert_eq!(moved_note(&[], 0), None);
+        let names = ["foxglove.exe \"Foxglove\"".to_string()];
+        let closed = moved_note(&names, 0).unwrap();
+        assert!(closed.contains("minimized for the sink"));
+        assert!(closed.contains("closes it"));
+        assert!(!closed.contains("shown again"));
+        let shown = moved_note(&names, 1).unwrap();
+        assert!(shown.contains("1 shown again, unfocused"));
+        assert!(!shown.contains("closes it"));
+    }
+}

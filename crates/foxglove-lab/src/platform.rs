@@ -96,6 +96,82 @@ pub fn prompt(ask: &str, cancelled: &Arc<AtomicBool>) -> Result<String> {
     }
 }
 
+/// The Foxglove app's executable: the only program whose window the typing sink moves aside.
+pub const APP_EXE: &str = "foxglove.exe";
+
+/// At most this many of the app's windows are minimized for one sink (Settings is one window;
+/// the cap keeps a misbehaving app from turning the wait into a loop of minimizes).
+pub const MAX_MOVED: usize = 2;
+
+/// A process image path is the Foxglove app itself: the exact file name, any case. Never
+/// foxglove-lab.exe, foxglove-cli.exe or any other program (#618: exact process match).
+pub fn is_app_image(path: &str) -> bool {
+    path.rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case(APP_EXE))
+}
+
+/// What the typing sink does about the window in front of it while it waits for the foreground.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrontMove {
+    /// Ask Windows for the foreground again (AttachThreadInput + SetForegroundWindow).
+    Ask,
+    /// The app's own Settings window is in front: minimize it first. The test app opens Settings
+    /// at every start and a focused Settings keeps the foreground (6a2632f gate, typing-abc and
+    /// typing-both-halves). Minimizing Settings is closing it (settings_window.rs: the app lives
+    /// in the tray), the app's own path, and a minimize hands the activation to the next window
+    /// from the thread that owns the foreground, so no foreground lock is in the way. No fake
+    /// Alt (#641): nothing is typed to get the focus.
+    MinimizeApp,
+}
+
+/// The decision for one look at the front window: `owner` its process image path (None when it
+/// can't be read or there is no front window), `topmost` whether it is WS_EX_TOPMOST (the
+/// overlay, which the app restores itself when minimized, #612: never touched), `seen` whether
+/// this sink minimized that window already, `moved` how many it minimized so far.
+pub fn front_move(owner: Option<&str>, topmost: bool, seen: bool, moved: usize) -> FrontMove {
+    if owner.is_some_and(is_app_image) && !topmost && !seen && moved < MAX_MOVED {
+        FrontMove::MinimizeApp
+    } else {
+        FrontMove::Ask
+    }
+}
+
+/// The BLOCKED reason when the sink still isn't in front at its deadline: who kept the
+/// foreground and what the sink moved aside. "foreground focus" stays in it: the flasher's
+/// typing check reads it as "not tested" (scripts/flash/foxglove_flash.py).
+pub fn focus_blocked(front: &str, moved: &[String]) -> String {
+    let mut s = format!(
+        "sink did not receive foreground focus within 5 seconds: Windows' foreground lock kept \
+         {front} in front"
+    );
+    if !moved.is_empty() {
+        s.push_str(&format!(
+            " (minimized first: {}; it took the focus back or another window did)",
+            moved.join(", ")
+        ));
+    }
+    s.push_str(". The PC's focus, not the keyboard: nothing was typed. Rerun with the user away and no other program in front");
+    s
+}
+
+/// The case's note when the sink minimized the app's windows: `restored` of them were still
+/// minimized (not closed) at the end and were shown again, unfocused.
+pub fn moved_note(moved: &[String], restored: usize) -> Option<String> {
+    if moved.is_empty() {
+        return None;
+    }
+    let closed = moved.len().saturating_sub(restored);
+    let mut s = format!("{} was in front: minimized for the sink", moved.join(", "));
+    if closed > 0 {
+        s.push_str(" (minimizing Settings closes it; the app stays in the tray)");
+    }
+    if restored > 0 {
+        s.push_str(&format!("; {restored} shown again, unfocused"));
+    }
+    Some(s)
+}
+
 #[cfg(windows)]
 mod native {
     use super::*;
@@ -109,8 +185,9 @@ mod native {
             System::{
                 LibraryLoader::GetModuleHandleW,
                 Threading::{
-                    AttachThreadInput, CreateMutexW, GetCurrentThreadId, ReleaseMutex,
-                    WaitForSingleObject,
+                    AttachThreadInput, CreateMutexW, GetCurrentThreadId, OpenProcess,
+                    QueryFullProcessImageNameW, ReleaseMutex, WaitForSingleObject,
+                    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
                 },
             },
             UI::WindowsAndMessaging::*,
@@ -225,12 +302,90 @@ mod native {
         }
     }
 
+    /// The image path of the process that owns `hwnd`, when Windows lets us read it.
+    unsafe fn owner_image(hwnd: HWND) -> Option<String> {
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return None;
+        }
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let read = QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            windows::core::PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        );
+        let _ = CloseHandle(process);
+        read.ok()
+            .map(|_| String::from_utf16_lossy(&buf[..len as usize]))
+    }
+
+    unsafe fn topmost(hwnd: HWND) -> bool {
+        GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 != 0
+    }
+
+    /// `foxglove.exe "Foxglove Settings"` for the report.
+    unsafe fn describe(hwnd: HWND) -> String {
+        if hwnd.0.is_null() {
+            return "no window".into();
+        }
+        let image = owner_image(hwnd);
+        let exe = image
+            .as_deref()
+            .and_then(|p| p.rsplit(['\\', '/']).next())
+            .unwrap_or("an unknown program")
+            .to_string();
+        let mut title = [0u16; 256];
+        let n = GetWindowTextW(hwnd, &mut title).max(0) as usize;
+        format!("{exe} \"{}\"", String::from_utf16_lossy(&title[..n]))
+    }
+
+    /// The app's windows the sink minimized; each one still minimized (not closed by the app)
+    /// is shown again, unfocused, when the sink ends, on every path.
+    #[derive(Default)]
+    struct Moved {
+        windows: Vec<HWND>,
+        names: Vec<String>,
+    }
+    impl Moved {
+        unsafe fn minimize(&mut self, front: HWND) {
+            self.names.push(describe(front));
+            self.windows.push(front);
+            // Async: a hung app must not hang the lab. The app's own thread handles it, and that
+            // thread owns the foreground, so the activation passes on (to the sink, just raised).
+            let _ = ShowWindowAsync(front, SW_MINIMIZE);
+        }
+        fn restore(&mut self) -> usize {
+            let mut shown = 0;
+            for hwnd in self.windows.drain(..) {
+                unsafe {
+                    if IsWindow(Some(hwnd)).as_bool()
+                        && IsWindowVisible(hwnd).as_bool()
+                        && IsIconic(hwnd).as_bool()
+                    {
+                        let _ = ShowWindowAsync(hwnd, SW_SHOWNOACTIVATE);
+                        shown += 1;
+                    }
+                }
+            }
+            shown
+        }
+    }
+    impl Drop for Moved {
+        fn drop(&mut self) {
+            self.restore();
+        }
+    }
+
     pub fn sink(
         text: &str,
         via: &[Step],
         cancelled: &Arc<AtomicBool>,
         mut inject: impl FnMut(&Step) -> Result<()>,
-    ) -> Result<String> {
+    ) -> Result<(String, Option<String>)> {
         unsafe {
             let instance = GetModuleHandleW(None)?;
             let class = w!("FoxgloveLabSink");
@@ -259,6 +414,9 @@ mod native {
                 Some(instance.into()),
                 None,
             )?;
+            // Declared before the window: dropped after it, so Settings comes back only once the
+            // sink is gone.
+            let mut moved = Moved::default();
             let _window = Window(hwnd);
             let mut received = Vec::new();
             let end = Instant::now() + Duration::from_secs(5);
@@ -266,14 +424,31 @@ mod native {
             while GetForegroundWindow() != hwnd {
                 ensure!(!cancelled.load(Ordering::Relaxed), "sink interrupted");
                 if asked.elapsed() >= Duration::from_millis(250) {
+                    let front = GetForegroundWindow();
+                    if !front.0.is_null() {
+                        let image = owner_image(front);
+                        let seen = moved.windows.contains(&front);
+                        if super::front_move(
+                            image.as_deref(),
+                            topmost(front),
+                            seen,
+                            moved.windows.len(),
+                        ) == super::FrontMove::MinimizeApp
+                        {
+                            let _ = BringWindowToTop(hwnd);
+                            moved.minimize(front);
+                        }
+                    }
                     take_foreground(hwnd);
                     asked = Instant::now();
                 }
                 pump(hwnd, &mut received)?;
-                ensure!(
-                    Instant::now() < end,
-                    "sink did not receive foreground focus within 5 seconds"
-                );
+                if Instant::now() >= end {
+                    let front = describe(GetForegroundWindow());
+                    return Err(
+                        crate::runner::Blocked(super::focus_blocked(&front, &moved.names)).into(),
+                    );
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
             pump(hwnd, &mut received)?;
@@ -300,7 +475,10 @@ mod native {
                 ensure!(!cancelled.load(Ordering::Relaxed), "sink interrupted");
                 std::thread::sleep(Duration::from_millis(10));
             }
-            Ok(String::from_utf16(&received)?)
+            let text = String::from_utf16(&received)?;
+            drop(_window);
+            let restored = moved.restore();
+            Ok((text, super::moved_note(&moved.names, restored)))
         }
     }
 }
@@ -329,6 +507,6 @@ pub fn sink(
     _: &[Step],
     _: &Arc<AtomicBool>,
     _: impl FnMut(&Step) -> Result<()>,
-) -> Result<String> {
+) -> Result<(String, Option<String>)> {
     anyhow::bail!("typing sink requires Windows")
 }
