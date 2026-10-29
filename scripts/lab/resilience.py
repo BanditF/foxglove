@@ -32,7 +32,7 @@ def suite(name, steps, env=None):
                     ',\n  '.join(steps) + ',\n]\n')
     subprocess.run([args.lab, '--allow-app', 'run', '--suite', str(path), '--non-interactive', '--out', str(out)],
                    capture_output=True, text=True, env=env, cwd=REPO)
-    case = json.loads((out / 'report.json').read_text())['cases'][0]
+    case = json.loads((out / 'report.json').read_text(encoding='utf-8'))['cases'][0]
     return case['status'], [s['actual'] for s in case['steps']]
 
 

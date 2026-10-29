@@ -119,7 +119,7 @@ These steps don't press anything. They use Windows' device list and process time
   - Right absent, or present with **no** interfaces (peripheral firmware on USB power; Windows shows problem 28) → info, expected.
   - Right **with** interfaces → FAIL: left or settings_reset firmware is on it.
   - A half in the UF2 bootloader → warn (`strict = true` makes warnings fail).
-- `art_select = { set = 1 }`: selects a built-in art set on the right through the relay, waits for the right to report it, and puts the previous set back. Pushed art lives in RAM and can't be restored, so the step reports BLOCKED when pushed art is showing, unless `replace_pushed = true`.
+- `art_select = { set = 1 }`: selects a built-in art set on the right through the relay, waits for the right to report it, and puts the previous set back. Pushed art lives in RAM and can't be restored, so the step reports BLOCKED when pushed art is showing, unless `replace_pushed = true`. When the left's relay is busy with another client's job first (state pushing or receiving, as after a re-link while the app re-applies the right's art, #618), the step waits for that job to end on the art reports that arrive (no timed reads), for at most `idle_within_ms` (30000).
 - `idle_cpu = { seconds = 20, max_cpu_ms = 60 }`: CPU used by `foxglove` (or `process = "..."`) over the window. Run with `--allow-app`; it's the regression test for #100.
 
 `tests/hil/app-idle.toml` holds the app checks; `release.toml` includes it and `smoke.toml`.
@@ -149,6 +149,15 @@ connection alive through the outstanding release deadline, even if the reply was
 lost. A reconnect is treated as an error, so execution cannot continue on a new
 connection. Later steps of a failed case are SKIPPED. Subsequent cases still
 produce results; cancellation prevents further injection.
+
+Key presses through the keyboard (positions, INVOKE, the sink's taps) are input
+to Windows like the user's. `foxglove-lab run` records each one in
+`%LOCALAPPDATA%\Foxglove\lab-injections.log` (`FOXGLOVE_LAB_INJECTIONS`
+overrides), as `scripts/lab/labkit.py` does for its tray clicks and window posts
+(#618): `<start> <end> <the user's last input before it, or -> <what>`. Input from
+an injection's start to 2 s past its end is the harness's; the "user is working"
+gate (`python scripts/lab/labkit.py idle --min 120`) leaves it out, and any other
+input still blocks. See `src/injections.rs`.
 
 Manual prompts require a TTY and have a five-minute deadline. `--non-interactive`
 blocks manual cases before injection and lists all prompt text in each report.

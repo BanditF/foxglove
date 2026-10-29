@@ -587,6 +587,7 @@ fn main() -> Result<std::process::ExitCode> {
             report.environment.insert("product".into(), product);
             let mut runner =
                 Runner::new(&device, &catalog, hello, cancelled, non_interactive, &out);
+            runner.injections = Some(foxglove_lab::injections::path());
             for c in &suite.cases {
                 let result = runner.case(c, only.as_ref().is_none_or(|n| c.name.contains(n)));
                 println!("{} {}", result.status, result.name);

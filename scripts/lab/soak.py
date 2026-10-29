@@ -13,14 +13,16 @@ then idles to the 30-minute mark. At the end: the app still runs, foxglove.log h
 screen readback works (a capture of the right), and its redraw count grew since the start.
 
 Bounded: a watchdog ends everything at --cap-min (35) whatever runs; each lab step has its own
-timeout. Cleanup: the test app is stopped by its own PID and the user's Foxglove (stopped by its
+timeout. Before anything starts the PC must have had no user input for --idle-s (120) seconds,
+the harness's own injections left out (labkit's rule, #618); otherwise BLOCKED. Cleanup: the test
+app is stopped by its own PID and the user's Foxglove (stopped by its
 exact name at the start) is started again by its path. It launches the app, so it runs only with
 FOXGLOVE_APP_OK=1 (On-call). The PC must stay unlocked and the keyboard untouched while it runs.
 
     FOXGLOVE_APP_OK=1 python scripts/lab/soak.py --app <foxglove.exe>   (exit 0 PASS, 1 FAIL, 2 BLOCKED)
 """
 import argparse, json, os, re, subprocess, threading, time
-from labkit import App, Checks, REPO, TARGET, Windows, connect, require_app_ok, temp_config, wait
+from labkit import App, Checks, REPO, TARGET, Windows, connect, require_app_ok, require_user_idle, temp_config, wait
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--app', required=True, help='the Foxglove build under test')
@@ -28,8 +30,10 @@ ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'))
 ap.add_argument('--minutes', type=float, default=30, help='how long the soak runs')
 ap.add_argument('--cap-min', type=float, default=35, help='hard stop, whatever runs')
 ap.add_argument('--allow', action='append', default=[], help='regex of a log line that is not an error')
+ap.add_argument('--idle-s', type=float, default=120, help="the user's idle needed before it starts")
 args = ap.parse_args()
 require_app_ok()
+require_user_idle(args.idle_s)
 if args.minutes >= args.cap_min:
     raise SystemExit('--minutes must be under --cap-min')
 check = Checks()
@@ -45,17 +49,18 @@ def left():
 
 def lab(*a, env=None, timeout=180):
     """One foxglove-lab command next to the test app, within the cap."""
-    return subprocess.run([args.lab, '--allow-app', *a], capture_output=True, text=True, env=env, cwd=REPO,
+    return subprocess.run([args.lab, '--allow-app', *a], capture_output=True, text=True, encoding='utf-8',
+                          errors='replace', env=env, cwd=REPO,
                           timeout=min(timeout, max(1, left() - 30)))
 
 
 def suite(name, steps, env):
     path = out / f'{name}.toml'
     path.write_text(f'schema = 1\n[[cases]]\nname = "{name}"\ndescription = "{name}"\nsteps = [\n  ' +
-                    ',\n  '.join(steps) + ',\n]\n')
+                    ',\n  '.join(steps) + ',\n]\n', encoding='utf-8')
     try:
         lab('run', '--suite', str(path), '--non-interactive', '--out', str(out / name), env=env)
-        case = json.loads((out / name / 'report.json').read_text())['cases'][0]
+        case = json.loads((out / name / 'report.json').read_text(encoding='utf-8'))['cases'][0]
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, IndexError) as e:
         return 'FAIL', [f'{name}: {e}']
     return case['status'], [s['actual'] for s in case['steps']]
@@ -94,7 +99,7 @@ with App(args.app, cfg) as app:
         try:
             r = lab('run', '--suite', 'tests/hil/resilience.toml', '--only', 'right-redraw-after-wake',
                     '--non-interactive', '--out', str(out / 'idle-wake'), env=app.env, timeout=240)
-            case = next(c for c in json.loads((out / 'idle-wake' / 'report.json').read_text())['cases']
+            case = next(c for c in json.loads((out / 'idle-wake' / 'report.json').read_text(encoding='utf-8'))['cases']
                         if c['name'] == 'right-redraw-after-wake')
             status, detail = case['status'], [s['actual'] for s in case['steps']][-2:]
         except (OSError, StopIteration, subprocess.TimeoutExpired, json.JSONDecodeError) as e:

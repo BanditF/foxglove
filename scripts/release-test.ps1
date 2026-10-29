@@ -15,6 +15,9 @@
 # then run this against the same firmware folder.
 # Agents: add -NonInteractive (manual cases are reported BLOCKED) and -AllowApp if Foxglove runs.
 # Exit 0 PASS, 1 FAIL, 2 BLOCKED (nothing failed, something couldn't run).
+# The lab's key presses and tray clicks are input to Windows; foxglove-lab and labkit record them
+# (%LOCALAPPDATA%\Foxglove\lab-injections.log), so the "user is working" gate before a soak
+# (python scripts/lab/labkit.py idle) leaves them out (#618).
 param(
     [Parameter(Mandatory)][string]$Firmware,
     [string]$Suite = 'release',
@@ -23,6 +26,9 @@ param(
     [switch]$NonInteractive
 )
 $ErrorActionPreference = 'Stop'
+# The lab scripts print UTF-8 (arrows in log lines): decode it as such through Tee-Object (#618).
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$env:PYTHONIOENCODING = 'utf-8'
 
 Push-Location (Split-Path -Parent $PSScriptRoot)
 try {
