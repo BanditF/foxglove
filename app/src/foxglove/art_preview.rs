@@ -5,6 +5,34 @@
 //! set, and are inverted here as the keyboard inverts them.
 
 pub fn first_frame(blob: &[u8]) -> Result<egui::ColorImage, &'static str> {
+    let d = decode(blob)?;
+    let bits = &d.frames[blob[12] as usize];
+    let stride = d.width.div_ceil(8);
+    let pixels = (0..d.height)
+        .flat_map(|y| {
+            (0..d.width).map(move |x| {
+                if (bits[y * stride + x / 8] & (0x80 >> (x % 8)) != 0) == d.ink {
+                    egui::Color32::WHITE
+                } else {
+                    egui::Color32::BLACK
+                }
+            })
+        })
+        .collect();
+    Ok(egui::ColorImage::new([d.width, d.height], pixels))
+}
+
+/// A blob's unique frames as stored (rows MSB first, `width.div_ceil(8)` bytes a row).
+pub(crate) struct Decoded {
+    pub width: usize,
+    pub height: usize,
+    /// Set bits are ink (`art_encode::FLAG_INK`); without it the clear bits are.
+    pub ink: bool,
+    pub frames: Vec<Vec<u8>>,
+}
+
+/// Checks a blob and unpacks its unique frames.
+pub(crate) fn decode(blob: &[u8]) -> Result<Decoded, &'static str> {
     let bad = "Invalid NVA1 art blob";
     if blob.len() < 12 || blob.len() > 65535 || &blob[..4] != b"NVA1" {
         return Err(bad);
@@ -35,29 +63,18 @@ pub fn first_frame(blob: &[u8]) -> Result<egui::ColorImage, &'static str> {
     }
     let stride = w.div_ceil(8);
     let mut bits = vec![0; stride * h];
-    let mut first = None;
+    let mut out = Vec::with_capacity(unique);
     for (index, &start) in offsets.iter().enumerate() {
         let stop = offsets.get(index + 1).copied().unwrap_or(blob.len());
         apply(&blob[start..stop], &mut bits)?;
-        if index == blob[12] as usize {
-            first = Some(bits.clone());
-        }
+        out.push(bits.clone());
     }
-    let bits = first.ok_or(bad)?;
-    let ink = blob[7] & super::art_encode::FLAG_INK != 0;
-    let pixels = (0..h)
-        .flat_map(|y| {
-            let bits = &bits;
-            (0..w).map(move |x| {
-                if (bits[y * stride + x / 8] & (0x80 >> (x % 8)) != 0) == ink {
-                    egui::Color32::WHITE
-                } else {
-                    egui::Color32::BLACK
-                }
-            })
-        })
-        .collect();
-    Ok(egui::ColorImage::new([w, h], pixels))
+    Ok(Decoded {
+        width: w,
+        height: h,
+        ink: blob[7] & super::art_encode::FLAG_INK != 0,
+        frames: out,
+    })
 }
 
 pub(crate) fn apply(mut data: &[u8], bits: &mut [u8]) -> Result<(), &'static str> {

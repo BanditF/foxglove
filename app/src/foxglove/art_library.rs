@@ -94,10 +94,11 @@ fn scan(state: Arc<Mutex<Library>>) {
                         continue;
                     }
                     use std::io::Read;
+                    // As shown and sent: normalised to the piece's polarity (#666).
                     let read = std::fs::File::open(&path).and_then(|f| {
                         let mut bytes = Vec::new();
                         f.take(65536).read_to_end(&mut bytes)?;
-                        Ok(bytes)
+                        Ok(super::art_polarity::blob(&path, &bytes))
                     });
                     let (bytes, hash) = read.as_ref().map_or((0, 0), |b| (b.len(), blob_hash(b)));
                     let preview = read.map_err(|e| e.to_string()).and_then(|b| {
@@ -117,7 +118,8 @@ fn scan(state: Arc<Mutex<Library>>) {
                 // Made for the connected keyboard's art screen (#560).
                 for source in super::art_sources::load().sources {
                     for folder in super::art_sources::sets_in(&source) {
-                        let blob = super::art_encode::encode_folder(&folder, target);
+                        let polarity = super::art_polarity::of(&folder); // #666
+                        let blob = super::art_encode::encode_folder(&folder, target, polarity);
                         let preview = blob
                             .as_ref()
                             .ok()

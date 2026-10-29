@@ -133,7 +133,11 @@ others (see **Screens** below). The strip above it uses the same icons as the le
 (with a bolt while charging), then the link to the left half: two boxes joined by a bar while the
 halves are linked, two empty boxes with the bar broken while they aren't.
 
-Both screens show light ink on a dark field.
+Both screens show light ink on a dark field, or dark ink on a light one: **Screens: Dark /
+Light** on the Screens page (Showing now) sets both halves, every widget and every piece of art,
+and the keyboard keeps the choice. Each picture is turned the right way round when it is made or
+sent, so its drawing is the ink; a piece's right-click menu has **Ink: Auto / As is / Invert**
+for one Foxglove guessed wrong.
 
 ## 5. A tour of the window
 

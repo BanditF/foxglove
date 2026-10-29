@@ -69,6 +69,9 @@ pub mod capabilities {
     /// the keyboard then stays lit while the PC is awake and idles when it sleeps
     /// ([`super::pc_state`]).
     pub const PC_STATE: u32 = 1 << 26;
+    /// Settings PANEL_POLARITY (D7 12): the keyboard's mono panels dark or light, both halves,
+    /// every widget and piece of art (#666; [`super::PanelPolarity`]).
+    pub const PANEL_POLARITY: u32 = 1 << 27;
 }
 pub const VERSION: u8 = 1;
 
@@ -134,6 +137,8 @@ pub mod settings {
     pub const LAMP_PARTS: u8 = 0x10;
     /// The PC's state (#609, #604): see [`super::pc_state`].
     pub const PC_STATE: u8 = 0x11;
+    /// The panels' dark or light (#666): see [`super::PanelPolarity`].
+    pub const PANEL_POLARITY: u8 = 0x12;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -856,6 +861,71 @@ impl PcState {
 /// Whether `r` is PC_STATE's lease ask (D7 91 with event 1), which the keyboard sends on its own.
 pub fn is_pc_state_event(r: &[u8]) -> bool {
     is_reply(r, SETTINGS, settings::PC_STATE) && r.get(3).is_some_and(|&e| e != 0)
+}
+
+/// The keyboard's mono panels (#666, D7 12, HELLO bit 27; firmware widgets/panel_polarity.h):
+/// one setting for both halves, every widget and every piece of art. Saved on the keyboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Polarity {
+    /// Light ink on a dark field (the shipped default).
+    Dark,
+    /// Dark ink on a light field.
+    Light,
+}
+
+impl Polarity {
+    fn byte(self) -> u8 {
+        match self {
+            Polarity::Dark => 0,
+            Polarity::Light => 1,
+        }
+    }
+
+    fn of(b: u8) -> Option<Polarity> {
+        match b {
+            0 => Some(Polarity::Dark),
+            1 => Some(Polarity::Light),
+            _ => None,
+        }
+    }
+}
+
+/// PANEL_POLARITY: reads the panels' polarity (`set` = `None`) or sets it.
+pub fn panel_polarity(set: Option<Polarity>) -> Vec<u8> {
+    vec![
+        SETTINGS,
+        settings::PANEL_POLARITY,
+        set.map_or(0xff, Polarity::byte),
+    ]
+}
+
+/// The PANEL_POLARITY reply (D7 92).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PanelPolarity {
+    /// 0 ok, 4 not built in, 5 bad value (nothing changed).
+    pub status: u8,
+    /// The polarity in force (`None`: a value this app doesn't know).
+    pub polarity: Option<Polarity>,
+    /// The firmware's default (its Kconfig), used until the PC sets one.
+    pub default: Option<Polarity>,
+    /// What the right half acknowledged on this link; `None` before that, or without a relay
+    /// link. A right before #666 acknowledges it without applying it.
+    pub right: Option<Polarity>,
+}
+
+impl PanelPolarity {
+    /// `None` for anything but a D7 92.
+    pub fn parse(r: &[u8]) -> Option<PanelPolarity> {
+        if !is_reply(r, SETTINGS, settings::PANEL_POLARITY) || r.len() < 6 {
+            return None;
+        }
+        Some(PanelPolarity {
+            status: r[2],
+            polarity: Polarity::of(r[3]),
+            default: Polarity::of(r[4]),
+            right: Polarity::of(r[5]),
+        })
+    }
 }
 
 /// LAMP_PARTS (D7 10, HELLO bit 22): asks for the board's LEDs per part.
@@ -1780,8 +1850,8 @@ mod tests {
     fn capability_bits_are_distinct() {
         use capabilities::*;
         assert_eq!(
-            (RGB_SHOWN, RIGHT_REDRAWS, PC_STATE),
-            (1 << 24, 1 << 25, 1 << 26)
+            (RGB_SHOWN, RIGHT_REDRAWS, PC_STATE, PANEL_POLARITY),
+            (1 << 24, 1 << 25, 1 << 26, 1 << 27)
         );
         let all = [
             PANEL,
@@ -1810,6 +1880,7 @@ mod tests {
             RIGHT_EVENTS,
             RGB_SHOWN,
             RIGHT_REDRAWS,
+            PANEL_POLARITY,
         ];
         for (i, a) in all.iter().enumerate() {
             assert_eq!(a.count_ones(), 1);
@@ -1817,6 +1888,35 @@ mod tests {
                 assert_eq!(a & b, 0, "{a:#x} and {b:#x} overlap");
             }
         }
+    }
+
+    /// D7 12 as the firmware reads it and D7 92 as it writes it (widgets/host_link.h, #666);
+    /// tests/zmk-sim/panel-polarity plays the same bytes against the firmware.
+    #[test]
+    fn panel_polarity_reports() {
+        assert_eq!(panel_polarity(None), [0xD7, 0x12, 0xff]);
+        assert_eq!(panel_polarity(Some(Polarity::Dark)), [0xD7, 0x12, 0]);
+        assert_eq!(panel_polarity(Some(Polarity::Light)), [0xD7, 0x12, 1]);
+        let mut r = [0u8; REPORT];
+        r[..6].copy_from_slice(&[0xD7, 0x92, 0, 1, 0, 0xff]);
+        assert_eq!(
+            PanelPolarity::parse(&r),
+            Some(PanelPolarity {
+                status: 0,
+                polarity: Some(Polarity::Light),
+                default: Some(Polarity::Dark),
+                right: None,
+            })
+        );
+        r[5] = 1;
+        assert_eq!(
+            PanelPolarity::parse(&r).unwrap().right,
+            Some(Polarity::Light)
+        );
+        r[2] = 5;
+        assert_eq!(PanelPolarity::parse(&r).unwrap().status, 5);
+        r[1] = 0x91;
+        assert_eq!(PanelPolarity::parse(&r), None);
     }
 
     /// D7 11 as the firmware reads it (widgets/host_link.h), and D7 91 as it writes it

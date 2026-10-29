@@ -3,18 +3,151 @@
 //! `art-src\bandit\out\Bandit_idle` without Python (#59).
 //!
 //! Same rules as the script: each frame is fitted upright into the art screen (never upscaled,
-//! centred), thresholded at 50% (black = ink = a set bit, #610; the keyboard shows ink lit, in the
-//! screen theme's foreground),
-//! stored turned as the screen is mounted, and each unique frame is an RLE-packed XOR delta
-//! against the previous one. The screen's size and turn come from its descriptor (#560).
+//! centred), thresholded at 50% (ink = a set bit, #610; the keyboard shows ink in the panel
+//! polarity's foreground, #666), stored turned as the screen is mounted, and each unique frame is
+//! an RLE-packed XOR delta against the previous one. The screen's size and turn come from its
+//! descriptor (#560).
+//!
+//! Polarity (#666): the drawing is the ink, whichever way round the source was drawn.
+//! [`Polarity::Auto`] finds the background from the edge pixels of every frame of the set (a tie
+//! goes to all their pixels): a light background makes the dark pixels the ink, a dark one the
+//! light pixels (the source is inverted before the padding goes round it). The whole set goes one
+//! way. Blobs that are already encoded (files, plugins) are normalised the same way by
+//! [`normalise_blob`], which only flips their header's ink flag.
 
 use std::path::Path;
 
 use image::{imageops, GrayImage, Luma};
+use serde::{Deserialize, Serialize};
 
 /// Header byte 7 (art_relay.h `ART_RELAY_FLAG_INK`, #610): set bits are ink. Blobs without it
 /// (from before #610) have the background bits set; the keyboard and `art_preview` invert them.
 pub const FLAG_INK: u8 = 0x01;
+
+/// Which way round a piece's ink is (#666), as the art picker and the plugin API set it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Polarity {
+    /// The background decides: the majority of the edge pixels (a tie: of all of them).
+    #[default]
+    Auto,
+    /// The dark pixels are the ink (a source drawn dark on light), whatever the background.
+    AsIs,
+    /// The light pixels are the ink (a source drawn light on dark).
+    Invert,
+}
+
+impl Polarity {
+    pub const ALL: [Polarity; 3] = [Polarity::Auto, Polarity::AsIs, Polarity::Invert];
+
+    /// The picker's words.
+    pub fn label(self) -> &'static str {
+        match self {
+            Polarity::Auto => "Auto",
+            Polarity::AsIs => "As is",
+            Polarity::Invert => "Invert",
+        }
+    }
+}
+
+/// Dark edge pixels, edge pixels, dark pixels and pixels, at 50%.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Counts {
+    edge_dark: u64,
+    edge: u64,
+    dark: u64,
+    all: u64,
+}
+
+impl Counts {
+    /// Counts `w` x `h` pixels, `dark(x, y)` saying which are dark (or ink).
+    fn of(w: u32, h: u32, dark: impl Fn(u32, u32) -> bool) -> Counts {
+        let mut c = Counts::default();
+        for y in 0..h {
+            for x in 0..w {
+                let d = u64::from(dark(x, y));
+                c.dark += d;
+                if x == 0 || y == 0 || x + 1 == w || y + 1 == h {
+                    c.edge += 1;
+                    c.edge_dark += d;
+                }
+            }
+        }
+        c.all = u64::from(w) * u64::from(h);
+        c
+    }
+
+    fn add(self, o: Counts) -> Counts {
+        Counts {
+            edge_dark: self.edge_dark + o.edge_dark,
+            edge: self.edge + o.edge,
+            dark: self.dark + o.dark,
+            all: self.all + o.all,
+        }
+    }
+
+    /// The background is dark: the edge's majority, or on a tie all the pixels'.
+    fn dark_background(self) -> bool {
+        if self.edge_dark * 2 != self.edge {
+            self.edge_dark * 2 > self.edge
+        } else {
+            self.dark * 2 > self.all
+        }
+    }
+}
+
+/// Whether a set of fitted sources is drawn light on dark, so its light pixels are the ink.
+fn should_invert(fitted: &[GrayImage], polarity: Polarity) -> bool {
+    match polarity {
+        Polarity::AsIs => false,
+        Polarity::Invert => true,
+        Polarity::Auto => fitted
+            .iter()
+            .map(|img| {
+                Counts::of(img.width(), img.height(), |x, y| {
+                    img.get_pixel(x, y).0[0] < 128
+                })
+            })
+            .fold(Counts::default(), Counts::add)
+            .dark_background(),
+    }
+}
+
+/// An encoded blob normalised to `polarity` (#666): auto flips its ink flag when its ink, as the
+/// keyboard shows it, is the background (the majority of the stored frames' edge; a tie: of all
+/// their pixels); invert flips it; as is leaves it. Flipping the flag inverts every frame on the
+/// keyboard and in `art_preview` (only the padding bits past the art's width differ, which nobody
+/// sees). A blob that doesn't decode is left as it is: the push reports it.
+pub fn normalise_blob(blob: &[u8], polarity: Polarity) -> Vec<u8> {
+    let mut out = blob.to_vec();
+    let flip = match polarity {
+        Polarity::AsIs => false,
+        Polarity::Invert => true,
+        Polarity::Auto => blob_ink_is_background(blob).unwrap_or(false),
+    };
+    if flip && out.len() > 7 {
+        out[7] ^= FLAG_INK;
+    }
+    out
+}
+
+/// Whether a blob's ink, as shown, covers its background; `None` when it doesn't decode.
+fn blob_ink_is_background(blob: &[u8]) -> Option<bool> {
+    let d = super::art_preview::decode(blob).ok()?;
+    let stride = d.width.div_ceil(8);
+    let (w, h) = (u32::try_from(d.width).ok()?, u32::try_from(d.height).ok()?);
+    let counts = d
+        .frames
+        .iter()
+        .map(|bits| {
+            Counts::of(w, h, |x, y| {
+                let (x, y) = (x as usize, y as usize);
+                (bits[y * stride + x / 8] & (0x80 >> (x % 8)) != 0) == d.ink
+            })
+        })
+        .fold(Counts::default(), Counts::add);
+    Some(counts.dark_background())
+}
 
 /// The art screen a set is made for (#560): its stored buffer's size, and how many quarter turns
 /// clockwise the upright art is turned to it.
@@ -68,8 +201,13 @@ pub fn is_set(folder: &Path) -> bool {
     folder.join("meta.txt").is_file()
 }
 
-/// The folder's frames encoded as one pushable blob for `target`.
-pub fn encode_folder(folder: &Path, target: ArtTarget) -> Result<Vec<u8>, String> {
+/// The folder's frames encoded as one pushable blob for `target`, its ink normalised to
+/// `polarity` (#666).
+pub fn encode_folder(
+    folder: &Path,
+    target: ArtTarget,
+    polarity: Polarity,
+) -> Result<Vec<u8>, String> {
     let meta =
         std::fs::read_to_string(folder.join("meta.txt")).map_err(|e| format!("meta.txt: {e}"))?;
     let value = |key: &str| {
@@ -89,29 +227,33 @@ pub fn encode_folder(folder: &Path, target: ArtTarget) -> Result<Vec<u8>, String
     let fps: u8 = value("Frame rate")
         .and_then(|v| v.parse().ok())
         .unwrap_or(2);
-    let mut cache: Vec<(usize, Vec<u8>)> = Vec::new();
-    let mut frames = Vec::with_capacity(order.len());
+    let mut cache: Vec<(usize, GrayImage)> = Vec::new();
+    let mut sources = Vec::with_capacity(order.len());
     for &i in &order {
         if let Some((_, f)) = cache.iter().find(|(n, _)| *n == i) {
-            frames.push(f.clone());
+            sources.push(f.clone());
             continue;
         }
         let path = folder.join(format!("frame_{i}.png"));
         let img = image::open(&path)
             .map_err(|e| format!("{}: {e}", path.display()))?
             .to_luma8();
-        let stored = to_bytes(&stored(&img, target), target);
-        cache.push((i, stored.clone()));
-        frames.push(stored);
+        let img = fitted(&img, target);
+        cache.push((i, img.clone()));
+        sources.push(img);
     }
+    // The whole set one way (as flipper_art's should_invert, over the play order's frames).
+    let invert = should_invert(&sources, polarity);
+    let frames: Vec<Vec<u8>> = sources
+        .iter()
+        .map(|img| to_bytes(&placed(img, target, invert), target))
+        .collect();
     encode(&frames, fps, target)
 }
 
-/// Fits upright art into the target (as flipper_art's `fit`), thresholds it and turns it to the
-/// stored orientation.
-fn stored(img: &GrayImage, target: ArtTarget) -> GrayImage {
+/// Upright art scaled down to fit the target (as flipper_art's `fitted`), before the padding.
+fn fitted(img: &GrayImage, target: ArtTarget) -> GrayImage {
     let (uw, uh) = target.upright();
-    let mut img = img.clone();
     if img.width() > uw || img.height() > uh {
         let scale = f64::min(
             f64::from(uw) / f64::from(img.width()),
@@ -119,7 +261,25 @@ fn stored(img: &GrayImage, target: ArtTarget) -> GrayImage {
         );
         let w = ((f64::from(img.width()) * scale) as u32).max(1);
         let h = ((f64::from(img.height()) * scale) as u32).max(1);
-        img = imageops::resize(&img, w, h, imageops::FilterType::Triangle);
+        return imageops::resize(img, w, h, imageops::FilterType::Triangle);
+    }
+    img.clone()
+}
+
+/// Fits upright art into the target (as flipper_art's `fit`), thresholds it and turns it to the
+/// stored orientation.
+#[cfg(test)]
+fn stored(img: &GrayImage, target: ArtTarget) -> GrayImage {
+    placed(&fitted(img, target), target, false)
+}
+
+/// A fitted source centred on the field (inverted first when it's drawn light on dark, so the
+/// padding stays the field), thresholded and turned to the stored orientation.
+fn placed(img: &GrayImage, target: ArtTarget, invert: bool) -> GrayImage {
+    let (uw, uh) = target.upright();
+    let mut img = img.clone();
+    if invert {
+        imageops::invert(&mut img);
     }
     let mut canvas = GrayImage::from_pixel(uw, uh, Luma([255]));
     imageops::overlay(
@@ -139,7 +299,7 @@ fn stored(img: &GrayImage, target: ArtTarget) -> GrayImage {
     }
 }
 
-/// Rows MSB first, a set bit for ink, a black source pixel (flipper_art's `to_lvgl_bytes`).
+/// Rows MSB first, a set bit for ink, a black pixel here (flipper_art's `to_lvgl_bytes`).
 fn to_bytes(img: &GrayImage, target: ArtTarget) -> Vec<u8> {
     let stride = target.width.div_ceil(8) as usize;
     let mut out = vec![0u8; stride * target.height as usize];
@@ -293,10 +453,149 @@ mod tests {
     #[test]
     fn the_script_and_the_app_write_the_same_blob() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/art");
-        let blob = encode_folder(&root.join("ink-fixture"), ArtTarget::FIRMWARE).unwrap();
+        let blob = encode_folder(
+            &root.join("ink-fixture"),
+            ArtTarget::FIRMWARE,
+            Polarity::Auto,
+        )
+        .unwrap();
         let script = std::fs::read(root.join("ink-fixture.bin")).unwrap();
         assert_eq!(blob, script);
         assert_eq!(blob[7], FLAG_INK);
+    }
+
+    fn fixture(name: &str, polarity: Polarity) -> Vec<u8> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/art");
+        encode_folder(&root.join(name), ArtTarget::FIRMWARE, polarity).unwrap()
+    }
+
+    /// #666: `dark-fixture` is `ink-fixture`'s negative, a light drawing on a dark field. Auto
+    /// makes the same blob of both, the one the script writes (`scripts/test_flipper_art.py`
+    /// checks the same); the override goes the way it says.
+    #[test]
+    fn a_dark_background_source_makes_the_same_blob_as_a_light_one() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/art");
+        let script = std::fs::read(root.join("ink-fixture.bin")).unwrap();
+        assert_eq!(fixture("dark-fixture", Polarity::Auto), script);
+        assert_eq!(
+            fixture("ink-fixture", Polarity::AsIs),
+            script,
+            "light: as is"
+        );
+        assert_eq!(fixture("dark-fixture", Polarity::Invert), script);
+        let as_is = fixture("dark-fixture", Polarity::AsIs);
+        assert_ne!(as_is, script);
+        assert_eq!(as_is, fixture("ink-fixture", Polarity::Invert));
+        // Inverted, the field is ink and the padding past column 139 stays clear.
+        let img = super::super::art_preview::first_frame(&as_is).unwrap();
+        assert_eq!(img.pixels[50 * 140 + (139 - 50)], egui::Color32::WHITE);
+        let d = super::super::art_preview::decode(&as_is).unwrap();
+        assert!(d.frames[0].chunks(18).all(|row| row[17] & 0x0f == 0));
+    }
+
+    fn img(
+        w: u32,
+        h: u32,
+        field: u8,
+        dark_box: Option<(u32, u32, u32, u32)>,
+        fill: u8,
+    ) -> GrayImage {
+        let mut i = GrayImage::from_pixel(w, h, Luma([field]));
+        if let Some((x0, y0, x1, y1)) = dark_box {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    i.put_pixel(x, y, Luma([fill]));
+                }
+            }
+        }
+        i
+    }
+
+    /// #666: auto reads the edge, then on a tie the whole; a set goes one way (as the script's
+    /// `test_auto_reads_the_edge_then_the_whole`).
+    #[test]
+    fn auto_reads_the_edge_then_the_whole() {
+        let big = img(68, 140, 255, Some((1, 1, 67, 139)), 0);
+        assert!(
+            !should_invert(&[big], Polarity::Auto),
+            "light field, big dark drawing"
+        );
+        let small = img(68, 140, 0, Some((20, 20, 30, 30)), 255);
+        assert!(should_invert(&[small], Polarity::Auto), "dark field");
+        let half = img(68, 140, 255, Some((0, 0, 34, 140)), 0);
+        assert!(
+            !should_invert(&[half], Polarity::Auto),
+            "an edge tie, half dark: as is"
+        );
+        let more = img(68, 140, 255, Some((0, 0, 35, 140)), 0);
+        assert!(should_invert(&[more], Polarity::Auto));
+        let light = img(68, 140, 255, Some((20, 20, 30, 30)), 0);
+        let dark = img(68, 140, 0, None, 0);
+        assert!(!should_invert(
+            &[light.clone(), light.clone(), dark.clone()],
+            Polarity::Auto
+        ));
+        assert!(!should_invert(&[dark], Polarity::AsIs));
+        assert!(should_invert(&[light], Polarity::Invert));
+    }
+
+    /// #666: an encoded blob (a file, a plugin's) is normalised by its ink flag alone: auto flips
+    /// one whose ink is its background, and leaves one that's right; the override goes its way.
+    #[test]
+    fn blobs_are_normalised_by_their_ink_flag() {
+        let good = fixture("ink-fixture", Polarity::Auto);
+        let wrong = fixture("dark-fixture", Polarity::AsIs);
+        assert_eq!(normalise_blob(&good, Polarity::Auto), good);
+        let fixed = normalise_blob(&wrong, Polarity::Auto);
+        assert_eq!(fixed[7], 0, "flag flipped");
+        assert_eq!(fixed[8..], wrong[8..], "nothing else changes");
+        let a = super::super::art_preview::first_frame(&fixed).unwrap();
+        let b = super::super::art_preview::first_frame(&good).unwrap();
+        assert_eq!(
+            a.pixels, b.pixels,
+            "shows as the light-background source does"
+        );
+        assert_eq!(normalise_blob(&wrong, Polarity::AsIs), wrong);
+        assert_eq!(normalise_blob(&good, Polarity::Invert)[7], 0);
+        assert_eq!(
+            normalise_blob(b"junk", Polarity::Auto),
+            b"junk",
+            "left for the push to refuse"
+        );
+    }
+
+    /// #666: the built-ins in the firmware need nothing: auto keeps each as it is.
+    #[test]
+    fn the_built_ins_are_already_normalised() {
+        let src = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../boards/shields/nice_view_custom/widgets/custom_art.c"),
+        )
+        .unwrap();
+        let mut sets = 0;
+        for si in 0.. {
+            let head = format!("static const uint8_t set_{si}_delta_0[] = {{");
+            let Some(start) = src.find(&head) else {
+                break;
+            };
+            let body = &src[start + head.len()..];
+            let body = &body[..body.find("};").unwrap()];
+            let delta: Vec<u8> = body
+                .split(',')
+                .filter_map(|t| u8::from_str_radix(t.trim().trim_start_matches("0x"), 16).ok())
+                .collect();
+            let mut bits = vec![0u8; 18 * 68];
+            super::super::art_preview::apply(&delta, &mut bits).unwrap();
+            let c = Counts::of(140, 68, |x, y| {
+                bits[y as usize * 18 + x as usize / 8] & (0x80 >> (x % 8)) != 0
+            });
+            assert!(
+                !c.dark_background(),
+                "built-in set {si}: auto would invert it"
+            );
+            sets += 1;
+        }
+        assert!(sets > 10, "found the built-ins ({sets})");
     }
 }
 
@@ -329,7 +628,7 @@ mod target_tests {
         let target = ArtTarget::of(first(&corne, Role::Art).unwrap()).unwrap();
         assert_eq!(target, ArtTarget::FIRMWARE);
         let d = folder("corne", 68, 140);
-        let blob = encode_folder(&d, target).unwrap();
+        let blob = encode_folder(&d, target, Polarity::Auto).unwrap();
         assert_eq!(&blob[..6], b"NVA1\x8c\x44");
         let img = super::super::art_preview::first_frame(&blob).unwrap();
         assert_eq!(img.size, [140, 68]);
@@ -352,7 +651,7 @@ mod target_tests {
             }
         );
         let d = folder("plank", 160, 80);
-        let blob = encode_folder(&d, target).unwrap();
+        let blob = encode_folder(&d, target, Polarity::Auto).unwrap();
         assert_eq!(&blob[..6], b"NVA1\xa0\x50");
         let img = super::super::art_preview::first_frame(&blob).unwrap();
         assert_eq!(img.size, [160, 80]);

@@ -120,6 +120,8 @@ enum Act {
     StandIn(String, Option<u8>),
     /// Hide the firmware-change line.
     Dismiss,
+    /// Which way round a piece's ink is (#666), by its file or folder.
+    Polarity(PathBuf, super::art_encode::Polarity),
 }
 
 #[cfg(test)]
@@ -297,6 +299,9 @@ fn act(art: &Art, acts: Vec<Act>) {
             }
             Act::StandIn(builtin, slot) => super::art_sources::set_stand_in(&builtin, slot),
             Act::Dismiss => h.dismiss_notice(),
+            Act::Polarity(p, polarity) => {
+                super::art_polarity::set(&p, polarity);
+            }
         }
     }
 }
@@ -1354,6 +1359,9 @@ fn pc_tile(
             acts.push(Act::KeepPiece(index));
             ui.close();
         }
+        if let Some(path) = piece.polarity_path() {
+            polarity_menu(ui, path, acts);
+        }
         if let Some(file) = piece.file() {
             if ui
                 .button(RichText::new("Move to the Recycle Bin").color(p.danger))
@@ -1364,6 +1372,28 @@ fn pc_tile(
             }
         }
     });
+}
+
+/// The piece's ink (#666): Auto finds its background, As is takes its dark pixels as the
+/// drawing, Invert its light ones. The keyboard's Dark / Light (Screens) then decides the look.
+fn polarity_menu(ui: &mut egui::Ui, path: &std::path::Path, acts: &mut Vec<Act>) {
+    use super::art_encode::Polarity;
+    let now = super::art_polarity::of(path);
+    ui.menu_button(format!("Ink: {}", now.label()), |ui| {
+        for p in Polarity::ALL {
+            let hint = match p {
+                Polarity::Auto => "Finds the background: the drawing is the ink, whichever way round it was drawn.",
+                Polarity::AsIs => "The dark pixels are the drawing.",
+                Polarity::Invert => "The light pixels are the drawing.",
+            };
+            if ui.radio(now == p, p.label()).on_hover_text(hint).clicked() {
+                acts.push(Act::Polarity(path.to_path_buf(), p));
+                ui.close();
+            }
+        }
+    })
+    .response
+    .on_hover_text("Which way round this piece is drawn. Dark or light screens: Screens, Showing now.");
 }
 
 #[cfg(test)]

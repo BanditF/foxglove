@@ -436,6 +436,30 @@ impl FoxgloveLinkDevice {
         }
     }
 
+    /// The panels' dark or light (D7 12, #666); `set` changes it first. Unsupported on firmware
+    /// without [`capabilities::PANEL_POLARITY`].
+    pub fn panel_polarity(
+        &self,
+        set: Option<crate::protocol::Polarity>,
+    ) -> PResult<crate::protocol::PanelPolarity> {
+        if !self.has(capabilities::PANEL_POLARITY) {
+            return Err(DeviceError::Unsupported);
+        }
+        let p = settings::panel_polarity(&*self.link, set).map_err(err)?;
+        match p.status {
+            0 => Ok(p),
+            4 => Err(DeviceError::Unsupported),
+            s => Err(err(anyhow::anyhow!(
+                "the keyboard refused the polarity (status {s})"
+            ))),
+        }
+    }
+
+    /// Whether the firmware has dark or light panels to choose (HELLO bit 27, #666).
+    pub fn panel_polarity_supported(&self) -> bool {
+        self.has(capabilities::PANEL_POLARITY)
+    }
+
     /// SET_FRAME (#272): per-LED colours from lamp `start` on, part by part in each strip's chain
     /// order ([`Self::lamp_parts`]). The first frame takes both halves' lights from the keyboard's own
     /// effect until [`Self::release_frame`] or the keyboard's timeout (the reply says how long).

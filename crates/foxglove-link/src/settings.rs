@@ -81,6 +81,21 @@ pub fn pc_state(t: &impl Transport, report: &[u8]) -> Result<protocol::PcState> 
     protocol::PcState::parse(&r).ok_or_else(|| anyhow::anyhow!("not a PC_STATE reply"))
 }
 
+/// PANEL_POLARITY (D7 12, HELLO bit 27, #666): reads the panels' polarity (`set` = `None`) or
+/// sets it; the left saves it and passes it to the right.
+pub fn panel_polarity(
+    t: &impl Transport,
+    set: Option<protocol::Polarity>,
+) -> Result<protocol::PanelPolarity> {
+    let r = t.request(
+        &protocol::panel_polarity(set),
+        protocol::SETTINGS,
+        protocol::settings::PANEL_POLARITY,
+        Duration::from_millis(500),
+    )?;
+    protocol::PanelPolarity::parse(&r).ok_or_else(|| anyhow::anyhow!("not a PANEL_POLARITY reply"))
+}
+
 /// Reboots `half` (0 left, 1 right; the right goes over the relay) into its UF2 bootloader:
 /// ARM, then TRIGGER with the nonce ARM returned. Only for the flasher, after the user has
 /// confirmed the flash; firmware without HELLO capability bit 9 answers "not built in".
