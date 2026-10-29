@@ -91,6 +91,7 @@ static void rgb_sync_link_up(void);
 static void lamps_link_up(void);
 static void effect_link_up(void);
 static void doorbell_link_up(void);
+static void activity_link_up(void);
 
 // Tries again a little later, in case ZMK's own setup of the link got in the way.
 static void discovery_failed(int8_t result) {
@@ -120,6 +121,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
             lamps_link_up();
             effect_link_up();
             doorbell_link_up();
+            activity_link_up();
             host_link_art_status();
         } else {
             discovery_failed(ART_DISCOVERY_NO_CHRC);
@@ -148,6 +150,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         lamps_link_up();
         effect_link_up();
         doorbell_link_up();
+        activity_link_up();
         host_link_art_status();
         return BT_GATT_ITER_STOP;
     }
@@ -1090,9 +1093,130 @@ static void doorbell_link_up(void) {
     k_work_reschedule_for_queue(&relay_q, &doorbell_work, K_MSEC(300));
 }
 
+/* The left's activity (#603, #605; activity_relay.h). Each change goes to the right twice:
+ *  - at once, as a write command from its own small queue (lane_q). It goes out at the next
+ *    connection event, ahead of whatever waits on relay_q: there every request (art pushes,
+ *    slot, build and dim reads, screen readback, the PC's frames and effects, the colour) takes
+ *    a round trip of up to the split link's slave latency (ZMK's default 30 x 7.5 ms), one after
+ *    the other, so a busy queue held the right's wake back for seconds. Best effort: one try,
+ *    nothing more when the radio has no buffer (only lane_q waits for one, never ZMK or relay_q).
+ *  - as a write request on relay_q, whose response confirms it. It sends the state as it is
+ *    when the job runs (newest wins), so a command and a request that cross can't leave the
+ *    right on an old state: the kick behind the newer state queues the request again.
+ * The underglow on/off (art_relay_rgb_kick) takes the same head start.
+ *
+ * Start/stop:
+ *   lane     starts on a kick (an activity or underglow change); one write command for each
+ *            thing kicked since it last ran, then nothing until the next kick.
+ *   request  starts on a kick or link-up; stops once the right has acknowledged the current
+ *            state, on link loss, or after ACTIVITY_RETRIES failed tries ACTIVITY_RETRY apart; a
+ *            request still out on the link (a timed-out one) is waited for ACTIVITY_BUSY_WAITS x
+ *            ACTIVITY_BUSY_RETRY at most. */
+
+#define ACTIVITY_SETTLE K_MSEC(100) // after link-up, as the underglow's RGB_SETTLE
+#define ACTIVITY_RETRY K_SECONDS(1)
+#define ACTIVITY_RETRIES 10
+#define ACTIVITY_BUSY_RETRY K_MSEC(20)
+#define ACTIVITY_BUSY_WAITS 160 // 3.2 s: a little past GATT_TIMEOUT
+
+K_THREAD_STACK_DEFINE(lane_stack, 768);
+static struct k_work_q lane_q;
+
+#define LANE_ACTIVITY BIT(0)
+#define LANE_RGB BIT(1)
+static atomic_t lane_want;
+
+static void lane_rgb(struct bt_conn *conn, uint16_t handle);
+
+static void lane_cb(struct k_work *work) {
+    atomic_val_t want = atomic_clear(&lane_want);
+    struct bt_conn *conn = NULL;
+    uint16_t handle = 0;
+    unsigned int key = irq_lock(); // disconnected() clears peer and the handles
+    if (art_relay_link() == 2) {
+        conn = bt_conn_ref(peer);
+        handle = data_handle;
+    }
+    irq_unlock(key);
+    if (conn == NULL) {
+        return; // link-up sends the state as a request
+    }
+    if (want & LANE_ACTIVITY) {
+        uint8_t op[2];
+        art_relay_activity_op(op);
+        bt_gatt_write_without_response(conn, handle, op, sizeof(op), false);
+    }
+    if (want & LANE_RGB) {
+        lane_rgb(conn, handle);
+    }
+    bt_conn_unref(conn);
+}
+static K_WORK_DEFINE(lane_work, lane_cb);
+
+static void lane(atomic_val_t what) {
+    atomic_or(&lane_want, what);
+    k_work_submit_to_queue(&lane_q, &lane_work);
+}
+
+// On relay_q only:
+static int8_t activity_sent = -1; // the state the right last acknowledged, -1 unknown
+static uint8_t activity_tries, activity_busy;
+static atomic_t activity_reset; // a new link: activity_cb starts over
+
+static void activity_cb(struct k_work *work) {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    if (atomic_cas(&activity_reset, 1, 0)) {
+        activity_sent = -1; // a new right, or one that rebooted
+        activity_tries = 0;
+        activity_busy = 0;
+    }
+    struct bt_conn *conn = job_conn();
+    if (conn == NULL) {
+        return; // activity_link_up starts over
+    }
+    uint8_t op[2];
+    art_relay_activity_op(op);
+    int err = 0;
+    if (op[1] != activity_sent) {
+        err = write_req(conn, op, sizeof(op));
+        if (!err) {
+            activity_sent = op[1];
+        }
+    }
+    bt_conn_unref(conn);
+    if (err == -EBUSY && activity_busy++ < ACTIVITY_BUSY_WAITS) {
+        k_work_reschedule_for_queue(&relay_q, dwork, ACTIVITY_BUSY_RETRY);
+        return;
+    }
+    activity_busy = 0;
+    if (err && activity_tries++ < ACTIVITY_RETRIES) {
+        k_work_reschedule_for_queue(&relay_q, dwork, ACTIVITY_RETRY);
+        return;
+    }
+    activity_tries = 0;
+    // Nothing else until the next change (art_relay_activity_kick) or link-up.
+}
+static K_WORK_DELAYABLE_DEFINE(activity_work, activity_cb);
+
+void art_relay_activity_kick(void) {
+    if (art_relay_link() == 2) {
+        lane(LANE_ACTIVITY);
+        k_work_reschedule_for_queue(&relay_q, &activity_work, K_NO_WAIT);
+    }
+}
+
+// From the discovery callback (Bluetooth thread); the relay queue's state resets in activity_cb.
+static void activity_link_up(void) {
+    atomic_set(&activity_reset, 1);
+    k_work_reschedule_for_queue(&relay_q, &activity_work, ACTIVITY_SETTLE);
+}
+
 static int art_relay_init(void) {
     k_work_queue_start(&relay_q, relay_stack, K_THREAD_STACK_SIZEOF(relay_stack),
                        K_LOWEST_APPLICATION_THREAD_PRIO, NULL);
+    // Just above relay_q, so a head start never waits behind a relay job.
+    k_work_queue_start(&lane_q, lane_stack, K_THREAD_STACK_SIZEOF(lane_stack),
+                       K_LOWEST_APPLICATION_THREAD_PRIO - 1, NULL);
     return 0;
 }
 
@@ -1113,21 +1237,43 @@ static bool rgb_sent_valid;
 static uint8_t rgb_retries;
 static atomic_t hsb_sent = ATOMIC_INIT(-1); // the PC colour the right last acknowledged (#266)
 
-static void rgb_sync_cb(struct k_work *work) {
-    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+// The RGB op as the right should have it now; false when the on/off can't be read. Any thread.
+static bool rgb_op(uint8_t buf[sizeof(rgb_sent)], uint8_t *len) {
     bool on;
-    bool synced = true;
     // Under the PC's frames the user's on/off, not ZMK's: a right that can't draw frames keeps
     // its own effect (and one that can comes back lit).
-    if (rgb_idle_get_on(&on) == 0) {
-        uint8_t buf[sizeof(rgb_sent)] = {ART_RELAY_RGB, on, rgb_idle_sync()};
-        uint8_t len = 3;
+    if (rgb_idle_get_on(&on) != 0) {
+        return false;
+    }
+    memset(buf, 0, sizeof(rgb_sent));
+    buf[0] = ART_RELAY_RGB;
+    buf[1] = on;
+    buf[2] = rgb_idle_sync();
+    *len = 3;
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
-        struct battery_dim_config dim;
-        battery_dim_get_config(&dim);
-        memcpy(&buf[3], &dim, sizeof(dim)); // the right takes the left's levels (status v6)
-        len = sizeof(buf);
+    struct battery_dim_config dim;
+    battery_dim_get_config(&dim);
+    memcpy(&buf[3], &dim, sizeof(dim)); // the right takes the left's levels (status v6)
+    *len = sizeof(rgb_sent);
 #endif
+    return true;
+}
+
+// The head start (lane_q, above): the same op as a write command, ahead of relay_q (#605).
+static void lane_rgb(struct bt_conn *conn, uint16_t handle) {
+    uint8_t buf[sizeof(rgb_sent)];
+    uint8_t len;
+    if (rgb_op(buf, &len)) {
+        bt_gatt_write_without_response(conn, handle, buf, len, false);
+    }
+}
+
+static void rgb_sync_cb(struct k_work *work) {
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    bool synced = true;
+    uint8_t buf[sizeof(rgb_sent)];
+    uint8_t len;
+    if (rgb_op(buf, &len)) {
         if (!rgb_sent_valid || memcmp(buf, rgb_sent, sizeof(buf)) != 0) {
             // A write request, so the right's answer confirms it applied the state: one small
             // request per change, with write_req's timeout.
@@ -1171,6 +1317,7 @@ static void rgb_sync_link_up(void) {
 void art_relay_rgb_kick(void) {
     if (art_relay_link() == 2) {
         rgb_retries = 0;
+        lane(LANE_RGB); // at once (#605); the request below confirms it
         k_work_reschedule_for_queue(&relay_q, &rgb_sync_work, K_NO_WAIT);
     }
 }
@@ -1602,6 +1749,7 @@ static __maybe_unused bool effect_takes_right(void) { return false; }
 static void effect_link_up(void) {}
 #endif
 #else
+static void lane_rgb(struct bt_conn *conn, uint16_t handle) {}
 static void rgb_sync_link_up(void) {}
 static void lamps_link_up(void) {}
 static void effect_link_up(void) {}

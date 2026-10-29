@@ -149,6 +149,8 @@ pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
         "build_info" => "firmware doesn't report its build (HELLO bit 12)",
         "screen_readback" if has(caps::SCREEN) => return None,
         "screen_readback" => "firmware has no screen readback (HELLO bit 6, #67)",
+        "activity_relay" if has(caps::ACTIVITY_RELAY) => return None,
+        "activity_relay" => "the left doesn't relay its activity to the right (HELLO bit 23, #603)",
         "art_keys" if hello.capabilities & ART_KEYS_CAP != 0 => return None,
         "art_keys" => "firmware has no art keys (HELLO bit 16, #302)",
         "position_press" if has(caps::POSITION) && has(caps::INVOKE_REFUSES) => return None,
@@ -684,7 +686,9 @@ impl<'a, D: Device> Runner<'a, D> {
             Step::ExpectRgb(r) => self.wait(r.within_ms, || {
                 let s = settings::rgb_state(self.device)?;
                 Ok((
-                    s.right.is_some_and(|(_, age)| age <= r.right_age_max_s),
+                    s.right.is_some_and(|(right, age)| {
+                        age <= r.right_age_max_s && r.right_on.is_none_or(|on| on == right.on)
+                    }) && r.left_on.is_none_or(|on| on == s.left.on),
                     format!("{s:?}"),
                 ))
             }),
@@ -1005,6 +1009,38 @@ impl<'a, D: Device> Runner<'a, D> {
                 );
                 Ok(format!("matches {}", sc.golden))
             }
+            Step::ExpectScreenStill(c) => {
+                let first = match self.baselines.remove(&c.half) {
+                    Some(image) => image,
+                    None => self.capture(&c.half)?,
+                };
+                let started = Instant::now();
+                let end = started + Duration::from_millis(c.ms);
+                let mut captures = 0;
+                let mut last = first.clone();
+                while Instant::now() < end {
+                    self.check()?;
+                    std::thread::sleep(Duration::from_millis(250));
+                    last = self.capture(&c.half)?;
+                    captures += 1;
+                    let n = screen::changed(&first, &last, c.region.as_ref());
+                    if n > 0 {
+                        self.save_png(&format!("{}-still-before", c.half), &first)?;
+                        self.save_png(&format!("{}-still-after", c.half), &last)?;
+                        bail!(
+                            "{} screen changed ({n} pixels) after {} ms; expected it still for {} ms",
+                            c.half,
+                            started.elapsed().as_millis(),
+                            c.ms
+                        );
+                    }
+                }
+                self.baselines.insert(c.half.clone(), last);
+                Ok(format!(
+                    "still for {} ms ({captures} captures)",
+                    started.elapsed().as_millis()
+                ))
+            }
             Step::ExpectScreenChange(c) => {
                 let first = match self.baselines.remove(&c.half) {
                     Some(image) => image,
@@ -1053,9 +1089,10 @@ impl<'a, D: Device> Runner<'a, D> {
             .iter()
             .filter_map(|r| unsupported(r, &self.hello))
             .chain(c.steps.iter().filter_map(|s| match s {
-                Step::Screen(_) | Step::CaptureScreen(_) | Step::ExpectScreenChange(_) => {
-                    unsupported("screen_readback", &self.hello)
-                }
+                Step::Screen(_)
+                | Step::CaptureScreen(_)
+                | Step::ExpectScreenChange(_)
+                | Step::ExpectScreenStill(_) => unsupported("screen_readback", &self.hello),
                 Step::PressPosition(p) => {
                     unsupported("position_press", &self.hello).or_else(|| {
                         (p.expect_status == "refused")

@@ -55,6 +55,9 @@ pub mod capabilities {
     /// Settings LAMP_PARTS (D7 10): the board's LEDs per part (#561). HELLO has no byte left for
     /// them, so this bit says the keyboard answers them.
     pub const LAMP_PARTS: u32 = 1 << 22;
+    /// The left sends its activity state (active, idle) to the right half, whose art follows it
+    /// at once (#603). Says nothing about the right's firmware: a right before it keeps its own.
+    pub const ACTIVITY_RELAY: u32 = 1 << 23;
 }
 pub const VERSION: u8 = 1;
 

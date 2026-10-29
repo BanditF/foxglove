@@ -40,6 +40,7 @@ pub enum Step {
     PressPosition(Position),
     CaptureScreen(Capture),
     ExpectScreenChange(ScreenChange),
+    ExpectScreenStill(ScreenStill),
     PanelDump(PanelDump),
     ScreensSetting(ScreensSetting),
     ArtSelect(Art),
@@ -101,6 +102,10 @@ pub struct Conn {
 #[serde(deny_unknown_fields)]
 pub struct Rgb {
     pub right_age_max_s: u8,
+    /// RGB_STATE's on/off for the left and the right, when set (#603). The right's comes from
+    /// the left's last read of it, so it's only as fresh as `right_age_max_s` allows.
+    pub left_on: Option<bool>,
+    pub right_on: Option<bool>,
     #[serde(default = "timeout")]
     pub within_ms: u64,
 }
@@ -333,6 +338,18 @@ pub struct ScreenChange {
     pub within_ms: u64,
 }
 
+/// Captures one half's screen for `ms` and fails on any change inside `region` (portrait 68x160
+/// coordinates; whole screen when absent): an animation that should be paused (#603). Compares
+/// with the case's last capture_screen of that half, or a capture taken at the start, and leaves
+/// its last capture as the baseline for a following expect_screen_change.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenStill {
+    pub half: String,
+    pub region: Option<Rect>,
+    pub ms: u64,
+}
+
 /// F13–F24 as `&kp` params (HID keyboard page 7, usages 0x68–0x73, no modifiers). They type
 /// nothing, so a short tap is safe outside the typing sink: it's how a test presses a key bound
 /// to a plugin action (#212).
@@ -397,7 +414,11 @@ impl Step {
                 );
             }
             Self::ExpectRgb(r) => {
-                wait(r.within_ms)?;
+                // Up to 2 minutes: long enough to wait out the keyboard's 30 s idle (#603).
+                ensure!(
+                    (1..=120_000).contains(&r.within_ms),
+                    "expect_rgb within_ms must be 1..=120000"
+                );
                 ensure!(r.right_age_max_s < 255, "invalid RGB age");
             }
             Self::ArtSelect(a) => {
@@ -537,6 +558,19 @@ impl Step {
                     );
                 }
             }
+            Self::ExpectScreenStill(c) => {
+                ensure!(["left", "right"].contains(&c.half.as_str()), "invalid half");
+                ensure!(
+                    (1..=120_000).contains(&c.ms),
+                    "screen still ms must be 1..=120000"
+                );
+                if let Some(r) = &c.region {
+                    ensure!(
+                        r.width > 0 && r.height > 0 && r.x + r.width <= 68 && r.y + r.height <= 160,
+                        "region outside the portrait 68x160 screen"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -580,7 +614,8 @@ pub fn load(path: &Path) -> Result<Suite> {
                     "screen_readback",
                     "invoke_refusal",
                     "build_info",
-                    "unlocked"
+                    "unlocked",
+                    "activity_relay"
                 ]
                 .contains(&r.as_str())
                     || r.strip_prefix("host_link>=")

@@ -27,6 +27,10 @@ void art_hold(void);
 // Rewrite every pixel of the panel soon (#613): after anything that may have switched its power
 // back on, and after an art change. Any thread.
 void art_redraw_all(void);
+// The left's activity over the relay (#603): while it's active the art plays as if this half
+// were, without counting as activity here (this half's own idle, sleep and battery rules stay).
+// false when the left idles or the split link drops. Any thread.
+void art_activity_remote(bool active);
 // The built-in set index to use for index, picking one at random when it's out of range.
 int art_builtin_index(int index);
 

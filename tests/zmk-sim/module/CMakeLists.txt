@@ -16,6 +16,12 @@ if(CONFIG_FOXGLOVE_SIM_POWEROFF)
   zephyr_library_sources(sleep_sim.c)
 endif()
 
+if(CONFIG_FOXGLOVE_SIM_ACTIVITY)
+  # The left's activity relay (#603): the real listener; the relay prints what it would send.
+  zephyr_library_include_directories(${FOXGLOVE_WIDGETS})
+  zephyr_library_sources(${FOXGLOVE_WIDGETS}/activity_relay.c activity_sim.c)
+endif()
+
 if(CONFIG_FOXGLOVE_SIM_DIM)
   # The levels are the shield's shipped defaults (Kconfig.defconfig), which the simulator doesn't
   # load.

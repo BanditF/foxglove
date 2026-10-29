@@ -1,0 +1,15 @@
+#include "../common/keymap.dtsi"
+
+&kscan {
+    // No exit after the last event: the run ends when ZMK powers off (SIM_SLEEP), after the
+    // relay's last message, so every state change is in the trace.
+    /delete-property/ exit-after;
+    events = <
+        ZMK_MOCK_PRESS(0,1,10)     // Q while active since boot: no message
+        ZMK_MOCK_RELEASE(0,1,5000) // idle 3 s later: idle
+        ZMK_MOCK_PRESS(0,1,10)     // Q wakes the left: active
+        ZMK_MOCK_RELEASE(0,1,500)
+        ZMK_MOCK_PRESS(0,1,10)     // Q while active: no message
+        ZMK_MOCK_RELEASE(0,1,5000) // idle again; module/activity_sim.c then plays a cable going in
+    >;
+};

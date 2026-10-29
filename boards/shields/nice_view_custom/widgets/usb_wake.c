@@ -18,7 +18,8 @@
  *
  * Each half goes by its own cable: the right builds Zephyr's USB stack too (no ZMK HID, but the
  * same events, which its battery dim uses), so its own cable wakes it. The left waking doesn't
- * wake the right's screen, as the left's key presses don't; with sync on its underglow follows.
+ * count as the right's activity, as the left's key presses don't, but the left relays its
+ * activity (activity_relay.c, #603): the right's art follows it, and with sync on its underglow.
  *
  * Start/stop: one note per qualifying USB event (on the system work queue, where ZMK raises it
  * and runs its idle check), nothing between them. No timer, no polling.

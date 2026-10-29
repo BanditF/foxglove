@@ -29,7 +29,9 @@
  *                    18 BATTERY_DIM (D7 0E), 19 EFFECTS (D7 0F SET_EFFECT),
  *                    20 RIGHT_EVENTS (the right's on/off and power source reach the
  *                    PC as D7 83 / D7 8E events, #478), 21 EFFECT_LAMPS (D7 0F op 3, #550),
- *                    22 LAMP_PARTS (D7 10: the LEDs per part, #561).
+ *                    22 LAMP_PARTS (D7 10: the LEDs per part, #561),
+ *                    23 ACTIVITY_RELAY (the left sends its activity state to the right,
+ *                    whose art follows it, #603; a right before it keeps its own).
  *      HELLO has no byte left for the LED counts: bit 22 says D7 10 answers them.
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
@@ -320,6 +322,8 @@
 #define HOST_LINK_CAP_EFFECT_LAMPS (1U << 21)
 // D7 10 LAMP_PARTS: the LEDs per part (#561).
 #define HOST_LINK_CAP_LAMP_PARTS (1U << 22)
+// The left relays its activity to the right (art relay op ACTIVITY, activity_relay.h, #603).
+#define HOST_LINK_CAP_ACTIVITY_RELAY (1U << 23)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);

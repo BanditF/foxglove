@@ -149,6 +149,16 @@ BT_CONN_CB_DEFINE(art_relay_rgb_conn_cb) = {
 };
 #endif
 
+// The split link dropped: the art goes by this half's own activity until the left is back
+// (link-up sends its state again, #603).
+static void activity_disconnected(struct bt_conn *conn, uint8_t reason) {
+    art_activity_remote(false);
+}
+
+BT_CONN_CB_DEFINE(art_relay_activity_conn_cb) = {
+    .disconnected = activity_disconnected,
+};
+
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
 static struct lamp_effect_wire effect_rx; // ART_RELAY_EFFECT fills it, EFFECT_GO draws it
 #endif
@@ -390,6 +400,13 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
             battery_dim_set_config(&c); // an invalid one is ignored; the rest still applies
         }
 #endif
+        break;
+
+    case ART_RELAY_ACTIVITY: // write request or command: the same state, newest last (#603)
+        if (len != 2) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+        art_activity_remote(d[1] == ZMK_ACTIVITY_ACTIVE);
         break;
 
     case ART_RELAY_RGB_HSB: {

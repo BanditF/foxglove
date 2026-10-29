@@ -1,0 +1,8 @@
+activity: to the right 10 01, the left idle
+activity: to the right 10 00, the left active
+activity: to the right 10 01, the left idle
+activity: -- a cable goes in: usb_wake.c's call into ZMK's activity listener
+activity: to the right 10 00, the left active
+activity: to the right 10 01, the left idle
+activity: to the right 10 02, the left going to sleep
+SIM_SLEEP

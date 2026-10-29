@@ -1,0 +1,5 @@
+# One message to the right per activity change of the left, and none for a key while active:
+# idle, a key wake, idle, a cable going in (usb_wake.c's path into ZMK's listener), idle, and
+# going to sleep before the power-off.
+/^activity: /p
+/^SIM_SLEEP$/p
