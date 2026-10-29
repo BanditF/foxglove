@@ -1139,7 +1139,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             // the art back if the right half lost it. Link events already do that above (a
             // connect, and the relay-ready STATUS event), so their re-apply is theirs.
             Command::Reassert(trigger) => {
-                if trigger.is_link() || current.is_none() {
+                if trigger.is_link() || trigger.lighting_only() || current.is_none() {
                     continue;
                 }
                 reassert = Some(*trigger);
