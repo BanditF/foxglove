@@ -306,6 +306,64 @@ pub struct SettingValues {
     pub values: serde_json::Map<String, serde_json::Value>,
 }
 
+/// A split keyboard's "right half's lights follow the left", saved on the keyboard (#617, API 1.5):
+/// the answer to `lighting.sync` and `lighting.set_sync`, read back from the keyboard.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SyncState {
+    pub device: String,
+    pub on: bool,
+}
+
+/// Turns a split keyboard's lighting sync on or off (API 1.5).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SetSyncParams {
+    pub device: String,
+    pub on: bool,
+}
+
+/// One zone of a PC lighting device (a case, a cooler): its id (the board's zone number), its
+/// name, and the colour Foxglove last set or saved for it, `#rrggbb` (API 1.5).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PcZone {
+    pub id: String,
+    pub name: String,
+    pub color: Option<String>,
+}
+
+/// A PC lighting device Foxglove found (not the keyboard). `device` is its stable key
+/// (`vvvv:pppp`, plus the serial when it has one); `writable` is false for devices Foxglove
+/// can't drive yet (API 1.5).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PcDevice {
+    pub device: String,
+    pub name: String,
+    pub writable: bool,
+    pub match_keyboard: bool,
+    pub zones: Vec<PcZone>,
+}
+
+/// The answer to `pc_lighting.list` and `pc_lighting.set_zone` (API 1.5).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct PcDevices {
+    pub devices: Vec<PcDevice>,
+    /// The last write's result, as the Lights page's status line shows it.
+    pub status: Option<String>,
+    /// Apps running now that may put their own colours back on a device (a vendor's lighting
+    /// tool), as `<app> on <device>`.
+    #[serde(default)]
+    pub conflicts: Vec<String>,
+}
+
+/// Sets one zone of a PC lighting device, as the Lights page's Apply does: saved as the user's
+/// colour, and "Match keyboard" stops (API 1.5). `zone` is the zone's id or its name;
+/// `color` is `#rrggbb`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SetZoneParams {
+    pub device: String,
+    pub zone: String,
+    pub color: String,
+}
+
 /// Mutes or unmutes the default communications microphone (#237, API 1.2).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SetMuteParams {
@@ -669,6 +727,36 @@ pub const METHODS: &[Method] = &[
         permission: Some("audio.inputs.mute"),
         params: schema!(SetMuteParams),
         result: Some(schema!(Empty)),
+    },
+    // A split keyboard's lighting sync, read back from the keyboard (#617, API 1.5).
+    Method {
+        name: "lighting.sync",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(DeviceParams),
+        result: Some(schema!(SyncState)),
+    },
+    Method {
+        name: "lighting.set_sync",
+        kind: Kind::Call,
+        permission: Some("lighting.write"),
+        params: schema!(SetSyncParams),
+        result: Some(schema!(SyncState)),
+    },
+    // PC lighting devices (cases, coolers) and their zones (#617, API 1.5).
+    Method {
+        name: "pc_lighting.list",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(Empty),
+        result: Some(schema!(PcDevices)),
+    },
+    Method {
+        name: "pc_lighting.set_zone",
+        kind: Kind::Call,
+        permission: Some("lighting.write"),
+        params: schema!(SetZoneParams),
+        result: Some(schema!(PcDevices)),
     },
     // Hold and give back the lights (#236).
     Method {

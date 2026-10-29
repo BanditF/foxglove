@@ -74,7 +74,7 @@ fn initialize_comes_first_and_reports_the_grant() {
     assert!(err(1, code::INVALID_REQUEST)(&out[0]));
     assert_eq!(
         out[1],
-        json!({"jsonrpc":"2.0","id":0,"result":{"api":"1.4","app":"0.3.0","granted":["facts.read:clock.*"]}})
+        json!({"jsonrpc":"2.0","id":0,"result":{"api":"1.5","app":"0.3.0","granted":["facts.read:clock.*"]}})
     );
     assert_eq!(out[2], json!({"jsonrpc":"2.0","id":2,"result":{}}));
 }
