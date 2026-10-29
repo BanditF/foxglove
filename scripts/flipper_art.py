@@ -18,6 +18,7 @@ clockwise. Options go after the input, separated by colons:
   :name=X     override the set name (default: the file or folder name)
   :label=Text override the display label (default: set name with underscores replaced by spaces)
   :labels=A|B|C  with :stills, label each frame in order; missing labels use the default
+  :polarity=P which way round the source's ink is (#666): auto (the default), as-is or invert
   Labels may contain spaces but no colons.
 
 Animations keep all their frames
@@ -36,10 +37,19 @@ Use :label=Text for one set or :labels=A|B|C with :stills for individual labels.
 An OUT.bin is one art set as a blob to push from the PC without flashing (hostpanel push-art
 OUT.bin); the format is in boards/shields/nice_view_custom/widgets/art_relay.h.
 
-Bits: 1 = ink (#610), the same as the left's PC info screen. A source's black pixels are the ink
-and show lit (the theme's foreground; light on dark by default), its white pixels the field. Blobs
-carry ART_RELAY_FLAG_INK in header byte 7; blobs from before #610 (flags 0, background bits set)
-still play correctly on the keyboard, which inverts them.
+Bits: 1 = ink (#610), the same as the left's PC info screen. Ink shows in the panel polarity's
+foreground (#666: dark or light, set from Foxglove; light on dark by default). Blobs carry
+ART_RELAY_FLAG_INK in header byte 7; blobs from before #610 (flags 0, background bits set) still
+play correctly on the keyboard, which inverts them.
+
+Polarity (#666): every source is normalised so that its drawing is the ink and its background the
+field, whichever way round it was drawn. :polarity=auto (the default) finds the background: the
+majority of the edge pixels of every frame of the set, at 50%, after fitting; a tie goes to the
+majority of all their pixels. A light background means the dark pixels are the ink (as-is); a
+dark background means the light ones are, so the source is inverted. as-is takes the dark pixels
+as ink whatever the background, invert the light ones. The whole set goes one way, so an
+animation never flips mid-way. app/src/foxglove/art_encode.rs does the same (parity tests with
+tests/art/ink-fixture and tests/art/dark-fixture).
 
 The preview shows the screen as you see it on the keyboard: portrait, status strip on top, in the
 default dark theme (light ink on a dark field).
@@ -134,10 +144,13 @@ def decode_lvgl_c(path):
 
 
 def load_input(spec):
-    """Returns [(name, [PIL images], fps, landscape, label)]: one set, or one per still."""
+    """Returns [(name, [PIL images], fps, landscape, label, invert)]: one set, or one per still;
+    invert says the set is drawn light on dark (its polarity, #666)."""
     path, opts = spec, {}
     while True:
-        m = re.search(r":(landscape|stills|fps=\d+|name=\w+|labels?=[^:]+)$", path, re.I)
+        m = re.search(
+            r":(landscape|stills|fps=\d+|name=\w+|polarity=[\w-]+|labels?=[^:]+)$", path, re.I
+        )
         if not m:
             break
         k, _, v = m.group(1).partition("=")
@@ -148,6 +161,9 @@ def load_input(spec):
     if "fps" in opts:
         fps = int(opts["fps"])
     landscape = "landscape" in opts
+    polarity = opts.get("polarity", "auto").lower()
+    if polarity not in POLARITIES:
+        sys.exit("%s: polarity is one of %s" % (spec, ", ".join(POLARITIES)))
     if "stills" in opts:
         labels = opts["labels"].split("|") if "labels" in opts else []
         sets = []
@@ -156,10 +172,12 @@ def load_input(spec):
             label = labels[i] if i < len(labels) else set_name.replace("_", " ")
             if "labels" not in opts:
                 label = opts.get("label", label)
-            sets.append((set_name, [f], 0, landscape, label))
+            invert = should_invert([f], landscape, polarity)
+            sets.append((set_name, [f], 0, landscape, label, invert))
         return sets
     label = opts.get("label", name.replace("_", " "))
-    return [(name, frames, fps if len(frames) > 1 else 0, landscape, label)]
+    invert = should_invert(frames, landscape, polarity)
+    return [(name, frames, fps if len(frames) > 1 else 0, landscape, label, invert)]
 
 
 def load_frames(path):
@@ -187,23 +205,68 @@ def load_frames(path):
     return name, [Image.open(path)], 0
 
 
-def fit(img, w, h):
-    """Fit into w x h (never upscales), centre, 1-bit."""
+POLARITIES = ("auto", "as-is", "invert")
+
+
+def fitted(img, w, h):
+    """The source in grey, scaled down to fit w x h (never upscaled), before any padding."""
     img = img.convert("L")
     if img.width > w or img.height > h:
         scale = min(w / img.width, h / img.height)
         img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))))
+    return img
+
+
+def dark_counts(img):
+    """(dark edge pixels, edge pixels, dark pixels, pixels) of a fitted source, at 50%."""
+    px = img.load()
+    w, h = img.size
+    edge_dark = edge = dark = 0
+    for y in range(h):
+        for x in range(w):
+            d = px[x, y] < 128
+            dark += d
+            if x == 0 or y == 0 or x == w - 1 or y == h - 1:
+                edge += 1
+                edge_dark += d
+    return edge_dark, edge, dark, w * h
+
+
+def should_invert(frames, landscape, polarity="auto"):
+    """Whether a set's sources are drawn light on dark, so their light pixels are the ink (#666).
+    auto: the edge pixels of every frame decide (a dark majority means a dark background); a tie
+    goes to all their pixels. as-is never inverts, invert always does."""
+    if polarity == "as-is":
+        return False
+    if polarity == "invert":
+        return True
+    w, h = (ART_W, ART_H) if landscape else (ART_H, ART_W)
+    edge_dark = edge = dark = total = 0
+    for f in frames:
+        a, b, c, d = dark_counts(fitted(f, w, h))
+        edge_dark, edge, dark, total = edge_dark + a, edge + b, dark + c, total + d
+    if edge_dark * 2 != edge:
+        return edge_dark * 2 > edge
+    return dark * 2 > total
+
+
+def fit(img, w, h, invert=False):
+    """Fit into w x h (never upscales), centre, 1-bit; a light-on-dark source is inverted first,
+    so the padding stays the field (#666)."""
+    img = fitted(img, w, h)
+    if invert:
+        img = img.point(lambda v: 255 - v)
     canvas = Image.new("L", (w, h), 255)
     canvas.paste(img, ((w - img.width) // 2, (h - img.height) // 2))
     return canvas.point(lambda v: 255 if v >= 128 else 0, "1")
 
 
-def to_stored(img, landscape):
+def to_stored(img, landscape, invert=False):
     """The ART_W x ART_H 1-bit image to store. The upright view of the stored buffer is the
     buffer rotated 90 degrees counter-clockwise, so portrait art is rotated clockwise here."""
     if landscape:
-        return fit(img, ART_W, ART_H)
-    return fit(img, ART_H, ART_W).rotate(-90, expand=True)
+        return fit(img, ART_W, ART_H, invert)
+    return fit(img, ART_H, ART_W, invert).rotate(-90, expand=True)
 
 
 def to_lvgl_bytes(img):
@@ -275,12 +338,12 @@ def unrle_xor(blob, buf):
         pos += n
 
 
-def encode_set(name, frames, landscape):
+def encode_set(name, frames, landscape, invert=False):
     """Returns (order, deltas): the play order as indices into the unique frames, and each
     unique frame as an RLE-packed XOR delta against the previous one (checked to round-trip)."""
     uniq, order = [], []
     for img in frames:
-        data = bytes(to_lvgl_bytes(to_stored(img, landscape)))
+        data = bytes(to_lvgl_bytes(to_stored(img, landscape, invert)))
         if data not in uniq:
             uniq.append(data)
         order.append(uniq.index(data))
@@ -302,8 +365,8 @@ def write_blob(path, sets):
     """One set as a pushable blob: header, order, delta offsets, deltas (see art_relay.h)."""
     if len(sets) != 1:
         sys.exit("a .bin holds one art set; got %d (drop :stills or pass one input)" % len(sets))
-    name, frames, fps, landscape, label = sets[0]
-    order, deltas = encode_set(name, frames, landscape)
+    name, frames, fps, landscape, label, invert = sets[0]
+    order, deltas = encode_set(name, frames, landscape, invert)
     head = b"NVA1" + struct.pack(
         "<BBBBHH", ART_W, ART_H, fps, FLAG_INK, len(deltas), len(order)
     )
@@ -336,8 +399,8 @@ def write_c(path, sets):
     raw_bytes = packed_bytes = unique = 0
     set_lines = []
     manifest_sets = []
-    for si, (name, frames, fps, landscape, label) in enumerate(sets):
-        order, deltas = encode_set(name, frames, landscape)
+    for si, (name, frames, fps, landscape, label, invert) in enumerate(sets):
+        order, deltas = encode_set(name, frames, landscape, invert)
         uniq = deltas
         for fi, blob in enumerate(deltas):
             lines.append("static const uint8_t set_%d_delta_%d[] = {" % (si, fi))
@@ -388,9 +451,9 @@ def write_preview(path, sets, scale=3, per_row=6):
     rows = (len(sets) + per_row - 1) // per_row
     cols = min(len(sets), per_row)
     sheet = Image.new("L", ((w * scale + gap) * cols, (h * scale + gap) * rows), 160)
-    for i, (_, frames, _, landscape, _) in enumerate(sets):
+    for i, (_, frames, _, landscape, _, invert) in enumerate(sets):
         screen = Image.new("1", (SCREEN_W, ART_H), 1)
-        screen.paste(to_stored(frames[0], landscape), (0, 0))
+        screen.paste(to_stored(frames[0], landscape, invert), (0, 0))
         for x in range(ART_W, SCREEN_W):  # stand-in for the battery/connection strip
             for y in range(ART_H):
                 if (x + y) % 4 == 0:
@@ -417,10 +480,16 @@ def main():
         "flash: %.1f KiB compressed vs %.1f KiB raw (%.0f%%)"
         % (packed / 1024, raw / 1024, 100.0 * packed / raw)
     )
-    for name, frames, fps, landscape, label in sets:
+    for name, frames, fps, landscape, label, invert in sets:
         print(
-            "  %-32s %3d frame(s)%s%s"
-            % (name, len(frames), " @ %d fps" % fps if fps else "", " (landscape)" if landscape else "")
+            "  %-32s %3d frame(s)%s%s%s"
+            % (
+                name,
+                len(frames),
+                " @ %d fps" % fps if fps else "",
+                " (landscape)" if landscape else "",
+                " (inverted: drawn light on dark)" if invert else "",
+            )
         )
     if args.preview:
         write_preview(args.preview, sets)

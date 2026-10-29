@@ -1,0 +1,4 @@
+Width: 68
+Height: 140
+Frame rate: 2
+Frames order: 0 1 1 0

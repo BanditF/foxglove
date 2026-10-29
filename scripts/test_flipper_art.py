@@ -95,6 +95,70 @@ class InkConvention(unittest.TestCase):
         ], "inverted from 0xff, only the 4 padding bits per row differ")
 
 
+DARK_FIXTURE = os.path.join(ROOT, "tests", "art", "dark-fixture")
+
+
+def blob_of(spec):
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "out.bin")
+        fa.write_blob(path, fa.load_input(spec))
+        with open(path, "rb") as f:
+            return f.read()
+
+
+class Polarity(unittest.TestCase):
+    """#666: each source is normalised so its drawing is the ink, whichever way round it was drawn
+    (art_encode.rs does the same; its tests read the same fixtures)."""
+
+    def test_a_dark_background_source_makes_the_same_blob_as_a_light_one(self):
+        # dark-fixture is ink-fixture's negative: a light drawing on a dark field.
+        with open(FIXTURE + ".bin", "rb") as f:
+            light = f.read()
+        self.assertEqual(blob_of(DARK_FIXTURE), light)
+        self.assertEqual(blob_of(DARK_FIXTURE + ":polarity=auto"), light)
+        self.assertEqual(blob_of(FIXTURE + ":polarity=as-is"), light, "light: as is")
+
+    def test_the_override(self):
+        with open(FIXTURE + ".bin", "rb") as f:
+            light = f.read()
+        self.assertNotEqual(blob_of(DARK_FIXTURE + ":polarity=as-is"), light)
+        self.assertEqual(blob_of(DARK_FIXTURE + ":polarity=as-is"),
+                         blob_of(FIXTURE + ":polarity=invert"))
+        self.assertEqual(blob_of(DARK_FIXTURE + ":polarity=invert"), light)
+        frame = frames_of(blob_of(FIXTURE + ":polarity=invert"))[0]
+        self.assertFalse(bit(frame, 139 - 10, 5), "inverted: the black square is the field")
+        self.assertTrue(bit(frame, 139 - 50, 50), "inverted: the white field is ink")
+        for y in range(fa.ART_H):
+            self.assertEqual(frame[y * STRIDE + STRIDE - 1] & 0x0F, 0, "padding stays clear")
+        with self.assertRaises(SystemExit):
+            fa.load_input(FIXTURE + ":polarity=sideways")
+
+    def test_auto_reads_the_edge_then_the_whole(self):
+        from PIL import Image
+
+        def img(w, h, field, box=None, fill=0):
+            i = Image.new("L", (w, h), field)
+            if box:
+                i.paste(fill, box)
+            return i
+
+        # A light field with a big dark blob (most pixels dark): the edge says light, as is.
+        big = img(68, 140, 255, (1, 1, 67, 139), 0)
+        self.assertFalse(fa.should_invert([big], False))
+        # A dark field with a small light drawing: invert.
+        self.assertTrue(fa.should_invert([img(68, 140, 0, (20, 20, 30, 30), 255)], False))
+        # Half the edge dark (left half black): the whole decides; here mostly light, as is.
+        half = img(68, 140, 255, (0, 0, 34, 140), 0)
+        self.assertFalse(fa.should_invert([half], False), "34 of 68 columns: a tie, not dark")
+        self.assertTrue(fa.should_invert([img(68, 140, 255, (0, 0, 35, 140), 0)], False))
+        # A set decides once: one dark frame among light ones doesn't flip the animation.
+        light = img(68, 140, 255, (20, 20, 30, 30), 0)
+        dark = img(68, 140, 0)
+        self.assertFalse(fa.should_invert([light, light, dark], False))
+        self.assertEqual(fa.should_invert([dark], False, "as-is"), False)
+        self.assertEqual(fa.should_invert([light], False, "invert"), True)
+
+
 class BuiltIns(unittest.TestCase):
     def test_built_in_art_is_ink_bits(self):
         src = open(BUILTINS, encoding="utf-8").read()
@@ -108,6 +172,13 @@ class BuiltIns(unittest.TestCase):
             fa.unrle_xor(delta, buf)
             for y in range(fa.ART_H):
                 self.assertEqual(buf[y * STRIDE + STRIDE - 1] & 0x0F, 0, "set %d padding" % si)
+            # #666: the built-ins are already normalised: auto keeps every one as it is (the
+            # field, at the edge of the stored frame, is mostly clear).
+            edge = [(x, 0) for x in range(fa.ART_W)] + [(x, fa.ART_H - 1) for x in range(fa.ART_W)]
+            edge += [(0, y) for y in range(1, fa.ART_H - 1)]
+            edge += [(fa.ART_W - 1, y) for y in range(1, fa.ART_H - 1)]
+            lit = sum(bit(buf, x, y) for x, y in edge)
+            self.assertLess(lit * 2, len(edge), "%s: auto would invert it" % name)
             if name.startswith("Bandit_"):
                 # The Bandit HUD scenes are line work on a dark field (about 13% lit, art-src
                 # notes): a set stored the old way round (field bits set) fails here.
