@@ -566,6 +566,25 @@ def connect(name, permissions, seconds=30):
             time.sleep(0.5)
 
 
+# The app's answer when a lighting write came before the keymap was read (#655, api.rs
+# LIGHTING_NOT_KNOWN): it already waited 5 s for it. "not supported" means the keymap has none.
+LIGHTING_NOT_KNOWN = "the keyboard's lighting isn't known yet (keymap not read)"
+
+
+def set_lights(api, params):
+    """`lighting.set` with one more try when a freshly started app hasn't read the keymap yet
+    (#655): the app's own wait is bounded (5 s), so is this (one retry). Any other error raises."""
+    try:
+        return api.call('lighting.set', params)
+    except AppGone:
+        raise
+    except RuntimeError as e:
+        if LIGHTING_NOT_KNOWN not in str(e):
+            raise
+        print(f'restore_lights: {e}; trying once more', flush=True)
+    return api.call('lighting.set', params)
+
+
 def restore_lights(exe, lab, original):
     """Puts the underglow back to `original` (an rgb() reading) through a short run of the app with no
     plugins: a hard-stopped app can't give back a plugin's lease, so the lights would stay leased."""
@@ -577,8 +596,8 @@ def restore_lights(exe, lab, original):
         h = original[0]
         for d in api.call('devices.list', {})['devices']:
             if 'lighting' in d['caps']:
-                api.call('lighting.set', {'device': d['id'], 'on': h['on'], 'effect': str(h['effect']),
-                                          'color': {'hue': h['hue'], 'saturation': h['sat'], 'brightness': h['brt']}})
+                set_lights(api, {'device': d['id'], 'on': h['on'], 'effect': str(h['effect']),
+                                 'color': {'hue': h['hue'], 'saturation': h['sat'], 'brightness': h['brt']}})
         ok, s = wait(lambda: rgb(lab, app.env), lambda s: same(s, original), 10)
         api.close()
     print('lights restored' if ok else f'lights NOT restored: {s} (wanted {original})', flush=True)
