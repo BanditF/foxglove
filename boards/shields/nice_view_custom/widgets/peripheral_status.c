@@ -26,6 +26,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zmk/events/activity_state_changed.h>
 #include <zmk/activity.h>
 
+#include "pc_state.h"
+
 #include "peripheral_status.h"
 #include "screen_snap.h"
 #include "custom_art.h"
@@ -125,8 +127,9 @@ static atomic_t remote_active;
 
 // The art moves while either half is active: on a split keyboard most keys go to the left, so
 // this half's own activity alone left it still while the left typed or after the left woke.
+// This half's own activity is its keys, or the PC state's hold on its own USB power (#609).
 static __maybe_unused bool art_active(void) {
-    return zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE || atomic_get(&remote_active);
+    return pc_state_active() || atomic_get(&remote_active);
 }
 
 // Art is stored with background bits set. This palette shows it light-on-dark, like the status
@@ -225,7 +228,11 @@ static struct art_activity_state art_activity_get_state(const zmk_event_t *eh) {
 
 ZMK_DISPLAY_WIDGET_LISTENER(widget_art_activity, struct art_activity_state,
                             art_activity_update_cb, art_activity_get_state)
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+ZMK_SUBSCRIPTION(widget_art_activity, foxglove_awake_changed); // ZMK's changes come through it
+#else
 ZMK_SUBSCRIPTION(widget_art_activity, zmk_activity_state_changed);
+#endif
 
 // The left's activity changed: the same update on the display queue, where the timer lives.
 static void art_remote_cb(struct k_work *work) {
@@ -320,16 +327,29 @@ void art_redraw_all(void) {
 
 // This half waking (a key: rgb_idle turns the underglow, and so the panel, back on) or its cable
 // coming or going.
+// With the PC state (#609) the effective activity: its hold keeps the underglow, and so the
+// panel's power, up; it ending or starting switches it.
 static int redraw_listener(const zmk_event_t *eh) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+    const struct foxglove_awake_changed *awake = as_foxglove_awake_changed(eh);
+    if (awake == NULL || awake->active) {
+        art_redraw_all();
+    }
+#else
     const struct zmk_activity_state_changed *activity = as_zmk_activity_state_changed(eh);
     if (activity == NULL || activity->state == ZMK_ACTIVITY_ACTIVE) {
         art_redraw_all();
     }
+#endif
     return ZMK_EV_EVENT_BUBBLE;
 }
 
 ZMK_LISTENER(art_redraw, redraw_listener);
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+ZMK_SUBSCRIPTION(art_redraw, foxglove_awake_changed);
+#else
 ZMK_SUBSCRIPTION(art_redraw, zmk_activity_state_changed);
+#endif
 #if IS_ENABLED(CONFIG_USB_DEVICE_STACK)
 ZMK_SUBSCRIPTION(art_redraw, zmk_usb_conn_state_changed);
 #endif

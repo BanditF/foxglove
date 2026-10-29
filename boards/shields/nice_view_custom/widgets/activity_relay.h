@@ -9,7 +9,8 @@
  * while either half is active (peripheral_status.c). Nothing is faked into ZMK on the right: its
  * own idle, sleep and battery rules stay its own.
  *
- * Wire: op 16, state u8, ZMK's enum zmk_activity_state (0 active, 1 idle, 2 going to sleep).
+ * Wire: op 16, state u8, ZMK's enum zmk_activity_state (0 active, 1 idle, 2 going to sleep); with
+ * the PC state (pc_state.h, #609) "idle" also while the PC's away overrules the left's keys.
  * A right before this firmware has no case for the op and ignores it (data_write answers
  * success), so the left sends it to any right without a version check.
  */
@@ -22,15 +23,19 @@
 
 #include <zmk/activity.h>
 
+#include "pc_state.h"
+
 #define ART_RELAY_ACTIVITY_OP 16
 
 BUILD_ASSERT(ZMK_ACTIVITY_ACTIVE == 0 && ZMK_ACTIVITY_IDLE == 1 && ZMK_ACTIVITY_SLEEP == 2,
              "the ACTIVITY op carries ZMK's activity states as they are");
 
-// The op as it goes to the right: this half's activity state now.
+// The op as it goes to the right: this half's activity state now. Its keys' (with the PC's away
+// applied), never the PC state's hold: a right on battery keeps its own rules (#609); the right
+// holds itself on its own USB power from the PC state the left relays.
 static inline void art_relay_activity_op(uint8_t out[2]) {
     out[0] = ART_RELAY_ACTIVITY_OP;
-    out[1] = (uint8_t)zmk_activity_get_state();
+    out[1] = pc_state_keys();
 }
 
 // Left (art_relay_central.c): this half's activity state changed (activity_relay.c's listener);

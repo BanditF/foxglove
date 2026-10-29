@@ -34,7 +34,8 @@
  *                    whose art follows it, #603; a right before it keeps its own),
  *                    24 RGB_SHOWN (RGB_STATE bytes 17-28: what each half's LEDs show, #605;
  *                    with sync on the left also hands the right its colour and effect, #624),
- *                    25 RIGHT_REDRAWS (D7 8E bytes 16-20: the right's redraw count, #618).
+ *                    25 RIGHT_REDRAWS (D7 8E bytes 16-20: the right's redraw count, #618),
+ *                    26 PC_STATE (D7 11: the PC awake with a lease, or away, #609, #604).
  *      HELLO has no byte left for the LED counts: bit 22 says D7 10 answers them.
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
@@ -292,6 +293,25 @@
  *      none). Right: as SET_FRAME's (0 no relay link yet, 1 the right draws it, 2 its firmware
  *      can't and keeps its own effect). Event: always 0 (no unsolicited D7 8F).
  *      Status: 0 ok, 4 not built in (CONFIG_FOXGLOVE_HOST_EFFECTS, dev builds), 5 bad request.
+ *   11 PC_STATE  state u8 (0 away, 1 awake, 0xff read), flags u8 (bit 0 wake), lease s u16 LE
+ *                (awake: 1-3600)                                 (HELLO bit 26, #609, #604)
+ *      reply: D7 91, status (0 ok, 4 not built in, 5 bad: another state, or an awake lease out of
+ *             range; nothing changes), event (0 a reply, 1 below), state (0 none: no lease, the
+ *             USB idle time applies; 1 awake: a lease runs; 2 away), flags (bit 0 held: the hold
+ *             keeps the left out of idle now, 1 USB: the left has USB power on a bus that isn't
+ *             suspended, 2 keys: ZMK's own activity is active, 3 active: keys or held), lease
+ *             seconds left u16 LE (0 without one)
+ *      The PC's state (pc_state.h). Awake holds the keyboard out of idle (underglow, key
+ *      backlight, the right's art) while the lease runs and the half has USB power; with the wake
+ *      flag it also notes activity once, as a key does (the PC came back, #604). Away idles it at
+ *      once, even within ZMK's idle time after a key; the next key or awake ends that. Without a
+ *      lease, a half on USB power stays lit CONFIG_FOXGLOVE_PC_STATE_USB_IDLE_S (600) after the
+ *      last key; on battery nothing changes (ZMK's own idle and sleep). The left passes the state
+ *      to the right (art relay op PC_STATE), which holds only on its own USB power.
+ *      Lease asks: on USB power the left sends D7 91 unsolicited with event 1, after host
+ *      traffic, 60 s and again 20 s before the lease ends. A PC that is awake answers with
+ *      awake (no wake flag) and a new lease; one that isn't (or an app that is gone) lets it
+ *      lapse. Not a reply: a request in flight keeps waiting for its own.
  *   0B GUARD_TEST [delay_ms u16] (test hooks + split guard only)        reply: D7 8B, status
  *      The #122 split guard treats the current split link as stuck once, delay_ms from now (2000
  *      when left out; 0 = at once, even mid-relay, e.g. during an art push): it drops it, ZMK
@@ -348,6 +368,9 @@
 #define HOST_LINK_CAP_RGB_SHOWN (1U << 24)
 // D7 8E bytes 16-20 carry the right's whole-screen rewrites since its power-on (#618)
 #define HOST_LINK_CAP_RIGHT_REDRAWS (1U << 25)
+// D7 11 PC_STATE: the PC awake with a lease, or away; on USB power the keyboard stays lit while
+// the PC is awake and idles when it sleeps (#609, #604; pc_state.h).
+#define HOST_LINK_CAP_PC_STATE (1U << 26)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
@@ -361,6 +384,9 @@ struct foxglove_build_info;
 // D7 89 BUILD_INFO reply; build may be NULL on errors.
 void host_link_build_info_reply(uint8_t status, uint8_t half,
                                 const struct foxglove_build_info *build);
+
+// pc_state.c: the lease ends soon. Sends D7 91 with event 1 after host traffic. System work queue.
+void host_link_pc_state_event(void);
 
 // rgb_idle.c, on the left: the underglow went on or off.
 void host_link_rgb_changed(void);

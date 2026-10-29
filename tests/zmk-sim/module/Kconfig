@@ -43,9 +43,20 @@ config FOXGLOVE_SIM_RGB_STATE
     depends on !FOXGLOVE_SIM_FRAMES && !FOXGLOVE_SIM_EFFECTS
     depends on SETTINGS
 
+config FOXGLOVE_SIM_PC_STATE
+    bool "Simulator: PC state case (pc_state.c, host_link.c, rgb_idle.c, activity_relay.c with a fake underglow, cable and relay, module/pc_state_sim.c)"
+    depends on !FOXGLOVE_SIM_FRAMES && !FOXGLOVE_SIM_EFFECTS && !FOXGLOVE_SIM_RGB_STATE
+    depends on SETTINGS
+
+# The shield's symbol, for every source that asks; its USB idle time comes from the shield's
+# Kconfig.defconfig (CMakeLists.txt).
+config FOXGLOVE_PC_STATE
+    bool
+    default y if FOXGLOVE_SIM_PC_STATE
+
 config NICE_VIEW_RGB_IDLE
     bool
-    default y if FOXGLOVE_SIM_EFFECTS || FOXGLOVE_SIM_RGB_STATE
+    default y if FOXGLOVE_SIM_EFFECTS || FOXGLOVE_SIM_RGB_STATE || FOXGLOVE_SIM_PC_STATE
 
 config FOXGLOVE_HOST_FRAMES
     bool

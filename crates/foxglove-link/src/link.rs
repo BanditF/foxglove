@@ -607,9 +607,10 @@ fn dispatch(r: &Report, requests: &mut Requests, shared: &Shared) {
         // A reply goes to its request. Unasked art STATUS may be a firmware notification;
         // other replies stay private. A key held after a timeout drops the late reply.
         let key = (r[0], r[1] & 0x7f);
-        if protocol::is_frame_event(r) {
-            // SET_FRAME's hand-back event is never the answer to a frame: report observers
-            // (above) see it, and the request in flight keeps waiting for its own reply.
+        if protocol::is_frame_event(r) || protocol::is_pc_state_event(r) {
+            // SET_FRAME's hand-back event and PC_STATE's lease ask are never the answer to a
+            // request: report observers (above) see them, and the request in flight keeps
+            // waiting for its own reply.
             return;
         }
         if requests.held.remove(&key).is_some() {
@@ -951,6 +952,38 @@ mod tests {
         dispatch(&event, &mut requests, &l.shared);
         assert!(rx.try_recv().is_err(), "the event isn't the reply");
         let reply = report(&[protocol::SETTINGS, 0x8C, 0, 3, 30, 1, 0]);
+        dispatch(&reply, &mut requests, &l.shared);
+        assert_eq!(rx.recv_timeout(WAIT).unwrap(), reply);
+    }
+
+    #[test]
+    fn a_pc_state_lease_ask_is_not_the_reply_to_a_pc_state_request() {
+        let key = (protocol::SETTINGS, protocol::settings::PC_STATE);
+        let (tx, rx) = mpsc::channel();
+        let mut requests = Requests::default();
+        requests.in_flight.insert(
+            key,
+            Request {
+                key,
+                tx,
+                deadline: Instant::now() + WAIT,
+            },
+        );
+        let fake = Fake::default();
+        let l = link(&fake);
+        let (seen_tx, seen) = mpsc::channel();
+        let _observer = l.subscribe_reports(move |_, r| {
+            let _ = seen_tx.send(*r);
+        });
+        let ask = report(&[protocol::SETTINGS, 0x91, 0, 1, 1, 0b1011, 60, 0]);
+        dispatch(&ask, &mut requests, &l.shared);
+        assert!(rx.try_recv().is_err(), "the ask isn't the reply");
+        assert_eq!(
+            seen.recv_timeout(WAIT).unwrap(),
+            ask,
+            "observers see the ask"
+        );
+        let reply = report(&[protocol::SETTINGS, 0x91, 0, 0, 1, 0b1011, 0x58, 2]);
         dispatch(&reply, &mut requests, &l.shared);
         assert_eq!(rx.recv_timeout(WAIT).unwrap(), reply);
     }

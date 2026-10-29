@@ -98,6 +98,33 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
       "CONFIG_ZMK_RGB_UNDERGLOW_SPD_START=3;CONFIG_NICE_VIEW_ART_RELAY=1;CONFIG_NICE_VIEW_HOST_LINK=1")
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/rgb_idle.c rgb_state_sim.c)
   endif()
+  if(CONFIG_FOXGLOVE_SIM_PC_STATE)
+    # The PC state (#609, #604): the real pc_state.c, rgb_idle.c and activity_relay.c, as the left
+    # of a keyboard with the relay (faked: what the right would be sent) and the host link (D7 11);
+    # ZMK's underglow and the cable are faked in pc_state_sim.c. The USB idle time is the shield's
+    # shipped default.
+    file(STRINGS ${FOXGLOVE_WIDGETS}/../Kconfig.defconfig FOXGLOVE_DEFCONFIG)
+    set(FOXGLOVE_VALUE "")
+    set(FOXGLOVE_IN FALSE)
+    foreach(line IN LISTS FOXGLOVE_DEFCONFIG)
+      if(line MATCHES "^config FOXGLOVE_PC_STATE_USB_IDLE_S[^A-Z_]*$")
+        set(FOXGLOVE_IN TRUE)
+      elseif(FOXGLOVE_IN AND line MATCHES "^[ 	]+default ([0-9]+)")
+        set(FOXGLOVE_VALUE ${CMAKE_MATCH_1})
+        break()
+      endif()
+    endforeach()
+    if(FOXGLOVE_VALUE STREQUAL "")
+      message(FATAL_ERROR "FOXGLOVE_PC_STATE_USB_IDLE_S's default not found in Kconfig.defconfig")
+    endif()
+    set(FOXGLOVE_LEFT_DEFS "CONFIG_NICE_VIEW_ART_RELAY=1;CONFIG_NICE_VIEW_HOST_LINK=1")
+    set_source_files_properties(${FOXGLOVE_WIDGETS}/pc_state.c PROPERTIES COMPILE_DEFINITIONS
+      "${FOXGLOVE_LEFT_DEFS};CONFIG_FOXGLOVE_PC_STATE_USB_IDLE_S=${FOXGLOVE_VALUE}")
+    set_source_files_properties(${FOXGLOVE_WIDGETS}/rgb_idle.c PROPERTIES COMPILE_DEFINITIONS
+      "CONFIG_ZMK_RGB_UNDERGLOW_SPD_START=3;${FOXGLOVE_LEFT_DEFS}")
+    zephyr_library_sources(${FOXGLOVE_WIDGETS}/pc_state.c ${FOXGLOVE_WIDGETS}/rgb_idle.c
+                           ${FOXGLOVE_WIDGETS}/activity_relay.c pc_state_sim.c)
+  endif()
   if(CONFIG_FOXGLOVE_SIM_ART_KEYS)
     # &art_next / &art_prev (#60): the real behaviour; the board-side step prints instead.
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/art_keys.c art_keys_sim.c)

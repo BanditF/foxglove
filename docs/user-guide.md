@@ -505,6 +505,17 @@ This wipes the halves' saved settings and every Bluetooth pairing.
 
 1. Press each half's reset button once (once, not twice, or you get the USB drive).
 
+### When the keyboard's lights go dark on their own
+
+- **On USB power** (the cable in): the lights stay on while the PC is awake, with Foxglove
+  running. They go dark when the PC's screen turns off or the PC sleeps, and come back when the
+  screen comes on or you unlock. Locking alone keeps them on. With Foxglove closed they stay on
+  for 10 minutes after your last key.
+- **On battery:** they go dark 30 seconds after your last key, and the half sleeps after 30
+  minutes. A key wakes it.
+- **The right half** keeps its battery rules while only the left is plugged in: it goes dark on
+  its own to save its battery. Plug it in too to keep it lit.
+
 ### The lights stay stuck after Foxglove closes
 
 A plugin or Foxglove set the colour and nothing changed it back.

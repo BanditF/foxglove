@@ -37,6 +37,7 @@
 #include "rgb_idle.h"
 #include "art_relay.h"
 #include "host_link.h"
+#include "pc_state.h"
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
 #include "battery_dim.h"
 #endif
@@ -60,10 +61,19 @@ static bool loaded;      // wanted came from the settings
 static bool sync = true; // left: the right follows the left, saved
 static bool following;   // right: the left's state is in charge
 static bool remote_on;   // right: the left's state
+static bool remote_wanted; // right: the left's own on/off, which a held right shows (#609)
 static atomic_t host_drawn; // the PC draws this half's LEDs (SET_FRAME, lamp_strip.c)
 static atomic_t host_want;  // the last rgb_idle_host_control: hand-back pending or done
 
-static bool active(void) { return zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE; }
+// This half's keys, or the PC state's hold (pc_state.h, #609): ZMK's own idle on battery.
+static bool active(void) { return pc_state_active(); }
+
+// What the underglow should show: the left's on/off while following it (on the right's own USB
+// power, held by the PC state, the left's own choice: the left's keys don't hold it), else the
+// user's on/off with this half's activity.
+static bool target(void) {
+    return following ? remote_on || (remote_wanted && pc_state_held()) : wanted && active();
+}
 
 /* What the LEDs show (#605). D7 83's on byte is ZMK's on flag (or, under the PC's frames, the
  * on/off hand-back will show): it read off while a scene lit the LEDs, and on while ext power or
@@ -210,7 +220,7 @@ static K_WORK_DELAYABLE_DEFINE(speed_ready_work, speed_ready_cb);
 int rgb_idle_get_on(bool *on) {
     if (atomic_get(&host_drawn)) {
         // ZMK's underglow is off under the PC's frames: say what hand-back will show.
-        *on = following ? remote_on : wanted && active();
+        *on = target();
         return 0;
     }
     return zmk_rgb_underglow_get_state(on);
@@ -337,20 +347,20 @@ static K_WORK_DEFINE(lit_work, lit_cb);
 static void output_changed(void) { k_work_submit(&lit_work); }
 
 static void apply_cb(struct k_work *work) {
-    bool target = following ? remote_on : wanted && active();
+    bool want = target();
     // Under the PC's scene (SET_FRAME, SET_EFFECT) ZMK's underglow stays off and the scene draws
     // whatever the on/off (#542); this runs again on hand-back, which puts target back.
     if (!atomic_get(&host_drawn)) {
         bool on;
-        if (zmk_rgb_underglow_get_state(&on) == 0 && on != target) {
-            if (target) {
+        if (zmk_rgb_underglow_get_state(&on) == 0 && on != want) {
+            if (want) {
                 zmk_rgb_underglow_on();
             } else {
                 zmk_rgb_underglow_off();
             }
         }
     }
-    tell(target);
+    tell(want);
     output_changed();
 #if RELAY_CENTRAL
     // The right follows the left's on/off under a scene as well, so it's right on hand-back
@@ -404,7 +414,12 @@ static int activity_listener(const zmk_event_t *eh) {
 }
 
 ZMK_LISTENER(rgb_idle, activity_listener);
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+// ZMK's activity changes come through it too.
+ZMK_SUBSCRIPTION(rgb_idle, foxglove_awake_changed);
+#else
 ZMK_SUBSCRIPTION(rgb_idle, zmk_activity_state_changed);
+#endif
 
 // A key or encoder step may have run an rgb_ug binding: look once, shortly after.
 static int binding_listener(const zmk_event_t *eh) {
@@ -430,10 +445,24 @@ void rgb_idle_set_sync(bool on) {
 #endif
 }
 
-void rgb_idle_remote(bool on, bool follow) {
+void rgb_idle_remote_wanted(bool on, bool follow, bool left_wanted) {
     remote_on = on;
+    remote_wanted = left_wanted;
     following = follow;
     k_work_submit(&apply_work);
+}
+
+void rgb_idle_remote(bool on, bool follow) { rgb_idle_remote_wanted(on, follow, on); }
+
+int rgb_idle_relay_on(bool *on, bool *own) {
+    *own = wanted;
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+    // The left's keys, never the PC state's hold: a right on battery keeps its own rules (#609).
+    *on = wanted && pc_state_keys() == ZMK_ACTIVITY_ACTIVE;
+    return 0;
+#else
+    return rgb_idle_get_on(on);
+#endif
 }
 
 // Hand-back clears the flag on the system queue, where check_cb and apply_cb run, so a key's

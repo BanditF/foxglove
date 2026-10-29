@@ -1,0 +1,12 @@
+# The PC state (module/pc_state_sim.c): on battery idle 30 s after a key, as before; plugged in
+# without the app lit 10 minutes after the last key (#609 decision 2); bad D7 11 requests change
+# nothing; the app's awake with the wake lights it at once and holds it past ZMK's 30 s; the
+# keyboard asks a minute before the lease ends and the app renews it; away idles it at once,
+# within 30 s of a key too; back wakes it at once (#604); a key ends away; with the app gone
+# the lease lapses (both asks unanswered) and the USB idle time from the last key applies; an
+# unplug ends the hold at once; as the right (decision 3) the hold needs its own USB power and
+# shows the left's own on/off, away and awake from the left follow at once; the left hands the
+# right its keys' activity and on/off, never the hold; on battery ZMK's 30-minute sleep is
+# unchanged.
+/^pcstate: /p
+/^SIM_SLEEP$/p
