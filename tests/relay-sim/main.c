@@ -435,6 +435,44 @@ static void push_relink_tap(void) {
     debug_line("at the end");
 }
 
+// right-art-select-golden with the app running (#662): art.select set 0, a snapshot, set 1, a
+// snapshot. The right's ATT server follows Zephyr 3.5's response-buffer rule (a request that
+// comes before the right's system queue has run its last response's sent callback gets no
+// response at all), and that queue is busy for 15 ms after each redraw (SELECT, SNAP). A left that
+// sends its next request the moment an answer comes (the SELECT's status read, the first read
+// after the SNAP write, each Read Blob of the image) loses it: on hardware, "right half timed
+// out", then "still busy after retries" and the unstick's link drop (5a50426 gate).
+static void select_snap(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    k_msleep(2000);
+    sim_bt_faults.rsp_meta_rule = true;
+    sim_bt_faults.right_redraw_busy_us = 15000;
+    int drops = sim_bt_stats.link_drops;
+    char why[160];
+    int64_t worst = 0;
+    for (int8_t set = 0; set < 2; set++) {
+        char name[24];
+        snprintf(name, sizeof(name), "select-%d", set);
+        check(name, lab_select(set, why, sizeof(why)), "%s", why);
+        uint16_t f;
+        int64_t t0 = k_uptime_get();
+        int r = snapshot(&f);
+        int64_t took = k_uptime_get() - t0;
+        worst = MAX(worst, took);
+        snprintf(name, sizeof(name), "snapshot-set%d", set);
+        check(name, r == SNAP_OK, "%s in %lld ms", snap_name(r), (long long)took);
+    }
+    check("snapshot-budget", worst < 5000, "slowest %lld ms (firmware budget 5 s, lab waits 6 s)",
+          (long long)worst);
+    check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
+          sim_bt_stats.link_drops - drops);
+    check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped);
+    debug_line("at the end");
+}
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -456,6 +494,8 @@ static void lab_thread(void *arg) {
         push_relink_tap();
     } else if (!strcmp(scenario, "relink-shown")) {
         relink_shown();
+    } else if (!strcmp(scenario, "select-snap")) {
+        select_snap();
     } else {
         printf("unknown scenario %s\n", scenario);
         failed = true;
