@@ -21,6 +21,7 @@
 #include <zmk/rgb_underglow.h>
 
 #include "activity_relay.h"
+#include "art_relay.h"
 #include "pc_state.h"
 #include "rgb_idle.h"
 
