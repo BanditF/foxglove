@@ -31,6 +31,17 @@ doctor mode: it writes only the halves already in their bootloaders and asks non
 in (`Nothing to resume` when there are none). A bootloader whose half has no image
 in this run is reported and the run stops without asking another half in.
 
+**A half must be on USB before it is asked in (#654).** The bootloader is reached
+only over USB, so before asking a half into its bootloader the flasher requires
+that half's running-firmware device, `USB\VID_1D50&PID_615E\<its serial>`, to be
+present (`Get-PnpDevice -PresentOnly`, any status: the right on USB power shows
+problem 28). The pre-flight summary logs both halves (`on USB (..., status X)` or
+`not on USB`). The first entry checks every half the run will ask, so a missing
+right refuses with "the right half isn't on USB; plug its cable in, then run
+again" before the left is touched; a later entry looks again. A half already in
+its bootloader is written without this check, and a settings reset (double tap)
+isn't gated.
+
 Preflight checks every UF2 block's magic, family, flags, payload length, block
 numbers, and flash range `0x26000..0xAD000`. All 96 inspected local UF2s start at
 `0x26000`. Payloads are decoded into an address-ordered flat image for markers.
