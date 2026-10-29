@@ -22,8 +22,13 @@ struct Cli {
     product: Option<String>,
     #[arg(long, global = true)]
     allow_app: bool,
+    /// The app's saved keymap to take behavior ids from; used only when it names the build the
+    /// left runs (D7 09), else the lab reads them over Studio (#618).
     #[arg(long, global = true)]
     keymap: Option<PathBuf>,
+    /// The left's Studio serial port (COMn) for that read; found by USB ids otherwise.
+    #[arg(long, global = true)]
+    studio_port: Option<String>,
 }
 #[derive(Subcommand)]
 enum Command {
@@ -177,6 +182,24 @@ fn board_parts(
         }
         None => foxglove_link::lamps::LampParts::old_firmware(),
     }
+}
+
+/// The behavior ids for the firmware on `link` (#618): the saved keymap when it names the
+/// build the left runs (D7 09), else the lab's own Studio read.
+fn catalog_for(
+    link: &impl foxglove_link::Transport,
+    hello: Option<&foxglove_link::protocol::Hello>,
+    keymap: Option<PathBuf>,
+    studio_port: Option<&str>,
+) -> Catalog {
+    let builds = hello.is_some_and(|h| h.capabilities & capabilities::BUILD_INFO != 0);
+    let left = builds
+        .then(|| settings::build_info(link, 0).ok())
+        .flatten()
+        .map(|b| foxglove_lab::behaviors::build_key(&b));
+    foxglove_lab::behaviors::resolve(Catalog::load(keymap), left.as_deref(), || {
+        foxglove_lab::studio::read(studio_port)
+    })
 }
 
 fn connect(product: Option<String>) -> Result<Link> {
@@ -445,7 +468,7 @@ fn main() -> Result<std::process::ExitCode> {
         }
         return Ok(std::process::ExitCode::SUCCESS);
     }
-    let _guard = platform::guard(cli.allow_app)?;
+    let guard = platform::guard(cli.allow_app)?;
     let _lab = platform::lab_lock(Duration::from_secs(120))?;
     let cancelled = platform::cancellation()?;
     if matches!(cli.command, Command::ArtStatus) {
@@ -494,8 +517,13 @@ fn main() -> Result<std::process::ExitCode> {
     } = cli.command
     {
         let link = connect(cli.product)?;
-        link.wait_connected(Duration::from_secs(10))?;
-        let catalog = Catalog::load(cli.keymap)?;
+        let c = link.wait_connected(Duration::from_secs(10))?;
+        let catalog = catalog_for(
+            &link,
+            c.hello.as_ref(),
+            cli.keymap,
+            cli.studio_port.as_deref(),
+        );
         let rgb_ug = *catalog.ids.get("rgb_ug").ok_or_else(|| {
             anyhow::anyhow!(
                 "rgb_ug absent from the keymap metadata ({})",
@@ -534,10 +562,6 @@ fn main() -> Result<std::process::ExitCode> {
         PathBuf::from("lab-reports").join(format!("{}-{git}", now.format("%Y%m%dT%H%M%S%.3fZ")))
     });
     std::fs::create_dir_all(&out)?;
-    let catalog = Catalog::load(cli.keymap).unwrap_or_else(|e| Catalog {
-        source: format!("No cached IDs: {e:#}; named invokes will fail safely"),
-        ..Default::default()
-    });
     let mut report = Report::new(
         &suite_name,
         now.to_rfc3339(),
@@ -556,7 +580,6 @@ fn main() -> Result<std::process::ExitCode> {
             ),
             ("os".into(), std::env::consts::OS.into()),
             ("arch".into(), std::env::consts::ARCH.into()),
-            ("local_ids".into(), catalog.source.clone()),
         ]),
     );
     report.app = foxglove_lab::host::app_info();
@@ -585,9 +608,31 @@ fn main() -> Result<std::process::ExitCode> {
                 report.firmware.right = build(1);
             }
             report.environment.insert("product".into(), product);
+            let catalog = catalog_for(
+                &device,
+                Some(&hello),
+                cli.keymap,
+                cli.studio_port.as_deref(),
+            );
+            report
+                .environment
+                .insert("local_ids".into(), catalog.source.clone());
             let mut runner =
                 Runner::new(&device, &catalog, hello, cancelled, non_interactive, &out);
             runner.injections = Some(foxglove_lab::injections::path());
+            // While the app runs, art selects go through its API (#618, #622).
+            runner.app = guard
+                .app_running()
+                .then_some(&foxglove_lab::app_api::Pipe as &dyn foxglove_lab::app_api::AppArt);
+            report.environment.insert(
+                "art_select_path".into(),
+                if runner.app.is_some() {
+                    "app API art.select (the app is running)"
+                } else {
+                    "direct D6 SELECT (the app isn't running)"
+                }
+                .into(),
+            );
             for c in &suite.cases {
                 let result = runner.case(c, only.as_ref().is_none_or(|n| c.name.contains(n)));
                 println!("{} {}", result.status, result.name);

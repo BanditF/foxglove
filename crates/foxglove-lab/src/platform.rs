@@ -117,7 +117,14 @@ mod native {
         },
     };
 
-    pub struct AppGuard(HANDLE);
+    /// Holds Foxglove's single-instance mutex open; says whether the app was running.
+    pub struct AppGuard(HANDLE, bool);
+    impl AppGuard {
+        /// Foxglove was running when the guard was taken (its mutex existed; `--allow-app`).
+        pub fn app_running(&self) -> bool {
+            self.1
+        }
+    }
     impl Drop for AppGuard {
         fn drop(&mut self) {
             unsafe {
@@ -129,7 +136,7 @@ mod native {
         unsafe {
             let h = CreateMutexW(None, false, w!("Local\\Foxglove.Panel"))?;
             let exists = GetLastError() == ERROR_ALREADY_EXISTS;
-            let guard = AppGuard(h);
+            let guard = AppGuard(h, exists);
             ensure!(
                 !exists || allow,
                 "Foxglove is running (Local\\Foxglove.Panel); tray → Quit, or use --allow-app"
@@ -301,8 +308,16 @@ mod native {
 pub use native::{guard, lab_lock, sink};
 
 #[cfg(not(windows))]
-pub fn guard(_: bool) -> Result<()> {
-    Ok(())
+pub struct AppGuard;
+#[cfg(not(windows))]
+impl AppGuard {
+    pub fn app_running(&self) -> bool {
+        false
+    }
+}
+#[cfg(not(windows))]
+pub fn guard(_: bool) -> Result<AppGuard> {
+    Ok(AppGuard)
 }
 #[cfg(not(windows))]
 pub fn lab_lock(_: Duration) -> Result<()> {

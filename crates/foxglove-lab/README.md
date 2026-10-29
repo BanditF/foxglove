@@ -14,7 +14,7 @@ cargo run -p foxglove-lab -- run --suite release --out lab-reports/my-run
 cargo run -p foxglove-lab -- run --suite tests/hil/smoke.toml --only momentary
 ```
 
-`--product FILTER`, `--allow-app`, and `--keymap PATH` apply to all commands.
+`--product FILTER`, `--allow-app`, `--keymap PATH` and `--studio-port COMn` apply to all commands.
 `--only CASE` selects names containing CASE; an empty match is an error.
 `--list` validates the whole suite, prints selected cases, and opens no devices.
 
@@ -26,20 +26,29 @@ and preventing the desktop app from starting during the test.
 ## Behavior IDs
 
 IDs are **not constants**: they belong to the flashed keyboard's Studio build.
-The runner reads the same FXK1 exchange recording used by Foxglove's
-`app/src/foxglove/keymap_cache.rs` in `%APPDATA%\Foxglove\config\keymap-*.studio`.
+The runner reads the app's saved exchange recording (FXK1, or FXK2 since #636, which
+also names the firmware build it was read from), as Foxglove's
+`app/src/foxglove/keymap_cache.rs` writes it in `%APPDATA%\Foxglove\config\keymap-*.studio`.
 It independently decodes only Studio's behavior details (ID and display name),
 using the published Studio protobuf field tags. This follows the app's pairing
 of resolved behavior meaning with raw local IDs in `keyboard_actions.rs`, without
 depending on the app crate or copying its GPL implementation. Common Studio
 names become `kp`, `mo`, `tog`, `to`, `sl`, `rgb_ug`, etc. `behaviors` prints every
-cached name, its ID, parameters, and injection eligibility.
+cached name, its ID, parameters, and injection eligibility (from the saved copy only;
+it opens no device).
 
-Use `--keymap PATH` if there are multiple caches. There is no live Studio RPC,
-unlock operation, hardcoded ID fallback, or automatic choice among multiple
-devices' caches. **Ensure the cache matches the flashed firmware.** HELLO cannot
-authenticate a cache or provide a firmware SHA. The report records the cache path
-and this limitation. An explicit `local_id` is accepted but must also resolve to
+`run` and `rgb-latency` use the saved copy **only when it names the build the left
+runs** (D7 09, `major.minor.patch-profile-sha`, as the app keys it) and holds ids
+(#618). An FXK1 copy, a copy of another build, an empty one, a missing one, or a left
+whose build can't be read: the runner reads the ids itself over Studio on the left's
+USB serial port (`list_all_behaviors`, then `get_behavior_details` each; 3 s per call),
+found by the keyboard's USB ids and the left's serial, or `--studio-port COMn`. The
+report's `local_ids` says which source was used and why. If that read fails too (the
+left on Bluetooth, the port held by the app's keymap editor or ZMK Studio), named
+invokes fail safely and `local_ids` gives both reasons. Use `--keymap PATH` if there
+are multiple caches; it is held to the same build rule. There is no unlock operation
+and no hardcoded ID fallback.
+An explicit `local_id` is accepted but must also resolve to
 a recognized safe behavior in the cache: an unclassified numeric ID could type,
 reboot, or power off on an older build, so it cannot bypass safety checks.
 
@@ -119,7 +128,7 @@ These steps don't press anything. They use Windows' device list and process time
   - Right absent, or present with **no** interfaces (peripheral firmware on USB power; Windows shows problem 28) → info, expected.
   - Right **with** interfaces → FAIL: left or settings_reset firmware is on it.
   - A half in the UF2 bootloader → warn (`strict = true` makes warnings fail).
-- `art_select = { set = 1 }`: selects a built-in art set on the right through the relay, waits for the right to report it, and puts the previous set back. Pushed art lives in RAM and can't be restored, so the step reports BLOCKED when pushed art is showing, unless `replace_pushed = true`. When the left's relay is busy with another client's job first (state pushing or receiving, as after a re-link while the app re-applies the right's art, #618), the step waits for that job to end on the art reports that arrive (no timed reads), for at most `idle_within_ms` (30000).
+- `art_select = { set = 1 }`: selects a built-in art set on the right through the relay, waits for the right to report it, and puts the previous set back. While the app runs (`--allow-app`, its `Local\Foxglove.Panel` mutex exists) the select goes through the app's local API `art.select` (by the set's manifest label) and is read back with one fresh D6 STATUS pair and `art.status`, since the app puts its own choice back after a direct SELECT (#622); with the app quit it is the direct D6 SELECT. The step's result starts with the path it took, and the report's `art_select_path` says it too. Pushed art lives in RAM and can't be restored, so the step reports BLOCKED when pushed art is showing, unless `replace_pushed = true`. When the left's relay is busy with another client's job first (state pushing or receiving, as after a re-link while the app re-applies the right's art, #618), the step waits for that job to end on the art reports that arrive (no timed reads), for at most `idle_within_ms` (30000).
 - `idle_cpu = { seconds = 20, max_cpu_ms = 60 }`: CPU used by `foxglove` (or `process = "..."`) over the window. Run with `--allow-app`; it's the regression test for #100.
 
 `tests/hil/app-idle.toml` holds the app checks; `release.toml` includes it and `smoke.toml`.
