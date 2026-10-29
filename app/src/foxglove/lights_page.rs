@@ -229,7 +229,8 @@ pub fn half_text(half: Option<&RgbHalf>, age: Option<u8>) -> String {
         return "no data yet".into();
     };
     let mut text = if h.on {
-        let effect = effect(h.effect).map_or_else(|| "other effect".into(), KeyboardEffect::label);
+        // Just the name: the rainbow chip beside it says what Spectrum and Swirl do (#670).
+        let effect = effect(h.effect).map_or("other effect", |e| e.name);
         format!("on · {effect} · {}% · speed {}", h.brightness, h.speed)
     } else {
         "off".to_string()
@@ -419,7 +420,15 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         }
         let controls = showing.controls;
         ui.add_space(4.0);
-        ui.label(theme::caps_label(ui, "Colour"));
+        // Over a rainbow it's what the lights look like, not a colour to pick (#670).
+        ui.label(theme::caps_label(
+            ui,
+            if controls.colour() {
+                "Colour"
+            } else {
+                "Looks like"
+            },
+        ));
         let picked = draft.color;
         let edited = &mut draft.edited;
         let Some((hue, sat, brightness)) = draft.color.as_mut() else {
@@ -498,15 +507,16 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
                     "Apply brightness"
                 };
                 apply = ui.add(theme::primary_button(ui, label)).clicked();
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
-                if controls.colour() {
+                // The colour Apply sends; an effect without a hue has none to show (#670).
+                if controls.hue {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
                     ui.painter().rect_filled(rect, 3.0, shown_color(*hue, *sat, *brightness));
-                } else {
-                    super::effect_controls::paint_rainbow(ui.painter(), rect, true);
                 }
             },
             |ui| {
-                if ui
+                // The accent sets a hue: only for an effect that shows one (#670).
+                if controls.hue
+                    && ui
                     .checkbox(&mut accent, "Follow the Windows accent colour")
                     .on_hover_text(
                         "The underglow takes the accent colour's hue and saturation whenever it changes in Windows, \
@@ -939,10 +949,8 @@ pub mod tests {
             text.contains("Swirl is a rainbow: it doesn't use the colour yet"),
             "{text}"
         );
-        assert!(
-            text.contains("Swirl (rainbow; colour not used yet)"),
-            "{text}"
-        );
+        assert!(text.contains("on · Swirl · 80%"), "{text}");
+        assert!(!text.contains("colour not used yet"), "{text}");
         let text = draw_text(&sample());
         assert!(!text.contains("doesn't use the colour"), "{text}");
         assert!(FOLLOW_TIP.contains(
@@ -1033,8 +1041,36 @@ pub mod tests {
             "Speed",
             "Apply brightness",
             "Swirl is a rainbow",
+            "LOOKS LIKE",
         ] {
             assert!(swirl.contains(want), "Swirl has {want}: {swirl}");
+        }
+        // The user's tweaks: no hue, so no accent switch; "Looks like" over the rainbow; the
+        // halves say just "Swirl".
+        assert!(
+            !swirl.contains("Follow the Windows accent colour"),
+            "{swirl}"
+        );
+        assert!(
+            !swirl.contains(
+                "COLOUR
+"
+            ) && !swirl.contains("colour not used yet"),
+            "{swirl}"
+        );
+        assert!(swirl.contains("on · Swirl · 42%"), "{swirl}");
+        for colour in [&breathe, &solid] {
+            assert!(
+                colour.contains(
+                    "COLOUR
+"
+                ) && !colour.contains("LOOKS LIKE"),
+                "{colour}"
+            );
+            assert!(
+                colour.contains("Follow the Windows accent colour"),
+                "{colour}"
+            );
         }
     }
 

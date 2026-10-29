@@ -1270,7 +1270,8 @@ fn lights_colour_effect_renders() {
     assert_eq!(rainbow_green(&img), 0, "no rainbow under a colour effect");
 }
 
-/// #670: a colour-free effect (Swirl) shows a rainbow in place of the colour picker.
+/// #670: a colour-free effect (Swirl) shows a rainbow under "Looks like" in place of the colour
+/// picker, with no accent switch (it has no hue), and the halves say just "Swirl".
 #[test]
 fn lights_rainbow_effect_renders() {
     use crate::foxglove::lights_page::tests::sample_effect;

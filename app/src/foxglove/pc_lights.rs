@@ -288,12 +288,11 @@ impl KeyboardLights {
             .then(|| vec![hsv_rgb(self.hue, self.sat, self.brightness); zones])
     }
 
-    /// The effect's name with its note, for the status line.
+    /// The effect's name, for the status line (#670: just the name).
     fn effect_label(&self) -> String {
-        super::lights_page::effect(self.effect).map_or_else(
-            || "an effect Foxglove doesn't know".into(),
-            super::lights_page::KeyboardEffect::label,
-        )
+        super::lights_page::effect(self.effect)
+            .map_or("an effect Foxglove doesn't know", |e| e.name)
+            .to_string()
     }
 }
 
@@ -1617,7 +1616,8 @@ mod tests {
         );
         let status = w.status.clone().unwrap_or_default();
         assert!(
-            status.contains("Swirl (rainbow; colour not used yet)")
+            status.contains("plays Swirl, which")
+                && !status.contains("colour not used yet")
                 && status.contains("can't match"),
             "{status}"
         );
