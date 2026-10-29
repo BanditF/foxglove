@@ -1,4 +1,8 @@
 //! NVA1 thumbnail decoding. The stored bitmap is row-major, MSB first.
+//!
+//! Thumbnails show the art as the keyboard does in its dark theme: ink white on black (#610).
+//! Ink is a set bit in blobs with `art_encode::FLAG_INK`; older blobs have the background bits
+//! set, and are inverted here as the keyboard inverts them.
 
 pub fn first_frame(blob: &[u8]) -> Result<egui::ColorImage, &'static str> {
     let bad = "Invalid NVA1 art blob";
@@ -40,14 +44,15 @@ pub fn first_frame(blob: &[u8]) -> Result<egui::ColorImage, &'static str> {
         }
     }
     let bits = first.ok_or(bad)?;
+    let ink = blob[7] & super::art_encode::FLAG_INK != 0;
     let pixels = (0..h)
         .flat_map(|y| {
             let bits = &bits;
             (0..w).map(move |x| {
-                if bits[y * stride + x / 8] & (0x80 >> (x % 8)) == 0 {
-                    egui::Color32::BLACK
-                } else {
+                if (bits[y * stride + x / 8] & (0x80 >> (x % 8)) != 0) == ink {
                     egui::Color32::WHITE
+                } else {
+                    egui::Color32::BLACK
                 }
             })
         })
@@ -109,7 +114,14 @@ mod tests {
         let blob = [
             b'N', b'V', b'A', b'1', 8, 1, 1, 0, 2, 0, 1, 0, 1, 17, 0, 18, 0, 0x80, 0x80,
         ];
+        // The first frame shown is unique frame 1: every bit clear. In a blob from before #610
+        // (flags 0) set bits are the field, so a clear frame is all ink, all lit.
         let image = first_frame(&blob).unwrap();
+        assert!(image.pixels.iter().all(|p| *p == egui::Color32::WHITE));
+        // The same bits with the ink flag: no ink, all dark.
+        let mut inked = blob;
+        inked[7] = super::super::art_encode::FLAG_INK;
+        let image = first_frame(&inked).unwrap();
         assert!(image.pixels.iter().all(|p| *p == egui::Color32::BLACK));
         for end in 0..blob.len() {
             assert!(first_frame(&blob[..end]).is_err());
