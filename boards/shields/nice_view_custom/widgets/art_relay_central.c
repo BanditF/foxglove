@@ -330,6 +330,29 @@ BT_CONN_CB_DEFINE(art_relay_conn_cb) = {
 #define STUCK_AFTER_MS 10000
 #define STUCK_DROPS_IN_ROW 3
 
+/* Spacing (#662): no request goes to the right sooner than REQ_GAP_MS after the right's last
+ * answer. Zephyr 3.5's ATT server on the right holds its one response buffer (rsp_meta, and the
+ * ATT_PENDING_RSP flag) until that response's sent callback has run on the right's system work
+ * queue. A request that arrives before then gets no response at all ("already processing a
+ * REQ/RSP"), and the left's bearer then waits on it until a re-link: the unanswered readback the
+ * #662 gate showed after a SELECT (TIMEOUT, then BUSY for 5 s, then the unstick's link drop). The
+ * screen readback was the most exposed: ~63 Read Blob requests, each sent from the RX callback
+ * the moment the last answer came. With the gap, the right's system queue has REQ_GAP_MS to free
+ * the buffer. Only relay_q sleeps for it (req_new, screen_job). relay-sim: select-snap. */
+#define REQ_GAP_MS 25
+
+static atomic_t answer_at; // k_uptime_get() of the right's last answer, truncated to 32 bits
+
+static void answered_now(void) { atomic_set(&answer_at, (atomic_val_t)(uint32_t)k_uptime_get()); }
+
+// relay_q only: waits out the rest of REQ_GAP_MS since the right's last answer.
+static void req_space(void) {
+    uint32_t since = (uint32_t)k_uptime_get() - (uint32_t)atomic_get(&answer_at);
+    if (since < REQ_GAP_MS) {
+        k_msleep(REQ_GAP_MS - since);
+    }
+}
+
 static K_SEM_DEFINE(gatt_done, 0, 1);
 static uint8_t gatt_err;
 
@@ -372,14 +395,21 @@ static bool any_let_go(void) {
     return let_go;
 }
 
-static void unstick_arm(void) {
+// Arms the unstick for a request let go waited_ms after it went out: it acts STUCK_AFTER_MS after
+// the send, whatever the lane's own timeout was (the screen readback lets go at its deadline,
+// which can be soon after its last read went out: counting GATT_TIMEOUT_MS for it would cut a
+// slow but answered read short).
+static void unstick_arm_after(int64_t waited_ms) {
     if (atomic_cas(&unstick_q_started, 0, 1)) {
         k_work_queue_start(&unstick_q, unstick_stack, K_THREAD_STACK_SIZEOF(unstick_stack),
                            K_LOWEST_APPLICATION_THREAD_PRIO, NULL);
     }
-    // Counted from the first let-go request: it went out GATT_TIMEOUT_MS ago.
-    k_work_schedule_for_queue(&unstick_q, &unstick_work, K_MSEC(STUCK_AFTER_MS - GATT_TIMEOUT_MS));
+    // Counted from the first let-go request (schedule keeps an earlier deadline).
+    k_work_schedule_for_queue(&unstick_q, &unstick_work,
+                              K_MSEC(MAX(STUCK_AFTER_MS - waited_ms, 0)));
 }
+
+static void unstick_arm(void) { unstick_arm_after(GATT_TIMEOUT_MS); }
 
 // A let-go request's callback came. Another one still out gets the full wait from now.
 static void unstick_answered(void) {
@@ -425,6 +455,7 @@ static K_WORK_DELAYABLE_DEFINE(unstick_work, unstick_cb);
 
 // A slot for the next request (relay_q only), or NULL while Zephyr holds every slot.
 static struct relay_req *req_new(void) {
+    req_space();
     struct relay_req *r = NULL;
     unsigned int key = irq_lock();
     for (int i = 0; i < RELAY_REQS && r == NULL; i++) {
@@ -462,6 +493,7 @@ static void req_end(struct relay_req *r, uint8_t err) {
         gatt_err = err;
     }
     irq_unlock(key);
+    answered_now();
     dbg.answered++;
     if (was == REQ_WAITING) {
         if (!err) {

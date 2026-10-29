@@ -1,6 +1,14 @@
 /* Included by art_relay_central.c: shares relay_q and job_conn(), no extra queue or discovery.
  * SPDX-License-Identifier: MIT
  */
+/* Budget (#662): SCREEN_BUDGET_MS from the D7 06 to the reply, within foxglove-lab's and the
+ * app's 6 s. The image comes one chunk per request (MTU 23: ~63 reads), each sent from relay_q
+ * REQ_GAP_MS after the last answer (art_relay_central.c), not from the RX callback: ~2.5-3.5 s.
+ * Every read is answered within a connection event or two, so a slow snapshot holds no request
+ * for long, and one let go at the deadline arms the unstick from its own send time
+ * (unstick_arm_after), never sooner than STUCK_AFTER_MS after it went out. */
+#define SCREEN_BUDGET_MS 5000
+
 static K_SEM_DEFINE(screen_done, 0, 1);
 static atomic_t screen_flight;
 static atomic_t screen_accept;
@@ -9,6 +17,7 @@ static atomic_t screen_replied;
 static uint8_t screen_err;
 static uint16_t screen_received;
 static int64_t screen_deadline;
+static int64_t screen_sent_at; // when the request in flight went out
 static struct bt_gatt_read_params screen_read_params;
 static struct bt_gatt_write_params screen_write_params;
 static const uint8_t screen_op = ART_RELAY_SNAP;
@@ -26,6 +35,7 @@ static void screen_timeout(struct k_work *work) {
 static K_WORK_DELAYABLE_DEFINE(screen_timeout_work, screen_timeout);
 
 static void screen_request_done(uint8_t err) {
+    answered_now();
     unsigned int key = irq_lock();
     screen_err = err;
     atomic_clear(&screen_flight);
@@ -51,7 +61,7 @@ static uint8_t screen_read_cb(struct bt_conn *conn, uint8_t err,
         return BT_GATT_ITER_STOP;
     }
     if (err || data == NULL) {
-        screen_request_done(err);
+        screen_request_done(err ? err : BT_ATT_ERR_UNLIKELY); // no data: the value ended early
         return BT_GATT_ITER_STOP;
     }
     if (length > SCREEN_SNAP_WIRE - screen_received) {
@@ -60,16 +70,11 @@ static uint8_t screen_read_cb(struct bt_conn *conn, uint8_t err,
     }
     screen_snap_remote_data(screen_received, data, length);
     screen_received += length;
-    if (screen_received == SCREEN_SNAP_WIRE) {
-        screen_request_done(0);
-        return BT_GATT_ITER_STOP;
-    }
-    if (!atomic_get(&screen_accept) || k_uptime_get() >= screen_deadline) {
-        screen_request_done(BT_ATT_ERR_UNLIKELY);
-        return BT_GATT_ITER_STOP;
-    }
-    /* Zephyr advances single.offset and issues Read Blob requests, even at MTU 23. */
-    return BT_GATT_ITER_CONTINUE;
+    /* One chunk per request: screen_job sends the next (a Read Blob at the new offset) after
+     * REQ_GAP_MS. Going on from here (BT_GATT_ITER_CONTINUE) sent it the moment this answer came,
+     * before the right could free its response buffer (#662). */
+    screen_request_done(0);
+    return BT_GATT_ITER_STOP;
 }
 
 static int screen_wait(int ret) {
@@ -81,7 +86,9 @@ static int screen_wait(int ret) {
     int64_t remaining = screen_deadline - k_uptime_get();
     if (remaining <= 0 || k_sem_take(&screen_done, K_MSEC(remaining))) {
         if (atomic_get(&screen_flight) && atomic_cas(&stuck_screen, 0, 1)) {
-            unstick_arm(); // let go: the right may yet answer; if not, the unstick acts
+            // Let go: the right may yet answer; if not, the unstick acts STUCK_AFTER_MS after
+            // this request went out.
+            unstick_arm_after(k_uptime_get() - screen_sent_at);
         }
         return -ETIMEDOUT;
     }
@@ -107,24 +114,31 @@ static void screen_job(struct k_work *work) {
     screen_write_params.offset = 0;
     screen_write_params.data = &screen_op;
     screen_write_params.length = 1;
+    req_space();
     k_sem_reset(&screen_done);
     atomic_set(&screen_flight, 1);
+    screen_sent_at = k_uptime_get();
     if (screen_wait(bt_gatt_write(conn, &screen_write_params))) {
         goto done;
     }
     int poll_ms = 25;
+    screen_received = 0;
     while (k_uptime_get() < screen_deadline) {
-        screen_received = 0;
+        req_space();
         screen_read_params.func = screen_read_cb;
         screen_read_params.handle_count = 1;
         screen_read_params.single.handle = screen_handle;
-        screen_read_params.single.offset = 0;
+        screen_read_params.single.offset = screen_received;
         k_sem_reset(&screen_done);
         atomic_set(&screen_flight, 1);
+        screen_sent_at = k_uptime_get();
         int err = screen_wait(bt_gatt_read(conn, &screen_read_params));
         if (!err && screen_received == SCREEN_SNAP_WIRE) {
             result = screen_snap_remote_valid() ? SCREEN_OK : SCREEN_TIMEOUT;
             break;
+        }
+        if (!err && screen_received > 0) {
+            continue; // the next chunk
         }
         if (atomic_get(&screen_flight) || screen_received ||
             screen_err != BT_ATT_ERR_UNLIKELY) {
@@ -159,11 +173,11 @@ uint8_t art_relay_screen_snap(void) {
         return SCREEN_BUSY;
     }
     unsigned int key = irq_lock();
-    screen_deadline = k_uptime_get() + 3000;
+    screen_deadline = k_uptime_get() + SCREEN_BUDGET_MS;
     atomic_clear(&screen_replied);
     irq_unlock(key);
     /* Only replies on the system queue; all radio work stays on relay_q. */
-    k_work_reschedule(&screen_timeout_work, K_SECONDS(3));
+    k_work_reschedule(&screen_timeout_work, K_MSEC(SCREEN_BUDGET_MS));
     k_work_submit_to_queue(&relay_q, &screen_work);
     return SCREEN_OK;
 }

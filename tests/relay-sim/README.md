@@ -29,6 +29,7 @@ get tested.
 | `stall-app` | `stall` with the app's traffic | as `stall` |
 | `late` | one request answered 4.5 s late (past the 3 s GATT timeout), user commands meanwhile | the SELECT, a push and a snapshot right after the timeout work |
 | `late-ignored` | a status read answered 4.5 s late with an ATT error; a SELECT goes while it is out | the left let it go (timeouts 1, in flight 1), the SELECT completes with its own answer (a left that took the late error for it fails here), nothing is held afterwards, a push works, and the link never dropped |
+| `select-snap` | right-art-select-golden with the app running (#662): select set 0, a snapshot, set 1, a snapshot; the right's ATT server follows Zephyr 3.5's response-buffer rule and its system queue is busy 20 ms after each redraw | both snapshots OK within the 5 s budget, no request left unanswered, no re-link |
 | `lost` (diagnostic) | one request never answered | not gating: the SELECT queued behind it can't be answered either; the push after the unstick's re-link works |
 
 ## How the stall is handled (art_relay_central.c, #618)
@@ -57,6 +58,16 @@ re-link. Now:
 `sim_bt.c` models `bt_gatt_write_without_response_cb` as Zephyr 3.5 has it: the callback runs on
 the system work queue once the command is sent, and is dropped for a command still queued when
 the link goes. `sim_bt_faults.late_err` gives a late answer an ATT error.
+
+- **Spaced requests (#662).** No request goes to the right sooner than 25 ms after the right's
+  last answer (`REQ_GAP_MS`), and the screen readback reads one chunk per request from relay_q
+  instead of chaining Read Blobs from the RX callback. Zephyr 3.5's ATT server on the right holds
+  its single response buffer until the sent callback has run on the right's system queue; a
+  request arriving before that gets no response at all, and the left's bearer then waits on it
+  until a re-link. The 5a50426 gate showed exactly that after a SELECT: "right half timed out",
+  "still busy after retries", then the unstick's link drop. The readback's budget is 5 s
+  (`SCREEN_BUDGET_MS`), and a readback let go at its deadline arms the unstick from that
+  request's own send time, so a slow but answered read never drops the link.
 
 ## Known gaps (run in CI, must still fail)
 
