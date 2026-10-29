@@ -64,6 +64,13 @@ The params and results are in the schema. Notes:
 - **`behaviors.invoke` refuses actions that need confirmation** (error 5). A Plugin can never press
   one; only a user's click in Foxglove can. The firmware already refuses &bt, &out, reset and
   soft-off from the PC altogether.
+- **`behaviors.list` / `behaviors.invoke` answer from the keymap read on the firmware the keyboard
+  runs** (#639). Until it's read (a new or unknown build, #636) both say the behaviors aren't
+  known yet (error 3, try again). The list is the app's allowlist: anything not on it (&bt, &out,
+  &bootloader, &sys_reset, &soft_off) is unsupported (error 1).
+- **`art.select` takes over Foxglove's own art job** (a re-apply, Rotation's timer) instead of
+  answering "another art job is running" (#618); that error now means a job a user or another
+  caller started is still running.
 - **`screens.panel_override`** lasts at most 60 s; the panel then returns to Foxglove's own drawing.
 - **`art.select` names built-ins by their manifest name** (stable across firmware), plus slots,
   random, or a file. API 1.6 (#618) adds `"next"` and `"previous"`: the tray panel's Next › and

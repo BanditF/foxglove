@@ -52,6 +52,12 @@ pub struct Snapshot {
     pub job: Option<Job>,
     /// How the last job ended; the strip says so until the next one starts.
     pub outcome: Option<Outcome>,
+    /// The running job is Foxglove's own (a re-apply, the relay coming up, Rotation's timer,
+    /// layer or preset art): a command from the user or an API caller takes it over instead of
+    /// being refused (#618). False for a job the user or an API caller started.
+    pub background: bool,
+    /// Counts claims on `busy`, so a background job sees that a user's command took it over.
+    pub claim: u64,
 }
 
 /// What a job does, for the strip's words (`art_words`).
@@ -245,6 +251,11 @@ enum Command {
     Resume,
     /// An event that can have lost the right screen's art (`reassert.rs`).
     Reassert(super::reassert::Trigger),
+    /// The tray's Next › (`true`) or ‹ from the user or an agent (#618): Rotation's step as
+    /// their job, which already holds `busy` ([`Handle::step_now`]).
+    Step(bool),
+    /// A user's job that can't run after all: it ends with this error.
+    Refused(String),
 }
 
 /// Whether the UI may send `command` (#404): while Foxglove is paused only reads go out.
@@ -286,9 +297,13 @@ impl Handle {
         }
     }
 
+    /// Sends a command from the user or an API caller. Refused only while another job they
+    /// started runs: Foxglove's own job (a re-apply, Rotation's timer, ...) is taken over
+    /// (#618). It skips its keyboard write once it sees that, and this command runs right after
+    /// it on the worker, so what the user chose is what stays on screen.
     fn submit(&self, command: Command) -> bool {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.busy || self.stop.load(Ordering::Relaxed) {
+        if user_refused(&state) || self.stop.load(Ordering::Relaxed) {
             return false;
         }
         if !allowed(&command, super::pause::paused()) {
@@ -299,11 +314,7 @@ impl Handle {
         if self.commands.send(command).is_err() {
             return false;
         }
-        state.busy = true;
-        state.cancelled = false;
-        state.error = None;
-        state.push_progress = None;
-        state.outcome = None;
+        claim_for_user(&mut state);
         true
     }
 
@@ -387,27 +398,31 @@ impl Handle {
         if super::pause::paused() {
             return Err(super::pause::REFUSED.into());
         }
-        let s = self.snapshot();
-        let st = s
-            .status
-            .filter(|_| s.connected)
-            .ok_or("no keyboard with the art relay")?;
-        if s.busy {
-            return Err("another art job is running".into());
+        {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let st = s
+                .status
+                .filter(|_| s.connected)
+                .ok_or("no keyboard with the art relay")?;
+            // Only a job the user (or an agent) started refuses it; Foxglove's own re-apply or
+            // timer job is taken over (#618: it answered "another art job is running").
+            if user_refused(&s) || self.stop.load(Ordering::Relaxed) {
+                return Err("another art job is running".into());
+            }
+            art_cycle::step(
+                &art_cycle::rotation(&st),
+                art_cycle::on_screen(&st),
+                forward,
+            )
+            .ok_or("the keyboard has nothing else to show")?;
+            self.cancel.store(false, Ordering::Relaxed);
+            self.commands
+                .send(Command::Step(forward))
+                .map_err(|_| "the art service has stopped")?;
+            // The outcome is cleared, so the wait sees this job's end and not the last one's.
+            claim_for_user(&mut s);
         }
-        art_cycle::step(
-            &art_cycle::rotation(&st),
-            art_cycle::on_screen(&st),
-            forward,
-        )
-        .ok_or("the keyboard has nothing else to show")?;
-        // Cleared, so the wait sees this job's end and not the last one's.
-        self.update(|s| s.outcome = None);
-        if forward {
-            self.next()
-        } else {
-            self.previous()
-        };
+        self.update(|_| {});
         Ok(())
     }
 
@@ -438,6 +453,26 @@ impl Handle {
     fn cancelled(&self) -> bool {
         self.cancel.load(Ordering::Relaxed) || self.stop.load(Ordering::Relaxed)
     }
+}
+
+/// A command from the user or an API caller can't start: a job they started runs (#618).
+fn user_refused(s: &Snapshot) -> bool {
+    s.busy && !s.background
+}
+
+/// `busy` is the user's (or an API caller's) job now; a background job that held it sees its
+/// claim gone and leaves the keyboard alone (#618).
+fn claim_for_user(s: &mut Snapshot) {
+    if s.busy {
+        eprintln!("Foxglove: art: a user's choice takes over Foxglove's own art job");
+    }
+    s.busy = true;
+    s.background = false;
+    s.claim = s.claim.wrapping_add(1);
+    s.cancelled = false;
+    s.error = None;
+    s.push_progress = None;
+    s.outcome = None;
 }
 
 static SERVICE: OnceLock<Handle> = OnceLock::new();
@@ -609,6 +644,12 @@ fn load_art_settings() -> ArtSettings {
 /// it (a SELECT restarts the animation, and a pushed file costs a send).
 fn reapply(wanted: &Option<Choice>, status: ArtStatus) -> Option<Choice> {
     restore(wanted, status).filter(|c| art_cycle::on_screen(&status).as_ref() != Some(c))
+}
+
+/// An unasked STATUS `now` says the relay came up since the status before it (`was`; none
+/// known yet counts as down): the firmware sends one when it does (art_relay_central.c).
+fn came_up(was: Option<ArtStatus>, now: ArtStatus) -> bool {
+    now.link == 2 && was.is_none_or(|w| w.link != 2)
 }
 
 fn restore(pinned: &Option<Choice>, status: ArtStatus) -> Option<Choice> {
@@ -837,8 +878,15 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         // Clicked in the UI: these say how they went; Foxglove's own changes stay quiet.
         let from_ui = matches!(
             command,
-            Command::Choose(_) | Command::Keep { .. } | Command::Erase(_) | Command::Status
+            Command::Choose(_)
+                | Command::Keep { .. }
+                | Command::Erase(_)
+                | Command::Status
+                | Command::Step(_)
         );
+        // Foxglove's own job (#618): it claims `busy` when it starts, and a user's command
+        // queued meanwhile, or sent while it runs, wins.
+        let mut background = false;
         // What a trigger change means on screen: its art, or the next one down / the pin.
         let shown = |change: Change, triggers: &Triggers| -> Option<Command> {
             let snap = h.snapshot();
@@ -856,7 +904,6 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     .and_then(|i| resolve(&i))
                     .or(snap.pinned)?,
             };
-            h.update(|s| s.busy = true);
             Some(Command::Show(choice))
         };
         let reschedule = |connected: bool| {
@@ -896,7 +943,10 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 match shown(change, &triggers) {
-                    Some(command) => command,
+                    Some(command) => {
+                        background = true;
+                        command
+                    }
                     None => continue,
                 }
             }
@@ -906,7 +956,10 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 match shown(change, &triggers) {
-                    Some(command) => command,
+                    Some(command) => {
+                        background = true;
+                        command
+                    }
                     None => continue,
                 }
             }
@@ -916,7 +969,10 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 match shown(change, &triggers) {
-                    Some(command) => command,
+                    Some(command) => {
+                        background = true;
+                        command
+                    }
                     None => continue,
                 }
             }
@@ -939,7 +995,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                         continue;
                     }
                     Some(choice) if snap.pinned.as_ref() != Some(&choice) => {
-                        h.update(|s| s.busy = true);
+                        background = true;
                         Command::Choose(choice)
                     }
                     _ => continue,
@@ -962,7 +1018,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                         continue;
                     }
                     Some(choice) => {
-                        h.update(|s| s.busy = true);
+                        background = true;
                         Command::Choose(choice)
                     }
                     None => continue,
@@ -987,7 +1043,10 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 }
                 // Otherwise layer or preset art, or the pin.
                 match shown(Change::Restore, &triggers) {
-                    Some(command) => command,
+                    Some(command) => {
+                        background = true;
+                        command
+                    }
                     None => continue,
                 }
             }
@@ -1031,19 +1090,36 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 ) else {
                     continue;
                 };
-                h.update(|s| {
-                    s.busy = true;
-                    s.error = None;
-                    s.outcome = None;
-                });
-                h.cancel.store(false, Ordering::Relaxed);
+                background = true;
                 Command::Choose(choice)
+            }
+            // The user's (or an agent's) Next › / ‹: it holds `busy` already, and shows even
+            // over layer or preset art.
+            Command::Step(forward) => {
+                due = reschedule(current.is_some());
+                let step = h
+                    .snapshot()
+                    .status
+                    .filter(|_| current.is_some())
+                    .and_then(|st| {
+                        art_cycle::step(
+                            &art_cycle::rotation(&st),
+                            art_cycle::on_screen(&st),
+                            forward,
+                        )
+                    });
+                match step {
+                    Some(choice) => Command::Choose(choice),
+                    None => Command::Refused("the keyboard has nothing else to show".into()),
+                }
             }
             other => other,
         };
         let mut reported = None;
         // Set for a re-apply (`reassert.rs`): what asked.
         let mut reassert = None;
+        // An unasked STATUS that says the relay just came up (#618).
+        let mut relay_came_up = false;
         // On a new connection, the flash slots are read once its status is in.
         let mut connected_now = false;
         let automatic = match &command {
@@ -1132,7 +1208,13 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 {
                     continue;
                 }
-                reported = Some(ArtStatus::parse(report));
+                // Unasked STATUS is the firmware's relay up/down notice, or another host's STATUS
+                // reply on the same HID device (the lab, a second Foxglove): every handle gets
+                // every report. Only the relay coming up puts the art back (#618); answering
+                // each one with a SELECT fought the lab's own selects and a second app's.
+                let st = ArtStatus::parse(report);
+                relay_came_up = came_up(h.snapshot().status, st);
+                reported = Some(st);
                 true
             }
             // PC back, a display change or a taskbar restart (#618): read the status and put
@@ -1154,7 +1236,10 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         }
         // A UI command already queued owns busy/cancel until that command completes.
         let mut queued_command = false;
-        if automatic {
+        // This job's claim on `busy`, while it is Foxglove's own: a user's command sent while
+        // it runs takes it over (#618), and the job then leaves the keyboard alone.
+        let mut mine = None;
+        if automatic || background {
             h.update(|s| {
                 queued_command = s.busy;
                 if queued_command {
@@ -1162,11 +1247,19 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 }
                 h.cancel.store(false, Ordering::Relaxed);
                 s.busy = true;
+                s.background = true;
+                s.claim = s.claim.wrapping_add(1);
+                mine = Some(s.claim);
                 s.cancelled = false;
                 s.error = None;
                 s.push_progress = None;
             });
         }
+        // Foxglove's own art while a user's command waits in the queue: theirs wins.
+        if background && queued_command {
+            continue;
+        }
+        let taken_over = || mine.is_some_and(|m| h.snapshot().claim != m);
         if !automatic {
             let job = job_for(&command, &h.snapshot(), !from_ui);
             h.update(|s| s.job = job);
@@ -1193,16 +1286,25 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                                     art_cycle::resolve(&i, st.right_set_count, st.flash_used)
                                 })
                                 .or(snap.pin_now());
-                            let choice = match reassert {
-                                // A re-apply (#618) leaves art the right half shows alone.
-                                Some(t) => reapply(&wanted, st).inspect(|_| {
+                            // What asked: a re-apply trigger, a new connection, or the relay
+                            // coming up. Any other STATUS changes nothing (#618).
+                            let why = reassert
+                                .or(connected_now
+                                    .then_some(super::reassert::Trigger::KeyboardConnected))
+                                .or(relay_came_up
+                                    .then_some(super::reassert::Trigger::RightRelayReady));
+                            // Each leaves art the right half shows alone (a SELECT restarts
+                            // the animation and costs relay round trips).
+                            let choice = why
+                                .and_then(|t| reapply(&wanted, st).map(|c| (c, t)))
+                                .filter(|_| !taken_over())
+                                .map(|(c, t)| {
                                     eprintln!(
                                         "{}",
                                         super::reassert::line("the right screen's art", t)
                                     );
-                                }),
-                                None => restore(&wanted, st),
-                            };
+                                    c
+                                });
                             if let Some(choice) = choice {
                                 h.update(|s| {
                                     s.job = Some(Job {
@@ -1236,7 +1338,12 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                             read_slots(link, h, st);
                             note_seen(h, false);
                         }),
+                    // Foxglove's own art a user's command took over: theirs runs next.
+                    Command::Show(_) | Command::Choose(_) if taken_over() => {
+                        Err("taken over".into())
+                    }
                     Command::Show(choice) => choose(link, h, &choice),
+                    Command::Refused(e) => Err(e),
                     Command::Choose(choice) => choose(link, h, &choice).and_then(|st| {
                         h.update(|s| s.status = Some(st));
                         save_pin(h, &choice)?;
@@ -1251,12 +1358,20 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         if queued_command {
             continue;
         }
+        if taken_over() {
+            // The user's command holds `busy` now and ends it.
+            if let Ok(st) = result {
+                h.update(|s| s.status = Some(st));
+            }
+            continue;
+        }
         if let Err(e) = &result {
             // The UI shows words for it (art_words); the raw error is for the log.
             eprintln!("Foxglove: art: {e}");
         }
         h.update(|s| {
             s.busy = false;
+            s.background = false;
             s.cancelled = h.cancelled();
             let job = s.job.take();
             match result {
@@ -1714,8 +1829,8 @@ mod tests {
         assert_eq!(restore(&None, st), None);
     }
 
-    /// #618: an agent's Next sends the tray's own Next once it would show something, and the
-    /// wait ends with that job's outcome (woken by the snapshot change, not a timeout).
+    /// #618: an agent's Next sends the tray's Next as its own job once it would show something;
+    /// the wait ends with that job's outcome (woken by the snapshot change, not a timeout).
     #[test]
     fn an_agent_step_sends_next_and_waits_for_the_job() {
         let (commands, receiver) = mpsc::channel();
@@ -1749,7 +1864,7 @@ mod tests {
             stop: Arc::new(AtomicBool::new(false)),
         };
         h.step_now(true).unwrap();
-        assert!(matches!(receiver.try_recv(), Ok(Command::Next)));
+        assert!(matches!(receiver.try_recv(), Ok(Command::Step(true))));
         assert!(
             h.snapshot().outcome.is_none(),
             "the last job's outcome is cleared"
@@ -1775,7 +1890,7 @@ mod tests {
         );
         assert_eq!(s.status.map(|st| st.right_set), Some(2));
         h.step_now(false).unwrap();
-        assert!(matches!(receiver.try_recv(), Ok(Command::Previous)));
+        assert!(matches!(receiver.try_recv(), Ok(Command::Step(false))));
         // Busy or without the keyboard: refused with a reason, nothing sent.
         h.update(|s| s.busy = true);
         assert_eq!(h.step_now(true), Err("another art job is running".into()));
@@ -1846,5 +1961,338 @@ mod tests {
                 (2, "Set 2".into())
             ]
         );
+    }
+}
+
+/// #618: the art service against an in-memory keyboard on a real host link, window-free. The
+/// board counts every request, so the tests say how much the service asks the keyboard on a
+/// connect, on reports and while idle, and that a user's choice wins over a re-apply.
+#[cfg(test)]
+mod contention_tests {
+    use super::*;
+    use foxglove_link::link::{Bus, Connected, RawHid, Report};
+    use foxglove_link::protocol::{Hello, REPORT};
+    use std::collections::VecDeque;
+    use std::sync::atomic::AtomicU32;
+    use std::sync::Condvar;
+
+    const WAIT: Duration = Duration::from_secs(10);
+
+    /// The left half and the right half's art, as the relay reports them.
+    #[derive(Default)]
+    struct Board {
+        set: Mutex<i8>,
+        link: Mutex<u8>,
+        /// How long a STATUS takes to answer (a slow relay): keeps a re-apply running.
+        status_delay: Mutex<Duration>,
+        statuses: AtomicU32,
+        selects: AtomicU32,
+        others: AtomicU32,
+        inbox: (Mutex<VecDeque<Report>>, Condvar),
+        interrupted: AtomicBool,
+    }
+
+    impl Board {
+        fn new(set: i8) -> Arc<Board> {
+            let b = Board::default();
+            *b.set.lock().unwrap() = set;
+            *b.link.lock().unwrap() = 2;
+            Arc::new(b)
+        }
+
+        fn status(&self, cmd: u8, seq: u16) -> Report {
+            let mut r = [0u8; REPORT];
+            r[0] = protocol::ART;
+            r[1] = 0x80 | cmd;
+            r[6..8].copy_from_slice(&seq.to_le_bytes());
+            r[8] = *self.link.lock().unwrap();
+            r[9] = 2;
+            r[15] = *self.set.lock().unwrap() as u8;
+            r[16] = 6;
+            r
+        }
+
+        fn push(&self, r: Report) {
+            self.inbox.0.lock().unwrap().push_back(r);
+            self.inbox.1.notify_all();
+        }
+
+        /// An art STATUS nobody here asked for: the firmware's relay notice, or another host's
+        /// STATUS reply on the same HID device. `seq` marks it (in `pushed`).
+        fn unasked(&self, seq: u16) {
+            self.push(self.status(protocol::art::STATUS, seq));
+        }
+
+        fn requests(&self) -> (u32, u32, u32) {
+            (
+                self.statuses.load(Ordering::SeqCst),
+                self.selects.load(Ordering::SeqCst),
+                self.others.load(Ordering::SeqCst),
+            )
+        }
+    }
+
+    struct Conn(Arc<Board>);
+
+    impl RawHid for Conn {
+        fn read(&self, buf: &mut Report) -> anyhow::Result<usize> {
+            let b = &self.0;
+            let mut inbox = b.inbox.0.lock().unwrap();
+            loop {
+                if b.interrupted.load(Ordering::Relaxed) {
+                    return Ok(0);
+                }
+                if let Some(r) = inbox.pop_front() {
+                    *buf = r;
+                    return Ok(REPORT);
+                }
+                inbox = b.inbox.1.wait(inbox).unwrap();
+            }
+        }
+
+        fn interrupt(&self) {
+            let _inbox = self.0.inbox.0.lock().unwrap();
+            self.0.interrupted.store(true, Ordering::Relaxed);
+            self.0.inbox.1.notify_all();
+        }
+
+        fn write(&self, out: &[u8]) -> anyhow::Result<()> {
+            let b = &self.0;
+            match (out[0], out[1]) {
+                (protocol::ART, protocol::art::STATUS) => {
+                    b.statuses.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(*b.status_delay.lock().unwrap());
+                    b.push(b.status(protocol::art::STATUS, 0));
+                }
+                (protocol::ART, protocol::art::SELECT) => {
+                    b.selects.fetch_add(1, Ordering::SeqCst);
+                    *b.set.lock().unwrap() = out[2] as i8;
+                    b.push(b.status(protocol::art::SELECT, 0));
+                }
+                _ => {
+                    b.others.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// The service on the board's link with `pinned`, its connect job done.
+    struct Rig {
+        board: Arc<Board>,
+        h: Handle,
+        worker: Option<std::thread::JoinHandle<()>>,
+        _link: Arc<Link>,
+    }
+
+    impl Rig {
+        fn new(showing: i8, pinned: i8) -> Rig {
+            crate::foxglove::store::test_config_dir();
+            let board = Board::new(showing);
+            let opened = board.clone();
+            let link = Arc::new(Link::start(Box::new(move || {
+                let connected = Connected {
+                    product: "Fake".into(),
+                    hello: Some(Hello {
+                        version: 1,
+                        width: 68,
+                        height: 160,
+                        right_link: 2,
+                        ..Hello::default()
+                    }),
+                    bus: Bus::Unknown,
+                };
+                Ok((Box::new(Conn(opened.clone())) as Box<dyn RawHid>, connected))
+            })));
+            link.wait_connected(WAIT).unwrap();
+            let (commands, receiver) = mpsc::channel();
+            let h = Handle {
+                commands,
+                state: Arc::new(Mutex::new(Snapshot {
+                    pinned: Some(Choice::BuiltIn(pinned)),
+                    ..Snapshot::default()
+                })),
+                cancel: Arc::new(AtomicBool::new(false)),
+                stop: Arc::new(AtomicBool::new(false)),
+            };
+            let w = h.clone();
+            let worker = std::thread::spawn(move || run_events(&w, &receiver));
+            h.commands.send(Command::Available(link.clone())).unwrap();
+            let rig = Rig {
+                board,
+                h,
+                worker: Some(worker),
+                _link: link,
+            };
+            rig.until("the connect job ended", |s| {
+                s.connected && !s.busy && s.status.is_some_and(|st| st.right_set == pinned)
+            });
+            rig
+        }
+
+        /// Sleeps on the service's snapshot changes until `done`, at most `WAIT`.
+        fn until(&self, what: &str, done: impl Fn(&Snapshot) -> bool) -> Snapshot {
+            let end = Instant::now() + WAIT;
+            let mut changes = CHANGES.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                let s = self.h.snapshot();
+                if done(&s) {
+                    return s;
+                }
+                let left = end.saturating_duration_since(Instant::now());
+                assert!(!left.is_zero(), "{what}: timed out; {:?}", s.status);
+                changes = CHANGED
+                    .wait_timeout(changes, left.min(Duration::from_millis(200)))
+                    .unwrap_or_else(|e| e.into_inner())
+                    .0;
+            }
+        }
+
+        /// `n` unasked STATUS reports, then the service done with the last one.
+        fn reports(&self, n: u16) {
+            for seq in 1..=n {
+                self.board.unasked(seq);
+            }
+            self.until("the reports were handled", |s| {
+                !s.busy && s.status.is_some_and(|st| st.pushed == n)
+            });
+        }
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            let _ = self.h.commands.send(Command::Stop);
+            if let Some(w) = self.worker.take() {
+                let _ = w.join();
+            }
+        }
+    }
+
+    /// A connect asks a bounded, counted number of requests: one fresh status read (two
+    /// STATUS), and the pin only when the right half doesn't show it (a SELECT and its settled
+    /// STATUS). Then, with no events, nothing at all reaches the keyboard.
+    #[test]
+    fn a_connect_asks_a_counted_few_and_idle_asks_nothing() {
+        let rig = Rig::new(2, 2);
+        assert_eq!(rig.board.requests(), (2, 0, 0), "the pin shows: no SELECT");
+        let rig = Rig::new(1, 4);
+        assert_eq!(rig.board.requests(), (3, 1, 0), "the pin put back once");
+        // Idle: no events, no traffic (the service sleeps on its queue).
+        let before = rig.board.requests();
+        std::thread::sleep(Duration::from_millis(1500));
+        assert_eq!(rig.board.requests(), before, "idle asks nothing");
+        assert!(!rig.h.snapshot().busy);
+    }
+
+    /// Unasked STATUS (another host reading the relay, the lab's own selects) doesn't fight
+    /// the right half's art: N of them cause no re-apply. The relay coming up causes one,
+    /// however many reports follow it.
+    #[test]
+    fn n_status_reports_cause_at_most_one_reapply() {
+        let rig = Rig::new(2, 2);
+        let start = rig.board.requests();
+        // Changed behind the app's back (the lab's direct SELECT), then other hosts' reads.
+        *rig.board.set.lock().unwrap() = 0;
+        rig.reports(5);
+        assert_eq!(rig.board.requests(), start, "no request for 5 reports");
+        assert_eq!(rig.h.snapshot().status.map(|s| s.right_set), Some(0));
+        // The relay drops and comes back: its notice puts the pin back, once.
+        *rig.board.link.lock().unwrap() = 1;
+        rig.board.unasked(100);
+        rig.until("the relay is down", |s| {
+            !s.busy && s.status.is_some_and(|st| st.pushed == 100)
+        });
+        *rig.board.link.lock().unwrap() = 2;
+        rig.reports(5);
+        let (statuses, selects, others) = rig.board.requests();
+        assert_eq!(selects - start.1, 1, "one re-apply for the relay coming up");
+        assert_eq!(statuses - start.0, 1, "its settled read only");
+        assert_eq!(others, 0);
+        assert_eq!(*rig.board.set.lock().unwrap(), 2, "the pin shows again");
+    }
+
+    /// A user's (or an API caller's) choice while Foxglove's own re-apply runs is taken, not
+    /// refused (#618: art.select answered "another art job is running"); the re-apply leaves the
+    /// keyboard alone, and later re-applies keep what was chosen.
+    #[test]
+    fn a_choice_during_a_reapply_wins_and_stays() {
+        let rig = Rig::new(2, 2);
+        *rig.board.status_delay.lock().unwrap() = Duration::from_millis(400);
+        *rig.board.set.lock().unwrap() = 0;
+        let start = rig.board.requests();
+        rig.h
+            .commands
+            .send(Command::Reassert(
+                super::super::reassert::Trigger::DisplayChange,
+            ))
+            .unwrap();
+        rig.until("the re-apply runs", |s| s.busy && s.background);
+        assert!(rig.h.select(3), "a select during a re-apply is taken");
+        let after = rig.h.wait_job(WAIT);
+        assert!(
+            matches!(after.outcome.as_ref().map(|o| &o.result), Some(Ok(()))),
+            "{:?}",
+            after.outcome
+        );
+        assert_eq!(*rig.board.set.lock().unwrap(), 3);
+        assert_eq!(
+            after.pinned,
+            Some(Choice::BuiltIn(3)),
+            "the choice is the pin"
+        );
+        assert_eq!(
+            rig.board.requests().1 - start.1,
+            1,
+            "only the user's SELECT"
+        );
+        // The next display change finds the choice on screen: nothing re-applied.
+        *rig.board.status_delay.lock().unwrap() = Duration::ZERO;
+        let reads = rig.board.requests().0;
+        rig.h
+            .commands
+            .send(Command::Reassert(
+                super::super::reassert::Trigger::DisplayChange,
+            ))
+            .unwrap();
+        rig.until("the second re-apply read the status", |s| {
+            !s.busy && rig.board.requests().0 >= reads + 2
+        });
+        assert_eq!(
+            rig.board.requests().1 - start.1,
+            1,
+            "the choice isn't reverted"
+        );
+        assert_eq!(*rig.board.set.lock().unwrap(), 3);
+    }
+
+    /// The tray's Next › (and an agent's art.select next) during a re-apply: taken, and shown.
+    #[test]
+    fn a_step_during_a_reapply_is_taken() {
+        let rig = Rig::new(2, 2);
+        *rig.board.status_delay.lock().unwrap() = Duration::from_millis(400);
+        rig.h
+            .commands
+            .send(Command::Reassert(super::super::reassert::Trigger::PcBack))
+            .unwrap();
+        rig.until("the re-apply runs", |s| s.busy && s.background);
+        rig.h.step_now(true).expect("Next during a re-apply");
+        let after = rig.h.wait_job(WAIT);
+        assert!(
+            matches!(after.outcome.as_ref().map(|o| &o.result), Some(Ok(()))),
+            "{:?}",
+            after.outcome
+        );
+        assert_eq!(*rig.board.set.lock().unwrap(), 3, "the next piece");
+        // A job the user started still refuses a second one.
+        rig.h.update(|s| {
+            s.busy = true;
+            s.background = false;
+        });
+        assert_eq!(
+            rig.h.step_now(true),
+            Err("another art job is running".into())
+        );
+        assert!(!rig.h.select(1));
+        rig.h.update(|s| s.busy = false);
     }
 }

@@ -446,6 +446,17 @@ impl Devices for AppDevices {
                 })?;
                 Ok(json!(zone_readback(&after, &key, index, color)?))
             }
+            "behaviors.list" => {
+                let p: methods::DeviceParams = params(_params)?;
+                with_device(&p.device, behaviors_list)
+            }
+            "behaviors.invoke" => {
+                let p: methods::InvokeParams = params(_params)?;
+                if super::pause::paused() {
+                    return Err(paused_error());
+                }
+                with_device(&p.device, |d| behaviors_invoke(d, &p))
+            }
             "art.status" => {
                 let p: methods::DeviceParams = params(_params)?;
                 let h = art_service(&p.device)?;
@@ -575,6 +586,69 @@ fn art_service(device: &str) -> Result<super::art_service::Handle, Error> {
         message: "the art service isn't running".into(),
         data: None,
     })
+}
+
+/// `behaviors.list` (#639): what the keymap lets the app invoke, with ids, parameters and names,
+/// from the keymap read on the firmware build the keyboard runs. Before that read (or while
+/// the saved copy is from another or an unknown build, #636) it says "not known yet" instead
+/// of an empty list that would read as "nothing to invoke".
+pub(crate) fn behaviors_list(d: &dyn foxglove_devices::Device) -> Result<Value, Error> {
+    let b = d.behaviors().ok_or_else(no_behaviors)?;
+    behaviors_known(d)?;
+    let behaviors = b
+        .list()
+        .map_err(device_error)?
+        .into_iter()
+        .map(|i| methods::Behavior {
+            id: i.id,
+            param1: i.param1,
+            param2: i.param2,
+            name: i.name,
+            needs_confirmation: i.risk == foxglove_devices::Risk::Confirm,
+        })
+        .collect();
+    Ok(json!(methods::Behaviors { behaviors }))
+}
+
+/// `behaviors.invoke` (#639): one listed behavior, with the app's own refusals: what isn't
+/// listed is unsupported (`&bt`, `&out`, `&bootloader`, `&sys_reset` and `&soft_off` never
+/// are, `keyboard_actions::describe`), and one that needs the user's click is denied.
+pub(crate) fn behaviors_invoke(
+    d: &dyn foxglove_devices::Device,
+    p: &methods::InvokeParams,
+) -> Result<Value, Error> {
+    let b = d.behaviors().ok_or_else(no_behaviors)?;
+    behaviors_known(d)?;
+    b.invoke(p.id, p.param1, p.param2, false)
+        .map_err(device_error)?;
+    eprintln!(
+        "Foxglove: behavior {} ({}, {}) invoked (api)",
+        p.id, p.param1, p.param2
+    );
+    Ok(json!(methods::Empty {}))
+}
+
+fn no_behaviors() -> Error {
+    Error {
+        code: code::UNSUPPORTED,
+        message: "this device has no behaviors Foxglove can invoke".into(),
+        data: None,
+    }
+}
+
+/// The host-link keyboard's behaviors are known once its keymap was read on this build (#636).
+fn behaviors_known(d: &dyn foxglove_devices::Device) -> Result<(), Error> {
+    let host = keyboard().is_some_and(|k| k.info().id == d.info().id);
+    if host && super::devices::underglow() == super::devices::Underglow::Unknown {
+        return Err(Error {
+            code: code::BUSY,
+            message: "the keyboard's behaviors aren't known yet: Foxglove waits for its keymap \
+                      to be read from the firmware it runs"
+                .into(),
+            data: None,
+        });
+    }
+    Ok(())
 }
 
 /// `art.status`: what the right screen shows, from the art service's snapshot.

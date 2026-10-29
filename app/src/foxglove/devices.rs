@@ -825,6 +825,73 @@ mod build_tests {
         assert_eq!(heard_lighting_known(), 1);
         drop(rig);
     }
+
+    /// #639: the local API's `behaviors.list` and `behaviors.invoke` answer from the keymap read
+    /// on the build the keyboard runs: "not known yet" before that, then the allowlist, and the
+    /// app's refusals (`&bt`, `&sys_reset` never invocable) hold.
+    #[test]
+    fn the_api_lists_and_invokes_only_the_trusted_keymaps_behaviors() {
+        use crate::foxglove::api::{behaviors_invoke, behaviors_list};
+        use foxglove_plugin_api::methods::{Behaviors, InvokeParams};
+        use foxglove_plugin_api::rpc::code;
+        use zmk_studio_api::BluetoothCommand;
+        let rig = Rig::new(5, Some("aaaa1111"));
+        let d = device().unwrap();
+        let invoke = |id, param1| {
+            behaviors_invoke(
+                d.as_ref(),
+                &InvokeParams {
+                    device: d.info().id.to_string(),
+                    id,
+                    param1,
+                    param2: 0,
+                },
+            )
+        };
+        let unknown = behaviors_list(d.as_ref()).unwrap_err();
+        assert_eq!(unknown.code, code::BUSY, "{}", unknown.message);
+        assert!(unknown.message.contains("aren't known yet"));
+        assert_eq!(invoke(4, 1).unwrap_err().code, code::BUSY);
+        assert!(rig.invokes().is_empty());
+
+        // The keymap read from this build: `&rgb_ug RGB_ON` (4), `&bt BT_NXT` (7), `&sys_reset` (8).
+        let bindings = [
+            (Behavior::Underglow(UnderglowCommand::On), 4, 1),
+            (Behavior::Bluetooth(BluetoothCommand::Next), 7, 1),
+            (Behavior::Reset, 8, 0),
+        ];
+        let resolved = vec![ResolvedLayer {
+            id: 0,
+            name: "Base".into(),
+            bindings: bindings.iter().map(|(b, _, _)| b.clone()).collect(),
+        }];
+        let raw = Keymap {
+            layers: vec![Layer {
+                id: 0,
+                name: String::new(),
+                bindings: bindings
+                    .iter()
+                    .map(|(_, id, p1)| BehaviorBinding {
+                        behavior_id: *id,
+                        param1: *p1,
+                        param2: 0,
+                    })
+                    .collect(),
+            }],
+            ..Default::default()
+        };
+        keyboard_actions::learn(&resolved, &raw, firmware_build());
+        let list: Behaviors = serde_json::from_value(behaviors_list(d.as_ref()).unwrap()).unwrap();
+        let ids: Vec<u32> = list.behaviors.iter().map(|b| b.id).collect();
+        assert_eq!(ids, [4], "only the allowlist: {:?}", list.behaviors);
+        assert!(!list.behaviors[0].needs_confirmation);
+        invoke(4, 1).unwrap();
+        assert_eq!(rig.invokes(), [4]);
+        for (id, p1) in [(7, 1), (8, 0), (4, 2)] {
+            assert_eq!(invoke(id, p1).unwrap_err().code, code::UNSUPPORTED, "{id}");
+        }
+        assert!(rig.invokes().is_empty(), "nothing refused went out");
+    }
 }
 
 #[cfg(test)]
