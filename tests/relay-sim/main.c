@@ -438,7 +438,7 @@ static void push_relink_tap(void) {
 // right-art-select-golden with the app running (#662): art.select set 0, a snapshot, set 1, a
 // snapshot. The right's ATT server follows Zephyr 3.5's response-buffer rule (a request that
 // comes before the right's system queue has run its last response's sent callback gets no
-// response at all), and that queue is busy for 15 ms after each redraw (SELECT, SNAP). A left that
+// response at all), and that queue is busy for 20 ms after each redraw (SELECT, SNAP). A left that
 // sends its next request the moment an answer comes (the SELECT's status read, the first read
 // after the SNAP write, each Read Blob of the image) loses it: on hardware, "right half timed
 // out", then "still busy after retries" and the unstick's link drop (5a50426 gate).
@@ -448,7 +448,7 @@ static void select_snap(void) {
     app_on = true;
     k_msleep(2000);
     sim_bt_faults.rsp_meta_rule = true;
-    sim_bt_faults.right_redraw_busy_us = 15000;
+    sim_bt_faults.right_redraw_busy_us = 20000; // more than a request turnaround (2 events)
     int drops = sim_bt_stats.link_drops;
     char why[160];
     int64_t worst = 0;
