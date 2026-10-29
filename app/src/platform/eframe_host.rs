@@ -87,9 +87,10 @@ struct EframeApp {
     placement_tries: u32,
     #[cfg(target_os = "windows")]
     displays_checked: Option<std::time::Instant>,
-    // Foxglove (#612): whether the overlay window was minimized at the last frame.
+    // Foxglove (#612): whether the overlay window was minimized (or parked, #618) at the last
+    // frame.
     #[cfg(target_os = "windows")]
-    was_iconic: bool,
+    was_away: bool,
 }
 
 impl eframe::App for EframeApp {
@@ -159,7 +160,7 @@ impl EframeApp {
         // overlay (and moves it onto a live display) before this frame draws the panel.
         if let Some(placed) = crate::foxglove::overlay_restore::frame(
             hwnd,
-            &mut self.was_iconic,
+            &mut self.was_away,
             self.app.monitor(),
             place_window,
         ) {
@@ -192,10 +193,17 @@ impl EframeApp {
             self.placement_tries = 0;
         }
         // A few tries per area, so a window manager that insists on another size isn't fought
-        // forever.
-        if window_rect(hwnd) != Some(target) && self.placement_tries < 3 {
+        // forever. Foxglove (#618): never while minimized or parked (overlay_restore::place_due).
+        let rect = window_rect(hwnd);
+        let iconic = crate::foxglove::overlay_restore::is_iconic(hwnd);
+        if crate::foxglove::overlay_restore::place_due(iconic, rect, target, self.placement_tries) {
             self.placement_tries += 1;
             place_window(hwnd, target);
+            let now = window_rect(hwnd);
+            eprintln!(
+                "{}",
+                crate::foxglove::overlay_restore::placed_line(rect, target, now)
+            );
             ctx.request_repaint();
         }
     }
@@ -441,7 +449,7 @@ fn run_inner(
                 #[cfg(target_os = "windows")]
                 displays_checked: None,
                 #[cfg(target_os = "windows")]
-                was_iconic: false,
+                was_away: false,
             }))
         }),
     )
