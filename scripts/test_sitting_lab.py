@@ -141,5 +141,114 @@ class Scripts(unittest.TestCase):
         self.assertIn('if args.focus and hwnd:', text)
 
 
+class PreSittingRun(unittest.TestCase):
+    """The 10/29 pre-sitting run's three failures (On-call, #90), each from its own inputs."""
+
+    def test_the_panels_hit_test_is_waited_for_not_read_once(self):
+        # overlay_tray --focus FAIL "panel open: the overlay takes the mouse (not transparent)":
+        # tray.set_panel answers from the frame that drew the panel; the region follows in that
+        # frame, the passthrough only after its paint. A style read once right after the region
+        # sees WS_EX_TRANSPARENT still; waiting (bounded) sees the panel take the mouse.
+        transparent = 0xC0138  # as the run read it: WS_EX_TRANSPARENT | WS_EX_LAYERED | topmost, …
+        taking = transparent & ~labkit.WS_EX_TRANSPARENT & ~labkit.WS_EX_LAYERED  # winit's hittest on
+        reads = iter([transparent, transparent, taking])
+        style = lambda: next(reads, labkit.WS_EX_LAYERED)
+        self.assertTrue(labkit.click_through(transparent), 'a single read right after the region: FAIL')
+        ok, last = labkit.wait(style, lambda s: not labkit.click_through(s), 2, poll=0.01)
+        self.assertTrue(ok, hex(last))
+        text = (LAB / 'overlay_tray.py').read_text(encoding='utf-8')
+        self.assertIn("ok, style = wait(lambda: win.exstyle(hwnd), lambda s: not click_through(s, win.visible(hwnd)), 5,",
+                      text)
+        self.assertNotIn('not click_through(win.exstyle(hwnd), win.visible(hwnd))', text, 'no one-shot read')
+
+    def test_the_test_app_gets_the_users_keyboard(self):
+        # FAIL "Settings focused: only over the keys (a window region): None": the temp store had
+        # no [connection.last], so the test app's overlay never connected and drew no keys.
+        store = ('schema = 1\n\n[connection.last]\nid = "COM4"\npid = 24926\ntransport = "serial"\nvid = 7504\n\n'
+                 '[layers.names]\n0 = "QWERTY"\n')
+        seed = labkit.remembered_keyboard(store)
+        import tomllib
+        self.assertEqual(tomllib.loads('schema = 1\n' + seed)['connection']['last'],
+                         {'id': 'COM4', 'pid': 24926, 'transport': 'serial', 'vid': 7504})
+        self.assertEqual(labkit.remembered_keyboard('schema = 1\n[lighting]\nfollow_accent = true\n'), '')
+        self.assertEqual(labkit.remembered_keyboard('[connection.last]\nid = "COM4"\n'), '', 'incomplete')
+        self.assertEqual(labkit.remembered_keyboard('not = [toml'), '')
+        text = (LAB / 'overlay_tray.py').read_text(encoding='utf-8')
+        self.assertIn("temp_config('foxglove-overlay-tray-', KEYBOARD)", text)
+
+    def test_a_closed_pipe_says_the_app_ended(self):
+        # The crash: OSError 22 writing the API pipe after the test app had gone.
+        class Broken:
+            def write(self, _):
+                raise OSError(22, 'Invalid argument')
+
+            def read(self, _):
+                raise OSError(22, 'Invalid argument')
+        api = object.__new__(labkit.Api)
+        api.pipe, api.next = Broken(), 0
+        with self.assertRaises(labkit.AppGone) as e:
+            api.call('tray.panel', {})
+        self.assertIn('the API pipe is closed', str(e.exception))
+        self.assertTrue(issubclass(labkit.AppGone, RuntimeError))
+        text = (LAB / 'overlay_tray.py').read_text(encoding='utf-8')
+        self.assertIn('except AppGone:\n        raise', text, "call() doesn't swallow it")
+        self.assertIn("check('Settings minimized: the test app keeps running (in the tray)'", text)
+
+    def test_how_the_test_app_ended(self):
+        # 10/29: no panic line, no crash event; it quit with code 0 when Settings was minimized
+        # (KeyPeek's quit before the overlay ever connected; the app no longer does that).
+        log = ['2026-10-29 09:08:57Z Foxglove 0.2.0 started (pid 650076, 228943 s after boot)',
+               '2026-10-29 09:08:57Z Foxglove: already running; showing that one']
+        self.assertIn('quit on its own (exit code 0), not a crash', labkit.exit_report(0, log))
+        self.assertIn('already running', labkit.exit_report(0, log))
+        now = log + ['2026-10-29 10:00:00Z Foxglove: the overlay window closed; quitting']
+        self.assertIn('the overlay window closed; quitting', labkit.exit_report(0, now))
+        self.assertIn('access violation', labkit.exit_report(-1073741819, log), 'signed 0xC0000005')
+        self.assertIn('access violation', labkit.exit_report(0xC0000005, log))
+        panic = log + ['2026-10-29 09:09:00Z Foxglove: panic in main: boom at src/x.rs:1']
+        self.assertIn('a panic: ', labkit.exit_report(101, panic))
+        self.assertEqual(labkit.exit_report(None, log), 'still running')
+
+    def test_the_app_object_reports_its_exit(self):
+        import tempfile
+        cfg = Path(tempfile.mkdtemp(prefix='foxglove-lab-test-')) / 'config'
+        (cfg / 'logs').mkdir(parents=True)
+        (cfg / 'logs' / 'foxglove.log').write_text('2026-10-29 09:08:53Z Foxglove 0.2.0 started (pid 1)\n',
+                                                    encoding='utf-8')
+        app = labkit.App(sys.executable, cfg)
+        app.proc = subprocess.Popen([sys.executable, '-c', 'raise SystemExit(0)'])
+        app.proc.wait(30)
+        self.assertEqual(app.exited(), 0)
+        self.assertIn('not a crash', app.exit_report())
+
+    def test_the_windows_accent_is_the_one_foxglove_reads(self):
+        # wallpaper_follow FAIL: fury-forest (no palette) expected 39/70, the app applied 42/97.
+        # The test read DWM's AccentColor (the picked colour); accent.rs reads UISettings' Accent,
+        # the accent palette's entry 3. Both from this PC's registry on 10/29.
+        picked = wc.dwm_rgb(0xFF3F9FD3)
+        self.assertEqual(picked, (0xd3, 0x9f, 0x3f))
+        self.assertEqual(wc.hue_sat(*picked), (39, 70), "what the run expected")
+        palette = bytes.fromhex('FAE76C00 F8D33400 C28E0600 9C6F0500 84570400 65380300 42140100 88179800')
+        accent = wc.palette_accent(palette)
+        self.assertEqual(accent, (0x9c, 0x6f, 0x05), "UISettings' Accent read the same on 10/29")
+        self.assertEqual(wc.hue_sat(*accent), (42, 97), "what the app applied: right")
+        self.assertIsNone(wc.palette_accent(b'\x00' * 8))
+        forest = {'id': 'fury-forest', 'motifs': []}
+        hs, source = wc.expected(forest, (accent, 'UISettings Accent'))
+        self.assertEqual(hs, (42, 97))
+        self.assertIn('the Windows accent #9c6f05', source)
+        pattern = {'palette': {'accent': '#d9a441'}}
+        hs, source = wc.expected(pattern, (accent, 'UISettings Accent'))
+        self.assertEqual((hs, source.split(' #')[0]), ((39, 70), 'the wallpaper palette'), 'a palette wins')
+        self.assertEqual(wc.expected(forest, (None, 'unreadable'))[0], None)
+        text = (LAB / 'wallpaper_follow.py').read_text(encoding='utf-8')
+        self.assertNotIn("'AccentColor'", text, 'the picked colour is never the expectation')
+
+    def test_the_lighting_flags(self):
+        store = '[lighting]\nfollow_accent = true\n\n[overlay_place]\nmonitor = ""\n'
+        self.assertTrue(wc.follow_accent(store))
+        self.assertFalse(wc.follow_wallpaper(store))
+
+
 if __name__ == '__main__':
     unittest.main()

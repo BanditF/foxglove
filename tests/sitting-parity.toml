@@ -293,7 +293,7 @@ needs_eyes = "eyes: dragging the overlay, its opacity over a real desktop, the s
 match = "Overlay clickable only while Settings has focus"
 api = ["overlay.window", "overlay.restore"]
 script = ["scripts/lab/overlay_tray.py"]
-note = "sitting IA1-IA2: WS_EX_TRANSPARENT and WindowFromPoint with Settings closed, focused (a second launch) and minimized"
+note = "sitting IA1-IA2: WS_EX_TRANSPARENT and WindowFromPoint with Settings unfocused, focused (a second launch) and minimized (the app keeps running)"
 needs_eyes = "a real click reaching the desktop through the overlay (sitting I2); a game in front, alt-tab and dragging across displays are the user's desktop"
 
 [[step]]
@@ -483,6 +483,7 @@ log = ["tray panel "]
 batch = "IA2"
 script = ["scripts/lab/overlay_tray.py"]
 api = ["tray.panel", "overlay.window"]
+log = ["the overlay connected to the keyboard's keymap", "Settings closed before the overlay connected"]
 
 [[step]]
 batch = "I1"

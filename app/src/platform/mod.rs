@@ -10,6 +10,9 @@ mod wayland;
 // Linux Wayland sessions we drive a wlr-layer-shell surface directly instead.
 pub trait OverlayHost {
     fn set_passthrough(&mut self, enabled: bool);
+    // Foxglove (#618): unused since closing Settings no longer quits (ui_settings.rs); kept so the
+    // upstream hosts stay as they are.
+    #[allow(dead_code)]
     fn request_close(&mut self);
     /// Foxglove (#405): limits where the window takes the mouse (and draws) to a rounded
     /// rectangle in window pixels, `[left, top, right, bottom, corner]`; `None` gives the whole

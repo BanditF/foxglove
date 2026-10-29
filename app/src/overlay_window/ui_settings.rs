@@ -75,7 +75,7 @@ impl OverlayApp {
     pub(super) fn draw_settings_window(
         &mut self,
         ctx: &egui::Context,
-        host: &mut dyn crate::platform::OverlayHost,
+        _host: &mut dyn crate::platform::OverlayHost,
     ) {
         let mut open = self.ui.settings_visible;
         let reconnecting = matches!(
@@ -502,7 +502,11 @@ impl OverlayApp {
             self.persist_settings();
             if !self.session.ever_connected {
                 self.request_close_editor();
-                host.request_close();
+                // Foxglove: no quit here. KeyPeek ended the app when Settings closed before a
+                // keyboard ever connected; Foxglove lives in the tray (lights, screens, the local
+                // API), and minimizing Settings closes it (#549), so that quit took the whole app
+                // down on a minimize, with no line in the log (the #618 pre-sitting lab run).
+                eprintln!("{}", crate::foxglove::settings_window::CLOSED_UNCONNECTED);
             }
         }
     }

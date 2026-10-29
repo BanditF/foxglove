@@ -12,6 +12,7 @@ REPO = Path(__file__).resolve().parents[2]
 # runs there (#618: a relative tool path crashed overlay_tray's lab cases).
 TARGET = REPO / os.environ.get('CARGO_TARGET_DIR', 'target')
 REAL_CONFIG = Path(os.environ['APPDATA']) / 'Foxglove' / 'config'
+REAL_STORE = Path(os.environ['APPDATA']) / 'Foxglove' / 'foxglove.toml'
 
 
 def tool(path, flag='--lab', kind='file'):
@@ -180,6 +181,30 @@ def require_user_idle(seconds):
         sys.exit(2)
     note = f" (later input was the harness's: {r[3]})" if r else ''
     print(f'user idle: {"unknown" if idle is None else f"{idle:.0f} s"}{note}', flush=True)
+
+
+def remembered_keyboard(store_text):
+    """The `[connection.last]` table of a settings store (the keyboard the overlay connects to by
+    itself on start, last_device.rs) as TOML text for a temp store, or '' when there is none.
+    Without it a test app's overlay never connects: it draws no keys, so with Settings focused
+    it has nothing to take the mouse over (#549), and before #618's fix closing Settings quit it."""
+    import tomllib
+    try:
+        last = tomllib.loads(store_text).get('connection', {}).get('last')
+    except tomllib.TOMLDecodeError:
+        return ''
+    if not isinstance(last, dict) or not {'vid', 'pid', 'transport', 'id'} <= set(last):
+        return ''
+    return (f"\n[connection.last]\nid = {json.dumps(str(last['id']))}\npid = {int(last['pid'])}\n"
+            f"transport = {json.dumps(str(last['transport']))}\nvid = {int(last['vid'])}\n")
+
+
+def users_keyboard():
+    """remembered_keyboard() of the user's own store (read only)."""
+    try:
+        return remembered_keyboard(REAL_STORE.read_text(encoding='utf-8', errors='replace'))
+    except OSError:
+        return ''
 
 
 def temp_config(prefix, store=''):
@@ -395,7 +420,22 @@ class App:
         self.proc = subprocess.Popen([str(self.exe)], env=self.env)
         return self
 
+    def exited(self):
+        """The test app's exit code once it has ended, else None."""
+        return self.proc.poll()
+
+    def exit_report(self):
+        """Why the test app is gone, from its exit code and its log (in the temp config). Waits
+        up to 10 s for a closing app to end (its pipe can break a moment before it exits)."""
+        try:
+            self.proc.wait(10)
+        except subprocess.TimeoutExpired:
+            pass
+        return exit_report(self.proc.poll(), log_lines(self.cfg, 'Foxglove'))
+
     def __exit__(self, *exc):
+        if self.proc.poll() is not None:
+            print('the test app had already ended:', self.exit_report(), flush=True)
         self.proc.terminate()
         try:
             self.proc.wait(10)
@@ -409,6 +449,38 @@ class App:
         time.sleep(5)
         alive = [p for p in self.previous if p.lower() in ps("(Get-Process -Name foxglove -ErrorAction SilentlyContinue).Path").lower()]
         print('restored:', alive if alive == self.previous else f'{alive} of {self.previous} (check!)', flush=True)
+
+
+# Windows' NTSTATUS codes a crashed process exits with, as unsigned 32-bit.
+CRASH_CODES = {0xC0000005: 'an access violation', 0xC0000409: 'a stack buffer overrun (abort)',
+               0xC00000FD: 'a stack overflow', 0xC0000374: 'heap corruption'}
+
+
+def exit_report(code, lines):
+    """One line on how the test app ended: its exit code read as a crash, a Rust panic or a quit,
+    and the last lines of its log. A panic's own log line ("Foxglove: panic in …") wins."""
+    if code is None:
+        return 'still running'
+    tail = [l for l in lines if 'Foxglove' in l][-3:]
+    panic = [l for l in lines if 'Foxglove: panic in ' in l]
+    quits = [l for l in lines if 'the overlay window closed; quitting' in l or 'Quit from the tray menu' in l]
+    c = code & 0xFFFFFFFF
+    if panic:
+        why = f'a panic: {panic[-1]}'
+    elif c in CRASH_CODES:
+        why = f'a crash ({CRASH_CODES[c]}, 0x{c:08X})'
+    elif c == 101:
+        why = 'a Rust panic (exit code 101)'
+    elif c == 0 and quits:
+        why = f'it quit on its own (exit code 0), not a crash: {quits[-1]}'
+    elif c == 0:
+        why = ('it quit on its own (exit code 0), not a crash; builds before #618\'s fix log no line '
+               'for a window-loop exit')
+    elif c == 1:
+        why = 'it was stopped, or failed to start (exit code 1)'
+    else:
+        why = f'exit code {code} (killed or crashed)'
+    return f'{why}; its log ends: {tail}'
 
 
 def rgb(lab, env):
@@ -441,6 +513,10 @@ def wait(read, pred, seconds, poll=0.5):
         time.sleep(poll)
 
 
+class AppGone(RuntimeError):
+    """The app's end of the API pipe is gone: the app ended (see App.exit_report)."""
+
+
 class Api:
     """A client of Foxglove's local API over its named pipe (docs/local-api.md), as an outside tool."""
 
@@ -451,14 +527,21 @@ class Api:
                                                 'permissions': permissions})['granted']
 
     def call(self, method, params):
-        """The call's result; raises RuntimeError with the API error."""
+        """The call's result; raises RuntimeError with the API error, and AppGone when the pipe
+        broke (the app ended: on Windows a write to a closed pipe is OSError 22, EINVAL)."""
         self.next += 1
-        self.pipe.write((json.dumps({'jsonrpc': '2.0', 'id': self.next, 'method': method, 'params': params}) + '\n').encode())
+        try:
+            self.pipe.write((json.dumps({'jsonrpc': '2.0', 'id': self.next, 'method': method, 'params': params}) + '\n').encode())
+        except OSError as e:
+            raise AppGone(f'{method}: the API pipe is closed ({e})') from e
         buf = b''
         while True:
-            c = self.pipe.read(1)
+            try:
+                c = self.pipe.read(1)
+            except OSError as e:
+                raise AppGone(f'{method}: the API pipe is closed ({e})') from e
             if not c:
-                raise RuntimeError('Foxglove closed the connection')
+                raise AppGone(f'{method}: Foxglove closed the connection')
             buf += c
             if c == b'\n':
                 msg, buf = json.loads(buf), b''

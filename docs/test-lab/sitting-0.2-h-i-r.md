@@ -25,7 +25,12 @@ Step ids: `HA1` is an agent step of batch H (On-call runs it), `H1` a user step.
   - With it on, the accent comes from the first monitor, in Wallpaper Engine's key order, whose
     wallpaper has a palette. That is FURY Constellations on the Dell (`#d9a441`, hue/sat 39/70),
     whatever the HUD monitor shows. FURY Forest and the HUD have no palette.
-  - The Windows accent is `#d39f3f` (39/70), the same gold, so no switch would show a change.
+  - The Windows accent Foxglove follows is UISettings' Accent, `#9c6f05` (42/97): the base of the
+    accent palette Windows derives from the colour picked in Settings (`#d39f3f`, 39/70, DWM's
+    AccentColor, which Foxglove doesn't read). The 10/29 pre-sitting run expected the pick and
+    failed `HA4` on a correct 42/97 (fixed in the check; `wallpaper_check.py state` prints both).
+  - On the board the user's lights read about 23/100, not 42/97: RGB_STATE is the colour after
+    the keyboard's calibration (gamma 2.5 in the user's store), which Foxglove reads back as 42/97.
   - The case follows only with "Match keyboard" on, and that's off (`match_keyboard = false`).
   - `HA4` now checks the mechanism with the wallpaper test hook. `H5` keeps one look at the
     gold.
@@ -43,8 +48,8 @@ Step ids: `HA1` is an agent step of batch H (On-call runs it), `H1` a user step.
 ## Batch H: wallpaper (#586, #527, #70, #571)
 
 Agent, before the sitting (On-call's run list):
-- `HA0` `wallpaper_check.py state`: Wallpaper Engine runs, the HUD is on a monitor, the playback settings, the Presets card's expected names, "Lights follow the wallpaper" and the accent it would take; `foxglove-lab --allow-app status` reads RGB_STATE on 39/70 (the gold `H5` looks at).
-- `HA4` `wallpaper_follow.py` (a test app, temp config, wallpaper test hook): switching to FURY Pattern, then Cauldron Corner, then FURY Forest (no palette) puts each accent, then the Windows accent, on both halves within the bounds, one "Foxglove accent: applied" line each; the lights are put back.
+- `HA0` `wallpaper_check.py state`: Wallpaper Engine runs, the HUD is on a monitor, the playback settings, the Presets card's expected names, "Lights follow the wallpaper", the Windows accent as Foxglove reads it, and what the lights follow now; `foxglove-lab --allow-app status` records RGB_STATE (the colour after the keyboard's calibration, about 23/100 for the accent's 42/97). `H5` runs only when the lights follow the stars wallpaper (`#d9a441`, 39/70, "Lights follow the wallpaper" on); with the Windows accent they don't, and `H5` is dropped.
+- `HA4` `wallpaper_follow.py` (a test app, temp config, wallpaper test hook): switching to FURY Pattern (3/78), then Cauldron Corner (29/82), then FURY Forest (no palette: the Windows accent as accent.rs reads it, 42/97 on this PC) puts each colour on both halves within the bounds, one "Foxglove accent: applied" line each; each expectation names its source (the fixture palette or UISettings' Accent). The temp store has no calibration, so RGB_STATE reads the asked hue/sat. The lights are put back.
 
 Agent, in the sitting, right before `H1`:
 - `HA1` the devlog listener (bounded), the HUD's Diagnostics on through `-control applyProperties` (`wallpaper_check.py debug on --monitor SAM`), and the GAME layer on (`sitting/game-layer-on`): the log says "game mode on".
@@ -67,8 +72,8 @@ Agent:
 ## Batch I: overlay and tray (#549, #405/#406)
 
 Agent, before the sitting:
-- `IA1` `overlay_tray.py` (a test app): with Settings closed the overlay is WS_EX_TRANSPARENT and WS_EX_LAYERED, and WindowFromPoint on it gives the window underneath; with the tray panel open the window region is the panel, a point on the panel hits the overlay, and a point beside it goes underneath.
-- `IA2` `overlay_tray.py --focus` (the same run): Settings (a second launch) focused arms the overlay over the keys, Settings minimized makes it click-through again (#549's report), and the tray panel closes when the focus goes to Settings (#406). BLOCKED, not FAIL, when Windows keeps the foreground where it was.
+- `IA1` `overlay_tray.py` (a test app, with the user's remembered keyboard seeded into its store): with Settings not focused (the test app opens it behind) the overlay is WS_EX_TRANSPARENT and WS_EX_LAYERED, and WindowFromPoint on it gives the window underneath; with the tray panel open (it draws inside the overlay window) the window region is the panel, the overlay drops WS_EX_TRANSPARENT, a point on the panel hits the overlay, and a point beside it goes underneath. Each is waited for (bounded): the passthrough lands after the frame that set the region.
+- `IA2` `overlay_tray.py --focus` (the same run): Settings (a second launch) focused arms the overlay over the keys (once its keymap session connected), Settings minimized keeps the app running and makes the overlay click-through again (#549's report), and the tray panel closes when the focus goes to Settings (#406). BLOCKED, not FAIL, when Windows keeps the foreground where it was, or when the overlay never connected (no keys to take the mouse over). A test app that ends mid-run is one FAIL with its exit code and log, and the rest is not run.
 
 User:
 - `I1` Click the minimize button (–) at the top right of the Foxglove window.

@@ -118,13 +118,91 @@ def manifest_accent(m):
     return most_colourful(p['stops']) if p.get('stops') else None
 
 
-def follow_wallpaper(store_text):
-    """The store's `[lighting]` follow_wallpaper (off when missing, as serde's default)."""
+def lighting_flag(store_text, key):
+    """A `[lighting]` flag of the store (off when missing, as serde's default)."""
     section = re.search(r'^\[lighting\]\s*$(.*?)(?=^\[|\Z)', store_text, re.M | re.S)
     if not section:
         return False
-    m = re.search(r'^\s*follow_wallpaper\s*=\s*(true|false)', section.group(1), re.M)
+    m = re.search(rf'^\s*{key}\s*=\s*(true|false)', section.group(1), re.M)
     return bool(m and m.group(1) == 'true')
+
+
+def follow_wallpaper(store_text):
+    """The store's `[lighting]` follow_wallpaper ("Lights follow the wallpaper", #70)."""
+    return lighting_flag(store_text, 'follow_wallpaper')
+
+
+def follow_accent(store_text):
+    """The store's `[lighting]` follow_accent ("Follow the Windows accent colour", #93)."""
+    return lighting_flag(store_text, 'follow_accent')
+
+
+# The Windows accent, as Foxglove reads it (#70, #93). accent.rs takes UISettings'
+# GetColorValue(UIColorType::Accent): the base of the accent palette Windows derives from the
+# colour picked in Settings. That is not the picked colour itself (DWM's AccentColor, shown in
+# Settings > Personalization > Colors): on this PC the pick is #d39f3f (39/70) and the accent
+# Foxglove follows is #9c6f05 (42/97), a darker, more saturated gold.
+
+def palette_accent(palette):
+    """The accent from HKCU\\...\\Explorer\\Accent\\AccentPalette (8 RGBA entries, lightest to
+    darkest; UISettings' Accent is entry 3, checked against UISettings on 10/29), or None."""
+    if not palette or len(palette) < 16:
+        return None
+    return tuple(palette[12:15])
+
+
+def dwm_rgb(abgr):
+    """DWM's AccentColor (0xAABBGGRR) as (r, g, b): the colour picked in Settings."""
+    return (abgr & 0xFF, (abgr >> 8) & 0xFF, (abgr >> 16) & 0xFF)
+
+
+def windows_accent():
+    """(rgb, source) of the Windows accent Foxglove follows: UISettings' Accent (the app's own
+    call, through PowerShell's WinRT), else the accent palette's entry 3; (None, why) without
+    either. Read only."""
+    script = ('[Windows.UI.ViewManagement.UISettings,Windows.UI.ViewManagement,ContentType=WindowsRuntime] | Out-Null; '
+              '$c = (New-Object Windows.UI.ViewManagement.UISettings).GetColorValue('
+              '[Windows.UI.ViewManagement.UIColorType]::Accent); "$($c.R) $($c.G) $($c.B)"')
+    try:
+        out = subprocess.run(['powershell', '-NoProfile', '-Command', script], capture_output=True, text=True,
+                             timeout=30).stdout.split()
+        if len(out) == 3:
+            return tuple(int(v) for v in out), 'UISettings Accent (as accent.rs reads it)'
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\CurrentVersion\Explorer\Accent') as k:
+            c = palette_accent(winreg.QueryValueEx(k, 'AccentPalette')[0])
+        if c:
+            return c, 'the accent palette entry 3 (UISettings Accent unreadable)'
+    except OSError:
+        pass
+    return None, 'no Windows accent readable'
+
+
+def picked_accent():
+    """The colour picked in Windows' Settings (DWM AccentColor), for the record only, or None."""
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r'Software\Microsoft\Windows\DWM') as k:
+            return dwm_rgb(winreg.QueryValueEx(k, 'AccentColor')[0])
+    except OSError:
+        return None
+
+
+def colour(c):
+    return '#%02x%02x%02x (hue/sat %d/%d)' % (tuple(c) + hue_sat(*c)) if c else 'none'
+
+
+def expected(manifest, windows):
+    """(hue/sat, source) the lights take for a wallpaper: its palette's accent, else the Windows
+    accent (`windows`: (rgb, source) from wallpaper_check.windows_accent)."""
+    a = manifest_accent(manifest)
+    if a:
+        return hue_sat(*a), f"the wallpaper palette {colour(a)}"
+    rgb, source = windows
+    return (hue_sat(*rgb) if rgb else None), f"the Windows accent {colour(rgb)}, from {source}"
 
 
 def log_since(lines, since, piece):
@@ -208,11 +286,19 @@ def state(args, check):
             continue
         names += [x['name'] for x in m.get('motifs', [])]
     print(f'  Presets card, "Wallpapers" (#571, the user reads it in H4): {names}', flush=True)
+    win, source = windows_accent()
+    print(f'  the Windows accent as Foxglove reads it: {colour(win)}, from {source}; the colour picked in '
+          f"Windows' Settings (DWM AccentColor, not what Foxglove follows): {colour(picked_accent())}", flush=True)
     if STORE.is_file():
-        on = follow_wallpaper(STORE.read_text(encoding='utf-8', errors='replace'))
+        store = STORE.read_text(encoding='utf-8', errors='replace')
+        on, acc = follow_wallpaper(store), follow_accent(store)
         print(f'  "Lights follow the wallpaper" in the store: {"on" if on else "off"}; with it on the lights take '
-              f"{'#%02x%02x%02x (hue/sat %d/%d)' % (accent + hue_sat(*accent)) if accent else 'the Windows accent'}",
-              flush=True)
+              f"{colour(accent) + ' (the wallpaper palette)' if accent else 'the Windows accent'}", flush=True)
+        now = (f'{colour(accent)}, the wallpaper palette' if on and accent else
+               f'{colour(win)}, the Windows accent' if on or acc else 'nothing (both off)')
+        print(f'  the lights follow now: {now}. That is the hue/sat Foxglove asks for (its "accent: applied" '
+              'and "re-applied the accent colour" lines); RGB_STATE reads it after the keyboard\'s colour '
+              'calibration (the store\'s [calibration], e.g. gamma 2.5 turns 42/97 into about 23/100)', flush=True)
     sync = [l for l in read_lines(FOXGLOVE_LOG) if 'wallpaper sync: ' in l]
     check('Foxglove synced a wallpaper (wallpaper sync line in foxglove.log)', bool(sync), sync[-1:] or str(FOXGLOVE_LOG))
 
