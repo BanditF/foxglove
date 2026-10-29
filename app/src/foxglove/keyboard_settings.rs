@@ -241,6 +241,15 @@ fn adopt_keyboard_change(d: &foxglove_link::devices::FoxgloveLinkDevice, s: &Rgb
     super::lighting_leases::try_with(|a| a.keyboard_reported(&id, generation, &now));
 }
 
+/// Reads both halves' lights now, on the caller's thread, into the cache the pages draw from:
+/// the local API's `lights.page` answers from a fresh report (#674).
+pub fn read_rgb_state_now() -> Option<RgbState> {
+    let state = super::services::guard("rgb-state", read_rgb_state).flatten();
+    *super::services::lock_or_reset(&RGB_STATE) = state;
+    *RGB_READ_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
+    state.map(|s| shown(s, 0, RIGHT_LIVE.load(Ordering::Relaxed)))
+}
+
 /// Returns the cached state and reads it in the background when requested.
 pub fn rgb_state(ctx: &egui::Context) -> Option<RgbState> {
     if RGB_REFRESH.load(Ordering::Relaxed) && !RGB_POLLING.swap(true, Ordering::Relaxed) {
