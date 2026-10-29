@@ -444,7 +444,8 @@ pub fn show(ctx: &egui::Context) -> bool {
             screen: None,
         });
         // Focus, so a click elsewhere (or Alt+Tab) closes the panel through the focus event.
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        // Without faking input (#618, focus.rs): the tray click gave the app the foreground.
+        super::focus::bring_to_front(ctx, egui::ViewportId::ROOT, super::overlay_restore::hwnd());
         ctx.request_repaint();
     }
     // The work area the overlay covers, in screen points.
@@ -464,7 +465,11 @@ pub fn show(ctx: &egui::Context) -> bool {
                 rect: None,
                 screen: None,
             });
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            super::focus::bring_to_front(
+                ctx,
+                egui::ViewportId::ROOT,
+                super::overlay_restore::hwnd(),
+            );
         } else if !want {
             *open = None;
         }
