@@ -169,11 +169,26 @@ impl Report {
         }
         areas
     }
+    /// FAIL if a case failed; BLOCKED if none did but a `release` case is blocked (a manual
+    /// step in a non-interactive run, a missing capability); PASS otherwise.
     pub fn verdict(&self) -> Status {
-        if self.overall_pass() {
+        if self.cases.iter().any(|c| c.status == Status::Fail) {
+            Status::Fail
+        } else if self.overall_pass() {
             Status::Pass
         } else {
-            Status::Fail
+            Status::Blocked
+        }
+    }
+    /// `run`'s exit code: 0 when `exit_success`, 1 when a case failed, 2 when nothing failed
+    /// but something couldn't run (the lab scripts' and release-test.ps1's BLOCKED).
+    pub fn exit_code(&self) -> u8 {
+        if self.exit_success() {
+            0
+        } else if self.cases.iter().any(|c| c.status == Status::Fail) {
+            1
+        } else {
+            2
         }
     }
     fn json(&self) -> Result<serde_json::Value> {

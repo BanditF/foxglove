@@ -145,7 +145,8 @@ try {
     if ($AllowApp) { $run += '--allow-app' }
     if ($NonInteractive) { $run += '--non-interactive' }
     & $lab @run
-    if ($LASTEXITCODE) { $failed += "suite $Suite" }
+    # Exit 2: nothing failed, a case couldn't run (a manual one under -NonInteractive): BLOCKED.
+    if ($LASTEXITCODE -eq 2) { $blocked += "suite $Suite" } elseif ($LASTEXITCODE) { $failed += "suite $Suite" }
 
     Write-Host '== App lab cases (overlay, tray, re-apply, API)' -ForegroundColor Cyan
     if (-not $App) { $blocked += 'app lab cases (no -App <foxglove.exe>)' }
