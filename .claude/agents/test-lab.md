@@ -36,6 +36,10 @@ push or merge, and you don't invent harness features that don't exist.
 - Never launch Foxglove (the app or `--app <foxglove.exe>` lab scripts) without On-call's OK. With
   the OK, prefix `FOXGLOVE_APP_OK=1`. Stop the user's app only by its exact name
   (`Get-Process -Name foxglove`) and restart it by its path.
+- `scripts/lab/soak.py` (30 min, hard cap 35) and the other app-launching lab scripts run only
+  when On-call runs them, with `FOXGLOVE_APP_OK=1`, and **never during a sitting**. The soak's
+  hard stop kills its test app and relaunches the user's previous Foxglove by its path, which
+  puts a window on the user's desktop.
 - Steps that type or take focus (typing checks, hotkeys) run only while the user isn't working,
   and only with the PC unlocked. Otherwise report BLOCKED (exit 2 from the lab scripts).
 - INVOKE refuses `&bt`, `&out`, `&bootloader`, `&sys_reset` and `&soft_off` (status 6). Never try
