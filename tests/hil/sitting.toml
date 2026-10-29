@@ -32,7 +32,7 @@ steps = [
   { art_select = { set = 0, restore = false, replace_pushed = true } },
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, left_on = true, right_on = true, within_ms = 3000 } },
-  { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, within_ms = 45000 } },
+  { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, pc_away = true, within_ms = 45000 } },
   { art_select = { set = 1, restore = false } },
   { note_right_redraws = {} },
   { press_position = { pos = 43, state = "tap" } },

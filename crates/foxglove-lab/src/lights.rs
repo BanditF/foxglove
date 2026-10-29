@@ -82,8 +82,17 @@ impl<'a, T: Transport> Saved<'a, T> {
         }
     }
 
+    // Busy: the invoke before's release hasn't run yet (it goes to the right through ZMK's
+    // split queue): asked again every 50 ms for at most 1.5 s, as the runner's invoke step does.
     fn send(&self, param1: u32, param2: u32) -> Result<InvokeStatus> {
-        settings::invoke(self.transport, self.rgb_ug, param1, param2, 0)
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        loop {
+            let s = settings::invoke(self.transport, self.rgb_ug, param1, param2, 0)?;
+            if s != InvokeStatus::Busy || std::time::Instant::now() >= end {
+                return Ok(s);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
     }
 }
 

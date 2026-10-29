@@ -247,7 +247,7 @@ pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
     Some(reason.into())
 }
 
-pub struct Runner<'a, D> {
+pub struct Runner<'a, D: Device> {
     pub device: &'a D,
     pub catalog: &'a Catalog,
     pub hello: Hello,
@@ -278,6 +278,8 @@ pub struct Runner<'a, D> {
     /// `art.select` then, because the app puts its own choice back after a direct SELECT (#622).
     /// `None`: the app isn't running, so SELECT goes to the keyboard directly.
     pub app: Option<&'a dyn crate::app_api::AppArt>,
+    /// The PC state before this case's first `pc_away` (pc_hold.rs); put back in cleanup.
+    pc_saved: Option<crate::pc_hold::Saved<'a, D>>,
 }
 impl<'a, D: Device> Runner<'a, D> {
     pub fn new(
@@ -306,6 +308,7 @@ impl<'a, D: Device> Runner<'a, D> {
             redraw_note: None,
             injections: None,
             app: None,
+            pc_saved: None,
         }
     }
     fn check(&self) -> Result<()> {
@@ -372,7 +375,22 @@ impl<'a, D: Device> Runner<'a, D> {
         let deadline = Instant::now() + Duration::from_millis(u64::from(i.hold_ms) + 1500);
         self.held_until = Some(prior_release.map_or(deadline, |prior| prior.max(deadline)));
         let _injecting = self.injecting(|| format!("invoke {id} param1={:#x}", i.param1));
-        let status = settings::invoke(self.device, id, i.param1, i.param2, i.hold_ms)?;
+        // Busy: the last invoke's release hasn't run yet. A global behavior (&rgb_ug) goes to the
+        // right through ZMK's split queue, whose send waits for the right's next listen (slave
+        // latency 30 x 7.5 ms) and can hold the release past the 30 ms allowed after the reply
+        // (right-relink-keeps-the-lefts-look's "expected ok, actual busy", #618). The firmware
+        // refuses a busy invoke without doing anything, so it is asked again: every BUSY_RETRY,
+        // for at most BUSY_FOR, unless the case expects busy.
+        const BUSY_RETRY: Duration = Duration::from_millis(50);
+        const BUSY_FOR: Duration = Duration::from_millis(1500);
+        let busy_end = Instant::now() + BUSY_FOR;
+        let mut status = settings::invoke(self.device, id, i.param1, i.param2, i.hold_ms)?;
+        while status == InvokeStatus::Busy && i.expect_status != "busy" && Instant::now() < busy_end
+        {
+            self.check()?;
+            std::thread::sleep(BUSY_RETRY);
+            status = settings::invoke(self.device, id, i.param1, i.param2, i.hold_ms)?;
+        }
         // The firmware schedules release even when the behavior press returns an error.
         if matches!(status, InvokeStatus::Ok | InvokeStatus::BehaviorFailed) {
             let deadline = Instant::now() + Duration::from_millis(u64::from(i.hold_ms) + 30);
@@ -849,7 +867,46 @@ impl<'a, D: Device> Runner<'a, D> {
         Ok(name)
     }
     /// Waits out the bounded firmware release even when cancelled; no unsupported release command.
+    /// The `expect_rgb` wait: RGB_STATE (D7 83) with the shown blocks until it matches.
+    fn expect_rgb(&self, r: &crate::spec::Rgb) -> Result<String> {
+        self.wait(r.within_ms, || {
+            let (s, shown) = settings::rgb_output(self.device)?;
+            let look = |h: &protocol::RgbHalf| crate::spec::Look {
+                hue: h.hue,
+                sat: h.sat,
+                brightness: h.brightness,
+                effect: h.effect,
+            };
+            Ok((
+                s.right.is_some_and(|(right, age)| {
+                    age <= r.right_age_max_s
+                        && r.right_on.is_none_or(|on| on == right.on)
+                        && (!r.right_same_look || look(&right) == look(&s.left))
+                }) && r.left_on.is_none_or(|on| on == s.left.on)
+                    && r.left_look.is_none_or(|l| l == look(&s.left))
+                    && (!r.shown || (shown.left.is_some() && shown.right.is_some())),
+                format!("{s:?}, shown {shown:?}"),
+            ))
+        })
+    }
+    /// Tells the keyboard the PC is away before an idle wait (pc_hold.rs, #618 after #651): on USB
+    /// it otherwise stays lit while the PC is awake. The first one in a case saves the state;
+    /// cleanup puts it back. Firmware without PC_STATE (HELLO bit 26) has no hold: nothing sent.
+    fn pc_away(&mut self) -> Result<String> {
+        if self.hello.capabilities & caps::PC_STATE == 0 {
+            return Ok("no PC state on this firmware (HELLO bit 26): nothing holds it lit".into());
+        }
+        if let Some(saved) = &self.pc_saved {
+            return saved.again();
+        }
+        let (saved, line) = crate::pc_hold::Saved::away(self.device)?;
+        self.pc_saved = Some(saved);
+        Ok(line)
+    }
     fn cleanup(&mut self) {
+        if let Some(mut saved) = self.pc_saved.take() {
+            saved.restore();
+        }
         self.baselines.clear();
         self.redraw_note = None;
         if let Some((path, original)) = self.screens_ini.take() {
@@ -899,25 +956,15 @@ impl<'a, D: Device> Runner<'a, D> {
                     format!("{s:?}, right_link={}", h.right_link),
                 ))
             }),
-            Step::ExpectRgb(r) => self.wait(r.within_ms, || {
-                let (s, shown) = settings::rgb_output(self.device)?;
-                let look = |h: &protocol::RgbHalf| crate::spec::Look {
-                    hue: h.hue,
-                    sat: h.sat,
-                    brightness: h.brightness,
-                    effect: h.effect,
+            Step::ExpectRgb(r) => {
+                let away = if r.pc_away {
+                    Some(self.pc_away()?)
+                } else {
+                    None
                 };
-                Ok((
-                    s.right.is_some_and(|(right, age)| {
-                        age <= r.right_age_max_s
-                            && r.right_on.is_none_or(|on| on == right.on)
-                            && (!r.right_same_look || look(&right) == look(&s.left))
-                    }) && r.left_on.is_none_or(|on| on == s.left.on)
-                        && r.left_look.is_none_or(|l| l == look(&s.left))
-                        && (!r.shown || (shown.left.is_some() && shown.right.is_some())),
-                    format!("{s:?}, shown {shown:?}"),
-                ))
-            }),
+                let got = self.expect_rgb(r)?;
+                Ok(away.map_or(got.clone(), |a| format!("{a}; {got}")))
+            }
             Step::Prompt(p) => crate::platform::prompt(&p.ask, &self.cancelled),
             Step::TypeIntoSink(t) => {
                 // Preflight everything before opening the sink or issuing a key.
@@ -1546,8 +1593,9 @@ impl<'a, D: Device> Runner<'a, D> {
         result
     }
 }
-impl<D> Drop for Runner<'_, D> {
+impl<D: Device> Drop for Runner<'_, D> {
     fn drop(&mut self) {
+        self.pc_saved = None; // puts the PC state back (pc_hold.rs) if a case left it away
         if let Some(end) = self.held_until.take() {
             std::thread::sleep(end.saturating_duration_since(Instant::now()));
         }

@@ -412,9 +412,11 @@ class App:
         require_app_ok()  # every app-level case launches Foxglove: On-call's OK only
         # Exactly the app's process name: test binaries such as foxglove_plugin_host-*.exe are other
         # sessions' work and must never be stopped.
-        self.previous = ps("Get-Process -Name foxglove -ErrorAction SilentlyContinue | "
-                           "% { $_.Path; Stop-Process -Id $_.Id -Confirm:$false }").split()
-        time.sleep(2)
+        # Then a wait on those processes' own exit (an event, at most 20 s) in place of a fixed 2 s:
+        # the test app must not start while the user's still holds the keyboard's HID handles.
+        self.previous = ps("$p = @(Get-Process -Name foxglove -ErrorAction SilentlyContinue); "
+                           "$p | % { $_.Path }; $p | Stop-Process -Confirm:$false; "
+                           "$p | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue").split()
         for p in self.plugins:
             kill(p)
         self.proc = subprocess.Popen([str(self.exe)], env=self.env)

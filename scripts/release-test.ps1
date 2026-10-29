@@ -98,16 +98,29 @@ try {
     } else {
         $restarted = $false
         try {
+            $stopped = @()
             if ($running) {
                 $procs = @(Get-Process -Name foxglove -ErrorAction SilentlyContinue)
+                $stopped = @($procs | ForEach-Object { $_.Id })
                 $procs | Stop-Process -Confirm:$false
                 $restarted = $true
-                # Quiet first: wait on the processes' exit (their HID handles close with them),
-                # bounded; the suite doesn't start while one is still there.
+                # Quiet first: wait on the processes' exit (their HID handles close with them), on
+                # their own handles (an event, bounded); the suite doesn't start while one is there.
                 $procs | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue
             }
-            if (Get-Process -Name foxglove -ErrorAction SilentlyContinue) {
-                $blocked += 'suite resilience (Foxglove did not exit within 20 s)'
+            # The verdict names the process (#618): the 8fb66f8 gate said "did not exit within
+            # 20 s" in the second it stopped the app (usb.txt 22:20:33Z; the Foxglove it started
+            # again logged "started" at 22:20:33Z), so the wait never ran 20 s: the stopped ones had
+            # exited, and what it saw was another process named foxglove that it hadn't stopped
+            # (a test instance on its own FOXGLOVE_CONFIG_DIR logs to its own folder).
+            $alive = @(Get-Process -Name foxglove -ErrorAction SilentlyContinue)
+            $late = @($alive | Where-Object { $stopped -contains $_.Id })
+            $other = @($alive | Where-Object { $stopped -notcontains $_.Id })
+            $name = { param($p) "pid $($p.Id), started $(try { $p.StartTime.ToUniversalTime().ToString('HH:mm:ssZ') } catch { '?' }), $(if ($p.Path) { $p.Path } else { 'path unknown' })" }
+            if ($late) {
+                $blocked += "suite resilience (Foxglove did not exit within 20 s: $(($late | ForEach-Object { & $name $_ }) -join '; '))"
+            } elseif ($other) {
+                $blocked += "suite resilience (another process named foxglove runs, not one this gate stopped: $(($other | ForEach-Object { & $name $_ }) -join '; '); the suite needs every Foxglove quit)"
             } else {
                 $rout = Join-Path $out 'resilience'
                 $run = @('run', '--suite', 'tests/hil/resilience.toml', '--out', $rout)

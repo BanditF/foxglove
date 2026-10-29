@@ -118,6 +118,11 @@ pub struct Rgb {
     /// The right's stored hue, saturation, brightness and effect must equal the left's (#624).
     #[serde(default)]
     pub right_same_look: bool,
+    /// An idle wait (#618 after #651): tell the keyboard the PC is away first (D7 11), so a
+    /// half on USB isn't held lit while the PC is awake. The case's end puts the PC state back
+    /// (pc_hold.rs). Firmware without PC_STATE (HELLO bit 26) gets nothing.
+    #[serde(default)]
+    pub pc_away: bool,
     #[serde(default = "timeout")]
     pub within_ms: u64,
 }
