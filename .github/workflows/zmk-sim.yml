@@ -8,6 +8,7 @@ on:
       - "dts/**"
       - "zephyr/module.yml"
       - "tests/zmk-sim/**"
+      - "tests/relay-sim/**"
       - ".github/workflows/zmk-sim.yml"
   pull_request:
     paths:
@@ -16,6 +17,7 @@ on:
       - "dts/**"
       - "zephyr/module.yml"
       - "tests/zmk-sim/**"
+      - "tests/relay-sim/**"
       - ".github/workflows/zmk-sim.yml"
   workflow_dispatch:
     inputs:
@@ -28,6 +30,16 @@ permissions:
   contents: read
 
 jobs:
+  # The left's art relay (art_relay_central.c) on a host: a simulated kernel and a fake split link
+  # with Zephyr 3.5's ATT rules (tests/relay-sim/README.md). No container or west needed.
+  relay-sim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run relay scenarios
+        run: bash tests/relay-sim/run.sh
+
   simulator:
     runs-on: ubuntu-latest
     timeout-minutes: 30

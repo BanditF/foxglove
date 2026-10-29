@@ -51,7 +51,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define DISCOVER_DELAY K_SECONDS(15)
 #define DISCOVER_RETRY K_SECONDS(5)
 #define DISCOVER_TRIES 20
-#define GATT_TIMEOUT K_SECONDS(3)
+#define GATT_TIMEOUT K_SECONDS(3) // GATT_TIMEOUT_MS, by the stuck-request watchdog
 
 static uint8_t blob[CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE];
 static uint16_t blob_len;
@@ -215,9 +215,12 @@ static void discover_cb(struct k_work *work) {
 }
 static K_WORK_DELAYABLE_DEFINE(discover_work, discover_cb);
 
+static void stuck_reset(void);
+
 // Forgets the split connection and everything found on it.
 static void drop_peer(void) {
     k_work_cancel_delayable(&discover_work);
+    stuck_reset();
     if (peer != NULL) {
         bt_conn_unref(peer);
         peer = NULL;
@@ -301,6 +304,56 @@ static uint8_t gatt_err;
 // A request whose callback hasn't come yet; its params must not be reused until it does.
 static atomic_t in_flight;
 
+/* A request that never gets its answer (#618). In the gate and soak runs on 1ebdf9d and 5568e5a,
+ * HELLO's relay debug read "timeouts 1, in flight 1" for minutes, with the last call returning 0
+ * (the ATT bearer alive) and the relay queue free: a request went out and was never answered,
+ * and Zephyr's 30 s ATT timeout never ended it either (it starts only once the request is on
+ * the air). Every relay request after it waits for its params, so pushes, SELECTs and the
+ * right's readback failed ("Bluetooth write failed", 0 bytes pushed, the snapshot busy) until
+ * the split link next dropped; only a re-link ever ended it. relay-sim's stall scenario plays
+ * it (tests/relay-sim).
+ *
+ * So the left drops the split link itself when a request it gave up on (GATT_TIMEOUT) still has
+ * no answer STUCK_AFTER after it went out. ZMK reconnects in seconds, Zephyr ends the request
+ * with an error, and the relay is back after discovery.
+ *
+ * Start/stop: armed when a request (relay or screen readback) times out with its callback
+ * still to come; stopped by that callback (request_done, screen_request_done) or the link
+ * dropping. Fires once per stuck request; at most STUCK_DROPS_IN_ROW drops until a request is
+ * answered again, then it only logs. No timer otherwise. On relay_q, as the guard: it is free
+ * in this state (each job there gives up on the stuck request at once). */
+#define GATT_TIMEOUT_MS 3000
+#define STUCK_AFTER_MS 10000
+#define STUCK_DROPS_IN_ROW 3
+
+static struct k_work_q relay_q;
+static atomic_t stuck_relay;  // the relay request in flight timed out
+static atomic_t stuck_screen; // the screen readback's request timed out (screen_snap_relay.inc)
+static atomic_t stuck_in_row;
+static struct k_work_delayable stuck_work;
+
+static void stuck_arm(atomic_t *which) {
+    atomic_set(which, 1);
+    k_work_reschedule_for_queue(&relay_q, &stuck_work, K_MSEC(STUCK_AFTER_MS - GATT_TIMEOUT_MS));
+}
+
+static void stuck_answered(atomic_t *which, bool ok) {
+    atomic_clear(which);
+    if (!atomic_get(&stuck_relay) && !atomic_get(&stuck_screen)) {
+        k_work_cancel_delayable(&stuck_work);
+    }
+    if (ok) {
+        atomic_clear(&stuck_in_row);
+    }
+}
+
+// The link went: Zephyr ends its requests with an error. The count of drops in a row stays.
+static void stuck_reset(void) {
+    k_work_cancel_delayable(&stuck_work);
+    atomic_clear(&stuck_relay);
+    atomic_clear(&stuck_screen);
+}
+
 static int wait_done(int ret) {
     dbg.write_ret = MAX(ret, INT8_MIN);
     if (ret) {
@@ -309,6 +362,9 @@ static int wait_done(int ret) {
     }
     if (k_sem_take(&gatt_done, GATT_TIMEOUT)) {
         dbg.timeouts++;
+        if (atomic_get(&in_flight)) {
+            stuck_arm(&stuck_relay);
+        }
         return -ETIMEDOUT;
     }
     dbg.att_err = gatt_err;
@@ -319,6 +375,7 @@ static void request_done(uint8_t err) {
     gatt_err = err;
     dbg.answered++;
     atomic_set(&in_flight, 0);
+    stuck_answered(&stuck_relay, err == 0);
     k_sem_give(&gatt_done);
 }
 
@@ -984,6 +1041,34 @@ static void guard_arm(void) {}
 static void guard_cancel(bool encrypted) {}
 uint8_t art_relay_guard_drops(void) { return 0; }
 #endif
+
+// The stuck-request watchdog (above wait_done) firing, on relay_q.
+static void stuck_cb(struct k_work *work) {
+    if (!atomic_get(&stuck_relay) && !atomic_get(&stuck_screen)) {
+        return; // answered meanwhile
+    }
+    struct bt_conn *conn = NULL;
+    unsigned int key = irq_lock(); // disconnected() clears peer from the Bluetooth thread
+    if (peer != NULL) {
+        conn = bt_conn_ref(peer);
+    }
+    irq_unlock(key);
+    if (conn == NULL) {
+        return; // the link is gone already: that ends the request
+    }
+    if (atomic_get(&stuck_in_row) < STUCK_DROPS_IN_ROW) {
+        atomic_inc(&stuck_in_row);
+        LOG_WRN("art relay: a %s request to the right has had no answer for %d s; dropping the "
+                "split link to end it (%d in a row)",
+                atomic_get(&stuck_relay) ? "relay" : "screen", STUCK_AFTER_MS / 1000,
+                (int)atomic_get(&stuck_in_row));
+        bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    } else {
+        LOG_WRN("art relay: a request to the right is stuck again; leaving the link");
+    }
+    bt_conn_unref(conn);
+}
+static K_WORK_DELAYABLE_DEFINE(stuck_work, stuck_cb);
 
 void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]) {
     out[0] = dbg.chrcs;

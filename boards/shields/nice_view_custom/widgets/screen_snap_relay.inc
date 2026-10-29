@@ -31,6 +31,7 @@ static void screen_request_done(uint8_t err) {
     atomic_clear(&screen_flight);
     k_sem_give(&screen_done);
     irq_unlock(key);
+    stuck_answered(&stuck_screen, err == 0 || err == BT_ATT_ERR_UNLIKELY);
 }
 
 static void screen_write_cb(struct bt_conn *conn, uint8_t err,
@@ -75,6 +76,9 @@ static int screen_wait(int ret) {
     }
     int64_t remaining = screen_deadline - k_uptime_get();
     if (remaining <= 0 || k_sem_take(&screen_done, K_MSEC(remaining))) {
+        if (atomic_get(&screen_flight)) {
+            stuck_arm(&stuck_screen); // the right may yet answer; if not, the watchdog acts
+        }
         return -ETIMEDOUT;
     }
     return screen_err ? -EIO : 0;
