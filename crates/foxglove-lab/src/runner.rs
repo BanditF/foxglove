@@ -187,14 +187,15 @@ const REDRAW_SETTLE: Duration = Duration::from_millis(1200);
 /// For a redraw count that didn't move (#618): the right's count reaches the PC only through the
 /// left's relay reads, so a relay request that stays in flight with nothing answered (HELLO's
 /// art_relay_debug, before and after the wait: byte 6 in flight, byte 5 answered) means the
-/// left's relay queue is stuck and the right wasn't asked; not that it didn't redraw.
+/// left's relay queue is stuck and the right wasn't asked; not that it didn't redraw. Since the
+/// left lets go of an unanswered request and goes on with a second slot, byte 6 can read 2.
 fn relay_stuck_note(before: Option<[u8; 10]>, after: Option<[u8; 10]>) -> String {
     match (before, after) {
-        (Some(b), Some(a)) if b[6] == 1 && a[6] == 1 && b[5] == a[5] => format!(
+        (Some(b), Some(a)) if b[6] >= 1 && a[6] >= 1 && b[5] == a[5] => format!(
             "; the left's relay is stuck: a request in flight the whole wait with none answered \
-             (HELLO debug: in flight 1, answered {}, timeouts {}), so the count wasn't read \
+             (HELLO debug: in flight {}, answered {}, timeouts {}), so the count wasn't read \
              again, the right may well have redrawn",
-            a[5], a[4]
+            a[6], a[5], a[4]
         ),
         _ => String::new(),
     }
@@ -1595,6 +1596,10 @@ mod relay_note_tests {
         let mut idle = stuck;
         idle[6] = 0;
         assert_eq!(relay_stuck_note(Some(idle), Some(idle)), "");
+        // Both request slots held (two requests let go): still stuck.
+        let mut both = stuck;
+        both[6] = 2;
+        assert!(relay_stuck_note(Some(both), Some(both)).contains("in flight 2"));
         assert_eq!(relay_stuck_note(None, Some(stuck)), "");
     }
 }

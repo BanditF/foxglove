@@ -195,7 +195,8 @@ enum art_relay_discovery {
 };
 void art_relay_discovery(int8_t *result, uint8_t *tries);
 // Counters for debugging the link: chrcs seen, discoveries finished, last request return
-// value, last ATT error, timeouts, callbacks, request in flight, security level, MTU u16.
+// value, last ATT error, timeouts (requests let go), callbacks, requests in flight (0-2: the
+// request slots Zephyr still holds, let-go ones included), security level, MTU u16.
 #define ART_RELAY_DEBUG_SIZE 10
 void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]);
 // 0 = right half not connected, 1 = connected, 2 = connected and has the relay service.

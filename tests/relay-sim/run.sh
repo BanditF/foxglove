@@ -23,9 +23,9 @@ DEFINES=(
     -DCONFIG_FOXGLOVE_RIGHT_LAMPS=21
     -DCONFIG_ZMK_LOG_LEVEL=0
 )
-SCENARIOS=(wake wake-app relink-shown push-relink-tap)
-# Known gaps: each must still FAIL (README.md, "Known gaps").
-KNOWN_GAPS=(stall stall-app)
+SCENARIOS=(wake wake-app relink-shown push-relink-tap stall stall-app late late-ignored)
+# Known gaps: each must still FAIL (README.md, "Known gaps"). None at the moment.
+KNOWN_GAPS=()
 if [ "$#" -gt 0 ]; then
     SCENARIOS=("$@")
     KNOWN_GAPS=()
@@ -44,7 +44,7 @@ for s in "${SCENARIOS[@]}"; do
         fail=$((fail + 1))
     fi
 done
-for s in "${KNOWN_GAPS[@]}"; do
+for s in ${KNOWN_GAPS[@]+"${KNOWN_GAPS[@]}"}; do
     if "$out/relay-sim" "$s" 1 | grep "^RESULT "; then
         echo "relay-sim: known gap $s passed: update run.sh, config.ps1 and README.md"
         fail=$((fail + 1))

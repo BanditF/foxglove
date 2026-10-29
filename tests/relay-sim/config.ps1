@@ -12,10 +12,11 @@ $RelaySimDefines = @(
     "CONFIG_FOXGLOVE_RIGHT_LAMPS=21",
     "CONFIG_ZMK_LOG_LEVEL=0"
 )
-# Gating: each must pass on this tree.
-$RelaySimScenarios = @("wake", "wake-app", "relink-shown", "push-relink-tap")
+# Gating: each must pass on this tree. stall and stall-app were known gaps until the left let
+# go of unanswered requests and dropped a link whose request never got an answer (#618).
+$RelaySimScenarios = @("wake", "wake-app", "relink-shown", "push-relink-tap", "stall", "stall-app", "late", "late-ignored")
 # Known gaps: each must still FAIL on this tree (README.md, "Known gaps"); one that passes means
-# the gap closed and the lists and README need updating.
-$RelaySimKnownGaps = @("stall", "stall-app")
-# Diagnostic only (bisect.ps1 runs them too): a request answered late, or never.
-$RelaySimInfo = @("late", "lost")
+# the gap closed and the lists and README need updating. None at the moment.
+$RelaySimKnownGaps = @()
+# Diagnostic only (bisect.ps1 runs it too): a request never answered while a SELECT waits.
+$RelaySimInfo = @("lost")

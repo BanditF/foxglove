@@ -32,6 +32,7 @@ struct sim_bt_faults {
     int late_op;
     int64_t late_us;
     int late_count;
+    uint8_t late_err; // the late response carries this ATT error (0: none)
     // The right's system work queue is busy this long after each redraw (wake, SNAP), and its
     // response buffer is freed only there (Zephyr 3.5 rsp_meta): a request in that window gets no
     // response at all.
