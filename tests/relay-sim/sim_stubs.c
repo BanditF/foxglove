@@ -19,6 +19,10 @@ int rgb_idle_get_on(bool *on) {
     *on = sim_left.on && sim_left.activity == ZMK_ACTIVITY_ACTIVE;
     return 0;
 }
+int rgb_idle_relay_on(bool *on, bool *own) { // the RGB op's on and byte 13 (#609)
+    *own = sim_left.on;
+    return rgb_idle_get_on(on);
+}
 bool rgb_idle_sync(void) { return true; }
 #ifdef RGB_IDLE_LOOK_SIZE
 void rgb_idle_look(uint8_t out[RGB_IDLE_LOOK_SIZE]) { memcpy(out, sim_left.look, 5); }

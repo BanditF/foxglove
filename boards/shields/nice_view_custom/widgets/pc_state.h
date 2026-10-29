@@ -45,7 +45,9 @@
 #include <zephyr/toolchain.h>
 
 #include <zmk/activity.h>
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
 #include <zmk/event_manager.h>
+#endif
 
 // D7 11 PC_STATE's state byte, and the art relay op's.
 enum pc_state_kind {
