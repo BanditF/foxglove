@@ -45,6 +45,18 @@ pub fn is_right(pos: u8) -> bool {
     RIGHT_POSITIONS.contains(&pos) || (45..=47).contains(&pos)
 }
 
+/// An app API error, BLOCKED when the running app doesn't speak the lab's API (a lab/app pair
+/// from different trees, #669's gate), else as it came.
+fn app_error(path: &str, e: anyhow::Error) -> anyhow::Error {
+    if e.downcast_ref::<crate::app_api::VersionMismatch>()
+        .is_some()
+    {
+        Blocked(format!("{path}: {e:#}")).into()
+    } else {
+        anyhow::anyhow!("{path}: {e:#}")
+    }
+}
+
 pub trait Device: Transport {
     fn layer(&self, timeout: Duration) -> Result<Option<u32>>;
     /// Unsolicited art-key events (D7 8D 01 <dir>, #302), from now on; `None` where the device
@@ -691,13 +703,13 @@ impl<'a, D: Device> Runner<'a, D> {
         // The app's own wait for its job (20 s), plus the time asked for.
         let limit = Duration::from_millis(ms) + Duration::from_secs(20);
         app.select_built_in(&label, limit)
-            .map_err(|e| anyhow::anyhow!("{path}: {e:#}"))?;
+            .map_err(|e| app_error(&path, e))?;
         art::status(self.device)?;
         std::thread::sleep(Duration::from_millis(300));
         let s = art::status(self.device)?;
         let shown = app
             .status(Duration::from_secs(5))
-            .map_err(|e| anyhow::anyhow!("{path}: art.status: {e:#}"))?;
+            .map_err(|e| app_error(&format!("{path}: art.status"), e))?;
         let says = shown
             .built_in
             .clone()

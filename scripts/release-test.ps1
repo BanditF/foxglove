@@ -11,7 +11,8 @@
 #    suite's own pushes and floods, and passed alone (986 ms) (#618 follow-up).
 # 5. The release suite on the keyboard (foxglove-lab run --suite release), with the app started
 #    again: its idle CPU case runs first and measures once the app has run 2 minutes (settle_s).
-# 6. With -App <foxglove.exe> and FOXGLOVE_APP_OK=1: the app-level lab cases of the stability pass
+# 6. With -App <foxglove.exe> (default: app\target\release\foxglove.exe, built from this tree, so
+#    the app speaks this tree's API, #669) and FOXGLOVE_APP_OK=1: the app-level lab cases of the stability pass
 #    (scripts/lab/overlay_tray.py: #612/#620, #601/#622, #618 agent controls; api_tools.py: #617/
 #    #623). They launch that build on a temp FOXGLOVE_CONFIG_DIR. Without them the stage is BLOCKED.
 # foxglove-lab saves the underglow (RGB_STATE) when each suite starts and puts it back when it ends,
@@ -53,6 +54,14 @@ function Resolve-RepoPath([string]$Path, [string]$What, [switch]$Folder) {
 }
 $Firmware = Resolve-RepoPath $Firmware '-Firmware' -Folder
 if ($App) { $App = Resolve-RepoPath $App '-App' }
+else {
+    # The app built from this tree by default (#669's gate): its local API is the version this
+    # tree's lab and scripts speak. A lab/app pair from different trees is BLOCKED by name
+    # (foxglove-lab asks for the oldest API with its calls; labkit's connect ends BLOCKED on
+    # "version not served"), never a FAIL mid-run.
+    $own = Join-Path $root 'app\target\release\foxglove.exe'
+    if (Test-Path -LiteralPath $own -PathType Leaf) { $App = $own }
+}
 
 Push-Location $root
 try {
@@ -162,7 +171,7 @@ try {
     if ($LASTEXITCODE -eq 2) { $blocked += "suite $Suite" } elseif ($LASTEXITCODE) { $failed += "suite $Suite" }
 
     Write-Host '== App lab cases (overlay, tray, re-apply, API)' -ForegroundColor Cyan
-    if (-not $App) { $blocked += 'app lab cases (no -App <foxglove.exe>)' }
+    if (-not $App) { $blocked += 'app lab cases (no -App <foxglove.exe>, and no app\target\release\foxglove.exe built from this tree)' }
     elseif (-not $appOk) { $blocked += 'app lab cases (they launch the app: FOXGLOVE_APP_OK=1, On-call)' }
     else {
         $cases = @(

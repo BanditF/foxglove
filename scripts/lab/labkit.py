@@ -519,14 +519,30 @@ class AppGone(RuntimeError):
     """The app's end of the API pipe is gone: the app ended (see App.exit_report)."""
 
 
+class ApiMismatch(RuntimeError):
+    """The running app doesn't speak the API version this client asks for (error code 7): a lab and
+    an app from different trees (#669's gate). BLOCKED, not FAIL."""
+
+
+# The local API's "version not served" error (crates/plugin-api/src/rpc.rs code::VERSION).
+API_VERSION_ERROR = 7
+
+
 class Api:
     """A client of Foxglove's local API over its named pipe (docs/local-api.md), as an outside tool."""
 
     def __init__(self, name, permissions, api='1.2'):
         self.pipe = open('//./pipe/foxglove-' + re.sub(r'[^A-Za-z0-9_-]', '', os.environ['USERNAME']), 'r+b', buffering=0)
         self.next = 0
-        self.granted = self.call('initialize', {'api': api, 'client': {'name': name, 'version': '1'},
-                                                'permissions': permissions})['granted']
+        try:
+            self.granted = self.call('initialize', {'api': api, 'client': {'name': name, 'version': '1'},
+                                                    'permissions': permissions})['granted']
+        except RuntimeError as e:
+            if getattr(e, 'code', None) == API_VERSION_ERROR:
+                self.pipe.close()
+                raise ApiMismatch(f'{e.message} (this lab client asks for API {api}): run the app built '
+                                  'from this tree') from e
+            raise
 
     def call(self, method, params):
         """The call's result; raises RuntimeError with the API error, and AppGone when the pipe
@@ -549,7 +565,10 @@ class Api:
                 msg, buf = json.loads(buf), b''
                 if msg.get('id') == self.next:
                     if 'error' in msg:
-                        raise RuntimeError(f"{method}: {msg['error']}")
+                        e = RuntimeError(f"{method}: {msg['error']}")
+                        e.code = msg['error'].get('code') if isinstance(msg['error'], dict) else None
+                        e.message = msg['error'].get('message', '') if isinstance(msg['error'], dict) else str(msg['error'])
+                        raise e
                     return msg['result']
 
     def close(self):
@@ -557,11 +576,16 @@ class Api:
 
 
 def connect(name, permissions, seconds=30):
-    """Waits for the app's pipe (it comes up a few seconds after start)."""
+    """Waits for the app's pipe (it comes up a few seconds after start). An app that doesn't speak
+    the client's API ends the script BLOCKED (exit 2), naming both versions."""
     end = time.time() + seconds
     while True:
         try:
             return Api(name, permissions)
+        except ApiMismatch as e:
+            print(f'BLOCKED {name}: {e}', flush=True)
+            print('RESULT BLOCKED', flush=True)
+            raise SystemExit(2)
         except OSError:
             if time.time() > end:
                 raise
