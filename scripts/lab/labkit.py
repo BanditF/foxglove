@@ -12,6 +12,7 @@ REPO = Path(__file__).resolve().parents[2]
 # runs there (#618: a relative tool path crashed overlay_tray's lab cases).
 TARGET = REPO / os.environ.get('CARGO_TARGET_DIR', 'target')
 REAL_CONFIG = Path(os.environ['APPDATA']) / 'Foxglove' / 'config'
+REAL_STORE = Path(os.environ['APPDATA']) / 'Foxglove' / 'foxglove.toml'
 
 
 def tool(path, flag='--lab', kind='file'):
@@ -182,6 +183,30 @@ def require_user_idle(seconds):
     print(f'user idle: {"unknown" if idle is None else f"{idle:.0f} s"}{note}', flush=True)
 
 
+def remembered_keyboard(store_text):
+    """The `[connection.last]` table of a settings store (the keyboard the overlay connects to by
+    itself on start, last_device.rs) as TOML text for a temp store, or '' when there is none.
+    Without it a test app's overlay never connects: it draws no keys, so with Settings focused
+    it has nothing to take the mouse over (#549), and before #618's fix closing Settings quit it."""
+    import tomllib
+    try:
+        last = tomllib.loads(store_text).get('connection', {}).get('last')
+    except tomllib.TOMLDecodeError:
+        return ''
+    if not isinstance(last, dict) or not {'vid', 'pid', 'transport', 'id'} <= set(last):
+        return ''
+    return (f"\n[connection.last]\nid = {json.dumps(str(last['id']))}\npid = {int(last['pid'])}\n"
+            f"transport = {json.dumps(str(last['transport']))}\nvid = {int(last['vid'])}\n")
+
+
+def users_keyboard():
+    """remembered_keyboard() of the user's own store (read only)."""
+    try:
+        return remembered_keyboard(REAL_STORE.read_text(encoding='utf-8', errors='replace'))
+    except OSError:
+        return ''
+
+
 def temp_config(prefix, store=''):
     """A temp config folder with the user's keymap metadata (so behaviors resolve) and `store` as
     its foxglove.toml."""
@@ -212,9 +237,17 @@ class Windows:
     """The test app's own windows, found by class among the top-level windows of its PID (the
     lab hooks of #612/#618: no mouse, no focus taken from the user's windows by these posts)."""
     WM_DISPLAYCHANGE, WM_LBUTTONUP, WM_USER_TRAYICON, SW_MINIMIZE = 0x007E, 0x0202, 6002, 6
+    GWL_EXSTYLE, GA_ROOT = -20, 2
 
     def __init__(self, pid):
         self.pid, self.u = pid, ctypes.windll.user32
+        # Physical pixels, as the per-monitor-aware app reports its rects (#549 probes): an unaware
+        # lab process would get scaled coordinates on a 125/150 % display. Fails harmlessly when
+        # the awareness is already set.
+        try:
+            self.u.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        except (AttributeError, OSError):
+            pass
 
     def find(self, cls):
         """The pid's top-level windows of class `cls` (shown or not)."""
@@ -238,6 +271,54 @@ class Windows:
         r = wintypes.RECT()
         self.u.GetWindowRect(hwnd, ctypes.byref(r))
         return [r.left, r.top, r.right, r.bottom]
+
+    def exstyle(self, hwnd):
+        """The window's extended style (GWL_EXSTYLE): WS_EX_TRANSPARENT | WS_EX_LAYERED is how
+        winit makes a window click-through (set_cursor_hittest(false))."""
+        f = self.u.GetWindowLongPtrW
+        f.restype, f.argtypes = ctypes.c_ssize_t, [ctypes.c_void_p, ctypes.c_int]
+        return f(hwnd, self.GWL_EXSTYLE) & 0xFFFFFFFF
+
+    def visible(self, hwnd):
+        return bool(self.u.IsWindowVisible(hwnd))
+
+    def region_box(self, hwnd):
+        """The window region's bounding box in screen pixels (SetWindowRgn, #405), or None when
+        the window has no region (the whole window hit-tests)."""
+        from ctypes import wintypes
+        gdi = ctypes.windll.gdi32
+        rgn = gdi.CreateRectRgn(0, 0, 0, 0)
+        try:
+            if self.u.GetWindowRgn(hwnd, rgn) in (0, 1):  # ERROR (no region) or NULLREGION
+                return None
+            r = wintypes.RECT()
+            gdi.GetRgnBox(rgn, ctypes.byref(r))
+        finally:
+            gdi.DeleteObject(rgn)
+        left, top = self.rect(hwnd)[:2]
+        return [r.left + left, r.top + top, r.right + left, r.bottom + top]
+
+    def at(self, x, y):
+        """The top-level window a click at (x, y) would reach: WindowFromPoint, which hit-tests as
+        the mouse does (it skips WS_EX_TRANSPARENT layered windows and honours window regions)."""
+        from ctypes import wintypes
+        f = self.u.WindowFromPoint
+        f.restype, f.argtypes = ctypes.c_void_p, [wintypes.POINT]
+        hwnd = f(wintypes.POINT(int(x), int(y)))
+        if not hwnd:
+            return None
+        g = self.u.GetAncestor
+        g.restype, g.argtypes = ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_uint]
+        return g(hwnd, self.GA_ROOT)
+
+    def foreground(self):
+        f = self.u.GetForegroundWindow
+        f.restype = ctypes.c_void_p
+        return f()
+
+    def others(self, overlay):
+        """The pid's other shown winit windows (Settings, the editor): not the overlay."""
+        return [h for h in self.find('Window Class') if h != overlay and self.visible(h)]
 
     def overlay(self, rect):
         """The overlay: the winit window whose rect is the one overlay.window reports."""
@@ -263,6 +344,40 @@ class Windows:
             for h in hwnds:
                 self.u.PostMessageW(h, self.WM_USER_TRAYICON, 0, self.WM_LBUTTONUP)
         return bool(hwnds)
+
+
+WS_EX_TRANSPARENT, WS_EX_LAYERED = 0x20, 0x80000
+
+
+def click_through(exstyle, visible=True):
+    """A window clicks pass through (#549): hidden, or transparent and layered (winit's
+    set_cursor_hittest(false))."""
+    both = WS_EX_TRANSPARENT | WS_EX_LAYERED
+    return not visible or exstyle & both == both
+
+
+def same_box(a, b, tolerance=2):
+    """Two [left, top, right, bottom] boxes equal within `tolerance` pixels (the panel's region is
+    its rect rounded outward, tray_panel::region)."""
+    return a is not None and b is not None and all(abs(x - y) <= tolerance for x, y in zip(a, b))
+
+
+def centre(box):
+    return ((box[0] + box[2]) // 2, (box[1] + box[3]) // 2)
+
+
+def outside(box, rect, margin=40):
+    """A point inside `rect` (the overlay) but at least `margin` px outside `box` (the panel), or
+    None: the corner of the overlay farthest from the panel."""
+    corners = [(rect[0] + margin, rect[1] + margin), (rect[2] - margin, rect[1] + margin),
+               (rect[0] + margin, rect[3] - margin), (rect[2] - margin, rect[3] - margin)]
+
+    def gap(p):
+        dx = max(box[0] - p[0], 0, p[0] - box[2])
+        dy = max(box[1] - p[1], 0, p[1] - box[3])
+        return max(dx, dy)
+    best = max(corners, key=gap)
+    return best if gap(best) >= margin else None
 
 
 def kill(name):
@@ -305,7 +420,22 @@ class App:
         self.proc = subprocess.Popen([str(self.exe)], env=self.env)
         return self
 
+    def exited(self):
+        """The test app's exit code once it has ended, else None."""
+        return self.proc.poll()
+
+    def exit_report(self):
+        """Why the test app is gone, from its exit code and its log (in the temp config). Waits
+        up to 10 s for a closing app to end (its pipe can break a moment before it exits)."""
+        try:
+            self.proc.wait(10)
+        except subprocess.TimeoutExpired:
+            pass
+        return exit_report(self.proc.poll(), log_lines(self.cfg, 'Foxglove'))
+
     def __exit__(self, *exc):
+        if self.proc.poll() is not None:
+            print('the test app had already ended:', self.exit_report(), flush=True)
         self.proc.terminate()
         try:
             self.proc.wait(10)
@@ -319,6 +449,38 @@ class App:
         time.sleep(5)
         alive = [p for p in self.previous if p.lower() in ps("(Get-Process -Name foxglove -ErrorAction SilentlyContinue).Path").lower()]
         print('restored:', alive if alive == self.previous else f'{alive} of {self.previous} (check!)', flush=True)
+
+
+# Windows' NTSTATUS codes a crashed process exits with, as unsigned 32-bit.
+CRASH_CODES = {0xC0000005: 'an access violation', 0xC0000409: 'a stack buffer overrun (abort)',
+               0xC00000FD: 'a stack overflow', 0xC0000374: 'heap corruption'}
+
+
+def exit_report(code, lines):
+    """One line on how the test app ended: its exit code read as a crash, a Rust panic or a quit,
+    and the last lines of its log. A panic's own log line ("Foxglove: panic in …") wins."""
+    if code is None:
+        return 'still running'
+    tail = [l for l in lines if 'Foxglove' in l][-3:]
+    panic = [l for l in lines if 'Foxglove: panic in ' in l]
+    quits = [l for l in lines if 'the overlay window closed; quitting' in l or 'Quit from the tray menu' in l]
+    c = code & 0xFFFFFFFF
+    if panic:
+        why = f'a panic: {panic[-1]}'
+    elif c in CRASH_CODES:
+        why = f'a crash ({CRASH_CODES[c]}, 0x{c:08X})'
+    elif c == 101:
+        why = 'a Rust panic (exit code 101)'
+    elif c == 0 and quits:
+        why = f'it quit on its own (exit code 0), not a crash: {quits[-1]}'
+    elif c == 0:
+        why = ('it quit on its own (exit code 0), not a crash; builds before #618\'s fix log no line '
+               'for a window-loop exit')
+    elif c == 1:
+        why = 'it was stopped, or failed to start (exit code 1)'
+    else:
+        why = f'exit code {code} (killed or crashed)'
+    return f'{why}; its log ends: {tail}'
 
 
 def rgb(lab, env):
@@ -351,6 +513,10 @@ def wait(read, pred, seconds, poll=0.5):
         time.sleep(poll)
 
 
+class AppGone(RuntimeError):
+    """The app's end of the API pipe is gone: the app ended (see App.exit_report)."""
+
+
 class Api:
     """A client of Foxglove's local API over its named pipe (docs/local-api.md), as an outside tool."""
 
@@ -361,14 +527,21 @@ class Api:
                                                 'permissions': permissions})['granted']
 
     def call(self, method, params):
-        """The call's result; raises RuntimeError with the API error."""
+        """The call's result; raises RuntimeError with the API error, and AppGone when the pipe
+        broke (the app ended: on Windows a write to a closed pipe is OSError 22, EINVAL)."""
         self.next += 1
-        self.pipe.write((json.dumps({'jsonrpc': '2.0', 'id': self.next, 'method': method, 'params': params}) + '\n').encode())
+        try:
+            self.pipe.write((json.dumps({'jsonrpc': '2.0', 'id': self.next, 'method': method, 'params': params}) + '\n').encode())
+        except OSError as e:
+            raise AppGone(f'{method}: the API pipe is closed ({e})') from e
         buf = b''
         while True:
-            c = self.pipe.read(1)
+            try:
+                c = self.pipe.read(1)
+            except OSError as e:
+                raise AppGone(f'{method}: the API pipe is closed ({e})') from e
             if not c:
-                raise RuntimeError('Foxglove closed the connection')
+                raise AppGone(f'{method}: Foxglove closed the connection')
             buf += c
             if c == b'\n':
                 msg, buf = json.loads(buf), b''

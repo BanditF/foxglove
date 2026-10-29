@@ -19,6 +19,10 @@ try {
     Step 'scripts: python tests' { python -m unittest discover -s scripts -p "test_*.py" }
     # Functions over 120 lines and files over 1,500 lines, listed as warnings; never fails.
     Step 'size budget' { python scripts/size_budget.py }
+    # The left's art relay against a fake split link (tests/relay-sim, #618); CI runs it with gcc.
+    if (Test-Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe") {
+        Step 'firmware: relay-sim' { powershell -ExecutionPolicy Bypass -File tests/relay-sim/build.ps1 -Log 1 }
+    } else { Write-Warning 'firmware: relay-sim: no MSVC (vswhere) found, skipped; CI runs it' }
     # The SignalRGB plugin's packets, and the receiver test's recording of them (#331).
     if (Get-Command node -ErrorAction SilentlyContinue) {
         Step 'signalrgb: packets' { node integrations/signalrgb/test.mjs; if (!$LASTEXITCODE) { node integrations/signalrgb/record-packets.mjs --check } }

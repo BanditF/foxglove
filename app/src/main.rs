@@ -72,6 +72,11 @@ fn main() {
     foxglove::identity::start();
     foxglove::autostart::start(); // Foxglove: Start with Windows
     let result = platform::run(settings, available_devices);
+    // Foxglove (#618): an exit through the window loop (not the tray's Quit) says so, so a
+    // test app that ended is told apart from one that crashed.
+    if result.is_ok() {
+        foxglove::app_log::early("Foxglove: the overlay window closed; quitting");
+    }
     foxglove::calibrate_ui::cancel(); // Foxglove: quitting mid-calibration puts the colours back
     foxglove::led_map_ui::quit(); // Foxglove: quitting mid "Find my LEDs" gives the lights back
     foxglove::notifications::quit(); // Foxglove (#507): a light cue gives the lights back

@@ -57,6 +57,7 @@ pub enum Step {
     ArtKey(ArtKey),
     NoteRightRedraws(NoteRedraws),
     ExpectRightRedraws(RightRedraws),
+    WaitRelay(RelayWait),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -412,6 +413,19 @@ pub struct RightRedraws {
 fn one() -> u32 {
     1
 }
+
+/// Waits for the left's relay to the right to be up (HELLO: right link 2, discovery done), as
+/// after a re-link: ZMK reconnects in seconds, then the left finds the relay ~15 s later (#618).
+/// Reads HELLO every 500 ms, at most `within_ms`; fails "relay not up" if it never comes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RelayWait {
+    #[serde(default = "relay_wait_timeout")]
+    pub within_ms: u64,
+}
+fn relay_wait_timeout() -> u64 {
+    30_000
+}
 fn redraw_timeout() -> u64 {
     5000
 }
@@ -638,6 +652,10 @@ impl Step {
                 }
             }
             Self::NoteRightRedraws(_) => {}
+            Self::WaitRelay(w) => ensure!(
+                (1..=60_000).contains(&w.within_ms),
+                "wait_relay within_ms must be 1..=60000"
+            ),
             Self::ExpectRightRedraws(r) => {
                 ensure!(
                     (1..=60_000).contains(&r.within_ms),

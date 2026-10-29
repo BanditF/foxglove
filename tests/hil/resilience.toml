@@ -125,6 +125,9 @@ description = "#605 (PR 6b of #618): RGB_STATE's on/off is what each half's LEDs
 tags = ["resilience"]
 requires = ["rgb_shown", "position_press"]
 steps = [
+  # After r5a's drop the relay is back ~20 s later (reconnect, then discovery); the tap's 3 s
+  # budget only counts once it is up.
+  { wait_relay = { within_ms = 30000 } },
   { invoke = { behavior = "rgb_ug", param1 = 1 } },
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, shown = true, left_on = true, right_on = true, right_same_look = true, within_ms = 3000 } },
@@ -135,7 +138,7 @@ steps = [
 
 [[cases]]
 name = "right-relink-keeps-the-lefts-look"
-description = "#624/#625 (PR 6b of #618): after the right misses a change and re-links, both halves show the left's look; nothing the right had is taken by the left. Needs a dev build on both halves (D7 0B GUARD_TEST, HELLO bit 24), sync on, Foxglove quit. Sets the underglow on, hue 200 sat 90 bri 20, Swirl; both halves must report that. Then the split guard drops the link and, while HELLO shows it down (right link 0), sets hue 39 sat 70 bri 42 on the left only (the right misses it, as a rebooted right with an older save would). After the relay is back, RGB_STATE must show the left on 39/70/42 Swirl and the right on the same within 10 s. Before the fix the right kept 200/90/20 (only on/off followed). Ends on on, Swirl, 39/70/42 (the user's look, #625 restore): check it still is the user's before running"
+description = "#624/#625 (PR 6b of #618): after the right misses a change and re-links, both halves show the left's look; nothing the right had is taken by the left. Needs a dev build on both halves (D7 0B GUARD_TEST, HELLO bit 24), sync on, Foxglove quit. Sets the underglow on, hue 200 sat 90 bri 20, Swirl; both halves must report that. Then the split guard drops the link and, while HELLO shows it down (right link 0), sets hue 39 sat 70 bri 42 on the left only (the right misses it, as a rebooted right with an older save would). After the relay is back, RGB_STATE must show the left on 39/70/42 Swirl and the right on the same within 10 s. Before the fix the right kept 200/90/20 (only on/off followed). Ends on 39/70/42, a look of the test's own: foxglove-lab saves the lights when a suite starts and puts them back when it ends, also after a failure or Ctrl-C (src/lights.rs), so nobody restores by hand"
 tags = ["resilience"]
 requires = ["rgb_shown"]
 steps = [

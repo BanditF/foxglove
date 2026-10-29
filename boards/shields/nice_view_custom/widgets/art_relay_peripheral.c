@@ -467,11 +467,17 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
 }
 
 // The left subscribed to the doorbell (each link, after discovery): it hears this half's state at
-// once (#605), not at its next read.
-static void doorbell_subscribed(const struct bt_gatt_attr *attr, uint16_t value) {
+// once (#605), not at its next read. On every write with notify on (ART_RELAY_RINGS_ON_SUBSCRIBE):
+// a cfg_changed callback missed every re-link, since Zephyr 3.5 restores a bonded peer's CCC
+// value at encryption (gatt.c update_ccc), before the left has subscribed, and the subscribe that
+// follows doesn't change it (bt_gatt_attr_write_ccc). The ring runs on the system queue, after
+// this write is stored, so the notify reaches the left.
+static ssize_t doorbell_written(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+                                uint16_t value) {
     if (value & BT_GATT_CCC_NOTIFY) {
         art_relay_right_rang(ART_RELAY_RANG_RGB);
     }
+    return sizeof(value);
 }
 
 static ssize_t screen_read(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
@@ -492,7 +498,9 @@ BT_GATT_SERVICE_DEFINE(
                            BT_GATT_CHRC_READ | BT_GATT_CHRC_NOTIFY, BT_GATT_PERM_READ_ENCRYPT,
                            status_read, NULL, NULL),
     // Right after the status value: the left subscribes at its handle + 1 (#478).
-    BT_GATT_CCC(doorbell_subscribed, BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_ENCRYPT),
+    BT_GATT_CCC_MANAGED(((struct _bt_gatt_ccc[]){BT_GATT_CCC_INITIALIZER(NULL, doorbell_written,
+                                                                          NULL)}),
+                        BT_GATT_PERM_READ | BT_GATT_PERM_WRITE_ENCRYPT),
     BT_GATT_CHARACTERISTIC(BT_UUID_DECLARE_128(ART_RELAY_SCREEN_UUID), BT_GATT_CHRC_READ,
                            BT_GATT_PERM_READ_ENCRYPT, screen_read, NULL, NULL), );
 

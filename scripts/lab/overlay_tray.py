@@ -21,29 +21,54 @@ and the re-apply hooks, read back through the local API (API 1.6) and the test a
 - re-apply after relay-ready (#622): the split link dropped once by the dev build's guard hook
   (D7 0B, foxglove-lab split_guard_test); once the relay is back the pinned set still shows.
 
+- click-through (#549, #405/#406; the sitting's batch I): the overlay's window style and Windows'
+  own hit test (WindowFromPoint, which routes a click as the mouse does). The tray panel is drawn
+  inside the overlay window (not a window of its own): open, the overlay takes the mouse and its
+  window region is the panel. With Settings not focused (the test app opens it behind at start)
+  the overlay is WS_EX_TRANSPARENT | WS_EX_LAYERED and a click on it reaches the window underneath;
+  with the tray panel open the overlay drops WS_EX_TRANSPARENT and only the panel's region takes
+  clicks (a click beside it goes underneath); each is waited for, bounded, since the passthrough
+  lands after the frame's paint. With --focus (it takes the focus: the PC unlocked and the user
+  away 2 min, else BLOCKED): a second launch focuses Settings, which arms the overlay over the
+  keys (once its keymap session connected: the user's remembered keyboard is seeded into the temp
+  store); minimizing Settings (ShowWindow, the user's #549 report) closes it, keeps the app
+  running and makes the overlay click-through again; and the tray panel, opened by the tray
+  click, closes when the focus goes to Settings (a second launch). A focus case is BLOCKED, not
+  FAIL, when Windows' foreground lock keeps the focus where it was (a posted message or a launch
+  from a background process carries no foreground right): then the sitting keeps its eyes step.
+
 It launches the build under test on a temp FOXGLOVE_CONFIG_DIR (the user's Foxglove is stopped by
 its exact name and started again by its path), so it runs only with FOXGLOVE_APP_OK=1 (On-call).
-The keyboard cases need the keyboard (BLOCKED without it); the guard case a dev build.
+The keyboard cases need the keyboard (BLOCKED without it); the guard case a dev build. When the
+test app ends mid-run the run stops with one FAIL saying how (exit code, its log's last lines).
 
-    FOXGLOVE_APP_OK=1 python scripts/lab/overlay_tray.py --app <foxglove.exe>  (exit 0 PASS, 1 FAIL, 2 BLOCKED)
+    FOXGLOVE_APP_OK=1 python scripts/lab/overlay_tray.py --app <foxglove.exe> [--focus]  (exit 0 PASS, 1 FAIL, 2 BLOCKED)
 """
 import argparse, json, subprocess, time
-from labkit import App, tool_arg, Checks, REPO, TARGET, Windows, connect, log_lines, require_app_ok, temp_config, wait
+from labkit import (App, AppGone, tool_arg, Checks, REPO, TARGET, Windows, centre, click_through, connect, injecting,
+                    log_lines, outside, require_app_ok, require_user_idle, same_box, temp_config, users_keyboard, wait)
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--app', required=True, type=tool_arg('--app'), help='the Foxglove build under test')
 ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'), type=tool_arg('--lab'))
 ap.add_argument('--skip-guard', action='store_true', help='leave out the split-link drop (GA build)')
+ap.add_argument('--focus', action='store_true',
+                help='also the cases that move the focus (Settings shown by a second launch): PC unlocked, user away')
 args = ap.parse_args()
 require_app_ok()
+if args.focus:
+    require_user_idle(120)
 check = Checks()
 PERMISSIONS = ['devices.read', 'app.windows', 'art.write']
 
 
 def call(api, method, params=None):
-    """The result, or None with the error printed (a check then fails on it)."""
+    """The result, or None with the error printed (a check then fails on it). A closed pipe (the
+    test app ended) raises AppGone, which ends the run with the app's exit report."""
     try:
         return api.call(method, params or {})
+    except AppGone:
+        raise
     except RuntimeError as e:
         print(f'  {method}: {e}', flush=True)
         return None
@@ -114,6 +139,140 @@ def overlay_cases(api, win, cfg):
           log_lines(cfg, '(api)')[-1:])
 
 
+def click_cases(api, win):
+    """#549 and #405/#406 by the window style and Windows' own hit test (no mouse, no clicks)."""
+    call(api, 'tray.set_panel', {'open': False})
+    o = call(api, 'overlay.restore')
+    hwnd = win.overlay(o['rect']) if o else None
+    if not check('click-through: the lab finds the overlay', hwnd is not None, o):
+        return None
+    rect = o['rect']
+
+    # Settings not focused: the overlay passes every click on. The test app opens Settings at
+    # every start, but a launch from a background process gets no foreground, so Settings shows
+    # behind, unfocused: the same rule as closed (overlay_grab), and closing it comes later
+    # (Settings minimized, --focus).
+    ok, style = wait(lambda: win.exstyle(hwnd), lambda s: click_through(s, win.visible(hwnd)), 5)
+    check('Settings not focused: the overlay is click-through (WS_EX_TRANSPARENT | WS_EX_LAYERED)', ok, hex(style))
+    x, y = centre(rect)
+    under = win.at(x, y)
+    check('Settings not focused: a click on the overlay reaches the window underneath (WindowFromPoint)',
+          under is not None and under != hwnd, f'({x}, {y}) -> {under} (overlay {hwnd})')
+
+    # The tray panel open: only the panel takes clicks (#405), the rest goes underneath (#406).
+    # tray.set_panel answers from the frame that drew the panel (tray_panel::show); that frame
+    # then sets the window region at once (SetWindowRgn), while the mouse passthrough is an egui
+    # viewport command winit applies only after the frame's paint. Each is waited for (bounded),
+    # never read once: the 10/29 pre-sitting run read the style a moment after the region and
+    # saw the overlay still WS_EX_TRANSPARENT.
+    p = call(api, 'tray.set_panel', {'open': True})
+    if check('panel open for the hit test', bool(p and p['open'] and p['rect']), p):
+        t0 = time.time()
+        ok, box = wait(lambda: win.region_box(hwnd), lambda b: same_box(b, p['rect']), 5, poll=0.05)
+        check("panel open: the overlay's window region is the panel", ok,
+              {'region': box, 'panel': p['rect'], 'after_s': round(time.time() - t0, 2)})
+        ok, style = wait(lambda: win.exstyle(hwnd), lambda s: not click_through(s, win.visible(hwnd)), 5, poll=0.05)
+        check('panel open: the overlay takes the mouse (not transparent)', ok,
+              f'{hex(style)} after {time.time() - t0:.2f} s')
+        px, py = centre(p['rect'])
+        ok, at = wait(lambda: win.at(px, py), lambda h: h == hwnd, 2, poll=0.05)
+        check('panel open: a click on the panel reaches the panel', ok, f'({px}, {py}) -> {at} (overlay {hwnd})')
+        pt = outside(p['rect'], rect)
+        if pt is None:
+            check('panel open: a click beside the panel', False, 'no point of the overlay away from the panel', blocked=True)
+        else:
+            under = win.at(*pt)
+            check('panel open: a click beside the panel reaches the window underneath',
+                  under is not None and under != hwnd, f'{pt} -> {under} (overlay {hwnd})')
+    call(api, 'tray.set_panel', {'open': False})
+    return hwnd
+
+
+def show_settings(win, hwnd):
+    """A second launch shows the running test app's Settings (#345) and gives it the focus when
+    Windows lets it: (the Settings window or None, whether it got the foreground)."""
+    with injecting('second launch shows Settings (lab hook)'):
+        subprocess.run([str(app.exe)], env=app.env, timeout=30, capture_output=True)
+    ok, shown = wait(lambda: win.others(hwnd), lambda s: bool(s), 10)
+    if not ok:
+        return None, False
+    settings = shown[0]
+    focused, _ = wait(lambda: win.foreground(), lambda f: f == settings, 5)
+    return settings, focused
+
+
+def focus_cases(api, win, hwnd):
+    """#549 with Settings really focused, then minimized; #406 the panel closing on focus loss."""
+    settings, focused = show_settings(win, hwnd)
+    if not check('second launch: Settings shows', settings is not None, settings):
+        return
+    if not focused:
+        check('Settings focused: the overlay arms over the keys', False,
+              "Settings didn't get the foreground (Windows' foreground lock); the sitting keeps I1-I2", blocked=True)
+    else:
+        # The overlay takes the mouse over its keys only once it drew them: its keymap session is
+        # connected (the remembered keyboard, seeded from the user's store) and the keymap read.
+        armed = lambda: (win.exstyle(hwnd), win.region_box(hwnd))
+        ok, (style, box) = wait(armed, lambda a: not click_through(a[0], win.visible(hwnd)) and a[1] is not None,
+                                KEYS_S)
+        connected = log_lines(cfg, CONNECTED)
+        if ok:
+            check('Settings focused: the overlay takes the mouse', True, hex(style))
+            check('Settings focused: only over the keys (a window region)', True, box)
+        elif connected or not KEYBOARD:
+            # Connected and still nothing over the keys: the app's bug. No remembered keyboard: the
+            # test app can't draw keys, which is a setup gap (BLOCKED), named as such.
+            why = (f'{hex(style)}, region {box}; the overlay connected ({connected[-1]})' if connected else
+                   "no remembered keyboard in the user's store ([connection.last]): the test app's overlay draws no keys")
+            check('Settings focused: the overlay takes the mouse over its keys', False, why, blocked=not connected)
+        else:
+            check('Settings focused: the overlay takes the mouse over its keys', False,
+                  f"{hex(style)}, region {box}: no keys within {KEYS_S} s and no '{CONNECTED}' line (the overlay's "
+                  "keymap session didn't connect; builds before #618's fix don't log it)", blocked=True)
+        with injecting('Settings minimize (lab hook)'):
+            win.u.ShowWindow(settings, win.SW_MINIMIZE)
+        ok, style = wait(lambda: win.exstyle(hwnd), lambda s: click_through(s, win.visible(hwnd)), 5)
+        # Minimized is closed (#549). Before #618's fix, closing Settings in an app whose overlay
+        # never connected quit the whole app (KeyPeek's rule), as on 10/29.
+        try:  # bounded: an app that quits ends within a few seconds of the frame that saw it
+            app.proc.wait(3)
+        except subprocess.TimeoutExpired:
+            pass
+        alive = app.exited() is None
+        check('Settings minimized: the test app keeps running (in the tray)', alive,
+              'running' if alive else app.exit_report())
+        if not alive:
+            raise AppGone('the test app ended when Settings was minimized')
+        check('Settings minimized: the overlay is click-through again (#549)', ok, hex(style))
+        o = call(api, 'overlay.window')
+        if o:
+            x, y = centre(o['rect'])
+            under = win.at(x, y)
+            check('Settings minimized: a click on the overlay reaches the window underneath',
+                  under is not None and under != hwnd, f'({x}, {y}) -> {under}')
+
+    # #406: the panel closes when the overlay loses the focus.
+    win.tray_click()
+    ok, p = wait(lambda: call(api, 'tray.panel'), lambda p: p and p['open'], 10)
+    if not check('tray click: the panel opens', ok, p):
+        return
+    got, _ = wait(lambda: win.foreground(), lambda f: f == hwnd, 3)
+    if not got:
+        call(api, 'tray.set_panel', {'open': False})
+        return check('focus loss closes the panel', False,
+                     'the overlay never got the foreground from a posted tray click; the sitting keeps I3-I4',
+                     blocked=True)
+    settings, focused = show_settings(win, hwnd)
+    if not focused:
+        call(api, 'tray.set_panel', {'open': False})
+        return check('focus loss closes the panel', False,
+                     "Settings didn't get the foreground; the sitting keeps I3-I4", blocked=True)
+    ok, p = wait(lambda: call(api, 'tray.panel'), lambda p: p and not p['open'], 5)
+    check('focus to another window: the panel closes (#406)', ok, p)
+    with injecting('Settings minimize (lab hook)'):
+        win.u.ShowWindow(settings, win.SW_MINIMIZE)
+
+
 def keyboard_cases(api, cfg, env):
     devices = (call(api, 'devices.list') or {}).get('devices', [])
     if not devices:
@@ -165,12 +324,27 @@ def keyboard_cases(api, cfg, env):
     print('  re-apply lines:', log_lines(cfg, '(right relay ready)')[-3:], flush=True)
 
 
-cfg = temp_config('foxglove-overlay-tray-')
+# The keyboard the user's Foxglove reconnects to, so the test app's overlay connects and draws
+# its keys (the Settings-focused case needs them); '' when the user's store has none.
+KEYBOARD = users_keyboard()
+CONNECTED = "the overlay connected to the keyboard's keymap"
+KEYS_S = 30  # the overlay's connect plus a fresh keymap read over USB
+print('remembered keyboard for the test app:', KEYBOARD.strip().replace('\n', '; ') or 'none', flush=True)
+cfg = temp_config('foxglove-overlay-tray-', KEYBOARD)
 with App(args.app, cfg) as app:
     api = connect('test-lab-overlay-tray', PERMISSIONS)
     granted = set(api.granted)
-    if check('API 1.6 grants the window and art writes', {'app.windows', 'art.write'} <= granted, sorted(granted)):
-        overlay_cases(api, Windows(app.proc.pid), cfg)
-        keyboard_cases(api, cfg, app.env)
+    try:
+        if check('API 1.6 grants the window and art writes', {'app.windows', 'art.write'} <= granted, sorted(granted)):
+            overlay_cases(api, Windows(app.proc.pid), cfg)
+            hwnd = click_cases(api, Windows(app.proc.pid))
+            if args.focus and hwnd:
+                focus_cases(api, Windows(app.proc.pid), hwnd)
+            keyboard_cases(api, cfg, app.env)
+    except AppGone as e:
+        # The test app ended mid-run: say how (its exit code and log), and stop; nothing after
+        # this point ran.
+        check('the test app runs to the end of the cases', False, f'{e}; {app.exit_report()}')
+        check('the cases after it', False, 'not run: the test app had ended', blocked=True)
     api.close()
 check.finish()

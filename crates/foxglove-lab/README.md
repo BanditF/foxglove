@@ -87,6 +87,7 @@ Steps are single-key tables in an ordered `steps` array:
 | `press_position` | `pos` (0–47), `state = "down"` / `"up"` |
 | `expect_screen_still` | `half`, optional `region` (portrait 68×160), `ms`: captures for `ms` and fails on any change there (a paused animation, #603); its last capture is the baseline for a following `expect_screen_change` |
 | `note_right_redraws` | `{}`: notes the right's whole-screen rewrites since its power-on (D7 8E bytes 16-20, HELLO bit 25, #618) once the count holds for 1.2 s |
+| `wait_relay` | optional `within_ms` (30000): HELLO read every 500 ms until the left's relay to the right is up (right link 2, discovery done), as after a re-link; fails "relay not up" when it never comes (#618) |
 | `expect_right_redraws` | optional `at_least` (1), `within_ms` (5000): the count grew that much since the note; BLOCKED when the right doesn't report it |
 
 INVOKE status names: `ok` (0), `unknown_id` (1), `busy` (2), `failed` (3),
@@ -132,6 +133,8 @@ These steps don't press anything. They use Windows' device list and process time
 - `idle_cpu = { seconds = 20, max_cpu_ms = 60, settle_s = 120 }`: CPU used by `foxglove` (or `process = "..."`) over the window. Run with `--allow-app`; it's the regression test for #100. `settle_s` (0-600, default 0) measures only once the process has run that long: one timed wait for what's left, counted from its start (#618). The result names the left-screen layout from the app's settings store (`FOXGLOVE_CONFIG_DIR` or `%APPDATA%\Foxglove\foxglove.toml`, with the active profile's override).
 
 `tests/hil/app-idle.toml` holds the app checks; `release.toml` includes it first (its idle case must not measure the other cases' traffic), then `smoke.toml`.
+
+`tests/hil/sitting.toml` holds the agent steps of the resumed 0.2 sitting (docs/test-lab/sitting-0.2-h-i-r.md): the GAME layer on and off for the wallpaper batch, and a SELECT made while the right is dark (#621). Run each with `--only`, as On-call's run list says. It isn't part of the release gate.
 
 ## Safety and manual tests
 

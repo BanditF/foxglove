@@ -15,7 +15,9 @@
  *      also comes when the right's LEDs go lit or dark and when the left subscribes. A left that
  *      gets them takes them as the right's state and skips the read; an older left reads byte 0
  *      only. The shown block is taken even before the left's first status read on a link (the
- *      subscribe's ring comes first, #618; art_relay_doorbell.h). Invariant: the
+ *      subscribe's ring comes first, #618; art_relay_doorbell.h). The subscribe's ring comes on
+ *      every write of the CCC with notify on, re-links included (ART_RELAY_RINGS_ON_SUBSCRIBE).
+ *      Invariant: the
  *      CCC is the attribute right after the status value (its handle + 1, the 6th attribute of the
  *      service), where the left subscribes after discovery; a right without it answers that
  *      write with an ATT error, and the left doesn't try again on that link.
@@ -103,6 +105,12 @@ enum art_relay_op {
     // sleep), as a write request on relay_q and also, ahead of the queue, as a write command.
     ART_RELAY_ACTIVITY = ART_RELAY_ACTIVITY_OP,
 };
+
+// The right rings on every CCC write that turns notify on (#618), not only when Zephyr's CCC value
+// changes: for the bonded left, Zephyr restores that value at encryption, ~15 s before the left
+// subscribes, so the subscribe changed nothing and the ring never came on a re-link. The left's
+// shown block then stayed empty until the right's LEDs next went lit or dark.
+#define ART_RELAY_RINGS_ON_SUBSCRIBE 1
 
 // The status notify's bits (#478).
 #define ART_RELAY_RANG_RGB BIT(0)   // the right's underglow went on or off

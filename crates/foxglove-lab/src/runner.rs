@@ -1284,6 +1284,36 @@ impl<'a, D: Device> Runner<'a, D> {
                 }
                 bail!("the right's redraw count kept changing: last {n:?}")
             }
+            Step::WaitRelay(w) => {
+                let started = Instant::now();
+                let end = started + Duration::from_millis(w.within_ms);
+                loop {
+                    self.check()?;
+                    let h = foxglove_link::panel::hello(self.device).ok();
+                    if let Some(h) = &h {
+                        if h.right_link == 2 && h.discovery == 4 {
+                            return Ok(format!(
+                                "relay up after {} ms",
+                                started.elapsed().as_millis()
+                            ));
+                        }
+                    }
+                    if Instant::now() >= end {
+                        bail!(
+                            "relay not up within {} ms ({})",
+                            w.within_ms,
+                            match h {
+                                Some(h) => format!(
+                                    "right link {}, discovery {}, tries {}",
+                                    h.right_link, h.discovery, h.discovery_tries
+                                ),
+                                None => "no HELLO reply".to_string(),
+                            }
+                        );
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
             Step::ExpectRightRedraws(c) => {
                 let base = self
                     .redraw_note
