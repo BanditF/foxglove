@@ -18,6 +18,7 @@
 #include <zmk/event_manager.h>
 
 #include "panel_polarity.h"
+#include "posix_board_if.h"
 
 static bool watching;
 
@@ -151,4 +152,5 @@ void polarity_sim_driver(void) {
     polarity(PANEL_POLARITY_LIGHT);
     k_msleep(2500);
     note("done");
+    posix_exit(0); // the end of the run: nothing may print after it
 }
