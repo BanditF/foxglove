@@ -16,6 +16,12 @@
 //!   every colour the keyboard is sent, so they are handed back (`Lighting::release`) before
 //!   anything else shows, and the lease is asked to draw again when it shows again.
 //! - Colours the user sets while a lease holds the lights are what comes back at the end.
+//! - The user's choice (what the Lights page or the followed accent set, [`Chosen`]) is the
+//!   only source for what the keyboard shows when no lease holds it (#624, #625). A snapshot
+//!   gets it laid over, so one taken while the LEDs were idle-dark or showed something else
+//!   doesn't bring that back. A restore that didn't take is tried again on a later event only
+//!   while the keyboard still shows nothing but what the arbiter wrote; once anything else
+//!   changed it (a key, a tool, the user), the old snapshot is dropped and nothing is sent.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -52,7 +58,94 @@ pub struct Arbiter {
     paused: bool,
     /// Devices whose lights a lease draws as frames (#529).
     frames: HashMap<String, Frames>,
+    /// Each device's lights as the user chose them (#624): the fields they set.
+    chosen: HashMap<String, Chosen>,
+    /// What the arbiter wrote to each device while its snapshot is kept (the leases' looks and
+    /// each restore): a later retry is only safe while the keyboard shows nothing else.
+    wrote: HashMap<String, Vec<Look>>,
 }
+
+/// The fields of a device's lights the user set (the Lights page, the followed accent), as
+/// [`Arbiter::user_changed`] saw them. A field never set is `None`.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Chosen {
+    on: Option<bool>,
+    hue: Option<u16>,
+    sat: Option<u8>,
+    brightness: Option<u8>,
+    effect: Option<String>,
+    speed: Option<u8>,
+}
+
+impl Chosen {
+    /// A state to run a change on: the chosen values, and out-of-range ones for fields never
+    /// set, so every field the change sets is seen (the change runs once: it is `FnOnce`).
+    fn probe(&self) -> LightingState {
+        LightingState {
+            on: self.on.unwrap_or(false),
+            hue: self.hue.unwrap_or(u16::MAX),
+            sat: self.sat.unwrap_or(u8::MAX),
+            brightness: self.brightness.unwrap_or(u8::MAX),
+            effect: Effect {
+                id: self.effect.clone().unwrap_or_default(),
+                params: vec![],
+            },
+            speed: self.speed.unwrap_or(u8::MAX),
+            settled: true,
+        }
+    }
+
+    /// The fields `after` (a [`Chosen::probe`] a change ran on) differs in. Setting a field to
+    /// the value it already had changes nothing, so it needs no entry.
+    fn changed(&self, after: &LightingState) -> Chosen {
+        let before = self.probe();
+        Chosen {
+            on: (before.on != after.on).then_some(after.on),
+            hue: (before.hue != after.hue).then_some(after.hue),
+            sat: (before.sat != after.sat).then_some(after.sat),
+            brightness: (before.brightness != after.brightness).then_some(after.brightness),
+            effect: (before.effect.id != after.effect.id).then(|| after.effect.id.clone()),
+            speed: (before.speed != after.speed).then_some(after.speed),
+        }
+    }
+
+    /// Takes every field `other` sets.
+    fn merge(&mut self, other: &Chosen) {
+        self.on = other.on.or(self.on);
+        self.hue = other.hue.or(self.hue);
+        self.sat = other.sat.or(self.sat);
+        self.brightness = other.brightness.or(self.brightness);
+        self.effect = other.effect.clone().or(self.effect.take());
+        self.speed = other.speed.or(self.speed);
+    }
+
+    /// Lays the chosen fields over `s`.
+    fn overlay(&self, s: &mut LightingState) {
+        s.on = self.on.unwrap_or(s.on);
+        s.hue = self.hue.unwrap_or(s.hue);
+        s.sat = self.sat.unwrap_or(s.sat);
+        s.brightness = self.brightness.unwrap_or(s.brightness);
+        if let Some(e) = &self.effect {
+            s.effect.id.clone_from(e);
+        }
+        s.speed = self.speed.unwrap_or(s.speed);
+    }
+}
+
+/// One look the arbiter wrote (a lease's, or a restore); `speed` only for a restore.
+#[derive(Clone, Debug, PartialEq)]
+struct Look {
+    on: bool,
+    hue: u16,
+    sat: u8,
+    brightness: u8,
+    effect: String,
+    speed: Option<u8>,
+}
+
+/// At most this many looks are kept per device (`Arbiter::wrote`): enough for a lease
+/// stack's changes; the oldest go first.
+const WROTE_KEPT: usize = 16;
 
 /// A lease that draws frames over its colour.
 struct Frames {
@@ -82,7 +175,8 @@ impl Arbiter {
     /// Takes the lights for `lease` (its `id` is assigned) and shows the winner.
     pub fn add(&mut self, mut lease: Lease, light: &dyn Lighting) -> Result<u64, DeviceError> {
         if !self.paused && !self.base.contains_key(&lease.device) {
-            self.base.insert(lease.device.clone(), settled(light)?);
+            let snapshot = self.snapshot(&lease.device, light)?;
+            self.base.insert(lease.device.clone(), snapshot);
         }
         self.next += 1;
         lease.id = self.next;
@@ -104,7 +198,7 @@ impl Arbiter {
         if let Some(base) = self.base.get(device) {
             return Ok(base.clone());
         }
-        let now = settled(light)?;
+        let now = self.snapshot(device, light)?;
         if !self.paused {
             self.base.insert(device.to_string(), now.clone());
         }
@@ -179,7 +273,8 @@ impl Arbiter {
     pub fn apply(&mut self, device: &str, light: &dyn Lighting) -> Result<(), DeviceError> {
         // Resumed (or a lease came while paused): keep the lights as they are first.
         if !self.paused && self.winner(device).is_some() && !self.base.contains_key(device) {
-            self.base.insert(device.to_string(), settled(light)?);
+            let snapshot = self.snapshot(device, light)?;
+            self.base.insert(device.to_string(), snapshot);
         }
         let showing = match self.target(device) {
             Target::Lease(l) => Some(l.id),
@@ -188,11 +283,19 @@ impl Arbiter {
         // Frames hide every colour: they go before anything else shows.
         self.hand_back_frames(device, showing, light);
         let shown = match self.target(device) {
-            Target::Lease(l) => show(light, &Want::lease(l), false).map(|_| ()),
+            Target::Lease(l) => {
+                let want = Want::lease(l);
+                let look = want.look();
+                let shown = show(light, &want, false).map(|_| ());
+                self.wrote_look(device, look);
+                shown
+            }
             // Giving the lights back waits for both halves of a split keyboard.
             Target::Restore(s) => {
-                if show(light, &Want::restore(&s), true)? {
-                    self.base.remove(device);
+                let want = Want::restore(&s);
+                self.wrote_look(device, want.look());
+                if show(light, &want, true)? {
+                    self.forget_restore(device);
                 } else {
                     eprintln!("Foxglove: {device}'s lights didn't come back as they were; trying again when it next connects");
                 }
@@ -204,12 +307,15 @@ impl Arbiter {
         shown
     }
 
-    /// The device (re)connected: a restore that didn't take is tried again (#293). Started by
-    /// the connection, stopped by the readback or [`RESENDS`]. A lease drawing frames draws
-    /// again (an unplug hands them back).
+    /// The device (re)connected: a restore that didn't take is tried again (#293), only while
+    /// the keyboard shows nothing but what the arbiter wrote (`Arbiter::retry_restore`).
+    /// Started by the connection, stopped by the readback or [`RESENDS`]. A lease drawing
+    /// frames draws again (an unplug hands them back).
     pub fn connected(&mut self, device: &str, light: &dyn Lighting) -> Result<(), DeviceError> {
         if (self.paused || self.winner(device).is_none()) && self.base.contains_key(device) {
-            return self.apply(device, light);
+            return self
+                .retry_restore(device, light, "keyboard connected")
+                .map(|_| ());
         }
         if let (Some(f), Some(w)) = (self.frames.get(device), self.winner(device)) {
             if f.lease == w.id && !self.paused {
@@ -253,17 +359,108 @@ impl Arbiter {
                 }
             }
             Target::Restore(_) if connected => return Ok(false),
-            Target::Restore(base) => {
-                if light
-                    .state()
-                    .is_ok_and(|s| s.settled && shows(&s, &Want::restore(&base)))
-                {
-                    self.base.remove(device);
-                    return Ok(false);
-                }
-            }
+            // The same rule as a connect: never an old snapshot over a changed keyboard.
+            Target::Restore(_) => return self.retry_restore(device, light, "re-apply"),
             Target::Nothing => return Ok(false),
         }
+        self.apply(device, light).map(|()| true)
+    }
+
+    /// A snapshot of `device`'s lights for a lease: as they read once settled, with the user's
+    /// choice laid over (#624). A read while idle-dark (off), under a left-running effect, or
+    /// with a half behind doesn't become what comes back.
+    fn snapshot(&self, device: &str, light: &dyn Lighting) -> Result<LightingState, DeviceError> {
+        let mut s = settled(light)?;
+        if let Some(c) = self.chosen.get(device) {
+            c.overlay(&mut s);
+        }
+        Ok(s)
+    }
+
+    /// Notes a look sent to `device` (a lease's or a restore), for `Arbiter::only_ours`.
+    fn wrote_look(&mut self, device: &str, look: Look) {
+        let wrote = self.wrote.entry(device.to_string()).or_default();
+        if wrote.last() != Some(&look) {
+            wrote.push(look);
+        }
+        if wrote.len() > WROTE_KEPT {
+            wrote.remove(0);
+        }
+    }
+
+    /// The restore is done (or dropped): no snapshot and no record of writes are kept.
+    fn forget_restore(&mut self, device: &str) {
+        self.base.remove(device);
+        self.wrote.remove(device);
+    }
+
+    /// Whether the keyboard shows nothing but the arbiter's writes to `device` while its
+    /// snapshot was kept: one look it wrote, whole (a lease's colour left on), or a restore
+    /// that half took (the snapshot's on/off, and each other field one the arbiter wrote or
+    /// the snapshot's own). Anything else means someone changed the keyboard since.
+    fn only_ours(&self, device: &str, s: &LightingState, base: &LightingState) -> bool {
+        let near = |a: u16, b: u16, wrap: u16| {
+            let d = a.abs_diff(b);
+            d.min(wrap.saturating_sub(d)) <= 2
+        };
+        let base = Want::restore(base).look();
+        let wrote = self.wrote.get(device).map_or(&[][..], Vec::as_slice);
+        let looks = || wrote.iter().chain(std::iter::once(&base));
+        let whole = |l: &Look| {
+            l.on == s.on
+                && near(l.hue, s.hue, 360)
+                && near(l.sat.into(), s.sat.into(), 1000)
+                && near(l.brightness.into(), s.brightness.into(), 1000)
+                && l.effect == s.effect.id
+                && l.speed.or(base.speed) == Some(s.speed)
+        };
+        if looks().any(whole) {
+            return true;
+        }
+        // The restore sends on/off first: a half-taken one shows the snapshot's.
+        s.on == base.on
+            && looks().any(|l| near(l.hue, s.hue, 360))
+            && looks().any(|l| near(l.sat.into(), s.sat.into(), 1000))
+            && looks().any(|l| near(l.brightness.into(), s.brightness.into(), 1000))
+            && looks().any(|l| l.effect == s.effect.id)
+            && looks().any(|l| l.speed == Some(s.speed))
+    }
+
+    /// A restore that didn't take, tried again on a later event (`why`, for the log): sent
+    /// (the snapshot with the user's choice over it, logged) only while the keyboard shows
+    /// nothing but the arbiter's own writes. A keyboard that already shows it, or that
+    /// something else changed since (#625: the user's own look), is left alone and the
+    /// snapshot dropped. True when something was sent.
+    fn retry_restore(
+        &mut self,
+        device: &str,
+        light: &dyn Lighting,
+        why: &str,
+    ) -> Result<bool, DeviceError> {
+        let Some(base) = self.base.get(device).cloned() else {
+            return Ok(false);
+        };
+        let s = light.state()?;
+        if s.settled && shows(&s, &Want::restore(&base)) {
+            self.forget_restore(device);
+            return Ok(false);
+        }
+        if !self.only_ours(device, &s, &base) {
+            eprintln!(
+                "Foxglove: {device}'s lights changed since a lease ended; its old snapshot is dropped, nothing sent ({why})"
+            );
+            self.forget_restore(device);
+            return Ok(false);
+        }
+        eprintln!(
+            "Foxglove: giving back {device}'s lights after a lease ({why}): {} · effect {} · {} % · hue {} · sat {} · speed {}",
+            if base.on { "on" } else { "off" },
+            base.effect.id,
+            base.brightness,
+            base.hue,
+            base.sat,
+            base.speed
+        );
         self.apply(device, light).map(|()| true)
     }
 
@@ -328,7 +525,9 @@ impl Arbiter {
             .filter(|w| w.id == lease && !self.paused)
             .cloned();
         if let (true, Some(w)) = (held, current) {
-            if let Err(e) = show(light, &Want::lease(&w), false) {
+            let want = Want::lease(&w);
+            self.wrote_look(device, want.look());
+            if let Err(e) = show(light, &want, false) {
                 eprintln!("Foxglove: {device}'s colour after its frames: {e}");
             }
         }
@@ -385,11 +584,17 @@ impl Arbiter {
         Ok(true)
     }
 
-    /// The user changed `device`'s lights (the Lights page) while leases hold them: that is
-    /// what comes back when the last one ends, as for the case's colours under a scene.
+    /// The user changed `device`'s lights (the Lights page, the followed accent): their
+    /// choice from now on (#624), and, while leases hold the lights, what comes back when the
+    /// last one ends, as for the case's colours under a scene.
     pub fn user_changed(&mut self, device: &str, change: impl FnOnce(&mut LightingState)) {
+        let chosen = self.chosen.entry(device.to_string()).or_default();
+        let mut probe = chosen.probe();
+        change(&mut probe);
+        let set = chosen.changed(&probe);
+        chosen.merge(&set);
         if let Some(base) = self.base.get_mut(device) {
-            change(base);
+            set.overlay(base);
         }
     }
 }
@@ -425,6 +630,17 @@ impl<'a> Want<'a> {
             brightness: s.brightness,
             effect: &s.effect.id,
             speed: Some(s.speed),
+        }
+    }
+
+    fn look(&self) -> Look {
+        Look {
+            on: self.on,
+            hue: self.hue,
+            sat: self.sat,
+            brightness: self.brightness,
+            effect: self.effect.to_string(),
+            speed: self.speed,
         }
     }
 }
@@ -518,9 +734,7 @@ pub fn register_reassert() {
         for t in rx {
             with(|a| {
                 for device in a.devices() {
-                    let shown = with_light(&device, |light| {
-                        a.reassert(&device, light, t == Trigger::KeyboardConnected)
-                    });
+                    let shown = with_light(&device, |light| reassert_on(a, &device, light, t));
                     match shown {
                         Some(Ok(true)) => {
                             eprintln!("{}", reassert::line(&format!("{device}'s lights"), t));
@@ -536,6 +750,21 @@ pub fn register_reassert() {
             });
         }
     });
+}
+
+/// The lights hook's work for one device and trigger (#622): a connect leaves a pending
+/// restore to [`Arbiter::connected`], which the device bus's Connected event runs (`api.rs`).
+fn reassert_on(
+    a: &mut Arbiter,
+    device: &str,
+    light: &dyn Lighting,
+    t: super::reassert::Trigger,
+) -> Result<bool, DeviceError> {
+    a.reassert(
+        device,
+        light,
+        t == super::reassert::Trigger::KeyboardConnected,
+    )
 }
 
 /// Runs `f` on the lights of device `id`: the host-link keyboard or a VIA one.
@@ -656,6 +885,10 @@ mod tests {
         lose: RefCell<u32>,
         /// Keeps the effect from changing (a keyboard that won't take it).
         stuck_effect: RefCell<bool>,
+        /// Every write, in order (#624: what a connect sent).
+        log: RefCell<Vec<String>>,
+        /// Unplugged: every write fails.
+        offline: RefCell<bool>,
     }
 
     impl Fake {
@@ -675,7 +908,27 @@ mod tests {
                 }),
                 lose: RefCell::new(0),
                 stuck_effect: RefCell::new(false),
+                log: RefCell::new(Vec::new()),
+                offline: RefCell::new(false),
             }
+        }
+        /// Notes a write; an unplugged keyboard refuses it.
+        fn write(&self, what: String) -> foxglove_devices::Result<()> {
+            if *self.offline.borrow() {
+                return Err(DeviceError::Disconnected);
+            }
+            self.log.borrow_mut().push(what);
+            Ok(())
+        }
+        /// The writes so far, emptied.
+        fn writes(&self) -> Vec<String> {
+            std::mem::take(&mut *self.log.borrow_mut())
+        }
+        /// Sets the whole look, as a key or another tool would (no write is logged).
+        fn set(&self, on: bool, (hue, sat, brightness): (u16, u8, u8), effect: &str, speed: u8) {
+            let mut s = self.state.borrow_mut();
+            (s.on, s.hue, s.sat, s.brightness, s.speed) = (on, hue, sat, brightness, speed);
+            s.effect.id = effect.into();
         }
         fn lost(&self) -> bool {
             let mut l = self.lose.borrow_mut();
@@ -693,23 +946,27 @@ mod tests {
             Ok(self.state.borrow().clone())
         }
         fn set_on(&self, on: bool) -> foxglove_devices::Result<()> {
+            self.write(format!("on {on}"))?;
             if !self.lost() {
                 self.state.borrow_mut().on = on;
             }
             Ok(())
         }
         fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> foxglove_devices::Result<()> {
+            self.write(format!("colour {hue} {sat} {brightness}"))?;
             let mut s = self.state.borrow_mut();
             (s.hue, s.sat, s.brightness) = (hue, sat, brightness);
             Ok(())
         }
         fn set_effect(&self, effect: Effect) -> foxglove_devices::Result<()> {
+            self.write(format!("effect {}", effect.id))?;
             if !*self.stuck_effect.borrow() {
                 self.state.borrow_mut().effect = effect;
             }
             Ok(())
         }
         fn set_speed(&self, speed: u8) -> foxglove_devices::Result<()> {
+            self.write(format!("speed {speed}"))?;
             self.state.borrow_mut().speed = speed;
             Ok(())
         }
@@ -1105,5 +1362,219 @@ mod tests {
         *kb.lose.borrow_mut() = 1;
         a.add(lease(3, Priority::Low, 60), &kb).unwrap();
         assert_eq!(hue(&kb), (true, 60));
+    }
+    /// The #625 look on file: off · Spectrum (2) · hue 4 · sat 100 · 9 % · speed 3.
+    const STALE: (bool, (u16, u8, u8), &str, u8) = (false, (4, 100, 9), "2", 3);
+    /// The user's: on · Swirl (3) · the accent 39/70 · 42 % · speed 3.
+    const USERS: (bool, (u16, u8, u8), &str, u8) = (true, (39, 70, 42), "3", 3);
+
+    fn look(f: &Fake) -> (bool, (u16, u8, u8), String, u8) {
+        let s = f.state.borrow();
+        (
+            s.on,
+            (s.hue, s.sat, s.brightness),
+            s.effect.id.clone(),
+            s.speed,
+        )
+    }
+
+    fn users() -> (bool, (u16, u8, u8), String, u8) {
+        (USERS.0, USERS.1, USERS.2.into(), USERS.3)
+    }
+
+    /// A lease taken while the keyboard read the #625 look, whose restore didn't take (the
+    /// effect stuck), so that look is kept for a later retry.
+    fn stale_snapshot_on_file(kb: &Fake, a: &mut Arbiter) {
+        kb.set(STALE.0, STALE.1, STALE.2, STALE.3);
+        a.add(lease(1, Priority::Low, 0), kb).unwrap();
+        *kb.stuck_effect.borrow_mut() = true;
+        for d in a.end(|_| true) {
+            a.apply(&d, kb).unwrap();
+        }
+        *kb.stuck_effect.borrow_mut() = false;
+        assert_eq!(a.base["kb"].effect.id, "2", "the stale snapshot is on file");
+        kb.writes();
+    }
+
+    /// #625, exactly: the keyboard is at the user's on · Swirl · 42 % (set on the keyboard,
+    /// not through the app), with a stale off · Spectrum · 9 % snapshot on file. It connects,
+    /// then the restore runs: nothing is written, and the effect and brightness stay.
+    #[test]
+    fn the_625_connect_and_restore_write_nothing_over_the_users_look() {
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        stale_snapshot_on_file(&kb, &mut a);
+        kb.set(USERS.0, USERS.1, USERS.2, USERS.3);
+        a.connected("kb", &kb).unwrap();
+        assert_eq!(kb.writes(), Vec::<String>::new(), "nothing written");
+        assert_eq!(look(&kb), users(), "effect and brightness kept");
+        assert!(a.base.is_empty(), "the stale snapshot is dropped");
+        // A later connect has nothing left to send.
+        a.connected("kb", &kb).unwrap();
+        assert_eq!(kb.writes(), Vec::<String>::new());
+
+        // The same through the Lights page: the user's choice goes into the snapshot, and the
+        // keyboard that shows it gets nothing.
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        stale_snapshot_on_file(&kb, &mut a);
+        kb.set(USERS.0, USERS.1, USERS.2, USERS.3);
+        a.user_changed("kb", |s| s.on = true);
+        a.user_changed("kb", |s| (s.hue, s.sat, s.brightness) = (39, 70, 42));
+        a.user_changed("kb", |s| s.effect.id = "3".into());
+        a.connected("kb", &kb).unwrap();
+        assert_eq!(kb.writes(), Vec::<String>::new());
+        assert_eq!(look(&kb), users());
+        assert!(a.base.is_empty());
+    }
+
+    /// #622's re-apply hooks (connect, relay ready, PC back, display change, taskbar restart),
+    /// in any order and repeated, can't replay a stale snapshot through the lights hook.
+    #[test]
+    fn the_reapply_hooks_never_replay_a_stale_snapshot() {
+        use super::super::reassert::Trigger;
+        // The relay comes up first (the #624 re-link), then the rest, twice.
+        let mut order = vec![Trigger::RightRelayReady];
+        order.extend(Trigger::ALL);
+        order.extend(Trigger::ALL);
+        for first in Trigger::ALL {
+            let kb = Fake::new();
+            let mut a = Arbiter::default();
+            stale_snapshot_on_file(&kb, &mut a);
+            kb.set(USERS.0, USERS.1, USERS.2, USERS.3);
+            for &t in std::iter::once(&first).chain(&order) {
+                for device in a.devices() {
+                    assert_eq!(reassert_on(&mut a, &device, &kb, t), Ok(false), "{t:?}");
+                }
+                if t == Trigger::KeyboardConnected {
+                    a.connected("kb", &kb).unwrap();
+                }
+            }
+            assert_eq!(kb.writes(), Vec::<String>::new(), "first {first:?}");
+            assert_eq!(look(&kb), users());
+            assert_eq!(
+                a.devices(),
+                Vec::<String>::new(),
+                "nothing left to re-apply"
+            );
+        }
+    }
+
+    /// #624: a snapshot read while the LEDs were idle-dark (off), dimmed, or under an effect a
+    /// scene left running gets the user's choice laid over; its off · Spectrum · 9 % is never
+    /// written, on the lease's end or on a connect.
+    #[test]
+    fn a_snapshot_taken_while_idle_dimmed_or_under_a_scene_is_never_written() {
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        // The Lights page: on · Swirl · 42 %, before any lease.
+        kb.set(USERS.0, USERS.1, USERS.2, USERS.3);
+        a.user_changed("kb", |s| s.on = true);
+        a.user_changed("kb", |s| (s.hue, s.sat, s.brightness) = (39, 70, 42));
+        a.user_changed("kb", |s| s.effect.id = "3".into());
+        assert_eq!(a.chosen["kb"].brightness, Some(42));
+        // Idle-dark, at a dim, under a scene's Spectrum: the keyboard reads the #625 look.
+        kb.set(STALE.0, STALE.1, STALE.2, STALE.3);
+        a.add(lease(1, Priority::Low, 0), &kb).unwrap();
+        assert_eq!(
+            (
+                a.base["kb"].on,
+                a.base["kb"].brightness,
+                a.base["kb"].effect.id.as_str()
+            ),
+            (true, 42, "3"),
+            "the snapshot is the user's choice"
+        );
+        // Unplugged when the lease ends: the restore doesn't take, the lease's red stays.
+        *kb.offline.borrow_mut() = true;
+        for d in a.end(|_| true) {
+            assert!(a.apply(&d, &kb).is_err());
+        }
+        *kb.offline.borrow_mut() = false;
+        kb.writes();
+        a.connected("kb", &kb).unwrap();
+        let sent = kb.writes();
+        for stale in ["on false", "effect 2", "colour 4 100 9"] {
+            assert!(!sent.contains(&stale.to_string()), "{stale} in {sent:?}");
+        }
+        assert_eq!(look(&kb), users());
+    }
+
+    /// A connect with no lease: a keyboard that matches (or one no lease ever touched) gets
+    /// nothing; one a lease left its colour on gets the user's choice, once, and then nothing.
+    #[test]
+    fn a_connect_sends_the_users_choice_only_over_a_leases_leftover_and_once() {
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        a.user_changed("kb", |s| s.on = true);
+        a.user_changed("kb", |s| (s.hue, s.sat, s.brightness) = (39, 70, 42));
+        a.user_changed("kb", |s| s.effect.id = "3".into());
+        // No lease ever: the keyboard is the user's to change (keys, other tools).
+        kb.set(STALE.0, STALE.1, STALE.2, STALE.3);
+        a.connected("kb", &kb).unwrap();
+        assert_eq!(kb.writes(), Vec::<String>::new(), "no lease, nothing sent");
+
+        // A restore pending, and the keyboard already shows it: nothing.
+        kb.set(USERS.0, USERS.1, USERS.2, USERS.3);
+        a.add(lease(1, Priority::Normal, 0), &kb).unwrap();
+        *kb.offline.borrow_mut() = true;
+        for d in a.end(|_| true) {
+            assert!(a.apply(&d, &kb).is_err());
+        }
+        *kb.offline.borrow_mut() = false;
+        kb.set(USERS.0, USERS.1, USERS.2, USERS.3);
+        kb.writes();
+        a.connected("kb", &kb).unwrap();
+        assert_eq!(kb.writes(), Vec::<String>::new(), "matches: nothing sent");
+        assert!(a.base.is_empty());
+
+        // A restore pending, and the keyboard still shows the lease's red: the user's choice
+        // goes out once.
+        a.add(lease(1, Priority::Normal, 0), &kb).unwrap();
+        *kb.offline.borrow_mut() = true;
+        for d in a.end(|_| true) {
+            assert!(a.apply(&d, &kb).is_err());
+        }
+        *kb.offline.borrow_mut() = false;
+        assert_eq!(hue(&kb), (true, 0), "the lease's red is left on");
+        kb.writes();
+        a.connected("kb", &kb).unwrap();
+        assert_eq!(
+            kb.writes(),
+            ["on true", "colour 39 70 42", "effect 3", "speed 3"],
+            "the user's choice, once"
+        );
+        assert_eq!(look(&kb), users());
+        a.connected("kb", &kb).unwrap();
+        assert_eq!(kb.writes(), Vec::<String>::new(), "then nothing");
+    }
+
+    /// A key that turns the lights back on after a restore half took (the on/off differs from
+    /// the snapshot) counts as the user's: the old snapshot isn't sent.
+    #[test]
+    fn a_key_after_a_half_taken_restore_is_left_alone() {
+        let kb = Fake::new();
+        let mut a = Arbiter::default();
+        stale_snapshot_on_file(&kb, &mut a);
+        // The restore turned the lights off; the user turns them on with a key.
+        kb.state.borrow_mut().on = true;
+        a.connected("kb", &kb).unwrap();
+        assert_eq!(kb.writes(), Vec::<String>::new());
+        assert!(kb.state.borrow().on);
+    }
+
+    /// The Lights page's changes are the user's choice field by field, also when set back.
+    #[test]
+    fn the_users_choice_is_kept_field_by_field() {
+        let mut a = Arbiter::default();
+        a.user_changed("kb", |s| s.on = true);
+        a.user_changed("kb", |s| s.speed = 4);
+        a.user_changed("kb", |s| s.on = false);
+        a.user_changed("kb", |s| s.on = false);
+        let c = &a.chosen["kb"];
+        assert_eq!(
+            (c.on, c.speed, c.hue, c.effect.as_deref()),
+            (Some(false), Some(4), None, None)
+        );
     }
 }
