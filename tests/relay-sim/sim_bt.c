@@ -777,6 +777,14 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
         sim_right.left_activity = d[1];
         right_update_lit();
         return 0;
+    case ART_RELAY_PANEL_POLARITY: // saved and drawn (panel_polarity.c): the screen redraws
+        if (len == 2) {
+            sim_right.polarity = d[1];
+            sim_right.polarity_writes++;
+            sim_right.redraws++;
+            right_redraw();
+        }
+        return 0;
     case ART_RELAY_SNAP:
         // art_relay_peripheral.c: one byte reads as before; a second, ART_RELAY_SNAP_PUSH (#662),
         // pushes the image once captured. A right before the push refuses two bytes.
@@ -1159,6 +1167,7 @@ void sim_bt_init(void) {
     k_work_init_delayable(&att_timeout_work, att_timeout_cb);
     att_timeout_work.target = &k_sys_work_q;
     sim_right.set = 0;
+    sim_right.polarity = -1;
     sim_right.follow = true;
     sim_right.rgb_on = true;
     sim_right.ccc_cfg = BT_GATT_CCC_NOTIFY; // bonded and subscribed before (the left's CCC)

@@ -10,11 +10,12 @@ $RelaySimDefines = @(
     "CONFIG_ZMK_SPLIT=1",
     "CONFIG_ZMK_SPLIT_ROLE_CENTRAL=1",
     "CONFIG_FOXGLOVE_RIGHT_LAMPS=21",
+    "CONFIG_FOXGLOVE_PANEL_POLARITY=1",
     "CONFIG_ZMK_LOG_LEVEL=0"
 )
 # Gating: each must pass on this tree. stall and stall-app were known gaps until the left let
 # go of unanswered requests and dropped a link whose request never got an answer (#618).
-$RelaySimScenarios = @("wake", "wake-app", "relink-shown", "push-relink-tap", "stall", "stall-app", "late", "late-ignored", "select-snap", "snap-latency")
+$RelaySimScenarios = @("wake", "wake-app", "relink-shown", "push-relink-tap", "stall", "stall-app", "late", "late-ignored", "select-snap", "snap-latency", "polarity-relink")
 # Known gaps: each must still FAIL on this tree (README.md, "Known gaps"); one that passes means
 # the gap closed and the lists and README need updating. None at the moment.
 $RelaySimKnownGaps = @()

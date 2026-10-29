@@ -35,7 +35,8 @@
  *                    24 RGB_SHOWN (RGB_STATE bytes 17-28: what each half's LEDs show, #605;
  *                    with sync on the left also hands the right its colour and effect, #624),
  *                    25 RIGHT_REDRAWS (D7 8E bytes 16-20: the right's redraw count, #618),
- *                    26 PC_STATE (D7 11: the PC awake with a lease, or away, #609, #604).
+ *                    26 PC_STATE (D7 11: the PC awake with a lease, or away, #609, #604),
+ *                    27 PANEL_POLARITY (D7 12: dark or light mono panels, both halves, #666).
  *      HELLO has no byte left for the LED counts: bit 22 says D7 10 answers them.
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
@@ -314,6 +315,17 @@
  *      traffic, 60 s and again 20 s before the lease ends. A PC that is awake answers with
  *      awake (no wake flag) and a new lease; one that isn't (or an app that is gone) lets it
  *      lapse. Not a reply: a request in flight keeps waiting for its own.
+ *   12 PANEL_POLARITY  polarity u8 (0 dark, 1 light, 0xff or a report cut short: read)
+ *                                                                (HELLO bit 27, #666)
+ *      reply: D7 92, status (0 ok, 4 not built in, 5 bad: another value; nothing changes),
+ *             polarity (the one in force), default (CONFIG_NICE_VIEW_WIDGET_INVERTED: 1 light),
+ *             right (the polarity the right acknowledged on this link; 0xff none yet or no relay
+ *             link)
+ *      Dark is light ink on a dark field, light dark ink on a light field: every widget and every
+ *      piece of art on both halves, built-in and pushed (art stores ink bits, #610). Saved on the
+ *      keyboard ("nvc_pol/v"), so it holds without the app and over a reboot; the left sends it
+ *      to the right over the art relay (op PANEL_POLARITY) on each change and every link-up, and
+ *      the right saves it too. A right before #666 acknowledges the op without applying it.
  *   0B GUARD_TEST [delay_ms u16] (test hooks + split guard only)        reply: D7 8B, status
  *      The #122 split guard treats the current split link as stuck once, delay_ms from now (2000
  *      when left out; 0 = at once, even mid-relay, e.g. during an art push): it drops it, ZMK
@@ -373,6 +385,8 @@
 // D7 11 PC_STATE: the PC awake with a lease, or away; on USB power the keyboard stays lit while
 // the PC is awake and idles when it sleeps (#609, #604; pc_state.h).
 #define HOST_LINK_CAP_PC_STATE (1U << 26)
+// D7 12 PANEL_POLARITY: dark or light mono panels, both halves (#666; panel_polarity.h).
+#define HOST_LINK_CAP_PANEL_POLARITY (1U << 27)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);

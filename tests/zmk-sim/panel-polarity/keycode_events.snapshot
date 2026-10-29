@@ -1,0 +1,53 @@
+polarity: HELLO caps bit 27 PANEL_POLARITY 1
+polarity: -- the default (Kconfig): dark, nothing stored
+polarity: PC sends D7 12 FF
+polarity: keyboard D7 92: status 0, polarity 0, default 0, right FF
+polarity: -- the app sets light: this half redraws, the right is sent it, one save 2 s later
+polarity: PC sends D7 12 01
+polarity: redraw, light
+polarity: to the right: 12 01
+polarity: keyboard D7 92: status 0, polarity 1, default 0, right FF
+polarity: settings nvc_pol/v = 01
+polarity: -- light again: nothing changes, nothing is sent or saved
+polarity: PC sends D7 12 01
+polarity: keyboard D7 92: status 0, polarity 1, default 0, right FF
+polarity: -- a bad value: status 5, nothing changes
+polarity: PC sends D7 12 07
+polarity: keyboard D7 92: status 5, polarity 1, default 0, right FF
+polarity: -- a report cut short is a read
+polarity: keyboard D7 92: status 0, polarity 1, default 0, right FF
+polarity: -- dark, then light again within the save delay: two redraws, no save (light is stored)
+polarity: PC sends D7 12 00
+polarity: redraw, dark
+polarity: to the right: 12 00
+polarity: keyboard D7 92: status 0, polarity 0, default 0, right FF
+polarity: PC sends D7 12 01
+polarity: redraw, light
+polarity: to the right: 12 01
+polarity: keyboard D7 92: status 0, polarity 1, default 0, right FF
+polarity: -- dark: one save
+polarity: PC sends D7 12 00
+polarity: redraw, dark
+polarity: to the right: 12 00
+polarity: keyboard D7 92: status 0, polarity 0, default 0, right FF
+polarity: settings nvc_pol/v = 00
+polarity: -- as the right: the left's light over the relay is drawn and saved; a bad value ignored
+polarity: redraw, light
+polarity: settings nvc_pol/v = 01
+polarity: -- a reboot: the stored dark comes back from the settings, drawn once
+polarity: redraw, dark
+polarity: -- the settings load 1 byte(s) (err 0)
+polarity: PC sends D7 12 FF
+polarity: keyboard D7 92: status 0, polarity 0, default 0, right FF
+polarity: -- a stored value of the wrong size or out of range is ignored
+polarity: -- the settings load 2 byte(s) (err 0)
+polarity: -- the settings load 1 byte(s) (err 0)
+polarity: PC sends D7 12 FF
+polarity: keyboard D7 92: status 0, polarity 0, default 0, right FF
+polarity: -- light after the load: saved, as dark was the stored value
+polarity: PC sends D7 12 01
+polarity: redraw, light
+polarity: to the right: 12 01
+polarity: keyboard D7 92: status 0, polarity 1, default 0, right FF
+polarity: settings nvc_pol/v = 01
+polarity: -- done

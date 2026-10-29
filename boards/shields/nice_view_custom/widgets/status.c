@@ -224,6 +224,11 @@ void host_panel_redraw(void) {
     SYS_SLIST_FOR_EACH_CONTAINER(&widgets, widget, node) { draw_all(widget); }
 }
 
+#if IS_ENABLED(CONFIG_FOXGLOVE_PANEL_POLARITY)
+// The panel polarity changed (#666): every canvas again, in the new colours. Display queue.
+void panel_polarity_apply(void) { host_panel_redraw(); }
+#endif
+
 static void set_battery_status(struct zmk_widget_status *widget,
                                struct battery_status_state state) {
 #if IS_ENABLED(CONFIG_USB_DEVICE_STACK)

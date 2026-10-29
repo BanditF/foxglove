@@ -50,6 +50,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "half_marker.h"
 #include "custom_art.h"
 #include "peripheral_status.h"
+#include "panel_polarity.h"
 
 static uint8_t slots[2][CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE];
 static int shown = -1; // slot playing, or -1 for a built-in set
@@ -440,6 +441,15 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         }
 #if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
         pc_state_remote(d[1], sys_get_le16(&d[2]));
+#endif
+        break;
+
+    case ART_RELAY_PANEL_POLARITY: // the left's panel polarity (#666): saved and drawn here too
+        if (len != PANEL_POLARITY_RELAY_SIZE) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+#if IS_ENABLED(CONFIG_FOXGLOVE_PANEL_POLARITY)
+        panel_polarity_remote(d[1]); // a value it doesn't know is ignored
 #endif
         break;
 

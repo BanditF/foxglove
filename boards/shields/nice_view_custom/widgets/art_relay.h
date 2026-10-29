@@ -41,6 +41,11 @@
  * PC's state as the left has it (#609), sent like ACTIVITY on each change, each renewal and on
  * link-up. The right holds itself out of idle only on its own USB power. A right before it has no
  * case for the op and ignores it.
+ * PANEL_POLARITY (18, panel_polarity.h, #666): polarity u8 (0 dark, 1 light), a write request on
+ * relay_q after ACTIVITY and PC_STATE in the same job (so it keeps #662's spacing): sent on each
+ * change and again on every link-up, newest wins. The right saves and applies it. A right before
+ * it has no case for the op and answers it like any write, ignoring it: the left's "right
+ * acknowledged" (D7 92) can't tell such a right from one that applied it.
  * RGB (write request, so the left knows it arrived) is the left's underglow on/off; with follow = 1 the right shows
  * the same, with 0 it goes by its own activity (rgb_idle.c). Bytes 3-7 (status version >= 6) are
  * the left's struct battery_dim_config, which the right takes and saves as its own levels (each
@@ -120,6 +125,8 @@ enum art_relay_op {
     ART_RELAY_ACTIVITY = ART_RELAY_ACTIVITY_OP,
     // The PC's state (#609, pc_state.h): state u8, lease s u16 LE, sent with ACTIVITY's rules.
     ART_RELAY_PC_STATE = 17,
+    // The panel polarity (#666, panel_polarity.h): polarity u8, sent with PC_STATE's rules.
+    ART_RELAY_PANEL_POLARITY = 18,
 };
 
 // The right rings on every CCC write that turns notify on (#618), not only when Zephyr's CCC value
@@ -236,6 +243,11 @@ int art_relay_guard_test(uint16_t delay_ms);
 void art_relay_rgb_kick(void);
 // The PC's state changed or was renewed (pc_state.c): the right gets it soon. Any thread.
 void art_relay_pc_state_kick(void);
+// The panel polarity changed (panel_polarity.c): the right gets it soon. Any thread.
+void art_relay_polarity_kick(void);
+// The polarity the right acknowledged on this link (D7 92), or PANEL_POLARITY_UNKNOWN (0xff): no
+// relay link, or not acknowledged yet. Any thread.
+uint8_t art_relay_right_polarity(void);
 // The PC's colour for the right half (#266): sent as one acknowledged write, the newest value
 // only, retried until the right has it. -ENOTSUP when the right can't take it (no relay link, or
 // older right firmware): use ZMK's split invoke instead.

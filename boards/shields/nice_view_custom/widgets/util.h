@@ -8,14 +8,16 @@
 #include <lvgl.h>
 #include <zmk/endpoints.h>
 
+#include "panel_polarity.h"
+
 #define NICEVIEW_PROFILE_COUNT 5
 
 #define CANVAS_SIZE 68
 
-#define LVGL_BACKGROUND                                                                            \
-    IS_ENABLED(CONFIG_NICE_VIEW_WIDGET_INVERTED) ? lv_color_black() : lv_color_white()
-#define LVGL_FOREGROUND                                                                            \
-    IS_ENABLED(CONFIG_NICE_VIEW_WIDGET_INVERTED) ? lv_color_white() : lv_color_black()
+// The panel's colours, read when drawn: the panel polarity (#666, panel_polarity.h) the PC sets
+// at run time, CONFIG_NICE_VIEW_WIDGET_INVERTED until then. Light is the old inverted theme.
+#define LVGL_BACKGROUND (panel_polarity_light() ? lv_color_black() : lv_color_white())
+#define LVGL_FOREGROUND (panel_polarity_light() ? lv_color_white() : lv_color_black())
 
 struct status_state {
     uint8_t battery;

@@ -1,0 +1,7 @@
+# The panel polarity (module/polarity_sim.c): HELLO bit 27; the Kconfig default dark; light from
+# the app redraws this half, goes to the right (op 12 = 18) and is saved once 2 s later; the same
+# value again changes nothing; a bad value answers 5 and changes nothing; a short report reads;
+# two flips within the save delay save nothing (the stored value is back); as the right the
+# left's value is drawn and saved, a bad one ignored; after a reboot the stored value comes back
+# from the settings and is drawn, a stored value of the wrong size or range is ignored.
+/^polarity: /p

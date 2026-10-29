@@ -10,6 +10,7 @@
 #include <stdlib.h>
 
 #include "art_relay.h"
+#include "panel_polarity.h"
 #include "screen_snap.h"
 #include "sim_bt.h"
 #include "sim_kernel.h"
@@ -534,6 +535,91 @@ static void snap_latency(bool old_right) {
     debug_line("at the end");
 }
 
+// Waits up to max_ms for the right to have polarity p and the left to report it acknowledged.
+static bool polarity_reaches(uint8_t p, int max_ms, int64_t *took) {
+    int64_t start = k_uptime_get();
+    while (k_uptime_get() - start < max_ms) {
+        if (sim_right.polarity == p && art_relay_right_polarity() == p) {
+            *took = k_uptime_get() - start;
+            return true;
+        }
+        k_msleep(20);
+    }
+    *took = k_uptime_get() - start;
+    return false;
+}
+
+// The panel polarity (#666): the left sends the right its value on link-up, on each change (the
+// PC's D7 12: panel_polarity_set kicks the relay), and again after a re-link, newest wins; a flip
+// made while the link is down reaches the right when it comes back. With the app's traffic, the
+// right's response-buffer rule and its busy system queue after each redraw (select-snap's
+// conditions, #662): no request may go unanswered and the link must not drop.
+static void polarity_relink(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    int64_t took;
+    bool ok = polarity_reaches(PANEL_POLARITY_DARK, 3000, &took);
+    check("sent-on-link-up", ok, "right %d, left sees %d, after %lld ms", sim_right.polarity,
+          art_relay_right_polarity(), (long long)took);
+    app_on = true;
+    k_msleep(2000);
+    sim_bt_faults.rsp_meta_rule = true;
+    sim_bt_faults.right_redraw_busy_us = 20000;
+    int drops = sim_bt_stats.link_drops;
+
+    sim_left.polarity = PANEL_POLARITY_LIGHT;
+    art_relay_polarity_kick();
+    ok = polarity_reaches(PANEL_POLARITY_LIGHT, 3000, &took);
+    check("flip-light", ok, "right %d after %lld ms", sim_right.polarity, (long long)took);
+
+    // A burst of flips, a SELECT in the middle: the newest value wins, every request answered.
+    for (int i = 0; i < 4; i++) {
+        sim_left.polarity = (uint8_t)(i % 2 == 0 ? PANEL_POLARITY_LIGHT : PANEL_POLARITY_DARK);
+        art_relay_polarity_kick();
+        k_msleep(5);
+    }
+    char why[160];
+    check("select-during", lab_select(2, why, sizeof(why)), "%s", why);
+    ok = polarity_reaches(PANEL_POLARITY_DARK, 3000, &took);
+    check("burst-newest-wins", ok, "right %d, %d writes", sim_right.polarity,
+          sim_right.polarity_writes);
+    check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
+          sim_bt_stats.link_drops - drops);
+    check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped);
+
+    // The link drops; the PC flips to light meanwhile (the kick finds no link); the re-link sends
+    // the newest value, and the left says unknown until the right has it.
+    sim_bt_faults.rsp_meta_rule = false;
+    sim_bt_drop(2000000);
+    k_msleep(100);
+    check("unknown-while-down", art_relay_right_polarity() == PANEL_POLARITY_UNKNOWN, "left sees %d",
+          art_relay_right_polarity());
+    sim_left.polarity = PANEL_POLARITY_LIGHT;
+    art_relay_polarity_kick();
+    int writes = sim_right.polarity_writes;
+    k_msleep(3000);
+    wait_relay(40);
+    check("relay-back", art_relay_link() == 2, "link %d", art_relay_link());
+    ok = polarity_reaches(PANEL_POLARITY_LIGHT, 3000, &took);
+    check("resent-on-relink", ok && sim_right.polarity_writes == writes + 1,
+          "right %d, %d write(s) since the drop, after %lld ms", sim_right.polarity,
+          sim_right.polarity_writes - writes, (long long)took);
+
+    // A re-link with no change still sends it once (a right that rebooted meanwhile, #666).
+    writes = sim_right.polarity_writes;
+    sim_bt_drop(2000000);
+    k_msleep(3000);
+    wait_relay(40);
+    ok = polarity_reaches(PANEL_POLARITY_LIGHT, 3000, &took);
+    check("resent-unchanged", ok && sim_right.polarity_writes == writes + 1, "%d write(s)",
+          sim_right.polarity_writes - writes);
+    k_msleep(3000);
+    check("then-quiet", sim_right.polarity_writes == writes + 1, "%d write(s) 3 s later",
+          sim_right.polarity_writes - writes);
+    debug_line("at the end");
+}
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -561,6 +647,8 @@ static void lab_thread(void *arg) {
         snap_latency(false);
     } else if (!strcmp(scenario, "snap-latency-old")) {
         snap_latency(true);
+    } else if (!strcmp(scenario, "polarity-relink")) {
+        polarity_relink();
     } else {
         printf("unknown scenario %s\n", scenario);
         failed = true;
