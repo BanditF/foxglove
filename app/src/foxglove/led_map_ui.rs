@@ -383,7 +383,7 @@ fn play(c: &Confirm) -> led_map::Play {
     led_map::Play {
         frames: c.frames(),
         every: std::time::Duration::from_millis(ms),
-        rounds: confirm::rounds(c.per_half, ms),
+        rounds: confirm::rounds(c.steps().len(), ms),
     }
 }
 
@@ -835,7 +835,7 @@ fn check_board(ui: &mut egui::Ui, v: &CheckView, c: &Confirm) {
         if let Some(first) = c.point(h, 0) {
             painter.circle_stroke(g.screen(a, first), 7.0, Stroke::new(1.5, p.accent));
         }
-        if let Some(at) = v.step.and_then(|i| c.point(h, i)) {
+        if let Some(at) = v.step.and_then(|i| c.point(h, c.lamp_at(i)?)) {
             let at = g.screen(a, at);
             painter.circle_filled(at, 8.0, p.accent.gamma_multiply(0.35));
             painter.circle(at, 5.0, Color32::WHITE, Stroke::new(1.5, p.accent));

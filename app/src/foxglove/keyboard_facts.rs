@@ -84,7 +84,10 @@ fn publish(facts: &Facts, event: &DeviceEvent) {
             facts.set("keyboard.profile", Value::Int(i64::from(*profile) + 1));
             facts.set("keyboard.profile_connected", Value::Bool(*connected));
         }
-        DeviceEvent::Key { .. } | DeviceEvent::LightingChanged { .. } => {}
+        // The keyboard's report of its lights (every RGB_STATE read or event, #605): the
+        // case's "Match keyboard" follows it (#616). Its facts are `device.<id>.lighting.*`.
+        DeviceEvent::LightingChanged { state } => super::pc_lights::keyboard_lights(state),
+        DeviceEvent::Key { .. } => {}
     }
 }
 

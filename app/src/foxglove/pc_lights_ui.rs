@@ -120,10 +120,23 @@ pub fn show(ui: &mut egui::Ui) {
             }
             Intent::Identify(key) => pc_lights::send(Msg::Identify(key)),
             Intent::Match(key, on) => {
-                if on {
-                    if let Some(c) = follow_color() {
-                        pc_lights::send(Msg::Follow(c));
+                // What the keyboard last reported, should the worker have none yet.
+                if let (true, Some(k)) = (on, keyboard_shows()) {
+                    // The accent the keyboard is sent may not be what it shows (#616): say
+                    // which one the case follows.
+                    if let Some(accent) = super::accent::followed() {
+                        eprintln!(
+                            "Foxglove: Match keyboard on for {key}: following the keyboard's \
+                             report (effect {}, hue {}, sat {}, brightness {}), not the accent \
+                             {} it is sent",
+                            k.effect,
+                            k.hue,
+                            k.sat,
+                            k.brightness,
+                            pc_lights::hex(accent)
+                        );
                     }
+                    pc_lights::send(Msg::Keyboard(k));
                 }
                 pc_lights::send(Msg::Match(key, on));
             }
@@ -158,14 +171,12 @@ pub fn show(ui: &mut egui::Ui) {
     }
 }
 
-/// What "Match keyboard" starts from: the colour the keyboard follows (the wallpaper's or the
-/// Windows accent) when it follows one, else the keyboard's colour as last read.
-fn follow_color() -> Option<[u8; 3]> {
-    if let Some(c) = super::accent::followed() {
-        return Some(c);
-    }
+/// What "Match keyboard" starts from: the keyboard's lights as it last reported them
+/// (RGB_STATE), never the colour Foxglove meant to send it, such as the accent the keymap
+/// can't take (#616).
+fn keyboard_shows() -> Option<pc_lights::KeyboardLights> {
     let left = super::keyboard_settings::cached_rgb_state()?.left;
-    Some(pc_lights::hsv_rgb(left.hue, left.sat, left.brightness))
+    Some(pc_lights::KeyboardLights::from_half(&left))
 }
 
 /// What the control kind is called on the page.
@@ -424,9 +435,10 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
                 if ui
                     .checkbox(&mut matching, "Match keyboard")
                     .on_hover_text(
-                        "Follow the keyboard's underglow colour when Foxglove sets it, or the wallpaper's \
-                         or the Windows accent colour when the keyboard follows that. Picking a colour \
-                         here stops it.",
+                        "Show the colour the keyboard's lights show, as the keyboard reports it. \
+                         While the keyboard plays a rainbow (Spectrum, Swirl) there's no colour to \
+                         copy: this device keeps its colours and the line below says so. It \
+                         doesn't go dark when the keyboard dims. Picking a colour here stops it.",
                     )
                     .changed()
                 {

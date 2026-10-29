@@ -355,7 +355,7 @@ mod tests {
         let d = other.drawing.as_ref().expect("a whole-board drawing");
         let (c, r, t) = d.grid();
         assert_eq!(c * r + t, second_desk::LAMPS);
-        let mut keys = l.led_keys.clone();
+        let mut keys: Vec<u8> = l.led_keys.iter().flat_map(|k| k.keys().to_vec()).collect();
         keys.sort_unstable();
         assert_eq!(keys, (0..61).collect::<Vec<u8>>(), "every key once");
         // The case board: another vendor, no driver; the lightbar isn't in any catalog.

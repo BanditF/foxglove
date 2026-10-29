@@ -178,24 +178,34 @@ fn keyboard_parts(room: &RoomMap) -> Option<Vec<&foxglove_scene::room::Placed>> 
 }
 
 /// One part's LEDs as EFFECT LAMPS points: each numbered light ("0", "1", ...) of the placed
-/// part, in thousandths of the part from its top-left corner. `None` unless the part has
-/// exactly `count` of them, its LEDs in the board's frame (one light per part: no map).
+/// part, in thousandths of the part from its top-left corner. An LED without a light is one
+/// that lights nothing (#608): it gets the part's centre, which no one sees. `None` unless every
+/// light of the part is one of its `count` LEDs (one light per part: no map).
 fn part_lamps(d: &foxglove_scene::room::Placed, count: usize) -> Option<Vec<[u16; 2]>> {
-    if count == 0 || d.lights.len() != count || d.rect.w <= 0.0 || d.rect.h <= 0.0 {
+    let numbered =
+        |l: &&foxglove_scene::room::PlacedLight| l.id.parse::<usize>().is_ok_and(|i| i < count);
+    if count == 0
+        || d.lights.is_empty()
+        || !d.lights.iter().all(|l| numbered(&l))
+        || d.rect.w <= 0.0
+        || d.rect.h <= 0.0
+    {
         return None;
     }
     let per = |v: f32, from: f32, size: f32| {
         ((v - from) / size * 1000.0).round().clamp(0.0, 1000.0) as u16
     };
-    (0..count)
-        .map(|i| {
-            let l = d.lights.iter().find(|l| l.id == i.to_string())?;
-            Some([
-                per(l.at.x, d.rect.x, d.rect.w),
-                per(l.at.y, d.rect.y, d.rect.h),
-            ])
-        })
-        .collect()
+    Some(
+        (0..count)
+            .map(|i| match d.lights.iter().find(|l| l.id == i.to_string()) {
+                Some(l) => [
+                    per(l.at.x, d.rect.x, d.rect.w),
+                    per(l.at.y, d.rect.y, d.rect.h),
+                ],
+                None => [500, 500],
+            })
+            .collect(),
+    )
 }
 
 /// The scene's effect as the keyboard's own (#542), or `None` when it doesn't map (gradient,
@@ -318,7 +328,8 @@ fn part_of(device: &str, parts: &LampParts) -> Option<usize> {
 /// The keyboard's lights in a rendered frame as one SET_FRAME frame of `parts`' LEDs. A light
 /// whose id is an LED number (the board profile's LED map) colours that LED of its part; any
 /// other light (a part lit as one) colours every LED of its part that no numbered light covers.
-/// A part missing from the room gets the mix of everything.
+/// A part with numbered lights only leaves the LEDs without one black: the map says they light
+/// nothing (#608). A part missing from the room gets the mix of everything.
 pub(crate) fn keyboard_frame(
     lights: &[(&str, &str, Rgb)],
     parts: &LampParts,
@@ -337,8 +348,11 @@ pub(crate) fn keyboard_frame(
             .filter(|(l, _)| l.parse::<usize>().is_err())
             .map(|(_, c)| *c)
             .collect();
-        let fill =
-            mixed(&whole).or_else(|| mixed(&own.iter().map(|(_, c)| *c).collect::<Vec<_>>()));
+        let fill = if whole.is_empty() && !own.is_empty() {
+            Some(Rgb([0, 0, 0]))
+        } else {
+            mixed(&whole)
+        };
         let Some(fill) = fill else {
             continue;
         };
@@ -1168,7 +1182,7 @@ mod tests {
         assert_eq!(f.lamps[half..], vec![blue; half]);
         assert_eq!(f.mix, hsb(red.mix(blue, 0.5)));
         // Per LED (a board profile with an LED map): each numbered light its LED; LEDs the map
-        // leaves out get the half's mix.
+        // leaves out light nothing (#608), so they stay black.
         let mut lights: Vec<(&str, &str, Rgb)> = Vec::new();
         let ids: Vec<String> = (0..half).map(|i| i.to_string()).collect();
         for (i, id) in ids.iter().enumerate().take(20) {
@@ -1178,12 +1192,11 @@ mod tests {
         let f = keyboard_frame(&lights, &corne).unwrap();
         assert_eq!(f.lamps[3], green);
         assert_eq!(f.lamps[0], red);
-        let left: Vec<Rgb> = lights
-            .iter()
-            .filter(|(d, _, _)| *d == "keyboard:left")
-            .map(|(_, _, c)| *c)
-            .collect();
-        assert_eq!(f.lamps[20], mixed(&left).unwrap(), "the half's mix");
+        assert_eq!(
+            f.lamps[20],
+            Rgb([0, 0, 0]),
+            "a dead LED: black, not the half's mix"
+        );
         assert_eq!(f.lamps[half], blue);
         // A one-piece keyboard on split firmware (or one half placed): the mix everywhere.
         let f = keyboard_frame(&[("keyboard", "all", green)], &corne).unwrap();

@@ -157,6 +157,22 @@ fn lighting_state(h: &RgbHalf) -> LightingState {
     }
 }
 
+/// A half's colour as the keyboard reports it, in the palette's colours: what Foxglove asked
+/// for while the keyboard still shows what was sent for it, else the calibration's inverse.
+fn asked_half(key: &str, half: &mut RgbHalf) {
+    (half.hue, half.sat, half.brightness) =
+        calibration::asked_hsb(key, (half.hue, half.sat, half.brightness));
+}
+
+/// An RGB_STATE with both halves in the palette's colours ([`asked_half`]).
+fn reported_state(key: &str, mut state: RgbState) -> RgbState {
+    asked_half(key, &mut state.left);
+    if let Some((right, _)) = &mut state.right {
+        asked_half(key, right);
+    }
+    state
+}
+
 /// Whether the right half (as it last reported) shows what the left does; brightness aside,
 /// since each half dims on its own battery.
 fn halves_agree(rgb: &RgbState) -> bool {
@@ -187,8 +203,9 @@ pub struct FoxgloveLinkDevice {
     behaviors: Mutex<Vec<BehaviorInfo>>,
     underglow: Mutex<Option<u16>>,
     /// Its key in the colour calibration registry: underglow colours go through that
-    /// calibration (`calibration::send_hsb`).
-    calibration_key: Mutex<String>,
+    /// calibration (`calibration::send_hsb`). Shared with the report observer, which turns each
+    /// RGB_STATE back into the palette's colours.
+    calibration_key: Arc<Mutex<String>>,
     /// Its LEDs by part, in SET_FRAME's order (#561): what the firmware or the board profile
     /// says, else the old firmware's.
     lamp_parts: Mutex<LampParts>,
@@ -211,7 +228,9 @@ impl FoxgloveLinkDevice {
             }
         });
         let layers = Arc::new(Mutex::new(vec![0]));
+        let calibration_key = Arc::new(Mutex::new(calibration::key_for(&info.id)));
         let (report_sink, report_layers) = (sink.clone(), layers.clone());
+        let report_key = calibration_key.clone();
         let capabilities = hello.capabilities;
         // The right's level from the last HELLO seen, so a repeat isn't news.
         let right_seen = Mutex::new(hello.right_battery);
@@ -262,6 +281,21 @@ impl FoxgloveLinkDevice {
                         });
                     }
                 }
+            } else if crate::protocol::is_reply(
+                r,
+                crate::protocol::SETTINGS,
+                crate::protocol::settings::RGB_STATE,
+            ) {
+                // Every RGB_STATE, read or sent as an event, is the one source of the lighting
+                // facts (#605): what the keyboard reports, never what was last commanded.
+                let key = report_key.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let rgb = reported_state(&key, crate::protocol::RgbState::parse(r));
+                report_sink.emit(DeviceEvent::LightingChanged {
+                    state: LightingState {
+                        settled: halves_agree(&rgb),
+                        ..lighting_state(&rgb.left)
+                    },
+                });
             } else if let Some(active) = parse_layers(r) {
                 let mut current = report_layers.lock().unwrap_or_else(|e| e.into_inner());
                 if *current != active {
@@ -277,7 +311,7 @@ impl FoxgloveLinkDevice {
             });
         }
         FoxgloveLinkDevice {
-            calibration_key: Mutex::new(calibration::key_for(&info.id)),
+            calibration_key,
             info,
             link,
             caps: caps(&hello),
@@ -341,18 +375,12 @@ impl FoxgloveLinkDevice {
     /// A half's colour as the keyboard reports it, turned back into the colour Foxglove asked
     /// for (before calibration), so the app shows and resends the palette's colour.
     pub fn asked_half(&self, half: &mut RgbHalf) {
-        (half.hue, half.sat, half.brightness) = calibration::asked_hsb(
-            &self.calibration_key(),
-            (half.hue, half.sat, half.brightness),
-        );
+        asked_half(&self.calibration_key(), half);
     }
 
     /// Both halves' state as [`Self::asked_half`] reports them.
     pub fn asked_state(&self, state: &mut RgbState) {
-        self.asked_half(&mut state.left);
-        if let Some((right, _)) = &mut state.right {
-            self.asked_half(right);
-        }
+        *state = reported_state(&self.calibration_key(), *state);
     }
 
     /// The keymap's `&rgb_ug` behavior id, which lighting changes go through (the firmware has
@@ -673,17 +701,15 @@ impl Lighting for FoxgloveLinkDevice {
         Ok(zones)
     }
 
+    /// The keyboard's RGB_STATE. Its reply passes the report observer first, which publishes
+    /// it as the lighting facts (#605), so this read and the facts always agree.
     fn state(&self) -> PResult<LightingState> {
         let mut rgb = settings::rgb_state(&*self.link).map_err(err)?;
         self.asked_state(&mut rgb);
-        let state = LightingState {
+        Ok(LightingState {
             settled: halves_agree(&rgb),
             ..lighting_state(&rgb.left)
-        };
-        self.sink.emit(DeviceEvent::LightingChanged {
-            state: state.clone(),
-        });
-        Ok(state)
+        })
     }
 
     /// Effects by the firmware's number: 0 solid, 1 breathe, 2 spectrum, 3 swirl.
@@ -1525,6 +1551,33 @@ mod tests {
             "the keyboard's calibrated colour reads back as the palette's"
         );
         calibration::global().set_device(&key, None);
+    }
+
+    /// #605: the lighting facts come from the keyboard's RGB_STATE only, a read or an unasked
+    /// event alike, and agree with what `state()` returns; a command alone changes nothing.
+    #[test]
+    fn lighting_facts_follow_every_rgb_state_report_and_nothing_else() {
+        let (dev, fake, bus) = device(capabilities::PANEL | capabilities::SETTINGS_RGB);
+        let id = foxglove_devices::Device::info(&dev).id.to_string();
+        let fact = |name: &str| bus.facts().get(&format!("device.{id}.lighting.{name}"));
+        let lighting = dev.lighting().unwrap();
+        assert_eq!(fact("on"), None, "nothing reported yet");
+        // A command is not a report.
+        dev.set_underglow(Some(7));
+        lighting.set_on(false).unwrap();
+        assert_eq!(fact("on"), None, "the command didn't become a fact");
+        // A read: the facts equal what it returned (the reply passes the observer first).
+        let s = lighting.state().unwrap();
+        assert_eq!(fact("on"), Some(Value::Bool(s.on)));
+        assert_eq!(fact("hue"), Some(Value::Int(s.hue.into())));
+        assert_eq!(fact("brightness"), Some(Value::Int(s.brightness.into())));
+        assert_eq!(fact("effect"), Some(Value::Text("3".into())));
+        // The keyboard's own event (lights switched off by idle): the facts follow it.
+        fake.push(&[0xD7, 0x83, 0, 12, 0, 33, 9, 0, 1, 0xff]);
+        wait_for(|| fact("on") == Some(Value::Bool(false)));
+        assert_eq!(fact("on"), Some(Value::Bool(false)));
+        assert_eq!(fact("effect"), Some(Value::Text("0".into())));
+        assert_eq!(fact("speed"), Some(Value::Int(1)));
     }
 
     #[test]

@@ -12,6 +12,10 @@
 //! "Matches" saves the map as points at the keys' centres in the store's `[led_map]`, which
 //! marks it checked, so the profile's shipped map is asked about once.
 //!
+//! An LED that drives a group of keys (the Eyelash Corne's columns, #608) shows at its keys'
+//! centre and the corrections move each of its keys; one that lights nothing is left out of
+//! the dot's run and the drawing.
+//!
 //! A split board's halves each have their own chain: an answer is for both halves, or for one
 //! when their dots run differently. The dot's pace is the user's (about 0.7 s an LED by
 //! default), and the drawing's dot moves when the keyboard has the frame, so both show the same
@@ -19,7 +23,7 @@
 
 use foxglove_devices::Rgb;
 
-use super::boards::{Board, Drawing};
+use super::boards::{Board, Drawing, Lamp};
 use super::led_map::{BoardLeds, Seen, LIT};
 
 /// The dot's paces: a name and how long each LED stays lit, in ms. Each is well above what a
@@ -89,11 +93,11 @@ pub struct Confirm {
     pub halves: u8,
     pub per_half: usize,
     pub source: Source,
-    /// The proposal as keys, one chain per half: lamp `i` of half `h` sits under key
-    /// `keys[h][i]` of its half's drawing (the right half's drawing mirrors the left's). Both
-    /// start the same; an answer for one half turns only its chain. `None` for a found map
-    /// ([`Self::found`]).
-    pub keys: Option<Vec<Vec<u8>>>,
+    /// The proposal as keys, one chain per half: lamp `i` of half `h` lights keys
+    /// `keys[h][i]` of its half's drawing (the right half's drawing mirrors the left's): one
+    /// key, a group, or none (dead). Both start the same; an answer for one half turns only its
+    /// chain. `None` for a found map ([`Self::found`]).
+    pub keys: Option<Vec<Vec<Lamp>>>,
     /// A found map: each lamp's point on its half, or `None` for one not seen.
     pub found: Vec<Option<[f32; 2]>>,
     /// The corrections so far, in order.
@@ -157,12 +161,38 @@ pub fn fix(keys: &[u8], drawing: &Drawing, answer: Answer) -> Vec<u8> {
     }
 }
 
-/// Whether a key chain fits a half: one LED per key, every key once.
-fn fits(keys: &[u8], drawing: &Drawing, per_half: usize) -> bool {
+/// A lamp chain corrected by one answer ([`fix`] for each lamp's keys). Backwards reverses
+/// the lamps that light something and leaves the dead ones where they are in the chain.
+pub fn fix_lamps(lamps: &[Lamp], drawing: &Drawing, answer: Answer) -> Vec<Lamp> {
+    match answer {
+        Answer::Backwards => {
+            let mut live = lamps.iter().filter(|l| !l.dead()).rev();
+            lamps
+                .iter()
+                .map(|l| {
+                    if l.dead() {
+                        l.clone()
+                    } else {
+                        live.next().cloned().unwrap_or_default()
+                    }
+                })
+                .collect()
+        }
+        _ => lamps
+            .iter()
+            .map(|l| Lamp(fix(l.keys(), drawing, answer)))
+            .collect(),
+    }
+}
+
+/// Whether a lamp chain fits a half: one lamp per LED, each key under at most one lamp, at
+/// least one lamp lighting something.
+fn fits(lamps: &[Lamp], drawing: &Drawing, per_half: usize) -> bool {
     let n = drawing.keys(false).len();
     let mut seen = vec![false; n];
-    keys.len() == per_half
-        && keys.iter().all(|&k| {
+    lamps.len() == per_half
+        && lamps.iter().any(|l| !l.dead())
+        && lamps.iter().flat_map(Lamp::keys).all(|&k| {
             let k = usize::from(k);
             k < n && !std::mem::replace(&mut seen[k], true)
         })
@@ -212,7 +242,8 @@ impl Confirm {
             c.keys = Some(vec![lighting.led_keys.clone(); usize::from(halves)]);
             return Some(c);
         }
-        c.keys = Some(vec![serpentine(&c.drawing, per_half)?; usize::from(halves)]);
+        let guess = Lamp::chain(&serpentine(&c.drawing, per_half)?);
+        c.keys = Some(vec![guess; usize::from(halves)]);
         Some(c)
     }
 
@@ -249,29 +280,49 @@ impl Confirm {
         };
         for (h, chain) in keys.iter_mut().enumerate() {
             if half.is_none_or(|only| only == h) {
-                *chain = fix(chain, &self.drawing, a);
+                *chain = fix_lamps(chain, &self.drawing, a);
             }
         }
         true
     }
 
     /// Where lamp `index` of half `half` (0 left, 1 right) is proposed to be: a point on its
-    /// half's drawing, in key units.
+    /// half's drawing, in key units (a group's centre). `None` for a lamp that lights nothing.
     pub fn point(&self, half: usize, index: usize) -> Option<[f32; 2]> {
         match &self.keys {
             Some(keys) => {
-                let k = *keys.get(half)?.get(index)?;
-                let c = self.drawing.keys(half == 1).get(usize::from(k))?.center();
+                let lamp = keys.get(half)?.get(index)?;
+                let c = lamp.center(&self.drawing.keys(half == 1))?;
                 Some([c.x, c.y])
             }
             None => *self.found.get(half * self.per_half + index)?,
         }
     }
 
-    /// The dot's frames: step `i` lights LED `i` of every half (white), the others off.
+    /// The lamps the dot lights, in order: every one that lights something on some half (a
+    /// found map: all of them).
+    pub fn steps(&self) -> Vec<usize> {
+        (0..self.per_half)
+            .filter(|&i| {
+                self.keys.as_ref().is_none_or(|keys| {
+                    keys.iter()
+                        .any(|chain| chain.get(i).is_some_and(|l| !l.dead()))
+                })
+            })
+            .collect()
+    }
+
+    /// The lamp the dot's step `step` lights.
+    pub fn lamp_at(&self, step: usize) -> Option<usize> {
+        self.steps().get(step).copied()
+    }
+
+    /// The dot's frames: step `n` lights the `n`th of [`Self::steps`] on every half (white),
+    /// the others off.
     pub fn frames(&self) -> Vec<Vec<Rgb>> {
         let [r, g, b] = LIT;
-        (0..self.per_half)
+        self.steps()
+            .into_iter()
             .map(|i| {
                 let mut f = vec![Rgb { r: 0, g: 0, b: 0 }; self.total()];
                 for h in 0..usize::from(self.halves) {
@@ -336,6 +387,55 @@ mod tests {
         Board::parse(include_str!("../../resources/boards/eyelash-corne.toml")).unwrap()
     }
 
+    /// crkbd's per-key chain, the Corne's map before #608: an old one-key-per-LED profile.
+    const PER_KEY: [u8; 21] = [
+        20, 17, 16, 15, 12, 13, 14, 19, 18, 11, 10, 9, 6, 7, 8, 5, 4, 3, 0, 1, 2,
+    ];
+
+    /// A Corne-shaped board whose profile maps one key per LED.
+    fn per_key() -> Board {
+        let mut b = corne();
+        b.lighting.as_mut().unwrap().led_keys = Lamp::chain(&PER_KEY);
+        b
+    }
+
+    /// #608: the Corne's grouped map is proposed as it is; the dot runs over the 6 pixels that
+    /// light something, each shown at its keys' centre; corrections move every key of a group
+    /// and keep the dead pixels dead.
+    #[test]
+    fn a_grouped_map_runs_the_dot_over_live_lamps_only() {
+        let mut c = Confirm::new(&corne()).unwrap();
+        assert_eq!(c.source, Source::Profile { checked: false });
+        assert_eq!(c.steps(), [0, 1, 2, 3, 4, 5]);
+        let frames = c.frames();
+        assert_eq!(frames.len(), 6, "no step for a pixel that lights nothing");
+        for (i, f) in frames.iter().enumerate() {
+            let lit: Vec<usize> = (0..42).filter(|&l| f[l].r == 255).collect();
+            assert_eq!(lit, vec![i, 21 + i]);
+        }
+        assert_eq!(c.lamp_at(5), Some(5));
+        assert_eq!(c.point(0, 6), None, "dead: not drawn");
+        let keys = c.drawing.keys(false);
+        let centre = [15, 16, 17, 20]
+            .iter()
+            .fold(egui::Vec2::ZERO, |s, &k| s + keys[k].center().to_vec2())
+            / 4.0;
+        let p = c.point(0, 0).unwrap();
+        assert!((p[0] - centre.x).abs() < 1e-4 && (p[1] - centre.y).abs() < 1e-4);
+        // Backwards: the outer column first, the dead pixels still dead.
+        c.answer(Answer::Backwards);
+        let chain = &c.keys.as_ref().unwrap()[0];
+        assert_eq!(chain[0].keys(), [0, 1, 2]);
+        assert_eq!(chain[5].keys(), [15, 16, 17, 20]);
+        assert!(chain[6..].iter().all(Lamp::dead));
+        c.undo();
+        // Mirrored: pixel 0 moves to the outer column with the outer thumb.
+        c.answer(Answer::Mirrored);
+        assert_eq!(c.keys.as_ref().unwrap()[0][0].keys(), [0, 1, 2, 18]);
+        // The saved map: the 6 live pixels a half, the dead ones unseen.
+        assert_eq!(c.result().leds.len(), 12);
+    }
+
     #[test]
     fn the_guess_is_a_column_snake_with_the_thumbs_last() {
         let d = corne().drawing.unwrap();
@@ -344,7 +444,7 @@ mod tests {
             keys,
             [0, 1, 2, 5, 4, 3, 6, 7, 8, 11, 10, 9, 12, 13, 14, 17, 16, 15, 18, 19, 20]
         );
-        assert!(fits(&keys, &d, 21));
+        assert!(fits(&Lamp::chain(&keys), &d, 21));
         // Six underglow LEDs on a 21-key half: no guess.
         assert!(serpentine(&d, 6).is_none());
     }
@@ -352,10 +452,10 @@ mod tests {
     #[test]
     fn each_correction_is_a_permutation_and_its_own_inverse() {
         let d = corne().drawing.unwrap();
-        let shipped = corne().lighting.unwrap().led_keys;
+        let shipped = PER_KEY.to_vec();
         for a in [Answer::Backwards, Answer::Mirrored, Answer::RowsFlipped] {
             let once = fix(&shipped, &d, a);
-            assert!(fits(&once, &d, 21), "{a:?}");
+            assert!(fits(&Lamp::chain(&once), &d, 21), "{a:?}");
             assert_ne!(once, shipped, "{a:?}");
             assert_eq!(fix(&once, &d, a), shipped, "{a:?}");
         }
@@ -372,11 +472,12 @@ mod tests {
 
     #[test]
     fn a_shipped_map_is_proposed_and_one_to_three_answers_reach_any_snake() {
-        let mut c = Confirm::new(&corne()).unwrap();
+        let mut c = Confirm::new(&per_key()).unwrap();
         assert_eq!(c.source, Source::Profile { checked: false });
         assert!(c.correctable());
         let shipped = c.keys.as_ref().unwrap()[0].clone();
-        let both = |k: Vec<u8>| Some(vec![k.clone(), k]);
+        let both = |k: Vec<Lamp>| Some(vec![k.clone(), k]);
+        let fix = fix_lamps;
         // The keyboard's real chain is the shipped one mirrored and backwards: two answers.
         let real = fix(
             &fix(&shipped, &c.drawing, Answer::Mirrored),
@@ -402,8 +503,9 @@ mod tests {
 
     #[test]
     fn an_answer_for_one_half_turns_only_its_chain() {
-        let mut c = Confirm::new(&corne()).unwrap();
+        let mut c = Confirm::new(&per_key()).unwrap();
         let shipped = c.keys.as_ref().unwrap()[0].clone();
+        let fix = fix_lamps;
         // The halves' dots ran differently: the right one ran backwards.
         c.half = Some(1);
         c.answer(Answer::Backwards);
@@ -478,7 +580,7 @@ mod tests {
 
     #[test]
     fn the_dot_lights_the_same_led_on_both_halves_and_the_result_is_key_centres() {
-        let c = Confirm::new(&corne()).unwrap();
+        let c = Confirm::new(&per_key()).unwrap();
         let frames = c.frames();
         assert_eq!(frames.len(), 21);
         for (i, f) in frames.iter().enumerate() {
@@ -504,11 +606,14 @@ mod tests {
         assert_eq!(c.source, Source::Guess);
         assert_eq!(
             c.keys,
-            serpentine(&corne().drawing.unwrap(), 21).map(|k| vec![k; 2])
+            serpentine(&corne().drawing.unwrap(), 21).map(|k| vec![Lamp::chain(&k); 2])
         );
-        // A broken profile map (a key twice) falls back to the guess too.
+        // A broken profile map (a key twice, or every lamp dead) falls back to the guess too.
         let l = board.lighting.as_mut().unwrap();
-        l.led_keys = vec![0; 21];
+        l.led_keys = Lamp::chain(&[0; 21]);
+        assert_eq!(Confirm::new(&board).unwrap().source, Source::Guess);
+        let l = board.lighting.as_mut().unwrap();
+        l.led_keys = vec![Lamp::default(); 21];
         assert_eq!(Confirm::new(&board).unwrap().source, Source::Guess);
         // Underglow that isn't one LED per key: no proposal (Find my LEDs).
         board.lighting.as_mut().unwrap().lamps = 12;

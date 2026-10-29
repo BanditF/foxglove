@@ -96,12 +96,14 @@ pub struct Lighting {
     pub parts: Vec<u16>,
     #[serde(default)]
     pub layout: String,
-    /// Which key each LED sits under, in chain order: an index into [`Drawing::keys`]. Either
+    /// What each LED (each data pixel of the strip) lights, in chain order: the key it sits
+    /// under, an index into [`Drawing::keys`]; or, for a pixel that drives several keys'
+    /// LEDs together, the list of them; or `[]` for one that lights nothing (#608). Either
     /// one half's strip, which the other half mirrors (halves of the same count), or every LED
     /// of the board part by part, each part's into its own drawing. Scenes place LEDs by it
-    /// (#529).
+    /// (#529): a group at its keys' centre, and a dead one gets no colour.
     #[serde(default)]
-    pub led_keys: Vec<u8>,
+    pub led_keys: Vec<Lamp>,
     /// [`LED_MAP_CHECKED`] once `led_keys` is confirmed on the board (a sitting, the dot test, or
     /// "Find my LEDs" placed them); [`LED_MAP_SHIPPED`] for a map that comes with the profile but
     /// no one has checked on a board yet (scenes use it, the app asks for the dot test once);
@@ -113,6 +115,67 @@ pub struct Lighting {
     /// for one the user couldn't see. Wins over `led_keys` when set.
     #[serde(skip)]
     pub led_points: Vec<Option<[f32; 2]>>,
+}
+
+/// What one LED of a board profile's map lights ([`Lighting::led_keys`]): the keys under it, as
+/// indices into [`Drawing::keys`]. One key for a per-key LED, several for a pixel that drives a
+/// group of keys together (the Eyelash Corne's columns, #608), none for a pixel that lights
+/// nothing. In the profile a number is one key and a list a group: `led_keys = [20, 17]` and
+/// `led_keys = [[15, 16, 17, 20], [12, 13, 14, 19], []]` both read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(from = "LampEntry")]
+pub struct Lamp(pub Vec<u8>);
+
+/// A [`Lamp`] as the profile writes it.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum LampEntry {
+    One(u8),
+    Group(Vec<u8>),
+}
+
+impl From<LampEntry> for Lamp {
+    fn from(e: LampEntry) -> Self {
+        match e {
+            LampEntry::One(k) => Lamp(vec![k]),
+            LampEntry::Group(keys) => Lamp(keys),
+        }
+    }
+}
+
+impl From<u8> for Lamp {
+    fn from(k: u8) -> Self {
+        Lamp(vec![k])
+    }
+}
+
+impl Lamp {
+    /// A one-key-per-LED chain as lamps.
+    pub fn chain(keys: &[u8]) -> Vec<Lamp> {
+        keys.iter().map(|&k| Lamp::from(k)).collect()
+    }
+
+    pub fn keys(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// It lights nothing: scenes and the dot test skip it.
+    pub fn dead(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Where it sits on a drawing's `keys`: its keys' centre, in key units. `None` for a dead
+    /// lamp or one naming a key the drawing hasn't.
+    pub fn center(&self, keys: &[egui::Rect]) -> Option<egui::Pos2> {
+        if self.dead() {
+            return None;
+        }
+        let mut sum = egui::Vec2::ZERO;
+        for &k in &self.0 {
+            sum += keys.get(usize::from(k))?.center().to_vec2();
+        }
+        Some((sum / self.0.len() as f32).to_pos2())
+    }
 }
 
 impl Lighting {
@@ -133,7 +196,7 @@ impl Lighting {
 
     /// The keys LED by LED of part `part` (of `parts`): its share of a whole-board map, or the
     /// one-half map every half of that count mirrors. `None` when the map is neither.
-    pub fn part_keys(&self, parts: &LampParts, part: usize) -> Option<&[u8]> {
+    pub fn part_keys(&self, parts: &LampParts, part: usize) -> Option<&[Lamp]> {
         if self.led_keys.len() == parts.total() {
             return self.led_keys.get(parts.range(part));
         }
@@ -691,6 +754,36 @@ pub fn led_map_changed() {
 mod tests {
     use super::*;
 
+    /// #608: a lamp is a key, a group of keys, or dead (`[]`), and an old one-key-per-LED map
+    /// reads as before.
+    #[test]
+    fn led_keys_take_keys_groups_and_dead_lamps() {
+        let parse = |map: &str| {
+            let text = format!(
+                "format = \"foxglove-board\"\nversion = 1\nid = \"t\"\nname = \"T\"\n\
+                 protocol = \"zmk\"\n[[match]]\nvid = 1\npid = 2\n\
+                 [lighting]\nlamps = 3\nled_keys = {map}\n"
+            );
+            Board::parse(&text).unwrap().lighting.unwrap().led_keys
+        };
+        assert_eq!(parse("[2, 0, 1]"), Lamp::chain(&[2, 0, 1]));
+        let grouped = parse("[[0, 1], [2], []]");
+        assert_eq!(grouped[0].keys(), [0, 1]);
+        assert_eq!(grouped[1], Lamp::from(2));
+        assert!(grouped[2].dead() && !grouped[0].dead());
+        let keys = [
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1.0, 1.0)),
+            egui::Rect::from_min_size(egui::pos2(0.0, 2.0), egui::vec2(1.0, 1.0)),
+        ];
+        assert_eq!(
+            grouped[0].center(&keys),
+            Some(egui::pos2(0.5, 1.5)),
+            "the group's centre"
+        );
+        assert_eq!(grouped[1].center(&keys), None, "a key the drawing hasn't");
+        assert_eq!(grouped[2].center(&keys), None, "dead");
+    }
+
     #[test]
     fn the_built_in_profiles_parse_and_match_their_boards() {
         let all = load(None);
@@ -702,16 +795,20 @@ mod tests {
             .keymap_source()
             .is_some_and(|k| k.contains("zmk,keymap")));
         assert_eq!(corne.lighting.as_ref().map(|l| l.lamps), Some(42));
-        // The shipped LED map (crkbd's per-key chain): one key per LED of a half, every key
-        // once, the inner thumb first; not yet checked on a board.
+        // The shipped LED map (#607, #608): 21 pixels a half, the first 6 each a column of 3
+        // keys plus its thumb key where it has one, inner column first; pixels 6-20 light
+        // nothing. Every key once.
         let lighting = corne.lighting.clone().unwrap();
-        let mut keys = lighting.led_keys.clone();
+        assert_eq!(lighting.led_keys.len(), 21);
+        assert_eq!(
+            lighting.led_keys[0].keys(),
+            [15, 16, 17, 20],
+            "T, G, B and Space"
+        );
+        assert!(lighting.led_keys[6..].iter().all(Lamp::dead));
+        let mut keys: Vec<u8> = lighting.led_keys.iter().flat_map(|l| l.0.clone()).collect();
         keys.sort_unstable();
         assert_eq!(keys, (0..21).collect::<Vec<u8>>());
-        assert_eq!(
-            lighting.led_keys[0], 20,
-            "the chain starts at the inner thumb"
-        );
         assert_eq!(lighting.led_map, LED_MAP_SHIPPED);
         let toucan = find_in(&all, 0x1d50, 0x615e, "Toucan").unwrap();
         assert_eq!(
