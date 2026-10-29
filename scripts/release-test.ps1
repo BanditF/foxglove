@@ -14,6 +14,10 @@
 # 6. With -App <foxglove.exe> and FOXGLOVE_APP_OK=1: the app-level lab cases of the stability pass
 #    (scripts/lab/overlay_tray.py: #612/#620, #601/#622, #618 agent controls; api_tools.py: #617/
 #    #623). They launch that build on a temp FOXGLOVE_CONFIG_DIR. Without them the stage is BLOCKED.
+# foxglove-lab saves the underglow (RGB_STATE) when each suite starts and puts it back when it ends,
+# also after a failure or Ctrl-C (crates/foxglove-lab/src/lights.rs; two log lines: "lights saved",
+# "lights restored"). On-call no longer restores the user's look by hand after a gate run (#618
+# follow-up; resilience's right-relink case left 19/100/20 behind).
 # The 30-minute soak (scripts/lab/soak.py) is separate: it is the sitting's exit check (#618).
 # It never flashes. Flash first with scripts/flash/foxglove_flash.py (the user types FLASH),
 # then run this against the same firmware folder.

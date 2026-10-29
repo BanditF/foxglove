@@ -3,6 +3,7 @@ pub mod app_api;
 pub mod behaviors;
 pub mod host;
 pub mod injections;
+pub mod lights;
 pub mod platform;
 pub mod report;
 pub mod resilience;
