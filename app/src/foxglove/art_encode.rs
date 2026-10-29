@@ -3,13 +3,18 @@
 //! `art-src\bandit\out\Bandit_idle` without Python (#59).
 //!
 //! Same rules as the script: each frame is fitted upright into the art screen (never upscaled,
-//! centred), thresholded at 50% (white = a set bit; the keyboard shows black source pixels lit),
+//! centred), thresholded at 50% (black = ink = a set bit, #610; the keyboard shows ink lit, in the
+//! screen theme's foreground),
 //! stored turned as the screen is mounted, and each unique frame is an RLE-packed XOR delta
 //! against the previous one. The screen's size and turn come from its descriptor (#560).
 
 use std::path::Path;
 
 use image::{imageops, GrayImage, Luma};
+
+/// Header byte 7 (art_relay.h `ART_RELAY_FLAG_INK`, #610): set bits are ink. Blobs without it
+/// (from before #610) have the background bits set; the keyboard and `art_preview` invert them.
+pub const FLAG_INK: u8 = 0x01;
 
 /// The art screen a set is made for (#560): its stored buffer's size, and how many quarter turns
 /// clockwise the upright art is turned to it.
@@ -134,12 +139,12 @@ fn stored(img: &GrayImage, target: ArtTarget) -> GrayImage {
     }
 }
 
-/// Rows MSB first, a set bit for white (flipper_art's `to_lvgl_bytes`).
+/// Rows MSB first, a set bit for ink, a black source pixel (flipper_art's `to_lvgl_bytes`).
 fn to_bytes(img: &GrayImage, target: ArtTarget) -> Vec<u8> {
     let stride = target.width.div_ceil(8) as usize;
     let mut out = vec![0u8; stride * target.height as usize];
     for (x, y, p) in img.enumerate_pixels() {
-        if p.0[0] != 0 {
+        if p.0[0] == 0 {
             out[y as usize * stride + x as usize / 8] |= 0x80 >> (x % 8);
         }
     }
@@ -212,7 +217,7 @@ pub fn encode(frames: &[Vec<u8>], fps: u8, target: ArtTarget) -> Result<Vec<u8>,
         })
         .collect();
     let mut blob = b"NVA1".to_vec();
-    blob.extend_from_slice(&[w, h, fps, 0]);
+    blob.extend_from_slice(&[w, h, fps, FLAG_INK]);
     blob.extend_from_slice(&(deltas.len() as u16).to_le_bytes());
     blob.extend_from_slice(&(order.len() as u16).to_le_bytes());
     blob.extend_from_slice(&order);
@@ -258,8 +263,16 @@ mod tests {
         }
         let corne = ArtTarget::FIRMWARE;
         let f = to_bytes(&stored(&up, corne), corne);
+        // #610: ink is a set bit, the field and the padding past column 139 are clear.
+        // Columns 120-129 of row 5: byte 16 holds 128-135, so its top two bits.
+        assert_eq!(f[5 * 18 + 16], 0xc0, "upright (5, 10..20) is ink");
+        assert_eq!(
+            f.iter().map(|b| b.count_ones()).sum::<u32>(),
+            100,
+            "the square only"
+        );
         let blob = encode(&[f.clone(), f], 4, corne).unwrap();
-        assert_eq!(&blob[..8], b"NVA1\x8c\x44\x04\x00");
+        assert_eq!(&blob[..8], b"NVA1\x8c\x44\x04\x01", "flags: ink bits");
         assert_eq!(
             u16::from_le_bytes([blob[8], blob[9]]),
             1,
@@ -268,9 +281,22 @@ mod tests {
         assert_eq!(u16::from_le_bytes([blob[10], blob[11]]), 2, "played twice");
         let img = super::super::art_preview::first_frame(&blob).unwrap();
         assert_eq!(img.size, [140, 68]);
-        // upright (5, 10) is stored at column 139 - 10, row 5; black source = a clear bit
-        assert_eq!(img.pixels[5 * 140 + (139 - 10)], egui::Color32::BLACK);
-        assert_eq!(img.pixels[50 * 140 + 50], egui::Color32::WHITE);
+        // upright (5, 10) is stored at column 139 - 10, row 5; the black source square is ink,
+        // shown lit on a dark field as on the keyboard (#610)
+        assert_eq!(img.pixels[5 * 140 + (139 - 10)], egui::Color32::WHITE);
+        assert_eq!(img.pixels[50 * 140 + 50], egui::Color32::BLACK);
+    }
+
+    /// #610: `scripts/flipper_art.py` and this encoder write the same blob for the same folder
+    /// (`tests/art/ink-fixture`, two frames at the art screen's size). The Python side checks
+    /// the same file in `scripts/test_flipper_art.py`.
+    #[test]
+    fn the_script_and_the_app_write_the_same_blob() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/art");
+        let blob = encode_folder(&root.join("ink-fixture"), ArtTarget::FIRMWARE).unwrap();
+        let script = std::fs::read(root.join("ink-fixture.bin")).unwrap();
+        assert_eq!(blob, script);
+        assert_eq!(blob[7], FLAG_INK);
     }
 }
 
@@ -307,7 +333,7 @@ mod target_tests {
         assert_eq!(&blob[..6], b"NVA1\x8c\x44");
         let img = super::super::art_preview::first_frame(&blob).unwrap();
         assert_eq!(img.size, [140, 68]);
-        assert_eq!(img.pixels[5 * 140 + (139 - 10)], egui::Color32::BLACK);
+        assert_eq!(img.pixels[5 * 140 + (139 - 10)], egui::Color32::WHITE);
         let _ = std::fs::remove_dir_all(d);
     }
 
@@ -331,8 +357,8 @@ mod target_tests {
         let img = super::super::art_preview::first_frame(&blob).unwrap();
         assert_eq!(img.size, [160, 80]);
         // Upright: the square is where it was drawn.
-        assert_eq!(img.pixels[12 * 160 + 7], egui::Color32::BLACK);
-        assert_eq!(img.pixels[50 * 160 + 100], egui::Color32::WHITE);
+        assert_eq!(img.pixels[12 * 160 + 7], egui::Color32::WHITE);
+        assert_eq!(img.pixels[50 * 160 + 100], egui::Color32::BLACK);
         // Too big for a blob's header: refused, not cut.
         let huge = ArtTarget {
             width: 320,

@@ -36,7 +36,13 @@ Use :label=Text for one set or :labels=A|B|C with :stills for individual labels.
 An OUT.bin is one art set as a blob to push from the PC without flashing (hostpanel push-art
 OUT.bin); the format is in boards/shields/nice_view_custom/widgets/art_relay.h.
 
-The preview shows the screen as you see it on the keyboard: portrait, status strip on top.
+Bits: 1 = ink (#610), the same as the left's PC info screen. A source's black pixels are the ink
+and show lit (the theme's foreground; light on dark by default), its white pixels the field. Blobs
+carry ART_RELAY_FLAG_INK in header byte 7; blobs from before #610 (flags 0, background bits set)
+still play correctly on the keyboard, which inverts them.
+
+The preview shows the screen as you see it on the keyboard: portrait, status strip on top, in the
+default dark theme (light ink on a dark field).
 
 Requires: pip install pillow heatshrink2
 """
@@ -50,6 +56,7 @@ import sys
 
 from PIL import Image
 
+FLAG_INK = 0x01  # blob header byte 7 (art_relay.h ART_RELAY_FLAG_INK): set bits are ink
 ART_W, ART_H = 140, 68  # stored art buffer, left of the status strip on the right-hand nice!view
 SCREEN_W, STRIP_W = 160, 20  # stored screen; the status strip is the top 20px when held upright
 
@@ -200,13 +207,14 @@ def to_stored(img, landscape):
 
 
 def to_lvgl_bytes(img):
-    """LVGL INDEXED_1BIT rows, MSB first. Ink -> index 0 (foreground in the palette below)."""
+    """LVGL INDEXED_1BIT rows, MSB first. Ink (a black source pixel) -> a set bit, index 1, which
+    the firmware draws in LVGL_FOREGROUND (peripheral_status.c). Padding bits stay clear."""
     stride = (ART_W + 7) // 8
     out = bytearray(stride * ART_H)
     px = img.load()
     for y in range(ART_H):
         for x in range(ART_W):
-            if px[x, y]:  # background -> bit set
+            if not px[x, y]:  # ink -> bit set
                 out[y * stride + x // 8] |= 0x80 >> (x % 8)
     return out
 
@@ -296,7 +304,9 @@ def write_blob(path, sets):
         sys.exit("a .bin holds one art set; got %d (drop :stills or pass one input)" % len(sets))
     name, frames, fps, landscape, label = sets[0]
     order, deltas = encode_set(name, frames, landscape)
-    head = b"NVA1" + struct.pack("<BBBBHH", ART_W, ART_H, fps, 0, len(deltas), len(order))
+    head = b"NVA1" + struct.pack(
+        "<BBBBHH", ART_W, ART_H, fps, FLAG_INK, len(deltas), len(order)
+    )
     at = len(head) + len(order) + 2 * len(deltas)
     offsets = []
     for d in deltas:
@@ -372,7 +382,8 @@ def write_c(path, sets):
 
 
 def write_preview(path, sets, scale=3, per_row=6):
-    """First frame of each set as seen on the keyboard: portrait, status strip on top."""
+    """First frame of each set as seen on the keyboard: portrait, status strip on top, in the
+    dark theme (ink light on a dark field)."""
     w, h, gap = ART_H, SCREEN_W, 8
     rows = (len(sets) + per_row - 1) // per_row
     cols = min(len(sets), per_row)
@@ -385,6 +396,7 @@ def write_preview(path, sets, scale=3, per_row=6):
                 if (x + y) % 4 == 0:
                     screen.putpixel((x, y), 0)
         upright = screen.rotate(90, expand=True).resize((w * scale, h * scale), Image.NEAREST)
+        upright = upright.convert("L").point(lambda v: 255 - v)  # dark theme: ink lit
         sheet.paste(upright.convert("L"), ((i % per_row) * (w * scale + gap), (i // per_row) * (h * scale + gap)))
     sheet.save(path)
 

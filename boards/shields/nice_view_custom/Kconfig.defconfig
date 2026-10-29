@@ -33,11 +33,18 @@ config ZMK_DISPLAY_STATUS_SCREEN_CUSTOM
 config NICE_VIEW_WIDGET_STATUS
     bool "Custom nice!view status widget"
     select LV_FONT_MONTSERRAT_16
+    # The shared status-strip icons (widgets/icons.c) on both halves.
+    select LV_FONT_UNSCII_8
     select LV_USE_IMG
     select LV_USE_CANVAS
 
 config NICE_VIEW_WIDGET_INVERTED
-    bool "Invert custom status widget colors"
+    bool "Light screen theme: dark ink on a light field"
+    help
+      The screen theme for both halves (#610): every widget, the left's PC info screen and the
+      right's art (built-in and pushed) take their colours from LVGL_BACKGROUND and
+      LVGL_FOREGROUND in widgets/util.h. Off (the default) is the dark theme, light ink on a dark
+      field, as the user's photo on #610 showed the status strips.
 
 config NICE_VIEW_CUSTOM_ART_SET
     int "Right-hand art set to show (-1 = random each power-on)"
