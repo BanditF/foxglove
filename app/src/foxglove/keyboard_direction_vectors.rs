@@ -46,7 +46,9 @@ fn board() -> Board {
         .expect("the Corne's profile");
     let drawing = board.drawing.clone().unwrap_or_default();
     let lighting = board.lighting.as_mut().expect("lighting");
-    lighting.led_keys = super::led_map_confirm::serpentine(&drawing, HALF_LAMPS).expect("21 keys");
+    lighting.led_keys = super::boards::Lamp::chain(
+        &super::led_map_confirm::serpentine(&drawing, HALF_LAMPS).expect("21 keys"),
+    );
     lighting.led_map = LED_MAP_CHECKED.into();
     board
 }

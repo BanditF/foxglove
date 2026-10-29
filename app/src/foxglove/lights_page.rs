@@ -18,7 +18,73 @@ use super::keyboard_settings::{self as ks, RgbSync};
 use super::settings_ui::card;
 use super::theme;
 
-pub const EFFECTS: [&str; 4] = ["Solid", "Breathe", "Spectrum", "Swirl"];
+/// One of the keyboard's own effects (ZMK's underglow, by its number), as data: what it is
+/// called, and whether it shows the colour picked for it (#616). ZMK's Spectrum and Swirl cycle
+/// the hue themselves and ignore the colour, so the page greys the colour out for them, says
+/// so in their label, and the case's "Match keyboard" has no colour to copy from them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyboardEffect {
+    pub name: &'static str,
+    /// It shows the chosen colour (hue and saturation).
+    pub uses_colour: bool,
+    /// What its name doesn't say, shown after it.
+    pub note: Option<&'static str>,
+}
+
+impl KeyboardEffect {
+    /// Its name with its note: "Swirl (rainbow; colour not used yet)".
+    pub fn label(&self) -> String {
+        match self.note {
+            Some(note) => format!("{} ({note})", self.name),
+            None => self.name.to_string(),
+        }
+    }
+}
+
+/// The keyboard's effects by number: 0 solid, 1 breathe, 2 spectrum, 3 swirl.
+pub const EFFECT_TABLE: [KeyboardEffect; 4] = [
+    KeyboardEffect {
+        name: "Solid",
+        uses_colour: true,
+        note: None,
+    },
+    KeyboardEffect {
+        name: "Breathe",
+        uses_colour: true,
+        note: None,
+    },
+    KeyboardEffect {
+        name: "Spectrum",
+        uses_colour: false,
+        note: Some(RAINBOW),
+    },
+    KeyboardEffect {
+        name: "Swirl",
+        uses_colour: false,
+        note: Some(RAINBOW),
+    },
+];
+
+const RAINBOW: &str = "rainbow; colour not used yet";
+
+/// The effects' names, in number order (the pills).
+pub const EFFECTS: [&str; 4] = [
+    EFFECT_TABLE[0].name,
+    EFFECT_TABLE[1].name,
+    EFFECT_TABLE[2].name,
+    EFFECT_TABLE[3].name,
+];
+
+/// Effect number `n`, if the keyboard has it.
+pub fn effect(n: u8) -> Option<&'static KeyboardEffect> {
+    EFFECT_TABLE.get(usize::from(n))
+}
+
+/// Whether the colour controls apply to the effect shown: yes unless it is one that ignores
+/// the colour (an unknown effect or none read yet keeps them).
+pub fn colour_used(effect_now: Option<u8>) -> bool {
+    effect_now.and_then(effect).is_none_or(|e| e.uses_colour)
+}
 
 /// The width, in points, from which a page's cards (or the Keyboard card's contents) sit in
 /// two columns.
@@ -199,10 +265,7 @@ pub fn half_text(half: Option<&RgbHalf>, age: Option<u8>) -> String {
         return "no data yet".into();
     };
     let mut text = if h.on {
-        let effect = EFFECTS
-            .get(usize::from(h.effect))
-            .copied()
-            .unwrap_or("other effect");
+        let effect = effect(h.effect).map_or_else(|| "other effect".into(), KeyboardEffect::label);
         format!("on · {effect} · {}% · speed {}", h.brightness, h.speed)
     } else {
         "off".to_string()
@@ -368,8 +431,13 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         );
         ui.horizontal_wrapped(|ui| {
             let current = left.map(|l| l.effect);
-            for (i, name) in (0u8..).zip(EFFECTS) {
-                if theme::pill(ui, current == Some(i), name).clicked() && current != Some(i) {
+            for (i, e) in (0u8..).zip(&EFFECT_TABLE) {
+                let pill = theme::pill(ui, current == Some(i), e.name);
+                let pill = match e.note {
+                    Some(_) => pill.on_hover_text(e.label()),
+                    None => pill,
+                };
+                if pill.clicked() && current != Some(i) {
                     out.push(Intent::Effect(i));
                 }
             }
@@ -380,28 +448,40 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             ui.weak("Waiting for the keyboard's colour…");
             return;
         };
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing.x = 10.0;
-            for (name, rgb) in SWATCHES {
-                let selected = is_swatch((*hue, *sat), rgb);
-                let shown = super::calibrate::keyboard_screen(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-                if swatch(ui, shown, selected).on_hover_text(name).clicked() {
-                    (*hue, *sat) = swatch_hue_sat(rgb);
+        // An effect that ignores the colour greys the colour out and says why (#616).
+        let current = left.map(|l| l.effect);
+        let uses_colour = colour_used(current);
+        if let Some(e) = current.and_then(effect).filter(|_| !uses_colour) {
+            ui.weak(format!(
+                "{} is a rainbow: it doesn't use the colour yet. Brightness and speed still apply.",
+                e.name
+            ));
+        }
+        let custom_open = &mut draft.custom_open;
+        ui.add_enabled_ui(uses_colour, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 10.0;
+                for (name, rgb) in SWATCHES {
+                    let selected = is_swatch((*hue, *sat), rgb);
+                    let shown = super::calibrate::keyboard_screen(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+                    if swatch(ui, shown, selected).on_hover_text(name).clicked() {
+                        (*hue, *sat) = swatch_hue_sat(rgb);
+                    }
                 }
-            }
-            // Any other colour: hue and saturation sliders behind a pill.
-            let custom = !SWATCHES.iter().any(|(_, rgb)| is_swatch((*hue, *sat), *rgb));
-            if theme::pill(ui, custom || draft.custom_open, "Custom").clicked() {
-                draft.custom_open = !draft.custom_open;
+                // Any other colour: hue and saturation sliders behind a pill.
+                let custom = !SWATCHES.iter().any(|(_, rgb)| is_swatch((*hue, *sat), *rgb));
+                if theme::pill(ui, custom || *custom_open, "Custom").clicked() {
+                    *custom_open = !*custom_open;
+                }
+            });
+            if *custom_open && uses_colour {
+                ui.add_space(2.0);
+                value_row(ui, "Hue", format!("{hue}°"));
+                full_slider(ui, egui::Slider::new(&mut *hue, 0..=359));
+                value_row(ui, "Saturation", format!("{sat}%"));
+                full_slider(ui, egui::Slider::new(&mut *sat, 0..=100));
             }
         });
-        if draft.custom_open {
-            ui.add_space(2.0);
-            value_row(ui, "Hue", format!("{hue}°"));
-            full_slider(ui, egui::Slider::new(hue, 0..=359));
-            value_row(ui, "Saturation", format!("{sat}%"));
-            full_slider(ui, egui::Slider::new(sat, 0..=100));
-        }
         ui.add_space(4.0);
         value_row(ui, "Brightness", format!("{brightness}%"));
         full_slider(ui, egui::Slider::new(brightness, 0..=100));
@@ -473,6 +553,12 @@ pub fn follow_label(parts: &super::parts::Parts) -> String {
     )
 }
 
+/// The "follow the left" switch's tooltip (#606). The left is the central, so it sees every
+/// key and wakes for either half's; the right sees only its own keys.
+const FOLLOW_TIP: &str = "On: the left half decides when both halves' lights are on, so they \
+    always match. Off: each half dims on its own idle timer. The left wakes for a key on either \
+    half; the right only for its own keys. Saved on the keyboard.";
+
 /// "Right half's lights follow the left", saved on the keyboard.
 fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mut Vec<Intent>) {
     let label = follow_label(parts);
@@ -482,11 +568,7 @@ fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mu
                 let mut follow = on;
                 if ui
                     .checkbox(&mut follow, &label)
-                    .on_hover_text(
-                        "On: the left half decides when both halves' underglow is on, so they always match \
-                         (it sees key presses on both halves). Off: each half turns its own lights off and on \
-                         when idle. Saved on the keyboard.",
-                    )
+                    .on_hover_text(FOLLOW_TIP)
                     .changed()
                 {
                     out.push(Intent::Follow(follow));
@@ -497,7 +579,9 @@ fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mu
                 ui.weak("Asking the keyboard…");
             }
             RgbSync::NoKeyboard => {
-                ui.weak(format!("{label}: needs a keyboard with Foxglove's firmware"));
+                ui.weak(format!(
+                    "{label}: needs a keyboard with Foxglove's firmware"
+                ));
             }
             RgbSync::NotSupported => {
                 ui.weak(format!("{label}: needs newer keyboard firmware"));
@@ -740,5 +824,50 @@ pub mod tests {
             corne.contains("Right half's lights follow the left"),
             "{corne}"
         );
+    }
+
+    /// #616: Swirl and Spectrum say they're a rainbow that doesn't use the colour, and the
+    /// colour controls under them are greyed out; Solid keeps them. #606: the follow tooltip
+    /// says how each half wakes with the switch off.
+    #[test]
+    fn a_rainbow_effect_greys_the_colour_and_says_so() {
+        let ctx = super::super::pc_lights_ui::tests::test_ctx();
+        let draw_text = |v: &View| {
+            let mut text = String::new();
+            for _ in 0..2 {
+                let mut draft = Draft {
+                    color: Some((26, 76, 80)),
+                    ..Draft::default()
+                };
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                    draw(ui, v, &mut draft);
+                });
+                out.textures_delta.clear();
+                text.clear();
+                for clipped in &out.shapes {
+                    collect(&clipped.shape, &mut text);
+                }
+            }
+            text
+        };
+        let mut swirl = sample();
+        if let Some(s) = swirl.state.as_mut() {
+            s.left.effect = 3;
+        }
+        let text = draw_text(&swirl);
+        assert!(
+            text.contains("Swirl is a rainbow: it doesn't use the colour yet"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Swirl (rainbow; colour not used yet)"),
+            "{text}"
+        );
+        let text = draw_text(&sample());
+        assert!(!text.contains("doesn't use the colour"), "{text}");
+        assert!(FOLLOW_TIP.contains(
+            "Off: each half dims on its own idle timer. The left wakes for a key on either half; \
+             the right only for its own keys."
+        ));
     }
 }

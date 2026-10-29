@@ -292,10 +292,14 @@ fn lighting(
     run(label.into(), ctx, move |d| {
         // An effect a quit left running (#542) would hide the change.
         super::scene_run::release_left_effect(d);
-        change(
-            d.lighting()
-                .ok_or(foxglove_devices::DeviceError::Unsupported)?,
-        )?;
+        let lights = d
+            .lighting()
+            .ok_or(foxglove_devices::DeviceError::Unsupported)?;
+        change(lights)?;
+        // Read back what the keyboard now shows (one RGB_STATE): that report, not this
+        // command, is what the lighting facts and the case's "Match keyboard" follow (#605,
+        // #616). A failed read leaves them at the last report.
+        let _ = lights.state();
         use foxglove_devices::Device as _;
         let device = d.info().id.to_string();
         super::lighting_leases::with(|a| a.user_changed(&device, keep));
@@ -314,12 +318,7 @@ pub fn set_color(hue: u16, sat: u8, brightness: u8, ctx: egui::Context) {
     lighting(
         "Set colour",
         ctx,
-        move |l| {
-            l.set_color(hue, sat, brightness)?;
-            // The case's "Match keyboard" follows (#423).
-            super::pc_lights::keyboard_color(hue, sat, brightness);
-            Ok(())
-        },
+        move |l| l.set_color(hue, sat, brightness),
         move |s| (s.hue, s.sat, s.brightness) = (hue, sat, brightness),
     );
 }

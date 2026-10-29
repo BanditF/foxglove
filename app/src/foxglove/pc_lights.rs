@@ -3,8 +3,9 @@
 //!
 //! One worker thread owns the drivers and blocks on its queue. It scans when the app starts,
 //! when a HID interface arrives or goes (`device_watch`), and when the Lights page opens; it
-//! writes only for a click on the page or a colour the case follows ("Match keyboard": the
-//! keyboard's colour as Foxglove sets it, or the Windows accent). Nothing streams or polls.
+//! writes only for a click on the page or for "Match keyboard", which follows what the keyboard
+//! reports it shows (its RGB_STATE report, #616), not a colour Foxglove meant to send it.
+//! Nothing streams or polls.
 //! The colours the user picks are saved in the store's `[pc_lighting]` and put back when the
 //! board arrives (at startup too), unless an app its catalog entry names as a conflict (a
 //! vendor's lighting tool) is running.
@@ -112,8 +113,13 @@ pub enum Msg {
     Off(String),
     Identify(String),
     Match(String, bool),
-    /// The colour "Match keyboard" follows changed.
+    /// A colour Foxglove is about to send the keyboard (the accent follower sends it). Ignored
+    /// since #616: the push may not take (the keymap has no colour behavior) and an effect may
+    /// hide it, so the case follows the keyboard's own report ([`Msg::Keyboard`]) instead.
     Follow([u8; 3]),
+    /// What the keyboard reports it shows (its lighting state from RGB_STATE): what
+    /// "Match keyboard" follows.
+    Keyboard(KeyboardLights),
     /// Add a device: blink one zone of a board through a protocol, then put it back.
     TestZone {
         vid: u16,
@@ -234,9 +240,68 @@ pub fn page_shown(ctx: &egui::Context) {
     *last = Some(frame);
 }
 
-/// The keyboard's colour as Foxglove just set it (hue 0-359, saturation and brightness 0-100).
-pub fn keyboard_color(hue: u16, sat: u8, brightness: u8) {
-    send(Msg::Follow(hsv_rgb(hue, sat, brightness)));
+/// What the keyboard reports it shows, in the palette's colours (hue 0-359, saturation and
+/// brightness 0-100) with its effect: what "Match keyboard" follows (#616).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyboardLights {
+    pub hue: u16,
+    pub sat: u8,
+    pub brightness: u8,
+    /// The keyboard's effect: 0 solid, 1 breathe, 2 spectrum, 3 swirl (ZMK's underglow).
+    pub effect: u8,
+}
+
+impl KeyboardLights {
+    /// From a ZMK keyboard's reported lighting state; `None` for an effect it doesn't number.
+    pub fn from_state(s: &foxglove_devices::LightingState) -> Option<Self> {
+        Some(Self {
+            hue: s.hue,
+            sat: s.sat,
+            brightness: s.brightness,
+            effect: s.effect.id.parse().ok()?,
+        })
+    }
+
+    /// From an RGB_STATE half (the left's: the half the PC talks to).
+    pub fn from_half(h: &foxglove_link::protocol::RgbHalf) -> Self {
+        Self {
+            hue: h.hue,
+            sat: h.sat,
+            brightness: h.brightness,
+            effect: h.effect,
+        }
+    }
+
+    /// What a device of `zones` zones shows to match it, zone by zone, or `None` when it
+    /// can't. An effect that shows the chosen colour (solid; breathe, one colour pulsing) gives
+    /// that colour on every zone, steady. One that ignores it (Spectrum, Swirl: a rainbow;
+    /// which ones is the effect table's data, `lights_page::EFFECT_TABLE`) gives `None`: no
+    /// device driver here can run a rainbow effect from Foxglove yet, and the colour the
+    /// keyboard was sent isn't on it, so there's nothing honest to copy.
+    ///
+    /// On/off isn't followed: the keyboard dims on its own idle timer, which a case shouldn't
+    /// copy, and the report's on/off doesn't always match what is lit yet (#605).
+    pub fn colors(&self, zones: usize) -> Option<Vec<[u8; 3]>> {
+        let effect = super::lights_page::effect(self.effect)?;
+        effect
+            .uses_colour
+            .then(|| vec![hsv_rgb(self.hue, self.sat, self.brightness); zones])
+    }
+
+    /// The effect's name with its note, for the status line.
+    fn effect_label(&self) -> String {
+        super::lights_page::effect(self.effect).map_or_else(
+            || "an effect Foxglove doesn't know".into(),
+            super::lights_page::KeyboardEffect::label,
+        )
+    }
+}
+
+/// The keyboard reported its lights (any RGB_STATE read or event): "Match keyboard" follows it.
+pub fn keyboard_lights(s: &foxglove_devices::LightingState) {
+    if let Some(k) = KeyboardLights::from_state(s) {
+        send(Msg::Keyboard(k));
+    }
 }
 
 /// An HSV colour (hue 0-359, saturation and value 0-100) as sRGB bytes.
@@ -301,7 +366,8 @@ pub struct Worker {
     pub rescan: bool,
     drivers: BTreeMap<String, Box<dyn LightingDevice>>,
     pub settings: Settings,
-    follow: Option<[u8; 3]>,
+    /// What the keyboard last reported it shows ("Match keyboard" follows it).
+    follow: Option<KeyboardLights>,
     conflicts: Vec<Conflicting>,
     status: Option<String>,
     /// Settings changed and need saving.
@@ -453,8 +519,10 @@ impl Worker {
     /// the keyboard, else the saved ones (`None` where nothing was saved).
     fn saved_colors(&self, f: &Found) -> Vec<Option<Rgb>> {
         let saved = self.settings.devices.get(&f.key);
-        if let (Some(true), Some(c)) = (saved.map(|s| s.match_keyboard), self.follow) {
-            return vec![Some(rgb(c)); f.zones.len()];
+        if saved.is_some_and(|s| s.match_keyboard) {
+            if let Some(colors) = self.follow.and_then(|k| k.colors(f.zones.len())) {
+                return colors.into_iter().map(|c| Some(rgb(c))).collect();
+            }
         }
         f.zones
             .iter()
@@ -510,6 +578,7 @@ impl Worker {
             msg,
             Msg::Scan
                 | Msg::Follow(_)
+                | Msg::Keyboard(_)
                 | Msg::Match(_, false)
                 | Msg::SaveLocal(_)
                 | Msg::RemoveLocal(..)
@@ -589,17 +658,19 @@ impl Worker {
                     .or_default()
                     .match_keyboard = on;
                 self.dirty = true;
-                // A scene holds the lights: its end puts the followed colour on.
-                if let (true, Some(c), None) = (on, self.follow, &self.scene) {
-                    self.write(&key, "Matching the keyboard", |d| d.set_all(rgb(c)), false);
+                // A scene holds the lights: its end puts the matched colours on.
+                if on && self.scene.is_none() {
+                    self.match_keyboard(&key);
                 }
             }
-            Msg::Follow(c) => {
-                // Paused: not taken, so the same colour applies once Foxglove resumes.
-                if paused || self.follow == Some(c) {
+            // Superseded by the keyboard's report (#616); see the variant.
+            Msg::Follow(_) => {}
+            Msg::Keyboard(k) => {
+                // Paused: not taken, so the same report applies once Foxglove resumes.
+                if paused || self.follow == Some(k) {
                     return;
                 }
-                self.follow = Some(c);
+                self.follow = Some(k);
                 if self.scene.is_some() {
                     return;
                 }
@@ -611,7 +682,7 @@ impl Worker {
                     .map(|(k, _)| k.clone())
                     .collect();
                 for key in keys {
-                    self.write(&key, "Matching the keyboard", |d| d.set_all(rgb(c)), false);
+                    self.match_keyboard(&key);
                 }
             }
             Msg::TestZone {
@@ -770,8 +841,10 @@ impl Worker {
                 .devices
                 .get(&key)
                 .is_some_and(|s| s.match_keyboard)
-                && self.follow.is_some();
-            // Following the keyboard: its colour now. Else the colours from before (white
+                && self
+                    .follow
+                    .is_some_and(|k| k.colors(f.zones.len()).is_some());
+            // Following the keyboard: what it shows now. Else the colours from before (white
             // where none was known: never dark).
             let colors = if follows {
                 pcl::restore_colors(&saved, &[])
@@ -784,6 +857,36 @@ impl Worker {
                 }
             }
         }
+    }
+
+    /// Shows on one device what the keyboard last reported ("Match keyboard"), or says why it
+    /// can't (no report yet; an effect that ignores the colour), leaving its colours as they
+    /// are. Never the colour the keyboard was sent but doesn't show (#616).
+    fn match_keyboard(&mut self, key: &str) {
+        let Some(k) = self.follow else {
+            self.status =
+                Some("Match keyboard: waiting for the keyboard to report its lights".into());
+            return;
+        };
+        let Some(d) = self.drivers.get(key) else {
+            return;
+        };
+        let Some(colors) = k.colors(d.zones().len()) else {
+            self.status = Some(format!(
+                "Match keyboard: the keyboard plays {}, which {} can't match from Foxglove, so \
+                 it keeps its colours",
+                k.effect_label(),
+                d.name()
+            ));
+            return;
+        };
+        let colors: Vec<(usize, Rgb)> = colors.into_iter().map(rgb).enumerate().collect();
+        self.write(
+            key,
+            "Matching the keyboard",
+            |d| d.set_zones(&colors),
+            false,
+        );
     }
 
     /// Runs one driver call; `manual` saves the colours and stops matching the keyboard.
@@ -1401,19 +1504,146 @@ mod tests {
         assert_eq!(sent.lock().unwrap().len(), 2, "replugged: put back again");
     }
 
+    /// The keyboard reports a solid colour at full saturation and brightness.
+    fn solid(hue: u16) -> KeyboardLights {
+        KeyboardLights {
+            hue,
+            sat: 100,
+            brightness: 100,
+            effect: 0,
+        }
+    }
+
+    fn grey() -> KeyboardLights {
+        KeyboardLights {
+            hue: 0,
+            sat: 0,
+            brightness: 50,
+            effect: 0,
+        }
+    }
+
+    /// #616: the effect table says which effects show the chosen colour, and that decides what
+    /// "Match keyboard" can copy.
+    #[test]
+    fn the_effect_table_decides_what_match_keyboard_copies() {
+        use super::super::lights_page::{colour_used, effect, EFFECTS};
+        assert_eq!(EFFECTS, ["Solid", "Breathe", "Spectrum", "Swirl"]);
+        let uses: Vec<bool> = (0..4).map(|n| effect(n).unwrap().uses_colour).collect();
+        assert_eq!(uses, [true, true, false, false]);
+        assert_eq!(
+            effect(3).unwrap().label(),
+            "Swirl (rainbow; colour not used yet)"
+        );
+        assert_eq!(
+            effect(2).unwrap().label(),
+            "Spectrum (rainbow; colour not used yet)"
+        );
+        assert_eq!(effect(0).unwrap().label(), "Solid");
+        // The page's rule: colour controls only for an effect that uses the colour.
+        assert!(colour_used(Some(0)) && colour_used(Some(1)));
+        assert!(!colour_used(Some(2)) && !colour_used(Some(3)));
+        assert!(
+            colour_used(None) && colour_used(Some(9)),
+            "unknown: keep them"
+        );
+        // The match decision.
+        let breathe = KeyboardLights {
+            effect: 1,
+            ..solid(240)
+        };
+        assert_eq!(
+            breathe.colors(3),
+            Some(vec![[0, 0, 255]; 3]),
+            "its colour, steady"
+        );
+        for effect in [2, 3, 9] {
+            assert_eq!(
+                KeyboardLights {
+                    effect,
+                    ..solid(40)
+                }
+                .colors(5),
+                None,
+                "{effect}"
+            );
+        }
+        // From the device layer's state (ZMK numbers its effects).
+        let state = foxglove_devices::LightingState {
+            on: true,
+            hue: 40,
+            sat: 100,
+            brightness: 100,
+            effect: foxglove_devices::Effect {
+                id: "3".into(),
+                params: vec![],
+            },
+            speed: 3,
+            settled: true,
+        };
+        assert_eq!(
+            KeyboardLights::from_state(&state),
+            Some(KeyboardLights {
+                effect: 3,
+                ..solid(40)
+            })
+        );
+    }
+
+    /// #616, the sitting: the keyboard plays Swirl while its accent push failed. "Match
+    /// keyboard" gave the case the accent (gold); now the accent is ignored, the case keeps its
+    /// colours and the page says it can't match Swirl, and a solid colour is matched.
+    #[test]
+    fn match_keyboard_follows_the_keyboards_report_not_the_accent() {
+        let (mut w, sent) = worker(Settings::default());
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let key = "103c:84fd".to_string();
+        // Matching before any report: nothing written, and the page says why.
+        w.handle(Msg::Match(key.clone(), true), false, &mut no_wait());
+        assert!(sent.lock().unwrap().is_empty());
+        assert!(w.status.as_deref().unwrap_or_default().contains("waiting"));
+        // The accent sent toward the keyboard isn't what the keyboard shows.
+        w.handle(Msg::Follow([0x9c, 0x6f, 0x05]), false, &mut no_wait());
+        assert!(sent.lock().unwrap().is_empty(), "the accent isn't followed");
+        let swirl = KeyboardLights {
+            hue: 40,
+            sat: 100,
+            brightness: 100,
+            effect: 3,
+        };
+        w.handle(Msg::Keyboard(swirl), false, &mut no_wait());
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "nothing to copy from a rainbow"
+        );
+        let status = w.status.clone().unwrap_or_default();
+        assert!(
+            status.contains("Swirl (rainbow; colour not used yet)")
+                && status.contains("can't match"),
+            "{status}"
+        );
+        // The keyboard goes back to a solid colour: so does the case, on every zone.
+        w.handle(Msg::Keyboard(solid(240)), false, &mut no_wait());
+        let wrote = sent.lock().unwrap().clone();
+        assert_eq!(wrote.len(), 5);
+        for (r, z) in wrote.iter().zip([1, 2, 5, 6, 7]) {
+            assert_eq!(*r, report(z, [0, 0, 255]), "zone {z}");
+        }
+    }
+
     #[test]
     fn match_keyboard_follows_colour_changes_only() {
         let (mut w, sent) = worker(Settings::default());
         w.scan(&case_hid(), &mut nothing(), false, true);
         let key = "103c:84fd".to_string();
-        w.handle(Msg::Follow([255, 0, 0]), false, &mut no_wait());
+        w.handle(Msg::Keyboard(solid(0)), false, &mut no_wait());
         assert!(sent.lock().unwrap().is_empty(), "not matching yet");
         w.handle(Msg::Match(key.clone(), true), false, &mut no_wait());
         assert_eq!(sent.lock().unwrap().len(), 5, "the current colour, once");
         assert_eq!(sent.lock().unwrap()[4], report(7, [255, 0, 0]));
-        w.handle(Msg::Follow([255, 0, 0]), false, &mut no_wait());
+        w.handle(Msg::Keyboard(solid(0)), false, &mut no_wait());
         assert_eq!(sent.lock().unwrap().len(), 5, "same colour: nothing");
-        w.handle(Msg::Follow([0, 0, 255]), false, &mut no_wait());
+        w.handle(Msg::Keyboard(solid(240)), false, &mut no_wait());
         assert_eq!(sent.lock().unwrap().len(), 10);
         // A manual pick stops matching.
         w.handle(
@@ -1425,14 +1655,14 @@ mod tests {
             &mut no_wait(),
         );
         assert!(!w.settings.devices[&key].match_keyboard);
-        w.handle(Msg::Follow([0, 255, 0]), false, &mut no_wait());
+        w.handle(Msg::Keyboard(solid(120)), false, &mut no_wait());
         assert_eq!(sent.lock().unwrap().len(), 11);
         // Paused: the colour waits, and comes through once resumed.
         w.handle(Msg::Match(key.clone(), true), false, &mut no_wait());
         assert_eq!(sent.lock().unwrap().len(), 16);
-        w.handle(Msg::Follow([9, 9, 9]), true, &mut no_wait());
+        w.handle(Msg::Keyboard(grey()), true, &mut no_wait());
         assert_eq!(sent.lock().unwrap().len(), 16);
-        w.handle(Msg::Follow([9, 9, 9]), false, &mut no_wait());
+        w.handle(Msg::Keyboard(grey()), false, &mut no_wait());
         assert_eq!(sent.lock().unwrap().len(), 21);
     }
 
@@ -1992,10 +2222,10 @@ zones = [{ id = 3, name = \"Logo\" }]
 
         // Matching the keyboard: a colour change during the scene isn't written until it ends.
         w.handle(Msg::Match(key.clone(), true), false, &mut no_wait());
-        w.handle(Msg::Follow([0, 0, 255]), false, &mut no_wait());
+        w.handle(Msg::Keyboard(solid(240)), false, &mut no_wait());
         w.handle(Msg::SceneStart, false, &mut no_wait());
         sent.lock().unwrap().clear();
-        w.handle(Msg::Follow([255, 0, 0]), false, &mut no_wait());
+        w.handle(Msg::Keyboard(solid(0)), false, &mut no_wait());
         assert!(
             sent.lock().unwrap().is_empty(),
             "the scene holds the lights"

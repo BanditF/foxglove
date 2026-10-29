@@ -147,8 +147,10 @@ fn keyboard(board: Option<&Board>) -> Vec<DeviceInfo> {
 /// One part's LEDs at their keys (part 0 the left half or the one piece, 1 the right half),
 /// numbered in its strip's order (the scene output's SET_FRAME lamps of that part), from the
 /// board profile's LED map once it is checked on the board (#90 row G) or shipped with the
-/// profile. As many as the profile gives the part (#561). `None` (one light for the part)
-/// without such a map, or when it names a key the drawing hasn't.
+/// profile. As many as the profile gives the part (#561), less the ones that light nothing: an
+/// LED that drives a group of keys sits at their centre, and a dead one has no light, so the
+/// frame leaves it dark (#608). `None` (one light for the part) without such a map, or when it
+/// names a key the drawing hasn't.
 fn leds(board: Option<&Board>, drawing: &Drawing, part: usize) -> Option<Vec<LightSpec>> {
     let b = board?;
     let l = b.lighting.as_ref()?;
@@ -159,13 +161,16 @@ fn leds(board: Option<&Board>, drawing: &Drawing, part: usize) -> Option<Vec<Lig
     if !l.led_points.is_empty() {
         return found_leds(l, &parts, drawing, part);
     }
-    let led_keys = l.part_keys(&parts, part).filter(|k| !k.is_empty())?;
+    let lamps = l
+        .part_keys(&parts, part)
+        .filter(|k| k.iter().any(|lamp| !lamp.dead()))?;
     let keys = drawing.keys(part == 1);
-    led_keys
+    lamps
         .iter()
         .enumerate()
-        .map(|(i, &k)| {
-            let c = keys.get(usize::from(k))?.center();
+        .filter(|(_, lamp)| !lamp.dead())
+        .map(|(i, lamp)| {
+            let c = lamp.center(&keys)?;
             Some(LightSpec::point(
                 i.to_string(),
                 Some(Point::new(c.x * KEY_MM, c.y * KEY_MM)),
@@ -176,7 +181,8 @@ fn leds(board: Option<&Board>, drawing: &Drawing, part: usize) -> Option<Vec<Lig
 
 /// One part's LEDs where "Find my LEDs" saw them (points on the part's drawing, key units),
 /// numbered in strip order. One the user couldn't see sits in the part's centre, so it takes
-/// the colour of the middle of the part rather than a random spot.
+/// the colour of the middle of the part rather than a random spot, unless the profile's map
+/// says it lights nothing: that one has no light (#608).
 fn found_leds(
     l: &super::boards::Lighting,
     parts: &foxglove_link::lamps::LampParts,
@@ -184,11 +190,17 @@ fn found_leds(
     part: usize,
 ) -> Option<Vec<LightSpec>> {
     let points = l.led_points.get(parts.range(part))?;
+    let dead = |i: usize| {
+        l.part_keys(parts, part)
+            .and_then(|lamps| lamps.get(i))
+            .is_some_and(super::boards::Lamp::dead)
+    };
     let (w, h) = drawing.size();
     Some(
         points
             .iter()
             .enumerate()
+            .filter(|&(i, p)| !(p.is_none() && dead(i)))
             .map(|(i, p)| {
                 let [x, y] = p.unwrap_or([w / 2.0, h / 2.0]);
                 LightSpec::point(i.to_string(), Some(Point::new(x * KEY_MM, y * KEY_MM)))
@@ -679,9 +691,68 @@ pub(crate) mod tests {
         }
     }
 
+    /// crkbd's per-key chain, the Corne's map before #608: an old one-key-per-LED profile.
+    const PER_KEY: [u8; 21] = [
+        20, 17, 16, 15, 12, 13, 14, 19, 18, 11, 10, 9, 6, 7, 8, 5, 4, 3, 0, 1, 2,
+    ];
+
+    /// #608: the Corne's LEDs are column groups. Each half has one light per live pixel, at
+    /// its group's centre, and none for the pixels that light nothing; a frame keeps those
+    /// dark, and a found map's unseen dead pixels stay out too.
+    #[test]
+    fn grouped_leds_sit_at_their_keys_centre_and_dead_ones_get_no_light() {
+        let board = users_desk::board();
+        let halves = keyboard(Some(&board));
+        let ids: Vec<&str> = halves[0].lights.iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["0", "1", "2", "3", "4", "5"],
+            "pixels 6-20 light nothing"
+        );
+        assert_eq!(halves[1].lights.len(), 6);
+        // Pixel 0: T, G, B and Space, at their centre.
+        let drawing = super::super::boards::drawing(Some(&board));
+        let keys = drawing.keys(false);
+        let centre = [15, 16, 17, 20]
+            .iter()
+            .fold(egui::Vec2::ZERO, |s, &k| s + keys[k].center().to_vec2())
+            / 4.0;
+        let at = halves[0].lights[0].at.unwrap();
+        assert!((at.x - centre.x * KEY_MM).abs() < 0.01 && (at.y - centre.y * KEY_MM).abs() < 0.01);
+        // A frame: the live pixels get their light's colour, the dead ones black (not the mix).
+        let parts = super::super::boards::lamp_parts(Some(&board));
+        let red = foxglove_scene::Rgb([255, 0, 0]);
+        let lit: Vec<(&str, &str, foxglove_scene::Rgb)> = halves
+            .iter()
+            .flat_map(|d| {
+                d.lights
+                    .iter()
+                    .map(move |l| (d.id.as_str(), l.id.as_str(), red))
+            })
+            .collect();
+        let frame = super::super::scene_output::keyboard_frame(&lit, &parts).unwrap();
+        let black = foxglove_scene::Rgb([0, 0, 0]);
+        for half in 0..2 {
+            let lamps = &frame.lamps[parts.range(half)];
+            assert!(lamps[..6].iter().all(|c| *c == red), "half {half}");
+            assert!(
+                lamps[6..].iter().all(|c| *c == black),
+                "half {half}: no dead pixel lit"
+            );
+        }
+        // "Find my LEDs" left pixels 6-20 unseen: still no light for them.
+        let mut found = board.clone();
+        let l = found.lighting.as_mut().unwrap();
+        l.led_points = (0..42)
+            .map(|i| (i % 21 < 6).then_some([1.0, 1.0]))
+            .collect();
+        assert!(keyboard(Some(&found)).iter().all(|d| d.lights.len() == 6));
+    }
+
     #[test]
     fn the_keyboard_is_one_light_per_half_until_it_has_a_usable_led_map() {
         let mut board = users_desk::board();
+        board.lighting.as_mut().unwrap().led_keys = super::super::boards::Lamp::chain(&PER_KEY);
         // A provisional map isn't used.
         board.lighting.as_mut().unwrap().led_map = "provisional".into();
         let halves = keyboard(Some(&board));
@@ -711,7 +782,7 @@ pub(crate) mod tests {
             .at
             .is_some_and(|p| p.x > 0.0 && p.x < size.x && p.y < size.y)));
         // A map naming a key the drawing hasn't: one light per half again.
-        board.lighting.as_mut().unwrap().led_keys[3] = 99;
+        board.lighting.as_mut().unwrap().led_keys[3] = 99.into();
         assert!(keyboard(Some(&board)).iter().all(|d| d.lights.len() == 1));
     }
 
@@ -721,6 +792,7 @@ pub(crate) mod tests {
         let mut board = users_desk::board();
         let lighting = board.lighting.as_mut().unwrap();
         lighting.led_map = super::super::boards::LED_MAP_CHECKED.into();
+        lighting.led_keys = super::super::boards::Lamp::chain(&PER_KEY);
         let left = lighting.led_keys.clone();
         lighting.led_keys.extend_from_slice(&left[..18]);
         (lighting.lamps, lighting.parts) = (39, vec![21, 18]);
