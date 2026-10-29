@@ -14,9 +14,10 @@ $RelaySimDefines = @(
 )
 # Gating: each must pass on this tree. stall and stall-app were known gaps until the left let
 # go of unanswered requests and dropped a link whose request never got an answer (#618).
-$RelaySimScenarios = @("wake", "wake-app", "relink-shown", "push-relink-tap", "stall", "stall-app", "late", "late-ignored", "select-snap")
+$RelaySimScenarios = @("wake", "wake-app", "relink-shown", "push-relink-tap", "stall", "stall-app", "late", "late-ignored", "select-snap", "snap-latency")
 # Known gaps: each must still FAIL on this tree (README.md, "Known gaps"); one that passes means
 # the gap closed and the lists and README need updating. None at the moment.
 $RelaySimKnownGaps = @()
-# Diagnostic only (bisect.ps1 runs it too): a request never answered while a SELECT waits.
-$RelaySimInfo = @("lost")
+# Diagnostic only (bisect.ps1 runs them too): a request never answered while a SELECT waits; the
+# snapshot against a right before the screen push (its reads time out under the link's latency).
+$RelaySimInfo = @("lost", "snap-latency-old")

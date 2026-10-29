@@ -7,6 +7,11 @@
  *   screen (encrypted read) frame u16 LE, crc32 u32 LE, 1360 native screen bytes
  *      SNAP (op 7, one byte, write request) queues capture; screen reads return ATT unlikely
  *      until ready. Long reads use offsets into the frozen image; CRC excludes the 6-byte header.
+ *      SNAP with a second byte ART_RELAY_SNAP_PUSH (#662) also pushes the image once captured, as
+ *      notifications of the status value (below: ART_RELAY_RANG_SCREEN, offset u16 LE, up to
+ *      MTU - 6 bytes of the image), at most two unsent at a time. A right before it refuses two
+ *      bytes with ATT 0x0d (invalid attribute length): that refusal is how the left knows, and it
+ *      then reads the image as before. The left reads any chunk that didn't come.
  *   status (read, notify)                    struct art_relay_status
  *      Notify (#478): one byte, ART_RELAY_RANG_*, when the right's underglow on/off or its power
  *      source (battery dim state) changed, whatever changed it. The left reads the status (and
@@ -21,6 +26,8 @@
  *      CCC is the attribute right after the status value (its handle + 1, the 6th attribute of the
  *      service), where the left subscribes after discovery; a right without it answers that
  *      write with an ATT error, and the left doesn't try again on that link.
+ *      A notify whose byte 0 is ART_RELAY_RANG_SCREEN is a chunk of a pushed screen image (SNAP
+ *      above), not a ring; it only comes to a left that asked for the push.
  * Ops: BEGIN len u16, crc32 u32 | DATA offset u16, bytes | COMMIT | SELECT int8 set |
  *      RGB on u8, follow u8 [, battery dim config (5 B)] | PRESS position u8, state u8
  * PRESS is exactly three bytes: 06, global keymap position, state (1 down, 0 up).
@@ -87,7 +94,7 @@ enum art_relay_op {
     ART_RELAY_SELECT,
     ART_RELAY_RGB,
     ART_RELAY_PRESS, // 6: keymap position u8, state u8 (1 down, 0 up)
-    ART_RELAY_SNAP = 7, // one byte, write request: take a screen snapshot
+    ART_RELAY_SNAP = 7, // write request: take a screen snapshot; [ART_RELAY_SNAP_PUSH] (#662)
     ART_RELAY_SAVE = 9,  // slot u8, name[16]: save the shown pushed set to flash (write request)
     ART_RELAY_ERASE = 10, // slot u8: empty a flash slot (write request)
     ART_RELAY_BOOT = 8, // "BOOT", write request: reboot into the bootloader (test hooks only)
@@ -124,6 +131,11 @@ enum art_relay_op {
 // The status notify's bits (#478).
 #define ART_RELAY_RANG_RGB BIT(0)   // the right's underglow went on or off
 #define ART_RELAY_RANG_POWER BIT(1) // its battery dim state: USB power or the level
+// Byte 0 of a pushed screen chunk (#662): offset u16 LE and the image's bytes follow. Never a ring.
+#define ART_RELAY_RANG_SCREEN 0x80
+// SNAP's second byte: push the image once captured (#662).
+#define ART_RELAY_SNAP_PUSH 1
+#define ART_RELAY_SNAP_PUSH_HEADER 3 // ART_RELAY_RANG_SCREEN, offset u16 LE
 
 #define ART_RELAY_HEADER_SIZE 12
 #define ART_RELAY_MAGIC "NVA1"

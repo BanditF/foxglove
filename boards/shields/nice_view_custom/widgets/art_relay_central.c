@@ -338,7 +338,10 @@ BT_CONN_CB_DEFINE(art_relay_conn_cb) = {
  * #662 gate showed after a SELECT (TIMEOUT, then BUSY for 5 s, then the unstick's link drop). The
  * screen readback was the most exposed: ~63 Read Blob requests, each sent from the RX callback
  * the moment the last answer came. With the gap, the right's system queue has REQ_GAP_MS to free
- * the buffer. Only relay_q sleeps for it (req_new, screen_job). relay-sim: select-snap. */
+ * the buffer. Only relay_q sleeps for it (req_new, screen_job). relay-sim: select-snap.
+ * The gap costs a wake of the right each time: the split link's slave latency (ZMK's 30 x
+ * 7.5 ms) lets the right sleep through it, so a request after a request waits up to ~230 ms for
+ * the right to listen. Hence the screen push (screen_snap_relay.inc, relay-sim snap-latency). */
 #define REQ_GAP_MS 25
 
 static atomic_t answer_at; // k_uptime_get() of the right's last answer, truncated to 32 bits
@@ -368,6 +371,7 @@ struct relay_req {
 static struct relay_req reqs[RELAY_REQS];
 
 static atomic_t stuck_screen; // the screen readback's request was let go (screen_snap_relay.inc)
+static atomic_t doorbell_live; // doorbell belongs to Zephyr until its subscription ends
 static atomic_t stuck_in_row;
 static struct k_work_delayable unstick_work;
 K_THREAD_STACK_DEFINE(unstick_stack, 768);
@@ -1306,7 +1310,6 @@ void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]) {
 #define DOORBELL_WAITS 3
 
 static struct bt_gatt_subscribe_params doorbell;
-static atomic_t doorbell_live; // doorbell belongs to Zephyr until its subscription ends
 static uint8_t doorbell_waits;
 
 static uint8_t doorbell_rang(struct bt_conn *conn, struct bt_gatt_subscribe_params *params,
@@ -1316,6 +1319,10 @@ static uint8_t doorbell_rang(struct bt_conn *conn, struct bt_gatt_subscribe_para
         return BT_GATT_ITER_STOP;
     }
     const uint8_t *d = data;
+    if (length >= 1 && d[0] == ART_RELAY_RANG_SCREEN) {
+        screen_push_chunk(d, length); // a chunk of the screen push (#662), not a ring
+        return BT_GATT_ITER_CONTINUE;
+    }
     uint8_t what = length >= 1 ? d[0] : ART_RELAY_RANG_RGB;
     // Since #605 an RGB ring carries the right's state: no read needed, so no wait on relay_q.
     // Its shown block is kept even before the first status read on this link (#618).

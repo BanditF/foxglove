@@ -23,7 +23,7 @@ DEFINES=(
     -DCONFIG_FOXGLOVE_RIGHT_LAMPS=21
     -DCONFIG_ZMK_LOG_LEVEL=0
 )
-SCENARIOS=(wake wake-app relink-shown push-relink-tap stall stall-app late late-ignored select-snap)
+SCENARIOS=(wake wake-app relink-shown push-relink-tap stall stall-app late late-ignored select-snap snap-latency)
 # Known gaps: each must still FAIL (README.md, "Known gaps"). None at the moment.
 KNOWN_GAPS=()
 if [ "$#" -gt 0 ]; then

@@ -24,6 +24,9 @@ void screen_snap_pixel(uint8_t *out, int x, int y, bool ink);
 uint8_t screen_snap_local(void);
 /* Copies only frozen bytes; safe on the Bluetooth RX thread. */
 int screen_snap_wire_read(void *out, uint16_t len, uint16_t offset);
+/* A capture ended (ok: the frozen image is valid), on the display queue. The right's relay pushes
+ * the image from it (#662, art_relay_peripheral.c); a no-op elsewhere. */
+void screen_snap_captured(bool ok);
 #if !defined(CONFIG_ZMK_SPLIT) || defined(CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
 void screen_snap_command(const uint8_t *data, int len);
 void host_link_screen_reply(const uint8_t *data, int len);
