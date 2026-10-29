@@ -52,7 +52,6 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define DISCOVER_DELAY K_SECONDS(15)
 #define DISCOVER_RETRY K_SECONDS(5)
 #define DISCOVER_TRIES 20
-#define GATT_TIMEOUT K_SECONDS(3)
 
 static uint8_t blob[CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE];
 static uint16_t blob_len;
@@ -83,7 +82,7 @@ static struct {
     uint8_t ends;      // discovery procedures that finished
     int8_t write_ret;  // last bt_gatt_write / bt_gatt_read return value
     uint8_t att_err;   // last ATT error from a write or read callback
-    uint8_t timeouts;  // requests that got no callback within GATT_TIMEOUT
+    uint8_t timeouts;  // requests let go: no callback within GATT_TIMEOUT_MS
     uint8_t answered;  // callbacks for requests
 } dbg;
 
@@ -216,9 +215,14 @@ static void discover_cb(struct k_work *work) {
 }
 static K_WORK_DELAYABLE_DEFINE(discover_work, discover_cb);
 
+static void unstick_reset(void);
+static void cmds_link_changed(void);
+
 // Forgets the split connection and everything found on it.
 static void drop_peer(void) {
     k_work_cancel_delayable(&discover_work);
+    unstick_reset();
+    cmds_link_changed();
     if (peer != NULL) {
         bt_conn_unref(peer);
         peer = NULL;
@@ -295,59 +299,272 @@ BT_CONN_CB_DEFINE(art_relay_conn_cb) = {
     .security_changed = security_changed,
 };
 
-/* GATT calls, made synchronous for the push work queue */
+/* GATT calls, made synchronous for the push work queue
+ *
+ * A request's params sit in one of RELAY_REQS slots, and Zephyr owns a slot from the call until
+ * that request's callback. relay_q waits GATT_TIMEOUT_MS for it. A request with no callback by
+ * then is let go (#618): its slot stays Zephyr's, the relay goes on with the other slot, and its
+ * callback, whenever it comes, only frees the slot. It copies nothing and wakes no one, so a late
+ * answer can't be taken for the next request's (the slot, not a shared flag, says whose answer it
+ * is). Only while Zephyr holds every slot does a request get -EBUSY. Before, one request that
+ * never got its answer held the single in-flight flag for good: HELLO's "timeouts 1, in flight 1"
+ * with the link up, and every relay command after it failed until a re-link (1ebdf9d soak,
+ * 6a2632f gate).
+ *
+ * A request that went out but is never answered at all (relay-sim's stall: nothing the left
+ * sends goes on the air, while the right's PDUs still come) also holds Zephyr's ATT bearer, and
+ * the requests after it queue behind it there. Only the link going ends that, so the unstick
+ * below drops the split link once, as the #122 guard does, when a let-go request is still
+ * unanswered STUCK_AFTER_MS after it went out. Zephyr then ends every request with an error
+ * (their callbacks free the slots), ZMK reconnects, and discovery brings the relay back.
+ *
+ * Start/stop of the unstick: armed when a request (relay or screen readback) is let go; stopped
+ * when no let-go request is left (their callbacks) or by the link dropping. It fires once per
+ * arming; at most STUCK_DROPS_IN_ROW drops until a request is answered in time again, then it
+ * only logs. It runs on its own small queue, started on first use (never at boot): relay_q or
+ * lane_q can be asleep inside a Bluetooth call while the radio sends nothing, and the system
+ * queue mustn't wait for bt_conn_disconnect. No timer otherwise. */
+
+#define GATT_TIMEOUT_MS 3000
+#define RELAY_REQS 2
+#define STUCK_AFTER_MS 10000
+#define STUCK_DROPS_IN_ROW 3
 
 static K_SEM_DEFINE(gatt_done, 0, 1);
 static uint8_t gatt_err;
-// A request whose callback hasn't come yet; its params must not be reused until it does.
-static atomic_t in_flight;
 
-static int wait_done(int ret) {
+enum { REQ_FREE, REQ_WAITING, REQ_LET_GO };
+struct relay_req {
+    union {
+        struct bt_gatt_write_params write;
+        struct bt_gatt_read_params read;
+    };
+    uint8_t copy[20]; // SAVE is the longest write: op, slot, name[16]
+    uint8_t state;    // REQ_*, under irq_lock
+};
+static struct relay_req reqs[RELAY_REQS];
+
+static atomic_t stuck_screen; // the screen readback's request was let go (screen_snap_relay.inc)
+static atomic_t stuck_in_row;
+static struct k_work_delayable unstick_work;
+K_THREAD_STACK_DEFINE(unstick_stack, 768);
+static struct k_work_q unstick_q;
+static atomic_t unstick_q_started;
+
+// Requests Zephyr holds: the let-go ones, and one relay_q waits for (HELLO's "in flight").
+static int reqs_held(void) {
+    int n = 0;
+    unsigned int key = irq_lock();
+    for (int i = 0; i < RELAY_REQS; i++) {
+        n += reqs[i].state != REQ_FREE;
+    }
+    irq_unlock(key);
+    return n;
+}
+
+static bool any_let_go(void) {
+    bool let_go = atomic_get(&stuck_screen);
+    unsigned int key = irq_lock();
+    for (int i = 0; i < RELAY_REQS; i++) {
+        let_go |= reqs[i].state == REQ_LET_GO;
+    }
+    irq_unlock(key);
+    return let_go;
+}
+
+static void unstick_arm(void) {
+    if (atomic_cas(&unstick_q_started, 0, 1)) {
+        k_work_queue_start(&unstick_q, unstick_stack, K_THREAD_STACK_SIZEOF(unstick_stack),
+                           K_LOWEST_APPLICATION_THREAD_PRIO, NULL);
+    }
+    // Counted from the first let-go request: it went out GATT_TIMEOUT_MS ago.
+    k_work_schedule_for_queue(&unstick_q, &unstick_work, K_MSEC(STUCK_AFTER_MS - GATT_TIMEOUT_MS));
+}
+
+// A let-go request's callback came. Another one still out gets the full wait from now.
+static void unstick_answered(void) {
+    if (!atomic_get(&unstick_q_started)) {
+        return;
+    }
+    if (any_let_go()) {
+        k_work_reschedule_for_queue(&unstick_q, &unstick_work, K_MSEC(STUCK_AFTER_MS));
+    } else {
+        k_work_cancel_delayable(&unstick_work);
+    }
+}
+
+// The link went: Zephyr ends its requests, and their callbacks free the slots. The count in a
+// row stays until a request is answered in time.
+static void unstick_reset(void) { k_work_cancel_delayable(&unstick_work); }
+
+static void unstick_cb(struct k_work *work) {
+    if (!any_let_go()) {
+        return; // answered meanwhile
+    }
+    struct bt_conn *conn = NULL;
+    unsigned int key = irq_lock(); // disconnected() clears peer from the Bluetooth thread
+    if (peer != NULL) {
+        conn = bt_conn_ref(peer);
+    }
+    irq_unlock(key);
+    if (conn == NULL) {
+        return; // the link is gone already: that ends the requests
+    }
+    if (atomic_get(&stuck_in_row) < STUCK_DROPS_IN_ROW) {
+        atomic_inc(&stuck_in_row);
+        LOG_WRN("art relay: a request to the right has had no answer for %d s; dropping the "
+                "split link to end it (%d in a row)",
+                STUCK_AFTER_MS / 1000, (int)atomic_get(&stuck_in_row));
+        bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    } else {
+        LOG_WRN("art relay: a request to the right is stuck again; leaving the link");
+    }
+    bt_conn_unref(conn);
+}
+static K_WORK_DELAYABLE_DEFINE(unstick_work, unstick_cb);
+
+// A slot for the next request (relay_q only), or NULL while Zephyr holds every slot.
+static struct relay_req *req_new(void) {
+    struct relay_req *r = NULL;
+    unsigned int key = irq_lock();
+    for (int i = 0; i < RELAY_REQS && r == NULL; i++) {
+        if (reqs[i].state == REQ_FREE) {
+            r = &reqs[i];
+            r->state = REQ_WAITING;
+        }
+    }
+    irq_unlock(key);
+    if (r != NULL) {
+        gatt_err = 0;
+        k_sem_reset(&gatt_done);
+    }
+    return r;
+}
+
+// For a read callback's data: copies it to dst only while relay_q still waits for r.
+static bool req_take(struct relay_req *r, void *dst, const void *src, uint16_t n) {
+    unsigned int key = irq_lock();
+    bool live = r->state == REQ_WAITING;
+    if (live && n) {
+        memcpy(dst, src, n);
+    }
+    irq_unlock(key);
+    return live;
+}
+
+// r's (last) callback came: the slot is free again. Only a request relay_q still waits for
+// hands its result over; a let-go one's answer is dropped here.
+static void req_end(struct relay_req *r, uint8_t err) {
+    unsigned int key = irq_lock();
+    uint8_t was = r->state;
+    r->state = REQ_FREE;
+    if (was == REQ_WAITING) {
+        gatt_err = err;
+    }
+    irq_unlock(key);
+    dbg.answered++;
+    if (was == REQ_WAITING) {
+        if (!err) {
+            atomic_clear(&stuck_in_row);
+        }
+        k_sem_give(&gatt_done);
+    } else if (was == REQ_LET_GO) {
+        LOG_INF("art relay: a late answer (err 0x%02x) to a request given up on, dropped", err);
+        unstick_answered();
+    }
+}
+
+static int req_wait(struct relay_req *r, int ret) {
     dbg.write_ret = MAX(ret, INT8_MIN);
     if (ret) {
-        atomic_set(&in_flight, 0);
+        unsigned int key = irq_lock();
+        r->state = REQ_FREE; // Zephyr didn't take it: no callback comes
+        irq_unlock(key);
         return -EIO;
     }
-    if (k_sem_take(&gatt_done, GATT_TIMEOUT)) {
-        dbg.timeouts++;
-        return -ETIMEDOUT;
+    if (k_sem_take(&gatt_done, K_MSEC(GATT_TIMEOUT_MS))) {
+        unsigned int key = irq_lock();
+        bool let_go = r->state == REQ_WAITING;
+        if (let_go) {
+            r->state = REQ_LET_GO;
+        }
+        irq_unlock(key);
+        if (let_go) {
+            dbg.timeouts++;
+            unstick_arm();
+            return -ETIMEDOUT;
+        }
+        k_sem_take(&gatt_done, K_NO_WAIT); // its callback came just now
     }
     dbg.att_err = gatt_err;
     return gatt_err ? -EIO : 0;
 }
 
-static void request_done(uint8_t err) {
-    gatt_err = err;
-    dbg.answered++;
-    atomic_set(&in_flight, 0);
-    k_sem_give(&gatt_done);
-}
-
 static void write_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_write_params *params) {
-    request_done(err);
+    req_end(CONTAINER_OF(params, struct relay_req, write), err);
 }
 
 static int write_req(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
-    static struct bt_gatt_write_params params;
-    static uint8_t copy[20]; // SAVE is the longest: op, slot, name[16]
-    if (atomic_get(&in_flight) || len > sizeof(copy)) {
+    if (len > sizeof(reqs[0].copy)) {
         return -EBUSY;
     }
-    gatt_err = 0;
-    memcpy(copy, data, len); // the request may outlive the caller's buffer
-    params.func = write_cb;
-    params.handle = data_handle;
-    params.offset = 0;
-    params.data = copy;
-    params.length = len;
-    k_sem_reset(&gatt_done);
-    atomic_set(&in_flight, 1); // before the call: the callback can come before it returns
-    return wait_done(bt_gatt_write(conn, &params));
+    struct relay_req *r = req_new();
+    if (r == NULL) {
+        return -EBUSY;
+    }
+    memcpy(r->copy, data, len); // the request may outlive the caller's buffer
+    r->write.func = write_cb;
+    r->write.handle = data_handle;
+    r->write.offset = 0;
+    r->write.data = r->copy;
+    r->write.length = len;
+    return req_wait(r, bt_gatt_write(conn, &r->write));
+}
+
+// Write commands from relay_q (art data, the PC's lamp frames and effects) are paced: at most
+// CMDS_OUT of them wait for the radio at a time, so they never take all of the ATT buffers and
+// TX contexts (5 each with ZMK's central) from the requests and from ZMK's own split traffic.
+// The count goes down as each one is sent (Zephyr's complete callback, on the system queue). One
+// that finds no room within CMD_ROOM_MS (nothing sent in that time: the radio isn't sending)
+// fails instead of sleeping inside Zephyr. A new link starts the count over: Zephyr 3.5 drops the
+// callbacks of commands still queued when a link goes.
+#define CMDS_OUT 3
+#define CMD_ROOM_MS 1000
+
+static atomic_t cmds_out;
+static atomic_t cmd_epoch; // the link the count is for
+static K_SEM_DEFINE(cmd_room, 0, 1);
+
+static void cmd_sent(struct bt_conn *conn, void *user_data) {
+    if ((atomic_val_t)(uintptr_t)user_data == atomic_get(&cmd_epoch) &&
+        atomic_dec(&cmds_out) <= 0) {
+        atomic_set(&cmds_out, 0);
+    }
+    k_sem_give(&cmd_room);
+}
+
+static void cmds_link_changed(void) {
+    atomic_inc(&cmd_epoch);
+    atomic_set(&cmds_out, 0);
+    k_sem_give(&cmd_room);
 }
 
 static int write_cmd(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
     for (int tries = 0; tries < 50; tries++) {
-        int err = bt_gatt_write_without_response(conn, data_handle, data, len, false);
+        int64_t until = k_uptime_get() + CMD_ROOM_MS;
+        while (atomic_get(&cmds_out) >= CMDS_OUT) {
+            int64_t left = until - k_uptime_get();
+            if (left <= 0 || k_sem_take(&cmd_room, K_MSEC(left))) {
+                return -ETIMEDOUT;
+            }
+        }
+        atomic_val_t epoch = atomic_get(&cmd_epoch);
+        atomic_inc(&cmds_out);
+        int err = bt_gatt_write_without_response_cb(conn, data_handle, data, len, false, cmd_sent,
+                                                    (void *)(uintptr_t)epoch);
+        if (err) {
+            atomic_dec(&cmds_out);
+        }
         if (err != -ENOMEM && err != -EAGAIN) {
             return err;
         }
@@ -363,37 +580,42 @@ static bool right_rgb_known(void) {
 
 static uint8_t read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_params *params,
                        const void *data, uint16_t length) {
+    struct relay_req *r = CONTAINER_OF(params, struct relay_req, read);
     if (data != NULL) {
         // The value goes on with the flash slot table; the first chunk has all of the status.
         bool had = right_rgb_known();
         uint8_t was_on = right.rgb.on;
-        memcpy(&right, data, MIN(length, sizeof(right)));
+        if (!req_take(r, &right, data, MIN(length, sizeof(right)))) {
+            req_end(r, 0); // let go: what it read is old news
+            return BT_GATT_ITER_STOP;
+        }
         right_len = length;
         right_read_at = k_uptime_get();
-        request_done(0);
+        req_end(r, 0);
         if (right_rgb_known() != had || (had && right.rgb.on != was_on)) {
             host_link_rgb_right_changed(); // D7 83 (#478); nothing if the PC already has it
         }
         rgb_reconcile();
         return BT_GATT_ITER_STOP;
     }
-    request_done(err);
+    req_end(r, err);
     return BT_GATT_ITER_STOP;
 }
 
-static int read_status(struct bt_conn *conn) {
-    static struct bt_gatt_read_params params;
-    if (atomic_get(&in_flight)) {
+// A read of the status value at offset, from relay_q; func takes the chunks.
+static int read_value(struct bt_conn *conn, bt_gatt_read_func_t func, uint16_t offset) {
+    struct relay_req *r = req_new();
+    if (r == NULL) {
         return -EBUSY;
     }
-    params.func = read_cb;
-    params.handle_count = 1;
-    params.single.handle = status_handle;
-    params.single.offset = 0;
-    k_sem_reset(&gatt_done);
-    atomic_set(&in_flight, 1);
-    return wait_done(bt_gatt_read(conn, &params));
+    r->read.func = func;
+    r->read.handle_count = 1;
+    r->read.single.handle = status_handle;
+    r->read.single.offset = offset;
+    return req_wait(r, bt_gatt_read(conn, &r->read));
 }
+
+static int read_status(struct bt_conn *conn) { return read_value(conn, read_cb, 0); }
 
 /* Pushes */
 
@@ -619,50 +841,48 @@ int art_relay_erase(uint8_t slot) {
 static uint8_t slot_index;
 static uint8_t slot_info[sizeof(struct art_relay_slot_info)];
 static atomic_t slot_busy;
-// Where an offset read of the status value lands (one at a time: they run on relay_q, and a new
-// request is never sent while one is in flight).
+// Where an offset read of the status value lands (one at a time: they run on relay_q; a let-go
+// read's chunks land nowhere, see slot_read_cb).
 static uint8_t *ofs_buf;
 static uint16_t ofs_len, slot_got;
 
 static uint8_t slot_read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_params *params,
                             const void *data, uint16_t length) {
+    struct relay_req *r = CONTAINER_OF(params, struct relay_req, read);
     if (data != NULL) {
-        uint16_t n = MIN(length, ofs_len - slot_got);
-        memcpy(&ofs_buf[slot_got], data, n);
-        slot_got += n;
-        if (slot_got < ofs_len) {
+        unsigned int key = irq_lock();
+        bool more = false;
+        if (r->state == REQ_WAITING) { // a let-go read's chunk belongs to no one
+            uint16_t n = MIN(length, ofs_len - slot_got);
+            memcpy(&ofs_buf[slot_got], data, n);
+            slot_got += n;
+            more = slot_got < ofs_len;
+        }
+        irq_unlock(key);
+        if (more) {
             return BT_GATT_ITER_CONTINUE; // Zephyr reads on from where this chunk ended
         }
-        request_done(0);
+        req_end(r, 0);
         return BT_GATT_ITER_STOP;
     }
-    request_done(err ? err : BT_ATT_ERR_UNLIKELY); // the value ended early
+    req_end(r, err ? err : BT_ATT_ERR_UNLIKELY); // the value ended early
     return BT_GATT_ITER_STOP;
 }
 
 static void slot_read_job(struct k_work *work) {
-    static struct bt_gatt_read_params params;
     uint8_t status = 2;
     struct bt_conn *conn = job_conn();
     if (conn != NULL) {
         status = 4; // the right's firmware has no slots
         if (right.version >= 3 && slot_index < right.flash_slots) {
-            status = 3;
-            if (!atomic_get(&in_flight)) {
-                slot_got = 0;
-                ofs_buf = slot_info;
-                ofs_len = sizeof(slot_info);
-                params.func = slot_read_cb;
-                params.handle_count = 1;
-                params.single.handle = status_handle;
-                params.single.offset =
-                    sizeof(struct art_relay_status) + slot_index * sizeof(slot_info);
-                k_sem_reset(&gatt_done);
-                atomic_set(&in_flight, 1);
-                if (wait_done(bt_gatt_read(conn, &params)) == 0) {
-                    status = 0;
-                }
-            }
+            slot_got = 0;
+            ofs_buf = slot_info;
+            ofs_len = sizeof(slot_info);
+            // 3: no answer, or every request slot still held
+            status = read_value(conn, slot_read_cb,
+                                sizeof(struct art_relay_status) + slot_index * sizeof(slot_info))
+                         ? 3
+                         : 0;
         }
         bt_conn_unref(conn);
     }
@@ -678,29 +898,20 @@ static K_WORK_DEFINE(slot_read_work, slot_read_job);
 static atomic_t build_busy;
 
 static void build_read_job(struct k_work *work) {
-    static struct bt_gatt_read_params params;
     static struct foxglove_build_info build;
     uint8_t status = 2;
     struct bt_conn *conn = job_conn();
     if (conn != NULL) {
         status = 4; // the right's firmware doesn't report it
         if (right.version >= 4) {
-            status = 3;
-            if (!atomic_get(&in_flight)) {
-                slot_got = 0;
-                ofs_buf = (uint8_t *)&build;
-                ofs_len = sizeof(build);
-                params.func = slot_read_cb;
-                params.handle_count = 1;
-                params.single.handle = status_handle;
-                params.single.offset = sizeof(struct art_relay_status) +
-                                       ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info);
-                k_sem_reset(&gatt_done);
-                atomic_set(&in_flight, 1);
-                if (wait_done(bt_gatt_read(conn, &params)) == 0) {
-                    status = 0;
-                }
-            }
+            slot_got = 0;
+            ofs_buf = (uint8_t *)&build;
+            ofs_len = sizeof(build);
+            status = read_value(conn, slot_read_cb,
+                                sizeof(struct art_relay_status) +
+                                    ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info))
+                         ? 3
+                         : 0;
         }
         bt_conn_unref(conn);
     }
@@ -727,24 +938,18 @@ static uint32_t right_redraws; // the right's whole-screen rewrites, as last rea
 static bool right_redraws_ok;
 
 static void dim_read_job(struct k_work *work) {
-    static struct bt_gatt_read_params params;
     static struct battery_dim_wire got;
     int err = -ENOTSUP;
     struct bt_conn *conn = job_conn();
     if (conn != NULL) {
-        if (right.version >= 6 && !atomic_get(&in_flight)) {
+        if (right.version >= 6) {
             slot_got = 0;
             ofs_buf = (uint8_t *)&got;
             ofs_len = sizeof(got);
-            params.func = slot_read_cb;
-            params.handle_count = 1;
-            params.single.handle = status_handle;
-            params.single.offset = sizeof(struct art_relay_status) +
-                                   ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info) +
-                                   sizeof(struct foxglove_build_info);
-            k_sem_reset(&gatt_done);
-            atomic_set(&in_flight, 1);
-            err = wait_done(bt_gatt_read(conn, &params));
+            err = read_value(conn, slot_read_cb,
+                             sizeof(struct art_relay_status) +
+                                 ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info) +
+                                 sizeof(struct foxglove_build_info));
         }
         bt_conn_unref(conn);
     }
@@ -754,10 +959,7 @@ static void dim_read_job(struct k_work *work) {
         slot_got = 0;
         ofs_buf = count;
         ofs_len = sizeof(count);
-        params.single.offset = ART_RELAY_REDRAWS_AT;
-        k_sem_reset(&gatt_done);
-        atomic_set(&in_flight, 1);
-        right_redraws_ok = wait_done(bt_gatt_read(conn, &params)) == 0;
+        right_redraws_ok = read_value(conn, slot_read_cb, ART_RELAY_REDRAWS_AT) == 0;
         right_redraws = right_redraws_ok ? sys_get_le32(count) : 0;
         bt_conn_unref(conn);
     }
@@ -993,7 +1195,7 @@ void art_relay_debug(uint8_t out[ART_RELAY_DEBUG_SIZE]) {
     out[3] = dbg.att_err;
     out[4] = dbg.timeouts;
     out[5] = dbg.answered;
-    out[6] = atomic_get(&in_flight);
+    out[6] = reqs_held();
     out[7] = peer ? bt_conn_get_security(peer) : 0;
     sys_put_le16(peer ? bt_gatt_get_mtu(peer) : 0, &out[8]);
 }
@@ -1174,7 +1376,7 @@ static void doorbell_link_up(void) {
 #define ACTIVITY_RETRY K_SECONDS(1)
 #define ACTIVITY_RETRIES 10
 #define ACTIVITY_BUSY_RETRY K_MSEC(20)
-#define ACTIVITY_BUSY_WAITS 160 // 3.2 s: a little past GATT_TIMEOUT
+#define ACTIVITY_BUSY_WAITS 160 // 3.2 s: a little past GATT_TIMEOUT_MS
 
 K_THREAD_STACK_DEFINE(lane_stack, 768);
 static struct k_work_q lane_q;
@@ -1464,7 +1666,7 @@ void art_relay_rgb_kick(void) {
 #define HSB_RETRY K_MSEC(100)
 #define HSB_BUSY_RETRY K_MSEC(20) // another request on the relay (a status read) is in flight
 #define HSB_RETRIES 5
-// The request in the way ends with its answer or GATT_TIMEOUT (3 s); this many waits is past that.
+// The request in the way ends with its answer or GATT_TIMEOUT_MS (3 s); this many waits is past that.
 #define BUSY_WAITS 160
 #define RGB_VERIFY_AFTER K_MSEC(300) // ZMK's split write, then the right's next underglow tick
 

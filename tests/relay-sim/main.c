@@ -318,6 +318,43 @@ static void late_answer(void) {
     debug_line("at the end");
 }
 
+// A request's answer comes after the left gave up on it and went on with the next one (#618):
+// that answer must be dropped, never taken for the next request's. The late answer is an ATT
+// error, so a left that matched it to the SELECT queued next would fail that SELECT; and it comes
+// well before the unstick, so the link stays up.
+static void late_ignored(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    char why[160];
+    check("select-3", lab_select(3, why, sizeof(why)), "%s", why);
+    k_msleep(2000);
+    int drops = sim_bt_stats.link_drops;
+    sim_bt_faults.late_op = 0;
+    sim_bt_faults.late_us = 4500000;
+    sim_bt_faults.late_err = BT_ATT_ERR_UNLIKELY;
+    sim_bt_faults.late_count = 1;
+    status(); // queues a status read: its answer comes 4.5 s late, an error
+    k_msleep(3200); // the left gives up on it after 3 s
+    debug_line("with the late request let go");
+    uint8_t d[ART_RELAY_DEBUG_SIZE];
+    art_relay_debug(d);
+    check("slot-let-go", d[4] == 1 && d[6] == 1, "timeouts %d, held %d", d[4], d[6]);
+    // The SELECT goes at once on the other slot and queues behind the late read on the link; the
+    // late error lands while it waits.
+    check("select-5", lab_select(5, why, sizeof(why)), "%s", why);
+    k_msleep(2000);
+    struct report r = status();
+    k_msleep(500);
+    r = status();
+    art_relay_debug(d);
+    check("late-dropped", r.right.set == 5 && sim_right.set == 5 && d[6] == 0,
+          "left sees set %d, right on %d, held %d", r.right.set, sim_right.set, d[6]);
+    check("push-after", lab_push(3599, why, sizeof(why)), "%s", why);
+    check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
+          sim_bt_stats.link_drops - drops);
+    debug_line("at the end");
+}
+
 // A request the right never answers (until the bearer times out): what's left afterwards.
 static void lost_answer(void) {
     wait_relay(40);
@@ -411,6 +448,8 @@ static void lab_thread(void *arg) {
         wake_and_push(true, true);
     } else if (!strcmp(scenario, "late")) {
         late_answer();
+    } else if (!strcmp(scenario, "late-ignored")) {
+        late_ignored();
     } else if (!strcmp(scenario, "lost")) {
         lost_answer();
     } else if (!strcmp(scenario, "push-relink-tap")) {

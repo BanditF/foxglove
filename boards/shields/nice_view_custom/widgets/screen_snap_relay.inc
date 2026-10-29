@@ -31,6 +31,11 @@ static void screen_request_done(uint8_t err) {
     atomic_clear(&screen_flight);
     k_sem_give(&screen_done);
     irq_unlock(key);
+    if (atomic_cas(&stuck_screen, 1, 0)) {
+        unstick_answered(); // a late answer to a let-go readback
+    } else if (!err || err == BT_ATT_ERR_UNLIKELY) {
+        atomic_clear(&stuck_in_row);
+    }
 }
 
 static void screen_write_cb(struct bt_conn *conn, uint8_t err,
@@ -75,6 +80,9 @@ static int screen_wait(int ret) {
     }
     int64_t remaining = screen_deadline - k_uptime_get();
     if (remaining <= 0 || k_sem_take(&screen_done, K_MSEC(remaining))) {
+        if (atomic_get(&screen_flight) && atomic_cas(&stuck_screen, 0, 1)) {
+            unstick_arm(); // let go: the right may yet answer; if not, the unstick acts
+        }
         return -ETIMEDOUT;
     }
     return screen_err ? -EIO : 0;
@@ -87,8 +95,7 @@ static void screen_job(struct k_work *work) {
         result = SCREEN_NO_LINK;
         goto done;
     }
-    if (atomic_get(&in_flight) || atomic_get(&screen_flight) ||
-        k_uptime_get() >= screen_deadline) {
+    if (atomic_get(&screen_flight) || k_uptime_get() >= screen_deadline) {
         goto done;
     }
     atomic_set(&screen_accept, 1);

@@ -120,6 +120,8 @@ struct pdu {
     struct req *req;
     int64_t due; // a late response goes on the air from then
     bool on_air; // a request: handed to the controller (its TX context taken)
+    bt_gatt_complete_func_t sent; // a command's complete callback (att_on_sent_cb)
+    void *sent_data;
     struct pdu *next;
 };
 
@@ -371,6 +373,15 @@ int bt_gatt_discover(struct bt_conn *conn, struct bt_gatt_discover_params *param
 
 int bt_gatt_write_without_response(struct bt_conn *conn, uint16_t handle, const void *data,
                                    uint16_t length, bool sign) {
+    return bt_gatt_write_without_response_cb(conn, handle, data, length, sign, NULL, NULL);
+}
+
+// The callback runs on the system work queue once the command is sent (tx_notify, then
+// att_on_sent_cb). Zephyr 3.5 drops it for a command still queued when the link goes ("Bearer
+// not connected, dropping ATT cb"): free_list and sim_bt_drop don't call it.
+int bt_gatt_write_without_response_cb(struct bt_conn *conn, uint16_t handle, const void *data,
+                                      uint16_t length, bool sign, bt_gatt_complete_func_t func,
+                                      void *user_data) {
     (void)sign;
     if (!conn_ok(conn) || !att_alive) {
         return -ENOTCONN;
@@ -389,6 +400,8 @@ int bt_gatt_write_without_response(struct bt_conn *conn, uint16_t handle, const 
     struct pdu *p = new_pdu(P_CMD, handle);
     memcpy(p->data, data, length);
     p->len = length;
+    p->sent = func;
+    p->sent_data = user_data;
     got = take(&ctx_free, &ctx_wait);
     if (got == 0) {
         push(&left_cmd_wait, p); // att->tx_queue: bt_att_sent sends it later
@@ -591,6 +604,9 @@ static void left_tx_notify_cb(struct k_work *w) {
             k_work_reschedule(&att_timeout_work, K_USEC(SIM_ATT_TIMEOUT_US));
         }
         give(&meta_free, &meta_wait);
+        if (p->kind == P_CMD && p->sent && link_up) {
+            p->sent(link, p->sent_data);
+        }
         if (p->req == NULL) {
             free(p); // request PDUs stay with their request (a few bytes each)
         }
@@ -841,6 +857,9 @@ static void right_rx_cb(struct k_work *w) {
             // The response this request made goes on the air late, or never.
             struct pdu *r = before.tail ? before.tail->next : right_air.head;
             if (r && r->kind == P_RSP) {
+                if (sim_bt_faults.late_err) {
+                    r->err = sim_bt_faults.late_err;
+                }
                 if (sim_bt_faults.late_us < 0) {
                     r->due = INT64_MAX / 2;
                 } else {

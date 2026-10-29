@@ -92,6 +92,7 @@ static inline bool atomic_cas(atomic_t *a, atomic_val_t old, atomic_val_t v) {
     return true;
 }
 static inline atomic_val_t atomic_inc(atomic_t *a) { return (*a)++; }
+static inline atomic_val_t atomic_dec(atomic_t *a) { return (*a)--; }
 static inline atomic_val_t atomic_or(atomic_t *a, atomic_val_t v) {
     atomic_val_t o = *a;
     *a |= v;
@@ -347,6 +348,10 @@ int bt_gatt_read(struct bt_conn *conn, struct bt_gatt_read_params *params);
 int bt_gatt_write(struct bt_conn *conn, struct bt_gatt_write_params *params);
 int bt_gatt_write_without_response(struct bt_conn *conn, uint16_t handle, const void *data,
                                    uint16_t length, bool sign);
+typedef void (*bt_gatt_complete_func_t)(struct bt_conn *conn, void *user_data);
+int bt_gatt_write_without_response_cb(struct bt_conn *conn, uint16_t handle, const void *data,
+                                      uint16_t length, bool sign, bt_gatt_complete_func_t func,
+                                      void *user_data);
 int bt_gatt_subscribe(struct bt_conn *conn, struct bt_gatt_subscribe_params *params);
 uint16_t bt_gatt_get_mtu(struct bt_conn *conn);
 
