@@ -86,19 +86,63 @@ pub fn push_cancellable(
     Ok(st)
 }
 
-/// Shows built-in set `set` again (-1 = random).
+/// Before the one retry of a SELECT whose relay write failed: the left's request in the way (a
+/// timed-out one, still out on the link) gets this long to end. Newer firmware waits for it
+/// itself (#618); this covers a left without that.
+pub const SELECT_RETRY_PAUSE: Duration = Duration::from_millis(500);
+
+/// Shows built-in set `set` again (-1 = random). A relay write that fails ("Bluetooth write
+/// failed": the split link was busy with other traffic) is tried once more, with a log line;
+/// the error comes back only when that try fails too (#618).
 pub fn select(t: &impl Transport, set: i8) -> Result<ArtStatus> {
+    match select_once(t, set)? {
+        Ok(st) => Ok(st),
+        Err(st) if st.state == left_state::FAILED && st.error == protocol::relay_error::BLE => {
+            note(format!(
+                "Foxglove link: art SELECT {set}: the relay's write to the right failed ({st}); \
+                 trying once more"
+            ));
+            std::thread::sleep(SELECT_RETRY_PAUSE);
+            match select_once(t, set)? {
+                Ok(st) => {
+                    note(format!(
+                        "Foxglove link: art SELECT {set}: the second try went through"
+                    ));
+                    Ok(st)
+                }
+                Err(st) => select_error(st),
+            }
+        }
+        Err(st) => select_error(st),
+    }
+}
+
+/// A log line (the app's stderr goes to foxglove.log); tests read them back.
+fn note(line: String) {
+    #[cfg(test)]
+    tests::NOTES.with(|n| n.borrow_mut().push(line.clone()));
+    eprintln!("{line}");
+}
+
+/// One SELECT and the left's relay of it: Ok, or Err with the status it ended on.
+fn select_once(t: &impl Transport, set: i8) -> Result<Result<ArtStatus, ArtStatus>> {
     let mut st = command(t, &protocol::art_select(set))?;
     let end = Instant::now() + Duration::from_secs(10);
     while st.state == left_state::PUSHING && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(100));
         st = status(t)?;
     }
-    match st.state {
-        left_state::FAILED => bail!("select failed: {st}"),
-        left_state::PUSHING => bail!("select did not finish in 10 s: {st}"),
+    Ok(match st.state {
+        left_state::FAILED | left_state::PUSHING => Err(st),
         _ => Ok(st),
+    })
+}
+
+fn select_error(st: ArtStatus) -> Result<ArtStatus> {
+    if st.state == left_state::PUSHING {
+        bail!("select did not finish in 10 s: {st}");
     }
+    bail!("select failed: {st}")
 }
 
 /// Selects `set` and returns the right half's state once it plays it. The right acknowledges
@@ -343,6 +387,64 @@ mod tests {
         assert_eq!(select_settled(&t, 5, Duration::ZERO).unwrap().right_set, 2);
     }
 
+    thread_local! {
+        pub(super) static NOTES: std::cell::RefCell<Vec<String>> = const {
+            std::cell::RefCell::new(Vec::new())
+        };
+    }
+
+    fn notes() -> Vec<String> {
+        NOTES.with(|n| n.take())
+    }
+
+    fn failed(cmd: u8, error: u8) -> [u8; protocol::REPORT] {
+        let mut r = reply(cmd, left_state::FAILED);
+        r[3] = error;
+        r
+    }
+
+    /// #618: one "Bluetooth write failed" is tried once more, logged, and the user sees success.
+    #[test]
+    fn a_failed_relay_write_is_tried_once_more_and_logged() {
+        notes();
+        let t = Mock::default();
+        t.replies.borrow_mut().extend([
+            failed(art::SELECT, protocol::relay_error::BLE),
+            reply(art::SELECT, left_state::DONE),
+        ]);
+        assert!(select(&t, 3).is_ok());
+        let sent = t.sent.borrow();
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert!(sent.iter().all(|r| *r == protocol::art_select(3)));
+        let notes = notes();
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(notes[0].contains("art SELECT 3") && notes[0].contains("trying once more"));
+        assert!(notes[0].contains("Bluetooth write failed"));
+        assert!(notes[1].contains("second try went through"));
+    }
+
+    /// The user's error comes only after the retry failed too; other errors aren't retried.
+    #[test]
+    fn the_error_shows_only_after_the_retry_fails() {
+        notes();
+        let t = Mock::default();
+        t.replies.borrow_mut().extend([
+            failed(art::SELECT, protocol::relay_error::BLE),
+            failed(art::SELECT, protocol::relay_error::BLE),
+        ]);
+        let e = select(&t, 2).unwrap_err().to_string();
+        assert!(e.contains("Bluetooth write failed"), "{e}");
+        assert_eq!(t.sent.borrow().len(), 2);
+        assert_eq!(notes().len(), 1);
+
+        // "right half not connected" (1) isn't transient: no second try.
+        let t = Mock::default();
+        t.replies.borrow_mut().push_back(failed(art::SELECT, 1));
+        assert!(select(&t, 2).is_err());
+        assert_eq!(t.sent.borrow().len(), 1);
+        assert!(notes().is_empty());
+    }
+
     #[test]
     fn select_reports_failure() {
         let t = Mock::default();
@@ -519,6 +621,223 @@ mod tests {
             let got = wait_relay_ready(&link, Duration::from_secs(5)).unwrap();
             assert!(matches!(got, RelayWait::Ready(s) if s.link == 2));
             assert_eq!(statuses.load(Ordering::Relaxed), 2);
+        }
+    }
+
+    /// #618 with the app's own traffic: a left half in memory that runs the relay as the firmware
+    /// does (one state for every caller: a SELECT is PUSHING until the relay ends, then DONE or
+    /// FAILED), whose first relay write fails as it did beside a timed-out request. Other threads
+    /// read STATUS and RGB_STATE through the same link the whole time, as the app's background
+    /// does. The user's SELECT still succeeds (once retried) and nobody gets another's reply.
+    mod contention {
+        use super::super::*;
+        use super::notes;
+        use crate::link::{Connected, Link, RawHid, Report};
+        use std::collections::VecDeque;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::{Arc, Condvar, Mutex};
+
+        #[derive(Default)]
+        struct Relay {
+            state: u8,
+            error: u8,
+            set: i8,
+            selects: usize,
+            /// STATUS reads the running SELECT stays PUSHING for.
+            pushing_for: usize,
+        }
+
+        #[derive(Default)]
+        struct Left {
+            inbox: Mutex<VecDeque<Report>>,
+            ready: Condvar,
+            stopped: AtomicBool,
+            relay: Mutex<Relay>,
+            /// SELECTs whose relay write fails ("Bluetooth write failed").
+            failing: usize,
+            selects: Arc<AtomicUsize>,
+            rgb_reads: Arc<AtomicUsize>,
+        }
+
+        impl Left {
+            fn push(&self, r: Report) {
+                self.inbox.lock().unwrap().push_back(r);
+                self.ready.notify_all();
+            }
+        }
+
+        fn art_reply(cmd: u8, relay: &Relay) -> Report {
+            let mut r = [0u8; protocol::REPORT];
+            r[0] = protocol::ART;
+            r[1] = 0x80 | cmd;
+            r[2] = relay.state;
+            r[3] = relay.error;
+            r[2 + 6] = 2; // relay up
+            r[2 + 13] = relay.set as u8;
+            r
+        }
+
+        impl RawHid for Left {
+            fn read(&self, buf: &mut Report) -> Result<usize> {
+                let mut inbox = self.inbox.lock().unwrap();
+                loop {
+                    if self.stopped.load(Ordering::Relaxed) {
+                        return Ok(0);
+                    }
+                    if let Some(r) = inbox.pop_front() {
+                        *buf = r;
+                        return Ok(protocol::REPORT);
+                    }
+                    inbox = self.ready.wait(inbox).unwrap();
+                }
+            }
+            fn interrupt(&self) {
+                let _inbox = self.inbox.lock().unwrap();
+                self.stopped.store(true, Ordering::Relaxed);
+                self.ready.notify_all();
+            }
+            fn write(&self, out: &[u8]) -> Result<()> {
+                match (out[0], out[1]) {
+                    (protocol::ART, art::SELECT) => {
+                        let mut relay = self.relay.lock().unwrap();
+                        relay.selects += 1;
+                        self.selects.fetch_add(1, Ordering::Relaxed);
+                        relay.state = left_state::PUSHING;
+                        relay.error = 0;
+                        relay.pushing_for = 2;
+                        relay.set = out[2] as i8;
+                        let r = art_reply(art::SELECT, &relay);
+                        drop(relay);
+                        self.push(r);
+                    }
+                    (protocol::ART, art::STATUS) => {
+                        let mut relay = self.relay.lock().unwrap();
+                        if relay.state == left_state::PUSHING {
+                            if relay.pushing_for > 0 {
+                                relay.pushing_for -= 1;
+                            } else if relay.selects <= self.failing {
+                                relay.state = left_state::FAILED;
+                                relay.error = protocol::relay_error::BLE;
+                            } else {
+                                relay.state = left_state::DONE;
+                            }
+                        }
+                        let r = art_reply(art::STATUS, &relay);
+                        drop(relay);
+                        self.push(r);
+                    }
+                    (protocol::SETTINGS, protocol::settings::RGB_STATE) => {
+                        self.rgb_reads.fetch_add(1, Ordering::Relaxed);
+                        let mut r = [0u8; protocol::REPORT];
+                        r[0] = protocol::SETTINGS;
+                        r[1] = 0x80 | protocol::settings::RGB_STATE;
+                        r[2] = 0x5A; // marks it as the RGB reply
+                        self.push(r);
+                    }
+                    _ => {}
+                }
+                Ok(())
+            }
+        }
+
+        type Started = (Arc<Link>, Arc<AtomicUsize>, Arc<AtomicUsize>);
+
+        fn start(failing: usize) -> Started {
+            let selects = Arc::new(AtomicUsize::new(0));
+            let rgb_reads = Arc::new(AtomicUsize::new(0));
+            let mut left = Some(Left {
+                failing,
+                selects: selects.clone(),
+                rgb_reads: rgb_reads.clone(),
+                ..Default::default()
+            });
+            let link = Link::start(Box::new(move || {
+                let left = left.take().ok_or_else(|| anyhow::anyhow!("no keyboard"))?;
+                let connected = Connected {
+                    product: "Fake left".into(),
+                    hello: None,
+                    bus: Default::default(),
+                };
+                Ok((Box::new(left) as Box<dyn RawHid>, connected))
+            }));
+            link.wait_connected(Duration::from_secs(2)).unwrap();
+            (Arc::new(link), selects, rgb_reads)
+        }
+
+        /// The app's background: STATUS and RGB_STATE reads until `stop`, each answered by its
+        /// own kind of reply. Returns how many each thread made.
+        fn background(
+            link: &Arc<Link>,
+            stop: &Arc<AtomicBool>,
+        ) -> Vec<std::thread::JoinHandle<usize>> {
+            let status_reads = {
+                let (link, stop) = (link.clone(), stop.clone());
+                std::thread::spawn(move || {
+                    let mut n = 0;
+                    while !stop.load(Ordering::Relaxed) {
+                        let st = status(&*link).unwrap();
+                        assert_eq!(st.link, 2);
+                        n += 1;
+                    }
+                    n
+                })
+            };
+            let rgb = {
+                let (link, stop) = (link.clone(), stop.clone());
+                std::thread::spawn(move || {
+                    let mut n = 0;
+                    while !stop.load(Ordering::Relaxed) {
+                        let r = link
+                            .request(
+                                &[protocol::SETTINGS, protocol::settings::RGB_STATE],
+                                protocol::SETTINGS,
+                                protocol::settings::RGB_STATE,
+                                Duration::from_secs(1),
+                            )
+                            .unwrap();
+                        assert_eq!(r[2], 0x5A, "an art reply reached the RGB read");
+                        n += 1;
+                    }
+                    n
+                })
+            };
+            vec![status_reads, rgb]
+        }
+
+        #[test]
+        fn a_user_select_amid_app_traffic_succeeds_after_one_retry() {
+            notes();
+            let (link, selects, rgb_reads) = start(1);
+            let stop = Arc::new(AtomicBool::new(false));
+            let threads = background(&link, &stop);
+            let st = select(&*link, 4);
+            stop.store(true, Ordering::Relaxed);
+            let counts: Vec<usize> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+            let st = st.unwrap();
+            assert_eq!(st.state, left_state::DONE);
+            assert_eq!(st.right_set, 4);
+            assert_eq!(selects.load(Ordering::Relaxed), 2, "one SELECT, one retry");
+            assert!(counts.iter().all(|&n| n > 0), "background ran: {counts:?}");
+            assert!(rgb_reads.load(Ordering::Relaxed) > 0);
+            let notes = notes();
+            assert_eq!(notes.len(), 2, "{notes:?}");
+            assert!(notes[0].contains("trying once more"));
+        }
+
+        #[test]
+        fn a_user_select_amid_app_traffic_needs_no_retry_when_the_relay_is_fine() {
+            notes();
+            let (link, selects, _) = start(0);
+            let stop = Arc::new(AtomicBool::new(false));
+            let threads = background(&link, &stop);
+            let st = select(&*link, 1);
+            stop.store(true, Ordering::Relaxed);
+            for t in threads {
+                t.join().unwrap();
+            }
+            assert_eq!(st.unwrap().right_set, 1);
+            assert_eq!(selects.load(Ordering::Relaxed), 1);
+            assert!(notes().is_empty());
         }
     }
 

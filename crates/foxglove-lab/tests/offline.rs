@@ -900,6 +900,40 @@ fn snapshot_reads_checks_crc_and_rotates() {
         .contains("CRC"));
 }
 
+/// #618: a right snapshot that timed out in the relay (the app's traffic on the split link) is
+/// taken once more; a second timeout is the error, and a left one isn't retried.
+#[test]
+fn a_right_snapshot_timeout_is_taken_once_more() {
+    let mut image = vec![0u8; 1360];
+    image[5] = 0x10;
+    let timeout = |half| reply(&[0xd7, 0x86, 3, half]);
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(timeout(1));
+    fake.replies
+        .borrow_mut()
+        .extend(snapshot_replies(1, &image, crc32fast::hash(&image)));
+    assert_eq!(foxglove_lab::screen::snapshot(&fake, 1).unwrap(), image);
+    let snaps = |f: &Fake| {
+        f.requests
+            .borrow()
+            .iter()
+            .filter(|r| r[..2] == [0xd7, 0x06])
+            .count()
+    };
+    assert_eq!(snaps(&fake), 2);
+
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([timeout(1), timeout(1)]);
+    let e = foxglove_lab::screen::snapshot(&fake, 1).unwrap_err();
+    assert!(e.to_string().contains("right half timed out"), "{e}");
+    assert_eq!(snaps(&fake), 2);
+
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(timeout(0));
+    assert!(foxglove_lab::screen::snapshot(&fake, 0).is_err());
+    assert_eq!(snaps(&fake), 1);
+}
+
 #[test]
 fn screen_without_golden_is_blocked_with_a_candidate() {
     let image = vec![0u8; 1360];

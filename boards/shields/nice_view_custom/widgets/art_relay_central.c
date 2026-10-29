@@ -16,6 +16,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
+#include <zephyr/bluetooth/hci.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/sys/byteorder.h>
@@ -51,7 +52,8 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #define DISCOVER_DELAY K_SECONDS(15)
 #define DISCOVER_RETRY K_SECONDS(5)
 #define DISCOVER_TRIES 20
-#define GATT_TIMEOUT K_SECONDS(3)
+#define GATT_TIMEOUT_MS 3000
+#define GATT_TIMEOUT K_MSEC(GATT_TIMEOUT_MS)
 
 static uint8_t blob[CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE];
 static uint16_t blob_len;
@@ -296,6 +298,81 @@ BT_CONN_CB_DEFINE(art_relay_conn_cb) = {
 
 /* GATT calls, made synchronous for the push work queue */
 
+/* A Bluetooth call on relay_q that doesn't return (#618). In the soak (#644) HELLO's relay debug
+ * read "in flight 1, answered 23, timeouts 1" twice, 41 s apart: relay_q was inside a
+ * bt_gatt_read or bt_gatt_write, after in_flight was set and before wait_done's timed wait. Zephyr
+ * 3.5 takes the PDU, its ATT meta data and the connection's TX context with K_FOREVER off the
+ * system workqueue (bt_att_chan_create_pdu, tx_meta_data_alloc, conn_tx_alloc), and gives the
+ * last two back on the system workqueue. When they run out, relay_q sleeps in the call, and
+ * nothing behind it runs: art selects and pushes, status reads, the colour, the screen readback.
+ * The app saw that as "Bluetooth write failed" and a right snapshot that timed out.
+ *
+ * Moving the calls to the system workqueue (where those two take K_NO_WAIT) isn't safe in 3.5:
+ * the ACL buffer itself is still taken with K_FOREVER there (net_buf_alloc has no syswq guard),
+ * and a system workqueue asleep on it would never free the TX contexts either. The call can't be
+ * taken back, and its params are Zephyr's until it returns, so in_flight can't be freed under
+ * it. What frees the buffers is the link going: the soak's re-link ended it (the count read 78
+ * after). So the rescue does exactly that, once: a call on relay_q still in progress RELAY_STUCK
+ * after it began drops the split link, logged. Zephyr flushes the link's queue, the call returns
+ * with an error, relay_q goes on, and ZMK reconnects (the right's keys pause for that, some 15 s,
+ * which is why it is a last resort and not a timeout).
+ *
+ * Start/stop: armed when a relay_q call begins, cancelled when it returns (no timer otherwise).
+ * One drop per stuck call; at most RESCUE_MAX_IN_ROW drops until a call succeeds again, then it
+ * only logs. lane_q's write commands aren't watched: one stuck there delays only the head start,
+ * and the request on relay_q still carries the state. */
+#define RELAY_STUCK K_SECONDS(10)
+#define RESCUE_MAX_IN_ROW 3
+
+K_THREAD_STACK_DEFINE(rescue_stack, 768);
+static struct k_work_q rescue_q; // its own: relay_q is the one stuck, and the system queue
+                                 // mustn't wait for bt_conn_disconnect
+static atomic_t calling;         // a relay_q Bluetooth call is in progress
+static atomic_t rescue_in_row;
+
+static void rescue_cb(struct k_work *work) {
+    if (!atomic_get(&calling)) {
+        return;
+    }
+    struct bt_conn *conn = NULL;
+    unsigned int key = irq_lock(); // disconnected() clears peer from the Bluetooth thread
+    if (peer != NULL) {
+        conn = bt_conn_ref(peer);
+    }
+    irq_unlock(key);
+    if (conn == NULL) {
+        return; // the link is gone already: that frees the call
+    }
+    if (atomic_get(&rescue_in_row) < RESCUE_MAX_IN_ROW) {
+        atomic_inc(&rescue_in_row);
+        LOG_WRN("art relay: a Bluetooth call on the relay queue hasn't returned in 10 s (no TX "
+                "buffer?); dropping the split link to free it (%d in a row)",
+                (int)atomic_get(&rescue_in_row));
+        bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    } else {
+        LOG_WRN("art relay: the relay queue is stuck in a Bluetooth call again; leaving the link");
+    }
+    bt_conn_unref(conn);
+}
+static K_WORK_DELAYABLE_DEFINE(rescue_work, rescue_cb);
+
+static void call_begin(void) {
+    atomic_set(&calling, 1);
+    k_work_reschedule_for_queue(&rescue_q, &rescue_work, RELAY_STUCK);
+}
+
+static int call_end(int ret) {
+    atomic_clear(&calling);
+    k_work_cancel_delayable(&rescue_work);
+    if (ret == 0) {
+        atomic_clear(&rescue_in_row);
+    }
+    return ret;
+}
+
+// A Bluetooth call on relay_q, watched by the rescue above.
+#define BT_CALL(expr) (call_begin(), call_end(expr))
+
 static K_SEM_DEFINE(gatt_done, 0, 1);
 static uint8_t gatt_err;
 // A request whose callback hasn't come yet; its params must not be reused until it does.
@@ -341,12 +418,12 @@ static int write_req(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
     params.length = len;
     k_sem_reset(&gatt_done);
     atomic_set(&in_flight, 1); // before the call: the callback can come before it returns
-    return wait_done(bt_gatt_write(conn, &params));
+    return wait_done(BT_CALL(bt_gatt_write(conn, &params)));
 }
 
 static int write_cmd(struct bt_conn *conn, const uint8_t *data, uint16_t len) {
     for (int tries = 0; tries < 50; tries++) {
-        int err = bt_gatt_write_without_response(conn, data_handle, data, len, false);
+        int err = BT_CALL(bt_gatt_write_without_response(conn, data_handle, data, len, false));
         if (err != -ENOMEM && err != -EAGAIN) {
             return err;
         }
@@ -385,14 +462,67 @@ static int read_status(struct bt_conn *conn) {
     if (atomic_get(&in_flight)) {
         return -EBUSY;
     }
+    gatt_err = 0; // as write_req: a call that fails reads as never sent (user_req)
     params.func = read_cb;
     params.handle_count = 1;
     params.single.handle = status_handle;
     params.single.offset = 0;
     k_sem_reset(&gatt_done);
     atomic_set(&in_flight, 1);
-    return wait_done(bt_gatt_read(conn, &params));
+    return wait_done(BT_CALL(bt_gatt_read(conn, &params)));
 }
+
+/* Someone's own command (#618): a SELECT, SAVE or ERASE, a push, the screen readback. The relay
+ * also carries Foxglove's background traffic (status, dim and slot reads, the colour, the
+ * activity and underglow state), and a request of that which timed out stays out on the link
+ * (in_flight) until its late answer. A user's command used to fail at once on it, as "Bluetooth
+ * write failed" in the app. Now it waits for that answer first, and a write that didn't get out
+ * (that request still in the way, or no buffer for the call) is tried once more, logged.
+ *
+ * Start/stop: starts with the command's job on relay_q. The wait ends on the late request's
+ * callback (request_done gives gatt_done) or the job's deadline, USER_JOB_MS after it started,
+ * below the PC's 10 s wait for a SELECT. One retry, only while the deadline leaves room for it.
+ * A link that drops ends the request in the way with an error, so the wait ends then too. */
+#define USER_JOB_MS 8000
+
+// Waits, on its callback, for a request still out on the link; -EBUSY if it's there at `end`.
+static int wait_idle(int64_t end) {
+    while (atomic_get(&in_flight)) {
+        int64_t left = end - k_uptime_get();
+        if (left <= 0) {
+            return -EBUSY;
+        }
+        k_sem_take(&gatt_done, K_MSEC(left)); // request_done gives it; then look again
+    }
+    return 0;
+}
+
+// The request never went out: another was in the way, or the call itself failed (no buffer).
+// An ATT error is the right's answer and a timeout went out; neither is "never sent".
+static bool not_sent(int err) { return err == -EBUSY || (err == -EIO && gatt_err == 0); }
+
+// A user's request (write_req, or read_status when `data` is NULL): after the request in the way,
+// and once more on a send that didn't go out. `again_after_timeout` also retries one that went out
+// unanswered, for commands that are the same done twice (SELECT of a set, a status read).
+static int user_req(struct bt_conn *conn, const uint8_t *data, uint16_t len, int64_t end,
+                    bool again_after_timeout) {
+    int err = 0;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        err = wait_idle(end);
+        if (!err) {
+            err = data != NULL ? write_req(conn, data, len) : read_status(conn);
+        }
+        bool retry = not_sent(err) || (again_after_timeout && err == -ETIMEDOUT);
+        if (!err || !retry || attempt > 0 || k_uptime_get() + GATT_TIMEOUT_MS > end) {
+            break;
+        }
+        LOG_WRN("art relay: %s to the right failed (%d, in flight %d), trying once more",
+                data != NULL ? "write" : "status read", err, (int)atomic_get(&in_flight));
+    }
+    return err;
+}
+
+static int64_t user_deadline(void) { return k_uptime_get() + USER_JOB_MS; }
 
 /* Pushes */
 
@@ -511,10 +641,12 @@ void art_relay_boot(void) { k_work_submit_to_queue(&relay_q, &boot_work); }
 
 static int push(struct bt_conn *conn) {
     uint8_t buf[3 + 244];
+    int64_t end = user_deadline();
     buf[0] = ART_RELAY_BEGIN;
     sys_put_le16(blob_len, &buf[1]);
     sys_put_le32(blob_crc, &buf[3]);
-    if (write_req(conn, buf, 7)) {
+    // BEGIN starts the right's receive over, so one that went out unanswered can go again.
+    if (user_req(conn, buf, 7, end, true)) {
         return ART_ERR_BLE;
     }
     int chunk = CLAMP((int)bt_gatt_get_mtu(conn) - 3 - 3, 16, (int)sizeof(buf) - 3);
@@ -529,7 +661,8 @@ static int push(struct bt_conn *conn) {
         pushed += n;
     }
     buf[0] = ART_RELAY_COMMIT;
-    if (write_req(conn, buf, 1) || read_status(conn)) {
+    end = user_deadline(); // the data took its own time
+    if (user_req(conn, buf, 1, end, false) || user_req(conn, NULL, 0, end, true)) {
         return ART_ERR_BLE;
     }
     return right.state == ART_RIGHT_PLAYING ? ART_ERR_NONE : ART_ERR_RIGHT;
@@ -558,7 +691,8 @@ static void select_cb(struct k_work *work) {
         return;
     }
     uint8_t buf[] = {ART_RELAY_SELECT, select_set};
-    bool err = write_req(conn, buf, sizeof(buf)) || read_status(conn);
+    int64_t end = user_deadline();
+    bool err = user_req(conn, buf, sizeof(buf), end, true) || user_req(conn, NULL, 0, end, true);
     bt_conn_unref(conn);
     if (err) {
         fail(ART_ERR_BLE);
@@ -579,7 +713,10 @@ static void slot_op_cb(struct k_work *work) {
         fail(ART_ERR_NO_LINK);
         return;
     }
-    bool err = write_req(conn, slot_op, slot_op_len) || read_status(conn);
+    // SAVE and ERASE aren't sent again once out: a second one finds the right saving (0x82).
+    int64_t end = user_deadline();
+    bool err = user_req(conn, slot_op, slot_op_len, end, false) ||
+               user_req(conn, NULL, 0, end, true);
     bt_conn_unref(conn);
     if (err) {
         fail(ART_ERR_RIGHT);
@@ -658,7 +795,7 @@ static void slot_read_job(struct k_work *work) {
                     sizeof(struct art_relay_status) + slot_index * sizeof(slot_info);
                 k_sem_reset(&gatt_done);
                 atomic_set(&in_flight, 1);
-                if (wait_done(bt_gatt_read(conn, &params)) == 0) {
+                if (wait_done(BT_CALL(bt_gatt_read(conn, &params))) == 0) {
                     status = 0;
                 }
             }
@@ -696,7 +833,7 @@ static void build_read_job(struct k_work *work) {
                                        ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info);
                 k_sem_reset(&gatt_done);
                 atomic_set(&in_flight, 1);
-                if (wait_done(bt_gatt_read(conn, &params)) == 0) {
+                if (wait_done(BT_CALL(bt_gatt_read(conn, &params))) == 0) {
                     status = 0;
                 }
             }
@@ -743,7 +880,7 @@ static void dim_read_job(struct k_work *work) {
                                    sizeof(struct foxglove_build_info);
             k_sem_reset(&gatt_done);
             atomic_set(&in_flight, 1);
-            err = wait_done(bt_gatt_read(conn, &params));
+            err = wait_done(BT_CALL(bt_gatt_read(conn, &params)));
         }
         bt_conn_unref(conn);
     }
@@ -756,7 +893,7 @@ static void dim_read_job(struct k_work *work) {
         params.single.offset = ART_RELAY_REDRAWS_AT;
         k_sem_reset(&gatt_done);
         atomic_set(&in_flight, 1);
-        right_redraws_ok = wait_done(bt_gatt_read(conn, &params)) == 0;
+        right_redraws_ok = wait_done(BT_CALL(bt_gatt_read(conn, &params))) == 0;
         right_redraws = right_redraws_ok ? sys_get_le32(count) : 0;
         bt_conn_unref(conn);
     }
@@ -1135,7 +1272,7 @@ static void doorbell_cb(struct k_work *work) {
             .value = BT_GATT_CCC_NOTIFY,
         };
         atomic_set_bit(doorbell.flags, BT_GATT_SUBSCRIBE_FLAG_VOLATILE);
-        if (bt_gatt_subscribe(conn, &doorbell) != 0) {
+        if (BT_CALL(bt_gatt_subscribe(conn, &doorbell)) != 0) {
             atomic_clear(&doorbell_live);
         }
     }
@@ -1272,6 +1409,9 @@ static int art_relay_init(void) {
                        K_LOWEST_APPLICATION_THREAD_PRIO, NULL);
     // Just above relay_q, so a head start never waits behind a relay job.
     k_work_queue_start(&lane_q, lane_stack, K_THREAD_STACK_SIZEOF(lane_stack),
+                       K_LOWEST_APPLICATION_THREAD_PRIO - 1, NULL);
+    // Above relay_q too: it runs while relay_q sleeps in a call (only then has it work).
+    k_work_queue_start(&rescue_q, rescue_stack, K_THREAD_STACK_SIZEOF(rescue_stack),
                        K_LOWEST_APPLICATION_THREAD_PRIO - 1, NULL);
     return 0;
 }

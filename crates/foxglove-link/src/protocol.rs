@@ -1177,6 +1177,12 @@ pub mod right_state {
     pub const SAVE_FAILED: u8 = 8;
 }
 
+/// The left relay's errors that matter to a caller (enum art_relay_error, [`ERRORS`]).
+pub mod relay_error {
+    /// "Bluetooth write failed": the left's write to the right didn't go through.
+    pub const BLE: u8 = 6;
+}
+
 /// Left-half relay states (enum art_relay_left_state).
 pub mod left_state {
     pub const IDLE: u8 = 0;

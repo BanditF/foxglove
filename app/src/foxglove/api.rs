@@ -460,7 +460,7 @@ impl Devices for AppDevices {
             "art.status" => {
                 let p: methods::DeviceParams = params(_params)?;
                 let h = art_service(&p.device)?;
-                art_status(&h.snapshot())
+                art_status(&h.wait_status(ART_STATUS_WAIT))
             }
             "art.select" => {
                 let p: methods::ArtSelectParams = params(_params)?;
@@ -650,6 +650,9 @@ fn behaviors_known(d: &dyn foxglove_devices::Device) -> Result<(), Error> {
     }
     Ok(())
 }
+
+/// How long `art.status` waits for the keyboard's first art status (the connect read).
+const ART_STATUS_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// `art.status`: what the right screen shows, from the art service's snapshot.
 fn art_status(s: &super::art_service::Snapshot) -> Result<Value, Error> {
