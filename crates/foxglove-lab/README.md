@@ -129,9 +129,9 @@ These steps don't press anything. They use Windows' device list and process time
   - Right **with** interfaces → FAIL: left or settings_reset firmware is on it.
   - A half in the UF2 bootloader → warn (`strict = true` makes warnings fail).
 - `art_select = { set = 1 }`: selects a built-in art set on the right through the relay, waits for the right to report it, and puts the previous set back. While the app runs (`--allow-app`, its `Local\Foxglove.Panel` mutex exists) the select goes through the app's local API `art.select` (by the set's manifest label) and is read back with one fresh D6 STATUS pair and `art.status`, since the app puts its own choice back after a direct SELECT (#622); with the app quit it is the direct D6 SELECT. The step's result starts with the path it took, and the report's `art_select_path` says it too. Pushed art lives in RAM and can't be restored, so the step reports BLOCKED when pushed art is showing, unless `replace_pushed = true`. When the left's relay is busy with another client's job first (state pushing or receiving, as after a re-link while the app re-applies the right's art, #618), the step waits for that job to end on the art reports that arrive (no timed reads), for at most `idle_within_ms` (30000).
-- `idle_cpu = { seconds = 20, max_cpu_ms = 60 }`: CPU used by `foxglove` (or `process = "..."`) over the window. Run with `--allow-app`; it's the regression test for #100.
+- `idle_cpu = { seconds = 20, max_cpu_ms = 60, settle_s = 120 }`: CPU used by `foxglove` (or `process = "..."`) over the window. Run with `--allow-app`; it's the regression test for #100. `settle_s` (0-600, default 0) measures only once the process has run that long: one timed wait for what's left, counted from its start (#618). The result names the left-screen layout from the app's settings store (`FOXGLOVE_CONFIG_DIR` or `%APPDATA%\Foxglove\foxglove.toml`, with the active profile's override).
 
-`tests/hil/app-idle.toml` holds the app checks; `release.toml` includes it and `smoke.toml`.
+`tests/hil/app-idle.toml` holds the app checks; `release.toml` includes it first (its idle case must not measure the other cases' traffic), then `smoke.toml`.
 
 ## Safety and manual tests
 

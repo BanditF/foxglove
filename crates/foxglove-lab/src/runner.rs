@@ -1167,6 +1167,22 @@ impl<'a, D: Device> Runner<'a, D> {
             }
             Step::IdleCpu(i) => {
                 ensure!((1..=600).contains(&i.seconds), "seconds must be 1..=600");
+                ensure!(i.settle_s <= 600, "settle_s must be 0..=600");
+                let mut settled = String::new();
+                if i.settle_s > 0 {
+                    // One timed wait for what's left of the settle, from the app's start.
+                    let age = crate::host::process_age_s(&i.process)?;
+                    let left = (i.settle_s as f64 - age).max(0.0);
+                    if left > 0.0 {
+                        std::thread::sleep(Duration::from_secs_f64(left));
+                    }
+                    self.check()?;
+                    settled = format!(
+                        "; measured {:.0} s after its start (settle {} s, waited {left:.0} s)",
+                        age + left,
+                        i.settle_s
+                    );
+                }
                 let start = crate::host::process_cpu_ms(&i.process)?;
                 let end = Instant::now() + Duration::from_secs(i.seconds);
                 while Instant::now() < end {
@@ -1174,8 +1190,12 @@ impl<'a, D: Device> Runner<'a, D> {
                     std::thread::sleep(Duration::from_millis(100));
                 }
                 let used = crate::host::process_cpu_ms(&i.process)? - start;
+                // Which left-screen layout the app drew while measured (#618): stats samples
+                // once a second, info redraws once a minute, the keyboard's own screen is none.
+                let layout = crate::host::left_layout_now();
                 let text = format!(
-                    "{} used {used:.0} ms CPU in {} s ({:.2} % of one core; limit {} ms)",
+                    "{} used {used:.0} ms CPU in {} s ({:.2} % of one core; limit {} ms){settled}; \
+                     left screen: {layout}",
                     i.process,
                     i.seconds,
                     used / (i.seconds as f64 * 10.0),

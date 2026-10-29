@@ -334,6 +334,11 @@ pub struct Idle {
     pub process: String,
     pub seconds: u64,
     pub max_cpu_ms: u64,
+    /// Measure only once the process has run this long (0-600 s): one timed wait for what's
+    /// left, counted from the process's start, so a just-started app's startup work isn't
+    /// measured as idle (#618: 78 ms in the release gate soon after a start, 47 ms settled).
+    #[serde(default)]
+    pub settle_s: u64,
 }
 fn foxglove() -> String {
     "foxglove".into()
@@ -555,6 +560,7 @@ impl Step {
                     "idle_cpu seconds must be 1..=600"
                 );
                 ensure!(!i.process.is_empty(), "idle_cpu needs a process name");
+                ensure!(i.settle_s <= 600, "idle_cpu settle_s must be 0..=600");
             }
             Self::TypeIntoSink(t) => {
                 ensure!(!t.via.is_empty(), "typing needs via steps");

@@ -14,20 +14,19 @@ delivers no hotkeys at all, so the case needs an unlocked session).
 import argparse, ctypes, os, re, shutil, subprocess, sys, tempfile, time
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
-TARGET = Path(os.environ.get('CARGO_TARGET_DIR', REPO / 'target'))
+from labkit import REPO, TARGET, tool_arg  # absolute paths, relative ones from the repo root (#618)
 PLUGIN = 'org.foxglove.focus-timer'
 # Exactly the app's process name: test binaries such as foxglove_plugin_host-*.exe are other
 # sessions' work and must never be stopped.
 STOP_FOXGLOVE = "Get-Process -Name foxglove -ErrorAction SilentlyContinue | % { $_.Path; Stop-Process -Id $_.Id -Confirm:$false }"
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-ap.add_argument('--app', required=True, type=Path, help='the Foxglove build under test')
-ap.add_argument('--plugin', type=Path, default=TARGET / 'plugins' / PLUGIN, help='staged plugin folder')
-ap.add_argument('--cli', type=Path, default=TARGET / 'release' / 'foxglove-cli.exe')
-ap.add_argument('--lab', type=Path, default=TARGET / 'release' / 'foxglove-lab.exe')
+ap.add_argument('--app', required=True, type=tool_arg('--app'), help='the Foxglove build under test')
+ap.add_argument('--plugin', type=tool_arg('--plugin', 'dir'), default=str(TARGET / 'plugins' / PLUGIN), help='staged plugin folder')
+ap.add_argument('--cli', type=tool_arg('--cli'), default=str(TARGET / 'release' / 'foxglove-cli.exe'))
+ap.add_argument('--lab', type=tool_arg('--lab'), default=str(TARGET / 'release' / 'foxglove-lab.exe'))
 args = ap.parse_args()
-for p in (args.app, args.plugin / 'plugin.toml', args.cli, args.lab):
+for p in (args.plugin / 'plugin.toml',):
     if not p.exists():
         sys.exit(f'missing {p}')
 

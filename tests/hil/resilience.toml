@@ -7,6 +7,28 @@ schema = 1
 # replug-hello (#374) is the exception: it needs Foxglove running and a fresh run after a human replug. Pushes leave test art on the
 # right; the last case puts a built-in set back (Foxglove re-pushes its own art when it starts).
 
+# right-follows-left-activity runs first (#618): its 1 s wake limit is a timing check, and in the
+# release gate it failed after the app stage and this suite's pushes, floods and link drops
+# (the relay read of the right 6 s old) while it passed run alone (986 ms). The gate runs this
+# suite before the app stages, once the app process has exited; its art_select waits for the
+# left's relay to leave any other job first (on the art reports, no timed reads).
+
+[[cases]]
+name = "right-follows-left-activity"
+description = "#603, #605 (PR 4 of #618): the right's art and underglow follow the left's idle and wake at once, with no key on the right. Needs both halves on a build with the activity relay (HELLO bit 23 says the left has it; a right without it fails the last step), the underglow on with sync on (the right follows the left), and Foxglove quit (its scenes own the lights). Selects animated built-in set 3 (Bandit_Gem, 4 fps) and taps the left's middle thumb (D7 05 pos 43, a layer key: types nothing) so both are lit; waits for the left's idle (RGB_STATE: both off, up to 45 s); the right's art must then hold still for 3 s (the right idles on its own: not kept awake); a second tap on the left must bring RGB_STATE's right on within 1 s and the right's art moving within 3 s (each right capture is a relay round trip; the step reports the ms). Before this fix the art stayed still until a right key. Leaves set 3 on the right; r-cleanup-built-in-art puts set 0 back"
+tags = ["resilience"]
+requires = ["activity_relay", "position_press", "screen_readback"]
+steps = [
+  { art_select = { set = 3, restore = false, replace_pushed = true } },
+  { press_position = { pos = 43, state = "tap" } },
+  { expect_rgb = { right_age_max_s = 2, left_on = true, right_on = true, within_ms = 3000 } },
+  { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, within_ms = 45000 } },
+  { expect_screen_still = { half = "right", region = { x = 0, y = 20, width = 68, height = 140 }, ms = 3000 } },
+  { press_position = { pos = 43, state = "tap" } },
+  { expect_rgb = { right_age_max_s = 2, right_on = true, within_ms = 1000 } },
+  { expect_screen_change = { half = "right", region = { x = 0, y = 20, width = 68, height = 140 }, within_ms = 3000 } },
+]
+
 [[cases]]
 name = "r2b-push-stops-mid-usb"
 description = "2b: BEGIN and a few DATA, then silence (app killed while sending). After ~10 s the left drops it (state 0, error 8); the right keeps its set; a new push works"
@@ -95,21 +117,6 @@ steps = [
   { prompt = { ask = "Was the left half's cable unplugged and plugged back in just before this run, with no key pressed since? (y/n)" } },
   { expect_hello = { caps_set = [6] } },
   { panel_dump = { path = "%TEMP%/foxglove-replug-panel.pbm", within_ms = 4000 } },
-]
-[[cases]]
-name = "right-follows-left-activity"
-description = "#603, #605 (PR 4 of #618): the right's art and underglow follow the left's idle and wake at once, with no key on the right. Needs both halves on a build with the activity relay (HELLO bit 23 says the left has it; a right without it fails the last step), the underglow on with sync on (the right follows the left), and Foxglove quit (its scenes own the lights). Selects animated built-in set 3 (Bandit_Gem, 4 fps) and taps the left's middle thumb (D7 05 pos 43, a layer key: types nothing) so both are lit; waits for the left's idle (RGB_STATE: both off, up to 45 s); the right's art must then hold still for 3 s (the right idles on its own: not kept awake); a second tap on the left must bring RGB_STATE's right on within 1 s and the right's art moving within 3 s (each right capture is a relay round trip; the step reports the ms). Before this fix the art stayed still until a right key. Leaves set 3 on the right; r-cleanup-built-in-art puts set 0 back"
-tags = ["resilience"]
-requires = ["activity_relay", "position_press", "screen_readback"]
-steps = [
-  { art_select = { set = 3, restore = false, replace_pushed = true } },
-  { press_position = { pos = 43, state = "tap" } },
-  { expect_rgb = { right_age_max_s = 2, left_on = true, right_on = true, within_ms = 3000 } },
-  { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, within_ms = 45000 } },
-  { expect_screen_still = { half = "right", region = { x = 0, y = 20, width = 68, height = 140 }, ms = 3000 } },
-  { press_position = { pos = 43, state = "tap" } },
-  { expect_rgb = { right_age_max_s = 2, right_on = true, within_ms = 1000 } },
-  { expect_screen_change = { half = "right", region = { x = 0, y = 20, width = 68, height = 140 }, within_ms = 3000 } },
 ]
 
 [[cases]]

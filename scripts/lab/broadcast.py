@@ -23,13 +23,13 @@ Build first: cargo build --release -p plugin-broadcast-status -p foxglove-cli -p
 import argparse, os, re, secrets, shutil, subprocess, time
 from pathlib import Path
 
-from labkit import App, Checks, REPO, TARGET, hue_is, restore_lights, rgb, same, temp_config, wait
+from labkit import App, tool_arg, Checks, REPO, TARGET, hue_is, restore_lights, rgb, same, temp_config, wait
 from obs_mock import ObsMock
 
 HERE = Path(__file__).resolve().parent
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-ap.add_argument('--app', required=True)
-ap.add_argument('--target', default=str(TARGET), help='where broadcast-status.exe, foxglove-cli and foxglove-lab are built')
+ap.add_argument('--app', required=True, type=tool_arg('--app'))
+ap.add_argument('--target', default=str(TARGET), type=tool_arg('--target', 'dir'), help='where broadcast-status.exe, foxglove-cli and foxglove-lab are built')
 ap.add_argument('--real-obs', action='store_true', help='watch real OBS; a person clicks in OBS when asked')
 args = ap.parse_args()
 

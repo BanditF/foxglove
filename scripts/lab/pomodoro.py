@@ -19,12 +19,12 @@ Build first: cargo build --release -p plugin-focus-timer -p foxglove-cli -p foxg
 """
 import argparse, re, shutil, subprocess, time
 from pathlib import Path
-from labkit import App, Checks, REPO, TARGET, hue_is, kill, locked, ps, restore_lights, rgb, same, temp_config, wait
+from labkit import App, tool_arg, Checks, REPO, TARGET, hue_is, kill, locked, ps, restore_lights, rgb, same, temp_config, wait
 
 PLUGIN = 'org.foxglove.focus-timer'
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-ap.add_argument('--app', required=True)
-ap.add_argument('--target', default=str(TARGET), help='where focus-timer.exe, foxglove-cli and foxglove-lab are built')
+ap.add_argument('--app', required=True, type=tool_arg('--app'))
+ap.add_argument('--target', default=str(TARGET), type=tool_arg('--target', 'dir'), help='where focus-timer.exe, foxglove-cli and foxglove-lab are built')
 args = ap.parse_args()
 release = Path(args.target) / 'release'
 lab, cli = release / 'foxglove-lab.exe', release / 'foxglove-cli.exe'

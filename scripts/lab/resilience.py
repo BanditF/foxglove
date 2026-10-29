@@ -12,13 +12,13 @@ Typing through the sink needs an unlocked PC (BLOCKED otherwise); the layer-key 
     python scripts/lab/resilience.py --row 2a --app <foxglove.exe>      (exit 0 PASS, 1 FAIL, 2 BLOCKED)
 """
 import argparse, json, subprocess, time
-from labkit import App, Checks, REPO, TARGET, locked, temp_config
+from labkit import App, tool_arg, Checks, REPO, TARGET, locked, temp_config
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--row', required=True, choices=['1', '2a'])
-ap.add_argument('--app', help='the Foxglove build for row 2a')
+ap.add_argument('--app', type=tool_arg('--app'), help='the Foxglove build for row 2a')
 ap.add_argument('--hold-s', type=int, default=300, help='row 2a: how long the frame must stay')
-ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'))
+ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'), type=tool_arg('--lab'))
 args = ap.parse_args()
 check = Checks()
 

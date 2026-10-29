@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 
 LAB = Path(__file__).resolve().parent / 'lab'
+# --app and --lab must name files that exist (#618 follow-up); any will do, as nothing gets launched.
+SOME_EXE = sys.executable
 
 
 def run(script, *args):
@@ -23,12 +25,12 @@ def run(script, *args):
 
 class AppLaunchesNeedOnCall(unittest.TestCase):
     def test_the_soak_refuses_without_the_ok(self):
-        r = run('soak.py', '--app', 'C:/nowhere/foxglove.exe')
+        r = run('soak.py', '--app', SOME_EXE, '--lab', SOME_EXE)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn('FOXGLOVE_APP_OK=1', r.stdout)
 
     def test_the_overlay_and_tray_cases_refuse_without_the_ok(self):
-        r = run('overlay_tray.py', '--app', 'C:/nowhere/foxglove.exe')
+        r = run('overlay_tray.py', '--app', SOME_EXE, '--lab', SOME_EXE)
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn('RESULT BLOCKED', r.stdout)
 
@@ -42,7 +44,7 @@ class AppLaunchesNeedOnCall(unittest.TestCase):
         saved = os.environ.pop('FOXGLOVE_APP_OK', None)
         try:
             with self.assertRaises(SystemExit) as e:
-                with labkit.App('C:/nowhere/foxglove.exe', Path('.')):
+                with labkit.App(SOME_EXE, Path('.')):
                     self.fail('the app would have started')
             self.assertEqual(e.exception.code, 2)
         finally:

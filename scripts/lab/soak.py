@@ -22,11 +22,11 @@ FOXGLOVE_APP_OK=1 (On-call). The PC must stay unlocked and the keyboard untouche
     FOXGLOVE_APP_OK=1 python scripts/lab/soak.py --app <foxglove.exe>   (exit 0 PASS, 1 FAIL, 2 BLOCKED)
 """
 import argparse, json, os, re, subprocess, threading, time
-from labkit import App, Checks, REPO, TARGET, Windows, connect, require_app_ok, require_user_idle, temp_config, wait
+from labkit import App, tool_arg, Checks, REPO, TARGET, Windows, connect, require_app_ok, require_user_idle, temp_config, wait
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-ap.add_argument('--app', required=True, help='the Foxglove build under test')
-ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'))
+ap.add_argument('--app', required=True, type=tool_arg('--app'), help='the Foxglove build under test')
+ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'), type=tool_arg('--lab'))
 ap.add_argument('--minutes', type=float, default=30, help='how long the soak runs')
 ap.add_argument('--cap-min', type=float, default=35, help='hard stop, whatever runs')
 ap.add_argument('--allow', action='append', default=[], help='regex of a log line that is not an error')

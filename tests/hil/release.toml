@@ -1,5 +1,6 @@
 schema = 1
-include = ["smoke.toml", "app-idle.toml", "positions.toml", "screens.toml"]
+# app-idle first: its idle CPU case must not measure the other cases' traffic (#618).
+include = ["app-idle.toml", "smoke.toml", "positions.toml", "screens.toml"]
 
 [[cases]]
 name = "typing-abc"

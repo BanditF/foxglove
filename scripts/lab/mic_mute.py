@@ -14,13 +14,13 @@ Build first: cargo build --release -p plugin-mic-mute -p foxglove-cli -p foxglov
 """
 import argparse, json, re, shutil, subprocess, time
 from pathlib import Path
-from labkit import App, Checks, REPO, TARGET, hue_is, locked, restore_lights, rgb, same, temp_config, wait
+from labkit import App, tool_arg, Checks, REPO, TARGET, hue_is, locked, restore_lights, rgb, same, temp_config, wait
 
 PLUGIN = 'org.foxglove.mic-mute'
 F15, F16, F17 = 0x7006A, 0x7006B, 0x7006C
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-ap.add_argument('--app', required=True)
-ap.add_argument('--target', default=str(TARGET), help='where mic-mute.exe, foxglove-cli and foxglove-lab are built')
+ap.add_argument('--app', required=True, type=tool_arg('--app'))
+ap.add_argument('--target', default=str(TARGET), type=tool_arg('--target', 'dir'), help='where mic-mute.exe, foxglove-cli and foxglove-lab are built')
 args = ap.parse_args()
 release = Path(args.target) / 'release'
 lab, cli = release / 'foxglove-lab.exe', release / 'foxglove-cli.exe'
