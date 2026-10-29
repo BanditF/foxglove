@@ -14,8 +14,11 @@ and the re-apply hooks, read back through the local API (API 1.6) and the test a
   has the "(display change)" restore line.
 - agent controls (#618): tray.set_panel open/close and overlay.restore, one log line each; the
   tray's Next › and ‹ through art.select, read back with art.status, one "art … (api)" line each.
-- re-apply after a display change (#601/#622): a built-in pinned through the API, another set
-  selected behind the app's back (foxglove-lab art_select with direct = true: the D6 SELECT even
+  The firmware has one built-in since #671, so the run first shows a bundled piece from this PC
+  (fury.bin): Next › then shows the built-in, and ‹ from it shows the last kept piece, or with
+  none kept the app says there is nothing else to show and the built-in stays.
+- re-apply after a display change (#601/#622): the built-in pinned through the API, another
+  piece sent behind the app's back (foxglove-lab art_push of a bundled blob: the D6 push even
   while the app runs), then WM_DISPLAYCHANGE: the pinned set comes back with one "re-applied the
   right screen's art (display change)" line; a second display change while it shows adds no line.
 - re-apply after relay-ready (#622): the split link dropped once by the dev build's guard hook
@@ -282,24 +285,33 @@ def keyboard_cases(api, cfg, env):
     if not check('art.status reads the right screen', ok, start):
         return
 
-    # The tray's Next › and ‹ (#618).
+    # The tray's Next › and ‹ (#618) with the firmware's one built-in (#671): from a piece sent
+    # from this PC, Next › shows the keyboard's first piece, its built-in; ‹ from there wraps to
+    # the last kept piece, or, with none kept, there is nothing else to show.
+    fury = str(REPO / 'app' / 'resources' / 'lighting' / 'art' / 'fury.bin')
+    start = call(api, 'art.select', {'device': device, 'target': {'file': fury}})
+    if not check('art: a piece from this PC shows first', bool(start and start['pushed']), start):
+        return
     nxt = call(api, 'art.select', {'device': device, 'target': 'next'})
-    check('art Next ›: another piece shows', bool(nxt and nxt['name'] != start['name']), f'{start["name"]} -> {nxt}')
+    check("art Next ›: the keyboard's built-in shows", bool(nxt and nxt['built_in']), f'{start["name"]} -> {nxt}')
     back = call(api, 'art.select', {'device': device, 'target': 'previous'})
-    check('art ‹: the piece before comes back', bool(back and back['name'] == start['name']), back)
+    if back:
+        check('art ‹: the last kept piece shows', back['slot'] is not None, back)
+    else:
+        now = call(api, 'art.status', {'device': device})
+        check('art ‹ with no kept piece: nothing else to show, the built-in stays',
+              bool(now and nxt and now['built_in'] == nxt['built_in']), now)
     check('one log line per art write', len(log_lines(cfg, ' (api): ')) >= 2, log_lines(cfg, ' (api): ')[-2:])
 
-    # Re-apply after a display change (#622): pin a built-in, lose it behind the app's back.
-    names = [n for n in [start.get('built_in'), (nxt or {}).get('built_in')] if n]
-    if len(names) < 2:
-        return check('re-apply cases', False, 'needs two built-in sets showing (Next showed no built-in)', blocked=True)
+    # Re-apply after a display change (#622): pin the built-in, lose it behind the app's back.
+    names = [n for n in [(nxt or {}).get('built_in')] if n]
+    if not names:
+        return check('re-apply cases', False, 'needs the built-in showing (Next showed none)', blocked=True)
     pinned = call(api, 'art.select', {'device': device, 'target': {'built_in': names[0]}})
     check('pin a built-in through the API', bool(pinned and pinned['built_in'] == names[0]), pinned)
-    status, detail = lab_case('lose-art', ['{ art_select = { set = 1, restore = false, direct = true } }'], env)
-    lost = call(api, 'art.status', {'device': device})
-    if lost and lost['built_in'] == names[0]:  # set 1 was the pinned one: lose it to set 0
-        status, detail = lab_case('lose-art', ['{ art_select = { set = 0, restore = false, direct = true } }'], env)
-    check('lab: another set selected behind the app', status == 'PASS', detail)
+    status, detail = lab_case('lose-art', ['{ art_push = { blob = "app/resources/lighting/art/hearth.bin", '
+                                           'expect_left_state = 3, expect_right_state = 2, within_ms = 60000 } }'], env)
+    check('lab: another piece sent behind the app', status == 'PASS', detail)
     before = len(log_lines(cfg, "re-applied the right screen's art (display change)"))
     Windows(app.proc.pid).display_change()
     ok, s = wait(lambda: call(api, 'art.status', {'device': device}), lambda s: s and s['built_in'] == names[0], 20)

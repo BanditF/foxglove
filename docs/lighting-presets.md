@@ -52,13 +52,13 @@ lights, and reads as a look rather than a colour:
 
 | preset | art | | preview |
 |---|---|---|---|
-| Bandit | built-in `Bandit_Idle` | the HUD wallpaper's art | ![](lighting-art/bandit.gif) |
+| Bandit | built-in `Bandit_Emblem` | the firmware's one built-in (#671; was `Bandit_Idle`) | ![](lighting-art/bandit.gif) |
 | Fury | `fury.bin` (3.5 KiB) | from FURY Print | ![](lighting-art/fury.gif) |
 | Constellations | `constellations.bin` (1.7 KiB) | from FURY Constellations | ![](lighting-art/constellations.gif) |
 | Hearth | `hearth.bin` (3.1 KiB) | from Cauldron Corner | ![](lighting-art/hearth.gif) |
 | Moon Garden | `moon-garden.bin` (3.2 KiB) | from Moon Garden | ![](lighting-art/moon-garden.gif) |
-| Courier | built-in `Bandit_Uplink` | the Courier wallpaper's art | ![](lighting-art/courier.gif) |
-| Signal | built-in `Bandit_Signal` | | ![](lighting-art/signal.gif) |
+| Courier | built-in `Bandit_Emblem` | the firmware's one built-in (#671; was `Bandit_Uplink`) | ![](lighting-art/courier.gif) |
+| Signal | built-in `Bandit_Emblem` | the firmware's one built-in (#671; was `Bandit_Signal`) | ![](lighting-art/signal.gif) |
 
 - **`{"builtin": name}`:** select the firmware set by its `custom_art.json` name
   (`art.select` / the app's own art service). No push.

@@ -689,7 +689,9 @@ static uint16_t status_value(uint8_t *out) {
     s.received = sim_right.received;
     s.capacity = 16384;
     s.set = sim_right.set;
-    s.set_count = 17;
+    // One built-in since #671 (Bandit_Emblem); a SELECT above it is a kept slot (set_count + n),
+    // which this right plays like any other set.
+    s.set_count = 1;
     s.rgb.on = sim_right.rgb_on;
     s.rgb.hue = sys_get_le16(sim_right.look);
     s.rgb.saturation = sim_right.look[2];

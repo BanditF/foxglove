@@ -21,21 +21,27 @@ roughly 270 KiB for art on the right half. Frames are stored as RLE-packed XOR d
 third of their raw size) and unpacked on the keyboard; the script prints the compressed size, so
 keep that under ~240 KiB.
 
-Current art: only portrait (upright) sets. The 30 signed Hammerbeam slideshow pieces were removed on 2026-10-21: their signature is the artist's attribution, so they are used as-is or not at all; wide Flipper art reads sideways and was left out. One set is picked at random each power-on; animated sets play while the keyboard is active:
+Current art: one built-in set since #671, the fallback that shows until Foxglove sends art, so
+the screen is never blank. Everything else (the other Bandit HUD scenes, the wallpaper sets, your
+own art) comes from the PC: pushed, or kept in the right half's flash slots. ZMK's stock art
+(balloon, mountain), Corro the urchin and the other 13 Bandit scenes left the firmware in #671;
+the 30 signed Hammerbeam slideshow pieces went on 2026-10-21 (their signature is the artist's
+attribution, so they are used as-is or not at all). The set animates while the keyboard is
+active:
 
 | Art | Orientation | Source | License |
 |---|---|---|---|
-| ZMK_1, ZMK_2 (balloon, mountain by Hammerbeam) | portrait | [ZMK nice_view shield](https://github.com/zmkfirmware/zmk/blob/v0.3.0/app/boards/shields/nice_view/widgets/art.c) | MIT |
-| Corro_urchin (GPeye's animation of Corro, the unofficial Rust unsafe-code mascot) | portrait | [GPeye/urchin-peripheral-animation](https://github.com/GPeye/urchin-peripheral-animation) | MIT |
-| Bandit_Gem, Bandit_Boot, Bandit_Idle, Bandit_Lock, Bandit_Emblem, Bandit_Radar, Bandit_Signal, Bandit_Decrypt, Bandit_Uplink, Bandit_Vitals, Bandit_Route, Bandit_Dossier, Bandit_Standby, Bandit_Skyline (the Bandit HUD scenes) | portrait | the repo owner's own art (generator: `art-src/bandit/bandit_art.py`, not in this repo) | © the repo owner, all rights reserved: not covered by this repo's code licences |
+| Bandit_Emblem (the Bandit HUD emblem: the fox in a turning ring, "BANDIT INC.", "STEEL FOR GOOD"; 12 frames at 4 fps, 2.1 KiB) | portrait | the repo owner's own art (generator: `art-src/bandit/bandit_art.py`, not in this repo) | © the repo owner, all rights reserved: not covered by this repo's code licences |
 
-Inputs used for the current `custom_art.c`, in order (paths are local checkouts of the sources above):
+Input used for the current `custom_art.c` (a local checkout path; the frames are stored with ink =
+a set bit, #610):
 
 ```
-zmk/app/boards/shields/nice_view/widgets/art.c:stills:name=ZMK:labels=ZMK balloon|ZMK mountain
-urchin-peripheral-animation/assets/example/animated/art.c:fps=1:name=Corro_urchin:label=Corro the urchin
-art-src/bandit/out/Bandit_gem:name=Bandit_Gem:label=Bandit gem   (index 3: replaced the borrowed Gem crystal, #110)
-art-src/bandit/out/Bandit_<Scene>:name=Bandit_<Scene>:label=Bandit <scene>   (for boot idle lock emblem radar signal decrypt uplink vitals route dossier standby skyline, in that order)
+python scripts/flipper_art.py boards/shields/nice_view_custom/widgets/custom_art.c "../art-src/bandit/out/Bandit_emblem:name=Bandit_Emblem:label=Bandit emblem"
 ```
+
+When it changes, regenerate the right-art golden too (`tests/hil/golden/right-art-set0.png`, the
+first frame as the lab reads it back; `right_art_goldens_match_the_firmware_art` in
+`crates/foxglove-lab/tests/offline.rs` checks it).
 
 The run also writes `widgets/custom_art.json`, which Foxglove uses to name the built-in sets.

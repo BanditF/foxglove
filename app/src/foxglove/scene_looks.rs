@@ -422,9 +422,10 @@ pub fn wallpaper_look(look: &Look) -> Option<WallpaperLook> {
         .cloned()
 }
 
-/// A wallpaper's right-screen art, tried in this order: the keyboard's built-in set, the file
-/// the wallpaper ships in its own folder, its file in the art folder (bandit-wallpapers installs
-/// it there), the copy that ships with Foxglove, then another built-in set.
+/// A wallpaper's right-screen art, tried in this order: the keyboard's built-in set (when the
+/// firmware has one by that name, `art_manifest::known`), the file the wallpaper ships in its own
+/// folder, its file in the art folder (bandit-wallpapers installs it there), the copy that ships
+/// with Foxglove, then another built-in set.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Art {
     pub builtin: Option<String>,
@@ -443,7 +444,11 @@ impl Art {
         library: impl Fn(&str) -> Option<PathBuf>,
         bundled: impl Fn(&str) -> Option<PathBuf>,
     ) -> Option<Item> {
-        if let Some(b) = &self.builtin {
+        if let Some(b) = self
+            .builtin
+            .as_ref()
+            .filter(|b| super::art_manifest::known(b))
+        {
             return Some(Item::BuiltIn(b.clone()));
         }
         self.file
@@ -754,13 +759,23 @@ mod tests {
         let none = |_: &str| None;
         let file = |n: &str| Some(PathBuf::from(format!("art/{n}")));
         let built = Art {
-            builtin: Some("Bandit_Idle".into()),
+            builtin: Some("Bandit_Emblem".into()),
             library: Some("hud.bin".into()),
             ..Art::default()
         };
         assert_eq!(
             built.item(file, file),
-            Some(Item::BuiltIn("Bandit_Idle".into()))
+            Some(Item::BuiltIn("Bandit_Emblem".into()))
+        );
+        // A built-in the firmware no longer has (#671: one built-in left) goes on to the file.
+        let gone = Art {
+            builtin: Some("Bandit_Idle".into()),
+            library: Some("hud.bin".into()),
+            ..Art::default()
+        };
+        assert_eq!(
+            gone.item(file, file),
+            Some(Item::File("art/hud.bin".into()))
         );
         let fury = Art {
             builtin: None,

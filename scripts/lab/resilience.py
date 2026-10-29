@@ -77,7 +77,7 @@ if args.row == '2a':
         suite('release', ['{ panel_release = {} }'])
 else:
     # art_select refuses while pushed art shows, so a select that works means a built-in set.
-    status, detail = suite('fresh-boot', ['{ art_select = { set = 1, restore = true } }'] + LAYER_KEYS)
+    status, detail = suite('fresh-boot', ['{ art_select = { set = 0, restore = true } }'] + LAYER_KEYS)
     check('fresh boot: the right shows a built-in set (nothing pushed), keys work on both halves',
           status == 'PASS', detail)
     typing()

@@ -1466,8 +1466,9 @@ fn replug_hello_case_finds_the_redrawn_left_panel_after_a_replug() {
 }
 
 /// #613: the right-art-select-golden case compares the right's readback after a built-in SELECT
-/// with goldens rendered from the firmware's own custom_art.c. A regenerated art file must come
-/// with new goldens, or the hardware case would fail on a correct board.
+/// with a golden rendered from the firmware's own custom_art.c. A regenerated art file must come
+/// with a new golden, or the hardware case would fail on a correct board. Since #671 the firmware
+/// has one built-in (set 0), so the case has one golden.
 #[test]
 fn right_art_goldens_match_the_firmware_art() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1525,7 +1526,12 @@ fn right_art_goldens_match_the_firmware_art() {
     let mut checked = 0;
     for step in &case.steps {
         let Step::Screen(s) = step else { continue };
-        let set = if s.golden.ends_with("set0.png") { 0 } else { 1 };
+        assert!(
+            s.golden.ends_with("set0.png"),
+            "{}: only set 0 is built in",
+            s.golden
+        );
+        let set = 0;
         // The right's readback: the art at native x 0..139, a blank status strip after it.
         let art = frame(set);
         let mut native = vec![0u8; 1360];
@@ -1545,7 +1551,7 @@ fn right_art_goldens_match_the_firmware_art() {
         assert!(c.different > 500, "{} is a picture, not a blank", s.golden);
         checked += 1;
     }
-    assert_eq!(checked, 2);
+    assert_eq!(checked, 1);
 }
 
 /// The app's API for the art path (#618): records each call, answers as the app would.
@@ -1608,7 +1614,7 @@ fn art_select_direct_forces_the_d6_select_while_the_app_runs() {
     ]);
     let app = FakeApp {
         calls: RefCell::default(),
-        shows: Some("ZMK balloon".into()),
+        shows: Some("Bandit emblem".into()),
         fails: false,
     };
     let result = run_app(
@@ -1670,34 +1676,34 @@ fn art_select_goes_through_the_app_while_it_runs() {
             .filter(|r| r[..2] == [0xd6, 4])
             .count()
     };
-    // 17 sets: the bundled manifest's labels.
+    // One set (#671): the bundled manifest's label, from pushed art back to the built-in.
     let fake = Fake::default();
     fake.replies.borrow_mut().extend([
         hello(2, 4),
-        art(5, 0, 17),
-        art(5, 0, 17),
-        art(5, 1, 17), // the fresh pair after art.select
-        art(5, 1, 17),
+        art(5, -1, 1),
+        art(5, -1, 1),
+        art(5, 0, 1), // the fresh pair after art.select
+        art(5, 0, 1),
     ]);
     let app = FakeApp {
         calls: RefCell::default(),
-        shows: Some("ZMK mountain".into()),
+        shows: Some("Bandit emblem".into()),
         fails: false,
     };
     let result = run_app(
         &fake,
         Some(&app),
-        &case("[{art_select={set=1,restore=false}}]"),
+        &case("[{art_select={set=0,restore=false,replace_pushed=true}}]"),
     );
     assert_eq!(result.status, Status::Pass, "{}", result.message);
     let actual = &result.steps[0].actual;
     assert!(
-        actual.contains("through the app's API (art.select \"ZMK mountain\""),
+        actual.contains("through the app's API (art.select \"Bandit emblem\""),
         "{actual}"
     );
-    assert!(actual.contains("art.status ZMK mountain"), "{actual}");
+    assert!(actual.contains("art.status Bandit emblem"), "{actual}");
     assert_eq!(selects(&fake), 0, "no direct SELECT while the app runs");
-    assert_eq!(app.calls.borrow()[0], "select ZMK mountain");
+    assert_eq!(app.calls.borrow()[0], "select Bandit emblem");
 
     // The app said yes but the right shows another set: FAIL, naming the path.
     let fake = Fake::default();
@@ -1710,7 +1716,7 @@ fn art_select_goes_through_the_app_while_it_runs() {
     ]);
     let app = FakeApp {
         calls: RefCell::default(),
-        shows: Some("ZMK balloon".into()),
+        shows: Some("Bandit emblem".into()),
         fails: false,
     };
     let result = run_app(
