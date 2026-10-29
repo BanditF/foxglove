@@ -4,13 +4,36 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use foxglove_devices::{BackendId, BehaviorInfo, DeviceId, DeviceInfo, DeviceKind, EventBus};
+use foxglove_devices::{
+    BackendId, BehaviorInfo, Device, DeviceId, DeviceInfo, DeviceKind, EventBus,
+};
 use foxglove_link::devices::FoxgloveLinkDevice;
 
 static BUS: OnceLock<EventBus> = OnceLock::new();
 static DEVICE: Mutex<Option<Arc<FoxgloveLinkDevice>>> = Mutex::new(None);
-/// The actions learned from the keymap and its `&rgb_ug` id, kept for the next device.
-static ACTIONS: Mutex<(Vec<BehaviorInfo>, Option<u16>)> = Mutex::new((Vec::new(), None));
+/// The link generation (connection) whose firmware build the cached device's ids were checked
+/// against (#633). Another one (a replug, a flash on the same link) checks again.
+static CHECKED: Mutex<Option<u64>> = Mutex::new(None);
+
+/// What the keymap lets the app invoke, its `&rgb_ug` id, and the firmware build those ids were
+/// learned under (#633): a flash can renumber the behaviors, so the next connection takes them
+/// only while it runs that same build.
+#[derive(Default)]
+struct Learned {
+    actions: Vec<BehaviorInfo>,
+    underglow: Option<u16>,
+    /// `None`: learned while the build couldn't be read, so no later connection trusts them.
+    build: Option<String>,
+}
+
+static ACTIONS: Mutex<Learned> = Mutex::new(Learned {
+    actions: Vec::new(),
+    underglow: None,
+    build: None,
+});
+
+/// The connected keyboard's firmware build, as last checked (`None`: unreadable or none yet).
+static BUILD: Mutex<Option<String>> = Mutex::new(None);
 
 /// The app's event bus; its facts store holds every device's state under `device.<id>.*`.
 pub fn bus() -> &'static EventBus {
@@ -24,10 +47,19 @@ pub fn device() -> Option<Arc<FoxgloveLinkDevice>> {
     if let Some(d) = cached
         .as_ref()
         .filter(|d| d.link().state().connected.is_some())
+        .cloned()
     {
-        return Some(d.clone());
+        // The same link connected again (a replug, a flash): its ids wait for its build (#633).
+        let rechecked = recheck(&d);
+        drop(cached);
+        if let Some(build) = rechecked {
+            let id = &d.info().id;
+            super::keyboard_actions::learn_cached(id.vid, id.pid, build.as_deref());
+        }
+        return Some(d);
     }
     let mut found = None;
+    let mut build = None;
     let mut name = String::new();
     let mut route = foxglove_link::link::Bus::Unknown;
     *cached = super::link::host_keyboard().map(|((vid, pid), link, hello)| {
@@ -60,9 +92,8 @@ pub fn device() -> Option<Arc<FoxgloveLinkDevice>> {
         FRAMES.store(device.frames(), std::sync::atomic::Ordering::Relaxed);
         EFFECTS.store(device.effects(), std::sync::atomic::Ordering::Relaxed);
         EFFECT_LAMPS.store(device.effect_lamps(), std::sync::atomic::Ordering::Relaxed);
-        let (actions, underglow) = ACTIONS.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        device.set_behaviors(actions);
-        device.set_underglow(underglow);
+        // The learned ids only for the build they were learned under (#633).
+        build = check(&device, device.link().state().generation);
         // Its LEDs by part, from the profile just read (#561): frames are that size, until the
         // firmware says (below).
         device.set_lamp_parts(super::boards::lamp_parts(super::boards::current().as_ref()));
@@ -86,7 +117,7 @@ pub fn device() -> Option<Arc<FoxgloveLinkDevice>> {
         {
             eprintln!("{line}");
         }
-        super::keyboard_actions::learn_cached(vid, pid);
+        super::keyboard_actions::learn_cached(vid, pid, build.as_deref());
         if let Some(d) = &out {
             learn_lamp_parts(d);
         }
@@ -206,11 +237,13 @@ fn connected_line(transport: &str, product: &str) -> String {
 /// after a reconnect). Before, [`device`] ran only when something asked, and a "no keyboard"
 /// from before the connection stayed until the next ask. Start: a link's State event with a
 /// connection. Stop: none needed; the worker blocks on its channel, so an idle keyboard costs
-/// no wake-ups.
+/// no wake-ups. A link that drops takes the device's behavior ids with it (#633): the next
+/// connection may run another build, and it gets them back only once that's checked.
 pub fn start() {
     enum Msg {
         Link(Arc<foxglove_link::link::Link>),
         Connected,
+        Lost(std::sync::Weak<foxglove_link::link::Link>),
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let links_tx = tx.clone();
@@ -224,20 +257,43 @@ pub fn start() {
             match msg {
                 Msg::Link(link) => {
                     let tx = tx.clone();
+                    let weak = Arc::downgrade(&link);
                     subscriptions.push(link.subscribe_events(move |event| {
                         if let foxglove_link::link::Event::State(s) = event {
-                            if s.connected.is_some() {
-                                let _ = tx.send(Msg::Connected);
-                            }
+                            let _ = tx.send(if s.connected.is_some() {
+                                Msg::Connected
+                            } else {
+                                Msg::Lost(weak.clone())
+                            });
                         }
                     }));
                 }
                 Msg::Connected => {
                     let _ = device();
                 }
+                Msg::Lost(link) => lost(&link),
             }
         }
     });
+}
+
+/// `link` dropped: if it's the device's, the device keeps no ids until its next connection is
+/// checked (#633). The learned cache stays for a connection on the same build.
+fn lost(link: &std::sync::Weak<foxglove_link::link::Link>) {
+    let cached = DEVICE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(d) = cached
+        .as_ref()
+        .filter(|d| std::ptr::eq(link.as_ptr(), Arc::as_ptr(d.link())))
+    {
+        forget_ids(d);
+    }
+}
+
+/// `d` invokes nothing until it is checked again.
+fn forget_ids(d: &FoxgloveLinkDevice) {
+    d.set_behaviors(Vec::new());
+    d.set_underglow(None);
+    *CHECKED.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// The current device's connection generation, without blocking or discovery (for the UI).
@@ -284,10 +340,16 @@ fn learned(before: Underglow, underglow: Option<u16>) -> (Underglow, bool) {
     (now, now != before)
 }
 
-/// What the keymap lets the app invoke (the allowlist) and its `&rgb_ug` behavior.
-pub fn set_actions(actions: Vec<BehaviorInfo>, underglow: Option<u16>) {
+/// What the keymap lets the app invoke (the allowlist) and its `&rgb_ug` behavior, learned
+/// under firmware `build` (#633: [`firmware_build`] for a live read, the saved copy's for a
+/// replay; `None` when it couldn't be read, so the next connection doesn't trust them).
+pub fn set_actions(actions: Vec<BehaviorInfo>, underglow: Option<u16>, build: Option<String>) {
     // The cache first: a device found meanwhile takes it, else it's set below.
-    *ACTIONS.lock().unwrap_or_else(|e| e.into_inner()) = (actions.clone(), underglow);
+    *ACTIONS.lock().unwrap_or_else(|e| e.into_inner()) = Learned {
+        actions: actions.clone(),
+        underglow,
+        build,
+    };
     if let Some(d) = DEVICE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         d.set_behaviors(actions);
         d.set_underglow(underglow);
@@ -304,6 +366,97 @@ pub fn set_actions(actions: Vec<BehaviorInfo>, underglow: Option<u16>) {
     }
 }
 
+/// The firmware build of the keyboard connected now, which numbers its keymap's behaviors
+/// (#633): the left half's (the central's) D7 09 reply, checked once per connection. `None`
+/// with no keyboard, or when its build can't be read. May find the keyboard: off the UI thread.
+pub fn firmware_build() -> Option<String> {
+    device()?;
+    BUILD.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// A build as one comparable string: version, profile and short SHA.
+fn build_key(b: &foxglove_link::protocol::BuildInfo) -> String {
+    let v = &b.version;
+    format!(
+        "{}.{}.{}-{}-{}",
+        v.major, v.minor, v.patch, v.profile, b.sha
+    )
+}
+
+/// The left half's build on `link`'s connection; `None` for firmware without BUILD_INFO (HELLO
+/// bit 12) or when it doesn't answer.
+fn read_build(link: &foxglove_link::link::Link) -> Option<String> {
+    let caps = link
+        .state()
+        .connected
+        .and_then(|c| c.hello)
+        .map_or(0, |h| h.capabilities);
+    if caps & foxglove_link::protocol::capabilities::BUILD_INFO == 0 {
+        return None;
+    }
+    match foxglove_link::settings::build_info(link, 0) {
+        Ok(b) => Some(build_key(&b)),
+        Err(e) => {
+            eprintln!("Foxglove: can't read the keyboard's firmware build: {e}");
+            None
+        }
+    }
+}
+
+/// `d`'s connection `generation` runs firmware `build` (#633): the ids learned under that build
+/// go to the device; any others are dropped before anything can invoke them, and the lighting
+/// command is `Unknown` again until a keymap is learned. Returns the build.
+fn check(d: &FoxgloveLinkDevice, generation: u64) -> Option<String> {
+    let build = read_build(d.link());
+    let (actions, underglow) = connected_build(build.clone());
+    d.set_behaviors(actions);
+    d.set_underglow(underglow);
+    *CHECKED.lock().unwrap_or_else(|e| e.into_inner()) = Some(generation);
+    build
+}
+
+/// Checks `d` again when its link is on a connection it wasn't checked on: `Some(build)` then.
+fn recheck(d: &FoxgloveLinkDevice) -> Option<Option<String>> {
+    let generation = d.link().state().generation;
+    if *CHECKED.lock().unwrap_or_else(|e| e.into_inner()) == Some(generation) {
+        return None;
+    }
+    Some(check(d, generation))
+}
+
+/// The keyboard connected with firmware `build` (`None`: unreadable). The learned ids when they
+/// are that build's; else nothing, with the cache, the actions and the lighting command
+/// forgotten until a keymap is learned again (`set_actions` then fires `LightingKnown`).
+fn connected_build(build: Option<String>) -> (Vec<BehaviorInfo>, Option<u16>) {
+    BUILD
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone_from(&build);
+    let mut learned = ACTIONS.lock().unwrap_or_else(|e| e.into_inner());
+    if build.is_some() && learned.build == build {
+        return (learned.actions.clone(), learned.underglow);
+    }
+    let had = !learned.actions.is_empty() || learned.underglow.is_some();
+    let was = std::mem::take(&mut *learned).build;
+    drop(learned);
+    super::keyboard_actions::forget();
+    *UNDERGLOW.lock().unwrap_or_else(|e| e.into_inner()) = Underglow::Unknown;
+    if had {
+        let on = was.unwrap_or_else(|| "an unknown build".into());
+        match &build {
+            Some(now) => eprintln!(
+                "Foxglove: the keyboard runs firmware {now}, its behaviors were learned on {on}: \
+                 they wait for the keymap to be read again"
+            ),
+            None => eprintln!(
+                "Foxglove: the keyboard's firmware build can't be read: its behaviors (learned on \
+                 {on}) wait for the keymap to be read again"
+            ),
+        }
+    }
+    (Vec::new(), None)
+}
+
 /// A device-layer error in the words the Keyboard panel uses.
 pub fn describe(e: &foxglove_devices::DeviceError) -> String {
     match e {
@@ -317,6 +470,360 @@ pub fn describe(e: &foxglove_devices::DeviceError) -> String {
         foxglove_devices::DeviceError::Busy(why)
         | foxglove_devices::DeviceError::Denied(why)
         | foxglove_devices::DeviceError::Backend(why) => why.clone(),
+    }
+}
+
+/// Held by tests that change the learned behaviors, the lighting command or the device: they
+/// are process-wide.
+#[cfg(test)]
+pub(crate) static STATE_LOCK: Mutex<()> = Mutex::new(());
+
+/// #633: the behavior ids follow the firmware build, against an in-memory keyboard on a real
+/// host link that can be "flashed" (reconnected with another build). Window-free; the saved
+/// keymap copies go to the tests' temp `FOXGLOVE_CONFIG_DIR`.
+#[cfg(test)]
+mod build_tests {
+    use super::*;
+    use crate::foxglove::keyboard_actions;
+    use crate::foxglove::reassert::Trigger;
+    use foxglove_link::link::{Bus, Connected, Event, Link, RawHid, Report};
+    use foxglove_link::protocol::{self, capabilities, Hello, REPORT};
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::{Condvar, MutexGuard};
+    use std::time::Duration;
+    use zmk_studio_api::proto::zmk::keymap::{BehaviorBinding, Keymap, Layer};
+    use zmk_studio_api::{Behavior, ResolvedLayer, UnderglowCommand};
+
+    const WAIT: Duration = Duration::from_secs(5);
+    const VID: u16 = 0xF633;
+
+    /// What the keyboard runs and what it was asked, across connections.
+    #[derive(Default)]
+    struct Board {
+        /// Its build's short SHA; `None`: firmware without BUILD_INFO (HELLO bit 12).
+        build: Mutex<Option<&'static str>>,
+        build_reads: AtomicU32,
+        /// The behavior id of every INVOKE that reached it.
+        invokes: Mutex<Vec<u16>>,
+    }
+
+    /// One connection to the board.
+    struct Conn {
+        board: Arc<Board>,
+        inbox: (Mutex<VecDeque<Report>>, Condvar),
+        interrupted: AtomicBool,
+    }
+
+    impl RawHid for Conn {
+        fn read(&self, buf: &mut Report) -> anyhow::Result<usize> {
+            let mut inbox = self.inbox.0.lock().unwrap();
+            loop {
+                if self.interrupted.load(Ordering::Relaxed) {
+                    return Ok(0);
+                }
+                if let Some(r) = inbox.pop_front() {
+                    *buf = r;
+                    return Ok(REPORT);
+                }
+                inbox = self.inbox.1.wait(inbox).unwrap();
+            }
+        }
+
+        fn interrupt(&self) {
+            let _inbox = self.inbox.0.lock().unwrap();
+            self.interrupted.store(true, Ordering::Relaxed);
+            self.inbox.1.notify_all();
+        }
+
+        fn write(&self, out: &[u8]) -> anyhow::Result<()> {
+            let mut r = [0u8; REPORT];
+            match (out[0], out[1]) {
+                (protocol::SETTINGS, protocol::settings::BUILD_INFO) => {
+                    self.board.build_reads.fetch_add(1, Ordering::SeqCst);
+                    let sha = self.board.build.lock().unwrap().unwrap_or_default();
+                    r[..8].copy_from_slice(&[0xD7, 0x89, 0, out[2], 0, 1, 0, 0]);
+                    r[8..8 + sha.len()].copy_from_slice(sha.as_bytes());
+                }
+                (protocol::SETTINGS, protocol::settings::INVOKE) => {
+                    let id = u16::from_le_bytes([out[2], out[3]]);
+                    self.board.invokes.lock().unwrap().push(id);
+                    r[..3].copy_from_slice(&[0xD7, 0x82, 0]);
+                }
+                _ => return Ok(()),
+            }
+            self.inbox.0.lock().unwrap().push_back(r);
+            self.inbox.1.notify_all();
+            Ok(())
+        }
+    }
+
+    fn hello(board: &Board) -> Hello {
+        let build = board
+            .build
+            .lock()
+            .unwrap()
+            .map_or(0, |_| capabilities::BUILD_INFO);
+        Hello {
+            version: 1,
+            capabilities: capabilities::SETTINGS_RGB | build,
+            ..Hello::default()
+        }
+    }
+
+    /// The board on a host link, as the cached device (`DEVICE`), with nothing learned yet.
+    struct Rig {
+        board: Arc<Board>,
+        link: Arc<Link>,
+        device: Arc<FoxgloveLinkDevice>,
+        _state: MutexGuard<'static, ()>,
+    }
+
+    impl Rig {
+        fn new(pid: u16, build: Option<&'static str>) -> Rig {
+            let state = STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            crate::foxglove::store::test_config_dir();
+            let board = Arc::new(Board::default());
+            *board.build.lock().unwrap() = build;
+            let opened = board.clone();
+            let link = Arc::new(Link::start(Box::new(move || {
+                let conn = Conn {
+                    board: opened.clone(),
+                    inbox: Default::default(),
+                    interrupted: AtomicBool::new(false),
+                };
+                let connected = Connected {
+                    product: "Fake".into(),
+                    hello: Some(hello(&opened)),
+                    bus: Bus::Unknown,
+                };
+                Ok((Box::new(conn) as Box<dyn RawHid>, connected))
+            })));
+            link.wait_connected(WAIT).unwrap();
+            let id = DeviceId::new(BackendId("zmk".into()), VID, pid, None, "fake");
+            let info = DeviceInfo {
+                id: id.clone(),
+                backend: id.backend.clone(),
+                name: "Fake".into(),
+                kind: DeviceKind::Keyboard,
+                firmware: None,
+            };
+            let device = Arc::new(FoxgloveLinkDevice::new(
+                info,
+                link.clone(),
+                hello(&board),
+                EventBus::default().sink(id),
+            ));
+            *ACTIONS.lock().unwrap() = Learned::default();
+            keyboard_actions::forget();
+            *UNDERGLOW.lock().unwrap() = Underglow::Unknown;
+            *CHECKED.lock().unwrap() = None;
+            *BUILD.lock().unwrap() = None;
+            *DEVICE.lock().unwrap() = Some(device.clone());
+            heard_lighting_known();
+            Rig {
+                board,
+                link,
+                device,
+                _state: state,
+            }
+        }
+
+        /// The board restarts on firmware `build` (a flash, or a replug when it's the same) and
+        /// the link connects to it again.
+        fn flash(&self, build: Option<&'static str>) {
+            *self.board.build.lock().unwrap() = build;
+            let before = self.link.state().generation;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _events = self.link.subscribe_events(move |e| {
+                if let Event::State(s) = e {
+                    let _ = tx.send(s);
+                }
+            });
+            self.link.reconnect();
+            loop {
+                let s = rx.recv_timeout(WAIT).expect("the link reconnects");
+                if s.connected.is_some() && s.generation > before {
+                    break;
+                }
+            }
+        }
+
+        /// A lighting command, as the accent or a lease sends it.
+        fn light(&self) -> foxglove_devices::Result<()> {
+            self.device.lighting().unwrap().set_on(true)
+        }
+
+        fn invokes(&self) -> Vec<u16> {
+            std::mem::take(&mut *self.board.invokes.lock().unwrap())
+        }
+    }
+
+    impl Drop for Rig {
+        fn drop(&mut self) {
+            *DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+    }
+
+    /// LightingKnown fires heard since the last call.
+    fn heard_lighting_known() -> u32 {
+        static HEARD: AtomicU32 = AtomicU32::new(0);
+        static HOOK: std::sync::Once = std::sync::Once::new();
+        HOOK.call_once(|| {
+            crate::foxglove::reassert::register("test-633", |t| {
+                if t == Trigger::LightingKnown {
+                    HEARD.fetch_add(1, Ordering::SeqCst);
+                }
+            });
+        });
+        HEARD.swap(0, Ordering::SeqCst)
+    }
+
+    /// A live keymap read whose `&rgb_ug` is behavior `underglow`, under firmware `build`.
+    fn read_keymap(underglow: u16, build: Option<String>) {
+        let resolved = vec![ResolvedLayer {
+            id: 0,
+            name: "Base".into(),
+            bindings: vec![Behavior::Underglow(UnderglowCommand::On)],
+        }];
+        let raw = Keymap {
+            layers: vec![Layer {
+                id: 0,
+                name: String::new(),
+                bindings: vec![BehaviorBinding {
+                    behavior_id: underglow.into(),
+                    param1: 1,
+                    param2: 0,
+                }],
+            }],
+            ..Default::default()
+        };
+        keyboard_actions::learn(&resolved, &raw, build);
+    }
+
+    /// The build key the fake's SHA reads as.
+    fn key(sha: &str) -> Option<String> {
+        Some(format!("0.1.0-0-{sha}"))
+    }
+
+    #[test]
+    fn the_same_build_keeps_the_learned_ids_without_reading_the_keymap() {
+        let rig = Rig::new(1, Some("aaaa1111"));
+        assert_eq!(firmware_build(), key("aaaa1111"));
+        read_keymap(4, firmware_build());
+        assert_eq!(heard_lighting_known(), 1);
+        // A copy that would replay as "no lighting command": reading it would show.
+        crate::foxglove::keymap_cache::save_fake(VID, 1, key("aaaa1111").as_deref(), false);
+
+        // The link drops: the device keeps no ids while it's away.
+        lost(&Arc::downgrade(&rig.link));
+        assert!(rig.light().is_err());
+        assert!(rig.invokes().is_empty());
+
+        rig.flash(Some("aaaa1111"));
+        let reads = rig.board.build_reads.load(Ordering::SeqCst);
+        assert!(Arc::ptr_eq(&device().unwrap(), &rig.device));
+        assert_eq!(
+            rig.board.build_reads.load(Ordering::SeqCst),
+            reads + 1,
+            "checked once"
+        );
+        assert_eq!(underglow(), Underglow::Known(4), "kept, not read again");
+        assert_eq!(heard_lighting_known(), 0, "nothing new");
+        rig.light().unwrap();
+        assert_eq!(rig.invokes(), [4]);
+        assert!(keyboard_actions::permitted((4, 1, 0)));
+        // Asked again on the same connection: no new check.
+        device().unwrap();
+        assert_eq!(rig.board.build_reads.load(Ordering::SeqCst), reads + 1);
+    }
+
+    #[test]
+    fn a_new_build_drops_the_ids_before_anything_invokes_them_then_learns_again() {
+        let rig = Rig::new(2, Some("aaaa1111"));
+        read_keymap(4, firmware_build());
+        crate::foxglove::keymap_cache::save_fake(VID, 2, key("aaaa1111").as_deref(), false);
+        heard_lighting_known();
+
+        rig.flash(Some("bbbb2222"));
+        // The first ask on the new connection checks it, before anyone gets the device.
+        let d = device().unwrap();
+        assert_eq!(firmware_build(), key("bbbb2222"));
+        assert_eq!(underglow(), Underglow::Unknown, "lighting waits");
+        assert!(keyboard_actions::actions().is_empty());
+        assert!(!keyboard_actions::permitted((4, 1, 0)));
+        assert!(d.behaviors().unwrap().list().unwrap().is_empty());
+        assert!(rig.light().is_err());
+        assert!(d.behaviors().unwrap().invoke(4, 1, 0, true).is_err());
+        assert!(rig.invokes().is_empty(), "the old id never went out");
+        // The other build's saved copy isn't replayed either.
+        assert!(!keyboard_actions::learn_cached(
+            VID,
+            2,
+            firmware_build().as_deref()
+        ));
+        assert_eq!(underglow(), Underglow::Unknown);
+        assert_eq!(heard_lighting_known(), 0);
+
+        // The keymap read from the new firmware: the new id, and the lighting writers wake once.
+        read_keymap(9, firmware_build());
+        assert_eq!(underglow(), Underglow::Known(9));
+        assert_eq!(heard_lighting_known(), 1);
+        rig.light().unwrap();
+        assert_eq!(rig.invokes(), [9]);
+    }
+
+    #[test]
+    fn an_unreadable_build_trusts_nothing_until_the_keymap_is_read() {
+        let rig = Rig::new(3, Some("aaaa1111"));
+        read_keymap(4, firmware_build());
+        crate::foxglove::keymap_cache::save_fake(VID, 3, key("aaaa1111").as_deref(), false);
+
+        // Firmware that doesn't say its build.
+        rig.flash(None);
+        device().unwrap();
+        assert_eq!(firmware_build(), None);
+        assert_eq!(underglow(), Underglow::Unknown);
+        assert!(
+            !keyboard_actions::learn_cached(VID, 3, None),
+            "no copy is trusted"
+        );
+        assert!(rig.light().is_err());
+        assert!(rig.invokes().is_empty());
+
+        // Read from the keyboard: good for this connection only.
+        read_keymap(9, firmware_build());
+        rig.light().unwrap();
+        assert_eq!(rig.invokes(), [9]);
+        rig.flash(None);
+        device().unwrap();
+        assert_eq!(
+            underglow(),
+            Underglow::Unknown,
+            "not trusted on the next one"
+        );
+        assert!(rig.light().is_err());
+        assert!(rig.invokes().is_empty());
+    }
+
+    #[test]
+    fn a_saved_copy_is_learned_only_on_the_build_it_was_read_from() {
+        let rig = Rig::new(4, Some("cccc3333"));
+        let now = firmware_build();
+        // From before #633 (no build), and from another build: not learned.
+        crate::foxglove::keymap_cache::save_fake(VID, 4, now.as_deref(), true);
+        assert!(!keyboard_actions::learn_cached(VID, 4, now.as_deref()));
+        crate::foxglove::keymap_cache::save_fake(VID, 4, key("aaaa1111").as_deref(), false);
+        assert!(!keyboard_actions::learn_cached(VID, 4, now.as_deref()));
+        crate::foxglove::keymap_cache::save_fake(VID, 4, None, false);
+        assert!(!keyboard_actions::learn_cached(VID, 4, now.as_deref()));
+        assert_eq!(underglow(), Underglow::Unknown);
+        // Read from this build: learned (the fake keymap has no `&rgb_ug`).
+        crate::foxglove::keymap_cache::save_fake(VID, 4, now.as_deref(), false);
+        assert!(keyboard_actions::learn_cached(VID, 4, now.as_deref()));
+        assert_eq!(underglow(), Underglow::Absent);
+        assert_eq!(heard_lighting_known(), 1);
+        drop(rig);
     }
 }
 

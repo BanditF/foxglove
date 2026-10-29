@@ -60,8 +60,10 @@ pub fn underglow_behavior() -> Option<u16> {
     super::services::lock_or_reset(&KNOWN).underglow
 }
 
-/// Learns the actions from a keymap (the resolved bindings for meaning, the raw ones for ids).
-pub fn learn(resolved: &[ResolvedLayer], raw: &Keymap) {
+/// Learns the actions from a keymap (the resolved bindings for meaning, the raw ones for ids),
+/// read from firmware `build` (#633: `devices::firmware_build()` for a live read; `None` when
+/// it couldn't be read, and the next connection then doesn't trust them).
+pub fn learn(resolved: &[ResolvedLayer], raw: &Keymap, build: Option<String>) {
     let name = |layer_id: u32| {
         resolved
             .iter()
@@ -111,23 +113,48 @@ pub fn learn(resolved: &[ResolvedLayer], raw: &Keymap) {
             },
         })
         .collect();
-    super::devices::set_actions(allowed, underglow);
+    super::devices::set_actions(allowed, underglow, build);
     *super::services::lock_or_reset(&KNOWN) = Known { actions, underglow };
+}
+
+/// Forgets every learned action (#633: the keyboard runs another build, or one that can't be
+/// read): everything is refused until a keymap is learned again.
+pub fn forget() {
+    *super::services::lock_or_reset(&KNOWN) = Known::default();
 }
 
 /// Learns the actions from keyboard `vid:pid`'s cached keymap when nothing has been learned yet,
 /// so lighting and actions work for plugins and the local API before the overlay opens the
 /// keymap (a fresh config, or the overlay pointed at another keyboard). True when it learned.
-pub fn learn_cached(vid: u16, pid: u16) -> bool {
+///
+/// Only from a copy read from the firmware `build` the keyboard runs now (#633): another
+/// build's ids, or a copy or keyboard whose build isn't known, would invoke the wrong
+/// behaviors. Those wait for the keymap to be read from the keyboard.
+pub fn learn_cached(vid: u16, pid: u16, build: Option<&str>) -> bool {
     if !super::services::lock_or_reset(&KNOWN).actions.is_empty() {
         return false;
     }
-    let Some(data) = super::keymap_cache::replay(vid, pid)
-        .and_then(|client| crate::protocols::zmk_rpc::fetch_zmk_data_from_client(client).ok())
-    else {
+    let Some(build) = build else {
         return false;
     };
-    learn(&data.resolved_layers, &data.raw_keymap);
+    let Some((client, saved)) = super::keymap_cache::replay(vid, pid) else {
+        return false;
+    };
+    if saved.as_deref() != Some(build) {
+        eprintln!(
+            "Foxglove: the saved keymap is from firmware {}, the keyboard runs {build}: its              behaviors wait for the keymap to be read",
+            saved.as_deref().unwrap_or("of an unknown build")
+        );
+        return false;
+    }
+    let Ok(data) = crate::protocols::zmk_rpc::fetch_zmk_data_from_client(client) else {
+        return false;
+    };
+    learn(
+        &data.resolved_layers,
+        &data.raw_keymap,
+        Some(build.to_string()),
+    );
     true
 }
 
@@ -222,7 +249,10 @@ mod tests {
             ])],
             ..Default::default()
         };
-        learn(&resolved, &keymap);
+        let _state = crate::foxglove::devices::STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        learn(&resolved, &keymap, Some("test".into()));
         let a = actions();
         assert_eq!(
             a.len(),
@@ -274,9 +304,22 @@ mod safety_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::copy(&src, dir.join(&name)).unwrap();
         std::env::set_var("FOXGLOVE_CONFIG_DIR", &dir);
-        assert!(learn_cached(vid, pid), "learned from the cache");
+        // Trusted only for the build it was read from (#633); an FXK1 copy has none.
+        let build = super::super::keymap_cache::replay(vid, pid).and_then(|(_, b)| b);
+        let Some(build) = build else {
+            assert!(
+                !learn_cached(vid, pid, Some("any")),
+                "an old copy isn't trusted"
+            );
+            let _ = std::fs::remove_dir_all(dir);
+            return;
+        };
+        assert!(
+            learn_cached(vid, pid, Some(&build)),
+            "learned from the cache"
+        );
         assert!(underglow_behavior().is_some(), "found &rgb_ug");
-        assert!(!learn_cached(vid, pid), "only once");
+        assert!(!learn_cached(vid, pid, Some(&build)), "only once");
         let _ = std::fs::remove_dir_all(dir);
     }
 
