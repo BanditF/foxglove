@@ -32,6 +32,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #endif
 
 #include "art_relay.h"
+#include "art_relay_doorbell.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
 #include "effect_run.h"
 #endif
@@ -1082,21 +1083,21 @@ static uint8_t doorbell_rang(struct bt_conn *conn, struct bt_gatt_subscribe_para
     const uint8_t *d = data;
     uint8_t what = length >= 1 ? d[0] : ART_RELAY_RANG_RGB;
     // Since #605 an RGB ring carries the right's state: no read needed, so no wait on relay_q.
+    // Its shown block is kept even before the first status read on this link (#618).
     bool carried = false;
-    if ((what & ART_RELAY_RANG_RGB) && right_rgb_known() &&
-        length >= 1 + sizeof(struct rgb_idle_wire) + sizeof(struct rgb_shown_wire)) {
-        uint8_t was_on = right.rgb.on;
-        bool was_lit = atomic_get(&right_shown_valid) && (right_shown.flags & RGB_SHOWN_LIT);
-        memcpy(&right.rgb, &d[1], sizeof(right.rgb));
-        memcpy(&right_shown, &d[1 + sizeof(right.rgb)], sizeof(right_shown));
-        atomic_set(&right_shown_valid, 1);
-        right_read_at = k_uptime_get();
-        bool lit = right_shown.flags & RGB_SHOWN_LIT;
-        if (right.rgb.on != was_on || lit != was_lit) {
+    if (what & ART_RELAY_RANG_RGB) {
+        uint8_t got = art_relay_ring_rgb(d, length, right_rgb_known(), &right.rgb, &right_shown,
+                                         &right_shown_valid);
+        carried = got & ART_RELAY_RING_CARRIED;
+        if (carried) {
+            right_read_at = k_uptime_get();
+        }
+        if (got & ART_RELAY_RING_TELL) {
             host_link_rgb_right_changed(); // D7 83 at once (deduped)
         }
-        carried = true;
-        rgb_reconcile();
+        if (carried) {
+            rgb_reconcile();
+        }
     }
     if (carried && what == ART_RELAY_RANG_RGB) {
         return BT_GATT_ITER_CONTINUE;

@@ -184,6 +184,22 @@ pub fn left_busy(s: &protocol::ArtStatus) -> bool {
 /// than the 900 ms between a redraw's two shots (peripheral_status.c).
 const REDRAW_SETTLE: Duration = Duration::from_millis(1200);
 
+/// For a redraw count that didn't move (#618): the right's count reaches the PC only through the
+/// left's relay reads, so a relay request that stays in flight with nothing answered (HELLO's
+/// art_relay_debug, before and after the wait: byte 6 in flight, byte 5 answered) means the
+/// left's relay queue is stuck and the right wasn't asked; not that it didn't redraw.
+fn relay_stuck_note(before: Option<[u8; 10]>, after: Option<[u8; 10]>) -> String {
+    match (before, after) {
+        (Some(b), Some(a)) if b[6] == 1 && a[6] == 1 && b[5] == a[5] => format!(
+            "; the left's relay is stuck: a request in flight the whole wait with none answered \
+             (HELLO debug: in flight 1, answered {}, timeouts {}), so the count wasn't read \
+             again, the right may well have redrawn",
+            a[5], a[4]
+        ),
+        _ => String::new(),
+    }
+}
+
 /// Capabilities come only from HELLO's capability bits, never from the version number.
 /// Position presses also need the refusal bit: a press resolves through whatever layers are
 /// active, so the firmware must be known to refuse bt/out/reset/bootloader/soft_off.
@@ -1274,6 +1290,9 @@ impl<'a, D: Device> Runner<'a, D> {
                     .ok_or_else(|| anyhow::anyhow!("no note_right_redraws earlier in the case"))?;
                 let started = Instant::now();
                 let end = started + Duration::from_millis(c.within_ms);
+                let relay_before = foxglove_link::panel::hello(self.device)
+                    .ok()
+                    .map(|h| h.debug);
                 loop {
                     self.check()?;
                     std::thread::sleep(Duration::from_millis(300));
@@ -1284,12 +1303,17 @@ impl<'a, D: Device> Runner<'a, D> {
                             started.elapsed().as_millis()
                         ));
                     }
-                    ensure!(
-                        Instant::now() < end,
-                        "right redraws {base} -> {n} within {} ms; expected at least +{}",
-                        c.within_ms,
-                        c.at_least
-                    );
+                    if Instant::now() >= end {
+                        let after = foxglove_link::panel::hello(self.device)
+                            .ok()
+                            .map(|h| h.debug);
+                        bail!(
+                            "right redraws {base} -> {n} within {} ms; expected at least +{}{}",
+                            c.within_ms,
+                            c.at_least,
+                            relay_stuck_note(relay_before, after)
+                        );
+                    }
                 }
             }
             Step::ExpectScreenStill(c) => {
@@ -1516,5 +1540,28 @@ pub fn art_select_path(app_running: bool, cases: &[crate::spec::Case]) -> String
         "app API art.select (the app is running); direct (forced) on direct = true steps".into()
     } else {
         "app API art.select (the app is running)".into()
+    }
+}
+
+#[cfg(test)]
+mod relay_note_tests {
+    use super::relay_stuck_note;
+
+    #[test]
+    fn a_stuck_relay_is_named_only_when_nothing_was_answered() {
+        // The soak's #618 failure: in flight 1 and answered 23 before and after the wait.
+        let stuck = [3, 1, 0, 0, 1, 23, 1, 2, 23, 0];
+        let note = relay_stuck_note(Some(stuck), Some(stuck));
+        assert!(note.contains("relay is stuck"), "{note}");
+        assert!(note.contains("answered 23, timeouts 1"), "{note}");
+        // Answers came meanwhile: busy, not stuck.
+        let mut later = stuck;
+        later[5] = 30;
+        assert_eq!(relay_stuck_note(Some(stuck), Some(later)), "");
+        // Nothing in flight, or no HELLO: nothing to add.
+        let mut idle = stuck;
+        idle[6] = 0;
+        assert_eq!(relay_stuck_note(Some(idle), Some(idle)), "");
+        assert_eq!(relay_stuck_note(None, Some(stuck)), "");
     }
 }

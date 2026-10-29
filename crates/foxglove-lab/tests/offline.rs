@@ -306,6 +306,7 @@ fn right_redraws_are_noted_and_must_grow() {
         dim_with_redraws(true, 4), // still settling from the idle-off's redraw
         dim_with_redraws(true, 5),
         dim_with_redraws(true, 5),
+        hello, // expect_right_redraws notes the relay's state before it waits
         dim_with_redraws(true, 6),
         dim_with_redraws(true, 7),
     ]);
@@ -315,8 +316,10 @@ fn right_redraws_are_noted_and_must_grow() {
     assert!(result.steps[1].actual.starts_with("right redraws 5 -> 7"));
     let requests = fake.requests.borrow();
     assert!(
-        requests[1..].iter().all(|r| r[..3] == [0xd7, 0x0e, 0]),
-        "reads only"
+        requests[1..]
+            .iter()
+            .all(|r| r[..3] == [0xd7, 0x0e, 0] || r[..2] == [0xd5, 0x01]),
+        "reads only (D7 0E, and HELLO for the relay's state)"
     );
     // A right before #618 reports nothing: BLOCKED, not a failure.
     let fake = Fake::default();
@@ -329,17 +332,33 @@ fn right_redraws_are_noted_and_must_grow() {
         run_with(&fake, &case(steps), REDRAWS).status,
         Status::Blocked
     );
-    // No rewrite after the wake: fails at the timeout.
-    let fake = Fake::default();
-    fake.replies.borrow_mut().extend([hello]);
-    fake.replies
-        .borrow_mut()
-        .extend(std::iter::repeat_n(dim_with_redraws(true, 5), 8));
+    // No rewrite after the wake: fails at the timeout, with HELLO read before and after the wait.
     let c = case("[{note_right_redraws={}}, {expect_right_redraws={within_ms=500}}]");
-    let result = run_with(&fake, &c, REDRAWS);
+    let no_rewrite = |before: [u8; 32], after: [u8; 32]| {
+        let fake = Fake::default();
+        let mut replies = fake.replies.borrow_mut();
+        replies.push_back(hello);
+        replies.extend(std::iter::repeat_n(dim_with_redraws(true, 5), 3));
+        replies.push_back(before);
+        replies.extend(std::iter::repeat_n(dim_with_redraws(true, 5), 2));
+        replies.push_back(after);
+        drop(replies);
+        run_with(&fake, &c, REDRAWS)
+    };
+    let result = no_rewrite(hello, hello);
     assert_eq!(result.status, Status::Fail);
     assert!(
-        result.message.contains("expected at least +1"),
+        result.message.contains("expected at least +1") && !result.message.contains("stuck"),
+        "{}",
+        result.message
+    );
+    // #618 soak: a relay request in flight the whole wait, none answered: the lab says so.
+    let mut stuck = hello;
+    stuck[11..21].copy_from_slice(&[3, 1, 0, 0, 1, 23, 1, 2, 23, 0]);
+    let result = no_rewrite(stuck, stuck);
+    assert_eq!(result.status, Status::Fail);
+    assert!(
+        result.message.contains("the left's relay is stuck"),
         "{}",
         result.message
     );

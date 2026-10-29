@@ -26,6 +26,7 @@
 #include <zmk/rgb_underglow.h>
 
 #include "art_relay.h"
+#include "art_relay_doorbell.h"
 #include "rgb_idle.h"
 
 #define LEDS 21
@@ -222,6 +223,55 @@ static void print_op(void) {
            op_on, op_follow, sys_get_le16(op_look), op_look[2], op_look[3], op_look[4]);
 }
 
+/* #618: the left's side of the right's doorbell (art_relay_doorbell.h) */
+
+// RGB_STATE's right shown block as host_link.c builds it: only with the right's status known.
+static void ring_report(const char *when, bool known, const struct rgb_shown_wire *shown,
+                        atomic_t *valid) {
+    if (!known || !atomic_get(valid)) {
+        printk("rgbstate: %s: RGB_STATE's right shown: none\n", when);
+        return;
+    }
+    printk("rgbstate: %s: RGB_STATE's right shown: lit %d, idle %d, following %d\n", when,
+           !!(shown->flags & RGB_SHOWN_LIT), !!(shown->flags & RGB_SHOWN_IDLE),
+           !!(shown->flags & RGB_SHOWN_FOLLOWING));
+}
+
+// An RGB ring from the right as art_relay_peripheral.c builds it: the right's own activity is
+// idle and it follows the left, lit or dark as the left's on/off says.
+static void ring_in(uint8_t lit, uint8_t on, bool known, struct rgb_idle_wire *rgb,
+                    struct rgb_shown_wire *shown, atomic_t *valid, const char *when) {
+    uint8_t d[1 + sizeof(struct rgb_idle_wire) + sizeof(struct rgb_shown_wire)] = {
+        ART_RELAY_RANG_RGB};
+    struct rgb_idle_wire w = {.on = on, .hue = 23, .saturation = 100, .brightness = 42,
+                              .effect = 3, .speed = 3};
+    struct rgb_shown_wire s = {
+        .flags = RGB_SHOWN_VALID | lit | RGB_SHOWN_WANTED | RGB_SHOWN_IDLE | RGB_SHOWN_FOLLOWING,
+        .hue = 0xffff,
+        .dim = 100};
+    memcpy(&d[1], &w, sizeof(w));
+    memcpy(&d[1 + sizeof(w)], &s, sizeof(s));
+    uint8_t got = art_relay_ring_rgb(d, sizeof(d), known, rgb, shown, valid);
+    printk("rgbstate: %s: carried %d, D7 83 due %d\n", when, !!(got & ART_RELAY_RING_CARRIED),
+           !!(got & ART_RELAY_RING_TELL));
+    ring_report(when, known, shown, valid);
+}
+
+// This half as the right: what its LEDs show (the fake strip) and what it reports.
+static void right_line(const char *when) {
+    bool led_lit, on = false;
+    int led_value;
+    struct rgb_shown_wire s;
+    truth(&led_lit, &led_value);
+    rgb_idle_shown(&s);
+    zmk_rgb_underglow_get_state(&on);
+    printk("rgbstate: the right, %s: the LEDs lit %d; shown lit %d, idle %d, following %d; "
+           "ZMK's flag %d: %s\n",
+           when, led_lit, !!(s.flags & RGB_SHOWN_LIT), !!(s.flags & RGB_SHOWN_IDLE),
+           !!(s.flags & RGB_SHOWN_FOLLOWING), on,
+           led_lit == !!(s.flags & RGB_SHOWN_LIT) ? "match" : "MISMATCH");
+}
+
 void rgb_state_sim_driver(void) {
     k_msleep(500);
     note("hello: capability bit 24");
@@ -330,5 +380,61 @@ void rgb_state_sim_driver(void) {
         rgb_idle_remote_lost();
         k_msleep(100);
     }
+
+    note("#618: the left keeps the right's shown state from the ring before its first status read");
+    {
+        // The left's side of the doorbell (art_relay_doorbell.h, as art_relay_central.c calls
+        // it); RGB_STATE reports the right's shown block only once a status read is in (age).
+        struct rgb_idle_wire rgb = {0};
+        struct rgb_shown_wire shown = {0};
+        atomic_t valid = ATOMIC_INIT(0);
+        bool known = false; // no status read on this link yet: a new link, as after a re-link
+        ring_in(RGB_SHOWN_LIT, 1, known, &rgb, &shown, &valid, "the subscribe's ring, lit");
+        known = true;
+        ring_report("the first status read lands", known, &shown, &valid);
+        ring_in(0, 0, known, &rgb, &shown, &valid, "the right goes dark");
+        ring_in(0, 0, known, &rgb, &shown, &valid, "the same ring again");
+        {
+            const uint8_t old_ring[] = {ART_RELAY_RANG_RGB}; // a right before #605: byte 0 only
+            uint8_t got = art_relay_ring_rgb(old_ring, sizeof(old_ring), known, &rgb, &shown,
+                                             &valid);
+            printk("rgbstate: a one-byte ring: carried %d, D7 83 due %d\n",
+                   !!(got & ART_RELAY_RING_CARRIED), !!(got & ART_RELAY_RING_TELL));
+            ring_report("after it", known, &shown, &valid);
+        }
+        atomic_clear(&valid); // drop_peer: the link went
+        ring_report("the link went", known, &shown, &valid);
+    }
+
+    note("#618, as the right: the left idles while the PC reads the right and sends its colour");
+    wait_idle(); // this half's own activity idles: nobody presses the right's keys
+    rgb_idle_remote(true, true); // the left is active: the right follows it on
+    k_msleep(100);
+    right_line("follows the left on");
+    rgb_idle_remote(false, true); // the left idles: its RGB op says off
+    k_msleep(100);
+    right_line("the left idles");
+    {
+        // What the PC's traffic does to the right meanwhile: status reads (the status value and
+        // the doorbell build these), the PC's colour (ART_RELAY_RGB_HSB sets ZMK's colour), the
+        // left's look (#624) and the same RGB op again (a retry).
+        struct rgb_idle_wire w;
+        struct rgb_shown_wire s;
+        for (int i = 0; i < 5; i++) {
+            rgb_idle_state(&w);
+            rgb_idle_shown(&s);
+        }
+        zmk_rgb_underglow_set_hsb((struct zmk_led_hsb){.h = 200, .s = 90, .b = 20});
+        const uint8_t look[RGB_IDLE_LOOK_SIZE] = {23, 0, 100, 42, 3};
+        rgb_idle_remote_look(look);
+        rgb_idle_remote(false, true);
+        k_msleep(100);
+    }
+    right_line("the left idle, with the PC's traffic");
+    rgb_idle_remote(true, true); // a left key
+    k_msleep(100);
+    right_line("a key on the left");
+    rgb_idle_remote_lost();
+    k_msleep(100);
     note("done");
 }
