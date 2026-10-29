@@ -933,7 +933,7 @@ impl<'a, D: Device> Runner<'a, D> {
                         _ => bail!("sink accepts invoke and press_position taps only"),
                     }
                 }
-                let actual =
+                let (actual, note) =
                     crate::platform::sink(&t.text, &t.via, &self.cancelled.clone(), |s| match s {
                         Step::Invoke(i) => self.invoke(i, true).map(|_| ()),
                         Step::PressPosition(p) => self.press(p).map(|_| ()),
@@ -945,7 +945,10 @@ impl<'a, D: Device> Runner<'a, D> {
                     t.expect,
                     actual
                 );
-                Ok(format!("received {actual:?}"))
+                Ok(match note {
+                    Some(note) => format!("received {actual:?}; {note}"),
+                    None => format!("received {actual:?}"),
+                })
             }
             Step::ArtSelect(a) => self.art_select(a),
             Step::ScreensSetting(s) => {
