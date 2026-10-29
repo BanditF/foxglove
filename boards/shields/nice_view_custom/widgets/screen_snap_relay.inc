@@ -12,12 +12,6 @@ static int64_t screen_deadline;
 static struct bt_gatt_read_params screen_read_params;
 static struct bt_gatt_write_params screen_write_params;
 static const uint8_t screen_op = ART_RELAY_SNAP;
-/* From the PC's request to the reply, queue wait included (#618). A right image is 1366 bytes
- * of Read Blob round trips at the split link's latency (capture-both reads both halves in about
- * 2 s with nothing else on the relay). Right after an art select it shares relay_q with the
- * app's reads and the right's redraws, and the old 3 s ran out. The PC waits 6 s for the reply
- * (foxglove-lab screen.rs). */
-#define SCREEN_RELAY_MS 5000
 
 static void screen_timeout(struct k_work *work) {
     unsigned int key = irq_lock();
@@ -93,9 +87,7 @@ static void screen_job(struct k_work *work) {
         result = SCREEN_NO_LINK;
         goto done;
     }
-    // A relay request that timed out is still out on the link: wait for its answer (user_req's
-    // wait), within the same deadline, instead of giving up at once.
-    if (wait_idle(screen_deadline) || atomic_get(&screen_flight) ||
+    if (atomic_get(&in_flight) || atomic_get(&screen_flight) ||
         k_uptime_get() >= screen_deadline) {
         goto done;
     }
@@ -110,7 +102,7 @@ static void screen_job(struct k_work *work) {
     screen_write_params.length = 1;
     k_sem_reset(&screen_done);
     atomic_set(&screen_flight, 1);
-    if (screen_wait(BT_CALL(bt_gatt_write(conn, &screen_write_params)))) {
+    if (screen_wait(bt_gatt_write(conn, &screen_write_params))) {
         goto done;
     }
     int poll_ms = 25;
@@ -122,7 +114,7 @@ static void screen_job(struct k_work *work) {
         screen_read_params.single.offset = 0;
         k_sem_reset(&screen_done);
         atomic_set(&screen_flight, 1);
-        int err = screen_wait(BT_CALL(bt_gatt_read(conn, &screen_read_params)));
+        int err = screen_wait(bt_gatt_read(conn, &screen_read_params));
         if (!err && screen_received == SCREEN_SNAP_WIRE) {
             result = screen_snap_remote_valid() ? SCREEN_OK : SCREEN_TIMEOUT;
             break;
@@ -160,11 +152,11 @@ uint8_t art_relay_screen_snap(void) {
         return SCREEN_BUSY;
     }
     unsigned int key = irq_lock();
-    screen_deadline = k_uptime_get() + SCREEN_RELAY_MS;
+    screen_deadline = k_uptime_get() + 3000;
     atomic_clear(&screen_replied);
     irq_unlock(key);
     /* Only replies on the system queue; all radio work stays on relay_q. */
-    k_work_reschedule(&screen_timeout_work, K_MSEC(SCREEN_RELAY_MS));
+    k_work_reschedule(&screen_timeout_work, K_SECONDS(3));
     k_work_submit_to_queue(&relay_q, &screen_work);
     return SCREEN_OK;
 }
