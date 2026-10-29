@@ -130,7 +130,7 @@ fn parses_seed_suites_and_all_step_kinds() {
             .unwrap()
             .cases
             .len(),
-        10
+        11
     );
     assert_eq!(
         spec::load(&root.join("app-actions.toml"))
@@ -151,6 +151,8 @@ fn parses_seed_suites_and_all_step_kinds() {
     for text in [
         "[{press_position={pos=12,state='down'}}]",
         "[{screen={half='left',golden='golden/a.png',mask=[{x=0,y=0,width=4,height=5}]}}]",
+        "[{expect_rgb={right_age_max_s=2,left_on=false,right_on=false,within_ms=45000}}]",
+        "[{expect_screen_still={half='right',region={x=0,y=20,width=68,height=140},ms=3000}}]",
     ] {
         for s in case(text).steps {
             s.validate().unwrap();
@@ -170,6 +172,9 @@ fn validates_bad_specs() {
         "[{screen={half='middle',golden='a.png'}}]",
         "[{screen={half='left',golden='a.png',mask=[{x=159,y=0,width=2,height=1}]}}]",
         "[{press_position={pos=48,state='down'}}]",
+        "[{expect_rgb={right_age_max_s=2,within_ms=120001}}]",
+        "[{expect_screen_still={half='right',ms=0}}]",
+        "[{expect_screen_still={half='right',region={x=0,y=20,width=69,height=1},ms=10}}]",
         "[{type_into_sink={text='a',expect='a',via=[{invoke={behavior='kp',hold_ms=1}}]}}]",
     ] {
         assert!(
@@ -250,6 +255,29 @@ fn connection_and_rgb_match_scripted_replies() {
 }
 
 #[test]
+fn rgb_on_off_is_checked_per_half() {
+    // RGB_STATE: the left on; the right's reading 1 s old, off (#603).
+    let mut rgb = reply(&[0xd7, 0x83, 1]);
+    rgb[9] = 1;
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(rgb);
+    let result = run(
+        &fake,
+        &case("[{expect_rgb={right_age_max_s=2,left_on=true,right_on=false}}]"),
+    );
+    assert_eq!(result.status, Status::Pass);
+    for steps in [
+        "[{expect_rgb={right_age_max_s=2,right_on=true,within_ms=1}}]",
+        "[{expect_rgb={right_age_max_s=2,left_on=false,within_ms=1}}]",
+        "[{expect_rgb={right_age_max_s=0,right_on=false,within_ms=1}}]",
+    ] {
+        let fake = Fake::default();
+        fake.replies.borrow_mut().push_back(rgb);
+        assert_eq!(run(&fake, &case(steps)).status, Status::Fail, "{steps}");
+    }
+}
+
+#[test]
 fn capabilities_and_refusal_gate_before_any_request() {
     for (requires, steps) in [
         (
@@ -258,6 +286,8 @@ fn capabilities_and_refusal_gate_before_any_request() {
         ),
         (vec![], "[{invoke={local_id=44,expect_status='refused'}}]"),
         (vec!["host_link>=2"], "[{invoke={behavior='mo'}}]"),
+        // HELLO bit 23 (#603): the left relays its activity to the right.
+        (vec!["activity_relay"], "[{expect_layer={top=0}}]"),
         (
             vec![],
             "[{invoke={behavior='mo'}},{screen={half='left',golden='a.png'}}]",

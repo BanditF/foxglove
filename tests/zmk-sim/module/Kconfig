@@ -5,6 +5,9 @@ config FOXGLOVE_SIM_POWEROFF
     bool "Simulator: sys_poweroff prints SIM_SLEEP and ends the run (sleep case)"
     select HAS_POWEROFF
 
+config FOXGLOVE_SIM_ACTIVITY
+    bool "Simulator: the left's activity relay (activity_relay.c, with module/activity_sim.c printing what the right is sent)"
+
 config FOXGLOVE_SIM_DIM
     bool "Simulator: underglow battery cap case (dim_strip.c with a fake strip and cable)"
 

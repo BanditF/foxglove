@@ -119,6 +119,15 @@ static int art_frame;
 static int art_unique = -1; // unique frame currently unpacked in art_buf
 // Set while art_set's data is being replaced (art_relay_peripheral.c): hold the current frame.
 static atomic_t art_held;
+// The left is active (art_activity_remote, #603): set from the relay, cleared when the left
+// idles or the link drops.
+static atomic_t remote_active;
+
+// The art moves while either half is active: on a split keyboard most keys go to the left, so
+// this half's own activity alone left it still while the left typed or after the left woke.
+static __maybe_unused bool art_active(void) {
+    return zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE || atomic_get(&remote_active);
+}
 
 // Art is stored with background bits set. This palette shows it light-on-dark, like the status
 // strip and the left screen; NICE_VIEW_WIDGET_INVERTED flips it along with them.
@@ -211,13 +220,37 @@ static void art_activity_update_cb(struct art_activity_state state) {
 }
 
 static struct art_activity_state art_activity_get_state(const zmk_event_t *eh) {
-    return (struct art_activity_state){.active = zmk_activity_get_state() == ZMK_ACTIVITY_ACTIVE};
+    return (struct art_activity_state){.active = art_active()};
 }
 
 ZMK_DISPLAY_WIDGET_LISTENER(widget_art_activity, struct art_activity_state,
                             art_activity_update_cb, art_activity_get_state)
 ZMK_SUBSCRIPTION(widget_art_activity, zmk_activity_state_changed);
+
+// The left's activity changed: the same update on the display queue, where the timer lives.
+static void art_remote_cb(struct k_work *work) {
+    art_activity_update_cb((struct art_activity_state){.active = art_active()});
+}
+static K_WORK_DEFINE(art_remote_work, art_remote_cb);
 #endif
+
+/* Start/stop (#603): no timer of its own. Each relayed change (activity_relay.h: the left sends
+ * one per activity change, and its state again on link-up) resumes or pauses the art timer once;
+ * a repeat of the same state does nothing. The link dropping clears it. */
+void art_activity_remote(bool active) {
+    if ((bool)atomic_set(&remote_active, active) == active) {
+        return;
+    }
+    if (!zmk_display_is_initialized()) {
+        return; // art_init reads remote_active when it starts the art
+    }
+#if IS_ENABLED(CONFIG_NICE_VIEW_CUSTOM_ANIMATE)
+    k_work_submit_to_queue(zmk_display_work_q(), &art_remote_work);
+#endif
+    if (active) {
+        art_redraw_all(); // as on this half's own wake (#613)
+    }
+}
 
 void art_hold(void) { atomic_set(&art_held, 1); }
 
@@ -238,7 +271,7 @@ void art_play(const struct custom_art_set *set) {
     }
     if (set->frame_count > 1 && set->fps > 0) {
         art_timer = lv_timer_create(art_timer_cb, 1000 / set->fps, NULL);
-        if (zmk_activity_get_state() != ZMK_ACTIVITY_ACTIVE) {
+        if (!art_active()) {
             lv_timer_pause(art_timer);
         }
     }

@@ -22,6 +22,7 @@
  * Application ATT errors: 82 busy, 84 hooks not built in, 85 invalid length/position/state.
  * These map to POSITION statuses 2, 4, 5; ATT success maps to 0 and timeout to 3.
  * SET_FRAME's LAMPS / LAMP_HOST (11, 12) and SET_EFFECT's EFFECT / EFFECT_GO (14, 15) are below.
+ * ACTIVITY (16, activity_relay.h) is the left's activity state, so the right's art follows it.
  * RGB (write request, so the left knows it arrived) is the left's underglow on/off; with follow = 1 the right shows
  * the same, with 0 it goes by its own activity (rgb_idle.c). Bytes 3-7 (status version >= 6) are
  * the left's struct battery_dim_config, which the right takes and saves as its own levels (each
@@ -46,6 +47,7 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/toolchain.h>
 
+#include "activity_relay.h"
 #include "battery_dim.h"
 #include "lamp_effect.h"
 #include "rgb_idle.h"
@@ -84,6 +86,9 @@ enum art_relay_op {
                               // just before sending); run 0 stops it and hands the LEDs back to
                               // the right's own effect. LAMP_HOST stops the effect too (SET_FRAME
                               // takes over).
+    // The left's activity (#603, activity_relay.h): state u8 (0 active, 1 idle, 2 going to
+    // sleep), as a write request on relay_q and also, ahead of the queue, as a write command.
+    ART_RELAY_ACTIVITY = ART_RELAY_ACTIVITY_OP,
 };
 
 // The status notify's bits (#478).

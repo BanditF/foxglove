@@ -24,6 +24,8 @@ if(CONFIG_ZMK_DISPLAY AND CONFIG_NICE_VIEW_WIDGET_STATUS)
       if(CONFIG_NICE_VIEW_ART_RELAY)
         zephyr_library_sources(widgets/art_relay_central.c)
         zephyr_library_sources(widgets/art_keys.c)
+        # The left's activity goes to the right, whose art follows it (#603).
+        zephyr_library_sources(widgets/activity_relay.c)
       endif()
     endif()
   else()
