@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::{mpsc, Condvar, Mutex, OnceLock};
 
 use foxglove_devices::pc_lighting::{
     self as pcl, Catalog, CatalogDevice, Control, Found, HidWriter, LampArrayInfo, LightCaps,
@@ -153,6 +153,11 @@ static LAST_FRAME: Mutex<Option<u64>> = Mutex::new(None);
 /// The settings window's context, to repaint it when the worker has news.
 static CTX: OnceLock<egui::Context> = OnceLock::new();
 
+/// Requests queued and requests the worker is done with (its snapshot published), so an API
+/// call can wait for its own write (#617): `send` numbers each request under the queue's lock,
+/// and the queue is in order. The waiter sleeps on the condvar; the timeout is only a fallback.
+static TICKETS: (Mutex<(u64, u64)>, Condvar) = (Mutex::new((0, 0)), Condvar::new());
+
 /// What the page shows now (empty before the first scan).
 pub fn snapshot() -> Snapshot {
     SNAPSHOT
@@ -164,7 +169,37 @@ pub fn snapshot() -> Snapshot {
 
 /// Queues a request; a no-op before [`start`].
 pub fn send(msg: Msg) {
-    if let Some(q) = QUEUE.get() {
+    queue(msg);
+}
+
+/// Queues a request and waits until the worker has handled it and published its snapshot
+/// (the local API's `pc_lighting.set_zone`, #617). `None`: no worker, or no answer in
+/// `timeout`.
+pub fn send_and_wait(msg: Msg, timeout: std::time::Duration) -> Option<Snapshot> {
+    let ticket = queue(msg)?;
+    let (lock, done) = &TICKETS;
+    let tickets = lock.lock().unwrap_or_else(|e| e.into_inner());
+    let (tickets, _) = done
+        .wait_timeout_while(tickets, timeout, |t| t.1 < ticket)
+        .unwrap_or_else(|e| e.into_inner());
+    (tickets.1 >= ticket).then(snapshot)
+}
+
+/// The worker handled this many more requests and published the snapshot.
+struct Handled(u64);
+
+impl Drop for Handled {
+    fn drop(&mut self) {
+        let (lock, done) = &TICKETS;
+        lock.lock().unwrap_or_else(|e| e.into_inner()).1 += self.0;
+        done.notify_all();
+    }
+}
+
+/// Queues a request and gives its ticket.
+fn queue(msg: Msg) -> Option<u64> {
+    let q = QUEUE.get()?;
+    {
         if matches!(
             msg,
             Msg::Set { .. } | Msg::Off(_) | Msg::Identify(_) | Msg::TestZone { .. }
@@ -173,8 +208,18 @@ pub fn send(msg: Msg) {
                 s.busy = true;
             }
         }
-        let _ = q.lock().unwrap_or_else(|e| e.into_inner()).send(msg);
+        let q = q.lock().unwrap_or_else(|e| e.into_inner());
+        ticketed(&q, msg)
     }
+}
+
+/// Sends on the worker's queue and numbers the request; every send goes through here, so the
+/// numbers follow the queue's order.
+fn ticketed(tx: &mpsc::Sender<Msg>, msg: Msg) -> Option<u64> {
+    let mut tickets = TICKETS.0.lock().unwrap_or_else(|e| e.into_inner());
+    tx.send(msg).ok()?;
+    tickets.0 += 1;
+    Some(tickets.0)
 }
 
 /// Called each frame the Lights page draws: the first frame after it wasn't shown scans again
@@ -478,9 +523,9 @@ impl Worker {
         match msg {
             Msg::Scan => {}
             Msg::Set { key, colors } => {
-                let colors: Vec<_> = colors.into_iter().map(|(i, c)| (i, rgb(c))).collect();
-                self.scene_keeps(&key, &colors);
-                self.write(&key, "Colours set", |d| d.set_zones(&colors), true);
+                if let Some(line) = self.set_colors(&key, colors) {
+                    eprintln!("{line}");
+                }
             }
             Msg::Off(key) => {
                 let zones = self.drivers.get(&key).map_or(0, |d| d.zones().len());
@@ -617,6 +662,56 @@ impl Worker {
                 self.save_local();
             }
         }
+    }
+
+    /// The user's colours on some zones (the page's Apply, the API's `pc_lighting.set_zone`),
+    /// saved; gives the log line (#617).
+    fn set_colors(&mut self, key: &str, colors: Vec<(usize, [u8; 3])>) -> Option<String> {
+        let colors: Vec<_> = colors.into_iter().map(|(i, c)| (i, rgb(c))).collect();
+        let before = self.shown_colors(key);
+        self.scene_keeps(key, &colors);
+        self.write(key, "Colours set", |d| d.set_zones(&colors), true);
+        self.set_line(key, &before, &colors)
+    }
+
+    /// Each zone's colour as the page shows it: what Foxglove set, else what was saved.
+    fn shown_colors(&self, key: &str) -> Vec<Option<[u8; 3]>> {
+        self.snapshot_row(key)
+            .map(|r| r.zones.into_iter().map(|(_, c)| c).collect())
+            .unwrap_or_default()
+    }
+
+    fn snapshot_row(&self, key: &str) -> Option<Row> {
+        self.snapshot().devices.into_iter().find(|r| r.key == key)
+    }
+
+    /// The log line for a zone write (#617): each zone old → new, and how it went.
+    fn set_line(
+        &self,
+        key: &str,
+        before: &[Option<[u8; 3]>],
+        colors: &[(usize, Rgb)],
+    ) -> Option<String> {
+        let row = self.snapshot_row(key)?;
+        let word = |c: Option<[u8; 3]>| c.map_or_else(|| "unset".to_string(), hex);
+        let zones: Vec<String> = colors
+            .iter()
+            .map(|&(i, c)| {
+                let name = row.zones.get(i).map_or("?", |(n, _)| n.as_str());
+                let id = row.zone_ids.get(i).map_or("?", String::as_str);
+                format!(
+                    "zone {id} ({name}) {} → {}",
+                    word(before.get(i).copied().flatten()),
+                    hex([c.r, c.g, c.b])
+                )
+            })
+            .collect();
+        Some(format!(
+            "Foxglove: zone colours of {} ({key}): {}; {}",
+            row.name,
+            zones.join(", "),
+            self.status.as_deref().unwrap_or("no status")
+        ))
     }
 
     /// The user set colours on a board a scene holds: those go back on at the scene's end.
@@ -810,7 +905,7 @@ pub fn start() {
             super::device_watch::DeviceWatch::interfaces(
                 true,
                 Box::new(move |_path| {
-                    let _ = tx.send(Msg::Scan);
+                    let _ = ticketed(&tx, Msg::Scan);
                 }),
             )
         };
@@ -826,11 +921,13 @@ pub fn start() {
             writers,
             Box::new(lamp_arrays),
         );
-        let _ = tx.send(Msg::Scan);
+        let _ = ticketed(&tx, Msg::Scan);
         while let Ok(first) = rx.recv() {
             // A burst of arrivals (a hub with several interfaces) scans once.
             let mut batch = vec![first];
             batch.extend(rx.try_iter());
+            // Counted when this round ends, also by a panic (the supervisor restarts it).
+            let _handled = Handled(batch.len() as u64);
             let batch = latest_shows(batch);
             let mut scanned = false;
             for msg in batch {
@@ -1169,6 +1266,42 @@ mod tests {
 
     fn no_wait() -> impl FnMut(std::time::Duration) {
         |_| {}
+    }
+
+    /// #617: a zone write logs one line, each zone old → new and the result; the saved
+    /// colour is the old one before Foxglove wrote anything.
+    #[test]
+    fn a_zone_write_logs_old_and_new_colours() {
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            "103c:84fd".into(),
+            Saved {
+                colors: [("1".to_string(), "#a57500".to_string())].into(),
+                match_keyboard: false,
+            },
+        );
+        let (mut w, _sent) = worker(settings);
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let line = w.set_colors("103c:84fd", vec![(0, [0xff, 0, 0]), (1, [0, 0, 0xff])]);
+        let line = line.unwrap();
+        assert!(
+            line.starts_with(
+                "Foxglove: zone colours of HP OMEN 45L case lights (103c:84fd): zone 1 ("
+            ),
+            "{line}"
+        );
+        assert!(line.contains(") #a57500 → #ff0000, zone "), "{line}");
+        assert!(line.contains("unset → #0000ff"), "{line}");
+        assert!(
+            line.ends_with("; HP OMEN 45L case lights: colours set"),
+            "{line}"
+        );
+        assert_eq!(
+            w.settings.devices["103c:84fd"].colors["1"], "#ff0000",
+            "saved as the user's"
+        );
+        // Not found: no line, nothing saved.
+        assert_eq!(w.set_colors("dead:beef", vec![(0, [1, 2, 3])]), None);
     }
 
     #[test]

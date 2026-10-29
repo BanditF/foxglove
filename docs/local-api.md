@@ -47,6 +47,8 @@ same messages.
 | `art.status` / `art.select` | call | `devices.read` / `art.write` |
 | `key.event` | event | `key.events` (warned: a keylogger) |
 | `profiles.list` / `profiles.activate` | call | — / `profiles.write` (API 1.1) |
+| `lighting.sync` / `lighting.set_sync` | call | `devices.read` / `lighting.write` (API 1.5) |
+| `pc_lighting.list` / `pc_lighting.set_zone` | call | `devices.read` / `lighting.write` (API 1.5) |
 
 The params and results are in the schema. Notes:
 
@@ -63,6 +65,15 @@ The params and results are in the schema. Notes:
 - **`screens.panel_override`** lasts at most 60 s; the panel then returns to Foxglove's own drawing.
 - **`art.select` names built-ins by their manifest name** (stable across firmware), plus slots,
   random, or a file.
+- **Case zones and the sync (#617, API 1.5):** `pc_lighting.list` gives each PC lighting
+  device (by its key, `vvvv:pppp` plus a serial), its zones with `#rrggbb` colours, whether
+  Foxglove writes it, the apps that may fight it, and the last write's status.
+  `pc_lighting.set_zone {device, zone, color}` (device by key or a unique part of its name,
+  zone by id or name) writes as the Lights page's Apply does, saved, and answers with the list
+  once the write is done; an error carries the status. `lighting.sync {device}` and
+  `lighting.set_sync {device, on}` read and change a split keyboard's "right half's lights
+  follow the left", answered from the keyboard's readback. Both writes log one line, old → new,
+  and are refused while Foxglove is paused. `foxglove-cli lights`, `light` and `sync` use them.
 - **`hid.raw` is reserved:** it's a valid permission but has no method in v1.
 
 ## Versioning

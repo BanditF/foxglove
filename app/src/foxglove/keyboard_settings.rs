@@ -37,27 +37,68 @@ pub fn ask_rgb_sync(set: Option<bool>, ctx: egui::Context) {
     let set = set.filter(|_| !super::pause::paused());
     *RGB_SYNC.lock().unwrap_or_else(|e| e.into_inner()) = RgbSync::Asking;
     let _ = super::services::spawn_supervised("keyboard-settings", move || {
-        let state = match device() {
-            None => RgbSync::NoKeyboard,
-            Some(d) => {
-                let reply = d
-                    .settings()
-                    .ok_or(foxglove_devices::DeviceError::Unsupported)
-                    .and_then(|s| {
-                        if let Some(on) = set {
-                            s.set("rgb_sync", Value::Bool(on))?;
-                        }
-                        s.get("rgb_sync")
-                    });
-                match reply {
-                    Ok(Some(Value::Bool(on))) => RgbSync::Known { on },
-                    _ => RgbSync::NotSupported,
-                }
-            }
-        };
-        *RGB_SYNC.lock().unwrap_or_else(|e| e.into_inner()) = state;
+        sync_now(device().as_deref(), set);
         ctx.request_repaint();
     });
+}
+
+/// Reads the setting (`set` = `None`) or changes it on `d` and reads it back, on the caller's
+/// thread: the Lights page's worker and the local API's `lighting.set_sync` (#617) both come
+/// here, so every change logs one line (#606). Keeps the answer for the page.
+pub fn sync_now(
+    d: Option<&foxglove_link::devices::FoxgloveLinkDevice>,
+    set: Option<bool>,
+) -> RgbSync {
+    let state = match d {
+        None => RgbSync::NoKeyboard,
+        Some(d) => {
+            let (state, line) = sync_on(d.settings(), set);
+            if let Some(line) = line {
+                eprintln!("{line}");
+            }
+            state
+        }
+    };
+    *RGB_SYNC.lock().unwrap_or_else(|e| e.into_inner()) = state;
+    state
+}
+
+/// The read or the change, through the keyboard's settings, and the log line for a change:
+/// the value before, the one asked for, and what the keyboard reads back.
+fn sync_on(
+    settings: Option<&dyn foxglove_devices::DevSettings>,
+    set: Option<bool>,
+) -> (RgbSync, Option<String>) {
+    let Some(s) = settings else {
+        return (RgbSync::NotSupported, None);
+    };
+    let read = || match s.get("rgb_sync") {
+        Ok(Some(Value::Bool(on))) => Some(on),
+        _ => None,
+    };
+    let known = |v: Option<bool>| v.map_or(RgbSync::NotSupported, |on| RgbSync::Known { on });
+    let Some(want) = set else {
+        return (known(read()), None);
+    };
+    let before = read();
+    let written = s.set("rgb_sync", Value::Bool(want));
+    let after = read();
+    let word = |v: Option<bool>| match v {
+        Some(true) => "on",
+        Some(false) => "off",
+        None => "unknown",
+    };
+    let result = match (&written, after) {
+        (Err(e), _) => format!("not written: {}", describe(e)),
+        (Ok(()), Some(a)) if a == want => format!("read back {}", word(after)),
+        (Ok(()), _) => format!("read back {} (not taken)", word(after)),
+    };
+    let line = format!(
+        "Foxglove: lighting sync (right follows left): {} → {}, {result}",
+        word(before),
+        word(Some(want))
+    );
+    (known(after), Some(line))
 }
 
 /// The last action invoked from the app and how it went.
@@ -444,6 +485,62 @@ mod rgb_state_tests {
             false,
             super::STALE_AFTER_S
         )))));
+    }
+}
+
+#[cfg(test)]
+mod sync_tests {
+    use super::{sync_on, RgbSync};
+    use foxglove_devices::{DevSettings, Value};
+    use std::cell::RefCell;
+
+    /// A keyboard's settings: `rgb_sync`, or none; `takes` false drops writes.
+    struct Board {
+        sync: RefCell<Option<bool>>,
+        takes: bool,
+    }
+
+    impl DevSettings for Board {
+        fn get(&self, key: &str) -> foxglove_devices::Result<Option<Value>> {
+            assert_eq!(key, "rgb_sync");
+            Ok(self.sync.borrow().map(Value::Bool))
+        }
+        fn set(&self, _key: &str, value: Value) -> foxglove_devices::Result<()> {
+            if let (true, Value::Bool(on)) = (self.takes, value) {
+                *self.sync.borrow_mut() = Some(on);
+            }
+            Ok(())
+        }
+    }
+
+    fn board(sync: Option<bool>, takes: bool) -> Board {
+        Board {
+            sync: RefCell::new(sync),
+            takes,
+        }
+    }
+
+    /// #606: every sync change logs one line, old → new and what the keyboard read back; a
+    /// read logs nothing.
+    #[test]
+    fn a_sync_change_logs_one_line_with_the_readback() {
+        let b = board(Some(true), true);
+        assert_eq!(sync_on(Some(&b), None), (RgbSync::Known { on: true }, None));
+        let (state, line) = sync_on(Some(&b), Some(false));
+        assert_eq!(state, RgbSync::Known { on: false });
+        assert_eq!(
+            line.as_deref(),
+            Some("Foxglove: lighting sync (right follows left): on → off, read back off")
+        );
+        let stuck = board(Some(true), false);
+        let (state, line) = sync_on(Some(&stuck), Some(false));
+        assert_eq!(state, RgbSync::Known { on: true });
+        assert!(line.unwrap().ends_with("read back on (not taken)"));
+        assert_eq!(
+            sync_on(Some(&board(None, false)), None),
+            (RgbSync::NotSupported, None)
+        );
+        assert_eq!(sync_on(None, Some(true)), (RgbSync::NotSupported, None));
     }
 }
 

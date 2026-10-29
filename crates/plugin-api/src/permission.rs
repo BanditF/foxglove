@@ -71,7 +71,7 @@ impl Permission {
             Permission::FactsRead(p) => format!("read {p}"),
             Permission::FactsWrite(p) => format!("publish {p}"),
             Permission::DevicesRead => "see your keyboards and their state".into(),
-            Permission::LightingWrite => "change your keyboards' lights".into(),
+            Permission::LightingWrite => "change your keyboards' and PC's lights".into(),
             Permission::BehaviorsInvoke => "run your keymap's actions (not risky ones)".into(),
             Permission::ScreensWrite => "draw on the keyboard's info screen".into(),
             Permission::ArtWrite => "change the art screen's art".into(),

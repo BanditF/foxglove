@@ -1,0 +1,397 @@
+# Sitting parity (#618 theme C, #617): every step of the next sitting's script maps to what an
+# agent can run or read without the user, or is tagged needs_eyes with the reason a person has
+# to act or look. scripts/test_sitting_parity.py (in the gate) fails when a step of
+# docs/release-notes/0.2.md "Known untested items" or a #90 row has no entry here, and when an
+# entry names an API method, CLI or foxglove-lab command, HIL case, simulator test, script or
+# log line that doesn't exist. Keep it honest: only what the code has today.
+#
+# Per step:
+#   match       a piece of the step's text in 0.2.md (exactly one step), or
+#   row         a #90 row letter (see [queue] below)
+#   api         local API methods (crates/plugin-api METHODS)
+#   cli         foxglove-cli commands
+#   lab         foxglove-lab commands (kebab-case)
+#   hil         tests/hil suite/case
+#   sim         tests/zmk-sim tests
+#   script      scripts an agent runs (lab scripts launch the app: On-call's OK first)
+#   log         pieces of `Foxglove…` log lines the step's writes or events print
+#   needs_eyes  why a person must act or look for (part of) the step; such steps are the
+#               follow-up candidates for more API, readback or log coverage
+#
+# Print the needs-eyes list: python scripts/test_sitting_parity.py --list
+
+schema = 1
+
+# #90's rows as of 2026-10-28 (the issue isn't in the repo). Update with #90.
+[queue]
+A = "Foxglove walkthrough"
+B = "Cable reconnect + typing"
+D = "Minisign keys for plugins"
+E = "K5 Pro read-only check"
+F = "GA build check"
+G = "LampArray sitting"
+H = "Plugins tab look"
+I = "Windows atom-table leak"
+L = "0.1 MSI install/upgrade/uninstall"
+M = "SignalRGB sideload"
+N = "Legacy Logitech Options memory leak"
+O = "Corsair iCUE mirror"
+
+# --- Keyboard: link, power and flashing ---
+
+[[step]]
+match = "Update the right hands-free with a left on this build"
+lab = ["bootloader", "build"]
+script = ["scripts/flash/foxglove_flash.py"]
+note = "On-call's test-and-revert flash; the flasher sees the drive appear and reads both builds back"
+
+[[step]]
+match = "Let the left go idle (lights off), then replug its cable"
+api = ["lighting.state", "lighting.set_sync"]
+lab = ["status"]
+hil = ["screens/capture-both"]
+log = ["lighting sync (right follows left)", "Keyboard connected ("]
+needs_eyes = "hands: replug the left's cable with no key pressed, put the PC to sleep and wake it, plug the right's cable in"
+
+[[step]]
+match = "Replug the left cable with no key pressed: HELLO answers"
+hil = ["resilience/replug-hello"]
+log = ["Keyboard connected ("]
+needs_eyes = "hands: the cable replug (the HELLO and redraw checks after it are agents')"
+
+[[step]]
+match = "Right half events: the right's cable in and out"
+api = ["lighting.set_sync", "lighting.sync", "lighting.state"]
+cli = ["sync"]
+lab = ["status"]
+log = ["lighting sync (right follows left)"]
+needs_eyes = "hands: the right's cable in and out, a key on the right, a right reboot"
+
+[[step]]
+match = "A new left with an old right: one refused subscribe"
+lab = ["status", "build"]
+script = ["scripts/flash/foxglove_flash.py"]
+needs_eyes = "hands: updating across #543 may need one double-press on the right"
+
+[[step]]
+match = "The split link and re-link while a scene runs"
+cli = ["facts"]
+hil = ["resilience/r5a-split-drop-mid-relay"]
+log = ["scene {name} started"]
+needs_eyes = "no API or CLI call starts a scene (Scenes page only); the right's deep sleep needs it on battery for hours"
+
+[[step]]
+match = "Underglow brightness by power"
+sim = ["battery-dim"]
+lab = ["status"]
+log = ["battery dim: "]
+needs_eyes = "eyes and hands: how bright the right looks on battery against USB, and plugging its cable"
+
+[[step]]
+match = "Save battery switch and sliders on flashed #465 firmware"
+log = ["battery dim: ", "battery notice: "]
+needs_eyes = "the Save battery switch and sliders have no API or CLI call; a USB plug-in on the right needs hands"
+
+[[step]]
+match = "The left half's own battery level and its change events"
+cli = ["facts", "status"]
+log = ["battery notice: "]
+
+[[step]]
+match = "The app on the keyboard in the USB-and-Bluetooth state"
+cli = ["status", "facts"]
+log = ["Keyboard connected ("]
+needs_eyes = "hands: switching USB and Bluetooth and the replug (&out is never sent from the PC); the diagnostics label is UI"
+
+[[step]]
+match = "Update keyboard from the app: both halves, left first"
+script = ["scripts/flash/foxglove_flash.py"]
+lab = ["build"]
+needs_eyes = "Update keyboard is a Settings button with no API or CLI call (the flasher is the agents' path)"
+
+[[step]]
+match = "`keyboard.*` facts: switch layers, unplug USB"
+cli = ["facts"]
+needs_eyes = "hands: holding a layer key and unplugging USB"
+
+# --- Keyboard: lights ---
+
+[[step]]
+match = "SET_FRAME: both halves follow a moving dot"
+lab = ["frame-dot"]
+sim = ["host-frames"]
+needs_eyes = "eyes: no flash of ZMK's effect at take-over and hand-back; hands: typing during frames, a USB unplug"
+
+[[step]]
+match = "SET_EFFECT: both halves' scanline phase"
+sim = ["host-effects"]
+needs_eyes = "eyes: the halves' phase over hours; hands: typing with the app dead"
+
+[[step]]
+match = "LAMPS: both halves draw the user's map"
+lab = ["lamp", "status"]
+needs_eyes = "eyes: the drawn map on both halves, also after a right re-link"
+
+[[step]]
+match = "LED map: Check LED map's dot at 0.7 s"
+log = ["Check LED map: ", "Find my LEDs saved"]
+needs_eyes = "eyes: where the dot is on the real Corne; Find my LEDs needs clicks on the keys"
+
+[[step]]
+match = "Scenes on the keyboard: the halves in phase"
+api = ["lighting.state"]
+log = ["scene {name} started", "wallpaper sync: scene"]
+needs_eyes = "no API or CLI call starts a scene; the phase between the halves, the case and the wallpaper is seen"
+
+[[step]]
+match = "Hand-back on pause, lock, display off and a mic-mute lease"
+api = ["audio.inputs.set_mute", "lighting.lease", "lighting.release"]
+script = ["scripts/lab/leases.py", "scripts/lab/mic_mute.py"]
+needs_eyes = "pause and Keep running have no API call; locking the PC and display off are the user's desktop; typing with the app closed needs hands"
+
+[[step]]
+match = "Key-press ripples: the key report's row and column"
+needs_eyes = "hands: key presses (agents never press keys); where the ring starts is seen"
+
+[[step]]
+match = "Leases: a Mic mute or Pomodoro lease"
+api = ["lighting.lease", "lighting.update", "lighting.release", "lighting.state"]
+script = ["scripts/lab/leases.py", "scripts/lab/mic_mute.py", "scripts/lab/pomodoro.py"]
+needs_eyes = "pause has no API call; the Plugins tab's holder line is UI; OpenRGB is an outside GUI"
+
+[[step]]
+match = "Plugins on the board: Pomodoro panel and lights"
+script = ["scripts/lab/pomodoro.py", "scripts/lab/mic_mute.py", "scripts/lab/obs_mock.py"]
+needs_eyes = "a real VB-CABLE mute and a real OBS recording (the lab uses mocks)"
+
+# --- Screens ---
+
+[[step]]
+match = "Left screen: the clock and date follow the region settings"
+hil = ["screens/left-clock-ticks", "screens/capture-both"]
+needs_eyes = "changing Windows' region settings is a system setting; locking the PC is the user's desktop"
+
+[[step]]
+match = "Notifications on the left screen: a real toast arrives"
+log = ["Foxglove notifications: "]
+hil = ["screens/capture-both"]
+needs_eyes = "Do not disturb and a full-screen game are the user's desktop; the light cue on both halves is seen"
+
+[[step]]
+match = "Right-screen art: Keep (send, SAVE, SELECT)"
+api = ["art.status", "art.select"]
+lab = ["art-status"]
+hil = ["app-idle/art-select-builtin"]
+needs_eyes = "hands: a power cycle of the right with a kept piece; Keep is a Screens page button"
+
+[[step]]
+match = "Art across a firmware update, the five steps"
+lab = ["art-status"]
+api = ["art.status"]
+needs_eyes = "the tray's ‹ / Next ›, Art… and the Change… picker have no API or CLI call (#618 theme C)"
+
+[[step]]
+match = "Keymap editor on the Corne over USB and over Bluetooth"
+needs_eyes = "the keymap editor is UI only (no API for keymap edits); a replug needs hands"
+
+# --- Case ---
+
+[[step]]
+match = "Each zone changes colour from Foxglove's own writes"
+api = ["pc_lighting.set_zone", "pc_lighting.list"]
+cli = ["light", "lights"]
+log = ["zone colours of"]
+needs_eyes = "eyes: the 45L is write-only, so whether the zone lit is seen (the readback is what Foxglove sent)"
+
+[[step]]
+match = "Light zone N blinks only that zone"
+needs_eyes = "eyes: the blinks; Identify and the zone test have no API call"
+
+[[step]]
+match = "Calibrate the 45L and the underglow against the screen"
+log = ["calibrate: "]
+api = ["pc_lighting.list", "lighting.state"]
+needs_eyes = "eyes: matching colours against the screen is the person's judgement"
+
+[[step]]
+match = "Scenes on the case: zone order and positions"
+log = ["scene {name} started", "scene {} ended ({}){}"]
+needs_eyes = "no API or CLI call starts a scene; zone order and positions on the real case are seen"
+
+[[step]]
+match = "The ambient zone fades with the fans"
+needs_eyes = "eyes: the fade against the fans and the wallpaper looks on the case and keyboard"
+
+[[step]]
+match = "A program rule starting and stopping a scene"
+log = ["scene {name} started", "scene {} ended ({}){}"]
+needs_eyes = "starting the rule's program is a GUI launch on the user's desktop; ripples need key presses"
+
+# --- Wallpaper ---
+
+[[step]]
+match = "Found in a second-drive Steam library"
+needs_eyes = "starting and stopping Wallpaper Engine and changing wallpapers are GUI actions on the user's desktop"
+
+[[step]]
+match = "Sync: `-location` and the `RAW~(...)~END` argument"
+log = ["wallpaper sync: scene", "wallpaper sync: sent to"]
+needs_eyes = "the wallpaper's devlog and reload behaviour are in Wallpaper Engine; the Win key in a full-screen game"
+
+[[step]]
+match = "Live feed: one run inside Wallpaper Engine"
+log = ["live feed on 127.0.0.1:"]
+needs_eyes = "one run inside Wallpaper Engine (CEF); keys over USB and BLE need key presses; full-screen game and lock are the user's desktop"
+
+[[step]]
+match = "The right screen shows each wallpaper's art"
+api = ["art.status", "profiles.activate"]
+cli = ["profile"]
+lab = ["art-status"]
+needs_eyes = "switching wallpapers in Wallpaper Engine is a GUI action; \"On screen\" is a UI label"
+
+[[step]]
+match = "the Presets card lists the wallpapers"
+needs_eyes = "the Presets card is UI only"
+
+[[step]]
+match = "Lights follow the wallpaper (#70)"
+api = ["lighting.state", "pc_lighting.list"]
+cli = ["lights"]
+lab = ["status"]
+needs_eyes = "switching wallpapers in Wallpaper Engine and the Windows desktop wallpaper are GUI actions"
+
+# --- Overlay and windows ---
+
+[[step]]
+match = "Settings window: drag between the displays"
+log = ["displays changed, the room map has"]
+needs_eyes = "window behaviour across displays (drag, rescale, Alt+Tab, title bar) is seen; no window-state probe yet (#612)"
+
+[[step]]
+match = "Layer overlay: drag across the displays"
+needs_eyes = "eyes: dragging the overlay, its opacity over a real desktop, the slider's live preview"
+
+[[step]]
+match = "Overlay clickable only while Settings has focus"
+needs_eyes = "clicking through the overlay in a game and alt-tab are the user's desktop"
+
+[[step]]
+match = "Tray: the icon and paused glyph at each scale"
+log = ["the taskbar is up; tray icon added"]
+needs_eyes = "eyes: the icon and panel at each scale; clicks outside the panel"
+
+[[step]]
+match = "Every page in the live window with the keyboard"
+cli = ["status", "profile"]
+needs_eyes = "every page's look is seen (live window, 150 %)"
+
+[[step]]
+match = "App plumbing: a release build writes `logs\\foxglove.log`"
+log = ["Start with Windows now starts", "the taskbar restarted; the tray icon is added again"]
+needs_eyes = "Copy diagnostics on the real clipboard, dialogs crisp at 150 %, and an Explorer restart on the user's desktop"
+
+[[step]]
+match = "Idle CPU of the running Foxglove"
+hil = ["app-idle/app-idle-cpu"]
+
+# --- Mouse and LampArray ---
+
+[[step]]
+match = "The G502's LampArray attributes"
+needs_eyes = "eyes: the G502's lighting stays as it was; its lamp positions in the room map are UI"
+
+[[step]]
+match = "Scenes on a Dynamic Lighting device"
+log = ["scene: Dynamic Lighting device"]
+needs_eyes = "no API or CLI call starts a scene; the G502 following it and Windows' lighting coming back are seen"
+
+[[step]]
+match = "Device batteries: a Bluetooth headset or mouse"
+log = ["battery notice: "]
+needs_eyes = "hands: connecting a Bluetooth headset and an Xbox controller; the list is UI"
+
+[[step]]
+match = "The Corne as a LampArray (drafts #115, #239)"
+lab = ["lamp"]
+needs_eyes = "eyes: naming the key under each lamp and Windows' Dynamic Lighting list (#90 row G)"
+
+# --- Elsewhere ---
+
+[[step]]
+match = "0.2 MSI on a Windows test account"
+needs_eyes = "a Windows test account, the installer and UAC (#90 row L)"
+
+[[step]]
+match = "VIA keyboards on the K5 Pro"
+needs_eyes = "hands: plug the K5 Pro in (#90 row E)"
+
+[[step]]
+match = "Foxglove for SignalRGB (#90 row M"
+needs_eyes = "SignalRGB and iCUE are outside GUIs (#90 rows M, O)"
+
+[[step]]
+match = "Signed plugins once the keys exist"
+needs_eyes = "the user makes the signing keys offline (#90 row D)"
+
+[[step]]
+match = "No board yet: Toucan2 and Halcyon e-paper"
+needs_eyes = "no such board yet"
+
+# --- #90 rows ---
+
+[[step]]
+row = "A"
+api = ["profiles.activate", "lighting.state", "art.status", "pc_lighting.list"]
+cli = ["profile", "status", "lights"]
+script = ["scripts/lab/pomodoro.py"]
+needs_eyes = "Settings scrolling, the Screens preview, the Bluetooth toggle, a Windows accent change, hotlist Next and readability are seen or the user's desktop"
+
+[[step]]
+row = "B"
+hil = ["resilience/replug-hello", "release/typing-abc"]
+log = ["Keyboard connected ("]
+needs_eyes = "hands: the replug and typing on both halves"
+
+[[step]]
+row = "D"
+needs_eyes = "the user makes the signing keys offline"
+
+[[step]]
+row = "E"
+needs_eyes = "hands: plug the K5 Pro in"
+
+[[step]]
+row = "F"
+hil = ["ga/ga-build-both-halves", "ga/ga-hello-no-test-hooks", "ga/ga-refusals"]
+script = ["scripts/flash/foxglove_flash.py"]
+note = "On-call, after the user's go for the GA flash"
+
+[[step]]
+row = "G"
+lab = ["lamp", "frame-dot"]
+needs_eyes = "eyes: naming the key under each lamp; Windows' Dynamic Lighting list; BLE pairing"
+
+[[step]]
+row = "H"
+needs_eyes = "eyes: the Plugins tab's look in light and dark"
+
+[[step]]
+row = "I"
+needs_eyes = "the user signs out or reboots"
+
+[[step]]
+row = "L"
+needs_eyes = "UAC prompts for install and uninstall"
+
+[[step]]
+row = "M"
+needs_eyes = "SignalRGB is an outside GUI; the underglow following it is seen"
+
+[[step]]
+row = "N"
+needs_eyes = "the user's call on legacy Logitech Options"
+
+[[step]]
+row = "O"
+needs_eyes = "iCUE and the user's Corsair gear"

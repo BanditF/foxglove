@@ -402,6 +402,50 @@ impl Devices for AppDevices {
                     Ok(json!({}))
                 })
             }
+            "lighting.sync" | "lighting.set_sync" => {
+                let (device, set) = if method == "lighting.sync" {
+                    let p: methods::DeviceParams = params(_params)?;
+                    (p.device, None)
+                } else {
+                    let p: methods::SetSyncParams = params(_params)?;
+                    (p.device, Some(p.on))
+                };
+                if set.is_some() && super::pause::paused() {
+                    return Err(paused_error());
+                }
+                let d = keyboard()
+                    .filter(|d| d.info().id.to_string() == device)
+                    .ok_or_else(|| Error {
+                        code: code::DISCONNECTED,
+                        message: format!("no keyboard {device} with Foxglove's host link"),
+                        data: None,
+                    })?;
+                let state = super::keyboard_settings::sync_now(Some(&d), set);
+                Ok(json!(sync_result(&device, state)?))
+            }
+            "pc_lighting.list" => Ok(json!(pc_devices(&super::pc_lights::snapshot()))),
+            "pc_lighting.set_zone" => {
+                let p: methods::SetZoneParams = params(_params)?;
+                if super::pause::paused() {
+                    return Err(paused_error());
+                }
+                let (key, index, color) = find_zone(&super::pc_lights::snapshot(), &p)?;
+                // Through the worker, as the page's Apply: saved, logged, and answered once
+                // the worker published its snapshot (a condvar, no polling).
+                let after = super::pc_lights::send_and_wait(
+                    super::pc_lights::Msg::Set {
+                        key: key.clone(),
+                        colors: vec![(index, color)],
+                    },
+                    std::time::Duration::from_secs(10),
+                )
+                .ok_or_else(|| Error {
+                    code: code::TIMEOUT,
+                    message: "the PC lighting worker didn't answer".into(),
+                    data: None,
+                })?;
+                Ok(json!(zone_readback(&after, &key, index, color)?))
+            }
             "profiles.list" => {
                 let (names, active) = super::store::profiles();
                 Ok(json!(methods::Profiles { names, active }))
@@ -436,6 +480,176 @@ impl Devices for AppDevices {
             }),
         }
     }
+}
+
+/// `lighting.sync`'s answer from what the keyboard read back.
+fn sync_result(
+    device: &str,
+    state: super::keyboard_settings::RgbSync,
+) -> Result<methods::SyncState, Error> {
+    use super::keyboard_settings::RgbSync;
+    match state {
+        RgbSync::Known { on } => Ok(methods::SyncState {
+            device: device.into(),
+            on,
+        }),
+        RgbSync::NoKeyboard => Err(Error {
+            code: code::DISCONNECTED,
+            message: "no keyboard with Foxglove's host link".into(),
+            data: None,
+        }),
+        _ => Err(Error {
+            code: code::UNSUPPORTED,
+            message: "this keyboard's firmware has no lighting sync (or didn't answer)".into(),
+            data: None,
+        }),
+    }
+}
+
+/// Whether Foxglove writes this device's colours itself.
+fn writable(r: &super::pc_lights::Row) -> bool {
+    matches!(r.control, foxglove_devices::pc_lighting::Control::Driver(_))
+}
+
+/// `pc_lighting.list` (#617): every PC lighting device the Lights page lists.
+fn pc_devices(s: &super::pc_lights::Snapshot) -> methods::PcDevices {
+    methods::PcDevices {
+        devices: s
+            .devices
+            .iter()
+            .map(|r| methods::PcDevice {
+                device: r.key.clone(),
+                name: r.name.clone(),
+                writable: writable(r),
+                match_keyboard: r.match_keyboard,
+                zones: r
+                    .zones
+                    .iter()
+                    .zip(&r.zone_ids)
+                    .map(|((name, c), id)| methods::PcZone {
+                        id: id.clone(),
+                        name: name.clone(),
+                        color: c.map(super::pc_lights::hex),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        status: s.status.clone(),
+        conflicts: s
+            .conflicts
+            .iter()
+            .map(|c| format!("{} on {}", c.app, c.device))
+            .collect(),
+    }
+}
+
+fn invalid(message: String) -> Error {
+    Error {
+        code: code::INVALID_PARAMS,
+        message,
+        data: None,
+    }
+}
+
+/// The device (by key, or a name only one device has), the zone (by id or name) and the
+/// colour (`#rrggbb` or `rrggbb`) a `pc_lighting.set_zone` names.
+fn find_zone(
+    s: &super::pc_lights::Snapshot,
+    p: &methods::SetZoneParams,
+) -> Result<(String, usize, [u8; 3]), Error> {
+    let want = p.device.to_lowercase();
+    let by_name: Vec<_> = s
+        .devices
+        .iter()
+        .filter(|r| r.name.to_lowercase().contains(&want))
+        .collect();
+    let by_key = s
+        .devices
+        .iter()
+        .find(|r| r.key.eq_ignore_ascii_case(&p.device));
+    let row = match (by_key, by_name.as_slice()) {
+        (Some(r), _) => r,
+        (None, [r]) => *r,
+        (None, []) => {
+            return Err(Error {
+                code: code::DISCONNECTED,
+                message: format!("no PC lighting device {:?}", p.device),
+                data: None,
+            })
+        }
+        (None, _) => {
+            return Err(invalid(format!(
+                "{:?} names more than one device; use its key",
+                p.device
+            )))
+        }
+    };
+    if !writable(row) {
+        return Err(Error {
+            code: code::UNSUPPORTED,
+            message: format!("Foxglove can't set {}'s colours yet", row.name),
+            data: None,
+        });
+    }
+    let index = row
+        .zone_ids
+        .iter()
+        .position(|id| id == &p.zone)
+        .or_else(|| {
+            row.zones
+                .iter()
+                .position(|(name, _)| name.eq_ignore_ascii_case(&p.zone))
+        })
+        .ok_or_else(|| {
+            let zones: Vec<_> = row
+                .zone_ids
+                .iter()
+                .zip(&row.zones)
+                .map(|(id, (name, _))| format!("{id} ({name})"))
+                .collect();
+            invalid(format!(
+                "{} has no zone {:?}; its zones: {}",
+                row.name,
+                p.zone,
+                zones.join(", ")
+            ))
+        })?;
+    let hex = p.color.trim();
+    let hex = if hex.starts_with('#') {
+        hex.to_string()
+    } else {
+        format!("#{hex}")
+    };
+    let color = super::pc_lights::parse_hex(&hex)
+        .ok_or_else(|| invalid(format!("{:?} isn't a #rrggbb colour", p.color)))?;
+    Ok((row.key.clone(), index, color))
+}
+
+/// The answer after a zone write: the devices, if the zone now shows the colour; else the
+/// worker's status as the error.
+fn zone_readback(
+    s: &super::pc_lights::Snapshot,
+    key: &str,
+    index: usize,
+    color: [u8; 3],
+) -> Result<methods::PcDevices, Error> {
+    let shown = s
+        .devices
+        .iter()
+        .find(|r| r.key == key)
+        .and_then(|r| r.zones.get(index))
+        .and_then(|(_, c)| *c);
+    if shown == Some(color) {
+        return Ok(pc_devices(s));
+    }
+    Err(Error {
+        code: code::BACKEND,
+        message: s
+            .status
+            .clone()
+            .unwrap_or_else(|| "the zone didn't take the colour".into()),
+        data: None,
+    })
 }
 
 /// `screens.list` (API 1.4, #560): each screen by id, role, name and size.
@@ -514,6 +728,153 @@ mod screens_tests {
         }))
         .unwrap();
         assert_eq!(old.screen, None);
+    }
+}
+
+#[cfg(test)]
+mod parity_tests {
+    use super::*;
+    use crate::foxglove::fixtures::{second_desk, users_desk};
+    use crate::foxglove::keyboard_settings::RgbSync;
+    use crate::foxglove::pc_lights::Snapshot;
+
+    fn desk() -> Snapshot {
+        let mut omen = users_desk::catalog_row((0x103c, 0x84fd));
+        omen.zones[0].1 = Some([0xa5, 0x75, 0x00]);
+        Snapshot {
+            devices: vec![
+                omen,
+                second_desk::case_row(),
+                users_desk::mouse_row(),
+                users_desk::catalog_row((0x03f0, 0x7397)),
+            ],
+            status: Some("HP OMEN 45L case lights: colours set".into()),
+            conflicts: vec![crate::foxglove::pc_lights::Conflicting {
+                app: "OMEN Light Studio".into(),
+                device: "HP OMEN 45L case lights".into(),
+                key: "103c:84fd".into(),
+                hint: None,
+            }],
+            ..Snapshot::default()
+        }
+    }
+
+    fn zone(device: &str, zone: &str, color: &str) -> methods::SetZoneParams {
+        methods::SetZoneParams {
+            device: device.into(),
+            zone: zone.into(),
+            color: color.into(),
+        }
+    }
+
+    /// #617: `pc_lighting.list` gives each device's zones by id and name with `#rrggbb`, and
+    /// whether Foxglove can write it.
+    #[test]
+    fn pc_lighting_list_reads_back_each_zone() {
+        let list = pc_devices(&desk());
+        let omen = &list.devices[0];
+        assert_eq!((omen.device.as_str(), omen.writable), ("103c:84fd", true));
+        assert_eq!(omen.zones[0].color.as_deref(), Some("#a57500"));
+        assert_eq!(omen.zones[0].id, "1");
+        assert_eq!(omen.zones[1].color, None);
+        assert!(
+            list.devices[1].writable,
+            "the second desk's case (any driver)"
+        );
+        assert!(!list.devices[2].writable, "a LampArray is Windows'");
+        assert!(
+            !list.devices[3].writable,
+            "the cooler isn't controllable yet"
+        );
+        assert_eq!(
+            list.status.as_deref(),
+            Some("HP OMEN 45L case lights: colours set")
+        );
+        assert_eq!(
+            list.conflicts,
+            ["OMEN Light Studio on HP OMEN 45L case lights"],
+            "a vendor tool running is detected"
+        );
+    }
+
+    /// The device by key or by a unique part of its name, the zone by id or name, the colour
+    /// with or without `#`; everything else is refused with a reason.
+    #[test]
+    fn set_zone_resolves_device_zone_and_colour() {
+        let s = desk();
+        let first = s.devices[0].zones[0].0.clone();
+        assert_eq!(
+            find_zone(&s, &zone("103c:84fd", "1", "#ff0000")).unwrap(),
+            ("103c:84fd".into(), 0, [0xff, 0, 0])
+        );
+        assert_eq!(
+            find_zone(&s, &zone("45l", &first.to_uppercase(), "A57500")).unwrap(),
+            ("103c:84fd".into(), 0, [0xa5, 0x75, 0])
+        );
+        let err = |p| find_zone(&s, &p).unwrap_err();
+        let e = err(zone("103c:84fd", "99", "#ff0000"));
+        assert_eq!(e.code, code::INVALID_PARAMS);
+        assert!(e.message.contains("its zones: 1 ("), "{}", e.message);
+        assert_eq!(
+            err(zone("103c:84fd", "1", "red")).code,
+            code::INVALID_PARAMS
+        );
+        assert_eq!(
+            err(zone("nothing", "1", "#ff0000")).code,
+            code::DISCONNECTED
+        );
+        assert_eq!(
+            err(zone("046d:c332", "1", "#ff0000")).code,
+            code::UNSUPPORTED
+        );
+        assert_eq!(
+            err(zone("omen", "1", "#ff0000")).code,
+            code::INVALID_PARAMS,
+            "two OMEN devices"
+        );
+    }
+
+    /// The write's answer is the readback: the zone shows the colour, or the worker's status
+    /// comes back as the error.
+    #[test]
+    fn set_zone_answers_with_the_readback() {
+        let s = desk();
+        assert!(zone_readback(&s, "103c:84fd", 0, [0xa5, 0x75, 0]).is_ok());
+        let e = zone_readback(&s, "103c:84fd", 0, [1, 2, 3]).unwrap_err();
+        assert_eq!(
+            (e.code, e.message.as_str()),
+            (code::BACKEND, "HP OMEN 45L case lights: colours set")
+        );
+    }
+
+    #[test]
+    fn sync_answers_from_the_keyboard_readback() {
+        assert_eq!(
+            sync_result("k", RgbSync::Known { on: false }).unwrap(),
+            methods::SyncState {
+                device: "k".into(),
+                on: false
+            }
+        );
+        assert_eq!(
+            sync_result("k", RgbSync::NotSupported).unwrap_err().code,
+            code::UNSUPPORTED
+        );
+        assert_eq!(
+            sync_result("k", RgbSync::NoKeyboard).unwrap_err().code,
+            code::DISCONNECTED
+        );
+    }
+
+    /// The new calls use the existing permissions: reads need `devices.read`, writes
+    /// `lighting.write`.
+    #[test]
+    fn the_new_calls_use_the_existing_permissions() {
+        let need = |m: &str| methods::find(m).and_then(|m| m.permission);
+        assert_eq!(need("pc_lighting.list"), Some("devices.read"));
+        assert_eq!(need("lighting.sync"), Some("devices.read"));
+        assert_eq!(need("pc_lighting.set_zone"), Some("lighting.write"));
+        assert_eq!(need("lighting.set_sync"), Some("lighting.write"));
     }
 }
 

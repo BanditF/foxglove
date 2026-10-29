@@ -371,6 +371,9 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
                             ui.label(RichText::new("changed").color(theme::palette(ui).accent));
                         }
                     });
+                    if let Some(c) = hex_box(ui, (&row.key, i), name, shown) {
+                        picks[i] = Some(c);
+                    }
                     ui.label(RichText::new(name).size(12.5));
                     if let Some(c) = shown {
                         if super::calibrate_ui::not_matched(ui, &row.key, zone, c) {
@@ -438,6 +441,44 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
             colors: changes,
         });
     }
+}
+
+/// A zone's colour as `#rrggbb` to type (#617): an exact colour, such as a saved one to put
+/// back. The text being typed stays while the box has focus; a whole colour is a pick (sent on
+/// Apply, like the picker's). The value is the device's colour, before the screen's mapping.
+fn hex_box(
+    ui: &mut egui::Ui,
+    id: (&str, usize),
+    name: &str,
+    shown: Option<[u8; 3]>,
+) -> Option<[u8; 3]> {
+    let id = ui.make_persistent_id(("pc-zone-hex", id.0, id.1));
+    let current = shown.map(pc_lights::hex).unwrap_or_default();
+    let mut text = ui
+        .data_mut(|d| d.get_temp::<String>(id))
+        .unwrap_or_else(|| current.clone());
+    let r = ui
+        .add(
+            egui::TextEdit::singleline(&mut text)
+                .desired_width(72.0)
+                .char_limit(7)
+                .font(egui::TextStyle::Monospace)
+                .hint_text("#rrggbb"),
+        )
+        .on_hover_text(format!("{name}: type a colour as #rrggbb, then Apply"));
+    let picked = r.changed().then(|| parse_typed(&text)).flatten();
+    if r.has_focus() {
+        ui.data_mut(|d| d.insert_temp(id, text));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(id));
+    }
+    picked
+}
+
+/// A typed colour: `#rrggbb` or `rrggbb`, any case.
+pub fn parse_typed(text: &str) -> Option<[u8; 3]> {
+    let t = text.trim();
+    pc_lights::parse_hex(&format!("#{}", t.strip_prefix('#').unwrap_or(t)))
 }
 
 /// "Calibrate…": opens the colour calibrator on a device.
@@ -695,6 +736,29 @@ pub mod tests {
             ],
         );
         assert_eq!(d.changes(&row), vec![(1, [2, 2, 2]), (4, [3, 3, 3])]);
+    }
+
+    /// #617: each zone shows its colour as `#rrggbb` to type; a typed colour is a pick.
+    #[test]
+    fn each_zone_has_a_hex_box() {
+        let v = sample();
+        let case =
+            v.pc.devices
+                .iter()
+                .find(|r| r.caps.per_zone() && r.zones.iter().any(|z| z.1.is_some()))
+                .expect("a per-zone device with colours in the sample");
+        let text = shown(&v);
+        for c in case.zones.iter().filter_map(|z| z.1) {
+            assert!(
+                text.contains(&pc_lights::hex(c)),
+                "{} in {text}",
+                pc_lights::hex(c)
+            );
+        }
+        assert_eq!(parse_typed("#A57500"), Some([0xa5, 0x75, 0x00]));
+        assert_eq!(parse_typed(" a57500 "), Some([0xa5, 0x75, 0x00]));
+        assert_eq!(parse_typed("#a575"), None);
+        assert_eq!(parse_typed("red"), None);
     }
 
     #[test]

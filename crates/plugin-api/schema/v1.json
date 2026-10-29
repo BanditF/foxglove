@@ -1,5 +1,5 @@
 {
-  "api": "1.4",
+  "api": "1.5",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -1172,6 +1172,46 @@
         "type": "object"
       }
     },
+    "lighting.set_sync": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Turns a split keyboard's lighting sync on or off (API 1.5).",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "device",
+          "on"
+        ],
+        "title": "SetSyncParams",
+        "type": "object"
+      },
+      "permission": "lighting.write",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A split keyboard's \"right half's lights follow the left\", saved on the keyboard (#617, API 1.5):\nthe answer to `lighting.sync` and `lighting.set_sync`, read back from the keyboard.",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "device",
+          "on"
+        ],
+        "title": "SyncState",
+        "type": "object"
+      }
+    },
     "lighting.state": {
       "kind": "call",
       "params": {
@@ -1239,6 +1279,41 @@
           "speed"
         ],
         "title": "LightingState",
+        "type": "object"
+      }
+    },
+    "lighting.sync": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "DeviceParams",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "A split keyboard's \"right half's lights follow the left\", saved on the keyboard (#617, API 1.5):\nthe answer to `lighting.sync` and `lighting.set_sync`, read back from the keyboard.",
+        "properties": {
+          "device": {
+            "type": "string"
+          },
+          "on": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "device",
+          "on"
+        ],
+        "title": "SyncState",
         "type": "object"
       }
     },
@@ -1504,6 +1579,215 @@
       "result": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Empty",
+        "type": "object"
+      }
+    },
+    "pc_lighting.list": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$defs": {
+          "PcDevice": {
+            "description": "A PC lighting device Foxglove found (not the keyboard). `device` is its stable key\n(`vvvv:pppp`, plus the serial when it has one); `writable` is false for devices Foxglove\ncan't drive yet (API 1.5).",
+            "properties": {
+              "device": {
+                "type": "string"
+              },
+              "match_keyboard": {
+                "type": "boolean"
+              },
+              "name": {
+                "type": "string"
+              },
+              "writable": {
+                "type": "boolean"
+              },
+              "zones": {
+                "items": {
+                  "$ref": "#/$defs/PcZone"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "device",
+              "name",
+              "writable",
+              "match_keyboard",
+              "zones"
+            ],
+            "type": "object"
+          },
+          "PcZone": {
+            "description": "One zone of a PC lighting device (a case, a cooler): its id (the board's zone number), its\nname, and the colour Foxglove last set or saved for it, `#rrggbb` (API 1.5).",
+            "properties": {
+              "color": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The answer to `pc_lighting.list` and `pc_lighting.set_zone` (API 1.5).",
+        "properties": {
+          "conflicts": {
+            "default": [],
+            "description": "Apps running now that may put their own colours back on a device (a vendor's lighting\ntool), as `<app> on <device>`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "devices": {
+            "items": {
+              "$ref": "#/$defs/PcDevice"
+            },
+            "type": "array"
+          },
+          "status": {
+            "description": "The last write's result, as the Lights page's status line shows it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "devices"
+        ],
+        "title": "PcDevices",
+        "type": "object"
+      }
+    },
+    "pc_lighting.set_zone": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Sets one zone of a PC lighting device, as the Lights page's Apply does: saved as the user's\ncolour, and \"Match keyboard\" stops (API 1.5). `zone` is the zone's id or its name;\n`color` is `#rrggbb`.",
+        "properties": {
+          "color": {
+            "type": "string"
+          },
+          "device": {
+            "type": "string"
+          },
+          "zone": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device",
+          "zone",
+          "color"
+        ],
+        "title": "SetZoneParams",
+        "type": "object"
+      },
+      "permission": "lighting.write",
+      "result": {
+        "$defs": {
+          "PcDevice": {
+            "description": "A PC lighting device Foxglove found (not the keyboard). `device` is its stable key\n(`vvvv:pppp`, plus the serial when it has one); `writable` is false for devices Foxglove\ncan't drive yet (API 1.5).",
+            "properties": {
+              "device": {
+                "type": "string"
+              },
+              "match_keyboard": {
+                "type": "boolean"
+              },
+              "name": {
+                "type": "string"
+              },
+              "writable": {
+                "type": "boolean"
+              },
+              "zones": {
+                "items": {
+                  "$ref": "#/$defs/PcZone"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "device",
+              "name",
+              "writable",
+              "match_keyboard",
+              "zones"
+            ],
+            "type": "object"
+          },
+          "PcZone": {
+            "description": "One zone of a PC lighting device (a case, a cooler): its id (the board's zone number), its\nname, and the colour Foxglove last set or saved for it, `#rrggbb` (API 1.5).",
+            "properties": {
+              "color": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "name"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The answer to `pc_lighting.list` and `pc_lighting.set_zone` (API 1.5).",
+        "properties": {
+          "conflicts": {
+            "default": [],
+            "description": "Apps running now that may put their own colours back on a device (a vendor's lighting\ntool), as `<app> on <device>`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "devices": {
+            "items": {
+              "$ref": "#/$defs/PcDevice"
+            },
+            "type": "array"
+          },
+          "status": {
+            "description": "The last write's result, as the Lights page's status line shows it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "devices"
+        ],
+        "title": "PcDevices",
         "type": "object"
       }
     },
