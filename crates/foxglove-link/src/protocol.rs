@@ -65,6 +65,10 @@ pub mod capabilities {
     /// BATTERY_DIM (D7 8E) also carries the right half's whole-screen rewrites since its
     /// power-on ([`super::BatteryDim::right_redraws`], #618).
     pub const RIGHT_REDRAWS: u32 = 1 << 25;
+    /// Settings PC_STATE (D7 11): the PC awake with a lease, or away (#609, #604). On USB power
+    /// the keyboard then stays lit while the PC is awake and idles when it sleeps
+    /// ([`super::pc_state`]).
+    pub const PC_STATE: u32 = 1 << 26;
 }
 pub const VERSION: u8 = 1;
 
@@ -128,6 +132,8 @@ pub mod settings {
     pub const EFFECT: u8 = 0x0F;
     /// The board's LEDs per part (#561): see [`super::lamp_parts`].
     pub const LAMP_PARTS: u8 = 0x10;
+    /// The PC's state (#609, #604): see [`super::pc_state`].
+    pub const PC_STATE: u8 = 0x11;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -734,6 +740,122 @@ pub fn frame(start: u8, colours: &[[u8; 3]]) -> Vec<Vec<u8>> {
 /// on its own after its timeout, a USB unplug or an endpoint change.
 pub fn is_frame_event(r: &[u8]) -> bool {
     is_reply(r, SETTINGS, settings::FRAME) && r.get(6).is_some_and(|&e| e != 0)
+}
+
+/// PC_STATE (D7 11, HELLO bit 26, #609, #604; firmware widgets/pc_state.h): the PC's state for
+/// the keyboard. Awake holds a half on its own USB power out of idle while the lease runs, and
+/// with the wake flag wakes it as a key does (the PC came back); away idles it at once. On
+/// battery nothing changes. The keyboard asks for a renewal (an unsolicited D7 91 with event 1,
+/// [`PcState::lease_ending`]) a minute and again 20 s before the lease ends; without one the
+/// lease lapses and the keyboard stays lit 10 minutes after the last key, then idles.
+pub mod pc_state {
+    pub const AWAY: u8 = 0;
+    pub const AWAKE: u8 = 1;
+    pub const READ: u8 = 0xff;
+    /// Request flag: wake the keyboard now, as a key would.
+    pub const WAKE: u8 = 1 << 0;
+    /// The longest lease the keyboard takes, in seconds.
+    pub const LEASE_MAX_S: u16 = 3600;
+}
+
+/// PC_STATE read: the keyboard's state now, changing nothing.
+pub fn pc_read() -> Vec<u8> {
+    vec![SETTINGS, settings::PC_STATE, pc_state::READ, 0, 0, 0]
+}
+
+/// PC_STATE away: the PC sleeps or its display is off; the keyboard idles at once.
+pub fn pc_away() -> Vec<u8> {
+    vec![SETTINGS, settings::PC_STATE, pc_state::AWAY, 0, 0, 0]
+}
+
+/// PC_STATE awake with a lease of `lease_s` seconds (1 to [`pc_state::LEASE_MAX_S`]); `wake`
+/// also wakes the keyboard at once (the PC came back, #604).
+pub fn pc_awake(lease_s: u16, wake: bool) -> Vec<u8> {
+    let lease = lease_s.clamp(1, pc_state::LEASE_MAX_S).to_le_bytes();
+    let flags = if wake { pc_state::WAKE } else { 0 };
+    vec![
+        SETTINGS,
+        settings::PC_STATE,
+        pc_state::AWAKE,
+        flags,
+        lease[0],
+        lease[1],
+    ]
+}
+
+/// The PC state as the keyboard has it (`PcState::state`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PcStateKind {
+    /// No lease: nothing heard, or it lapsed. On USB power the keyboard stays lit 10 minutes
+    /// after the last key.
+    None,
+    Awake,
+    Away,
+    Unknown(u8),
+}
+
+/// The PC_STATE reply or event (D7 91).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PcState {
+    /// 0 ok, 4 not built in, 5 bad request.
+    pub status: u8,
+    /// An unsolicited ask: the lease ends soon, renew it if the PC is awake.
+    pub lease_ending: bool,
+    pub state: PcStateKind,
+    /// The hold keeps the left out of idle now.
+    pub held: bool,
+    /// The left has USB power, on a bus that isn't suspended.
+    pub usb: bool,
+    /// The left's own activity (its keys) is active.
+    pub keys: bool,
+    /// Keys or held: the left is lit.
+    pub active: bool,
+    /// Seconds left on the lease, 0 without one.
+    pub lease_s: u16,
+    /// Why the hold is on or off (byte 8): see [`PcState::reason_text`].
+    pub reason: u8,
+}
+
+impl PcState {
+    /// `None` for anything but a D7 91.
+    pub fn parse(r: &[u8]) -> Option<PcState> {
+        if !is_reply(r, SETTINGS, settings::PC_STATE) || r.len() < 8 {
+            return None;
+        }
+        Some(PcState {
+            status: r[2],
+            lease_ending: r[3] == 1,
+            state: match r[4] {
+                0 => PcStateKind::None,
+                1 => PcStateKind::Awake,
+                2 => PcStateKind::Away,
+                other => PcStateKind::Unknown(other),
+            },
+            held: r[5] & 1 != 0,
+            usb: r[5] & 2 != 0,
+            keys: r[5] & 4 != 0,
+            active: r[5] & 8 != 0,
+            lease_s: u16::from_le_bytes([r[6], r[7]]),
+            reason: r[8],
+        })
+    }
+
+    /// The reason byte in words (firmware enum pc_state_reason).
+    pub fn reason_text(&self) -> &'static str {
+        match self.reason {
+            0 => "held: the lease runs",
+            1 => "held: the USB idle time after the last key",
+            2 => "not held: no USB power, or the bus is suspended",
+            3 => "not held: away",
+            4 => "not held: no lease and no USB idle time running",
+            _ => "unknown",
+        }
+    }
+}
+
+/// Whether `r` is PC_STATE's lease ask (D7 91 with event 1), which the keyboard sends on its own.
+pub fn is_pc_state_event(r: &[u8]) -> bool {
+    is_reply(r, SETTINGS, settings::PC_STATE) && r.get(3).is_some_and(|&e| e != 0)
 }
 
 /// LAMP_PARTS (D7 10, HELLO bit 22): asks for the board's LEDs per part.
@@ -1653,13 +1775,33 @@ mod tests {
     }
 
     /// Every HELLO capability is its own bit (#618 moved RIGHT_REDRAWS to 25 after #629 took 24
-    /// for RGB_SHOWN).
+    /// for RGB_SHOWN; #609 took 26 for PC_STATE).
     #[test]
     fn capability_bits_are_distinct() {
         use capabilities::*;
-        assert_eq!((RGB_SHOWN, RIGHT_REDRAWS), (1 << 24, 1 << 25));
+        assert_eq!(
+            (RGB_SHOWN, RIGHT_REDRAWS, PC_STATE),
+            (1 << 24, 1 << 25, 1 << 26)
+        );
         let all = [
             PANEL,
+            ART_STATUS_EVENT,
+            CONN_STATE,
+            POSITION,
+            SCREEN,
+            INVOKE_REFUSES,
+            CONN_STATE_EVENT,
+            BOOTLOADER,
+            ART_SLOTS,
+            RGB_STATE_EVENT,
+            BUILD_INFO,
+            SCREENS,
+            FRAMES,
+            PANEL_HOLD,
+            LEFT_BATTERY,
+            BATTERY_DIM,
+            EFFECTS,
+            PC_STATE,
             ART_RELAY,
             SETTINGS_RGB,
             ACTIVITY_RELAY,
@@ -1675,6 +1817,52 @@ mod tests {
                 assert_eq!(a & b, 0, "{a:#x} and {b:#x} overlap");
             }
         }
+    }
+
+    /// D7 11 as the firmware reads it (widgets/host_link.h), and D7 91 as it writes it
+    /// (struct pc_state_wire); tests/zmk-sim/pc-state plays the same bytes against the firmware.
+    #[test]
+    fn pc_state_reports() {
+        assert_eq!(pc_away(), [0xD7, 0x11, 0, 0, 0, 0]);
+        assert_eq!(pc_awake(600, true), [0xD7, 0x11, 1, 1, 0x58, 0x02]);
+        assert_eq!(pc_awake(600, false), [0xD7, 0x11, 1, 0, 0x58, 0x02]);
+        // The keyboard refuses 0 and anything past an hour: clamped, so a request always counts.
+        assert_eq!(pc_awake(0, false)[4..], [1, 0]);
+        assert_eq!(pc_awake(u16::MAX, false)[4..], [0x10, 0x0e]);
+
+        let mut r = [0u8; REPORT];
+        r[..9].copy_from_slice(&[0xD7, 0x91, 0, 0, 1, 0b1011, 0x58, 0x02, 0]);
+        let s = PcState::parse(&r).unwrap();
+        assert_eq!(
+            s,
+            PcState {
+                status: 0,
+                lease_ending: false,
+                state: PcStateKind::Awake,
+                held: true,
+                usb: true,
+                keys: false,
+                active: true,
+                lease_s: 600,
+                reason: 0,
+            }
+        );
+        assert_eq!(
+            PcState::parse(&r).unwrap().reason_text(),
+            "held: the lease runs"
+        );
+        assert_eq!(pc_read(), [0xD7, 0x11, 0xff, 0, 0, 0]);
+        assert!(!is_pc_state_event(&r));
+        r[3] = 1;
+        r[6..8].copy_from_slice(&[60, 0]);
+        let s = PcState::parse(&r).unwrap();
+        assert!(s.lease_ending && s.lease_s == 60);
+        assert!(is_pc_state_event(&r));
+        r[4] = 2;
+        assert_eq!(PcState::parse(&r).unwrap().state, PcStateKind::Away);
+        r[1] = 0x90;
+        assert_eq!(PcState::parse(&r), None);
+        assert!(!is_pc_state_event(&r));
     }
 
     #[test]

@@ -30,6 +30,10 @@
  * These map to POSITION statuses 2, 4, 5; ATT success maps to 0 and timeout to 3.
  * SET_FRAME's LAMPS / LAMP_HOST (11, 12) and SET_EFFECT's EFFECT / EFFECT_GO (14, 15) are below.
  * ACTIVITY (16, activity_relay.h) is the left's activity state, so the right's art follows it.
+ * PC_STATE (17, pc_state.h): state u8 (0 none, 1 awake, 2 away), lease seconds left u16 LE: the
+ * PC's state as the left has it (#609), sent like ACTIVITY on each change, each renewal and on
+ * link-up. The right holds itself out of idle only on its own USB power. A right before it has no
+ * case for the op and ignores it.
  * RGB (write request, so the left knows it arrived) is the left's underglow on/off; with follow = 1 the right shows
  * the same, with 0 it goes by its own activity (rgb_idle.c). Bytes 3-7 (status version >= 6) are
  * the left's struct battery_dim_config, which the right takes and saves as its own levels (each
@@ -37,7 +41,10 @@
  * (rgb_idle_look: hue u16, saturation, brightness, effect): with follow = 1 the right sets its
  * own to it, so a right that rebooted with an older saved look, or missed a change while the
  * link was down, shows the left's. The left is the only source: nothing the right reports is
- * ever applied on the left. The right ignores bytes it doesn't know, so the op can grow.
+ * ever applied on the left. Byte 13 (#609) is the left's own on/off (the user's choice, saved):
+ * byte 1 is that with the left's keys' activity, never the PC state's hold, so a right on battery
+ * goes dark on its own while the left is held lit; a right on USB power that the PC state holds
+ * shows byte 13 instead. The right ignores bytes it doesn't know, so the op can grow.
  * The right half receives into a spare slot and keeps playing what it shows until a blob passes
  * its CRC and header checks; a failed or abandoned push leaves the screen alone.
  *
@@ -100,6 +107,8 @@ enum art_relay_op {
     // The left's activity (#603, activity_relay.h): state u8 (0 active, 1 idle, 2 going to
     // sleep), as a write request on relay_q and also, ahead of the queue, as a write command.
     ART_RELAY_ACTIVITY = ART_RELAY_ACTIVITY_OP,
+    // The PC's state (#609, pc_state.h): state u8, lease s u16 LE, sent with ACTIVITY's rules.
+    ART_RELAY_PC_STATE = 17,
 };
 
 // The right rings on every CCC write that turns notify on (#618), not only when Zephyr's CCC value
@@ -207,6 +216,8 @@ uint8_t art_relay_guard_drops(void);
 int art_relay_guard_test(uint16_t delay_ms);
 // Sends the left's underglow state and sync setting to the right soon, if they changed.
 void art_relay_rgb_kick(void);
+// The PC's state changed or was renewed (pc_state.c): the right gets it soon. Any thread.
+void art_relay_pc_state_kick(void);
 // The PC's colour for the right half (#266): sent as one acknowledged write, the newest value
 // only, retried until the right has it. -ENOTSUP when the right can't take it (no relay link, or
 // older right firmware): use ZMK's split invoke instead.

@@ -33,6 +33,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 #include "art_relay.h"
 #include "art_relay_doorbell.h"
+#include "pc_state.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
 #include "effect_run.h"
 #endif
@@ -1180,6 +1181,7 @@ static struct k_work_q lane_q;
 
 #define LANE_ACTIVITY BIT(0)
 #define LANE_RGB BIT(1)
+#define LANE_PC_STATE BIT(2)
 static atomic_t lane_want;
 
 static void lane_rgb(struct bt_conn *conn, uint16_t handle);
@@ -1205,6 +1207,14 @@ static void lane_cb(struct k_work *work) {
     if (want & LANE_RGB) {
         lane_rgb(conn, handle);
     }
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+    if (want & LANE_PC_STATE) {
+        uint8_t op[PC_STATE_RELAY_SIZE];
+        uint32_t changes;
+        pc_state_relay_op(op, &changes);
+        bt_gatt_write_without_response(conn, handle, op, sizeof(op), false);
+    }
+#endif
     bt_conn_unref(conn);
 }
 static K_WORK_DEFINE(lane_work, lane_cb);
@@ -1218,11 +1228,19 @@ static void lane(atomic_val_t what) {
 static int8_t activity_sent = -1; // the state the right last acknowledged, -1 unknown
 static uint8_t activity_tries, activity_busy;
 static atomic_t activity_reset; // a new link: activity_cb starts over
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+// The PC state the right last acknowledged (#609): pc_state_relay_op's change count.
+static uint32_t pc_sent;
+static bool pc_sent_valid;
+#endif
 
 static void activity_cb(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
     if (atomic_cas(&activity_reset, 1, 0)) {
         activity_sent = -1; // a new right, or one that rebooted
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+        pc_sent_valid = false;
+#endif
         activity_tries = 0;
         activity_busy = 0;
     }
@@ -1239,6 +1257,21 @@ static void activity_cb(struct k_work *work) {
             activity_sent = op[1];
         }
     }
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+    // The PC's state (#609): each change and renewal once, newest wins, with the same stop rules.
+    if (!err) {
+        uint8_t pc[PC_STATE_RELAY_SIZE];
+        uint32_t changes;
+        pc_state_relay_op(pc, &changes);
+        if (!pc_sent_valid || changes != pc_sent) {
+            err = write_req(conn, pc, sizeof(pc));
+            if (!err) {
+                pc_sent = changes;
+                pc_sent_valid = true;
+            }
+        }
+    }
+#endif
     bt_conn_unref(conn);
     if (err == -EBUSY && activity_busy++ < ACTIVITY_BUSY_WAITS) {
         k_work_reschedule_for_queue(&relay_q, dwork, ACTIVITY_BUSY_RETRY);
@@ -1257,6 +1290,13 @@ static K_WORK_DELAYABLE_DEFINE(activity_work, activity_cb);
 void art_relay_activity_kick(void) {
     if (art_relay_link() == 2) {
         lane(LANE_ACTIVITY);
+        k_work_reschedule_for_queue(&relay_q, &activity_work, K_NO_WAIT);
+    }
+}
+
+void art_relay_pc_state_kick(void) {
+    if (art_relay_link() == 2) {
+        lane(LANE_PC_STATE);
         k_work_reschedule_for_queue(&relay_q, &activity_work, K_NO_WAIT);
     }
 }
@@ -1288,8 +1328,9 @@ SYS_INIT(art_relay_init, APPLICATION, CONFIG_APPLICATION_INIT_PRIORITY);
 #define RGB_RETRIES 10
 
 // The last RGB op the right half confirmed: on, follow, the battery dim config and the look.
-static uint8_t rgb_sent[3 + sizeof(struct battery_dim_config) + RGB_IDLE_LOOK_SIZE];
+static uint8_t rgb_sent[3 + sizeof(struct battery_dim_config) + RGB_IDLE_LOOK_SIZE + 1];
 #define RGB_LOOK_AT (3 + sizeof(struct battery_dim_config))
+#define RGB_WANTED_AT (RGB_LOOK_AT + RGB_IDLE_LOOK_SIZE) // the left's own on/off (#609)
 static bool rgb_sent_valid;
 // A status read showed the right with another look than the left's (#624): send it again, once
 // per look of the left's (a right that ignores the look, older firmware, isn't asked forever).
@@ -1301,10 +1342,11 @@ static atomic_t hsb_sent = ATOMIC_INIT(-1); // the PC colour the right last ackn
 
 // The RGB op as the right should have it now; false when the on/off can't be read. Any thread.
 static bool rgb_op(uint8_t buf[sizeof(rgb_sent)], uint8_t *len) {
-    bool on;
+    bool on, wanted;
     // Under the PC's frames the user's on/off, not ZMK's: a right that can't draw frames keeps
-    // its own effect (and one that can comes back lit).
-    if (rgb_idle_get_on(&on) != 0) {
+    // its own effect (and one that can comes back lit). The left's keys, not the PC state's hold:
+    // a right on battery keeps its own rules (#609).
+    if (rgb_idle_relay_on(&on, &wanted) != 0) {
         return false;
     }
     memset(buf, 0, sizeof(rgb_sent));
@@ -1320,6 +1362,7 @@ static bool rgb_op(uint8_t buf[sizeof(rgb_sent)], uint8_t *len) {
     // The left's look (#624): with follow on the right shows it, whatever it saved before. An
     // older right stops reading at the dim config.
     rgb_idle_look(&buf[RGB_LOOK_AT]);
+    buf[RGB_WANTED_AT] = wanted; // a right on USB power that the PC state holds shows this
     *len = sizeof(rgb_sent);
     return true;
 }

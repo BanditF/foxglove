@@ -105,6 +105,32 @@ config NICE_VIEW_RGB_IDLE
       user's choice, so a half that reboots after idle (the right, waking from deep sleep) stays
       dark. With the art relay, the PC can make the right follow the left's state (0xD7 01).
 
+config FOXGLOVE_PC_STATE
+    bool "Stay lit on USB power while the PC is awake, idle when it sleeps (#609, #604)"
+    default y if USB_DEVICE_STACK
+    help
+      The app tells the keyboard the PC's state (D7 11 PC_STATE, HELLO bit 26): awake with a
+      lease, or away (display off or sleep). On its own USB power a half then stays out of idle
+      while the lease runs, idles at once on away, and wakes when the PC comes back. Without the
+      app it stays lit FOXGLOVE_PC_STATE_USB_IDLE_S after the last key. On battery nothing
+      changes: ZMK's own idle and sleep. See widgets/pc_state.h.
+
+config FOXGLOVE_PC_STATE_USB_IDLE_S
+    int "On USB power without the app: seconds after the last key before idle"
+    default 600
+    range 0 86400
+    depends on FOXGLOVE_PC_STATE
+    help
+      Decision 2 on #609: 10 minutes. At or below ZMK's own idle timeout it changes nothing.
+
+config FOXGLOVE_BACKLIGHT_IDLE
+    bool "Key backlight off while idle, following the PC state's hold"
+    default y if ZMK_BACKLIGHT && FOXGLOVE_PC_STATE
+    depends on ZMK_BACKLIGHT && FOXGLOVE_PC_STATE
+    help
+      Replaces ZMK_BACKLIGHT_AUTO_OFF_IDLE (set that to n), which follows ZMK's own activity
+      only, so the PC state couldn't keep the backlight on.
+
 config NICE_VIEW_RGB_BATTERY_DIM
     def_bool DT_HAS_FOXGLOVE_DIM_STRIP_ENABLED
     help

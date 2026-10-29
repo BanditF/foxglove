@@ -23,6 +23,10 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include <zephyr/bluetooth/conn.h>
 
 #include "rgb_idle.h"
+#include "pc_state.h"
+
+// The RGB op's byte with the left's own on/off (art_relay.h, #609).
+#define RGB_OP_WANTED_AT (3 + sizeof(struct battery_dim_config) + RGB_IDLE_LOOK_SIZE)
 #endif
 
 #include <zephyr/sys/byteorder.h>
@@ -390,7 +394,9 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
         }
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
-        rgb_idle_remote(d[1] != 0, len < 3 || d[2] != 0);
+        // Byte 13 (#609): the left's own on/off, shown while the PC state holds this half.
+        rgb_idle_remote_wanted(d[1] != 0, len < 3 || d[2] != 0,
+                               len > RGB_OP_WANTED_AT ? d[RGB_OP_WANTED_AT] != 0 : d[1] != 0);
         // The left's look (#624): following it, the right shows the left's colour and effect,
         // whatever it saved before a reboot or missed while the link was down.
         if (len >= 3 + sizeof(struct battery_dim_config) + RGB_IDLE_LOOK_SIZE && d[2] != 0) {
@@ -412,6 +418,16 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
         }
         art_activity_remote(d[1] == ZMK_ACTIVITY_ACTIVE);
+        pc_state_remote_keys(d[1] == ZMK_ACTIVITY_ACTIVE); // a left key counts for USB idle
+        break;
+
+    case ART_RELAY_PC_STATE: // the PC's state as the left has it (#609): write request or command
+        if (len != PC_STATE_RELAY_SIZE) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+        pc_state_remote(d[1], sys_get_le16(&d[2]));
+#endif
         break;
 
     case ART_RELAY_RGB_HSB: {

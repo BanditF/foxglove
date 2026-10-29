@@ -74,6 +74,24 @@ enum Command {
     },
     /// Prints the art relay's status (D6 STATUS, asked twice so the right's part is fresh).
     ArtStatus,
+    /// The PC state (D7 11 / D7 91, HELLO bit 26, #609): reads the keyboard's state, or sends
+    /// away, awake or back (awake with the wake) with a lease, and prints the state after it as
+    /// JSON (held, USB, keys, active, lease left, the hold's reason). Exit code 4: no bit 26.
+    /// A send competes with a running app's own state: read only while it runs.
+    PcState {
+        #[arg(long, default_value = "read", value_parser = ["read", "away", "awake", "back"])]
+        set: String,
+        #[arg(long, default_value_t = 600)]
+        lease_s: u16,
+    },
+    /// Prints what the keyboard reports on its own for `--seconds`: each RGB_STATE event (D7 83,
+    /// both halves' shown state: lit, wanted, idle, PC-drawn, unpowered) and each PC_STATE ask
+    /// (D7 91), one JSON line each with the milliseconds since the start; first one RGB_STATE
+    /// read as the baseline. Event-driven, ends at the deadline (#651's steps 2, 3 and 5).
+    RgbWatch {
+        #[arg(long, default_value_t = 30)]
+        seconds: u64,
+    },
     /// Waits for the left's relay to the right half to be up: asks STATUS once, then waits for
     /// the relay-ready event (D6 85 with link 2) up to the timeout (#594). For scripts/flash.
     /// Exit code 0: up (JSON out); 3: timed out; 4: the firmware sends no relay events (no
@@ -200,6 +218,20 @@ fn catalog_for(
     foxglove_lab::behaviors::resolve(Catalog::load(keymap), left.as_deref(), || {
         foxglove_lab::studio::read(studio_port)
     })
+}
+
+/// One half's RGB_SHOWN (#605) as JSON; null when the firmware can't say.
+fn shown_json(s: Option<foxglove_link::protocol::RgbShown>) -> serde_json::Value {
+    s.map_or(serde_json::Value::Null, |s| {
+        serde_json::json!({"lit": s.lit, "wanted": s.wanted, "idle": s.idle, "host": s.host,
+            "unpowered": s.unpowered, "following": s.following, "value": s.value, "dim": s.dim})
+    })
+}
+
+fn pc_state_json(s: &foxglove_link::protocol::PcState) -> serde_json::Value {
+    serde_json::json!({"status": s.status, "event": s.lease_ending, "state": format!("{:?}", s.state),
+        "held": s.held, "usb": s.usb, "keys": s.keys, "active": s.active, "lease_s": s.lease_s,
+        "reason": s.reason, "reason_text": s.reason_text()})
 }
 
 fn connect(product: Option<String>) -> Result<Link> {
@@ -409,6 +441,68 @@ fn main() -> Result<std::process::ExitCode> {
             }
         };
     }
+    if let Command::PcState { set, lease_s } = &cli.command {
+        let _guard = platform::guard(cli.allow_app)?;
+        let _lab = platform::lab_lock(Duration::from_secs(120))?;
+        let link = connect(cli.product.clone())?;
+        let c = link.wait_connected(Duration::from_secs(10))?;
+        if c.hello.map_or(0, |h| h.capabilities) & capabilities::PC_STATE == 0 {
+            eprintln!("this firmware has no PC state (HELLO bit 26)");
+            return Ok(std::process::ExitCode::from(4));
+        }
+        let report = match set.as_str() {
+            "away" => foxglove_link::protocol::pc_away(),
+            "awake" => foxglove_link::protocol::pc_awake(*lease_s, false),
+            "back" => foxglove_link::protocol::pc_awake(*lease_s, true),
+            _ => foxglove_link::protocol::pc_read(),
+        };
+        let s = settings::pc_state(&link, &report)?;
+        println!("{}", pc_state_json(&s));
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+    if let Command::RgbWatch { seconds } = &cli.command {
+        let _guard = platform::guard(cli.allow_app)?;
+        let _lab = platform::lab_lock(Duration::from_secs(120))?;
+        let link = connect(cli.product.clone())?;
+        link.wait_connected(Duration::from_secs(10))?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        // On the link's reader: only enqueue.
+        let _reports = link.subscribe_reports(move |_, r| {
+            let _ = tx.send(*r);
+        });
+        let start = std::time::Instant::now();
+        let shown = |r: &foxglove_link::protocol::RgbOutput| serde_json::json!({"left": shown_json(r.left), "right": shown_json(r.right)});
+        let (_, base) = settings::rgb_output(&link)?;
+        println!(
+            "{}",
+            serde_json::json!({"ms": start.elapsed().as_millis() as u64, "baseline": shown(&base)})
+        );
+        let end = start + Duration::from_secs(*seconds);
+        // Start: each report the keyboard sends. Stop: the deadline.
+        while let Ok(r) = rx.recv_timeout(end.saturating_duration_since(std::time::Instant::now()))
+        {
+            let ms = start.elapsed().as_millis() as u64;
+            if foxglove_link::protocol::is_reply(
+                &r,
+                foxglove_link::protocol::SETTINGS,
+                foxglove_link::protocol::settings::RGB_STATE,
+            ) {
+                let out = foxglove_link::protocol::RgbOutput::parse(&r);
+                println!(
+                    "{}",
+                    serde_json::json!({"ms": ms, "rgb_state": shown(&out)})
+                );
+            } else if foxglove_link::protocol::is_pc_state_event(&r) {
+                if let Some(s) = foxglove_link::protocol::PcState::parse(&r) {
+                    println!(
+                        "{}",
+                        serde_json::json!({"ms": ms, "pc_state": pc_state_json(&s)})
+                    );
+                }
+            }
+        }
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
     if let Command::Bootloader { half, confirmed } = &cli.command {
         ensure!(
             confirmed == "FLASH",
@@ -494,6 +588,23 @@ fn main() -> Result<std::process::ExitCode> {
             settings::conn_state(&link)?,
             settings::rgb_state(&link)?
         );
+        // What each half's LEDs show (#605): lit, the user's on/off, idle (the effective one with
+        // the PC state's hold), the PC drawing, ext power.
+        match settings::rgb_output(&link) {
+            Ok((_, out)) => println!(
+                "RGB_SHOWN: {}",
+                serde_json::json!({"left": shown_json(out.left), "right": shown_json(out.right)})
+            ),
+            Err(e) => println!("RGB_SHOWN: error {e}"),
+        }
+        if hello.capabilities & capabilities::PC_STATE != 0 {
+            match settings::pc_state(&link, &foxglove_link::protocol::pc_read()) {
+                Ok(s) => println!("PC_STATE: {}", pc_state_json(&s)),
+                Err(e) => println!("PC_STATE: error {e}"),
+            }
+        } else {
+            println!("PC_STATE: unknown (no HELLO bit 26)");
+        }
         // The right's whole-screen rewrites since its power-on (#618), as the left last read
         // them; asked twice so the second answer is fresh.
         if hello.capabilities & foxglove_link::protocol::capabilities::RIGHT_REDRAWS != 0 {

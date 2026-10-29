@@ -119,6 +119,14 @@ needs_eyes = "hands: holding a layer key and unplugging USB"
 # --- Keyboard: lights ---
 
 [[step]]
+match = "The PC state, both halves on this build and the left on USB with Foxglove running"
+sim = ["pc-state"]
+lab = ["status", "pc-state", "rgb-watch"]
+api = ["lighting.state"]
+log = ["PC state to the keyboard:"]
+needs_eyes = "the PC itself: let the display go off and come back, lock and unlock, quit Foxglove for 10 minutes; and a look that both halves (the right's art too) dim and relight"
+
+[[step]]
 match = "SET_FRAME: both halves follow a moving dot"
 lab = ["frame-dot"]
 sim = ["host-frames"]
@@ -500,6 +508,49 @@ needs_eyes = "hands: a real tray click, only when IA2's focus case was BLOCKED b
 [[step]]
 batch = "I4"
 needs_eyes = "eyes and hands: a real click on another window closing the panel (#406), only when IA2 was BLOCKED"
+
+# Batch P: the PC state (#609, PR #651); display-off probes are retired on this PC
+
+[[step]]
+batch = "PA1"
+lab = ["status"]
+
+[[step]]
+batch = "PA2"
+lab = ["rgb-watch"]
+log = ["PC state to the keyboard:"]
+
+[[step]]
+batch = "P1"
+needs_eyes = "hands: opening Windows' power menu; only a real sleep turns the display off here (Modern Standby; display-off probes are retired, #651)"
+
+[[step]]
+batch = "P2"
+needs_eyes = "hands and eyes: only a real sleep turns the display off here (it is Modern Standby, and probes that did it are retired, #651); eyes say both halves went dark (PA2 times it)"
+
+[[step]]
+batch = "P3"
+needs_eyes = "hands and eyes: waking the PC from that sleep; eyes say both halves relit and the right's art moves (PA2 times the edges, nothing reads the art's motion)"
+
+[[step]]
+batch = "PA3"
+lab = ["pc-state"]
+
+[[step]]
+batch = "P4"
+needs_eyes = "hands: quitting the user's own Foxglove (agents don't stop or launch it on the user's desktop) and keeping off the keys for 11 minutes"
+
+[[step]]
+batch = "PA4"
+lab = ["rgb-watch", "pc-state"]
+
+[[step]]
+batch = "P5"
+needs_eyes = "eyes: the keyboard dark about 10 minutes after the last key (PA4 has the times; the look confirms the LEDs and the backlight went out)"
+
+[[step]]
+batch = "P6"
+needs_eyes = "hands: starting the user's own Foxglove again; agents never launch it on the user's desktop"
 
 # Batch R: right screen after #621 (#613)
 

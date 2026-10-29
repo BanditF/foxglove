@@ -62,6 +62,15 @@ endif()
 if(CONFIG_USB_DEVICE_STACK)
   zephyr_library_sources(widgets/usb_wake.c)
 endif()
+# The PC's state (#609, #604): both halves, display or not. Its users (rgb_idle.c,
+# peripheral_status.c, activity_relay.c, the backlight below) read the effective activity.
+if(CONFIG_FOXGLOVE_PC_STATE)
+  zephyr_library_include_directories(${CMAKE_SOURCE_DIR}/include)
+  zephyr_library_sources(widgets/pc_state.c)
+  if(CONFIG_FOXGLOVE_BACKLIGHT_IDLE)
+    zephyr_library_sources(widgets/backlight_idle.c)
+  endif()
+endif()
 
 # Version, SHA and half marker, shared with the foxglove_link shield.
 include(${CMAKE_CURRENT_LIST_DIR}/foxglove_common.cmake)

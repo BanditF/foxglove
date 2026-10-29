@@ -46,6 +46,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 #include "test_hooks.h"
 #endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+#include "pc_state.h"
+#endif
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
 #include <zmk/rgb_underglow.h>
@@ -67,7 +70,8 @@ enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
        SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B, // 0x0A: LAMP_TEST (#115 branch)
        SETTING_FRAME = 0x0C, SETTING_ART_KEYS = 0x0D,
-       SETTING_BATTERY_DIM = 0x0E, SETTING_EFFECT = 0x0F, SETTING_LAMP_PARTS = 0x10 };
+       SETTING_BATTERY_DIM = 0x0E, SETTING_EFFECT = 0x0F, SETTING_LAMP_PARTS = 0x10,
+       SETTING_PC_STATE = 0x11 };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -238,6 +242,9 @@ static void hello_reply(void) {
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) && DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_art_step)
     caps |= HOST_LINK_CAP_ART_KEYS;
+#endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+    caps |= HOST_LINK_CAP_PC_STATE;
 #endif
     if (CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S == 0) {
         caps |= HOST_LINK_CAP_PANEL_HOLD; // no keep-alive needed (#279)
@@ -719,6 +726,41 @@ void host_link_battery_dim_changed(void) {
 #endif
 }
 
+/* D7 11 PC_STATE (#609, #604): the PC's state, its lease's asks (pc_state.c) */
+
+#define PC_STATE_SIZE (2 + 7)
+
+static void pc_state_fill(uint8_t r[PC_STATE_SIZE], const uint8_t *d, int len) {
+    r[0] = HOST_LINK_SETTINGS;
+    r[1] = 0x80 | SETTING_PC_STATE;
+    r[2] = 4; // not built in
+#if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
+    BUILD_ASSERT(sizeof(struct pc_state_wire) == PC_STATE_SIZE - 2, "the D7 91 reply");
+    struct pc_state_wire w;
+    if (d == NULL) {
+        pc_state_report(&w);
+        w.status = 0;
+        w.event = 1;
+    } else {
+        // A report cut short is a read; d is padded to the report size.
+        uint8_t req = len >= 3 ? d[2] : PC_STATE_REQ_READ;
+        pc_state_host(req, d[3], sys_get_le16(&d[4]), &w);
+    }
+    memcpy(&r[2], &w, sizeof(w));
+#else
+    ARG_UNUSED(d);
+    ARG_UNUSED(len);
+#endif
+}
+
+void host_link_pc_state_event(void) {
+    if (atomic_get(&host_seen)) {
+        uint8_t r[PC_STATE_SIZE];
+        pc_state_fill(r, NULL, 0);
+        reply(r, sizeof(r));
+    }
+}
+
 static void settings_command(const uint8_t *d, int len) {
     if (d[1] == SETTING_SCREEN_SNAP || d[1] == SETTING_SCREEN_READ) {
         screen_snap_command(d, len);
@@ -751,6 +793,12 @@ static void settings_command(const uint8_t *d, int len) {
         BUILD_ASSERT(sizeof(r) == HOST_EFFECTS_REPLY_SIZE, "the D7 8F reply");
         host_effects_command(d, len, r);
 #endif
+        reply(r, sizeof(r));
+        break;
+    }
+    case SETTING_PC_STATE: {
+        uint8_t r[PC_STATE_SIZE];
+        pc_state_fill(r, d, len);
         reply(r, sizeof(r));
         break;
     }

@@ -1,0 +1,9 @@
+#include "../common/keymap.dtsi"
+
+&kscan {
+    // No key presses: module/pc_state_sim.c plays the app and the keys. No exit after the last
+    // event: the run ends when ZMK deep-sleeps on battery (SIM_SLEEP), so a board that never
+    // sleeps fails on run.sh's timeout instead of passing quietly.
+    /delete-property/ exit-after;
+    events = <ZMK_MOCK_RELEASE(4,0,10)>;
+};

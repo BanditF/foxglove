@@ -7,6 +7,9 @@
 //! power-setting callback (`GUID_CONSOLE_DISPLAY_STATE`, with no window), and lock/unlock from
 //! `WTSRegisterSessionNotification` on a message-only window whose thread sleeps in
 //! `GetMessageW`. Reads and keyboard events go on as usual.
+//!
+//! The keyboard's PC state (`pc_state.rs`, #609) needs the two apart: the display going off is
+//! the PC asleep, a lock alone is not. [`subscribe_changes`] hears each of the four edges.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -16,6 +19,18 @@ static DISPLAY_OFF: AtomicBool = AtomicBool::new(false);
 
 type Listener = (u64, Box<dyn Fn(bool) + Send>);
 static LISTENERS: Mutex<Vec<Listener>> = Mutex::new(Vec::new());
+
+/// One edge of the session lock or the display.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    Locked,
+    Unlocked,
+    DisplayOff,
+    DisplayOn,
+}
+
+type ChangeListener = (u64, Box<dyn Fn(Change) + Send>);
+static CHANGE_LISTENERS: Mutex<Vec<ChangeListener>> = Mutex::new(Vec::new());
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Keeps a listener registered; dropping it removes the listener (and whatever it holds) at once.
@@ -27,12 +42,33 @@ impl Drop for Subscription {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .retain(|(id, _)| *id != self.0);
+        CHANGE_LISTENERS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(id, _)| *id != self.0);
     }
 }
 
 /// Whether the session is locked or the display is off.
 pub fn away() -> bool {
     LOCKED.load(Ordering::SeqCst) || DISPLAY_OFF.load(Ordering::SeqCst)
+}
+
+/// Whether the display is off (the PC asleep, or about to be: Modern Standby starts there).
+pub fn display_off() -> bool {
+    DISPLAY_OFF.load(Ordering::SeqCst)
+}
+
+/// Calls `notify(change)` for each lock, unlock, display off and display on, until the
+/// subscription is dropped, whether or not [`away`] changed with it. It runs on a system thread
+/// with the listener list locked: only enqueue work there.
+pub fn subscribe_changes(notify: impl Fn(Change) + Send + 'static) -> Subscription {
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    CHANGE_LISTENERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((id, Box::new(notify)));
+    Subscription(id)
 }
 
 /// Calls `notify(away)` each time [`away`] changes, until the subscription is dropped. It runs
@@ -48,18 +84,41 @@ pub fn subscribe(notify: impl Fn(bool) + Send + 'static) -> Subscription {
 
 /// Records the session's lock state and tells the listeners if that changed [`away`].
 fn set_locked(locked: bool) {
-    update(&LOCKED, locked, "session locked", "session unlocked");
+    let change = if locked {
+        Change::Locked
+    } else {
+        Change::Unlocked
+    };
+    update(
+        &LOCKED,
+        locked,
+        "session locked",
+        "session unlocked",
+        change,
+    );
 }
 
 /// Records the display state and tells the listeners if that changed [`away`].
 fn set_display_off(off: bool) {
-    update(&DISPLAY_OFF, off, "display off", "display on");
+    let change = if off {
+        Change::DisplayOff
+    } else {
+        Change::DisplayOn
+    };
+    update(&DISPLAY_OFF, off, "display off", "display on", change);
 }
 
-fn update(flag: &AtomicBool, value: bool, on: &str, off: &str) {
+fn update(flag: &AtomicBool, value: bool, on: &str, off: &str, change: Change) {
     let before = away();
     if flag.swap(value, Ordering::SeqCst) == value {
         return;
+    }
+    for (_, notify) in CHANGE_LISTENERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+    {
+        notify(change);
     }
     let now = away();
     if now == before {
@@ -237,8 +296,12 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
 
+    /// The flags are process-wide: the tests that move them take turns.
+    static FLAGS: Mutex<()> = Mutex::new(());
+
     #[test]
     fn locked_or_display_off_is_away_and_listeners_hear_each_change_once() {
+        let _flags = FLAGS.lock().unwrap_or_else(|e| e.into_inner());
         let (tx, rx) = mpsc::channel();
         let token = subscribe(move |away| {
             let _ = tx.send(away);
@@ -259,5 +322,36 @@ mod tests {
             rx.try_iter().next().is_none(),
             "a dropped token stops the calls"
         );
+    }
+
+    /// The PC state (#609) tells a lock from the display going off: each edge once, even when
+    /// [`away`] doesn't change with it.
+    #[test]
+    fn change_listeners_hear_every_edge_and_display_off_reads_the_display() {
+        let _flags = FLAGS.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = mpsc::channel();
+        let token = subscribe_changes(move |c| {
+            let _ = tx.send(c);
+        });
+        set_display_off(true);
+        assert!(display_off());
+        set_locked(true); // away already: still an edge here
+        set_display_off(true); // unchanged: nothing
+        set_display_off(false);
+        assert!(!display_off());
+        set_locked(false);
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            [
+                Change::DisplayOff,
+                Change::Locked,
+                Change::DisplayOn,
+                Change::Unlocked
+            ]
+        );
+        drop(token);
+        set_locked(true);
+        set_locked(false);
+        assert!(rx.try_iter().next().is_none());
     }
 }

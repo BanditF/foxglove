@@ -35,7 +35,7 @@ struct rgb_shown_wire {
 #define RGB_SHOWN_LIT (1 << 1)       // the LEDs are lit: after idle, sync, the PC's frames, ext power
 #define RGB_SHOWN_WANTED (1 << 2)    // the user's on/off as saved on this half
 #define RGB_SHOWN_HOST (1 << 3)      // the PC draws this half's LEDs (SET_FRAME / SET_EFFECT)
-#define RGB_SHOWN_IDLE (1 << 4)      // this half's own ZMK activity is idle or asleep
+#define RGB_SHOWN_IDLE (1 << 4)      // this half is idle or asleep: its keys, and no PC state hold
 #define RGB_SHOWN_UNPOWERED (1 << 5) // ext power is off: the LEDs have no power
 #define RGB_SHOWN_DRAWN (1 << 6)     // hue, saturation and value come from a frame drawn
 #define RGB_SHOWN_FOLLOWING (1 << 7) // the right: the left's on/off is in charge (sync)
@@ -74,6 +74,13 @@ void rgb_idle_set_sync(bool sync);
 // Right: the left's underglow state, from the art relay link. follow = false hands the right its
 // own idle auto-off back.
 void rgb_idle_remote(bool on, bool follow);
+// Right: the same, with the left's own on/off (the RGB op's byte 13, #609), which the right shows
+// while the PC state holds it on its own USB power. Any thread.
+void rgb_idle_remote_wanted(bool on, bool follow, bool left_wanted);
+// Left: the on/off the right should follow (the RGB op's byte 1): the user's with the left's
+// keys, not the PC state's hold, so a right on battery keeps its own rules (#609); own is the
+// user's on/off as saved. 0 or ZMK's error. Any thread.
+int rgb_idle_relay_on(bool *on, bool *own);
 // The PC draws this half's LEDs (SET_FRAME, lamp_strip.c): idle, sync and key toggles leave
 // ZMK's underglow alone until it hands back, which re-applies the user's on/off. Any thread.
 void rgb_idle_host_control(bool on);

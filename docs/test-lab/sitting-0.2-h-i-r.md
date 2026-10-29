@@ -1,4 +1,4 @@
-# 0.2 sitting, resumed: batches H, I, R and Z re-cut (#618)
+# 0.2 sitting, resumed: batches H, I, R and Z re-cut (#618), and P (#609)
 
 The rest of the 0.2 sitting after the stability pass (#618 exit criterion 4). Every step an agent
 can do through the local API, the CLI, foxglove-lab, a Win32 query or a log moved to On-call. The
@@ -11,7 +11,8 @@ reason, or when an agent step names a check that doesn't exist.
 
 Step ids: `HA1` is an agent step of batch H (On-call runs it), `H1` a user step.
 
-**User steps: 12, was 25** (H 9 → 5, I 4 → 2, R 9 → 5, Z 3 → 0). Two fallbacks add steps back:
+**User steps: 18, was 25** (H 9 → 5, I 4 → 2, R 9 → 5, Z 3 → 0; P adds 6: #651's steps that only
+a real display-off can test). Two fallbacks add steps back:
 - `I3`–`I4` (the tray panel) stay only when `IA2`'s focus cases come back BLOCKED (Windows'
   foreground lock), not FAIL.
 - On firmware without the right's redraw count (HELLO bit 25; 13ff04b, on the board since
@@ -99,6 +100,37 @@ User:
 - `R3` Unplug the right half's cable.
 - `R4` Leave the keyboard alone until the right's lights go off. Tell me: what does the right screen show?
 - `R5` Press one key on the LEFT half. Tell me: does the right show its picture cleanly?
+
+## Batch P: the PC state (#609, #604, PR #651)
+
+On this PC the display going off starts Modern Standby, so agents don't turn it off: probes that
+did are retired (#651). The user does it as they normally would; agents read the keyboard
+meanwhile. Steps 1 and 7 of #651 (held while awake, one log line per change) passed on hardware
+on 2e7f508.
+
+Agent, before the sitting (Foxglove running, both halves on #651's firmware, the left on USB):
+- `PA1` `foxglove-lab --allow-app status`: `PC_STATE` held, reason 0 (the lease); `RGB_SHOWN` left `wanted`. With the left's underglow off by the user's choice (`wanted: false`), `P2`–`P3` and `P5` judge the key backlight, not the underglow; say so in `P2`'s question.
+
+Agent, right before `P1` (the agent half of `P2`–`P3`):
+- `PA2` `foxglove-lab --allow-app rgb-watch --seconds 180` in the background: each D7 83 event's left and right `idle` and `lit` with its time, to set against the user's sleep and wake (dark within about 1 s, lit within about 1 s; D7 83 comes about 600 ms after a change). The app's `foxglove.log` gives the edges' times: `PC state to the keyboard: away (display off)` and `awake, wake (display on)`.
+
+User:
+- `P1` Click Start, then the Power button.
+- `P2` Click "Sleep", watching the keyboard. Tell me: did both halves go dark within about a second?
+- `P3` Move the mouse to wake the PC. Tell me: did both halves light up within about a second, with the right screen's picture moving?
+
+Agent, after `P3` (the agent half of `P4`–`P5`; the order matters, #651's first try quit while the last state sent was away):
+- `PA3` `foxglove-lab --allow-app pc-state` (a read): `state` Awake and `reason` 0, so Foxglove's last word was awake (the wake in `P3` sent it). If it reads Away, `foxglove-lab --allow-app pc-state --set awake` first, then read again.
+
+User:
+- `P4` Right-click the fox icon in the taskbar's tray and click "Quit". Then press no keys on the keyboard for 11 minutes.
+
+Agent, during `P4`'s 11 minutes (Foxglove quit, so no `--allow-app` needed):
+- `PA4` `foxglove-lab rgb-watch --seconds 700` from the quit, and `foxglove-lab pc-state` reads at about 1, 5 and 11 minutes: `reason` 0 until the lease lapses (at most 10 min), then 1 (the USB idle time), the left `idle: false` until about 10 minutes after the last key, then `reason` 4 and the left `idle: true` (the dark edge's time in `rgb-watch`).
+
+User:
+- `P5` After the 11 minutes, look at the keyboard. Tell me: is it dark now?
+- `P6` Open Foxglove from the Start menu.
 
 ## Z: case zone 1 back to its colour
 

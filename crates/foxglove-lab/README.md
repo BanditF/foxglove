@@ -14,6 +14,13 @@ cargo run -p foxglove-lab -- run --suite release --out lab-reports/my-run
 cargo run -p foxglove-lab -- run --suite tests/hil/smoke.toml --only momentary
 ```
 
+`status` also prints `RGB_SHOWN` (each half's lit, wanted, idle, PC-drawn and unpowered
+flags from D7 83) and, with HELLO bit 26, `PC_STATE` (D7 91: held, USB, keys, active, lease
+left and the hold's reason, #609). `pc-state [--set read|away|awake|back] [--lease-s N]` reads or
+sends the PC state; while the app runs, read only (`--allow-app`), since a send competes with the
+app's own. `rgb-watch --seconds N` prints each D7 83 and D7 91 event the keyboard sends by
+itself, with milliseconds since the start (event-driven, ends at the deadline).
+
 `--product FILTER`, `--allow-app`, `--keymap PATH` and `--studio-port COMn` apply to all commands.
 `--only CASE` selects names containing CASE; an empty match is an error.
 `--list` validates the whole suite, prints selected cases, and opens no devices.
