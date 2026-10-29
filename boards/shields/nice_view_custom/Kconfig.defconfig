@@ -39,12 +39,23 @@ config NICE_VIEW_WIDGET_STATUS
     select LV_USE_CANVAS
 
 config NICE_VIEW_WIDGET_INVERTED
-    bool "Light screen theme: dark ink on a light field"
+    bool "Light screen theme by default: dark ink on a light field"
     help
-      The screen theme for both halves (#610): every widget, the left's PC info screen and the
-      right's art (built-in and pushed) take their colours from LVGL_BACKGROUND and
-      LVGL_FOREGROUND in widgets/util.h. Off (the default) is the dark theme, light ink on a dark
-      field, as the user's photo on #610 showed the status strips.
+      The default panel polarity for both halves (#610, #666): every widget, the left's PC info
+      screen and the right's art (built-in and pushed) take their colours from LVGL_BACKGROUND
+      and LVGL_FOREGROUND in widgets/util.h. Off (the default) is the dark theme, light ink on a
+      dark field, as the user's photo on #610 showed the status strips. With
+      FOXGLOVE_PANEL_POLARITY the PC changes it at run time (D7 12), and the keyboard keeps the
+      PC's choice in its settings; this is the value until then.
+
+config FOXGLOVE_PANEL_POLARITY
+    bool "Panel polarity (dark or light) set from the PC at run time (#666)"
+    default y
+    depends on NICE_VIEW_WIDGET_STATUS
+    help
+      D7 12 PANEL_POLARITY (HELLO bit 27): one setting, dark or light, for both halves' panels,
+      saved on the keyboard and passed to the right over the art relay. See
+      widgets/panel_polarity.h.
 
 config NICE_VIEW_CUSTOM_ART_SET
     int "Right-hand art set to show (-1 = random each power-on)"

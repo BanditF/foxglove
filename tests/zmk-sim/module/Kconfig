@@ -48,6 +48,17 @@ config FOXGLOVE_SIM_PC_STATE
     depends on !FOXGLOVE_SIM_FRAMES && !FOXGLOVE_SIM_EFFECTS && !FOXGLOVE_SIM_RGB_STATE
     depends on SETTINGS
 
+config FOXGLOVE_SIM_POLARITY
+    bool "Simulator: panel polarity case (panel_polarity.c and host_link.c with faked drawers, settings backend and relay, module/polarity_sim.c)"
+    depends on !FOXGLOVE_SIM_FRAMES && !FOXGLOVE_SIM_EFFECTS && !FOXGLOVE_SIM_RGB_STATE && !FOXGLOVE_SIM_PC_STATE
+    depends on SETTINGS
+    select SETTINGS_RUNTIME
+
+# The shield's symbol (Kconfig.defconfig), for every source that asks.
+config FOXGLOVE_PANEL_POLARITY
+    bool
+    default y if FOXGLOVE_SIM_POLARITY
+
 # The shield's symbol, for every source that asks; its USB idle time comes from the shield's
 # Kconfig.defconfig (CMakeLists.txt).
 config FOXGLOVE_PC_STATE

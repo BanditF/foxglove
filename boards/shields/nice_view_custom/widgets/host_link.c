@@ -49,6 +49,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
 #include "pc_state.h"
 #endif
+#include "panel_polarity.h"
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
 #include <zmk/rgb_underglow.h>
@@ -71,7 +72,7 @@ enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_
        SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B, // 0x0A: LAMP_TEST (#115 branch)
        SETTING_FRAME = 0x0C, SETTING_ART_KEYS = 0x0D,
        SETTING_BATTERY_DIM = 0x0E, SETTING_EFFECT = 0x0F, SETTING_LAMP_PARTS = 0x10,
-       SETTING_PC_STATE = 0x11 };
+       SETTING_PC_STATE = 0x11, SETTING_PANEL_POLARITY = 0x12 };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -245,6 +246,9 @@ static void hello_reply(void) {
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
     caps |= HOST_LINK_CAP_PC_STATE;
+#endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_PANEL_POLARITY)
+    caps |= HOST_LINK_CAP_PANEL_POLARITY;
 #endif
     if (CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S == 0) {
         caps |= HOST_LINK_CAP_PANEL_HOLD; // no keep-alive needed (#279)
@@ -799,6 +803,21 @@ static void settings_command(const uint8_t *d, int len) {
     case SETTING_PC_STATE: {
         uint8_t r[PC_STATE_SIZE];
         pc_state_fill(r, d, len);
+        reply(r, sizeof(r));
+        break;
+    }
+    case SETTING_PANEL_POLARITY: {
+        // D7 12 (#666): a report cut short is a read; d is padded to the report size.
+        uint8_t r[6] = {HOST_LINK_SETTINGS, 0x80 | SETTING_PANEL_POLARITY, 4,
+                        PANEL_POLARITY_DEFAULT, PANEL_POLARITY_DEFAULT, PANEL_POLARITY_UNKNOWN};
+#if IS_ENABLED(CONFIG_FOXGLOVE_PANEL_POLARITY)
+        uint8_t want = len >= 3 ? d[2] : PANEL_POLARITY_READ;
+        r[2] = want == PANEL_POLARITY_READ || panel_polarity_set(want) == 0 ? 0 : 5;
+        r[3] = panel_polarity_get();
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+        r[5] = art_relay_right_polarity();
+#endif
+#endif
         reply(r, sizeof(r));
         break;
     }

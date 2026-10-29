@@ -9,6 +9,7 @@
 
 #include "art_relay.h"
 #include "host_link.h"
+#include "panel_polarity.h"
 #include "screen_snap.h"
 
 struct sim_left sim_left = {.on = true, .activity = ZMK_ACTIVITY_ACTIVE, .look = {23, 0, 100, 42, 3}};
@@ -32,6 +33,10 @@ void battery_dim_get_config(struct battery_dim_config *out) {
     *out = c;
 }
 uint32_t effect_run_clock(void) { return (uint32_t)k_uptime_get(); }
+void panel_polarity_relay_op(uint8_t out[PANEL_POLARITY_RELAY_SIZE]) {
+    out[0] = PANEL_POLARITY_RELAY_OP;
+    out[1] = sim_left.polarity;
+}
 
 void host_link_art_status(void) { sim_left.art_status_events++; }
 void host_link_rgb_right_changed(void) { sim_left.rgb_events++; }

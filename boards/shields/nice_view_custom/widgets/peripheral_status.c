@@ -377,9 +377,30 @@ int art_builtin_index(int index) {
     return index;
 }
 
-static void art_init(lv_obj_t *parent) {
+static void art_palette(void) {
     palette_entry(&art_buf[0], LVGL_BACKGROUND); // index 0: no ink
     palette_entry(&art_buf[4], LVGL_FOREGROUND); // index 1: ink
+}
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_PANEL_POLARITY)
+// The panel polarity changed (#666, the left's value over the relay): the art's palette and the
+// status strip in the new colours, then the whole screen rewritten. Display queue.
+void panel_polarity_apply(void) {
+    art_palette();
+    if (art_img != NULL) {
+        lv_img_cache_invalidate_src(&art_dsc);
+        lv_obj_invalidate(art_img);
+    }
+    struct zmk_widget_status *widget;
+    SYS_SLIST_FOR_EACH_CONTAINER(&widgets, widget, node) {
+        draw_top(widget->obj, widget->cbuf, &widget->state);
+    }
+    art_redraw_all();
+}
+#endif
+
+static void art_init(lv_obj_t *parent) {
+    art_palette();
     art_img = lv_img_create(parent);
     lv_img_set_src(art_img, &art_dsc);
     lv_obj_align(art_img, LV_ALIGN_TOP_LEFT, 0, 0);

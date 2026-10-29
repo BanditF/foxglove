@@ -90,5 +90,7 @@ struct sim_right {
     uint16_t ccc_cfg; // the left's CCC entry (bonded: kept over links)
     uint16_t ccc_value;
     int pushes_ok;
+    int polarity;        // the PANEL_POLARITY op's value the right last took (#666), -1 none
+    int polarity_writes; // PANEL_POLARITY ops it took
 };
 extern struct sim_right sim_right;

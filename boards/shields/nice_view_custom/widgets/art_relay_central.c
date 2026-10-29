@@ -34,6 +34,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "art_relay.h"
 #include "art_relay_doorbell.h"
 #include "pc_state.h"
+#include "panel_polarity.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
 #include "effect_run.h"
 #endif
@@ -1474,6 +1475,9 @@ static atomic_t activity_reset; // a new link: activity_cb starts over
 static uint32_t pc_sent;
 static bool pc_sent_valid;
 #endif
+// The panel polarity the right acknowledged on this link (#666), PANEL_POLARITY_UNKNOWN before
+// that. Written on relay_q; D7 92 reads it from the USB thread.
+static atomic_t polarity_sent = ATOMIC_INIT(PANEL_POLARITY_UNKNOWN);
 
 static void activity_cb(struct k_work *work) {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
@@ -1482,6 +1486,7 @@ static void activity_cb(struct k_work *work) {
 #if IS_ENABLED(CONFIG_FOXGLOVE_PC_STATE)
         pc_sent_valid = false;
 #endif
+        atomic_set(&polarity_sent, PANEL_POLARITY_UNKNOWN); // re-sent on every link (#666)
         activity_tries = 0;
         activity_busy = 0;
     }
@@ -1509,6 +1514,20 @@ static void activity_cb(struct k_work *work) {
             if (!err) {
                 pc_sent = changes;
                 pc_sent_valid = true;
+            }
+        }
+    }
+#endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_PANEL_POLARITY)
+    // The panel polarity (#666): the value now, until the right has acknowledged it, with the same
+    // stop rules. In this job after the others, so write_req's spacing (#662) holds between them.
+    if (!err) {
+        uint8_t pol[PANEL_POLARITY_RELAY_SIZE];
+        panel_polarity_relay_op(pol);
+        if (pol[1] != (uint8_t)atomic_get(&polarity_sent)) {
+            err = write_req(conn, pol, sizeof(pol));
+            if (!err) {
+                atomic_set(&polarity_sent, pol[1]);
             }
         }
     }
@@ -1542,8 +1561,19 @@ void art_relay_pc_state_kick(void) {
     }
 }
 
+void art_relay_polarity_kick(void) {
+    if (art_relay_link() == 2) {
+        k_work_reschedule_for_queue(&relay_q, &activity_work, K_NO_WAIT);
+    }
+}
+
+uint8_t art_relay_right_polarity(void) {
+    return art_relay_link() == 2 ? (uint8_t)atomic_get(&polarity_sent) : PANEL_POLARITY_UNKNOWN;
+}
+
 // From the discovery callback (Bluetooth thread); the relay queue's state resets in activity_cb.
 static void activity_link_up(void) {
+    atomic_set(&polarity_sent, PANEL_POLARITY_UNKNOWN); // D7 92 says unknown until acknowledged
     atomic_set(&activity_reset, 1);
     k_work_reschedule_for_queue(&relay_q, &activity_work, ACTIVITY_SETTLE);
 }

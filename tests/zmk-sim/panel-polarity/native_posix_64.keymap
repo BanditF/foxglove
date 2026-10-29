@@ -1,0 +1,9 @@
+#include "../common/keymap.dtsi"
+
+&kscan {
+    events = <
+        // No key presses: module/polarity_sim.c plays the PC. This only keeps the simulator
+        // running until the driver is done (about 22 s).
+        ZMK_MOCK_RELEASE(4,0,40000) // fires at ~40 s; the mock exits ~20 s later
+    >;
+};

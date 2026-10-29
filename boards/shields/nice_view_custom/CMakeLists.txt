@@ -6,6 +6,10 @@ if(CONFIG_ZMK_DISPLAY AND CONFIG_NICE_VIEW_WIDGET_STATUS)
   zephyr_library_sources(widgets/icons.c)
   zephyr_library_sources(widgets/util.c)
   zephyr_library_sources(widgets/screen_snap.c)
+  if(CONFIG_FOXGLOVE_PANEL_POLARITY)
+    # Both halves: the panels' dark or light, from the PC and the left (#666).
+    zephyr_library_sources(widgets/panel_polarity.c)
+  endif()
 
   if(NOT CONFIG_ZMK_SPLIT OR CONFIG_ZMK_SPLIT_ROLE_CENTRAL)
     zephyr_library_sources(widgets/status.c)

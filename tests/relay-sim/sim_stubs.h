@@ -11,5 +11,6 @@ struct sim_left {
     bool snap_done;
     uint8_t snap_status;
     uint16_t snap_frame;
+    uint8_t polarity; // the panel polarity the PC set (#666, panel_polarity.c)
 };
 extern struct sim_left sim_left;

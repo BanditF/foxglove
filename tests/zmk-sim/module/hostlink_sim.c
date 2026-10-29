@@ -126,8 +126,13 @@ void frames_sim_driver(void);
 void effects_sim_driver(void);
 void rgb_state_sim_driver(void);
 void pc_state_sim_driver(void);
+void polarity_sim_driver(void);
 
 static void driver(void) {
+    if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_POLARITY)) {
+        polarity_sim_driver(); // the panel-polarity case plays the app
+        return;
+    }
     if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_PC_STATE)) {
         pc_state_sim_driver(); // the pc-state case plays the app
         return;
