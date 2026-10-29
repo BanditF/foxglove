@@ -2,7 +2,7 @@
 //! the host link as a device-layer device. Everything that talks to that keyboard goes through
 //! [`device`], so the same code will serve other backends later.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
 use foxglove_devices::{
     BackendId, BehaviorInfo, Device, DeviceId, DeviceInfo, DeviceKind, EventBus,
@@ -326,11 +326,67 @@ pub enum Underglow {
     Known(u16),
 }
 
-static UNDERGLOW: Mutex<Underglow> = Mutex::new(Underglow::Unknown);
+/// What is known of the lighting command, and a condvar that wakes whoever waits for it to
+/// become known (#655: the local API's lighting writes). Set by the keymap read, never polled.
+pub struct LightingKnown {
+    now: Mutex<Underglow>,
+    changed: Condvar,
+}
+
+impl LightingKnown {
+    pub const fn new() -> LightingKnown {
+        LightingKnown {
+            now: Mutex::new(Underglow::Unknown),
+            changed: Condvar::new(),
+        }
+    }
+
+    /// What is known now.
+    pub fn get(&self) -> Underglow {
+        *self.now.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Sets it; a waiter wakes when it is no longer `Unknown`.
+    pub fn set(&self, now: Underglow) {
+        *self.now.lock().unwrap_or_else(|e| e.into_inner()) = now;
+        self.changed.notify_all();
+    }
+
+    /// A keymap was learned with `underglow`: whether that's news (see [`learned`]).
+    fn learn(&self, underglow: Option<u16>) -> bool {
+        let news = {
+            let mut known = self.now.lock().unwrap_or_else(|e| e.into_inner());
+            let (now, news) = learned(*known, underglow);
+            *known = now;
+            news
+        };
+        self.changed.notify_all();
+        news
+    }
+
+    /// Waits until the lighting command is known (or known absent), at most `timeout`; returns
+    /// what is known then (`Unknown` when the timeout passed first). Starts at the call, stops
+    /// at the keymap read's [`LightingKnown::set`]/[`set_actions`]; the timeout is the fallback.
+    pub fn wait_known(&self, timeout: std::time::Duration) -> Underglow {
+        let now = self.now.lock().unwrap_or_else(|e| e.into_inner());
+        let (now, _) = self
+            .changed
+            .wait_timeout_while(now, timeout, |u| *u == Underglow::Unknown)
+            .unwrap_or_else(|e| e.into_inner());
+        *now
+    }
+}
+
+static UNDERGLOW: LightingKnown = LightingKnown::new();
 
 /// What the app knows of the keyboard's lighting command now.
 pub fn underglow() -> Underglow {
-    *UNDERGLOW.lock().unwrap_or_else(|e| e.into_inner())
+    UNDERGLOW.get()
+}
+
+/// The keyboard's lighting command, to wait on (#655).
+pub fn lighting_known() -> &'static LightingKnown {
+    &UNDERGLOW
 }
 
 /// A keymap was learned with `underglow`: what is known now, and whether that's news (the
@@ -354,12 +410,7 @@ pub fn set_actions(actions: Vec<BehaviorInfo>, underglow: Option<u16>, build: Op
         d.set_behaviors(actions);
         d.set_underglow(underglow);
     }
-    let news = {
-        let mut known = UNDERGLOW.lock().unwrap_or_else(|e| e.into_inner());
-        let (now, news) = learned(*known, underglow);
-        *known = now;
-        news
-    };
+    let news = UNDERGLOW.learn(underglow);
     // Once the device has the id: a write that waited on it goes out now (#633).
     if news {
         super::reassert::fire(super::reassert::Trigger::LightingKnown);
@@ -440,7 +491,7 @@ fn connected_build(build: Option<String>) -> (Vec<BehaviorInfo>, Option<u16>) {
     let was = std::mem::take(&mut *learned).build;
     drop(learned);
     super::keyboard_actions::forget();
-    *UNDERGLOW.lock().unwrap_or_else(|e| e.into_inner()) = Underglow::Unknown;
+    UNDERGLOW.set(Underglow::Unknown);
     if had {
         let on = was.unwrap_or_else(|| "an unknown build".into());
         match &build {
@@ -616,7 +667,7 @@ mod build_tests {
             ));
             *ACTIONS.lock().unwrap() = Learned::default();
             keyboard_actions::forget();
-            *UNDERGLOW.lock().unwrap() = Underglow::Unknown;
+            UNDERGLOW.set(Underglow::Unknown);
             *CHECKED.lock().unwrap() = None;
             *BUILD.lock().unwrap() = None;
             *DEVICE.lock().unwrap() = Some(device.clone());

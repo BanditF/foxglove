@@ -68,6 +68,11 @@ The params and results are in the schema. Notes:
   runs** (#639). Until it's read (a new or unknown build, #636) both say the behaviors aren't
   known yet (error 3, try again). The list is the app's allowlist: anything not on it (&bt, &out,
   &bootloader, &sys_reset, &soft_off) is unsupported (error 1).
+- **`lighting.set` and `lighting.lease` wait for the keyboard's keymap (#655):** right after
+  Foxglove starts, or after a firmware change, the keymap's lighting behavior (`&rgb_ug`) isn't
+  known yet. The call then waits for the keymap read, at most 5 s (one log line), and answers
+  error 4 "the keyboard's lighting isn't known yet (keymap not read)" if it still isn't; error 1
+  "not supported" comes only from a keymap without `&rgb_ug`, at once. Other devices don't wait.
 - **`art.select` takes over Foxglove's own art job** (a re-apply, Rotation's timer) instead of
   answering "another art job is running" (#618); that error now means a job a user or another
   caller started is still running.

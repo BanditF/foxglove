@@ -171,6 +171,87 @@ fn paused_error() -> Error {
     }
 }
 
+/// `lighting.set`'s writes, in order: on/off, colour, effect.
+fn set_lighting(
+    lighting: &dyn foxglove_devices::Lighting,
+    p: &methods::SetLightingParams,
+) -> Result<Value, Error> {
+    if let Some(on) = p.on {
+        lighting.set_on(on).map_err(device_error)?;
+    }
+    if let Some(c) = p.color {
+        lighting
+            .set_color(c.hue, c.saturation, c.brightness)
+            .map_err(device_error)?;
+    }
+    if let Some(effect) = &p.effect {
+        lighting
+            .set_effect(foxglove_devices::Effect {
+                id: effect.clone(),
+                params: vec![],
+            })
+            .map_err(device_error)?;
+    }
+    Ok(json!({}))
+}
+
+/// How long a lighting write waits for the keyboard's lighting command to become known (#655).
+const LIGHTING_KNOWN_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The answer when the keymap still wasn't read after [`LIGHTING_KNOWN_WAIT`] (#655).
+pub(crate) const LIGHTING_NOT_KNOWN: &str =
+    "the keyboard's lighting isn't known yet (keymap not read)";
+
+/// The host-link keyboard's lighting writes go once its keymap's lighting command (`&rgb_ug`)
+/// is known (#633, #655): right after a start or a firmware change the keymap isn't read yet.
+/// Other devices don't wait.
+fn host_lighting_known(d: &dyn foxglove_devices::Device, method: &str) -> Result<(), Error> {
+    if !keyboard().is_some_and(|k| k.info().id == d.info().id) {
+        return Ok(());
+    }
+    lighting_known(
+        super::devices::lighting_known(),
+        LIGHTING_KNOWN_WAIT,
+        method,
+    )
+}
+
+/// Known: go. Absent: "not supported" at once. Unknown: waits on `known`'s condvar (woken by
+/// the keymap read, `LightingKnown`) for at most `timeout`, then answers as above, or
+/// [`LIGHTING_NOT_KNOWN`] when it is still unknown. One log line when it waited.
+fn lighting_known(
+    known: &super::devices::LightingKnown,
+    timeout: std::time::Duration,
+    method: &str,
+) -> Result<(), Error> {
+    use super::devices::Underglow;
+    let verdict = |u: Underglow| match u {
+        Underglow::Known(_) => Ok(()),
+        Underglow::Absent => Err(device_error(foxglove_devices::DeviceError::Unsupported)),
+        Underglow::Unknown => Err(Error {
+            code: code::TIMEOUT,
+            message: LIGHTING_NOT_KNOWN.into(),
+            data: None,
+        }),
+    };
+    let now = known.get();
+    if now != Underglow::Unknown {
+        return verdict(now);
+    }
+    let start = std::time::Instant::now();
+    let now = known.wait_known(timeout);
+    let how = match now {
+        Underglow::Known(_) => "known",
+        Underglow::Absent => "not supported by the keymap",
+        Underglow::Unknown => "still not known: the keymap wasn't read",
+    };
+    eprintln!(
+        "Foxglove API: {method} waited {} ms for the keyboard's lighting: {how}",
+        start.elapsed().as_millis()
+    );
+    verdict(now)
+}
+
 /// Runs `f` on the device a call names: the host-link keyboard or an open VIA keyboard.
 fn with_device<R>(
     id: &str,
@@ -216,6 +297,8 @@ impl Devices for AppDevices {
                 };
                 let id = with_device(&p.device, |d| {
                     let light = d.lighting().ok_or_else(unsupported)?;
+                    // Before the arbiter's lock: the wait holds no one else up.
+                    host_lighting_known(d, method)?;
                     leases::with(|a| a.add(lease, light)).map_err(device_error)
                 })?;
                 Ok(json!(methods::Lease { lease: id }))
@@ -383,23 +466,8 @@ impl Devices for AppDevices {
                 }
                 with_device(&p.device, |d| {
                     let lighting = d.lighting().ok_or_else(unsupported)?;
-                    if let Some(on) = p.on {
-                        lighting.set_on(on).map_err(device_error)?;
-                    }
-                    if let Some(c) = p.color {
-                        lighting
-                            .set_color(c.hue, c.saturation, c.brightness)
-                            .map_err(device_error)?;
-                    }
-                    if let Some(effect) = p.effect {
-                        lighting
-                            .set_effect(foxglove_devices::Effect {
-                                id: effect,
-                                params: vec![],
-                            })
-                            .map_err(device_error)?;
-                    }
-                    Ok(json!({}))
+                    host_lighting_known(d, method)?;
+                    set_lighting(lighting, &p)
                 })
             }
             "lighting.sync" | "lighting.set_sync" => {
@@ -1281,6 +1349,122 @@ mod tests {
         assert_eq!(
             caps(Caps::LAYERS | Caps::SCREENS),
             vec!["layers", "screens"]
+        );
+    }
+
+    /// A keyboard's lights in memory: every write it took, in order.
+    #[derive(Default)]
+    struct FakeLights {
+        writes: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl foxglove_devices::Lighting for FakeLights {
+        fn layout(&self) -> foxglove_devices::Result<Vec<foxglove_devices::Zone>> {
+            Ok(vec![])
+        }
+        fn state(&self) -> foxglove_devices::Result<foxglove_devices::LightingState> {
+            Err(foxglove_devices::DeviceError::Unsupported)
+        }
+        fn set_on(&self, on: bool) -> foxglove_devices::Result<()> {
+            self.writes.lock().unwrap().push(format!("on {on}"));
+            Ok(())
+        }
+        fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> foxglove_devices::Result<()> {
+            self.writes
+                .lock()
+                .unwrap()
+                .push(format!("colour {hue} {sat} {brightness}"));
+            Ok(())
+        }
+    }
+
+    /// `lighting.set` as the API runs it on the host keyboard, with `known` for its lighting
+    /// command and `timeout` for the wait.
+    fn set_on_fake(
+        lights: &FakeLights,
+        known: &crate::foxglove::devices::LightingKnown,
+        timeout: std::time::Duration,
+    ) -> Result<Value, Error> {
+        let p: methods::SetLightingParams = serde_json::from_value(json!({
+            "device": "kb",
+            "on": true,
+            "color": {"hue": 200, "saturation": 50, "brightness": 40},
+        }))
+        .unwrap();
+        lighting_known(known, timeout, "lighting.set")?;
+        set_lighting(lights, &p)
+    }
+
+    /// #655: right after a start the keymap isn't read yet; a write waits for it (no sleep: the
+    /// keymap read wakes it) and goes out.
+    #[test]
+    fn a_lighting_write_before_the_keymap_waits_for_it() {
+        use crate::foxglove::devices::{LightingKnown, Underglow};
+        let known = std::sync::Arc::new(LightingKnown::new());
+        let lights = FakeLights::default();
+        let reader = {
+            let known = known.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                known.set(Underglow::Known(4));
+            })
+        };
+        let start = std::time::Instant::now();
+        assert_eq!(
+            set_on_fake(&lights, &known, LIGHTING_KNOWN_WAIT),
+            Ok(json!({}))
+        );
+        assert!(
+            start.elapsed() < LIGHTING_KNOWN_WAIT,
+            "woken, not timed out"
+        );
+        assert_eq!(
+            *lights.writes.lock().unwrap(),
+            ["on true", "colour 200 50 40"]
+        );
+        reader.join().unwrap();
+    }
+
+    /// #655: the keymap still not read when the wait ends: its own error, not "not supported",
+    /// and nothing sent.
+    #[test]
+    fn a_lighting_write_whose_keymap_never_comes_says_not_known_yet() {
+        use crate::foxglove::devices::LightingKnown;
+        let known = LightingKnown::new();
+        let lights = FakeLights::default();
+        let e = set_on_fake(&lights, &known, std::time::Duration::from_millis(50)).unwrap_err();
+        assert_eq!(e.code, code::TIMEOUT);
+        assert_eq!(e.message, LIGHTING_NOT_KNOWN);
+        assert!(!e.message.contains("not supported"));
+        assert!(lights.writes.lock().unwrap().is_empty());
+    }
+
+    /// A keymap without `&rgb_ug`: "not supported" at once, no wait; a known one goes at once.
+    #[test]
+    fn a_keymap_without_lighting_says_not_supported_at_once() {
+        use crate::foxglove::devices::{LightingKnown, Underglow};
+        let known = LightingKnown::new();
+        known.set(Underglow::Absent);
+        let lights = FakeLights::default();
+        let start = std::time::Instant::now();
+        let e = set_on_fake(&lights, &known, LIGHTING_KNOWN_WAIT).unwrap_err();
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "no wait"
+        );
+        assert_eq!(e.code, code::UNSUPPORTED);
+        assert!(e.message.contains("not supported"), "{}", e.message);
+        assert!(lights.writes.lock().unwrap().is_empty());
+
+        known.set(Underglow::Known(4));
+        let start = std::time::Instant::now();
+        assert_eq!(
+            set_on_fake(&lights, &known, LIGHTING_KNOWN_WAIT),
+            Ok(json!({}))
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "no wait"
         );
     }
 }

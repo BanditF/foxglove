@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 LAB = Path(__file__).resolve().parent / 'lab'
@@ -220,6 +221,53 @@ class ReleaseGateScript(unittest.TestCase):
         self.assertEqual(case['name'], 'app-idle-cpu')
         step = case['steps'][0]['idle_cpu']
         self.assertEqual((step['settle_s'], step['seconds'], step['max_cpu_ms']), (120, 20, 60))
+
+
+class RestoreRetry(unittest.TestCase):
+    """#655: right after a start the app hasn't read the keymap, and `lighting.set` answered "not
+    supported", so restore_lights raised. The app now waits (5 s) and then says the lighting isn't
+    known yet; restore_lights tries once more on that, and only on that."""
+
+    class FakeApi:
+        def __init__(self, k, errors):
+            self.k, self.errors, self.calls = k, list(errors), []
+
+        def call(self, method, params):
+            self.calls.append((method, params))
+            if self.errors:
+                raise RuntimeError(f"{method}: {self.errors.pop(0)}")
+            return {}
+
+    def setUp(self):
+        self.k = labkit()
+        self.params = {'device': 'kb', 'on': True}
+
+    def run_quietly(self, api):
+        with unittest.mock.patch('sys.stdout', io.StringIO()):
+            return self.k.set_lights(api, self.params)
+
+    def test_not_known_yet_is_tried_once_more(self):
+        api = self.FakeApi(self.k, [{'code': 4, 'message': self.k.LIGHTING_NOT_KNOWN}])
+        self.assertEqual(self.run_quietly(api), {})
+        self.assertEqual(api.calls, [('lighting.set', self.params)] * 2)
+
+    def test_the_retry_is_bounded_to_one(self):
+        err = {'code': 4, 'message': self.k.LIGHTING_NOT_KNOWN}
+        api = self.FakeApi(self.k, [err, err, err])
+        with self.assertRaises(RuntimeError):
+            self.run_quietly(api)
+        self.assertEqual(len(api.calls), 2)
+
+    def test_not_supported_is_not_retried(self):
+        api = self.FakeApi(self.k, [{'code': 1, 'message': 'not supported by this keyboard or keymap'}])
+        with self.assertRaises(RuntimeError):
+            self.run_quietly(api)
+        self.assertEqual(len(api.calls), 1)
+
+    def test_the_app_says_the_same_words(self):
+        api_rs = (REPO / 'app' / 'src' / 'foxglove' / 'api.rs').read_text(encoding='utf-8')
+        self.assertIn(f'"{self.k.LIGHTING_NOT_KNOWN}"', api_rs)
+
 
 if __name__ == '__main__':
     unittest.main()
