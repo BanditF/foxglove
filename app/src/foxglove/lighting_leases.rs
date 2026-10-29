@@ -63,6 +63,9 @@ pub struct Arbiter {
     /// What the arbiter wrote to each device while its snapshot is kept (the leases' looks and
     /// each restore): a later retry is only safe while the keyboard shows nothing else.
     wrote: HashMap<String, Vec<Look>>,
+    /// Each device's last reported lights and the link generation they came on (#670): a
+    /// change between two reports on one link was made on the keyboard.
+    reported: HashMap<String, (u64, LightingState)>,
 }
 
 /// The fields of a device's lights the user set (the Lights page, the followed accent), as
@@ -587,6 +590,94 @@ impl Arbiter {
     /// The user changed `device`'s lights (the Lights page, the followed accent): their
     /// choice from now on (#624), and, while leases hold the lights, what comes back when the
     /// last one ends, as for the case's colours under a scene.
+    /// The keyboard reported its lights (an RGB_STATE read or event, #670). A look changed on
+    /// the keyboard itself (a key, `&rgb_ug` from a tool) is the user's choice too: it is
+    /// adopted, so nothing Foxglove does later puts the old saved look back over it.
+    ///
+    /// A changed field (effect, hue, saturation, brightness) is one that differs from the
+    /// previous report on the same link (`generation`), from the saved choice, and from
+    /// anything the arbiter wrote itself (a lease's look, a restore). The first report after a
+    /// (re)connect is only remembered: a board that lost its look on a reset or re-link shows
+    /// the old one, and putting it back is the re-apply hooks' job (`reassert.rs`). While a
+    /// restore is pending, the change also goes into what comes back. On/off (idle dims it)
+    /// and speed (ZMK reports it late) are left alone. True when something was adopted.
+    pub fn keyboard_reported(
+        &mut self,
+        device: &str,
+        generation: u64,
+        now: &LightingState,
+    ) -> bool {
+        let before = self
+            .reported
+            .insert(device.to_string(), (generation, now.clone()));
+        let Some(before) = before.filter(|(g, _)| *g == generation).map(|(_, s)| s) else {
+            return false;
+        };
+        let near = |a: u16, b: u16, wrap: u16| {
+            let d = a.abs_diff(b);
+            d.min(wrap.saturating_sub(d)) <= 2
+        };
+        let wrote = self.wrote.get(device).map_or(&[][..], Vec::as_slice);
+        let base = self.base.get(device);
+        let held = self.winner(device).is_some() && !self.paused;
+        let ours = |f: &dyn Fn(&Look) -> bool, b: &dyn Fn(&LightingState) -> bool| {
+            wrote.iter().any(f) || base.is_some_and(b)
+        };
+        let Some(chosen) = self.chosen.get(device) else {
+            return false;
+        };
+        let mut set = Chosen::default();
+        if before.effect.id != now.effect.id
+            && chosen.effect.as_ref().is_some_and(|e| *e != now.effect.id)
+            && !ours(&|l| l.effect == now.effect.id, &|b| {
+                b.effect.id == now.effect.id
+            })
+        {
+            set.effect = Some(now.effect.id.clone());
+        }
+        if !near(before.hue, now.hue, 360)
+            && chosen.hue.is_some_and(|h| !near(h, now.hue, 360))
+            && !ours(&|l| near(l.hue, now.hue, 360), &|b| {
+                near(b.hue, now.hue, 360)
+            })
+        {
+            set.hue = Some(now.hue);
+        }
+        let near_pc = |a: u8, b: u8| near(a.into(), b.into(), 1000);
+        if !near_pc(before.sat, now.sat)
+            && chosen.sat.is_some_and(|v| !near_pc(v, now.sat))
+            && !ours(&|l| near_pc(l.sat, now.sat), &|b| near_pc(b.sat, now.sat))
+        {
+            set.sat = Some(now.sat);
+        }
+        if !near_pc(before.brightness, now.brightness)
+            && chosen
+                .brightness
+                .is_some_and(|v| !near_pc(v, now.brightness))
+            && !ours(&|l| near_pc(l.brightness, now.brightness), &|b| {
+                near_pc(b.brightness, now.brightness)
+            })
+        {
+            set.brightness = Some(now.brightness);
+        }
+        if set == Chosen::default() {
+            return false;
+        }
+        // A lease showing its own look: a change on the keyboard under it comes back at its
+        // end, as the Lights page's does.
+        eprintln!(
+            "Foxglove: {device}'s lights were changed on the keyboard{}; that is the look now",
+            if held { " under a lease" } else { "" }
+        );
+        if let Some(c) = self.chosen.get_mut(device) {
+            c.merge(&set);
+        }
+        if let Some(b) = self.base.get_mut(device) {
+            set.overlay(b);
+        }
+        true
+    }
+
     /// The looks the user chose (#670): each device's effect and colour fields they set.
     pub fn saved_looks(&self) -> Vec<(String, super::effect_controls::Saved)> {
         let mut out: Vec<_> = self
@@ -807,6 +898,21 @@ pub fn with<R>(f: impl FnOnce(&mut Arbiter) -> R) -> R {
     let saved = a.saved_looks();
     *SAVED.lock().unwrap_or_else(|e| e.into_inner()) = saved;
     r
+}
+
+/// [`with`], unless the arbiter is busy (a lease settling holds it for seconds): then `None`.
+pub fn try_with<R>(f: impl FnOnce(&mut Arbiter) -> R) -> Option<R> {
+    let mut guard = match ARBITER.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+    };
+    let a = guard.get_or_insert_with(Arbiter::default);
+    let r = f(a);
+    publish(a, &HOLDING, WAKE.get());
+    let saved = a.saved_looks();
+    *SAVED.lock().unwrap_or_else(|e| e.into_inner()) = saved;
+    Some(r)
 }
 
 /// Each device's saved look as of the last pass through [`with`] (#670).
@@ -1635,5 +1741,98 @@ mod tests {
                 }
             )]
         );
+    }
+
+    fn state_of(f: &Fake) -> LightingState {
+        f.state.borrow().clone()
+    }
+
+    /// #670: an effect changed on the keyboard (a key, `&rgb_ug RGB_EFF`) is adopted as the
+    /// user's look: a lease that starts and ends afterwards gives back the keyboard's Swirl,
+    /// not the Solid Foxglove saved.
+    #[test]
+    fn a_keyboard_change_is_adopted() {
+        let kb = Fake::new();
+        kb.set(true, (39, 70, 42), "0", 3);
+        let mut a = Arbiter::default();
+        a.user_changed("kb", |s| {
+            (s.hue, s.sat) = (39, 70);
+            s.effect.id = "0".into();
+        });
+        // The first report on a link is only remembered.
+        assert!(!a.keyboard_reported("kb", 1, &state_of(&kb)));
+        // RGB_EFF on the keyboard: Solid to Swirl.
+        kb.set(true, (39, 70, 42), "3", 3);
+        assert!(a.keyboard_reported("kb", 1, &state_of(&kb)));
+        assert_eq!(a.saved_looks()[0].1.effect, Some(3));
+        assert!(!a.keyboard_reported("kb", 1, &state_of(&kb)), "once");
+        // A notification comes and goes: Swirl comes back.
+        let id = a.add(lease(1, Priority::High, 0), &kb).unwrap();
+        assert_eq!(all(&kb).4, "0", "the lease shows");
+        for d in a.end(|l| l.id == id) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(all(&kb), (true, 39, 70, 42, "3".into(), 3));
+        // Foxglove's own writes are never taken for the keyboard's.
+        a.user_changed("kb", |s| s.effect.id = "1".into());
+        kb.set(true, (39, 70, 42), "1", 3);
+        assert!(!a.keyboard_reported("kb", 1, &state_of(&kb)));
+        assert_eq!(a.saved_looks()[0].1.effect, Some(1));
+    }
+
+    /// #670: a re-link where the board lost a lease's look (it reset to its saved one) re-applies
+    /// it; the report after the new link is not taken for a change on the keyboard.
+    #[test]
+    fn a_re_link_without_a_change_re_applies() {
+        let kb = Fake::new();
+        kb.set(true, (39, 70, 42), "3", 3);
+        let mut a = Arbiter::default();
+        a.user_changed("kb", |s| s.effect.id = "3".into());
+        a.add(lease(1, Priority::High, 0), &kb).unwrap();
+        assert!(!a.keyboard_reported("kb", 1, &state_of(&kb)));
+        // The board reset: it shows its saved Swirl again, on a new link.
+        kb.set(true, (39, 70, 42), "3", 3);
+        assert!(!a.keyboard_reported("kb", 2, &state_of(&kb)));
+        assert!(a.reassert("kb", &kb, false).unwrap(), "re-applied");
+        assert_eq!(hue(&kb), (true, 0), "the lease's look is back");
+        assert_eq!(a.saved_looks()[0].1.effect, Some(3), "nothing adopted");
+    }
+
+    /// #670: during a re-link the user changes the effect on the keyboard (a pending restore
+    /// is waiting for the keyboard to come back). The change wins: no old snapshot or saved
+    /// look is put over it, now or by a later lease.
+    #[test]
+    fn a_keyboard_change_during_a_re_link_wins() {
+        let kb = Fake::new();
+        kb.set(true, (39, 70, 42), "0", 3);
+        let mut a = Arbiter::default();
+        a.user_changed("kb", |s| s.effect.id = "0".into());
+        let id = a.add(lease(1, Priority::High, 0), &kb).unwrap();
+        assert!(!a.keyboard_reported("kb", 1, &state_of(&kb)));
+        // The lease ends while the keyboard is away: the restore doesn't go out.
+        *kb.offline.borrow_mut() = true;
+        for d in a.end(|l| l.id == id) {
+            assert!(a.apply(&d, &kb).is_err());
+        }
+        *kb.offline.borrow_mut() = false;
+        // Meanwhile, on the keyboard: Swirl, brighter.
+        kb.set(true, (0, 100, 60), "3", 3);
+        assert!(a.keyboard_reported("kb", 1, &state_of(&kb)));
+        kb.writes();
+        // The re-link's re-apply and the connect leave it.
+        a.reassert("kb", &kb, false).unwrap();
+        a.connected("kb", &kb).unwrap();
+        assert!(
+            kb.writes().is_empty(),
+            "nothing sent over the keyboard's change"
+        );
+        assert_eq!(all(&kb).4, "3");
+        // A later notification gives back the keyboard's Swirl, not the saved Solid.
+        let id = a.add(lease(2, Priority::High, 200), &kb).unwrap();
+        for d in a.end(|l| l.id == id) {
+            a.apply(&d, &kb).unwrap();
+        }
+        assert_eq!(all(&kb).4, "3");
+        assert_eq!(all(&kb).3, 60);
     }
 }

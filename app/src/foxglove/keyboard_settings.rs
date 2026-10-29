@@ -199,6 +199,7 @@ fn read_rgb_state() -> Option<RgbState> {
         device().and_then(|d| {
             let mut s = foxglove_link::settings::rgb_state(d.link().as_ref()).ok()?;
             d.asked_state(&mut s);
+            adopt_keyboard_change(&d, &s);
             Some((s, d.right_events()))
         })
     };
@@ -217,6 +218,27 @@ fn read_rgb_state() -> Option<RgbState> {
     }
     RIGHT_LIVE.store(right_events, Ordering::Relaxed);
     state
+}
+
+/// A look changed on the keyboard itself is the user's look from now on (#670): the lighting
+/// arbiter adopts it, so no re-apply or lease puts the saved one back over it.
+fn adopt_keyboard_change(d: &foxglove_link::devices::FoxgloveLinkDevice, s: &RgbState) {
+    use foxglove_devices::Device as _;
+    let id = d.info().id.to_string();
+    let generation = d.link().state().generation;
+    let now = foxglove_devices::LightingState {
+        on: s.left.on,
+        hue: s.left.hue,
+        sat: s.left.sat,
+        brightness: s.left.brightness,
+        effect: foxglove_devices::Effect {
+            id: s.left.effect.to_string(),
+            params: vec![],
+        },
+        speed: s.left.speed,
+        settled: true,
+    };
+    super::lighting_leases::try_with(|a| a.keyboard_reported(&id, generation, &now));
 }
 
 /// Returns the cached state and reads it in the background when requested.
