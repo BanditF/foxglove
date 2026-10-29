@@ -17,7 +17,10 @@
 //!   event with link 2, D6 85, firmware with HELLO bit 20, #594), once per connection;
 //! - [`Trigger::PcBack`]: unlocked or the display back on (`away.rs`, #410);
 //! - [`Trigger::DisplayChange`] and [`Trigger::TaskbarRestart`]: the overlay's display-change
-//!   window and the tray's TaskbarCreated (#612, `overlay_restore.rs`), reused, not new watchers.
+//!   window and the tray's TaskbarCreated (#612, `overlay_restore.rs`), reused, not new watchers;
+//! - [`Trigger::LightingKnown`]: the keymap's lighting behavior (`&rgb_ug`) became known or
+//!   changed (`devices::set_actions`, #633). A lighting write before it can't go out, so the
+//!   lighting writers send then; the screen's art doesn't depend on it.
 
 use std::sync::{mpsc, Arc, Mutex, Weak};
 
@@ -29,16 +32,18 @@ pub enum Trigger {
     PcBack,
     DisplayChange,
     TaskbarRestart,
+    LightingKnown,
 }
 
 impl Trigger {
     #[cfg(test)]
-    pub const ALL: [Trigger; 5] = [
+    pub const ALL: [Trigger; 6] = [
         Trigger::KeyboardConnected,
         Trigger::RightRelayReady,
         Trigger::PcBack,
         Trigger::DisplayChange,
         Trigger::TaskbarRestart,
+        Trigger::LightingKnown,
     ];
 
     /// For the log line.
@@ -49,6 +54,7 @@ impl Trigger {
             Trigger::PcBack => "PC back",
             Trigger::DisplayChange => "display change",
             Trigger::TaskbarRestart => "taskbar restart",
+            Trigger::LightingKnown => "keyboard lighting known",
         }
     }
 
@@ -56,6 +62,11 @@ impl Trigger {
     /// again on these (#601).
     pub fn is_link(self) -> bool {
         matches!(self, Trigger::KeyboardConnected | Trigger::RightRelayReady)
+    }
+
+    /// Only lighting writers act on it: the keyboard's lighting command became known (#633).
+    pub fn lighting_only(self) -> bool {
+        self == Trigger::LightingKnown
     }
 }
 
@@ -228,7 +239,7 @@ mod tests {
             assert_eq!(registry.fire(t), 3);
         }
         let heard = heard.lock().unwrap();
-        assert_eq!(heard.len(), 15);
+        assert_eq!(heard.len(), 3 * Trigger::ALL.len());
         for subsystem in ["accent", "art", "lights"] {
             for t in Trigger::ALL {
                 assert_eq!(
@@ -272,6 +283,16 @@ mod tests {
     fn link_triggers_are_the_keyboard_and_the_right_half() {
         let link: Vec<_> = Trigger::ALL.into_iter().filter(|t| t.is_link()).collect();
         assert_eq!(link, [Trigger::KeyboardConnected, Trigger::RightRelayReady]);
+    }
+
+    #[test]
+    fn only_lighting_known_is_for_the_lighting_writers_only() {
+        let only: Vec<_> = Trigger::ALL
+            .into_iter()
+            .filter(|t| t.lighting_only())
+            .collect();
+        assert_eq!(only, [Trigger::LightingKnown]);
+        assert!(!Trigger::LightingKnown.is_link());
     }
 
     #[test]

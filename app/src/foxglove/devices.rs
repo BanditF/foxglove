@@ -259,13 +259,49 @@ pub fn keyboard_key() -> Option<String> {
         .then(|| d.calibration_key())
 }
 
+/// What the app knows of the keyboard's lighting command, the keymap's `&rgb_ug` (#633).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Underglow {
+    /// No keymap learned yet: a lighting write can't go out, but may once it is.
+    Unknown,
+    /// The keymap has no `&rgb_ug`: lighting writes are not supported.
+    Absent,
+    /// Its behavior id.
+    Known(u16),
+}
+
+static UNDERGLOW: Mutex<Underglow> = Mutex::new(Underglow::Unknown);
+
+/// What the app knows of the keyboard's lighting command now.
+pub fn underglow() -> Underglow {
+    *UNDERGLOW.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A keymap was learned with `underglow`: what is known now, and whether that's news (the
+/// lighting writers waiting on it run then; the same keymap read again isn't).
+fn learned(before: Underglow, underglow: Option<u16>) -> (Underglow, bool) {
+    let now = underglow.map_or(Underglow::Absent, Underglow::Known);
+    (now, now != before)
+}
+
 /// What the keymap lets the app invoke (the allowlist) and its `&rgb_ug` behavior.
 pub fn set_actions(actions: Vec<BehaviorInfo>, underglow: Option<u16>) {
+    // The cache first: a device found meanwhile takes it, else it's set below.
+    *ACTIONS.lock().unwrap_or_else(|e| e.into_inner()) = (actions.clone(), underglow);
     if let Some(d) = DEVICE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        d.set_behaviors(actions.clone());
+        d.set_behaviors(actions);
         d.set_underglow(underglow);
     }
-    *ACTIONS.lock().unwrap_or_else(|e| e.into_inner()) = (actions, underglow);
+    let news = {
+        let mut known = UNDERGLOW.lock().unwrap_or_else(|e| e.into_inner());
+        let (now, news) = learned(*known, underglow);
+        *known = now;
+        news
+    };
+    // Once the device has the id: a write that waited on it goes out now (#633).
+    if news {
+        super::reassert::fire(super::reassert::Trigger::LightingKnown);
+    }
 }
 
 /// A device-layer error in the words the Keyboard panel uses.
@@ -287,6 +323,19 @@ pub fn describe(e: &foxglove_devices::DeviceError) -> String {
 #[cfg(test)]
 mod tests {
     use foxglove_link::lamps::LampParts;
+
+    /// #633: the lighting command becoming known (or changing, or going) is news once; the same
+    /// keymap learned again isn't.
+    #[test]
+    fn the_lighting_command_is_news_only_when_it_changes() {
+        use super::{learned, Underglow::*};
+        assert_eq!(learned(Unknown, Some(4)), (Known(4), true));
+        assert_eq!(learned(Known(4), Some(4)), (Known(4), false));
+        assert_eq!(learned(Known(4), Some(5)), (Known(5), true));
+        assert_eq!(learned(Unknown, None), (Absent, true));
+        assert_eq!(learned(Absent, None), (Absent, false));
+        assert_eq!(learned(Absent, Some(4)), (Known(4), true));
+    }
 
     /// The firmware's LED counts (#561) win when they fit the board's halves; else the
     /// profile's, as for firmware that doesn't say.

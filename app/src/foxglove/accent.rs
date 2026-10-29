@@ -15,6 +15,12 @@
 //! (#601: a push right after the left reboots can fail until `&rgb_ug` resolves, and used to
 //! wait for the next colour change). Nothing polls.
 //!
+//! A colour can't go out before the keymap's lighting behavior (`&rgb_ug`) is known (#633):
+//! a connect usually comes before the keymap is learned. The follower then waits, says
+//! nothing, and sends when the behavior becomes known (`Trigger::LightingKnown`). "Not
+//! supported" is said once, and only when the keymap is known and has no `&rgb_ug`; nothing is
+//! tried again until another keymap is learned.
+//!
 //! Only the hue and saturation follow; the board keeps its own brightness. The case's "Match
 //! keyboard" follows the same colour (#423). A lighting lease wins (a running scene, a
 //! notification): the colour then waits and comes back when it ends (`Arbiter::follow`).
@@ -23,6 +29,8 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
+
+use super::devices::Underglow;
 
 #[cfg(windows)]
 use foxglove_devices::Device as _;
@@ -49,6 +57,8 @@ struct Follower {
     applied: Option<(u16, u8)>,
     /// The last push failed: the next wake sends again, whatever it is (#601).
     failed: bool,
+    /// The keymap is known and has no `&rgb_ug`: said once, nothing sent until that changes.
+    unsupported: bool,
 }
 
 /// What the keyboard reports of its lights.
@@ -69,6 +79,11 @@ enum Step {
     /// Sent now (`true`), or kept for when a lighting lease ends (`false`).
     Sent(bool),
     Failed(String),
+    /// The lighting command isn't known yet (#633): nothing sent or said; it goes out when the
+    /// keymap is learned.
+    Waiting,
+    /// The keymap is known and has no lighting command: said once (#633).
+    Unsupported,
 }
 
 impl Follower {
@@ -77,18 +92,34 @@ impl Follower {
         why == Wake::Changed && !self.failed && self.applied == Some(want)
     }
 
-    /// Handles one wake for colour `want`. `read` reads the keyboard (asked at most once);
-    /// `push` sends at a brightness and says whether it went out now (a lease may hold the
-    /// lights).
+    /// Handles one wake for colour `want`, with what is known of the keyboard's lighting
+    /// command (`lighting`). `read` reads the keyboard (asked at most once); `push` sends at a
+    /// brightness and says whether it went out now (a lease may hold the lights).
     fn step(
         &mut self,
         why: Wake,
         want: (u16, u8),
+        lighting: Underglow,
         read: impl FnOnce() -> Option<Reported>,
         push: impl FnOnce(u8) -> Result<bool, String>,
     ) -> Step {
         if self.applied_already(why, want) {
             return Step::Skipped;
+        }
+        match lighting {
+            // Before the keymap is learned: no verdict, no traffic. Its LightingKnown wake
+            // sends (or finds the colour already shown).
+            Underglow::Unknown => return Step::Waiting,
+            Underglow::Absent => {
+                self.applied = None;
+                self.failed = false;
+                return if std::mem::replace(&mut self.unsupported, true) {
+                    Step::Skipped
+                } else {
+                    Step::Unsupported
+                };
+            }
+            Underglow::Known(_) => self.unsupported = false,
         }
         let reported = read();
         // Idempotent: a re-apply skips a colour the keyboard reports, unless the last push
@@ -106,7 +137,7 @@ impl Follower {
             Ok(now) => {
                 *self = Follower {
                     applied: Some(want),
-                    failed: false,
+                    ..Follower::default()
                 };
                 Step::Sent(now)
             }
@@ -375,6 +406,7 @@ mod windows_impl {
                         settled: s.settled,
                     })
                 };
+                let known = crate::foxglove::devices::underglow();
                 let push = |brightness| {
                     // An effect a quit left running (#542) would hide the colour.
                     crate::foxglove::scene_run::release_left_effect(&d);
@@ -383,14 +415,27 @@ mod windows_impl {
                     })
                     .map_err(|e| crate::foxglove::devices::describe(&e))
                 };
-                match (follower.step(why, want, read, push), why) {
+                match (follower.step(why, want, known, read, push), why) {
+                    // Every colour that lands says so (#633), so the log shows it did.
                     (Step::Sent(true), Wake::Reassert(t)) => {
                         eprintln!(
                             "{}",
-                            crate::foxglove::reassert::line("the accent colour", t)
+                            crate::foxglove::reassert::line(
+                                &format!("the accent colour {}/{}", want.0, want.1),
+                                t
+                            )
                         );
                     }
+                    (Step::Sent(true), Wake::Changed) => {
+                        eprintln!("Foxglove accent: applied {}/{}", want.0, want.1);
+                    }
                     (Step::Failed(e), _) => eprintln!("Foxglove accent: {e}"),
+                    (Step::Unsupported, _) => eprintln!(
+                        "Foxglove accent: {}",
+                        crate::foxglove::devices::describe(
+                            &foxglove_devices::DeviceError::Unsupported
+                        )
+                    ),
                     _ => {}
                 }
             }
@@ -452,6 +497,7 @@ mod tests {
         colour: RefCell<Option<(u16, u8, u8)>>,
         right_agrees: Cell<bool>,
         pushes: Cell<u32>,
+        reads: Cell<u32>,
         fail_next: Cell<bool>,
     }
 
@@ -461,11 +507,22 @@ mod tests {
                 colour: RefCell::new(colour),
                 right_agrees: Cell::new(true),
                 pushes: Cell::new(0),
+                reads: Cell::new(0),
                 fail_next: Cell::new(false),
             }
         }
 
         fn wake(&self, f: &mut Follower, why: Wake, want: (u16, u8)) -> Step {
+            self.wake_known(f, why, want, Underglow::Known(4))
+        }
+
+        fn wake_known(
+            &self,
+            f: &mut Follower,
+            why: Wake,
+            want: (u16, u8),
+            lighting: Underglow,
+        ) -> Step {
             let reported = self.colour.borrow().map(|(hue, sat, brightness)| Reported {
                 hue,
                 sat,
@@ -475,7 +532,11 @@ mod tests {
             f.step(
                 why,
                 want,
-                || reported,
+                lighting,
+                || {
+                    self.reads.set(self.reads.get() + 1);
+                    reported
+                },
                 |brightness| {
                     self.pushes.set(self.pushes.get() + 1);
                     if self.fail_next.take() {
@@ -550,6 +611,7 @@ mod tests {
         let mut f = Follower {
             applied: Some(blue),
             failed: true,
+            ..Follower::default()
         };
         assert_eq!(
             board.wake(&mut f, Wake::Reassert(Trigger::PcBack), blue),
@@ -559,6 +621,7 @@ mod tests {
         let mut f = Follower {
             applied: Some(blue),
             failed: true,
+            ..Follower::default()
         };
         assert_eq!(board.wake(&mut f, Wake::Changed, blue), Step::Sent(true));
     }
@@ -599,7 +662,7 @@ mod tests {
         board.right_agrees.set(false);
         let mut f = Follower {
             applied: Some(blue),
-            failed: false,
+            ..Follower::default()
         };
         assert_eq!(
             board.wake(&mut f, Wake::Reassert(Trigger::PcBack), blue),
@@ -624,22 +687,130 @@ mod tests {
         let (blue, red) = (hue_sat(0, 120, 215), hue_sat(255, 0, 0));
         let mut f = Follower {
             applied: Some(blue),
-            failed: false,
+            ..Follower::default()
         };
         assert_eq!(
             f.step(
                 Wake::Changed,
                 blue,
+                Underglow::Known(4),
                 || panic!("not read"),
                 |_| panic!("not sent")
             ),
             Step::Skipped
         );
         assert_eq!(
-            f.step(Wake::Changed, red, || None, |_| Ok(false)),
+            f.step(
+                Wake::Changed,
+                red,
+                Underglow::Known(4),
+                || None,
+                |_| Ok(false)
+            ),
             Step::Sent(false)
         );
         assert_eq!(f.applied, Some(red));
+    }
+
+    /// #633, the connect order: the colour is tried at the connect, before the keymap is
+    /// learned. No verdict and no traffic then; the lighting command becoming known sends it,
+    /// exactly once, and nothing after that re-sends it.
+    #[test]
+    fn a_push_before_the_lighting_command_is_known_waits_for_it() {
+        let blue = hue_sat(0, 120, 215);
+        let board = FakeBoard::new(Some((0, 100, 60)));
+        let mut f = Follower::default();
+        for why in [
+            Wake::Reassert(Trigger::KeyboardConnected),
+            Wake::Changed,
+            Wake::Reassert(Trigger::RightRelayReady),
+        ] {
+            assert_eq!(
+                board.wake_known(&mut f, why, blue, Underglow::Unknown),
+                Step::Waiting,
+                "{why:?}: no verdict while unknown"
+            );
+        }
+        assert!(!f.unsupported);
+        assert_eq!(
+            (board.reads.get(), board.pushes.get()),
+            (0, 0),
+            "no traffic"
+        );
+        assert_eq!(
+            board.wake_known(
+                &mut f,
+                Wake::Reassert(Trigger::LightingKnown),
+                blue,
+                Underglow::Known(4)
+            ),
+            Step::Sent(true),
+            "sent once the command is known"
+        );
+        assert_eq!(board.pushes.get(), 1);
+        assert_eq!(*board.colour.borrow(), Some((blue.0, blue.1, 60)));
+        // The command known again (another keymap read), and every other trigger: nothing.
+        for _ in 0..3 {
+            for t in Trigger::ALL {
+                assert_eq!(
+                    board.wake(&mut f, Wake::Reassert(t), blue),
+                    Step::Skipped,
+                    "{t:?}"
+                );
+            }
+            assert_eq!(board.wake(&mut f, Wake::Changed, blue), Step::Skipped);
+        }
+        assert_eq!(board.pushes.get(), 1, "applied exactly once");
+    }
+
+    /// The keymap known and without `&rgb_ug`: one "not supported", then no tries on any event
+    /// or colour change; a keymap that gains it gets the colour.
+    #[test]
+    fn a_keymap_without_the_lighting_command_says_so_once() {
+        let (blue, red) = (hue_sat(0, 120, 215), hue_sat(255, 0, 0));
+        let board = FakeBoard::new(Some((0, 100, 60)));
+        let mut f = Follower::default();
+        assert_eq!(
+            board.wake_known(
+                &mut f,
+                Wake::Reassert(Trigger::KeyboardConnected),
+                blue,
+                Underglow::Absent
+            ),
+            Step::Unsupported
+        );
+        for _ in 0..3 {
+            for t in Trigger::ALL {
+                assert_eq!(
+                    board.wake_known(&mut f, Wake::Reassert(t), blue, Underglow::Absent),
+                    Step::Skipped,
+                    "{t:?}"
+                );
+            }
+            for c in [blue, red] {
+                assert_eq!(
+                    board.wake_known(&mut f, Wake::Changed, c, Underglow::Absent),
+                    Step::Skipped
+                );
+            }
+        }
+        assert_eq!(
+            (board.reads.get(), board.pushes.get()),
+            (0, 0),
+            "no retries"
+        );
+        assert_eq!(
+            board.wake_known(
+                &mut f,
+                Wake::Reassert(Trigger::LightingKnown),
+                blue,
+                Underglow::Known(9)
+            ),
+            Step::Sent(true),
+            "a keymap with it"
+        );
+        assert!(!f.unsupported);
+        assert_eq!(board.pushes.get(), 1);
     }
 
     /// The old store keeps working: a section without the new key follows no wallpaper.
