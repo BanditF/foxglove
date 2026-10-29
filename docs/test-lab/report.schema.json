@@ -9,8 +9,8 @@
     "schema": { "const": "foxglove-lab-report" },
     "version": { "const": 2 },
     "verdict": {
-      "enum": ["PASS", "FAIL"],
-      "description": "The release gate: PASS only if no case failed and no case tagged release is blocked."
+      "enum": ["PASS", "FAIL", "BLOCKED"],
+      "description": "The release gate: FAIL if a case failed; BLOCKED if none did but a case tagged release is blocked; PASS otherwise."
     },
     "suite": { "type": "string", "description": "Suite name or path given to foxglove-lab run --suite." },
     "generated_utc": { "type": "string", "description": "RFC 3339 start time of the run." },

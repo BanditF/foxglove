@@ -21,7 +21,8 @@
   - pushed art that a test would destroy.
 
   A blocked release case blocks the release; it's never counted as a pass.
-- **Exit code:** 0 when the verdict is PASS and every non-manual case passed.
+- The report's `verdict`: FAIL if a case failed, BLOCKED if none did but a `release` case is blocked, else PASS.
+- **Exit code:** 0 when the verdict is PASS and every non-manual case passed; 1 when a case failed; 2 when nothing failed but something couldn't run. So `release-test.ps1` says BLOCKED, not FAIL, for a manual case under `-NonInteractive`.
 
 ## Areas
 
