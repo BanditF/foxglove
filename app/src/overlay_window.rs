@@ -215,7 +215,8 @@ impl OverlayApp {
                 // display.
                 let id = crate::foxglove::settings_window::id();
                 ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Minimized(false));
-                ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Focus);
+                // Foxglove (#618): no fake input to take the focus (foxglove::focus).
+                crate::foxglove::focus::bring_to_front(ctx, id, self.ui.settings_window.hwnd());
             }
             self.ui.settings_visible = true;
         }

@@ -369,6 +369,19 @@ fn save(saved: Option<Saved>) {
 }
 
 impl SettingsWindow {
+    /// The window's native handle while it's open and found (Windows), for bringing it to the
+    /// front.
+    pub fn hwnd(&self) -> Option<isize> {
+        #[cfg(target_os = "windows")]
+        {
+            self.hwnd
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    }
+
     /// Runs inside the window's viewport each frame: places it on its first frame, keeps its
     /// title bar in the app's theme, and saves its place when it loses the focus. With no
     /// place of its own yet it opens on the display under the mouse (else the main one). True
@@ -457,7 +470,7 @@ impl NativeWindow for Shown<'_> {
     }
     fn move_to(&mut self, _: [i32; 4]) {}
     fn show(&mut self) {
-        imp::show(self.0);
+        imp::show(self.0, None);
     }
 }
 
@@ -605,10 +618,21 @@ mod imp {
         }
     }
 
-    pub fn show(ctx: &egui::Context) {
+    pub fn show(ctx: &egui::Context, hwnd: Option<isize>) {
         // Through winit, so it knows the window is visible.
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        // Shown now as well, so it can take the foreground in this frame, without the fake Alt
+        // press winit's focus makes (#618, focus.rs).
+        if let Some(h) = hwnd {
+            // SAFETY: shows the Settings window, which belongs to this thread.
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
+                    HWND(h as *mut core::ffi::c_void),
+                    windows::Win32::UI::WindowsAndMessaging::SW_SHOW,
+                );
+            }
+        }
+        crate::foxglove::focus::bring_to_front(ctx, ctx.viewport_id(), hwnd);
     }
 
     pub struct Win32Window<'a> {
@@ -671,7 +695,7 @@ mod imp {
         }
 
         fn show(&mut self) {
-            show(self.ctx);
+            show(self.ctx, Some(self.hwnd));
         }
     }
 }

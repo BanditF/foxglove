@@ -23,6 +23,16 @@
 //! and a check restores any window that isn't on its chosen display's area ([`decide`]): onto
 //! that area, never at the size it had while away. Every restore and every placement logs one
 //! `Foxglove: overlay window …` line with the old and new rects and why.
+//!
+//! Why it was parked (#618, main 23941d8): winit only learns of a minimize from
+//! `WM_SYSCOMMAND`, so a window minimized any other way (`ShowWindow`, as the lab and Show
+//! desktop do) is still "not minimized" in winit's flags. The next winit flag change on the
+//! overlay (the tray panel's mouse passthrough, when it opens or closes) rewrites the window's
+//! style from those flags (winit 0.30 `WindowFlags::apply_diff`, `SetWindowLongW(GWL_STYLE)`),
+//! which drops `WS_MINIMIZE`: the window is then no longer minimized, at -32000 and 160x28, with
+//! nothing logged. The overlay's window hook ([`keep_minimized`]) keeps `WS_MINIMIZE` through
+//! winit's style refresh, so only these checks bring it back. [`window_state`] waits for a
+//! restore in progress, so the probe never reads a half-placed window.
 
 // The window side runs on Windows only; elsewhere only the tests use the decision.
 #![cfg_attr(not(windows), allow(dead_code))]
@@ -100,6 +110,26 @@ pub const PLACEMENT_TRIES: u32 = 3;
 /// bring an away window back.
 pub fn place_due(iconic: bool, rect: Option<[i32; 4]>, target: [i32; 4], tries: u32) -> bool {
     !away(iconic, rect) && rect != Some(target) && tries < PLACEMENT_TRIES
+}
+
+const WS_MINIMIZE: u32 = 0x2000_0000;
+
+/// The overlay window hook's answer to a style change (`WM_STYLECHANGING`, `GWL_STYLE`): while
+/// the window is minimized, winit's style refresh (`in_winit_refresh`, bracketed by its
+/// "Winit::SetRetainMaximized" message) keeps `WS_MINIMIZE` (the new style to use). Clearing it
+/// would un-minimize the window without placing it (see the module docs). Any other change, and
+/// any change while shown, goes through as asked.
+pub fn keep_minimized(in_winit_refresh: bool, iconic: bool, old: u32, new: u32) -> Option<u32> {
+    (in_winit_refresh && iconic && old & WS_MINIMIZE != 0 && new & WS_MINIMIZE == 0)
+        .then_some(new | WS_MINIMIZE)
+}
+
+/// The log line when the hook kept the window minimized.
+fn kept_minimized_line(rect: Option<[i32; 4]>) -> String {
+    format!(
+        "Foxglove: overlay window minimized at {}, kept minimized through a winit style refresh",
+        rect_text(rect)
+    )
 }
 
 /// How long after a display change the overlay becoming minimized counts as part of it.
@@ -223,6 +253,21 @@ static SERVED: Mutex<(u64, u64)> = Mutex::new((0, 0));
 static CHECKED: Condvar = Condvar::new();
 /// The last display change.
 static DISPLAY_CHANGED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+/// Held by the frame while it restores the window (un-minimize, place, log): the probe waits for
+/// it, so it never reads the window between two steps (#618: the minimized size moved onto the
+/// display before its resize) or before the restore's line.
+static RESTORING: Mutex<()> = Mutex::new(());
+
+/// Runs `read` once no restore is in progress.
+fn settled<T>(read: impl FnOnce() -> T) -> T {
+    let _restoring = RESTORING.lock().unwrap_or_else(|e| e.into_inner());
+    read()
+}
+
+/// The overlay window's handle, from its first frame on (for bringing it to the front).
+pub fn hwnd() -> Option<isize> {
+    Some(HWND.load(Ordering::Relaxed)).filter(|h| *h != 0)
+}
 
 /// Asks the overlay's next frame to check its window, and draws that frame.
 pub fn request(trigger: Trigger) {
@@ -280,12 +325,14 @@ pub fn window_state() -> Option<WindowState> {
         if hwnd == 0 {
             return None;
         }
-        Some(describe(
-            imp::is_iconic(hwnd),
-            imp::is_visible(hwnd),
-            imp::window_rect(hwnd),
-            &crate::monitors::list(),
-        ))
+        let (iconic, visible, rect) = settled(|| {
+            (
+                imp::is_iconic(hwnd),
+                imp::is_visible(hwnd),
+                imp::window_rect(hwnd),
+            )
+        });
+        Some(describe(iconic, visible, rect, &crate::monitors::list()))
     }
     #[cfg(not(windows))]
     {
@@ -372,6 +419,7 @@ pub fn frame(
     place: impl Fn(isize, [i32; 4]),
 ) -> Option<Option<[i32; 4]>> {
     imp::watch();
+    imp::hook(hwnd);
     HWND.store(hwnd, Ordering::Relaxed);
     let iconic = imp::is_iconic(hwnd);
     let rect = imp::window_rect(hwnd);
@@ -401,6 +449,7 @@ pub fn frame(
         checked();
         return None;
     };
+    let _restoring = RESTORING.lock().unwrap_or_else(|e| e.into_inner());
     imp::show_no_activate(hwnd);
     if let Some(to) = to {
         place(hwnd, to);
@@ -418,14 +467,82 @@ pub fn frame(
 
 #[cfg(windows)]
 mod imp {
-    use std::sync::Once;
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+    use std::sync::{Once, OnceLock};
     use windows::core::{w, PCWSTR};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+    use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DispatchMessageW, GetMessageW, GetWindowRect, IsIconic,
-        IsWindowVisible, RegisterClassW, ShowWindow, MSG, SW_SHOWNOACTIVATE, WINDOW_STYLE,
-        WM_DISPLAYCHANGE, WNDCLASSW, WS_EX_TOOLWINDOW,
+        IsWindowVisible, RegisterClassW, RegisterWindowMessageW, ShowWindow, GWL_STYLE, MSG,
+        STYLESTRUCT, SW_SHOWNOACTIVATE, WINDOW_STYLE, WM_DISPLAYCHANGE, WM_NCDESTROY,
+        WM_STYLECHANGING, WNDCLASSW, WS_EX_TOOLWINDOW,
     };
+
+    /// Our subclass of the overlay window ("FoxO").
+    const HOOK: usize = 0x466F_784F;
+
+    /// winit sends this registered message to a window with wparam 1 before its style refresh
+    /// (`WindowFlags::apply_diff`) and 0 after (winit 0.30 `SET_RETAIN_STATE_ON_SIZE_MSG_ID`).
+    fn winit_refresh_msg() -> u32 {
+        static ID: OnceLock<u32> = OnceLock::new();
+        // SAFETY: registers (or looks up) a message name; no pointers kept.
+        *ID.get_or_init(|| unsafe { RegisterWindowMessageW(w!("Winit::SetRetainMaximized")) })
+    }
+
+    /// Inside winit's style refresh of the overlay window (its thread only).
+    static IN_REFRESH: AtomicBool = AtomicBool::new(false);
+
+    /// Hooks the overlay window's messages (see `proc`), once per window.
+    pub fn hook(h: isize) {
+        static HOOKED: AtomicIsize = AtomicIsize::new(0);
+        if HOOKED.swap(h, Ordering::Relaxed) == h {
+            return;
+        }
+        let _ = winit_refresh_msg();
+        // SAFETY: the overlay window belongs to this (the UI) thread, as subclassing requires.
+        if !unsafe { SetWindowSubclass(hwnd(h), Some(proc), HOOK, 0) }.as_bool() {
+            eprintln!("Foxglove: can't hook the overlay window (minimized through style changes)");
+        }
+    }
+
+    /// The overlay window's messages, before winit's: notes winit's style-refresh bracket, and
+    /// keeps `WS_MINIMIZE` through it while minimized ([`super::keep_minimized`]).
+    unsafe extern "system" fn proc(
+        window: HWND,
+        message: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _id: usize,
+        _data: usize,
+    ) -> LRESULT {
+        // SAFETY (whole body): Windows calls this on the window's own thread with valid
+        // arguments for `message`; `lparam` of WM_STYLECHANGING points at a STYLESTRUCT that
+        // may be changed for the call.
+        unsafe {
+            if message == WM_STYLECHANGING && wparam.0 as i32 == GWL_STYLE.0 {
+                let result = DefSubclassProc(window, message, wparam, lparam);
+                let s = &mut *(lparam.0 as *mut STYLESTRUCT);
+                let iconic = IsIconic(window).as_bool();
+                let refresh = IN_REFRESH.load(Ordering::Relaxed);
+                if let Some(kept) = super::keep_minimized(refresh, iconic, s.styleOld, s.styleNew) {
+                    s.styleNew = kept;
+                    // Not eprintln: a closed stderr must not panic into Windows.
+                    let line = super::kept_minimized_line(window_rect(window.0 as isize));
+                    let _ = writeln!(std::io::stderr(), "{line}");
+                }
+                return result;
+            }
+            let refresh_msg = winit_refresh_msg();
+            if refresh_msg != 0 && message == refresh_msg {
+                IN_REFRESH.store(wparam.0 != 0, Ordering::Relaxed);
+            } else if message == WM_NCDESTROY {
+                let _ = RemoveWindowSubclass(window, Some(proc), HOOK);
+            }
+            DefSubclassProc(window, message, wparam, lparam)
+        }
+    }
 
     fn hwnd(h: isize) -> HWND {
         HWND(h as *mut core::ffi::c_void)
@@ -973,5 +1090,208 @@ mod tests {
         assert_eq!(w.rect, Some(MAIN));
         assert_eq!(w.lines.len(), 1);
         assert!(w.lines[0].ends_with("(display area)"));
+    }
+
+    const WS_POPUP: u32 = 0x8000_0000;
+
+    /// #618: winit's style refresh keeps `WS_MINIMIZE` on a minimized overlay; nothing else is
+    /// touched.
+    #[test]
+    fn a_winit_style_refresh_keeps_a_minimized_window_minimized() {
+        let min = WS_POPUP | WS_MINIMIZE;
+        assert_eq!(keep_minimized(true, true, min, WS_POPUP), Some(min));
+        assert_eq!(
+            keep_minimized(false, true, min, WS_POPUP),
+            None,
+            "not winit's refresh"
+        );
+        assert_eq!(
+            keep_minimized(true, false, WS_POPUP, WS_POPUP),
+            None,
+            "shown"
+        );
+        assert_eq!(keep_minimized(true, true, min, min), None, "kept anyway");
+        assert_eq!(
+            kept_minimized_line(Some(ICONIC_RECT)),
+            "Foxglove: overlay window minimized at [-32000, -32000, -31840, -31972], kept \
+             minimized through a winit style refresh"
+        );
+    }
+
+    /// A window-free model of the overlay window as Windows and winit 0.30 hold it, for the
+    /// main 23941d8 lab run (#618). Windows: the `WS_MINIMIZE` style (what `IsIconic` reads), the
+    /// rect, and the normal rect a minimized window is restored to. winit: its own `MINIMIZED`
+    /// flag, set only by `WM_SYSCOMMAND` or its own `set_minimized`, never by `ShowWindow`. The
+    /// frame runs the real `check`/`decide`, un-minimizes like `SW_SHOWNOACTIVATE` and places
+    /// like `place_window` (move with `SWP_NOSIZE`, then size), recording what a probe on another
+    /// thread could read between the steps.
+    struct Model {
+        minimized_style: bool,
+        rect: [i32; 4],
+        normal: [i32; 4],
+        winit_minimized: bool,
+        passthrough: bool,
+        hooked: bool,
+        was_away: bool,
+        between_steps: Vec<[i32; 4]>,
+        lines: Vec<String>,
+    }
+
+    impl Model {
+        fn shown() -> Self {
+            Model {
+                minimized_style: false,
+                rect: MAIN,
+                normal: MAIN,
+                winit_minimized: false,
+                passthrough: true,
+                hooked: false,
+                was_away: false,
+                between_steps: vec![],
+                lines: vec![],
+            }
+        }
+
+        fn probe(&self) -> (bool, [i32; 4]) {
+            (self.minimized_style, self.rect)
+        }
+
+        /// The lab hook: `ShowWindow(SW_MINIMIZE)` from another process (no `WM_SYSCOMMAND`,
+        /// so winit's flag stays "not minimized").
+        fn lab_minimize(&mut self) {
+            if !self.minimized_style {
+                self.normal = self.rect;
+            }
+            (self.minimized_style, self.rect) = (true, ICONIC_RECT);
+        }
+
+        /// egui's `MousePassthrough` → winit `set_cursor_hittest` → `apply_diff`: inside the
+        /// "SetRetainMaximized" bracket the style is rewritten from winit's flags (skipped only
+        /// while winit itself thinks the window minimized), through the overlay's hook when
+        /// hooked.
+        fn set_passthrough(&mut self, on: bool) {
+            if self.passthrough == on {
+                return;
+            }
+            self.passthrough = on;
+            let old = WS_POPUP | if self.minimized_style { WS_MINIMIZE } else { 0 };
+            let mut new = WS_POPUP | if self.winit_minimized { WS_MINIMIZE } else { 0 };
+            if self.winit_minimized {
+                return;
+            }
+            if self.hooked {
+                if let Some(kept) = keep_minimized(true, self.minimized_style, old, new) {
+                    new = kept;
+                    self.lines.push(kept_minimized_line(Some(self.rect)));
+                }
+            }
+            // The style no longer says minimized: the window stays where it was (-32000, at the
+            // minimized size), shown.
+            self.minimized_style = new & WS_MINIMIZE != 0;
+        }
+
+        fn frame(&mut self, pending: Option<Trigger>, since: Option<Duration>) {
+            let (iconic, rect) = (self.minimized_style, Some(self.rect));
+            let Some((trigger, Action::Restore { to, why })) = check(
+                pending,
+                &mut self.was_away,
+                iconic,
+                rect,
+                since,
+                &[MAIN],
+                Some(MAIN),
+            ) else {
+                return;
+            };
+            if self.minimized_style {
+                (self.minimized_style, self.rect) = (false, self.normal);
+            }
+            let to = to.expect("a display is known");
+            // place_window: moved first (SWP_NOSIZE), then sized.
+            self.rect = [
+                to[0],
+                to[1],
+                to[0] + self.rect[2] - self.rect[0],
+                to[1] + self.rect[3] - self.rect[1],
+            ];
+            self.between_steps.push(self.rect);
+            self.rect = to;
+            self.was_away = away(self.minimized_style, Some(self.rect));
+            self.lines
+                .push(restored_line(trigger, why, rect, Some(to), Some(self.rect)));
+        }
+
+        /// The run: minimize, tray click, panel open, panel closed (its passthrough change lands
+        /// after the lab's second minimize: the API answers mid-frame, the command runs at the
+        /// frame's end), then a display change 1 s later.
+        fn lab_run(hooked: bool) -> (Model, (bool, [i32; 4])) {
+            let mut w = Model {
+                hooked,
+                ..Model::shown()
+            };
+            w.lab_minimize();
+            assert_eq!(w.probe(), (true, ICONIC_RECT), "first minimize: iconic");
+            w.frame(Some(Trigger::TrayClick), None);
+            assert_eq!(w.probe(), (false, MAIN), "tray click: restored");
+            w.set_passthrough(false); // the panel opens and takes the mouse
+            w.lab_minimize(); // right after tray.set_panel close answered
+            w.set_passthrough(true); // the close's passthrough, at the frame's end
+            let after_second_minimize = w.probe();
+            w.frame(Some(Trigger::DisplayChange), Some(Duration::from_secs(1)));
+            (w, after_second_minimize)
+        }
+    }
+
+    /// #618 on main 23941d8, derived: without the hook, winit's style refresh (the panel's
+    /// passthrough) clears `WS_MINIMIZE` after the lab's second minimize. That is On-call's
+    /// "iconic False, rect -32000…", and the display change's restore then moves the 160x28
+    /// window to 0,0 before sizing it, which is the `[0, 0, 160, 28]` the probe read before the
+    /// restore's line was out.
+    #[test]
+    fn without_the_hook_the_lab_run_reads_as_on_call_saw_it() {
+        let (w, second) = Model::lab_run(false);
+        assert_eq!(second, (false, ICONIC_RECT), "un-minimized, still parked");
+        assert_eq!(w.between_steps[1], SMALL, "the minimized size at 0,0");
+        assert!(w.lines[1].starts_with("Foxglove: overlay window parked off screen"));
+    }
+
+    /// The fix: the hook keeps the second minimize a minimize (one line), and the display change
+    /// restores it as a minimized window: un-minimized to its full size, placed, one line, never
+    /// at 160x28.
+    #[test]
+    fn with_the_hook_the_lab_run_stays_minimized_then_restores_in_full() {
+        let (w, second) = Model::lab_run(true);
+        assert_eq!(second, (true, ICONIC_RECT), "the second minimize holds");
+        assert_eq!(w.probe(), (false, MAIN));
+        assert!(!w.between_steps.contains(&SMALL), "{:?}", w.between_steps);
+        assert_eq!(
+            w.lines,
+            [
+                "Foxglove: overlay window minimized at [-32000, -32000, -31840, -31972], \
+                 restored to [0, 0, 2560, 1400] (tray click)",
+                "Foxglove: overlay window minimized at [-32000, -32000, -31840, -31972], kept \
+                 minimized through a winit style refresh",
+                "Foxglove: overlay window minimized at [-32000, -32000, -31840, -31972], \
+                 restored to [0, 0, 2560, 1400] (display change)",
+            ]
+        );
+    }
+
+    /// The probe (`window_state`) waits for a restore in progress, so it never reads the window
+    /// between `place_window`'s two steps or before the restore's line.
+    #[test]
+    fn the_probe_waits_for_a_restore_in_progress() {
+        let restoring = RESTORING.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let probe = std::thread::spawn(move || {
+            let _ = tx.send(settled(|| 7));
+        });
+        assert!(
+            rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "waits while restoring"
+        );
+        drop(restoring);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Ok(7));
+        probe.join().unwrap();
     }
 }
