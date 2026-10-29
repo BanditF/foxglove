@@ -38,9 +38,14 @@ config FOXGLOVE_SIM_EFFECTS
     depends on !FOXGLOVE_SIM_FRAMES
     depends on SETTINGS
 
+config FOXGLOVE_SIM_RGB_STATE
+    bool "Simulator: RGB_STATE truth case (rgb_idle.c and host_link.c with a fake underglow, strip and relay, module/rgb_state_sim.c)"
+    depends on !FOXGLOVE_SIM_FRAMES && !FOXGLOVE_SIM_EFFECTS
+    depends on SETTINGS
+
 config NICE_VIEW_RGB_IDLE
     bool
-    default y if FOXGLOVE_SIM_EFFECTS
+    default y if FOXGLOVE_SIM_EFFECTS || FOXGLOVE_SIM_RGB_STATE
 
 config FOXGLOVE_HOST_FRAMES
     bool

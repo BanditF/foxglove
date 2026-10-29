@@ -71,7 +71,7 @@ Steps are single-key tables in an ordered `steps` array:
 | `invoke` | Exactly one of `behavior` (optional `&` prefix) / `local_id`; `param1`, `param2`, `hold_ms` default 0; `expect_status` defaults `ok` |
 | `expect_layer` | `active_contains = [N, ...]` and/or `top = N`; `within_ms` defaults 500 |
 | `expect_conn` | Optional `usb`, `ble_connected`, `right_link`; `usb_or_ble = true` tests either typing transport; `within_ms` defaults 500 |
-| `expect_rgb` | `right_age_max_s` (inclusive), optional `left_on` / `right_on` (RGB_STATE's on/off, #603), optional `within_ms` |
+| `expect_rgb` | `right_age_max_s` (inclusive), optional `left_on` / `right_on` (RGB_STATE's on/off, #603: what the LEDs show when the firmware has HELLO bit 24, #605), `shown = true` (both halves must report what their LEDs show), `left_look = { hue, sat, brightness, effect }` (the left's stored look) and `right_same_look = true` (the right's stored hue, saturation, brightness and effect equal the left's, #624), optional `within_ms` (up to 120000) |
 | `type_into_sink` | `text` (window hint), `via` (array of `invoke` steps), `expect` (received text) |
 | `prompt` | `ask`; answer is recorded verbatim, including the newline; only `y`/`yes` confirms a pass |
 | `screen` | `half = "left"` / `"right"`, `golden = "golden/left-base.png"`, `mask = [{ x = 0, y = 0, width = 20, height = 10 }]` |
@@ -87,7 +87,10 @@ reports left over from an earlier invocation are discarded before the next.
 
 Requirements currently understood: `host_link>=N`, `invoke_refusal`,
 `screen_readback`, `position_press`, `activity_relay` (HELLO bit 23: the left
-relays its activity to the right, #603). Unsupported requirements block the **whole
+relays its activity to the right, #603), `rgb_shown` (HELLO bit 24: RGB_STATE says what
+each half's LEDs show, #605). `split_guard_test` takes an optional `while_down` invoke,
+sent once while HELLO shows the split link down (right link 0), so only the left takes
+it (#624); the step is BLOCKED if the link never reads as down. Unsupported requirements block the **whole
 case before its first step**. `screen` and `press_position` also imply their
 requirements, so omitting `requires` cannot accidentally send a future command.
 Screen/position cases are BLOCKED with issues #67/#78. Current HELLO has no

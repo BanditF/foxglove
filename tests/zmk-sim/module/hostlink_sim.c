@@ -124,8 +124,13 @@ void panel_stream_driver(void);
 void art_keys_sim_driver(void);
 void frames_sim_driver(void);
 void effects_sim_driver(void);
+void rgb_state_sim_driver(void);
 
 static void driver(void) {
+    if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_RGB_STATE)) {
+        rgb_state_sim_driver(); // the rgb-state case plays a different PC
+        return;
+    }
     if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_EFFECTS)) {
         effects_sim_driver(); // the host-effects case plays a different PC
         return;

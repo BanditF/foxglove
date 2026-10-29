@@ -130,7 +130,7 @@ fn parses_seed_suites_and_all_step_kinds() {
             .unwrap()
             .cases
             .len(),
-        11
+        13
     );
     assert_eq!(
         spec::load(&root.join("app-actions.toml"))
@@ -278,6 +278,45 @@ fn rgb_on_off_is_checked_per_half() {
 }
 
 #[test]
+fn rgb_look_and_shown_are_checked_per_half() {
+    // RGB_STATE: both halves Swirl, hue 39, sat 70, 42 % (#624), each saying what it shows (#605).
+    let mut rgb = reply(&[
+        0xd7, 0x83, 1, 39, 0, 70, 42, 3, 3, 0, 1, 39, 0, 70, 42, 3, 3,
+    ]);
+    rgb[17] = 0b11; // valid, lit
+    rgb[23] = 0b11;
+    let pass = "[{expect_rgb={right_age_max_s=2,shown=true,right_same_look=true,left_on=true,right_on=true,left_look={hue=39,sat=70,brightness=42,effect=3}}}]";
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(rgb);
+    assert_eq!(run(&fake, &case(pass)).status, Status::Pass);
+    // The right kept another look (Spectrum, 9 %: the #624 state).
+    let mut stale = rgb;
+    stale[14] = 9;
+    stale[15] = 2;
+    // The right not heard from on this link: no shown block for it.
+    let mut unheard = rgb;
+    unheard[23] = 0;
+    for (r, steps) in [
+        (
+            rgb,
+            "[{expect_rgb={right_age_max_s=2,left_look={hue=40,sat=70,brightness=42,effect=3},within_ms=1}}]",
+        ),
+        (
+            stale,
+            "[{expect_rgb={right_age_max_s=2,right_same_look=true,within_ms=1}}]",
+        ),
+        (
+            unheard,
+            "[{expect_rgb={right_age_max_s=2,shown=true,within_ms=1}}]",
+        ),
+    ] {
+        let fake = Fake::default();
+        fake.replies.borrow_mut().push_back(r);
+        assert_eq!(run(&fake, &case(steps)).status, Status::Fail, "{steps}");
+    }
+}
+
+#[test]
 fn capabilities_and_refusal_gate_before_any_request() {
     for (requires, steps) in [
         (
@@ -288,6 +327,8 @@ fn capabilities_and_refusal_gate_before_any_request() {
         (vec!["host_link>=2"], "[{invoke={behavior='mo'}}]"),
         // HELLO bit 23 (#603): the left relays its activity to the right.
         (vec!["activity_relay"], "[{expect_layer={top=0}}]"),
+        // HELLO bit 24 (#605): RGB_STATE says what the LEDs show.
+        (vec!["rgb_shown"], "[{expect_layer={top=0}}]"),
         (
             vec![],
             "[{invoke={behavior='mo'}},{screen={half='left',golden='a.png'}}]",

@@ -209,7 +209,7 @@ static void hello_reply(void) {
     caps |= HOST_LINK_CAP_ACTIVITY_RELAY; // activity_relay.c is built with the relay
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
-    caps |= HOST_LINK_CAP_SETTINGS_RGB | HOST_LINK_CAP_RGB_STATE_EVENT;
+    caps |= HOST_LINK_CAP_SETTINGS_RGB | HOST_LINK_CAP_RGB_STATE_EVENT | HOST_LINK_CAP_RGB_SHOWN;
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
     caps |= HOST_LINK_CAP_POSITION | HOST_LINK_CAP_BOOTLOADER;
@@ -569,23 +569,32 @@ ZMK_SUBSCRIPTION(host_link_conn, zmk_usb_conn_state_changed);
 ZMK_SUBSCRIPTION(host_link_conn, zmk_battery_state_changed);
 #endif
 
-#define RGB_STATE_SIZE (2 + 2 * sizeof(struct rgb_idle_wire) + 1)
+#define RGB_SHOWN_AT (3 + 2 * sizeof(struct rgb_idle_wire))
+#define RGB_STATE_SIZE (RGB_SHOWN_AT + 2 * sizeof(struct rgb_shown_wire))
+BUILD_ASSERT(RGB_SHOWN_AT == 17 && RGB_STATE_SIZE == 29, "RGB_STATE's layout is the PC's");
 
 // The RGB_STATE reply; asks the relay for a fresher right state on the way.
 static void rgb_state(uint8_t r[RGB_STATE_SIZE]) {
     struct rgb_idle_wire left = {0}, right = {0};
+    struct rgb_shown_wire left_shown = {0}, right_shown = {0};
     uint8_t age = 0xff;
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
     rgb_idle_state(&left);
+    rgb_idle_shown(&left_shown);
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     age = art_relay_right_rgb(&right);
+    if (age == 0xff || !art_relay_right_shown(&right_shown)) {
+        memset(&right_shown, 0, sizeof(right_shown));
+    }
 #endif
     r[0] = HOST_LINK_SETTINGS;
     r[1] = 0x80 | SETTING_RGB_STATE;
     memcpy(&r[2], &left, sizeof(left));
     r[2 + sizeof(left)] = age;
     memcpy(&r[3 + sizeof(left)], &right, sizeof(right));
+    memcpy(&r[RGB_SHOWN_AT], &left_shown, sizeof(left_shown));
+    memcpy(&r[RGB_SHOWN_AT + sizeof(left_shown)], &right_shown, sizeof(right_shown));
 }
 
 // Unsolicited RGB_STATE: after host traffic, the left's underglow switching on or off (idle,
@@ -593,13 +602,17 @@ static void rgb_state(uint8_t r[RGB_STATE_SIZE]) {
 // freshest read, taken RGB_STATE_SETTLE after the change so the right has followed by then.
 #define RGB_STATE_SETTLE K_MSEC(600)
 
-static uint8_t rgb_state_sent = 0xff; // left on | right on << 1 | right known << 2, last sent
+// left on | right on << 1 | right known << 2 | left lit << 3 | right lit << 4, last sent
+static uint8_t rgb_state_sent = 0xff;
 
 static void rgb_state_event_cb(struct k_work *work) {
     uint8_t r[RGB_STATE_SIZE];
     rgb_state(r);
     uint8_t age = r[2 + sizeof(struct rgb_idle_wire)];
-    uint8_t now = r[2] | r[3 + sizeof(struct rgb_idle_wire)] << 1 | (age != 0xff) << 2;
+    bool left_lit = r[RGB_SHOWN_AT] & RGB_SHOWN_LIT;
+    bool right_lit = r[RGB_SHOWN_AT + sizeof(struct rgb_shown_wire)] & RGB_SHOWN_LIT;
+    uint8_t now = r[2] | r[3 + sizeof(struct rgb_idle_wire)] << 1 | (age != 0xff) << 2 |
+                  left_lit << 3 | right_lit << 4;
     if (now != rgb_state_sent) {
         rgb_state_sent = now;
         reply(r, sizeof(r));

@@ -1,0 +1,35 @@
+rgbstate: -- hello: capability bit 24
+rgbstate: HELLO caps bit 24 RGB_SHOWN 1
+rgbstate: lit at start: D7 83 left on 1 (ZMK's flag 1); shown: wanted 1, pc 0, idle 0, drawn 1, value 60, dim 100; the LEDs: lit 1, value 60: match
+rgbstate: -- idle: ZMK turns the underglow off; the LEDs go dark and D7 83 says so
+rgbstate: idle: D7 83 left on 0 (ZMK's flag 0); shown: wanted 1, pc 0, idle 1, drawn 0, value 0, dim 100; the LEDs: lit 0, value 0: match
+rgbstate: D7 83 event: left lit 0
+rgbstate: -- wake: lit again
+rgbstate: woken: D7 83 left on 1 (ZMK's flag 1); shown: wanted 1, pc 0, idle 0, drawn 1, value 60, dim 100; the LEDs: lit 1, value 60: match
+rgbstate: D7 83 event: left lit 1
+rgbstate: -- the PC's frames light the LEDs through idle, while ZMK's flag says off (#605 case 1)
+rgbstate: a scene draws: D7 83 left on 1 (ZMK's flag 1); shown: wanted 1, pc 1, idle 0, drawn 1, value 38, dim 100; the LEDs: lit 1, value 38: match
+rgbstate: a scene draws while idle: D7 83 left on 1 (ZMK's flag 0); shown: wanted 1, pc 1, idle 1, drawn 1, value 38, dim 100; the LEDs: lit 1, value 38: match
+rgbstate: D7 83 event: left lit 1
+rgbstate: -- a black frame: the LEDs are dark while the user's on/off is on (#605 case 2)
+rgbstate: a black frame: D7 83 left on 0 (ZMK's flag 1); shown: wanted 1, pc 1, idle 0, drawn 0, value 0, dim 100; the LEDs: lit 0, value 0: match
+rgbstate: D7 83 event: left lit 0
+rgbstate: -- hand-back: ZMK's own effect again
+rgbstate: handed back: D7 83 left on 1 (ZMK's flag 1); shown: wanted 1, pc 0, idle 0, drawn 1, value 60, dim 100; the LEDs: lit 1, value 60: match
+rgbstate: -- a breathe at its darkest is still on
+rgbstate: breathe through black: D7 83 left on 1 (ZMK's flag 1); shown: wanted 1, pc 0, idle 0, drawn 0, value 0, dim 100; the LEDs: lit 0, value 0: match
+rgbstate: -- sync off and on: the left's own lights don't change; the right is told
+rgbstate: sync off: D7 83 left on 1 (ZMK's flag 1); shown: wanted 1, pc 0, idle 0, drawn 1, value 60, dim 100; the LEDs: lit 1, value 60: match
+rgbstate: the right is sent: on 1, follow 0, look hue 30 sat 80 bri 60 effect 0
+rgbstate: sync on: D7 83 left on 1 (ZMK's flag 1); shown: wanted 1, pc 0, idle 0, drawn 1, value 60, dim 100; the LEDs: lit 1, value 60: match
+rgbstate: the right is sent: on 1, follow 1, look hue 30 sat 80 bri 60 effect 0
+rgbstate: -- #624: a look change on the left (an invoke) goes to the right in the RGB op
+rgbstate: kicked yes
+rgbstate: the right is sent: on 1, follow 1, look hue 39 sat 70 bri 42 effect 3
+rgbstate: a key that changed no look kicks: no
+rgbstate: the left's new look: D7 83 left on 1 (ZMK's flag 1); shown: wanted 1, pc 0, idle 0, drawn 1, value 42, dim 100; the LEDs: lit 1, value 42: match
+rgbstate: -- #624, as the right: rebooted with an older saved look, then the left's RGB op
+rgbstate: the right shows hue 39 sat 70 bri 42 effect 3 (1 hsb, 1 effect writes)
+rgbstate: the same op again writes 0 hsb, 0 effect
+rgbstate: the right on the left's look: D7 83 left on 1 (ZMK's flag 1); shown: wanted 1, pc 0, idle 0, drawn 1, value 42, dim 100; the LEDs: lit 1, value 42: match
+rgbstate: -- done

@@ -77,6 +77,9 @@ struct zmk_led_hsb zmk_rgb_underglow_calc_hue(int direction) {
     return (struct zmk_led_hsb){.h = 30, .s = 80, .b = 60};
 }
 int zmk_rgb_underglow_calc_effect(int direction) { return 0; }
+// rgb_idle.c's right half takes the left's look with these (#624); this case never does.
+int zmk_rgb_underglow_set_hsb(struct zmk_led_hsb color) { return 0; }
+int zmk_rgb_underglow_select_effect(int effect) { return 0; }
 
 /* The left strip (lamp_strip.c): draws are counted; a draw that differs from the last printed
  * one is printed unless the case is counting a moving effect. Taking it and handing it back go

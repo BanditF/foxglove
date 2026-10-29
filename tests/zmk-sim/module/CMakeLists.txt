@@ -89,6 +89,15 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
                            ${FOXGLOVE_WIDGETS}/effect_run.c ${FOXGLOVE_WIDGETS}/lamp_effect.c
                            ${FOXGLOVE_WIDGETS}/rgb_idle.c effects_sim.c)
   endif()
+  if(CONFIG_FOXGLOVE_SIM_RGB_STATE)
+    # RGB_STATE's truth (#605, #624): the real rgb_idle.c, as the left of a keyboard with the
+    # relay (faked: the RGB op it would send) and the host link (D7 83); ZMK's underglow and the
+    # strip are faked in rgb_state_sim.c.
+    set_source_files_properties(${FOXGLOVE_WIDGETS}/rgb_idle.c PROPERTIES
+      COMPILE_DEFINITIONS
+      "CONFIG_ZMK_RGB_UNDERGLOW_SPD_START=3;CONFIG_NICE_VIEW_ART_RELAY=1;CONFIG_NICE_VIEW_HOST_LINK=1")
+    zephyr_library_sources(${FOXGLOVE_WIDGETS}/rgb_idle.c rgb_state_sim.c)
+  endif()
   if(CONFIG_FOXGLOVE_SIM_ART_KEYS)
     # &art_next / &art_prev (#60): the real behaviour; the board-side step prints instead.
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/art_keys.c art_keys_sim.c)

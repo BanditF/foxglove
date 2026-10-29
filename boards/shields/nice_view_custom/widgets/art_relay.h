@@ -9,8 +9,12 @@
  *      until ready. Long reads use offsets into the frozen image; CRC excludes the 6-byte header.
  *   status (read, notify)                    struct art_relay_status
  *      Notify (#478): one byte, ART_RELAY_RANG_*, when the right's underglow on/off or its power
- *      source (battery dim state) changed, whatever changed it. A doorbell only: the left reads
- *      the status (and the dim state) again, and the PC hears from those reads. Invariant: the
+ *      source (battery dim state) changed, whatever changed it. The left reads the status (and
+ *      the dim state) again, and the PC hears from those reads. Since #605 an RGB ring carries the
+ *      state too: bytes 1-7 struct rgb_idle_wire, 8-13 struct rgb_shown_wire (rgb_idle.h), and it
+ *      also comes when the right's LEDs go lit or dark and when the left subscribes. A left that
+ *      gets them takes them as the right's state and skips the read; an older left reads byte 0
+ *      only. Invariant: the
  *      CCC is the attribute right after the status value (its handle + 1, the 6th attribute of the
  *      service), where the left subscribes after discovery; a right without it answers that
  *      write with an ATT error, and the left doesn't try again on that link.
@@ -26,8 +30,11 @@
  * RGB (write request, so the left knows it arrived) is the left's underglow on/off; with follow = 1 the right shows
  * the same, with 0 it goes by its own activity (rgb_idle.c). Bytes 3-7 (status version >= 6) are
  * the left's struct battery_dim_config, which the right takes and saves as its own levels (each
- * half still goes by its own cable and charge). The right ignores bytes it doesn't know, so the op
- * can grow.
+ * half still goes by its own cable and charge). Bytes 8-12 (#624) are the left's look
+ * (rgb_idle_look: hue u16, saturation, brightness, effect): with follow = 1 the right sets its
+ * own to it, so a right that rebooted with an older saved look, or missed a change while the
+ * link was down, shows the left's. The left is the only source: nothing the right reports is
+ * ever applied on the left. The right ignores bytes it doesn't know, so the op can grow.
  * The right half receives into a spare slot and keeps playing what it shows until a blob passes
  * its CRC and header checks; a failed or abandoned push leaves the screen alone.
  *
@@ -200,6 +207,9 @@ void art_relay_rgb_verify(void);
 // The right's underglow from the last status read; returns its age in seconds (capped at 254), or
 // 0xff if there is none (no link yet, or right firmware without it). Asks for a fresher read.
 uint8_t art_relay_right_rgb(struct rgb_idle_wire *out);
+// What the right's LEDs show, from its last doorbell on this link (#605); false when none came
+// (no link, or right firmware without it).
+bool art_relay_right_shown(struct rgb_shown_wire *out);
 // Fills out with: state, error, length u16, pushed u16, link, struct art_relay_status.
 #define ART_RELAY_REPORT_SIZE (7 + sizeof(struct art_relay_status))
 void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]);
