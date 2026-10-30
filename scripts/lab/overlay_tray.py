@@ -312,16 +312,20 @@ def keyboard_cases(api, cfg, env):
     status, detail = lab_case('lose-art', ['{ art_push = { blob = "app/resources/lighting/art/hearth.bin", '
                                            'expect_left_state = 3, expect_right_state = 2, within_ms = 60000 } }'], env)
     check('lab: another piece sent behind the app', status == 'PASS', detail)
-    before = len(log_lines(cfg, "re-applied the right screen's art (display change)"))
+    # art.status answers from the app's last read, which still says the pinned built-in: the
+    # push went behind the app's back. Since #673 the display change reads the right afresh and
+    # puts the pin back over the push, with one line; wait for that line (bounded), then read.
+    line = "re-applied the right screen's art (display change)"
+    before = len(log_lines(cfg, line))
     Windows(app.proc.pid).display_change()
+    ok, after = wait(lambda: len(log_lines(cfg, line)), lambda n: n > before, 20)
+    check('display change: one re-applied line', ok and after == before + 1, after - before)
     ok, s = wait(lambda: call(api, 'art.status', {'device': device}), lambda s: s and s['built_in'] == names[0], 20)
     check('display change: the pinned set is re-applied', ok, s)
-    after = len(log_lines(cfg, "re-applied the right screen's art (display change)"))
-    check('display change: one re-applied line', after == before + 1, after - before)
     Windows(app.proc.pid).display_change()
     time.sleep(5)  # bounded: a re-apply would have logged within the art worker's status read
     check('display change while it shows: nothing re-applied',
-          len(log_lines(cfg, "re-applied the right screen's art (display change)")) == after,
+          len(log_lines(cfg, line)) == after,
           'no SELECT, no line')
 
     # Re-apply after relay-ready (#622): drop the split link once (dev build's guard hook).

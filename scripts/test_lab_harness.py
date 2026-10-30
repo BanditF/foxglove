@@ -215,12 +215,12 @@ class ReleaseGateScript(unittest.TestCase):
         # Its 1 s wake limit stays.
         self.assertIn({'expect_rgb': {'right_age_max_s': 2, 'right_on': True, 'within_ms': 1000}}, case['steps'])
 
-    def test_the_idle_cpu_case_comes_first_and_settles_two_minutes(self):
+    def test_the_idle_cpu_case_comes_first_and_settles_four_minutes(self):
         self.assertEqual(self.toml('release.toml')['include'][0], 'app-idle.toml')
         case = self.toml('app-idle.toml')['cases'][0]
         self.assertEqual(case['name'], 'app-idle-cpu')
         step = case['steps'][0]['idle_cpu']
-        self.assertEqual((step['settle_s'], step['seconds'], step['max_cpu_ms']), (120, 20, 60))
+        self.assertEqual((step['settle_s'], step['seconds'], step['max_cpu_ms']), (240, 20, 60))
 
 
 class RestoreRetry(unittest.TestCase):

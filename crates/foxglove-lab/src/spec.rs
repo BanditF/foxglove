@@ -89,6 +89,12 @@ pub struct Layer {
     pub top: Option<u8>,
     #[serde(default = "timeout")]
     pub within_ms: u64,
+    /// A held position to release and press again when no layer report at all came within
+    /// `within_ms`, at most twice. The KeyPeek layer report goes out on the same Raw HID IN
+    /// endpoint as the key event and the POSITION reply, and zmk-raw-hid drops a report when the
+    /// endpoint stays busy for 2 ms, so a press sometimes loses its layer report; pressing again
+    /// raises a fresh one. Off (none): one wait.
+    pub retrigger: Option<u8>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

@@ -6,9 +6,9 @@ schema = 1
 
 [[cases]]
 name = "app-idle-cpu"
-description = "Foxglove idle for 20 s with nothing pressed uses at most 60 ms CPU (0.3 % of one core; #100), measured once it has run 2 minutes (settle_s, from its start: the release gate restarts it after the resilience stage, #618). The step names the left-screen layout it drew (stats samples once a second, info redraws once a minute, the keyboard's own screen is nothing)"
+description = "Foxglove idle for 20 s with nothing pressed uses at most 60 ms CPU (0.3 % of one core; #100), measured once it has run 4 minutes (settle_s, from its start: the release gate restarts it after the resilience stage, #618; at 121 s a new build on the user's store still finished its first-run work there, 94 ms, #673 follow-up). The step names the left-screen layout it drew (stats samples once a second, info redraws once a minute, the keyboard's own screen is nothing)"
 tags = ["app", "release"]
-steps = [{ idle_cpu = { seconds = 20, max_cpu_ms = 60, settle_s = 120 } }]
+steps = [{ idle_cpu = { seconds = 20, max_cpu_ms = 60, settle_s = 240 } }]
 
 [[cases]]
 name = "art-select-builtin"
