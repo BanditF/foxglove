@@ -47,7 +47,10 @@ def lab_case(name, steps, env):
     out.parent.mkdir(exist_ok=True)
     path.write_text(f'schema = 1\n[[cases]]\nname = "{name}"\ndescription = "{name}"\nsteps = [\n  ' +
                     ',\n  '.join(steps) + ',\n]\n', encoding='utf-8')
-    subprocess.run([args.lab, '--allow-app', 'run', '--suite', str(path), '--non-interactive', '--out', str(out)],
+    # --keep-lights: the run's own save/restore put the old effect back right after each RGB_EFF
+    # (#677); this script restores the user's lights itself at the end.
+    subprocess.run([args.lab, '--allow-app', 'run', '--suite', str(path), '--non-interactive', '--keep-lights',
+                    '--out', str(out)],
                    capture_output=True, text=True, encoding='utf-8', errors='replace', env=env, cwd=REPO, timeout=180)
     case = json.loads((out / 'report.json').read_text(encoding='utf-8'))['cases'][0]
     return case['status'], [s['actual'] for s in case['steps']]

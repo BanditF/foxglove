@@ -149,6 +149,10 @@ Outside the sink, only cached, recognized non-typing behaviors (`mo`, `tog`,
 `to`, `sl`, `rgb_ug`, `bl`, `ext_power`, `none`, `trans`) can be invoked. Typing,
 mouse behaviors, unclassified custom macros, and disruptive behaviors are
 rejected. Specs that toggle persistent state should restore it explicitly.
+`run` saves the left's underglow (RGB_STATE) when the suite starts and puts its colour, effect
+and on back when the suite ends. `run --keep-lights` skips both, for a script that changes the
+look on the keyboard's side on purpose and restores it itself (`scripts/lab/lights_page.py`:
+without it, each one-case RGB_EFF run ended by putting the old effect back, #677).
 
 The Windows sink uses a small raw Win32 window via the same `windows` crate
 version as the app. It owns and closes the window and pumps `WM_CHAR` messages;

@@ -27,6 +27,19 @@ pub struct Saved<'a, T: Transport> {
 }
 
 impl<'a, T: Transport> Saved<'a, T> {
+    /// The suite run's guard: none when the keymap has no `&rgb_ug`, or with `keep` (`run
+    /// --keep-lights`). A script that changes the look on the keyboard's side on purpose (#677:
+    /// `scripts/lab/lights_page.py` runs one RGB_EFF per suite) keeps it: the restore at the end
+    /// of each run put the old effect straight back, so RGB_EFF looked like it did nothing. Such a
+    /// script puts the user's lights back itself.
+    pub fn for_run(transport: &'a T, rgb_ug: Option<u16>, keep: bool) -> Option<Self> {
+        if keep {
+            println!("lights kept: --keep-lights, the run leaves the underglow as its cases do");
+            return None;
+        }
+        rgb_ug.and_then(|id| Self::save(transport, id))
+    }
+
     /// Reads RGB_STATE (D7 83) once and logs one line. `None` (and a line saying why) when the
     /// read fails: the run goes on, with nothing to put back.
     pub fn save(transport: &'a T, rgb_ug: u16) -> Option<Self> {
@@ -247,6 +260,27 @@ mod tests {
         // The link gone: each command fails, nothing panics.
         let f = fake(vec![user_look(true)], 255);
         drop(Saved::save(&f, 7));
+    }
+
+    /// #677: lights_page.py runs `&rgb_ug RGB_EFF` as a one-case suite. The run's restore sent
+    /// the saved effect (Swirl) right after the case's RGB_EFF, so the keyboard never stayed on
+    /// Solid. A kept run reads nothing and sends nothing: the case's effect stays.
+    #[test]
+    fn a_kept_run_leaves_a_keyboard_side_effect_change_alone() {
+        // RGB_EFF from Swirl, as the case does, then the run ends.
+        let f = fake(vec![user_look(true)], 0);
+        drop(Saved::for_run(&f, Some(7), false));
+        assert!(
+            invokes(&f).contains(&(RGB_EFFECT_SET, 3)),
+            "the default run puts Swirl back over the case's RGB_EFF"
+        );
+        let f = fake(vec![user_look(true)], 0);
+        assert!(Saved::for_run(&f, Some(7), true).is_none());
+        assert!(f.requests.borrow().is_empty(), "nothing read or sent");
+        // A keymap without &rgb_ug has nothing to save either way.
+        let f = fake(vec![user_look(true)], 0);
+        assert!(Saved::for_run(&f, None, false).is_none());
+        assert!(f.requests.borrow().is_empty());
     }
 
     #[test]

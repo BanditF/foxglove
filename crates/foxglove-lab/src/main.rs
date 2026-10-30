@@ -43,6 +43,11 @@ enum Command {
         list: bool,
         #[arg(long)]
         non_interactive: bool,
+        /// Leave the underglow as the cases leave it: no save at the start, no restore at the
+        /// end. For scripts that change the look on the keyboard's side on purpose and put the
+        /// user's lights back themselves (scripts/lab/lights_page.py, #677).
+        #[arg(long)]
+        keep_lights: bool,
     },
     Behaviors,
     Status,
@@ -656,6 +661,7 @@ fn main() -> Result<std::process::ExitCode> {
         out,
         only,
         non_interactive,
+        keep_lights,
         ..
     } = cli.command
     else {
@@ -741,11 +747,12 @@ fn main() -> Result<std::process::ExitCode> {
             );
             // The look the keyboard had goes back when the suite ends, however it ends: the
             // guard restores on drop (a `?` out of this loop, Ctrl-C, a panic). A keymap without
-            // `&rgb_ug` has nothing to restore.
-            let _lights = catalog
-                .ids
-                .get("rgb_ug")
-                .and_then(|&id| foxglove_lab::lights::Saved::save(&device.link, id));
+            // `&rgb_ug` has nothing to restore; --keep-lights leaves the cases' look (#677).
+            let _lights = foxglove_lab::lights::Saved::for_run(
+                &device.link,
+                catalog.ids.get("rgb_ug").copied(),
+                keep_lights,
+            );
             for c in &suite.cases {
                 let result = runner.case(c, only.as_ref().is_none_or(|n| c.name.contains(n)));
                 println!("{} {}", result.status, result.name);
