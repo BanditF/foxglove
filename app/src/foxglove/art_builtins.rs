@@ -14,7 +14,7 @@ const SOURCE: &str = include_str!("../../../boards/shields/nice_view_custom/widg
 const W: usize = super::art_encode::ArtTarget::FIRMWARE.width as usize;
 const H: usize = super::art_encode::ArtTarget::FIRMWARE.height as usize;
 
-/// A built-in's first frame, in `art_preview::first_frame`'s form (set bits white).
+/// A built-in's first frame, in `art_preview::first_frame`'s form (ink white, #610).
 #[derive(Clone)]
 pub struct Picture {
     /// A content key for the texture cache.

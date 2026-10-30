@@ -31,6 +31,10 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "peripheral_status.h"
 #include "screen_snap.h"
 #include "custom_art.h"
+#include "icons.h"
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+#include "art_relay.h"
+#endif
 
 static sys_slist_t widgets = SYS_SLIST_STATIC_INIT(&widgets);
 
@@ -41,22 +45,11 @@ struct peripheral_status_state {
 static void draw_top(lv_obj_t *widget, lv_color_t cbuf[], const struct status_state *state) {
     lv_obj_t *canvas = lv_obj_get_child(widget, 0);
 
-    lv_draw_label_dsc_t label_dsc;
-    init_label_dsc(&label_dsc, LVGL_FOREGROUND, &lv_font_montserrat_16, LV_TEXT_ALIGN_RIGHT);
-    lv_draw_rect_dsc_t rect_black_dsc;
-    init_rect_dsc(&rect_black_dsc, LVGL_BACKGROUND);
+    lv_canvas_fill_bg(canvas, LVGL_BACKGROUND, LV_OPA_COVER);
+    // The strip both halves share (icons.c): battery, then the split link to the left.
+    icons_battery(canvas, 0, state->battery, state->charging);
+    icons_split_link(canvas, 0, state->connected);
 
-    // Fill background
-    lv_canvas_draw_rect(canvas, 0, 0, CANVAS_SIZE, CANVAS_SIZE, &rect_black_dsc);
-
-    // Draw battery
-    draw_battery(canvas, state);
-
-    // Draw output status
-    lv_canvas_draw_text(canvas, 0, 0, CANVAS_SIZE, &label_dsc,
-                        state->connected ? LV_SYMBOL_WIFI : LV_SYMBOL_CLOSE);
-
-    // Rotate canvas
     rotate_canvas(canvas, cbuf);
 }
 
@@ -132,20 +125,42 @@ static __maybe_unused bool art_active(void) {
     return pc_state_active() || atomic_get(&remote_active);
 }
 
-// Art is stored with background bits set. This palette shows it light-on-dark, like the status
-// strip and the left screen; NICE_VIEW_WIDGET_INVERTED flips it along with them.
-#if CONFIG_NICE_VIEW_WIDGET_INVERTED
-#define ART_PALETTE 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff
-#else
-#define ART_PALETTE 0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0xff
-#endif
-
-static uint8_t art_buf[8 + CUSTOM_ART_STRIDE * CUSTOM_ART_H] = {ART_PALETTE};
+/* Art bits: 1 = ink (#610), as in the left's PC info screen. Index 0 is drawn in LVGL_BACKGROUND
+ * and index 1 in LVGL_FOREGROUND, so the art follows the screen theme with the status strip; the
+ * palette is filled from them in art_init. Pushed blobs from before #610 (and flash slots saved
+ * from them) have the background bits set instead: their header's flags lack ART_RELAY_FLAG_INK,
+ * and they're played inverted (art_base below), so they look as they should. */
+static uint8_t art_buf[8 + CUSTOM_ART_STRIDE * CUSTOM_ART_H];
 static const lv_img_dsc_t art_dsc = {.header.cf = LV_IMG_CF_INDEXED_1BIT,
                                      .header.w = CUSTOM_ART_W,
                                      .header.h = CUSTOM_ART_H,
                                      .data_size = sizeof(art_buf),
                                      .data = art_buf};
+
+// What a set's deltas start from: 0x00, or 0xff for a pre-#610 blob, which then plays inverted
+// (every delta after the first is the same either way, as XOR of two frames ignores inversion).
+static uint8_t art_base;
+
+static void palette_entry(uint8_t *p, lv_color_t color) {
+    uint8_t v = lv_color_brightness(color) >= 128 ? 0xff : 0x00;
+    p[0] = p[1] = p[2] = v; // blue, green, red
+    p[3] = 0xff;
+}
+
+// Whether a pushed set's blob (art_relay.h) has its background bits set: one from before #610.
+// The blob's play order follows its 12-byte header (art_relay_peripheral.c parse()), which is
+// how the header is found without another field in struct custom_art_set.
+static uint8_t set_base(const struct custom_art_set *set) {
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    if (set < custom_art_sets || set >= custom_art_sets + custom_art_set_count) {
+        const uint8_t *header = set->order - ART_RELAY_HEADER_SIZE;
+        if (memcmp(header, ART_RELAY_MAGIC, 4) == 0 && !(header[7] & ART_RELAY_FLAG_INK)) {
+            return 0xff;
+        }
+    }
+#endif
+    return 0x00;
+}
 
 // XOR one RLE-packed delta into the pixels (format in scripts/flipper_art.py:rle).
 static void art_apply(const uint8_t *src) {
@@ -183,7 +198,7 @@ static void art_show(int frame) {
     int target = art_set->order[frame];
     if (target < art_unique - target) {
         // Rewinding from scratch is shorter than stepping back.
-        memset(art_buf + 8, 0, sizeof(art_buf) - 8);
+        memset(art_buf + 8, art_base, sizeof(art_buf) - 8);
         art_unique = -1;
     }
     while (art_unique < target) {
@@ -265,7 +280,8 @@ void art_play(const struct custom_art_set *set) {
     art_set = set;
     art_frame = 0;
     art_unique = -1;
-    memset(art_buf + 8, 0, sizeof(art_buf) - 8);
+    art_base = set_base(set);
+    memset(art_buf + 8, art_base, sizeof(art_buf) - 8);
     atomic_set(&art_held, 0);
     if (art_img != NULL) {
         art_show(0);
@@ -362,6 +378,8 @@ int art_builtin_index(int index) {
 }
 
 static void art_init(lv_obj_t *parent) {
+    palette_entry(&art_buf[0], LVGL_BACKGROUND); // index 0: no ink
+    palette_entry(&art_buf[4], LVGL_FOREGROUND); // index 1: ink
     art_img = lv_img_create(parent);
     lv_img_set_src(art_img, &art_dsc);
     lv_obj_align(art_img, LV_ALIGN_TOP_LEFT, 0, 0);

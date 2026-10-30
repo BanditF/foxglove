@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
 #include <zephyr/bluetooth/uuid.h>
 #include <zephyr/sys/byteorder.h>
@@ -169,6 +170,9 @@ static struct lamp_effect_wire effect_rx; // ART_RELAY_EFFECT fills it, EFFECT_G
 
 // From art_slots.c's queue when a SAVE or ERASE has finished.
 static void save_done(int err) { status.state = err ? ART_RIGHT_SAVE_FAILED : ART_RIGHT_SAVED; }
+
+static void screen_push_ask(struct bt_conn *conn);
+static void screen_push_cancel(void);
 
 // Runs in the Bluetooth RX thread; keep it to copying and checking.
 static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
@@ -380,14 +384,23 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         }
         break;
 
-    case ART_RELAY_SNAP:
-        if (len != 1) {
+    case ART_RELAY_SNAP: {
+        // One byte: capture, the left reads it. ART_RELAY_SNAP_PUSH (#662): capture and push it.
+        bool push = len == 2 && d[1] == ART_RELAY_SNAP_PUSH;
+        if (len != 1 && !push) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
         }
+        if (push) {
+            screen_push_ask(conn); // before the capture can end
+        }
         if (screen_snap_local() != SCREEN_OK) {
+            if (push) {
+                screen_push_cancel();
+            }
             return BT_GATT_ERR(BT_ATT_ERR_UNLIKELY);
         }
         break;
+    }
 
     case ART_RELAY_RGB:
         if (len < 2) {
@@ -572,3 +585,166 @@ void art_relay_right_rang(uint8_t what) {
     atomic_or(&rang, what);
     k_work_reschedule(&ring_work, K_NO_WAIT);
 }
+
+/* The screen push (#662): after a SNAP with ART_RELAY_SNAP_PUSH, the captured image goes to the
+ * left as notifications of the status value: ART_RELAY_RANG_SCREEN, offset u16 LE, then up to
+ * MTU - 6 bytes (art_relay.h). A notification takes no ATT response buffer, and a peripheral with
+ * data to send skips its slave latency (ZMK's 30 x 7.5 ms), so the image comes in a few hundred
+ * ms. The left's paced Read Blob requests took ~63 round trips, each waiting for this half to wake
+ * (d265853: every snapshot timed out). The left reads any chunk that didn't come.
+ *
+ * Start/stop: starts when a capture asked for by such a SNAP ends (screen_snap_captured, display
+ * queue); runs on the system queue, at most PUSH_OUT notifications unsent at a time, each one's
+ * sent callback sends the next. It stops once the last byte is handed over, when the capture
+ * failed, when the link refuses a notification (gone, or the left not subscribed), or after
+ * PUSH_TRIES x PUSH_RETRY without a buffer. A new SNAP's capture starts it over from offset 0;
+ * while that capture runs, the image can't be read and the push waits for its end. */
+
+#define PUSH_OUT 2 // leaves the radio's other TX buffers to ZMK's key events and the rings
+#define PUSH_RETRY K_MSEC(10)
+#define PUSH_TRIES 50
+
+static struct bt_conn *push_asked; // the SNAP's link, until its capture ends (under irq_lock)
+static struct bt_conn *push_conn;  // the push's link (system queue only)
+static atomic_t push_start;        // a capture for a push ended well: start over
+static atomic_t push_gone;         // a link went: drop what the push holds
+static atomic_t push_out;          // notifications handed to Zephyr, their sent callback not run
+static atomic_t push_epoch;        // the push link the count is for
+static uint16_t push_at;
+static uint8_t push_tries;
+static struct k_work_delayable push_work;
+
+static void screen_push_ask(struct bt_conn *conn) {
+    struct bt_conn *old;
+    unsigned int key = irq_lock();
+    old = push_asked;
+    push_asked = bt_conn_ref(conn);
+    irq_unlock(key);
+    if (old != NULL) {
+        bt_conn_unref(old);
+    }
+}
+
+static void screen_push_cancel(void) {
+    unsigned int key = irq_lock();
+    struct bt_conn *old = push_asked;
+    push_asked = NULL;
+    irq_unlock(key);
+    if (old != NULL) {
+        bt_conn_unref(old);
+    }
+}
+
+void screen_snap_captured(bool ok) {
+    if (!ok) {
+        screen_push_cancel();
+        return;
+    }
+    unsigned int key = irq_lock();
+    bool asked = push_asked != NULL;
+    irq_unlock(key);
+    if (asked) {
+        atomic_set(&push_start, 1);
+        k_work_reschedule(&push_work, K_NO_WAIT);
+    }
+}
+
+static void push_end(void) {
+    if (push_conn != NULL) {
+        bt_conn_unref(push_conn);
+        push_conn = NULL;
+    }
+    push_tries = 0;
+}
+
+static void push_sent(struct bt_conn *conn, void *user_data) {
+    if ((atomic_val_t)(uintptr_t)user_data == atomic_get(&push_epoch) &&
+        atomic_dec(&push_out) <= 0) {
+        atomic_set(&push_out, 0);
+    }
+    if (push_conn != NULL) {
+        k_work_reschedule(&push_work, K_NO_WAIT);
+    }
+}
+
+static void push_cb(struct k_work *work) {
+    if (atomic_get(&push_gone)) { // the link went: its ref goes, and the SNAP's
+        atomic_clear(&push_gone);
+        push_end();
+        screen_push_cancel();
+        atomic_clear(&push_start);
+        return;
+    }
+    if (atomic_cas(&push_start, 1, 0)) {
+        unsigned int key = irq_lock();
+        struct bt_conn *conn = push_asked;
+        push_asked = NULL;
+        irq_unlock(key);
+        if (conn == NULL) {
+            return; // cancelled meanwhile
+        }
+        if (conn != push_conn) { // a new link: Zephyr drops the old one's sent callbacks
+            atomic_inc(&push_epoch);
+            atomic_set(&push_out, 0);
+        }
+        push_end();
+        push_conn = conn;
+        push_at = 0;
+    }
+    const struct bt_gatt_attr *status_attr = &art_relay_svc.attrs[STATUS_VALUE];
+    if (push_conn == NULL ||
+        bt_uuid_cmp(status_attr->uuid, BT_UUID_DECLARE_128(ART_RELAY_STATUS_UUID))) {
+        push_end();
+        return;
+    }
+    uint8_t chunk[ART_RELAY_SNAP_PUSH_HEADER + 20];
+    int room = MIN((int)bt_gatt_get_mtu(push_conn) - 3 - ART_RELAY_SNAP_PUSH_HEADER,
+                   (int)sizeof(chunk) - ART_RELAY_SNAP_PUSH_HEADER);
+    while (push_at < SCREEN_SNAP_WIRE && atomic_get(&push_out) < PUSH_OUT && room > 0) {
+        int n = screen_snap_wire_read(&chunk[ART_RELAY_SNAP_PUSH_HEADER], room, push_at);
+        if (n == -EAGAIN) {
+            return; // a new capture runs: its end starts the push over (or the image is gone)
+        }
+        if (n <= 0) {
+            push_end();
+            return;
+        }
+        chunk[0] = ART_RELAY_RANG_SCREEN;
+        sys_put_le16(push_at, &chunk[1]);
+        struct bt_gatt_notify_params params = {
+            .attr = status_attr,
+            .data = chunk,
+            .len = ART_RELAY_SNAP_PUSH_HEADER + n,
+            .func = push_sent,
+            .user_data = (void *)(uintptr_t)atomic_get(&push_epoch),
+        };
+        atomic_inc(&push_out);
+        int err = bt_gatt_notify_cb(push_conn, &params);
+        if (err) {
+            atomic_dec(&push_out);
+            if ((err == -ENOMEM || err == -EAGAIN) && push_tries++ < PUSH_TRIES) {
+                k_work_reschedule(&push_work, PUSH_RETRY); // no buffer: the radio catches up
+                return;
+            }
+            LOG_WRN("art relay: screen push stopped at %d (%d)", push_at, err);
+            push_end();
+            return;
+        }
+        push_tries = 0;
+        push_at += n;
+    }
+    if (push_at >= SCREEN_SNAP_WIRE) {
+        push_end(); // the last sent callbacks only count down
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(push_work, push_cb);
+
+// Never hold a link that has gone (the right takes one connection): the push work lets go of it.
+static void push_disconnected(struct bt_conn *conn, uint8_t reason) {
+    atomic_set(&push_gone, 1);
+    k_work_reschedule(&push_work, K_NO_WAIT);
+}
+
+BT_CONN_CB_DEFINE(art_relay_push_conn_cb) = {
+    .disconnected = push_disconnected,
+};

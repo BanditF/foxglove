@@ -675,7 +675,9 @@ impl Devices for AppDevices {
 
 /// How long an agent's art change waits for the job's end (a built-in, a slot, Next), and a
 /// pushed file's; the fallbacks when the service never reports (#618).
-const ART_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+// A built-in waits up to 30 s for the right half's relay to come back (art_service RELAY_WAIT,
+// #662), then its SELECT (up to ~12 s).
+const ART_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 const ART_PUSH_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 /// How long a tray panel or overlay request waits for the overlay's frame.
 const WINDOW_WAIT: std::time::Duration = std::time::Duration::from_secs(5);

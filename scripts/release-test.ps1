@@ -11,7 +11,8 @@
 #    suite's own pushes and floods, and passed alone (986 ms) (#618 follow-up).
 # 5. The release suite on the keyboard (foxglove-lab run --suite release), with the app started
 #    again: its idle CPU case runs first and measures once the app has run 2 minutes (settle_s).
-# 6. With -App <foxglove.exe> and FOXGLOVE_APP_OK=1: the app-level lab cases of the stability pass
+# 6. With -App <foxglove.exe> (default: app\target\release\foxglove.exe, built from this tree, so
+#    the app speaks this tree's API, #669) and FOXGLOVE_APP_OK=1: the app-level lab cases of the stability pass
 #    (scripts/lab/overlay_tray.py: #612/#620, #601/#622, #618 agent controls; api_tools.py: #617/
 #    #623). They launch that build on a temp FOXGLOVE_CONFIG_DIR. Without them the stage is BLOCKED.
 # foxglove-lab saves the underglow (RGB_STATE) when each suite starts and puts it back when it ends,
@@ -53,6 +54,14 @@ function Resolve-RepoPath([string]$Path, [string]$What, [switch]$Folder) {
 }
 $Firmware = Resolve-RepoPath $Firmware '-Firmware' -Folder
 if ($App) { $App = Resolve-RepoPath $App '-App' }
+else {
+    # The app built from this tree by default (#669's gate): its local API is the version this
+    # tree's lab and scripts speak. A lab/app pair from different trees is BLOCKED by name
+    # (foxglove-lab asks for the oldest API with its calls; labkit's connect ends BLOCKED on
+    # "version not served"), never a FAIL mid-run.
+    $own = Join-Path $root 'app\target\release\foxglove.exe'
+    if (Test-Path -LiteralPath $own -PathType Leaf) { $App = $own }
+}
 
 Push-Location $root
 try {
@@ -98,16 +107,29 @@ try {
     } else {
         $restarted = $false
         try {
+            $stopped = @()
             if ($running) {
                 $procs = @(Get-Process -Name foxglove -ErrorAction SilentlyContinue)
+                $stopped = @($procs | ForEach-Object { $_.Id })
                 $procs | Stop-Process -Confirm:$false
                 $restarted = $true
-                # Quiet first: wait on the processes' exit (their HID handles close with them),
-                # bounded; the suite doesn't start while one is still there.
+                # Quiet first: wait on the processes' exit (their HID handles close with them), on
+                # their own handles (an event, bounded); the suite doesn't start while one is there.
                 $procs | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue
             }
-            if (Get-Process -Name foxglove -ErrorAction SilentlyContinue) {
-                $blocked += 'suite resilience (Foxglove did not exit within 20 s)'
+            # The verdict names the process (#618): the 8fb66f8 gate said "did not exit within
+            # 20 s" in the second it stopped the app (usb.txt 22:20:33Z; the Foxglove it started
+            # again logged "started" at 22:20:33Z), so the wait never ran 20 s: the stopped ones had
+            # exited, and what it saw was another process named foxglove that it hadn't stopped
+            # (a test instance on its own FOXGLOVE_CONFIG_DIR logs to its own folder).
+            $alive = @(Get-Process -Name foxglove -ErrorAction SilentlyContinue)
+            $late = @($alive | Where-Object { $stopped -contains $_.Id })
+            $other = @($alive | Where-Object { $stopped -notcontains $_.Id })
+            $name = { param($p) "pid $($p.Id), started $(try { $p.StartTime.ToUniversalTime().ToString('HH:mm:ssZ') } catch { '?' }), $(if ($p.Path) { $p.Path } else { 'path unknown' })" }
+            if ($late) {
+                $blocked += "suite resilience (Foxglove did not exit within 20 s: $(($late | ForEach-Object { & $name $_ }) -join '; '))"
+            } elseif ($other) {
+                $blocked += "suite resilience (another process named foxglove runs, not one this gate stopped: $(($other | ForEach-Object { & $name $_ }) -join '; '); the suite needs every Foxglove quit)"
             } else {
                 $rout = Join-Path $out 'resilience'
                 $run = @('run', '--suite', 'tests/hil/resilience.toml', '--out', $rout)
@@ -149,7 +171,7 @@ try {
     if ($LASTEXITCODE -eq 2) { $blocked += "suite $Suite" } elseif ($LASTEXITCODE) { $failed += "suite $Suite" }
 
     Write-Host '== App lab cases (overlay, tray, re-apply, API)' -ForegroundColor Cyan
-    if (-not $App) { $blocked += 'app lab cases (no -App <foxglove.exe>)' }
+    if (-not $App) { $blocked += 'app lab cases (no -App <foxglove.exe>, and no app\target\release\foxglove.exe built from this tree)' }
     elseif (-not $appOk) { $blocked += 'app lab cases (they launch the app: FOXGLOVE_APP_OK=1, On-call)' }
     else {
         $cases = @(

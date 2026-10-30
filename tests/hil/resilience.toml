@@ -15,14 +15,14 @@ schema = 1
 
 [[cases]]
 name = "right-follows-left-activity"
-description = "#603, #605 (PR 4 of #618): the right's art and underglow follow the left's idle and wake at once, with no key on the right. Needs both halves on a build with the activity relay (HELLO bit 23 says the left has it; a right without it fails the last step), the underglow on with sync on (the right follows the left), and Foxglove quit (its scenes own the lights). Selects animated built-in set 3 (Bandit_Gem, 4 fps) and taps the left's middle thumb (D7 05 pos 43, a layer key: types nothing) so both are lit; waits for the left's idle (RGB_STATE: both off, up to 45 s); the right's art must then hold still for 3 s (the right idles on its own: not kept awake); a second tap on the left must bring RGB_STATE's right on within 1 s and the right's art moving within 3 s (each right capture is a relay round trip; the step reports the ms). Before this fix the art stayed still until a right key. Leaves set 3 on the right; r-cleanup-built-in-art puts set 0 back"
+description = "#603, #605 (PR 4 of #618): the right's art and underglow follow the left's idle and wake at once, with no key on the right. Needs both halves on a build with the activity relay (HELLO bit 23 says the left has it; a right without it fails the last step), the underglow on with sync on (the right follows the left), and Foxglove quit (its scenes own the lights). Selects animated built-in set 3 (Bandit_Gem, 4 fps) and taps the left's middle thumb (D7 05 pos 43, a layer key: types nothing) so both are lit; tells the keyboard the PC is away (D7 11, pc_away: #651's firmware holds a plugged-in keyboard lit while the PC is awake; the case's end puts the PC state back) and waits for the left's idle (RGB_STATE: both off, up to 45 s); the right's art must then hold still for 3 s (the right idles on its own: not kept awake); a second tap on the left must bring RGB_STATE's right on within 1 s and the right's art moving within 3 s (each right capture is a relay round trip; the step reports the ms). Before this fix the art stayed still until a right key. Leaves set 3 on the right; r-cleanup-built-in-art puts set 0 back"
 tags = ["resilience"]
 requires = ["activity_relay", "position_press", "screen_readback"]
 steps = [
   { art_select = { set = 3, restore = false, replace_pushed = true } },
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, left_on = true, right_on = true, within_ms = 3000 } },
-  { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, within_ms = 45000 } },
+  { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, pc_away = true, within_ms = 45000 } },
   { expect_screen_still = { half = "right", region = { x = 0, y = 20, width = 68, height = 140 }, ms = 3000 } },
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, right_on = true, within_ms = 1000 } },
@@ -57,11 +57,12 @@ steps = [
 
 [[cases]]
 name = "r5a-split-drop-mid-relay"
-description = "5a: the split link drops while the left pushes to the right (D7 0B); the push fails cleanly (state 4, error 6 or 1), the right types again after reconnecting, and a new push works"
+description = "5a: the split link drops while the left pushes to the right (D7 0B); the push fails cleanly (state 4, error 6 or 1), the relay comes back (wait_relay, up to 60 s: ZMK reconnects, encryption, the 15 s discovery delay, then discovery at the right's slave latency; the soak saw 16.8 s), the right types again, and a new push works"
 tags = ["resilience"]
 requires = ["position_press"]
 steps = [
   { art_push = { blob = "app/resources/lighting/art/fury.bin", drop_link = true, expect_left_state = 4, expect_errors = [6, 1], within_ms = 30000 } },
+  { wait_relay = { within_ms = 60000 } },
   { press_position = { pos = 46, state = "down" } },
   { expect_layer = { active_contains = [2], within_ms = 2000 } },
   { press_position = { pos = 46, state = "up" } },
@@ -121,7 +122,7 @@ steps = [
 
 [[cases]]
 name = "rgb-state-follows-the-leds"
-description = "#605 (PR 6b of #618): RGB_STATE's on/off is what each half's LEDs show, through an idle and a wake, and the right's comes within 1 s without a read. Needs both halves on a build with HELLO bit 24 (a right without it fails shown = true), the underglow on (the step turns it on: RGB_ON, a no-op when on) with sync on, and Foxglove quit (its scenes own the lights). Taps the left's middle thumb (D7 05 pos 43, a layer key: types nothing); RGB_STATE must report both halves lit from their shown blocks with the right on the left's look; waits for the left's idle (both dark, up to 45 s); a second tap must bring both back lit within 1 s. Proves the report follows the commanded on/off through idle and wake per half from the frames each half writes to its strip; it doesn't prove photons (a camera or the #90 queue does)"
+description = "#605 (PR 6b of #618): RGB_STATE's on/off is what each half's LEDs show, through an idle and a wake, and the right's comes within 1 s without a read. Needs both halves on a build with HELLO bit 24 (a right without it fails shown = true), the underglow on (the step turns it on: RGB_ON, a no-op when on) with sync on, and Foxglove quit (its scenes own the lights). Taps the left's middle thumb (D7 05 pos 43, a layer key: types nothing); RGB_STATE must report both halves lit from their shown blocks with the right on the left's look; tells the keyboard the PC is away (D7 11, pc_away: #651's firmware holds a plugged-in keyboard lit while the PC is awake; the case's end puts the PC state back) and waits for the left's idle (both dark, up to 45 s); a second tap must bring both back lit within 1 s. Proves the report follows the commanded on/off through idle and wake per half from the frames each half writes to its strip; it doesn't prove photons (a camera or the #90 queue does)"
 tags = ["resilience"]
 requires = ["rgb_shown", "position_press"]
 steps = [
@@ -131,7 +132,7 @@ steps = [
   { invoke = { behavior = "rgb_ug", param1 = 1 } },
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, shown = true, left_on = true, right_on = true, right_same_look = true, within_ms = 3000 } },
-  { expect_rgb = { right_age_max_s = 2, shown = true, left_on = false, right_on = false, within_ms = 45000 } },
+  { expect_rgb = { right_age_max_s = 2, shown = true, left_on = false, right_on = false, pc_away = true, within_ms = 45000 } },
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, shown = true, left_on = true, right_on = true, within_ms = 1000 } },
 ]
@@ -158,13 +159,13 @@ steps = [{ art_select = { set = 0, restore = false, replace_pushed = true } }]
 
 [[cases]]
 name = "right-redraw-after-wake"
-description = "#613/#621 (PR 8 of #618): an idle-off then wake rewrites the whole right panel. Screen readback is LVGL's model and can't see noise from the panel's power cut, so this reads the right's whole-screen rewrite count instead (D7 8E bytes 16-20, HELLO bit 25; both halves on a build with it). Needs the underglow on with sync on (the right's panel power follows the left's lights) and Foxglove quit (its scenes own the lights). Taps the left's middle thumb (D7 05 pos 43, a layer key: types nothing), waits for the left's idle (RGB_STATE: both off, up to 45 s), notes the count once it holds for 1.2 s, taps again: RGB_STATE's right on within 2 s, and the count up by at least 1 within 5 s. Whether the panel looks clean still needs eyes or a camera once (the count proves the rewrite ran)"
+description = "#613/#621 (PR 8 of #618): an idle-off then wake rewrites the whole right panel. Screen readback is LVGL's model and can't see noise from the panel's power cut, so this reads the right's whole-screen rewrite count instead (D7 8E bytes 16-20, HELLO bit 25; both halves on a build with it). Needs the underglow on with sync on (the right's panel power follows the left's lights) and Foxglove quit (its scenes own the lights). Taps the left's middle thumb (D7 05 pos 43, a layer key: types nothing), tells the keyboard the PC is away (D7 11, pc_away: #651's firmware holds a plugged-in keyboard lit while the PC is awake; the case's end puts the PC state back) and waits for the left's idle (RGB_STATE: both off, up to 45 s), notes the count once it holds for 1.2 s, taps again: RGB_STATE's right on within 2 s, and the count up by at least 1 within 5 s. Whether the panel looks clean still needs eyes or a camera once (the count proves the rewrite ran)"
 tags = ["resilience", "release"]
 requires = ["right_redraws", "position_press"]
 steps = [
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, left_on = true, right_on = true, within_ms = 3000 } },
-  { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, within_ms = 45000 } },
+  { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, pc_away = true, within_ms = 45000 } },
   { note_right_redraws = {} },
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, right_on = true, within_ms = 2000 } },

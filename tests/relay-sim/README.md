@@ -12,7 +12,8 @@ get tested.
   on the bearer and the rest queued; TX meta data and connection TX contexts (5 each with ZMK's
   central) taken with K_FOREVER off the system work queue and K_NO_WAIT on it; a 30 s ATT
   timeout that kills the bearer; Read Blob continuation from the RX thread. A connection event
-  every 7.5 ms. The right half is a model of `art_relay_peripheral.c`'s service, with Zephyr's
+  every 7.5 ms, with ZMK's slave latency 30: the right listens right after an event that carried
+  data, when it has data of its own, and at least every 31st event (#662). The right half is a model of `art_relay_peripheral.c`'s service, with Zephyr's
   CCC rules for a bonded peer.
 - `sim_stubs.c`: what the relay calls into (host_link, rgb_idle, screen_snap, ZMK activity).
 - `main.c`: scenarios, driven the way foxglove-lab and the app drive the left over USB.
@@ -29,6 +30,9 @@ get tested.
 | `stall-app` | `stall` with the app's traffic | as `stall` |
 | `late` | one request answered 4.5 s late (past the 3 s GATT timeout), user commands meanwhile | the SELECT, a push and a snapshot right after the timeout work |
 | `late-ignored` | a status read answered 4.5 s late with an ATT error; a SELECT goes while it is out | the left let it go (timeouts 1, in flight 1), the SELECT completes with its own answer (a left that took the late error for it fails here), nothing is held afterwards, a push works, and the link never dropped |
+| `select-snap` | right-art-select-golden with the app running (#662): select set 0, a snapshot, set 1, a snapshot; the right's ATT server follows Zephyr 3.5's response-buffer rule and its system queue is busy 20 ms after each redraw | both snapshots OK within the 5 s budget, no request left unanswered, no re-link |
+| `snap-latency` | the snapshot under the link's real timing (#662's d265853 hardware failure): latency 30, the response-buffer rule, the right's system queue busy 20 ms after each redraw and 20 ms on each art frame (10 a second), the app's traffic; select 0, snapshot, select 1, snapshot, two more snapshots while it animates, two art pushes, a SELECT | every snapshot OK and the slowest under 2 s (40% of the 5 s budget), nothing unanswered, no re-link; prints each snapshot's and push's simulated time |
+| `snap-latency-old` (diagnostic) | `snap-latency` against a right before the push: it refuses the push byte, the left reads | not gating: the reads time out at the 5 s budget (the reply still comes inside the lab's 6 s) |
 | `lost` (diagnostic) | one request never answered | not gating: the SELECT queued behind it can't be answered either; the push after the unstick's re-link works |
 
 ## How the stall is handled (art_relay_central.c, #618)
@@ -57,6 +61,31 @@ re-link. Now:
 `sim_bt.c` models `bt_gatt_write_without_response_cb` as Zephyr 3.5 has it: the callback runs on
 the system work queue once the command is sent, and is dropped for a command still queued when
 the link goes. `sim_bt_faults.late_err` gives a late answer an ATT error.
+
+- **Spaced requests (#662).** No request goes to the right sooner than 25 ms after the right's
+  last answer (`REQ_GAP_MS`), and the screen readback reads one chunk per request from relay_q
+  instead of chaining Read Blobs from the RX callback. Zephyr 3.5's ATT server on the right holds
+  its single response buffer until the sent callback has run on the right's system queue; a
+  request arriving before that gets no response at all, and the left's bearer then waits on it
+  until a re-link. The 5a50426 gate showed exactly that after a SELECT: "right half timed out",
+  "still busy after retries", then the unstick's link drop. The readback's budget is 5 s
+  (`SCREEN_BUDGET_MS`), and a readback let go at its deadline arms the unstick from that
+  request's own send time, so a slow but answered read never drops the link.
+
+- **Screen push (#662, d265853's hardware failure).** On hardware every right snapshot timed out
+  on d265853, with no relay timeout. The split link has ZMK's slave latency (30 x 7.5 ms): the
+  right listens only after an event that carried data, when it has data, or every 31st event.
+  The spaced Read Blob requests each found it asleep and waited up to ~230 ms; ~63 of them ran
+  past the 5 s budget. relay-sim didn't model latency, so `select-snap` passed. Now it does
+  (`snap-latency` fails on d265853: 5.1 s, timed out, twice per snapshot), and the right pushes
+  the image: the SNAP write carries `ART_RELAY_SNAP_PUSH`, the right sends the image as
+  notifications of the status value (`ART_RELAY_RANG_SCREEN`, offset u16, up to 17 bytes) once
+  captured, two unsent at a time, and the left reads only what didn't come, spaced as before.
+  Notifications take no response buffer, and a right with data to send skips its latency:
+  0.4-1.2 s per snapshot in `snap-latency`. A right before the push refuses the two-byte SNAP
+  (ATT 0x0d); the left then snaps and reads as before for that link (`snap-latency-old`). Art
+  pushes under latency: 3599 bytes in ~0.9 s from COMMIT, 3190 in ~1.1 s; a request after a
+  request (SELECT's status read) waits for the right's next listen, 0.3-0.8 s per SELECT.
 
 ## Known gaps (run in CI, must still fail)
 

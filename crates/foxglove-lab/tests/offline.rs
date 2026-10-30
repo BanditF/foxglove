@@ -216,16 +216,55 @@ fn invoke_and_layer_pass_with_report_buffered_during_request() {
 }
 
 #[test]
-fn invoke_status_failure_skips_later_steps_and_timeout_fails() {
+fn a_busy_invoke_is_asked_again_until_the_release_has_run() {
+    // right-relink-keeps-the-lefts-look's "expected ok, actual busy" (#618): the invoke before's
+    // release still waited on ZMK's split queue. Busy twice, then ok: the step passes.
+    let fake = Fake::default();
+    for status in [2, 2, 0] {
+        fake.replies
+            .borrow_mut()
+            .push_back(reply(&[0xd7, 0x82, status, 42, 0]));
+    }
+    let result = run(&fake, &case("[{invoke={local_id=42}}]"));
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    assert_eq!(fake.requests.borrow().len(), 3);
+    // Busy for longer than 1.5 s: the step fails "busy".
+    let fake = Fake::default();
+    for _ in 0..60 {
+        fake.replies
+            .borrow_mut()
+            .push_back(reply(&[0xd7, 0x82, 2, 42, 0]));
+    }
+    let result = run(&fake, &case("[{invoke={local_id=42}}]"));
+    assert_eq!(result.status, Status::Fail);
+    assert!(
+        result.steps[0].actual.contains("busy"),
+        "{}",
+        result.steps[0].actual
+    );
+    // A case that expects busy gets its one answer.
     let fake = Fake::default();
     fake.replies
         .borrow_mut()
         .push_back(reply(&[0xd7, 0x82, 2, 42, 0]));
+    let result = run(
+        &fake,
+        &case("[{invoke={local_id=42,expect_status='busy'}}]"),
+    );
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+}
+
+#[test]
+fn invoke_status_failure_skips_later_steps_and_timeout_fails() {
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .push_back(reply(&[0xd7, 0x82, 3, 42, 0]));
     let c = case("[{invoke={local_id=42}}, {expect_layer={top=0}}]");
     let result = run(&fake, &c);
     assert_eq!(result.status, Status::Fail);
     assert_eq!(result.steps[1].status, Status::Skipped);
-    assert!(result.steps[0].actual.contains("busy"));
+    assert!(result.steps[0].actual.contains("failed"));
     let result = run(
         &Fake::default(),
         &case("[{expect_layer={top=0,within_ms=1}}]"),
@@ -278,6 +317,55 @@ fn rgb_on_off_is_checked_per_half() {
         fake.replies.borrow_mut().push_back(rgb);
         assert_eq!(run(&fake, &case(steps)).status, Status::Fail, "{steps}");
     }
+}
+
+/// #618 after #651: an idle wait with pc_away tells the keyboard the PC is away first (on USB it
+/// is held lit while the PC is awake), and the case's end puts the PC state back: here the
+/// app's lease, with what was left of it. Firmware without HELLO bit 26 gets nothing.
+#[test]
+fn an_idle_wait_sends_away_first_and_the_case_end_puts_the_lease_back() {
+    let pc = |state: u8, lease: u16| {
+        let l = lease.to_le_bytes();
+        reply(&[0xd7, 0x91, 0, 0, state, 0b1011, l[0], l[1], 0])
+    };
+    let mut dark = reply(&[0xd7, 0x83, 0]);
+    dark[9] = 1;
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([pc(1, 600), pc(2, 0), dark, pc(1, 600)]);
+    let steps = "[{expect_rgb={right_age_max_s=2,left_on=false,pc_away=true,within_ms=1000}}]";
+    let result = run_with(&fake, &case(steps), 20 | 1 << 26);
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    assert!(
+        result.steps[0].actual.contains("was awake, lease 600 s"),
+        "{}",
+        result.steps[0].actual
+    );
+    let requests = fake.requests.borrow();
+    assert_eq!(requests[0], [0xd7, 0x11, 0xff, 0, 0, 0]); // read
+    assert_eq!(requests[1], [0xd7, 0x11, 0, 0, 0, 0]); // away
+    assert_eq!(requests[2][..2], [0xd7, 0x03]); // RGB_STATE
+    assert_eq!(requests[3][..4], [0xd7, 0x11, 1, 0]); // awake again, no wake flag
+    assert_eq!(requests.len(), 4);
+    drop(requests);
+
+    // A failing wait still puts it back (the case's cleanup): here the RGB_STATE read gets no
+    // answer, and the restore is still sent.
+    let fake = Fake::default();
+    fake.replies.borrow_mut().extend([pc(0, 0), pc(2, 0)]);
+    let steps = "[{expect_rgb={right_age_max_s=2,left_on=false,pc_away=true,within_ms=1}}]";
+    let result = run_with(&fake, &case(steps), 20 | 1 << 26);
+    assert_eq!(result.status, Status::Fail);
+    let last = fake.requests.borrow().last().cloned().unwrap();
+    assert_eq!(last, [0xd7, 0x11, 1, 0, 1, 0]); // no lease before: a 1 s one that lapses
+
+    // No PC state on the firmware: only the RGB_STATE read.
+    let fake = Fake::default();
+    fake.replies.borrow_mut().push_back(dark);
+    let result = run_with(&fake, &case(steps), 20);
+    assert_eq!(result.status, Status::Pass, "{}", result.message);
+    assert_eq!(fake.requests.borrow().len(), 1);
 }
 
 /// #618: wait_relay reads HELLO until the left's relay is up (right link 2, discovery done), and

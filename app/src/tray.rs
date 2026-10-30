@@ -97,15 +97,9 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
                     "settings" => on_settings(),
                     "quit" => {
                         crate::foxglove::app_log::line("Foxglove: Quit from the tray menu");
-                        // Foxglove: hand the left screen's panel back before going.
-                        crate::foxglove::screens::stop();
-                        // Foxglove (#485, #488): lights and a scene's right art back, while
-                        // the art service still runs to put the art back.
-                        crate::foxglove::scenes_ui::quitting();
-                        crate::foxglove::scene_run::quit();
-                        crate::foxglove::art_service::stop();
-                        crate::foxglove::calibrate_ui::cancel(); // Foxglove: mid-calibration
-                        crate::foxglove::led_map_ui::quit(); // Foxglove: mid "Find my LEDs"
+                        // Foxglove (#618): the panel, lights (a scene's right art while the art
+                        // service still runs), art and wallpapers back, within 4 s (quit.rs).
+                        crate::foxglove::quit::hand_back("Quit from the tray menu");
                         process::exit(0)
                     }
                     _ => crate::foxglove::tray::event(event.id.0.as_str()),

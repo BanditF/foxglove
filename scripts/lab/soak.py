@@ -2,7 +2,9 @@
 on a temp FOXGLOVE_CONFIG_DIR for 30 minutes while the keyboard goes through
 
   1. one idle -> wake (HIL resilience/right-redraw-after-wake: the left idles, a left tap wakes it,
-     the right's whole-screen rewrite count must grow; HELLO bit 24),
+     the right's whole-screen rewrite count must grow; HELLO bit 24). The test app's lease holds a
+     plugged-in keyboard lit (#651), so the case's idle wait sends PC_STATE away first and its end
+     puts the lease back (foxglove-lab's pc_away, #618),
   2. one right re-link (the dev build's split-guard hook, D7 0B: the left drops the split link
      once and the relay comes back; BLOCKED on a GA build), and
   3. one display change (the lab hook: the overlay minimized, WM_DISPLAYCHANGE posted to the app's

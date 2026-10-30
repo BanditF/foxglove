@@ -15,6 +15,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "status.h"
 #include "screen_snap.h"
 #include "host_link.h"
+#include "icons.h"
 #include <zmk/events/usb_conn_state_changed.h>
 #include <zmk/event_manager.h>
 #include <zmk/events/battery_state_changed.h>
@@ -67,30 +68,11 @@ struct mods_status_state {
 #define SCREEN_W 68
 #define SCREEN_H 160
 
-static void rect(lv_obj_t *c, int oy, int x, int y, int w, int h, int radius, bool filled,
-                 bool outline, lv_color_t color) {
-    lv_draw_rect_dsc_t dsc;
-    lv_draw_rect_dsc_init(&dsc);
-    dsc.radius = radius;
-    dsc.bg_color = color;
-    dsc.bg_opa = filled ? LV_OPA_COVER : LV_OPA_TRANSP;
-    dsc.border_color = color;
-    dsc.border_width = outline ? 1 : 0;
-    lv_canvas_draw_rect(c, x, y - oy, w, h, &dsc);
-}
-
-static void text(lv_obj_t *c, int oy, int x, int y, int w, const char *t, lv_color_t color,
-                 lv_text_align_t align) {
-    lv_draw_label_dsc_t dsc;
-    init_label_dsc(&dsc, color, &lv_font_unscii_8, align);
-    lv_canvas_draw_text(c, x, y - oy, w, &dsc, t);
-}
-
 // Rounded pill with a centred label: outlined when off, solid when on.
 static void pill(lv_obj_t *c, int oy, int x, int y, int w, int h, const char *t, bool on) {
-    rect(c, oy, x, y, w, h, h / 2, on, true, LVGL_FOREGROUND);
-    text(c, oy, x, y + (h - 8) / 2, w, t, on ? LVGL_BACKGROUND : LVGL_FOREGROUND,
-         LV_TEXT_ALIGN_CENTER);
+    icons_rect(c, oy, x, y, w, h, h / 2, on, true, LVGL_FOREGROUND);
+    icons_text(c, oy, x, y + (h - 8) / 2, w, t, on ? LVGL_BACKGROUND : LVGL_FOREGROUND,
+               LV_TEXT_ALIGN_CENTER);
 }
 
 // The PC's panel (host_link.c), 1 bit per pixel, MSB first, 1 = ink.
@@ -118,24 +100,24 @@ static void draw_profiles(lv_obj_t *c, int oy, const struct status_state *state)
     lv_color_t fg = invert ? LVGL_BACKGROUND : LVGL_FOREGROUND;
     lv_color_t bg = invert ? LVGL_FOREGROUND : LVGL_BACKGROUND;
     if (invert) {
-        rect(c, oy, 2, 84, SCREEN_W - 4, 20, 3, true, false, bg);
+        icons_rect(c, oy, 2, 84, SCREEN_W - 4, 20, 3, true, false, bg);
     }
     for (int i = 0; i < NICEVIEW_PROFILE_COUNT; i++) {
         int x = 4 + i * 12;
         char digit[2] = {'1' + i, 0};
         bool active = i == state->active_profile_index;
         if (active) {
-            rect(c, oy, x, 85, 11, 10, 2, true, false, fg);
+            icons_rect(c, oy, x, 85, 11, 10, 2, true, false, fg);
         } else if (state->profiles_connected[i]) {
-            rect(c, oy, x, 85, 11, 10, 2, false, true, fg);
+            icons_rect(c, oy, x, 85, 11, 10, 2, false, true, fg);
         }
-        text(c, oy, x, 86, 11, digit, active ? bg : fg, LV_TEXT_ALIGN_CENTER);
+        icons_text(c, oy, x, 86, 11, digit, active ? bg : fg, LV_TEXT_ALIGN_CENTER);
     }
     const char *word = !ble                              ? "USB"
                        : state->active_profile_connected ? "LINKED"
                        : state->active_profile_bonded    ? "SEARCH"
                                                          : "PAIR";
-    text(c, oy, 2, 96, SCREEN_W - 4, word, fg, LV_TEXT_ALIGN_CENTER);
+    icons_text(c, oy, 2, 96, SCREEN_W - 4, word, fg, LV_TEXT_ALIGN_CENTER);
 }
 
 static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
@@ -145,32 +127,17 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
 
     lv_canvas_fill_bg(c, bg, LV_OPA_COVER);
 
-    // Status strip, like the right half: battery on the left, connection on the right.
-    rect(c, oy, 1, 3, 22, 10, 2, false, true, fg);
-    rect(c, oy, 23, 6, 2, 4, 0, true, false, fg);
-    int fill = (17 * MIN(state->battery, 100) + 50) / 100;
-    if (fill > 0) {
-        rect(c, oy, 3, 5, fill, 6, 0, true, false, fg);
-    }
-    if (state->charging) {
-        lv_draw_rect_dsc_t bolt;
-        init_rect_dsc(&bolt, fg);
-        lv_point_t pts[] = {{29, 2 - oy}, {26, 8 - oy}, {28, 8 - oy},
-                            {27, 13 - oy}, {31, 6 - oy}, {29, 6 - oy}};
-        lv_canvas_draw_polygon(c, pts, ARRAY_SIZE(pts), &bolt);
-    }
+    // Status strip, drawn by the icons both halves share: battery, then the output.
+    icons_battery(c, oy, state->battery, state->charging);
+    bool ble = state->selected_endpoint.transport == ZMK_TRANSPORT_BLE;
     char conn[16] = "USB";
-    if (state->selected_endpoint.transport == ZMK_TRANSPORT_BLE) {
+    if (ble) {
         snprintf(conn, sizeof(conn), "BT%d", state->active_profile_index + 1);
     }
-    text(c, oy, 34, 4, SCREEN_W - 35, conn, fg, LV_TEXT_ALIGN_RIGHT);
-    if (state->selected_endpoint.transport == ZMK_TRANSPORT_BLE &&
-        !state->active_profile_connected) {
-        rect(c, oy, 42, 8, SCREEN_W - 44, 1, 0, true, false, fg); // struck through: not connected
-    }
+    icons_output(c, oy, conn, !ble || state->active_profile_connected);
 
     // Frame with the layer name in a tab, like the Hammerbeam art on the right.
-    rect(c, oy, 0, 17, SCREEN_W, SCREEN_H - 17, 6, false, true, fg);
+    icons_rect(c, oy, 0, 17, SCREEN_W, SCREEN_H - 17, 6, false, true, fg);
     char layer[12];
     if (state->layer_label == NULL || strlen(state->layer_label) == 0) {
         snprintf(layer, sizeof(layer), "LAYER %d", state->layer_index);
@@ -178,8 +145,8 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
         snprintf(layer, sizeof(layer), "%s", state->layer_label);
     }
     int tab_w = MIN(8 * (int)strlen(layer) + 8, SCREEN_W - 4);
-    rect(c, oy, 2, 19, tab_w, 13, 6, true, false, fg);
-    text(c, oy, 2, 22, tab_w, layer, bg, LV_TEXT_ALIGN_CENTER);
+    icons_rect(c, oy, 2, 19, tab_w, 13, 6, true, false, fg);
+    icons_text(c, oy, 2, 22, tab_w, layer, bg, LV_TEXT_ALIGN_CENTER);
 
     // Held modifiers (either side) as pills, Caps Lock below.
     const uint8_t m = state->mods;
@@ -190,7 +157,7 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
     pill(c, oy, 4, 69, 60, 14, "CAPS", state->caps_lock);
 
     draw_profiles(c, oy, state);
-    rect(c, oy, 6, 104, SCREEN_W - 12, 1, 0, true, false, fg);
+    icons_rect(c, oy, 6, 104, SCREEN_W - 12, 1, 0, true, false, fg);
 
     if (panel != NULL) {
         draw_host_panel(c, oy, panel);
@@ -198,12 +165,12 @@ static void draw_screen(lv_obj_t *c, int oy, const struct status_state *state,
     }
 
     // WPM: label, number badge, and a dithered filled-area chart of the last 10 samples.
-    text(c, oy, 5, 110, 30, "WPM", fg, LV_TEXT_ALIGN_LEFT);
+    icons_text(c, oy, 5, 110, 30, "WPM", fg, LV_TEXT_ALIGN_LEFT);
     char wpm_text[6];
     snprintf(wpm_text, sizeof(wpm_text), "%d", state->wpm[9]);
     int badge_w = 8 * (int)strlen(wpm_text) + 8;
-    rect(c, oy, SCREEN_W - 5 - badge_w, 108, badge_w, 12, 6, true, false, fg);
-    text(c, oy, SCREEN_W - 5 - badge_w, 110, badge_w, wpm_text, bg, LV_TEXT_ALIGN_CENTER);
+    icons_rect(c, oy, SCREEN_W - 5 - badge_w, 108, badge_w, 12, 6, true, false, fg);
+    icons_text(c, oy, SCREEN_W - 5 - badge_w, 110, badge_w, wpm_text, bg, LV_TEXT_ALIGN_CENTER);
 
     const int top = 124, bot = 152;
     int lo = 255, hi = 0;
