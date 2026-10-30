@@ -493,6 +493,29 @@ mod tests {
         assert!(d.frames[0].chunks(18).all(|row| row[17] & 0x0f == 0));
     }
 
+    /// #666 file fixtures for the hardware push checks: `dark-fixture.bin` is the dark-field
+    /// version written as is (its field is the ink). Pushed as a file, auto flips it to show as
+    /// `ink-fixture.bin` does; invert of the light one shows as the dark one as is.
+    #[test]
+    fn the_file_fixtures_normalise_to_the_same_picture() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/art");
+        let light = std::fs::read(root.join("ink-fixture.bin")).unwrap();
+        let dark = std::fs::read(root.join("dark-fixture.bin")).unwrap();
+        let shown = |b: &[u8]| {
+            super::super::art_preview::first_frame(b)
+                .unwrap()
+                .pixels
+                .clone()
+        };
+        assert_ne!(shown(&dark), shown(&light), "the dark file as it is");
+        assert_eq!(shown(&normalise_blob(&dark, Polarity::Auto)), shown(&light));
+        assert_eq!(normalise_blob(&light, Polarity::Auto), light);
+        assert_eq!(
+            shown(&normalise_blob(&light, Polarity::Invert)),
+            shown(&dark)
+        );
+    }
+
     fn img(
         w: u32,
         h: u32,
