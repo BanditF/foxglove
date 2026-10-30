@@ -315,6 +315,19 @@ pub fn keyboard_key() -> Option<String> {
         .then(|| d.calibration_key())
 }
 
+/// The connected keyboard's device id (as the lighting arbiter keys it), without blocking or
+/// discovery (for the UI).
+pub fn keyboard_id() -> Option<String> {
+    use foxglove_devices::Device as _;
+    let cached = DEVICE.try_lock().ok()?;
+    let d = cached.as_ref()?;
+    d.link()
+        .state()
+        .connected
+        .is_some()
+        .then(|| d.info().id.to_string())
+}
+
 /// What the app knows of the keyboard's lighting command, the keymap's `&rgb_ug` (#633).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Underglow {

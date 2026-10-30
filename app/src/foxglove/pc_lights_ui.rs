@@ -351,7 +351,22 @@ fn more(ui: &mut egui::Ui, row: &Row, entry: &str, draft: &mut Draft, out: &mut 
     .on_hover_text("Copy entry, Remove");
 }
 
+/// The effect a PC light runs from Foxglove, from the effect table (#670): its class's
+/// steady colour. A device Foxglove can't drive has none.
+pub fn effect_of(control: Control) -> Option<&'static super::effect_controls::EffectSpec> {
+    use super::effect_controls::{spec, EffectClass};
+    match control {
+        Control::Driver(_) => spec(EffectClass::PcLights, "static"),
+        Control::LampArray => spec(EffectClass::LampArray, "static"),
+        Control::NotYet => None,
+    }
+}
+
 fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut Vec<Intent>) {
+    // Only the controls its effect uses (#670); every one Foxglove drives takes a colour.
+    if !effect_of(row.control).is_some_and(|e| e.uses_colour()) {
+        return;
+    }
     let picks = draft
         .colors
         .entry(row.key.clone())

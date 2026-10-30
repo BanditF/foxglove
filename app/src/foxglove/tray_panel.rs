@@ -814,7 +814,17 @@ fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>)
                     }
                 });
                 ui.add_space(4.0);
+                // What the keyboard shows decides the controls (#670).
+                let rainbow = super::lights_page::effect(l.effect)
+                    .is_some_and(super::lights_page::KeyboardEffect::rainbow);
+                if rainbow {
+                    let w = ui.available_width().min(200.0);
+                    super::effect_controls::rainbow(ui, egui::vec2(w, 14.0));
+                }
                 ui.horizontal(|ui| {
+                    if rainbow {
+                        return;
+                    }
                     ui.spacing_mut().item_spacing.x = 10.0;
                     for (name, rgb) in super::lights_page::SWATCHES {
                         let selected = super::lights_page::is_swatch((l.hue, l.sat), rgb);

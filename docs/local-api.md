@@ -51,6 +51,7 @@ same messages.
 | `pc_lighting.list` / `pc_lighting.set_zone` | call | `devices.read` / `lighting.write` (API 1.5) |
 | `tray.panel` / `tray.set_panel` | call | `devices.read` / `app.windows` (API 1.6) |
 | `overlay.window` / `overlay.restore` | call | `devices.read` / `app.windows` (API 1.6) |
+| `lights.page` | call | `devices.read` (API 1.7) |
 
 The params and results are in the schema. Notes:
 
@@ -90,6 +91,13 @@ The params and results are in the schema. Notes:
   covers most, and on screen or not. `overlay.restore` runs the overlay's restore check now and
   answers with the probe; it logs the restore line, or `… nothing to restore (api)`. The writes
   need `app.windows`. `foxglove-cli art`, `panel` and `overlay` use them.
+- **What the Lights page shows (#674, API 1.7), for agents:** `lights.page {device}` reads the
+  keyboard's lights (RGB_STATE) and answers with what the Lights page's Keyboard card shows, from
+  the same view-model the page draws: the effect the keyboard reports (`effect`), the caption
+  over the colour row (`colour_label`: "Colour", or "Looks like" over the rainbow), `rainbow`,
+  which controls are visible (`controls`: swatches, custom, hue, sat, brightness, speed, accent),
+  and the "The keyboard shows X; Foxglove saved Y" `note`. Only the host-link keyboard.
+  `scripts/lab/lights_page.py` uses it.
 - **Case zones and the sync (#617, API 1.5):** `pc_lighting.list` gives each PC lighting
   device (by its key, `vvvv:pppp` plus a serial), its zones with `#rrggbb` colours, whether
   Foxglove writes it, the apps that may fight it, and the last write's status.

@@ -59,6 +59,9 @@ struct Follower {
     failed: bool,
     /// The keymap is known and has no `&rgb_ug`: said once, nothing sent until that changes.
     unsupported: bool,
+    /// A colour set on the keyboard itself since the last push (#670), as the lighting
+    /// arbiter adopted it: a re-apply leaves it showing. A new accent still goes out.
+    kept: Option<(u16, u8)>,
 }
 
 /// What the keyboard reports of its lights.
@@ -131,6 +134,17 @@ impl Follower {
         });
         if matches!(why, Wake::Reassert(_)) && !self.failed && shows {
             self.applied = Some(want);
+            return Step::Skipped;
+        }
+        // The user changed the colour on the keyboard (#670): a re-apply doesn't put the
+        // accent back over it; the board didn't lose anything.
+        let kept = self.kept.filter(|k| *k != want).is_some_and(|k| {
+            reported.is_some_and(|r| {
+                let dh = r.hue.abs_diff(k.0);
+                dh.min(360u16.saturating_sub(dh)) <= 2 && r.sat.abs_diff(k.1) <= 2
+            })
+        });
+        if matches!(why, Wake::Reassert(_)) && !self.failed && kept {
             return Step::Skipped;
         }
         match push(reported.map_or(100, |r| r.brightness)) {
@@ -415,6 +429,9 @@ mod windows_impl {
                     })
                     .map_err(|e| crate::foxglove::devices::describe(&e))
                 };
+                // A colour set on the keyboard since, as the arbiter adopted it (#670).
+                follower.kept = crate::foxglove::lighting_leases::saved(&device)
+                    .and_then(|s| Some((s.hue?, s.sat?)));
                 match (follower.step(why, want, known, read, push), why) {
                     // Every colour that lands says so (#633), so the log shows it did.
                     (Step::Sent(true), Wake::Reassert(t)) => {
@@ -877,5 +894,54 @@ mod tests {
                 follow_wallpaper: false,
             }
         );
+    }
+
+    /// #670: the user changed the colour on the keyboard (the arbiter adopted it as `kept`):
+    /// a re-link's re-apply leaves it, and a new accent still goes out.
+    #[test]
+    fn a_colour_set_on_the_keyboard_survives_a_re_apply() {
+        use crate::foxglove::reassert::Trigger;
+        let blue = hue_sat(0, 120, 215);
+        let green = (120, 90);
+        let board = FakeBoard::new(Some((green.0, green.1, 50)));
+        let mut f = Follower {
+            applied: Some(blue),
+            kept: Some(green),
+            ..Follower::default()
+        };
+        for t in [
+            Trigger::RightRelayReady,
+            Trigger::KeyboardConnected,
+            Trigger::PcBack,
+        ] {
+            assert_eq!(
+                board.wake(&mut f, Wake::Reassert(t), blue),
+                Step::Skipped,
+                "{t:?}"
+            );
+        }
+        assert_eq!(board.pushes.get(), 0, "the keyboard's colour stands");
+        // A new accent is a new choice: it goes out.
+        let red = hue_sat(255, 0, 0);
+        assert_eq!(board.wake(&mut f, Wake::Changed, red), Step::Sent(true));
+    }
+
+    /// #670: a re-link where the board lost the colour (it shows something nobody set on the
+    /// keyboard) re-applies it.
+    #[test]
+    fn a_lost_colour_is_re_applied_on_a_re_link() {
+        use crate::foxglove::reassert::Trigger;
+        let blue = hue_sat(0, 120, 215);
+        let board = FakeBoard::new(Some((30, 100, 50)));
+        let mut f = Follower {
+            applied: Some(blue),
+            kept: None,
+            ..Follower::default()
+        };
+        assert_eq!(
+            board.wake(&mut f, Wake::Reassert(Trigger::KeyboardConnected), blue),
+            Step::Sent(true)
+        );
+        assert_eq!(board.pushes.get(), 1);
     }
 }

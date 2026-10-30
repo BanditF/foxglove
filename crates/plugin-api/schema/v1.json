@@ -1,5 +1,5 @@
 {
-  "api": "1.6",
+  "api": "1.7",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -1406,6 +1406,103 @@
       "result": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Empty",
+        "type": "object"
+      }
+    },
+    "lights.page": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "DeviceParams",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$defs": {
+          "LightsPageControls": {
+            "description": "Which of the Keyboard card's colour controls are visible (API 1.7, #674).",
+            "properties": {
+              "accent": {
+                "description": "\"Follow the Windows accent colour\".",
+                "type": "boolean"
+              },
+              "brightness": {
+                "type": "boolean"
+              },
+              "custom": {
+                "description": "The Custom pill.",
+                "type": "boolean"
+              },
+              "hue": {
+                "description": "The hue and saturation sliders (behind Custom).",
+                "type": "boolean"
+              },
+              "sat": {
+                "type": "boolean"
+              },
+              "speed": {
+                "type": "boolean"
+              },
+              "swatches": {
+                "description": "The colour swatches.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "swatches",
+              "custom",
+              "hue",
+              "sat",
+              "brightness",
+              "speed",
+              "accent"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "What the Lights page's Keyboard card shows for the keyboard (API 1.7, #674), from the same\nview-model the page draws, so a check runs with no window: the effect the keyboard reports,\nand which colour controls are visible.",
+        "properties": {
+          "colour_label": {
+            "description": "The caption over the colour row: \"Colour\", or \"Looks like\" over the rainbow.",
+            "type": "string"
+          },
+          "controls": {
+            "$ref": "#/$defs/LightsPageControls"
+          },
+          "effect": {
+            "description": "The effect the keyboard reports it shows (\"Solid\", \"Swirl\"); none before a report or for\nan effect Foxglove doesn't know.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note": {
+            "description": "\"The keyboard shows X; Foxglove saved Y. …\", when the page shows it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rainbow": {
+            "description": "The rainbow preview shows in place of the swatches (an effect that makes its own colours).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "colour_label",
+          "rainbow",
+          "controls"
+        ],
+        "title": "LightsPage",
         "type": "object"
       }
     },

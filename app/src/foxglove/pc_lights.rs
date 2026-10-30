@@ -284,16 +284,15 @@ impl KeyboardLights {
     pub fn colors(&self, zones: usize) -> Option<Vec<[u8; 3]>> {
         let effect = super::lights_page::effect(self.effect)?;
         effect
-            .uses_colour
+            .uses_colour()
             .then(|| vec![hsv_rgb(self.hue, self.sat, self.brightness); zones])
     }
 
-    /// The effect's name with its note, for the status line.
+    /// The effect's name, for the status line (#670: just the name).
     fn effect_label(&self) -> String {
-        super::lights_page::effect(self.effect).map_or_else(
-            || "an effect Foxglove doesn't know".into(),
-            super::lights_page::KeyboardEffect::label,
-        )
+        super::lights_page::effect(self.effect)
+            .map_or("an effect Foxglove doesn't know", |e| e.name)
+            .to_string()
     }
 }
 
@@ -1533,9 +1532,9 @@ mod tests {
     /// "Match keyboard" can copy.
     #[test]
     fn the_effect_table_decides_what_match_keyboard_copies() {
-        use super::super::lights_page::{colour_used, effect, EFFECTS};
+        use super::super::lights_page::{effect, EFFECTS};
         assert_eq!(EFFECTS, ["Solid", "Breathe", "Spectrum", "Swirl"]);
-        let uses: Vec<bool> = (0..4).map(|n| effect(n).unwrap().uses_colour).collect();
+        let uses: Vec<bool> = (0..4).map(|n| effect(n).unwrap().uses_colour()).collect();
         assert_eq!(uses, [true, true, false, false]);
         assert_eq!(
             effect(3).unwrap().label(),
@@ -1546,13 +1545,6 @@ mod tests {
             "Spectrum (rainbow; colour not used yet)"
         );
         assert_eq!(effect(0).unwrap().label(), "Solid");
-        // The page's rule: colour controls only for an effect that uses the colour.
-        assert!(colour_used(Some(0)) && colour_used(Some(1)));
-        assert!(!colour_used(Some(2)) && !colour_used(Some(3)));
-        assert!(
-            colour_used(None) && colour_used(Some(9)),
-            "unknown: keep them"
-        );
         // The match decision.
         let breathe = KeyboardLights {
             effect: 1,
@@ -1624,7 +1616,8 @@ mod tests {
         );
         let status = w.status.clone().unwrap_or_default();
         assert!(
-            status.contains("Swirl (rainbow; colour not used yet)")
+            status.contains("plays Swirl, which")
+                && !status.contains("colour not used yet")
                 && status.contains("can't match"),
             "{status}"
         );
