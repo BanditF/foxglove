@@ -100,7 +100,9 @@ static bool lab_select(int8_t set, char *why, size_t n) {
     return false;
 }
 
-// BEGIN, DATA (27 bytes a report), COMMIT, then STATUS every 500 ms for 60 s.
+// BEGIN, DATA (27 bytes a report), COMMIT, then STATUS every push_poll_ms (the lab: 500) for 60 s.
+static int push_poll_ms = 500;
+static int64_t push_took_ms; // COMMIT to DONE or FAILED, as the last lab_push saw it
 static bool lab_push(uint16_t len, char *why, size_t n) {
     static uint8_t blob[4096];
     for (int i = 0; i < len; i++) {
@@ -121,9 +123,10 @@ static bool lab_push(uint16_t len, char *why, size_t n) {
     }
     int64_t start = k_uptime_get();
     while (k_uptime_get() - start < 60000) {
-        k_msleep(500);
+        k_msleep(push_poll_ms);
         struct report r = status();
         if (r.state == ART_LEFT_DONE || r.state == ART_LEFT_FAILED) {
+            push_took_ms = k_uptime_get() - start;
             snprintf(why, n, "%s after %lld ms, %d/%d bytes pushed, error %d",
                      r.state == ART_LEFT_DONE ? "done" : "failed",
                      (long long)(k_uptime_get() - start), r.pushed, r.len, r.error);
@@ -435,6 +438,102 @@ static void push_relink_tap(void) {
     debug_line("at the end");
 }
 
+// right-art-select-golden with the app running (#662): art.select set 0, a snapshot, set 1, a
+// snapshot. The right's ATT server follows Zephyr 3.5's response-buffer rule (a request that
+// comes before the right's system queue has run its last response's sent callback gets no
+// response at all), and that queue is busy for 20 ms after each redraw (SELECT, SNAP). A left that
+// sends its next request the moment an answer comes (the SELECT's status read, the first read
+// after the SNAP write, each Read Blob of the image) loses it: on hardware, "right half timed
+// out", then "still busy after retries" and the unstick's link drop (5a50426 gate).
+static void select_snap(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    k_msleep(2000);
+    sim_bt_faults.rsp_meta_rule = true;
+    sim_bt_faults.right_redraw_busy_us = 20000; // more than a request turnaround (2 events)
+    int drops = sim_bt_stats.link_drops;
+    char why[160];
+    int64_t worst = 0;
+    for (int8_t set = 0; set < 2; set++) {
+        char name[24];
+        snprintf(name, sizeof(name), "select-%d", set);
+        check(name, lab_select(set, why, sizeof(why)), "%s", why);
+        uint16_t f;
+        int64_t t0 = k_uptime_get();
+        int r = snapshot(&f);
+        int64_t took = k_uptime_get() - t0;
+        worst = MAX(worst, took);
+        snprintf(name, sizeof(name), "snapshot-set%d", set);
+        check(name, r == SNAP_OK, "%s in %lld ms", snap_name(r), (long long)took);
+    }
+    check("snapshot-budget", worst < 5000, "slowest %lld ms (firmware budget 5 s, lab waits 6 s)",
+          (long long)worst);
+    check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
+          sim_bt_stats.link_drops - drops);
+    check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped);
+    debug_line("at the end");
+}
+
+// The snapshot under ZMK's real link timing (#662's d265853 hardware failure): 7.5 ms interval,
+// peripheral latency 30 (the right listens after an event with data, when it has data, else every
+// 31st event), the right's response-buffer rule, its system queue busy 20 ms after each redraw and
+// 20 ms on every art frame (10 per second), the app's traffic. d265853 read the image with ~63
+// Read Blob requests spaced REQ_GAP_MS: the right fell asleep between them, each waited for its
+// next listen, and every snapshot ran past the 5 s budget ("right half timed out"). With push the
+// right sends the image as notifications. Passes when every snapshot is OK within 40% of the
+// budget, nothing went unanswered and the link never dropped; prints the push time of an art blob.
+static void snap_latency(bool old_right) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    k_msleep(2000);
+    sim_bt_faults.rsp_meta_rule = true;
+    sim_bt_faults.right_redraw_busy_us = 20000;
+    sim_bt_faults.right_frame_us = 100000;
+    sim_bt_faults.right_frame_busy_us = 20000;
+    sim_bt_faults.right_no_push = old_right;
+    int drops = sim_bt_stats.link_drops;
+    char why[160];
+    int64_t worst = 0;
+    for (int i = 0; i < 4; i++) {
+        char name[24];
+        if (i < 2) {
+            snprintf(name, sizeof(name), "select-%d", i);
+            check(name, lab_select((int8_t)i, why, sizeof(why)), "%s", why);
+        } else {
+            k_msleep(700); // the right animates between snapshots
+        }
+        uint16_t f;
+        int64_t t0 = k_uptime_get();
+        int r = snapshot(&f);
+        int64_t took = k_uptime_get() - t0;
+        worst = MAX(worst, took);
+        snprintf(name, sizeof(name), "snapshot-%d", i);
+        check(name, r == SNAP_OK, "%s in %lld ms (simulated)", snap_name(r), (long long)took);
+    }
+    // The firmware's budget is 5 s (SCREEN_BUDGET_MS); a push should take well under half of it.
+    check("snapshot-time", worst < 2000,
+          "slowest %lld ms simulated, budget 5000 ms, limit 2000 ms (40%%); lab waits 6 s",
+          (long long)worst);
+    push_poll_ms = 10;
+    for (int i = 0; i < 2; i++) {
+        uint16_t len = i ? 3190 : 3599;
+        check(i ? "push-2" : "push", lab_push(len, why, sizeof(why)), "%u B: %s", len, why);
+        printf("  art push of %u bytes under latency: %lld ms from COMMIT to DONE (simulated)\n",
+               len, (long long)push_took_ms);
+    }
+    check("select-end", lab_select(2, why, sizeof(why)), "%s", why);
+    check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
+          sim_bt_stats.link_drops - drops);
+    check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped);
+    printf("  sim: %d screen pushes, %d chunks\n", sim_bt_stats.screen_pushes,
+           sim_bt_stats.screen_chunks);
+    debug_line("at the end");
+}
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -456,6 +555,12 @@ static void lab_thread(void *arg) {
         push_relink_tap();
     } else if (!strcmp(scenario, "relink-shown")) {
         relink_shown();
+    } else if (!strcmp(scenario, "select-snap")) {
+        select_snap();
+    } else if (!strcmp(scenario, "snap-latency")) {
+        snap_latency(false);
+    } else if (!strcmp(scenario, "snap-latency-old")) {
+        snap_latency(true);
     } else {
         printf("unknown scenario %s\n", scenario);
         failed = true;

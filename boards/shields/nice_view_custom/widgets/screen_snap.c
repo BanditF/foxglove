@@ -54,8 +54,11 @@ static void capture(struct k_work *work) {
 #ifdef SNAP_CENTRAL
     screen_snap_complete(0, ok ? SCREEN_OK : SCREEN_NOT_BUILT);
 #endif
+    screen_snap_captured(ok);
 }
 static K_WORK_DEFINE(capture_work, capture);
+
+__weak void screen_snap_captured(bool ok) {}
 
 uint8_t screen_snap_local(void) {
     if (!zmk_display_is_initialized()) {

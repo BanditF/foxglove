@@ -14,9 +14,13 @@
  *    request's callback gets BT_ATT_ERR_UNLIKELY, subscriptions go, nothing more is sent.
  *  - gatt_read_rsp: a chunk of MTU - 1 bytes whose callback says CONTINUE is read on with a Read
  *    Blob from the RX thread; a shorter one ends the read with a NULL callback.
+ *  - The link has ZMK's slave latency (ZMK_SPLIT_BLE_PREF_LATENCY 30, #662): the right listens
+ *    at an event right after one that carried data either way, when it has a PDU of its own due,
+ *    and at least every 31st event; at the others nothing moves. A request sent while the right
+ *    sleeps waits for its next listen (up to ~230 ms). sim_bt_faults.no_latency turns it off.
  * The right's side is a model of art_relay_peripheral.c's service (status, data, screen, CCC),
  * with Zephyr's CCC rules for a bonded peer (gatt.c bt_gatt_attr_write_ccc, update_ccc): the
- * CCC's cfg_changed runs only when the aggregate value changes.
+ * CCC's cfg_changed runs only when the aggregate value changes, and its screen push (#662).
  * SPDX-License-Identifier: MIT
  */
 #include <stdio.h>
@@ -120,6 +124,7 @@ struct pdu {
     struct req *req;
     int64_t due; // a late response goes on the air from then
     bool on_air; // a request: handed to the controller (its TX context taken)
+    bool push; // a screen chunk the right pushed (its sent callback paces the push)
     bt_gatt_complete_func_t sent; // a command's complete callback (att_on_sent_cb)
     void *sent_data;
     struct pdu *next;
@@ -203,6 +208,19 @@ static K_WORK_DEFINE(right_rx_work, right_rx_cb);
 static K_WORK_DEFINE(right_tx_notify_work, right_tx_notify_cb);
 
 static struct sim_timer *event_timer;
+static int right_push_sent; // push chunks on the air whose sent callback hasn't run on the right
+static int right_slept;        // connection events the right has slept through in a row
+static bool right_awake_next; // the last event the right listened at carried data
+
+// Whether the right has a PDU of its own due now (it then skips its latency).
+static bool right_has_due(void) {
+    for (struct pdu *p = right_air.head; p; p = p->next) {
+        if (p->due <= sim_now_us()) {
+            return true;
+        }
+    }
+    return false;
+}
 
 static void conn_event(void *arg) {
     (void)arg;
@@ -210,6 +228,17 @@ static void conn_event(void *arg) {
     if (!link_up) {
         return;
     }
+    // Peripheral latency (ZMK_SPLIT_BLE_PREF_LATENCY 30): the right listens right after an event
+    // that carried data, when it has data of its own, and at least every SIM_PERIPH_LATENCY + 1st
+    // event. At an event it sleeps through nothing moves either way.
+    if (!sim_bt_faults.no_latency && !right_awake_next && !right_has_due() &&
+        right_slept < SIM_PERIPH_LATENCY) {
+        right_slept++;
+        event_timer = sim_timer_start(sim_now_us() + SIM_CONN_INTERVAL_US, conn_event, NULL);
+        return;
+    }
+    right_slept = 0;
+    int moved = 0;
     bool stalled = sim_bt_faults.left_tx_stall_at_us &&
                    sim_now_us() >= sim_bt_faults.left_tx_stall_at_us;
     for (int i = 0; i < SIM_PDUS_PER_EVENT && left_air.head && !stalled; i++) {
@@ -219,6 +248,7 @@ static void conn_event(void *arg) {
         copy->req = NULL;
         push(&right_in, copy);
         push(&left_done, p);
+        moved++;
     }
     if (left_done.head) {
         k_work_submit(&left_tx_notify_work);
@@ -233,12 +263,14 @@ static void conn_event(void *arg) {
         struct pdu *p = pop(&right_air);
         if (sent < SIM_PDUS_PER_EVENT && p->due <= sim_now_us()) {
             sent++;
+            right_push_sent += p->push;
             push(&left_in, p);
         } else {
             push(&keep, p);
         }
     }
     right_air = keep;
+    right_awake_next = moved || sent || (left_air.head && !stalled);
     if (sent) {
         k_work_submit_to_queue(&bt_rx_q, &left_rx_work);
         k_work_submit_to_queue(&right_sys_q, &right_tx_notify_work);
@@ -695,7 +727,10 @@ static void right_update_lit(void) {
     }
 }
 
-static int right_op(const uint8_t *d, uint16_t len) {
+static bool snap_push; // the capture under way is to be pushed (SNAP with ART_RELAY_SNAP_PUSH)
+
+// The relay op's ATT error (0: accepted).
+static uint8_t right_op(const uint8_t *d, uint16_t len) {
     switch (d[0]) {
     case ART_RELAY_BEGIN:
         sim_right.blob_len = sys_get_le16(&d[1]);
@@ -743,6 +778,12 @@ static int right_op(const uint8_t *d, uint16_t len) {
         right_update_lit();
         return 0;
     case ART_RELAY_SNAP:
+        // art_relay_peripheral.c: one byte reads as before; a second, ART_RELAY_SNAP_PUSH (#662),
+        // pushes the image once captured. A right before the push refuses two bytes.
+        if (len != 1 && (sim_bt_faults.right_no_push || len != 2 || d[1] != 1)) {
+            return BT_ATT_ERR_INVALID_ATTRIBUTE_LEN;
+        }
+        snap_push = len == 2;
         sim_right.snap_ready = 1;
         right_redraw(); // the capture runs on the right's display (system) queue
         return 0;
@@ -752,6 +793,9 @@ static int right_op(const uint8_t *d, uint16_t len) {
 }
 
 static uint8_t frozen[SCREEN_SNAP_WIRE]; // the capture: reads come from it (screen_snap.c)
+static uint16_t push_at; // the next byte of the push
+static int push_out;     // push chunks not yet sent
+static bool push_live;
 
 static void screen_wire(uint8_t out[SCREEN_SNAP_WIRE]) {
     uint8_t *px = out + SCREEN_SNAP_HEADER;
@@ -791,10 +835,7 @@ static void right_rx_cb(struct k_work *w) {
             }
             break;
         case P_REQ_WRITE:
-            if (p->handle == H_DATA && p->len) {
-                right_op(p->data, p->len);
-            }
-            respond(0, NULL, 0);
+            respond(p->handle == H_DATA && p->len ? right_op(p->data, p->len) : 0, NULL, 0);
             break;
         case P_REQ_SUB: {
             uint16_t v = sys_get_le16(p->data);
@@ -871,9 +912,16 @@ static void right_rx_cb(struct k_work *w) {
     }
 }
 
+static void push_more(void);
+
 static void right_tx_notify_cb(struct k_work *w) {
     (void)w;
     rsp_meta_busy = false; // chan_rsp_sent -> tx_meta_data_free (rsp_meta)
+    if (right_push_sent) {
+        push_out -= right_push_sent; // bt_gatt_notify_cb's func: the next chunks go
+        right_push_sent = 0;
+        push_more();
+    }
 }
 
 static void right_busy_cb(struct k_work *w) {
@@ -884,11 +932,52 @@ static void right_busy_cb(struct k_work *w) {
     if (sim_right.snap_ready == 1) {
         screen_wire(frozen);
         sim_right.snap_ready = 2;
+        if (snap_push) { // screen_snap_captured: the push starts over from offset 0
+            snap_push = false;
+            push_at = 0;
+            push_live = true;
+            sim_bt_stats.screen_pushes++;
+            push_more();
+        }
     }
 }
 static K_WORK_DEFINE(right_busy_work, right_busy_cb);
 
 static void right_redraw(void) { k_work_submit_to_queue(&right_sys_q, &right_busy_work); }
+
+static void right_frame_cb(struct k_work *w) {
+    (void)w;
+    sim_block(NULL, sim_bt_faults.right_frame_busy_us); // an art frame holds the queue
+}
+static K_WORK_DEFINE(right_frame_work, right_frame_cb);
+
+/* The right's screen push (art_relay_peripheral.c, #662): the frozen image as notifications of the
+ * status value, ART_RELAY_RANG_SCREEN, offset u16 LE, then up to MTU - 6 bytes; at most PUSH_OUT
+ * unsent at a time, each sent callback (on the right's system queue) sends the next. */
+#define PUSH_OUT 2
+
+static void push_more(void) {
+    while (push_live && push_out < PUSH_OUT && push_at < SCREEN_SNAP_WIRE) {
+        if (!(sim_right.ccc_value & BT_GATT_CCC_NOTIFY) || !link_up) {
+            push_live = false; // nobody subscribed: bt_gatt_notify_cb refuses, the push ends
+            return;
+        }
+        uint16_t n = MIN(SIM_MTU - 3 - 3, SCREEN_SNAP_WIRE - push_at);
+        struct pdu *p = new_pdu(P_NOTIFY, H_STATUS);
+        p->data[0] = 0x80; // ART_RELAY_RANG_SCREEN
+        sys_put_le16(push_at, &p->data[1]);
+        memcpy(&p->data[3], &frozen[push_at], n);
+        p->len = 3 + n;
+        p->push = true;
+        push_at += n;
+        push_out++;
+        sim_bt_stats.screen_chunks++;
+        right_send(p);
+    }
+    if (push_at >= SCREEN_SNAP_WIRE) {
+        push_live = false;
+    }
+}
 
 static uint8_t ring_what;
 static void ring_cb(struct k_work *w) {
@@ -929,8 +1018,12 @@ static void right_animate(void *arg) {
     (void)arg;
     if (sim_right.lit) {
         sim_right.frame++;
+        if (sim_bt_faults.right_frame_busy_us > 0) {
+            k_work_submit_to_queue(&right_sys_q, &right_frame_work);
+        }
     }
-    sim_timer_start(sim_now_us() + 250000, right_animate, NULL);
+    int64_t every = sim_bt_faults.right_frame_us > 0 ? sim_bt_faults.right_frame_us : 250000;
+    sim_timer_start(sim_now_us() + every, right_animate, NULL);
 }
 
 /* Link up and down */
@@ -1039,6 +1132,12 @@ void sim_bt_drop(int64_t back_after_us) {
     free_list(&left_in, false);
     sim_right.ccc_value = 0; // disconnected_cb in gatt.c: the value goes, the bond's cfg stays
     sim_right.snap_ready = 0;
+    push_live = false;
+    push_out = 0;
+    right_push_sent = 0;
+    snap_push = false;
+    right_awake_next = false;
+    right_slept = 0;
     sim_wake_all(&ctx_wait, 1); // "Disconnected while allocating context"
     sim_wake_all(&meta_wait, 1);
     k_work_submit_to_queue(&bt_rx_q, &disconnected_work);

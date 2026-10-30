@@ -9,6 +9,8 @@
 #define SIM_TX_CTX 5
 #define SIM_MTU 23
 #define SIM_CONN_INTERVAL_US 7500
+// ZMK_SPLIT_BLE_PREF_LATENCY (ZMK v0.3.0 default): the right may sleep through 30 events in a row.
+#define SIM_PERIPH_LATENCY 30
 #define SIM_PDUS_PER_EVENT 4
 #define SIM_ATT_TIMEOUT_US 30000000LL
 
@@ -23,6 +25,8 @@ struct sim_bt_stats {
     int notifies_dropped; // notifications the left had no subscription for
     int rings;            // rings the right sent
     int rsp_dropped;      // responses the right couldn't send ("already processing a REQ/RSP")
+    int screen_pushes;    // screen images the right pushed as notifications
+    int screen_chunks;    // their chunks
 };
 extern struct sim_bt_stats sim_bt_stats;
 
@@ -43,6 +47,16 @@ struct sim_bt_faults {
     // sent), while the right's PDUs still arrive: HELLO's "in flight 1, timeouts 1" with the
     // bearer alive, which only a re-link ended (#618 soak and gate runs). 0 = off.
     int64_t left_tx_stall_at_us;
+    // The right listens at every connection event (no peripheral latency). Off by default: the
+    // real link has ZMK's latency 30, which the old relay-sim didn't model (#662's d265853).
+    bool no_latency;
+    // The right's art animates every right_frame_us (default 250 ms) while lit; each frame holds
+    // its system work queue right_frame_busy_us (0: not at all).
+    int64_t right_frame_us;
+    int64_t right_frame_busy_us;
+    // A right before the screen push (#662): it refuses SNAP with the push byte (ATT 0x0d) and
+    // only answers reads.
+    bool right_no_push;
 };
 extern struct sim_bt_faults sim_bt_faults;
 

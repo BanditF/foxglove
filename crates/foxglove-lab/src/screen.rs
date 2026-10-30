@@ -81,8 +81,10 @@ fn snapshot_once(t: &impl Transport, half: u8) -> Result<Vec<u8>> {
         }
         Err(SnapError::Busy.into())
     };
-    // The right reply waits for the relay transfer (up to 5 s in the firmware since #618, 3 s
-    // before).
+    // The right reply waits for the relay transfer: the firmware replies within its 5 s budget
+    // (SCREEN_BUDGET_MS, since #618; 3 s before). Since #662 the right pushes the image, about
+    // 0.4-1.2 s under the split link's latency (relay-sim snap-latency); a left paired with an
+    // older right reads it and replies "timed out" at 5 s, inside this wait.
     let meta = request(
         &[protocol::SETTINGS, SNAP, half],
         SNAP,
