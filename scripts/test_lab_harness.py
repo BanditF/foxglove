@@ -269,5 +269,38 @@ class RestoreRetry(unittest.TestCase):
         self.assertIn(f'"{self.k.LIGHTING_NOT_KNOWN}"', api_rs)
 
 
+class ApiPairing(unittest.TestCase):
+    """#669's gate: a lab client and an app from different trees. The app's "version not served"
+    (code 7) ends the script BLOCKED, naming both versions, instead of a FAIL mid-run."""
+
+    def setUp(self):
+        self.k = labkit()
+
+    def fake_api(self, reply):
+        api = self.k.Api.__new__(self.k.Api)
+        api.next = 0
+        api.pipe = io.BytesIO()
+        api.pipe.read = io.BytesIO((reply + chr(10)).encode()).read
+        return api
+
+    def test_a_version_error_carries_its_code_and_message(self):
+        api = self.fake_api('{"jsonrpc":"2.0","id":1,"error":{"code":7,"message":"this Foxglove speaks API 1.6; the client needs 1.7"}}')
+        with self.assertRaises(RuntimeError) as e:
+            api.call('initialize', {})
+        self.assertEqual(e.exception.code, self.k.API_VERSION_ERROR)
+        self.assertIn('speaks API 1.6', e.exception.message)
+
+    def test_connect_ends_blocked_on_a_mismatch(self):
+        def mismatch(name, permissions):
+            raise self.k.ApiMismatch('this Foxglove speaks API 1.6; the client needs 1.7 (this lab client asks for API 1.7)')
+        out = io.StringIO()
+        with unittest.mock.patch.object(self.k, 'Api', mismatch), unittest.mock.patch('sys.stdout', out):
+            with self.assertRaises(SystemExit) as e:
+                self.k.connect('test', [])
+        self.assertEqual(e.exception.code, 2)
+        self.assertIn('BLOCKED test: this Foxglove speaks API 1.6; the client needs 1.7', out.getvalue())
+        self.assertIn('RESULT BLOCKED', out.getvalue())
+
+
 if __name__ == '__main__':
     unittest.main()

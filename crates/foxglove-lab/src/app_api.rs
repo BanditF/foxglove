@@ -41,6 +41,25 @@ pub fn built_in_label(set_count: u8, set: i8) -> String {
         .map_or_else(|| format!("Set {set}"), |s| s.label)
 }
 
+/// The API the lab asks for: the oldest that has what it calls (`art.select` / `art.status`,
+/// 1.6, #630), not the newest this build knows. A lab built on a newer tree (#669's 1.7) then
+/// still works with an app that speaks 1.6, and an older app is BLOCKED by name, not a FAIL.
+pub const NEEDS: foxglove_plugin_api::Version = foxglove_plugin_api::Version { major: 1, minor: 6 };
+
+/// The running app doesn't serve [`NEEDS`]: its message names the app's version (code 7).
+#[derive(Debug)]
+pub struct VersionMismatch(pub String);
+impl std::fmt::Display for VersionMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{} (foxglove-lab asks for API {NEEDS}): run the app built from this tree",
+            self.0
+        )
+    }
+}
+impl std::error::Error for VersionMismatch {}
+
 /// The app over its named pipe; one connection per call.
 pub struct Pipe;
 
@@ -69,6 +88,9 @@ fn call(method: &'static str, params: Value) -> Result<Value> {
             };
             return match r.outcome {
                 Outcome::Result(v) => Ok(v),
+                Outcome::Error(e) if e.code == foxglove_plugin_api::rpc::code::VERSION => {
+                    Err(VersionMismatch(e.message).into())
+                }
                 Outcome::Error(e) => Err(anyhow!("{method}: {} (code {})", e.message, e.code)),
             };
         }
@@ -76,7 +98,7 @@ fn call(method: &'static str, params: Value) -> Result<Value> {
     ask(
         "initialize",
         json!({
-            "api": foxglove_plugin_api::API_VERSION.to_string(),
+            "api": NEEDS.to_string(),
             "client": {"name": "foxglove-lab", "version": env!("CARGO_PKG_VERSION")},
             "permissions": ["devices.read", "art.write"],
         }),
@@ -130,6 +152,18 @@ impl AppArt for Pipe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_lab_asks_for_the_oldest_api_with_its_calls() {
+        // art.select and art.status came in 1.6 (#630): any 1.x app from 1.6 serves the lab.
+        assert_eq!(NEEDS.to_string(), "1.6");
+        assert!(NEEDS.served_by(foxglove_plugin_api::API_VERSION));
+        assert!(NEEDS.served_by(foxglove_plugin_api::Version { major: 1, minor: 7 }));
+        let old = foxglove_plugin_api::Version { major: 1, minor: 5 };
+        assert!(!NEEDS.served_by(old));
+        let e = VersionMismatch("this Foxglove speaks API 1.5; the client needs 1.6".into());
+        assert!(e.to_string().contains("API 1.5") && e.to_string().contains("asks for API 1.6"));
+    }
+
     #[test]
     fn labels_come_from_the_manifest_when_the_count_matches() {
         assert_eq!(built_in_label(17, 0), "ZMK balloon");
