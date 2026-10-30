@@ -1,5 +1,5 @@
 {
-  "api": "1.7",
+  "api": "1.8",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -107,7 +107,7 @@
       "params": {
         "$defs": {
           "ArtPolarity": {
-            "description": "Which way round a file's ink is (API 1.7, #666): `auto` finds its background, so the\ndrawing is the ink whichever way round it was drawn; `as_is` sends it as it is; `invert`\nflips it. The keyboard's dark or light screens then decide how it looks.",
+            "description": "Which way round a file's ink is (API 1.8, #666): `auto` finds its background, so the\ndrawing is the ink whichever way round it was drawn; `as_is` sends it as it is; `invert`\nflips it. The keyboard's dark or light screens then decide how it looks.",
             "enum": [
               "auto",
               "as_is",
@@ -191,7 +191,7 @@
                 "type": "null"
               }
             ],
-            "description": "For a `file`: its polarity, kept for that file as the art picker's choice is (API 1.7,\n#666). Left out: the file's choice so far (auto unless one was made)."
+            "description": "For a `file`: its polarity, kept for that file as the art picker's choice is (API 1.8,\n#666). Left out: the file's choice so far (auto unless one was made)."
           },
           "target": {
             "$ref": "#/$defs/ArtTarget"

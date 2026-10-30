@@ -1308,7 +1308,7 @@ mod parity_tests {
             serde_json::from_value(json!({"device": "k", "target": "previous"})).unwrap();
         assert_eq!(art_words(&p.target), "‹ (previous)");
         assert_eq!(p.polarity, None, "API 1.6 callers leave it out");
-        // API 1.7 (#666): a file's polarity, as the art picker's.
+        // API 1.8 (#666): a file's polarity, as the art picker's.
         let p: methods::ArtSelectParams = serde_json::from_value(
             json!({"device": "k", "target": {"file": "a.bin"}, "polarity": "as_is"}),
         )

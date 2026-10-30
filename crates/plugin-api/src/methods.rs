@@ -252,7 +252,7 @@ pub enum ArtTarget {
     Previous,
 }
 
-/// Which way round a file's ink is (API 1.7, #666): `auto` finds its background, so the
+/// Which way round a file's ink is (API 1.8, #666): `auto` finds its background, so the
 /// drawing is the ink whichever way round it was drawn; `as_is` sends it as it is; `invert`
 /// flips it. The keyboard's dark or light screens then decide how it looks.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -268,7 +268,7 @@ pub enum ArtPolarity {
 pub struct ArtSelectParams {
     pub device: String,
     pub target: ArtTarget,
-    /// For a `file`: its polarity, kept for that file as the art picker's choice is (API 1.7,
+    /// For a `file`: its polarity, kept for that file as the art picker's choice is (API 1.8,
     /// #666). Left out: the file's choice so far (auto unless one was made).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polarity: Option<ArtPolarity>,
