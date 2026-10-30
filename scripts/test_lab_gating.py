@@ -34,6 +34,11 @@ class AppLaunchesNeedOnCall(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn('RESULT BLOCKED', r.stdout)
 
+    def test_the_lights_page_case_refuses_without_the_ok(self):
+        r = run('lights_page.py', '--app', SOME_EXE, '--lab', SOME_EXE)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('FOXGLOVE_APP_OK=1', r.stdout)
+
     def test_every_app_run_needs_the_ok(self):
         os.environ.setdefault('APPDATA', str(Path.home()))  # labkit reads it at import (CI is Linux)
         sys.path.insert(0, str(LAB))

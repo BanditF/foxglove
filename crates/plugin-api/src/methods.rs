@@ -313,6 +313,39 @@ pub struct SettingValues {
     pub values: serde_json::Map<String, serde_json::Value>,
 }
 
+/// What the Lights page's Keyboard card shows for the keyboard (API 1.7, #674), from the same
+/// view-model the page draws, so a check runs with no window: the effect the keyboard reports,
+/// and which colour controls are visible.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LightsPage {
+    /// The effect the keyboard reports it shows ("Solid", "Swirl"); none before a report or for
+    /// an effect Foxglove doesn't know.
+    pub effect: Option<String>,
+    /// The caption over the colour row: "Colour", or "Looks like" over the rainbow.
+    pub colour_label: String,
+    /// The rainbow preview shows in place of the swatches (an effect that makes its own colours).
+    pub rainbow: bool,
+    pub controls: LightsPageControls,
+    /// "The keyboard shows X; Foxglove saved Y. …", when the page shows it.
+    pub note: Option<String>,
+}
+
+/// Which of the Keyboard card's colour controls are visible (API 1.7, #674).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LightsPageControls {
+    /// The colour swatches.
+    pub swatches: bool,
+    /// The Custom pill.
+    pub custom: bool,
+    /// The hue and saturation sliders (behind Custom).
+    pub hue: bool,
+    pub sat: bool,
+    pub brightness: bool,
+    pub speed: bool,
+    /// "Follow the Windows accent colour".
+    pub accent: bool,
+}
+
 /// The tray panel (API 1.6, #618): whether it's open, and where it was last drawn, in screen
 /// pixels (left, top, right, bottom).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -794,6 +827,14 @@ pub const METHODS: &[Method] = &[
         permission: Some("lighting.write"),
         params: schema!(SetZoneParams),
         result: Some(schema!(PcDevices)),
+    },
+    // What the Lights page shows, for window-free checks (#674, API 1.7).
+    Method {
+        name: "lights.page",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(DeviceParams),
+        result: Some(schema!(LightsPage)),
     },
     // The tray panel and the overlay window, as a sitting uses them (#618, API 1.6).
     Method {

@@ -163,22 +163,7 @@ pub fn show(ui: &mut egui::Ui) {
     if sync == RgbSync::Unknown {
         ks::ask_rgb_sync(None, ctx.clone());
     }
-    let view = View {
-        state: ks::rgb_state(&ctx),
-        sync,
-        accent: super::accent::enabled(),
-        wallpaper: super::accent::wallpaper_enabled(),
-        controls: super::keyboard_actions::underglow_behavior().is_some(),
-        busy: ks::invoking(),
-        leds: (
-            super::led_map_ui::available(),
-            super::led_map::state(super::boards::current().as_ref()),
-        ),
-        calibration: super::devices::keyboard_key()
-            .map(|k| foxglove_devices::calibration::global().device(&k).is_some()),
-        parts: super::parts::Parts::current(),
-        saved: super::devices::keyboard_id().and_then(|id| super::lighting_leases::saved(&id)),
-    };
+    let view = live_view(ks::rgb_state(&ctx));
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     draft.settle(view.state.as_ref());
     for intent in draw(ui, &view, &mut draft) {
@@ -370,6 +355,89 @@ fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     }
 }
 
+/// What the Keyboard card's colour controls show (#670, #674): the one view-model the page draws
+/// from and the local API's `lights.page` returns, so the two can't drift apart.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Model {
+    /// The effect the keyboard reports it shows; `None` before a report or for one the table
+    /// doesn't know.
+    pub effect: Option<&'static str>,
+    /// The caption over the colour row: "Colour", or "Looks like" over a rainbow.
+    pub colour_label: &'static str,
+    /// The rainbow preview shows in place of the swatches.
+    pub rainbow: bool,
+    /// The swatches and the Custom pill.
+    pub swatches: bool,
+    /// The hue and saturation sliders (behind Custom).
+    pub hue: bool,
+    pub sat: bool,
+    pub brightness: bool,
+    pub speed: bool,
+    /// "Follow the Windows accent colour" and the colour swatch beside Apply.
+    pub accent: bool,
+    /// "The keyboard shows X; Foxglove saved Y. Pick … to change it.", when shown.
+    pub note: Option<String>,
+}
+
+impl Model {
+    /// From what the keyboard shows (its report), never the saved look, which only makes the
+    /// note.
+    pub fn new(v: &View) -> Model {
+        let showing = Showing::new(v.state.as_ref());
+        let controls = showing.controls;
+        let note = showing
+            .effect
+            .zip(showing.differs(v.state.as_ref(), v.saved.as_ref()))
+            .map(|(shown, saved)| {
+                let pick = if shown.uses_colour() {
+                    "an effect or a colour"
+                } else {
+                    "an effect"
+                };
+                format!(
+                    "The keyboard shows {}; Foxglove saved {saved}. Pick {pick} to change it.",
+                    shown.name
+                )
+            });
+        Model {
+            effect: showing.effect.map(|e| e.name),
+            colour_label: if controls.colour() {
+                "Colour"
+            } else {
+                "Looks like"
+            },
+            rainbow: !controls.colour(),
+            swatches: controls.colour(),
+            hue: controls.hue,
+            sat: controls.sat,
+            brightness: controls.brightness,
+            speed: controls.speed,
+            accent: controls.hue,
+            note,
+        }
+    }
+}
+
+/// The page as it shows now, from the app's caches, with `state` the keyboard's last report.
+pub fn live_view(state: Option<RgbState>) -> View {
+    View {
+        state,
+        sync: ks::rgb_sync(),
+        accent: super::accent::enabled(),
+        wallpaper: super::accent::wallpaper_enabled(),
+        controls: super::keyboard_actions::underglow_behavior().is_some(),
+        busy: ks::invoking(),
+        leds: (
+            super::led_map_ui::available(),
+            super::led_map::state(super::boards::current().as_ref()),
+        ),
+        calibration: super::devices::keyboard_key()
+            .map(|k| foxglove_devices::calibration::global().device(&k).is_some()),
+        parts: super::parts::Parts::current(),
+        saved: super::devices::keyboard_id().and_then(|id| super::lighting_leases::saved(&id)),
+    }
+}
+
 fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>) {
     let left = v.state.map(|s| s.left);
     ui.add_enabled_ui(v.controls && !v.busy, |ui| {
@@ -402,33 +470,14 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             }
         });
         // What the keyboard shows decides the controls and the preview, never the saved
-        // look (#670); the saved one is only named when they differ.
-        let showing = Showing::new(v.state.as_ref());
-        if let (Some(shown), Some(saved)) = (
-            showing.effect,
-            showing.differs(v.state.as_ref(), v.saved.as_ref()),
-        ) {
-            let pick = if shown.uses_colour() {
-                "an effect or a colour"
-            } else {
-                "an effect"
-            };
-            ui.weak(format!(
-                "The keyboard shows {}; Foxglove saved {saved}. Pick {pick} to change it.",
-                shown.name
-            ));
+        // look (#670); the saved one is only named when they differ. One model for the page
+        // and the API's lights.page (#674).
+        let m = Model::new(v);
+        if let Some(note) = &m.note {
+            ui.weak(note);
         }
-        let controls = showing.controls;
         ui.add_space(4.0);
-        // Over a rainbow it's what the lights look like, not a colour to pick (#670).
-        ui.label(theme::caps_label(
-            ui,
-            if controls.colour() {
-                "Colour"
-            } else {
-                "Looks like"
-            },
-        ));
+        ui.label(theme::caps_label(ui, m.colour_label));
         let picked = draft.color;
         let edited = &mut draft.edited;
         let Some((hue, sat, brightness)) = draft.color.as_mut() else {
@@ -436,7 +485,7 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             return;
         };
         let custom_open = &mut draft.custom_open;
-        if controls.colour() {
+        if m.swatches {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 for (name, rgb) in SWATCHES {
@@ -454,34 +503,34 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             });
             if *custom_open {
                 ui.add_space(2.0);
-                if controls.hue {
+                if m.hue {
                     value_row(ui, "Hue", format!("{hue}°"));
                     full_slider(ui, egui::Slider::new(&mut *hue, 0..=359));
                 }
-                if controls.sat {
+                if m.sat {
                     value_row(ui, "Saturation", format!("{sat}%"));
                     full_slider(ui, egui::Slider::new(&mut *sat, 0..=100));
                 }
             }
-        } else {
+        }
+        if m.rainbow {
             // An effect that makes its own colours: a rainbow where the picker was, and why
             // (#616, #670). Hue and saturation are hidden; brightness and speed stay.
             let w = ui.available_width().min(360.0);
             super::effect_controls::rainbow(ui, egui::vec2(w, 18.0));
-            if let Some(e) = showing.effect {
+            if let Some(name) = m.effect {
                 ui.weak(format!(
-                    "{} is a rainbow: it doesn't use the colour yet. Brightness and speed still apply.",
-                    e.name
+                    "{name} is a rainbow: it doesn't use the colour yet. Brightness and speed still apply."
                 ));
             }
         }
-        if controls.brightness {
+        if m.brightness {
             ui.add_space(4.0);
             value_row(ui, "Brightness", format!("{brightness}%"));
             full_slider(ui, egui::Slider::new(&mut *brightness, 0..=100));
         }
 
-        if controls.speed {
+        if m.speed {
             let reported = left.map(|l| l.speed).filter(|s| (1..=5).contains(s));
             let mut speed = draft.speed.or(reported).unwrap_or(3);
             value_row(ui, "Speed", speed.to_string());
@@ -501,21 +550,21 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         super::settings_ui::split_row(
             ui,
             |ui| {
-                let label = if controls.colour() {
+                let label = if m.swatches {
                     "Apply colour"
                 } else {
                     "Apply brightness"
                 };
                 apply = ui.add(theme::primary_button(ui, label)).clicked();
                 // The colour Apply sends; an effect without a hue has none to show (#670).
-                if controls.hue {
+                if m.accent {
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
                     ui.painter().rect_filled(rect, 3.0, shown_color(*hue, *sat, *brightness));
                 }
             },
             |ui| {
                 // The accent sets a hue: only for an effect that shows one (#670).
-                if controls.hue
+                if m.accent
                     && ui
                     .checkbox(&mut accent, "Follow the Windows accent colour")
                     .on_hover_text(

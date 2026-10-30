@@ -171,6 +171,42 @@ fn paused_error() -> Error {
     }
 }
 
+/// `lights.page` (#674): what the Lights page's Keyboard card shows for the host-link keyboard,
+/// from a fresh RGB_STATE read, through the page's own view-model (`lights_page::Model`).
+fn lights_page(device: &str) -> Result<Value, Error> {
+    use foxglove_devices::Device as _;
+    if !keyboard().is_some_and(|k| k.info().id.to_string() == device) {
+        return Err(Error {
+            code: code::DISCONNECTED,
+            message: format!("no device {device} on the Lights page"),
+            data: None,
+        });
+    }
+    let state = super::keyboard_settings::read_rgb_state_now();
+    Ok(json!(page_json(&super::lights_page::Model::new(
+        &super::lights_page::live_view(state)
+    ))))
+}
+
+/// The page's model in the API's words.
+fn page_json(m: &super::lights_page::Model) -> methods::LightsPage {
+    methods::LightsPage {
+        effect: m.effect.map(String::from),
+        colour_label: m.colour_label.into(),
+        rainbow: m.rainbow,
+        controls: methods::LightsPageControls {
+            swatches: m.swatches,
+            custom: m.swatches,
+            hue: m.hue,
+            sat: m.sat,
+            brightness: m.brightness,
+            speed: m.speed,
+            accent: m.accent,
+        },
+        note: m.note.clone(),
+    }
+}
+
 /// `lighting.set`'s writes, in order: on/off, colour, effect.
 fn set_lighting(
     lighting: &dyn foxglove_devices::Lighting,
@@ -572,6 +608,10 @@ impl Devices for AppDevices {
                     });
                 }
                 art_status(&after)
+            }
+            "lights.page" => {
+                let p: methods::DeviceParams = params(_params)?;
+                lights_page(&p.device)
             }
             "tray.panel" => {
                 let (open, rect) = super::tray_panel::state();
@@ -1327,6 +1367,48 @@ mod parity_tests {
         assert_eq!(need("overlay.restore"), Some("app.windows"));
         assert_eq!(need("art.select"), Some("art.write"));
         assert!(!Permission::AppWindows.sensitive());
+        // API 1.7 (#674): what the Lights page shows is a read.
+        assert_eq!(need("lights.page"), Some("devices.read"));
+    }
+
+    /// #674: `lights.page` answers with the page's own model: Swirl shows the rainbow under
+    /// "Looks like", no swatches, Custom, hue, sat or accent switch, brightness and speed, and the
+    /// saved-look note; Solid the swatches and the switch, no speed. Asking for another device
+    /// than the Lights page's keyboard is refused.
+    #[test]
+    fn lights_page_is_the_pages_model() {
+        use super::super::lights_page::{tests::sample_board_differs, tests::sample_effect, Model};
+        let swirl = page_json(&Model::new(&sample_board_differs()));
+        assert_eq!(swirl.effect.as_deref(), Some("Swirl"));
+        assert_eq!(swirl.colour_label, "Looks like");
+        assert!(swirl.rainbow);
+        assert_eq!(
+            swirl.controls,
+            methods::LightsPageControls {
+                swatches: false,
+                custom: false,
+                hue: false,
+                sat: false,
+                brightness: true,
+                speed: true,
+                accent: false,
+            }
+        );
+        assert_eq!(
+            swirl.note.as_deref(),
+            Some("The keyboard shows Swirl; Foxglove saved Solid, amber. Pick an effect to change it.")
+        );
+        let solid = page_json(&Model::new(&sample_effect(0, 26, 76)));
+        assert_eq!(solid.effect.as_deref(), Some("Solid"));
+        assert_eq!(solid.colour_label, "Colour");
+        assert!(!solid.rainbow && solid.note.is_none());
+        let c = &solid.controls;
+        assert!(c.swatches && c.custom && c.hue && c.sat && c.brightness && c.accent);
+        assert!(!c.speed);
+        let err = AppDevices
+            .call("lights.page", json!({"device": "nothing"}))
+            .unwrap_err();
+        assert_eq!(err.code, code::DISCONNECTED);
     }
 }
 

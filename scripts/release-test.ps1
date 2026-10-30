@@ -154,7 +154,8 @@ try {
     else {
         $cases = @(
             @{ Name = 'overlay_tray'; Args = @('scripts/lab/overlay_tray.py', '--app', $App, '--lab', $lab) },
-            @{ Name = 'api_tools'; Args = @('scripts/lab/api_tools.py', '--app', $App) }
+            @{ Name = 'api_tools'; Args = @('scripts/lab/api_tools.py', '--app', $App) },
+            @{ Name = 'lights_page'; Args = @('scripts/lab/lights_page.py', '--app', $App, '--lab', $lab) }
         )
         foreach ($c in $cases) {
             $name = $c.Name
