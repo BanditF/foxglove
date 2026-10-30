@@ -665,10 +665,20 @@ fn came_up(was: Option<ArtStatus>, now: ArtStatus) -> bool {
 }
 
 fn restore(pinned: &Option<Choice>, status: ArtStatus) -> Option<Choice> {
-    // Only link=2 has a ready relay; 1 is connected but still discovering it.
-    pinned
-        .clone()
-        .filter(|_| status.link == 2 && status.right_state == 0)
+    use protocol::right_state::{BUILT_IN, SAVING};
+    // Only link=2 has a ready relay; 1 is connected but still discovering it. A pinned built-in
+    // or kept piece wins over anything else the right shows, a set pushed behind Foxglove's back
+    // included (#671: the right played that push after a display change). A pinned file goes out
+    // again only once the right lost it (back on a built-in): a set playing may be that file.
+    // Never while the right receives (1) or saves (SAVING).
+    let settled = status.right_state != 1 && status.right_state != SAVING;
+    pinned.clone().filter(|c| {
+        status.link == 2
+            && match c {
+                Choice::File(_) => status.right_state == BUILT_IN,
+                _ => settled,
+            }
+    })
 }
 
 fn fresh_status(link: &Link, h: &Handle) -> Result<ArtStatus, String> {
@@ -1913,6 +1923,36 @@ mod tests {
         assert_eq!(restore(&pinned, st), None);
         st.right_state = 0;
         assert_eq!(restore(&None, st), None);
+    }
+
+    /// #671 (On-call's overlay_tray run): a set pushed behind Foxglove's back plays (state 2,
+    /// set -1); the pinned built-in comes back on the next re-apply, not the push.
+    #[test]
+    fn a_pinned_built_in_wins_over_a_push_behind_the_apps_back() {
+        let st = ArtStatus {
+            link: 2,
+            right_state: protocol::right_state::PLAYING,
+            right_set_count: 1,
+            right_set: -1,
+            ..ArtStatus::default()
+        };
+        let pinned = Some(Choice::BuiltIn(0));
+        assert_eq!(reapply(&pinned, st), pinned);
+        let kept = Some(Choice::Slot(1));
+        let with_slot = ArtStatus {
+            flash_slots: 8,
+            flash_used: 0b10,
+            ..st
+        };
+        assert_eq!(reapply(&kept, with_slot), kept);
+        // Not while the right receives or saves.
+        for busy in [1, protocol::right_state::SAVING] {
+            let st = ArtStatus {
+                right_state: busy,
+                ..st
+            };
+            assert_eq!(reapply(&pinned, st), None, "state {busy}");
+        }
     }
 
     /// #618: an agent's Next sends the tray's Next as its own job once it would show something;

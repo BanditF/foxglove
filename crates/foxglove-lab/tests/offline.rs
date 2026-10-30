@@ -1494,11 +1494,10 @@ fn right_art_goldens_match_the_firmware_art() {
             })
             .collect()
     };
-    // The art's first frame, unpacked as peripheral_status.c's art_apply does.
-    let frame = |set: usize| -> Vec<u8> {
+    // Unique frame `last` of a set, unpacked as peripheral_status.c's art_apply does.
+    let frame = |set: usize, last: usize| -> Vec<u8> {
         let mut buf = vec![0u8; 18 * 68];
-        let first = array(&format!("set_{set}_order"))[0];
-        for k in 0..=usize::from(first) {
+        for k in 0..=last {
             let d = array(&format!("set_{set}_delta_{k}"));
             let (mut i, mut at) = (0, 0);
             while at < buf.len() {
@@ -1532,23 +1531,35 @@ fn right_art_goldens_match_the_firmware_art() {
             s.golden
         );
         let set = 0;
-        // The right's readback: the art at native x 0..139, a blank status strip after it.
-        let art = frame(set);
-        let mut native = vec![0u8; 1360];
-        for y in 0..68 {
-            for x in 0..140 {
-                if art[y * 18 + x / 8] & (0x80 >> (x % 8)) != 0 {
-                    native[y * 20 + x / 8] |= 0x80 >> (x % 8);
+        let order = array(&format!("set_{set}_order"));
+        let path = root.join("tests/hil").join(&s.golden);
+        // The golden is the first frame shown; with any_frame, -fN beside it is unique frame N.
+        let others = foxglove_lab::screen::goldens(&path, s.any_frame);
+        let unique = usize::from(*order.iter().max().unwrap()) + 1;
+        assert!(s.any_frame, "{}: the emblem animates (#671)", s.golden);
+        assert_eq!(others.len() + 1, unique, "a golden for every frame");
+        let frames = std::iter::once((usize::from(order[0]), path.clone()))
+            .chain(others.iter().enumerate().map(|(i, p)| (i + 1, p.clone())));
+        for (k, golden_path) in frames {
+            // The right's readback: the art at native x 0..139, a blank status strip after it.
+            let art = frame(set, k);
+            let mut native = vec![0u8; 1360];
+            for y in 0..68 {
+                for x in 0..140 {
+                    if art[y * 18 + x / 8] & (0x80 >> (x % 8)) != 0 {
+                        native[y * 20 + x / 8] |= 0x80 >> (x % 8);
+                    }
                 }
             }
+            let actual = foxglove_lab::screen::portrait(&native).unwrap();
+            let golden = std::fs::read(&golden_path).unwrap();
+            let c = foxglove_lab::screen::compare(&actual, &golden, &s.mask).unwrap();
+            let name = golden_path.display();
+            assert_eq!(c.different, 0, "{name} is set {set}'s frame {k}");
+            let blank = foxglove_lab::screen::portrait(&[0; 1360]).unwrap();
+            let c = foxglove_lab::screen::compare(&blank, &golden, &s.mask).unwrap();
+            assert!(c.different > 500, "{name} is a picture, not a blank");
         }
-        let actual = foxglove_lab::screen::portrait(&native).unwrap();
-        let golden = std::fs::read(root.join("tests/hil").join(&s.golden)).unwrap();
-        let c = foxglove_lab::screen::compare(&actual, &golden, &s.mask).unwrap();
-        assert_eq!(c.different, 0, "{} is set {set}'s first frame", s.golden);
-        let blank = foxglove_lab::screen::portrait(&[0; 1360]).unwrap();
-        let c = foxglove_lab::screen::compare(&blank, &golden, &s.mask).unwrap();
-        assert!(c.different > 500, "{} is a picture, not a blank", s.golden);
         checked += 1;
     }
     assert_eq!(checked, 1);

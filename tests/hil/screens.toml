@@ -61,13 +61,13 @@ steps = [
 
 [[cases]]
 name = "right-art-select-golden"
-description = "#613: a built-in SELECT redraws the right screen with that set. The firmware has one built-in since #671 (Bandit_Emblem, set 0), so the case first pushes a bundled set (fury.bin, RAM only) to have another picture on screen, then selects set 0 and compares the right's readback (D7 06/07 through the relay) with the set's first frame rendered from custom_art.c. Its first frame is the one shown on a SELECT; the status strip (portrait y 0-19) is masked. Readback is LVGL's own image, not the panel's pixels: noise from a panel power cycle needs eyes (On-call). Leaves set 0 on the right. Replaces pushed art (replace_pushed): the app re-sends its own when it next applies it. With the app running (--allow-app) the select goes through the app API art.select, read back with D6 STATUS and art.status, since the app puts its pinned set back after a direct SELECT (#622); with the app quit, the direct SELECT. Each step says which path it took"
+description = "#613: a built-in SELECT redraws the right screen with that set. The firmware has one built-in since #671 (Bandit_Emblem, set 0), so the case first pushes a bundled set (fury.bin, RAM only) to have another picture on screen, then selects set 0 and compares the right's readback (D7 06/07 through the relay) with the set's frames rendered from custom_art.c (golden/right-art-set0.png and its -fN frames: the emblem animates, so any frame matches; the capture is retried for up to 5 s while the redraw settles, as right after a flash); the status strip (portrait y 0-19) is masked. Readback is LVGL's own image, not the panel's pixels: noise from a panel power cycle needs eyes (On-call). Leaves set 0 on the right. Replaces pushed art (replace_pushed): the app re-sends its own when it next applies it. With the app running (--allow-app) the select goes through the app API art.select, read back with D6 STATUS and art.status, since the app puts its pinned set back after a direct SELECT (#622); with the app quit, the direct SELECT. Each step says which path it took"
 tags = ["screens", "art", "release"]
 requires = ["screen_readback"]
 steps = [
   { art_push = { blob = "app/resources/lighting/art/fury.bin", expect_left_state = 3, expect_right_state = 2, within_ms = 60000 } },
   { art_select = { set = 0, restore = false, replace_pushed = true } },
-  { screen = { half = "right", golden = "golden/right-art-set0.png", mask = [
+  { screen = { half = "right", golden = "golden/right-art-set0.png", any_frame = true, within_ms = 5000, mask = [
     { x = 0, y = 0, width = 68, height = 20 },
   ] } },
 ]
