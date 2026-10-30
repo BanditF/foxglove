@@ -986,6 +986,37 @@ fn position_refusal_and_tap() {
     assert_eq!(run_with(&fake, &case(tap), TEST_HOOKS).status, Status::Fail);
 }
 
+/// A layer report that never came (zmk-raw-hid drops one when the endpoint stays busy): with
+/// `retrigger` the held position is released and pressed again, at most twice, then the step
+/// fails; a report that came but shows another layer is never pressed for.
+#[test]
+fn a_dropped_layer_report_is_pressed_for_again_twice_at_most() {
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend((0..5).map(|_| position(0, 0)));
+    let steps = "[{press_position={pos=0,state='down'}},{expect_layer={active_contains=[6],within_ms=20,retrigger=0}}]";
+    let r = run_with(&fake, &case(steps), TEST_HOOKS);
+    assert_eq!(r.status, Status::Fail);
+    assert!(r.message.contains("no layer report"), "{}", r.message);
+    let presses: Vec<_> = fake.requests.borrow().iter().map(|q| q[3]).collect();
+    // down, then (up, down) twice, then the release at the case's end.
+    assert_eq!(presses, vec![1, 0, 1, 0, 1, 0]);
+    // Another layer reported: no press again.
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend((0..2).map(|_| position(0, 0)));
+    fake.layers.borrow_mut().push_back(0b10);
+    let r = run_with(&fake, &case(steps), TEST_HOOKS);
+    assert_eq!(r.status, Status::Fail);
+    assert_eq!(
+        fake.requests.borrow().len(),
+        2,
+        "down and the end's release only"
+    );
+}
+
 /// Scripted SCREEN_SNAP + SCREEN_READ replies for a native image.
 fn snapshot_replies(half: u8, image: &[u8], crc: u32) -> Vec<[u8; REPORT]> {
     let mut meta = vec![0xd7, 0x86, 0, half, 1, 0, 160, 68];

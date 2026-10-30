@@ -598,12 +598,14 @@ impl<'a, D: Device> Runner<'a, D> {
                     active_contains: vec![1],
                     top: None,
                     within_ms: 2000,
+                    retrigger: None,
                 }));
                 raw(0)?;
                 let up = self.execute(&Step::ExpectLayer(Layer {
                     active_contains: vec![],
                     top: Some(0),
                     within_ms: 2000,
+                    retrigger: None,
                 }));
                 if let Err(e) = down.and(up) {
                     let _ = raw(0);
@@ -946,17 +948,48 @@ impl<'a, D: Device> Runner<'a, D> {
         self.check()?;
         match step {
             Step::Invoke(i) => self.invoke(i, false),
-            Step::ExpectLayer(l) => self.wait(l.within_ms, || {
-                let Some(mask) = self.device.layer(Duration::from_millis(10))? else {
-                    return Ok((false, "no layer report".into()));
-                };
-                let top = (mask != 0).then(|| 31 - mask.leading_zeros());
-                Ok((
-                    l.active_contains.iter().all(|n| mask & (1u32 << n) != 0)
-                        && l.top.is_none_or(|n| top == Some(u32::from(n))),
-                    format!("active/default mask={mask:#x}, top={top:?}"),
-                ))
-            }),
+            Step::ExpectLayer(l) => {
+                let mut retried = 0;
+                loop {
+                    let mut heard = false;
+                    let got = self.wait(l.within_ms, || {
+                        let Some(mask) = self.device.layer(Duration::from_millis(10))? else {
+                            return Ok((false, "no layer report".into()));
+                        };
+                        heard = true;
+                        let top = (mask != 0).then(|| 31 - mask.leading_zeros());
+                        Ok((
+                            l.active_contains.iter().all(|n| mask & (1u32 << n) != 0)
+                                && l.top.is_none_or(|n| top == Some(u32::from(n))),
+                            format!("active/default mask={mask:#x}, top={top:?}"),
+                        ))
+                    });
+                    // Only a report that never came is pressed for again (bounded, twice): a
+                    // wrong layer is a wrong layer.
+                    match (got, l.retrigger) {
+                        (Err(e), Some(pos)) if !heard && retried < 2 => {
+                            retried += 1;
+                            eprintln!("no layer report ({e}); pressing position {pos} again");
+                            for state in ["up", "down"] {
+                                self.press(&crate::spec::Position {
+                                    pos,
+                                    state: state.into(),
+                                    hold_ms: 40,
+                                    expect_status: "ok".into(),
+                                })?;
+                            }
+                        }
+                        (Ok(actual), _) if retried > 0 => {
+                            break Ok(format!(
+                                "{actual} (after pressing {} again {retried}x: a layer report \
+                                 was dropped)",
+                                l.retrigger.unwrap_or_default()
+                            ));
+                        }
+                        (got, _) => break got,
+                    }
+                }
+            }
             Step::ExpectConn(c) => self.wait(c.within_ms, || {
                 let s = settings::conn_state(self.device)?;
                 let h = panel::hello(self.device)?;

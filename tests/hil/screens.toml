@@ -48,7 +48,7 @@ steps = [
   { press_position = { pos = 43, state = "down" } },
   { press_position = { pos = 46, state = "down" } },
   { press_position = { pos = 0, state = "down" } },
-  { expect_layer = { active_contains = [6] } },
+  { expect_layer = { active_contains = [6], retrigger = 0 } },
   { screen = { half = "left", golden = "golden/left-system.png", mask = [
     { x = 0, y = 0, width = 68, height = 16 },
     { x = 0, y = 105, width = 68, height = 55 },
