@@ -1301,32 +1301,55 @@ impl<'a, D: Device> Runner<'a, D> {
                 Ok(format!("saved {name}"))
             }
             Step::Screen(sc) => {
-                let image = self.capture(&sc.half)?;
                 let stem = Path::new(&sc.golden)
                     .file_stem()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| sc.half.clone());
                 let path = self.golden_dir.join(&sc.golden);
-                let Ok(golden) = std::fs::read(&path) else {
-                    let name = self.save_png(&format!("{stem}.candidate"), &image)?;
-                    return Err(Blocked(format!(
-                        "no golden at {}; review {name} in the report and copy it there",
-                        path.display()
-                    ))
-                    .into());
-                };
-                let c = screen::compare(&image, &golden, &sc.mask)?;
-                let actual = self.save_png(&format!("{stem}.actual"), &image)?;
-                let diff = format!("{}-{stem}.diff.png", self.case_name);
-                std::fs::write(self.out.join(&diff), &c.diff)?;
-                self.attachments.push(diff);
-                ensure!(
-                    c.different == 0,
-                    "{} pixels differ from {} (see {actual} and the diff)",
-                    c.different,
-                    sc.golden
-                );
-                Ok(format!("matches {}", sc.golden))
+                let goldens = crate::screen::goldens(&path, sc.any_frame);
+                let end = Instant::now() + Duration::from_millis(sc.within_ms);
+                loop {
+                    let image = self.capture(&sc.half)?;
+                    let Ok(golden) = std::fs::read(&path) else {
+                        let name = self.save_png(&format!("{stem}.candidate"), &image)?;
+                        return Err(Blocked(format!(
+                            "no golden at {}; review {name} in the report and copy it there",
+                            path.display()
+                        ))
+                        .into());
+                    };
+                    // The first frame's golden, then the animation's other frames.
+                    let mut best = (screen::compare(&image, &golden, &sc.mask)?, path.clone());
+                    for other in &goldens {
+                        if best.0.different == 0 {
+                            break;
+                        }
+                        let c = screen::compare(&image, &std::fs::read(other)?, &sc.mask)?;
+                        if c.different < best.0.different {
+                            best = (c, other.clone());
+                        }
+                    }
+                    let name = best
+                        .1
+                        .file_name()
+                        .map_or_else(|| sc.golden.clone(), |n| n.to_string_lossy().into_owned());
+                    if best.0.different == 0 || Instant::now() >= end {
+                        let actual = self.save_png(&format!("{stem}.actual"), &image)?;
+                        let diff = format!("{}-{stem}.diff.png", self.case_name);
+                        std::fs::write(self.out.join(&diff), &best.0.diff)?;
+                        self.attachments.push(diff);
+                        ensure!(
+                            best.0.different == 0,
+                            "{} pixels differ from {name}, the closest of {} golden(s) (see {actual} \
+                             and the diff)",
+                            best.0.different,
+                            goldens.len() + 1
+                        );
+                        return Ok(format!("matches {name}"));
+                    }
+                    self.check()?;
+                    std::thread::sleep(Duration::from_millis(300));
+                }
             }
             Step::NoteRightRedraws(_) => {
                 self.right_ready()?;

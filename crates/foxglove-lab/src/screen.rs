@@ -132,6 +132,34 @@ fn snapshot_once(t: &impl Transport, half: u8) -> Result<Vec<u8>> {
     Ok(image)
 }
 
+/// The other frames' goldens of `golden` when `any_frame` (`<stem>-f<N>.png` beside it, by N).
+pub fn goldens(golden: &std::path::Path, any_frame: bool) -> Vec<std::path::PathBuf> {
+    let (Some(dir), Some(stem)) = (golden.parent(), golden.file_stem()) else {
+        return Vec::new();
+    };
+    let prefix = format!("{}-f", stem.to_string_lossy());
+    let mut found: Vec<(u32, std::path::PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let n = name
+                .strip_prefix(&prefix)?
+                .strip_suffix(".png")?
+                .parse()
+                .ok()?;
+            Some((n, e.path()))
+        })
+        .collect();
+    found.sort();
+    if any_frame {
+        found.into_iter().map(|(_, p)| p).collect()
+    } else {
+        Vec::new()
+    }
+}
+
 /// The native image as a person sees it: 68 wide, 160 tall, black ink on white.
 pub fn portrait(bits: &[u8]) -> Result<GrayImage> {
     ensure!(bits.len() == BYTES, "screen must contain 1360 bytes");

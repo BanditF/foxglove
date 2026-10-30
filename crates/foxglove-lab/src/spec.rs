@@ -154,6 +154,14 @@ pub struct Screen {
     pub golden: String,
     #[serde(default)]
     pub mask: Vec<Rect>,
+    /// The golden is the first frame of an animation (#671): `<stem>-f<N>.png` next to it are
+    /// its other frames, and a capture matching any of them passes.
+    #[serde(default)]
+    pub any_frame: bool,
+    /// Captures again until a match, for at most this long (a redraw still settling, as right
+    /// after a flash); 0 = one capture.
+    #[serde(default)]
+    pub within_ms: u64,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
