@@ -114,10 +114,10 @@ pub fn dev_build(exe: &std::path::Path, debug: bool) -> Option<&'static str> {
     if debug {
         return Some("a debug build");
     }
-    let dev = exe.parent()?.components().any(|c| {
-        let c = c.as_os_str().to_string_lossy().to_lowercase();
-        matches!(c.as_str(), "target" | "_targets" | "worktrees")
-    });
+    let dir = exe.parent()?.to_string_lossy().to_lowercase();
+    let dev = dir
+        .split(['/', '\\'])
+        .any(|c| matches!(c, "target" | "_targets" | "worktrees"));
     dev.then_some("a dev build (cargo target or worktree path)")
 }
 
