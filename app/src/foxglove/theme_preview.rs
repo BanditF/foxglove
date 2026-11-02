@@ -2043,16 +2043,21 @@ fn sidebar_fox_renders() {
 #[test]
 fn health_card_renders() {
     use crate::foxglove::theme::DARK;
-    let ctx = preview_ctx();
+    // A context each: render_ui's texture map starts empty, so the font atlas must too.
     let card = |view: crate::foxglove::health::View| {
-        render_ui(&ctx, egui::vec2(640.0, 440.0), DARK.ground, move |ui| {
-            egui::Frame::new()
-                .fill(DARK.ground)
-                .inner_margin(egui::Margin::same(16))
-                .show(ui, |ui| {
-                    crate::foxglove::health::draw(ui, &view);
-                });
-        })
+        render_ui(
+            &preview_ctx(),
+            egui::vec2(640.0, 440.0),
+            DARK.ground,
+            move |ui| {
+                egui::Frame::new()
+                    .fill(DARK.ground)
+                    .inner_margin(egui::Margin::same(16))
+                    .show(ui, |ui| {
+                        crate::foxglove::health::draw(ui, &view);
+                    });
+            },
+        )
     };
     let with = card(crate::foxglove::health::tests::sample());
     let without = card(crate::foxglove::health::tests::sample_none());
