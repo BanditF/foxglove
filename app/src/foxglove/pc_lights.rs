@@ -71,6 +71,8 @@ pub struct Row {
     pub zone_roles: Vec<foxglove_devices::pc_lighting::ZoneRole>,
     /// What it is, from the catalog.
     pub kind: foxglove_devices::pc_lighting::DeviceKind,
+    /// A Dynamic Lighting device Foxglove drives: whether Windows lets it now (#691).
+    pub lamp_access: Option<pcl::LampAccess>,
 }
 
 /// An app the catalog names as a conflict for a found device, running now.
@@ -151,6 +153,9 @@ pub enum Msg {
     /// The scene ended: each board gets back the colours from before it (or the ones the user
     /// picked meanwhile, or the keyboard's colour it follows).
     SceneEnd,
+    /// Windows changed who may drive this Dynamic Lighting device (`AvailabilityChanged`,
+    /// #691): its colours go back on when Foxglove may again.
+    LampChanged(String),
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -595,7 +600,7 @@ impl Worker {
     pub fn handle(&mut self, msg: Msg, paused: bool, wait: &mut dyn FnMut(std::time::Duration)) {
         // Scene frames stop quietly while paused; the scene's end gives the colours back even
         // then, as leases do (#404).
-        if paused && matches!(msg, Msg::SceneFrame { .. }) {
+        if paused && matches!(msg, Msg::SceneFrame { .. } | Msg::LampChanged(_)) {
             return;
         }
         let writes = !matches!(
@@ -638,6 +643,7 @@ impl Worker {
                 }
             }
             Msg::SceneFrame { key, colors } => self.scene_frame(&key, &colors),
+            Msg::LampChanged(key) => self.lamp_changed(&key),
             Msg::SceneEnd => {
                 self.scene_end();
                 scene_ended();
@@ -756,6 +762,37 @@ impl Worker {
                 self.status = Some(format!("{vid:04x}:{pid:04x}: your entry removed"));
                 self.save_local();
             }
+        }
+    }
+
+    /// Windows gave a Dynamic Lighting device back (#691): the colours Foxglove set on it go
+    /// on again, unsaved (they are saved already), in case another app drew on it meanwhile.
+    /// Nothing while a scene holds it (the scene's writer puts its frame back, and its end puts
+    /// these back) or while Windows still keeps it from Foxglove.
+    fn lamp_changed(&mut self, key: &str) {
+        if self.scene.is_some() {
+            return;
+        }
+        let Some(d) = self.drivers.get_mut(key) else {
+            return;
+        };
+        if !d.lamp_access().is_some_and(|a| a.available && a.enabled) {
+            return;
+        }
+        let colors: Vec<(usize, Rgb)> = d
+            .colors()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, c)| Some((i, c?)))
+            .collect();
+        if colors.is_empty() {
+            return;
+        }
+        if let Err(e) = d.set_zones(&colors) {
+            eprintln!(
+                "Foxglove: {}: colours back after Windows gave it back: {e}",
+                d.name()
+            );
         }
     }
 
@@ -997,6 +1034,7 @@ impl Worker {
                     zone_positions: f.zones.iter().map(|z| z.position).collect(),
                     zone_roles: f.zones.iter().map(|z| z.role).collect(),
                     kind: f.kind,
+                    lamp_access: self.drivers.get(&f.key).and_then(|d| d.lamp_access()),
                 }
             })
             .collect();
@@ -1048,7 +1086,13 @@ pub fn start() {
             writers,
             Box::new(lamp_arrays),
         )
-        .with_lamp_opener(super::scene_lamps::worker_opener());
+        .with_lamp_opener({
+            // Windows' AvailabilityChanged, on its thread: one message to this queue.
+            let tx = tx.clone();
+            super::scene_lamps::worker_opener(std::sync::Arc::new(move |key: &str| {
+                let _ = ticketed(&tx, Msg::LampChanged(key.to_string()));
+            }))
+        });
         let _ = ticketed(&tx, Msg::Scan);
         while let Ok(first) = rx.recv() {
             // A burst of arrivals (a hub with several interfaces) scans once.
@@ -1903,11 +1947,15 @@ mod tests {
         key: String,
         count: usize,
         calls: LampCalls,
+        access: Arc<Mutex<pcl::LampAccess>>,
     }
 
     impl pcl::LampHandle for FakeLamps {
         fn lamp_count(&self) -> usize {
             self.count
+        }
+        fn access(&self) -> pcl::LampAccess {
+            *self.access.lock().unwrap()
         }
         fn set_all(&mut self, c: Rgb) -> foxglove_devices::Result<()> {
             let call = (self.key.clone(), None, [c.r, c.g, c.b]);
@@ -1925,14 +1973,104 @@ mod tests {
 
     /// Opens a fake for every Dynamic Lighting device, sized by its lamps.
     fn fake_lamps(calls: &LampCalls) -> LampOpener {
-        let calls = calls.clone();
+        fake_lamps_with(calls, &Arc::default())
+    }
+
+    /// The same, with what Windows lets Foxglove do with them set by the test.
+    fn fake_lamps_with(calls: &LampCalls, access: &Arc<Mutex<pcl::LampAccess>>) -> LampOpener {
+        let (calls, access) = (calls.clone(), access.clone());
         Box::new(move |f: &Found| {
             Some(Box::new(FakeLamps {
                 key: f.key.clone(),
                 count: f.zones.len(),
                 calls: calls.clone(),
+                access: access.clone(),
             }) as Box<dyn pcl::LampHandle>)
         })
+    }
+
+    /// #691: "Match keyboard" on a Dynamic Lighting device follows the keyboard's report (so
+    /// the accent or wallpaper it follows), a scene holds it without the worker writing, and
+    /// the scene's end puts the matched colour back.
+    #[test]
+    fn a_lamp_array_matches_the_keyboard_and_comes_back_after_a_scene() {
+        let calls = LampCalls::default();
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(fake_lamps(&calls));
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        w.handle(Msg::Keyboard(solid(0)), false, &mut no_wait());
+        w.handle(Msg::Match(MOUSE.into(), true), false, &mut no_wait());
+        let red = (MOUSE.to_string(), None, [255, 0, 0]);
+        assert_eq!(
+            calls.lock().unwrap().drain(..).collect::<Vec<_>>(),
+            vec![red.clone()]
+        );
+        assert!(w.snapshot_row(MOUSE).unwrap().match_keyboard);
+        // A scene takes the lights (its own writer draws on the device): the worker keeps out.
+        w.handle(Msg::SceneStart, false, &mut no_wait());
+        w.handle(Msg::Keyboard(solid(240)), false, &mut no_wait());
+        w.handle(Msg::LampChanged(MOUSE.into()), false, &mut no_wait());
+        assert!(calls.lock().unwrap().is_empty(), "the scene holds it");
+        // Its end: the colour the keyboard shows now.
+        w.handle(Msg::SceneEnd, false, &mut no_wait());
+        let back = calls.lock().unwrap().drain(..).collect::<Vec<_>>();
+        assert_eq!(back, vec![(MOUSE.to_string(), None, [0, 0, 255])]);
+    }
+
+    /// #691: Windows takes the device (Foxglove's window went to the back, another app came
+    /// first) and gives it back: on its event the colours go on again, and the page knows
+    /// which it is. Nothing polls; nothing is written while Windows keeps it.
+    #[test]
+    fn a_lamp_array_gets_its_colours_back_when_windows_gives_it_back() {
+        let calls = LampCalls::default();
+        let access = Arc::new(Mutex::new(pcl::LampAccess::default()));
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(fake_lamps_with(&calls, &access));
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let pine = [0x5f, 0xc4, 0x8e];
+        w.handle(
+            Msg::Set {
+                key: MOUSE.into(),
+                colors: vec![(0, pine)],
+            },
+            false,
+            &mut no_wait(),
+        );
+        calls.lock().unwrap().clear();
+        assert_eq!(
+            w.snapshot_row(MOUSE).unwrap().lamp_access,
+            Some(pcl::LampAccess::default())
+        );
+        access.lock().unwrap().available = false;
+        w.handle(Msg::LampChanged(MOUSE.into()), false, &mut no_wait());
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "Windows keeps it: nothing"
+        );
+        assert_eq!(
+            w.snapshot_row(MOUSE)
+                .unwrap()
+                .lamp_access
+                .map(|a| a.available),
+            Some(false)
+        );
+        access.lock().unwrap().available = true;
+        // Paused (#404): the event is dropped; the next one puts the colours back.
+        w.handle(Msg::LampChanged(MOUSE.into()), true, &mut no_wait());
+        assert!(calls.lock().unwrap().is_empty());
+        w.handle(Msg::LampChanged(MOUSE.into()), false, &mut no_wait());
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(MOUSE.to_string(), Some(0), pine)],
+            "only the lamp Foxglove set"
+        );
+        // Turned off in Windows' settings: left alone.
+        calls.lock().unwrap().clear();
+        access.lock().unwrap().enabled = false;
+        w.handle(Msg::LampChanged(MOUSE.into()), false, &mut no_wait());
+        assert!(calls.lock().unwrap().is_empty());
+        // A case board has no such state.
+        assert_eq!(w.snapshot_row("103c:84fd").unwrap().lamp_access, None);
     }
 
     const MOUSE: &str = "046d:c332";

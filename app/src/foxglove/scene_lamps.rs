@@ -430,6 +430,18 @@ mod imp {
     /// as the background controller) and keeps them for when it may.
     pub struct Handle {
         arrays: Vec<LampArray>,
+        /// Each array's `AvailabilityChanged` registration, removed on drop.
+        tokens: Vec<Option<i64>>,
+    }
+
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            for (a, t) in self.arrays.iter().zip(&self.tokens) {
+                if let Some(t) = t {
+                    let _ = a.RemoveAvailabilityChanged(*t);
+                }
+            }
+        }
     }
 
     fn color(c: foxglove_devices::Rgb) -> Color {
@@ -459,6 +471,14 @@ mod imp {
     }
 
     impl foxglove_devices::pc_lighting::LampHandle for Handle {
+        fn access(&self) -> foxglove_devices::pc_lighting::LampAccess {
+            // Windows before 11 22H2 has neither: there, an app in front always may.
+            foxglove_devices::pc_lighting::LampAccess {
+                enabled: self.arrays.iter().all(|a| a.IsEnabled().unwrap_or(true)),
+                available: self.arrays.iter().any(|a| a.IsAvailable().unwrap_or(true)),
+            }
+        }
+
         fn lamp_count(&self) -> usize {
             self.arrays
                 .iter()
@@ -482,30 +502,55 @@ mod imp {
     }
 
     /// Opens the Lights worker's handle for a key, claiming its devices in `claimed`; `None`
-    /// when Windows lists none for it.
-    pub fn handle(key: &str, claimed: &mut BTreeMap<String, String>) -> Option<Handle> {
+    /// when Windows lists none for it. `changed` runs (on Windows' thread) each time Windows
+    /// changes who may drive one of them.
+    pub fn handle(
+        key: &str,
+        claimed: &mut BTreeMap<String, String>,
+        changed: Changed,
+    ) -> Option<Handle> {
         let arrays = arrays_for(key, claimed).unwrap_or_else(|e| {
             eprintln!("Foxglove: opening Dynamic Lighting device {key}: {e}");
             Vec::new()
         });
-        (!arrays.is_empty()).then_some(Handle { arrays })
+        if arrays.is_empty() {
+            return None;
+        }
+        let tokens = arrays
+            .iter()
+            .map(|a| {
+                let tell = changed.clone();
+                a.AvailabilityChanged(&TypedEventHandler::new(move |_, _| {
+                    tell();
+                    Ok(())
+                }))
+                .ok()
+            })
+            .collect();
+        Some(Handle { arrays, tokens })
     }
 }
 
+/// Tells the Lights worker which device's access changed, by its key.
+pub type Notify = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// The Lights worker's handles on Dynamic Lighting devices (#691), through Windows. It keeps
 /// its own claims: scenes open the same devices separately, and both may hold them at once.
+/// `notify` gets the device's key on each `AvailabilityChanged`.
 #[cfg(target_os = "windows")]
-pub fn worker_opener() -> super::pc_lights::LampOpener {
+pub fn worker_opener(notify: Notify) -> super::pc_lights::LampOpener {
     let mut claimed = BTreeMap::new();
     Box::new(move |f: &foxglove_devices::pc_lighting::Found| {
-        imp::handle(&f.key, &mut claimed)
+        let (tell, key) = (notify.clone(), f.key.clone());
+        let changed: Changed = Arc::new(move || tell(&key));
+        imp::handle(&f.key, &mut claimed, changed)
             .map(|h| Box::new(h) as Box<dyn foxglove_devices::pc_lighting::LampHandle>)
     })
 }
 
 /// Elsewhere there are no Dynamic Lighting devices.
 #[cfg(not(target_os = "windows"))]
-pub fn worker_opener() -> super::pc_lights::LampOpener {
+pub fn worker_opener(_notify: Notify) -> super::pc_lights::LampOpener {
     Box::new(|_| None)
 }
 

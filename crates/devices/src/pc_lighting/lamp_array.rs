@@ -84,6 +84,27 @@ pub fn lamp_zones(lamps: &[Lamp]) -> Vec<ZoneSpec> {
         .collect()
 }
 
+/// Whether the host lets this app drive a LampArray now (#691). On Windows, `available` is
+/// `LampArray.IsAvailable`: true while the app's window is in front (with "Compatible apps in
+/// the foreground always control lighting" on) or while it is the background controller the
+/// user picked; `enabled` is `LampArray.IsEnabled`, the user's switch for the device in
+/// Settings > Personalization > Dynamic Lighting. Foxglove reads both and never sets them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LampAccess {
+    pub enabled: bool,
+    pub available: bool,
+}
+
+impl Default for LampAccess {
+    /// A host with no such rules (or a Windows too old to say): drive it.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            available: true,
+        }
+    }
+}
+
 /// One LampArray as the host drives it: Windows' `LampArray` in the app, a fake in tests.
 /// Lamp indices are the device's own (0-based, in its order).
 pub trait LampHandle: Send {
@@ -93,6 +114,10 @@ pub trait LampHandle: Send {
     fn set_all(&mut self, color: Rgb) -> Result<()>;
     /// Some lamps, each its own colour: `(lamp index, colour)`.
     fn set_lamps(&mut self, lamps: &[(usize, Rgb)]) -> Result<()>;
+    /// Whether the host lets this app drive it now.
+    fn access(&self) -> LampAccess {
+        LampAccess::default()
+    }
 }
 
 /// A LampArray as a [`LightingDevice`]: one zone per lamp, a static colour each. What it
@@ -135,6 +160,10 @@ impl LightingDevice for LampArrayDriver {
 
     fn colors(&self) -> Vec<Option<Rgb>> {
         self.colors.clone()
+    }
+
+    fn lamp_access(&self) -> Option<LampAccess> {
+        Some(self.handle.access())
     }
 
     /// One colour on every lamp is one call (and reaches lamps past [`MAX_LAMPS`]); anything
@@ -268,6 +297,7 @@ pub(crate) mod tests {
             ]
         );
         assert_eq!(d.colors(), vec![Some(RED), Some(BLUE), Some(RED)]);
+        assert_eq!(d.lamp_access(), Some(LampAccess::default()), "the handle's");
         assert_eq!(d.set_zones(&[(3, RED)]), Err(DeviceError::Unsupported));
     }
 

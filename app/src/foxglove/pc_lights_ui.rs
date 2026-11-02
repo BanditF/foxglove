@@ -571,6 +571,7 @@ pub mod tests {
             zone_positions: vec![],
             zone_roles: vec![],
             kind: foxglove_devices::pc_lighting::DeviceKind::Case,
+            lamp_access: None,
         }
     }
 
@@ -615,6 +616,7 @@ pub mod tests {
                         zone_positions: vec![],
                         zone_roles: vec![],
                         kind: Default::default(),
+                        lamp_access: None,
                     },
                     Row {
                         key: "046d:c332".into(),
@@ -636,6 +638,7 @@ pub mod tests {
                         zone_positions: vec![],
                         zone_roles: vec![],
                         kind: Default::default(),
+                        lamp_access: None,
                     },
                 ],
                 conflicts: vec![pc_lights::Conflicting {

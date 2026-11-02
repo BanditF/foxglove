@@ -29,7 +29,7 @@ use crate::calibration::Calibration;
 use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
 pub use catalog::{Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRole, ZoneSpec};
-pub use lamp_array::{Lamp, LampArrayDesc, LampArrayDriver, LampHandle};
+pub use lamp_array::{Lamp, LampAccess, LampArrayDesc, LampArrayDriver, LampHandle};
 
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;
@@ -254,6 +254,12 @@ pub trait LightingDevice: Send {
 
     /// Sets a static colour on some zones (`(index, colour)`, index into [`Self::zones`]).
     fn set_zones(&mut self, colors: &[(usize, Rgb)]) -> Result<()>;
+
+    /// A Dynamic Lighting device: whether the host lets Foxglove drive it now (#691). `None`
+    /// for devices Foxglove always drives itself.
+    fn lamp_access(&self) -> Option<LampAccess> {
+        None
+    }
 
     /// One colour on every zone.
     fn set_all(&mut self, color: Rgb) -> Result<()> {

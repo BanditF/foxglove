@@ -40,6 +40,7 @@ pub(crate) fn row(d: &CatalogDevice, control: Control) -> Row {
         zone_positions: d.zones.iter().map(|z| z.position).collect(),
         zone_roles: d.zones.iter().map(|z| z.role).collect(),
         kind: d.kind,
+        lamp_access: None,
     }
 }
 
@@ -60,6 +61,7 @@ fn lamp_array_row(key: &str, name: &str) -> Row {
         zone_positions: vec![],
         zone_roles: vec![],
         kind: Default::default(),
+        lamp_access: None,
     }
 }
 
