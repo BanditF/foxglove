@@ -152,6 +152,15 @@ pub fn behaviors(timeout: Duration) -> Result<crate::behaviors::Catalog> {
     crate::behaviors::Catalog::from_app(&list)
 }
 
+/// How long the lab waits for the app's `health.read`: both halves, the right's over the relay.
+pub const HEALTH_WAIT: Duration = Duration::from_secs(20);
+
+/// The app's `health.read` (#705, API 1.11): the keyboard's self-report and the app's own rows.
+/// An app before 1.11 answers that the call isn't available (an error here).
+pub fn health(timeout: Duration) -> Result<foxglove_plugin_api::methods::Health> {
+    bounded("health.read", json!({}), timeout)
+}
+
 impl AppArt for Pipe {
     fn select_built_in(&self, label: &str, timeout: Duration) -> Result<ArtStatus> {
         bounded(

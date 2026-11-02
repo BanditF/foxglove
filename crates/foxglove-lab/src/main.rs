@@ -51,6 +51,21 @@ enum Command {
     },
     Behaviors,
     Status,
+    /// The keyboard's self-report (#705): pass/fail per feature from both halves' D7 13 blocks,
+    /// the test after a batch flash. Through the app's health.read while the app runs (no
+    /// --allow-app needed: the lab never touches the link then). Exit 0 nothing failed (warnings
+    /// print), 1 something failed, 2 blocked.
+    Health {
+        /// One JSON object instead of lines.
+        #[arg(long)]
+        json: bool,
+        /// Keep the keyboard's D7 93 replies in this file (direct reads only).
+        #[arg(long)]
+        record: Option<PathBuf>,
+        /// Judge a recording instead of the keyboard (no device is opened).
+        #[arg(long)]
+        replay: Option<PathBuf>,
+    },
     /// How each half shows up on USB (no keyboard link needed).
     Usb,
     /// Whether Foxglove would be away on this PC now (#410, #683): the session locked or the
@@ -603,6 +618,51 @@ fn main() -> Result<std::process::ExitCode> {
             serde_json::json!({"left_state": s.state, "error": s.error, "length": s.length, "right_state": s.right_state, "right_set": s.right_set, "right_set_count": s.right_set_count, "text": s.to_string()})
         );
         return Ok(std::process::ExitCode::SUCCESS);
+    }
+    if let Command::Health {
+        json,
+        record,
+        replay,
+    } = &cli.command
+    {
+        use foxglove_lab::health as lab_health;
+        let out = if let Some(path) = replay {
+            let r = lab_health::Replay::parse(&std::fs::read_to_string(path)?)?;
+            lab_health::read(&r, r.capabilities)
+        } else if platform::guard(false).is_err() {
+            // The app holds the keyboard: ask it (health.read, API 1.11).
+            lab_health::from_app(foxglove_lab::app_api::HEALTH_WAIT)
+        } else {
+            let _guard = platform::guard(cli.allow_app)?;
+            let _lab = platform::lab_lock(Duration::from_secs(120))?;
+            match connect(cli.product.clone()).and_then(|l| {
+                let c = l.wait_connected(Duration::from_secs(10))?;
+                Ok((l, c))
+            }) {
+                Err(e) => lab_health::Outcome {
+                    rows: Vec::new(),
+                    blocked: Some(format!("no keyboard: {e:#}")),
+                },
+                Ok((link, c)) => {
+                    let caps = c.hello.map_or(0, |h| h.capabilities);
+                    let rec = lab_health::Recorder::new(&link);
+                    let out = lab_health::read(&rec, caps);
+                    if let Some(path) = record {
+                        std::fs::write(path, rec.text(caps))?;
+                        eprintln!("recorded to {}", path.display());
+                    }
+                    out
+                }
+            }
+        };
+        if *json {
+            println!("{}", out.json());
+        } else {
+            for line in out.lines() {
+                println!("{line}");
+            }
+        }
+        return Ok(std::process::ExitCode::from(out.code()));
     }
     if matches!(cli.command, Command::Status) {
         let link = connect(cli.product)?;
