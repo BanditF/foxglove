@@ -216,7 +216,6 @@ fn relay_stuck_note(before: Option<[u8; 10]>, after: Option<[u8; 10]>) -> String
 /// Capabilities come only from HELLO's capability bits, never from the version number.
 /// Position presses also need the refusal bit: a press resolves through whatever layers are
 /// active, so the firmware must be known to refuse bt/out/reset/bootloader/soft_off.
-
 pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
     let has = |bit| hello.capabilities & bit != 0;
     let reason = match requirement {
