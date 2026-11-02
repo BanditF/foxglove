@@ -892,6 +892,11 @@ mod windows_board {
     }
 }
 
+/// The "Update firmware…" button's tooltip: "for both halves", "for the keyboard" (#563).
+fn pick_tip(parts: &super::parts::Parts) -> String {
+    format!("Pick a folder with new firmware for {}", parts.all())
+}
+
 /// The update's part of the Firmware card; returns the click, if any.
 pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
     use egui::RichText;
@@ -906,7 +911,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
         View::Idle => {
             if ui
                 .button("Update firmware…")
-                .on_hover_text("Pick a folder with new firmware for both halves")
+                .on_hover_text(pick_tip(&super::parts::Parts::current().seen(2)))
                 .clicked()
             {
                 out = Some(Intent::Start);
@@ -1072,7 +1077,19 @@ pub mod tests {
                 assert!(!line.contains("half") && !line.contains("both"), "{line}");
             }
         }
-        // The Corne's names stay the flasher's halves.
+        assert_eq!(
+            pick_tip(&plank),
+            "Pick a folder with new firmware for the keyboard"
+        );
+        // The Corne's names stay the flasher's halves, and its tooltip reads as before.
+        assert_eq!(
+            pick_tip(&crate::foxglove::fixtures::users_desk::board().parts()),
+            "Pick a folder with new firmware for both halves"
+        );
+        assert_eq!(
+            pick_tip(&crate::foxglove::fixtures::wedge_parts()),
+            "Pick a folder with new firmware for both parts"
+        );
         let corne = crate::foxglove::fixtures::users_desk::board().parts();
         assert_eq!(flash_parts(&corne), foxglove_flash::Parts::split());
         // Only a profile makes a keyboard one piece: without one, a split's rules stay.

@@ -741,7 +741,8 @@ fn with_relay(
         }
         art::RelayWait::TimedOut(last) => {
             eprintln!(
-                "Foxglove: art {what}: the right half's relay didn't come back within {} s ({})",
+                "Foxglove: art {what}: {}'s relay didn't come back within {} s ({})",
+                super::parts::Parts::current().seen(2).the(1),
                 RELAY_WAIT.as_secs_f32(),
                 last.map_or_else(|| "no status".to_string(), |st| st.to_string())
             );
@@ -1388,7 +1389,15 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                                 .map(|(c, t)| {
                                     eprintln!(
                                         "{}",
-                                        super::reassert::line("the right screen's art", t)
+                                        super::reassert::line(
+                                            &format!(
+                                                "the art on {}",
+                                                super::screen_roles::the(
+                                                    super::screen_roles::Role::Art
+                                                )
+                                            ),
+                                            t
+                                        )
                                     );
                                     c
                                 });

@@ -615,11 +615,22 @@ pub fn follow_label(parts: &super::parts::Parts) -> String {
     )
 }
 
-/// The "follow the left" switch's tooltip (#606). The left is the central, so it sees every
-/// key and wakes for either half's; the right sees only its own keys.
-const FOLLOW_TIP: &str = "On: the left half decides when both halves' lights are on, so they \
-    always match. Off: each half dims on its own idle timer. The left wakes for a key on either \
-    half; the right only for its own keys. Saved on the keyboard.";
+/// The "follow the left" switch's tooltip (#606), in the board's part names (#563). The first
+/// part is the central, so it sees every key and wakes for either part's; the other sees only
+/// its own keys.
+fn follow_tip(parts: &super::parts::Parts) -> String {
+    let short = |i| super::parts::lower_first(&parts.short(i));
+    let noun = parts.noun();
+    format!(
+        "On: {} decides when {}' lights are on, so they always match. Off: each {noun} dims on \
+         its own idle timer. The {} wakes for a key on either {noun}; the {} only for its own \
+         keys. Saved on the keyboard.",
+        parts.the(0),
+        parts.all(),
+        short(0),
+        short(1),
+    )
+}
 
 /// "Right half's lights follow the left", saved on the keyboard.
 fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mut Vec<Intent>) {
@@ -630,7 +641,7 @@ fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mu
                 let mut follow = on;
                 if ui
                     .checkbox(&mut follow, &label)
-                    .on_hover_text(FOLLOW_TIP)
+                    .on_hover_text(follow_tip(parts))
                     .changed()
                 {
                     out.push(Intent::Follow(follow));
@@ -1002,10 +1013,23 @@ pub mod tests {
         assert!(!text.contains("colour not used yet"), "{text}");
         let text = draw_text(&sample());
         assert!(!text.contains("doesn't use the colour"), "{text}");
-        assert!(FOLLOW_TIP.contains(
-            "Off: each half dims on its own idle timer. The left wakes for a key on either half; \
-             the right only for its own keys."
-        ));
+        // #563: the Corne's tooltip reads as it always did; another split's names its parts.
+        let corne = crate::foxglove::fixtures::users_desk::board().parts();
+        assert_eq!(
+            follow_tip(&corne),
+            "On: the left half decides when both halves' lights are on, so they always match. \
+             Off: each half dims on its own idle timer. The left wakes for a key on either half; \
+             the right only for its own keys. Saved on the keyboard."
+        );
+        let wedge = crate::foxglove::fixtures::wedge_parts();
+        let tip = follow_tip(&wedge);
+        assert!(
+            tip.starts_with("On: the main board decides when both parts' lights are on")
+                && tip.contains("each part dims")
+                && tip.contains("the wing only for its own keys"),
+            "{tip}"
+        );
+        assert!(!tip.contains("half") && !tip.contains("left"), "{tip}");
     }
 
     /// The Lights page's keyboard showing `effect` in colour `hue`/`sat` on both halves

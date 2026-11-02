@@ -87,8 +87,10 @@ fn request(set: Option<Polarity>, ctx: &egui::Context) {
                     Ok(p) => {
                         if let Some(asked) = set {
                             eprintln!(
-                                "Foxglove: panel polarity set to {asked:?}: the keyboard has {:?}, the right half {:?} so far",
-                                p.polarity, p.right
+                                "Foxglove: panel polarity set to {asked:?}: the keyboard has {:?}, {} {:?} so far",
+                                p.polarity,
+                                super::parts::Parts::current().seen(2).the(1),
+                                p.right
                             );
                         }
                         state = State::Known(p);

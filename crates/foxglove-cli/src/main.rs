@@ -124,8 +124,8 @@ fn art_text(s: &ArtStatus) -> String {
     };
     let name = s.name.as_deref().or(s.built_in.as_deref()).unwrap_or("?");
     match s.slot {
-        Some(n) => format!("right screen: {name} ({what}, place {n})\n"),
-        None => format!("right screen: {name} ({what})\n"),
+        Some(n) => format!("art screen: {name} ({what}, place {n})\n"),
+        None => format!("art screen: {name} ({what})\n"),
     }
 }
 
@@ -466,7 +466,7 @@ mod tests {
             flash_slots: 4,
             name: Some("ZMK_1".into()),
         };
-        assert_eq!(art_text(&art), "right screen: ZMK_1 (built-in)\n");
+        assert_eq!(art_text(&art), "art screen: ZMK_1 (built-in)\n");
     }
 
     #[test]
