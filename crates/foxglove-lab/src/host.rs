@@ -329,6 +329,40 @@ pub fn left_layout_now() -> String {
     }
 }
 
+/// Why Foxglove isn't drawing a left panel that changes by itself, or None when it is (#678):
+/// `running` is a process named exactly foxglove, `away` why the PC is away (locked or display
+/// off: the app hands the panel back, #410), `layout` [`left_layout`]'s text. Info redraws the
+/// clock each minute and stats samples each second; the keyboard's own screen (drive_left off)
+/// has no clock, and a wallpaper may be one still frame.
+pub fn app_panel_blocked(running: bool, away: Option<String>, layout: &str) -> Option<String> {
+    if !running {
+        return Some("Foxglove isn't running: nothing draws the left panel's clock".into());
+    }
+    if let Some(why) = away {
+        return Some(format!(
+            "{why}: Foxglove hands the left panel back while away (#410), so no clock ticks; \
+             rerun with the PC unlocked and its display on"
+        ));
+    }
+    if layout.starts_with("the keyboard's own screen") || layout.starts_with("wallpaper") {
+        return Some(format!(
+            "the left screen's layout has no clock or load to change by itself: {layout}"
+        ));
+    }
+    None
+}
+
+/// [`app_panel_blocked`] for this PC now: the process, the lock and display, the saved layout.
+pub fn app_panel_now() -> Option<String> {
+    let running = process_age_s("foxglove").is_ok();
+    let away =
+        crate::platform::away_reason(crate::platform::locked(), crate::platform::display_off());
+    let layout = store_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map_or_else(|| "info".to_string(), |t| left_layout(&t));
+    app_panel_blocked(running, away, &layout)
+}
+
 /// Replaces `%NAME%` with environment variables (unknown names stay as written).
 pub fn expand_env(text: &str) -> String {
     let parts: Vec<&str> = text.split('%').collect();
@@ -499,6 +533,44 @@ mod tests {
         let gone = "[screens]\nlayout = \"stats\"\n[profiles]\nactive = \"Work\"\n";
         assert_eq!(left_layout(gone), "stats");
         assert!(left_layout("not = [toml").starts_with("unknown"));
+    }
+
+    /// #678: the clock case needs Foxglove drawing a panel that changes by itself.
+    #[test]
+    fn app_panel_needs_the_app_present_and_a_moving_layout() {
+        assert_eq!(app_panel_blocked(true, None, "info"), None);
+        assert_eq!(app_panel_blocked(true, None, "stats (profile Work)"), None);
+        assert!(app_panel_blocked(false, None, "info")
+            .unwrap()
+            .contains("isn't running"));
+        let away =
+            app_panel_blocked(true, Some("the PC's display is off".into()), "stats").unwrap();
+        assert!(
+            away.starts_with("the PC's display is off") && away.contains("#410"),
+            "{away}"
+        );
+        let own = left_layout("[screens]\ndrive_left = false\n");
+        assert!(app_panel_blocked(true, None, &own).is_some());
+        assert!(app_panel_blocked(true, None, "wallpaper (profile Game)").is_some());
+    }
+
+    #[test]
+    fn away_is_a_lock_or_the_display_off() {
+        use crate::platform::away_reason;
+        assert_eq!(away_reason(false, Some(false)), None);
+        assert_eq!(
+            away_reason(false, None),
+            None,
+            "no display state: the lock decides"
+        );
+        assert_eq!(away_reason(true, Some(false)).unwrap(), "the PC is locked");
+        assert_eq!(
+            away_reason(false, Some(true)).unwrap(),
+            "the PC's display is off"
+        );
+        assert!(away_reason(true, Some(true))
+            .unwrap()
+            .contains("locked and its display is off"));
     }
 
     #[test]

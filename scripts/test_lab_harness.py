@@ -302,5 +302,51 @@ class ApiPairing(unittest.TestCase):
         self.assertIn('RESULT BLOCKED', out.getvalue())
 
 
+
+class Lab678(unittest.TestCase):
+    """#678: what the PC does to the app-level cases is BLOCKED by name, not FAIL."""
+
+    def test_a_window_above_the_overlay_covers_the_hit_test(self):
+        k = labkit()
+        order = [7146262, 11012346, 196828]  # top to bottom: lock screen, overlay, desktop
+        above = lambda h, other: order.index(other) < order.index(h)
+        self.assertEqual(k.covering(11012346, 7146262, above), 7146262)
+        self.assertIsNone(k.covering(11012346, 196828, above), 'below the overlay: a real result')
+        self.assertIsNone(k.covering(11012346, 11012346, above))
+        self.assertIsNone(k.covering(11012346, None, above))
+
+    def test_away_is_what_foxglove_lab_says(self):
+        k = labkit()
+        done = subprocess.CompletedProcess([], 0, stdout='{"locked": false, "display_off": true, '
+                                                         '"away": "the PC display is off"}')
+        with unittest.mock.patch.object(k.subprocess, 'run', return_value=done):
+            self.assertEqual(k.away('foxglove-lab.exe'), 'the PC display is off')
+        done.stdout = '{"locked": false, "display_off": false, "away": null}'
+        with unittest.mock.patch.object(k.subprocess, 'run', return_value=done):
+            self.assertIsNone(k.away('foxglove-lab.exe'))
+
+    def test_without_the_lab_the_lock_decides(self):
+        k = labkit()
+        with unittest.mock.patch.object(k.subprocess, 'run', side_effect=OSError('no lab')), \
+                unittest.mock.patch.object(k, 'locked', return_value=True):
+            self.assertEqual(k.away('missing.exe'), 'the PC is locked')
+
+    def test_the_gate_records_the_away_state(self):
+        text = (REPO / 'scripts' / 'release-test.ps1').read_text(encoding='utf-8')
+        self.assertIn("& $lab away", text)
+        self.assertLess(text.index("& $lab away"), text.index("Write-Host '== Suite resilience"))
+
+    def test_the_clock_case_needs_the_app_panel(self):
+        import tomllib
+        cases = tomllib.loads((REPO / 'tests' / 'hil' / 'screens.toml').read_text(encoding='utf-8'))['cases']
+        case = next(c for c in cases if c['name'] == 'left-clock-ticks')
+        self.assertIn('app_panel', case['requires'])
+
+    def test_overlay_tray_names_both_outside_causes(self):
+        text = (LAB / 'overlay_tray.py').read_text(encoding='utf-8')
+        self.assertIn('gone = away(args.lab)', text)
+        self.assertIn("Windows sent a display change of its own", text)
+        self.assertEqual(text.count('hit_check('), 4)  # the def and its three WindowFromPoint checks
+
 if __name__ == '__main__':
     unittest.main()

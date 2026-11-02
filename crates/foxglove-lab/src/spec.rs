@@ -742,6 +742,7 @@ pub fn load(path: &Path) -> Result<Suite> {
                     "invoke_refusal",
                     "build_info",
                     "unlocked",
+                    "app_panel",
                     "activity_relay",
                     "rgb_shown",
                     "right_redraws"

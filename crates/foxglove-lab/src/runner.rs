@@ -232,6 +232,9 @@ pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
         // with it, so the &bt cases also only send BT_SEL to the profile already in use.
         // The PC's lock state, checked when the case starts (Runner::locked).
         "unlocked" => return None,
+        // Foxglove draws the left panel (the clock, the PC load): checked as the case starts
+        // (Runner::app_panel), since it's the app and the PC, not the firmware.
+        "app_panel" => return None,
         "build_info" if has(caps::BUILD_INFO) => return None,
         "build_info" => "firmware doesn't report its build (HELLO bit 12)",
         "screen_readback" if has(caps::SCREEN) => return None,
@@ -281,6 +284,13 @@ pub struct Runner<'a, D: Device> {
     baselines: std::collections::HashMap<String, image::GrayImage>,
     /// Whether the PC is locked, for cases that require "unlocked" (tests swap it out).
     pub locked: fn() -> bool,
+    /// Why Foxglove isn't drawing the left panel now (not running, drive_left off, a layout
+    /// without a clock, or away: locked or display off, #410), or None when it is; for cases that
+    /// require "app_panel" (tests swap it out).
+    pub app_panel: fn() -> Option<String>,
+    /// The current case requires "app_panel": a screen that didn't change is BLOCKED, not FAIL,
+    /// when the app stopped drawing it mid-case (the display went off, #618 follow-up #678).
+    needs_panel: bool,
     /// The right's redraw count at the case's note_right_redraws (#618).
     redraw_note: Option<u32>,
     /// Where key presses are recorded as the harness's own input (`injections`, #618); None
@@ -317,6 +327,8 @@ impl<'a, D: Device> Runner<'a, D> {
             case_name: String::new(),
             screens_ini: None,
             locked: crate::platform::locked,
+            app_panel: crate::host::app_panel_now,
+            needs_panel: false,
             redraw_note: None,
             injections: None,
             app: None,
@@ -1516,12 +1528,19 @@ impl<'a, D: Device> Runner<'a, D> {
                             started.elapsed().as_millis()
                         ));
                     }
-                    ensure!(
-                        Instant::now() < end,
-                        "{} screen didn't change within {} ms",
-                        c.half,
-                        c.within_ms
-                    );
+                    if Instant::now() >= end {
+                        self.save_png(&format!("{}-unchanged", c.half), &now)?;
+                        let what =
+                            format!("{} screen didn't change within {} ms", c.half, c.within_ms);
+                        // The app stopped drawing the panel mid-case (the display went off, the
+                        // app quit): nothing on the screen was meant to move (#678).
+                        if self.needs_panel {
+                            if let Some(why) = (self.app_panel)() {
+                                return Err(Blocked(format!("{what}, and {why}")).into());
+                            }
+                        }
+                        bail!("{what}");
+                    }
                     std::thread::sleep(Duration::from_millis(250));
                 }
             }
@@ -1586,6 +1605,12 @@ impl<'a, D: Device> Runner<'a, D> {
             blocked.push(
                 "the PC is locked: Foxglove hands the left panel back while away (#410)".into(),
             );
+        }
+        self.needs_panel = c.requires.iter().any(|r| r == "app_panel");
+        if self.needs_panel && selected && blocked.is_empty() {
+            if let Some(why) = (self.app_panel)() {
+                blocked.push(why);
+            }
         }
         if c.manual && self.non_interactive {
             blocked.push("manual case requires interactive confirmation".into());

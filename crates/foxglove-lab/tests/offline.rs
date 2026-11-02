@@ -1940,3 +1940,98 @@ mod sink_focus {
         assert!(!shown.contains("closes it"));
     }
 }
+
+/// #678: `left-clock-ticks` watches a panel only Foxglove draws (the clock, the PC load). With the
+/// app quit or away (locked or display off, #410) the keyboard shows its WPM chart, which holds
+/// still: BLOCKED before anything is sent, not a 65 s FAIL. The 10/30 01:57Z gate run failed it
+/// with the app logging "away (display off)".
+#[test]
+fn left_clock_ticks_is_blocked_while_the_app_draws_no_panel() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hil");
+    let suite = spec::load(&root.join("screens.toml")).unwrap();
+    let case = suite
+        .cases
+        .iter()
+        .find(|c| c.name == "left-clock-ticks")
+        .unwrap();
+    assert!(case.requires.iter().any(|r| r == "app_panel"));
+    assert!(!case.tags.iter().any(|t| t == "release"));
+    let fake = Fake::default();
+    let cat = catalog();
+    let dir = Temp::new();
+    let hello = Hello {
+        version: 1,
+        capabilities: TEST_HOOKS,
+        ..Default::default()
+    };
+    let mut runner = Runner::new(
+        &fake,
+        &cat,
+        hello,
+        Arc::new(AtomicBool::new(false)),
+        true,
+        &dir.0,
+    );
+    runner.app_panel = || Some("the PC's display is off".into());
+    let r = runner.case(case, true);
+    assert_eq!(r.status, Status::Blocked, "{}", r.message);
+    assert!(r.message.contains("display is off"), "{}", r.message);
+    assert!(fake.requests.borrow().is_empty(), "nothing sent");
+    // Filtered out by --only: not even asked.
+    runner.app_panel = || panic!("asked for a skipped case");
+    assert_eq!(runner.case(case, false).status, Status::Skipped);
+}
+
+/// #678: a screen that holds still is a FAIL while the app draws it the whole time (with the last
+/// capture saved), and BLOCKED when the app stopped drawing it mid-case (the display went off).
+#[test]
+fn a_still_screen_fails_unless_the_app_stopped_drawing_mid_case() {
+    use foxglove_lab::runner::Hardware;
+    static ASKED: AtomicU64 = AtomicU64::new(0);
+    let case: Case = toml::from_str(
+        r#"name = "still"
+description = "still"
+requires = ["app_panel"]
+steps = [{ expect_screen_change = { half = "left", within_ms = 300 } }]"#,
+    )
+    .unwrap();
+    let board = Arc::new(left_half::Board::default());
+    *board.screen.lock().unwrap() = foxglove_lab::resilience::test_frame(160, 68, 1);
+    let link = board.connect();
+    let hw = Hardware::new(link);
+    let cat = catalog();
+    let hello = Hello {
+        version: 1,
+        capabilities: 1 << 6,
+        ..Default::default()
+    };
+    let out = Temp::new();
+    let mut runner = Runner::new(
+        &hw,
+        &cat,
+        hello,
+        Arc::new(AtomicBool::new(false)),
+        true,
+        &out.0,
+    );
+    runner.app_panel = || None;
+    let r = runner.case(&case, true);
+    assert_eq!(r.status, Status::Fail, "{}", r.message);
+    assert!(
+        r.message.contains("didn't change within 300 ms"),
+        "{}",
+        r.message
+    );
+    assert_eq!(r.steps[0].attachments, ["still-left-unchanged.png"]);
+
+    // Drawn as the case starts, away by its end.
+    runner.app_panel =
+        || (ASKED.fetch_add(1, Ordering::SeqCst) > 0).then(|| "the PC is locked".into());
+    let r = runner.case(&case, true);
+    assert_eq!(r.status, Status::Blocked, "{}", r.message);
+    assert!(
+        r.message.contains("didn't change") && r.message.contains("the PC is locked"),
+        "{}",
+        r.message
+    );
+}

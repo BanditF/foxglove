@@ -67,6 +67,92 @@ pub fn locked() -> bool {
     false
 }
 
+/// Whether the display is off (GUID_CONSOLE_DISPLAY_STATE 0), as the app reads it (away.rs):
+/// Foxglove is away then too (#410), so it draws no left panel and, since #683, holds display
+/// changes until the PC is back. Windows sends the current state at once on registering, so this
+/// waits on that callback (an event, bounded at 2 s) and unregisters; None when no state came.
+#[cfg(windows)]
+pub fn display_off() -> Option<bool> {
+    use std::sync::mpsc::{sync_channel, SyncSender};
+    use windows::core::GUID;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Power::{
+        PowerSettingRegisterNotification, PowerSettingUnregisterNotification,
+        DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, HPOWERNOTIFY, POWERBROADCAST_SETTING,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{DEVICE_NOTIFY_CALLBACK, PBT_POWERSETTINGCHANGE};
+    const CONSOLE_DISPLAY_STATE: GUID = GUID::from_u128(0x6fe69556_704a_47a0_8f24_c28d936fda47);
+
+    unsafe extern "system" fn on_power(
+        context: *const core::ffi::c_void,
+        kind: u32,
+        setting: *const core::ffi::c_void,
+    ) -> u32 {
+        if kind != PBT_POWERSETTINGCHANGE || setting.is_null() || context.is_null() {
+            return 0;
+        }
+        // SAFETY: for PBT_POWERSETTINGCHANGE, `setting` points at a POWERBROADCAST_SETTING whose
+        // Data holds DataLength bytes; `context` is the sender below, alive until unregistered.
+        let setting = unsafe { &*setting.cast::<POWERBROADCAST_SETTING>() };
+        if setting.PowerSetting == CONSOLE_DISPLAY_STATE
+            && setting.DataLength as usize >= size_of::<u32>()
+        {
+            let state = unsafe {
+                std::ptr::addr_of!(setting.Data)
+                    .cast::<u32>()
+                    .read_unaligned()
+            };
+            let tx = unsafe { &*context.cast::<SyncSender<u32>>() };
+            let _ = tx.try_send(state);
+        }
+        0
+    }
+
+    let (tx, rx) = sync_channel::<u32>(4);
+    let tx = Box::into_raw(Box::new(tx));
+    let mut params = DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS {
+        Callback: Some(on_power),
+        Context: tx.cast(),
+    };
+    let mut handle = std::ptr::null_mut();
+    // SAFETY: with DEVICE_NOTIFY_CALLBACK the recipient points at the subscribe parameters, which
+    // outlive the registration (unregistered below, before they and the sender are dropped).
+    let registered = unsafe {
+        PowerSettingRegisterNotification(
+            &CONSOLE_DISPLAY_STATE,
+            DEVICE_NOTIFY_CALLBACK,
+            HANDLE(std::ptr::from_mut(&mut params).cast()),
+            &mut handle,
+        )
+    };
+    let state = if registered.is_ok() {
+        let state = rx.recv_timeout(Duration::from_secs(2)).ok();
+        // SAFETY: the handle came from the registration above and is unregistered once.
+        let _ = unsafe { PowerSettingUnregisterNotification(HPOWERNOTIFY(handle as isize)) };
+        state
+    } else {
+        None
+    };
+    // SAFETY: no callback runs after the unregistration (or none was registered): the box is ours.
+    drop(unsafe { Box::from_raw(tx) });
+    state.map(|s| s == 0)
+}
+#[cfg(not(windows))]
+pub fn display_off() -> Option<bool> {
+    Some(false)
+}
+
+/// Why Foxglove is away now (#410: it hands the left panel back, and since #683 holds display
+/// changes until the PC is back), or None when it isn't: the session locked, the display off.
+pub fn away_reason(locked: bool, display_off: Option<bool>) -> Option<String> {
+    match (locked, display_off) {
+        (true, Some(true)) => Some("the PC is locked and its display is off".into()),
+        (true, _) => Some("the PC is locked".into()),
+        (false, Some(true)) => Some("the PC's display is off".into()),
+        (false, _) => None,
+    }
+}
+
 pub fn prompt(ask: &str, cancelled: &Arc<AtomicBool>) -> Result<String> {
     ensure!(
         io::stdin().is_terminal(),

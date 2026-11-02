@@ -11,7 +11,10 @@ and the re-apply hooks, read back through the local API (API 1.6) and the test a
   one finds the overlay already shown and rightly logs nothing (#618 follow-up).
 - display change (#612/#620): the overlay minimized again, then WM_DISPLAYCHANGE posted to the
   app's display watcher: overlay.window must say not minimized and on a live display, and the log
-  has the "(display change)" restore line.
+  has the "(display change)" restore line. BLOCKED, not FAIL (#678), when Windows' own display
+  change restored the overlay first (the app does that within SETTLE, as designed), or when the PC
+  is away (locked or display off, `foxglove-lab away`): the app then holds display changes until
+  it is back (#683).
 - agent controls (#618): tray.set_panel open/close and overlay.restore, one log line each; the
   tray's Next › and ‹ through art.select, read back with art.status, one "art … (api)" line each.
   The firmware has one built-in since #671, so the run first shows a bundled piece from this PC
@@ -31,7 +34,8 @@ and the re-apply hooks, read back through the local API (API 1.6) and the test a
   the overlay is WS_EX_TRANSPARENT | WS_EX_LAYERED and a click on it reaches the window underneath;
   with the tray panel open the overlay drops WS_EX_TRANSPARENT and only the panel's region takes
   clicks (a click beside it goes underneath); each is waited for, bounded, since the passthrough
-  lands after the frame's paint. With --focus (it takes the focus: the PC unlocked and the user
+  lands after the frame's paint. A hit test that lands on a window above the overlay in the
+  z-order (the lock screen, a shell notification window) is BLOCKED, naming it (#678). With --focus (it takes the focus: the PC unlocked and the user
   away 2 min, else BLOCKED): a second launch focuses Settings, which arms the overlay over the
   keys (once its keymap session connected: the user's remembered keyboard is seeded into the temp
   store); minimizing Settings (ShowWindow, the user's #549 report) closes it, keeps the app
@@ -48,8 +52,9 @@ test app ends mid-run the run stops with one FAIL saying how (exit code, its log
     FOXGLOVE_APP_OK=1 python scripts/lab/overlay_tray.py --app <foxglove.exe> [--focus]  (exit 0 PASS, 1 FAIL, 2 BLOCKED)
 """
 import argparse, json, subprocess, time
-from labkit import (App, AppGone, tool_arg, Checks, REPO, TARGET, Windows, centre, click_through, connect, injecting,
-                    log_lines, outside, require_app_ok, require_user_idle, same_box, temp_config, users_keyboard, wait)
+from labkit import (App, AppGone, tool_arg, Checks, REPO, TARGET, Windows, away, centre, click_through, connect,
+                    covering, injecting, log_lines, outside, require_app_ok, require_user_idle, same_box, temp_config,
+                    users_keyboard, wait)
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
 ap.add_argument('--app', required=True, type=tool_arg('--app'), help='the Foxglove build under test')
@@ -116,16 +121,37 @@ def overlay_cases(api, win, cfg):
         check('tray click: the restore line', any('restored to' in l for l in lines), lines[-1:])
     call(api, 'tray.set_panel', {'open': False})
 
-    # Display change (#620).
+    # Display change (#620). Two things outside the app undo this case (#678), so each is named
+    # BLOCKED, not FAIL: a display change Windows sends itself (a monitor waking or sleeping) lets
+    # the app restore the lab's minimize within SETTLE, as designed; and away (locked or display
+    # off: Windows sent one about every 9.5 s at night on 10/30), the app holds display changes
+    # until the PC is back (#683), so the posted one restores nothing yet.
+    own = len(log_lines(cfg, '(display change)'))
     win.minimize(hwnd)
-    ok, o = wait(lambda: call(api, 'overlay.window'), lambda o: o and o['iconic'], 5)
-    check('lab hook: the overlay is minimized', ok, o)
+    minimized, o = wait(lambda: call(api, 'overlay.window'), lambda o: o and o['iconic'], 5)
+    windows_own = [l for l in log_lines(cfg, '(display change)')[own:] if 'restored to' in l]
+    if not minimized and windows_own:
+        check('lab hook: the overlay is minimized', False,
+              f'Windows sent a display change of its own and the app restored the overlay, as designed: {windows_own[-1:]}',
+              blocked=True)
+    else:
+        check('lab hook: the overlay is minimized', minimized, o)
+    gone = away(args.lab)
     before = len(log_lines(cfg, '(display change)'))
     check('WM_DISPLAYCHANGE posted to the display watcher', win.display_change(), 'FoxgloveOverlayDisplays')
-    ok, o = wait(lambda: call(api, 'overlay.window'), lambda o: o and not o['iconic'] and o['on_screen'], 10)
-    check('display change: the overlay is back, on a live display', ok, o)
-    lines = log_lines(cfg, '(display change)')[before:]
-    check('display change: one restore line', any('restored to' in l for l in lines), lines[-2:])
+    if gone:
+        why = f'{gone}: the app holds display changes until the PC is back (#683); rerun with it unlocked, display on'
+        check('display change: the overlay is back, on a live display', False, why, blocked=True)
+        check('display change: one restore line', False, why, blocked=True)
+    else:
+        ok, o = wait(lambda: call(api, 'overlay.window'), lambda o: o and not o['iconic'] and o['on_screen'], 10)
+        check('display change: the overlay is back, on a live display', ok, o)
+        lines = log_lines(cfg, '(display change)')[before:]
+        if minimized:
+            check('display change: one restore line', any('restored to' in l for l in lines), lines[-2:])
+        else:  # only a minimized overlay is restored, so only then is there a line
+            check('display change: one restore line', False, 'the overlay was not minimized, so nothing to restore',
+                  blocked=True)
 
     # Agent controls (#618).
     p = call(api, 'tray.set_panel', {'open': False})
@@ -140,6 +166,18 @@ def overlay_cases(api, win, cfg):
     check('overlay.restore: back on screen', bool(o and o['on_screen'] and not o['iconic']), o)
     check('overlay.restore: its log line', bool(log_lines(cfg, 'restored to') and log_lines(cfg, '(api)')),
           log_lines(cfg, '(api)')[-1:])
+
+
+def hit_check(name, win, hwnd, at, ok, detail):
+    """A WindowFromPoint check, BLOCKED when the point is under a window above the overlay in the
+    z-order (#678: the lock screen and a shell "New notification" window covered the whole screen
+    in the 10/30 gate runs, so every point, the panel's too, reached them): the hit test then
+    proves nothing about the overlay's style or region."""
+    cover = covering(hwnd, at, win.above)
+    if cover:
+        return check(name, False, f'{detail}: {win.describe(cover)} is above the overlay there, so it takes '
+                                  'any click; rerun with the PC unlocked and nothing over the screen', blocked=True)
+    return check(name, ok, detail)
 
 
 def click_cases(api, win):
@@ -159,8 +197,8 @@ def click_cases(api, win):
     check('Settings not focused: the overlay is click-through (WS_EX_TRANSPARENT | WS_EX_LAYERED)', ok, hex(style))
     x, y = centre(rect)
     under = win.at(x, y)
-    check('Settings not focused: a click on the overlay reaches the window underneath (WindowFromPoint)',
-          under is not None and under != hwnd, f'({x}, {y}) -> {under} (overlay {hwnd})')
+    hit_check('Settings not focused: a click on the overlay reaches the window underneath (WindowFromPoint)',
+              win, hwnd, under, under is not None and under != hwnd, f'({x}, {y}) -> {under} (overlay {hwnd})')
 
     # The tray panel open: only the panel takes clicks (#405), the rest goes underneath (#406).
     # tray.set_panel answers from the frame that drew the panel (tray_panel::show); that frame
@@ -179,14 +217,15 @@ def click_cases(api, win):
               f'{hex(style)} after {time.time() - t0:.2f} s')
         px, py = centre(p['rect'])
         ok, at = wait(lambda: win.at(px, py), lambda h: h == hwnd, 2, poll=0.05)
-        check('panel open: a click on the panel reaches the panel', ok, f'({px}, {py}) -> {at} (overlay {hwnd})')
+        hit_check('panel open: a click on the panel reaches the panel', win, hwnd, at, ok,
+                  f'({px}, {py}) -> {at} (overlay {hwnd})')
         pt = outside(p['rect'], rect)
         if pt is None:
             check('panel open: a click beside the panel', False, 'no point of the overlay away from the panel', blocked=True)
         else:
             under = win.at(*pt)
-            check('panel open: a click beside the panel reaches the window underneath',
-                  under is not None and under != hwnd, f'{pt} -> {under} (overlay {hwnd})')
+            hit_check('panel open: a click beside the panel reaches the window underneath', win, hwnd, under,
+                      under is not None and under != hwnd, f'{pt} -> {under} (overlay {hwnd})')
     call(api, 'tray.set_panel', {'open': False})
     return hwnd
 
