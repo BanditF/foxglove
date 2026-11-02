@@ -719,6 +719,7 @@ pub mod tests {
                         path: "pad".into(),
                     },
                 ],
+                lamp_applies: Default::default(),
                 local_file: Some(
                     r"C:\Users\you\AppData\Roaming\Foxglove\lighting-catalog.local.toml".into(),
                 ),

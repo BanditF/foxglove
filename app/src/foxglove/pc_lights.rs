@@ -101,6 +101,9 @@ pub struct Snapshot {
     pub unknown: Vec<Unknown>,
     /// Where the user's own entries are saved.
     pub local_file: Option<String>,
+    /// How the last write to each Dynamic Lighting device went, by key, for the health view
+    /// (#691, [`super::lamp_health`]).
+    pub lamp_applies: BTreeMap<String, super::lamp_health::Apply>,
 }
 
 /// A request to the worker.
@@ -386,6 +389,8 @@ pub struct Worker {
     scene: Option<BTreeMap<String, Vec<Option<Rgb>>>>,
     /// A scene write failed once already (logged once per scene).
     scene_error: bool,
+    /// The last write to each Dynamic Lighting device, by key (#691's health signal).
+    lamp_applies: BTreeMap<String, super::lamp_health::Apply>,
 }
 
 impl Worker {
@@ -426,6 +431,7 @@ impl Worker {
             dirty: false,
             scene: None,
             scene_error: false,
+            lamp_applies: BTreeMap::new(),
         }
     }
 
@@ -788,12 +794,30 @@ impl Worker {
         if colors.is_empty() {
             return;
         }
-        if let Err(e) = d.set_zones(&colors) {
+        let result = d.set_zones(&colors);
+        if let Err(e) = &result {
             eprintln!(
                 "Foxglove: {}: colours back after Windows gave it back: {e}",
                 d.name()
             );
         }
+        self.lamp_applied(key, &result);
+    }
+
+    /// Notes how a write to a Dynamic Lighting device went, for the health view (#691).
+    fn lamp_applied(&mut self, key: &str, result: &foxglove_devices::Result<()>) {
+        if !self
+            .drivers
+            .get(key)
+            .is_some_and(|d| d.lamp_access().is_some())
+        {
+            return;
+        }
+        let apply = match result {
+            Ok(()) => super::lamp_health::Apply::Ok,
+            Err(e) => super::lamp_health::Apply::Failed(e.to_string()),
+        };
+        self.lamp_applies.insert(key.to_string(), apply);
     }
 
     /// The user's colours on some zones (the page's Apply, the API's `pc_lighting.set_zone`),
@@ -963,6 +987,10 @@ impl Worker {
             return;
         };
         let result = call(d.as_mut());
+        self.lamp_applied(key, &result);
+        let Some(d) = self.drivers.get_mut(key) else {
+            return;
+        };
         // Under a scene, the other zones show its frame: the user's colours are the kept ones.
         let colors = match self.scene.as_ref().and_then(|s| s.get(key)) {
             Some(kept) if manual => kept.clone(),
@@ -1045,8 +1073,18 @@ impl Worker {
             busy: false,
             unknown: self.unknown.clone(),
             local_file: self.local_path.as_ref().map(|p| p.display().to_string()),
+            lamp_applies: self.lamp_applies.clone(),
         }
     }
+}
+
+/// The Dynamic Lighting devices' health now (#691), for the shared health view: found,
+/// controllable, what Windows lets Foxglove do, and the last apply. Read from the worker's
+/// snapshot; asks nothing of the devices.
+#[allow(dead_code)] // for the shared health view (worktrees\health)
+pub fn lamp_health() -> Vec<super::lamp_health::LampHealth> {
+    let s = snapshot();
+    super::lamp_health::from_snapshot(&s, &s.lamp_applies, super::scene_lamps::identity())
 }
 
 /// Starts the worker, the HID arrival watch and the first scan.
@@ -1987,6 +2025,68 @@ mod tests {
                 access: access.clone(),
             }) as Box<dyn pcl::LampHandle>)
         })
+    }
+
+    /// A Dynamic Lighting device whose writes fail, as Windows' would for a device gone.
+    struct BrokenLamps(usize);
+
+    impl pcl::LampHandle for BrokenLamps {
+        fn lamp_count(&self) -> usize {
+            self.0
+        }
+        fn set_all(&mut self, _: Rgb) -> foxglove_devices::Result<()> {
+            Err(DeviceError::Backend("the device is gone".into()))
+        }
+        fn set_lamps(&mut self, _: &[(usize, Rgb)]) -> foxglove_devices::Result<()> {
+            Err(DeviceError::Backend("the device is gone".into()))
+        }
+    }
+
+    /// #691's health signal: each Dynamic Lighting device reports found, controllable, what
+    /// Windows lets Foxglove do and how the last apply went, and the rows change when they do.
+    #[test]
+    fn the_health_rows_follow_each_lamp_arrays_state() {
+        use crate::foxglove::lamp_health::{from_snapshot, rows, Apply, Level};
+        let calls = LampCalls::default();
+        let access = Arc::new(Mutex::new(pcl::LampAccess::default()));
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(fake_lamps_with(&calls, &access));
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let health = |w: &Worker| {
+            let s = w.snapshot();
+            from_snapshot(&s, &s.lamp_applies, false)
+        };
+        let h = health(&w);
+        assert_eq!(h.len(), 1, "only the Dynamic Lighting device");
+        assert_eq!(
+            (h[0].lamps, h[0].controllable, h[0].last_apply.clone()),
+            (2, true, None)
+        );
+        w.handle(Msg::Off(MOUSE.into()), false, &mut no_wait());
+        assert_eq!(health(&w)[0].last_apply, Some(Apply::Ok));
+        // Windows takes it: the Windows row warns.
+        access.lock().unwrap().available = false;
+        w.handle(Msg::LampChanged(MOUSE.into()), false, &mut no_wait());
+        let r = rows(&health(&w)[0]);
+        assert_eq!(r[2].level, Level::Warn, "{r:?}");
+        // A device whose writes fail: the last apply fails, with the reason.
+        let (w2, _) = worker(Settings::default());
+        let mut w2 = w2.with_lamp_opener(Box::new(|f: &Found| {
+            Some(Box::new(BrokenLamps(f.zones.len())) as Box<dyn pcl::LampHandle>)
+        }));
+        w2.scan(&case_hid(), &mut nothing(), false, true);
+        w2.handle(Msg::Off(MOUSE.into()), false, &mut no_wait());
+        let r = rows(&health(&w2)[0]);
+        assert_eq!(r[3].level, Level::Fail);
+        assert!(r[3].detail.contains("the device is gone"), "{r:?}");
+        // The case board isn't a Dynamic Lighting device: no rows, no apply noted.
+        w2.handle(Msg::Off("103c:84fd".into()), false, &mut no_wait());
+        assert!(!w2.snapshot().lamp_applies.contains_key("103c:84fd"));
+        // No handle: found, not controllable.
+        let (mut bare, _) = worker(Settings::default());
+        bare.scan(&case_hid(), &mut nothing(), false, true);
+        let r = rows(&health(&bare)[0]);
+        assert_eq!((r[1].level, r.len()), (Level::Warn, 3));
     }
 
     /// #691: "Match keyboard" on a Dynamic Lighting device follows the keyboard's report (so

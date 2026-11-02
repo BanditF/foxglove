@@ -71,6 +71,7 @@ pub mod overlay_restore;
 mod panel_polarity_ui;
 pub mod parts;
 pub mod pause;
+pub mod lamp_health;
 pub mod pc_lights;
 pub mod pc_lights_add;
 pub mod pc_lights_ui;
