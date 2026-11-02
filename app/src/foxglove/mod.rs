@@ -37,6 +37,7 @@ pub mod firmware_update;
 #[cfg(test)]
 pub(crate) mod fixtures;
 pub mod focus;
+pub mod health;
 pub mod foreground;
 pub mod gpu_reset;
 pub mod identity;

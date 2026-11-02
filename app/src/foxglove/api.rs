@@ -171,6 +171,44 @@ fn paused_error() -> Error {
     }
 }
 
+/// `health.read` (#705, API 1.11): reads the keyboard's self-report now (both halves; the right's
+/// over the relay, up to 8 s) and answers with its rows and the features' (`health::all_rows`).
+fn health_read(device: &str) -> Result<Value, Error> {
+    use foxglove_devices::Device as _;
+    if !keyboard().is_some_and(|k| k.info().id.to_string() == device) {
+        return Err(Error {
+            code: code::DISCONNECTED,
+            message: format!("no keyboard {device} with Foxglove's host link"),
+            data: None,
+        });
+    }
+    let mut rows = super::health::read_now(super::health::Why::Asked).unwrap_or_default();
+    rows.extend(super::health::feature_rows());
+    Ok(json!(health_json(&rows)))
+}
+
+/// The rows in the API's words.
+fn health_json(rows: &[super::health::HealthRow]) -> methods::Health {
+    use super::health::Level;
+    let level = |l: Level| match l {
+        Level::Ok => methods::HealthLevel::Ok,
+        Level::Warn => methods::HealthLevel::Warn,
+        Level::Fail => methods::HealthLevel::Fail,
+    };
+    methods::Health {
+        level: level(foxglove_link::health::worst(rows)),
+        rows: rows
+            .iter()
+            .map(|r| methods::HealthRow {
+                subsystem: r.subsystem.clone(),
+                item: r.item.clone(),
+                level: level(r.level),
+                detail: r.detail.clone(),
+            })
+            .collect(),
+    }
+}
+
 /// `lights.page` (#674): what the Lights page's Keyboard card shows for the host-link keyboard,
 /// from a fresh RGB_STATE read, through the page's own view-model (`lights_page::Model`).
 fn lights_page(device: &str) -> Result<Value, Error> {
@@ -642,6 +680,10 @@ impl Devices for AppDevices {
                 lights_page(&p.device)
             }
             "scenes.page" => Ok(json!(scenes_page(&super::scenes_ui::presets_now()))),
+            "health.read" => {
+                let p: methods::DeviceParams = params(_params)?;
+                health_read(&p.device)
+            }
             "tray.panel" => {
                 let (open, rect) = super::tray_panel::state();
                 Ok(json!(methods::TrayPanel { open, rect }))
@@ -1643,6 +1685,34 @@ mod tests {
         assert!(
             start.elapsed() < std::time::Duration::from_secs(1),
             "no wait"
+        );
+    }
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+    use crate::foxglove::health::{HealthRow, Level};
+
+    #[test]
+    fn health_rows_go_out_in_the_apis_words() {
+        let rows = [
+            HealthRow::new("screens", "Left screen", Level::Ok, "started"),
+            HealthRow::new(
+                "screens",
+                "Right screen",
+                Level::Fail,
+                "2 art pushes failed (relay timeout or write failure)",
+            ),
+        ];
+        let v = serde_json::to_value(health_json(&rows)).unwrap();
+        assert_eq!(v["level"], "fail");
+        assert_eq!(v["rows"][1]["item"], "Right screen");
+        assert_eq!(v["rows"][1]["level"], "fail");
+        assert_eq!(v["rows"][0]["level"], "ok");
+        assert_eq!(
+            serde_json::to_value(health_json(&[])).unwrap()["level"],
+            "ok"
         );
     }
 }

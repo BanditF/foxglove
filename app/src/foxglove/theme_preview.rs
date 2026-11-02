@@ -2037,3 +2037,33 @@ fn sidebar_fox_renders() {
         .count();
     assert!(orange > 250, "{orange}");
 }
+
+/// The App page's Keyboard health card (#705): a keyboard with a failing right screen and a slow
+/// relay, and no keyboard.
+#[test]
+fn health_card_renders() {
+    use crate::foxglove::theme::DARK;
+    let ctx = preview_ctx();
+    let card = |view: crate::foxglove::health::View| {
+        render_ui(&ctx, egui::vec2(640.0, 440.0), DARK.ground, move |ui| {
+            egui::Frame::new()
+                .fill(DARK.ground)
+                .inner_margin(egui::Margin::same(16))
+                .show(ui, |ui| {
+                    crate::foxglove::health::draw(ui, &view);
+                });
+        })
+    };
+    let with = card(crate::foxglove::health::tests::sample());
+    let without = card(crate::foxglove::health::tests::sample_none());
+    keep("ui-705-health.png", &with);
+    keep("ui-705-health-none.png", &without);
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    assert!(count(&with, DARK.danger) > 20, "a Failed label");
+    assert!(count(&with, DARK.warn) > 20, "a Warning label");
+    assert_eq!(count(&without, DARK.danger), 0);
+}

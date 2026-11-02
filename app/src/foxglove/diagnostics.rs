@@ -53,6 +53,8 @@ pub struct Facts {
     pub scene: String,
     /// Background services that failed: restarted, or stopped for good (#587).
     pub services: Vec<String>,
+    /// Keyboard health (#705): each row as `level item: reason`, the worst first.
+    pub health: Vec<String>,
     pub log: Vec<String>,
 }
 
@@ -135,6 +137,7 @@ fn capability_names(bits: u32) -> String {
         (c::BATTERY_DIM, "BATTERY_DIM"),
         (c::EFFECTS, "EFFECTS"),
         (c::RIGHT_EVENTS, "RIGHT_EVENTS"),
+        (c::HEALTH, "HEALTH"),
     ];
     let mut names: Vec<String> = named
         .iter()
@@ -222,6 +225,12 @@ pub fn report(f: &Facts, personal: &Personal) -> String {
     }
     for (i, service) in f.services.iter().enumerate() {
         line(if i == 0 { "Services" } else { "" }, service);
+    }
+    if f.health.is_empty() {
+        line("Health", "not read (no keyboard, or firmware without it)");
+    }
+    for (i, row) in f.health.iter().enumerate() {
+        line(if i == 0 { "Health" } else { "" }, row);
     }
     let _ = writeln!(s, "\nLast {} log lines:", f.log.len());
     for l in &f.log {
@@ -339,6 +348,7 @@ pub fn collect(ctx: &egui::Context) -> Facts {
         room: super::scene_room::room().summary(),
         scene: super::scene_run::summary(),
         services: super::services::problems(),
+        health: super::health::diagnostics_lines(&super::health::all_rows()),
         log: super::app_log::recent(LOG_LINES),
     }
 }
@@ -417,6 +427,10 @@ pub(crate) fn sample() -> Facts {
             "pc-lights: service stopped after 5 failures (Panicked: bad report)".into(),
             "battery: 1 failure, running again (Panicked: oops)".into(),
         ],
+        health: vec![
+            "failed  Right screen: 2 art pushes failed (relay timeout or write failure)".into(),
+            "OK      Left screen: started".into(),
+        ],
         log: vec![
             "2026-10-25 14:10:07Z Foxglove: loaded C:\\Users\\Bandit\\AppData\\Roaming\\Foxglove\\foxglove.toml".into(),
             "2026-10-25 14:10:08Z Foxglove obs: token=hunter2 accepted on BANDIT-PC".into(),
@@ -473,6 +487,8 @@ mod tests {
             "Scene           demo scanline running 12 s",
             "Services        pc-lights: service stopped after 5 failures",
             "                battery: 1 failure, running again",
+            "Health          failed  Right screen: 2 art pushes failed",
+            "                OK      Left screen: started",
             "Last 2 log lines:",
         ] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
