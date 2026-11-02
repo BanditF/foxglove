@@ -782,6 +782,11 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
 
 /// Which devices the scene lights, in words.
 pub fn legend(v: &View) -> String {
+    legend_for(v, &super::parts::Parts::current().seen(2))
+}
+
+/// [`legend`] with a split's parts named as `parts` names them (#563).
+fn legend_for(v: &View, parts: &super::parts::Parts) -> String {
     let mut lit: Vec<String> = Vec::new();
     let mut shown: Vec<String> = Vec::new();
     for d in v
@@ -796,13 +801,13 @@ pub fn legend(v: &View) -> String {
             // A split's halves are "keyboard:left" and "keyboard:right"; one piece is "keyboard".
             let split = d.id.contains(':');
             let how = if d.lights.len() > 1 && v.keyboard_frames {
-                "a colour per LED"
+                "a colour per LED".to_string()
             } else if !split {
-                "one colour"
+                "one colour".to_string()
             } else if !v.keyboard_frames {
-                "one colour for both halves"
+                format!("one colour for {}", parts.all())
             } else {
-                "a colour per half"
+                format!("a colour per {}", parts.noun())
             };
             format!("{n} ({how})")
         } else {
@@ -1565,6 +1570,11 @@ pub(crate) mod tests {
             text.starts_with("Lights: Eyelash Corne (a colour per LED), HP OMEN 45L"),
             "{text}"
         );
+        // #563: a split whose parts aren't halves reads in its own words.
+        let wedge = crate::foxglove::fixtures::wedge_parts();
+        let text = legend_for(&sample(), &wedge);
+        assert!(text.contains("(one colour for both parts)"), "{text}");
+        assert!(!text.contains("halves"), "{text}");
     }
 
     #[test]
