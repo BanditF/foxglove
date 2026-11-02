@@ -257,6 +257,54 @@ fn show(ui: &mut egui::Ui) {
     }
 }
 
+/// The Presets card's rows, as [`presets`] draws them: the wallpapers' looks (each with its
+/// wallpaper's id and whether it's on screen), the effects' presets, and the user's own.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PresetsCard {
+    pub wallpapers: Vec<(String, String, bool)>,
+    pub effects: Vec<String>,
+    pub yours: Vec<String>,
+}
+
+/// The card for `wallpapers`, `on_screen` and `saved`, in [`presets`]' order.
+pub fn presets_card(
+    wallpapers: &[WallpaperLook],
+    on_screen: &[String],
+    saved: &[Preset],
+) -> PresetsCard {
+    PresetsCard {
+        wallpapers: wallpapers
+            .iter()
+            .map(|w| {
+                let shown = on_screen.contains(&w.wallpaper);
+                (w.preset.name.clone(), w.wallpaper.clone(), shown)
+            })
+            .collect(),
+        effects: looks::effect_presets()
+            .into_iter()
+            .map(|p| p.name)
+            .collect(),
+        yours: saved.iter().map(|p| p.name.clone()).collect(),
+    }
+}
+
+/// The Presets card the page shows now (the local API's `scenes.page`, #618 batch H), from the
+/// same sources as the page: the installed wallpapers' manifests, what's on screen, and the
+/// user's presets (the page's own copy once it has opened, else the store's).
+pub fn presets_now() -> PresetsCard {
+    let saved = STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|st| st.saved.presets.clone())
+        .unwrap_or_else(|| looks::load_saved().presets);
+    presets_card(
+        &looks::scenes().looks,
+        &super::wallpaper::on_screen_ids(),
+        &saved,
+    )
+}
+
 /// The page's state, loaded on first use and brought up to date: the profile's look after a
 /// profile switch, the room after a change or when the page is shown again.
 fn refresh(slot: &mut Option<State>, frame: u64) -> &mut State {
@@ -1494,6 +1542,35 @@ pub(crate) mod tests {
             leds_shipped: false,
             lamp_note: None,
         }
+    }
+
+    /// `scenes.page` (#618 batch H, the sitting's old H4): the Presets card's rows in the order
+    /// the card draws them, each wallpaper's look tagged on screen as the card tags it.
+    #[test]
+    fn the_presets_card_is_the_pages_rows() {
+        let v = sample();
+        let card = presets_card(&v.wallpapers, &v.on_screen, &v.saved);
+        let names: Vec<_> = v.wallpapers.iter().map(|w| w.preset.name.clone()).collect();
+        assert_eq!(
+            card.wallpapers
+                .iter()
+                .map(|w| w.0.clone())
+                .collect::<Vec<_>>(),
+            names
+        );
+        for (w, (_, id, shown)) in v.wallpapers.iter().zip(&card.wallpapers) {
+            assert_eq!(id, &w.wallpaper);
+            assert_eq!(*shown, w.wallpaper == "tidepool.lighthouse", "{id}");
+        }
+        assert_eq!(
+            card.effects,
+            looks::effect_presets()
+                .into_iter()
+                .map(|p| p.name)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(card.yours, ["Desk evening"]);
+        assert!(presets_card(&[], &[], &[]).wallpapers.is_empty());
     }
 
     /// No devices found and nothing running.

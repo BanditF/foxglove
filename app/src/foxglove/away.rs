@@ -144,13 +144,96 @@ fn tell(now: bool) {
 }
 
 /// Starts listening for lock/unlock and display on/off. `FOXGLOVE_DISABLE=away` leaves it out
-/// (Foxglove then behaves as if always present).
+/// (Foxglove then behaves as if always present). With the test hook
+/// (`FOXGLOVE_AWAY_OVERRIDE=<file>`, [`OVERRIDE_ENV`]) the file stands in for Windows.
 pub fn start() {
     if super::repaint_trace::disabled("away") {
         return;
     }
+    if let Some(path) = override_path() {
+        follow_override(path);
+        return;
+    }
     #[cfg(windows)]
     imp::start();
+}
+
+/// The test hook (#618, the 0.2 sitting's batch P): a watched file stands in for Windows' display
+/// and lock notifications, so a lab run can turn "the display off" without turning it off. On
+/// this PC a real display-off starts Modern Standby, which the probes that did it showed is not
+/// safe to drive (#651). Everything after the edge (the PC state to the keyboard, the panel
+/// handed back, the clocks stopped) runs as for a real one. The file holds lines `display off`,
+/// `display on`, `locked` or `unlocked` (the last of each kind wins); a missing file is the
+/// display on and unlocked. Rewriting it is the edge.
+///
+/// It is read only in a lab launch: with `FOXGLOVE_APP_OK=1` too (the marker every lab script
+/// that starts a test app runs under, labkit's `require_app_ok`). A normal run never has it, so a
+/// stray `FOXGLOVE_AWAY_OVERRIDE` in a user's environment is ignored (one log line) and the real
+/// notifications are followed.
+pub const OVERRIDE_ENV: &str = "FOXGLOVE_AWAY_OVERRIDE";
+/// The lab's launch marker that arms the hook.
+pub const LAB_ENV: &str = "FOXGLOVE_APP_OK";
+
+fn override_path() -> Option<std::path::PathBuf> {
+    let hook = std::env::var_os(OVERRIDE_ENV);
+    let path = override_from(hook.clone(), std::env::var_os(LAB_ENV));
+    if path.is_none() && hook.is_some_and(|h| !h.is_empty()) {
+        eprintln!(
+            "Foxglove: away test hook: ignored ({OVERRIDE_ENV} is set without {LAB_ENV}=1, so this isn't a lab run)"
+        );
+    }
+    path
+}
+
+/// The hook's file, given the two variables: only a non-empty path together with the lab marker.
+pub fn override_from(
+    hook: Option<std::ffi::OsString>,
+    lab: Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
+    if lab.as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return None;
+    }
+    hook.filter(|v| !v.is_empty()).map(std::path::PathBuf::from)
+}
+
+/// The hook file's text as (display off, locked).
+pub fn parse_override(text: &str) -> (bool, bool) {
+    let (mut off, mut locked) = (false, false);
+    for line in text.lines().map(|l| l.trim().to_ascii_lowercase()) {
+        match line.as_str() {
+            "display off" => off = true,
+            "display on" => off = false,
+            "locked" => locked = true,
+            "unlocked" => locked = false,
+            _ => {}
+        }
+    }
+    (off, locked)
+}
+
+fn apply_override(path: &std::path::Path) {
+    let (off, locked) = parse_override(&std::fs::read_to_string(path).unwrap_or_default());
+    // The display first: a lock and a display-off in one write is the PC going to sleep.
+    set_display_off(off);
+    set_locked(locked);
+}
+
+/// Reads the hook file now and again on each change in its folder (a folder watch: no timer).
+fn follow_override(path: std::path::PathBuf) {
+    eprintln!(
+        "Foxglove: away test hook: following {} in place of Windows' display and lock",
+        path.display()
+    );
+    apply_override(&path);
+    let wake = {
+        let path = path.clone();
+        std::sync::Arc::new(move || apply_override(&path))
+    };
+    match super::screens_watch::settings(&path, wake) {
+        // Process-lifetime watch, like the real notifications' registration.
+        Some(watch) => std::mem::forget(watch),
+        None => eprintln!("Foxglove: away test hook: can't watch {}", path.display()),
+    }
 }
 
 #[cfg(windows)]
@@ -322,6 +405,59 @@ mod tests {
             rx.try_iter().next().is_none(),
             "a dropped token stops the calls"
         );
+    }
+
+    /// The test hook's file (#618 batch P): the last line of each kind wins, anything else is
+    /// ignored, and an empty file is the PC present.
+    #[test]
+    fn the_override_file_reads_display_and_lock() {
+        assert_eq!(parse_override(""), (false, false));
+        assert_eq!(parse_override("display off\n"), (true, false));
+        assert_eq!(parse_override("Display Off\r\nlocked\r\n"), (true, true));
+        assert_eq!(parse_override("display off\ndisplay on\n"), (false, false));
+        assert_eq!(parse_override("locked\nunlocked\nnoise\n"), (false, false));
+    }
+
+    /// The hook only arms in a lab launch (FOXGLOVE_APP_OK=1): a user's run with a stray variable
+    /// follows Windows as always.
+    #[test]
+    fn the_override_needs_the_lab_marker() {
+        let s = |v: &str| Some(std::ffi::OsString::from(v));
+        assert_eq!(override_from(s("C:/x/away.txt"), None), None);
+        assert_eq!(override_from(s("C:/x/away.txt"), s("0")), None);
+        assert_eq!(override_from(s(""), s("1")), None);
+        assert_eq!(override_from(None, s("1")), None);
+        assert_eq!(
+            override_from(s("C:/x/away.txt"), s("1")),
+            Some(std::path::PathBuf::from("C:/x/away.txt"))
+        );
+    }
+
+    /// Rewriting the hook's file is the edge: the change listeners hear it as from Windows.
+    #[test]
+    fn the_override_file_drives_the_edges() {
+        let _flags = FLAGS.lock().unwrap_or_else(|e| e.into_inner());
+        let (tx, rx) = mpsc::channel();
+        let token = subscribe_changes(move |c| {
+            let _ = tx.send(c);
+        });
+        let dir = std::env::temp_dir().join(format!("foxglove-away-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("away.txt");
+        std::fs::write(&file, "display off\n").unwrap();
+        apply_override(&file);
+        assert!(display_off());
+        std::fs::write(&file, "display on\n").unwrap();
+        apply_override(&file);
+        std::fs::remove_file(&file).unwrap();
+        apply_override(&file); // gone: present, no edge
+        assert!(!away());
+        assert_eq!(
+            rx.try_iter().collect::<Vec<_>>(),
+            [Change::DisplayOff, Change::DisplayOn]
+        );
+        drop(token);
+        let _ = std::fs::remove_dir(dir);
     }
 
     /// The PC state (#609) tells a lock from the display going off: each edge once, even when

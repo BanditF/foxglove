@@ -1,5 +1,5 @@
 {
-  "api": "1.9",
+  "api": "1.10",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -2131,6 +2131,74 @@
           "names"
         ],
         "title": "Profiles",
+        "type": "object"
+      }
+    },
+    "scenes.page": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "title": "Empty",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$defs": {
+          "ScenesPageWallpaper": {
+            "description": "One row of the Presets card's \"Wallpapers\" group (API 1.10).",
+            "properties": {
+              "name": {
+                "description": "The row's name, as the card shows it.",
+                "type": "string"
+              },
+              "on_screen": {
+                "description": "The row's \"On screen\" tag: the wallpaper is on a monitor now.",
+                "type": "boolean"
+              },
+              "wallpaper": {
+                "description": "The wallpaper's id, from its manifest.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "wallpaper",
+              "on_screen"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "What the Scenes page's Presets card lists (API 1.10, #618 batch H), from the same sources the\ncard draws, so a check reads it with no window: the wallpapers' looks (from the installed\nwallpapers' manifests, #562/#571), the effects' presets and the user's own, in the card's order.",
+        "properties": {
+          "effects": {
+            "description": "The \"Effects\" group's names.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "wallpapers": {
+            "description": "The \"Wallpapers\" group; empty when no installed wallpaper describes itself (the card\nthen has no such group).",
+            "items": {
+              "$ref": "#/$defs/ScenesPageWallpaper"
+            },
+            "type": "array"
+          },
+          "yours": {
+            "description": "The \"Yours\" group's names.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "wallpapers",
+          "effects",
+          "yours"
+        ],
+        "title": "ScenesPage",
         "type": "object"
       }
     },

@@ -367,6 +367,31 @@ pub struct LightsPageControls {
     pub accent: bool,
 }
 
+/// What the Scenes page's Presets card lists (API 1.10, #618 batch H), from the same sources the
+/// card draws, so a check reads it with no window: the wallpapers' looks (from the installed
+/// wallpapers' manifests, #562/#571), the effects' presets and the user's own, in the card's order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ScenesPage {
+    /// The "Wallpapers" group; empty when no installed wallpaper describes itself (the card
+    /// then has no such group).
+    pub wallpapers: Vec<ScenesPageWallpaper>,
+    /// The "Effects" group's names.
+    pub effects: Vec<String>,
+    /// The "Yours" group's names.
+    pub yours: Vec<String>,
+}
+
+/// One row of the Presets card's "Wallpapers" group (API 1.10).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ScenesPageWallpaper {
+    /// The row's name, as the card shows it.
+    pub name: String,
+    /// The wallpaper's id, from its manifest.
+    pub wallpaper: String,
+    /// The row's "On screen" tag: the wallpaper is on a monitor now.
+    pub on_screen: bool,
+}
+
 /// The tray panel (API 1.6, #618): whether it's open, and where it was last drawn, in screen
 /// pixels (left, top, right, bottom).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -856,6 +881,14 @@ pub const METHODS: &[Method] = &[
         permission: Some("devices.read"),
         params: schema!(DeviceParams),
         result: Some(schema!(LightsPage)),
+    },
+    // What the Scenes page's Presets card lists, for window-free checks (#618 batch H, API 1.10).
+    Method {
+        name: "scenes.page",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(Empty),
+        result: Some(schema!(ScenesPage)),
     },
     // The tray panel and the overlay window, as a sitting uses them (#618, API 1.6).
     Method {

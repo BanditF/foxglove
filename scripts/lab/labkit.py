@@ -493,8 +493,14 @@ class App:
         return exit_report(self.proc.poll(), log_lines(self.cfg, 'Foxglove'))
 
     def __exit__(self, *exc):
-        if self.proc.poll() is not None:
+        self.stop()
+        self.restore()
+
+    def stop(self):
+        """Stops the test app (by its own process handle); its plugins too. Idempotent."""
+        if self.proc.poll() is not None and not getattr(self, 'stopped', False):
             print('the test app had already ended:', self.exit_report(), flush=True)
+        self.stopped = True
         self.proc.terminate()
         try:
             self.proc.wait(10)
@@ -503,11 +509,19 @@ class App:
         time.sleep(1)
         for p in self.plugins:  # a hard-stopped app can leave its plugin until the plugin notices
             kill(p)
-        for p in self.previous:
+
+    def restore(self):
+        """Starts the user's Foxglove again by its path(s), as it was before; once only. Returns
+        the paths running again."""
+        previous, self.previous = self.previous, []
+        for p in previous:
             subprocess.Popen([p])
+        if not previous:
+            return []
         time.sleep(5)
-        alive = [p for p in self.previous if p.lower() in ps("(Get-Process -Name foxglove -ErrorAction SilentlyContinue).Path").lower()]
-        print('restored:', alive if alive == self.previous else f'{alive} of {self.previous} (check!)', flush=True)
+        alive = [p for p in previous if p.lower() in ps("(Get-Process -Name foxglove -ErrorAction SilentlyContinue).Path").lower()]
+        print('restored:', alive if alive == previous else f'{alive} of {previous} (check!)', flush=True)
+        return alive
 
 
 # Windows' NTSTATUS codes a crashed process exits with, as unsigned 32-bit.
@@ -632,13 +646,14 @@ class Api:
         self.pipe.close()
 
 
-def connect(name, permissions, seconds=30):
+def connect(name, permissions, seconds=30, api='1.2'):
     """Waits for the app's pipe (it comes up a few seconds after start). An app that doesn't speak
-    the client's API ends the script BLOCKED (exit 2), naming both versions."""
+    the client's API (`api`: the oldest version with the calls the script makes) ends the script
+    BLOCKED (exit 2), naming both versions."""
     end = time.time() + seconds
     while True:
         try:
-            return Api(name, permissions)
+            return Api(name, permissions, api)
         except ApiMismatch as e:
             print(f'BLOCKED {name}: {e}', flush=True)
             print('RESULT BLOCKED', flush=True)

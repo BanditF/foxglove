@@ -1,9 +1,10 @@
 schema = 1
 
 # The 0.2 sitting's agent steps (docs/test-lab/sitting-0.2-h-i-r.md, On-call's run list): what the
-# user used to do by hand in batches H and R. Run each case on its own with --only; the
+# user used to do by hand in batches H and R. Run each case on its own with --only (names are
+# matched as substrings, so each is unique); scripts/lab/sitting.ps1 runs them all in order. The
 # game-layer cases run next to the user's Foxglove (--allow-app: it must see the layer to tell
-# the wallpaper), the right-screen case with Foxglove quit (its scenes own the lights).
+# the wallpaper), the right-screen cases with Foxglove quit (its scenes own the lights).
 
 [[cases]]
 name = "game-layer-on"
@@ -34,6 +35,46 @@ steps = [
   { expect_rgb = { right_age_max_s = 2, left_on = true, right_on = true, within_ms = 3000 } },
   { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, pc_away = true, within_ms = 45000 } },
   { art_select = { set = 0, restore = false, replace_pushed = true } },
+  { note_right_redraws = {} },
+  { press_position = { pos = 43, state = "tap" } },
+  { expect_rgb = { right_age_max_s = 2, right_on = true, within_ms = 2000 } },
+  { expect_right_redraws = { at_least = 1, within_ms = 5000 } },
+  { screen = { half = "right", golden = "golden/right-art-set0.png", any_frame = true, within_ms = 5000, mask = [
+    { x = 0, y = 0, width = 68, height = 20 },
+  ] } },
+]
+
+[[cases]]
+name = "right-clean-wake-usb"
+description = "Sitting R, the old R1-R2 (#613/#621 check 2), the right on USB power: Bandit_Emblem (set 0) on the right, the keyboard left to idle (the PC told away, so the plugged-in left isn't held lit: both dark, the right's panel power cut with its LEDs), then one tap on the LEFT (D7 05 pos 43, a layer key: types nothing). Within 2 s the right is lit, its whole-screen rewrite count grows (the panel rewritten after its power came back: no noise can survive a full rewrite), and its readback is a frame of Bandit_Emblem (status strip masked). The readback is LVGL's model, the count the panel write: together the clean picture R2 asked about. What the dark panel shows while unpowered (R1) has no readback: see the residual list. BLOCKED when the right is on its battery (right-clean-wake-battery runs then). Needs HELLO bits 24-25, Foxglove quit. Leaves set 0"
+tags = ["sitting", "screens"]
+requires = ["right_redraws", "position_press", "screen_readback"]
+steps = [
+  { usb_halves = { right_on_usb = true } },
+  { art_select = { set = 0, restore = false, replace_pushed = true } },
+  { press_position = { pos = 43, state = "tap" } },
+  { expect_rgb = { right_age_max_s = 2, left_on = true, right_on = true, within_ms = 3000 } },
+  { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, pc_away = true, within_ms = 45000 } },
+  { note_right_redraws = {} },
+  { press_position = { pos = 43, state = "tap" } },
+  { expect_rgb = { right_age_max_s = 2, right_on = true, within_ms = 2000 } },
+  { expect_right_redraws = { at_least = 1, within_ms = 5000 } },
+  { screen = { half = "right", golden = "golden/right-art-set0.png", any_frame = true, within_ms = 5000, mask = [
+    { x = 0, y = 0, width = 68, height = 20 },
+  ] } },
+]
+
+[[cases]]
+name = "right-clean-wake-battery"
+description = "Sitting R, the old R3-R5, the right on its battery: the same idle, LEFT tap, rewrite count and readback as right-clean-wake-usb. The right's cable is a person's, so no step unplugs it: the case is BLOCKED while the right is on USB power and runs the next time the right is found on its battery (foxglove-lab usb: 'right is not on USB'). Leaves set 0"
+tags = ["sitting", "screens"]
+requires = ["right_redraws", "position_press", "screen_readback"]
+steps = [
+  { usb_halves = { right_on_usb = false } },
+  { art_select = { set = 0, restore = false, replace_pushed = true } },
+  { press_position = { pos = 43, state = "tap" } },
+  { expect_rgb = { right_age_max_s = 2, left_on = true, right_on = true, within_ms = 3000 } },
+  { expect_rgb = { right_age_max_s = 2, left_on = false, right_on = false, pc_away = true, within_ms = 45000 } },
   { note_right_redraws = {} },
   { press_position = { pos = 43, state = "tap" } },
   { expect_rgb = { right_age_max_s = 2, right_on = true, within_ms = 2000 } },

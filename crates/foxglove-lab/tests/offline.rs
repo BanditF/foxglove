@@ -1830,9 +1830,35 @@ fn the_sitting_suite_parses_and_stays_safe() {
         [
             "game-layer-on",
             "game-layer-off",
-            "right-redraw-after-select-while-idle"
+            "right-redraw-after-select-while-idle",
+            "right-clean-wake-usb",
+            "right-clean-wake-battery"
         ]
     );
+    // --only matches substrings: each name picks its own case alone (scripts/lab/sitting.ps1).
+    for n in &names {
+        assert_eq!(names.iter().filter(|m| m.contains(n)).count(), 1, "{n}");
+    }
+    // The right-clean cases (#618 batch R): gated on the right's power, never unplugging it, and
+    // each ends in a redraw count and a readback golden that exists.
+    for (name, on_usb) in [
+        ("right-clean-wake-usb", true),
+        ("right-clean-wake-battery", false),
+    ] {
+        let c = suite.cases.iter().find(|c| c.name == name).unwrap();
+        assert!(
+            matches!(&c.steps[0], Step::UsbHalves(u) if u.right_on_usb == Some(on_usb)),
+            "{name}: the power gate comes first"
+        );
+        assert!(c
+            .steps
+            .iter()
+            .any(|s| matches!(s, Step::ExpectRightRedraws(_))));
+        assert!(c
+            .steps
+            .iter()
+            .any(|s| matches!(s, Step::Screen(g) if root.join(&g.golden).is_file())));
+    }
     for c in &suite.cases {
         for s in &c.steps {
             s.validate().unwrap();

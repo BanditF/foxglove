@@ -19,6 +19,12 @@
 #   log         pieces of `Foxglove…` log lines the step's writes or events print
 #   needs_eyes  why a person must act or look for (part of) the step; such steps are the
 #               follow-up candidates for more API, readback or log coverage
+#   replaces    (re-cut agent steps) the former user steps of the sitting it does instead
+#
+# [former] lists the re-cut's former user steps (#618: the sitting went from 18 user steps to 0);
+# each is replaced by exactly one agent step or kept in exactly one [[residual]] entry: what
+# truly can't be automated, with why (`needs_eyes`), and what it is (`kind`). No residual is a
+# step of the sitting.
 #
 # Print the needs-eyes list: python scripts/test_sitting_parity.py --list
 
@@ -123,8 +129,9 @@ match = "The PC state, both halves on this build and the left on USB with Foxglo
 sim = ["pc-state"]
 lab = ["status", "pc-state", "rgb-watch"]
 api = ["lighting.state"]
-log = ["PC state to the keyboard:"]
-needs_eyes = "the PC itself: let the display go off and come back, lock and unlock, quit Foxglove for 10 minutes; and a look that both halves (the right's art too) dim and relight"
+script = ["scripts/lab/pc_away.py"]
+log = ["PC state to the keyboard:", "away test hook: following"]
+note = "sitting PA1-PA4: the away test hook stands in for the display and the lock (a real display-off starts Modern Standby here); both halves dark and lit read with rgb-watch, the right's art moving by readback, the quit and the dark after it by pc-state; --history lists the real edges of the user's own nights"
 
 [[step]]
 match = "Dark / Light screens, both halves on this build"
@@ -259,9 +266,9 @@ needs_eyes = "starting and stopping Wallpaper Engine and changing wallpapers are
 match = "Sync: `-location` and the `RAW~(...)~END` argument"
 log = ["wallpaper sync: scene", "wallpaper sync: sent to", "game mode"]
 hil = ["sitting/game-layer-on", "sitting/game-layer-off"]
-script = ["scripts/lab/wallpaper_check.py"]
-note = "#586/#527 (sitting HA1-HA2): the devlog's snapshots and Wallpaper Engine's log.txt say whether a reloaded wallpaper kept game mode and whether a -control command was dropped"
-needs_eyes = "the Win key in a full-screen game and whether the HUD flickers (sitting H1-H3); the 50 ms phase needs a scene, which no API starts"
+script = ["scripts/lab/wallpaper_check.py", "scripts/lab/game_flicker.py"]
+note = "#586/#527 (sitting HA1, HA5, HA2): a full-screen stand-in, a real Win key and captures of the HUD's monitor say whether it flickers; the devlog's snapshots and Wallpaper Engine's log.txt say whether a reloaded wallpaper kept game mode and whether a -control command was dropped"
+needs_eyes = "the 50 ms phase needs a scene, which no API starts"
 
 [[step]]
 match = "Live feed: one run inside Wallpaper Engine"
@@ -277,9 +284,9 @@ needs_eyes = "switching wallpapers in Wallpaper Engine is a GUI action; \"On scr
 
 [[step]]
 match = "the Presets card lists the wallpapers"
+api = ["scenes.page"]
 script = ["scripts/lab/wallpaper_check.py"]
-note = "wallpaper_check.py state prints the names the card should list, from the installed manifests (sitting HA0, HA3)"
-needs_eyes = "the Presets card is UI only (sitting H4)"
+note = "sitting HA3: scenes.page (API 1.9) is the card's own rows, checked against the installed manifests and what Wallpaper Engine shows"
 
 [[step]]
 match = "Lights follow the wallpaper (#70)"
@@ -288,8 +295,8 @@ cli = ["lights"]
 lab = ["status"]
 script = ["scripts/lab/wallpaper_follow.py"]
 log = ["Foxglove accent: applied"]
-note = "sitting HA4: the wallpaper test hook switches palette, palette, no palette (Windows accent) on a test app; the case follows only with Match keyboard on"
-needs_eyes = "whether the underglow looks like the wallpaper's colour (sitting H5); a running scene keeping the lights needs a scene, which no API starts; the Windows desktop wallpaper without Wallpaper Engine is a GUI action"
+note = "sitting HA4: the wallpaper test hook switches palette, palette, no palette (Windows accent) on a test app; HA6: the running app keeps the followed gold through the user's calibration; the case follows only with Match keyboard on"
+needs_eyes = "a running scene keeping the lights needs a scene, which no API starts; the Windows desktop wallpaper without Wallpaper Engine is a GUI action"
 
 # --- Overlay and windows ---
 
@@ -309,8 +316,8 @@ needs_eyes = "eyes: dragging the overlay, its opacity over a real desktop, the s
 match = "Overlay clickable only while Settings has focus"
 api = ["overlay.window", "overlay.restore"]
 script = ["scripts/lab/overlay_tray.py"]
-note = "sitting IA1-IA2: WS_EX_TRANSPARENT and WindowFromPoint with Settings unfocused, focused (a second launch) and minimized (the app keeps running)"
-needs_eyes = "a real click reaching the desktop through the overlay (sitting I2); a game in front, alt-tab and dragging across displays are the user's desktop"
+note = "sitting IA1-IA3: WS_EX_TRANSPARENT and WindowFromPoint with Settings unfocused, focused (a second launch) and minimized (the app keeps running); real clicks (SendInput) through the overlay onto a lab window, on Settings' minimize button and the tray icon"
+needs_eyes = "a game in front, alt-tab and dragging across displays are the user's desktop"
 
 [[step]]
 match = "Tray: the icon and paused glyph at each scale"
@@ -414,7 +421,7 @@ needs_eyes = "eyes: naming the key under each lamp; Windows' Dynamic Lighting li
 
 [[step]]
 row = "H"
-needs_eyes = "eyes: the Plugins tab's look in light and dark"
+needs_eyes = "taste: the Plugins tab's look; the offline render (app theme_preview plugins_page_renders, kept with FOXGLOVE_UI_PREVIEW_DIR) goes to the user as an image, no live step"
 
 [[step]]
 row = "I"
@@ -436,7 +443,13 @@ needs_eyes = "the user's call on legacy Logitech Options"
 row = "O"
 needs_eyes = "iCUE and the user's Corsair gear"
 
-# --- The resumed sitting's re-cut (docs/test-lab/sitting-0.2-h-i-r.md) ---
+# --- The resumed sitting's re-cut (docs/test-lab/sitting-0.2-h-i-r.md): 0 user steps, was 18 ---
+# scripts/lab/sitting.ps1 runs them all, in this order.
+
+[former]
+steps = ["H1", "H2", "H3", "H4", "H5", "I1", "I2", "I3", "I4", "R1", "R2", "R3", "R4", "R5",
+         "P1", "P2", "P3", "P4", "P5", "P6"]
+
 # Batch H: wallpaper (#586, #527, #70, #571)
 
 [[step]]
@@ -444,6 +457,18 @@ batch = "HA0"
 script = ["scripts/lab/wallpaper_check.py"]
 lab = ["status"]
 log = ["wallpaper sync: sent to"]
+
+[[step]]
+batch = "HA3"
+replaces = ["H4"]
+api = ["scenes.page"]
+script = ["scripts/lab/wallpaper_check.py"]
+
+[[step]]
+batch = "HA6"
+replaces = ["H5"]
+api = ["lighting.state", "devices.list"]
+script = ["scripts/lab/wallpaper_check.py"]
 
 [[step]]
 batch = "HA4"
@@ -458,34 +483,15 @@ script = ["scripts/lab/wallpaper_check.py"]
 log = ["game mode"]
 
 [[step]]
-batch = "H1"
-needs_eyes = "hands: starting the user's own full-screen game is a GUI launch on the user's desktop"
-
-[[step]]
-batch = "H2"
-needs_eyes = "eyes: whether the HUD flickers when the Win key leaves the game (#586); no readback sees the screen"
-
-[[step]]
-batch = "H3"
-needs_eyes = "hands: closing the user's game (agents never stop the user's programs)"
+batch = "HA5"
+replaces = ["H1", "H2", "H3"]
+script = ["scripts/lab/game_flicker.py", "scripts/lab/desktop.py"]
 
 [[step]]
 batch = "HA2"
 script = ["scripts/lab/wallpaper_check.py"]
 hil = ["sitting/game-layer-off"]
 log = ["wallpaper sync: sent to"]
-
-[[step]]
-batch = "H4"
-needs_eyes = "eyes: the Presets card is UI only, with no API or readback (#571)"
-
-[[step]]
-batch = "H5"
-needs_eyes = "eyes: whether the underglow's gold looks like the wallpaper's (#70); RGB_STATE says what was sent, not how it looks"
-
-[[step]]
-batch = "HA3"
-script = ["scripts/lab/wallpaper_check.py"]
 
 # Batch I: overlay and tray (#549, #405/#406)
 
@@ -502,63 +508,10 @@ api = ["tray.panel", "overlay.window"]
 log = ["the overlay connected to the keyboard's keymap", "Settings closed before the overlay connected"]
 
 [[step]]
-batch = "I1"
-needs_eyes = "hands: minimizing the user's own Settings window, the #549 repro on the real app (the lab does it on a test app)"
-
-[[step]]
-batch = "I2"
-needs_eyes = "eyes and hands: a real click reaching the desktop through the overlay (#549)"
-
-[[step]]
-batch = "I3"
-needs_eyes = "hands: a real tray click, only when IA2's focus case was BLOCKED by Windows' foreground lock"
-
-[[step]]
-batch = "I4"
-needs_eyes = "eyes and hands: a real click on another window closing the panel (#406), only when IA2 was BLOCKED"
-
-# Batch P: the PC state (#609, PR #651); display-off probes are retired on this PC
-
-[[step]]
-batch = "PA1"
-lab = ["status"]
-
-[[step]]
-batch = "PA2"
-lab = ["rgb-watch"]
-log = ["PC state to the keyboard:"]
-
-[[step]]
-batch = "P1"
-needs_eyes = "hands: opening Windows' power menu; only a real sleep turns the display off here (Modern Standby; display-off probes are retired, #651)"
-
-[[step]]
-batch = "P2"
-needs_eyes = "hands and eyes: only a real sleep turns the display off here (it is Modern Standby, and probes that did it are retired, #651); eyes say both halves went dark (PA2 times it)"
-
-[[step]]
-batch = "P3"
-needs_eyes = "hands and eyes: waking the PC from that sleep; eyes say both halves relit and the right's art moves (PA2 times the edges, nothing reads the art's motion)"
-
-[[step]]
-batch = "PA3"
-lab = ["pc-state"]
-
-[[step]]
-batch = "P4"
-needs_eyes = "hands: quitting the user's own Foxglove (agents don't stop or launch it on the user's desktop) and keeping off the keys for 11 minutes"
-
-[[step]]
-batch = "PA4"
-lab = ["rgb-watch", "pc-state"]
-
-[[step]]
-batch = "P5"
-needs_eyes = "eyes: the keyboard dark about 10 minutes after the last key (PA4 has the times; the look confirms the LEDs and the backlight went out)"
-
-[[step]]
-batch = "P6"
-needs_eyes = "hands: starting the user's own Foxglove again; agents never launch it on the user's desktop"
+batch = "IA3"
+replaces = ["I1", "I2", "I3", "I4"]
+script = ["scripts/lab/overlay_tray.py", "scripts/lab/desktop.py"]
+api = ["tray.panel", "overlay.window"]
 
 # Batch R: right screen after #621 (#613)
 
@@ -577,24 +530,41 @@ batch = "RA3"
 hil = ["resilience/right-redraw-after-wake"]
 
 [[step]]
-batch = "R1"
-needs_eyes = "eyes: what the unpowered panel shows (blank, frozen or static) is the ext-power decision (#621 check 5); the panel is write-only"
+batch = "RA4"
+replaces = ["R2"]
+hil = ["sitting/right-clean-wake-usb"]
+lab = ["usb"]
 
 [[step]]
-batch = "R2"
-needs_eyes = "eyes: a clean picture after the wake; the redraw count (RA3) proves the rewrite ran, not the pixels"
+batch = "RA5"
+replaces = ["R3", "R5"]
+hil = ["sitting/right-clean-wake-battery"]
+lab = ["usb"]
+
+# Batch P: the PC state (#609, PR #651); the away test hook stands in for the display
 
 [[step]]
-batch = "R3"
-needs_eyes = "hands: unplugging the right's cable (the lab can't cut USB power)"
+batch = "PA1"
+script = ["scripts/lab/pc_away.py"]
+lab = ["status"]
+log = ["away test hook: following", "PC state to the keyboard:"]
 
 [[step]]
-batch = "R4"
-needs_eyes = "eyes: what the panel shows while dark, on battery"
+batch = "PA2"
+replaces = ["P1", "P2", "P3"]
+script = ["scripts/lab/pc_away.py"]
+lab = ["rgb-watch"]
+log = ["PC state to the keyboard:"]
 
 [[step]]
-batch = "R5"
-needs_eyes = "eyes: a clean picture after the wake, on battery"
+batch = "PA3"
+lab = ["pc-state"]
+
+[[step]]
+batch = "PA4"
+replaces = ["P4", "P5", "P6"]
+script = ["scripts/lab/pc_away.py"]
+lab = ["rgb-watch", "pc-state"]
 
 # Z: case zone 1 back to its colour
 
@@ -603,3 +573,24 @@ batch = "ZA1"
 cli = ["lights", "light"]
 api = ["pc_lighting.set_zone", "pc_lighting.list"]
 log = ["zone colours of"]
+
+# What truly can't be automated (docs/test-lab/sitting-0.2-h-i-r.md "What's left"): none is a
+# step of the sitting, none blocks 0.2.
+
+[[residual]]
+id = "unpowered-panel"
+replaces = ["R1", "R4"]
+kind = "eyes, optional"
+needs_eyes = "what the right's panel shows while its power is cut with the LEDs (blank, frozen or noise): the ls0xx is write-only and unpowered, so no readback exists, and no camera sees the keyboard; it feeds #621's ext-power decision, not a pass/fail"
+
+[[residual]]
+id = "right-unplug"
+replaces = []
+kind = "hands, only if RA5 never ran"
+needs_eyes = "no lab can cut USB power: RA5 runs by itself whenever the right is found on its battery; if it hasn't by the 0.2 cut, one unplug of the right's cable, and the case does the rest"
+
+[[residual]]
+id = "exclusive-fullscreen"
+replaces = []
+kind = "a report, not a step"
+needs_eyes = "HA5's stand-in is a borderless window; an exclusive DXGI full-screen game can't be captured with GDI, so a flicker the user still sees in a real game after HA5 passes reopens #586"

@@ -1271,7 +1271,20 @@ impl<'a, D: Device> Runner<'a, D> {
                 Ok(format!("{}: status 4 (not built in)", n.command))
             }
             Step::UsbHalves(u) => {
-                let halves = crate::host::classify(&crate::host::usb_entries()?);
+                let entries = crate::host::usb_entries()?;
+                if let Some(want) = u.right_on_usb {
+                    let on = crate::host::right_on_usb(&entries);
+                    if on != want {
+                        let say = |b| if b { "on USB power" } else { "on its battery" };
+                        return Err(Blocked(format!(
+                            "the case needs the right {}; it is {} (its cable decides: the case runs the next time it is)",
+                            say(want),
+                            say(on)
+                        ))
+                        .into());
+                    }
+                }
+                let halves = crate::host::classify(&entries);
                 let text = halves
                     .iter()
                     .map(|h| format!("{}: {:?}, {}", h.half, h.verdict, h.message))

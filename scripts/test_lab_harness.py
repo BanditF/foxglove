@@ -291,7 +291,7 @@ class ApiPairing(unittest.TestCase):
         self.assertIn('speaks API 1.6', e.exception.message)
 
     def test_connect_ends_blocked_on_a_mismatch(self):
-        def mismatch(name, permissions):
+        def mismatch(name, permissions, api='1.2'):
             raise self.k.ApiMismatch('this Foxglove speaks API 1.6; the client needs 1.7 (this lab client asks for API 1.7)')
         out = io.StringIO()
         with unittest.mock.patch.object(self.k, 'Api', mismatch), unittest.mock.patch('sys.stdout', out):
