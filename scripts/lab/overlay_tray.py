@@ -42,16 +42,24 @@ and the re-apply hooks, read back through the local API (API 1.6) and the test a
   running and makes the overlay click-through again; and the tray panel, opened by the tray
   click, closes when the focus goes to Settings (a second launch). A focus case is BLOCKED, not
   FAIL, when Windows' foreground lock keeps the focus where it was (a posted message or a launch
-  from a background process carries no foreground right): then the sitting keeps its eyes step.
+  from a background process carries no foreground right): --real-clicks (IA3) then covers it.
 
 It launches the build under test on a temp FOXGLOVE_CONFIG_DIR (the user's Foxglove is stopped by
 its exact name and started again by its path), so it runs only with FOXGLOVE_APP_OK=1 (On-call).
 The keyboard cases need the keyboard (BLOCKED without it); the guard case a dev build. When the
 test app ends mid-run the run stops with one FAIL saying how (exit code, its log's last lines).
 
-    FOXGLOVE_APP_OK=1 python scripts/lab/overlay_tray.py --app <foxglove.exe> [--focus]  (exit 0 PASS, 1 FAIL, 2 BLOCKED)
+- real clicks (--real-clicks; the sitting's old I1-I4, now IA3): real mouse input through
+  SendInput (scripts/lab/desktop.py), routed by Windows as a person's click: Settings' minimize
+  button (found by WM_NCHITTEST), a click on the faded keyboard reaching a lab probe window under
+  the overlay, a click on the tray icon (Shell_NotifyIconGetRect) opening the panel, and a click
+  on another probe window ("any browser tab") moving the focus and closing it (#406). Each click
+  puts the mouse back. BLOCKED, not FAIL, when the icon is in the hidden-icons flyout or Settings
+  draws its own title bar (the posted-message cases above then stand).
+
+    FOXGLOVE_APP_OK=1 python scripts/lab/overlay_tray.py --app <foxglove.exe> [--focus] [--real-clicks]  (exit 0 PASS, 1 FAIL, 2 BLOCKED)
 """
-import argparse, json, subprocess, time
+import argparse, ctypes, json, subprocess, time
 from labkit import (App, AppGone, tool_arg, Checks, REPO, TARGET, Windows, away, centre, click_through, connect,
                     covering, injecting, log_lines, outside, require_app_ok, require_user_idle, same_box, temp_config,
                     users_keyboard, wait)
@@ -62,9 +70,11 @@ ap.add_argument('--lab', default=str(TARGET / 'release' / 'foxglove-lab.exe'), t
 ap.add_argument('--skip-guard', action='store_true', help='leave out the split-link drop (GA build)')
 ap.add_argument('--focus', action='store_true',
                 help='also the cases that move the focus (Settings shown by a second launch): PC unlocked, user away')
+ap.add_argument('--real-clicks', action='store_true',
+                help="the sitting's I1-I4 with real mouse clicks (SendInput) on lab probe windows: PC unlocked, user away")
 args = ap.parse_args()
 require_app_ok()
-if args.focus:
+if args.focus or args.real_clicks:
     require_user_idle(120)
 check = Checks()
 PERMISSIONS = ['devices.read', 'app.windows', 'art.write']
@@ -250,7 +260,7 @@ def focus_cases(api, win, hwnd):
         return
     if not focused:
         check('Settings focused: the overlay arms over the keys', False,
-              "Settings didn't get the foreground (Windows' foreground lock); the sitting keeps I1-I2", blocked=True)
+              "Settings didn't get the foreground (Windows' foreground lock); IA3's real clicks cover it", blocked=True)
     else:
         # The overlay takes the mouse over its keys only once it drew them: its keymap session is
         # connected (the remembered keyboard, seeded from the user's store) and the keymap read.
@@ -302,17 +312,117 @@ def focus_cases(api, win, hwnd):
     if not got:
         call(api, 'tray.set_panel', {'open': False})
         return check('focus loss closes the panel', False,
-                     'the overlay never got the foreground from a posted tray click; the sitting keeps I3-I4',
+                     'the overlay never got the foreground from a posted tray click; IA3\'s real clicks cover it',
                      blocked=True)
     settings, focused = show_settings(win, hwnd)
     if not focused:
         call(api, 'tray.set_panel', {'open': False})
         return check('focus loss closes the panel', False,
-                     "Settings didn't get the foreground; the sitting keeps I3-I4", blocked=True)
+                     "Settings didn't get the foreground; IA3's real clicks cover it", blocked=True)
     ok, p = wait(lambda: call(api, 'tray.panel'), lambda p: p and not p['open'], 5)
     check('focus to another window: the panel closes (#406)', ok, p)
     with injecting('Settings minimize (lab hook)'):
         win.u.ShowWindow(settings, win.SW_MINIMIZE)
+
+
+HTMINBUTTON = 8
+
+
+def minimize_button(win, hwnd):
+    """A screen point on `hwnd`'s minimize button, by Windows' own hit test (WM_NCHITTEST along the
+    top band, right to left), or None (a window without one, or one that draws its own title bar
+    and answers HTCLIENT)."""
+    l, t, r, _ = win.rect(hwnd)
+    send = win.u.SendMessageW
+    send.restype = ctypes.c_ssize_t
+    send.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t, ctypes.c_ssize_t]
+    for y in range(t + 4, t + 48, 4):
+        for x in range(r - 4, max(l, r - 400), -4):
+            if send(hwnd, 0x0084, 0, ((y & 0xFFFF) << 16) | (x & 0xFFFF)) == HTMINBUTTON:
+                return x, y
+    return None
+
+
+def real_click_cases(api, win, hwnd):
+    """The sitting's I1-I4 with real input (SendInput, desktop.py): Windows routes each click as
+    the mouse does, so what these see is what a person's click does. A lab probe window stands in
+    for the desktop under the overlay (I2) and for "any browser tab" (I4); it records the clicks
+    that reach it."""
+    import desktop
+    call(api, 'tray.set_panel', {'open': False})
+    # #678's rules hold for real clicks too: away (locked, display off) no click reaches the desktop.
+    gone = away(args.lab)
+    if gone:
+        return check('IA3: real clicks', False, f'{gone}: rerun with the PC unlocked and the display on', blocked=True)
+
+    # I1: the minimize button of a focused Settings window, clicked (#549's report).
+    settings, focused = show_settings(win, hwnd)
+    if not check('I1: Settings shows for the minimize click', settings is not None, settings):
+        return
+    point = minimize_button(win, settings)
+    if point is None:
+        check('I1: a real click on Settings\' minimize button', False,
+              "no point answers HTMINBUTTON (a drawn title bar?); IA2's ShowWindow minimize stands", blocked=True)
+        with injecting('Settings minimize (lab hook)'):
+            win.u.ShowWindow(settings, win.SW_MINIMIZE)
+    else:
+        sent = desktop.click(*point, 'I1 Settings minimize button')
+        ok, _ = wait(lambda: bool(win.u.IsIconic(settings)) or not win.visible(settings), lambda v: v, 5)
+        check('I1: a real click on the minimize button minimizes Settings', ok, f'{point}, {sent} events in')
+    try:
+        app.proc.wait(3)  # bounded: an app that quits ends within a few seconds
+    except subprocess.TimeoutExpired:
+        pass
+    if not check('I1: the test app keeps running (in the tray)', app.exited() is None,
+                 'running' if app.exited() is None else app.exit_report()):
+        raise AppGone('the test app ended when Settings was minimized by its button')
+    ok, style = wait(lambda: win.exstyle(hwnd), lambda s: click_through(s, win.visible(hwnd)), 5)
+    check('I1: the overlay is click-through again', ok, hex(style))
+
+    # I2: a real click on the faded keyboard picture reaches what is under it.
+    o = call(api, 'overlay.window')
+    if not check('I2: the overlay is on screen', bool(o and o['on_screen']), o):
+        return
+    x, y = centre(o['rect'])
+    with desktop.Probe([x - 120, y - 60, x + 120, y + 60], 'Foxglove lab: under the overlay') as under:
+        time.sleep(0.5)  # the probe's first paint
+        # A window above the overlay there (the lock screen, a shell notification) would take the
+        # click whatever the overlay does: BLOCKED, naming it (#678), not a click on it.
+        cover = covering(hwnd, win.at(x, y), win.above)
+        if cover:
+            return check('I2: a real click on the overlay reaches the window under it (#549)', False,
+                         f'{win.describe(cover)} is above the overlay at ({x}, {y}); rerun with nothing over the screen',
+                         blocked=True)
+        before = len(under.clicks)
+        sent = desktop.click(x, y, 'I2 click on the overlay')
+        ok, n = wait(lambda: len(under.clicks), lambda n: n > before, 2, poll=0.05)
+        check('I2: a real click on the overlay reaches the window under it (#549)', ok,
+              f'({x}, {y}): {n - before} click(s) in the probe, {sent} events in')
+
+    # I3: a real click on the fox tray icon opens the panel.
+    icons = win.find('tray_icon_app')
+    back = desktop.cursor()
+    rect = desktop.tray_icon_shown(icons[0]) if icons else None  # an auto-hidden taskbar slides in first
+    if not check('I3: the tray icon is on the taskbar', rect is not None,
+                 rect or "not found (in the hidden-icons flyout?): IA1's posted tray click stands", blocked=rect is None):
+        desktop.move(*back, 'mouse back')
+        return
+    with desktop.Probe([x - 120, y - 300, x + 120, y - 180], 'Foxglove lab: another window') as other:
+        time.sleep(0.5)
+        sent = desktop.click(*centre(rect), 'I3 tray icon click')
+        ok, p = wait(lambda: call(api, 'tray.panel'), lambda p: p and p['open'], 5)
+        if not check('I3: a real tray click opens the panel', ok, f'{p}, {sent} events in'):
+            return
+        # I4: a real click on another window moves the focus and closes the panel (#406).
+        px, py = centre(other.rect)
+        sent = desktop.click(px, py, 'I4 click on another window')
+        got = other.foreground(3)
+        ok, p = wait(lambda: call(api, 'tray.panel'), lambda p: p and not p['open'], 5)
+        check('I4: the click reached the other window', bool(other.clicks) and got,
+              f'{len(other.clicks)} click(s), foreground {got}, {sent} events in')
+        check('I4: the panel closed (#406)', ok, p)
+    desktop.move(*back, 'mouse back where it was')
+    call(api, 'tray.set_panel', {'open': False})
 
 
 def keyboard_cases(api, cfg, env):
@@ -395,6 +505,8 @@ with App(args.app, cfg) as app:
             hwnd = click_cases(api, Windows(app.proc.pid))
             if args.focus and hwnd:
                 focus_cases(api, Windows(app.proc.pid), hwnd)
+            if args.real_clicks and hwnd:
+                real_click_cases(api, Windows(app.proc.pid), hwnd)
             keyboard_cases(api, cfg, app.env)
     except AppGone as e:
         # The test app ended mid-run: say how (its exit code and log), and stop; nothing after

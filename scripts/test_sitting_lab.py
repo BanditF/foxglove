@@ -1,7 +1,8 @@
 """The resumed 0.2 sitting's lab checks (docs/test-lab/sitting-0.2-h-i-r.md), offline: the overlay's
-click-through probes (#549, #405/#406), the wallpaper readers (#586, #527, #70, #571) and the
-right-panel redraw script (#621), on fixed inputs. Nothing here launches anything, makes input or
-touches the keyboard.
+click-through probes (#549, #405/#406), the wallpaper readers (#586, #527, #70, #571), the
+right-panel redraw script (#621), and the hands-free sitting's pieces (#618: the desktop
+primitives' pure parts, the flicker analysis, the PC-away readers, the runner's case names), on
+fixed inputs. Nothing here launches anything, makes input or touches the keyboard.
 
     python -m unittest scripts/test_sitting_lab.py
 """
@@ -17,7 +18,11 @@ os.environ.setdefault('APPDATA', str(Path.home()))  # labkit reads it at import 
 sys.path.insert(0, str(LAB))
 import labkit  # noqa: E402
 import wallpaper_check as wc  # noqa: E402
+import desktop  # noqa: E402
+import pc_away  # noqa: E402
 sys.path.pop(0)
+import tomllib  # noqa: E402
+import zlib  # noqa: E402
 
 
 def run(script, *args, env=None):
@@ -137,7 +142,8 @@ class Scripts(unittest.TestCase):
 
     def test_the_overlay_cases_take_the_focus_only_with_focus(self):
         text = (LAB / 'overlay_tray.py').read_text(encoding='utf-8')
-        self.assertIn('if args.focus:\n    require_user_idle(120)', text)
+        self.assertIn('if args.focus or args.real_clicks:\n    require_user_idle(120)', text)
+        self.assertIn('if args.real_clicks and hwnd:', text)
         self.assertIn('if args.focus and hwnd:', text)
 
 
@@ -248,6 +254,140 @@ class PreSittingRun(unittest.TestCase):
         store = '[lighting]\nfollow_accent = true\n\n[overlay_place]\nmonitor = ""\n'
         self.assertTrue(wc.follow_accent(store))
         self.assertFalse(wc.follow_wallpaper(store))
+
+
+class Desktop(unittest.TestCase):
+    """desktop.py's pure parts (scripts/lab/desktop.py): the real-input and capture primitives."""
+
+    def test_sendinput_coordinates_span_the_virtual_desktop(self):
+        virtual = [-1920, 0, 4480, 1440]  # a monitor left of the primary
+        self.assertEqual(desktop.absolute(-1920, 0, virtual), (0, 0))
+        self.assertEqual(desktop.absolute(2559, 1439, virtual), (65535, 65535))
+        x, y = desktop.absolute(0, 720, virtual)
+        self.assertAlmostEqual(x, 1920 * 65535 / 4479, delta=1)
+        self.assertEqual(desktop.absolute(99999, -5, virtual), (65535, 0), 'clamped')
+
+    def test_luma_and_change(self):
+        white, black = bytes([255, 255, 255, 0]) * 4, bytes([0, 0, 0, 0]) * 4
+        self.assertAlmostEqual(desktop.luma(white), 255, delta=0.5)
+        self.assertEqual(desktop.luma(black), 0)
+        self.assertEqual(desktop.luma(b''), 0.0)
+        self.assertAlmostEqual(desktop.change(white, black), 255, delta=0.5)
+        self.assertEqual(desktop.change(white, white), 0)
+        alpha = bytes([0, 0, 0, 255]) * 4
+        self.assertEqual(desktop.change(black, alpha), 0, 'alpha is not a change')
+
+    def test_a_flicker_is_a_dark_or_flashing_frame(self):
+        hud = [(120.0, 0.0), (118.0, 2.0), (121.0, 3.0)]  # animated: small changes
+        steady = [(0.5, 119.0, 2.5), (0.6, 120.0, 1.0)]
+        mean, seen = desktop.flicker(hud, steady)
+        self.assertAlmostEqual(mean, 119.67, delta=0.01)
+        self.assertEqual(seen, [], 'the HUD animating is no flicker')
+        _, seen = desktop.flicker(hud, steady + [(0.7, 12.0, 100.0)])
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0][1].startswith('dark'), seen)
+        _, seen = desktop.flicker(hud, steady + [(0.8, 125.0, 40.0)])
+        self.assertTrue(seen and seen[0][1].startswith('jump'), seen)
+        _, seen = desktop.flicker([(10.0, 0.0)], [(0.5, 10.0, 5.0)])
+        self.assertEqual(seen, [], 'under the floor a change is noise')
+
+    def test_the_png_is_a_png(self):
+        rgb = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255, 9, 9, 9])  # 2x2
+        data = desktop.png(2, 2, rgb)
+        self.assertTrue(data.startswith(b'\x89PNG\r\n\x1a\n'))
+        self.assertEqual(data[12:16], b'IHDR')
+        self.assertEqual(int.from_bytes(data[16:20], 'big'), 2)
+        idat = data.index(b'IDAT')
+        size = int.from_bytes(data[idat - 4:idat], 'big')
+        raw = zlib.decompress(data[idat + 4:idat + 4 + size])
+        self.assertEqual(raw, b'\x00' + rgb[:6] + b'\x00' + rgb[6:])
+        self.assertEqual(desktop.bgra_to_rgb(bytes([1, 2, 3, 4])), bytes([3, 2, 1]))
+
+    def test_the_hud_monitor_by_wallpaper_engines_key(self):
+        dev = '\\\\?\\DISPLAY#SAM0E3C#5&2b8f4a3&0&UID4352#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}'
+        self.assertTrue(desktop.monitor_matches(dev, 'SAM'))
+        self.assertTrue(desktop.monitor_matches(dev, '//?/DISPLAY#SAM0E3C'))
+        self.assertFalse(desktop.monitor_matches(dev, 'DEL40EA'))
+
+
+class PcAway(unittest.TestCase):
+    """pc_away.py's readers (batch P, #651)."""
+
+    def test_status_lines(self):
+        out = ('Eyelash Corne\nHELLO: {}\nRGB_SHOWN: {"left": {"lit": true, "wanted": false}, "right": null}\n'
+               'PC_STATE: {"held": true, "reason": 0, "state": "Awake"}\nRIGHT_REDRAWS: 5\n')
+        s = pc_away.status_json(out)
+        self.assertEqual(s['PC_STATE'], {'held': True, 'reason': 0, 'state': 'Awake'})
+        self.assertFalse(s['RGB_SHOWN']['left']['wanted'])
+        self.assertEqual(pc_away.status_json('PC_STATE: unknown (no HELLO bit 26)'), {})
+
+    def test_both_halves_dark_or_lit(self):
+        lit = {'rgb_state': {'left': {'lit': True}, 'right': {'lit': True}}}
+        half = {'rgb_state': {'left': {'lit': False}, 'right': {'lit': True}}}
+        dark = {'rgb_state': {'left': {'lit': False}, 'right': {'lit': False}}}
+        nothing = {'rgb_state': {'left': {'lit': False}, 'right': None}}
+        self.assertTrue(pc_away.both({'baseline': lit['rgb_state']}, 'lit', True))
+        self.assertFalse(pc_away.both(nothing, 'lit', False), 'a half that can\'t say is not dark')
+        events = [(1.0, lit), (2.0, half), (3.0, dark), (4.0, lit)]
+        self.assertEqual(pc_away.first_both(events, 'lit', False), 3.0)
+        self.assertEqual(pc_away.first_both(events, 'lit', True, after=1.5), 4.0)
+        self.assertIsNone(pc_away.first_both(events[:2], 'lit', False))
+
+    def test_the_real_nights(self):
+        log = ['2026-10-30 01:00:00Z Foxglove: PC state to the keyboard: away (display off)',
+               '2026-10-30 07:30:00Z Foxglove: PC state to the keyboard: awake, wake (display on)',
+               '2026-10-31 01:10:00Z Foxglove: PC state to the keyboard: away (display off)']
+        self.assertEqual(pc_away.history(log), [('2026-10-30 01:00:00Z', '2026-10-30 07:30:00Z'),
+                                                ('2026-10-31 01:10:00Z', None)])
+        self.assertEqual(pc_away.history([]), [])
+
+    def test_it_launches_only_with_on_calls_ok(self):
+        r = run('pc_away.py', '--app', sys.executable, '--lab', sys.executable)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('FOXGLOVE_APP_OK=1', r.stdout)
+
+
+class HandsFree(unittest.TestCase):
+    """The hands-free sitting's runner and its scripts' gates."""
+
+    def test_the_game_stand_in_needs_on_calls_ok(self):
+        r = run('game_flicker.py')
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn('FOXGLOVE_APP_OK=1', r.stdout)
+
+    def test_the_presets_card_against_the_manifests(self):
+        card = [{'name': 'Bandit Radar', 'wallpaper': 'bandit-radar', 'on_screen': False},
+                {'name': 'FURY Constellations', 'wallpaper': 'bandit-fury-stars', 'on_screen': True}]
+        names = ['Bandit Radar', 'FURY Constellations']
+        self.assertEqual(wc.card_check(card, names, ['bandit-fury-stars', 'bandit-hud']), ([], [], [], []))
+        self.assertEqual(wc.card_check(card, names + ['Moon Garden'], [])[0], ['Moon Garden'])
+        self.assertEqual(wc.card_check(card, names[:1], ['bandit-fury-stars'])[1], ['FURY Constellations'])
+        self.assertEqual(wc.card_check(card, names, [])[2], ['bandit-fury-stars'], 'tagged but not on screen')
+        self.assertEqual(wc.card_check(card, names, ['bandit-radar', 'bandit-fury-stars'])[3], ['bandit-radar'])
+        self.assertTrue(wc.hue_close(358, 2, 4) and not wc.hue_close(30, 40, 4))
+
+    def test_the_runner_names_cases_that_exist_once(self):
+        text = (LAB / 'sitting.ps1').read_text(encoding='utf-8')
+        import re
+        cases = re.findall(r"Case '(tests/hil/[a-z-]+\.toml)' '([a-z0-9-]+)'", text)
+        self.assertGreaterEqual(len(cases), 6)
+        root = LAB.parents[1]
+        for suite, name in cases:
+            names = [c['name'] for c in tomllib.loads((root / suite).read_text(encoding='utf-8'))['cases']]
+            self.assertEqual(sum(name in n for n in names), 1, f'{suite} --only {name}')
+        for script in re.findall(r'python (scripts/lab/[a-z_]+\.py)', text):
+            self.assertTrue((root / script).is_file(), script)
+        self.assertIn("Get-Process -Name foxglove ", text, 'the exact name, never a wildcard')
+        self.assertNotIn('foxglove*', text)
+        self.assertNotIn('foxglove_flash', text, 'the sitting never flashes')
+
+    @unittest.skipUnless(sys.platform == 'win32', 'PowerShell')
+    def test_the_runner_parses(self):
+        ps1 = LAB / 'sitting.ps1'
+        cmd = ("$e = $null; [System.Management.Automation.Language.Parser]::ParseFile("
+               f"'{ps1}', [ref]$null, [ref]$e) | Out-Null; $e.Count")
+        r = subprocess.run(['powershell', '-NoProfile', '-Command', cmd], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.stdout.strip(), '0', r.stdout + r.stderr)
 
 
 if __name__ == '__main__':

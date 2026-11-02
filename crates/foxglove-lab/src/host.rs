@@ -191,6 +191,20 @@ pub fn classify_with(entries: &[UsbEntry], serials: &Serials) -> Vec<HalfUsb> {
     out
 }
 
+/// Whether the right half's running firmware is on USB (its cable in: USB power), whatever
+/// Windows' status for it (problem 28 is expected). Off USB the right runs on its battery.
+pub fn right_on_usb(entries: &[UsbEntry]) -> bool {
+    right_on_usb_with(entries, serials())
+}
+
+/// [`right_on_usb`] for the given halves.
+pub fn right_on_usb_with(entries: &[UsbEntry], serials: &Serials) -> bool {
+    let id = format!("{RUNNING}{}", serials.right);
+    entries
+        .iter()
+        .any(|e| e.instance_id.eq_ignore_ascii_case(&id))
+}
+
 fn powershell(script: &str) -> Result<String> {
     ensure!(cfg!(windows), "host checks need Windows");
     let out = std::process::Command::new("powershell")
@@ -472,6 +486,22 @@ mod tests {
         ];
         assert_eq!(verdicts(&e), [Verdict::Ok, Verdict::Info]);
         assert_eq!(verdicts(&e[..1]), [Verdict::Ok, Verdict::Info]);
+    }
+
+    /// #618 batch R: the right on USB power (problem 28, no interfaces) or on its battery.
+    #[test]
+    fn the_right_on_usb_or_on_battery() {
+        let plugged = [
+            entry(RUNNING, LEFT_SERIAL, "OK", 3),
+            entry(RUNNING, RIGHT_SERIAL, "Error", 0),
+        ];
+        assert!(right_on_usb_with(&plugged, &Serials::default()));
+        assert!(!right_on_usb_with(&plugged[..1], &Serials::default()));
+        let boot = [entry(BOOTLOADER, RIGHT_SERIAL, "OK", 1)];
+        assert!(
+            !right_on_usb_with(&boot, &Serials::default()),
+            "a bootloader is not the running right"
+        );
     }
 
     #[test]

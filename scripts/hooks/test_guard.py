@@ -66,7 +66,10 @@ class App(unittest.TestCase):
                     'Start-Process foxglove',
                     r'Start-Process -FilePath C:\x\foxglove.exe',
                     r'python scripts/lab/pomodoro.py --app C:\x\foxglove.exe',
-                    'cargo run --manifest-path app/Cargo.toml --release']:
+                    'cargo run --manifest-path app/Cargo.toml --release',
+                    r'powershell -ExecutionPolicy Bypass -File scripts\lab\sitting.ps1',
+                    r'& scripts\lab\sitting.ps1 -Skip P',
+                    r'powershell -File scripts\release-test.ps1 -Firmware C:\fw -AllowApp -Sitting']:
             self.assertIn('On-call', blocked(cmd) or '', cmd)
 
     def test_not_launches(self):
@@ -77,6 +80,8 @@ class App(unittest.TestCase):
 
     def test_ok_marker(self):
         self.assertIsNone(blocked(r'$env:FOXGLOVE_APP_OK=1; python scripts/lab/pomodoro.py --app C:\x\foxglove.exe'))
+        self.assertIsNone(blocked("$env:FOXGLOVE_APP_OK = '1'; powershell -ExecutionPolicy Bypass -File scripts\\lab\\sitting.ps1"))
+        self.assertIsNone(blocked(r'powershell -File scripts\release-test.ps1 -Firmware C:\fw -AllowApp'), 'no -Sitting')
 
 
 class Port(unittest.TestCase):

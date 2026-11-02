@@ -105,6 +105,10 @@ APP_LAUNCH = [
     re.compile(HEAD + PROG + r'foxglove\.exe\b', re.I),
     re.compile(PYTHON + r'.*--app[\s=]["\']?[^\s"\']*foxglove\.exe', re.I),
     re.compile(HEAD + PROG + r'cargo(?:\.exe)?["\']?\s+run\b.*(--manifest-path\s+["\']?app[\\/]|(-p|--package|--bin)\s+foxglove(\s|$))', re.I),
+    # The hands-free sitting (scripts/lab/sitting.ps1, #618) and release-test.ps1 -Sitting launch
+    # test apps and take the focus: On-call only.
+    re.compile(r'(?:' + POWERSHELL + r'|' + HEAD + r')' + PROG + r'sitting\.ps1\b', re.I),
+    re.compile(r'(?:' + POWERSHELL + r'|' + HEAD + r')' + PROG + r'release-test\.ps1\b.*\s-Sitting\b', re.I),
 ]
 
 
