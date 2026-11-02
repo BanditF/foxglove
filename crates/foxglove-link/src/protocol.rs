@@ -74,7 +74,7 @@ pub mod capabilities {
     pub const PANEL_POLARITY: u32 = 1 << 27;
     /// RGB_STATE (D7 83) byte 29 says which underglow effects the left draws in the chosen
     /// colour ([`super::RgbState::colour_effects`], #626): Swirl as a band of hues around it.
-    pub const COLOUR_EFFECTS: u32 = 1 << 28;
+    pub const COLOUR_EFFECTS: u32 = 1 << 29;
 }
 pub const VERSION: u8 = 1;
 
@@ -1625,7 +1625,7 @@ mod tests {
         assert_eq!(s.colour_effects, Some(0x0B));
         assert_eq!(s.colour_effects.map(|m| m & (1 << 3) != 0), Some(true));
         assert_eq!(s.colour_effects.map(|m| m & (1 << 2) != 0), Some(false));
-        assert_eq!(capabilities::COLOUR_EFFECTS, 1 << 28);
+        assert_eq!(capabilities::COLOUR_EFFECTS, 1 << 29);
     }
 
     #[test]

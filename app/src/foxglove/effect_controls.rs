@@ -5,7 +5,7 @@
 //! that makes its own colours (a rainbow) gets a rainbow preview where the colour picker was.
 //!
 //! Firmware quirks live here as data, not as code in the pages. A keyboard that says which of
-//! its effects use the chosen colour (RGB_STATE byte 29, HELLO bit 28, #626: Swirl as a band of
+//! its effects use the chosen colour (RGB_STATE byte 29, HELLO bit 29, #626: Swirl as a band of
 //! hues around the colour) overrides the underglow rows by number ([`underglow_as`]); without
 //! that report the table is the only source.
 //!
