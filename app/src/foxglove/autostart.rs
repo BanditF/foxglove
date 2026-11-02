@@ -114,10 +114,10 @@ pub fn dev_build(exe: &std::path::Path, debug: bool) -> Option<&'static str> {
     if debug {
         return Some("a debug build");
     }
-    let dir = exe.parent()?.to_string_lossy().to_lowercase();
-    let dev = dir
-        .split(['/', '\\'])
-        .any(|c| matches!(c, "target" | "_targets" | "worktrees"));
+    // Split by hand: a Windows path read on Linux (the tests) has no `\` components.
+    let path = exe.to_string_lossy().to_lowercase();
+    let mut dirs = path.split(['/', '\\']).rev().skip(1); // the folders, not the file name
+    let dev = dirs.any(|c| matches!(c, "target" | "_targets" | "worktrees"));
     dev.then_some("a dev build (cargo target or worktree path)")
 }
 
