@@ -13,7 +13,8 @@ the [`foxglove-link`](../foxglove-link) crate.
 
 - **Left screen:** a 64x52 panel in place of the WPM chart showing the clock, volume, the media
   title (scrolling) and a per-game hint. The PC draws every pixel, so changing the layout
-  (`src/render.rs`) never needs a reflash. If the app stops, the WPM chart comes back after 65 s.
+  (`crates/panel/src/render.rs`, shared with the app) never needs a reflash. If the app stops,
+  the last frame stays until RELEASE or a restart (`NICE_VIEW_HOST_PANEL_TIMEOUT_S` = 0).
 - **Right screen:** push an art set without flashing. It goes PC -> left -> BLE split link ->
   right and is kept in RAM, so a power cycle brings back the built-in art.
 
@@ -22,7 +23,7 @@ hostpanel                      tray icon: Pause panel / Open config / Quit
 hostpanel run --console        same, logging to the console
 hostpanel status               panel size, right-half link + battery, art relay state
 hostpanel push-art set.bin     art blob from scripts/flipper_art.py OUT.bin INPUT
-hostpanel select -1            back to a built-in set (-1 = random, n = set n)
+hostpanel select 0             back to the built-in set (n = set n: kept slots follow it)
 hostpanel preview out.pbm      draw the panel once, no keyboard needed
 ```
 

@@ -244,7 +244,7 @@ active layer for free. The local API and plugins read and write it too.
   more renderers over the facts store. A declarative layout file is possible but not needed yet.
 
 **Local API.**
-- Transport: JSON-RPC over a named pipe (`\\.\pipeoxglove`, Unix socket
+- Transport: JSON-RPC over a named pipe (`\\.\pipe\foxglove`, Unix socket
   elsewhere, current-user ACL). No network listener by default. A localhost WebSocket for
   browser tools can be added behind an opt-in toggle with a token file.
 - Methods: `status`, `facts.get/set/subscribe`, `panel.override(bitmap, ttl)`,

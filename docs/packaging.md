@@ -27,7 +27,7 @@ updates run without elevation. Another Windows user installs their own copy. It 
 `app/resources/icon.ico`, which `app/build.rs` also embeds in the exe. No firmware or art is
 bundled.
 
-**Start with Windows** belongs to the app alone. The switch is in **Settings -> Theme and
+**Start with Windows** belongs to the app alone. The switch is in **App -> Startup and
 updates -> Start with Windows** and is on by default.
 - It writes and removes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\Foxglove`, the
   quoted exe path. Windows' Settings › Apps › Startup lists it with its own toggle.
@@ -70,26 +70,24 @@ per user and silent.
 
 ## Current settings paths
 
-These paths are resolved by `Settings::config_file_path()` and its callers;
-installation does not change them:
+Installation does not change these. With `FOXGLOVE_CONFIG_DIR` set, all of them go to that
+folder instead (tests and lab runs).
 
 | Data | Windows path |
 | --- | --- |
-| Overlay/KeyPeek-derived settings | `%APPDATA%\Foxglove\config\settings.ini` |
-| Last device / connection | `%APPDATA%\Foxglove\config\connection.ini` |
-| Screens settings | `%APPDATA%\Foxglove\config\screens.ini` |
-| Saved layer names | `%APPDATA%\Foxglove\config\layers.ini` |
+| Foxglove's settings and profiles (`foxglove::store`) | `%APPDATA%\Foxglove\foxglove.toml` |
+| Overlay settings (KeyPeek's, upstream format) | `%APPDATA%\Foxglove\config\settings.ini` |
 | Saved Studio keymap cache | `%APPDATA%\Foxglove\config\keymap-VID-PID.studio` (four-digit uppercase hex IDs) |
+| Art library | `%APPDATA%\Foxglove\config\art\` |
+| Installed plugins | `%APPDATA%\Foxglove\plugins\` |
+| Log | `%APPDATA%\Foxglove\logs\` |
 
-All current Foxglove writes above share `%APPDATA%\Foxglove\config` (the Windows
-`directories` crate appends `config`). Settings
-loading also falls back to KeyPeek's `%APPDATA%\srwi\KeyPeek\config\settings.ini`, then
-`settings.ini` in the process working directory. Saving writes to Foxglove's
-folder. Screens settings can import `%APPDATA%\hostpanel\config.toml` when
-`screens.ini` is absent. These legacy files remain in place; no migration is
-added here. A follow-up should move these files up one level, with a one-time import and
-legacy reads, so new writes go directly to
-`%APPDATA%\Foxglove`.
+The older per-feature files in `config\` (`connection.ini`, `screens.ini`, `layers.ini`,
+`lighting.ini`, `updates.ini`, `art.json`, `art-cycle.json`) are imported into `foxglove.toml`
+the first time each feature loads, then renamed `*.migrated` and kept. `screens` can also
+import hostpanel's `%APPDATA%\hostpanel\config.toml`. KeyPeek's `settings.ini` stays where it
+is ([profiles.md](profiles.md), Decision 1); loading it falls back to KeyPeek's
+`%APPDATA%\srwi\KeyPeek\config\settings.ini`.
 
 ## Releases and validation
 
