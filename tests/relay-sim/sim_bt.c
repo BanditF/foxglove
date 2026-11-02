@@ -30,6 +30,10 @@
 
 #include "art_relay.h"
 #include "half_marker.h"
+#if __has_include("health.h") // bisect.ps1 builds widgets from before #705 too
+#include "health.h"
+#define SIM_HEALTH 1
+#endif
 #include "screen_snap.h"
 #include "sim_kernel.h"
 
@@ -713,6 +717,40 @@ static uint16_t status_value(uint8_t *out) {
     n += sizeof(d);
     sys_put_le32(sim_right.redraws, out + n);
     n += 4;
+#ifdef SIM_HEALTH
+    if (sim_bt_faults.right_no_health) {
+        return n; // a right before #705
+    }
+    // The right's self-report (#705), as health.c fills it there: art_relay_peripheral.c's
+    // counters as this model keeps them.
+    struct health_wire h = {0};
+    h.version = HEALTH_VERSION;
+    h.half = 1;
+    h.length = sizeof(h);
+    h.flags = HEALTH_F_RELAY_PERIPHERAL | HEALTH_F_LIGHTING | HEALTH_F_POLARITY | HEALTH_F_DISPLAY;
+    memcpy(h.sha, "sim", 3);
+    h.fw_minor = 1;
+    h.uptime_s = (uint32_t)(sim_now_us() / 1000000);
+    h.selftest[HEALTH_CHECK_DISPLAY] = HEALTH_RESULT(HEALTH_PASS, 0);
+    h.selftest[HEALTH_CHECK_SETTINGS] = HEALTH_RESULT(HEALTH_PASS, 0);
+    h.selftest[HEALTH_CHECK_RELAY] = HEALTH_RESULT(sim_right.subscribes ? HEALTH_PASS : HEALTH_PENDING, 0);
+    h.selftest[HEALTH_CHECK_LEDS] = HEALTH_RESULT(HEALTH_PASS, 0);
+    h.relay_ready = (uint16_t)sim_right.subscribes;
+    h.redraws = sim_right.redraws;
+    h.art_ok = (uint16_t)sim_right.pushes_ok;
+    h.art_failed = (uint16_t)sim_right.pushes_rejected;
+    h.art_last_error = sim_right.pushes_rejected ? ART_RIGHT_BAD_CRC : 0;
+    h.art_set = sim_right.set;
+    h.underglow_effect = sim_right.look[4];
+    h.split_connected = 1;
+    h.pc_state = 0xff;
+    h.pc_reason = 0xff;
+    h.polarity = sim_right.polarity < 0 ? 0 : (uint8_t)sim_right.polarity;
+    h.polarity_right = 0xff;
+    h.leds = 21;
+    memcpy(out + n, &h, sizeof(h));
+    n += sizeof(h);
+#endif
     return n;
 }
 
@@ -750,6 +788,12 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
         return 0;
     }
     case ART_RELAY_COMMIT:
+        if (sim_bt_faults.right_reject_commit) {
+            sim_bt_faults.right_reject_commit = false;
+            sim_right.state = ART_RIGHT_BAD_CRC;
+            sim_right.pushes_rejected++;
+            return 0;
+        }
         if (sim_right.state == ART_RIGHT_RECEIVING && sim_right.received == sim_right.blob_len &&
             crc32_ieee(blob, sim_right.blob_len) == sim_right.blob_crc) {
             sim_right.state = ART_RIGHT_PLAYING;
@@ -852,6 +896,7 @@ static void right_rx_cb(struct k_work *w) {
 #ifdef ART_RELAY_RINGS_ON_SUBSCRIBE
             if (v & BT_GATT_CCC_NOTIFY) {
                 ring(ART_RELAY_RANG_RGB); // doorbell_written (cfg_write): every subscribe
+                sim_right.subscribes++;    // and health_relay_found() there (#705)
             }
 #endif
             sim_right.ccc_cfg = v;

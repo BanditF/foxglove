@@ -1,0 +1,43 @@
+health: HELLO caps bit 28 HEALTH 1
+health: -- one read: four chunks of one copy
+health: PC sends D7 13 00 00
+health: keyboard D7 93: status 0, half 0, chunk 0 of 4, length 96
+health: PC sends D7 13 00 01
+health: keyboard D7 93: status 0, half 0, chunk 1 of 4, length 96
+health: PC sends D7 13 00 02
+health: keyboard D7 93: status 0, half 0, chunk 2 of 4, length 96
+health: PC sends D7 13 00 03
+health: keyboard D7 93: status 0, half 0, chunk 3 of 4, length 96
+health: block version 1, half 0, length 96, flags 0x02, build 0.1.0 simtest
+health: self-test display n/a, settings pass, relay n/a, LEDs n/a
+health: raw HID sent > 0, reply drops 0; split connected 0, drops 0; pc state FF, polarity FF, LEDs 0, uptime >= 1 s
+health: -- six requests while the system queue can't run: four replies, two dropped
+health: keyboard D7 93: status 0, half 0, chunk 0 of 4, length 96
+health: keyboard D7 93: status 0, half 0, chunk 0 of 4, length 96
+health: keyboard D7 93: status 0, half 0, chunk 0 of 4, length 96
+health: keyboard D7 93: status 0, half 0, chunk 0 of 4, length 96
+health: 4 of 6 replies came
+health: -- the next read counts the two dropped
+health: PC sends D7 13 00 00
+health: keyboard D7 93: status 0, half 0, chunk 0 of 4, length 96
+health: PC sends D7 13 00 01
+health: keyboard D7 93: status 0, half 0, chunk 1 of 4, length 96
+health: PC sends D7 13 00 02
+health: keyboard D7 93: status 0, half 0, chunk 2 of 4, length 96
+health: PC sends D7 13 00 03
+health: keyboard D7 93: status 0, half 0, chunk 3 of 4, length 96
+health: block version 1, half 0, length 96, flags 0x02, build 0.1.0 simtest
+health: self-test display n/a, settings pass, relay n/a, LEDs n/a
+health: raw HID sent > 0, reply drops 2; split connected 0, drops 0; pc state FF, polarity FF, LEDs 0, uptime >= 1 s
+health: -- bad half, bad chunk, the right's chunk before its copy, the right without a relay
+health: PC sends D7 13 02 00
+health: keyboard D7 93: status 5, half 2, chunk 0 of 4, length 96
+health: PC sends D7 13 00 04
+health: keyboard D7 93: status 5, half 0, chunk 4 of 4, length 96
+health: PC sends D7 13 01 01
+health: keyboard D7 93: status 6, half 1, chunk 1 of 4, length 96
+health: PC sends D7 13 01 00
+health: keyboard D7 93: status 2, half 1, chunk 0 of 4, length 96
+health: -- a report cut short reads the left's chunk 0
+health: keyboard D7 93: status 0, half 0, chunk 0 of 4, length 96
+health: -- done

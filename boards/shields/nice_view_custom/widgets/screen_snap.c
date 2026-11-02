@@ -47,6 +47,9 @@ static void capture(struct k_work *work) {
         sys_put_le32(crc32_ieee(local.wire + SCREEN_SNAP_HEADER, SCREEN_SNAP_BYTES),
                      local.wire + 2);
     }
+    if (!ok) {
+        health_inc(HEALTH_SNAP_ERRORS); // #705
+    }
     k_spinlock_key_t key = k_spin_lock(&snap_lock);
     local.valid = ok;
     local.busy = false;

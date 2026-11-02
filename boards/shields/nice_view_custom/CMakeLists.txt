@@ -76,5 +76,11 @@ if(CONFIG_FOXGLOVE_PC_STATE)
   endif()
 endif()
 
+# The keyboard's self-report (#705): both halves, display or not.
+if(CONFIG_FOXGLOVE_HEALTH)
+  zephyr_library_include_directories(${CMAKE_SOURCE_DIR}/include)
+  zephyr_library_sources(widgets/health.c)
+endif()
+
 # Version, SHA and half marker, shared with the foxglove_link shield.
 include(${CMAKE_CURRENT_LIST_DIR}/foxglove_common.cmake)
