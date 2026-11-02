@@ -36,6 +36,9 @@ pub struct Action {
     pub hold_ms: u16,
     /// Whether this action needs confirmation.
     pub risky: bool,
+    /// The ZMK behavior as a keymap names it, without the `&` (`rgb_ug`, `tog`): the local
+    /// API's `behaviors.list` gives it so callers find ids by kind, not by label (#639).
+    pub behavior: &'static str,
 }
 
 #[derive(Default)]
@@ -93,6 +96,7 @@ pub fn learn(resolved: &[ResolvedLayer], raw: &Keymap, build: Option<String>) {
                     binding: (id, b.param1, b.param2),
                     hold_ms,
                     risky,
+                    behavior: keymap_name(behavior),
                 });
             }
         }
@@ -156,6 +160,21 @@ pub fn learn_cached(vid: u16, pid: u16, build: Option<&str>) -> bool {
         Some(build.to_string()),
     );
     true
+}
+
+/// A behavior's keymap name, for the kinds [`describe`] offers.
+fn keymap_name(b: &Behavior) -> &'static str {
+    match b {
+        Behavior::Underglow(_) => "rgb_ug",
+        Behavior::Backlight(_) => "bl",
+        Behavior::ToggleLayer { .. } => "tog",
+        Behavior::ToLayer { .. } => "to",
+        Behavior::StickyLayer { .. } => "sl",
+        Behavior::ExternalPower(_) => "ext_power",
+        Behavior::CapsWord => "caps_word",
+        Behavior::StudioUnlock => "studio_unlock",
+        _ => "",
+    }
 }
 
 /// What a binding does, if it's something worth a button: (group, label, hold ms, risky).

@@ -47,7 +47,11 @@ it opens no device).
 `run` and `rgb-latency` use the saved copy **only when it names the build the left
 runs** (D7 09, `major.minor.patch-profile-sha`, as the app keys it) and holds ids
 (#618). An FXK1 copy, a copy of another build, an empty one, a missing one, or a left
-whose build can't be read: the runner reads the ids itself over Studio on the left's
+whose build can't be read: while the app runs, the runner first asks its
+`behaviors.list` (#639, API 1.9's `behavior` names), and uses it when it lists every name the
+suite invokes (plus `rgb_ug`). The app lists only what it may invoke, so `kp`, `mo`, `&bt` and
+the other refused behaviors are never there; for those (or with the app closed, or before it
+read the keymap), the runner reads the ids itself over Studio on the left's
 USB serial port (`list_all_behaviors`, then `get_behavior_details` each; 3 s per call),
 found by the keyboard's USB ids and the left's serial, or `--studio-port COMn`. The
 report's `local_ids` says which source was used and why. If that read fails too (the

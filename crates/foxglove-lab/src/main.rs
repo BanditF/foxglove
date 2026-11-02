@@ -208,19 +208,24 @@ fn board_parts(
 }
 
 /// The behavior ids for the firmware on `link` (#618): the saved keymap when it names the
-/// build the left runs (D7 09), else the lab's own Studio read.
+/// build the left runs (D7 09), else the running app's `behaviors.list` when it has every name
+/// in `needed` (#639), else the lab's own Studio read.
 fn catalog_for(
     link: &impl foxglove_link::Transport,
     hello: Option<&foxglove_link::protocol::Hello>,
     keymap: Option<PathBuf>,
     studio_port: Option<&str>,
+    app_running: bool,
+    needed: &std::collections::BTreeSet<String>,
 ) -> Catalog {
     let builds = hello.is_some_and(|h| h.capabilities & capabilities::BUILD_INFO != 0);
     let left = builds
         .then(|| settings::build_info(link, 0).ok())
         .flatten()
         .map(|b| foxglove_lab::behaviors::build_key(&b));
-    foxglove_lab::behaviors::resolve(Catalog::load(keymap), left.as_deref(), || {
+    let app = app_running
+        .then(|| foxglove_lab::app_api::behaviors(foxglove_lab::app_api::BEHAVIORS_WAIT));
+    foxglove_lab::behaviors::resolve(Catalog::load(keymap), left.as_deref(), app, needed, || {
         foxglove_lab::studio::read(studio_port)
     })
 }
@@ -639,6 +644,8 @@ fn main() -> Result<std::process::ExitCode> {
             c.hello.as_ref(),
             cli.keymap,
             cli.studio_port.as_deref(),
+            guard.app_running(),
+            &["rgb_ug".to_string()].into(),
         );
         let rgb_ug = *catalog.ids.get("rgb_ug").ok_or_else(|| {
             anyhow::anyhow!(
@@ -730,6 +737,8 @@ fn main() -> Result<std::process::ExitCode> {
                 Some(&hello),
                 cli.keymap,
                 cli.studio_port.as_deref(),
+                guard.app_running(),
+                &foxglove_lab::behaviors::needed_names(&suite.cases),
             );
             report
                 .environment
