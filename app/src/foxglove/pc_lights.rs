@@ -350,6 +350,11 @@ pub type Writers = Box<dyn Fn(&str) -> foxglove_devices::Result<Box<dyn HidWrite
 /// Reads every LampArray's attributes and lamps (Windows).
 pub type LampArrays = Box<dyn FnMut() -> Vec<LampArrayDesc> + Send>;
 
+/// Opens the host's handle on a found Dynamic Lighting device (#691): Windows' LampArray, or a
+/// fake in tests. `None` when the host has none for it.
+pub type LampOpener =
+    Box<dyn FnMut(&Found) -> Option<Box<dyn foxglove_devices::pc_lighting::LampHandle>> + Send>;
+
 /// The worker's state, apart from the OS: tests drive it with a mocked HID writer.
 pub struct Worker {
     bundled: Catalog,
@@ -359,6 +364,7 @@ pub struct Worker {
     writers: Writers,
     lamp_arrays: LampArrays,
     lamp_info: BTreeMap<(u16, u16), LampArrayDesc>,
+    lamp_opener: LampOpener,
     found: Vec<Found>,
     unknown: Vec<Unknown>,
     /// The catalog changed: scan again, without putting colours back.
@@ -403,6 +409,7 @@ impl Worker {
             writers,
             lamp_arrays,
             lamp_info: BTreeMap::new(),
+            lamp_opener: Box::new(|_| None),
             found: Vec::new(),
             unknown: Vec::new(),
             rescan: false,
@@ -415,6 +422,12 @@ impl Worker {
             scene: None,
             scene_error: false,
         }
+    }
+
+    /// Drives Dynamic Lighting devices through `opener` (#691); without one they are listed only.
+    pub fn with_lamp_opener(mut self, opener: LampOpener) -> Self {
+        self.lamp_opener = opener;
+        self
     }
 
     /// A new enumeration: opens drivers for arrivals and puts their saved colours back (unless
@@ -480,10 +493,19 @@ impl Worker {
         });
         for f in &now {
             let arrived = !self.found.iter().any(|o| same(o, f));
-            if !arrived || !matches!(f.control, Control::Driver(_)) {
+            if !arrived || f.control == Control::NotYet {
                 continue;
             }
-            match (self.writers)(&f.path).and_then(|w| pcl::open(f, w)) {
+            let opened = match f.control {
+                // A Dynamic Lighting device, its lamps read: the host's handle on it (#691).
+                Control::LampArray if f.zones.is_empty() => continue,
+                Control::LampArray => match (self.lamp_opener)(f) {
+                    Some(handle) => pcl::open_lamp_array(f, handle),
+                    None => continue,
+                },
+                _ => (self.writers)(&f.path).and_then(|w| pcl::open(f, w)),
+            };
+            match opened {
                 Ok(driver) => {
                     self.drivers.insert(f.key.clone(), driver);
                     let fought = self.conflicts.iter().any(|c| c.key == f.key);
@@ -1025,7 +1047,8 @@ pub fn start() {
             settings,
             writers,
             Box::new(lamp_arrays),
-        );
+        )
+        .with_lamp_opener(super::scene_lamps::worker_opener());
         let _ = ticketed(&tx, Msg::Scan);
         while let Ok(first) = rx.recv() {
             // A burst of arrivals (a hub with several interfaces) scans once.
@@ -1870,6 +1893,189 @@ mod tests {
         assert_eq!(parse_hex(&hex([1, 0xab, 0xff])), Some([1, 0xab, 0xff]));
         assert_eq!(parse_hex("f08a3c"), None);
         assert_eq!(parse_hex("#f08a3"), None);
+    }
+
+    /// What a fake Dynamic Lighting device was asked: `None` index = every lamp.
+    type LampCalls = Arc<Mutex<Vec<(String, Option<usize>, [u8; 3])>>>;
+
+    /// A fake LampArray of any vendor: records each write under its key.
+    struct FakeLamps {
+        key: String,
+        count: usize,
+        calls: LampCalls,
+    }
+
+    impl pcl::LampHandle for FakeLamps {
+        fn lamp_count(&self) -> usize {
+            self.count
+        }
+        fn set_all(&mut self, c: Rgb) -> foxglove_devices::Result<()> {
+            let call = (self.key.clone(), None, [c.r, c.g, c.b]);
+            self.calls.lock().unwrap().push(call);
+            Ok(())
+        }
+        fn set_lamps(&mut self, lamps: &[(usize, Rgb)]) -> foxglove_devices::Result<()> {
+            let mut calls = self.calls.lock().unwrap();
+            for &(i, c) in lamps {
+                calls.push((self.key.clone(), Some(i), [c.r, c.g, c.b]));
+            }
+            Ok(())
+        }
+    }
+
+    /// Opens a fake for every Dynamic Lighting device, sized by its lamps.
+    fn fake_lamps(calls: &LampCalls) -> LampOpener {
+        let calls = calls.clone();
+        Box::new(move |f: &Found| {
+            Some(Box::new(FakeLamps {
+                key: f.key.clone(),
+                count: f.zones.len(),
+                calls: calls.clone(),
+            }) as Box<dyn pcl::LampHandle>)
+        })
+    }
+
+    const MOUSE: &str = "046d:c332";
+
+    /// #691: the mouse on Dynamic Lighting takes a colour on all its lamps or on one, goes
+    /// dark, blinks and comes back, and its colours are saved like any device's.
+    #[test]
+    fn a_lamp_array_takes_colours_per_lamp_off_and_identify() {
+        let calls = LampCalls::default();
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(fake_lamps(&calls));
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "nothing saved: nothing written"
+        );
+        let orange = [0xf0, 0x8a, 0x3c];
+        w.handle(
+            Msg::Set {
+                key: MOUSE.into(),
+                colors: vec![(0, orange), (1, orange)],
+            },
+            false,
+            &mut no_wait(),
+        );
+        w.handle(
+            Msg::Set {
+                key: MOUSE.into(),
+                colors: vec![(1, [0, 0, 255])],
+            },
+            false,
+            &mut no_wait(),
+        );
+        assert_eq!(
+            calls.lock().unwrap().drain(..).collect::<Vec<_>>(),
+            vec![
+                (MOUSE.to_string(), None, orange),
+                (MOUSE.to_string(), Some(1), [0, 0, 255]),
+            ],
+            "one colour on every lamp is one call; one lamp is that lamp"
+        );
+        let row = w.snapshot_row(MOUSE).unwrap();
+        assert_eq!(row.zones[0], ("Lamp 1 · Logo".to_string(), Some(orange)));
+        assert_eq!(row.zones[1].1, Some([0, 0, 255]));
+        assert_eq!(
+            w.settings.devices[MOUSE].colors,
+            BTreeMap::from([
+                ("0".to_string(), "#f08a3c".to_string()),
+                ("1".to_string(), "#0000ff".to_string())
+            ])
+        );
+        assert_eq!(
+            w.status.as_deref(),
+            Some("G502 Proteus Spectrum: colours set")
+        );
+        w.handle(Msg::Off(MOUSE.into()), false, &mut no_wait());
+        assert_eq!(
+            calls.lock().unwrap().drain(..).collect::<Vec<_>>(),
+            vec![(MOUSE.to_string(), None, [0, 0, 0])]
+        );
+        // Identify blinks the whole device, then puts back what it had (dark, after Off).
+        w.handle(Msg::Identify(MOUSE.into()), false, &mut no_wait());
+        let blink = calls.lock().unwrap().drain(..).collect::<Vec<_>>();
+        assert_eq!(blink.len(), pcl::IDENTIFY_STEPS + 1);
+        assert_eq!(blink[0], (MOUSE.to_string(), None, [255, 255, 255]));
+        assert_eq!(*blink.last().unwrap(), (MOUSE.to_string(), None, [0, 0, 0]));
+        // Paused (#404): refused, nothing written.
+        w.handle(
+            Msg::Set {
+                key: MOUSE.into(),
+                colors: vec![(0, orange)],
+            },
+            true,
+            &mut no_wait(),
+        );
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    /// #691: a Dynamic Lighting device's saved colours go back on when it arrives, as a case
+    /// board's do, and one with no handle (Windows lists none) is listed only.
+    #[test]
+    fn a_lamp_arrays_saved_colours_come_back_on_arrival() {
+        let calls = LampCalls::default();
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            MOUSE.into(),
+            Saved {
+                colors: BTreeMap::from([
+                    ("0".into(), "#ff0000".into()),
+                    ("1".into(), "#00ff00".into()),
+                ]),
+                match_keyboard: false,
+            },
+        );
+        let (w, _) = worker(settings.clone());
+        let mut w = w.with_lamp_opener(fake_lamps(&calls));
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (MOUSE.to_string(), Some(0), [255, 0, 0]),
+                (MOUSE.to_string(), Some(1), [0, 255, 0]),
+            ]
+        );
+        // The same scan again: not an arrival, nothing written.
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        // No handle: listed, not driven.
+        let (mut bare, _) = worker(settings);
+        bare.scan(&case_hid(), &mut nothing(), false, true);
+        bare.handle(Msg::Off(MOUSE.into()), false, &mut no_wait());
+        assert_eq!(
+            bare.status.as_deref(),
+            Some("That device isn't connected now")
+        );
+        assert_eq!(bare.snapshot_row(MOUSE).unwrap().zones.len(), 2);
+    }
+
+    /// Systems, not products (#563): the second desk's 12-lamp lightbar, another vendor and
+    /// kind, through the same code.
+    #[test]
+    fn any_lamp_array_takes_a_colour_per_lamp() {
+        use crate::foxglove::fixtures::second_desk as desk;
+        let calls = LampCalls::default();
+        let writers: Writers =
+            Box::new(|_path: &str| Ok(Box::new(Recorder(Arc::default())) as Box<dyn HidWriter>));
+        let lamps: LampArrays = Box::new(|| vec![desk::lightbar_desc()]);
+        let mut w = Worker::new(desk::catalog(), None, Settings::default(), writers, lamps)
+            .with_lamp_opener(fake_lamps(&calls));
+        w.scan(&desk::hid(), &mut nothing(), false, true);
+        let key = w.snapshot().devices[1].key.clone();
+        let colors: Vec<_> = (0..12).map(|i| (i, [i as u8 * 20, 0, 0])).collect();
+        w.handle(
+            Msg::Set {
+                key: key.clone(),
+                colors,
+            },
+            false,
+            &mut no_wait(),
+        );
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 12);
+        assert_eq!(calls[11], (key, Some(11), [220, 0, 0]));
     }
 
     #[test]

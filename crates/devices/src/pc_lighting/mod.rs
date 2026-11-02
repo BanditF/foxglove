@@ -29,7 +29,7 @@ use crate::calibration::Calibration;
 use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
 pub use catalog::{Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRole, ZoneSpec};
-pub use lamp_array::{Lamp, LampArrayDesc};
+pub use lamp_array::{Lamp, LampArrayDesc, LampArrayDriver, LampHandle};
 
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;
@@ -372,6 +372,25 @@ pub fn open(found: &Found, writer: Box<dyn HidWriter>) -> Result<Box<dyn Lightin
     };
     Ok(Box::new(calibrated::Calibrated::new(
         driver,
+        found.key.clone(),
+        &found.zones,
+        found.calibration.clone(),
+    )))
+}
+
+/// Opens the driver for a found Dynamic Lighting device over the host's handle to it (#691),
+/// wrapped in [`calibrated::Calibrated`] like every driver. Its lamps must have been read (its
+/// zones are its lamps).
+pub fn open_lamp_array(
+    found: &Found,
+    handle: Box<dyn LampHandle>,
+) -> Result<Box<dyn LightingDevice>> {
+    if found.control != Control::LampArray {
+        return Err(DeviceError::Unsupported);
+    }
+    let driver = LampArrayDriver::new(found.name.clone(), &found.zones, handle)?;
+    Ok(Box::new(calibrated::Calibrated::new(
+        Box::new(driver),
         found.key.clone(),
         &found.zones,
         found.calibration.clone(),

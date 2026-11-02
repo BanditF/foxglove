@@ -910,9 +910,15 @@ fn sync_result(
     }
 }
 
-/// Whether Foxglove writes this device's colours itself.
+/// Whether Foxglove writes this device's colours itself: a driver's, or a Dynamic Lighting
+/// device once its lamps are read (#691).
 fn writable(r: &super::pc_lights::Row) -> bool {
-    matches!(r.control, foxglove_devices::pc_lighting::Control::Driver(_))
+    use foxglove_devices::pc_lighting::Control;
+    match r.control {
+        Control::Driver(_) => true,
+        Control::LampArray => !r.zones.is_empty(),
+        Control::NotYet => false,
+    }
 }
 
 /// `pc_lighting.list` (#617): every PC lighting device the Lights page lists.
@@ -1185,7 +1191,15 @@ mod parity_tests {
             list.devices[1].writable,
             "the second desk's case (any driver)"
         );
-        assert!(!list.devices[2].writable, "a LampArray is Windows'");
+        assert!(
+            !list.devices[2].writable,
+            "a LampArray before its lamps are read"
+        );
+        // Once read, its lamps are zones Foxglove sets (#691).
+        let mut read = desk();
+        read.devices[2].zones = vec![("Lamp 1 · Accent".into(), None)];
+        read.devices[2].zone_ids = vec!["0".into()];
+        assert!(pc_devices(&read).devices[2].writable);
         assert!(
             !list.devices[3].writable,
             "the cooler isn't controllable yet"

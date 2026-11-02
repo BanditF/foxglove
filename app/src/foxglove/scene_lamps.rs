@@ -310,6 +310,7 @@ pub struct WindowsLamps {
 #[cfg(target_os = "windows")]
 mod imp {
     use super::{Changed, LampDevice, Opener};
+    use std::collections::BTreeMap;
     use windows::Devices::Enumeration::DeviceInformation;
     use windows::Devices::Lights::LampArray;
     use windows::Foundation::TypedEventHandler;
@@ -363,34 +364,50 @@ mod imp {
         Some((vid, pid))
     }
 
+    /// The LampArrays behind a Lights page key: those whose vendor and product match, not
+    /// claimed by another key; one only for a key with a serial. What `key` claimed before is
+    /// let go first (it is opened afresh). Shared by scenes and the Lights worker (#691).
+    pub(super) fn arrays_for(
+        key: &str,
+        claimed: &mut BTreeMap<String, String>,
+    ) -> windows::core::Result<Vec<LampArray>> {
+        let Some((vid, pid)) = vid_pid(key) else {
+            return Ok(Vec::new());
+        };
+        claimed.retain(|_, k| k != key);
+        let one_only = key.split(':').count() > 2;
+        let selector = LampArray::GetDeviceSelector()?;
+        let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join()?;
+        let mut out = Vec::new();
+        for info in &list {
+            if one_only && !out.is_empty() {
+                break;
+            }
+            let id = info.Id()?;
+            if claimed.contains_key(&id.to_string()) {
+                continue;
+            }
+            let Ok(array) = LampArray::FromIdAsync(&id).and_then(|op| op.join()) else {
+                continue;
+            };
+            if array.HardwareVendorId()? != vid || array.HardwareProductId()? != pid {
+                continue;
+            }
+            claimed.insert(id.to_string(), key.to_string());
+            out.push(array);
+        }
+        Ok(out)
+    }
+
     impl Opener for super::WindowsLamps {
         fn open(&mut self, key: &str, changed: Changed) -> Vec<Box<dyn LampDevice>> {
-            let Some((vid, pid)) = vid_pid(key) else {
-                return Vec::new();
-            };
-            // Opened afresh: what this key held before is let go.
-            self.claimed.retain(|_, k| k != key);
-            let one_only = key.split(':').count() > 2;
-            let claimed = &mut self.claimed;
-            let mut read = || -> windows::core::Result<Vec<Box<dyn LampDevice>>> {
-                let selector = LampArray::GetDeviceSelector()?;
-                let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join()?;
-                let mut out: Vec<Box<dyn LampDevice>> = Vec::new();
-                for info in &list {
-                    if one_only && !out.is_empty() {
-                        break;
-                    }
-                    let id = info.Id()?;
-                    if claimed.contains_key(&id.to_string()) {
-                        continue;
-                    }
-                    let Ok(array) = LampArray::FromIdAsync(&id).and_then(|op| op.join()) else {
-                        continue;
-                    };
-                    if array.HardwareVendorId()? != vid || array.HardwareProductId()? != pid {
-                        continue;
-                    }
-                    claimed.insert(id.to_string(), key.to_string());
+            let arrays = arrays_for(key, &mut self.claimed).unwrap_or_else(|e| {
+                eprintln!("Foxglove: scene: opening Dynamic Lighting device {key}: {e}");
+                Vec::new()
+            });
+            arrays
+                .into_iter()
+                .map(|array| {
                     let tell = changed.clone();
                     let token = array
                         .AvailabilityChanged(&TypedEventHandler::new(move |_, _| {
@@ -398,20 +415,98 @@ mod imp {
                             Ok(())
                         }))
                         .ok();
-                    out.push(Box::new(Device {
+                    Box::new(Device {
                         count: array.LampCount().unwrap_or(0),
                         array,
                         token,
-                    }));
-                }
-                Ok(out)
-            };
-            read().unwrap_or_else(|e| {
-                eprintln!("Foxglove: scene: opening Dynamic Lighting device {key}: {e}");
-                Vec::new()
-            })
+                    }) as Box<dyn LampDevice>
+                })
+                .collect()
         }
     }
+
+    /// The Lights worker's handle on one key's LampArrays (#691): every matching device gets
+    /// the same colours. Windows shows them while Foxglove may drive the device (in front, or
+    /// as the background controller) and keeps them for when it may.
+    pub struct Handle {
+        arrays: Vec<LampArray>,
+    }
+
+    fn color(c: foxglove_devices::Rgb) -> Color {
+        Color {
+            A: 255,
+            R: c.r,
+            G: c.g,
+            B: c.b,
+        }
+    }
+
+    /// Runs `call` on every device, even after one fails.
+    fn each(
+        arrays: &[LampArray],
+        mut call: impl FnMut(&LampArray) -> windows::core::Result<()>,
+    ) -> foxglove_devices::Result<()> {
+        let mut failed = None;
+        for a in arrays {
+            if let Err(e) = call(a) {
+                failed = Some(e);
+            }
+        }
+        match failed {
+            Some(e) => Err(foxglove_devices::DeviceError::Backend(e.to_string())),
+            None => Ok(()),
+        }
+    }
+
+    impl foxglove_devices::pc_lighting::LampHandle for Handle {
+        fn lamp_count(&self) -> usize {
+            self.arrays
+                .iter()
+                .map(|a| a.LampCount().unwrap_or(0).max(0) as usize)
+                .min()
+                .unwrap_or(0)
+        }
+
+        fn set_all(&mut self, c: foxglove_devices::Rgb) -> foxglove_devices::Result<()> {
+            each(&self.arrays, |a| a.SetColor(color(c)))
+        }
+
+        fn set_lamps(
+            &mut self,
+            lamps: &[(usize, foxglove_devices::Rgb)],
+        ) -> foxglove_devices::Result<()> {
+            let colours: Vec<Color> = lamps.iter().map(|&(_, c)| color(c)).collect();
+            let indices: Vec<i32> = lamps.iter().map(|&(i, _)| i as i32).collect();
+            each(&self.arrays, |a| a.SetColorsForIndices(&colours, &indices))
+        }
+    }
+
+    /// Opens the Lights worker's handle for a key, claiming its devices in `claimed`; `None`
+    /// when Windows lists none for it.
+    pub fn handle(key: &str, claimed: &mut BTreeMap<String, String>) -> Option<Handle> {
+        let arrays = arrays_for(key, claimed).unwrap_or_else(|e| {
+            eprintln!("Foxglove: opening Dynamic Lighting device {key}: {e}");
+            Vec::new()
+        });
+        (!arrays.is_empty()).then_some(Handle { arrays })
+    }
+}
+
+/// The Lights worker's handles on Dynamic Lighting devices (#691), through Windows. It keeps
+/// its own claims: scenes open the same devices separately, and both may hold them at once.
+#[cfg(target_os = "windows")]
+pub fn worker_opener() -> super::pc_lights::LampOpener {
+    let mut claimed = BTreeMap::new();
+    Box::new(move |f: &foxglove_devices::pc_lighting::Found| {
+        imp::handle(&f.key, &mut claimed)
+            .map(|h| Box::new(h) as Box<dyn foxglove_devices::pc_lighting::LampHandle>)
+    })
+}
+
+/// Elsewhere there are no Dynamic Lighting devices.
+#[cfg(not(target_os = "windows"))]
+pub fn worker_opener() -> super::pc_lights::LampOpener {
+    Box::new(|_| None)
 }
 
 /// Elsewhere there are no Dynamic Lighting devices.

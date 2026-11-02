@@ -4,7 +4,8 @@
 //! `Windows.Devices.Lights`) and this turns them into the zones every other light has, one per
 //! lamp.
 
-use super::{LampArrayInfo, ZoneRole, ZoneSpec};
+use super::{LampArrayInfo, LightingDevice, ZoneRole, ZoneSpec};
+use crate::{DeviceError, Result, Rgb};
 
 /// The most lamps that get a zone each (zone ids are one byte). A larger array still takes one
 /// colour on every lamp.
@@ -83,8 +84,85 @@ pub fn lamp_zones(lamps: &[Lamp]) -> Vec<ZoneSpec> {
         .collect()
 }
 
+/// One LampArray as the host drives it: Windows' `LampArray` in the app, a fake in tests.
+/// Lamp indices are the device's own (0-based, in its order).
+pub trait LampHandle: Send {
+    /// How many lamps the device has (may be more than [`MAX_LAMPS`]).
+    fn lamp_count(&self) -> usize;
+    /// Every lamp one colour.
+    fn set_all(&mut self, color: Rgb) -> Result<()>;
+    /// Some lamps, each its own colour: `(lamp index, colour)`.
+    fn set_lamps(&mut self, lamps: &[(usize, Rgb)]) -> Result<()>;
+}
+
+/// A LampArray as a [`LightingDevice`]: one zone per lamp, a static colour each. What it
+/// shows is the host's business (Windows decides which app's colours a device shows); the
+/// driver remembers what Foxglove set, as every write-only driver does.
+pub struct LampArrayDriver {
+    name: String,
+    zones: Vec<String>,
+    colors: Vec<Option<Rgb>>,
+    handle: Box<dyn LampHandle>,
+}
+
+impl LampArrayDriver {
+    /// A driver over `handle` for these zones (one per lamp, from [`lamp_zones`]).
+    pub fn new(name: String, zones: &[ZoneSpec], handle: Box<dyn LampHandle>) -> Result<Self> {
+        if zones.is_empty()
+            || zones
+                .iter()
+                .any(|z| usize::from(z.id) >= handle.lamp_count())
+        {
+            return Err(DeviceError::Backend(format!("{name}: lamps not read yet")));
+        }
+        Ok(Self {
+            name,
+            zones: zones.iter().map(|z| z.name.clone()).collect(),
+            colors: vec![None; zones.len()],
+            handle,
+        })
+    }
+}
+
+impl LightingDevice for LampArrayDriver {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn zones(&self) -> Vec<String> {
+        self.zones.clone()
+    }
+
+    fn colors(&self) -> Vec<Option<Rgb>> {
+        self.colors.clone()
+    }
+
+    /// One colour on every lamp is one call (and reaches lamps past [`MAX_LAMPS`]); anything
+    /// else names its lamps.
+    fn set_zones(&mut self, colors: &[(usize, Rgb)]) -> Result<()> {
+        if colors.iter().any(|&(i, _)| i >= self.zones.len()) {
+            return Err(DeviceError::Unsupported);
+        }
+        let Some(&(_, first)) = colors.first() else {
+            return Ok(());
+        };
+        let mut covered = vec![false; self.zones.len()];
+        colors.iter().for_each(|&(i, _)| covered[i] = true);
+        let whole = covered.iter().all(|c| *c) && colors.iter().all(|&(_, c)| c == first);
+        if whole {
+            self.handle.set_all(first)?;
+        } else {
+            self.handle.set_lamps(colors)?;
+        }
+        for &(i, c) in colors {
+            self.colors[i] = Some(c);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn lamp(position: Option<[u16; 2]>, purposes: u32) -> Lamp {
@@ -126,6 +204,90 @@ mod tests {
         assert_eq!(zones.len(), MAX_LAMPS);
         assert_eq!(zones.last().unwrap().id, 255);
         assert_eq!(zones[0].name, "Lamp 1 · Key");
+    }
+
+    /// A fake LampArray: records each call.
+    #[derive(Clone, Default)]
+    pub(crate) struct FakeLamps {
+        pub count: usize,
+        pub calls: std::sync::Arc<std::sync::Mutex<Vec<Call>>>,
+        pub fail: bool,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) enum Call {
+        All(Rgb),
+        Lamps(Vec<(usize, Rgb)>),
+    }
+
+    impl LampHandle for FakeLamps {
+        fn lamp_count(&self) -> usize {
+            self.count
+        }
+        fn set_all(&mut self, color: Rgb) -> Result<()> {
+            if self.fail {
+                return Err(DeviceError::Disconnected);
+            }
+            self.calls.lock().unwrap().push(Call::All(color));
+            Ok(())
+        }
+        fn set_lamps(&mut self, lamps: &[(usize, Rgb)]) -> Result<()> {
+            if self.fail {
+                return Err(DeviceError::Disconnected);
+            }
+            self.calls.lock().unwrap().push(Call::Lamps(lamps.to_vec()));
+            Ok(())
+        }
+    }
+
+    const RED: Rgb = Rgb { r: 255, g: 0, b: 0 };
+    const BLUE: Rgb = Rgb { r: 0, g: 0, b: 255 };
+
+    #[test]
+    fn one_colour_on_every_lamp_is_one_call_else_per_lamp() {
+        let fake = FakeLamps {
+            count: 3,
+            ..Default::default()
+        };
+        let zones = lamp_zones(&vec![lamp(None, purpose::ACCENT); 3]);
+        let mut d =
+            LampArrayDriver::new("Desk strip".into(), &zones, Box::new(fake.clone())).unwrap();
+        assert_eq!(
+            d.zones(),
+            vec!["Lamp 1 · Accent", "Lamp 2 · Accent", "Lamp 3 · Accent"]
+        );
+        d.set_all(RED).unwrap();
+        d.set_zones(&[(1, BLUE)]).unwrap();
+        d.set_zones(&[(0, RED), (1, BLUE), (2, RED)]).unwrap();
+        assert_eq!(
+            *fake.calls.lock().unwrap(),
+            vec![
+                Call::All(RED),
+                Call::Lamps(vec![(1, BLUE)]),
+                Call::Lamps(vec![(0, RED), (1, BLUE), (2, RED)]),
+            ]
+        );
+        assert_eq!(d.colors(), vec![Some(RED), Some(BLUE), Some(RED)]);
+        assert_eq!(d.set_zones(&[(3, RED)]), Err(DeviceError::Unsupported));
+    }
+
+    #[test]
+    fn a_failed_write_keeps_the_colours_it_had_and_unread_lamps_dont_open() {
+        let mut fake = FakeLamps {
+            count: 2,
+            ..Default::default()
+        };
+        let zones = lamp_zones(&[lamp(None, 0), lamp(None, 0)]);
+        assert!(LampArrayDriver::new("x".into(), &[], Box::new(fake.clone())).is_err());
+        let short = FakeLamps {
+            count: 1,
+            ..Default::default()
+        };
+        assert!(LampArrayDriver::new("x".into(), &zones, Box::new(short)).is_err());
+        fake.fail = true;
+        let mut d = LampArrayDriver::new("x".into(), &zones, Box::new(fake)).unwrap();
+        assert!(d.set_all(RED).is_err());
+        assert_eq!(d.colors(), vec![None, None]);
     }
 
     #[test]
