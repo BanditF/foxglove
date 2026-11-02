@@ -163,7 +163,16 @@ pub fn unknown(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Unknown> {
 
 /// Matches HID interfaces against the catalog, then lists LampArray devices the catalog
 /// doesn't name. One entry per device: a board with several interfaces is listed once.
+///
+/// A keyboard with a Raw HID interface (ZMK with Foxglove link, QMK, VIA) is never listed here,
+/// even when it is also a LampArray (#691, #88): its own link and the Keyboard card drive its
+/// lights, and a second driver here (or a scene through Windows) would fight them. Same rule
+/// as [`unknown`]: keyboard first, by VID/PID.
 pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
+    let raw_hid_keyboard = |vid, pid| {
+        hid.iter()
+            .any(|o| (o.vid, o.pid) == (vid, pid) && o.usage_page == RAW_HID_USAGE_PAGE)
+    };
     let mut found: Vec<Found> = Vec::new();
     for entry in hid {
         let key = device_key(entry);
@@ -196,6 +205,7 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
         if entry.usage_page != LAMP_ARRAY_USAGE_PAGE
             || entry.usage != LAMP_ARRAY_USAGE
             || found.iter().any(|f| f.key == key)
+            || raw_hid_keyboard(entry.vid, entry.pid)
         {
             continue;
         }
@@ -454,6 +464,23 @@ mod tests {
         );
         assert_eq!(found[0].key, "103c:84fd");
         assert_eq!(found[0].zones.len(), 5);
+    }
+
+    /// #691: a keyboard that is also a LampArray (the Corne with #88's firmware: Raw HID for
+    /// Foxglove link plus usage page 0x59) is the Keyboard card's, never a second light here.
+    #[test]
+    fn a_keyboard_that_is_also_a_lamp_array_is_not_listed_twice() {
+        let catalog = Catalog::bundled();
+        let hid = vec![
+            entry(0x1d50, 0x615e, 1, 6, "corne-keys"),
+            entry(0x1d50, 0x615e, 0xff60, 0x61, "corne-raw"),
+            entry(0x1d50, 0x615e, 0x59, 1, "corne-lamps"),
+            entry(0x1234, 0x5678, 0x59, 1, "strip"),
+        ];
+        let found = discover(&catalog, &hid);
+        let keys: Vec<_> = found.iter().map(|f| f.key.as_str()).collect();
+        assert_eq!(keys, vec!["1234:5678"]);
+        assert!(unknown(&catalog, &hid).is_empty());
     }
 
     #[test]
