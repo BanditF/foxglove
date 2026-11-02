@@ -411,9 +411,116 @@ pub fn draw_notice(p: &mut Panel, n: &Notice) {
     }
 }
 
+/// The art key's card (#60): which piece of Rotation an `&art_next` / `&art_prev` press moved
+/// to, shown for a moment over the layout.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ArtCard {
+    /// The piece's place in Rotation, from 0.
+    pub index: usize,
+    pub total: usize,
+    /// The piece's name, as the Screens page says it.
+    pub name: String,
+    /// The key stepped forward (`&art_next`) or back.
+    pub forward: bool,
+}
+
+/// The art key's card, still (one frame): Bandit corner brackets, "ART" over the place (n/m)
+/// with a triangle on the side the key stepped to, and the piece's name cut to the panel.
+pub fn draw_art_card(p: &mut Panel, c: &ArtCard) {
+    p.clear();
+    let w = p.width as i32;
+    let h = p.height as i32;
+    let line = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+    for (x, y, dx, dy) in [
+        (0, 0, 1, 1),
+        (w - 1, 0, -1, 1),
+        (0, h - 1, 1, -1),
+        (w - 1, h - 1, -1, -1),
+    ] {
+        for (to_x, to_y) in [(x + 3 * dx, y), (x, y + 3 * dy)] {
+            Line::new(Point::new(x, y), Point::new(to_x, to_y))
+                .into_styled(line)
+                .draw(p)
+                .ok();
+        }
+    }
+    centred(p, &FONT_5X8, "ART", 5);
+    // The place large, with a triangle on the side the key stepped to.
+    let count = format!("{}/{}", c.index + 1, c.total);
+    let (font, top) = if text_width(&FONT_9X18_BOLD, &count) <= w - 20 {
+        (&FONT_9X18_BOLD, 13)
+    } else {
+        (&FONT_5X8, 19)
+    };
+    centred(p, font, &count, top);
+    let half = text_width(font, &count) / 2;
+    let cy = top + font.character_size.height as i32 / 2;
+    let (tip, back) = if c.forward {
+        (w / 2 + half + 8, w / 2 + half + 3)
+    } else {
+        (w / 2 - half - 8, w / 2 - half - 3)
+    };
+    Triangle::new(
+        Point::new(tip, cy),
+        Point::new(back, cy - 5),
+        Point::new(back, cy + 5),
+    )
+    .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+    .draw(p)
+    .ok();
+    centred(
+        p,
+        &FONT_5X8,
+        &clipped(&FONT_5X8, c.name.trim(), w - 2),
+        h - 14,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #60: the art key's card stays inside the Corne's 64×52 panel, its count in the large font
+    /// when it fits, the triangle pointing the way the key stepped, and a long name cut.
+    #[test]
+    fn art_cards_fit_the_panel() {
+        let lit = |p: &Panel, x: i32, y: i32| {
+            p.bits[y as usize * p.stride + x as usize / 8] & (0x80 >> (x % 8)) != 0
+        };
+        let card = |index, total, name: &str, forward| {
+            let mut p = Panel::new(64, 52);
+            draw_art_card(
+                &mut p,
+                &ArtCard {
+                    index,
+                    total,
+                    name: name.into(),
+                    forward,
+                },
+            );
+            p
+        };
+        let next = card(2, 7, "Bandit Idle", true);
+        assert_eq!(next.bits.len(), 8 * 52);
+        assert!(
+            lit(&next, 0, 0) && lit(&next, 63, 0) && lit(&next, 0, 51) && lit(&next, 63, 51),
+            "brackets"
+        );
+        // The triangle: right of "3/7" going forward, left of it going back.
+        let (right, left, cy) = (32 + 13 + 5, 32 - 13 - 5, 13 + 9);
+        assert!(lit(&next, right, cy) && !lit(&next, left, cy));
+        let back = card(2, 7, "Bandit Idle", false);
+        assert!(lit(&back, left, cy) && !lit(&back, right, cy));
+        assert_ne!(next.bits, back.bits);
+        // A long name and a two-digit count still draw, inside the panel.
+        let long = card(9, 12, &"Constellations ".repeat(4), true);
+        assert_eq!(long.bits.len(), 8 * 52);
+        assert!(long.bits.iter().any(|b| *b != 0));
+        assert_eq!(
+            clipped(&FONT_5X8, &"Constellations ".repeat(4), 62),
+            "Constellat.."
+        );
+    }
 
     /// #507: both notice forms stay inside the Corne's 64×52 panel, the name-only form shows no
     /// text but the name, and wrapping keeps to its width and line count.

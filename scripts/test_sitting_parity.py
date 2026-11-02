@@ -4,9 +4,11 @@ or a log line) or is tagged needs_eyes with a reason. The table is tests/sitting
 
 Fails when a step of docs/release-notes/0.2.md "Known untested items", a #90 row (the table's
 [queue] snapshot) or a step of the resumed sitting's re-cut (docs/test-lab/sitting-0.2-h-i-r.md,
-batches H, I, R, Z) has no entry, and when an entry names something the code doesn't have. In the
+batches H, I, R, P, Z) has no entry, and when an entry names something the code doesn't have. In the
 re-cut, a user step (`H1`) must say why it needs eyes or hands, and an agent step (`HA1`) must
-name its checks and nothing for the user.
+name its checks and nothing for the user. Every former user step of the re-cut ([former], #618:
+18 user steps went to 0) is replaced by exactly one agent step (`replaces`) or kept in exactly
+one [[residual]] entry, which says why it can't be automated.
 
     python -m unittest scripts/test_sitting_parity.py
     python scripts/test_sitting_parity.py --list     (the needs-eyes steps, for a PR body)
@@ -22,7 +24,8 @@ TABLE = REPO / 'tests' / 'sitting-parity.toml'
 NOTES = REPO / 'docs' / 'release-notes' / '0.2.md'
 RECUT = REPO / 'docs' / 'test-lab' / 'sitting-0.2-h-i-r.md'
 CHECKS = ('api', 'cli', 'lab', 'hil', 'sim', 'script', 'log')
-KEYS = {'match', 'row', 'batch', 'needs_eyes', 'note', *CHECKS}
+KEYS = {'match', 'row', 'batch', 'needs_eyes', 'note', 'replaces', *CHECKS}
+RESIDUAL_KEYS = {'id', 'replaces', 'kind', 'needs_eyes'}
 WHERE = ('match', 'row', 'batch')
 
 
@@ -124,8 +127,35 @@ class SittingParity(unittest.TestCase):
 
     def test_the_recut_is_found(self):
         ids = set(self.recut)
-        self.assertLessEqual({'H1', 'H2', 'I2', 'R1', 'HA1', 'IA1', 'RA1', 'ZA1'}, ids)
+        self.assertLessEqual({'HA1', 'HA5', 'IA1', 'IA3', 'RA1', 'RA4', 'PA2', 'PA4', 'ZA1'}, ids)
         self.assertGreaterEqual(len(ids), 20, 'the re-cut sitting steps')
+
+    def test_every_former_user_step_is_replaced_or_a_residual_once(self):
+        former = self.table['former']['steps']
+        self.assertEqual(len(former), 20, 'H1-H5, I1-I4, R1-R5, P1-P6')
+        homes = {}
+        for s in self.steps:
+            for f in s.get('replaces', []):
+                homes.setdefault(f, []).append(f'step {name_of(s)}')
+        for r in self.table.get('residual', []):
+            for f in r['replaces']:
+                homes.setdefault(f, []).append(f'residual {r["id"]}')
+        for f in former:
+            self.assertEqual(len(homes.get(f, [])), 1, f'former step {f}: {homes.get(f)}')
+            self.assertNotIn(f, self.recut, f'{f} is still a step of the sitting')
+        self.assertLessEqual(set(homes), set(former), 'replaces names a step that never was')
+
+    def test_only_agent_steps_replace(self):
+        for s in (s for s in self.steps if 'replaces' in s):
+            self.assertTrue(is_agent(s.get('batch', '')), f'{name_of(s)}: only a re-cut agent step replaces')
+
+    def test_residuals_say_why_and_what(self):
+        ids = [r['id'] for r in self.table.get('residual', [])]
+        self.assertEqual(len(ids), len(set(ids)), 'residual ids are unique')
+        for r in self.table.get('residual', []):
+            self.assertLessEqual(set(r), RESIDUAL_KEYS, f'unknown keys in residual {r.get("id")}')
+            self.assertTrue(r.get('kind', '').strip(), f'residual {r["id"]}: its kind')
+            self.assertGreater(len(r.get('needs_eyes', '').strip()), 20, f'residual {r["id"]}: why')
 
     def test_every_recut_step_has_exactly_one_entry(self):
         for sid in self.recut:
@@ -148,8 +178,7 @@ class SittingParity(unittest.TestCase):
         """The re-cut states its user-step count; it must be the steps it lists (fallbacks aside)."""
         text = RECUT.read_text(encoding='utf-8')
         said = int(re.search(r'\*\*User steps: (\d+), was \d+\*\*', text)[1])
-        fallback = {'I3', 'I4'}
-        users = [i for i in self.recut if not is_agent(i) and i not in fallback]
+        users = [i for i in self.recut if not is_agent(i)]
         self.assertEqual(len(users), said, users)
 
     def test_every_entry_is_mapped(self):
@@ -190,7 +219,9 @@ class SittingParity(unittest.TestCase):
 
 
 def needs_eyes():
-    return [(name_of(s), s['needs_eyes']) for s in load()['step'] if s.get('needs_eyes')]
+    table = load()
+    return ([(name_of(s), s['needs_eyes']) for s in table['step'] if s.get('needs_eyes')] +
+            [(f'residual {r["id"]} ({r["kind"]})', r['needs_eyes']) for r in table.get('residual', [])])
 
 
 if __name__ == '__main__':

@@ -257,6 +257,54 @@ fn show(ui: &mut egui::Ui) {
     }
 }
 
+/// The Presets card's rows, as [`presets`] draws them: the wallpapers' looks (each with its
+/// wallpaper's id and whether it's on screen), the effects' presets, and the user's own.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PresetsCard {
+    pub wallpapers: Vec<(String, String, bool)>,
+    pub effects: Vec<String>,
+    pub yours: Vec<String>,
+}
+
+/// The card for `wallpapers`, `on_screen` and `saved`, in [`presets`]' order.
+pub fn presets_card(
+    wallpapers: &[WallpaperLook],
+    on_screen: &[String],
+    saved: &[Preset],
+) -> PresetsCard {
+    PresetsCard {
+        wallpapers: wallpapers
+            .iter()
+            .map(|w| {
+                let shown = on_screen.contains(&w.wallpaper);
+                (w.preset.name.clone(), w.wallpaper.clone(), shown)
+            })
+            .collect(),
+        effects: looks::effect_presets()
+            .into_iter()
+            .map(|p| p.name)
+            .collect(),
+        yours: saved.iter().map(|p| p.name.clone()).collect(),
+    }
+}
+
+/// The Presets card the page shows now (the local API's `scenes.page`, #618 batch H), from the
+/// same sources as the page: the installed wallpapers' manifests, what's on screen, and the
+/// user's presets (the page's own copy once it has opened, else the store's).
+pub fn presets_now() -> PresetsCard {
+    let saved = STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|st| st.saved.presets.clone())
+        .unwrap_or_else(|| looks::load_saved().presets);
+    presets_card(
+        &looks::scenes().looks,
+        &super::wallpaper::on_screen_ids(),
+        &saved,
+    )
+}
+
 /// The page's state, loaded on first use and brought up to date: the profile's look after a
 /// profile switch, the room after a change or when the page is shown again.
 fn refresh(slot: &mut Option<State>, frame: u64) -> &mut State {
@@ -782,6 +830,11 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
 
 /// Which devices the scene lights, in words.
 pub fn legend(v: &View) -> String {
+    legend_for(v, &super::parts::Parts::current().seen(2))
+}
+
+/// [`legend`] with a split's parts named as `parts` names them (#563).
+fn legend_for(v: &View, parts: &super::parts::Parts) -> String {
     let mut lit: Vec<String> = Vec::new();
     let mut shown: Vec<String> = Vec::new();
     for d in v
@@ -796,13 +849,13 @@ pub fn legend(v: &View) -> String {
             // A split's halves are "keyboard:left" and "keyboard:right"; one piece is "keyboard".
             let split = d.id.contains(':');
             let how = if d.lights.len() > 1 && v.keyboard_frames {
-                "a colour per LED"
+                "a colour per LED".to_string()
             } else if !split {
-                "one colour"
+                "one colour".to_string()
             } else if !v.keyboard_frames {
-                "one colour for both halves"
+                format!("one colour for {}", parts.all())
             } else {
-                "a colour per half"
+                format!("a colour per {}", parts.noun())
             };
             format!("{n} ({how})")
         } else {
@@ -1491,6 +1544,35 @@ pub(crate) mod tests {
         }
     }
 
+    /// `scenes.page` (#618 batch H, the sitting's old H4): the Presets card's rows in the order
+    /// the card draws them, each wallpaper's look tagged on screen as the card tags it.
+    #[test]
+    fn the_presets_card_is_the_pages_rows() {
+        let v = sample();
+        let card = presets_card(&v.wallpapers, &v.on_screen, &v.saved);
+        let names: Vec<_> = v.wallpapers.iter().map(|w| w.preset.name.clone()).collect();
+        assert_eq!(
+            card.wallpapers
+                .iter()
+                .map(|w| w.0.clone())
+                .collect::<Vec<_>>(),
+            names
+        );
+        for (w, (_, id, shown)) in v.wallpapers.iter().zip(&card.wallpapers) {
+            assert_eq!(id, &w.wallpaper);
+            assert_eq!(*shown, w.wallpaper == "tidepool.lighthouse", "{id}");
+        }
+        assert_eq!(
+            card.effects,
+            looks::effect_presets()
+                .into_iter()
+                .map(|p| p.name)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(card.yours, ["Desk evening"]);
+        assert!(presets_card(&[], &[], &[]).wallpapers.is_empty());
+    }
+
     /// No devices found and nothing running.
     pub(crate) fn sample_none() -> View {
         View {
@@ -1565,6 +1647,11 @@ pub(crate) mod tests {
             text.starts_with("Lights: Eyelash Corne (a colour per LED), HP OMEN 45L"),
             "{text}"
         );
+        // #563: a split whose parts aren't halves reads in its own words.
+        let wedge = crate::foxglove::fixtures::wedge_parts();
+        let text = legend_for(&sample(), &wedge);
+        assert!(text.contains("(one colour for both parts)"), "{text}");
+        assert!(!text.contains("halves"), "{text}");
     }
 
     #[test]

@@ -1,22 +1,37 @@
 # 0.2 sitting, resumed: batches H, I, R and Z re-cut (#618), and P (#609)
 
-The rest of the 0.2 sitting after the stability pass (#618 exit criterion 4). Every step an agent
-can do through the local API, the CLI, foxglove-lab, a Win32 query or a log moved to On-call. The
-user's steps are one action each and only what eyes (or hands) must do: the wallpaper flicker, a
-colour match, a click reaching the desktop, a screen's look.
+The rest of the 0.2 sitting after the stability pass (#618 exit criterion 4). The user said human
+tests cost far too much, so every step is now an agent step: a lab case On-call runs hands-free,
+with the PC unlocked and the user away. What a person looked at or did is read back (the local
+API, foxglove-lab, a Win32 query, a screen capture, a log) or done with real input (SendInput) on
+lab-owned windows.
 
-`tests/sitting-parity.toml` maps every step below (`batch = "<id>"`), and
-`scripts/test_sitting_parity.py` fails when one has no entry, when a user step has no needs-eyes
-reason, or when an agent step names a check that doesn't exist.
+`tests/sitting-parity.toml` maps every step below (`batch = "<id>"`) and every former user step to
+the agent step that replaced it (`replaces`) or to the short residual list (`[[residual]]`);
+`scripts/test_sitting_parity.py` fails when a step has no entry, a former step is unmapped, a user
+step has no needs-eyes reason, or a step names a check that doesn't exist.
 
-Step ids: `HA1` is an agent step of batch H (On-call runs it), `H1` a user step.
+Step ids: `HA1` is an agent step of batch H (On-call runs it); `H1` would be a user step.
 
-**User steps: 18, was 25** (H 9 → 5, I 4 → 2, R 9 → 5, Z 3 → 0; P adds 6: #651's steps that only
-a real display-off can test). Two fallbacks add steps back:
-- `I3`–`I4` (the tray panel) stay only when `IA2`'s focus cases come back BLOCKED (Windows'
-  foreground lock), not FAIL.
-- On firmware without the right's redraw count (HELLO bit 25; 13ff04b, on the board since
-  10/29 00:35Z, has none), `RA1`–`RA3` are BLOCKED and R stays at its old nine steps.
+**User steps: 0, was 18** (H 5 → 0, I 2 → 0, R 5 → 0, P 6 → 0, Z 0; the I3–I4 fallback is gone
+too). What can't be automated is in [What's left](#whats-left): none of it is a step of this
+sitting.
+
+## Run it
+
+On-call, from a checkout of the PR's head, the PC unlocked and the user away (about 25 minutes:
+H 3, I 3, R 4, P 14; the P stage keeps the keyboard untouched about 13 minutes):
+
+```powershell
+$env:FOXGLOVE_APP_OK = '1'
+powershell -ExecutionPolicy Bypass -File scripts\lab\sitting.ps1
+```
+
+`-App <foxglove.exe>` (default `app\target\release\foxglove.exe`, built from this tree), `-Skip
+H,I,R,P` to leave batches out, `-Monitor SAM` for the HUD's monitor. After the release gate:
+`scripts\release-test.ps1 -Firmware <dir> -AllowApp -NonInteractive -Sitting`. Exit 0 PASS, 1
+FAIL, 2 BLOCKED; `RA5` alone BLOCKED (the right on USB power) is the expected gate, not a hole.
+The report folder keeps every stage's output and HA5's frames (PNG) for a later look.
 
 ## What the re-cut found (read-only, 2026-10-29)
 
@@ -33,14 +48,12 @@ a real display-off can test). Two fallbacks add steps back:
   - On the board the user's lights read about 23/100, not 42/97: RGB_STATE is the colour after
     the keyboard's calibration (gamma 2.5 in the user's store), which Foxglove reads back as 42/97.
   - The case follows only with "Match keyboard" on, and that's off (`match_keyboard = false`).
-  - `HA4` now checks the mechanism with the wallpaper test hook. `H5` keeps one look at the
-    gold.
 - **The HUD is already on the Samsung monitor**, so the old H1 pick is gone. Wallpaper Engine has
   Stop under full-screen and maximized programs (`playbackfullscreen: "stop"`), the likely cause
   of #586's flicker: each Win key reloads the wallpaper.
-- **The accent push failed three times today** in the user's log: "Foxglove accent: not
-  supported by this keyboard or keymap" at 01:34Z and 02:06Z, and "no answer" at 07:01Z. `HA0`
-  reads RGB_STATE before `H5` relies on it.
+- **The accent push failed three times that day** in the user's log ("not supported by this
+  keyboard or keymap" at 01:34Z and 02:06Z, "no answer" at 07:01Z), all on builds from before
+  #634/#636 or during a flash. `HA6` reads what the app keeps now.
 - The Presets card's wallpapers (#571), from the installed manifests: Bandit Radar, Bandit
   Skyline, Bandit Courier, FURY Chase, FURY Forest, FURY Pattern, FURY Print, FURY
   Constellations, Cauldron Corner, Moon Garden, Wheel of the Year, Bandit HUD
@@ -48,91 +61,61 @@ a real display-off can test). Two fallbacks add steps back:
 
 ## Batch H: wallpaper (#586, #527, #70, #571)
 
-Agent, before the sitting (On-call's run list):
-- `HA0` `wallpaper_check.py state`: Wallpaper Engine runs, the HUD is on a monitor, the playback settings, the Presets card's expected names, "Lights follow the wallpaper", the Windows accent as Foxglove reads it, and what the lights follow now; `foxglove-lab --allow-app status` records RGB_STATE (the colour after the keyboard's calibration, about 23/100 for the accent's 42/97). `H5` runs only when the lights follow the stars wallpaper (`#d9a441`, 39/70, "Lights follow the wallpaper" on); with the Windows accent they don't, and `H5` is dropped.
-- `HA4` `wallpaper_follow.py` (a test app, temp config, wallpaper test hook): switching to FURY Pattern (3/78), then Cauldron Corner (29/82), then FURY Forest (no palette: the Windows accent as accent.rs reads it, 42/97 on this PC) puts each colour on both halves within the bounds, one "Foxglove accent: applied" line each; each expectation names its source (the fixture palette or UISettings' Accent). The temp store has no calibration, so RGB_STATE reads the asked hue/sat. The lights are put back.
-
-Agent, in the sitting, right before `H1`:
+- `HA0` `wallpaper_check.py state`: Wallpaper Engine runs, the HUD is on a monitor, the playback settings, the Presets card's expected names, "Lights follow the wallpaper", the Windows accent as Foxglove reads it, and what the lights follow now; `foxglove-lab --allow-app status` records RGB_STATE (the colour after the keyboard's calibration).
+- `HA3` `wallpaper_check.py presets --app <exe>` (old H4): the Presets card of a test app of this build, through the local API's `scenes.page` (API 1.10, the card's own rows), lists every installed wallpaper look and nothing else under "Wallpapers", and tags "On screen" exactly the wallpapers Wallpaper Engine shows.
+- `HA6` `wallpaper_check.py gold` (old H5): the running Foxglove's `lighting.state` (read back through the keyboard's calibration) is the hue/sat of what it follows now, the stars' `#d9a441` with "Lights follow the wallpaper" on, else the Windows accent: the user's calibration is their own match of the keyboard against the screen, so the same colour through it is the same gold to the eye.
+- `HA4` `wallpaper_follow.py` (a test app, temp config, wallpaper test hook): switching to FURY Pattern (3/78), then Cauldron Corner (29/82), then FURY Forest (no palette: the Windows accent as accent.rs reads it, 42/97 on this PC) puts each colour on both halves within the bounds, one "Foxglove accent: applied" line each; each expectation names its source. The lights are put back.
 - `HA1` the devlog listener (bounded), the HUD's Diagnostics on through `-control applyProperties` (`wallpaper_check.py debug on --monitor SAM`), and the GAME layer on (`sitting/game-layer-on`): the log says "game mode on".
-
-User:
-- `H1` Start any full-screen game on the Samsung monitor (the one with the Bandit HUD).
-- `H2` Press the Windows key once. Tell me: did the HUD flicker?
-- `H3` Close the game.
-
-Agent, right after `H3`:
-- `HA2` `wallpaper_check.py game --since <HA1's time>`: Foxglove sent game mode on, Wallpaper Engine dropped no `-control` command, the DXGI resets, and from the devlog whether the reloaded HUD kept game mode (the old H5's "does it still show GAME MODE", #586's open question). Then Diagnostics off and `sitting/game-layer-off`.
-
-User (the Foxglove window is already open: On-call's last step before the sitting):
-- `H4` In the Foxglove window's left column, click "Scenes". Tell me the names under "Wallpapers" on the "Presets" card.
-- `H5` Look at the keyboard's underglow, then at the stars wallpaper on the Dell monitor. Tell me: is it the same gold?
-
-Agent:
-- `HA3` Compare `H4`'s names with `HA0`'s list.
+- `HA5` `game_flicker.py --monitor SAM` (old H1–H3): a lab window stands in for a full-screen game on the HUD's monitor (borderless, topmost, black; it takes the foreground with a real click and minimizes itself on focus loss, as an exclusive full-screen game does), a real Win key tap (SendInput), and the monitor captured about 10 times a second for 6 s (GDI: what DWM composes, the wallpaper too): a dark or flashing frame against the HUD's own captures before the game is a flicker (#586), with its time for `HA2`. Then a real Esc closes the Start menu and the window closes; the HUD must show again. The frames are kept for a later look. A capture that sees only black is BLOCKED.
+- `HA2` `wallpaper_check.py game --since <HA1's time>`: Foxglove sent game mode on, Wallpaper Engine dropped no `-control` command, the DXGI resets, and from the devlog whether the reloaded HUD kept game mode (#586's open question). Then Diagnostics off and `sitting/game-layer-off`.
 
 ## Batch I: overlay and tray (#549, #405/#406)
 
-Agent, before the sitting:
-- `IA1` `overlay_tray.py` (a test app, with the user's remembered keyboard seeded into its store): with Settings not focused (the test app opens it behind) the overlay is WS_EX_TRANSPARENT and WS_EX_LAYERED, and WindowFromPoint on it gives the window underneath; with the tray panel open (it draws inside the overlay window) the window region is the panel, the overlay drops WS_EX_TRANSPARENT, a point on the panel hits the overlay, and a point beside it goes underneath. Each is waited for (bounded): the passthrough lands after the frame that set the region.
-- `IA2` `overlay_tray.py --focus` (the same run): Settings (a second launch) focused arms the overlay over the keys (once its keymap session connected), Settings minimized keeps the app running and makes the overlay click-through again (#549's report), and the tray panel closes when the focus goes to Settings (#406). BLOCKED, not FAIL, when Windows keeps the foreground where it was, or when the overlay never connected (no keys to take the mouse over). A test app that ends mid-run is one FAIL with its exit code and log, and the rest is not run.
-
-User:
-- `I1` Click the minimize button (–) at the top right of the Foxglove window.
-- `I2` Click on the desktop right where the faded keyboard picture is. Tell me: did the click reach the desktop, with nothing blocked?
-
-Only when `IA2` was BLOCKED for the panel:
-- `I3` Left-click the fox tray icon.
-- `I4` Click any browser tab. Tell me: did the tab switch and the panel close?
+- `IA1` `overlay_tray.py` (a test app, with the user's remembered keyboard seeded into its store): with Settings not focused the overlay is WS_EX_TRANSPARENT and WS_EX_LAYERED, and WindowFromPoint on it gives the window underneath; with the tray panel open the window region is the panel, the overlay drops WS_EX_TRANSPARENT, a point on the panel hits the overlay, and a point beside it goes underneath. Each is waited for (bounded).
+- `IA2` `overlay_tray.py --focus` (the same run): Settings (a second launch) focused arms the overlay over the keys, Settings minimized keeps the app running and makes the overlay click-through again (#549), and the tray panel closes when the focus goes to Settings (#406). PASS on 10/29 (#655 rerun).
+- `IA3` `overlay_tray.py --real-clicks` (the same run; old I1–I4): real mouse clicks (SendInput, routed by Windows as a person's): Settings' minimize button, found by Windows' own hit test (WM_NCHITTEST), minimizes it and the app keeps running with the overlay click-through (I1); a click on the faded keyboard reaches a lab window under the overlay (I2); a click on the tray icon (Shell_NotifyIconGetRect) opens the panel (I3); a click on another lab window ("any browser tab") gets the focus and the panel closes (I4). Each click puts the mouse back.
 
 ## Batch R: right screen after #621 (#613 acceptance)
 
-Needs main firmware with HELLO bit 25 on both halves (1ebdf9d or later). On 13ff04b, run R as in
-On-call's old note.
+Needs firmware with HELLO bits 24–25 on both halves (main since 1ebdf9d). Foxglove quit (the
+runner stops it by its exact name and starts it again by its path).
 
-Agent, before the sitting (Foxglove quit):
-- `RA1` `sitting/right-redraw-after-select-while-idle`: a SELECT while the right is dark is drawn when a LEFT tap wakes it: RGB_STATE right on, the redraw count up, readback Bandit_Emblem, the one built-in since #671 (old R4–R6, #621 check 3).
-- `RA2` `right_redraws.py`: three take-and-hand-back cycles of the LEDs (SET_FRAME, as the window's preview does) each rewrite the right panel (old R7–R8, #621 check 4).
-- `RA3` `resilience/right-redraw-after-wake`: an idle-off and a LEFT tap rewrite the panel (the count behind `R2`).
-
-User:
-- `R1` Leave the keyboard alone until the right half's lights go off (about 30 s). Tell me: what does the right screen show: blank, the picture frozen, or static?
-- `R2` Press one key on the LEFT half. Tell me: within about a second, does the right screen show its picture cleanly, with no static?
-- `R3` Unplug the right half's cable.
-- `R4` Leave the keyboard alone until the right's lights go off. Tell me: what does the right screen show?
-- `R5` Press one key on the LEFT half. Tell me: does the right show its picture cleanly?
+- `RA1` `sitting/right-redraw-after-select-while-idle`: a SELECT while the right is dark is drawn when a LEFT tap wakes it: RGB_STATE right on, the redraw count up, readback Bandit_Emblem (#621 check 3).
+- `RA2` `right_redraws.py`: three take-and-hand-back cycles of the LEDs (SET_FRAME, as the window's preview does) each rewrite the right panel (#621 check 4).
+- `RA3` `resilience/right-redraw-after-wake`: an idle-off and a LEFT tap rewrite the panel.
+- `RA4` `sitting/right-clean-wake-usb` (old R1–R2): on USB power, the keyboard idles (the PC told away), one LEFT tap: the right lit within 2 s, its whole-screen rewrite count up (the panel rewritten after its power came back: no noise survives a full rewrite), and its readback a frame of Bandit_Emblem. BLOCKED while the right is on its battery.
+- `RA5` `sitting/right-clean-wake-battery` (old R3–R5): the same on the right's battery. No step unplugs the cable: BLOCKED while the right is on USB power, it runs the next time the right is found on its battery (`foxglove-lab usb`: "right is not on USB").
 
 ## Batch P: the PC state (#609, #604, PR #651)
 
-On this PC the display going off starts Modern Standby, so agents don't turn it off: probes that
-did are retired (#651). The user does it as they normally would; agents read the keyboard
-meanwhile. Steps 1 and 7 of #651 (held while awake, one log line per change) passed on hardware
-on 2e7f508.
+On this PC the display going off starts Modern Standby, so nothing turns it off: the app's away
+test hook (`FOXGLOVE_AWAY_OVERRIDE`, away.rs) stands in for Windows' display notification, and
+everything after the edge is the app's real path. The hook arms only with `FOXGLOVE_APP_OK=1` (a
+lab launch), so a stray variable in a user's run is ignored. Needs both halves on #651's firmware (HELLO bit
+26) and the left on USB. `pc_away.py` runs PA1–PA4 in one go.
 
-Agent, before the sitting (Foxglove running, both halves on #651's firmware, the left on USB):
-- `PA1` `foxglove-lab --allow-app status`: `PC_STATE` held, reason 0 (the lease); `RGB_SHOWN` left `wanted`. With the left's underglow off by the user's choice (`wanted: false`), `P2`–`P3` and `P5` judge the key backlight, not the underglow; say so in `P2`'s question.
-
-Agent, right before `P1` (the agent half of `P2`–`P3`):
-- `PA2` `foxglove-lab --allow-app rgb-watch --seconds 180` in the background: each D7 83 event's left and right `idle` and `lit` with its time, to set against the user's sleep and wake (dark within about 1 s, lit within about 1 s; D7 83 comes about 600 ms after a change). The app's `foxglove.log` gives the edges' times: `PC state to the keyboard: away (display off)` and `awake, wake (display on)`.
-
-User:
-- `P1` Click Start, then the Power button.
-- `P2` Click "Sleep", watching the keyboard. Tell me: did both halves go dark within about a second?
-- `P3` Move the mouse to wake the PC. Tell me: did both halves light up within about a second, with the right screen's picture moving?
-
-Agent, after `P3` (the agent half of `P4`–`P5`; the order matters, #651's first try quit while the last state sent was away):
-- `PA3` `foxglove-lab --allow-app pc-state` (a read): `state` Awake and `reason` 0, so Foxglove's last word was awake (the wake in `P3` sent it). If it reads Away, `foxglove-lab --allow-app pc-state --set awake` first, then read again.
-
-User:
-- `P4` Right-click the fox icon in the taskbar's tray and click "Quit". Then press no keys on the keyboard for 11 minutes.
-
-Agent, during `P4`'s 11 minutes (Foxglove quit, so no `--allow-app` needed):
-- `PA4` `foxglove-lab rgb-watch --seconds 700` from the quit, and `foxglove-lab pc-state` reads at about 1, 5 and 11 minutes: `reason` 0 until the lease lapses (at most 10 min), then 1 (the USB idle time), the left `idle: false` until about 10 minutes after the last key, then `reason` 4 and the left `idle: true` (the dark edge's time in `rgb-watch`).
-
-User:
-- `P5` After the 11 minutes, look at the keyboard. Tell me: is it dark now?
-- `P6` Open Foxglove from the Start menu.
+- `PA1` `pc_away.py` (a test app with the hook): on connect the app says "awake (keyboard connected)"; `foxglove-lab status`: `PC_STATE` held, reason 0 (the lease). With both halves' underglow off by the user's choice, the run turns it on for the run and puts it back.
+- `PA2` (old P1–P3) the hook says "display off": "PC state to the keyboard: away (display off)" and `foxglove-lab rgb-watch` sees both halves dark within 2 s; then "display on": "awake, wake (display on)", both lit within 2 s, and the right's readback changes within 5 s (its art moves). Then "locked" alone tells the keyboard nothing and both stay lit (#609 decision 1), and "unlocked" sends "awake, wake (session unlocked)".
+- `PA3` `foxglove-lab pc-state`: `state` Awake, `reason` 0, and the app's last PC-state line is awake, before the quit (#651's first try quit while the last state sent was away).
+- `PA4` (old P4–P6) the test app is stopped (Quit sends nothing more), no key is pressed, and `rgb-watch` segments with `pc-state` reads between them (about every 2 minutes, up to 700 s): reason 0 (the lease) first, then the keyboard goes dark on its own and the hold ends (reason 4). Then the user's Foxglove starts again by its path. Input meanwhile makes the dark step BLOCKED, not FAIL. `--history` also lists the real display edges of the user's own nights from their foxglove.log (measured, never caused).
 
 ## Z: case zone 1 back to its colour
 
-Agent:
-- `ZA1` `foxglove-cli lights` for the OMEN 45L's key and zone 1, then `foxglove-cli light <key> <zone> #a57500`: the answer lists zone 1 as `#a57500` (old Z1–Z3, the Lights page's colour box).
+- `ZA1` `foxglove-cli lights` for the OMEN 45L's key and zone 1, then `foxglove-cli light <key> <zone> #a57500`: the answer lists zone 1 as `#a57500`. Done and read back on 10/29 (#90); not repeated.
+
+## What's left
+
+None of these is a step of this sitting, and none blocks 0.2. Each is mapped in
+`tests/sitting-parity.toml` (`[[residual]]`).
+
+1. **What the right's panel shows while it has no power** (old R1, R4: blank, frozen or noise).
+   The ls0xx panel is write-only and its power is cut with the LEDs, so no readback can exist,
+   and the PC has no camera on the keyboard. It isn't a pass/fail: it feeds #621's ext-power
+   decision (keep the rail on while the LEDs are off). Whoever next glances at an idle keyboard
+   can answer it on #90; nothing waits on it.
+2. **One unplug of the right's cable, only if `RA5` never ran.** No lab can cut USB power. `RA5`
+   runs by itself whenever the right is found on its battery (it was on 10/29); if it hasn't by
+   the 0.2 cut, one unplug is the only hands step, and the case does the rest.
+3. **Exclusive full-screen games (#586).** `HA5`'s stand-in is a borderless window; a game in
+   exclusive DXGI full-screen can't be captured with GDI. If the user still sees the flicker in a
+   real game after `HA5` passes, that report reopens it; it is not a step.

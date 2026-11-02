@@ -39,6 +39,10 @@ pub fn set(paused: bool) {
     super::live_feed::pause_changed();
     // A notification on the screen goes; none shows while paused (#507).
     super::notifications::pause_changed();
+    // The art keys step the keyboard's own art while paused, Rotation here again after (#60).
+    if let Some(h) = super::art_service::handle() {
+        h.pause_changed();
+    }
     if !paused {
         super::accent::wake();
         if let Some(h) = super::art_service::handle() {

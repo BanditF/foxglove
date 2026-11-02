@@ -65,6 +65,31 @@ fn lamp_array_row(key: &str, name: &str) -> Row {
     }
 }
 
+/// A made-up split whose parts aren't halves (#563): "Main board" (the one the PC talks to)
+/// and "Wing". Proves that strings about a split's parts come from the profile.
+pub(crate) const WEDGE: &str = r#"
+format = "foxglove-board"
+version = 1
+id = "wedge"
+name = "Wedge"
+protocol = "zmk"
+[[parts]]
+id = "main"
+name = "Main board"
+[[parts]]
+id = "wing"
+name = "Wing"
+[[match]]
+vid = 0x1d50
+pid = 0x615e
+product = "Wedge"
+"#;
+
+/// [`WEDGE`]'s parts.
+pub(crate) fn wedge_parts() -> super::parts::Parts {
+    Board::parse(WEDGE).expect("the Wedge's profile").parts()
+}
+
 /// The user's desk: the devices Foxglove was first built on.
 pub(crate) mod users_desk {
     use super::*;

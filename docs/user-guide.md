@@ -13,14 +13,15 @@ You can quit the app at any time and the keyboard keeps typing.
 
 ## 1. Install the app
 
-1. Download `foxglove-x64.msi` from the
-   [Releases page](https://github.com/BanditF/foxglove/releases) (the newest `app-v…` release).
+1. Download the Foxglove `.msi` from the
+   [Releases page](https://github.com/BanditF/foxglove/releases) (the newest release).
 2. Run it. **Windows SmartScreen will warn you**: "Windows protected your PC". The installer
    isn't code-signed yet, so Windows doesn't know it. Click **More info**, then **Run anyway**.
-3. Windows asks for administrator permission. Foxglove installs for everyone on the PC,
-   into `C:\Program Files\Foxglove`.
-4. In the setup screen, **Start with Windows** is off by default. Tick it if you want Foxglove
-   running whenever you sign in.
+3. Foxglove installs for you alone, into `%LOCALAPPDATA%\Programs\Foxglove`, without an
+   administrator prompt. (Foxglove 0.1 installed for everyone; uninstall it first, the installer
+   tells you if it finds it. Your settings stay.)
+4. **Start with Windows** is on from the first start. Turn it off under **App → Startup and
+   updates**.
 
 Foxglove then appears in the system tray (the fox icon near the clock; it may be hidden under
 the **^** arrow). Right-click it for the menu:
@@ -243,10 +244,17 @@ firmware ([section 7](#7-updating-the-keyboards-firmware)).
 
 ## 7. Updating the keyboard's firmware
 
-Firmware updates come as two files, one per half: `eyelash_corne_studio_left.uf2` for the
-left and `nice_view_custom-eyelash_corne_right-zmk.uf2` for the right. Putting the right half's
-file on the left half (or the other way round) stops that half working until it's flashed
-again, so use the flasher, which checks this for you:
+Firmware updates come as two files, one per half: in a release, `foxglove-<version>-left.uf2`
+and `foxglove-<version>-right.uf2`; in a CI build, `eyelash_corne_studio_left.uf2` and
+`nice_view_custom-eyelash_corne_right-zmk.uf2`. Putting the right half's file on the left half
+(or the other way round) stops that half working until it's flashed again, so let Foxglove or
+the flasher do it: both check this for you.
+
+**From Foxglove:** **Keyboard → Firmware → Update firmware…**, then pick the folder with the
+files. It updates both halves, left first, and says what it will do before it starts.
+
+**From the command line** (a CI build's folder; for a release's files, pass them with
+`--left` and `--right`):
 
 ```powershell
 python scripts/flash/foxglove_flash.py --firmware C:\path\to\firmware --half both
@@ -281,13 +289,13 @@ Bandit wallpaper family:
 
 | preset | lights | right screen |
 |---|---|---|
-| Bandit | orange, steady | Bandit Idle |
+| Bandit | orange, steady | the Bandit emblem (built in) |
 | Fury | red, slow breathe | FURY Print |
 | Constellations | night-sky indigo, breathe | FURY Constellations |
 | Hearth | candle amber, breathe | Cauldron Corner |
 | Moon Garden | violet, steady | Moon Garden |
-| Courier | quiet warm white | Bandit Uplink |
-| Signal | rainbow swirl | Bandit Signal |
+| Courier | quiet warm white | the Bandit emblem (built in) |
+| Signal | rainbow swirl | the Bandit emblem (built in) |
 
 - **Change the right screen with the preset** (on by default) shows the preset's art too. Pick
   "none" and your own art comes back.
@@ -408,10 +416,11 @@ show. There is no separate list: to change what Rotation
 shows, keep or remove pieces on the keyboard. (A playlist of art that only this PC has is a
 later idea, #522.)
 - **Next piece** comes on any of these, in any mix:
-  - **on the art key** *(after 0.1, next app update)*: hold SYSTEM (both middle thumbs + Tab),
-    then **P** for next and **O** for previous. Without the app, the keyboard steps through its
-    own built-ins and saved slots. *(next app update)* The left screen shows **ART 3/7** and the
-    name for a second.
+  - **on the art key** *(after 0.1)*: hold SYSTEM (both middle thumbs + Tab), then **P** for
+    next and **O** for previous. While Foxglove runs, the left screen shows **ART** with the
+    piece's place (3/7), a triangle the way it stepped and the piece's name, for about a second.
+    Paused, quit, or without the app, the keyboard steps through its own built-ins and saved
+    slots.
   - **Lights wake**: the next piece each time the keyboard's lights come back on.
   - **every N minutes**.
 - **Wallpaper:** the right screen shows the art that goes with the wallpaper on
@@ -497,8 +506,8 @@ that typing works. Then find your case below.
 ### The left half stops typing after an update
 
 1. Double-tap the left half's reset button. A USB drive appears.
-2. Copy the release's **left** file, `eyelash_corne_studio_left.uf2`, onto it. The half restarts
-   by itself.
+2. Copy the **left** file onto it (`foxglove-<version>-left.uf2` in a release,
+   `eyelash_corne_studio_left.uf2` in a CI build). The half restarts by itself.
 3. Check that it types over the cable before you touch the right half.
 
 ### The right half doesn't talk (right screen frozen, right-hand keys dead)
@@ -511,8 +520,9 @@ that typing works. Then find your case below.
 
 This wipes the halves' saved settings and every Bluetooth pairing.
 
-1. Double-tap a half's reset button and copy `settings_reset-nice_nano_v2-zmk.uf2` from the
-   firmware release onto the drive. Do the same for the other half.
+1. Double-tap a half's reset button and copy the settings-reset file
+   (`foxglove-<version>-settings-reset.uf2` in a release, `settings_reset-nice_nano_v2-zmk.uf2`
+   in a CI build) onto the drive. Do the same for the other half.
 2. Flash each half's normal file again, left first. The halves find each other on their own.
 3. Pair the keyboard with Windows again (Settings → Bluetooth & devices → Add device →
    "Eyelash Corne"), on slot 1 ([section 6](#6-it-types-on-the-cable-but-not-on-bluetooth)).
@@ -565,7 +575,7 @@ sluggish after sleep:
 
 | what | where |
 |---|---|
-| Foxglove's settings, profiles, hotlist, presets, plugin settings | `%APPDATA%\Foxglove\foxglove.toml` (one file; older `*.ini` files are imported once and renamed `*.migrated`) |
+| Foxglove's settings, profiles, presets, plugin settings | `%APPDATA%\Foxglove\foxglove.toml` (one file; older `*.ini` files are imported once and renamed `*.migrated`) |
 | the overlay's own settings (KeyPeek's) | `%APPDATA%\Foxglove\config\settings.ini` |
 | keymap cache | `%APPDATA%\Foxglove\config\keymap-*.studio` |
 | art library (pushed animations, wallpaper art, converted source sets) | `%APPDATA%\Foxglove\config\art\` |

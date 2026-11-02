@@ -1,5 +1,4 @@
 //! Right art on the shared host link. File I/O and all keyboard requests stay on the worker.
-#![allow(dead_code)] // Handle consumed by the art settings and tray in #15/#16.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -8,6 +7,7 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use super::art_cycle::{self, Cycle};
+use super::art_keys_health::{self, HandBack};
 use super::art_triggers::{Change, Triggers};
 
 use foxglove_link::art;
@@ -201,10 +201,6 @@ impl Snapshot {
             manifest_index(count),
         )
     }
-
-    pub fn progress(&self) -> Option<(u16, u16)> {
-        self.push_progress
-    }
 }
 
 enum Command {
@@ -251,9 +247,21 @@ enum Command {
     Resume,
     /// An event that can have lost the right screen's art (`reassert.rs`).
     Reassert(super::reassert::Trigger),
-    /// The tray's Next › (`true`) or ‹ from the user or an agent (#618): Rotation's step as
-    /// their job, which already holds `busy` ([`Handle::step_now`]).
-    Step(bool),
+    /// The tray's Next › (`forward`) or ‹ from the user or an agent (#618), or the keyboard's
+    /// art key (#60): Rotation's step as their job, which already holds `busy`
+    /// ([`Handle::step_now`]). `card`: the left screen shows which piece it moved to.
+    Step {
+        forward: bool,
+        card: bool,
+    },
+    /// An `&art_next` / `&art_prev` press while Foxglove holds the art keys (D7 8D 01, #60).
+    ArtKey {
+        source: Weak<Link>,
+        generation: u64,
+        forward: bool,
+    },
+    /// Foxglove paused or resumed (#404): it holds the art keys only while it runs.
+    ArtKeys,
     /// A user's job that can't run after all: it ends with this error.
     Refused(String),
 }
@@ -386,6 +394,11 @@ impl Handle {
         let _ = self.commands.send(Command::Wallpaper(w));
     }
 
+    /// Foxglove paused or resumed (#404): the art keys go back to the keyboard while paused.
+    pub fn pause_changed(&self) {
+        let _ = self.commands.send(Command::ArtKeys);
+    }
+
     /// Foxglove resumed (#404): the art held back while paused shows now.
     pub fn resumed(&self) {
         let _ = self.commands.send(Command::Resume);
@@ -395,6 +408,11 @@ impl Handle {
     /// `art.select`): the same command, once it's known that it would show something. Err says
     /// why not. Wait for the piece with [`Self::wait_job`].
     pub fn step_now(&self, forward: bool) -> Result<(), String> {
+        self.step(forward, false)
+    }
+
+    /// Rotation's step as the user's job; `card` shows the art key's card with it (#60).
+    fn step(&self, forward: bool, card: bool) -> Result<(), String> {
         if super::pause::paused() {
             return Err(super::pause::REFUSED.into());
         }
@@ -417,7 +435,7 @@ impl Handle {
             .ok_or("the keyboard has nothing else to show")?;
             self.cancel.store(false, Ordering::Relaxed);
             self.commands
-                .send(Command::Step(forward))
+                .send(Command::Step { forward, card })
                 .map_err(|_| "the art service has stopped")?;
             // The outcome is cleared, so the wait sees this job's end and not the last one's.
             claim_for_user(&mut s);
@@ -534,6 +552,11 @@ pub fn start() {
                     s.connected = false;
                     s.error = Some("Art worker panicked; restarted".into());
                 });
+                // The next connect takes the art keys again; the health view says it happened.
+                art_keys_health::note(|a| {
+                    a.held = false;
+                    a.last_hand_back = Some(HandBack::Recovered);
+                });
             }
             run(&worker, &receiver.lock().unwrap_or_else(|e| e.into_inner()));
         });
@@ -550,6 +573,71 @@ pub fn stop() {
         h.cancel();
         let _ = h.commands.send(Command::Stop);
     }
+    // Here, not on the worker, which may be mid-push: once the reply is in, the keys step the
+    // keyboard's own art again after Foxglove quits.
+    if let Some(link) = held_art_keys(None).and_then(|l| l.upgrade()) {
+        let r = link.request(
+            &protocol::art_keys(false),
+            protocol::SETTINGS,
+            protocol::settings::ART_KEYS,
+            ART_KEYS_REPLY,
+        );
+        let why = match r {
+            Ok(_) => HandBack::Quit,
+            Err(e) => {
+                eprintln!("Foxglove: art keys: not handed back to the keyboard: {e}");
+                HandBack::QuitFailed(e.to_string())
+            }
+        };
+        art_keys_health::note(|h| h.told(false, Some(why)));
+    }
+}
+
+/// The link Foxglove holds the art keys on (#60), for [`stop`] to hand them back.
+static ART_KEYS_HELD: Mutex<Option<Weak<Link>>> = Mutex::new(None);
+
+/// How long [`stop`] waits for the keyboard to take its art keys back.
+const ART_KEYS_REPLY: Duration = Duration::from_millis(300);
+
+/// Sets the link holding the art keys (`None`: none) and returns the one before.
+fn held_art_keys(link: Option<Weak<Link>>) -> Option<Weak<Link>> {
+    std::mem::replace(
+        &mut *ART_KEYS_HELD.lock().unwrap_or_else(|e| e.into_inner()),
+        link,
+    )
+}
+
+/// Takes the art keys (`want`) or hands them back, on a keyboard that has them (HELLO bit 16),
+/// when that changes what it was last told (`told`). Returns what it was told now. Foxglove
+/// holds them while it runs unpaused: a press then steps Rotation here and shows the card.
+fn sync_art_keys(link: &Arc<Link>, has_keys: bool, want: bool, told: Option<bool>) -> Option<bool> {
+    if !has_keys || told == Some(want) {
+        return told;
+    }
+    // The reply (D7 8D 00) is only an echo; the link's other readers skip it.
+    if let Err(e) = link.send(&protocol::art_keys(want)) {
+        eprintln!("Foxglove: art keys: {e}");
+        return told;
+    }
+    held_art_keys(want.then(|| Arc::downgrade(link)));
+    // Only pause hands them back here; quit and a disconnect note their own reasons.
+    art_keys_health::note(|h| h.told(want, Some(HandBack::Pause)));
+    Some(want)
+}
+
+/// The art key's card (#60) for a step to `choice`: its place in `list` and its name.
+fn art_card(
+    list: &[Choice],
+    choice: &Choice,
+    forward: bool,
+    s: &Snapshot,
+) -> Option<foxglove_panel::render::ArtCard> {
+    Some(foxglove_panel::render::ArtCard {
+        index: list.iter().position(|c| c == choice)?,
+        total: list.len(),
+        name: name_of(choice, s),
+        forward,
+    })
 }
 
 /// The `[art]` section of the settings store: the pinned choice, re-applied after the right
@@ -741,7 +829,8 @@ fn with_relay(
         }
         art::RelayWait::TimedOut(last) => {
             eprintln!(
-                "Foxglove: art {what}: the right half's relay didn't come back within {} s ({})",
+                "Foxglove: art {what}: {}'s relay didn't come back within {} s ({})",
+                super::parts::Parts::current().seen(2).the(1),
                 RELAY_WAIT.as_secs_f32(),
                 last.map_or_else(|| "no status".to_string(), |st| st.to_string())
             );
@@ -940,6 +1029,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     let mut triggers = Triggers::default();
     // Art held back while Foxglove was paused (#404), to show on resume.
     let mut missed = false;
+    // The current keyboard has the art keys (HELLO bit 16), and what it was last told (#60).
+    let mut has_art_keys = false;
+    let mut art_keys_told: Option<bool> = None;
     while !h.stop.load(Ordering::Relaxed) {
         let next_deadline = match (due, triggers.deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -969,7 +1061,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 | Command::Keep { .. }
                 | Command::Erase(_)
                 | Command::Status
-                | Command::Step(_)
+                | Command::Step { .. }
         );
         // Foxglove's own job (#618): it claims `busy` when it starts, and a user's command
         // queued meanwhile, or sent while it runs, wins.
@@ -1023,6 +1115,32 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 Command::Next
+            }
+            Command::ArtKey {
+                source,
+                generation,
+                forward,
+            } => {
+                let is_current = current.is_some_and(|(id, g)| {
+                    g == generation && Weak::ptr_eq(&Arc::downgrade(&links[id].0), &source)
+                });
+                // Only while Foxglove holds the keys: another host's subscription (the lab's) sees
+                // the same reports. A press that can't step (busy, nothing else) says why.
+                if is_current && art_keys_told == Some(true) {
+                    let stepped = h.step(forward, true);
+                    if let Err(e) = &stepped {
+                        eprintln!("Foxglove: art key: {e}");
+                    }
+                    art_keys_health::note(|a| a.pressed(&stepped));
+                }
+                continue;
+            }
+            Command::ArtKeys => {
+                if let Some((id, _)) = current {
+                    let want = !super::pause::paused();
+                    art_keys_told = sync_art_keys(&links[id].0, has_art_keys, want, art_keys_told);
+                }
+                continue;
             }
             Command::Layers(active) => {
                 let change = triggers.layers(&active, &h.snapshot().cycle, Instant::now());
@@ -1182,21 +1300,24 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             }
             // The user's (or an agent's) Next › / ‹: it holds `busy` already, and shows even
             // over layer or preset art.
-            Command::Step(forward) => {
+            Command::Step { forward, card } => {
                 due = reschedule(current.is_some());
-                let step = h
-                    .snapshot()
-                    .status
-                    .filter(|_| current.is_some())
-                    .and_then(|st| {
-                        art_cycle::step(
-                            &art_cycle::rotation(&st),
-                            art_cycle::on_screen(&st),
-                            forward,
-                        )
-                    });
+                let snap = h.snapshot();
+                let step = snap.status.filter(|_| current.is_some()).and_then(|st| {
+                    let list = art_cycle::rotation(&st);
+                    let choice = art_cycle::step(&list, art_cycle::on_screen(&st), forward)?;
+                    let card = card
+                        .then(|| art_card(&list, &choice, forward, &snap))
+                        .flatten();
+                    Some((card, choice))
+                });
                 match step {
-                    Some(choice) => Command::Choose(choice),
+                    Some((card, choice)) => {
+                        if let Some(card) = card {
+                            super::screens::show_art_card(card);
+                        }
+                        Command::Choose(choice)
+                    }
                     None => Command::Refused("the keyboard has nothing else to show".into()),
                 }
             }
@@ -1224,7 +1345,17 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 let tx = h.commands.clone();
                 // Runs on the link's reader thread: only enqueue.
                 light_taps.push(link.subscribe_reports(move |generation, r| {
-                    if protocol::is_reply(r, protocol::SETTINGS, protocol::settings::RGB_STATE) {
+                    if let Some(forward) = protocol::art_key_event(r) {
+                        let _ = tx.send(Command::ArtKey {
+                            source: source.clone(),
+                            generation,
+                            forward,
+                        });
+                    } else if protocol::is_reply(
+                        r,
+                        protocol::SETTINGS,
+                        protocol::settings::RGB_STATE,
+                    ) {
                         let state = protocol::RgbState::parse(r);
                         let _ = tx.send(Command::Lights {
                             source: source.clone(),
@@ -1249,6 +1380,11 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     due = None;
                     lights_on = None;
                     right_on = None;
+                    // The keyboard takes its art keys back on a USB disconnect itself; the next
+                    // connect takes them again.
+                    (has_art_keys, art_keys_told) = (false, None);
+                    held_art_keys(None);
+                    art_keys_health::note(|a| a.disconnected());
                     triggers.disconnected();
                     h.update(|s| {
                         s.connected = false;
@@ -1270,9 +1406,13 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     continue;
                 }
                 current = Some((id, state.generation));
-                let wake_events = super::link::ask_hello(link).is_some_and(|hello| {
-                    hello.capabilities & protocol::capabilities::RGB_STATE_EVENT != 0
-                });
+                let caps = super::link::ask_hello(link).map_or(0, |hello| hello.capabilities);
+                let wake_events = caps & protocol::capabilities::RGB_STATE_EVENT != 0;
+                // Taken on each connect: the keyboard drops them on a USB disconnect or an
+                // endpoint change, and keeps no keep-alive.
+                has_art_keys = caps & protocol::capabilities::ART_KEYS != 0;
+                art_keys_health::note(|a| a.connected(has_art_keys));
+                art_keys_told = sync_art_keys(link, has_art_keys, !super::pause::paused(), None);
                 h.update(|s| {
                     s.connected = true;
                     s.wake_events = wake_events;
@@ -1388,7 +1528,15 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                                 .map(|(c, t)| {
                                     eprintln!(
                                         "{}",
-                                        super::reassert::line("the right screen's art", t)
+                                        super::reassert::line(
+                                            &format!(
+                                                "the art on {}",
+                                                super::screen_roles::the(
+                                                    super::screen_roles::Role::Art
+                                                )
+                                            ),
+                                            t
+                                        )
                                     );
                                     c
                                 });
@@ -1990,7 +2138,13 @@ mod tests {
             stop: Arc::new(AtomicBool::new(false)),
         };
         h.step_now(true).unwrap();
-        assert!(matches!(receiver.try_recv(), Ok(Command::Step(true))));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Command::Step {
+                forward: true,
+                card: false
+            })
+        ));
         assert!(
             h.snapshot().outcome.is_none(),
             "the last job's outcome is cleared"
@@ -2016,7 +2170,13 @@ mod tests {
         );
         assert_eq!(s.status.map(|st| st.right_set), Some(2));
         h.step_now(false).unwrap();
-        assert!(matches!(receiver.try_recv(), Ok(Command::Step(false))));
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(Command::Step {
+                forward: false,
+                card: false
+            })
+        ));
         // Busy or without the keyboard: refused with a reason, nothing sent.
         h.update(|s| s.busy = true);
         assert_eq!(h.step_now(true), Err("another art job is running".into()));
@@ -2114,6 +2274,8 @@ mod contention_tests {
         statuses: AtomicU32,
         selects: AtomicU32,
         others: AtomicU32,
+        /// Each ART_KEYS the app sent (D7 0D on), in order.
+        art_keys: Mutex<Vec<u8>>,
         inbox: (Mutex<VecDeque<Report>>, Condvar),
         interrupted: AtomicBool,
     }
@@ -2202,6 +2364,12 @@ mod contention_tests {
                     }
                     b.push(r);
                 }
+                (protocol::SETTINGS, protocol::settings::ART_KEYS) => {
+                    b.art_keys.lock().unwrap().push(out[2]);
+                    let mut r = [0u8; REPORT];
+                    r[..4].copy_from_slice(&[protocol::SETTINGS, 0x8D, 0, out[2]]);
+                    b.push(r);
+                }
                 _ => {
                     b.others.fetch_add(1, Ordering::SeqCst);
                 }
@@ -2220,6 +2388,11 @@ mod contention_tests {
 
     impl Rig {
         fn new(showing: i8, pinned: i8) -> Rig {
+            Rig::with_caps(showing, pinned, 0)
+        }
+
+        /// As [`Rig::new`], on a keyboard whose HELLO has `capabilities`.
+        fn with_caps(showing: i8, pinned: i8, capabilities: u32) -> Rig {
             crate::foxglove::store::test_config_dir();
             let board = Board::new(showing);
             let opened = board.clone();
@@ -2231,6 +2404,7 @@ mod contention_tests {
                         width: 68,
                         height: 160,
                         right_link: 2,
+                        capabilities,
                         ..Hello::default()
                     }),
                     bus: Bus::Unknown,
@@ -2429,6 +2603,98 @@ mod contention_tests {
             "the choice isn't reverted"
         );
         assert_eq!(*rig.board.set.lock().unwrap(), 3);
+    }
+
+    /// #60: on a keyboard with the art keys, the connect takes them (D7 0D 01) and each press
+    /// (D7 8D 01 dir) steps Rotation either way; without HELLO bit 16 nothing is sent, and a
+    /// press Foxglove didn't subscribe to (another host's) is left alone.
+    #[test]
+    fn the_art_keys_step_rotation_once_taken() {
+        let rig = Rig::with_caps(2, 2, protocol::capabilities::ART_KEYS);
+        let press = |dir: i8| {
+            let mut r = [0u8; REPORT];
+            r[..4].copy_from_slice(&[protocol::SETTINGS, 0x8D, 1, dir as u8]);
+            rig.board.push(r);
+        };
+        assert_eq!(*rig.board.art_keys.lock().unwrap(), [1], "taken on connect");
+        let before = art_keys_health::now().stepped;
+        press(1);
+        let after = rig.until("the next piece", |s| {
+            !s.busy && s.status.is_some_and(|st| st.right_set == 3)
+        });
+        assert!(
+            matches!(after.outcome.as_ref().map(|o| &o.result), Some(Ok(()))),
+            "{:?}",
+            after.outcome
+        );
+        assert_eq!(*rig.board.set.lock().unwrap(), 3);
+        press(-1);
+        rig.until("the piece before", |s| {
+            !s.busy && s.status.is_some_and(|st| st.right_set == 2)
+        });
+        assert_eq!(*rig.board.set.lock().unwrap(), 2);
+        assert_eq!(rig.board.requests().2, 0, "nothing else asked");
+        // The health signal fired for both presses (other tests press no art keys).
+        assert!(art_keys_health::now().stepped >= before + 2);
+
+        let plain = Rig::new(2, 2);
+        assert!(plain.board.art_keys.lock().unwrap().is_empty(), "no bit 16");
+        let selects = plain.board.requests().1;
+        let mut r = [0u8; REPORT];
+        r[..4].copy_from_slice(&[protocol::SETTINGS, 0x8D, 1, 1]);
+        plain.board.push(r);
+        plain.reports(1); // handled in order after the press
+        assert_eq!(plain.board.requests().1, selects, "not ours: no step");
+    }
+
+    /// #60, #404: what the keyboard is told follows pause, once per change, and only on a
+    /// keyboard with the keys; holding them records the link for the quit's hand-back.
+    #[test]
+    fn art_keys_are_told_once_per_change() {
+        let rig = Rig::with_caps(2, 2, protocol::capabilities::ART_KEYS);
+        let sent = || rig.board.art_keys.lock().unwrap().clone();
+        assert_eq!(
+            sync_art_keys(&rig._link, true, true, Some(true)),
+            Some(true)
+        );
+        assert_eq!(sent(), [1], "no change, nothing sent");
+        assert_eq!(
+            sync_art_keys(&rig._link, true, false, Some(true)),
+            Some(false)
+        );
+        assert_eq!(
+            sync_art_keys(&rig._link, false, true, None),
+            None,
+            "no keys"
+        );
+        assert_eq!(
+            sync_art_keys(&rig._link, true, true, Some(false)),
+            Some(true)
+        );
+        let until = Instant::now() + WAIT;
+        while sent().len() < 3 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(sent(), [1, 0, 1]);
+    }
+
+    /// The art key's card names the piece and its place in Rotation (#60).
+    #[test]
+    fn the_art_card_names_the_place_and_the_piece() {
+        let list = [Choice::BuiltIn(0), Choice::BuiltIn(1), Choice::Slot(0)];
+        let s = Snapshot {
+            slots: vec![SlotInfo {
+                slot: 0,
+                used: true,
+                name: "Fury".into(),
+                ..SlotInfo::default()
+            }],
+            ..Snapshot::default()
+        };
+        let card = art_card(&list, &Choice::Slot(0), false, &s).unwrap();
+        assert_eq!((card.index, card.total, card.forward), (2, 3, false));
+        assert_eq!(card.name, "Fury");
+        assert!(art_card(&list, &Choice::BuiltIn(5), true, &s).is_none());
     }
 
     /// The tray's Next › (and an agent's art.select next) during a re-apply: taken, and shown.

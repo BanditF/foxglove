@@ -207,6 +207,25 @@ fn page_json(m: &super::lights_page::Model) -> methods::LightsPage {
     }
 }
 
+/// `scenes.page` (API 1.10, #618 batch H): the Scenes page's Presets card in the API's words.
+fn scenes_page(card: &super::scenes_ui::PresetsCard) -> methods::ScenesPage {
+    methods::ScenesPage {
+        wallpapers: card
+            .wallpapers
+            .iter()
+            .map(
+                |(name, wallpaper, on_screen)| methods::ScenesPageWallpaper {
+                    name: name.clone(),
+                    wallpaper: wallpaper.clone(),
+                    on_screen: *on_screen,
+                },
+            )
+            .collect(),
+        effects: card.effects.clone(),
+        yours: card.yours.clone(),
+    }
+}
+
 /// `lighting.set`'s writes, in order: on/off, colour, effect.
 fn set_lighting(
     lighting: &dyn foxglove_devices::Lighting,
@@ -622,6 +641,7 @@ impl Devices for AppDevices {
                 let p: methods::DeviceParams = params(_params)?;
                 lights_page(&p.device)
             }
+            "scenes.page" => Ok(json!(scenes_page(&super::scenes_ui::presets_now()))),
             "tray.panel" => {
                 let (open, rect) = super::tray_panel::state();
                 Ok(json!(methods::TrayPanel { open, rect }))
@@ -1432,6 +1452,33 @@ mod parity_tests {
         assert!(!Permission::AppWindows.sensitive());
         // API 1.7 (#674): what the Lights page shows is a read.
         assert_eq!(need("lights.page"), Some("devices.read"));
+        // API 1.10 (#618 batch H): so is what the Scenes page's Presets card lists.
+        assert_eq!(need("scenes.page"), Some("devices.read"));
+    }
+
+    /// `scenes.page` answers with the Presets card's rows, in the card's order and words.
+    #[test]
+    fn scenes_page_is_the_cards_rows() {
+        let card = super::super::scenes_ui::PresetsCard {
+            wallpapers: vec![
+                ("Bandit Radar".into(), "bandit-radar".into(), false),
+                (
+                    "FURY Constellations".into(),
+                    "bandit-fury-stars".into(),
+                    true,
+                ),
+            ],
+            effects: vec!["Breathe".into()],
+            yours: vec![],
+        };
+        let page = scenes_page(&card);
+        assert_eq!(page.wallpapers.len(), 2);
+        assert_eq!(page.wallpapers[1].name, "FURY Constellations");
+        assert!(page.wallpapers[1].on_screen && !page.wallpapers[0].on_screen);
+        assert_eq!(page.effects, ["Breathe"]);
+        let live = AppDevices.call("scenes.page", json!({})).unwrap();
+        let live: methods::ScenesPage = serde_json::from_value(live).unwrap();
+        assert!(!live.effects.is_empty(), "the effects' presets always show");
     }
 
     /// #674: `lights.page` answers with the page's own model: Swirl shows the rainbow under

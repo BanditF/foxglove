@@ -282,6 +282,10 @@ pub struct Usb {
     /// Also fail when a half is in the bootloader or the left is off USB.
     #[serde(default)]
     pub strict: bool,
+    /// The case needs the right on USB power (true) or on its battery (false), #618 batch R: a
+    /// right the other way is BLOCKED, not FAIL (its cable is a person's; the case runs the next
+    /// time the right is found that way).
+    pub right_on_usb: Option<bool>,
 }
 /// A D6 art push as a misbehaving PC would send it (docs/resilience.md, #25), then the art STATUS
 /// it should leave: `cut` "data" (BEGIN and a few DATA, then silence) or "commit" (silence after
@@ -742,6 +746,7 @@ pub fn load(path: &Path) -> Result<Suite> {
                     "invoke_refusal",
                     "build_info",
                     "unlocked",
+                    "app_panel",
                     "activity_relay",
                     "rgb_shown",
                     "right_redraws"

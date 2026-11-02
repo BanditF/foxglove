@@ -92,7 +92,6 @@ pub fn line(text: &str) {
 }
 
 /// The last `n` lines of the log (the rolled file first), for "Copy diagnostics" (#371).
-#[allow(dead_code)]
 pub fn recent(n: usize) -> Vec<String> {
     dir().map(|d| recent_in(&d, n)).unwrap_or_default()
 }

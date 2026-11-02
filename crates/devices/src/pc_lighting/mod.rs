@@ -5,6 +5,7 @@
 //! - [`catalog`]: the data-driven list of known boards (`lighting-catalog.toml`), and the
 //!   user's own entries
 //! - [`caps`]: what a device can do (colour, effects, brightness, screens), as chips
+//! - [`zones`]: its real lighting resolution (#611): zones, dead lamps, and where that came from
 //! - [`discover`]: matches a HID enumeration against the catalog and the LampArray usage;
 //!   [`unknown`] lists the rest for "Add a device", and [`test_zone`] lights one zone of it
 //! - [`lamp_array`]: Windows Dynamic Lighting (LampArray) devices' lamps, as zones
@@ -22,6 +23,7 @@ pub mod catalog;
 pub mod hid;
 pub mod lamp_array;
 pub mod omen_tracer;
+pub mod zones;
 
 use std::time::Duration;
 
@@ -30,6 +32,7 @@ use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
 pub use catalog::{Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRole, ZoneSpec};
 pub use lamp_array::{Lamp, LampAccess, LampArrayDesc, LampArrayDriver, LampHandle};
+pub use zones::{HealthLevel, Zone, ZoneHealth, ZoneKey, ZoneSource, Zones};
 
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;

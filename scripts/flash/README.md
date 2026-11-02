@@ -42,6 +42,30 @@ again" before the left is touched; a later entry looks again. A half already in
 its bootloader is written without this check, and a settings reset (double tap)
 isn't gated.
 
+**A bootloader drive that never mounts (#664).** After Modern Standby a USB port can
+fail to re-enumerate (`Unknown USB Device (Device Descriptor Request Failed)`,
+`USB\VID_0000&PID_0002\...`, Code 43): the half leaves its firmware for its
+bootloader, but no drive appears. The flasher tells this apart from a slow mount:
+- after a hands-free entry, no bootloader within 30 s *and* the half's
+  `VID_1D50&PID_615E` device gone from USB means the port failed (a firmware still on
+  USB is just slow, and the normal wait goes on; double taps are never judged);
+- a bootloader on USB whose drive lookups (3 tries) find no volume is a drive that
+  didn't mount. This used to refuse with "Unplug other bootloaders", which was wrong:
+  nothing was ambiguous.
+
+Either way it logs the evidence (any Code 43 device), records `drive-not-mounted` in
+the flash history, and asks once: "The right half is in its bootloader but Windows
+didn't mount its drive. Unplug the right half's USB cable and plug it back in; the
+flash will continue." It then waits up to 300 s for that serial's bootloader and
+drive, on Windows device-change events (`Win32_DeviceChangeEvent`, no admin; each
+wait at most 15 s, then it looks again), and writes it as usual. If the half's
+normal firmware comes back instead it stops ("nothing was written"); with no replug
+it stops with exit code 2 and says to replug, then run the same command with
+`--resume`. `--pnp-rescan` runs `pnputil /scan-devices` once first, only from an
+elevated prompt (otherwise it logs that it skipped it); it can't revive a Code 43
+port, so the replug stays the fix. The app's firmware update does the same
+(`crates/flash`).
+
 Preflight checks every UF2 block's magic, family, flags, payload length, block
 numbers, and flash range `0x26000..0xAD000`. All 96 inspected local UF2s start at
 `0x26000`. Payloads are decoded into an address-ordered flat image for markers.

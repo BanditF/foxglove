@@ -19,6 +19,9 @@
 # also after a failure or Ctrl-C (crates/foxglove-lab/src/lights.rs; two log lines: "lights saved",
 # "lights restored"). On-call no longer restores the user's look by hand after a gate run (#618
 # follow-up; resilience's right-relink case left 19/100/20 behind).
+# 7. With -Sitting (and FOXGLOVE_APP_OK=1): the 0.2 sitting's former user steps, hands-free
+#    (scripts/lab/sitting.ps1; docs/test-lab/sitting-0.2-h-i-r.md): about 25 minutes more, with
+#    the PC unlocked and the user away (real clicks, the focus, the keyboard untouched).
 # The 30-minute soak (scripts/lab/soak.py) is separate: it is the sitting's exit check (#618).
 # It never flashes. Flash first with scripts/flash/foxglove_flash.py (the user types FLASH),
 # then run this against the same firmware folder.
@@ -32,7 +35,8 @@ param(
     [string]$Suite = 'release',
     [string]$App,
     [switch]$AllowApp,
-    [switch]$NonInteractive
+    [switch]$NonInteractive,
+    [switch]$Sitting
 )
 $ErrorActionPreference = 'Stop'
 # The lab scripts print UTF-8 (arrows in log lines): decode it as such through Tee-Object (#618).
@@ -98,6 +102,13 @@ try {
     Write-Host '== USB halves' -ForegroundColor Cyan
     & $lab usb | Tee-Object -FilePath (Join-Path $out 'usb.txt')
     if ($LASTEXITCODE) { $failed += 'usb' }
+
+    Write-Host '== PC away? (lock, display)' -ForegroundColor Cyan
+    # Locked or with the display off, Foxglove is away (#410, #683): it hands the left panel back
+    # and holds display changes, so left-clock-ticks and overlay_tray's display-change and hit-test
+    # checks are BLOCKED by name then, never FAIL (#678). Recorded up front for On-call: run the gate
+    # with the PC unlocked and its display on (scripts/keep-display-awake.ps1 or a sitting).
+    & $lab away | Tee-Object -FilePath (Join-Path $out 'away.txt')
 
     Write-Host '== Suite resilience (Foxglove quit)' -ForegroundColor Cyan
     # Exactly the app's process name: other sessions' test binaries must never be stopped.
@@ -183,6 +194,18 @@ try {
             $name = $c.Name
             python @($c.Args) | Tee-Object -FilePath (Join-Path $out "$name.txt")
             if ($LASTEXITCODE -eq 2) { $blocked += $name } elseif ($LASTEXITCODE) { $failed += $name }
+        }
+    }
+
+    if ($Sitting) {
+        # The 0.2 sitting's former user steps, hands-free (scripts/lab/sitting.ps1, #618): after
+        # the gate, with the same app and lab, in this report folder.
+        Write-Host '== The sitting (scripts/lab/sitting.ps1)' -ForegroundColor Cyan
+        if (-not $App) { $blocked += 'sitting (no -App <foxglove.exe>)' }
+        elseif (-not $appOk) { $blocked += 'sitting (it launches the app and takes the focus: FOXGLOVE_APP_OK=1, On-call)' }
+        else {
+            & powershell -ExecutionPolicy Bypass -File "$PSScriptRoot\lab\sitting.ps1" -App $App -Lab $lab -Out (Join-Path $out 'sitting')
+            if ($LASTEXITCODE -eq 2) { $blocked += 'sitting' } elseif ($LASTEXITCODE) { $failed += 'sitting' }
         }
     }
 

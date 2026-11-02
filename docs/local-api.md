@@ -1,9 +1,10 @@
 # Foxglove local API and plugins, v1
 
-Status: design for #69, with the contract in code (`crates/plugin-api`, schema in
-`crates/plugin-api/schema/v1.json`). This builds on [plugins-and-devices.md](plugins-and-devices.md)
-(the device layer, plugins, the Plugins tab). Nothing in the app speaks it yet. The next PRs add the host, the named
-pipe and the Plugins tab.
+Status: built (#69). The contract is in code (`crates/plugin-api`, API 1.9, schema in
+`crates/plugin-api/schema/v1.json`); the app serves it on the named pipe
+`\\.\pipe\foxglove-<user>` (`crates/plugin-host`), and the plugins and `foxglove-cli` use it. This
+builds on [plugins-and-devices.md](plugins-and-devices.md) (the device layer, plugins, the
+Plugins tab).
 
 ## One protocol, three doors
 
@@ -52,6 +53,7 @@ same messages.
 | `tray.panel` / `tray.set_panel` | call | `devices.read` / `app.windows` (API 1.6) |
 | `overlay.window` / `overlay.restore` | call | `devices.read` / `app.windows` (API 1.6) |
 | `lights.page` | call | `devices.read` (API 1.7) |
+| `scenes.page` | call | `devices.read` (API 1.10) |
 
 The params and results are in the schema. Notes:
 
@@ -104,6 +106,11 @@ The params and results are in the schema. Notes:
   which controls are visible (`controls`: swatches, custom, hue, sat, brightness, speed, accent),
   and the "The keyboard shows X; Foxglove saved Y" `note`. Only the host-link keyboard.
   `scripts/lab/lights_page.py` uses it.
+- **What the Scenes page's Presets card lists (#618, API 1.10), for agents:** `scenes.page` answers
+  with the card's rows from the same sources the card draws: `wallpapers` (each row's `name`, its
+  wallpaper's `wallpaper` id from the installed manifests, and `on_screen`, the card's "On screen"
+  tag), `effects` and `yours`, in the card's order. `scripts/lab/wallpaper_check.py presets`
+  checks it against the installed manifests (the 0.2 sitting's old H4).
 - **Case zones and the sync (#617, API 1.5):** `pc_lighting.list` gives each PC lighting
   device (by its key, `vvvv:pppp` plus a serial), its zones with `#rrggbb` colours, whether
   Foxglove writes it, the apps that may fight it, and the last write's status.

@@ -18,8 +18,20 @@ off; Wallpaper Engine doesn't save it (config.json is not written, checked 10/27
         Wallpaper Engine dropped no -control command ("Windows is reentrant"); DXGI device-lost
         lines (a flicker that isn't Foxglove's); and from the devlog, each reload (a gap in the
         snapshots) and whether the wallpaper still had game mode after it.
+    python scripts/lab/wallpaper_check.py presets [--app <foxglove.exe>]
+        The sitting's old H4 (#571), window-free: the running Foxglove's Presets card, through the
+        local API's scenes.page (API 1.10), lists the installed wallpapers' looks, and tags "On
+        screen" the ones Wallpaper Engine shows now. With --app it reads a test app of that build
+        (temp config; it launches it: FOXGLOVE_APP_OK=1, On-call) instead.
+    python scripts/lab/wallpaper_check.py gold
+        The sitting's old H5 (#70): the colour the running Foxglove keeps on the keyboard
+        (lighting.state, read back through the keyboard's calibration) is the one it follows now:
+        the wallpaper's accent with "Lights follow the wallpaper" on, else the Windows accent with
+        "Follow the Windows accent colour" on. The calibration is the user's own match of the
+        keyboard against the screen, so the same hue/sat through it is the same gold to the eye.
 
-Exit 0 PASS, 1 FAIL, 2 BLOCKED (a file or the devlog is missing). Prints one line per check.
+Exit 0 PASS, 1 FAIL, 2 BLOCKED (a file, the devlog or the running Foxglove is missing). Prints one
+line per check. presets and gold only read the running Foxglove's local API (devices.read).
 """
 import argparse
 import json
@@ -32,7 +44,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from labkit import Checks  # noqa: E402  (prints UTF-8 whatever the console)
+from labkit import Checks, connect, tool_arg  # noqa: E402  (prints UTF-8 whatever the console)
 
 STEAM_WE = Path(r'C:\Program Files (x86)\Steam\steamapps\common\wallpaper_engine')
 APPDATA = Path(os.environ.get('APPDATA', str(Path.home())))
@@ -205,6 +217,24 @@ def expected(manifest, windows):
     return (hue_sat(*rgb) if rgb else None), f"the Windows accent {colour(rgb)}, from {source}"
 
 
+def card_check(card, names, shown_ids):
+    """The Presets card (scenes.page's `wallpapers`) against the installed manifests' look names
+    and the ids of the wallpapers on screen: (missing, extra, wrongly tagged, untagged)."""
+    rows = [w['name'] for w in card]
+    missing = [n for n in names if n not in rows]
+    extra = [n for n in rows if n not in names]
+    tagged = {w['wallpaper'] for w in card if w['on_screen']}
+    have = {w['wallpaper'] for w in card}
+    wrong = sorted(tagged - set(shown_ids))
+    untagged = sorted((set(shown_ids) & have) - tagged)
+    return missing, extra, wrong, untagged
+
+
+def hue_close(a, b, tolerance):
+    d = abs(a - b) % 360
+    return min(d, 360 - d) <= tolerance
+
+
 def log_since(lines, since, piece):
     """[(time, line)] of Foxglove log lines containing `piece` at or after `since`."""
     out = []
@@ -277,14 +307,7 @@ def state(args, check):
                   flush=True)
     hud = any('bandit-hud' in f for _, f in selected(text))
     check('the Bandit HUD is on a monitor (H1 needs no pick)', hud, 'selectedwallpapers')
-    names = []
-    for d in sorted((we / 'projects' / 'myprojects').glob('*/foxglove.json')):
-        try:
-            m = json.loads(d.read_text(encoding='utf-8'))
-        except ValueError as e:
-            print(f'  {d}: broken ({e}); Foxglove skips it', flush=True)
-            continue
-        names += [x['name'] for x in m.get('motifs', [])]
+    names = preset_names(we)
     print(f'  Presets card, "Wallpapers" (#571, the user reads it in H4): {names}', flush=True)
     win, source = windows_accent()
     print(f'  the Windows accent as Foxglove reads it: {colour(win)}, from {source}; the colour picked in '
@@ -301,6 +324,113 @@ def state(args, check):
               'calibration (the store\'s [calibration], e.g. gamma 2.5 turns 42/97 into about 23/100)', flush=True)
     sync = [l for l in read_lines(FOXGLOVE_LOG) if 'wallpaper sync: ' in l]
     check('Foxglove synced a wallpaper (wallpaper sync line in foxglove.log)', bool(sync), sync[-1:] or str(FOXGLOVE_LOG))
+
+
+def preset_names(we):
+    """The looks' names the Presets card's "Wallpapers" group should list, from the installed
+    Bandit wallpapers' manifests (#571)."""
+    names = []
+    for d in sorted((we / 'projects' / 'myprojects').glob('*/foxglove.json')):
+        try:
+            m = json.loads(d.read_text(encoding='utf-8'))
+        except ValueError as e:
+            print(f'  {d}: broken ({e}); Foxglove skips it', flush=True)
+            continue
+        names += [x['name'] for x in m.get('motifs', [])]
+    return names
+
+
+def on_screen_ids(we):
+    """The manifest ids of the wallpapers Wallpaper Engine shows now (from its config)."""
+    cfg = we / 'config.json'
+    if not cfg.is_file():
+        return []
+    ids = []
+    for _, file in selected(cfg.read_text(encoding='utf-8', errors='replace')):
+        m = manifest_of(file)
+        if m and m.get('id'):
+            ids.append(m['id'])
+    return ids
+
+
+def api_or_blocked(check, name, api):
+    """The running Foxglove's local API at version `api`, or None after a BLOCKED line."""
+    try:
+        return connect(name, ['devices.read'], seconds=5, api=api)
+    except OSError as e:
+        check("the running Foxglove's local API", False, f'no pipe ({e}): Foxglove not running?', blocked=True)
+        return None
+
+
+def presets(args, check):
+    we = we_dir(args.we)
+    names = preset_names(we)
+    if not check('installed wallpapers describe their looks', bool(names), f'{len(names)} looks', blocked=not names):
+        return
+    if args.app:  # the build under test on a temp config (its card reads the same manifests)
+        from labkit import App, require_app_ok, temp_config
+        require_app_ok()
+        with App(args.app, temp_config('foxglove-presets-')):
+            api = connect('test-lab-presets', ['devices.read'], api='1.10')
+            try:
+                card = api.call('scenes.page', {})
+            finally:
+                api.close()
+    else:
+        api = api_or_blocked(check, 'test-lab-presets', '1.10')
+        if not api:
+            return
+        try:
+            card = api.call('scenes.page', {})
+        finally:
+            api.close()
+    rows = [w['name'] for w in card['wallpapers']]
+    print(f'  the card\'s "Wallpapers": {rows}', flush=True)
+    missing, extra, wrong, untagged = card_check(card['wallpapers'], names, on_screen_ids(we))
+    check('H4: the Presets card lists every installed wallpaper look (#571)', not missing, missing or f'{len(rows)} rows')
+    check('H4: and nothing else under "Wallpapers"', not extra, extra or 'none')
+    check('H4: "On screen" tags the wallpapers Wallpaper Engine shows', not wrong and not untagged,
+          {'tagged, not on screen': wrong, 'on screen, not tagged': untagged})
+    check('H4: the Effects group is there', bool(card['effects']), card['effects'])
+
+
+def gold(args, check):
+    we = we_dir(args.we)
+    if not check("the user's store", STORE.is_file(), str(STORE), blocked=not STORE.is_file()):
+        return
+    store = STORE.read_text(encoding='utf-8', errors='replace')
+    if follow_wallpaper(store):
+        accent = None
+        cfg = we / 'config.json'
+        text = cfg.read_text(encoding='utf-8', errors='replace') if cfg.is_file() else '{"v": 1}'
+        for _, file in selected(text):
+            m = manifest_of(file)
+            accent = accent or (manifest_accent(m) if m else None)
+        rgb, source = (accent, 'the wallpaper palette') if accent else windows_accent()
+    elif follow_accent(store):
+        rgb, source = windows_accent()
+    else:
+        check('the lights follow a colour', False, 'both "follow" options are off: no gold to match', blocked=True)
+        return
+    if not check('the colour followed is readable', rgb is not None, source, blocked=rgb is None):
+        return
+    want = hue_sat(*rgb)
+    print(f'  the lights follow {colour(rgb)}, from {source}', flush=True)
+    api = api_or_blocked(check, 'test-lab-gold', '1.2')
+    if not api:
+        return
+    try:
+        boards = [d for d in api.call('devices.list', {})['devices'] if 'lighting' in d['caps']]
+        if not check('a keyboard with lights', bool(boards), boards, blocked=not boards):
+            return
+        state = api.call('lighting.state', {'device': boards[0]['id']})
+    finally:
+        api.close()
+    got = (state['hue'], state['saturation'])
+    ok = hue_close(got[0], want[0], args.tolerance) and abs(got[1] - want[1]) <= args.tolerance
+    check('H5: the keyboard keeps the gold it follows (#70; through its calibration)', ok,
+          f'lighting.state {got[0]}/{got[1]} ({state["effect"]}, on {state["on"]}, settled '
+          f'{state.get("settled")}) against {want[0]}/{want[1]}')
 
 
 def read_lines(path):
@@ -369,9 +499,13 @@ def main(argv=None):
     g.add_argument('--since', required=True, help='UTC, e.g. 2026-10-29T09:00:00Z (just before H1)')
     g.add_argument('--devlog', default=str(DEVLOG))
     g.add_argument('--wallpaper', default='Bandit HUD', help="the snapshots' wallpaper title")
+    pr = sub.add_parser('presets')
+    pr.add_argument('--app', type=tool_arg('--app'), help='read a test app of this build (temp config, FOXGLOVE_APP_OK=1) instead of the running Foxglove')
+    gd = sub.add_parser('gold')
+    gd.add_argument('--tolerance', type=int, default=4, help='hue and saturation steps allowed (rounding)')
     args = ap.parse_args(argv)
     check = Checks()
-    {'state': state, 'debug': debug, 'game': game}[args.what](args, check)
+    {'state': state, 'debug': debug, 'game': game, 'presets': presets, 'gold': gold}[args.what](args, check)
     check.finish()
 
 

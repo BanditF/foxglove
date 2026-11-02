@@ -7,6 +7,9 @@
 // The shared health view (worktrees\health: `health.read`, the app's health page,
 // `foxglove-lab health`) picks these up; until it lands only the tests read them.
 #![allow(dead_code)]
+// TODO(#709): once it merges, use the shared row type (`foxglove_link::health::{HealthRow,
+// Level}`) in place of the local ones below and register these rows through
+// `crate::foxglove::health::register`, then drop the allow above.
 
 use foxglove_devices::pc_lighting::{Control, LampAccess};
 

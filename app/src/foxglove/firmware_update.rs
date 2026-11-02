@@ -107,14 +107,16 @@ fn save_known(k: &Known) {
 
 /// The firmware files in `dir` for each half of a split: a release's
 /// `foxglove-<version>-<half>.uf2`, else CI's `foxglove-fw-…-<half>-<profile>.uf2` for
-/// `profile`, else the older fixed names. A one-piece board (`split` false, #559) takes one file
-/// with no half in its name: `foxglove-<version>.uf2` or `foxglove-fw-…-<profile>.uf2`. More than
-/// one candidate for a part is refused rather than guessed.
+/// `profile`, else the older name the board's profile gives that part (`[firmware] files`,
+/// #563). A one-piece board (`split` false, #559) takes one file with no half in its name:
+/// `foxglove-<version>.uf2` or `foxglove-fw-…-<profile>.uf2`. More than one candidate for a part
+/// is refused rather than guessed. `board` names the parts in the messages too.
 pub fn pick_files(
     dir: &Path,
     profile: &str,
-    split: bool,
+    board: Option<&super::boards::Board>,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>), String> {
+    let split = flash_parts_for(board).is_split();
     let names: Vec<String> = std::fs::read_dir(dir)
         .map_err(|e| format!("Can't read {}: {e}", dir.display()))?
         .filter_map(|e| e.ok()?.file_name().into_string().ok())
@@ -138,10 +140,8 @@ pub fn pick_files(
                 n.starts_with("foxglove-fw-") && n.ends_with(&format!("-{half}-{profile}.uf2"))
             })
             .collect();
-        let legacy = match half {
-            "left" => "eyelash_corne_studio_left.uf2",
-            _ => "nice_view_custom-eyelash_corne_right-zmk.uf2",
-        };
+        let part = usize::from(half != "left");
+        let legacy = board.and_then(|b| b.firmware_file(part));
         for set in [release, ci] {
             match set.as_slice() {
                 [] => continue,
@@ -154,16 +154,30 @@ pub fn pick_files(
                 }
             }
         }
-        Ok(names.iter().any(|n| n == legacy).then(|| dir.join(legacy)))
+        Ok(legacy
+            .filter(|l| names.iter().any(|n| n == l))
+            .map(|l| dir.join(l)))
     };
     let (left, right) = (one("left")?, one("right")?);
     if left.is_none() && right.is_none() {
+        let parts = board.map_or_else(|| super::parts::Parts::halves(2), |b| b.parts());
         return Err(format!(
-            "No keyboard firmware (.uf2 for the left or right half) in {}.",
+            "No keyboard firmware (.uf2 for {}) in {}.",
+            either_part(&parts),
             dir.display()
         ));
     }
     Ok((left, right))
+}
+
+/// A split's two parts in a sentence: "the left or right half", "the main board or the
+/// satellite".
+fn either_part(parts: &super::parts::Parts) -> String {
+    if parts.noun() == "half" {
+        let short = |i| super::parts::lower_first(&parts.short(i));
+        return format!("the {} or {} half", short(0), short(1));
+    }
+    format!("{} or {}", parts.the(0), parts.the(1))
 }
 
 /// A one-piece board's firmware file: no half in its name, and not the settings reset.
@@ -227,10 +241,10 @@ pub fn notes(plan: &Plan) -> Vec<String> {
         out.push("When asked, double-tap the reset button on that half (GA builds can't restart themselves).".into());
     }
     if plan.images.iter().any(|i| i.half == Half::Right) {
-        out.push(
-            "Plug the right half into this PC too: its new firmware goes over its own cable."
-                .into(),
-        );
+        out.push(format!(
+            "Plug the {} into this PC too: its new firmware goes over its own cable.",
+            super::parts::lower_first(&plan.parts.name(Half::Right))
+        ));
     }
     if plan.downgrade {
         out.push("This is an older version than the keyboard runs.".into());
@@ -293,8 +307,9 @@ fn check(dir: PathBuf) {
         let result = (|| -> Result<Plan, String> {
             let board = board()?;
             let profile = board.profile();
-            let parts = flash_parts_for(super::boards::current().as_ref());
-            let (left, right) = pick_files(&dir, &profile, parts.is_split())?;
+            let current = super::boards::current();
+            let parts = flash_parts_for(current.as_ref());
+            let (left, right) = pick_files(&dir, &profile, current.as_ref())?;
             let read = |p: Option<PathBuf>| {
                 p.map(|p| std::fs::read(&p).map_err(|e| format!("Can't read {}: {e}", p.display())))
                     .transpose()
@@ -806,7 +821,7 @@ mod windows_board {
             self.next_event(timeout);
         }
 
-        fn volume(&self, serial: &str) -> Result<PathBuf, String> {
+        fn volume(&self, serial: &str) -> Result<Option<PathBuf>, String> {
             if !serial.chars().all(|c| c.is_ascii_alphanumeric()) {
                 return Err("an unexpected bootloader serial".into());
             }
@@ -814,14 +829,22 @@ mod windows_board {
                 "$disks = @(Get-CimInstance Win32_DiskDrive | Where-Object {{ $_.PNPDeviceID -match '{serial}' }}); ConvertTo-Json -Compress -InputObject @($disks | Where-Object {{ $disks.Count -eq 1 }} | ForEach-Object {{ Get-CimAssociatedInstance -InputObject $_ -Association Win32_DiskDriveToDiskPartition | ForEach-Object {{ Get-CimAssociatedInstance -InputObject $_ -Association Win32_LogicalDiskToPartition | ForEach-Object {{ $_.DeviceID }} }} }})"
             );
             let rows = strings(&powershell(&script)?);
-            let [letter] = rows.as_slice() else {
-                return Err("its drive can't be told apart from other drives; unplug other keyboards in bootloader mode".into());
+            // #664: no row is a bootloader with no drive mounted (yet), not an ambiguity: the
+            // update waits for it, then asks for a replug.
+            let letter = match rows.as_slice() {
+                [] => return Ok(None),
+                [letter] => letter,
+                more => {
+                    return Err(format!(
+                        "its disk shows {} drives ({}), not one; unplug any other bootloader drive",
+                        more.len(),
+                        more.join(", ")
+                    ))
+                }
             };
             let volume = PathBuf::from(format!("{letter}\\"));
-            if !volume.join("INFO_UF2.TXT").exists() {
-                return Err("its drive has no INFO_UF2.TXT".into());
-            }
-            Ok(volume)
+            // A drive still mounting may not show INFO_UF2.TXT yet: not written until it does.
+            Ok(volume.join("INFO_UF2.TXT").exists().then_some(volume))
         }
 
         fn board_id(&self, volume: &Path) -> Result<String, String> {
@@ -892,6 +915,11 @@ mod windows_board {
     }
 }
 
+/// The "Update firmware…" button's tooltip: "for both halves", "for the keyboard" (#563).
+fn pick_tip(parts: &super::parts::Parts) -> String {
+    format!("Pick a folder with new firmware for {}", parts.all())
+}
+
 /// The update's part of the Firmware card; returns the click, if any.
 pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
     use egui::RichText;
@@ -906,7 +934,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
         View::Idle => {
             if ui
                 .button("Update firmware…")
-                .on_hover_text("Pick a folder with new firmware for both halves")
+                .on_hover_text(pick_tip(&super::parts::Parts::current().seen(2)))
                 .clicked()
             {
                 out = Some(Intent::Start);
@@ -1001,6 +1029,111 @@ pub mod tests {
         d
     }
 
+    fn corne() -> crate::foxglove::boards::Board {
+        crate::foxglove::fixtures::users_desk::board()
+    }
+
+    fn plank() -> crate::foxglove::boards::Board {
+        crate::foxglove::fixtures::second_desk::board()
+    }
+
+    /// #563: the older file names come from the board's profile, not the code. The Corne's
+    /// profile gives the names the update always took; a made-up split names its own, and a
+    /// board without a profile takes only Foxglove's names.
+    #[test]
+    fn older_firmware_names_come_from_the_profile() {
+        let d = temp("legacy");
+        for n in [
+            "eyelash_corne_studio_left.uf2",
+            "nice_view_custom-eyelash_corne_right-zmk.uf2",
+            "settings_reset-nice_nano_v2-zmk.uf2",
+        ] {
+            std::fs::write(d.join(n), b"x").unwrap();
+        }
+        let (l, r) = pick_files(&d, "dev", Some(&corne())).unwrap();
+        assert_eq!(
+            l.unwrap().file_name().unwrap(),
+            "eyelash_corne_studio_left.uf2"
+        );
+        assert_eq!(
+            r.unwrap().file_name().unwrap(),
+            "nice_view_custom-eyelash_corne_right-zmk.uf2"
+        );
+        // Foxglove's own name still wins over the profile's for that part.
+        std::fs::write(d.join("foxglove-0.2.0-left.uf2"), b"x").unwrap();
+        let (l, r) = pick_files(&d, "dev", Some(&corne())).unwrap();
+        assert_eq!(l.unwrap().file_name().unwrap(), "foxglove-0.2.0-left.uf2");
+        assert!(r.is_some());
+
+        // A made-up split with its own parts and older names: the Corne's files aren't its.
+        let wedge = crate::foxglove::boards::Board::parse(
+            r#"
+format = "foxglove-board"
+version = 1
+id = "wedge"
+name = "Wedge"
+protocol = "zmk"
+[[parts]]
+id = "main"
+name = "Main board"
+[[parts]]
+id = "wing"
+name = "Wing"
+[firmware]
+files = ["wedge_main.uf2", "wedge_wing.uf2"]
+[[match]]
+vid = 0x1d50
+pid = 0x615e
+product = "Wedge"
+"#,
+        )
+        .unwrap();
+        assert!(pick_files(&d, "dev", Some(&wedge))
+            .map(|(l, r)| l.is_some() && r.is_none())
+            .unwrap());
+        let w = temp("wedge");
+        for n in [
+            "wedge_main.uf2",
+            "wedge_wing.uf2",
+            "eyelash_corne_studio_left.uf2",
+        ] {
+            std::fs::write(w.join(n), b"x").unwrap();
+        }
+        let (l, r) = pick_files(&w, "dev", Some(&wedge)).unwrap();
+        assert_eq!(l.unwrap().file_name().unwrap(), "wedge_main.uf2");
+        assert_eq!(r.unwrap().file_name().unwrap(), "wedge_wing.uf2");
+        let none = temp("wedge-none");
+        std::fs::write(none.join("eyelash_corne_studio_left.uf2"), b"x").unwrap();
+        let e = pick_files(&none, "dev", Some(&wedge)).unwrap_err();
+        assert!(e.contains("(.uf2 for the main board or the wing)"), "{e}");
+        // The second part's cable line names it: the Corne's right half as before, the wing.
+        let plug = |parts: foxglove_flash::Parts| {
+            notes(&Plan {
+                images: vec![foxglove_flash::Image {
+                    half: Half::Right,
+                    data: Vec::new(),
+                    check: Default::default(),
+                }],
+                parts,
+                ..Default::default()
+            })
+            .into_iter()
+            .find(|l| l.starts_with("Plug"))
+            .unwrap()
+        };
+        assert_eq!(
+            plug(flash_parts(&corne().parts())),
+            "Plug the right half into this PC too: its new firmware goes over its own cable."
+        );
+        assert!(plug(flash_parts(&wedge.parts())).starts_with("Plug the wing into"));
+        // The Corne's message reads as it always did; no profile reads as a split's.
+        let empty = temp("legacy-empty");
+        for board in [Some(corne()), None] {
+            let e = pick_files(&empty, "dev", board.as_ref()).unwrap_err();
+            assert!(e.contains("(.uf2 for the left or right half)"), "{e}");
+        }
+    }
+
     #[test]
     fn picks_release_then_ci_names_and_refuses_doubles() {
         let d = temp("pick");
@@ -1012,7 +1145,7 @@ pub mod tests {
         ] {
             std::fs::write(d.join(n), b"x").unwrap();
         }
-        let (l, r) = pick_files(&d, "dev", true).unwrap();
+        let (l, r) = pick_files(&d, "dev", Some(&corne())).unwrap();
         assert_eq!(l.unwrap().file_name().unwrap(), "foxglove-0.2.0-left.uf2");
         assert_eq!(r.unwrap().file_name().unwrap(), "foxglove-0.2.0-right.uf2");
         let d = temp("ci");
@@ -1023,14 +1156,14 @@ pub mod tests {
         ] {
             std::fs::write(d.join(n), b"x").unwrap();
         }
-        let (l, r) = pick_files(&d, "ga", true).unwrap();
+        let (l, r) = pick_files(&d, "ga", Some(&corne())).unwrap();
         assert!(l.unwrap().to_string_lossy().ends_with("left-ga.uf2"));
         assert!(r.is_none(), "no right GA build: the right is left as it is");
         std::fs::write(d.join("foxglove-fw-v0.2.0-9z9z9z9-left-dev.uf2"), b"x").unwrap();
-        assert!(pick_files(&d, "dev", true)
+        assert!(pick_files(&d, "dev", Some(&corne()))
             .unwrap_err()
             .contains("More than one left"));
-        assert!(pick_files(&temp("empty"), "dev", true)
+        assert!(pick_files(&temp("empty"), "dev", Some(&corne()))
             .unwrap_err()
             .contains("No keyboard firmware"));
     }
@@ -1047,15 +1180,15 @@ pub mod tests {
         ] {
             std::fs::write(d.join(n), b"x").unwrap();
         }
-        let (one, none) = pick_files(&d, "dev", false).unwrap();
+        let (one, none) = pick_files(&d, "dev", Some(&plank())).unwrap();
         assert_eq!(one.unwrap().file_name().unwrap(), "foxglove-0.2.0.uf2");
         assert!(none.is_none());
         let d = temp("one-ci");
         std::fs::write(d.join("foxglove-fw-v0.2.0-1a2b3c4-dev.uf2"), b"x").unwrap();
         std::fs::write(d.join("foxglove-fw-v0.2.0-1a2b3c4-left-dev.uf2"), b"x").unwrap();
-        let (one, _) = pick_files(&d, "dev", false).unwrap();
+        let (one, _) = pick_files(&d, "dev", Some(&plank())).unwrap();
         assert!(one.unwrap().to_string_lossy().ends_with("1a2b3c4-dev.uf2"));
-        assert!(pick_files(&temp("one-empty"), "dev", false)
+        assert!(pick_files(&temp("one-empty"), "dev", Some(&plank()))
             .unwrap_err()
             .contains("No keyboard firmware (.uf2)"));
         let plank = crate::foxglove::fixtures::second_desk::board().parts();
@@ -1072,7 +1205,19 @@ pub mod tests {
                 assert!(!line.contains("half") && !line.contains("both"), "{line}");
             }
         }
-        // The Corne's names stay the flasher's halves.
+        assert_eq!(
+            pick_tip(&plank),
+            "Pick a folder with new firmware for the keyboard"
+        );
+        // The Corne's names stay the flasher's halves, and its tooltip reads as before.
+        assert_eq!(
+            pick_tip(&crate::foxglove::fixtures::users_desk::board().parts()),
+            "Pick a folder with new firmware for both halves"
+        );
+        assert_eq!(
+            pick_tip(&crate::foxglove::fixtures::wedge_parts()),
+            "Pick a folder with new firmware for both parts"
+        );
         let corne = crate::foxglove::fixtures::users_desk::board().parts();
         assert_eq!(flash_parts(&corne), foxglove_flash::Parts::split());
         // Only a profile makes a keyboard one piece: without one, a split's rules stay.

@@ -1,7 +1,8 @@
 # Lighting presets
 
-Curated underglow looks that match the Bandit wallpapers and screen art, for **Settings →
-Lighting** and for profiles (M7). The data is `app/resources/lighting-presets.json`, with a
+Curated underglow looks that match the Bandit wallpapers and screen art, for the **Lights**
+page and for profiles (M7). The data ships; the page that applies them is #306 (not in the app
+yet). The data is `app/resources/lighting-presets.json`, with a
 preview chip per preset in `app/resources/lighting/<id>.svg`. Both are written by
 `scripts/lighting_presets.py` (`--sheet` renders the review sheet below; it needs `resvg-py`).
 
@@ -68,7 +69,7 @@ lights, and reads as a look rather than a colour:
   bandit-wallpapers keyboard set it is; the generator re-copies it from that repo's
   `dist/keyboard/<id>/right.bin` when present, and checks the size and the NVA1 magic.
 - **When it applies:** only when the user picks a preset, and only if **Change the right screen
-  with the preset** is on (the default, the user's pick). A pinned set, the hotlist or "match the wallpaper" are put back when
+  with the preset** is on (the default, the user's pick). A pinned set, Rotation or "match the wallpaper" are put back when
   the preset is cleared. Leaving a preset doesn't wipe the user's own art choice.
 - Wallpaper-matched presets could later reuse the same file as "match the wallpaper", so the two
   never fight.

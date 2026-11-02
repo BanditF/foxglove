@@ -78,6 +78,9 @@ pub struct View {
     pub parts: super::parts::Parts,
     /// The look Foxglove saved for the keyboard (#670): named when the keyboard shows another.
     pub saved: Option<super::effect_controls::Saved>,
+    /// Its real lighting resolution (#611): "6 lighting zones per half, by column"; `None` with
+    /// no keyboard or none Foxglove knows lights of.
+    pub zones: Option<super::light_zones::Line>,
 }
 
 /// What the user is choosing but hasn't sent: the colour until Apply, the speed until the
@@ -257,6 +260,9 @@ pub(crate) fn shown_color(hue: u16, sat: u8, brightness: u8) -> Color32 {
 pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     let mut out = Vec::new();
     card(ui, "Keyboard", |ui| {
+        if let Some(line) = &v.zones {
+            zone_line(ui, line);
+        }
         let gap = 24.0;
         let width = ui.available_width();
         // Wide, the card has two columns: the colour controls, and the halves' state with the
@@ -289,6 +295,15 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     });
     ui.add_space(10.0);
     out
+}
+
+/// The keyboard's lighting resolution (#611): one line under the card's title, with what it
+/// means, where it came from and the lamps that light nothing on hover. No new control.
+fn zone_line(ui: &mut egui::Ui, line: &super::light_zones::Line) {
+    let p = theme::palette(ui);
+    ui.add(egui::Label::new(RichText::new(&line.summary).color(p.text)).wrap())
+        .on_hover_text(line.details.join("\n"));
+    ui.add_space(8.0);
 }
 
 /// The Keyboard card's other column: both halves as the keyboard reports them, with Refresh
@@ -435,6 +450,7 @@ pub fn live_view(state: Option<RgbState>) -> View {
             .map(|k| foxglove_devices::calibration::global().device(&k).is_some()),
         parts: super::parts::Parts::current(),
         saved: super::devices::keyboard_id().and_then(|id| super::lighting_leases::saved(&id)),
+        zones: super::light_zones::current(),
     }
 }
 
@@ -615,11 +631,22 @@ pub fn follow_label(parts: &super::parts::Parts) -> String {
     )
 }
 
-/// The "follow the left" switch's tooltip (#606). The left is the central, so it sees every
-/// key and wakes for either half's; the right sees only its own keys.
-const FOLLOW_TIP: &str = "On: the left half decides when both halves' lights are on, so they \
-    always match. Off: each half dims on its own idle timer. The left wakes for a key on either \
-    half; the right only for its own keys. Saved on the keyboard.";
+/// The "follow the left" switch's tooltip (#606), in the board's part names (#563). The first
+/// part is the central, so it sees every key and wakes for either part's; the other sees only
+/// its own keys.
+fn follow_tip(parts: &super::parts::Parts) -> String {
+    let short = |i| super::parts::lower_first(&parts.short(i));
+    let noun = parts.noun();
+    format!(
+        "On: {} decides when {}' lights are on, so they always match. Off: each {noun} dims on \
+         its own idle timer. The {} wakes for a key on either {noun}; the {} only for its own \
+         keys. Saved on the keyboard.",
+        parts.the(0),
+        parts.all(),
+        short(0),
+        short(1),
+    )
+}
 
 /// "Right half's lights follow the left", saved on the keyboard.
 fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mut Vec<Intent>) {
@@ -630,7 +657,7 @@ fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mu
                 let mut follow = on;
                 if ui
                     .checkbox(&mut follow, &label)
-                    .on_hover_text(FOLLOW_TIP)
+                    .on_hover_text(follow_tip(parts))
                     .changed()
                 {
                     out.push(Intent::Follow(follow));
@@ -908,7 +935,15 @@ pub mod tests {
             calibration: Some(true),
             parts: crate::foxglove::fixtures::users_desk::board().parts(),
             saved: None,
+            zones: Some(zone_line_of(&crate::foxglove::fixtures::users_desk::board())),
         }
+    }
+
+    /// The zone line a board's profile gives (#611), its firmware not asked.
+    pub fn zone_line_of(board: &crate::foxglove::boards::Board) -> super::super::light_zones::Line {
+        use super::super::light_zones as lz;
+        let drawing = crate::foxglove::boards::drawing(Some(board));
+        lz::line(lz::keyboard(Some(board), &drawing, None).as_ref())
     }
 
     /// No keyboard: nothing read, no RGB key known.
@@ -924,6 +959,7 @@ pub mod tests {
             calibration: None,
             parts: crate::foxglove::fixtures::users_desk::board().parts(),
             saved: None,
+            zones: None,
         }
     }
 
@@ -952,10 +988,15 @@ pub mod tests {
                 right: None,
             }),
             parts: crate::foxglove::fixtures::second_desk::board().parts(),
+            zones: Some(zone_line_of(
+                &crate::foxglove::fixtures::second_desk::board(),
+            )),
             ..sample()
         };
         let text = draw_text(&plank);
         assert!(text.contains("THE KEYBOARD NOW"), "{text}");
+        // #611: its real resolution, per key, and still no "half".
+        assert!(text.contains("Per-key lighting, 61 keys"), "{text}");
         assert!(!text.to_lowercase().contains("half"), "{text}");
         assert!(!text.contains("follow"), "{text}");
         let corne = draw_text(&sample());
@@ -963,6 +1004,14 @@ pub mod tests {
             corne.contains("Right half's lights follow the left"),
             "{corne}"
         );
+        // #611, #608: the Corne's 6 column groups per half, not 21 per-key lamps.
+        assert!(
+            corne.contains("6 lighting zones per half, by column"),
+            "{corne}"
+        );
+        // No keyboard: no line.
+        let none = draw_text(&sample_none());
+        assert!(!none.contains("lighting zone"), "{none}");
     }
 
     /// #616: Swirl and Spectrum say they're a rainbow that doesn't use the colour, and the
@@ -1002,10 +1051,23 @@ pub mod tests {
         assert!(!text.contains("colour not used yet"), "{text}");
         let text = draw_text(&sample());
         assert!(!text.contains("doesn't use the colour"), "{text}");
-        assert!(FOLLOW_TIP.contains(
-            "Off: each half dims on its own idle timer. The left wakes for a key on either half; \
-             the right only for its own keys."
-        ));
+        // #563: the Corne's tooltip reads as it always did; another split's names its parts.
+        let corne = crate::foxglove::fixtures::users_desk::board().parts();
+        assert_eq!(
+            follow_tip(&corne),
+            "On: the left half decides when both halves' lights are on, so they always match. \
+             Off: each half dims on its own idle timer. The left wakes for a key on either half; \
+             the right only for its own keys. Saved on the keyboard."
+        );
+        let wedge = crate::foxglove::fixtures::wedge_parts();
+        let tip = follow_tip(&wedge);
+        assert!(
+            tip.starts_with("On: the main board decides when both parts' lights are on")
+                && tip.contains("each part dims")
+                && tip.contains("the wing only for its own keys"),
+            "{tip}"
+        );
+        assert!(!tip.contains("half") && !tip.contains("left"), "{tip}");
     }
 
     /// The Lights page's keyboard showing `effect` in colour `hue`/`sat` on both halves

@@ -72,6 +72,19 @@ def locked():
     return not ctypes.windll.user32.OpenInputDesktop(0, False, 0x0100)
 
 
+def away(lab):
+    """Why Foxglove is away on this PC now (#410: the session locked or the display off), or None:
+    `foxglove-lab away`, which reads the display state as the app does (GUID_CONSOLE_DISPLAY_STATE).
+    Away, the app hands the left panel back and, since #683, holds display changes until the PC is
+    back, so the display-change cases can't run (#678). Without the lab's answer, the lock alone."""
+    try:
+        r = subprocess.run([str(lab), 'away'], capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=20)
+        return json.loads(r.stdout)['away']
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return 'the PC is locked' if locked() else None
+
+
 # The harness's own input (#618). Some lab steps make Windows see input: foxglove-lab's key presses
 # through the keyboard (D7 05 positions, INVOKE, the typing sink) and these scripts' tray clicks and
 # window posts. GetLastInputInfo can't tell them from the user's, so the "the user is working" gate
@@ -311,6 +324,42 @@ class Windows:
         g.restype, g.argtypes = ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_uint]
         return g(hwnd, self.GA_ROOT)
 
+    GW_HWNDPREV = 3
+
+    def above(self, hwnd, other):
+        """Whether `other` is above `hwnd` in the z-order: walked up from `hwnd` (GetWindow
+        GW_HWNDPREV) over the top-level windows, bounded."""
+        g = self.u.GetWindow
+        g.restype, g.argtypes = ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_uint]
+        h = g(hwnd, self.GW_HWNDPREV)
+        for _ in range(20000):
+            if not h:
+                return False
+            if h == other:
+                return True
+            h = g(h, self.GW_HWNDPREV)
+        return False
+
+    def describe(self, hwnd):
+        """`hwnd (class, exe, "title")`, for a report line."""
+        from ctypes import wintypes
+        name = ctypes.create_unicode_buffer(256)
+        self.u.GetClassNameW(ctypes.c_void_p(hwnd), name, 256)
+        title = ctypes.create_unicode_buffer(256)
+        self.u.GetWindowTextW(ctypes.c_void_p(hwnd), title, 256)
+        pid = wintypes.DWORD()
+        self.u.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
+        exe = '?'
+        k = ctypes.windll.kernel32
+        k.OpenProcess.restype = ctypes.c_void_p
+        h = k.OpenProcess(0x1000, False, pid.value)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if h:
+            buf, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+            if k.QueryFullProcessImageNameW(ctypes.c_void_p(h), 0, buf, ctypes.byref(size)):
+                exe = Path(buf.value).name
+            k.CloseHandle(ctypes.c_void_p(h))
+        return f'{hwnd} ({name.value}, {exe}, "{title.value}")'
+
     def foreground(self):
         f = self.u.GetForegroundWindow
         f.restype = ctypes.c_void_p
@@ -354,6 +403,14 @@ def click_through(exstyle, visible=True):
     set_cursor_hittest(false))."""
     both = WS_EX_TRANSPARENT | WS_EX_LAYERED
     return not visible or exstyle & both == both
+
+
+def covering(overlay, at, above):
+    """#678: the window a hit test reached when it is above the overlay in the z-order (the lock
+    screen, a shell notification window), else None. Such a window takes the click whatever the
+    overlay's style and region are, so the hit test then says nothing about the overlay: the check
+    is BLOCKED, not FAIL. A window below the overlay that still got the click is a real FAIL."""
+    return at if at is not None and at != overlay and above(overlay, at) else None
 
 
 def same_box(a, b, tolerance=2):
@@ -436,8 +493,14 @@ class App:
         return exit_report(self.proc.poll(), log_lines(self.cfg, 'Foxglove'))
 
     def __exit__(self, *exc):
-        if self.proc.poll() is not None:
+        self.stop()
+        self.restore()
+
+    def stop(self):
+        """Stops the test app (by its own process handle); its plugins too. Idempotent."""
+        if self.proc.poll() is not None and not getattr(self, 'stopped', False):
             print('the test app had already ended:', self.exit_report(), flush=True)
+        self.stopped = True
         self.proc.terminate()
         try:
             self.proc.wait(10)
@@ -446,11 +509,19 @@ class App:
         time.sleep(1)
         for p in self.plugins:  # a hard-stopped app can leave its plugin until the plugin notices
             kill(p)
-        for p in self.previous:
+
+    def restore(self):
+        """Starts the user's Foxglove again by its path(s), as it was before; once only. Returns
+        the paths running again."""
+        previous, self.previous = self.previous, []
+        for p in previous:
             subprocess.Popen([p])
+        if not previous:
+            return []
         time.sleep(5)
-        alive = [p for p in self.previous if p.lower() in ps("(Get-Process -Name foxglove -ErrorAction SilentlyContinue).Path").lower()]
-        print('restored:', alive if alive == self.previous else f'{alive} of {self.previous} (check!)', flush=True)
+        alive = [p for p in previous if p.lower() in ps("(Get-Process -Name foxglove -ErrorAction SilentlyContinue).Path").lower()]
+        print('restored:', alive if alive == previous else f'{alive} of {previous} (check!)', flush=True)
+        return alive
 
 
 # Windows' NTSTATUS codes a crashed process exits with, as unsigned 32-bit.
@@ -575,13 +646,14 @@ class Api:
         self.pipe.close()
 
 
-def connect(name, permissions, seconds=30):
+def connect(name, permissions, seconds=30, api='1.2'):
     """Waits for the app's pipe (it comes up a few seconds after start). An app that doesn't speak
-    the client's API ends the script BLOCKED (exit 2), naming both versions."""
+    the client's API (`api`: the oldest version with the calls the script makes) ends the script
+    BLOCKED (exit 2), naming both versions."""
     end = time.time() + seconds
     while True:
         try:
-            return Api(name, permissions)
+            return Api(name, permissions, api)
         except ApiMismatch as e:
             print(f'BLOCKED {name}: {e}', flush=True)
             print('RESULT BLOCKED', flush=True)
