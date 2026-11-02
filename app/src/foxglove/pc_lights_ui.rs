@@ -14,7 +14,9 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use egui::{Color32, RichText, Sense, Stroke};
-use foxglove_devices::pc_lighting::{CatalogDevice, Control, Protocol};
+use foxglove_devices::pc_lighting::{
+    zones as zone_words, CatalogDevice, Control, LightCaps, Protocol,
+};
 
 use super::pc_lights::{self, Msg, Row, Snapshot};
 use super::pc_lights_add::{self as add, Wizard};
@@ -248,6 +250,30 @@ pub fn chips(ui: &mut egui::Ui, chips: &[String]) {
     });
 }
 
+/// A device's real lighting resolution (#611): one summary line ("5 lighting zones",
+/// "Per-LED lighting, 24 lamps"), where it came from on hover, and its screens' chips. It
+/// replaces the light, brightness and onboard-effect chips (docs/lighting-zones.md section 6).
+fn light_line(ui: &mut egui::Ui, caps: &LightCaps) {
+    let p = theme::palette(ui);
+    let mut others = caps.screen_chips();
+    match caps.summary(false) {
+        Some(summary) => {
+            let mut tip = vec![super::light_zones::TIP.to_string()];
+            if let Some(z) = &caps.zones {
+                tip.push(zone_words::source_line(z, false));
+                tip.extend(zone_words::dead_line(z));
+            }
+            ui.add(egui::Label::new(RichText::new(summary).color(p.text)).wrap())
+                .on_hover_text(tip.join("\n"));
+        }
+        None if others.is_empty() => others.push("No lights Foxglove knows of".into()),
+        None => {}
+    }
+    if !others.is_empty() {
+        chips(ui, &others);
+    }
+}
+
 fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut Vec<Intent>) {
     let p = theme::palette(ui);
     let driven = matches!(row.control, Control::Driver(_));
@@ -292,7 +318,7 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
             }
         },
     );
-    chips(ui, &row.caps.chips(false));
+    light_line(ui, &row.caps);
     match row.control {
         Control::Driver(_) if row.caps.takes_color() => zones(ui, row, busy, draft, out),
         Control::Driver(_) => {}

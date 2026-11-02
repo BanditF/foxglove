@@ -78,6 +78,9 @@ pub struct View {
     pub parts: super::parts::Parts,
     /// The look Foxglove saved for the keyboard (#670): named when the keyboard shows another.
     pub saved: Option<super::effect_controls::Saved>,
+    /// Its real lighting resolution (#611): "6 lighting zones per half, by column"; `None` with
+    /// no keyboard or none Foxglove knows lights of.
+    pub zones: Option<super::light_zones::Line>,
 }
 
 /// What the user is choosing but hasn't sent: the colour until Apply, the speed until the
@@ -257,6 +260,9 @@ pub(crate) fn shown_color(hue: u16, sat: u8, brightness: u8) -> Color32 {
 pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     let mut out = Vec::new();
     card(ui, "Keyboard", |ui| {
+        if let Some(line) = &v.zones {
+            zone_line(ui, line);
+        }
         let gap = 24.0;
         let width = ui.available_width();
         // Wide, the card has two columns: the colour controls, and the halves' state with the
@@ -289,6 +295,15 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     });
     ui.add_space(10.0);
     out
+}
+
+/// The keyboard's lighting resolution (#611): one line under the card's title, with what it
+/// means, where it came from and the lamps that light nothing on hover. No new control.
+fn zone_line(ui: &mut egui::Ui, line: &super::light_zones::Line) {
+    let p = theme::palette(ui);
+    ui.add(egui::Label::new(RichText::new(&line.summary).color(p.text)).wrap())
+        .on_hover_text(line.details.join("\n"));
+    ui.add_space(8.0);
 }
 
 /// The Keyboard card's other column: both halves as the keyboard reports them, with Refresh
@@ -435,6 +450,7 @@ pub fn live_view(state: Option<RgbState>) -> View {
             .map(|k| foxglove_devices::calibration::global().device(&k).is_some()),
         parts: super::parts::Parts::current(),
         saved: super::devices::keyboard_id().and_then(|id| super::lighting_leases::saved(&id)),
+        zones: super::light_zones::current(),
     }
 }
 
@@ -919,7 +935,15 @@ pub mod tests {
             calibration: Some(true),
             parts: crate::foxglove::fixtures::users_desk::board().parts(),
             saved: None,
+            zones: Some(zone_line_of(&crate::foxglove::fixtures::users_desk::board())),
         }
+    }
+
+    /// The zone line a board's profile gives (#611), its firmware not asked.
+    pub fn zone_line_of(board: &crate::foxglove::boards::Board) -> super::super::light_zones::Line {
+        use super::super::light_zones as lz;
+        let drawing = crate::foxglove::boards::drawing(Some(board));
+        lz::line(lz::keyboard(Some(board), &drawing, None).as_ref())
     }
 
     /// No keyboard: nothing read, no RGB key known.
@@ -935,6 +959,7 @@ pub mod tests {
             calibration: None,
             parts: crate::foxglove::fixtures::users_desk::board().parts(),
             saved: None,
+            zones: None,
         }
     }
 
@@ -963,10 +988,15 @@ pub mod tests {
                 right: None,
             }),
             parts: crate::foxglove::fixtures::second_desk::board().parts(),
+            zones: Some(zone_line_of(
+                &crate::foxglove::fixtures::second_desk::board(),
+            )),
             ..sample()
         };
         let text = draw_text(&plank);
         assert!(text.contains("THE KEYBOARD NOW"), "{text}");
+        // #611: its real resolution, per key, and still no "half".
+        assert!(text.contains("Per-key lighting, 61 keys"), "{text}");
         assert!(!text.to_lowercase().contains("half"), "{text}");
         assert!(!text.contains("follow"), "{text}");
         let corne = draw_text(&sample());
@@ -974,6 +1004,14 @@ pub mod tests {
             corne.contains("Right half's lights follow the left"),
             "{corne}"
         );
+        // #611, #608: the Corne's 6 column groups per half, not 21 per-key lamps.
+        assert!(
+            corne.contains("6 lighting zones per half, by column"),
+            "{corne}"
+        );
+        // No keyboard: no line.
+        let none = draw_text(&sample_none());
+        assert!(!none.contains("lighting zone"), "{none}");
     }
 
     /// #616: Swirl and Spectrum say they're a rainbow that doesn't use the colour, and the
