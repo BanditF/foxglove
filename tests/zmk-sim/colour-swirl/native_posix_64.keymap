@@ -1,0 +1,26 @@
+#include "../common/keymap.dtsi"
+
+/ {
+    sim_strip: sim_strip {
+        compatible = "foxglove,sim-strip";
+        chain-length = <21>;
+    };
+
+    underglow_dim: underglow_dim {
+        compatible = "foxglove,dim-strip";
+        led-strip = <&sim_strip>;
+        chain-length = <21>;
+    };
+
+    chosen {
+        zmk,underglow = &underglow_dim;
+    };
+};
+
+&kscan {
+    events = <
+        // No key presses: module/colour_swirl_sim.c plays the PC and ZMK's underglow. This only
+        // keeps the simulator running until the driver is done.
+        ZMK_MOCK_RELEASE(4,0,8000)
+    >;
+};

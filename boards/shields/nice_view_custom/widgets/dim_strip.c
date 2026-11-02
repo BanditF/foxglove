@@ -3,7 +3,8 @@
 // every pixel to battery_dim_level() percent (battery_dim.c: on USB, on battery, low battery). ZMK's
 // own brightness, effects and saved state don't change, and each half goes by its own cable and
 // charge. ZMK redraws every 50 ms while the underglow is on, so a new level shows on the next
-// frame; the level itself only changes on ZMK's USB and battery events (#218).
+// frame; the level itself only changes on ZMK's USB and battery events (#218). ZMK's own frames
+// go through colour_effects.c first, which draws Swirl in the chosen colour (#626).
 #define DT_DRV_COMPAT foxglove_dim_strip
 
 #include <zephyr/device.h>
@@ -13,6 +14,7 @@
 #include <zephyr/toolchain.h>
 
 #include "battery_dim.h"
+#include "colour_effects.h"
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
 #include "rgb_idle.h"
 #endif
@@ -28,6 +30,7 @@ BUILD_ASSERT(LEN == DT_PROP(DT_INST_PHANDLE(0, led_strip), chain_length),
 static const struct device *const strip = DEVICE_DT_GET(DT_INST_PHANDLE(0, led_strip));
 static struct led_rgb scaled[LEN]; // the WS2812 driver may write into the buffer it's given
 static K_MUTEX_DEFINE(scaled_lock); // the underglow and the LampArray (#115) both draw
+static struct led_rgb coloured[LEN]; // ZMK's frame in the chosen colour; ZMK's queue only
 
 // A lit channel stays at least 1, so the lowest level dims the lights but never turns them off.
 static uint8_t scale(uint8_t v, unsigned int cap) { return v == 0 ? 0 : MAX(v * cap / 100, 1); }
@@ -56,7 +59,11 @@ static int draw(struct led_rgb *pixels, size_t n, bool host) {
 }
 
 static int dim_update_rgb(const struct device *dev, struct led_rgb *pixels, size_t n) {
-    return atomic_get(&held) ? 0 : draw(pixels, n, false);
+    if (atomic_get(&held)) {
+        return 0;
+    }
+    n = MIN(n, LEN);
+    return draw(colour_effects_frame(pixels, coloured, n), n, false);
 }
 
 void dim_strip_hold(bool on) { atomic_set(&held, on); }

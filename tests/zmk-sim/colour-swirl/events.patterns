@@ -1,0 +1,7 @@
+# The colour Swirl (module/colour_swirl_sim.c): ZMK v0.3.0's rainbow Swirl drawn through the real
+# dim_strip.c and colour_effects.c: every LED of every frame within the band around the chosen
+# colour (amber, red across 0, white, after RGB_HUI, on battery), reaching both edges, moving each
+# frame; Spectrum, Solid and Breathe untouched; HELLO bit 28, D7 83 byte 29 and its shown hue; the
+# right taking the left's look and drawing the same frames; the lighting health counters.
+/^swirl:/p
+s/.*hid_listener_keycode/kp/p

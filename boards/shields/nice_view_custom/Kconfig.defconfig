@@ -155,6 +155,29 @@ config NICE_VIEW_RGB_BATTERY_DIM
       The board's zmk,underglow is a foxglove,dim-strip in front of the real strip (the shield's
       boards/<board>.overlay), so dim_strip.c and battery_dim.c are built.
 
+# ZMK's Swirl in the chosen colour (#626, colour_effects.c): dim_strip.c redraws each Swirl frame
+# as a band of hues around the chosen one. ZMK's &rgb_ug keys and the PC's invokes drive it as
+# before. Off: ZMK's rainbow Swirl.
+config FOXGLOVE_COLOUR_SWIRL
+    bool "Swirl draws the chosen colour (a hue band and a brightness wave), not the rainbow"
+    default y
+    depends on NICE_VIEW_RGB_BATTERY_DIM && ZMK_RGB_UNDERGLOW
+    help
+      D7 83 byte 29 (HELLO bit 28) tells the PC which effects use the colour. Both halves build
+      it; the right shows the left's colour and effect (#624). Spectrum stays the rainbow.
+
+config FOXGLOVE_COLOUR_SWIRL_BAND
+    int "Colour Swirl: degrees of hue either side of the chosen colour"
+    default 30
+    range 0 90
+    depends on FOXGLOVE_COLOUR_SWIRL
+
+config FOXGLOVE_COLOUR_SWIRL_DEPTH
+    int "Colour Swirl: how much dimmer the wave's trough is, in percent"
+    default 40
+    range 0 90
+    depends on FOXGLOVE_COLOUR_SWIRL
+
 # The underglow's brightness by power state (battery_dim.c). These are the defaults; the app can
 # change them (D7 0E), and each half saves what it was given.
 config NICE_VIEW_RGB_DIM_POWER

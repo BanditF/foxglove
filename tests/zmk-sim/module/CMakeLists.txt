@@ -22,32 +22,43 @@ if(CONFIG_FOXGLOVE_SIM_ACTIVITY)
   zephyr_library_sources(${FOXGLOVE_WIDGETS}/activity_relay.c activity_sim.c)
 endif()
 
-if(CONFIG_FOXGLOVE_SIM_DIM)
-  # The levels are the shield's shipped defaults (Kconfig.defconfig), which the simulator doesn't
-  # load.
-  file(STRINGS ${FOXGLOVE_WIDGETS}/../Kconfig.defconfig FOXGLOVE_DEFCONFIG)
+# The shield's shipped default for Kconfig symbol `sym` (Kconfig.defconfig), which the simulator
+# doesn't load, as "CONFIG_<sym>=<value>" in `out`.
+function(foxglove_shipped_default sym out)
+  file(STRINGS ${FOXGLOVE_WIDGETS}/../Kconfig.defconfig lines)
+  set(value "")
+  set(in FALSE)
+  foreach(line IN LISTS lines)
+    if(line MATCHES "^config ${sym}[^A-Z_]*$")
+      set(in TRUE)
+    elseif(in AND line MATCHES "^[ 	]+default ([0-9]+)")
+      set(value ${CMAKE_MATCH_1})
+      break()
+    endif()
+  endforeach()
+  if(value STREQUAL "")
+    message(FATAL_ERROR "${sym}'s default not found in Kconfig.defconfig")
+  endif()
+  set(${out} "CONFIG_${sym}=${value}" PARENT_SCOPE)
+endfunction()
+
+if(CONFIG_FOXGLOVE_SIM_DIM OR CONFIG_FOXGLOVE_SIM_COLOUR_SWIRL)
+  # The levels are the shield's shipped defaults.
   set(FOXGLOVE_DIM_DEFS "")
   foreach(sym POWER BATTERY LOW LOW_BELOW)
-    set(FOXGLOVE_VALUE "")
-    set(FOXGLOVE_IN FALSE)
-    foreach(line IN LISTS FOXGLOVE_DEFCONFIG)
-      if(line MATCHES "^config NICE_VIEW_RGB_DIM_${sym}[^A-Z_]*$")
-        set(FOXGLOVE_IN TRUE)
-      elseif(FOXGLOVE_IN AND line MATCHES "^[ 	]+default ([0-9]+)")
-        set(FOXGLOVE_VALUE ${CMAKE_MATCH_1})
-        break()
-      endif()
-    endforeach()
-    if(FOXGLOVE_VALUE STREQUAL "")
-      message(FATAL_ERROR "NICE_VIEW_RGB_DIM_${sym}'s default not found in Kconfig.defconfig")
-    endif()
-    list(APPEND FOXGLOVE_DIM_DEFS "CONFIG_NICE_VIEW_RGB_DIM_${sym}=${FOXGLOVE_VALUE}")
+    foxglove_shipped_default(NICE_VIEW_RGB_DIM_${sym} def)
+    list(APPEND FOXGLOVE_DIM_DEFS "${def}")
   endforeach()
   set_source_files_properties(${FOXGLOVE_WIDGETS}/battery_dim.c PROPERTIES
     COMPILE_DEFINITIONS "${FOXGLOVE_DIM_DEFS}")
   zephyr_library_include_directories(${FOXGLOVE_WIDGETS})
+  # colour_effects.c: dim_strip.c hands it ZMK's frames (#626); a pass-through without the
+  # colour Swirl.
   zephyr_library_sources(${FOXGLOVE_WIDGETS}/dim_strip.c ${FOXGLOVE_WIDGETS}/battery_dim.c
-                         dim_sim.c)
+                         ${FOXGLOVE_WIDGETS}/colour_effects.c)
+  if(CONFIG_FOXGLOVE_SIM_DIM)
+    zephyr_library_sources(dim_sim.c)
+  endif()
 endif()
 
 if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
@@ -124,6 +135,19 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
       "CONFIG_ZMK_RGB_UNDERGLOW_SPD_START=3;${FOXGLOVE_LEFT_DEFS}")
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/pc_state.c ${FOXGLOVE_WIDGETS}/rgb_idle.c
                            ${FOXGLOVE_WIDGETS}/activity_relay.c pc_state_sim.c)
+  endif()
+  if(CONFIG_FOXGLOVE_SIM_COLOUR_SWIRL)
+    # The colour Swirl (#626): the real colour_effects.c behind the real dim_strip.c, at the
+    # shield's shipped band and depth, with rgb_idle.c as the left of a keyboard with the relay
+    # (faked: the RGB op the right would be sent) and the host link (D7 83). ZMK's underglow and
+    # the strip are faked in colour_swirl_sim.c.
+    foxglove_shipped_default(FOXGLOVE_COLOUR_SWIRL_BAND band)
+    foxglove_shipped_default(FOXGLOVE_COLOUR_SWIRL_DEPTH depth)
+    zephyr_library_compile_definitions(${band} ${depth})
+    set_source_files_properties(${FOXGLOVE_WIDGETS}/rgb_idle.c PROPERTIES
+      COMPILE_DEFINITIONS
+      "CONFIG_ZMK_RGB_UNDERGLOW_SPD_START=3;CONFIG_NICE_VIEW_ART_RELAY=1;CONFIG_NICE_VIEW_HOST_LINK=1")
+    zephyr_library_sources(${FOXGLOVE_WIDGETS}/rgb_idle.c colour_swirl_sim.c)
   endif()
   if(CONFIG_FOXGLOVE_SIM_POLARITY)
     # The panel polarity (#666): the real panel_polarity.c, as the left of a keyboard with the

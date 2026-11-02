@@ -58,7 +58,8 @@ if(CONFIG_NICE_VIEW_RGB_IDLE)
   endif()
 endif()
 if(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
-  zephyr_library_sources(widgets/dim_strip.c widgets/battery_dim.c)
+  # colour_effects.c: Swirl in the chosen colour (#626), and the lighting health counters.
+  zephyr_library_sources(widgets/dim_strip.c widgets/battery_dim.c widgets/colour_effects.c)
 endif()
 # Not a display feature either: a cable or a host arriving counts as activity (#432). Here, not
 # in foxglove_common.cmake: the foxglove_link shield (Toucan2) builds that into Zephyr's own

@@ -127,8 +127,13 @@ void effects_sim_driver(void);
 void rgb_state_sim_driver(void);
 void pc_state_sim_driver(void);
 void polarity_sim_driver(void);
+void colour_swirl_sim_driver(void);
 
 static void driver(void) {
+    if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_COLOUR_SWIRL)) {
+        colour_swirl_sim_driver(); // the colour-swirl case plays the app and ZMK's underglow
+        return;
+    }
     if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_POLARITY)) {
         polarity_sim_driver(); // the panel-polarity case plays the app
         return;
