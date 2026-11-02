@@ -450,7 +450,7 @@ impl Outputs {
             cases: Vec::new(),
             lamps: Vec::new(),
             keyboard: false,
-            keyboard_parts: LampParts::old_firmware(),
+            keyboard_parts: super::boards::lamp_parts(None),
             pacing: Pacing::default(),
             sent_case: BTreeMap::new(),
             sent_lamps: BTreeMap::new(),

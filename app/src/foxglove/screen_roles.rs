@@ -118,26 +118,39 @@ pub fn of_board(board: &Board) -> Vec<Screen> {
         .collect()
 }
 
+/// The screens of the board Foxglove's older firmware was built for (#563,
+/// [`super::boards::old_firmware_board`]): what a keyboard that describes none, and has no
+/// profile, is taken to have. Empty only if no built-in profile says it is that board.
+pub fn old_firmware() -> Vec<Screen> {
+    super::boards::old_firmware_board()
+        .map(of_board)
+        .unwrap_or_default()
+}
+
+/// The upright size of the older firmware's screen of `role`, for a keyboard that doesn't say.
+pub fn old_firmware_size(role: Role) -> Option<(u16, u16)> {
+    first(&old_firmware(), role).map(Screen::upright)
+}
+
 /// How an art screen stores its picture, from its upright size as the firmware describes it
 /// (`screens_corne.c`: "upright as the art tools draw it, stored turned in the NVA1 blobs"): the
-/// profile's art screen of that upright size, else the firmware's own art format when it is
+/// profile's art screen of that upright size, else the older firmware's art screen when it is
 /// that size, else as it is (upright, unturned).
 fn art_stored(upright: (u16, u16), profile: Option<&Screen>) -> (u16, u16, u8) {
+    art_stored_with(upright, profile, &old_firmware())
+}
+
+/// [`art_stored`] with `old` as the older firmware's screens.
+fn art_stored_with(
+    upright: (u16, u16),
+    profile: Option<&Screen>,
+    old: &[Screen],
+) -> (u16, u16, u8) {
     if let Some(p) = profile.filter(|p| p.upright() == upright) {
         return (p.width, p.height, p.rotation);
     }
-    let f = super::art_encode::ArtTarget::FIRMWARE;
-    let firmware = Screen {
-        id: 0,
-        role: Role::Art,
-        name: String::new(),
-        width: f.width as u16,
-        height: f.height as u16,
-        format: String::new(),
-        rotation: f.rotation,
-    };
-    if firmware.upright() == upright {
-        return (firmware.width, firmware.height, firmware.rotation);
+    if let Some(f) = first(old, Role::Art).filter(|f| f.upright() == upright) {
+        return (f.width, f.height, f.rotation);
     }
     (upright.0, upright.1, 0)
 }
@@ -231,6 +244,34 @@ fn has_in(screens: Option<&[Screen]>, role: Role) -> bool {
 mod tests {
     use super::*;
     use crate::foxglove::fixtures::{second_desk, users_desk};
+
+    /// #563: the screens of firmware that describes none come from the older firmware's
+    /// profile: the Corne's give the 64 x 52 panel and the 140 x 68 turned art screen the code
+    /// had; a made-up board's screens stand in the same way.
+    #[test]
+    fn the_old_firmwares_screens_come_from_its_profile() {
+        use crate::foxglove::art_encode::ArtTarget;
+        assert_eq!(old_firmware_size(Role::Info), Some((64, 52)));
+        assert_eq!(old_firmware_size(Role::Art), Some((68, 140)));
+        let old = old_firmware();
+        let art = first(&old, Role::Art).unwrap();
+        assert_eq!(ArtTarget::of(art), Some(ArtTarget::FIRMWARE));
+        // No profile, nothing described: the art target is the one it always was.
+        assert_eq!(ArtTarget::current(), ArtTarget::FIRMWARE);
+        // A described upright 68 x 140 art screen is stored turned, as before.
+        assert_eq!(art_stored((68, 140), None), (140, 68, 1));
+        assert_eq!(art_stored((80, 160), None), (80, 160, 0));
+
+        // Plank 3 as the older firmware's board: its 160 x 80 art screen is the one stored as
+        // it is, and the Corne's shape is just another size.
+        let plank = of_board(&second_desk::board());
+        assert_eq!(art_stored_with((160, 80), None, &plank), (160, 80, 0));
+        assert_eq!(art_stored_with((68, 140), None, &plank), (68, 140, 0));
+        assert_eq!(
+            first(&plank, Role::Info).map(Screen::upright),
+            Some((128, 32))
+        );
+    }
 
     #[test]
     fn the_corne_has_an_info_and_an_art_screen() {

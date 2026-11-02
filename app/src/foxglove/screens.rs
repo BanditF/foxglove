@@ -255,9 +255,6 @@ static OVERRIDE: Mutex<Option<Override>> = Mutex::new(None);
 /// The panel's size, once a keyboard with one has connected.
 static PANEL_SIZE: Mutex<Option<(u16, u16)>> = Mutex::new(None);
 
-/// The panel Foxglove's firmware draws, for a keyboard that doesn't describe its info screen.
-pub const FIRMWARE_PANEL: (u16, u16) = (64, 52);
-
 /// The longest a plugin's timed frame lasts.
 pub const MAX_OVERRIDE: Duration = Duration::from_secs(60);
 
