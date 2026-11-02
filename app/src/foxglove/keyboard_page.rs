@@ -933,6 +933,7 @@ pub mod tests {
             binding: (0, 0, 0),
             hold_ms: 0,
             risky: false,
+            behavior: "",
         };
         View {
             halves,
@@ -1076,6 +1077,7 @@ pub mod tests {
             binding: (0, 0, 0),
             hold_ms: 0,
             risky: false,
+            behavior: "",
         };
         assert_eq!(short_label(&a("Lights: Toggle", Group::Lights)), "Toggle");
         assert_eq!(

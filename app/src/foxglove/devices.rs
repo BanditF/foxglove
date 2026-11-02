@@ -949,6 +949,8 @@ mod build_tests {
         let ids: Vec<u32> = list.behaviors.iter().map(|b| b.id).collect();
         assert_eq!(ids, [4], "only the allowlist: {:?}", list.behaviors);
         assert!(!list.behaviors[0].needs_confirmation);
+        // API 1.9: each says which behavior it is, so callers find `&rgb_ug` by kind.
+        assert_eq!(list.behaviors[0].behavior.as_deref(), Some("rgb_ug"));
         invoke(4, 1).unwrap();
         assert_eq!(rig.invokes(), [4]);
         for (id, p1) in [(7, 1), (8, 0), (4, 2)] {

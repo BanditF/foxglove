@@ -1,5 +1,5 @@
 {
-  "api": "1.8",
+  "api": "1.9",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -398,6 +398,13 @@
         "$defs": {
           "Behavior": {
             "properties": {
+              "behavior": {
+                "description": "The ZMK behavior as a keymap names it, without the `&`: `rgb_ug`, `tog`, `to`, `sl`,\n`bl`, `ext_power`, `caps_word`, `studio_unlock` (API 1.9, #639). Left out when Foxglove\ndoesn't know it (another kind of device, or an older app).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "id": {
                 "format": "uint32",
                 "minimum": 0,

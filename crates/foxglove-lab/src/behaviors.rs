@@ -5,10 +5,14 @@
 //!
 //! Behavior ids belong to one firmware build (#633): a flash can renumber them. The saved copy
 //! is used only when it names the build the left half runs now (D7 09); otherwise, and when it
-//! is missing or empty, [`resolve`] reads the ids from the keyboard instead (#618).
+//! is missing or empty, [`resolve`] asks the running app's `behaviors.list` (#639), then reads
+//! the ids from the keyboard (#618).
 use anyhow::{ensure, Context, Result};
 use prost::Message;
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 #[derive(Clone, PartialEq, Message)]
 struct Response {
@@ -92,6 +96,26 @@ impl Catalog {
             let name = short_name(&name).to_string();
             if let Some(old) = c.ids.insert(name.clone(), id) {
                 ensure!(old == id, "ambiguous behavior {name}");
+            }
+        }
+        Ok(c)
+    }
+
+    /// The running app's `behaviors.list` (#639): each listed action's kind (API 1.9's
+    /// `behavior`; an older app gives none) and id. Only what the app may invoke is listed, so
+    /// `kp`, `mo` and the refused `&bt`, `&out`, `&sys_reset`... are never in it.
+    pub fn from_app(list: &foxglove_plugin_api::methods::Behaviors) -> Result<Self> {
+        let mut c = Self {
+            source: "the app's behaviors.list".into(),
+            ..Default::default()
+        };
+        for b in &list.behaviors {
+            let Some(name) = b.behavior.as_deref() else {
+                continue;
+            };
+            let id = u16::try_from(b.id)?;
+            if let Some(old) = c.ids.insert(name.to_string(), id) {
+                ensure!(old == id, "ambiguous behavior {name} in the app's list");
             }
         }
         Ok(c)
@@ -191,14 +215,18 @@ impl Catalog {
 }
 
 /// The ids for firmware whose left half runs `left_build`: the saved copy when it names that
-/// build and holds ids, else the keyboard's own answer from `read` (the lab's Studio read). With
-/// neither, an empty catalog whose source says why, so named invokes fail safely.
+/// build and holds ids; else the running app's list (`app`, `None` while the app isn't up) when
+/// it has every behavior in `needed`; else the keyboard's own answer from `read` (the lab's
+/// Studio read), with the app's ids for anything the read lacks. With none of them, the app's
+/// partial list, or an empty catalog, whose source says why, so missing names fail safely.
 pub fn resolve(
     cache: Result<Catalog>,
     left_build: Option<&str>,
+    app: Option<Result<Catalog>>,
+    needed: &BTreeSet<String>,
     read: impl FnOnce() -> Result<Catalog>,
 ) -> Catalog {
-    let why = match cache {
+    let mut why = match cache {
         Ok(mut c) => match c.untrusted(left_build) {
             None => {
                 c.source = format!("{}; matches the left's build", c.source);
@@ -208,8 +236,45 @@ pub fn resolve(
         },
         Err(e) => format!("no saved keymap: {e:#}"),
     };
-    match read() {
+    let mut partial = None;
+    match app {
+        None => {}
+        Some(Ok(mut c)) if !c.ids.is_empty() => {
+            let missing: Vec<&str> = needed
+                .iter()
+                .map(String::as_str)
+                .filter(|n| !c.ids.contains_key(*n))
+                .collect();
+            if missing.is_empty() {
+                c.source = format!("{} (not the saved keymap: {why})", c.source);
+                return c;
+            }
+            why = format!("{why}; the app's list lacks {}", missing.join(", "));
+            partial = Some(c);
+        }
+        Some(Ok(c)) => why = format!("{why}; {} listed no behaviors", c.source),
+        Some(Err(e)) => why = format!("{why}; the app's behaviors.list: {e:#}"),
+    }
+    let read = read();
+    let read_ok = matches!(&read, Ok(c) if !c.ids.is_empty());
+    if let Some(mut p) = partial.take_if(|_| !read_ok) {
+        let failed = match read {
+            Ok(c) => format!("{} listed no behaviors", c.source),
+            Err(e) => format!("the Studio read failed: {e:#}"),
+        };
+        p.source = format!(
+            "{} (not the saved keymap: {why}; {failed}; missing names fail safely)",
+            p.source
+        );
+        return p;
+    }
+    match read {
         Ok(mut c) if !c.ids.is_empty() => {
+            if let Some(p) = partial {
+                for (name, id) in p.ids {
+                    c.ids.entry(name).or_insert(id);
+                }
+            }
             c.source = format!("{} (not the saved keymap: {why})", c.source);
             c
         }
@@ -228,6 +293,34 @@ pub fn resolve(
             ..Default::default()
         },
     }
+}
+
+/// The behaviors a run needs ids for (#639): every named invoke in `cases`, wherever it sits
+/// (a step, a hold's `while_down`), plus `rgb_ug` for restoring the lights afterwards.
+pub fn needed_names(cases: &[crate::spec::Case]) -> BTreeSet<String> {
+    fn walk(v: &serde_json::Value, out: &mut BTreeSet<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, v) in m {
+                    match (k.as_str(), v) {
+                        ("behavior", serde_json::Value::String(s)) => {
+                            out.insert(s.trim_start_matches('&').to_string());
+                        }
+                        _ => walk(v, out),
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|v| walk(v, out)),
+            _ => {}
+        }
+    }
+    let mut out = BTreeSet::from(["rgb_ug".to_string()]);
+    for c in cases {
+        if let Ok(v) = serde_json::to_value(&c.steps) {
+            walk(&v, &mut out);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -303,7 +396,10 @@ mod tests {
     fn resolve_trusts_only_a_matching_nonempty_build() {
         let left = Some("0.1.0-0-13ff04b");
         let same = || Catalog::parse(&fxk2("0.1.0-0-13ff04b"));
-        let c = resolve(same(), left, || panic!("no read for a matching cache"));
+        let none = BTreeSet::new();
+        let c = resolve(same(), left, None, &none, || {
+            panic!("no read for a matching cache")
+        });
         assert_eq!(c.ids["mo"], 7);
         assert!(
             c.source.contains("matches the left's build"),
@@ -341,7 +437,7 @@ mod tests {
             ),
         ];
         for (cache, build, why) in cases {
-            let c = resolve(cache, build, studio);
+            let c = resolve(cache, build, None, &none, studio);
             assert_eq!(c.ids["mo"], 9, "{why}");
             assert!(
                 c.source.contains("COM9") && c.source.contains(why),
@@ -350,7 +446,7 @@ mod tests {
             );
         }
         // The read failed too: empty, saying both reasons.
-        let c = resolve(Catalog::parse(&fxk2("other")), left, || {
+        let c = resolve(Catalog::parse(&fxk2("other")), left, None, &none, || {
             anyhow::bail!("port busy")
         });
         assert!(c.ids.is_empty());
@@ -359,5 +455,90 @@ mod tests {
             "{}",
             c.source
         );
+    }
+
+    fn app_list(kinds: &[(&str, u32)]) -> Result<Catalog> {
+        use foxglove_plugin_api::methods::{Behavior, Behaviors};
+        Catalog::from_app(&Behaviors {
+            behaviors: kinds
+                .iter()
+                .map(|&(k, id)| Behavior {
+                    id,
+                    param1: 1,
+                    param2: 0,
+                    name: "Lights: On".into(),
+                    needs_confirmation: false,
+                    behavior: Some(k.to_string()),
+                })
+                .collect(),
+        })
+    }
+
+    /// #639: with the app up, its `behaviors.list` comes before the Studio read; Studio is read
+    /// only for names the app doesn't list, and the app's ids stand when that read fails.
+    #[test]
+    fn resolve_prefers_the_apps_list_then_falls_back_to_studio() {
+        let left = Some("0.1.0-0-13ff04b");
+        let other = || Catalog::parse(&fxk2("0.1.0-0-88e3a59"));
+        let needs = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<BTreeSet<_>>();
+        // Everything needed is listed: no Studio read.
+        let app = Some(app_list(&[("rgb_ug", 4)]));
+        let c = resolve(other(), left, app, &needs(&["rgb_ug"]), || {
+            panic!("no Studio read when the app lists it")
+        });
+        assert_eq!(c.ids["rgb_ug"], 4);
+        assert!(
+            c.source.contains("behaviors.list") && c.source.contains("88e3a59"),
+            "{}",
+            c.source
+        );
+        // `mo` isn't listed (the app never offers it): Studio fills it, the app's ids stay.
+        let app = Some(app_list(&[("rgb_ug", 4)]));
+        let c = resolve(other(), left, app, &needs(&["rgb_ug", "mo"]), studio);
+        assert_eq!((c.ids["mo"], c.ids["rgb_ug"]), (9, 4));
+        assert!(
+            c.source.contains("COM9") && c.source.contains("lacks mo"),
+            "{}",
+            c.source
+        );
+        // The Studio read fails (the app holds the port): the app's list, saying what's missing.
+        let app = Some(app_list(&[("rgb_ug", 4)]));
+        let c = resolve(other(), left, app, &needs(&["mo"]), || {
+            anyhow::bail!("port busy")
+        });
+        assert_eq!(c.ids.len(), 1);
+        assert!(
+            c.source.contains("lacks mo") && c.source.contains("port busy"),
+            "{}",
+            c.source
+        );
+        // Not known yet, or an older app without kinds: Studio as before.
+        for app in [
+            Err(anyhow::anyhow!("aren't known yet (code 3)")),
+            app_list(&[]),
+        ] {
+            let c = resolve(other(), left, Some(app), &needs(&["rgb_ug"]), studio);
+            assert_eq!(c.ids["mo"], 9);
+            assert!(c.source.contains("COM9"), "{}", c.source);
+        }
+        // Two ids for one kind is refused.
+        assert!(app_list(&[("tog", 1), ("tog", 2)]).is_err());
+    }
+
+    #[test]
+    fn needed_names_come_from_every_invoke() {
+        let suite: crate::spec::Suite = toml::from_str(
+            r#"
+schema = 1
+
+[[cases]]
+name = "a"
+description = "a"
+steps = [{ invoke = { behavior = "&mo", param1 = 1 } }, { invoke = { local_id = 3 } }]
+"#,
+        )
+        .unwrap();
+        let n = needed_names(&suite.cases);
+        assert_eq!(n.into_iter().collect::<Vec<_>>(), ["mo", "rgb_ug"]);
     }
 }

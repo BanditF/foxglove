@@ -68,7 +68,10 @@ The params and results are in the schema. Notes:
 - **`behaviors.list` / `behaviors.invoke` answer from the keymap read on the firmware the keyboard
   runs** (#639). Until it's read (a new or unknown build, #636) both say the behaviors aren't
   known yet (error 3, try again). The list is the app's allowlist: anything not on it (&bt, &out,
-  &bootloader, &sys_reset, &soft_off) is unsupported (error 1).
+  &bootloader, &sys_reset, &soft_off) is unsupported (error 1). API 1.9 adds each entry's
+  `behavior`, the keymap's name for it without the `&` (`rgb_ug`, `tog`, `to`, `sl`, `bl`,
+  `ext_power`, `caps_word`, `studio_unlock`), so a caller finds an id by kind rather than by its
+  label; foxglove-lab takes its ids from here while the app runs.
 - **`lighting.set` and `lighting.lease` wait for the keyboard's keymap (#655):** right after
   Foxglove starts, or after a firmware change, the keymap's lighting behavior (`&rgb_ug`) isn't
   known yet. The call then waits for the keymap read, at most 5 s (one log line), and answers

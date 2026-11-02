@@ -165,6 +165,11 @@ pub struct Behavior {
     pub name: String,
     /// Plugins can never invoke these; they need the user's click in Foxglove.
     pub needs_confirmation: bool,
+    /// The ZMK behavior as a keymap names it, without the `&`: `rgb_ug`, `tog`, `to`, `sl`,
+    /// `bl`, `ext_power`, `caps_word`, `studio_unlock` (API 1.9, #639). Left out when Foxglove
+    /// doesn't know it (another kind of device, or an older app).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behavior: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]

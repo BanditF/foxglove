@@ -2,7 +2,8 @@
 //! while it runs (#618): the app re-applies its pinned art when the right half changes behind
 //! its back (#622), so a direct SELECT is undone; `art.select` (API 1.6, #630) is the app's own
 //! choice and sticks. Each call runs on its own thread with a time limit: the pipe has no
-//! read timeout.
+//! read timeout. The behavior ids come from its `behaviors.list` too (#639), so the lab needn't
+//! open the Studio port the app may hold.
 use anyhow::{anyhow, Result};
 use foxglove_plugin_api::methods::ArtStatus;
 use serde_json::{json, Value};
@@ -122,7 +123,11 @@ fn call(_: &'static str, _: Value) -> Result<Value> {
 }
 
 /// `call` on a thread, answered within `timeout` (the thread ends with the process otherwise).
-fn bounded(method: &'static str, params: Value, timeout: Duration) -> Result<ArtStatus> {
+fn bounded<T: serde::de::DeserializeOwned>(
+    method: &'static str,
+    params: Value,
+    timeout: Duration,
+) -> Result<T> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(call(method, params));
@@ -134,6 +139,17 @@ fn bounded(method: &'static str, params: Value, timeout: Duration) -> Result<Art
         )
     })??;
     Ok(serde_json::from_value(v)?)
+}
+
+/// How long the lab waits for the app's `behaviors.list`.
+pub const BEHAVIORS_WAIT: Duration = Duration::from_secs(3);
+
+/// The app's `behaviors.list` (#639) as a catalog: ids by kind (API 1.9's `behavior`). An app
+/// that hasn't read the keymap on this build answers "not known yet" (an error here).
+pub fn behaviors(timeout: Duration) -> Result<crate::behaviors::Catalog> {
+    let list: foxglove_plugin_api::methods::Behaviors =
+        bounded("behaviors.list", json!({}), timeout)?;
+    crate::behaviors::Catalog::from_app(&list)
 }
 
 impl AppArt for Pipe {

@@ -713,12 +713,26 @@ fn art_service(device: &str) -> Result<super::art_service::Handle, Error> {
 /// of an empty list that would read as "nothing to invoke".
 pub(crate) fn behaviors_list(d: &dyn foxglove_devices::Device) -> Result<Value, Error> {
     let b = d.behaviors().ok_or_else(no_behaviors)?;
-    behaviors_known(d)?;
+    let host = behaviors_known(d)?;
+    // The host keyboard's actions know their keymap name (API 1.9), keyed by binding.
+    let kinds: Vec<_> = if host {
+        super::keyboard_actions::actions()
+    } else {
+        Vec::new()
+    };
     let behaviors = b
         .list()
         .map_err(device_error)?
         .into_iter()
         .map(|i| methods::Behavior {
+            behavior: kinds
+                .iter()
+                .find(|a| {
+                    (u32::from(a.binding.0), a.binding.1, a.binding.2) == (i.id, i.param1, i.param2)
+                })
+                .map(|a| a.behavior)
+                .filter(|k| !k.is_empty())
+                .map(String::from),
             id: i.id,
             param1: i.param1,
             param2: i.param2,
@@ -756,7 +770,8 @@ fn no_behaviors() -> Error {
 }
 
 /// The host-link keyboard's behaviors are known once its keymap was read on this build (#636).
-fn behaviors_known(d: &dyn foxglove_devices::Device) -> Result<(), Error> {
+/// True for the host-link keyboard.
+fn behaviors_known(d: &dyn foxglove_devices::Device) -> Result<bool, Error> {
     let host = keyboard().is_some_and(|k| k.info().id == d.info().id);
     if host && super::devices::underglow() == super::devices::Underglow::Unknown {
         return Err(Error {
@@ -767,7 +782,7 @@ fn behaviors_known(d: &dyn foxglove_devices::Device) -> Result<(), Error> {
             data: None,
         });
     }
-    Ok(())
+    Ok(host)
 }
 
 /// How long `art.status` waits for the keyboard's first art status (the connect read).
