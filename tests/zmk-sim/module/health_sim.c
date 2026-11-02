@@ -106,8 +106,8 @@ static void read_left(void) {
            state(h.selftest[HEALTH_CHECK_RELAY]), state(h.selftest[HEALTH_CHECK_LEDS]));
     printk("health: raw HID sent %s, reply drops %u; split connected %u, drops %u; pc state %02X, "
            "polarity %02X, LEDs %u, uptime %s\n",
-           h.hid_sent > 0 ? "> 0" : "0", h.hid_reply_drops, h.split_connected, h.split_drops,
-           h.pc_state, h.polarity, h.leds, h.uptime_s >= 1 ? ">= 1 s" : "0 s");
+           h.hid_sent > 0 ? "some" : "none", h.hid_reply_drops, h.split_connected, h.split_drops,
+           h.pc_state, h.polarity, h.leds, h.uptime_s >= 1 ? "1 s or more" : "0 s");
 }
 
 void health_sim_driver(void) {
