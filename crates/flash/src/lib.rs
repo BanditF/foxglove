@@ -189,8 +189,9 @@ pub trait Board {
     fn now(&self) -> std::time::Instant {
         std::time::Instant::now()
     }
-    /// The bootloader drive with this serial (it must have INFO_UF2.TXT).
-    fn volume(&self, serial: &str) -> Result<PathBuf, String>;
+    /// The bootloader drive with this serial (it must have INFO_UF2.TXT). `Ok(None)`: Windows
+    /// hasn't mounted a drive for it (yet); an error means it can't be told which drive it is.
+    fn volume(&self, serial: &str) -> Result<Option<PathBuf>, String>;
     /// The `Board-ID:` line of the drive's INFO_UF2.TXT.
     fn board_id(&self, volume: &Path) -> Result<String, String>;
     /// A moment after the drive appears, before writing (a write ~1 s after it is sometimes ignored).
@@ -244,6 +245,14 @@ pub const DRIVE_WAIT: Duration = Duration::from_secs(180);
 pub const RELAY_WAIT: Duration = Duration::from_secs(60);
 pub const LEFT_BACK_WAIT: Duration = Duration::from_secs(60);
 pub const RIGHT_BACK_WAIT: Duration = Duration::from_secs(90);
+/// #664: a hands-free restart shows its bootloader within seconds. None after this, with the
+/// half's running firmware gone from USB too: Windows lost the port (after Modern Standby the
+/// port's descriptor request failed, Code 43), and only a replug brings it back.
+pub const VANISH_WAIT: Duration = Duration::from_secs(30);
+/// A bootloader on USB gets this long for Windows to mount its drive before a replug is asked for.
+pub const MOUNT_WAIT: Duration = Duration::from_secs(30);
+/// How long the update waits for the replug it asked for.
+pub const REPLUG_WAIT: Duration = Duration::from_secs(300);
 
 fn version(v: &str) -> Option<(u32, u32, u32)> {
     let mut parts = v.split(['.', '-', '+']).map(|p| p.parse::<u32>().ok());
@@ -487,6 +496,15 @@ pub fn run(
     Ok(())
 }
 
+/// Whether `half`'s running firmware is on USB now (#664: gone after a restart into the
+/// bootloader); `None` if it can't say.
+fn firmware_on_usb(board: &dyn Board, half: Half) -> Option<bool> {
+    match half {
+        Half::Left => Some(board.left_serial().is_some()),
+        Half::Right => board.right_on_usb(),
+    }
+}
+
 fn one(
     image: &Image,
     parts: &Parts,
@@ -541,29 +559,91 @@ fn one(
     } else {
         format!("Double-tap the reset button on {the}, with its cable plugged in")
     });
-    // Its bootloader drive: exactly one, and the right one.
-    let deadline = board.now() + DRIVE_WAIT;
-    let serial = loop {
+    // Its bootloader drive: exactly one, the right one, and mounted. #664: a bootloader that
+    // never shows up while the half's firmware has left USB, or one whose drive never mounts, is
+    // a failed USB port, not a slow mount: ask once for a replug, then carry on when it's back.
+    let start = board.now();
+    let mut deadline = start + DRIVE_WAIT;
+    let vanish_at = start + VANISH_WAIT;
+    let mut mount_by = None;
+    let mut replug = false;
+    let mut settled = false;
+    let (serial, volume) = loop {
         let present = board.bootloaders();
         match present.as_slice() {
             [one] => {
                 identify(parts, half, one, left_serial, known).map_err(|e| fail(format!("Stopped before writing: {e}.")))?;
-                break one.clone();
+                if !settled {
+                    // The drive gets a moment to mount before it's looked up and written.
+                    board.settle();
+                    settled = true;
+                }
+                match board.volume(one) {
+                    Ok(Some(v)) => break (one.clone(), v),
+                    Ok(None) => {
+                        mount_by.get_or_insert(board.now() + MOUNT_WAIT);
+                    }
+                    Err(e) => return Err(fail(format!("Stopped before writing: {e}."))),
+                }
             }
-            [] => {}
+            [] => {
+                settled = false;
+                if replug && firmware_on_usb(board, half) == Some(true) {
+                    return Err(fail(format!(
+                        "{the_cap} restarted its normal firmware instead of coming back in its bootloader; nothing was written. Update again."
+                    )));
+                }
+            }
             _ => say("Two bootloaders are connected. Unplug the one you're not updating; nothing is written meanwhile.".into()),
         }
-        let left = deadline.saturating_duration_since(board.now());
-        if left.is_zero() {
-            return Err(fail(format!("{the_cap}'s bootloader drive didn't appear.")));
+        let now = board.now();
+        let stuck = match present.as_slice() {
+            [] => hands_free && now >= vanish_at && firmware_on_usb(board, half) == Some(false),
+            [_] => mount_by.is_some_and(|t| now >= t),
+            _ => false,
+        };
+        if stuck && !replug {
+            replug = true;
+            board.record(
+                half,
+                sha,
+                "drive-not-mounted",
+                if present.is_empty() {
+                    "no bootloader after the restart; its firmware left USB"
+                } else {
+                    "a bootloader with no drive"
+                },
+            );
+            say(format!(
+                "{the_cap} is in its bootloader but Windows didn't mount its drive. Unplug {the}'s USB cable and plug it back in; the update will continue."
+            ));
+            deadline = now + REPLUG_WAIT;
         }
-        board.wait_bootloaders(left);
+        let left = deadline.saturating_duration_since(now);
+        if left.is_zero() {
+            return Err(fail(if replug {
+                format!(
+                    "{the_cap}'s bootloader drive didn't mount and its cable wasn't plugged back in within {} s; nothing was written. Plug it back in (another port if this one keeps failing), then update again.",
+                    REPLUG_WAIT.as_secs()
+                )
+            } else {
+                format!("{the_cap}'s bootloader drive didn't appear.")
+            }));
+        }
+        // Device events wake this early; the next check that could change things bounds it.
+        let next = if replug {
+            None
+        } else if present.is_empty() && hands_free {
+            Some(vanish_at)
+        } else {
+            mount_by
+        };
+        let wait = next
+            .map(|t| t.saturating_duration_since(now))
+            .filter(|d| !d.is_zero())
+            .map_or(left, |d| d.min(left));
+        board.wait_bootloaders(wait);
     };
-    // The drive gets a moment to mount before it's looked up and written.
-    board.settle();
-    let volume = board
-        .volume(&serial)
-        .map_err(|e| fail(format!("Stopped before writing: {e}.")))?;
     let id = board
         .board_id(&volume)
         .map_err(|e| fail(format!("Stopped before writing: {e}.")))?;
@@ -572,7 +652,7 @@ fn one(
     for attempt in 1..=2 {
         // Identity once more, right before touching the drive.
         if board.bootloaders() != [serial.clone()]
-            || board.volume(&serial).ok().as_deref() != Some(volume.as_path())
+            || board.volume(&serial).ok().flatten().as_deref() != Some(volume.as_path())
         {
             return Err(fail(
                 "Stopped before writing: the bootloader drive changed.".into(),

@@ -806,7 +806,7 @@ mod windows_board {
             self.next_event(timeout);
         }
 
-        fn volume(&self, serial: &str) -> Result<PathBuf, String> {
+        fn volume(&self, serial: &str) -> Result<Option<PathBuf>, String> {
             if !serial.chars().all(|c| c.is_ascii_alphanumeric()) {
                 return Err("an unexpected bootloader serial".into());
             }
@@ -814,14 +814,22 @@ mod windows_board {
                 "$disks = @(Get-CimInstance Win32_DiskDrive | Where-Object {{ $_.PNPDeviceID -match '{serial}' }}); ConvertTo-Json -Compress -InputObject @($disks | Where-Object {{ $disks.Count -eq 1 }} | ForEach-Object {{ Get-CimAssociatedInstance -InputObject $_ -Association Win32_DiskDriveToDiskPartition | ForEach-Object {{ Get-CimAssociatedInstance -InputObject $_ -Association Win32_LogicalDiskToPartition | ForEach-Object {{ $_.DeviceID }} }} }})"
             );
             let rows = strings(&powershell(&script)?);
-            let [letter] = rows.as_slice() else {
-                return Err("its drive can't be told apart from other drives; unplug other keyboards in bootloader mode".into());
+            // #664: no row is a bootloader with no drive mounted (yet), not an ambiguity: the
+            // update waits for it, then asks for a replug.
+            let letter = match rows.as_slice() {
+                [] => return Ok(None),
+                [letter] => letter,
+                more => {
+                    return Err(format!(
+                        "its disk shows {} drives ({}), not one; unplug any other bootloader drive",
+                        more.len(),
+                        more.join(", ")
+                    ))
+                }
             };
             let volume = PathBuf::from(format!("{letter}\\"));
-            if !volume.join("INFO_UF2.TXT").exists() {
-                return Err("its drive has no INFO_UF2.TXT".into());
-            }
-            Ok(volume)
+            // A drive still mounting may not show INFO_UF2.TXT yet: not written until it does.
+            Ok(volume.join("INFO_UF2.TXT").exists().then_some(volume))
         }
 
         fn board_id(&self, volume: &Path) -> Result<String, String> {
