@@ -272,10 +272,12 @@ pub fn meter(s: &Snapshot) -> Option<(usize, usize)> {
     Some((used, total))
 }
 
-/// The first free place, `None` when the keyboard is full (or has none).
+/// The first free place, `None` when the keyboard is full (or has none). Places lent to the
+/// playlist (#522) are its own, never offered.
 pub fn first_free(s: &Snapshot) -> Option<u8> {
     let st = s.status.filter(|st| st.flash_slots > 0)?;
-    (0..st.flash_slots.min(8)).find(|n| st.flash_used & (1 << n) == 0)
+    (0..st.flash_slots.min(8))
+        .find(|n| st.flash_used & (1 << n) == 0 && !s.cycle.places.contains(n))
 }
 
 /// The most a piece can be: the right screen's buffer, as the keyboard reports it.

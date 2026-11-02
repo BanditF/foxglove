@@ -36,7 +36,8 @@ impl Seen {
             kept: s
                 .slots
                 .iter()
-                .filter(|i| i.used)
+                // A place lent to the playlist (#522) changes with it: not one of the user's.
+                .filter(|i| i.used && !s.cycle.places.contains(&i.slot))
                 .map(|i| i.name.clone())
                 .collect(),
         })

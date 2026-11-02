@@ -959,6 +959,43 @@ fn screens_page_renders() {
     );
 }
 
+/// The Screens page with the art playlist on (#522): its pieces in order (Rotation's piece now
+/// in bold), the places lent to it, Add a piece…, and the keyboard card's lent-places line.
+#[test]
+fn screens_playlist_renders() {
+    use crate::foxglove::art_cycle::{Item, Step};
+    use crate::foxglove::shell::Page;
+    let mut samples = Samples::full();
+    let (s, _) = samples.art.as_mut().expect("art sample");
+    s.cycle.playlist = true;
+    s.cycle.places = vec![6, 7];
+    s.cycle.items = vec![
+        Item::File("art/fury.bin".into()),
+        Item::File("art/hearth.bin".into()),
+        Item::BuiltIn("Bandit_Emblem".into()),
+        Item::Slot(2),
+        Item::File("art/moon-garden.bin".into()),
+        Item::File("art/constellations.bin".into()),
+    ];
+    s.cycle.position = 1;
+    s.cycle.set_step(Step::Minutes, true);
+    s.slots.push(foxglove_link::protocol::SlotInfo {
+        slot: 6,
+        used: true,
+        writes: 14,
+        len: 900,
+        name: "moon-garden".into(),
+    });
+    if let Some(st) = s.status.as_mut() {
+        st.flash_used |= 1 << 6;
+    }
+    let with = shell_preview_with(Page::Screens, &samples, 1400.0);
+    let without = shell_preview_with(Page::Screens, &Samples::full(), 1400.0);
+    keep("ui-522-playlist.png", &with);
+    keep("ui-522-playlist-off.png", &without);
+    assert_ne!(with, without, "the playlist shows");
+}
+
 /// The Plugins page (#389): the installed and catalog cards, three to a row.
 #[test]
 fn plugins_page_renders() {

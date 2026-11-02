@@ -824,14 +824,179 @@ fn draw_rotation(ui: &mut egui::Ui, art: &Art, acts: &mut Vec<Act>) {
             ui.weak(hint);
         }
     }
-    let pieces = super::art_cycle::rotation(&st).len();
-    ui.weak(format!(
-        "Steps through the keyboard's {pieces} pieces. Its art keys step through the same ones."
-    ));
+    if super::art_playlist::active(&cycle) {
+        let pieces = cycle.items.len();
+        ui.weak(format!(
+            "Steps through the playlist's {pieces} pieces. Its art keys step through the same ones."
+        ));
+    } else {
+        let pieces = super::art_cycle::rotation(&st).len();
+        ui.weak(format!(
+            "Steps through the keyboard's {pieces} pieces. Its art keys step through the same ones."
+        ));
+    }
+    playlist(ui, art, &mut cycle, &mut changed);
     layer_art(ui, art, &mut cycle, &mut changed);
     if changed {
         acts.push(Act::Cycle(cycle));
     }
+}
+
+/// A playlist entry in the user's words.
+fn item_label(item: &Item, s: &Snapshot) -> String {
+    let count = s.status.map_or(0, |st| st.right_set_count);
+    match item {
+        Item::BuiltIn(name) => super::art_manifest::sets(count)
+            .and_then(|sets| sets.iter().find(|set| &set.name == name))
+            .map_or_else(|| name.clone(), |set| set.label.clone()),
+        Item::Slot(n) => art_service::name_of(&Choice::Slot(*n), s),
+        Item::File(p) => art_service::file_name(p),
+    }
+}
+
+/// The playlist (#522): more art than the keyboard keeps, in the order Rotation steps it. Its
+/// pieces from this PC go into the places lent to it ahead of their turn (`art_playlist`).
+fn playlist(ui: &mut egui::Ui, art: &Art, cycle: &mut Cycle, changed: &mut bool) {
+    let s = &art.s;
+    let Some(st) = s.status else {
+        return;
+    };
+    egui::CollapsingHeader::new("Playlist")
+        .id_salt("art-playlist")
+        .default_open(cycle.playlist)
+        .show(ui, |ui| {
+            ui.weak("Steps through more art than the keyboard keeps. Pieces from this PC go into the places lent to the playlist before their turn, so each step is instant. Without Foxglove the keyboard shows what those places hold.");
+            let mut on = cycle.playlist;
+            if ui.checkbox(&mut on, "Play the playlist").changed() {
+                cycle.playlist = on;
+                if on && cycle.places.is_empty() {
+                    cycle.places = super::art_playlist::lend(&st, super::art_playlist::MAX_PLACES);
+                }
+                *changed = true;
+            }
+            let mut remove = None;
+            let mut earlier = None;
+            egui::Grid::new("art-playlist-items")
+                .num_columns(3)
+                .spacing(egui::vec2(8.0, 4.0))
+                .show(ui, |ui| {
+                    for (i, item) in cycle.items.iter().enumerate() {
+                        let here = cycle.playlist && i == cycle.position % cycle.items.len().max(1);
+                        let label = format!("{}. {}", i + 1, item_label(item, s));
+                        if here {
+                            ui.label(
+                                RichText::new(format!("{label} · now"))
+                                    .color(theme::palette(ui).accent),
+                            )
+                            .on_hover_text("Rotation's piece now");
+                        } else {
+                            ui.label(label);
+                        }
+                        if i > 0 {
+                            if ui.small_button("↑").on_hover_text("Earlier").clicked() {
+                                earlier = Some(i);
+                            }
+                        } else {
+                            ui.label("");
+                        }
+                        if ui
+                            .small_button("Remove")
+                            .on_hover_text("Remove from the playlist")
+                            .clicked()
+                        {
+                            remove = Some(i);
+                        }
+                        ui.end_row();
+                    }
+                });
+            if let Some(i) = earlier {
+                cycle.items.swap(i - 1, i);
+                *changed = true;
+            }
+            if let Some(i) = remove {
+                cycle.items.remove(i);
+                cycle.position = 0;
+                *changed = true;
+            }
+            let mut add = None;
+            egui::ComboBox::from_id_salt("art-playlist-add")
+                .selected_text("Add a piece…")
+                .show_ui(ui, |ui| {
+                    for p in &art.pcs {
+                        if let Some(f) = p.file() {
+                            if ui.selectable_label(false, &p.name).clicked() {
+                                add = Some(Item::File(f.clone()));
+                            }
+                        }
+                    }
+                    for set in super::art_manifest::sets(st.right_set_count).unwrap_or_default() {
+                        if ui.selectable_label(false, &set.label).clicked() {
+                            add = Some(Item::BuiltIn(set.name.clone()));
+                        }
+                    }
+                    for info in s
+                        .slots
+                        .iter()
+                        .filter(|i| i.used && !cycle.places.contains(&i.slot))
+                    {
+                        if ui.selectable_label(false, &info.name).clicked() {
+                            add = Some(Item::Slot(info.slot));
+                        }
+                    }
+                });
+            if let Some(item) = add {
+                cycle.items.push(item);
+                *changed = true;
+            }
+            ui.horizontal_wrapped(|ui| {
+                let lent: Vec<String> = cycle.places.iter().map(|n| (n + 1).to_string()).collect();
+                ui.label(if lent.is_empty() {
+                    "No places lent".to_string()
+                } else {
+                    format!("Places lent: {}", lent.join(" and "))
+                });
+                let more = super::art_playlist::lend(&st, 8)
+                    .into_iter()
+                    .rev()
+                    .find(|n| !cycle.places.contains(n));
+                if cycle.places.len() < super::art_playlist::MAX_PLACES {
+                    let lend = ui.add_enabled(more.is_some(), egui::Button::new("Lend a place").small());
+                    if lend
+                        .on_hover_text("A free place on the keyboard for the playlist's pieces.")
+                        .on_disabled_hover_text("The keyboard's places are all in use.")
+                        .clicked()
+                    {
+                        if let Some(n) = more {
+                            cycle.places.push(n);
+                            cycle.places.sort_unstable();
+                            *changed = true;
+                        }
+                    }
+                }
+                if !cycle.places.is_empty()
+                    && ui
+                        .small_button("Give one back")
+                        .on_hover_text("The place keeps what it holds, as one of yours.")
+                        .clicked()
+                {
+                    cycle.places.remove(0);
+                    *changed = true;
+                }
+            });
+            // How the last swap went (the health rows, #705).
+            if cycle.playlist {
+                let health = super::art_health::now();
+                if let Some(row) = super::art_health::rows_of(&health, std::time::Instant::now()).get(2) {
+                    let p = theme::palette(ui);
+                    let colour = match row.level {
+                        super::art_health::Level::Ok => p.text,
+                        super::art_health::Level::Warn => p.warn,
+                        super::art_health::Level::Fail => p.danger,
+                    };
+                    ui.colored_label(colour, format!("Last swap: {}", row.detail));
+                }
+            }
+        });
 }
 
 /// Art for a layer while it's active, over everything else (art_triggers).
@@ -948,6 +1113,13 @@ fn draw_keyboard(ui: &mut egui::Ui, art: &Art, state: &mut UiState, acts: &mut V
         meter(ui, used, total);
     }
     ui.weak("Plays without this PC.");
+    if !s.cycle.places.is_empty() {
+        let lent: Vec<String> = s.cycle.places.iter().map(|n| (n + 1).to_string()).collect();
+        ui.weak(format!(
+            "Places {} are lent to the playlist: it changes what they hold.",
+            lent.join(" and ")
+        ));
+    }
     let now = art_words::showing(&st);
     if !art.kept.is_empty() {
         ui.add_space(6.0);

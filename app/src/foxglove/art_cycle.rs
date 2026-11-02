@@ -3,8 +3,9 @@
 //!
 //! Rotation steps through the keyboard's own art, the pieces that come with it and then the
 //! kept places, the order its art keys use without Foxglove (#515: "the hotlist and stored on
-//! the device should be one and the same"). `items` is the old hotlist, kept for the playlist
-//! idea (#522) and not stepped.
+//! the device should be one and the same"). With the playlist on (#522, `art_playlist`), it
+//! steps through `items` instead: more art than the keyboard keeps, staged into the places
+//! lent to it (`places`) ahead of each step.
 //!
 //! Built-ins are stored by their manifest name (the stable id), not their index, so a firmware
 //! that reorders its sets still shows the same art.
@@ -74,8 +75,15 @@ pub struct Cycle {
     /// Read from earlier builds only; `load` moves it into `step` and `follow`.
     #[serde(skip_serializing)]
     pub mode: Mode,
-    /// The old hotlist: no longer stepped (see the module), kept for a playlist (#522).
+    /// The playlist (#522): what Rotation steps through while `playlist` is on.
     pub items: Vec<Item>,
+    /// Rotation plays the playlist instead of the keyboard's own art.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub playlist: bool,
+    /// The kept places lent to the playlist: it writes its next piece into one of them ahead of
+    /// each step and never touches the others.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub places: Vec<u8>,
     /// The entry shown last, so a restart carries on where it left off.
     #[serde(default)]
     pub position: usize,
@@ -98,6 +106,8 @@ impl Default for Cycle {
         Cycle {
             mode: Mode::Off,
             items: Vec::new(),
+            playlist: false,
+            places: Vec::new(),
             position: 0,
             step: Vec::new(),
             minutes: default_minutes(),
@@ -391,6 +401,8 @@ mod tests {
                 art: Item::BuiltIn("Bandit_Radar".into()),
             }],
             wallpaper_monitor: Some("Monitor0".into()),
+            playlist: true,
+            places: vec![6, 7],
             ..Cycle::default()
         };
         assert_eq!(
