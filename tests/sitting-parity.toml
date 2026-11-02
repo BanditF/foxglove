@@ -328,7 +328,7 @@ needs_eyes = "every page's look is seen (live window, 150 %)"
 
 [[step]]
 match = "App plumbing: a release build writes `logs\\foxglove.log`"
-log = ["Start with Windows now starts", "the taskbar restarted; the tray icon is added again"]
+log = ["Start with Windows: ", "the taskbar restarted; the tray icon is added again"]
 needs_eyes = "Copy diagnostics on the real clipboard, dialogs crisp at 150 %, and an Explorer restart on the user's desktop"
 
 [[step]]

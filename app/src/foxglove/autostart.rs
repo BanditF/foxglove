@@ -6,13 +6,18 @@
 //!   (0.1's per-machine MSI could write the same value; it's kept as it is when it starts this exe.)
 //! - Uninstall runs `foxglove.exe --uninstall-cleanup` (`app/wix/main.wxs`), which removes the
 //!   value only when it starts this exe, so another install's entry is left alone.
-//! - At startup, with the switch on, a missing value or one naming another exe is set to this
-//!   one. With it off, startup leaves the value alone: turning it off removed it, and it is
-//!   never added back.
-//! - Turning it on writes the value; turning it off removes it.
+//! - At startup, with the switch on, the value is written only when it is missing or the file it
+//!   names no longer exists (#684). A value naming another exe that exists (a second install, a
+//!   renamed copy) is left alone: startup never takes it over. With the switch off, startup leaves
+//!   the value alone: turning it off removed it, and it is never added back.
+//! - Dev builds (debug, or an exe in a cargo `target` dir or under `worktrees`) never write it at
+//!   startup, even when it's missing: those files get cleaned, and a value naming a deleted lab
+//!   build leaves Windows nothing to start.
+//! - Turning the switch on writes the value for this exe, whatever it named: the user asked.
+//!   Turning it off removes it.
+//! - Test isolation runs (`FOXGLOVE_CONFIG_DIR` set) never touch the value, at startup or on the
+//!   switch: the user's autostart isn't the test's.
 //! - Only at startup and on the switch: nothing watches the registry.
-//! - Test runs (`FOXGLOVE_CONFIG_DIR` set) and debug builds never touch the value at startup,
-//!   so a test build can't take over the user's autostart.
 
 use serde::{Deserialize, Serialize};
 
@@ -94,6 +99,28 @@ fn same(value: &str, command: &str) -> bool {
     bare(value) == bare(command)
 }
 
+/// The file a Run value starts: the quoted path, or the whole value when it isn't quoted.
+fn target(value: &str) -> std::path::PathBuf {
+    let v = value.trim();
+    match v.strip_prefix('"') {
+        Some(rest) => rest.split('"').next().unwrap_or(rest).into(),
+        None => v.into(),
+    }
+}
+
+/// Why this build must not write the Run value at startup, if it mustn't: a debug build, or an
+/// exe in a cargo `target` dir or under `worktrees` (lab and agent builds, cleaned without notice).
+pub fn dev_build(exe: &std::path::Path, debug: bool) -> Option<&'static str> {
+    if debug {
+        return Some("a debug build");
+    }
+    let dev = exe.parent()?.components().any(|c| {
+        let c = c.as_os_str().to_string_lossy().to_lowercase();
+        matches!(c.as_str(), "target" | "_targets" | "worktrees")
+    });
+    dev.then_some("a dev build (cargo target or worktree path)")
+}
+
 /// What startup did to the Run value.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Startup {
@@ -101,20 +128,72 @@ pub enum Startup {
     Off,
     /// The value already starts this exe.
     Unchanged,
-    /// The value was missing or named another exe; it now starts this one.
+    /// The value was missing; it now starts this exe.
     Written,
+    /// The value named a file that no longer exists (shown); it now starts this exe.
+    Replaced(String),
+    /// The value starts another exe that exists (shown): left alone.
+    KeptOther(String),
+    /// The value was missing (`None`) or names a missing file, but this is a dev build (why).
+    Skipped(Option<String>, &'static str),
 }
 
-/// At startup: with the switch on, makes the Run value start `command`. Off, it does nothing.
-pub fn reconcile(on: bool, command: &str, key: &dyn RunKey) -> std::io::Result<Startup> {
+/// At startup, with the switch on: writes the Run value only when it is missing or names a file
+/// that doesn't exist, and never for a dev build (`dev`, from [`dev_build`]). A value starting
+/// another exe that exists is left alone. Off, it does nothing.
+pub fn reconcile(
+    on: bool,
+    command: &str,
+    dev: Option<&'static str>,
+    key: &dyn RunKey,
+    exists: &dyn Fn(&std::path::Path) -> bool,
+) -> std::io::Result<Startup> {
     if !on {
         return Ok(Startup::Off);
     }
-    if key.get()?.is_some_and(|v| same(&v, command)) {
-        return Ok(Startup::Unchanged);
+    let stale = match key.get()? {
+        Some(v) if same(&v, command) => return Ok(Startup::Unchanged),
+        Some(v) if exists(&target(&v)) => return Ok(Startup::KeptOther(v)),
+        stale => stale,
+    };
+    if let Some(why) = dev {
+        return Ok(Startup::Skipped(stale, why));
     }
     key.set(command)?;
-    Ok(Startup::Written)
+    Ok(match stale {
+        Some(v) => Startup::Replaced(v),
+        None => Startup::Written,
+    })
+}
+
+/// The one log line for what startup did, and why.
+pub fn describe(result: &std::io::Result<Startup>, command: &str) -> String {
+    let what = match result {
+        Ok(Startup::Off) => "off in Settings; the Run value is left as it is".into(),
+        Ok(Startup::Unchanged) => format!("already starts {command}; nothing to do"),
+        Ok(Startup::Written) => format!("the Run value was missing; it now starts {command}"),
+        Ok(Startup::Replaced(old)) => {
+            format!("the Run value named {old}, which no longer exists; it now starts {command}")
+        }
+        Ok(Startup::KeptOther(other)) => format!(
+            "the Run value starts {other}, which exists; left alone (turn the switch off and on \
+             in Settings to start {command} instead)"
+        ),
+        Ok(Startup::Skipped(None, why)) => {
+            format!("the Run value is missing, but this is {why}; not written")
+        }
+        Ok(Startup::Skipped(Some(old), why)) => format!(
+            "the Run value names {old}, which no longer exists, but this is {why}; not written"
+        ),
+        Err(e) => format!("couldn't read or write the Run value: {e}"),
+    };
+    format!("Foxglove: Start with Windows: {what}")
+}
+
+/// A test isolation run: the user's Run value is never touched.
+#[cfg(windows)]
+fn isolated() -> bool {
+    std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some()
 }
 
 /// Uninstall: removes the Run value if it starts `command` (this exe). True when removed.
@@ -174,19 +253,20 @@ pub fn enabled() -> bool {
 pub fn start() {
     #[cfg(windows)]
     {
-        if cfg!(debug_assertions) || std::env::var_os("FOXGLOVE_CONFIG_DIR").is_some() {
-            return; // a test or development run: the user's autostart isn't ours to change
+        if isolated() {
+            eprintln!(
+                "Foxglove: Start with Windows: a test run (FOXGLOVE_CONFIG_DIR set); the Run \
+                 value is not touched"
+            );
+            return;
         }
         let Ok(exe) = std::env::current_exe() else {
             return;
         };
-        match reconcile(enabled(), &command(&exe), &Registry) {
-            Ok(Startup::Written) => {
-                eprintln!("Foxglove: Start with Windows now starts {}", exe.display())
-            }
-            Ok(_) => {}
-            Err(e) => eprintln!("Foxglove: Start with Windows: {e}"),
-        }
+        let me = command(&exe);
+        let dev = dev_build(&exe, cfg!(debug_assertions));
+        let result = reconcile(enabled(), &me, dev, &Registry, &|p| p.is_file());
+        eprintln!("{}", describe(&result, &me));
     }
 }
 
@@ -201,9 +281,13 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     ON.store(if on { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
     #[cfg(windows)]
-    {
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        apply(on, &command(&exe), &Registry).map_err(|e| format!("Start with Windows: {e}"))?;
+    if !isolated() {
+        let me = command(&std::env::current_exe().map_err(|e| e.to_string())?);
+        apply(on, &me, &Registry).map_err(|e| format!("Start with Windows: {e}"))?;
+        match on {
+            true => eprintln!("Foxglove: Start with Windows: switched on in Settings; starts {me}"),
+            false => eprintln!("Foxglove: Start with Windows: switched off in Settings; removed"),
+        }
     }
     Ok(())
 }
@@ -265,14 +349,121 @@ mod tests {
         );
     }
 
+    /// Only these files exist, for `reconcile`.
+    fn only(files: &'static [&'static str]) -> impl Fn(&std::path::Path) -> bool {
+        move |p| files.iter().any(|f| std::path::Path::new(f) == p)
+    }
+    const ME_FILE: &str = r"C:\Program Files\Foxglove\foxglove.exe";
+    const OTHER: &str = r#""C:\Users\fuchs\splitkeeb\app-main\foxglove-9f29911.exe""#;
+    const OTHER_FILE: &str = r"C:\Users\fuchs\splitkeeb\app-main\foxglove-9f29911.exe";
+    const GONE: &str = r#""C:\worktrees\_targets\oncall-673-app\release\foxglove.exe""#;
+    const DEV: Option<&str> = Some("a dev build");
+
+    fn holding(v: Option<&str>) -> Fake {
+        Fake(RefCell::new(v.map(Into::into)), RefCell::new(0))
+    }
+
     #[test]
-    fn startup_adds_a_missing_value_and_fixes_one_for_another_exe() {
+    fn startup_writes_a_missing_value() {
         let key = Fake::default();
-        assert_eq!(reconcile(true, ME, &key).unwrap(), Startup::Written);
+        let r = reconcile(true, ME, None, &key, &only(&[ME_FILE])).unwrap();
+        assert_eq!(r, Startup::Written);
         assert_eq!(key.0.borrow().as_deref(), Some(ME));
-        *key.0.borrow_mut() = Some(r#""C:\old\foxglove.exe""#.into());
-        assert_eq!(reconcile(true, ME, &key).unwrap(), Startup::Written);
+    }
+
+    #[test]
+    fn startup_rewrites_a_value_whose_file_is_gone() {
+        let key = holding(Some(GONE));
+        let r = reconcile(true, ME, None, &key, &only(&[ME_FILE])).unwrap();
+        assert_eq!(r, Startup::Replaced(GONE.into()));
         assert_eq!(key.0.borrow().as_deref(), Some(ME));
+    }
+
+    #[test]
+    fn startup_never_takes_over_another_existing_exe() {
+        // #684: a renamed copy or a second install that exists keeps the value, dev build or not.
+        for dev in [None, DEV] {
+            let key = holding(Some(OTHER));
+            let r = reconcile(true, ME, dev, &key, &only(&[ME_FILE, OTHER_FILE])).unwrap();
+            assert_eq!(r, Startup::KeptOther(OTHER.into()));
+            assert_eq!(
+                (key.0.borrow().as_deref(), *key.1.borrow()),
+                (Some(OTHER), 0)
+            );
+        }
+    }
+
+    #[test]
+    fn startup_with_the_same_exe_is_a_no_op() {
+        let key = holding(Some(ME));
+        let r = reconcile(true, ME, None, &key, &only(&[ME_FILE])).unwrap();
+        assert_eq!(r, Startup::Unchanged);
+        assert_eq!(*key.1.borrow(), 0);
+    }
+
+    #[test]
+    fn a_dev_build_never_writes_at_startup() {
+        let key = Fake::default();
+        let r = reconcile(true, ME, DEV, &key, &only(&[ME_FILE])).unwrap();
+        assert_eq!(r, Startup::Skipped(None, "a dev build"));
+        assert_eq!((key.0.borrow().as_deref(), *key.1.borrow()), (None, 0));
+        let key = holding(Some(GONE));
+        let r = reconcile(true, ME, DEV, &key, &only(&[ME_FILE])).unwrap();
+        assert_eq!(r, Startup::Skipped(Some(GONE.into()), "a dev build"));
+        assert_eq!(
+            (key.0.borrow().as_deref(), *key.1.borrow()),
+            (Some(GONE), 0)
+        );
+    }
+
+    #[test]
+    fn the_settings_switch_claims_the_value_from_another_exe() {
+        let key = holding(Some(OTHER));
+        apply(true, ME, &key).unwrap();
+        assert_eq!(key.0.borrow().as_deref(), Some(ME));
+    }
+
+    #[test]
+    fn dev_paths_are_recognised() {
+        use std::path::Path;
+        let dev = |p: &str| dev_build(Path::new(p), false).is_some();
+        assert!(dev(
+            r"C:\Users\fuchs\splitkeeb\worktrees\_targets\oncall-673-app\release\foxglove.exe"
+        ));
+        assert!(dev(
+            r"C:\Users\fuchs\splitkeeb\foxglove\app\target\release\foxglove.exe"
+        ));
+        assert!(dev(
+            r"C:\Users\fuchs\splitkeeb\worktrees\autostart\app\Target\release\foxglove.exe"
+        ));
+        assert!(!dev(ME_FILE));
+        assert!(!dev(OTHER_FILE));
+        assert!(!dev(
+            r"C:\Users\fuchs\AppData\Local\Programs\Foxglove\foxglove.exe"
+        ));
+        assert!(
+            dev_build(Path::new(ME_FILE), true).is_some(),
+            "debug builds are dev builds"
+        );
+    }
+
+    #[test]
+    fn the_target_is_the_quoted_path() {
+        let me = std::path::PathBuf::from(ME_FILE);
+        assert_eq!(target(ME), me);
+        assert_eq!(target(&format!("{ME} --tray")), me);
+        assert_eq!(target(&format!("  {ME_FILE} ")), me);
+    }
+
+    #[test]
+    fn the_log_line_says_what_and_why() {
+        let line = |r: Startup| describe(&Ok(r), ME);
+        assert!(line(Startup::Written).contains("was missing"));
+        assert!(line(Startup::Replaced(GONE.into())).contains("no longer exists"));
+        assert!(line(Startup::KeptOther(OTHER.into())).contains("left alone"));
+        assert!(line(Startup::Unchanged).contains("nothing to do"));
+        assert!(line(Startup::Skipped(None, "a dev build")).contains("not written"));
+        assert!(line(Startup::Off).starts_with("Foxglove: Start with Windows: off"));
     }
 
     #[test]
@@ -295,7 +486,8 @@ mod tests {
             RefCell::new(Some(r#""c:\program files\foxglove\FOXGLOVE.EXE""#.into())),
             RefCell::new(0),
         );
-        assert_eq!(reconcile(true, ME, &key).unwrap(), Startup::Unchanged);
+        let r = reconcile(true, ME, None, &key, &only(&[ME_FILE])).unwrap();
+        assert_eq!(r, Startup::Unchanged);
         assert_eq!(
             *key.1.borrow(),
             0,
@@ -311,13 +503,14 @@ mod tests {
         apply(false, ME, &key).unwrap();
         assert_eq!(*key.0.borrow(), None);
         for _ in 0..3 {
-            assert_eq!(reconcile(false, ME, &key).unwrap(), Startup::Off);
+            let r = reconcile(false, ME, None, &key, &only(&[])).unwrap();
+            assert_eq!(r, Startup::Off);
         }
         assert_eq!(*key.0.borrow(), None, "startup never re-adds it");
         // Off leaves someone else's value (the MSI added later) alone, too.
         *key.0.borrow_mut() = Some(ME.into());
         let writes = *key.1.borrow();
-        reconcile(false, ME, &key).unwrap();
+        reconcile(false, ME, None, &key, &only(&[])).unwrap();
         assert_eq!(
             (key.0.borrow().as_deref(), *key.1.borrow()),
             (Some(ME), writes)
