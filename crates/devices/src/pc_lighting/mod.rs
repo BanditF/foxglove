@@ -7,6 +7,7 @@
 //! - [`caps`]: what a device can do (colour, effects, brightness, screens), as chips
 //! - [`discover`]: matches a HID enumeration against the catalog and the LampArray usage;
 //!   [`unknown`] lists the rest for "Add a device", and [`test_zone`] lights one zone of it
+//! - [`lamp_array`]: Windows Dynamic Lighting (LampArray) devices' lamps, as zones
 //! - [`omen_tracer`]: the HP OMEN case lighting board (TracerLED)
 //! - [`calibrated`]: every opened driver's colours go through the device's colour calibration
 //! - `hid` (feature `hid`): the hidapi enumeration and report writer
@@ -19,6 +20,7 @@ pub mod caps;
 pub mod catalog;
 #[cfg(feature = "hid")]
 pub mod hid;
+pub mod lamp_array;
 pub mod omen_tracer;
 
 use std::time::Duration;
@@ -27,6 +29,7 @@ use crate::calibration::Calibration;
 use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
 pub use catalog::{Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRole, ZoneSpec};
+pub use lamp_array::{Lamp, LampArrayDesc};
 
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;

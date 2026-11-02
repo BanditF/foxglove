@@ -23,8 +23,8 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Condvar, Mutex, OnceLock};
 
 use foxglove_devices::pc_lighting::{
-    self as pcl, Catalog, CatalogDevice, Control, Found, HidWriter, LampArrayInfo, LightCaps,
-    LightingDevice, Protocol, Unknown,
+    self as pcl, Catalog, CatalogDevice, Control, Found, HidWriter, LampArrayDesc, LampArrayInfo,
+    LightCaps, LightingDevice, Protocol, Unknown,
 };
 use foxglove_devices::{DeviceError, Rgb};
 use serde::{Deserialize, Serialize};
@@ -347,8 +347,8 @@ fn rgb(c: [u8; 3]) -> Rgb {
 /// Opens a HID path for writing (the hidapi writer, or a recording one in tests).
 pub type Writers = Box<dyn Fn(&str) -> foxglove_devices::Result<Box<dyn HidWriter>> + Send>;
 
-/// Reads every LampArray's attributes (Windows), by VID/PID.
-pub type LampArrays = Box<dyn FnMut() -> Vec<(u16, u16, LampArrayInfo)> + Send>;
+/// Reads every LampArray's attributes and lamps (Windows).
+pub type LampArrays = Box<dyn FnMut() -> Vec<LampArrayDesc> + Send>;
 
 /// The worker's state, apart from the OS: tests drive it with a mocked HID writer.
 pub struct Worker {
@@ -358,7 +358,7 @@ pub struct Worker {
     catalog: Catalog,
     writers: Writers,
     lamp_arrays: LampArrays,
-    lamp_info: BTreeMap<(u16, u16), LampArrayInfo>,
+    lamp_info: BTreeMap<(u16, u16), LampArrayDesc>,
     found: Vec<Found>,
     unknown: Vec<Unknown>,
     /// The catalog changed: scan again, without putting colours back.
@@ -456,15 +456,18 @@ impl Worker {
             f.control == Control::LampArray && !self.lamp_info.contains_key(&(f.vid, f.pid))
         });
         if unread {
-            for (vid, pid, info) in (self.lamp_arrays)() {
-                self.lamp_info.insert((vid, pid), info);
+            for desc in (self.lamp_arrays)() {
+                self.lamp_info.insert((desc.vid, desc.pid), desc);
             }
         }
+        // Its lamps are its zones (#691): one each, named by purpose, at its position.
         for f in &mut now {
-            if let (Control::LampArray, Some(info)) =
+            if let (Control::LampArray, Some(desc)) =
                 (f.control, self.lamp_info.get(&(f.vid, f.pid)))
             {
-                f.caps = LightCaps::from_lamp_array(*info);
+                f.caps = LightCaps::from_lamp_array(desc.info);
+                f.zones = pcl::lamp_array::lamp_zones(&desc.lamps);
+                f.size = desc.size;
             }
         }
         // Same device, same interface, same catalog entry: keep its driver.
@@ -1150,14 +1153,15 @@ pub fn lamp_layouts() -> BTreeMap<(u16, u16), LampLayout> {
         .clone()
 }
 
-/// Every LampArray's attributes, through Windows' Dynamic Lighting API: lamp count, whether
-/// lamps have positions, the update interval and kind. Read once per new LampArray on a scan;
-/// nothing is written to it. Each one's shape is kept for [`lamp_layouts`].
+/// Every LampArray's attributes and lamps, through Windows' Dynamic Lighting API: lamp count,
+/// each lamp's position, purposes and whether it takes a colour, the update interval and kind.
+/// Read once per new LampArray on a scan; nothing is written to it. Each one's shape is kept
+/// for [`lamp_layouts`].
 #[cfg(target_os = "windows")]
-pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
+pub fn lamp_arrays() -> Vec<LampArrayDesc> {
     use windows::Devices::Enumeration::DeviceInformation;
     use windows::Devices::Lights::LampArray;
-    let read = || -> windows::core::Result<Vec<(u16, u16, LampArrayInfo)>> {
+    let read = || -> windows::core::Result<Vec<LampArrayDesc>> {
         let selector = LampArray::GetDeviceSelector()?;
         let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join()?;
         let mut out = Vec::new();
@@ -1166,9 +1170,13 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
                 continue;
             };
             let count = lamps.LampCount().unwrap_or(0).max(0);
+            let infos: Vec<_> = (0..count.min(512))
+                .map(|i| lamps.GetLampInfo(i).ok())
+                .collect();
             // Windows gives metres.
-            let at: Vec<_> = (0..count.min(512))
-                .map(|i| lamps.GetLampInfo(i).and_then(|l| l.Position()).ok())
+            let at: Vec<_> = infos
+                .iter()
+                .map(|l| l.as_ref().and_then(|l| l.Position().ok()))
                 .collect();
             let positions = at
                 .iter()
@@ -1191,10 +1199,27 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert((vid, pid), layout);
-            out.push((
+            let mm = |m: f32| (m * 1000.0).round().clamp(0.0, f32::from(u16::MAX)) as u16;
+            let lamp_list = infos
+                .iter()
+                .zip(&at)
+                .map(|(l, p)| pcl::Lamp {
+                    position: positions.then(|| p.map_or([0; 2], |p| [mm(p.X), mm(p.Y)])),
+                    purposes: l
+                        .as_ref()
+                        .and_then(|l| l.Purposes().ok())
+                        .map_or(0, |p| p.0),
+                    colour: l.as_ref().is_some_and(|l| {
+                        let levels = [l.RedLevelCount(), l.GreenLevelCount(), l.BlueLevelCount()];
+                        let fixed = l.FixedColor().and_then(|c| c.Value()).is_ok();
+                        !fixed && levels.into_iter().any(|n| n.unwrap_or(0) > 0)
+                    }),
+                })
+                .collect();
+            out.push(LampArrayDesc {
                 vid,
                 pid,
-                LampArrayInfo {
+                info: LampArrayInfo {
                     lamp_count: count as u32,
                     positions,
                     // TimeSpan counts 100 ns.
@@ -1203,7 +1228,10 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
                         .map_or(0, |t| (t.Duration.max(0) / 10) as u64),
                     kind,
                 },
-            ));
+                size: (size_mm[0] > 0.0 && size_mm[1] > 0.0)
+                    .then(|| [mm(size_mm[0] / 1000.0), mm(size_mm[1] / 1000.0)]),
+                lamps: lamp_list,
+            });
         }
         Ok(out)
     };
@@ -1214,7 +1242,7 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
+pub fn lamp_arrays() -> Vec<LampArrayDesc> {
     Vec::new()
 }
 
@@ -1296,22 +1324,39 @@ mod tests {
         let s = sent.clone();
         let writers: Writers =
             Box::new(move |_path: &str| Ok(Box::new(Recorder(s.clone())) as Box<dyn HidWriter>));
-        let lamps: LampArrays = Box::new(|| {
-            vec![(
-                0x046d,
-                0xc332,
-                LampArrayInfo {
-                    lamp_count: 2,
-                    positions: true,
-                    min_update_us: 33_000,
-                    kind: 2,
-                },
-            )]
-        });
+        let lamps: LampArrays = Box::new(|| vec![g502()]);
         (
             Worker::new(Catalog::bundled(), local, settings, writers, lamps),
             sent,
         )
+    }
+
+    /// The mouse as Windows reports it: a mouse-kind array of 2 lamps, a logo and an accent.
+    fn g502() -> LampArrayDesc {
+        use foxglove_devices::pc_lighting::lamp_array::purpose;
+        LampArrayDesc {
+            vid: 0x046d,
+            pid: 0xc332,
+            info: LampArrayInfo {
+                lamp_count: 2,
+                positions: true,
+                min_update_us: 33_000,
+                kind: 2,
+            },
+            size: Some([68, 132]),
+            lamps: vec![
+                pcl::Lamp {
+                    position: Some([34, 90]),
+                    purposes: purpose::BRANDING,
+                    colour: true,
+                },
+                pcl::Lamp {
+                    position: Some([34, 30]),
+                    purposes: purpose::ACCENT,
+                    colour: true,
+                },
+            ],
+        }
     }
 
     fn case_hid() -> Vec<HidEntry> {
@@ -1431,7 +1476,7 @@ mod tests {
                     5
                 ),
                 ("HP OMEN liquid cooler", Control::NotYet, 0),
-                ("G502 Proteus Spectrum", Control::LampArray, 0),
+                ("G502 Proteus Spectrum", Control::LampArray, 2),
             ]
         );
         let names: Vec<_> = s
@@ -1844,6 +1889,18 @@ mod tests {
             s.devices[2].caps.chips(false)[0],
             "Per-LED RGB · 2 lamps · up to 30 fps"
         );
+        // #691: its lamps, by purpose and position, from what the device reports.
+        let mouse = &s.devices[2];
+        assert_eq!(
+            mouse.zones,
+            vec![
+                ("Lamp 1 · Logo".to_string(), None),
+                ("Lamp 2 · Accent".to_string(), None)
+            ]
+        );
+        assert_eq!(mouse.zone_ids, vec!["0", "1"]);
+        assert_eq!(mouse.zone_positions, vec![Some([34, 90]), Some([34, 30])]);
+        assert_eq!(mouse.size, Some([68, 132]));
         assert!(s.unknown.is_empty(), "all three are placed");
     }
 
@@ -1856,8 +1913,7 @@ mod tests {
         let s = sent.clone();
         let writers: Writers =
             Box::new(move |_path: &str| Ok(Box::new(Recorder(s.clone())) as Box<dyn HidWriter>));
-        let lamps: LampArrays =
-            Box::new(|| vec![(desk::LIGHTBAR.0, desk::LIGHTBAR.1, desk::lightbar_info())]);
+        let lamps: LampArrays = Box::new(|| vec![desk::lightbar_desc()]);
         let mut w = Worker::new(desk::catalog(), None, Settings::default(), writers, lamps);
         w.scan(&desk::hid(), &mut nothing(), false, true);
         let snap = w.snapshot();
@@ -1870,9 +1926,14 @@ mod tests {
             rows,
             vec![
                 ("Nimbus Strata case lights", Control::NotYet, 4),
-                ("Lumen desk lightbar", Control::LampArray, 0),
+                ("Lumen desk lightbar", Control::LampArray, 12),
             ]
         );
+        // Its lamps are its zones, at the positions it reports (#691).
+        assert_eq!(snap.devices[1].zones[0].0, "Lamp 1 · Accent");
+        assert_eq!(snap.devices[1].zone_ids[11], "11");
+        assert_eq!(snap.devices[1].zone_positions[0], Some([16, 12]));
+        assert_eq!(snap.devices[1].size, Some([400, 24]));
         assert_eq!(
             snap.devices[0].caps.chips(false),
             vec!["Per-zone RGB · 4 zones"]
