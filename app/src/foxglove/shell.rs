@@ -61,7 +61,7 @@ impl Page {
 
 /// Every settings section by title, and the page it lives on (#385). A new section goes in
 /// here too; the `every_section_has_a_page` test finds the ones that don't.
-pub const SECTIONS: [(&str, Page); 19] = [
+pub const SECTIONS: [(&str, Page); 20] = [
     ("Connection", Page::Keyboard),
     ("Keyboard", Page::Keyboard),
     // The layer overlay's card (#534): KeyPeek's appearance grid, its layer colours, then the
@@ -84,6 +84,8 @@ pub const SECTIONS: [(&str, Page); 19] = [
     ("Live wallpaper", Page::Settings),
     // Copy diagnostics, the log folder and the connection details (#535).
     ("Troubleshooting", Page::Settings),
+    // What each part of the keyboard reported about itself (#705).
+    ("Keyboard health", Page::Settings),
     // The links, credits and version at the end of the window.
     ("About", Page::Settings),
 ];
@@ -94,10 +96,11 @@ pub const SECTIONS: [(&str, Page); 19] = [
 /// Keyboard page's are stacked (#534), so KeyPeek's sections keep their order in its file and
 /// still show in the canvas's: the layer overlay's card (its grid, then its colours), the keymap
 /// source at the card's foot, then Other keyboards. Unlisted sections are in part 1.
-const PARTS: [(&str, usize); 7] = [
+const PARTS: [(&str, usize); 8] = [
     ("Profile", 0),
     ("Appearance", 0),
     ("Troubleshooting", 0),
+    ("Keyboard health", 0),
     ("Overlay Appearance", 0),
     ("Theme", 0),
     ("Connection", 1),
