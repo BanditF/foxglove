@@ -8,6 +8,9 @@ no prompts; the automatic checks all stay, and a typing check by foxglove-lab re
 reset when asked.
 A half left in its bootloader by an earlier run is written first (#654); --resume writes only
 such halves and asks none into its bootloader.
+A bootloader whose drive Windows never mounts (#664: the USB port failed after Modern Standby) is
+told apart from a slow mount: the flasher asks once for that half's cable to be replugged, then
+waits for the drive (on device events) and carries on by itself, or stops after a bounded wait.
 Settings reset: supply its path with --left/--right, select --half, and add
 --settings-reset; this erases settings and requires a separate confirmation.
 """
@@ -41,6 +44,15 @@ SETTLE_SECONDS = 3  # after the bootloader drive appears, before writing
 FIND_TRIES = 3
 FIND_TIMEOUT = 30
 FIND_PAUSE = 2
+# #664: after a hands-free entry the half's bootloader shows up within seconds. When none has after
+# VANISH_SECONDS and the half's running-firmware device has left USB too, Windows lost the port
+# (Code 43 'Device Descriptor Request Failed' after Modern Standby): waiting longer won't help.
+VANISH_SECONDS = 30
+# How long the flasher waits for the replug it asked for, and the longest single device-event
+# wait inside it (an arrival missed between two looks is caught by the next look).
+REPLUG_SECONDS = 300
+EVENT_SLICE = 15
+FAILED_DEVICE = 'USB\\VID_0000&PID_0002\\'  # a USB device whose descriptor request failed
 START = 0x26000  # All inspected real builds, including settings reset, start here.
 ROLLBACK = local_config.get('flash.rollback')
 MARKER = re.compile(rb'FOXGLOVE_HALF=(?P<half>left|right)'
@@ -151,6 +163,14 @@ class Refused(Exception):
 
 class FlashFailed(Exception):
     pass
+
+
+class NoDrive(Exception):
+    """The bootloader is on USB (its PnP device is present), but Windows mounted no drive for it."""
+
+
+class DriveNotMounted(TimeoutError):
+    """#664: the drive never mounted and the half wasn't replugged within REPLUG_SECONDS."""
 
 
 class DriveGone(Exception):
@@ -380,19 +400,23 @@ class WindowsOS:
             return None
         if len(rows) > 1:
             # Never guess between drives: this is what keeps a UF2 off the wrong half.
-            raise Refused('Cannot map this serial to exactly one disk and volume. Unplug other bootloaders and try again.')
+            volumes = ', '.join(sorted(str(r.get('Volume')) for r in rows))
+            raise Refused(f"bootloader {serial}'s disk shows {len(rows)} volumes ({volumes}), not one; "
+                          'nothing was written. Unplug any other UF2 drive and run again.')
         if not rows:
             self.log(f'{SERIALS[serial]}: drive lookup {attempt}/{FIND_TRIES} ({how}) for {serial}: '
                      'no volume yet.')
         return rows
 
-    def find_volume(self, serial):
+    def find_volume(self, serial, tries=None):
         """The bootloader volume of `serial`, by the CIM association, or by the INFO_UF2.TXT
-        fallback, retried FIND_TRIES times. Refuses an ambiguous mapping at once."""
+        fallback, retried `tries` (FIND_TRIES) times. Refuses an ambiguous mapping at once;
+        NoDrive when every lookup answered and none found a volume (#664)."""
         if serial not in SERIALS:
             raise Refused('Unknown bootloader serial')
+        tries = tries or FIND_TRIES
         timed_out = True
-        for attempt in range(1, FIND_TRIES + 1):
+        for attempt in range(1, tries + 1):
             for how, script in (('CIM', self._cim_script(serial)),
                                 ('INFO_UF2.TXT', self._uf2_volume_script(serial))):
                 rows = self._lookup(serial, attempt, how, script)
@@ -406,11 +430,54 @@ class WindowsOS:
                     if attempt > 1 or how != 'CIM':
                         self.log(f'{SERIALS[serial]}: drive found at {volume} ({how}, try {attempt}/{FIND_TRIES}).')
                     return volume
-            if attempt < FIND_TRIES:
+            if attempt < tries:
                 self.sleep(FIND_PAUSE)
         if timed_out:
-            raise TimeoutError(f'the drive lookup for {serial} timed out {FIND_TRIES} times')
-        raise Refused('Cannot map this serial to exactly one disk and volume. Unplug other bootloaders and try again.')
+            raise TimeoutError(f'the drive lookup for {serial} timed out {tries} times')
+        # #664: this used to say "Unplug other bootloaders", which sent people after drives that
+        # weren't there. Nothing is ambiguous: the bootloader is on USB and has no drive.
+        raise NoDrive(f'bootloader {serial} is on USB, but Windows mounted no drive for it '
+                      f'({tries} lookup{"s" if tries > 1 else ""})')
+
+    def failed_usb_devices(self):
+        """Present USB devices whose device descriptor request failed (VID_0000&PID_0002, Code 43):
+        what a port that failed to re-enumerate leaves behind (#664). Evidence for the log only."""
+        return self._ps(r"ConvertTo-Json -Compress -InputObject @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.InstanceId -like '" + FAILED_DEVICE + r"*' } | ForEach-Object { $_.InstanceId })")
+
+    def wait_device_change(self, seconds):
+        """Waits up to `seconds` for a Windows device-change event (Win32_DeviceChangeEvent, an
+        extrinsic WMI event: no WMI polling, no admin rights). True: something arrived or left;
+        False: nothing in time. If the subscription can't be made, it waits out `seconds` instead
+        (the bounded fallback) and returns None."""
+        seconds = max(1, int(seconds + 0.999))
+        script = ('Register-CimIndicationEvent -ClassName Win32_DeviceChangeEvent -SourceIdentifier FoxgloveFlash | Out-Null; '
+                  f'try {{ $e = Wait-Event -SourceIdentifier FoxgloveFlash -Timeout {seconds} }} '
+                  'finally { Unregister-Event -SourceIdentifier FoxgloveFlash -ErrorAction SilentlyContinue }; '
+                  'ConvertTo-Json -Compress -InputObject ([bool]$e)')
+        try:
+            return bool(self._ps(script, timeout=seconds + 20))
+        except (subprocess.SubprocessError, OSError, ValueError) as exc:
+            self.log(f'device events unavailable ({exc}); waiting {seconds} s instead.')
+            self.sleep(seconds)
+            return None
+
+    def pnp_rescan(self):
+        """`pnputil /scan-devices`, only when this process is elevated: (ran, detail). It needs an
+        administrator prompt, and it can't revive a port whose enumeration failed (Code 43): only
+        a replug does that. Opt-in (--pnp-rescan)."""
+        try:
+            import ctypes
+            admin = bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except (AttributeError, OSError):
+            admin = False
+        if not admin:
+            return False, 'pnputil /scan-devices needs an administrator prompt, and this one is not elevated'
+        try:
+            result = subprocess.run(['pnputil', '/scan-devices'], capture_output=True, text=True, timeout=60)
+        except (subprocess.SubprocessError, OSError) as exc:
+            return False, f'pnputil /scan-devices failed: {exc}'
+        lines = (result.stdout or result.stderr).strip().splitlines()
+        return result.returncode == 0, (lines[-1] if lines else f'exit {result.returncode}')
 
     def exists(self, path):
         # Once the bootloader reboots, Windows answers a stat on its drive with WinError 433 or
@@ -618,9 +685,68 @@ def enter_with_retries(half, backend, log, clock=time.monotonic, sleep=time.slee
             return False, True
 
 
+def replug_message(half):
+    """The one thing to do when a half's bootloader drive doesn't mount (#664)."""
+    return (f"The {half} half is in its bootloader but Windows didn't mount its drive. Unplug the "
+            f"{half} half's USB cable and plug it back in; the flash will continue.")
+
+
+def recover_drive(half, serials, backend, log, why, sha='', clock=time.monotonic, sleep=time.sleep,
+                  pnp_rescan=False):
+    """#664: `half`'s bootloader drive didn't mount (`why`). Says once what to do, then waits up
+    to REPLUG_SECONDS for that half's bootloader, by its serial, to come back with a drive: woken
+    by device events, each wait at most EVENT_SLICE s. `serials`: the one it was on, or the
+    half's known serials. Returns (serial, volume); a late mount without a replug counts too. FlashFailed when the half's normal firmware came back instead, and
+    DriveNotMounted when nothing happened in time. Nothing is written meanwhile."""
+    log(f'{half}: {why}.')
+    try:
+        failed = backend.failed_usb_devices() if hasattr(backend, 'failed_usb_devices') else []
+    except (subprocess.SubprocessError, OSError, ValueError):
+        failed = []
+    if failed:
+        log(f'{half}: Windows shows a USB device it could not read ({", ".join(failed)}, Code 43): '
+            'a port failed to re-enumerate.')
+    if pnp_rescan and hasattr(backend, 'pnp_rescan'):
+        ran, detail = backend.pnp_rescan()
+        log(f'{half}: PnP rescan {"done" if ran else "skipped"}: {detail}.')
+    record(half, sha, 'drive-not-mounted', why)
+    log(replug_message(half) + f' (Waiting up to {REPLUG_SECONDS} s.)')
+    wait = getattr(backend, 'wait_device_change', None)
+    deadline = clock() + REPLUG_SECONDS
+    serials = [serials] if isinstance(serials, str) else list(serials)
+    while True:
+        mine = known_bootloaders(backend.enumerate_bootloaders()).get(half, [])
+        if len(mine) == 1 and mine[0] in serials:
+            try:
+                volume = backend.find_volume(mine[0], tries=1)
+            except (NoDrive, TimeoutError):
+                pass
+            else:
+                log(f'{half}: its drive is at {volume}; carrying on.')
+                return mine[0], volume
+        elif mine:
+            raise Refused(f'a different {half} bootloader ({", ".join(mine)}) showed up instead of '
+                          f'{" or ".join(serials)}; nothing was written.')
+        elif usb_presence(backend, half)[1] is not None:
+            raise FlashFailed(f'the {half} half restarted its normal firmware instead of coming back in '
+                              'its bootloader; nothing was written to it. Run the same command again.')
+        remaining = deadline - clock()
+        if remaining <= 0:
+            raise DriveNotMounted(
+                f"the {half} half's bootloader drive didn't mount and its cable wasn't replugged within "
+                f'{REPLUG_SECONDS} s; nothing was written to it. It is probably still in its bootloader: '
+                'unplug and replug its USB cable (another port if this one keeps failing), then run the '
+                'same command again with --resume.')
+        step = min(EVENT_SLICE, remaining)
+        if wait is None:
+            sleep(step)
+        else:
+            wait(step)  # returns early on a device event; falls back to a plain wait itself
+
+
 def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
           settings_reset=False, allow_unknown_half=False, clock=time.monotonic, sleep=time.sleep,
-          allow_profile_mix=False, yes=False, force=False, resume=False):
+          allow_profile_mix=False, yes=False, force=False, resume=False, pnp_rescan=False):
     """Flashes the halves in `images`, left first. Resume (#654): before any half is asked into
     its bootloader, the bootloaders already connected are listed. A half already in its
     bootloader (a run that stopped after the entry, or a double tap) is written first, scoped to
@@ -697,9 +823,39 @@ def flash(images, backend, seconds, stdin=sys.stdin, ask=input, log=print,
                     log(f'Double-tap reset on the {half} half only. Waiting up to {seconds:g} seconds.')
             else:
                 log(f'Double-tap reset on the {half} half only. Waiting up to {seconds:g} seconds.')
+        volume = None
+        if not chosen and entered and not settings_reset:
+            # #664: a hands-free entry shows its bootloader within seconds. None after
+            # VANISH_SECONDS while the half's firmware has left USB too: Windows lost the port, so
+            # say what to do now rather than wait out the whole timeout.
+            try:
+                wait_for(ready, min(VANISH_SECONDS, seconds), 'no bootloader yet', clock, sleep)
+            except TimeoutError:
+                try:
+                    gone = usb_presence(backend, half)
+                except Refused:
+                    gone = ([], 'unknown')
+                if gone[1] is None and gone[0]:
+                    serial, volume = recover_drive(
+                        half, gone[0], backend, log,
+                        f'it left its normal firmware ({" / ".join(APP_DEVICE + s for s in gone[0])} gone), '
+                        f'but no bootloader showed up in {VANISH_SECONDS} s', expected.get(half, ''), clock, sleep,
+                        pnp_rescan)
+                    chosen[:] = [serial]
+                else:
+                    wait_for(ready, max(0, seconds - VANISH_SECONDS),
+                             f'Timed out waiting for {half} bootloader', clock, sleep)
         if not chosen:
             wait_for(ready, seconds, f'Timed out waiting for {half} bootloader', clock, sleep)
-        volume = backend.find_volume(chosen[0])
+        if volume is None:
+            try:
+                volume = backend.find_volume(chosen[0])
+            except (NoDrive, TimeoutError) as exc:
+                # A slow mount is what the lookup's own retries are for; past them, the drive
+                # isn't coming without a replug (#664).
+                _, volume = recover_drive(half, chosen[0], backend, log,
+                                       f'its bootloader ({chosen[0]}) is on USB, but no drive mounted: {exc}',
+                                       expected.get(half, ''), clock, sleep, pnp_rescan)
         info = volume / 'INFO_UF2.TXT'
         if not backend.exists(info):
             raise Refused('INFO_UF2.TXT disappeared before writing')
@@ -844,6 +1000,10 @@ def main(argv=None):
                              'typing check in place of TYPES')
     parser.add_argument('--allow-profile-mix', action='store_true',
                         help='allow leaving one half dev and the other GA')
+    parser.add_argument('--pnp-rescan', action='store_true',
+                        help='when a bootloader drive does not mount (#664), run pnputil /scan-devices '
+                             'once before asking for a replug. Needs an elevated prompt (skipped, and '
+                             'logged, otherwise); a port that failed to enumerate still needs the replug')
     parser.add_argument('--resume', action='store_true',
                         help='doctor mode (#654): write only the halves already in their bootloaders '
                              '(stranded by an earlier run, or double-tapped), each scoped to its USB '
@@ -887,11 +1047,11 @@ def main(argv=None):
                 flash(images, WindowsOS(log=log), args.wait_seconds, log=log, ask=ask_terminal,
                       settings_reset=args.settings_reset, allow_unknown_half=args.allow_unknown_half,
                       allow_profile_mix=args.allow_profile_mix, yes=args.yes, force=args.force,
-                      resume=args.resume)
+                      resume=args.resume, pnp_rescan=args.pnp_rescan)
     except (TimeoutError, subprocess.TimeoutExpired) as exc:
         code = 2
         log('TIMEOUT: ' + str(exc))
-    except (Refused, OSError, ValueError) as exc:
+    except (Refused, NoDrive, OSError, ValueError) as exc:
         code = 1
         log('REFUSED: ' + str(exc))
     except (FlashFailed, subprocess.SubprocessError) as exc:

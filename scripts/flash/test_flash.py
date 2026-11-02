@@ -77,7 +77,7 @@ class FakeOS:
             return []
         return self.serials
 
-    def find_volume(self, serial):
+    def find_volume(self, serial, tries=None):
         return Path('fake-volume')
 
     def exists(self, path):
@@ -968,9 +968,13 @@ class FindVolumeTests(unittest.TestCase):
             self.lookup([self.timeout(), [{'Volume': 'X:'}, {'Volume': 'Y:'}]])
         self.assertEqual(len(ctx.exception.calls), 2, 'never retried into a guess')
 
-    def test_no_volume_after_every_try_refuses(self):
-        with self.assertRaises(f.Refused):
+    def test_no_volume_after_every_try_is_no_drive_not_ambiguity(self):
+        # #664: this said "Unplug other bootloaders" with no other bootloader connected.
+        with self.assertRaises(f.NoDrive) as ctx:
             self.lookup([[]] * (2 * f.FIND_TRIES))
+        self.assertNotIn('Unplug other bootloaders', str(ctx.exception))
+        self.assertIn('Windows mounted no drive', str(ctx.exception))
+        self.assertNotIsInstance(ctx.exception, f.Refused)
 
     def test_volume_without_info_uf2_refuses(self):
         with self.assertRaises(f.Refused):
@@ -980,7 +984,7 @@ class FindVolumeTests(unittest.TestCase):
 class BootloaderOS(FakeOS):
     """Bootloaders that come and go: asking a half in adds its serial; a write the bootloader
     takes removes it. Each half's drive is its own fake volume. `fail_lookup`: serials whose
-    drive lookup times out once (#654)."""
+    drive lookup times out, for as long as they are in it (#654)."""
     def __init__(self, present=()):
         super().__init__(stranded=True)
         self.present_serials = list(present)
@@ -999,10 +1003,9 @@ class BootloaderOS(FakeOS):
         self.present_serials.append(self.serial_of[half])
         return True
 
-    def find_volume(self, serial):
+    def find_volume(self, serial, tries=None):
         self.lookups.append(serial)
         if serial in self.fail_lookup:
-            self.fail_lookup.discard(serial)
             raise TimeoutError(f'the drive lookup for {serial} timed out {f.FIND_TRIES} times')
         return Path('fake-' + serial)
 
@@ -1043,6 +1046,7 @@ class ResumeTests(unittest.TestCase):
             self.run_yes(backend)
         self.assertEqual(backend.present_serials, [RIGHT], 'the right is stranded in its bootloader')
         self.assertEqual([s for s, _ in backend.writes], [LEFT])
+        backend.fail_lookup = set()  # replugged: the drive mounts now
         # Run 2, --half both: the stranded right is written first; only then is the left asked in.
         backend.writes, backend.entered, backend.at_enter = [], [], []
         logs = self.run_yes(backend)
@@ -1222,3 +1226,199 @@ class UsbPresenceTests(unittest.TestCase):
         with self.assertRaisesRegex(f.Refused, "couldn't check whether the left half is on USB"):
             self.run_yes(backend)
         self.assertEqual((backend.entered, backend.writes), ([], []))
+
+
+class StuckPortOS(BootloaderOS):
+    """#664: the right asked into its bootloader leaves USB as running firmware; then either its
+    bootloader shows up (after `appears_after` s; None: never, the port failed), and its drive
+    mounts or not (`mounted`). `events` are what each device-change wait brings, in order (a
+    callable run on the fake); with none left, a wait runs out its whole time."""
+    def __init__(self, clock, appears_after=0, mounted=True):
+        super().__init__()
+        self.clock = clock
+        self.appears_after = appears_after
+        self.mounted = mounted
+        self.events = []
+        self.waits = []
+        self.entered_at = None
+        self.failed = []
+        self.rescans = 0
+
+    def enter_bootloader(self, half, log):
+        self.entered.append(half)
+        self.at_enter.append(list(self.present_serials))
+        self.usb[half] = None  # the running firmware left USB
+        self.entered_at = self.clock.now
+        return True
+
+    def enumerate_bootloaders(self):
+        if (self.entered_at is not None and self.appears_after is not None
+                and self.clock.now - self.entered_at >= self.appears_after and RIGHT not in self.present_serials):
+            self.present_serials.append(RIGHT)
+            self.appears_after = None  # it came once; a replug is an event
+        return list(self.present_serials)
+
+    def find_volume(self, serial, tries=None):
+        self.lookups.append((serial, tries))
+        if not self.mounted:
+            raise f.NoDrive(f'bootloader {serial} is on USB, but Windows mounted no drive for it')
+        return Path('fake-' + serial)
+
+    def failed_usb_devices(self):
+        return list(self.failed)
+
+    def pnp_rescan(self):
+        self.rescans += 1
+        return False, 'needs an administrator prompt'
+
+    def wait_device_change(self, seconds):
+        self.waits.append(seconds)
+        if self.events:
+            self.clock.now += 1
+            self.events.pop(0)(self)
+            return True
+        self.clock.now += seconds
+        return False
+
+
+def unplug(os_):
+    if RIGHT in os_.present_serials:
+        os_.present_serials.remove(RIGHT)
+
+
+def replug(os_):
+    if RIGHT not in os_.present_serials:
+        os_.present_serials.append(RIGHT)
+    os_.mounted = True
+
+
+class DriveNotMountedTests(unittest.TestCase):
+    """#664: the right's bootloader drive never mounted (its port failed to re-enumerate after
+    Modern Standby). The flasher tells that apart from a slow mount, asks once for a replug,
+    and carries on by itself, or stops after a bounded wait with one clear message."""
+    IMAGES = {'right': uf2(b'FOXGLOVE_HALF=right')}
+
+    def run_right(self, backend, clock, **kwargs):
+        logs = []
+        try:
+            f.flash(dict(self.IMAGES), backend, 600, stdin=io.StringIO(''), ask=lambda p: self.fail(p),
+                    log=logs.append, clock=clock.clock, sleep=clock.sleep, yes=True, **kwargs)
+        except Exception as exc:
+            exc.logs = logs
+            raise
+        return logs
+
+    def prompts(self, logs):
+        return [m for m in logs if m.startswith(f.replug_message('right'))]
+
+    def test_slow_bootloader_and_mount_succeed_without_a_prompt(self):
+        clock = Clock()
+        backend = StuckPortOS(clock, appears_after=f.VANISH_SECONDS - 5)
+        logs = self.run_right(backend, clock)
+        self.assertEqual([s for s, _ in backend.writes], [RIGHT])
+        self.assertEqual(self.prompts(logs), [], logs)
+        self.assertEqual(backend.waits, [], 'no replug wait')
+
+    def test_slow_bootloader_with_its_firmware_still_on_usb_is_not_vanished(self):
+        # The firmware hasn't left USB: the request hasn't landed yet. Keep waiting, no prompt.
+        clock = Clock()
+        backend = StuckPortOS(clock, appears_after=f.VANISH_SECONDS + 60)
+        enter = backend.enter_bootloader
+        def enter_keep_usb(half, log):
+            result = enter(half, log)
+            backend.usb[half] = 'Error'
+            return result
+        backend.enter_bootloader = enter_keep_usb
+        logs = self.run_right(backend, clock)
+        self.assertEqual([s for s, _ in backend.writes], [RIGHT])
+        self.assertEqual(self.prompts(logs), [], logs)
+
+    def test_no_drive_then_replug_then_resumes(self):
+        clock = Clock()
+        backend = StuckPortOS(clock, mounted=False)
+        backend.events = [unplug, replug]
+        logs = self.run_right(backend, clock)
+        self.assertEqual(len(self.prompts(logs)), 1, logs)
+        self.assertTrue(any('is on USB, but no drive mounted' in m for m in logs), logs)
+        self.assertEqual([s for s, _ in backend.writes], [RIGHT], 'written once, after the replug')
+        self.assertEqual(backend.entered, ['right'], 'not asked in again')
+        self.assertTrue(all(w <= f.EVENT_SLICE for w in backend.waits), backend.waits)
+        self.assertFalse(any('Unplug other bootloaders' in m for m in logs), logs)
+
+    def test_vanished_bootloader_is_called_at_once_then_replug_resumes(self):
+        clock = Clock()
+        backend = StuckPortOS(clock, appears_after=None)
+        backend.failed = ['USB\\VID_0000&PID_0002\\5&212ABA97&0&3']
+        backend.events = [replug]
+        logs = self.run_right(backend, clock)
+        self.assertEqual(len(self.prompts(logs)), 1, logs)
+        prompted = next(i for i, m in enumerate(logs) if m.startswith(f.replug_message('right')))
+        self.assertTrue(any(f'no bootloader showed up in {f.VANISH_SECONDS} s' in m for m in logs[:prompted]), logs)
+        self.assertTrue(any('Code 43' in m and '5&212ABA97' in m for m in logs[:prompted]), logs)
+        self.assertEqual([s for s, _ in backend.writes], [RIGHT])
+        self.assertLess(backend.entered_at + f.VANISH_SECONDS, clock.now)
+        self.assertLess(clock.now, 600, 'did not wait out --wait-seconds first')
+
+    def test_no_replug_fails_bounded_with_one_clear_message(self):
+        for appears_after, mounted in ((None, True), (0, False)):
+            with self.subTest(vanished=appears_after is None):
+                clock = Clock()
+                backend = StuckPortOS(clock, appears_after=appears_after, mounted=mounted)
+                with self.assertRaises(f.DriveNotMounted) as ctx:
+                    self.run_right(backend, clock)
+                message = str(ctx.exception)
+                self.assertIn("wasn't replugged within", message)
+                self.assertIn('--resume', message)
+                self.assertIsInstance(ctx.exception, TimeoutError, 'exit code 2 (TIMEOUT)')
+                self.assertEqual(len(self.prompts(ctx.exception.logs)), 1, ctx.exception.logs)
+                self.assertEqual(backend.writes, [])
+                self.assertLessEqual(clock.now, f.VANISH_SECONDS + f.REPLUG_SECONDS + f.SETTLE_SECONDS + 70)
+                self.assertTrue(all(w <= f.EVENT_SLICE for w in backend.waits), backend.waits)
+
+    def test_firmware_back_instead_of_the_bootloader_stops_clearly(self):
+        clock = Clock()
+        backend = StuckPortOS(clock, appears_after=None)
+        def firmware_back(os_):
+            os_.usb['right'] = 'Error'
+        backend.events = [firmware_back]
+        with self.assertRaisesRegex(f.FlashFailed, 'restarted its normal firmware'):
+            self.run_right(backend, clock)
+        self.assertEqual(backend.writes, [])
+
+    def test_pnp_rescan_is_opt_in_and_says_why_it_was_skipped(self):
+        for flag in (False, True):
+            clock = Clock()
+            backend = StuckPortOS(clock, mounted=False)
+            backend.events = [replug]
+            logs = self.run_right(backend, clock, pnp_rescan=flag)
+            self.assertEqual(backend.rescans, int(flag))
+            self.assertEqual(any('PnP rescan skipped: needs an administrator prompt' in m for m in logs), flag)
+
+    def test_windows_device_wait_is_an_event_with_a_bound_and_a_fallback(self):
+        sleeps = []
+        backend = f.WindowsOS(log=lambda m: None, sleep=sleeps.append)
+        calls = []
+        with patch.object(backend, '_ps', side_effect=lambda s, timeout=20: (calls.append((s, timeout)), True)[1]):
+            self.assertTrue(backend.wait_device_change(15))
+        script, timeout = calls[0]
+        self.assertIn('Win32_DeviceChangeEvent', script)
+        self.assertIn('-Timeout 15', script)
+        self.assertIn('Unregister-Event', script)
+        self.assertEqual(timeout, 35)
+        with patch.object(backend, '_ps', side_effect=f.subprocess.CalledProcessError(1, 'powershell')):
+            self.assertIsNone(backend.wait_device_change(15))
+        self.assertEqual(sleeps, [15], 'the fallback is one bounded wait')
+
+    def test_windows_failed_device_query_and_rescan_without_admin(self):
+        backend = f.WindowsOS(log=lambda m: None)
+        scripts = []
+        with patch.object(backend, '_ps', side_effect=lambda s, **k: (scripts.append(s), ['X'])[1]):
+            self.assertEqual(backend.failed_usb_devices(), ['X'])
+        self.assertIn("-like 'USB\\VID_0000&PID_0002\\*'", scripts[0])
+        shell32 = type('Shell32', (), {'IsUserAnAdmin': staticmethod(lambda: 0)})()
+        windll = type('WinDLL', (), {'shell32': shell32})()
+        with patch.object(f.subprocess, 'run', side_effect=AssertionError('pnputil ran')), \
+                patch('ctypes.windll', windll, create=True):
+            ran, why = backend.pnp_rescan()
+        self.assertFalse(ran)
+        self.assertIn('administrator', why)

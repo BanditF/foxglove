@@ -6,6 +6,8 @@ use std::collections::VecDeque;
 
 const LEFT_SERIAL: &str = "1E89EF085AA8A635";
 const RIGHT_SERIAL: &str = "35B4541F78DE9CF8";
+/// In `arrives`: time passes with no device change (the bootloaders stay as they are).
+const TICK: &str = "<time passes>";
 
 fn image(half: Half, version: &str, profile: &str, sha: &str) -> Vec<u8> {
     let mut payload = vec![0u8; 512];
@@ -31,7 +33,11 @@ fn build(version: &str, profile: &str, sha: &str) -> Build {
 /// The keyboard and the PC in memory. `drives` scripts which bootloaders show after each wait.
 struct Mock {
     on_usb: Option<bool>,
-    right_usb: Option<bool>,
+    /// The right's running firmware on USB; it leaves when the right restarts into its
+    /// bootloader and is back once a write is taken.
+    right_usb: std::cell::Cell<Option<bool>>,
+    /// Volume lookups per serial that find no drive mounted yet (#664).
+    unmounted: RefCell<std::collections::HashMap<String, u32>>,
     battery: Option<u8>,
     hands_free: bool,
     builds: RefCell<[Option<Build>; 2]>,
@@ -55,7 +61,8 @@ impl Default for Mock {
     fn default() -> Self {
         Mock {
             on_usb: Some(true),
-            right_usb: Some(true),
+            right_usb: std::cell::Cell::new(Some(true)),
+            unmounted: RefCell::new(Default::default()),
             battery: Some(80),
             hands_free: true,
             builds: RefCell::new([
@@ -96,7 +103,7 @@ impl Board for Mock {
         self.battery
     }
     fn right_on_usb(&self) -> Option<bool> {
-        self.right_usb
+        self.right_usb.get()
     }
     fn left_serial(&self) -> Option<String> {
         Some(LEFT_SERIAL.into())
@@ -109,6 +116,9 @@ impl Board for Mock {
     }
     fn enter_bootloader(&self, half: Half) -> Result<(), String> {
         self.log.borrow_mut().push(format!("enter {}", half.name()));
+        if half == Half::Right {
+            self.right_usb.set(Some(false));
+        }
         Ok(())
     }
     fn bootloaders(&self) -> Vec<String> {
@@ -116,6 +126,7 @@ impl Board for Mock {
     }
     fn wait_bootloaders(&self, timeout: Duration) {
         match self.arrives.borrow_mut().pop_front() {
+            Some(next) if next == [TICK] => self.clock.set(self.clock.get() + timeout),
             Some(next) => *self.present.borrow_mut() = next,
             None => {
                 // Nothing arrives: the wait runs out.
@@ -127,8 +138,15 @@ impl Board for Mock {
     fn now(&self) -> std::time::Instant {
         self.start + self.clock.get()
     }
-    fn volume(&self, serial: &str) -> Result<PathBuf, String> {
-        Ok(PathBuf::from(format!("{serial}:\\")))
+    fn volume(&self, serial: &str) -> Result<Option<PathBuf>, String> {
+        let mut unmounted = self.unmounted.borrow_mut();
+        match unmounted.get_mut(serial) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                Ok(None)
+            }
+            _ => Ok(Some(PathBuf::from(format!("{serial}:\\")))),
+        }
     }
     fn board_id(&self, _volume: &Path) -> Result<String, String> {
         Ok("Board-ID: nRF52840-nicenano".into())
@@ -144,6 +162,9 @@ impl Board for Mock {
         let i = self.half_of(&serial);
         self.builds.borrow_mut()[i] = self.after.borrow()[i].clone();
         self.present.borrow_mut().clear();
+        if i == 1 {
+            self.right_usb.set(Some(true));
+        }
         if self.gone_mid_write {
             return Err(WriteError::DriveGone("device gone".into()));
         }
@@ -449,7 +470,7 @@ fn a_drive_that_never_appears_times_out_with_recovery_steps() {
 fn a_one_piece_keyboard_is_one_part_with_no_halves() {
     let parts = Parts::new(vec!["Keyboard".into()]);
     let board = Mock {
-        right_usb: Some(false),
+        right_usb: std::cell::Cell::new(Some(false)),
         battery: Some(3),
         builds: RefCell::new([Some(build("0.1.0", "dev", "aaaaaaa")), None]),
         arrives: RefCell::new(VecDeque::from([vec![LEFT_SERIAL.to_string()]])),
@@ -565,4 +586,172 @@ fn a_split_keeps_its_halves_words() {
         steps[0].text,
         "Double-tap the reset button on the left half (only that half), with its cable plugged in"
     );
+}
+
+/// The replug step, if any.
+fn replugs(steps: &[Progress]) -> Vec<&Progress> {
+    steps
+        .iter()
+        .filter(|s| s.text.contains("didn't mount its drive. Unplug"))
+        .collect()
+}
+
+fn arrivals(list: &[&[&str]]) -> VecDeque<Vec<String>> {
+    list.iter()
+        .map(|l| l.iter().map(|s| s.to_string()).collect())
+        .collect()
+}
+
+#[test]
+fn a_slow_mount_is_waited_for_without_a_replug() {
+    // #664: the right's drive mounts a few device events after its bootloader shows up.
+    let board = Mock {
+        arrives: RefCell::new(arrivals(&[
+            &[LEFT_SERIAL],
+            &[RIGHT_SERIAL],
+            &[RIGHT_SERIAL],
+            &[RIGHT_SERIAL],
+        ])),
+        ..Mock::default()
+    };
+    board.unmounted.borrow_mut().insert(RIGHT_SERIAL.into(), 2);
+    let (result, steps, _) = go(&board);
+    assert_eq!(result, Ok(()));
+    assert!(replugs(&steps).is_empty(), "{steps:?}");
+    assert_eq!(board.written.borrow().len(), 2);
+    assert!(board.clock.get() < MOUNT_WAIT, "woken by the events");
+}
+
+#[test]
+fn a_drive_that_never_mounts_asks_for_one_replug_then_carries_on() {
+    // The bootloader is on USB, its drive doesn't mount; the user replugs the right.
+    let board = Mock {
+        arrives: RefCell::new(arrivals(&[
+            &[LEFT_SERIAL],
+            &[RIGHT_SERIAL],
+            &[TICK],
+            &[],
+            &[RIGHT_SERIAL],
+        ])),
+        ..Mock::default()
+    };
+    board.unmounted.borrow_mut().insert(RIGHT_SERIAL.into(), 2);
+    let (result, steps, _) = go(&board);
+    assert_eq!(result, Ok(()));
+    let asked = replugs(&steps);
+    assert_eq!(asked.len(), 1, "{steps:?}");
+    assert_eq!(asked[0].half, Half::Right);
+    assert_eq!(
+        asked[0].text,
+        "The right half is in its bootloader but Windows didn't mount its drive. Unplug the right half's USB cable and plug it back in; the update will continue."
+    );
+    assert_eq!(
+        *board.written.borrow(),
+        [
+            (LEFT_SERIAL.to_string(), 2048),
+            (RIGHT_SERIAL.to_string(), 2048)
+        ]
+    );
+    assert!(board
+        .log
+        .borrow()
+        .contains(&"right drive-not-mounted".to_string()));
+    assert_eq!(
+        board
+            .log
+            .borrow()
+            .iter()
+            .filter(|l| l.starts_with("enter"))
+            .count(),
+        2,
+        "the right isn't asked in again"
+    );
+}
+
+#[test]
+fn a_vanished_bootloader_is_called_after_the_vanish_wait_not_the_drive_wait() {
+    // Nothing shows up after the right's restart and its firmware has left USB: Windows lost
+    // the port (#664). The replug brings the bootloader back with its drive.
+    let board = Mock {
+        arrives: RefCell::new(arrivals(&[&[LEFT_SERIAL], &[TICK], &[RIGHT_SERIAL]])),
+        ..Mock::default()
+    };
+    let (result, steps, _) = go(&board);
+    assert_eq!(result, Ok(()));
+    assert_eq!(replugs(&steps).len(), 1, "{steps:?}");
+    assert_eq!(board.clock.get(), VANISH_WAIT, "asked at the vanish wait");
+    assert_eq!(board.written.borrow().len(), 2);
+}
+
+#[test]
+fn no_replug_fails_bounded_with_one_message_and_no_write() {
+    for mount_fails in [false, true] {
+        let board = Mock {
+            arrives: RefCell::new(if mount_fails {
+                arrivals(&[&[LEFT_SERIAL], &[RIGHT_SERIAL], &[TICK], &[TICK], &[TICK]])
+            } else {
+                arrivals(&[&[LEFT_SERIAL]])
+            }),
+            ..Mock::default()
+        };
+        board
+            .unmounted
+            .borrow_mut()
+            .insert(RIGHT_SERIAL.into(), u32::MAX);
+        let (result, steps, _) = go(&board);
+        let f = result.unwrap_err();
+        assert_eq!(f.half, Half::Right);
+        assert!(
+            f.message.contains("wasn't plugged back in within 300 s"),
+            "{}",
+            f.message
+        );
+        assert_eq!(replugs(&steps).len(), 1, "{steps:?}");
+        assert_eq!(board.written.borrow().len(), 1, "only the left was written");
+        let waited = board.clock.get();
+        assert!(
+            waited <= VANISH_WAIT.max(MOUNT_WAIT) + REPLUG_WAIT,
+            "bounded: {waited:?}"
+        );
+        assert!(waited >= REPLUG_WAIT);
+    }
+}
+
+#[test]
+fn the_right_firmware_coming_back_instead_stops_clearly() {
+    let board = Mock {
+        arrives: RefCell::new(arrivals(&[&[LEFT_SERIAL], &[TICK]])),
+        ..Mock::default()
+    };
+    // After the replug prompt the right comes back running, not in its bootloader.
+    let (l, r) = both();
+    let p = plan(l, r, &board).unwrap();
+    let mut known = Known::default();
+    let mut steps = vec![];
+    let result = run(&p, &board, &mut known, false, &mut |s| {
+        if s.text.contains("didn't mount its drive") {
+            board.right_usb.set(Some(true));
+        }
+        steps.push(s)
+    });
+    let f = result.unwrap_err();
+    assert!(
+        f.message.contains("restarted its normal firmware"),
+        "{}",
+        f.message
+    );
+    assert_eq!(board.written.borrow().len(), 1);
+}
+
+#[test]
+fn taps_are_never_called_vanished() {
+    // Without hands-free entry a person is tapping: no early replug prompt.
+    let board = Mock {
+        hands_free: false,
+        arrives: RefCell::new(arrivals(&[&[LEFT_SERIAL]])),
+        ..Mock::default()
+    };
+    let (result, steps, _) = go(&board);
+    assert!(result.unwrap_err().message.contains("didn't appear"));
+    assert!(replugs(&steps).is_empty(), "{steps:?}");
 }
