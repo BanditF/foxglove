@@ -24,8 +24,8 @@ jobs:
   build:
     uses: zmkfirmware/zmk/.github/workflows/build-user-config.yml@v0.3.0
 
-  # Names the UF2s by version, half and profile (foxglove-fw-v0.1.0-1a2b3c4-left-dev.uf2), gathers
-  # the release's assets (foxglove-0.1.0-left.uf2, -right.uf2, -settings-reset.uf2, SHA256SUMS,
+  # Names the UF2s by version, half and profile (foxglove-fw-v0.2.0-1a2b3c4-left-dev.uf2), gathers
+  # the release's assets (foxglove-0.2.0-left.uf2, -right.uf2, -settings-reset.uf2, SHA256SUMS,
   # #378), and on a fw-vX.Y.Z tag checks it against FIRMWARE_VERSION and attaches those to a
   # GitHub release.
   package:
