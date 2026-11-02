@@ -324,6 +324,27 @@ impl Studio {
     }
 }
 
+/// A board's firmware files beyond Foxglove's own names (#563): what its older builds were
+/// called, one file name per part, the one the PC talks to first. The update takes such a
+/// file only when no file has Foxglove's own name for that part.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct Firmware {
+    #[serde(default)]
+    pub files: Vec<String>,
+}
+
+impl Board {
+    /// The older firmware file name of part `part`, if the profile names one (#563).
+    pub fn firmware_file(&self, part: usize) -> Option<&str> {
+        self.firmware
+            .as_ref()?
+            .files
+            .get(part)
+            .map(String::as_str)
+            .filter(|f| !f.is_empty())
+    }
+}
+
 /// The widest grid a drawing may have: a whole full-size board.
 const MAX_COLUMNS: u8 = 24;
 /// The most keys a drawing may list.
@@ -553,6 +574,9 @@ pub struct Board {
     /// What its firmware lets ZMK Studio do (#580); unknown when absent.
     #[serde(default)]
     pub studio: Option<Studio>,
+    /// Where its firmware files are found (#563); Foxglove's own names only when absent.
+    #[serde(default)]
+    pub firmware: Option<Firmware>,
     /// The folder of a user profile, for its keymap file.
     #[serde(skip)]
     pub dir: Option<PathBuf>,
