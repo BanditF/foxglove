@@ -1,11 +1,12 @@
 # Settings and profiles
 
-Status: design for #66 (phase 5 of [plugins-and-devices.md](plugins-and-devices.md), M6), for
-approval. No code yet.
+Status: built (#66, phase 5 of [plugins-and-devices.md](plugins-and-devices.md), M6): the store is
+`app/src/foxglove/store.rs`, profiles are in the App page and the tray. This page is the design it
+was built from.
 
-## Where settings live today
+## Where settings lived before the store
 
-Everything sits in `%APPDATA%\Foxglove\config\`, one file per feature, each read and written
+Everything sat in `%APPDATA%\Foxglove\config\`, one file per feature, each read and written
 its own way:
 
 | File | Owner | Format |

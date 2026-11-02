@@ -10,7 +10,7 @@ Where a file has an `SPDX-License-Identifier` header, that header decides.
 | Files from the Eyelash Peripherals repo without a header (the board's `.keymap`, `.yaml`, `.zmk.yml`; `config/eyelash_corne.json`) | not stated | Inherited from [a741725193/zmk-new_corne](https://github.com/a741725193/zmk-new_corne), which has no license file. They stay under their authors' terms |
 | `config/eyelash_corne.keymap`, `keymap-drawer/` | mixed | The vendor's keymap (several contributors, no header), with Foxglove's changes on top. Those changes are MIT |
 | `config/eyelash_corne.conf` | MIT | SPDX header |
-| Right-hand art in `widgets/custom_art.c`, and pushed `.bin` sets | per artist | See [ART_CREDITS.md](boards/shields/nice_view_custom/ART_CREDITS.md). Some sets rest on the artist's consent rather than a license, so check before reusing them |
+| Right-hand art in `widgets/custom_art.c` (one built-in, the owner's Bandit emblem), and pushed `.bin` sets | per artist | See [ART_CREDITS.md](boards/shields/nice_view_custom/ART_CREDITS.md) and [docs/art-licensing.md](docs/art-licensing.md). Some pushed sets rest on the artist's consent rather than a license, so check before reusing them |
 | `app/resources/lighting/art/` (lighting preset art) | © the repo owner, all rights reserved | The owner's FURY and Hearth art; see [docs/lighting-presets.md](docs/lighting-presets.md) |
 | `assets/plugins/` (plugin screen art) | © the repo owner, all rights reserved | The owner's Bandit art; see [docs/plugin-screens.md](docs/plugin-screens.md) |
 | `app/resources/plugins/` (plugin icons, empty-state art) | © the repo owner, all rights reserved | The owner's Bandit art, like the right-hand Bandit scenes; see [docs/plugin-icons.md](docs/plugin-icons.md) |

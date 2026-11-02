@@ -1,9 +1,10 @@
 # Foxglove local API and plugins, v1
 
-Status: design for #69, with the contract in code (`crates/plugin-api`, schema in
-`crates/plugin-api/schema/v1.json`). This builds on [plugins-and-devices.md](plugins-and-devices.md)
-(the device layer, plugins, the Plugins tab). Nothing in the app speaks it yet. The next PRs add the host, the named
-pipe and the Plugins tab.
+Status: built (#69). The contract is in code (`crates/plugin-api`, API 1.9, schema in
+`crates/plugin-api/schema/v1.json`); the app serves it on the named pipe
+`\\.\pipe\foxglove-<user>` (`crates/plugin-host`), and the plugins and `foxglove-cli` use it. This
+builds on [plugins-and-devices.md](plugins-and-devices.md) (the device layer, plugins, the
+Plugins tab).
 
 ## One protocol, three doors
 

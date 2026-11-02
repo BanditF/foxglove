@@ -17,7 +17,9 @@ It has no UI and makes no OS calls, so everything in it runs headless in tests.
   start now or align to an external epoch (the start time Foxglove hands a wallpaper), so both
   compute the same phase: `phase = ((now_ms - epoch_ms) mod period_ms) / period_ms`.
 - `effects`: pure `f(position, time) -> colour`: scanline, sweep, ripple, breathe, gradient
-  and noise, mixed in Oklab (`palette`).
+  and noise (Drift in the app), mixed in Oklab (`palette`).
+- `burst`: one-shot effects over a running scene (#489): a ring from a pressed key, a sweep on a
+  layer change. At most 4 at once; the scene's frames draw them.
 - `wallpaper`: the scene as a wallpaper reads it (#493): one `foxglove_scene` text with the
   epoch, period, direction, width, colours, the room's bounds and the monitor's rectangle. The
   wallpaper side (bandit-wallpapers `shared/foxglove-sync.js`) is checked against the same
