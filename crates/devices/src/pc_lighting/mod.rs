@@ -5,6 +5,7 @@
 //! - [`catalog`]: the data-driven list of known boards (`lighting-catalog.toml`), and the
 //!   user's own entries
 //! - [`caps`]: what a device can do (colour, effects, brightness, screens), as chips
+//! - [`zones`]: its real lighting resolution (#611): zones, dead lamps, and where that came from
 //! - [`discover`]: matches a HID enumeration against the catalog and the LampArray usage;
 //!   [`unknown`] lists the rest for "Add a device", and [`test_zone`] lights one zone of it
 //! - [`omen_tracer`]: the HP OMEN case lighting board (TracerLED)
@@ -20,6 +21,7 @@ pub mod catalog;
 #[cfg(feature = "hid")]
 pub mod hid;
 pub mod omen_tracer;
+pub mod zones;
 
 use std::time::Duration;
 
@@ -27,6 +29,7 @@ use crate::calibration::Calibration;
 use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
 pub use catalog::{Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRole, ZoneSpec};
+pub use zones::{Zone, ZoneKey, ZoneSource, Zones};
 
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;

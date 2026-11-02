@@ -8,6 +8,8 @@
 
 use serde::Deserialize;
 
+use super::zones::{self, Zones};
+
 /// How finely the device's colour can be set.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -57,6 +59,9 @@ pub struct LightCaps {
     /// The fastest the lights take updates, in frames per second.
     pub fps: Option<u16>,
     pub screens: Vec<Screen>,
+    /// Its real lighting resolution (#611): the zones that light something, dead lamps and the
+    /// source. `None` when only `color` and `count` are known.
+    pub zones: Option<Zones>,
 }
 
 /// A LampArray's attributes, as Windows (or its HID feature report) reports them.
@@ -87,8 +92,17 @@ impl LightCaps {
             positions: info.positions,
             brightness: info.lamp_count > 0,
             fps,
+            // Each lamp is a zone the device reports; where each sits isn't known by key.
+            zones: (info.lamp_count > 0).then(|| Zones::from_report(&[info.lamp_count])),
             ..Default::default()
         }
+    }
+
+    /// The one summary line for the device (#611, docs/lighting-zones.md): "6 lighting zones
+    /// per half, by column", "1 zone (whole device)", "Per-LED lighting, 24 lamps". `keys`
+    /// says the device is a keyboard. `None` for a device with no lights.
+    pub fn summary(&self, keys: bool) -> Option<String> {
+        zones::summary(self.color, self.count, self.zones.as_ref(), keys)
     }
 
     /// Whether the device takes any colour (single, per zone or per LED).
@@ -259,6 +273,16 @@ mod tests {
             ]
         );
         assert!(mouse.per_zone() && mouse.takes_color());
+        assert_eq!(mouse.summary(false).unwrap(), "Per-LED lighting, 2 lamps");
+        let keyboard = LightCaps::from_lamp_array(LampArrayInfo {
+            lamp_count: 104,
+            kind: 1,
+            ..Default::default()
+        });
+        assert_eq!(
+            keyboard.summary(true).unwrap(),
+            "Per-key lighting, 104 keys"
+        );
         let one = LightCaps::from_lamp_array(LampArrayInfo {
             lamp_count: 1,
             ..Default::default()
@@ -267,5 +291,6 @@ mod tests {
         assert!(!one.per_zone());
         let none = LightCaps::from_lamp_array(LampArrayInfo::default());
         assert!(!none.switchable());
+        assert_eq!(none.summary(false), None);
     }
 }
