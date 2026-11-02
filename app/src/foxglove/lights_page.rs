@@ -540,7 +540,7 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             super::effect_controls::paint_band(
                 ui.painter(),
                 rect,
-                (*hue, *sat, (*brightness).max(40)),
+                (*hue, *sat, 100), // the hues at full level, like the swatches
                 shown_color,
             );
             if let Some(name) = m.effect {

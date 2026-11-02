@@ -651,13 +651,14 @@ mod tests {
     fn the_band_preview_spans_the_band_around_the_colour() {
         let ctx = egui::Context::default();
         let seen = std::cell::RefCell::new(Vec::new());
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(120.0, 10.0));
             paint_band(ui.painter(), rect, (10, 70, 42), |h, _, _| {
                 seen.borrow_mut().push(h);
                 Color32::from_gray(h as u8)
             });
         });
+        out.textures_delta.clear();
         let seen = seen.into_inner();
         assert_eq!(seen.first(), Some(&340), "BAND below, across 0");
         assert_eq!(seen.last(), Some(&40));
