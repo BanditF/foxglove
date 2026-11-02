@@ -48,6 +48,12 @@ script = ["scripts/flash/foxglove_flash.py"]
 note = "On-call's test-and-revert flash; the flasher sees the drive appear and reads both builds back"
 
 [[step]]
+match = "Art keys with the app (#60)"
+hil = ["art-keys/art-keys-advertised", "screens/capture-both"]
+log = ["art key: "]
+needs_eyes = "hands: SYSTEM+P / O and Pause / Quit from the tray (no API call presses an art key with the app holding them); eyes: the card shows for about a second, which a capture can miss"
+
+[[step]]
 match = "Let the left go idle (lights off), then replug its cable"
 api = ["lighting.state", "lighting.set_sync"]
 lab = ["status"]
