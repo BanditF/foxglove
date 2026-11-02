@@ -22,7 +22,8 @@ manifest:
     # come back after a PC restart.
     - name: zmk-raw-hid
       url: https://github.com/BanditF/zmk-raw-hid
-      revision: nonblocking
+      # CI only (#705, #680): the fork's queue-reports-680 with raw_hid/stats.h. Never merge.
+      revision: queue-reports-680
     - name: zmk-keypeek-layer-notifier
       remote: srwi
       revision: master
