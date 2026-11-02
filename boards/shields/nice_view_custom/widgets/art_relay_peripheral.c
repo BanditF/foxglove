@@ -64,8 +64,9 @@ static uint32_t rx_crc;
 static struct art_relay_status status = {
     // 5: ART_RELAY_RGB_HSB, 6: battery dim (config in RGB, state after build), 7: SET_FRAME's
     // ART_RELAY_LAMPS / LAMP_HOST (#272), 8: SET_EFFECT's ART_RELAY_EFFECT / EFFECT_GO (#490),
-    // 9: ART_RELAY_EFFECT takes the whole wire, with the PC's LED points (#550)
-    .version = IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS) ? 9
+    // 9: ART_RELAY_EFFECT takes the whole wire, with the PC's LED points (#550),
+    // 10: ART_RELAY_STORE keeps a received set in flash without showing it (#522)
+    .version = IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS) ? ART_RELAY_STORE_STATUS_VERSION
                : IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES) ? 7
                                                          : 6,
     .capacity = CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE,
@@ -193,6 +194,10 @@ static struct lamp_effect_wire effect_rx; // ART_RELAY_EFFECT fills it, EFFECT_G
 
 // From art_slots.c's queue when a SAVE or ERASE has finished.
 static void save_done(int err) { status.state = err ? ART_RIGHT_SAVE_FAILED : ART_RIGHT_SAVED; }
+
+// STORE (#522): once written, the state goes back to what the screen shows (it never changed).
+static uint8_t store_resume;
+static void store_done(int err) { status.state = err ? ART_RIGHT_SAVE_FAILED : store_resume; }
 
 static void screen_push_ask(struct bt_conn *conn);
 static void screen_push_cancel(void);
@@ -394,6 +399,34 @@ static ssize_t data_op(struct bt_conn *conn, const struct bt_gatt_attr *attr, co
         }
         status.state = ART_RIGHT_SAVING;
         if (art_slots_save(d[1], slots[shown], slot_len[shown], (const char *)&d[2], save_done)) {
+            status.state = ART_RIGHT_SAVE_FAILED;
+        }
+        break;
+
+    case ART_RELAY_STORE:
+        // #522: the set received since BEGIN goes to flash without being shown (the playlist
+        // stages its next piece; places a firmware update lost come back).
+        if (len != 18) {
+            return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
+        }
+        if (status.state == ART_RIGHT_SAVING) {
+            return BT_GATT_ERR(0x82);
+        }
+        if (status.state != ART_RIGHT_RECEIVING || d[1] >= art_slots_count() ||
+            d[1] == flash_shown) {
+            return BT_GATT_ERR(0x85); // nothing received, no such slot, or the slot on screen
+        }
+        if (status.received != rx_len || crc32_ieee(slots[rx], rx_len) != rx_crc) {
+            status.state = ART_RIGHT_BAD_CRC;
+            break;
+        }
+        if (!parse_blob()) { // rx is never the slot shown: the screen is untouched
+            status.state = ART_RIGHT_BAD_BLOB;
+            break;
+        }
+        store_resume = shown >= 0 ? ART_RIGHT_PLAYING : ART_RIGHT_IDLE;
+        status.state = ART_RIGHT_SAVING; // BEGIN waits: slots[rx] stays put until store_done
+        if (art_slots_save(d[1], slots[rx], rx_len, (const char *)&d[2], store_done)) {
             status.state = ART_RIGHT_SAVE_FAILED;
         }
         break;

@@ -130,7 +130,16 @@ enum art_relay_op {
     ART_RELAY_PC_STATE = 17,
     // The panel polarity (#666, panel_polarity.h): polarity u8, sent with PC_STATE's rules.
     ART_RELAY_PANEL_POLARITY = 18,
+    // STORE (#522, status version >= ART_RELAY_STORE_STATUS_VERSION): slot u8, name[16], a write
+    // request in place of COMMIT. The right checks the set received since BEGIN (CRC, blob) and
+    // writes it into flash slot n without showing it: the screen keeps what it plays. Status
+    // SAVING, then back to the shown set's state (IDLE or PLAYING), or SAVE_FAILED. Refused
+    // (0x85) with nothing received, no such slot, or the slot on screen; 0x82 while saving.
+    ART_RELAY_STORE = 19,
 };
+
+// The right status version that has ART_RELAY_STORE (#522).
+#define ART_RELAY_STORE_STATUS_VERSION 10
 
 // The right rings on every CCC write that turns notify on (#618), not only when Zephyr's CCC value
 // changes: for the bonded left, Zephyr restores that value at encryption, ~15 s before the left
@@ -270,6 +279,11 @@ void art_relay_report(uint8_t out[ART_RELAY_REPORT_SIZE]);
 // Flash slots on the right (D6 06/07/08). save/erase report like select; slot replies D6 87 later.
 int art_relay_save(uint8_t slot, const uint8_t name[16]);
 int art_relay_erase(uint8_t slot);
+// D6 09 STORE (#522): in place of COMMIT, push the blob received from the PC and have the right
+// keep it in flash slot n without showing it (ART_RELAY_STORE). Reports like COMMIT; a right
+// before it (status version < ART_RELAY_STORE_STATUS_VERSION) fails it with ART_ERR_RIGHT before
+// anything is sent.
+int art_relay_store(uint8_t slot, const uint8_t name[16]);
 int art_relay_slot(uint8_t slot);
 // D7 09 for the right: its build info, by an offset read; replies D7 89 later.
 int art_relay_build_info(void);

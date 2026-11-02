@@ -3,6 +3,8 @@
 
 #include "zephyr_sim.h"
 
+#include "art_relay.h" // ART_RELAY_FLASH_SLOTS
+
 // Zephyr 3.5 with ZMK's split central defaults: BT_L2CAP_TX_BUF_COUNT 5 (ZMK, central), so
 // BT_CONN_TX_MAX 5 and ATT's TX meta pool 5; MTU 23; ZMK's 7.5 ms connection interval.
 #define SIM_TX_BUFS 5
@@ -57,6 +59,9 @@ struct sim_bt_faults {
     // A right before the screen push (#662): it refuses SNAP with the push byte (ATT 0x0d) and
     // only answers reads.
     bool right_no_push;
+    // How long the right's flash write of a slot takes (art_slots.c on its own queue: erase five
+    // 4 KiB pages, then write); 0 = 650 ms, the nRF52840's ~85 ms per page erase plus the write.
+    int64_t flash_write_us;
     // A right before the self-report (#705): its status value ends at ART_RELAY_HEALTH_AT.
     bool right_no_health;
     // The right refuses the next COMMIT (BAD_CRC), as one whose slot got a corrupt blob would.
@@ -72,6 +77,10 @@ void sim_bt_stall_left_tx(void);
 void sim_bt_connect(int64_t secure_after_us);
 // Drops the link (as the guard or a re-link would); it comes back after back_after_us.
 void sim_bt_drop(int64_t back_after_us);
+// The right half restarts with new firmware (#521): the link drops and comes back after
+// back_after_us, the right starts on its built-in set 0; with wipe its flash slots are empty
+// (a settings reset, or an update that moved the art partition).
+void sim_bt_right_update(bool wipe, int64_t back_after_us);
 bool sim_bt_att_alive(void);
 int sim_bt_queued_requests(void);
 bool sim_bt_request_on_air(void);
@@ -98,5 +107,20 @@ struct sim_right {
     int subscribes;      // the left's doorbell subscribes (#705's relay_ready on the right)
     int polarity;        // the PANEL_POLARITY op's value the right last took (#666), -1 none
     int polarity_writes; // PANEL_POLARITY ops it took
+    // The status version it reports: ART_RELAY_STORE_STATUS_VERSION has STORE (#522); a lower
+    // one ignores the op as a right before it does.
+    uint8_t version;
+    // Flash slots (art_slots.c): what SAVE and STORE wrote. crc is the blob's, for the checks.
+    struct sim_flash_slot {
+        bool used;
+        uint32_t writes;
+        uint16_t len;
+        char name[16];
+        uint32_t crc;
+    } flash[ART_RELAY_FLASH_SLOTS];
+    uint16_t shown_len; // the pushed set on screen (COMMIT), for SAVE
+    uint32_t shown_crc;
+    int saves_ok, stores_ok;
+    int updates; // sim_bt_right_update calls
 };
 extern struct sim_right sim_right;

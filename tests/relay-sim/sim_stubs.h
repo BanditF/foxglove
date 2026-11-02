@@ -8,6 +8,8 @@ struct sim_left {
     enum zmk_activity_state activity; // ZMK's activity
     uint8_t look[5];
     int art_status_events, rgb_events, rgb_followed, dim_events, sends;
+    uint8_t last_send[64]; // the last reply host_link_send got (D6 87 SLOT, ...)
+    int last_send_len;
     bool snap_done;
     uint8_t snap_status;
     uint16_t snap_frame;

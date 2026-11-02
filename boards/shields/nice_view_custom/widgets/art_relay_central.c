@@ -792,7 +792,15 @@ static K_WORK_DEFINE(boot_work, boot_cb);
 void art_relay_boot(void) { k_work_submit_to_queue(&relay_q, &boot_work); }
 #endif
 
+// D6 09 STORE (#522): the push ends with ART_RELAY_STORE instead of COMMIT. Set by
+// art_relay_store and cleared by art_relay_commit, both only while receiving (no push runs).
+static bool store_pending;
+static uint8_t store_op[18];
+
 static int push(struct bt_conn *conn) {
+    if (store_pending && right.version < ART_RELAY_STORE_STATUS_VERSION) {
+        return ART_ERR_RIGHT; // a right before STORE would ignore it and keep receiving
+    }
     uint8_t buf[3 + 244];
     buf[0] = ART_RELAY_BEGIN;
     sys_put_le16(blob_len, &buf[1]);
@@ -810,6 +818,17 @@ static int push(struct bt_conn *conn) {
             return ART_ERR_BLE;
         }
         pushed += n;
+    }
+    if (store_pending) {
+        if (write_req(conn, store_op, sizeof(store_op)) || read_status(conn)) {
+            return ART_ERR_BLE;
+        }
+        // The right checked the set and writes it on its own queue (SAVING), or has already
+        // gone back to what it shows; anything else is a set it refused (BAD_CRC, BAD_BLOB).
+        return right.state == ART_RIGHT_SAVING || right.state == ART_RIGHT_IDLE ||
+                       right.state == ART_RIGHT_PLAYING
+                   ? ART_ERR_NONE
+                   : ART_ERR_RIGHT;
     }
     buf[0] = ART_RELAY_COMMIT;
     if (write_req(conn, buf, 1) || read_status(conn)) {
@@ -1194,6 +1213,25 @@ int art_relay_commit(void) {
         fail(ART_ERR_BAD_CRC);
         return -EINVAL;
     }
+    store_pending = false;
+    state = ART_LEFT_PUSHING;
+    k_work_submit_to_queue(&relay_q, &push_work);
+    return 0;
+}
+
+int art_relay_store(uint8_t slot, const uint8_t name[16]) {
+    if (state != ART_LEFT_RECEIVING) {
+        return -EINVAL;
+    }
+    k_work_cancel_delayable(&receive_timeout);
+    if (crc32_ieee(blob, blob_len) != blob_crc) {
+        fail(ART_ERR_BAD_CRC);
+        return -EINVAL;
+    }
+    store_op[0] = ART_RELAY_STORE;
+    store_op[1] = slot;
+    memcpy(&store_op[2], name, 16);
+    store_pending = true;
     state = ART_LEFT_PUSHING;
     k_work_submit_to_queue(&relay_q, &push_work);
     return 0;

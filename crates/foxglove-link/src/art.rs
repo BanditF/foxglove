@@ -86,6 +86,69 @@ pub fn push_cancellable(
     Ok(st)
 }
 
+/// The start of the error [`store`] gives when the keyboard can't keep a piece without showing
+/// it (a left without D6 09, or a right before status version 10): fall back to keeping it the
+/// way that shows it (push, then SAVE).
+pub const STORE_UNSUPPORTED: &str = "the keyboard can't keep a piece without showing it";
+
+/// Keeps `blob` in flash slot `slot` on the right half under `name` without showing it (#522,
+/// D6 09 STORE): BEGIN and DATA as a push, then STORE in place of COMMIT. The right checks the
+/// set and writes it on its own queue while the screen keeps what it plays. Waits for the relay
+/// (about 1 s for 4 KiB under the split link's latency), then for the right to leave SAVING, as
+/// SAVE does. Cancellable until STORE is sent. A keyboard without STORE fails with
+/// [`STORE_UNSUPPORTED`] before anything reaches the right half.
+pub fn store(
+    t: &impl Transport,
+    blob: &[u8],
+    slot: u8,
+    name: &str,
+    mut progress: impl FnMut(&ArtStatus),
+    cancelled: impl Fn() -> bool,
+) -> Result<ArtStatus> {
+    let check = || {
+        ensure!(!cancelled(), "store cancelled");
+        Ok(())
+    };
+    check()?;
+    ensure!(
+        blob.len() <= u16::MAX as usize,
+        "blob is {} bytes; the most is {}",
+        blob.len(),
+        u16::MAX
+    );
+    let st = command(
+        t,
+        &protocol::art_begin(blob.len() as u16, crc32fast::hash(blob)),
+    )?;
+    if st.state != left_state::RECEIVING {
+        bail!("the left half refused the blob: {st}");
+    }
+    for (i, chunk) in blob.chunks(art::DATA_MAX).enumerate() {
+        check()?;
+        t.send(&protocol::art_data((i * art::DATA_MAX) as u16, chunk))?;
+    }
+    check()?;
+    let mut st = command(t, &protocol::art_store(slot, name))?;
+    // A left before D6 09 doesn't answer it at all (the request times out above): nothing ran.
+    let end = Instant::now() + Duration::from_secs(120);
+    while st.state == left_state::PUSHING && Instant::now() < end {
+        progress(&st);
+        std::thread::sleep(Duration::from_millis(250));
+        st = status(t)?;
+    }
+    let refused_set = matches!(
+        st.right_state,
+        right_state::BAD_CRC | right_state::BAD_BLOB | right_state::TOO_BIG
+    );
+    if st.state == left_state::FAILED && st.error == protocol::relay_error::RIGHT && !refused_set {
+        bail!("{STORE_UNSUPPORTED} ({st})");
+    }
+    if st.state != left_state::DONE {
+        bail!("store failed: {st}");
+    }
+    finish_slot_op(t, st, "store")
+}
+
 /// Before the one retry of a SELECT whose relay write failed: the left's request in the way (a
 /// timed-out one, still out on the link) gets this long to end. Newer firmware waits for it
 /// itself (#618); this covers a left without that.
@@ -310,6 +373,73 @@ mod tests {
         assert_eq!(&sent[3][5..], &blob[54..]);
         assert_eq!(sent[4], protocol::art_commit());
         assert_eq!(sent[5], protocol::art_status());
+    }
+
+    fn with_right(mut r: [u8; protocol::REPORT], error: u8, right: u8) -> [u8; protocol::REPORT] {
+        r[3] = error;
+        r[2 + 8] = right;
+        r
+    }
+
+    /// STORE (#522): BEGIN, DATA, STORE in place of COMMIT, then status until the left is done
+    /// and the right has left SAVING; the screen's state is the right's own again at the end.
+    #[test]
+    fn store_sends_begin_data_store_and_waits_for_the_write() {
+        let t = Mock::default();
+        t.replies.borrow_mut().extend([
+            reply(art::BEGIN, left_state::RECEIVING),
+            reply(art::STORE, left_state::PUSHING),
+            with_right(reply(art::STATUS, left_state::DONE), 0, right_state::SAVING),
+            with_right(
+                reply(art::STATUS, left_state::DONE),
+                0,
+                right_state::BUILT_IN,
+            ),
+        ]);
+        let blob: Vec<u8> = b"NVA1".iter().copied().chain(0..30).collect(); // 34 bytes
+        let st = store(&t, &blob, 6, "radar", |_| {}, || false).unwrap();
+        assert_eq!(st.right_state, right_state::BUILT_IN);
+        let sent = t.sent.borrow();
+        assert_eq!(sent[0], protocol::art_begin(34, crc32fast::hash(&blob)));
+        assert_eq!(&sent[1][..5], &[0xD6, 0x02, 0, 0, 27]);
+        assert_eq!(&sent[2][..5], &[0xD6, 0x02, 27, 0, 7]);
+        assert_eq!(sent[3], protocol::art_store(6, "radar"));
+        assert!(
+            sent.iter().all(|r| r[1] != art::COMMIT),
+            "never COMMIT: nothing shows"
+        );
+        assert_eq!(sent.len(), 6);
+    }
+
+    /// A right before STORE: the left fails it with "right half rejected it" while the right
+    /// shows its own art; a set the right refused says so instead.
+    #[test]
+    fn store_says_when_the_keyboard_cannot() {
+        let t = Mock::default();
+        t.replies.borrow_mut().extend([
+            reply(art::BEGIN, left_state::RECEIVING),
+            with_right(
+                reply(art::STORE, left_state::FAILED),
+                protocol::relay_error::RIGHT,
+                right_state::BUILT_IN,
+            ),
+        ]);
+        let e = store(&t, b"NVA1", 6, "radar", |_| {}, || false).unwrap_err();
+        assert!(e.to_string().starts_with(STORE_UNSUPPORTED), "{e}");
+
+        let t = Mock::default();
+        t.replies.borrow_mut().extend([
+            reply(art::BEGIN, left_state::RECEIVING),
+            reply(art::STORE, left_state::PUSHING),
+            with_right(
+                reply(art::STATUS, left_state::FAILED),
+                protocol::relay_error::RIGHT,
+                right_state::BAD_BLOB,
+            ),
+        ]);
+        let e = store(&t, b"NVA1", 6, "radar", |_| {}, || false).unwrap_err();
+        assert!(!e.to_string().starts_with(STORE_UNSUPPORTED), "{e}");
+        assert!(store(&Mock::default(), b"NVA1", 6, "x", |_| {}, || true).is_err());
     }
 
     #[test]

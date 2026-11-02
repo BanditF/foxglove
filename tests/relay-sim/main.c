@@ -635,6 +635,341 @@ static void polarity_relink(void) {
     debug_line("at the end");
 }
 
+/* The art playlist (#522) and art across firmware updates (#521). STORE (D6 09) keeps a piece
+ * in one of the right's flash places without showing it: the playlist stages its next piece in a
+ * place it was lent ahead of the step, and the step is then a SELECT of that place; after an
+ * update Foxglove puts the places the keyboard lost back the same way. */
+
+static const char *right_state_name(uint8_t s) {
+    static const char *n[] = {"built-in", "receiving", "playing pushed", "bad CRC", "bad blob",
+                              "too big",  "saving",    "saved",          "save failed"};
+    return s < ARRAY_SIZE(n) ? n[s] : "?";
+}
+
+static uint8_t piece[4096];
+static void make_piece(uint16_t len, uint8_t seed) {
+    for (int i = 0; i < len; i++) {
+        piece[i] = (uint8_t)(i * 13 + 7 + seed * 29);
+    }
+}
+
+static void name16(uint8_t out[16], const char *name) {
+    memset(out, 0, 16);
+    memcpy(out, name, MIN(strlen(name), 16));
+}
+
+// Whether place `slot` holds the piece made from (len, seed) under `name`, as the right has it.
+static bool place_holds(uint8_t slot, uint16_t len, uint8_t seed, const char *name) {
+    make_piece(len, seed);
+    const struct sim_flash_slot *f = &sim_right.flash[slot];
+    return f->used && f->len == len && f->crc == crc32_ieee(piece, len) &&
+           !strncmp(f->name, name, 16);
+}
+
+// Ends a SAVE or STORE as the app's art::finish_slot_op does: STATUS every 250 ms until the left
+// is done and the right has left SAVING, at most 20 s. The right state at the end.
+static bool finish_slot_op(int64_t start, struct report *r) {
+    while (k_uptime_get() - start < 20000) {
+        k_msleep(250);
+        *r = status();
+        if (r->state == ART_LEFT_FAILED) {
+            return false;
+        }
+        if (r->state == ART_LEFT_DONE && r->right.state != ART_RIGHT_SAVING) {
+            return r->right.state != ART_RIGHT_SAVE_FAILED;
+        }
+    }
+    return false;
+}
+
+// D6 01, 02 x n, 09 as the app's art::store sends them, then finish_slot_op. Passes when the
+// left is done, the right didn't fail it, and the place holds these very bytes.
+static int64_t store_took_ms;
+static bool lab_store(uint8_t slot, uint16_t len, uint8_t seed, const char *name, char *why,
+                      size_t n) {
+    make_piece(len, seed);
+    uint8_t nm[16];
+    name16(nm, name);
+    int64_t start = k_uptime_get();
+    if (art_relay_begin(len, crc32_ieee(piece, len)) != 0) {
+        snprintf(why, n, "BEGIN refused");
+        return false;
+    }
+    for (int at = 0; at < len; at += 27) {
+        art_relay_data(at, &piece[at], (uint8_t)MIN(27, len - at));
+        k_msleep(1);
+    }
+    struct report r = {0};
+    bool ok = art_relay_store(slot, nm) == 0 && finish_slot_op(start, &r);
+    if (!ok && r.state == 0) {
+        r = status();
+    }
+    store_took_ms = k_uptime_get() - start;
+    bool landed = place_holds(slot, len, seed, name);
+    snprintf(why, n, "%s in %lld ms (left error %d, right %s), place %u %s", ok ? "done" : "failed",
+             (long long)store_took_ms, r.error, right_state_name(r.right.state), slot,
+             landed ? "holds it" : "doesn't hold it");
+    return ok && landed;
+}
+
+// D6 06 SAVE of the pushed set on screen (the keep path before STORE), then finish_slot_op.
+static bool lab_save(uint8_t slot, const char *name, char *why, size_t n) {
+    uint8_t nm[16];
+    name16(nm, name);
+    int64_t start = k_uptime_get();
+    struct report r = {0};
+    bool ok = art_relay_save(slot, nm) == 0 && finish_slot_op(start, &r);
+    snprintf(why, n, "%s in %lld ms, right %s", ok ? "saved" : "failed",
+             (long long)(k_uptime_get() - start), right_state_name(r.right.state));
+    return ok && sim_right.flash[slot].used;
+}
+
+// D6 07 SLOT as the app reads a place back (art::slot, 3 s): used, length and name.
+static bool lab_slot(uint8_t slot, bool *used, uint16_t *len, char name[17]) {
+    int sends = sim_left.sends;
+    if (art_relay_slot(slot) != 0) {
+        return false;
+    }
+    int64_t start = k_uptime_get();
+    while (sim_left.sends == sends && k_uptime_get() - start < 3000) {
+        k_msleep(10);
+    }
+    const uint8_t *r = sim_left.last_send;
+    if (sim_left.sends == sends || r[1] != 0x87 || r[2] != 0 || r[3] != slot) {
+        return false;
+    }
+    *used = r[4];
+    *len = sys_get_le16(&r[9]);
+    memcpy(name, &r[11], 16);
+    name[16] = 0;
+    return true;
+}
+
+// The art the right shows didn't change: its set and no push played.
+static bool screen_kept(int8_t set, int pushes) {
+    return sim_right.set == set && sim_right.pushes_ok == pushes;
+}
+
+// The playlist (#522) with two places lent to it, under the link's real timing (latency 30, the
+// right's response-buffer rule and its busy system queue, the app's traffic): two pieces staged
+// ahead, then four steps, each a SELECT of the staged place followed by staging the next piece
+// into the other place. The screen changes only at the SELECTs; a STORE into the place on screen
+// is refused and leaves the screen and the link alone.
+static void playlist_store(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    k_msleep(2000);
+    sim_bt_faults.rsp_meta_rule = true;
+    sim_bt_faults.right_redraw_busy_us = 20000;
+    int drops = sim_bt_stats.link_drops;
+    char why[200];
+    const uint8_t lent[2] = {6, 7};
+    const uint16_t lens[] = {3599, 3190, 2048, 3999, 3333, 2777};
+    const char *names[] = {"radar", "orbit", "uplink", "skyline", "vitals", "signal"};
+    int8_t shown = sim_right.set;
+    int pushes = sim_right.pushes_ok;
+    // Ahead of the first step: piece 0 into the first lent place, the screen untouched.
+    bool ok = lab_store(lent[0], lens[0], 0, names[0], why, sizeof(why));
+    check("stage-ahead", ok && screen_kept(shown, pushes), "%s; screen on set %d", why,
+          sim_right.set);
+    int64_t worst = store_took_ms, worst_step = 0;
+    // Each step: a SELECT of the staged place, then the next piece into the other one.
+    for (int step = 0; step < 5; step++) {
+        uint8_t on = lent[step % 2], other = lent[(step + 1) % 2];
+        char name[24];
+        snprintf(name, sizeof(name), "step-%d", step);
+        int64_t t0 = k_uptime_get();
+        ok = lab_select((int8_t)(1 + on), why, sizeof(why)); // set_count 1 + place
+        int64_t took = k_uptime_get() - t0;
+        worst_step = MAX(worst_step, took);
+        check(name, ok && place_holds(on, lens[step], (uint8_t)step, names[step]), "%s", why);
+        shown = sim_right.set;
+        pushes = sim_right.pushes_ok;
+        snprintf(name, sizeof(name), "stage-next-%d", step);
+        int next = step + 1;
+        ok = lab_store(other, lens[next], (uint8_t)next, names[next], why, sizeof(why));
+        check(name, ok && screen_kept(shown, pushes), "%s; screen on set %d", why, sim_right.set);
+        worst = MAX(worst, store_took_ms);
+    }
+    printf("  playlist: slowest stage %lld ms, slowest step %lld ms (simulated)\n",
+           (long long)worst, (long long)worst_step);
+    check("stage-budget", worst < 4000,
+          "slowest stage %lld ms (staged right after a step; the next is a minute away at least)",
+          (long long)worst);
+    check("step-budget", worst_step < 1500, "slowest step %lld ms", (long long)worst_step);
+    // The place on screen is never written: the right refuses, the screen and the link stay.
+    uint8_t on = (uint8_t)(sim_right.set - 1);
+    bool refused = !lab_store(on, 1024, 9, "nope", why, sizeof(why));
+    check("store-on-screen-refused",
+          refused && screen_kept(shown, pushes) && sim_right.flash[on].crc != 0 &&
+              !place_holds(on, 1024, 9, "nope"),
+          "%s", why);
+    check("store-after-refusal", lab_store(lent[0] == on ? lent[1] : lent[0], 2222, 10, "after", why,
+                                           sizeof(why)),
+          "%s", why);
+    // The places read back as the app reads them.
+    bool used;
+    uint16_t len;
+    char name[17];
+    bool read = lab_slot(on, &used, &len, name);
+    check("place-reads-back", read && used && len == sim_right.flash[on].len &&
+                                  !strncmp(name, sim_right.flash[on].name, 16),
+          "place %u: %s, %u bytes, \"%s\"", on, used ? "used" : "free", len, read ? name : "?");
+    check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
+          sim_bt_stats.link_drops - drops);
+    check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped);
+    printf("  sim: %d stores, %d saves on the right; place writes:", sim_right.stores_ok,
+           sim_right.saves_ok);
+    for (int i = 0; i < ART_RELAY_FLASH_SLOTS; i++) {
+        printf(" %u", sim_right.flash[i].writes);
+    }
+    printf("\n");
+    debug_line("at the end");
+}
+
+// A right before STORE (status version 9): the left fails it before sending anything, so the
+// screen and the link are untouched, and the keep path that shows the piece (push, SAVE) works
+// as before: what Foxglove falls back to there.
+static void playlist_store_old(void) {
+    sim_right.version = ART_RELAY_STORE_STATUS_VERSION - 1;
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    k_msleep(2000);
+    int drops = sim_bt_stats.link_drops;
+    int requests = sim_bt_stats.requests_sent;
+    int8_t shown = sim_right.set;
+    int pushes = sim_right.pushes_ok;
+    char why[200];
+    bool ok = lab_store(6, 3599, 0, "radar", why, sizeof(why));
+    struct report r = status();
+    check("old-right-refused", !ok && r.error == ART_ERR_RIGHT && screen_kept(shown, pushes) &&
+                                   sim_right.received == 0,
+          "%s; left error %d, right received %u bytes", why, r.error, sim_right.received);
+    check("refused-fast", store_took_ms < 1000, "%lld ms, %d requests meanwhile (the app's)",
+          (long long)store_took_ms, sim_bt_stats.requests_sent - requests);
+    check("fallback-push", lab_push(3599, why, sizeof(why)), "%s", why);
+    check("fallback-save", lab_save(6, "radar", why, sizeof(why)), "%s", why);
+    check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
+          sim_bt_stats.link_drops - drops);
+    debug_line("at the end");
+}
+
+// Art across a firmware update (#521): three kept places, then the right restarts with new
+// firmware. An update keeps them (they live above the image); one that wiped them (a settings
+// reset) is restored with STORE, the screen staying on the right's own art, and the link drops
+// once in the middle of the restore: the first pass restores 2 of 3, the next (on the relay
+// coming up) the last one. Foxglove's health row says "restored N of M" from the reads back.
+static int count_restored(const uint8_t *places, const uint16_t *lens, const char **names,
+                          int m) {
+    int n = 0;
+    for (int i = 0; i < m; i++) {
+        bool used;
+        uint16_t len;
+        char name[17];
+        if (lab_slot(places[i], &used, &len, name) && used && len == lens[i] &&
+            !strncmp(name, names[i], 16) && place_holds(places[i], lens[i], (uint8_t)(20 + i),
+                                                        names[i])) {
+            n++;
+        }
+    }
+    return n;
+}
+
+static void restore_update(void) {
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    app_on = true;
+    k_msleep(2000);
+    char why[200];
+    const uint8_t places[] = {0, 1, 2};
+    const uint16_t lens[] = {3599, 3190, 2048};
+    const char *names[] = {"fury", "radar", "gem"};
+    const int m = 3;
+    for (int i = 0; i < m; i++) {
+        char name[24];
+        snprintf(name, sizeof(name), "keep-%d", i);
+        check(name, lab_store(places[i], lens[i], (uint8_t)(20 + i), names[i], why, sizeof(why)),
+              "%s", why);
+    }
+    // An update that keeps the places: nothing to restore.
+    sim_bt_right_update(false, 3000000);
+    k_msleep(3000);
+    wait_relay(40);
+    check("relay-back", art_relay_link() == 2, "link %d", art_relay_link());
+    k_msleep(1000);
+    struct report r = status();
+    k_msleep(500);
+    r = status();
+    int kept = count_restored(places, lens, names, m);
+    check("update-keeps-places", kept == m && (r.right.flash_used & 0x7) == 0x7,
+          "%d of %d still there, used bits 0x%02x", kept, m, r.right.flash_used);
+
+    // One that wipes them: the left reports them free; Foxglove stores each one back.
+    sim_bt_right_update(true, 3000000);
+    k_msleep(3000);
+    wait_relay(40);
+    check("relay-back-2", art_relay_link() == 2, "link %d", art_relay_link());
+    k_msleep(1000);
+    status();
+    k_msleep(500);
+    r = status();
+    check("places-lost", (r.right.flash_used & 0x7) == 0, "used bits 0x%02x",
+          r.right.flash_used);
+    int8_t shown = sim_right.set;
+    int pushes = sim_right.pushes_ok;
+    int drops = sim_bt_stats.link_drops;
+    // First pass: the link drops while the second piece goes.
+    for (int i = 0; i < m; i++) {
+        bool ok;
+        if (i == 1) {
+            make_piece(lens[i], (uint8_t)(20 + i));
+            uint8_t nm[16];
+            name16(nm, names[i]);
+            art_relay_begin(lens[i], crc32_ieee(piece, lens[i]));
+            for (int at = 0; at < lens[i]; at += 27) {
+                art_relay_data(at, &piece[at], (uint8_t)MIN(27, lens[i] - at));
+            }
+            art_relay_store(places[i], nm);
+            k_msleep(30);
+            sim_bt_drop(2000000);
+            struct report q;
+            ok = finish_slot_op(k_uptime_get(), &q) && place_holds(places[i], lens[i],
+                                                                   (uint8_t)(20 + i), names[i]);
+            printf("  restore %s with the link dropped: %s\n", names[i], ok ? "landed" : "lost");
+            k_msleep(3000);
+            wait_relay(40);
+        } else {
+            ok = lab_store(places[i], lens[i], (uint8_t)(20 + i), names[i], why, sizeof(why));
+            printf("  restore %s: %s\n", names[i], why);
+        }
+    }
+    int first = count_restored(places, lens, names, m);
+    printf("  art restored %d/%d after the first pass\n", first, m);
+    check("first-pass-partial", first == m - 1 && sim_bt_stats.link_drops == drops + 1,
+          "restored %d/%d, %d link drop(s)", first, m, sim_bt_stats.link_drops - drops);
+    // The relay came up again: the missing one goes.
+    for (int i = 0; i < m; i++) {
+        if (!place_holds(places[i], lens[i], (uint8_t)(20 + i), names[i])) {
+            char name[24];
+            snprintf(name, sizeof(name), "retry-%d", i);
+            check(name, lab_store(places[i], lens[i], (uint8_t)(20 + i), names[i], why,
+                                  sizeof(why)),
+                  "%s", why);
+        }
+    }
+    int all = count_restored(places, lens, names, m);
+    printf("  art restored %d/%d\n", all, m);
+    check("restored-all", all == m, "art restored %d/%d", all, m);
+    check("screen-untouched", screen_kept(shown, pushes), "set %d, %d pushes played",
+          sim_right.set, sim_right.pushes_ok - pushes);
+    check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped);
+    debug_line("at the end");
+}
+
 #ifdef SIM_HEALTH
 // D7 13 HEALTH half 1 as host_link.c starts it: the relay read, then the reply it sends.
 static int health_right(struct health_wire *out, int64_t *took) {
@@ -805,6 +1140,12 @@ static void lab_thread(void *arg) {
         snap_latency(true);
     } else if (!strcmp(scenario, "polarity-relink")) {
         polarity_relink();
+    } else if (!strcmp(scenario, "playlist-store")) {
+        playlist_store();
+    } else if (!strcmp(scenario, "playlist-store-old")) {
+        playlist_store_old();
+    } else if (!strcmp(scenario, "restore-update")) {
+        restore_update();
 #ifdef SIM_HEALTH
     } else if (!strcmp(scenario, "health")) {
         health_scenario();
