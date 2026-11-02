@@ -53,6 +53,10 @@ enum Command {
     Status,
     /// How each half shows up on USB (no keyboard link needed).
     Usb,
+    /// Whether Foxglove would be away on this PC now (#410, #683): the session locked or the
+    /// display off, as JSON ({"locked", "display_off", "away"}; display_off null when Windows
+    /// sent no state within 2 s). No keyboard link needed; for scripts/lab (labkit.away).
+    Away,
     /// Reboots one half into its UF2 bootloader (D7 08). For scripts/flash only, after the user
     /// typed FLASH there. Exit code 4: this firmware can't (no HELLO bit 9), use a double tap.
     Bootloader {
@@ -263,6 +267,19 @@ fn main() -> Result<std::process::ExitCode> {
             };
             println!("{name} → {id}: {params}");
         }
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+    if matches!(cli.command, Command::Away) {
+        let locked = foxglove_lab::platform::locked();
+        let display_off = foxglove_lab::platform::display_off();
+        println!(
+            "{}",
+            serde_json::json!({
+                "locked": locked,
+                "display_off": display_off,
+                "away": foxglove_lab::platform::away_reason(locked, display_off),
+            })
+        );
         return Ok(std::process::ExitCode::SUCCESS);
     }
     if matches!(cli.command, Command::Usb) {

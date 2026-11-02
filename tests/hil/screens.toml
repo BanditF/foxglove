@@ -24,8 +24,9 @@ steps = [
 
 [[cases]]
 name = "left-clock-ticks"
-description = "The left screen changes within 65 s with nothing pressed (the clock's minute tick)"
+description = "The left screen changes within 65 s with nothing pressed (the info layout's clock minute, or the stats layout's samples). Foxglove draws that panel only while it runs and the PC isn't away (#410: locked or display off, it hands the screen back to the keyboard's WPM chart); otherwise the case is BLOCKED by app_panel, not FAIL (#678). Run it with the PC unlocked and its display on"
 tags = ["screens"]
+requires = ["app_panel"]
 steps = [{ expect_screen_change = { half = "left", within_ms = 65000 } }]
 
 [[cases]]

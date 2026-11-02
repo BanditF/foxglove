@@ -108,7 +108,7 @@ Requirements currently understood: `host_link>=N`, `invoke_refusal`,
 `screen_readback`, `position_press`, `activity_relay` (HELLO bit 23: the left
 relays its activity to the right, #603), `rgb_shown` (HELLO bit 24: RGB_STATE says what
 each half's LEDs show, #605), `right_redraws` (HELLO bit 25: D7 8E carries the
-right's redraw count, #618; `foxglove-lab status` prints it as `RIGHT_REDRAWS`). `split_guard_test` takes an optional `while_down` invoke,
+right's redraw count, #618; `foxglove-lab status` prints it as `RIGHT_REDRAWS`). `app_panel` (#678: Foxglove draws the left panel now: a process named exactly foxglove runs, the PC isn't away, i.e. locked or display off, and the saved layout is info or stats; checked as the case starts, BLOCKED otherwise, and an `expect_screen_change` that times out after the app stopped drawing mid-case is BLOCKED too; `foxglove-lab away` prints the lock and display state as JSON). `split_guard_test` takes an optional `while_down` invoke,
 sent once while HELLO shows the split link down (right link 0), so only the left takes
 it (#624); the step is BLOCKED if the link never reads as down. Unsupported requirements block the **whole
 case before its first step**. `screen` and `press_position` also imply their

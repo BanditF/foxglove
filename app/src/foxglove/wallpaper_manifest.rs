@@ -651,7 +651,7 @@ pub(crate) mod tests {
                 "art above the folder",
             ),
             (
-                REEF.replace("keyboard/right.bin", "C:/right.bin"),
+                REEF.replace("keyboard/right.bin", "/right.bin"),
                 "art elsewhere",
             ),
             (
@@ -661,6 +661,13 @@ pub(crate) mod tests {
         ] {
             assert!(ok(&bad).is_err(), "{why}");
         }
+        // A drive path is absolute only on Windows; elsewhere "C:" is a folder name (the Linux
+        // CI failure of #678's note), so this one is checked where it means elsewhere.
+        #[cfg(windows)]
+        assert!(
+            ok(&REEF.replace("keyboard/right.bin", "C:/right.bin")).is_err(),
+            "art on another drive"
+        );
     }
 
     #[test]
