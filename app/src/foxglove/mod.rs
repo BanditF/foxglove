@@ -10,6 +10,7 @@ pub mod app_windows;
 pub mod art_builtins;
 pub mod art_cycle;
 mod art_encode;
+pub mod art_keys_health;
 pub mod art_library;
 pub mod art_manifest;
 pub mod art_pieces;

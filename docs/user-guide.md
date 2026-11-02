@@ -410,10 +410,11 @@ show. There is no separate list: to change what Rotation
 shows, keep or remove pieces on the keyboard. (A playlist of art that only this PC has is a
 later idea, #522.)
 - **Next piece** comes on any of these, in any mix:
-  - **on the art key** *(after 0.1, next app update)*: hold SYSTEM (both middle thumbs + Tab),
-    then **P** for next and **O** for previous. Without the app, the keyboard steps through its
-    own built-ins and saved slots. *(next app update)* The left screen shows **ART 3/7** and the
-    name for a second.
+  - **on the art key** *(after 0.1)*: hold SYSTEM (both middle thumbs + Tab), then **P** for
+    next and **O** for previous. While Foxglove runs, the left screen shows **ART** with the
+    piece's place (3/7), a triangle the way it stepped and the piece's name, for about a second.
+    Paused, quit, or without the app, the keyboard steps through its own built-ins and saved
+    slots.
   - **Lights wake**: the next piece each time the keyboard's lights come back on.
   - **every N minutes**.
 - **Wallpaper:** the right screen shows the art that goes with the wallpaper on
