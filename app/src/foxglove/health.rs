@@ -24,9 +24,6 @@ pub type Provider = fn() -> Vec<HealthRow>;
 static PROVIDERS: Mutex<Vec<(&'static str, Provider)>> = Mutex::new(Vec::new());
 
 /// Adds a feature's rows to the health view, once per `name` (a second call replaces the first).
-// The features with rows (#701 art keys, #704 LampArray) call this once they land on the shared
-// type; until then only the tests do.
-#[allow(dead_code)]
 pub fn register(name: &'static str, rows: Provider) {
     let mut p = PROVIDERS.lock().unwrap_or_else(|e| e.into_inner());
     p.retain(|(n, _)| *n != name);
@@ -153,6 +150,7 @@ pub fn start() {
     if super::repaint_trace::disabled("health") {
         return;
     }
+    register("art_keys", super::art_keys_health::rows_now); // #701
     let events = super::services::First::new(super::devices::bus().subscribe(false));
     let _ = super::services::spawn_supervised("health", move || {
         let events = events.take_or(|| super::devices::bus().subscribe(false));
