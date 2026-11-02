@@ -5,6 +5,7 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/crc.h>
 #include <zmk/display.h>
+#include "health.h"
 #include "screen_snap.h"
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_HOST_LINK) && \

@@ -711,8 +711,7 @@ static void health_scenario(void) {
           r.version, r.half, r.relay_ready, r.leds);
     check("right-block-time", took < 5000, "%lld ms simulated (the lab waits 8 s)",
           (long long)took);
-    printf("  health read of the right: %d requests (the app's included)
-",
+    printf("  health read of the right: %d requests (the app's included)\n",
            sim_bt_stats.requests_sent - sent);
 
     // A forced relay timeout: a status read answered 4.5 s late.
