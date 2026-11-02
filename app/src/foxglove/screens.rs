@@ -345,6 +345,29 @@ fn current_notice(now: Instant) -> Option<(render::Notice, Instant)> {
     n.clone()
 }
 
+/// The art key's card (#60) over the layout and any notification, until its time is up. Plugin
+/// frames still draw over it. Its end is the panel loop's own deadline: no timer of ours.
+static ART_CARD: Mutex<Option<(render::ArtCard, Instant)>> = Mutex::new(None);
+
+/// How long the art key's card stays up.
+pub const ART_CARD_FOR: Duration = Duration::from_millis(1200);
+
+/// Shows the art key's card on the left screen for [`ART_CARD_FOR`]; a newer press replaces it.
+pub fn show_art_card(card: render::ArtCard) {
+    *ART_CARD.lock().unwrap_or_else(|e| e.into_inner()) =
+        Some((card, Instant::now() + ART_CARD_FOR));
+    wake();
+}
+
+/// The art card showing at `now` and when it ends; an ended one is dropped.
+fn current_art_card(now: Instant) -> Option<(render::ArtCard, Instant)> {
+    let mut c = ART_CARD.lock().unwrap_or_else(|e| e.into_inner());
+    if c.as_ref().is_some_and(|(_, until)| *until <= now) {
+        *c = None;
+    }
+    c.clone()
+}
+
 fn wake() {
     if let Some(tx) = EVENTS.get().and_then(|s| s.lock().ok()) {
         if let Some(tx) = tx.as_ref() {
@@ -723,6 +746,13 @@ fn run() {
             animated = false;
         }
         let clock_at = notice.map_or(clock_at, |(_, until)| clock_at.min(until));
+        // The art key's card (#60), over that: the user just pressed it.
+        let card = current_art_card(now);
+        if let Some((c, _)) = &card {
+            render::draw_art_card(&mut d.panel, c);
+            animated = false;
+        }
+        let clock_at = card.map_or(clock_at, |(_, until)| clock_at.min(until));
         // A plugin's frame, over everything else, until it lapses.
         *PANEL_SIZE.lock().unwrap_or_else(|e| e.into_inner()) =
             Some((d.panel.width as u16, d.panel.height as u16));
@@ -842,6 +872,25 @@ fn battery_log(battery: Option<u8>, last: &mut Option<u8>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// #60: the art key's card ends by its own deadline, which the panel loop folds into its
+    /// one wait; a newer press replaces it.
+    #[test]
+    fn an_art_card_ends_by_its_deadline() {
+        let card = |index| render::ArtCard {
+            index,
+            total: 3,
+            name: "Bandit Idle".into(),
+            forward: true,
+        };
+        show_art_card(card(0));
+        show_art_card(card(1));
+        let now = Instant::now();
+        let (shown, until) = current_art_card(now).expect("the card shows");
+        assert_eq!(shown.index, 1, "the newer press");
+        assert!(until > now && until <= now + ART_CARD_FOR);
+        assert!(current_art_card(until).is_none(), "gone at its deadline");
+        assert!(current_art_card(now).is_none(), "and dropped");
+    }
     #[test]
     fn frames_change_only_after_pixels_change_or_ownership_resets() {
         assert!(changed(None, &[1, 2]));

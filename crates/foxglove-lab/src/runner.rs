@@ -126,7 +126,7 @@ impl Device for Hardware {
         // subscribers see them.
         let (tx, rx) = std::sync::mpsc::channel();
         let watch = self.link.subscribe_reports(move |_, r| {
-            if r.starts_with(&[protocol::SETTINGS, 0x80 | ART_KEYS, 1]) {
+            if protocol::art_key_event(r).is_some() {
                 let _ = tx.send(*r);
             }
         });
@@ -216,10 +216,6 @@ fn relay_stuck_note(before: Option<[u8; 10]>, after: Option<[u8; 10]>) -> String
 /// Capabilities come only from HELLO's capability bits, never from the version number.
 /// Position presses also need the refusal bit: a press resolves through whatever layers are
 /// active, so the firmware must be known to refuse bt/out/reset/bootloader/soft_off.
-/// D7 0D ART_KEYS: the app takes over the art keys (#302); its events come back as D7 8D 01 <dir>.
-const ART_KEYS: u8 = 0x0D;
-/// HELLO capability bit 16: the keymap has &art_next/&art_prev and the art relay is built.
-const ART_KEYS_CAP: u32 = 1 << 16;
 
 pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
     let has = |bit| hello.capabilities & bit != 0;
@@ -242,7 +238,7 @@ pub fn unsupported(requirement: &str, hello: &Hello) -> Option<String> {
         "rgb_shown" => "RGB_STATE doesn't say what the LEDs show (HELLO bit 24, #605)",
         "right_redraws" if has(caps::RIGHT_REDRAWS) => return None,
         "right_redraws" => "the left doesn't report the right's redraw count (HELLO bit 25, #618)",
-        "art_keys" if hello.capabilities & ART_KEYS_CAP != 0 => return None,
+        "art_keys" if has(caps::ART_KEYS) => return None,
         "art_keys" => "firmware has no art keys (HELLO bit 16, #302)",
         "position_press" if has(caps::POSITION) && has(caps::INVOKE_REFUSES) => return None,
         "position_press" => {
@@ -498,9 +494,9 @@ impl<'a, D: Device> Runner<'a, D> {
         };
         let subscribe = |runner: &Self, on: bool| -> Result<()> {
             let r = runner.device.request(
-                &[protocol::SETTINGS, ART_KEYS, u8::from(on)],
+                &protocol::art_keys(on),
                 protocol::SETTINGS,
-                ART_KEYS,
+                protocol::settings::ART_KEYS,
                 Duration::from_secs(1),
             )?;
             ensure!(
