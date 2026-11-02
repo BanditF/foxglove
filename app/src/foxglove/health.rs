@@ -13,6 +13,7 @@
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use foxglove_devices::Device as _;
 use foxglove_link::health::{self as kh, Thresholds};
 pub use foxglove_link::health::{HealthRow, Level};
 
