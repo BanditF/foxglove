@@ -175,3 +175,9 @@ the table, or a keyboard without a profile, takes Foxglove's names only.
 [firmware]
 files = ["eyelash_corne_studio_left.uf2", "nice_view_custom-eyelash_corne_right-zmk.uf2"]
 ```
+
+`old_firmware = true` in the same table marks the board Foxglove's older firmware was built for:
+firmware from before it described its screens (HELLO `SCREENS`) and LEDs (lamp parts, D7 10).
+A keyboard whose firmware describes neither, and that has no profile, is taken to have that
+board's screens and LEDs: the info panel's and art screen's sizes, and the LEDs by part. Only the
+built-in profiles are read for it, and one of them (the Eyelash Corne's) says so.

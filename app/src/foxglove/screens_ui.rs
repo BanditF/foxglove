@@ -318,13 +318,16 @@ pub fn sample_stats() -> foxglove_panel::stats::Stats {
     }
 }
 
-/// The info screen's size, for its previews: the keyboard's (#560), else the panel Foxglove's
-/// firmware draws.
+/// The info screen's size, for its previews: the keyboard's (#560), else the older firmware's
+/// (its board's profile, #563).
 fn info_size() -> (usize, usize) {
+    use super::screen_roles::Role;
     let (w, h) = super::screen_roles::current()
         .as_deref()
-        .and_then(|s| super::screen_roles::first(s, super::screen_roles::Role::Info))
-        .map_or(screens::FIRMWARE_PANEL, |s| s.upright());
+        .and_then(|s| super::screen_roles::first(s, Role::Info))
+        .map(|s| s.upright())
+        .or_else(|| super::screen_roles::old_firmware_size(Role::Info))
+        .unwrap_or((1, 1));
     (usize::from(w.max(1)), usize::from(h.max(1)))
 }
 

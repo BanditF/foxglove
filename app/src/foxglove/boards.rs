@@ -205,12 +205,18 @@ impl Lighting {
 }
 
 /// The keyboard's LEDs by part: the board profile's, else what firmware that doesn't report
-/// them has (the Eyelash Corne's, `foxglove_link::lamps`), as one strip on a one-piece board.
+/// them has (the older firmware's board's, [`old_firmware_board`]), as one strip on a
+/// one-piece board.
 pub fn lamp_parts(board: Option<&Board>) -> LampParts {
+    lamp_parts_with(board, old_firmware_board())
+}
+
+/// [`lamp_parts`] with `old` as the older firmware's board.
+fn lamp_parts_with(board: Option<&Board>, old: Option<&Board>) -> LampParts {
     if let Some(parts) = board.and_then(|b| b.lighting.as_ref()?.lamp_parts(b.halves)) {
         return parts;
     }
-    let old = LampParts::old_firmware();
+    let old = old_firmware_lamps(old);
     match board {
         Some(b) if b.halves == 1 => LampParts::even(old.total(), 1).unwrap_or(old),
         _ => old,
@@ -331,6 +337,33 @@ impl Studio {
 pub struct Firmware {
     #[serde(default)]
     pub files: Vec<String>,
+    /// Foxglove's firmware from before it described its screens and LEDs was built for this
+    /// board only: such firmware, on a keyboard without a profile, is taken to have this
+    /// board's screens and LEDs ([`old_firmware_board`]). Read from the built-in profiles only.
+    #[serde(default)]
+    pub old_firmware: bool,
+}
+
+/// The built-in profile of the board Foxglove's older firmware was built for (`[firmware]
+/// old_firmware`, #563): what a keyboard whose firmware says nothing about its screens or LEDs,
+/// and that has no profile, is taken to have. Parsed once.
+pub fn old_firmware_board() -> Option<&'static Board> {
+    static OLD: std::sync::OnceLock<Option<Board>> = std::sync::OnceLock::new();
+    OLD.get_or_init(|| old_firmware_in(load(None))).as_ref()
+}
+
+/// The first of `boards` that says it is the older firmware's.
+fn old_firmware_in(boards: Vec<Board>) -> Option<Board> {
+    boards
+        .into_iter()
+        .find(|b| b.firmware.as_ref().is_some_and(|f| f.old_firmware))
+}
+
+/// The LEDs by part of firmware that doesn't report them: the older firmware's board's
+/// (`old`), else the link's own default for such firmware.
+fn old_firmware_lamps(old: Option<&Board>) -> LampParts {
+    old.and_then(|b| b.lighting.as_ref()?.lamp_parts(b.halves))
+        .unwrap_or_else(LampParts::old_firmware)
 }
 
 impl Board {
@@ -920,6 +953,44 @@ mod tests {
 
     /// The LED counts by part (#561): the profile's own split, an even share, a one-piece
     /// board's single strip, and a profile whose counts don't hold up, which is said.
+    /// #563: what firmware that reports no LEDs has comes from the one built-in profile marked
+    /// `[firmware] old_firmware`, not from the code. The Corne's gives the 2 x 21 the code had;
+    /// a made-up board marked so gives its own.
+    #[test]
+    fn the_old_firmwares_leds_come_from_its_profile() {
+        let marked = |b: &Board| b.firmware.as_ref().is_some_and(|f| f.old_firmware);
+        assert_eq!(load(None).iter().filter(|b| marked(b)).count(), 1);
+        let old = old_firmware_board().expect("a built-in profile is the older firmware's");
+        assert_eq!(old.id, "eyelash-corne");
+        assert_eq!(lamp_parts(None), LampParts::new(&[21, 21]).unwrap());
+        assert_eq!(lamp_parts(None), LampParts::old_firmware());
+        // A one-piece profile without lights: the same LEDs as one strip, as before.
+        let mut bare = crate::foxglove::fixtures::second_desk::board();
+        bare.lighting = None;
+        assert_eq!(lamp_parts(Some(&bare)), LampParts::new(&[42]).unwrap());
+
+        // A made-up older-firmware board (Plank 3, one piece of 61) stands in instead.
+        let mut plank = crate::foxglove::fixtures::second_desk::board();
+        plank.firmware = Some(Firmware {
+            old_firmware: true,
+            ..Default::default()
+        });
+        let mut corne = crate::foxglove::fixtures::users_desk::board();
+        corne.firmware = None;
+        let found = old_firmware_in(vec![corne, plank.clone()]).unwrap();
+        assert_eq!(found.id, "plank-3");
+        assert_eq!(
+            lamp_parts_with(None, Some(&found)),
+            LampParts::new(&[61]).unwrap()
+        );
+        assert_eq!(
+            lamp_parts_with(Some(&bare), Some(&found)),
+            LampParts::new(&[61]).unwrap()
+        );
+        // Nothing marked: the link's own default for such firmware.
+        assert_eq!(lamp_parts_with(None, None), LampParts::old_firmware());
+    }
+
     #[test]
     fn lamp_parts_come_from_the_profile() {
         let all = load(None);

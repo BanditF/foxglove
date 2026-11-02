@@ -177,12 +177,17 @@ impl ArtTarget {
         })
     }
 
-    /// The connected keyboard's art screen, else [`ArtTarget::FIRMWARE`].
+    /// The connected keyboard's art screen, else the older firmware's (its board's profile,
+    /// #563), else [`ArtTarget::FIRMWARE`].
     pub fn current() -> ArtTarget {
+        use super::screen_roles::{first, Role};
         super::screen_roles::current()
             .as_deref()
-            .and_then(|s| super::screen_roles::first(s, super::screen_roles::Role::Art))
+            .and_then(|s| first(s, Role::Art))
             .and_then(ArtTarget::of)
+            .or_else(|| {
+                first(&super::screen_roles::old_firmware(), Role::Art).and_then(ArtTarget::of)
+            })
             .unwrap_or(ArtTarget::FIRMWARE)
     }
 

@@ -538,16 +538,15 @@ thread_local! {
     pub static LAST_HITS: std::cell::RefCell<Option<Hits>> = const { std::cell::RefCell::new(None) };
 }
 
-/// The screens' shapes when the keyboard doesn't say (width, height): the panel Foxglove's
-/// firmware draws, and its art screen upright.
-const PANEL_SHAPE: egui::Vec2 = egui::vec2(
-    super::screens::FIRMWARE_PANEL.0 as f32,
-    super::screens::FIRMWARE_PANEL.1 as f32,
-);
-const ART_SHAPE: egui::Vec2 = egui::vec2(
-    super::art_encode::ArtTarget::FIRMWARE.height as f32,
-    super::art_encode::ArtTarget::FIRMWARE.width as f32,
-);
+/// A screen's shape when the keyboard doesn't say (width, height): the older firmware's
+/// screen of that role, upright (its board's profile, #563); square if none is known.
+fn fallback_shape(role: super::screen_roles::Role) -> egui::Vec2 {
+    super::screen_roles::old_firmware_size(role)
+        .filter(|(w, h)| *w > 0 && *h > 0)
+        .map_or(egui::vec2(1.0, 1.0), |(w, h)| {
+            egui::vec2(f32::from(w), f32::from(h))
+        })
+}
 
 /// A screen's shape upright, as the user sees it (#560).
 fn shape_of(
@@ -597,9 +596,11 @@ pub fn board(ui: &mut egui::Ui, v: &BoardView) -> Option<Page> {
                 let top = rect.top();
                 // The screen sits over the inner columns, as on the Corne, shaped like what it shows.
                 let shape = if right {
-                    v.art_shape.unwrap_or(ART_SHAPE)
+                    v.art_shape
+                        .unwrap_or_else(|| fallback_shape(super::screen_roles::Role::Art))
                 } else {
-                    v.panel_shape.unwrap_or(PANEL_SHAPE)
+                    v.panel_shape
+                        .unwrap_or_else(|| fallback_shape(super::screen_roles::Role::Info))
                 };
                 let screen = egui::vec2(
                     (SCREEN_HEIGHT - 6.0) * shape.x / shape.y + 6.0,

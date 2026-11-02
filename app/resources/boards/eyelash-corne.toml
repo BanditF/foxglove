@@ -22,6 +22,11 @@ keymap = "eyelash_corne"
 # (foxglove-<version>-left.uf2, CI's foxglove-fw-...-left-<profile>.uf2).
 [firmware]
 files = ["eyelash_corne_studio_left.uf2", "nice_view_custom-eyelash_corne_right-zmk.uf2"]
+# Foxglove's firmware from before it described its screens (HELLO SCREENS) and LEDs (lamp
+# parts, D7 10) was built for this board only. A keyboard whose firmware describes neither, and
+# that has no profile, is taken to have this board's screens and LEDs. One built-in profile
+# says so.
+old_firmware = true
 
 [[match]]
 vid = 0x1d50
