@@ -131,6 +131,9 @@ The params and results are in the schema. Notes:
 - **Enforcement:** `schema/v1.json` is generated from the Rust types, and a test fails when the
   types change without the file. Reviewers check that a schema diff matches the version bump.
   Regenerate with `UPDATE_SCHEMA=1 cargo test -p foxglove-plugin-api`.
+- **Releases:** Foxglove 0.1.0 served API 1.1; Foxglove 0.2.0 serves API 1.10
+  (`crates/plugin-api`, `API_VERSION`). The app's own version (`initialize`'s `app`) and the API
+  version move separately.
 - **SDKs:** the Rust types *are* the Rust SDK (MIT). Python/TypeScript clients get generated from
   the schema later.
 
