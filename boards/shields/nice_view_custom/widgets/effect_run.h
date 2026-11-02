@@ -19,7 +19,5 @@ void effect_run_start(const struct lamp_effect_wire *w, uint32_t at_ms);
 // Stops drawing. hand_back: the LEDs go back to the keyboard's own effect; without it they stay
 // with the PC (SET_FRAME takes over). Once it returns, no frame of the effect draws any more.
 void effect_run_stop(bool hand_back);
-// Whether this half draws an effect.
-bool effect_run_active(void);
 // This half's effect clock now, modulo the period: the anchor for the other half.
 uint32_t effect_run_clock(void);

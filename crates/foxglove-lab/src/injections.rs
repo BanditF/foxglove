@@ -128,11 +128,6 @@ pub struct Injection {
     path: PathBuf,
 }
 
-/// Starts recording an injection described by `what` in the shared file.
-pub fn begin(what: impl Into<String>) -> Injection {
-    begin_at(path(), what)
-}
-
 /// Starts recording an injection described by `what` in `path`.
 pub fn begin_at(path: PathBuf, what: impl Into<String>) -> Injection {
     let records = std::fs::read_to_string(&path)

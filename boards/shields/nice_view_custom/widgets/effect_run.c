@@ -107,13 +107,6 @@ void effect_run_stop(bool hand_back) {
     }
 }
 
-bool effect_run_active(void) {
-    k_spinlock_key_t key = k_spin_lock(&lock);
-    bool run = running;
-    k_spin_unlock(&lock, key);
-    return run;
-}
-
 uint32_t effect_run_clock(void) {
     k_spinlock_key_t key = k_spin_lock(&lock);
     uint32_t period = pending.period_ms[0] | pending.period_ms[1] << 8 |
