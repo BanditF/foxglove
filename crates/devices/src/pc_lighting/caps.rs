@@ -105,6 +105,13 @@ impl LightCaps {
         zones::summary(self.color, self.count, self.zones.as_ref(), keys)
     }
 
+    /// The chips shown beside the summary line (#611, docs/lighting-zones.md section 6): only
+    /// the screens. The light chip is the summary now; brightness and onboard effects show as
+    /// their own controls.
+    pub fn screen_chips(&self) -> Vec<String> {
+        self.screens.iter().map(screen_chip).collect()
+    }
+
     /// Whether the device takes any colour (single, per zone or per LED).
     pub fn takes_color(&self) -> bool {
         matches!(self.color, Color::Single | Color::PerZone | Color::PerLed)

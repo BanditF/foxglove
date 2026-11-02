@@ -29,7 +29,7 @@ use crate::calibration::Calibration;
 use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
 pub use catalog::{Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRole, ZoneSpec};
-pub use zones::{Zone, ZoneKey, ZoneSource, Zones};
+pub use zones::{HealthLevel, Zone, ZoneHealth, ZoneKey, ZoneSource, Zones};
 
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;

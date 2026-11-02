@@ -301,6 +301,98 @@ pub fn source_line(zones: &Zones, keys: bool) -> String {
     text
 }
 
+/// How a health row stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HealthLevel {
+    /// The zones are known and the sources agree.
+    Ok,
+    /// The sources disagree (the device reports another lamp count than the winner has).
+    Warn,
+    /// Nothing says what the zones are.
+    Unknown,
+}
+
+/// One device's lighting-zones row for the health view (#611): the zones and lamps found,
+/// where they came from, and a warning when the device's own report disagrees with the source
+/// that won. Plain data, so the shared health view (and `foxglove-lab health`) can list it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneHealth {
+    pub device: String,
+    /// Zones that light something, all parts.
+    pub zones: u32,
+    /// Lamps, live and dead, all parts.
+    pub lamps: u32,
+    /// "check", "profile", "catalog", "firmware" (a keyboard's report) or "device"
+    /// (another device's report); "none" when unknown.
+    pub source: &'static str,
+    pub level: HealthLevel,
+    /// What disagrees, or why it's unknown.
+    pub note: Option<String>,
+}
+
+impl ZoneHealth {
+    /// The row as one log line, the signal's text form: "lighting zones: Eyelash Corne: 12
+    /// zones, 42 lamps, from the profile", with "; warning: ..." when the sources disagree.
+    pub fn log_line(&self) -> String {
+        let mut line = format!(
+            "lighting zones: {}: {} zones, {} lamps, from the {}",
+            self.device, self.zones, self.lamps, self.source
+        );
+        if let Some(note) = &self.note {
+            let what = if self.level == HealthLevel::Warn {
+                "warning"
+            } else {
+                "unknown"
+            };
+            line.push_str(&format!("; {what}: {note}"));
+        }
+        line
+    }
+}
+
+/// The health row for one device's zones. `keys` says it is a keyboard (its report is the
+/// firmware's).
+pub fn health(device: &str, found: Option<&Zones>, keys: bool) -> ZoneHealth {
+    let Some(z) = found else {
+        return ZoneHealth {
+            device: device.into(),
+            zones: 0,
+            lamps: 0,
+            source: "none",
+            level: HealthLevel::Unknown,
+            note: Some("no source knows its lighting zones".into()),
+        };
+    };
+    let source = match z.source {
+        ZoneSource::Check => "check",
+        ZoneSource::Profile { .. } => "profile",
+        ZoneSource::Catalog => "catalog",
+        ZoneSource::Reported if keys => "firmware",
+        ZoneSource::Reported => "device",
+    };
+    let join = |v: &[u32]| v.iter().map(u32::to_string).collect::<Vec<_>>().join(" + ");
+    let (level, note) = match &z.reported {
+        Some(reported) => (
+            HealthLevel::Warn,
+            Some(format!(
+                "{} reports {} lamps; the {source} has {}",
+                if keys { "firmware" } else { "device" },
+                join(reported),
+                join(&z.lamps())
+            )),
+        ),
+        None => (HealthLevel::Ok, None),
+    };
+    ZoneHealth {
+        device: device.into(),
+        zones: z.list.len() as u32,
+        lamps: z.lamps().iter().sum(),
+        source,
+        level,
+        note,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::Color;
@@ -570,5 +662,38 @@ mod tests {
             source_line(&won, true),
             "From your check · the keyboard reports 21 lamps per half; 15 of them light nothing here"
         );
+    }
+
+    /// The health signal: counts and source per device, a warning only when the firmware's
+    /// report and the winning source disagree.
+    #[test]
+    fn health_rows_count_name_the_source_and_warn_on_disagreement() {
+        let device = Zones::from_report(&[21, 21]);
+        let profile = corne(ZoneSource::Profile { checked: false });
+        let agree = Zones::pick(None, Some(profile.clone()), Some(device)).unwrap();
+        let row = health("Eyelash Corne", Some(&agree), true);
+        assert_eq!((row.zones, row.lamps, row.source), (12, 42, "profile"));
+        assert_eq!((row.level, row.note), (HealthLevel::Ok, None));
+
+        let short = Zones::from_report(&[7, 7]);
+        let differ = Zones::pick(None, Some(profile), Some(short)).unwrap();
+        let row = health("Eyelash Corne", Some(&differ), true);
+        assert_eq!(row.level, HealthLevel::Warn);
+        assert_eq!(
+            row.note.as_deref(),
+            Some("firmware reports 7 + 7 lamps; the profile has 21 + 21")
+        );
+        assert_eq!(
+            row.log_line(),
+            "lighting zones: Eyelash Corne: 12 zones, 42 lamps, from the profile; warning: \
+             firmware reports 7 + 7 lamps; the profile has 21 + 21"
+        );
+
+        let fw = health("Board", Some(&Zones::from_report(&[21, 21])), true);
+        assert_eq!((fw.source, fw.level), ("firmware", HealthLevel::Ok));
+        let cat = health("Case", Some(&case()), false);
+        assert_eq!((cat.zones, cat.source), (5, "catalog"));
+        let none = health("Mystery", None, false);
+        assert_eq!((none.source, none.level), ("none", HealthLevel::Unknown));
     }
 }
