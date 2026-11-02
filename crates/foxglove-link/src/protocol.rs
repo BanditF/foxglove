@@ -72,6 +72,9 @@ pub mod capabilities {
     /// Settings PANEL_POLARITY (D7 12): the keyboard's mono panels dark or light, both halves,
     /// every widget and piece of art (#666; [`super::PanelPolarity`]).
     pub const PANEL_POLARITY: u32 = 1 << 27;
+    /// Settings HEALTH (D7 13): each half's self-report, counters per subsystem and a boot
+    /// self-test (#705; [`crate::health`]).
+    pub const HEALTH: u32 = 1 << 28;
 }
 pub const VERSION: u8 = 1;
 
@@ -139,6 +142,8 @@ pub mod settings {
     pub const PC_STATE: u8 = 0x11;
     /// The panels' dark or light (#666): see [`super::PanelPolarity`].
     pub const PANEL_POLARITY: u8 = 0x12;
+    /// One half's self-report block, in chunks (#705): see [`crate::health`].
+    pub const HEALTH: u8 = 0x13;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
