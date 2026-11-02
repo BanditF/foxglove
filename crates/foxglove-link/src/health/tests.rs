@@ -207,7 +207,7 @@ fn every_shipped_threshold_names_a_counter_the_rows_use() {
 
 #[test]
 fn a_healthy_keyboard_is_all_ok_with_one_line_per_feature() {
-    let rows = rows(&report(left(), right()), &Thresholds::default());
+    let rows = super::rows(&report(left(), right()), &Thresholds::default());
     assert_eq!(worst(&rows), Level::Ok, "{rows:#?}");
     for item in [
         "Left half",
@@ -235,7 +235,7 @@ fn failed_art_pushes_read_as_the_issue_asks() {
         art_last_error: 6,
         ..left()
     };
-    let rows = rows(&report(l, right()), &Thresholds::default());
+    let rows = super::rows(&report(l, right()), &Thresholds::default());
     let screen: Vec<_> = find(&rows, "Right screen")
         .into_iter()
         .filter(|r| r.subsystem == "screens")
@@ -252,7 +252,7 @@ fn failed_art_pushes_read_as_the_issue_asks() {
         art_last_error: 7,
         ..left()
     };
-    let rows = rows(&report(l, right()), &Thresholds::default());
+    let rows = super::rows(&report(l, right()), &Thresholds::default());
     assert_eq!(
         failed_lines(&rows),
         vec!["Right screen: 5 art pushes failed (the right refused the art)".to_string()]
@@ -263,7 +263,7 @@ fn failed_art_pushes_read_as_the_issue_asks() {
         art_last_error: 3,
         ..right()
     };
-    let rows = rows(&report(left(), r), &Thresholds::default());
+    let rows = super::rows(&report(left(), r), &Thresholds::default());
     assert!(rows
         .iter()
         .any(|x| x.line() == "Right screen: 1 art push failed (bad CRC)"));
@@ -275,7 +275,7 @@ fn the_boot_self_test_says_what_failed() {
         self_test: [2 | (1 << 2), 0, 2 | (1 << 2), 3],
         ..left()
     };
-    let rows = rows(&report(l, right()), &Thresholds::default());
+    let rows = super::rows(&report(l, right()), &Thresholds::default());
     let screen = find(&rows, "Left screen");
     assert!(screen
         .iter()
@@ -294,7 +294,7 @@ fn the_boot_self_test_says_what_failed() {
         self_test: [1, 1, 2 | (2 << 2), 1],
         ..left()
     };
-    let rows = rows(&report(l, right()), &Thresholds::default());
+    let rows = super::rows(&report(l, right()), &Thresholds::default());
     assert!(failed_lines(&rows)
         .contains(&"Relay to the right half: no link to the other half after start".to_string()));
 }
@@ -312,7 +312,7 @@ fn the_relay_raw_hid_and_lights_counters_have_rows() {
         split_drops: 3,
         ..left()
     };
-    let rows = rows(&report(l, right()), &Thresholds::default());
+    let rows = super::rows(&report(l, right()), &Thresholds::default());
     let lines: Vec<String> = rows.iter().map(HealthRow::line).collect();
     for want in [
         "Relay to the right half: stuck: both request slots are held by unanswered requests",
@@ -350,7 +350,7 @@ fn the_halves_are_compared() {
         split_connected: false,
         ..left()
     };
-    let rows = rows(&report(l, r), &Thresholds::default());
+    let rows = super::rows(&report(l, r), &Thresholds::default());
     let lines: Vec<String> = rows.iter().map(HealthRow::line).collect();
     assert!(lines
         .iter()
@@ -372,14 +372,14 @@ fn read_errors_become_rows() {
         left: Err(ReadError::NotBuilt),
         right: Err(ReadError::NotBuilt),
     };
-    let rows = rows(&r, &Thresholds::default());
+    let rows = super::rows(&r, &Thresholds::default());
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].level, Level::Warn);
     let r = Report {
         left: Ok(left()),
         right: Err(ReadError::OldFirmware),
     };
-    let rows = rows(&r, &Thresholds::default());
+    let rows = super::rows(&r, &Thresholds::default());
     assert!(rows.iter().any(|x| x.item == "Right half"
         && x.level == Level::Warn
         && x.detail.contains("flash both")));
@@ -387,7 +387,7 @@ fn read_errors_become_rows() {
         left: Ok(left()),
         right: Err(ReadError::NoRelay),
     };
-    let rows = rows(&r, &Thresholds::default());
+    let rows = super::rows(&r, &Thresholds::default());
     assert!(failed_lines(&rows).contains(
         &"Right half: couldn't read its health: no relay link to the right half".to_string()
     ));
