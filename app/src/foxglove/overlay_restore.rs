@@ -269,8 +269,23 @@ pub fn hwnd() -> Option<isize> {
     Some(HWND.load(Ordering::Relaxed)).filter(|h| *h != 0)
 }
 
+/// A display change heard while away, answered once when the PC is back ([`request`]).
+static DEFERRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a display change waits for the PC to be back: while locked or with the display off,
+/// Windows can send `WM_DISPLAYCHANGE` every few seconds all night (a sleeping monitor's link),
+/// and answering each one moved the overlay and re-applied every device's state each time
+/// (about 380 an hour). Nothing is on screen then, so one check on coming back does it.
+pub fn defer_while_away(trigger: Trigger, away: bool) -> bool {
+    trigger == Trigger::DisplayChange && away
+}
+
 /// Asks the overlay's next frame to check its window, and draws that frame.
 pub fn request(trigger: Trigger) {
+    if defer_while_away(trigger, super::away::away()) {
+        DEFERRED.store(true, Ordering::Relaxed);
+        return;
+    }
     if trigger == Trigger::DisplayChange {
         *DISPLAY_CHANGED_AT.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
     }
@@ -593,6 +608,12 @@ mod imp {
     pub fn watch() {
         static ONCE: Once = Once::new();
         ONCE.call_once(|| {
+            // The display changes held while away get their one check on coming back.
+            std::mem::forget(super::super::away::subscribe(|away| {
+                if !away && super::DEFERRED.swap(false, Ordering::Relaxed) {
+                    super::request(super::Trigger::DisplayChange);
+                }
+            }));
             super::super::services::spawn_named("overlay-displays", || {
                 let class = w!("FoxgloveOverlayDisplays");
                 // SAFETY: window-class and window creation on this thread; the class name is a
@@ -642,6 +663,15 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_changes_wait_while_away_and_nothing_else_does() {
+        assert!(defer_while_away(Trigger::DisplayChange, true));
+        assert!(!defer_while_away(Trigger::DisplayChange, false));
+        for t in [Trigger::TrayClick, Trigger::TaskbarRestart, Trigger::Api] {
+            assert!(!defer_while_away(t, true), "{t:?} still runs while away");
+        }
+    }
 
     const MAIN: [i32; 4] = [0, 0, 2560, 1400];
     const GONE_4K: [i32; 4] = [2560, 0, 6400, 2159];
