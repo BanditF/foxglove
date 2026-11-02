@@ -41,6 +41,9 @@
  * PC's state as the left has it (#609), sent like ACTIVITY on each change, each renewal and on
  * link-up. The right holds itself out of idle only on its own USB power. A right before it has no
  * case for the op and ignores it.
+ * The status value's tail (#705): after the redraw count (ART_RELAY_REDRAWS_AT) comes the right's
+ * self-report, struct health_wire (health.h), at ART_RELAY_HEALTH_AT. The left reads it with
+ * offset reads, one response's worth per request, each spaced like any request (REQ_GAP_MS).
  * PANEL_POLARITY (18, panel_polarity.h, #666): polarity u8 (0 dark, 1 light), a write request on
  * relay_q after ACTIVITY and PC_STATE in the same job (so it keeps #662's spacing): sent on each
  * change and again on every link-up, newest wins. The right saves and applies it. A right before
@@ -283,6 +286,15 @@ uint8_t art_relay_right_dim(struct battery_dim_wire *out, bool refresh);
      ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info) +                                  \
      sizeof(struct foxglove_build_info) + sizeof(struct battery_dim_wire))
 bool art_relay_right_redraws(uint32_t *out);
+// The right's self-report (#705, health.h) follows its redraw count. A right before it ends the
+// value at ART_RELAY_HEALTH_AT: the read past the end fails, and D7 93 says 4 (not built in).
+#define ART_RELAY_HEALTH_AT (ART_RELAY_REDRAWS_AT + sizeof(uint32_t))
+// D7 13 HEALTH for the right: reads its block, a few bytes per request, spaced as every relay
+// request is (REQ_GAP_MS), into the left's copy; replies D7 93 (chunk 0) when done. -EBUSY while
+// one runs.
+int art_relay_health_read(void);
+// The right's block from the last good read (len bytes); false before one.
+bool art_relay_right_health(uint8_t *out, uint8_t len);
 
 // SET_FRAME (#272): host says whether the PC draws the right's LEDs; rgb is the right's whole
 // frame (copied). Runs on the relay queue, newest frame wins; only lamps that changed since the

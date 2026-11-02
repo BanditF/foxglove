@@ -57,6 +57,10 @@ struct sim_bt_faults {
     // A right before the screen push (#662): it refuses SNAP with the push byte (ATT 0x0d) and
     // only answers reads.
     bool right_no_push;
+    // A right before the self-report (#705): its status value ends at ART_RELAY_HEALTH_AT.
+    bool right_no_health;
+    // The right refuses the next COMMIT (BAD_CRC), as one whose slot got a corrupt blob would.
+    bool right_reject_commit;
 };
 extern struct sim_bt_faults sim_bt_faults;
 
@@ -90,6 +94,8 @@ struct sim_right {
     uint16_t ccc_cfg; // the left's CCC entry (bonded: kept over links)
     uint16_t ccc_value;
     int pushes_ok;
+    int pushes_rejected; // COMMITs it refused (#705's art_failed)
+    int subscribes;      // the left's doorbell subscribes (#705's relay_ready on the right)
     int polarity;        // the PANEL_POLARITY op's value the right last took (#666), -1 none
     int polarity_writes; // PANEL_POLARITY ops it took
 };

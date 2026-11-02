@@ -12,5 +12,7 @@ struct sim_left {
     uint8_t snap_status;
     uint16_t snap_frame;
     uint8_t polarity; // the panel polarity the PC set (#666, panel_polarity.c)
+    int health_status; // the last D7 13 half 1 read's status (host_link_health_right), -1 none
+    int health_replies;
 };
 extern struct sim_left sim_left;

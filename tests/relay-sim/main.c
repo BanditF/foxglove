@@ -10,6 +10,10 @@
 #include <stdlib.h>
 
 #include "art_relay.h"
+#if __has_include("health.h") // bisect.ps1 builds widgets from before #705 too
+#include "health.h"
+#define SIM_HEALTH 1
+#endif
 #include "panel_polarity.h"
 #include "screen_snap.h"
 #include "sim_bt.h"
@@ -291,6 +295,17 @@ static void wake_and_push(bool app, bool stall) {
               "link %d, in flight %d, timeouts %d, %s, after %lld ms", art_relay_link(), d[6],
               d[4], sim_bt_faults.left_tx_stall_at_us ? "the left's TX still stalled" : "re-linked",
               (long long)(k_uptime_get() - t0));
+#ifdef SIM_HEALTH
+        // The self-report (#705) says so after the re-link, where HELLO's per-link debug can't:
+        // the timeouts and the unstick since boot, the drop and the second time the relay was found.
+        struct health_wire h;
+        health_fill(&h);
+        check("health-after-stall",
+              h.relay_timeouts >= 1 && h.relay_unsticks >= 1 && h.split_drops >= 1 &&
+                  h.relay_ready >= 2 && h.split_connected == 1,
+              "timeouts %u, unsticks %u, split drops %u, relay found %u times, connected %u",
+              h.relay_timeouts, h.relay_unsticks, h.split_drops, h.relay_ready, h.split_connected);
+#endif
         debug_line("after the wait");
     }
     check("push", lab_push(3599, why, sizeof(why)), "%s", why);
@@ -620,6 +635,148 @@ static void polarity_relink(void) {
     debug_line("at the end");
 }
 
+#ifdef SIM_HEALTH
+// D7 13 HEALTH half 1 as host_link.c starts it: the relay read, then the reply it sends.
+static int health_right(struct health_wire *out, int64_t *took) {
+    int before = sim_left.health_replies;
+    int64_t t0 = k_uptime_get();
+    if (art_relay_health_read() != 0) {
+        return 1; // busy
+    }
+    while (sim_left.health_replies == before && k_uptime_get() - t0 < 20000) {
+        k_msleep(10);
+    }
+    *took = k_uptime_get() - t0;
+    if (sim_left.health_replies == before) {
+        return -1;
+    }
+    if (sim_left.health_status == 0) {
+        art_relay_right_health((uint8_t *)out, sizeof(*out));
+    }
+    return sim_left.health_status;
+}
+
+static const char *state_name(uint8_t r) {
+    static const char *names[] = {"pending", "pass", "fail", "n/a"};
+    return names[r & 3];
+}
+
+// The self-report (#705): each counter driven by its real path, read the way the PC reads it.
+// The right comes up 70 s after boot, past CONFIG_FOXGLOVE_HEALTH_RELAY_S (60): the boot self-test
+// says pending, then failed (no link), then failed (found late). Then the right's block over the
+// relay under ZMK's latency and the right's response-buffer rule (spaced reads, nothing dropped),
+// a forced relay timeout, a push the right refuses and one it takes, a right without the block,
+// and a re-link.
+static void health_scenario(void) {
+    struct health_wire h;
+    health_fill(&h);
+    check("block", h.version == HEALTH_VERSION && h.half == 0 && h.length == HEALTH_SIZE &&
+                       (h.flags & HEALTH_F_RELAY_CENTRAL),
+          "version %u, half %u, length %u, flags 0x%02x", h.version, h.half, h.length, h.flags);
+    uint8_t relay = h.selftest[HEALTH_CHECK_RELAY];
+    check("selftest-pending", relay == HEALTH_RESULT(HEALTH_PENDING, 0), "relay check %s code %u",
+          state_name(relay), relay >> 2);
+    k_msleep(61000);
+    health_fill(&h);
+    relay = h.selftest[HEALTH_CHECK_RELAY];
+    check("selftest-no-link", relay == HEALTH_RESULT(HEALTH_FAIL, 2), "relay check %s code %u",
+          state_name(relay), relay >> 2);
+    k_msleep(9000);
+    sim_bt_connect(500000); // the right switched on 70 s after the left
+    wait_relay(40);
+    check("relay-up", art_relay_link() == 2, "link %d", art_relay_link());
+    health_fill(&h);
+    relay = h.selftest[HEALTH_CHECK_RELAY];
+    check("selftest-late", relay == HEALTH_RESULT(HEALTH_FAIL, 1) && h.relay_ready == 1 &&
+                               h.split_connected == 1 && h.split_up_at_s >= 70,
+          "relay check %s code %u, found %u, connected %u, link up at %u s", state_name(relay),
+          relay >> 2, h.relay_ready, h.split_connected, h.split_up_at_s);
+    check("debug-folded-in", h.relay_discovery == ART_DISCOVERY_DONE && h.relay_debug[9] == 0 &&
+                                 h.relay_debug[8] == SIM_MTU,
+          "discovery %d, MTU %u", h.relay_discovery, h.relay_debug[8] | h.relay_debug[9] << 8);
+
+    // The right's block, spaced: the response-buffer rule and a busy right (select-snap's).
+    app_on = true;
+    k_msleep(2000);
+    sim_bt_faults.rsp_meta_rule = true;
+    sim_bt_faults.right_redraw_busy_us = 20000;
+    int drops = sim_bt_stats.link_drops;
+    int sent = sim_bt_stats.requests_sent;
+    struct health_wire r;
+    int64_t took;
+    int st = health_right(&r, &took);
+    check("right-block", st == 0 && r.version == HEALTH_VERSION && r.half == 1 &&
+                             r.length == HEALTH_SIZE && r.relay_ready == 1 && r.leds == 21,
+          "status %d in %lld ms, version %u, half %u, found %u, LEDs %u", st, (long long)took,
+          r.version, r.half, r.relay_ready, r.leds);
+    check("right-block-time", took < 5000, "%lld ms simulated (the lab waits 8 s)",
+          (long long)took);
+    printf("  health read of the right: %d requests (the app's included)
+",
+           sim_bt_stats.requests_sent - sent);
+
+    // A forced relay timeout: a status read answered 4.5 s late.
+    health_fill(&h);
+    uint16_t timeouts = h.relay_timeouts;
+    sim_bt_faults.late_op = 0;
+    sim_bt_faults.late_us = 4500000;
+    sim_bt_faults.late_count = 1;
+    status();
+    k_msleep(3300);
+    health_fill(&h);
+    check("relay-timeout", h.relay_timeouts == timeouts + 1, "timeouts %u -> %u", timeouts,
+          h.relay_timeouts);
+    k_msleep(2000); // the late answer comes and frees its slot
+
+    // A push the right refuses, then one it takes.
+    char why[160];
+    uint16_t ok0 = h.art_ok, failed0 = h.art_failed;
+    sim_bt_faults.right_reject_commit = true;
+    bool pushed = lab_push(3599, why, sizeof(why));
+    health_fill(&h);
+    check("art-push-failed", !pushed && h.art_failed == failed0 + 1 &&
+                                 h.art_last_error == ART_ERR_RIGHT,
+          "%s; failed %u -> %u, last error %u", why, failed0, h.art_failed, h.art_last_error);
+    check("art-push-ok", lab_push(3190, why, sizeof(why)), "%s", why);
+    health_fill(&h);
+    check("art-ok-counted", h.art_ok == ok0 + 1 && h.art_set == -1, "ok %u -> %u, set %d", ok0,
+          h.art_ok, h.art_set);
+    st = health_right(&r, &took);
+    check("right-art-counts", st == 0 && r.art_failed == 1 && r.art_ok == 1 &&
+                                  r.art_last_error == ART_RIGHT_BAD_CRC,
+          "status %d, the right: ok %u, failed %u, last %u", st, r.art_ok, r.art_failed,
+          r.art_last_error);
+    check("no-relink", sim_bt_stats.link_drops == drops, "%d link drops",
+          sim_bt_stats.link_drops - drops);
+    check("none-dropped", sim_bt_stats.rsp_dropped == 0, "%d requests the right didn't answer",
+          sim_bt_stats.rsp_dropped);
+
+    // A right without the block: D7 93 says 4, and nothing is counted as a refusal.
+    sim_bt_faults.rsp_meta_rule = false;
+    health_fill(&h);
+    uint16_t refused = h.relay_refused;
+    sim_bt_faults.right_no_health = true;
+    st = health_right(&r, &took);
+    health_fill(&h);
+    check("right-without-block", st == 4 && h.relay_refused == refused, "status %d, refused %u",
+          st, h.relay_refused - refused);
+    sim_bt_faults.right_no_health = false;
+
+    // A re-link: one more drop, the relay found again, the link-up time moves.
+    uint16_t split0 = h.split_drops, ready0 = h.relay_ready;
+    uint32_t up0 = h.split_up_at_s;
+    sim_bt_drop(2000000);
+    k_msleep(3000);
+    wait_relay(40);
+    health_fill(&h);
+    check("relink-counted", h.split_drops == split0 + 1 && h.relay_ready == ready0 + 1 &&
+                                h.split_up_at_s > up0 && h.split_connected == 1,
+          "drops %u -> %u, found %u -> %u, up at %u -> %u s", split0, h.split_drops, ready0,
+          h.relay_ready, up0, h.split_up_at_s);
+    debug_line("at the end");
+}
+#endif
+
 static bool lab_done;
 static void lab_thread(void *arg) {
     (void)arg;
@@ -649,6 +806,10 @@ static void lab_thread(void *arg) {
         snap_latency(true);
     } else if (!strcmp(scenario, "polarity-relink")) {
         polarity_relink();
+#ifdef SIM_HEALTH
+    } else if (!strcmp(scenario, "health")) {
+        health_scenario();
+#endif
     } else {
         printf("unknown scenario %s\n", scenario);
         failed = true;
@@ -683,7 +844,9 @@ int main(int argc, char **argv) {
     sim_sys_init_art_relay_init();
     sim_thread_create("usb", 5, lab_thread, NULL);
     sim_thread_create("app", 6, app_thread, NULL);
-    sim_bt_connect(500000);
+    if (strcmp(scenario, "health") != 0) { // health brings the right up late itself
+        sim_bt_connect(500000);
+    }
     if (!sim_run(1000LL * 1000000, is_done, NULL)) {
         check("progress", false, "every thread blocked and no timer left");
     }

@@ -1,0 +1,6 @@
+# The self-report (module/health_sim.c): HELLO bit 28; one block read in four chunks, parsed as the
+# app parses it (crates/foxglove-link health.rs); a burst of six requests while the system queue
+# can't run: four replies go out, two are dropped, and the next block counts them; the boot
+# self-test (settings loaded: pass; no display, relay or strip here: n/a); bad half and chunk
+# answer 5, a chunk before its copy 6, the right without a relay 2, a short report reads.
+/^health: /p
