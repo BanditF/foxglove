@@ -1295,6 +1295,20 @@ fn lights_board_differs_renders() {
     assert_ne!(img, plain, "the saved look is named");
 }
 
+/// #626: the board draws Swirl in the chosen colour (amber): the colour controls and the
+/// amber band, no rainbow; beside it the same Swirl from firmware that doesn't say (the rainbow).
+#[test]
+fn lights_colour_swirl_renders() {
+    use crate::foxglove::lights_page::tests::{sample_colour_swirl, sample_effect};
+    let rainbow = effect_preview("ui-626-swirl-before.png", sample_effect(3, 39, 70));
+    let img = effect_preview("ui-626-swirl-colour.png", sample_colour_swirl(39, 70));
+    let blue = effect_preview("ui-626-swirl-colour-blue.png", sample_colour_swirl(210, 80));
+    assert!(rainbow_green(&rainbow) > 100, "older firmware: the rainbow");
+    assert_eq!(rainbow_green(&img), 0, "a colour Swirl shows no rainbow");
+    assert_eq!(rainbow_green(&blue), 0);
+    assert_ne!(img, blue, "the band follows the colour");
+}
+
 /// The Scenes page (#487): the user's room with a scene running (wide and at the window's
 /// default size), a scene being dragged, and an empty room with nothing running.
 #[test]

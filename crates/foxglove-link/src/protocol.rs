@@ -72,6 +72,9 @@ pub mod capabilities {
     /// Settings PANEL_POLARITY (D7 12): the keyboard's mono panels dark or light, both halves,
     /// every widget and piece of art (#666; [`super::PanelPolarity`]).
     pub const PANEL_POLARITY: u32 = 1 << 27;
+    /// RGB_STATE (D7 83) byte 29 says which underglow effects the left draws in the chosen
+    /// colour ([`super::RgbState::colour_effects`], #626): Swirl as a band of hues around it.
+    pub const COLOUR_EFFECTS: u32 = 1 << 28;
 }
 pub const VERSION: u8 = 1;
 
@@ -468,6 +471,11 @@ pub struct RgbState {
     pub left: RgbHalf,
     /// `None` when there's no data from the right half (no relay link yet, or old firmware).
     pub right: Option<(RgbHalf, u8)>,
+    /// The underglow effects the left draws in the chosen colour, one bit per effect number
+    /// (bit 0 solid, 1 breathe, 2 spectrum, 3 swirl): byte 29 ([`capabilities::COLOUR_EFFECTS`],
+    /// #626; 0x0B with the colour Swirl). `None` from firmware before it (the byte is 0): the
+    /// app's own table decides.
+    pub colour_effects: Option<u8>,
 }
 
 impl RgbState {
@@ -484,6 +492,7 @@ impl RgbState {
         RgbState {
             left: half(&r[2..9], shown.left),
             right: (r[9] != 0xff).then(|| (half(&r[10..17], shown.right), r[9])),
+            colour_effects: (r[29] != 0).then_some(r[29]),
         }
     }
 }
@@ -1600,6 +1609,23 @@ mod tests {
         r[23] = 0b11;
         r[9] = 0xff;
         assert_eq!(RgbOutput::parse(&r).right, None);
+    }
+
+    /// #626: byte 29 names the effects the left draws in the chosen colour; 0 (firmware before
+    /// it) says nothing.
+    #[test]
+    fn rgb_state_says_which_effects_use_the_colour() {
+        let mut r = [0u8; REPORT];
+        r[..17].copy_from_slice(&[
+            0xD7, 0x83, 1, 39, 0, 70, 42, 3, 3, 0xff, 0, 0, 0, 0, 0, 0, 0,
+        ]);
+        assert_eq!(RgbState::parse(&r).colour_effects, None, "older firmware");
+        r[29] = 0x0B;
+        let s = RgbState::parse(&r);
+        assert_eq!(s.colour_effects, Some(0x0B));
+        assert_eq!(s.colour_effects.map(|m| m & (1 << 3) != 0), Some(true));
+        assert_eq!(s.colour_effects.map(|m| m & (1 << 2) != 0), Some(false));
+        assert_eq!(capabilities::COLOUR_EFFECTS, 1 << 28);
     }
 
     #[test]

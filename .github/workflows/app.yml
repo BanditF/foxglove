@@ -30,7 +30,20 @@ jobs:
         with:
           workspaces: app
       - run: cargo clippy --all-targets -- -D warnings
+      - name: Review image folder
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/ui-previews" | Out-Null
       - run: cargo test
+        env:
+          # theme_preview keeps its PNGs here: the review images, uploaded below.
+          FOXGLOVE_UI_PREVIEW_DIR: ${{ runner.temp }}/ui-previews
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-previews
+          path: ${{ runner.temp }}/ui-previews
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Match executable version to release tag (or the test version)
         if: startsWith(github.ref, 'refs/tags/app-v') || inputs.test_version != ''
         shell: pwsh

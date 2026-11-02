@@ -23,7 +23,9 @@ use super::theme;
 /// called and which controls it uses (#616, #670). The table is
 /// [`super::effect_controls::UNDERGLOW`]; Spectrum and Swirl make their own colours, so the
 /// page shows a rainbow for them in place of the colour picker, and the case's "Match
-/// keyboard" has no colour to copy from them.
+/// keyboard" has no colour to copy from them. A keyboard that draws Swirl in the chosen colour
+/// says so (#626), and the page then shows its colour controls and a band of that colour
+/// ([`super::effect_controls::underglow_in`]).
 pub type KeyboardEffect = super::effect_controls::EffectSpec;
 
 /// The keyboard's effects by number: 0 solid, 1 breathe, 2 spectrum, 3 swirl.
@@ -300,6 +302,7 @@ fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
         ui,
         &format!("{} now", super::parts::upper_first(&parts.all())),
     ));
+    let colour_effects = v.state.and_then(|s| s.colour_effects);
     let mut rows = vec![(parts.short(0), v.state.map(|s| s.left), None)];
     if parts.is_split() {
         rows.push((parts.short(1), right.map(|(h, _)| h), right.map(|(_, a)| a)));
@@ -307,7 +310,7 @@ fn keyboard_side(ui: &mut egui::Ui, v: &View, out: &mut Vec<Intent>) {
     for (name, half, age) in rows {
         super::settings_ui::pair(ui, 52.0, &name, |ui| {
             if let Some(h) = half {
-                preview_chip(ui, &h);
+                preview_chip(ui, &h, colour_effects);
             }
             ui.add(egui::Label::new(half_text(half.as_ref(), age)).wrap());
         });
@@ -366,6 +369,9 @@ pub struct Model {
     pub colour_label: &'static str,
     /// The rainbow preview shows in place of the swatches.
     pub rainbow: bool,
+    /// The effect moves a band of hues around the chosen colour (#626): the band shows under
+    /// the swatches.
+    pub band: bool,
     /// The swatches and the Custom pill.
     pub swatches: bool,
     /// The hue and saturation sliders (behind Custom).
@@ -407,6 +413,7 @@ impl Model {
                 "Looks like"
             },
             rainbow: !controls.colour(),
+            band: showing.effect.is_some_and(|e| e.band),
             swatches: controls.colour(),
             hue: controls.hue,
             sat: controls.sat,
@@ -521,6 +528,25 @@ fn underglow(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             if let Some(name) = m.effect {
                 ui.weak(format!(
                     "{name} is a rainbow: it doesn't use the colour yet. Brightness and speed still apply."
+                ));
+            }
+        }
+        if m.band {
+            // The colour Swirl (#626): the band of hues it moves through, around the colour
+            // being picked.
+            ui.add_space(4.0);
+            let w = ui.available_width().min(360.0);
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 18.0), Sense::hover());
+            super::effect_controls::paint_band(
+                ui.painter(),
+                rect,
+                (*hue, *sat, (*brightness).max(40)),
+                shown_color,
+            );
+            if let Some(name) = m.effect {
+                ui.weak(format!(
+                    "{name} moves a band of hues around this colour, {}° either way.",
+                    super::effect_controls::BAND
                 ));
             }
         }
@@ -668,18 +694,21 @@ fn follow_row(ui: &mut egui::Ui, v: &View, parts: &super::parts::Parts, out: &mu
     });
 }
 
-/// A half's lights as a small chip: its colour, a rainbow for an effect that makes its own
-/// colours, or dark (#670: what the keyboard reports it shows).
-fn preview_chip(ui: &mut egui::Ui, h: &RgbHalf) {
+/// A half's lights as a small chip: its colour, its band for a colour Swirl (#626), a rainbow
+/// for an effect that makes its own colours, or dark (#670: what the keyboard reports it
+/// shows). `colour_effects` is the keyboard's report of the effects it draws in the colour.
+fn preview_chip(ui: &mut egui::Ui, h: &RgbHalf, colour_effects: Option<u8>) {
+    use super::effect_controls::{paint_preview, underglow_as, Preview};
     let (rect, _) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), Sense::hover());
-    if !h.on {
-        ui.painter().rect_filled(rect, 3.0, Color32::from_gray(20));
-    } else if effect(h.effect).is_some_and(KeyboardEffect::rainbow) {
-        super::effect_controls::paint_rainbow(ui.painter(), rect, true);
+    let preview = if !h.on {
+        Preview::Dark
     } else {
-        ui.painter()
-            .rect_filled(rect, 3.0, shown_color(h.hue, h.sat, h.brightness));
-    }
+        underglow_as(h.effect, colour_effects)
+            .map_or(Preview::Colour(h.hue, h.sat, h.brightness), |e| {
+                e.preview(h.hue, h.sat, h.brightness)
+            })
+    };
+    paint_preview(ui.painter(), rect, preview, shown_color);
 }
 
 /// A label with its value on the right, above a slider.
@@ -773,6 +802,7 @@ pub mod tests {
         let state = RgbState {
             left: half(true, 26, 3),
             right: None,
+            colour_effects: None,
         };
         let mut d = Draft::default();
         d.settle(None);
@@ -792,6 +822,7 @@ pub mod tests {
         d.settle(Some(&RgbState {
             left: half(true, 26, 5),
             right: None,
+            colour_effects: None,
         }));
         assert_eq!(d.speed, None, "the keyboard caught up");
     }
@@ -808,6 +839,7 @@ pub mod tests {
                 ..half(false, 4, 3)
             },
             right: Some((half(false, 4, 3), 0)),
+            colour_effects: None,
         };
         // The page last sent 42 % (Swirl); the keyboard now reports off, Spectrum, 9 %.
         let mut d = Draft {
@@ -909,6 +941,7 @@ pub mod tests {
             state: Some(RgbState {
                 left: half(true, 26, 3),
                 right: Some((half(true, 26, 3), 1)),
+                colour_effects: None,
             }),
             sync: RgbSync::Known { on: true },
             accent: false,
@@ -961,6 +994,7 @@ pub mod tests {
             state: Some(RgbState {
                 left: half(true, 26, 3),
                 right: None,
+                colour_effects: None,
             }),
             parts: crate::foxglove::fixtures::second_desk::board().parts(),
             ..sample()
@@ -1046,9 +1080,39 @@ pub mod tests {
             state: Some(RgbState {
                 left: h,
                 right: Some((h, 0)),
+                colour_effects: None,
             }),
             ..sample()
         }
+    }
+
+    /// #626: the board draws Swirl in the chosen colour (RGB_STATE byte 29 = 0x0B).
+    pub fn sample_colour_swirl(hue: u16, sat: u8) -> View {
+        let mut v = sample_effect(3, hue, sat);
+        if let Some(s) = &mut v.state {
+            s.colour_effects = Some(0x0B);
+        }
+        v
+    }
+
+    /// #626: a colour Swirl shows the colour controls (swatches, Custom, hue, saturation,
+    /// brightness, speed, the accent switch) and the band, not the rainbow; the same Swirl from
+    /// firmware that doesn't say stays the rainbow.
+    #[test]
+    fn a_colour_swirl_shows_the_colour_controls_and_its_band() {
+        let m = Model::new(&sample_colour_swirl(39, 70));
+        assert_eq!(m.effect, Some("Swirl"));
+        assert_eq!(m.colour_label, "Colour");
+        assert!(!m.rainbow && m.band && m.swatches);
+        assert!(m.hue && m.sat && m.brightness && m.speed && m.accent);
+        let text = page_text(&sample_colour_swirl(39, 70));
+        assert!(
+            text.contains("Swirl moves a band of hues around this colour"),
+            "{text}"
+        );
+        assert!(!text.contains("is a rainbow"), "{text}");
+        let old = Model::new(&sample_effect(3, 39, 70));
+        assert!(old.rainbow && !old.band && !old.hue);
     }
 
     /// #670's sitting case: the board shows a rainbow Swirl (set on the keyboard) while
