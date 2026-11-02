@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <stdlib.h>
+
 #include <zephyr/drivers/led_strip.h>
 #include <zephyr/kernel.h>
 #include <zephyr/spinlock.h>
@@ -120,7 +122,7 @@ static void swirl(const struct led_rgb *in, struct led_rgb *out, size_t n,
         uint16_t hue = (chosen.h % 360 + 360 + offset) % 360;
         uint8_t level = MAX(v * (100 * 180 - DEPTH * (180 - tri)) / (100 * 180), 1);
         out[i] = from_hsv(hue, MIN(chosen.s, 100), level);
-        *widest = MAX(*widest, (uint8_t)ABS(offset));
+        *widest = MAX(*widest, (uint8_t)abs(offset));
     }
 }
 
