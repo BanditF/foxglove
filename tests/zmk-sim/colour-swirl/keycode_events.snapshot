@@ -1,5 +1,5 @@
-swirl: -- hello: capability bit 28
-swirl: HELLO caps bit 28 COLOUR_EFFECTS 1
+swirl: -- hello: capability bit 29
+swirl: HELLO caps bit 29 COLOUR_EFFECTS 1
 swirl: strip ready 1, dim level 100
 swirl: health, before any frame: version 1, effect 255, flags 4 (colour 0, recoloured 0, built 1), band 30, hue 0, widest offset within the band yes, frames 0, last apply none
 swirl: -- the user's amber (#d39f3f): a band around it, never the rainbow

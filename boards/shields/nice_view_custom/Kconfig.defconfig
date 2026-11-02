@@ -163,7 +163,7 @@ config FOXGLOVE_COLOUR_SWIRL
     default y
     depends on NICE_VIEW_RGB_BATTERY_DIM && ZMK_RGB_UNDERGLOW
     help
-      D7 83 byte 29 (HELLO bit 28) tells the PC which effects use the colour. Both halves build
+      D7 83 byte 29 (HELLO bit 29) tells the PC which effects use the colour. Both halves build
       it; the right shows the left's colour and effect (#624). Spectrum stays the rainbow.
 
 config FOXGLOVE_COLOUR_SWIRL_BAND

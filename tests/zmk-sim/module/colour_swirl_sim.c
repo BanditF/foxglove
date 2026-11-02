@@ -10,7 +10,7 @@
  * (plus 1 for rounding), reaching both edges of the band, moving every frame, while ZMK's own
  * hues span the whole wheel. Then the right: a half with an older look takes the left's from
  * the relay's RGB op (rgb_idle.c, #624) and draws the same frames. Spectrum, Solid and Breathe
- * pass through untouched; D7 83 byte 29 and HELLO bit 28 say what the left draws in colour;
+ * pass through untouched; D7 83 byte 29 and HELLO bit 29 say what the left draws in colour;
  * the lighting health counters (colour_effects.h) count the frames.
  * SPDX-License-Identifier: MIT
  */
@@ -337,13 +337,13 @@ static void read_83(const char *when) {
 
 void colour_swirl_sim_driver(void) {
     k_msleep(500);
-    note("hello: capability bit 28");
+    note("hello: capability bit 29");
     {
         const uint8_t d[] = {0xD5, 0x01, 0x01};
         want_hello = true;
         put(d, sizeof(d));
-        printk("swirl: HELLO caps bit 28 COLOUR_EFFECTS %d\n",
-               (sys_get_le32(&hello[21]) >> 28) & 1);
+        printk("swirl: HELLO caps bit 29 COLOUR_EFFECTS %d\n",
+               (sys_get_le32(&hello[21]) >> 29) & 1);
     }
     battery_dim_update(true, 100); // on USB: full level, so the hues aren't rounded twice
     printk("swirl: strip ready %d, dim level %d\n", device_is_ready(underglow),

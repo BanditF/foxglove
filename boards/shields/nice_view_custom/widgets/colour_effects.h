@@ -29,7 +29,7 @@ struct led_rgb;
 #define COLOUR_EFFECT_SWIRL 3
 
 // The ZMK effects this build draws in the chosen colour, one bit per effect number: D7 83 byte 29
-// (HELLO bit 28, host_link.h). Solid and Breathe always; Swirl with CONFIG_FOXGLOVE_COLOUR_SWIRL.
+// (HELLO bit 29, host_link.h). Solid and Breathe always; Swirl with CONFIG_FOXGLOVE_COLOUR_SWIRL.
 uint8_t colour_effects_mask(void);
 
 // dim_strip.c, ZMK's frames only (the lowest-priority queue): the frame to send. `in` itself,
