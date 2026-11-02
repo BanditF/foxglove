@@ -148,5 +148,15 @@ store keeps `position` across restarts, as now.
   **Change the right screen with the preset** is on. That toggle belongs to the presets, so
   there's no "follow the preset" option here.
 - **Layer art** offers built-ins and saved slots (instant). Files wait for the slot cache.
-- **The art key:** the checkbox is there but disabled until firmware ships `&art_next` and its
-  HELLO capability bit.
+- **The art key** (since the #306/#318 salvage): no checkbox. While Foxglove runs unpaused it
+  takes the keys on every keyboard with HELLO bit 16 (D7 0D 01 after each HELLO), steps Rotation
+  on each D7 8D 01 (even over layer or preset art, as Next › does) and shows the card on the
+  left screen (`render::draw_art_card`, `screens::show_art_card`, 1.2 s, ended by the panel
+  loop's own deadline; a plugin's frame stays on top). Pause hands the keys back (D7 0D 00), and
+  Quit does too before it exits (one request, 300 ms at most). A crash leaves them with the PC
+  until the next USB disconnect or endpoint change, when the board takes them back itself.
+- **Health** (`art_keys_health.rs`, for the shared Keyboard health view, #705): subsystem
+  `screens.art_keys`, three rows: **Held** (Foxglove holds the keys, the keyboard steps its own
+  art, or the firmware has none: Warn), **Presses** (pressed and stepped; Warn with the last
+  reason when one didn't step) and **Last hand-back** (pause, quit, the keyboard going; Warn
+  after a worker restart retook them; Fail when quit got no answer).
