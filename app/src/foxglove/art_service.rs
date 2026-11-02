@@ -8,6 +8,7 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
 
 use super::art_cycle::{self, Cycle};
+use super::art_keys_health::{self, HandBack};
 use super::art_triggers::{Change, Triggers};
 
 use foxglove_link::art;
@@ -556,6 +557,11 @@ pub fn start() {
                     s.connected = false;
                     s.error = Some("Art worker panicked; restarted".into());
                 });
+                // The next connect takes the art keys again; the health view says it happened.
+                art_keys_health::note(|a| {
+                    a.held = false;
+                    a.last_hand_back = Some(HandBack::Recovered);
+                });
             }
             run(&worker, &receiver.lock().unwrap_or_else(|e| e.into_inner()));
         });
@@ -581,9 +587,14 @@ pub fn stop() {
             protocol::settings::ART_KEYS,
             ART_KEYS_REPLY,
         );
-        if let Err(e) = r {
-            eprintln!("Foxglove: art keys: not handed back to the keyboard: {e}");
-        }
+        let why = match r {
+            Ok(_) => HandBack::Quit,
+            Err(e) => {
+                eprintln!("Foxglove: art keys: not handed back to the keyboard: {e}");
+                HandBack::QuitFailed(e.to_string())
+            }
+        };
+        art_keys_health::note(|h| h.told(false, Some(why)));
     }
 }
 
@@ -614,6 +625,8 @@ fn sync_art_keys(link: &Arc<Link>, has_keys: bool, want: bool, told: Option<bool
         return told;
     }
     held_art_keys(want.then(|| Arc::downgrade(link)));
+    // Only pause hands them back here; quit and a disconnect note their own reasons.
+    art_keys_health::note(|h| h.told(want, Some(HandBack::Pause)));
     Some(want)
 }
 
@@ -1118,9 +1131,11 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 // Only while Foxglove holds the keys: another host's subscription (the lab's) sees
                 // the same reports. A press that can't step (busy, nothing else) says why.
                 if is_current && art_keys_told == Some(true) {
-                    if let Err(e) = h.step(forward, true) {
+                    let stepped = h.step(forward, true);
+                    if let Err(e) = &stepped {
                         eprintln!("Foxglove: art key: {e}");
                     }
+                    art_keys_health::note(|a| a.pressed(&stepped));
                 }
                 continue;
             }
@@ -1373,6 +1388,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     // connect takes them again.
                     (has_art_keys, art_keys_told) = (false, None);
                     held_art_keys(None);
+                    art_keys_health::note(|a| a.disconnected());
                     triggers.disconnected();
                     h.update(|s| {
                         s.connected = false;
@@ -1399,6 +1415,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 // Taken on each connect: the keyboard drops them on a USB disconnect or an
                 // endpoint change, and keeps no keep-alive.
                 has_art_keys = caps & protocol::capabilities::ART_KEYS != 0;
+                art_keys_health::note(|a| a.connected(has_art_keys));
                 art_keys_told = sync_art_keys(link, has_art_keys, !super::pause::paused(), None);
                 h.update(|s| {
                     s.connected = true;
@@ -2596,6 +2613,7 @@ mod contention_tests {
             rig.board.push(r);
         };
         assert_eq!(*rig.board.art_keys.lock().unwrap(), [1], "taken on connect");
+        let before = art_keys_health::now().stepped;
         press(1);
         let after = rig.until("the next piece", |s| {
             !s.busy && s.status.is_some_and(|st| st.right_set == 3)
@@ -2612,6 +2630,8 @@ mod contention_tests {
         });
         assert_eq!(*rig.board.set.lock().unwrap(), 2);
         assert_eq!(rig.board.requests().2, 0, "nothing else asked");
+        // The health signal fired for both presses (other tests press no art keys).
+        assert!(art_keys_health::now().stepped >= before + 2);
 
         let plain = Rig::new(2, 2);
         assert!(plain.board.art_keys.lock().unwrap().is_empty(), "no bit 16");
