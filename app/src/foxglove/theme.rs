@@ -92,8 +92,8 @@ pub const LIGHT: Palette = Palette {
 };
 
 impl Palette {
-    /// Every token by name, for checks and previews.
-    #[allow(dead_code)] // used by the tests and the pages that follow (#385 on)
+    /// Every token by name, for the palette checks.
+    #[cfg(test)]
     pub fn tokens(&self) -> Vec<(&'static str, Color32)> {
         vec![
             ("ground", self.ground),
@@ -325,7 +325,6 @@ pub fn heading(ui: &egui::Ui, text: &str) -> RichText {
 }
 
 /// A small upper-case label (`EFFECT`, `LIBRARY`) in the mono face.
-#[allow(dead_code)] // for the pages that follow (#385 on)
 pub fn caps_label(ui: &egui::Ui, text: &str) -> RichText {
     RichText::new(text.to_uppercase())
         .font(mono(11.0))
@@ -362,7 +361,6 @@ pub fn pill_button(ui: &egui::Ui, selected: bool, text: &str) -> egui::Button<'s
 }
 
 /// The main action of a card: an orange button.
-#[allow(dead_code)] // for the pages that follow (#385 on)
 pub fn primary_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
     let p = palette(ui);
     egui::Button::new(RichText::new(text.to_owned()).color(p.on_accent))

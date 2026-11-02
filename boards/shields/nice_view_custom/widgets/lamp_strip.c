@@ -30,7 +30,10 @@
     (IS_ENABLED(CONFIG_ZMK_RGB_UNDERGLOW_EXT_POWER) &&                                             \
      DT_HAS_COMPAT_STATUS_OKAY(zmk_ext_power_generic))
 
+// Written through dim_strip.c when battery dimming is built in (draw()), directly otherwise.
+#if !IS_ENABLED(CONFIG_NICE_VIEW_RGB_BATTERY_DIM)
 static const struct device *const strip = DEVICE_DT_GET(DT_CHOSEN(zmk_underglow));
+#endif
 #if EXT_POWER
 static const struct device *const ext_power = DEVICE_DT_GET(DT_INST(0, zmk_ext_power_generic));
 #endif

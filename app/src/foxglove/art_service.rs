@@ -1,5 +1,4 @@
 //! Right art on the shared host link. File I/O and all keyboard requests stay on the worker.
-#![allow(dead_code)] // Handle consumed by the art settings and tray in #15/#16.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -200,10 +199,6 @@ impl Snapshot {
             self.pinned_name.as_deref(),
             manifest_index(count),
         )
-    }
-
-    pub fn progress(&self) -> Option<(u16, u16)> {
-        self.push_progress
     }
 }
 
