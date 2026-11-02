@@ -161,3 +161,16 @@ three layers): RAM +2,536 B (49.3% to 50.3% of 256 KB), flash +2,408 B (65.3% to
 540 KB); the right half's builds are byte for byte the same size. Settings
 storage (NVS, 32 KB on the Eyelash Corne) only grows when a reserved layer is used: one entry
 per changed key (up to 48 a layer), plus its name and the layer order.
+
+## Board profiles: firmware files (#563)
+
+The app's firmware update takes Foxglove's own file names for each part
+(`foxglove-<version>-left.uf2`, CI's `foxglove-fw-…-left-<profile>.uf2`). A board whose older
+builds had other names lists them in `[firmware] files`, one per part, the one the PC talks to
+first; such a file is taken only when no file has Foxglove's name for that part. A board without
+the table, or a keyboard without a profile, takes Foxglove's names only.
+
+```toml
+[firmware]
+files = ["eyelash_corne_studio_left.uf2", "nice_view_custom-eyelash_corne_right-zmk.uf2"]
+```
