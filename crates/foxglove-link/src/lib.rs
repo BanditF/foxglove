@@ -5,6 +5,7 @@
 //! command, and replies come back with byte 1 = command | 0x80.
 //!
 //! - [`protocol`]: report builders and reply parsers, no I/O
+//! - [`health`]: the keyboard's self-report (D7 13): parse, thresholds, rows (#705)
 //! - [`lamps`]: a keyboard's LEDs by part, in SET_FRAME's order
 //! - [`Transport`]: what the senders need from a connection; [`hid`] has the hidapi one
 //! - [`link`]: one shared owner of the connection, for apps where several parts talk to the board
@@ -16,6 +17,7 @@
 pub mod art;
 #[cfg(feature = "devices")]
 pub mod devices;
+pub mod health;
 #[cfg(feature = "hid")]
 pub mod hid;
 pub mod lamps;

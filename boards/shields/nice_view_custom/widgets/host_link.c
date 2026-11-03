@@ -51,6 +51,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "pc_state.h"
 #endif
 #include "panel_polarity.h"
+#include "health.h"
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
 #include <zmk/rgb_underglow.h>
@@ -73,7 +74,7 @@ enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_
        SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B, // 0x0A: LAMP_TEST (#115 branch)
        SETTING_FRAME = 0x0C, SETTING_ART_KEYS = 0x0D,
        SETTING_BATTERY_DIM = 0x0E, SETTING_EFFECT = 0x0F, SETTING_LAMP_PARTS = 0x10,
-       SETTING_PC_STATE = 0x11, SETTING_PANEL_POLARITY = 0x12 };
+       SETTING_PC_STATE = 0x11, SETTING_PANEL_POLARITY = 0x12, SETTING_HEALTH = 0x13 };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -115,7 +116,10 @@ BUILD_ASSERT(HOST_PANEL_W % 8 == 0, "panel rows are whole bytes");
 void host_panel_redraw(void) {}
 #endif
 
-static void redraw_cb(struct k_work *work) { host_panel_redraw(); }
+static void redraw_cb(struct k_work *work) {
+    health_inc(HEALTH_REDRAWS);
+    host_panel_redraw();
+}
 static K_WORK_DEFINE(redraw_work, redraw_cb);
 
 static void redraw(void) {
@@ -153,6 +157,8 @@ static void reply(const uint8_t *data, int len) {
     memcpy(report, data, MIN(len, REPORT_SIZE));
     if (k_msgq_put(&reply_msgq, report, K_NO_WAIT) == 0) {
         k_work_submit(&reply_work);
+    } else {
+        health_inc(HEALTH_HID_REPLY_DROPS); // the queue is full: this reply is lost (#705)
     }
 }
 
@@ -250,6 +256,9 @@ static void hello_reply(void) {
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_PANEL_POLARITY)
     caps |= HOST_LINK_CAP_PANEL_POLARITY;
+#endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH)
+    caps |= HOST_LINK_CAP_HEALTH;
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_COLOUR_SWIRL) && IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
     caps |= HOST_LINK_CAP_COLOUR_EFFECTS;
@@ -472,6 +481,7 @@ static uint8_t invoke(const uint8_t *d, int len) {
         }
         if (art_relay_rgb_hsb(color.h, color.s, color.b) == 0) {
             zmk_rgb_underglow_set_hsb(color);
+            health_inc(HEALTH_LIGHT_APPLIES);
             invoke_reply(INVOKE_OK, id); // the caller only replies to errors
             return INVOKE_OK;
         }
@@ -775,6 +785,93 @@ void host_link_pc_state_event(void) {
     }
 }
 
+/* D7 13 HEALTH (#705, HELLO bit 28): each half's self-report block (health.h, docs/health.md), in
+ * HEALTH_CHUNKS chunks. Chunk 0 takes a new copy (the left's at once; the right's over the relay,
+ * replied when it is in) and the other chunks come from that copy, so one read is one moment. */
+
+#define HEALTH_REPLY_SIZE (8 + 24)
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH)
+BUILD_ASSERT(HEALTH_REPLY_SIZE == 8 + HEALTH_CHUNK, "D7 93 bytes 8-31");
+static uint8_t health_copy[2][HEALTH_SIZE];
+static bool health_have[2];
+static uint8_t health_seq[2];
+static struct k_spinlock health_lock;
+#endif
+
+// D7 93: status, half, copy number, chunk, chunks, block length, then the chunk's bytes.
+static void health_reply(uint8_t status, uint8_t half, uint8_t chunk) {
+    uint8_t r[HEALTH_REPLY_SIZE] = {HOST_LINK_SETTINGS, 0x80 | SETTING_HEALTH, status, half};
+    r[5] = chunk;
+#if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH)
+    r[6] = HEALTH_CHUNKS;
+    r[7] = HEALTH_SIZE;
+    if (status == 0 && half <= 1 && chunk < HEALTH_CHUNKS) {
+        k_spinlock_key_t key = k_spin_lock(&health_lock);
+        r[4] = health_seq[half];
+        memcpy(&r[8], &health_copy[half][chunk * HEALTH_CHUNK],
+               MIN(HEALTH_CHUNK, HEALTH_SIZE - chunk * HEALTH_CHUNK));
+        k_spin_unlock(&health_lock, key);
+    }
+#endif
+    reply(r, sizeof(r));
+}
+
+void host_link_health_right(uint8_t status) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH) && IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+    if (status == 0) {
+        k_spinlock_key_t key = k_spin_lock(&health_lock);
+        if (art_relay_right_health(health_copy[1], HEALTH_SIZE)) {
+            health_have[1] = true;
+            health_seq[1]++;
+        } else {
+            status = 3;
+        }
+        k_spin_unlock(&health_lock, key);
+    }
+    health_reply(status, 1, 0);
+#else
+    ARG_UNUSED(status);
+#endif
+}
+
+// Status: 0 ok, 1 busy (a read of the right runs), 2 no relay link, 3 the right didn't answer,
+// 4 not built in (or the right's firmware has no block), 5 bad request, 6 no copy yet (chunk 0
+// first).
+static void health_command(const uint8_t *d) {
+    uint8_t half = d[2], chunk = d[3]; // d is padded: a report cut short reads half 0, chunk 0
+#if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH)
+    if (half > 1 || chunk >= HEALTH_CHUNKS) {
+        health_reply(5, half, chunk);
+        return;
+    }
+    if (chunk == 0 && half == 0) {
+        struct health_wire h;
+        health_fill(&h);
+        k_spinlock_key_t key = k_spin_lock(&health_lock);
+        memcpy(health_copy[0], &h, sizeof(h));
+        health_have[0] = true;
+        health_seq[0]++;
+        k_spin_unlock(&health_lock, key);
+        health_reply(0, 0, 0);
+        return;
+    }
+    if (chunk == 0) {
+#if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
+        if (art_relay_health_read() != 0) {
+            health_reply(1, 1, 0); // one is on its way; its reply comes
+        }
+#else
+        health_reply(2, 1, 0);
+#endif
+        return;
+    }
+    health_reply(health_have[half] ? 0 : 6, half, chunk);
+#else
+    health_reply(4, half, chunk);
+#endif
+}
+
 static void settings_command(const uint8_t *d, int len) {
     if (d[1] == SETTING_SCREEN_SNAP || d[1] == SETTING_SCREEN_READ) {
         screen_snap_command(d, len);
@@ -787,6 +884,9 @@ static void settings_command(const uint8_t *d, int len) {
         BUILD_ASSERT(sizeof(r) == HOST_FRAMES_REPLY_SIZE, "the D7 8C reply");
         if (!host_frames_command(d, len, r)) {
             break;
+        }
+        if (r[2] == 0 && (d[2] & 1)) {
+            health_inc(HEALTH_LIGHT_APPLIES); // a frame shown (SHOW)
         }
 #endif
         reply(r, sizeof(r));
@@ -806,6 +906,12 @@ static void settings_command(const uint8_t *d, int len) {
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
         BUILD_ASSERT(sizeof(r) == HOST_EFFECTS_REPLY_SIZE, "the D7 8F reply");
         host_effects_command(d, len, r);
+        if (r[2] == 0 && d[2] == 2) { // op EFFECT: kind in byte 3
+            health_inc(HEALTH_LIGHT_APPLIES);
+            health_set(HEALTH_LAST_EFFECT, d[3]);
+        } else if (r[2] == 0 && d[2] == 0) { // op RELEASE
+            health_set(HEALTH_LAST_EFFECT, 0);
+        }
 #endif
         reply(r, sizeof(r));
         break;
@@ -816,6 +922,9 @@ static void settings_command(const uint8_t *d, int len) {
         reply(r, sizeof(r));
         break;
     }
+    case SETTING_HEALTH:
+        health_command(d);
+        break;
     case SETTING_PANEL_POLARITY: {
         // D7 12 (#666): a report cut short is a read; d is padded to the report size.
         uint8_t r[6] = {HOST_LINK_SETTINGS, 0x80 | SETTING_PANEL_POLARITY, 4,

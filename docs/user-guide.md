@@ -312,8 +312,14 @@ Foxglove controls them:
   **Identify** blinks the case for a moment; **Off** turns it dark. **Match keyboard** makes
   the case follow the keyboard's light colour you set in Foxglove, or the Windows accent colour when
   the keyboard follows that. Foxglove puts your colours back when the PC starts.
-- **Windows lighting**, such as a Logitech G502: Windows' Dynamic Lighting settings
-  control it for now.
+- **Windows lighting**: any device Windows lists under Dynamic Lighting, such as a Logitech
+  G502, a light strip or a headset. Its lamps are listed by what they are for ("Lamp 1 · Logo").
+  You get a picker per lamp (up to 12 lamps; more lamps get one **All lamps** row), plus
+  **Apply colours**, **Identify**, **Off** and **Match keyboard**, as for the case. Windows
+  decides who drives these lights. It shows Foxglove's colours while Foxglove's window is in
+  front, and in the background its own Dynamic Lighting takes over. The line under the device
+  says which. Foxglove keeps your colours and puts them back when Windows hands the device
+  back. A device you turned off in Settings > Personalization > Dynamic Lighting stays off.
 - **Not controllable yet**, such as the OMEN liquid cooler: listed so you know it was seen.
 
 Each device shows what it can do as small chips, such as **Per-zone RGB · 5 zones**,
@@ -410,10 +416,11 @@ show. There is no separate list: to change what Rotation
 shows, keep or remove pieces on the keyboard. (A playlist of art that only this PC has is a
 later idea, #522.)
 - **Next piece** comes on any of these, in any mix:
-  - **on the art key** *(after 0.1, next app update)*: hold SYSTEM (both middle thumbs + Tab),
-    then **P** for next and **O** for previous. Without the app, the keyboard steps through its
-    own built-ins and saved slots. *(next app update)* The left screen shows **ART 3/7** and the
-    name for a second.
+  - **on the art key** *(after 0.1)*: hold SYSTEM (both middle thumbs + Tab), then **P** for
+    next and **O** for previous. While Foxglove runs, the left screen shows **ART** with the
+    piece's place (3/7), a triangle the way it stepped and the piece's name, for about a second.
+    Paused, quit, or without the app, the keyboard steps through its own built-ins and saved
+    slots.
   - **Lights wake**: the next piece each time the keyboard's lights come back on.
   - **every N minutes**.
 - **Wallpaper:** the right screen shows the art that goes with the wallpaper on

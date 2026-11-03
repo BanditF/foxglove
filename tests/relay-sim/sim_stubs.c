@@ -12,7 +12,8 @@
 #include "panel_polarity.h"
 #include "screen_snap.h"
 
-struct sim_left sim_left = {.on = true, .activity = ZMK_ACTIVITY_ACTIVE, .look = {23, 0, 100, 42, 3}};
+struct sim_left sim_left = {
+    .on = true, .activity = ZMK_ACTIVITY_ACTIVE, .look = {23, 0, 100, 42, 3}, .health_status = -1};
 
 enum zmk_activity_state zmk_activity_get_state(void) { return sim_left.activity; }
 
@@ -47,6 +48,22 @@ void host_link_send(const uint8_t *data, int len) {
     (void)len;
     sim_left.sends++;
 }
+/* The self-report (#705): host_link.c's D7 93 for the right, and what health.c reads. */
+void host_link_health_right(uint8_t status) {
+    sim_left.health_status = status;
+    sim_left.health_replies++;
+}
+void foxglove_build_info(struct foxglove_build_info *out) {
+    struct foxglove_build_info b = {0, 1, 0, 0, "simleft"};
+    *out = b;
+}
+uint8_t panel_polarity_get(void) { return sim_left.polarity; }
+void rgb_idle_state(struct rgb_idle_wire *out) {
+    memset(out, 0, sizeof(*out));
+    out->on = sim_left.on;
+    out->effect = sim_left.look[4];
+}
+
 void host_link_build_info_reply(uint8_t status, uint8_t half,
                                 const struct foxglove_build_info *info) {
     (void)status;

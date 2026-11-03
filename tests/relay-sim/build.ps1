@@ -22,8 +22,15 @@ $defs = ($RelaySimDefines | ForEach-Object { "/D$_" }) -join " "
 $common = "/nologo /std:c11 /Zc:preprocessor /W3 /wd4200 /wd4244 /wd4267 /wd4146 /wd4996 /Od /Zi"
 $inc = "/I`"$here\include`" /I`"$Widgets`" /I`"$here`""
 $exe = Join-Path $Out "relay-sim.exe"
+# The self-report (#705) where the widgets have it (bisect.ps1 builds older ones too).
+$healthSrc = ""
+$healthObj = ""
+if (Test-Path (Join-Path $Widgets "health.c")) {
+    $healthSrc = "`"$Widgets\health.c`""
+    $healthObj = "`"$Out\health.obj`""
+}
 $cmd = @"
-call "$vcvars" >nul && cd /d "$Out" && cl $common /c "$here\sim_coro.c" /Fo"$Out\sim_coro.obj" && cl $common /Zp1 $defs $inc /c "$here\sim_kernel.c" "$here\sim_bt.c" "$here\sim_stubs.c" "$here\main.c" "$Widgets\art_relay_central.c" && cl $common /Fe"$exe" "$Out\sim_coro.obj" "$Out\sim_kernel.obj" "$Out\sim_bt.obj" "$Out\sim_stubs.obj" "$Out\main.obj" "$Out\art_relay_central.obj"
+call "$vcvars" >nul && cd /d "$Out" && cl $common /c "$here\sim_coro.c" /Fo"$Out\sim_coro.obj" && cl $common /Zp1 $defs $inc /c "$here\sim_kernel.c" "$here\sim_bt.c" "$here\sim_stubs.c" "$here\main.c" "$Widgets\art_relay_central.c" $healthSrc && cl $common /Fe"$exe" "$Out\sim_coro.obj" "$Out\sim_kernel.obj" "$Out\sim_bt.obj" "$Out\sim_stubs.obj" "$Out\main.obj" "$Out\art_relay_central.obj" $healthObj
 "@
 cmd /c $cmd
 if ($LASTEXITCODE -ne 0) { throw "relay-sim: build failed" }

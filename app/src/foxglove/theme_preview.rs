@@ -1780,6 +1780,22 @@ fn pc_lights_caps_and_add_render() {
     assert_ne!(pick, zones);
 }
 
+/// #691: the Lights page with Dynamic Lighting devices driven like any light: the mouse's two
+/// lamps (logo, accent) on the user's desk, and the second desk's 12-lamp lightbar while
+/// Windows keeps it from Foxglove. Review images `ui-691-lights-desk.png` and
+/// `ui-691-lights-second-desk.png`.
+#[test]
+fn lamp_array_cards_render() {
+    use crate::foxglove::shell::Page;
+    let mut second = Samples::full();
+    second.pc = crate::foxglove::pc_lights_ui::tests::sample_second_desk();
+    let desk = shell_preview_with(Page::Lights, &Samples::full(), 1900.0);
+    let other = shell_preview_with(Page::Lights, &second, 1900.0);
+    keep("ui-691-lights-desk.png", &desk);
+    keep("ui-691-lights-second-desk.png", &other);
+    assert_ne!(desk, other);
+}
+
 #[test]
 fn settings_preview_renders_in_the_theme() {
     use crate::foxglove::theme::{Choice, DARK, LIGHT};
@@ -2050,4 +2066,39 @@ fn sidebar_fox_renders() {
         .filter(|p| p.0[..3] == [DARK.accent.r(), DARK.accent.g(), DARK.accent.b()])
         .count();
     assert!(orange > 250, "{orange}");
+}
+
+/// The App page's Keyboard health card (#705): a keyboard with a failing right screen and a slow
+/// relay, and no keyboard.
+#[test]
+fn health_card_renders() {
+    use crate::foxglove::theme::DARK;
+    // A context each: render_ui's texture map starts empty, so the font atlas must too.
+    let card = |view: crate::foxglove::health::View| {
+        render_ui(
+            &preview_ctx(),
+            egui::vec2(640.0, 440.0),
+            DARK.ground,
+            move |ui| {
+                egui::Frame::new()
+                    .fill(DARK.ground)
+                    .inner_margin(egui::Margin::same(16))
+                    .show(ui, |ui| {
+                        crate::foxglove::health::draw(ui, &view);
+                    });
+            },
+        )
+    };
+    let with = card(crate::foxglove::health::tests::sample());
+    let without = card(crate::foxglove::health::tests::sample_none());
+    keep("ui-705-health.png", &with);
+    keep("ui-705-health-none.png", &without);
+    let count = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| p.0[..3] == [c.r(), c.g(), c.b()])
+            .count()
+    };
+    assert!(count(&with, DARK.danger) > 20, "a Failed label");
+    assert!(count(&with, DARK.warn) > 20, "a Warning label");
+    assert_eq!(count(&without, DARK.danger), 0);
 }

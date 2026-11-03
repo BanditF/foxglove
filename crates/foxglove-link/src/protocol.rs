@@ -40,6 +40,9 @@ pub mod capabilities {
     /// The panel stays as drawn until RELEASE, and keeps its last frame on link loss: the host
     /// sends no keep-alive (#279, #280).
     pub const PANEL_HOLD: u32 = 1 << 15;
+    /// Settings ART_KEYS (D7 0D): the keymap has `&art_next` / `&art_prev` and the art relay is
+    /// built, so the PC can take the keys (#60, #302; [`super::art_keys`]).
+    pub const ART_KEYS: u32 = 1 << 16;
     /// CONN_STATE (D7 84) byte 8 is the left half's own battery % (#373).
     pub const LEFT_BATTERY: u32 = 1 << 17;
     /// Settings BATTERY_DIM (D7 0E): the underglow's levels by power state, per half.
@@ -72,6 +75,9 @@ pub mod capabilities {
     /// Settings PANEL_POLARITY (D7 12): the keyboard's mono panels dark or light, both halves,
     /// every widget and piece of art (#666; [`super::PanelPolarity`]).
     pub const PANEL_POLARITY: u32 = 1 << 27;
+    /// Settings HEALTH (D7 13): each half's self-report, counters per subsystem and a boot
+    /// self-test (#705; [`crate::health`]).
+    pub const HEALTH: u32 = 1 << 28;
     /// RGB_STATE (D7 83) byte 29 says which underglow effects the left draws in the chosen
     /// colour ([`super::RgbState::colour_effects`], #626): Swirl as a band of hues around it.
     pub const COLOUR_EFFECTS: u32 = 1 << 29;
@@ -132,6 +138,8 @@ pub mod settings {
     pub const BUILD_INFO: u8 = 0x09;
     /// Per-LED frames for both halves (#272): see [`super::frame`].
     pub const FRAME: u8 = 0x0C;
+    /// The PC takes the `&art_next` / `&art_prev` keys (#60): see [`super::art_keys`].
+    pub const ART_KEYS: u8 = 0x0D;
     /// The underglow's levels by power state (on USB, on battery, low battery), per half.
     pub const BATTERY_DIM: u8 = 0x0E;
     /// Effects each half draws on its own (#490): see [`super::effect`].
@@ -142,6 +150,8 @@ pub mod settings {
     pub const PC_STATE: u8 = 0x11;
     /// The panels' dark or light (#666): see [`super::PanelPolarity`].
     pub const PANEL_POLARITY: u8 = 0x12;
+    /// One half's self-report block, in chunks (#705): see [`crate::health`].
+    pub const HEALTH: u8 = 0x13;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -864,6 +874,28 @@ impl PcState {
             4 => "not held: no lease and no USB idle time running",
             _ => "unknown",
         }
+    }
+}
+
+/// ART_KEYS (D7 0D, HELLO bit 16): `on` hands the `&art_next` / `&art_prev` presses to the PC as
+/// [`art_key_event`]s instead of the board stepping its own art. The board drops the
+/// subscription on a USB disconnect or an endpoint change; there is no keep-alive, so the PC
+/// subscribes again after each HELLO. The reply is D7 8D, 00, on.
+pub fn art_keys(on: bool) -> Vec<u8> {
+    vec![SETTINGS, settings::ART_KEYS, u8::from(on)]
+}
+
+/// An art-key press while the PC holds the keys: D7 8D, 01, dir (i8: 1 next, -1 previous).
+/// `Some(true)` for next, `Some(false)` for previous; `None` for anything else, the ART_KEYS
+/// reply (D7 8D 00) included.
+pub fn art_key_event(r: &[u8]) -> Option<bool> {
+    if !is_reply(r, SETTINGS, settings::ART_KEYS) || r.get(2) != Some(&1) {
+        return None;
+    }
+    match *r.get(3)? as i8 {
+        1 => Some(true),
+        -1 => Some(false),
+        _ => None,
     }
 }
 
@@ -1907,6 +1939,8 @@ mod tests {
             RGB_SHOWN,
             RIGHT_REDRAWS,
             PANEL_POLARITY,
+            HEALTH,
+            COLOUR_EFFECTS,
         ];
         for (i, a) in all.iter().enumerate() {
             assert_eq!(a.count_ones(), 1);
@@ -1914,6 +1948,26 @@ mod tests {
                 assert_eq!(a & b, 0, "{a:#x} and {b:#x} overlap");
             }
         }
+    }
+
+    /// D7 0D as the firmware reads it and D7 8D as it writes it (widgets/host_link.c, #302):
+    /// the reply (byte 2 = 0) is never taken for a press.
+    #[test]
+    fn art_keys_reports() {
+        assert_eq!(art_keys(true), [0xD7, 0x0D, 1]);
+        assert_eq!(art_keys(false), [0xD7, 0x0D, 0]);
+        let mut r = [0u8; REPORT];
+        r[..4].copy_from_slice(&[0xD7, 0x8D, 1, 1]);
+        assert_eq!(art_key_event(&r), Some(true));
+        r[3] = 0xFF;
+        assert_eq!(art_key_event(&r), Some(false));
+        r[3] = 2;
+        assert_eq!(art_key_event(&r), None, "only one step either way");
+        r[..4].copy_from_slice(&[0xD7, 0x8D, 0, 1]);
+        assert_eq!(art_key_event(&r), None, "the subscription's reply");
+        r[..4].copy_from_slice(&[0xD7, 0x8C, 1, 1]);
+        assert_eq!(art_key_event(&r), None);
+        assert_eq!(art_key_event(&[0xD7, 0x8D, 1]), None, "short");
     }
 
     /// D7 12 as the firmware reads it and D7 92 as it writes it (widgets/host_link.h, #666);

@@ -145,6 +145,7 @@ fn style(title: &str) -> Style {
         | "Startup and updates"
         | "Live wallpaper"
         | "Troubleshooting"
+        | "Keyboard health"
         | "Other keyboards (VIA)" => Style::Card,
         "Overlay Appearance" => Style::CardTop,
         "Theme" if keymap_source_shown() => Style::CardMiddle,

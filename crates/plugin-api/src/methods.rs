@@ -392,6 +392,31 @@ pub struct ScenesPageWallpaper {
     pub on_screen: bool,
 }
 
+/// How a health row stands (API 1.11, #705).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum HealthLevel {
+    Ok,
+    Warn,
+    Fail,
+}
+
+/// One line of the Keyboard health view: a feature, how it stands and why (API 1.11, #705).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct HealthRow {
+    pub subsystem: String,
+    pub item: String,
+    pub level: HealthLevel,
+    pub detail: String,
+}
+
+/// The keyboard's self-report, read now, and Foxglove's features' rows (API 1.11, #705).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Health {
+    pub level: HealthLevel,
+    pub rows: Vec<HealthRow>,
+}
+
 /// The tray panel (API 1.6, #618): whether it's open, and where it was last drawn, in screen
 /// pixels (left, top, right, bottom).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -873,6 +898,14 @@ pub const METHODS: &[Method] = &[
         permission: Some("lighting.write"),
         params: schema!(SetZoneParams),
         result: Some(schema!(PcDevices)),
+    },
+    // The keyboard's self-report and the features' health rows (#705, API 1.11).
+    Method {
+        name: "health.read",
+        kind: Kind::Call,
+        permission: Some("devices.read"),
+        params: schema!(DeviceParams),
+        result: Some(schema!(Health)),
     },
     // What the Lights page shows, for window-free checks (#674, API 1.7).
     Method {

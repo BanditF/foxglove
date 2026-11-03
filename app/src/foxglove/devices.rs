@@ -141,8 +141,23 @@ fn learn_lamp_parts(d: &FoxgloveLinkDevice) {
         }
     };
     *FIRMWARE_PARTS.lock().unwrap_or_else(|e| e.into_inner()) = parts.clone();
+    // The zones' health signal (#611): what was found, from where, and a firmware/profile
+    // disagreement, once per connect.
+    let board = super::boards::current();
+    let drawing = super::boards::drawing(board.as_ref());
+    let row = super::light_zones::keyboard_health(board.as_ref(), &drawing, parts.as_ref());
+    eprintln!("Foxglove: {}", row.log_line());
     // Frames split (and calibrate) by the same counts the scenes size them by.
     d.set_lamp_parts(choose_parts(parts, super::boards::current().as_ref()));
+}
+
+/// The LEDs per part the keyboard found last reported (LAMP_PARTS), as it said them; `None`
+/// for firmware that doesn't say. For the Lights page's zone line (#611).
+pub fn firmware_lamp_parts() -> Option<foxglove_link::lamps::LampParts> {
+    FIRMWARE_PARTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// The keyboard's LEDs by part (#561): what its firmware said when it connected, when that has

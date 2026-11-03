@@ -54,6 +54,7 @@ static void screen_timeout(struct k_work *work) {
     irq_unlock(key);
     if (send) {
         atomic_clear(&screen_accept);
+        health_inc(HEALTH_SNAP_ERRORS); // #705
         screen_snap_complete(1, SCREEN_TIMEOUT);
     }
 }
@@ -159,6 +160,7 @@ static int screen_wait(int ret) {
     int64_t remaining = screen_deadline - k_uptime_get();
     if (remaining <= 0 || k_sem_take(&screen_done, K_MSEC(remaining))) {
         if (atomic_get(&screen_flight) && atomic_cas(&stuck_screen, 0, 1)) {
+            health_inc(HEALTH_RELAY_TIMEOUTS); // #705
             // Let go: the right may yet answer; if not, the unstick acts STUCK_AFTER_MS after
             // this request went out.
             unstick_arm_after(k_uptime_get() - screen_sent_at);
@@ -264,6 +266,9 @@ done:
         bt_conn_unref(conn);
     }
     if (atomic_cas(&screen_replied, 0, 1)) {
+        if (result == SCREEN_TIMEOUT) {
+            health_inc(HEALTH_SNAP_ERRORS); // #705
+        }
         screen_snap_complete(1, result);
     }
     atomic_clear(&screen_pending);

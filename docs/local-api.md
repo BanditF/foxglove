@@ -99,6 +99,12 @@ The params and results are in the schema. Notes:
   covers most, and on screen or not. `overlay.restore` runs the overlay's restore check now and
   answers with the probe; it logs the restore line, or `… nothing to restore (api)`. The writes
   need `app.windows`. `foxglove-cli art`, `panel` and `overlay` use them.
+- **Keyboard health (#705, API 1.11):** `health.read {device}` reads the keyboard's self-report
+  now (both halves' D7 13 blocks, the right's over the relay, up to about 8 s; docs/health.md)
+  and answers `{level, rows}`: one row per feature, `{subsystem, item, level, detail}` with
+  `level` `ok`, `warn` or `fail` and the reason in plain words, the keyboard's first, then the
+  rows Foxglove's own features add. It needs `devices.read`. `foxglove-lab health` uses it while
+  the app holds the keyboard.
 - **What the Lights page shows (#674, API 1.7), for agents:** `lights.page {device}` reads the
   keyboard's lights (RGB_STATE) and answers with what the Lights page's Keyboard card shows, from
   the same view-model the page draws: the effect the keyboard reports (`effect`), the caption
@@ -131,6 +137,9 @@ The params and results are in the schema. Notes:
 - **Enforcement:** `schema/v1.json` is generated from the Rust types, and a test fails when the
   types change without the file. Reviewers check that a schema diff matches the version bump.
   Regenerate with `UPDATE_SCHEMA=1 cargo test -p foxglove-plugin-api`.
+- **Releases:** Foxglove 0.1.0 served API 1.1; Foxglove 0.2.0 serves API 1.10
+  (`crates/plugin-api`, `API_VERSION`). The app's own version (`initialize`'s `app`) and the API
+  version move separately.
 - **SDKs:** the Rust types *are* the Rust SDK (MIT). Python/TypeScript clients get generated from
   the schema later.
 

@@ -5,6 +5,7 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/crc.h>
 #include <zmk/display.h>
+#include "health.h"
 #include "screen_snap.h"
 
 #if IS_ENABLED(CONFIG_NICE_VIEW_HOST_LINK) && \
@@ -46,6 +47,9 @@ static void capture(struct k_work *work) {
         sys_put_le16(sys_get_le16(local.wire) + 1, local.wire);
         sys_put_le32(crc32_ieee(local.wire + SCREEN_SNAP_HEADER, SCREEN_SNAP_BYTES),
                      local.wire + 2);
+    }
+    if (!ok) {
+        health_inc(HEALTH_SNAP_ERRORS); // #705
     }
     k_spinlock_key_t key = k_spin_lock(&snap_lock);
     local.valid = ok;

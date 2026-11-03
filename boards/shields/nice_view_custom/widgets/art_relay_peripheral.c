@@ -51,6 +51,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "custom_art.h"
 #include "peripheral_status.h"
 #include "panel_polarity.h"
+#include "health.h"
 
 static uint8_t slots[2][CONFIG_NICE_VIEW_ART_RELAY_MAX_SIZE];
 static int shown = -1; // slot playing, or -1 for a built-in set
@@ -127,6 +128,7 @@ static void play_cb(struct k_work *work) {
         status.set = art_builtin_index(select_set);
         art_play(&custom_art_sets[status.set]);
     }
+    health_set(HEALTH_ART_SET, (uint8_t)status.set); // -1 (0xff): the pushed set (#705)
     // The art alone rewrites its rows; this also covers a panel that lost power since (#613).
     art_redraw_all();
 }
@@ -165,6 +167,26 @@ BT_CONN_CB_DEFINE(art_relay_activity_conn_cb) = {
     .disconnected = activity_disconnected,
 };
 
+// The split link for the self-report (#705): the right is the peripheral on it, its only link.
+static void health_connected(struct bt_conn *conn, uint8_t err) {
+    struct bt_conn_info info;
+    if (!err && bt_conn_get_info(conn, &info) == 0 && info.role == BT_CONN_ROLE_PERIPHERAL) {
+        health_link_up();
+    }
+}
+
+static void health_disconnected(struct bt_conn *conn, uint8_t reason) {
+    struct bt_conn_info info;
+    if (bt_conn_get_info(conn, &info) == 0 && info.role == BT_CONN_ROLE_PERIPHERAL) {
+        health_link_down();
+    }
+}
+
+BT_CONN_CB_DEFINE(art_relay_health_conn_cb) = {
+    .connected = health_connected,
+    .disconnected = health_disconnected,
+};
+
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
 static struct lamp_effect_wire effect_rx; // ART_RELAY_EFFECT fills it, EFFECT_GO draws it
 #endif
@@ -176,8 +198,8 @@ static void screen_push_ask(struct bt_conn *conn);
 static void screen_push_cancel(void);
 
 // Runs in the Bluetooth RX thread; keep it to copying and checking.
-static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
-                          uint16_t len, uint16_t offset, uint8_t flags) {
+static ssize_t data_op(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
+                       uint16_t len, uint16_t offset, uint8_t flags) {
     const uint8_t *d = buf;
     if (offset != 0 || len < 1) {
         return BT_GATT_ERR(BT_ATT_ERR_INVALID_OFFSET);
@@ -201,6 +223,7 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         }
         if (!(flags & BT_GATT_WRITE_FLAG_CMD)) {
             lamp_strip_show();
+            health_inc(HEALTH_LIGHT_APPLIES); // a whole frame from the PC (#705)
         }
         break;
     }
@@ -236,8 +259,11 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         }
         if (d[1]) {
             effect_run_start(&effect_rx, sys_get_le32(&d[2])); // re-anchors the clock
+            health_inc(HEALTH_LIGHT_APPLIES);
+            health_set(HEALTH_LAST_EFFECT, effect_rx.kind);
         } else {
             effect_run_stop(true);
+            health_set(HEALTH_LAST_EFFECT, 0);
             lamp_strip_host(false); // also after frames the effect never replaced
         }
         art_redraw_all(); // as for LAMP_HOST (#613)
@@ -279,6 +305,10 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         rx_crc = sys_get_le32(&d[3]);
         status.received = 0;
         status.state = rx_len <= sizeof(slots[0]) ? ART_RIGHT_RECEIVING : ART_RIGHT_TOO_BIG;
+        if (status.state == ART_RIGHT_TOO_BIG) {
+            health_inc(HEALTH_ART_FAILED);
+            health_set(HEALTH_ART_LAST_ERROR, status.state);
+        }
         break;
 
     case ART_RELAY_DATA: {
@@ -300,9 +330,14 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         }
         if (status.received != rx_len || crc32_ieee(slots[rx], rx_len) != rx_crc) {
             status.state = ART_RIGHT_BAD_CRC;
+            health_inc(HEALTH_ART_FAILED);
+            health_set(HEALTH_ART_LAST_ERROR, status.state);
         } else if (!parse_blob()) {
             status.state = ART_RIGHT_BAD_BLOB;
+            health_inc(HEALTH_ART_FAILED);
+            health_set(HEALTH_ART_LAST_ERROR, status.state);
         } else {
+            health_inc(HEALTH_ART_OK);
             // Freeze the old set until play_cb switches over, so the next push can take its slot.
             art_hold();
             shown = rx;
@@ -407,6 +442,7 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         if (len < 2) {
             return BT_GATT_ERR(BT_ATT_ERR_INVALID_ATTRIBUTE_LEN);
         }
+        health_inc(HEALTH_LIGHT_SYNCS);
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
         // Byte 13 (#609): the left's own on/off, shown while the PC state holds this half.
         rgb_idle_remote_wanted(d[1] != 0, len < 3 || d[2] != 0,
@@ -463,11 +499,22 @@ static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         if (zmk_rgb_underglow_set_hsb(hsb) < 0) {
             return BT_GATT_ERR(BT_ATT_ERR_VALUE_NOT_ALLOWED);
         }
+        health_inc(HEALTH_LIGHT_APPLIES);
 #endif
         break;
     }
     }
     return len;
+}
+
+// Every op, counted for the self-report (#705): one the right refused is an ATT error.
+static ssize_t data_write(struct bt_conn *conn, const struct bt_gatt_attr *attr, const void *buf,
+                          uint16_t len, uint16_t offset, uint8_t flags) {
+    ssize_t ret = data_op(conn, attr, buf, len, offset, flags);
+    if (ret < 0) {
+        health_inc(HEALTH_RELAY_REFUSED);
+    }
+    return ret;
 }
 
 static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr, void *buf,
@@ -484,7 +531,13 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
 #define BUILD_AT (SLOTS_AT + ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info))
 #define DIM_AT (BUILD_AT + sizeof(struct foxglove_build_info))
     BUILD_ASSERT(DIM_AT + sizeof(struct battery_dim_wire) == ART_RELAY_REDRAWS_AT, "art_relay.h");
-    static uint8_t value[ART_RELAY_REDRAWS_AT + sizeof(uint32_t)];
+    BUILD_ASSERT(ART_RELAY_REDRAWS_AT + sizeof(uint32_t) == ART_RELAY_HEALTH_AT, "art_relay.h");
+#if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH)
+    // Then this half's self-report (#705), filled only for a read that reaches it.
+    static uint8_t value[ART_RELAY_HEALTH_AT + sizeof(struct health_wire)];
+#else
+    static uint8_t value[ART_RELAY_HEALTH_AT];
+#endif
     memcpy(value, &status, sizeof(status));
     if (offset + len > sizeof(status)) {
         for (int i = 0; i < ART_RELAY_FLASH_SLOTS; i++) {
@@ -502,6 +555,13 @@ static ssize_t status_read(struct bt_conn *conn, const struct bt_gatt_attr *attr
         memcpy(&value[DIM_AT], &dim, sizeof(dim));
         sys_put_le32(art_redraw_count(), &value[ART_RELAY_REDRAWS_AT]);
     }
+#if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH)
+    if (offset + len > ART_RELAY_HEALTH_AT) {
+        struct health_wire h;
+        health_fill(&h);
+        memcpy(&value[ART_RELAY_HEALTH_AT], &h, sizeof(h));
+    }
+#endif
     return bt_gatt_attr_read(conn, attr, buf, len, offset, value, sizeof(value));
 }
 
@@ -515,6 +575,7 @@ static ssize_t doorbell_written(struct bt_conn *conn, const struct bt_gatt_attr 
                                 uint16_t value) {
     if (value & BT_GATT_CCC_NOTIFY) {
         art_relay_right_rang(ART_RELAY_RANG_RGB);
+        health_relay_found(); // the left found the relay on this link (#705)
     }
     return sizeof(value);
 }

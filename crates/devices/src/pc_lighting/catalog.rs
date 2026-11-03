@@ -6,6 +6,7 @@
 use serde::Deserialize;
 
 use super::caps::{Color, LightCaps, Screen};
+use super::zones::{Zone, ZoneSource, Zones};
 use crate::calibration::Calibration;
 
 /// The driver a catalog board needs.
@@ -208,7 +209,30 @@ impl CatalogDevice {
             effects: self.effects.clone(),
             brightness: self.brightness,
             screens: self.screen.clone(),
+            zones: (color == Color::PerZone).then(|| self.zone_map()),
             ..Default::default()
+        }
+    }
+
+    /// Its zones as areas (#611): from Foxglove's catalog, or the user's own check when they
+    /// added the device by hand (they named each zone as it lit).
+    fn zone_map(&self) -> Zones {
+        Zones {
+            list: self
+                .zones
+                .iter()
+                .map(|z| Zone {
+                    area: Some(z.name.clone()),
+                    ..Default::default()
+                })
+                .collect(),
+            dead: vec![0],
+            source: if self.local {
+                ZoneSource::Check
+            } else {
+                ZoneSource::Catalog
+            },
+            reported: None,
         }
     }
 
@@ -510,6 +534,10 @@ mod tests {
         assert!(case.local);
         assert_eq!(case.zones.len(), 1);
         assert_eq!(case.caps().count, 1);
+        // Added by hand: the user named each zone as it lit, so it is their check (#611).
+        let mine_caps = case.caps();
+        assert_eq!(mine_caps.zones.unwrap().source, super::ZoneSource::Check);
+        assert_eq!(mine_caps.color, Color::PerZone);
         assert!(merged.find(0x03f0, 0x7397).is_some(), "the rest stay");
         local.put(CatalogDevice::new(
             "renamed".into(),
@@ -529,6 +557,11 @@ mod tests {
         assert_eq!(case.count, 5);
         assert!(case.brightness);
         assert_eq!(case.effects.len(), 5);
+        // Its real resolution (#611): five areas, from the catalog.
+        assert_eq!(case.summary(false).unwrap(), "5 lighting zones");
+        let zones = case.zones.as_ref().unwrap();
+        assert_eq!(zones.source, super::ZoneSource::Catalog);
+        assert_eq!(zones.list[4].area.as_deref(), Some("Front top fan"));
         let cooler = c.find(0x03f0, 0x7397).unwrap().caps();
         assert_eq!(cooler.color, Color::None);
         assert_eq!(cooler.screens.len(), 1);

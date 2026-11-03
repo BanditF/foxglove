@@ -157,6 +157,10 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
       COMPILE_DEFINITIONS "CONFIG_NICE_VIEW_ART_RELAY=1;CONFIG_NICE_VIEW_HOST_LINK=1")
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/panel_polarity.c polarity_sim.c)
   endif()
+  if(CONFIG_FOXGLOVE_SIM_HEALTH)
+    # The self-report (#705): the real health.c; the Raw HID module's counters are faked.
+    zephyr_library_sources(${FOXGLOVE_WIDGETS}/health.c health_sim.c)
+  endif()
   if(CONFIG_FOXGLOVE_SIM_ART_KEYS)
     # &art_next / &art_prev (#60): the real behaviour; the board-side step prints instead.
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/art_keys.c art_keys_sim.c)

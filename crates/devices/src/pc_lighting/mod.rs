@@ -5,8 +5,10 @@
 //! - [`catalog`]: the data-driven list of known boards (`lighting-catalog.toml`), and the
 //!   user's own entries
 //! - [`caps`]: what a device can do (colour, effects, brightness, screens), as chips
+//! - [`zones`]: its real lighting resolution (#611): zones, dead lamps, and where that came from
 //! - [`discover`]: matches a HID enumeration against the catalog and the LampArray usage;
 //!   [`unknown`] lists the rest for "Add a device", and [`test_zone`] lights one zone of it
+//! - [`lamp_array`]: Windows Dynamic Lighting (LampArray) devices' lamps, as zones
 //! - [`omen_tracer`]: the HP OMEN case lighting board (TracerLED)
 //! - [`calibrated`]: every opened driver's colours go through the device's colour calibration
 //! - `hid` (feature `hid`): the hidapi enumeration and report writer
@@ -19,7 +21,9 @@ pub mod caps;
 pub mod catalog;
 #[cfg(feature = "hid")]
 pub mod hid;
+pub mod lamp_array;
 pub mod omen_tracer;
+pub mod zones;
 
 use std::time::Duration;
 
@@ -27,6 +31,8 @@ use crate::calibration::Calibration;
 use crate::{DeviceError, Result, Rgb};
 pub use caps::{Color, LampArrayInfo, LightCaps, Screen};
 pub use catalog::{Catalog, CatalogDevice, Conflict, DeviceKind, Protocol, ZoneRole, ZoneSpec};
+pub use lamp_array::{Lamp, LampAccess, LampArrayDesc, LampArrayDriver, LampHandle};
+pub use zones::{HealthLevel, Zone, ZoneHealth, ZoneKey, ZoneSource, Zones};
 
 /// Windows Dynamic Lighting devices: HID usage page Lighting and Illumination, usage LampArray.
 pub const LAMP_ARRAY_USAGE_PAGE: u16 = 0x0059;
@@ -160,7 +166,16 @@ pub fn unknown(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Unknown> {
 
 /// Matches HID interfaces against the catalog, then lists LampArray devices the catalog
 /// doesn't name. One entry per device: a board with several interfaces is listed once.
+///
+/// A keyboard with a Raw HID interface (ZMK with Foxglove link, QMK, VIA) is never listed here,
+/// even when it is also a LampArray (#691, #88): its own link and the Keyboard card drive its
+/// lights, and a second driver here (or a scene through Windows) would fight them. Same rule
+/// as [`unknown`]: keyboard first, by VID/PID.
 pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
+    let raw_hid_keyboard = |vid, pid| {
+        hid.iter()
+            .any(|o| (o.vid, o.pid) == (vid, pid) && o.usage_page == RAW_HID_USAGE_PAGE)
+    };
     let mut found: Vec<Found> = Vec::new();
     for entry in hid {
         let key = device_key(entry);
@@ -193,6 +208,7 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
         if entry.usage_page != LAMP_ARRAY_USAGE_PAGE
             || entry.usage != LAMP_ARRAY_USAGE
             || found.iter().any(|f| f.key == key)
+            || raw_hid_keyboard(entry.vid, entry.pid)
         {
             continue;
         }
@@ -251,6 +267,12 @@ pub trait LightingDevice: Send {
 
     /// Sets a static colour on some zones (`(index, colour)`, index into [`Self::zones`]).
     fn set_zones(&mut self, colors: &[(usize, Rgb)]) -> Result<()>;
+
+    /// A Dynamic Lighting device: whether the host lets Foxglove drive it now (#691). `None`
+    /// for devices Foxglove always drives itself.
+    fn lamp_access(&self) -> Option<LampAccess> {
+        None
+    }
 
     /// One colour on every zone.
     fn set_all(&mut self, color: Rgb) -> Result<()> {
@@ -375,6 +397,25 @@ pub fn open(found: &Found, writer: Box<dyn HidWriter>) -> Result<Box<dyn Lightin
     )))
 }
 
+/// Opens the driver for a found Dynamic Lighting device over the host's handle to it (#691),
+/// wrapped in [`calibrated::Calibrated`] like every driver. Its lamps must have been read (its
+/// zones are its lamps).
+pub fn open_lamp_array(
+    found: &Found,
+    handle: Box<dyn LampHandle>,
+) -> Result<Box<dyn LightingDevice>> {
+    if found.control != Control::LampArray {
+        return Err(DeviceError::Unsupported);
+    }
+    let driver = LampArrayDriver::new(found.name.clone(), &found.zones, handle)?;
+    Ok(Box::new(calibrated::Calibrated::new(
+        Box::new(driver),
+        found.key.clone(),
+        &found.zones,
+        found.calibration.clone(),
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -426,6 +467,23 @@ mod tests {
         );
         assert_eq!(found[0].key, "103c:84fd");
         assert_eq!(found[0].zones.len(), 5);
+    }
+
+    /// #691: a keyboard that is also a LampArray (the Corne with #88's firmware: Raw HID for
+    /// Foxglove link plus usage page 0x59) is the Keyboard card's, never a second light here.
+    #[test]
+    fn a_keyboard_that_is_also_a_lamp_array_is_not_listed_twice() {
+        let catalog = Catalog::bundled();
+        let hid = vec![
+            entry(0x1d50, 0x615e, 1, 6, "corne-keys"),
+            entry(0x1d50, 0x615e, 0xff60, 0x61, "corne-raw"),
+            entry(0x1d50, 0x615e, 0x59, 1, "corne-lamps"),
+            entry(0x1234, 0x5678, 0x59, 1, "strip"),
+        ];
+        let found = discover(&catalog, &hid);
+        let keys: Vec<_> = found.iter().map(|f| f.key.as_str()).collect();
+        assert_eq!(keys, vec!["1234:5678"]);
+        assert!(unknown(&catalog, &hid).is_empty());
     }
 
     #[test]

@@ -114,6 +114,25 @@ config NICE_VIEW_ART_RELAY
     default y if ZMK_SPLIT_BLE && (NICE_VIEW_HOST_LINK || !ZMK_SPLIT_ROLE_CENTRAL)
     select CRC
 
+config FOXGLOVE_HEALTH
+    bool "Keyboard self-report: per-subsystem counters and a boot self-test (#705)"
+    default y
+    imply HWINFO
+    help
+      Each half keeps small saturating counters and states per subsystem in RAM (relay, Raw HID,
+      screens, lighting, split link, PC state, polarity) and works out a boot self-test when
+      read. The PC reads both halves' blocks with D7 13 HEALTH (HELLO bit 28; the right's over
+      the art relay). No timers, no boot work. See widgets/health.h and docs/health.md.
+
+config FOXGLOVE_HEALTH_RELAY_S
+    int "Boot self-test: seconds after boot by which the art relay should be found"
+    default 60
+    depends on FOXGLOVE_HEALTH
+    help
+      The left finds the right's relay about 15 s after the split link is encrypted. A relay
+      found later than this, or never, fails the check (code 1 late, 2 no split link, 3 a link
+      but no relay).
+
 config NICE_VIEW_RGB_IDLE
     bool "Underglow idle auto-off that survives a reboot; right half follows the left"
     default y if ZMK_RGB_UNDERGLOW

@@ -37,6 +37,7 @@
  *                    25 RIGHT_REDRAWS (D7 8E bytes 16-20: the right's redraw count, #618),
  *                    26 PC_STATE (D7 11: the PC awake with a lease, or away, #609, #604),
  *                    27 PANEL_POLARITY (D7 12: dark or light mono panels, both halves, #666),
+ *                    28 HEALTH (D7 13: each half's self-report, #705),
  *                    29 COLOUR_EFFECTS (D7 83 byte 29: the effects the left draws in the
  *                    chosen colour; Swirl as a hue band around it, #626).
  *      HELLO has no byte left for the LED counts: bit 22 says D7 10 answers them.
@@ -332,6 +333,16 @@
  *      keyboard ("nvc_pol/v"), so it holds without the app and over a reboot; the left sends it
  *      to the right over the art relay (op PANEL_POLARITY) on each change and every link-up, and
  *      the right saves it too. A right before #666 acknowledges the op without applying it.
+ *   13 HEALTH  half u8 (0 left, 1 right), chunk u8 (0-3)            (HELLO bit 28, #705)
+ *      reply: D7 93, status, half, copy u8, chunk, chunks (4), length (96), data[24] (bytes 8-31)
+ *      One half's self-report block (health.h; the format is docs/health.md): counters and
+ *      states per subsystem since that half's boot, its build, uptime, reset reason and boot
+ *      self-test. Chunk 0 takes a new copy, its number one up from the last; chunks 1-3 come from
+ *      that copy (ask chunk 0 again for a fresh one). The right's copy comes over the art relay
+ *      (art_relay.h, ART_RELAY_HEALTH_AT), spaced like every relay request, so its chunk 0
+ *      reply waits for the right (about a second under the link's latency). Status: 0 ok, 1 busy
+ *      (a read of the right runs; its reply comes), 2 no relay link, 3 the right didn't answer,
+ *      4 not built in or a right without the block, 5 bad half or chunk, 6 no copy yet.
  *   0B GUARD_TEST [delay_ms u16] (test hooks + split guard only)        reply: D7 8B, status
  *      The #122 split guard treats the current split link as stuck once, delay_ms from now (2000
  *      when left out; 0 = at once, even mid-relay, e.g. during an art push): it drops it, ZMK
@@ -393,6 +404,9 @@
 #define HOST_LINK_CAP_PC_STATE (1U << 26)
 // D7 12 PANEL_POLARITY: dark or light mono panels, both halves (#666; panel_polarity.h).
 #define HOST_LINK_CAP_PANEL_POLARITY (1U << 27)
+// D7 13 HEALTH: each half's self-report, per-subsystem counters and a boot self-test (#705;
+// health.h, docs/health.md).
+#define HOST_LINK_CAP_HEALTH (1U << 28)
 // D7 83 byte 29: the effects the left draws in the chosen colour (#626; colour_effects.h).
 #define HOST_LINK_CAP_COLOUR_EFFECTS (1U << 29)
 
@@ -433,6 +447,10 @@ void host_link_rgb_right_changed(void);
 
 // Called by relay connection/discovery callbacks; queues a report only after host traffic.
 void host_link_art_status(void);
+
+// art_relay_central.c: the right's self-report read ended (D7 13 half 1, #705); status as D7 93's.
+// Sends D7 93 chunk 0 from the left's copy. relay_q.
+void host_link_health_right(uint8_t status);
 
 // The panel covers the WPM block of the portrait layout (status.c), inside the frame.
 // A board with a panel of its own sets CONFIG_FOXGLOVE_PANEL_* (foxglove_link shield).

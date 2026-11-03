@@ -770,13 +770,13 @@ fn showing_name(s: &super::art_service::Snapshot) -> Option<String> {
 static FAKE_FULLSCREEN: AtomicBool = AtomicBool::new(false);
 
 #[cfg(test)]
-fn fullscreen_now() -> bool {
+pub(super) fn fullscreen_now() -> bool {
     FAKE_FULLSCREEN.load(Ordering::SeqCst)
 }
 
 /// A full-screen program is in front: a game, a video or a presentation.
 #[cfg(all(windows, not(test)))]
-fn fullscreen_now() -> bool {
+pub(super) fn fullscreen_now() -> bool {
     use windows::Win32::UI::Shell::{
         SHQueryUserNotificationState, QUNS_BUSY, QUNS_PRESENTATION_MODE,
         QUNS_RUNNING_D3D_FULL_SCREEN,
@@ -791,7 +791,7 @@ fn fullscreen_now() -> bool {
 }
 
 #[cfg(all(not(windows), not(test)))]
-fn fullscreen_now() -> bool {
+pub(super) fn fullscreen_now() -> bool {
     false
 }
 

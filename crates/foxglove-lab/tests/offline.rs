@@ -2061,3 +2061,28 @@ steps = [{ expect_screen_change = { half = "left", within_ms = 300 } }]"#,
         r.message
     );
 }
+
+/// `foxglove-lab health --replay` against a recorded block (#705): both halves' D7 93 replies in
+/// the recorder's format, judged with the shipped thresholds, no device opened.
+#[test]
+fn health_judges_a_recorded_block() {
+    use foxglove_lab::health::{Replay, PASS};
+    let replay = Replay::parse(include_str!("data/health-recorded.hex")).unwrap();
+    let out = foxglove_lab::health::read(&replay, replay.capabilities);
+    let lines = out.lines();
+    assert_eq!(out.code(), PASS, "{lines:#?}");
+    for want in [
+        "WARN relay      Relay to the right half: 2 requests timed out",
+        "WARN screens    Right screen: 2 art pushes failed (bad CRC)",
+        "PASS firmware   Left half: firmware 0.1.0 (dev) 80d5b8c, up 1 h 12 min",
+        "PASS self_test  Left lights: 21 LEDs ready",
+        "PASS pc_state   Stay awake: held awake: the PC is on",
+    ] {
+        assert!(
+            lines.iter().any(|l| l.starts_with(want)),
+            "missing {want:?} in {lines:#?}"
+        );
+    }
+    assert_eq!(lines.last().unwrap(), "PASS: nothing failed, 2 warning(s)");
+    assert_eq!(out.json()["result"], "pass");
+}
