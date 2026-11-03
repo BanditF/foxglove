@@ -13,6 +13,7 @@
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use foxglove_devices::pc_lighting::{ZoneSource, Zones};
 use foxglove_devices::Device as _;
 use foxglove_link::health::{self as kh, Thresholds};
 pub use foxglove_link::health::{HealthRow, Level};
@@ -107,7 +108,8 @@ pub fn read_now(why: Why) -> Option<Vec<HealthRow>> {
     let _one = ONE_READ.lock().unwrap_or_else(|e| e.into_inner());
     set_reading(true);
     let report = kh::read_both(link.as_ref(), capabilities);
-    let rows = kh::rows(&report, &thresholds());
+    let mut rows = kh::rows(&report, &thresholds());
+    in_zones(&mut rows, keyboard_zones().as_ref());
     let before = {
         let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
         let before = kh::failed_lines(&last.rows);
@@ -120,6 +122,44 @@ pub fn read_now(why: Why) -> Option<Vec<HealthRow>> {
         eprintln!("{line}");
     }
     Some(rows)
+}
+
+/// The connected keyboard's lighting zones (#703): the user's check, else the board profile's LED
+/// groups, else the firmware's lamp counts. From the caches; asks the keyboard nothing.
+fn keyboard_zones() -> Option<Zones> {
+    let board = super::boards::current();
+    let firmware = super::devices::firmware_lamp_parts();
+    let drawing = super::boards::drawing(board.as_ref());
+    super::light_zones::keyboard(board.as_ref(), &drawing, firmware.as_ref())
+}
+
+/// The lights self-test rows in the board's own zones (#703): "6 zones per half, ready" in place of
+/// the firmware's LED count, from the profile's LED groups or the user's check. Rows stay as the
+/// firmware said when only its lamp counts are known (they don't say which keys a lamp lights).
+pub fn in_zones(rows: &mut [HealthRow], zones: Option<&Zones>) {
+    let Some(z) = zones.filter(|z| z.source != ZoneSource::Reported) else {
+        return;
+    };
+    let live = z.live();
+    let Some(&first) = live.first() else {
+        return;
+    };
+    let mirrored = live.len() > 1 && live.iter().all(|&n| n == first);
+    let lights = rows.iter_mut().filter(|r| {
+        r.subsystem == "self_test" && r.level == Level::Ok && r.item.ends_with(" lights")
+    });
+    for r in lights {
+        let (n, each) = match (mirrored, live.len()) {
+            (true, 2) => (first, " per half"),
+            (true, _) => (first, " per part"),
+            // The row names its half: "Left lights", "Right lights".
+            _ => match live.get(usize::from(r.item.starts_with("Right"))) {
+                Some(&n) => (n, ""),
+                None => continue,
+            },
+        };
+        r.detail = format!("{n} {}{each}, ready", if n == 1 { "zone" } else { "zones" });
+    }
 }
 
 fn set_reading(on: bool) {
@@ -151,6 +191,8 @@ pub fn start() {
         return;
     }
     register("art_keys", super::art_keys_health::rows_now); // #701
+    register("dynamic_lighting", super::lamp_health::rows_now); // #691
+    register("wallpaper_sync", super::wallpaper_sync_health::rows_now); // #586
     let events = super::services::First::new(super::devices::bus().subscribe(false));
     let _ = super::services::spawn_supervised("health", move || {
         let events = events.take_or(|| super::devices::bus().subscribe(false));
@@ -310,7 +352,7 @@ pub(crate) mod tests {
                 row("Relay to the right half", Level::Warn, "2 requests timed out"),
                 row("Reports to the PC", Level::Ok, "no problems since start"),
                 row("Left screen", Level::Ok, "started"),
-                row("Right lights", Level::Ok, "21 LEDs ready"),
+                row("Right lights", Level::Ok, "6 zones per half, ready"),
                 row("Link between the halves", Level::Warn, "Left half saw it drop 3 times"),
                 row("Stay awake", Level::Ok, "held awake: the PC is on"),
                 HealthRow::new("screens.art_keys", "Art keys", Level::Ok, "Foxglove holds them: 12 presses, 12 stepped"),
@@ -323,6 +365,35 @@ pub(crate) mod tests {
 
     pub fn sample_none() -> View {
         View::default()
+    }
+
+    /// The lights row says the board profile's zones (the Corne: 6 column groups per half), not
+    /// the firmware's 21 LEDs; with only the firmware's counts it keeps the LEDs.
+    #[test]
+    fn the_lights_row_says_the_profiles_zones() {
+        let board = super::super::boards::Board::parse(include_str!(
+            "../../resources/boards/eyelash-corne.toml"
+        ))
+        .unwrap();
+        let drawing = board.drawing.clone().unwrap_or_default();
+        let zones = super::super::light_zones::keyboard(Some(&board), &drawing, None);
+        let sample = || {
+            vec![
+                HealthRow::new("self_test", "Right lights", Level::Ok, "21 LEDs ready"),
+                HealthRow::new("self_test", "Right screen", Level::Ok, "started"),
+            ]
+        };
+        let mut rows = sample();
+        in_zones(&mut rows, zones.as_ref());
+        assert_eq!(rows[0].detail, "6 zones per half, ready");
+        assert_eq!(rows[1].detail, "started");
+        let reported = Zones::from_report(&[21, 21]);
+        let mut rows = sample();
+        in_zones(&mut rows, Some(&reported));
+        assert_eq!(rows[0].detail, "21 LEDs ready");
+        let mut rows = sample();
+        in_zones(&mut rows, None);
+        assert_eq!(rows[0].detail, "21 LEDs ready");
     }
 
     #[test]

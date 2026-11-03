@@ -6,18 +6,16 @@
 //!
 //! The sync worker notes each sync as it happens; [`rows`] only reads. No polling: the minute's
 //! count is worked out from the push times when it is read.
-
-// The shared health view (#705) picks these up; until it lands only the tests and the log line
-// read them.
-#![allow(dead_code)]
-// TODO(#709): once it merges, use the shared row type (`foxglove_link::health::{HealthRow,
-// Level}`) and register these rows through `crate::foxglove::health::register`.
+//!
+//! The rows are the Keyboard health view's shared type (`foxglove_link::health::HealthRow`, #705),
+//! registered with `health::register` as "wallpaper_sync".
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-pub use super::lamp_health::{HealthRow, Level};
+// The shared row type of the Keyboard health view (#705).
+pub use super::health::{HealthRow, Level};
 
 /// The subsystem these rows belong to in the health view.
 pub const SUBSYSTEM: &str = "wallpaper.sync";
@@ -151,13 +149,15 @@ pub fn now() -> SyncHealth {
     HEALTH.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// The health view's rows now (registered with `health::register`).
+pub fn rows_now() -> Vec<HealthRow> {
+    rows(&now(), Instant::now())
+}
+
 /// The health view's rows at `now`: Pushes, Duplicates suppressed, Last push.
 pub fn rows(h: &SyncHealth, now: Instant) -> Vec<HealthRow> {
-    let row = |what: &str, level, detail: String| HealthRow {
-        subsystem: SUBSYSTEM,
-        item: format!("Wallpaper sync · {what}"),
-        level,
-        detail,
+    let row = |what: &str, level, detail: String| {
+        HealthRow::new(SUBSYSTEM, format!("Wallpaper sync · {what}"), level, detail)
     };
     let minute = h.per_minute(now);
     let pushes = if minute > BURST_PER_MINUTE {

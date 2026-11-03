@@ -3,13 +3,9 @@
 //! worker found, and [`rows`] turning it into view-model rows. Nothing here draws or asks
 //! anything: it reads the worker's snapshot, which the worker updates on its own events (a
 //! scan, a write, Windows' `AvailabilityChanged`). No polling.
-
-// The shared health view (worktrees\health: `health.read`, the app's health page,
-// `foxglove-lab health`) picks these up; until it lands only the tests read them.
-#![allow(dead_code)]
-// TODO(#709): once it merges, use the shared row type (`foxglove_link::health::{HealthRow,
-// Level}`) in place of the local ones below and register these rows through
-// `crate::foxglove::health::register`, then drop the allow above.
+//!
+//! The rows are the Keyboard health view's shared type (`foxglove_link::health::HealthRow`, #705),
+//! registered with `health::register` as "dynamic_lighting".
 
 use foxglove_devices::pc_lighting::{Control, LampAccess};
 
@@ -46,23 +42,16 @@ pub struct LampHealth {
     pub last_apply: Option<Apply>,
 }
 
-/// A row's state in the health view.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Level {
-    Ok,
-    /// Works as Windows allows, but not everything the user may expect.
-    Warn,
-    Fail,
-}
+// The shared row type of the Keyboard health view (#705).
+pub use super::health::{HealthRow, Level};
 
-/// One view-model row for the health view.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HealthRow {
-    pub subsystem: &'static str,
-    /// The device's name and what the row checks: "G502 Proteus Spectrum · Windows".
-    pub item: String,
-    pub level: Level,
-    pub detail: String,
+/// The health view's rows now, every Dynamic Lighting device's (registered with
+/// `health::register`).
+pub fn rows_now() -> Vec<HealthRow> {
+    super::pc_lights::lamp_health()
+        .iter()
+        .flat_map(rows)
+        .collect()
 }
 
 /// Every Dynamic Lighting device in a Lights snapshot, with the last apply per key from
@@ -89,11 +78,8 @@ pub fn from_snapshot(
 
 /// The health view's rows for one device: found, controllable, Windows' setting, last apply.
 pub fn rows(h: &LampHealth) -> Vec<HealthRow> {
-    let row = |what: &str, level, detail: String| HealthRow {
-        subsystem: SUBSYSTEM,
-        item: format!("{} · {what}", h.name),
-        level,
-        detail,
+    let row = |what: &str, level, detail: String| {
+        HealthRow::new(SUBSYSTEM, format!("{} · {what}", h.name), level, detail)
     };
     let mut out = vec![if h.lamps > 0 {
         row(
