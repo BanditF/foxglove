@@ -274,6 +274,12 @@ enum Command {
         slot: u8,
         name: String,
     },
+    /// Put the kept places a connect found lost back from this PC (#521): each into its old
+    /// place with STORE. `not` are the ones that can't be, with the reason.
+    Restore {
+        plan: Vec<(super::art_seen::Place, PathBuf)>,
+        not: Vec<(String, String)>,
+    },
 }
 
 /// Whether the UI may send `command` (#404): while Foxglove is paused only reads go out.
@@ -769,10 +775,12 @@ fn save_pin(h: &Handle, choice: &Choice) -> Result<(), String> {
     .map_err(|e| format!("saving pinned art: {e}"))
 }
 
-/// Remembers what the keyboard holds; on a connect, first says what changed since (#521).
+/// Remembers what the keyboard holds; on a connect, first says what changed since (#521), and
+/// asks for the kept places it lost to be put back from this PC (`Command::Restore`). Those
+/// stay remembered until they are back, so a restore cut short goes on at the next connect.
 fn note_seen(h: &Handle, announce: bool) {
     let snap = h.snapshot();
-    let Some(now) = super::art_seen::Seen::of(&snap) else {
+    let Some(mut now) = super::art_seen::Seen::of(&snap) else {
         return;
     };
     let before = super::art_seen::load();
@@ -780,11 +788,107 @@ fn note_seen(h: &Handle, announce: bool) {
         return;
     }
     if announce {
-        if let Some(line) = before.and_then(|b| super::art_seen::change(&b, &now)) {
-            h.update(|s| s.notice = Some(line));
+        if let Some(b) = &before {
+            if let Some(line) = super::art_seen::change(b, &now) {
+                h.update(|s| s.notice = Some(line));
+            }
+            let lost = super::art_seen::lost(b, &now);
+            if !lost.is_empty() {
+                let used = snap.status.map_or(0, |st| st.flash_used);
+                let names: Vec<&str> = lost.iter().map(|p| p.name.as_str()).collect();
+                let (plan, not) = super::art_seen::plan(&lost, used, &restore_candidates(&names));
+                eprintln!(
+                    "Foxglove: art: {} kept piece(s) lost since the last connect, {} with a copy here",
+                    lost.len(),
+                    plan.len()
+                );
+                for (p, _) in &plan {
+                    now.places.push(p.clone());
+                    now.kept.push(p.name.clone());
+                }
+                let _ = h.commands.send(Command::Restore { plan, not });
+            }
         }
     }
     super::art_seen::save(&now);
+}
+
+/// This PC's files a lost place can come back from (#521): the library's, and a bundled set
+/// with a lost piece's name (copied in first), each with the name and length it is kept under.
+fn restore_candidates(names: &[&str]) -> Vec<(PathBuf, art_playlist::Key)> {
+    let mut files: Vec<PathBuf> = super::art_library::folder()
+        .and_then(|f| std::fs::read_dir(f).ok())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| super::art_library::is_right_art_file(p))
+        .collect();
+    for (file, _, _) in super::art_pieces::BUNDLED {
+        let stem = file.trim_end_matches(".bin");
+        if names.contains(&protocol::art_name_fit(stem)) {
+            if let Ok(p) = super::art_pieces::bundled_file(file) {
+                files.push(p);
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    files
+        .into_iter()
+        .filter_map(|p| place_key(&p).map(|k| (p, k)))
+        .collect()
+}
+
+/// What a restore did (#521): put back by name, not put back with the reason, and the places
+/// to try again on the next connect (a link that dropped, a choice of the user's that came
+/// first). Each goes into its old place with STORE, the screen untouched.
+struct Restored {
+    back: Vec<String>,
+    not: Vec<(String, String)>,
+    again: Vec<super::art_seen::Place>,
+}
+
+fn restore_places(
+    link: &impl Transport,
+    h: &Handle,
+    plan: &[(super::art_seen::Place, PathBuf)],
+    not: Vec<(String, String)>,
+    can_store: bool,
+    stop: &dyn Fn() -> bool,
+) -> Restored {
+    let mut r = Restored {
+        back: Vec::new(),
+        not,
+        again: Vec::new(),
+    };
+    for (place, file) in plan {
+        if !can_store {
+            r.not.push((
+                place.name.clone(),
+                "the keyboard's firmware can't put a piece back without showing it: use Keep on keyboard".into(),
+            ));
+            continue;
+        }
+        if stop() {
+            r.not
+                .push((place.name.clone(), "tried again on the next connect".into()));
+            r.again.push(place.clone());
+            continue;
+        }
+        match stage(link, h, file, place.slot, &place.name) {
+            Ok(_) => r.back.push(place.name.clone()),
+            Err(e) if e.contains(art::STORE_UNSUPPORTED) => r.not.push((
+                place.name.clone(),
+                "the keyboard's firmware can't put a piece back without showing it: use Keep on keyboard".into(),
+            )),
+            Err(e) => {
+                r.not.push((place.name.clone(), e));
+                r.again.push(place.clone());
+            }
+        }
+    }
+    r
 }
 
 fn load_pinned() -> (Option<Choice>, Option<String>) {
@@ -1651,7 +1755,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             let job = job_for(&command, &h.snapshot(), !from_ui);
             h.update(|s| s.job = job);
         }
-        let staging = matches!(command, Command::Stage { .. });
+        let staging = matches!(command, Command::Stage { .. } | Command::Restore { .. });
         let result = if let Some((id, _)) = current {
             let link: &Link = links[id].0.as_ref();
             if automatic {
@@ -1746,6 +1850,41 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                         with_relay(link, h, &what, || choose(link, h, &choice))
                     }
                     Command::Refused(e) => Err(e),
+                    Command::Restore { plan, not } => {
+                        let total = plan.len() + not.len();
+                        let r =
+                            restore_places(link, h, &plan, not, can_store != Some(false), &|| {
+                                taken_over() || h.cancelled() || super::pause::paused()
+                            });
+                        if r.not
+                            .iter()
+                            .any(|(_, e)| e.contains("can't put a piece back"))
+                        {
+                            can_store = Some(false);
+                        }
+                        eprintln!(
+                            "Foxglove: art restored {}/{total} after the firmware update",
+                            r.back.len()
+                        );
+                        let line = super::art_seen::restored_line(&r.back, &r.not, total);
+                        h.update(|s| {
+                            s.notice = Some(super::art_seen::with_restored(s.notice.take(), &line))
+                        });
+                        art_health::note_restore(art_health::RestoreHealth {
+                            lost: total,
+                            restored: r.back,
+                            failed: r.not,
+                        });
+                        // What the keyboard holds now, and what to try again on the next connect.
+                        if let Some(mut seen) = super::art_seen::Seen::of(&h.snapshot()) {
+                            for p in r.again {
+                                seen.kept.push(p.name.clone());
+                                seen.places.push(p);
+                            }
+                            super::art_seen::save(&seen);
+                        }
+                        art::status(link).map_err(|e| e.to_string())
+                    }
                     Command::Stage { .. } if taken_over() => Err("taken over".into()),
                     Command::Stage { file, slot, name } => {
                         let started = Instant::now();
@@ -2079,6 +2218,58 @@ mod tests {
             art_playlist::place_of(&[6, 7], &s.slots, &place_key(&fury()).unwrap()),
             Some(7)
         );
+    }
+
+    /// After an update lost two kept places (#521): the one this PC has goes back into its old
+    /// place with STORE, the screen untouched; the other is named with its reason; the health
+    /// row says "art restored 1/2".
+    #[test]
+    fn lost_places_go_back_without_showing() {
+        let kb = FakeKeyboard::default();
+        let h = idle_handle(Snapshot::default());
+        let (name, len) = place_key(&fury()).unwrap();
+        let place = super::super::art_seen::Place {
+            slot: 2,
+            name: name.clone(),
+            len: len as u16,
+        };
+        let r = restore_places(
+            &kb,
+            &h,
+            &[(place, fury())],
+            vec![("gem".into(), "this PC has no copy of it".into())],
+            true,
+            &|| false,
+        );
+        assert_eq!(r.back, vec![name.clone()]);
+        assert!(r.again.is_empty());
+        assert_eq!(kb.kept.borrow()[0].0, 2);
+        assert_eq!(kb.set.get(), 0, "the screen kept its set");
+        assert!(!kb.log.borrow().contains(&cmd::COMMIT));
+        let row = art_health::restore_rows(&art_health::RestoreHealth {
+            lost: 2,
+            restored: r.back,
+            failed: r.not,
+        })
+        .remove(0);
+        assert!(row.detail.starts_with("art restored 1/2"), "{}", row.detail);
+        assert_eq!(row.level, art_health::Level::Warn);
+
+        // Without STORE nothing is sent, and it says why; a user's choice first: tried again.
+        let old = FakeKeyboard {
+            no_store: true,
+            ..Default::default()
+        };
+        let p = super::super::art_seen::Place {
+            slot: 3,
+            name,
+            len: len as u16,
+        };
+        let r = restore_places(&old, &h, &[(p.clone(), fury())], vec![], false, &|| false);
+        assert!(r.back.is_empty() && old.log.borrow().is_empty());
+        assert!(r.not[0].1.contains("can't put a piece back"));
+        let r = restore_places(&kb, &h, &[(p.clone(), fury())], vec![], true, &|| true);
+        assert_eq!(r.again, vec![p]);
     }
 
     /// A keyboard without STORE: the stage fails with the words the service falls back on.
