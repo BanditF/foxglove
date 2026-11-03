@@ -482,6 +482,7 @@ mod rgb_state_tests {
                     age,
                 )
             }),
+            colour_effects: None,
         }
     }
 

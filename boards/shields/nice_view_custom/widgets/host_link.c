@@ -37,6 +37,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "rgb_idle.h"
 #include "battery_dim.h"
 #include "behavior_safety.h"
+#include "colour_effects.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
 #include "host_frames.h"
 #endif
@@ -258,6 +259,9 @@ static void hello_reply(void) {
 #endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH)
     caps |= HOST_LINK_CAP_HEALTH;
+#endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_COLOUR_SWIRL) && IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+    caps |= HOST_LINK_CAP_COLOUR_EFFECTS;
 #endif
     if (CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S == 0) {
         caps |= HOST_LINK_CAP_PANEL_HOLD; // no keep-alive needed (#279)
@@ -594,8 +598,9 @@ ZMK_SUBSCRIPTION(host_link_conn, zmk_battery_state_changed);
 #endif
 
 #define RGB_SHOWN_AT (3 + 2 * sizeof(struct rgb_idle_wire))
-#define RGB_STATE_SIZE (RGB_SHOWN_AT + 2 * sizeof(struct rgb_shown_wire))
-BUILD_ASSERT(RGB_SHOWN_AT == 17 && RGB_STATE_SIZE == 29, "RGB_STATE's layout is the PC's");
+#define RGB_COLOUR_EFFECTS_AT (RGB_SHOWN_AT + 2 * sizeof(struct rgb_shown_wire))
+#define RGB_STATE_SIZE (RGB_COLOUR_EFFECTS_AT + 1)
+BUILD_ASSERT(RGB_SHOWN_AT == 17 && RGB_STATE_SIZE == 30, "RGB_STATE's layout is the PC's");
 
 // The RGB_STATE reply; asks the relay for a fresher right state on the way.
 static void rgb_state(uint8_t r[RGB_STATE_SIZE]) {
@@ -619,6 +624,11 @@ static void rgb_state(uint8_t r[RGB_STATE_SIZE]) {
     memcpy(&r[3 + sizeof(left)], &right, sizeof(right));
     memcpy(&r[RGB_SHOWN_AT], &left_shown, sizeof(left_shown));
     memcpy(&r[RGB_SHOWN_AT + sizeof(left_shown)], &right_shown, sizeof(right_shown));
+    // The effects the left draws in the chosen colour (#626); 0, as before it, says nothing.
+    r[RGB_COLOUR_EFFECTS_AT] = 0;
+#if IS_ENABLED(CONFIG_FOXGLOVE_COLOUR_SWIRL) && IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
+    r[RGB_COLOUR_EFFECTS_AT] = colour_effects_mask();
+#endif
 }
 
 // Unsolicited RGB_STATE: after host traffic, the left's underglow switching on or off (idle,

@@ -1,0 +1,60 @@
+swirl: -- hello: capability bit 29
+swirl: HELLO caps bit 29 COLOUR_EFFECTS 1
+swirl: strip ready 1, dim level 100
+swirl: health, before any frame: version 1, effect 255, flags 4 (colour 0, recoloured 0, built 1), band 30, hue 0, widest offset within the band yes, frames 0, last apply none
+swirl: -- the user's amber (#d39f3f): a band around it, never the rainbow
+swirl: amber (hue 39, sat 70, bri 42): 60 frames of 21 LEDs
+swirl: amber: ZMK's own hues span the wheel (over 300 degrees): yes
+swirl: amber: every LED within 30+2 degrees of the colour: yes (0 outside)
+swirl: amber: the band reaches both edges (27 degrees or more each way): yes
+swirl: amber: a brightness wave (trough at most 65% of the crest): yes; no LED dark: yes
+swirl: amber: it moves every frame: yes; ZMK's frame unchanged: yes
+swirl: health, after the amber swirl: version 1, effect 3, flags 7 (colour 1, recoloured 1, built 1), band 30, hue 39, widest offset within the band yes, frames 60, last apply set
+swirl: D7 83, amber swirl: effect 3, byte 29 0x0B; shown hue within 30+3 of 39: yes
+swirl: -- red, across 0: the band wraps round
+swirl: red (hue 350, sat 100, bri 80): 60 frames of 21 LEDs
+swirl: red: ZMK's own hues span the wheel (over 300 degrees): yes
+swirl: red: every LED within 30+2 degrees of the colour: yes (0 outside)
+swirl: red: the band reaches both edges (27 degrees or more each way): yes
+swirl: red: a brightness wave (trough at most 65% of the crest): yes; no LED dark: yes
+swirl: red: it moves every frame: yes; ZMK's frame unchanged: yes
+swirl: -- white: no hue to band, the brightness wave still moves
+swirl: white (hue 200, sat 0, bri 50): 60 frames of 21 LEDs
+swirl: white: ZMK's own frame is all one white: yes
+swirl: white: every LED white (no hue): yes
+swirl: white: a brightness wave (trough at most 65% of the crest): yes; no LED dark: yes
+swirl: white: it moves every frame: yes; ZMK's frame unchanged: yes
+swirl: -- a key: RGB_HUI turns the colour, and the band follows it
+swirl: after RGB_HUI (hue 49, sat 70, bri 42): 60 frames of 21 LEDs
+swirl: after RGB_HUI: ZMK's own hues span the wheel (over 300 degrees): yes
+swirl: after RGB_HUI: every LED within 30+2 degrees of the colour: yes (0 outside)
+swirl: after RGB_HUI: the band reaches both edges (27 degrees or more each way): yes
+swirl: after RGB_HUI: a brightness wave (trough at most 65% of the crest): yes; no LED dark: yes
+swirl: after RGB_HUI: it moves every frame: yes; ZMK's frame unchanged: yes
+swirl: -- on battery (80%): the dim keeps the band
+swirl: dim level 80
+swirl: amber at 80% (hue 39, sat 70, bri 42): 60 frames of 21 LEDs
+swirl: amber at 80%: ZMK's own hues span the wheel (over 300 degrees): yes
+swirl: amber at 80%: every LED within 30+4 degrees of the colour: yes (0 outside)
+swirl: amber at 80%: the band reaches both edges (27 degrees or more each way): yes
+swirl: amber at 80%: a brightness wave (trough at most 65% of the crest): yes; no LED dark: yes
+swirl: amber at 80%: it moves every frame: yes; ZMK's frame unchanged: yes
+swirl: -- Spectrum stays the rainbow; Solid and Breathe are ZMK's own
+swirl: spectrum: the LEDs show ZMK's own frame: yes
+swirl: health, spectrum: version 1, effect 2, flags 4 (colour 0, recoloured 0, built 1), band 30, hue 39, widest offset within the band yes, frames 300, last apply set
+swirl: solid: the LEDs show ZMK's own frame: yes
+swirl: health, solid: version 1, effect 0, flags 5 (colour 1, recoloured 0, built 1), band 30, hue 39, widest offset within the band yes, frames 300, last apply set
+swirl: breathe: the LEDs show ZMK's own frame: yes
+swirl: no frame counted outside Swirl: yes
+swirl: -- the right: an older look, then the left's from the relay's RGB op (#624)
+swirl: the right is sent: hue 39 sat 70 bri 42 effect 3
+swirl: the right takes hue 39 sat 70 bri 42 effect 3 (1 hsb, 1 effect writes)
+swirl: the right (hue 39, sat 70, bri 42): 60 frames of 21 LEDs
+swirl: the right: ZMK's own hues span the wheel (over 300 degrees): yes
+swirl: the right: every LED within 30+2 degrees of the colour: yes (0 outside)
+swirl: the right: the band reaches both edges (27 degrees or more each way): yes
+swirl: the right: a brightness wave (trough at most 65% of the crest): yes; no LED dark: yes
+swirl: the right: it moves every frame: yes; ZMK's frame unchanged: yes
+swirl: the right's frames match the left's: yes (0 LEDs differ)
+swirl: health, at the end: version 1, effect 3, flags 7 (colour 1, recoloured 1, built 1), band 30, hue 39, widest offset within the band yes, frames 360, last apply set
+swirl: -- done

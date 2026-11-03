@@ -251,6 +251,8 @@ pub struct View {
     pub active_profile: Option<String>,
     /// The left half's lights as last read.
     pub lights: Option<RgbHalf>,
+    /// The effects the keyboard draws in the chosen colour (RGB_STATE byte 29, #626).
+    pub colour_effects: Option<u8>,
     /// The keymap has an RGB key, and nothing is being sent.
     pub lights_ready: bool,
     pub art_name: String,
@@ -370,7 +372,9 @@ fn art(s: &super::art_service::Snapshot, library: &super::art_library::Library) 
 
 fn view(ctx: &egui::Context) -> View {
     let (profiles, active_profile) = super::store::cached_profiles();
-    let lights = super::keyboard_settings::rgb_state(ctx).map(|s| s.left);
+    let rgb = super::keyboard_settings::rgb_state(ctx);
+    let lights = rgb.map(|s| s.left);
+    let colour_effects = rgb.and_then(|s| s.colour_effects);
     let lights_ready = super::keyboard_actions::underglow_behavior().is_some()
         && !super::keyboard_settings::invoking();
     let a = match super::art_service::handle() {
@@ -383,6 +387,7 @@ fn view(ctx: &egui::Context) -> View {
         profiles,
         active_profile,
         lights,
+        colour_effects,
         lights_ready,
         art_name: a.name,
         art_image: a.image,
@@ -815,7 +820,7 @@ fn lights(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Intent>)
                 });
                 ui.add_space(4.0);
                 // What the keyboard shows decides the controls (#670).
-                let rainbow = super::lights_page::effect(l.effect)
+                let rainbow = super::effect_controls::underglow_as(l.effect, v.colour_effects)
                     .is_some_and(super::lights_page::KeyboardEffect::rainbow);
                 if rainbow {
                     let w = ui.available_width().min(200.0);
@@ -1204,6 +1209,7 @@ pub mod tests {
                 effect: 0,
                 speed: 3,
             }),
+            colour_effects: None,
             lights_ready: true,
             art_name: a.name,
             art_image: a.image,

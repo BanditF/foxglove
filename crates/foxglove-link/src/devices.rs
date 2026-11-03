@@ -1485,7 +1485,11 @@ mod tests {
             speed: 1,
         };
         assert!(
-            halves_agree(&RgbState { left, right: None }),
+            halves_agree(&RgbState {
+                left,
+                right: None,
+                colour_effects: None
+            }),
             "no right half: nothing to wait for"
         );
         let dim = RgbHalf {
@@ -1495,22 +1499,26 @@ mod tests {
         assert!(
             halves_agree(&RgbState {
                 left,
-                right: Some((dim, 1))
+                right: Some((dim, 1)),
+                colour_effects: None,
             }),
             "a half dimmed on battery still agrees"
         );
         let behind = RgbHalf { hue: 240, ..left };
         assert!(!halves_agree(&RgbState {
             left,
-            right: Some((behind, 2))
+            right: Some((behind, 2)),
+            colour_effects: None,
         }));
         assert!(!halves_agree(&RgbState {
             left,
-            right: Some((RgbHalf { on: false, ..left }, 0))
+            right: Some((RgbHalf { on: false, ..left }, 0)),
+            colour_effects: None,
         }));
         assert!(!halves_agree(&RgbState {
             left,
-            right: Some((RgbHalf { effect: 3, ..left }, 0))
+            right: Some((RgbHalf { effect: 3, ..left }, 0)),
+            colour_effects: None,
         }));
     }
 
@@ -1567,6 +1575,7 @@ mod tests {
                 speed: 1,
             },
             right: None,
+            colour_effects: None,
         };
         dev.asked_state(&mut state);
         assert_eq!(

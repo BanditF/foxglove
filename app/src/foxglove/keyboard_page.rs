@@ -491,10 +491,12 @@ fn board_view(ctx: &egui::Context) -> BoardView {
             art = image;
         }
     }
-    let lit = ks::rgb_state(ctx).map(|s| s.left).filter(|l| l.on);
+    let rgb = ks::rgb_state(ctx);
+    let lit = rgb.map(|s| s.left).filter(|l| l.on);
     let glow = lit.map(|l| super::lights_page::shown_color(l.hue, l.sat, l.brightness));
+    // A colour Swirl (#626) glows in its colour; a rainbow effect glows as a rainbow.
     let glow_rainbow = lit.is_some_and(|l| {
-        super::lights_page::effect(l.effect)
+        super::effect_controls::underglow_in(rgb.as_ref(), l.effect)
             .is_some_and(super::lights_page::KeyboardEffect::rainbow)
     });
     let link = super::connection::summary(ctx);

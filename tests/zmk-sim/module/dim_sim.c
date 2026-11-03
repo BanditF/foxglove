@@ -17,7 +17,16 @@
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
+#include <zmk/rgb_underglow.h>
+
 #include "battery_dim.h"
+
+// ZMK's underglow, which the simulator doesn't build, as dim_strip.c's colour_effects.c asks it
+// (#626): Solid, so every frame passes through as drawn.
+int zmk_rgb_underglow_calc_effect(int direction) { return 0; }
+struct zmk_led_hsb zmk_rgb_underglow_calc_hue(int direction) {
+    return (struct zmk_led_hsb){.h = 0, .s = 0, .b = 100};
+}
 
 // What ZMK reads before its first event: no cable, no charge reading yet.
 bool battery_dim_read_usb(void) { return false; }
