@@ -386,3 +386,145 @@ fn the_session_bar_and_prompts_lay_out_without_overlaps() {
     }
     report(&found);
 }
+
+/// F6: what the keymap health rows say now (this test thread's editor noted it).
+fn last_change() -> Option<crate::foxglove::keymap_health::Change> {
+    crate::foxglove::keymap_health::now().last_change
+}
+
+/// F6: a change that fails Foxglove's checks is never sent: the board and the overlay keep
+/// what they have, the editor says why, and the health row notes it.
+#[test]
+fn a_change_that_fails_the_checks_is_never_sent() {
+    use crate::foxglove::keymap_health::Change;
+    let board = FakeBoard::corne();
+    let mut bench = Bench::open(board);
+    bench.ready();
+    let before = bench.board.live_param(0, 3);
+    // A layer the board doesn't have.
+    let nowhere = KeyAction::Zmk(Behavior::MomentaryLayer { layer_id: 9 });
+    bench.editor.apply_write(&bench.keyboard, at(0, 3), nowhere);
+    assert!(!bench.editor.session_busy(), "nothing was sent");
+    let error = bench.editor.error.clone().unwrap_or_default();
+    assert!(
+        error.contains("a layer the keyboard doesn't have"),
+        "{error}"
+    );
+    assert!(matches!(last_change(), Some(Change::Refused(_))));
+    // A key that isn't on the layout.
+    bench
+        .editor
+        .apply_write(&bench.keyboard, at(0, 999), key(0x14));
+    assert!(!bench.editor.session_busy());
+    assert_eq!(bench.board.live_param(0, 3), before);
+    assert!(!bench.board.unsaved());
+    bench.editor.retarget(&bench.keyboard, at(0, 3));
+    bench.editor.apply_write(
+        &bench.keyboard,
+        at(0, 3),
+        KeyAction::Zmk(Behavior::MomentaryLayer { layer_id: 9 }),
+    );
+    bench.frame();
+    bench.png("ui-keymap-f6-refused.png");
+}
+
+/// F6: the board refuses a binding and keeps its own; the editor says so, reads the keymap
+/// back and shows the board's binding.
+#[test]
+fn a_binding_the_board_refuses_leaves_the_key_as_it_was() {
+    use crate::foxglove::keymap_health::Change;
+    for board in [FakeBoard::plank3(), FakeBoard::corne()] {
+        board.unlock();
+        let mut bench = Bench::open(board);
+        bench.ready();
+        let before = bench.shown(at(0, 3));
+        bench.board.refuse_next_write();
+        bench
+            .editor
+            .apply_write(&bench.keyboard, at(0, 3), key(0x14));
+        bench.idle();
+        assert_eq!(
+            bench.shown(at(0, 3)),
+            before,
+            "the overlay shows the board's binding"
+        );
+        assert_ne!(bench.board.live_param(0, 3), 0x07_0014);
+        assert!(!bench.editor.zmk_dirty, "nothing changed on the board");
+        let error = bench.editor.error.clone().unwrap_or_default();
+        assert!(
+            error.contains("didn't take that change: the keyboard doesn't accept those values"),
+            "{error}"
+        );
+        assert!(matches!(last_change(), Some(Change::Rejected(_))));
+        assert!(bench.editor.studio.history.next_undo().is_none());
+    }
+}
+
+/// F6: the link breaks during a write, after the board took it: the editor reads the keymap
+/// back on a new link and shows what the board has (the new binding, unsaved).
+#[test]
+fn a_write_whose_answer_is_lost_reads_the_keymap_back() {
+    use crate::foxglove::keymap_health::Change;
+    let board = FakeBoard::corne();
+    let mut bench = Bench::open(board);
+    bench.ready();
+    bench.board.lose_next_reply();
+    bench
+        .editor
+        .apply_write(&bench.keyboard, at(0, 3), key(0x14));
+    bench.idle();
+    assert_eq!(bench.board.live_param(0, 3), 0x07_0014, "the board took it");
+    assert_eq!(bench.shown(at(0, 3)), Some(key(0x14)), "read back");
+    assert!(bench.editor.zmk_dirty, "the board says unsaved");
+    assert!(
+        bench.board.lines_opened() >= 2,
+        "a new link for the read-back"
+    );
+    let error = bench.editor.error.clone().unwrap_or_default();
+    assert!(error.contains("may not have reached"), "{error}");
+    assert!(!error.contains("Reading"), "the read-back is done: {error}");
+    assert!(matches!(last_change(), Some(Change::LinkFailed(_))));
+    assert!(crate::foxglove::keymap_health::now().unsaved);
+}
+
+/// F6: a save the board can't do keeps the changes on it, unsaved, and says why; the next
+/// save works.
+#[test]
+fn a_failed_save_keeps_the_changes_and_says_why() {
+    use zmk_studio_api::proto::zmk::keymap::SaveChangesErrorCode;
+    let board = FakeBoard::plank3();
+    board.unlock();
+    let mut bench = Bench::open(board);
+    bench.ready();
+    bench.write(at(0, 3), key(0x14));
+    bench
+        .board
+        .fail_next_save(SaveChangesErrorCode::SaveChangesErrNoSpace);
+    bench.editor.save(&bench.keyboard);
+    bench.idle();
+    let error = bench.editor.error.clone().unwrap_or_default();
+    assert!(
+        error.contains("Not saved: the keyboard has no room left to save"),
+        "{error}"
+    );
+    assert!(bench.editor.zmk_dirty);
+    assert!(bench.board.unsaved());
+    assert_eq!(bench.board.live_param(0, 3), 0x07_0014, "still live");
+    assert_ne!(bench.board.saved_param(0, 3), 0x07_0014);
+    let health = crate::foxglove::keymap_health::now();
+    assert_eq!(
+        health.last_save,
+        Some(Err("the keyboard has no room left to save".into()))
+    );
+    assert!(health.unsaved);
+    bench.png("ui-keymap-f6-save-failed.png");
+
+    bench.editor.save(&bench.keyboard);
+    bench.idle();
+    assert!(!bench.editor.zmk_dirty);
+    assert_eq!(bench.board.saved_param(0, 3), 0x07_0014);
+    assert_eq!(
+        crate::foxglove::keymap_health::now().last_save,
+        Some(Ok(()))
+    );
+}

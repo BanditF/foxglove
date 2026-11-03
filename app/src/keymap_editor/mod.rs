@@ -533,6 +533,10 @@ impl EditorState {
             self.queued = Some((target, action));
             return;
         }
+        // Foxglove (F6): checked before it is written; a refused change is never sent.
+        if !self.check_before_write(keyboard, target, &action) {
+            return;
+        }
         self.studio.begin_edit(keyboard, target, &action); // Foxglove (#578): for undo
         let receiver = target.set_key(keyboard, action);
         self.start_task(PendingKind::Set, receiver);
@@ -547,6 +551,7 @@ impl EditorState {
             Ok(Ok(())) => {
                 if let Some(task) = self.pending.take() {
                     self.complete_task(task.kind);
+                    self.task_done(keyboard, task.kind); // Foxglove (F6): health
                 }
                 // Foxglove (#578): an undo or redo shows the key it changed.
                 if let Some(target) = self.studio.take_jump() {
@@ -566,13 +571,13 @@ impl EditorState {
                 }
             }
             Ok(Err(e)) => {
-                self.fail_task(e);
+                self.task_failed(keyboard, e); // Foxglove (F6): reason, read-back, health
             }
             Err(mpsc::TryRecvError::Empty) => {
                 ctx.request_repaint();
             }
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.fail_task("Connection lost");
+                self.task_failed(keyboard, "Connection lost".into());
             }
         }
     }
