@@ -528,3 +528,107 @@ fn a_failed_save_keeps_the_changes_and_says_why() {
         Some(Ok(()))
     );
 }
+
+/// #582: a behaviour the board defines itself, with a key and a count (`hid_usage` + `range`),
+/// is assigned from the Behaviours page's draft; the board stores it, and reading the keymap
+/// back (the Studio client's own decoding) gives the same binding.
+#[test]
+fn a_behaviour_of_the_boards_own_is_assigned_and_round_trips() {
+    use crate::foxglove::studio_session::StudioRequest;
+    use crate::keymap_editor::{CustomDraft, ZmkDraft};
+    for board in [FakeBoard::plank3(), FakeBoard::corne()] {
+        board.unlock();
+        let mut bench = Bench::open(board);
+        bench.ready();
+        let catalog = bench.keyboard.custom_behaviors();
+        let names: Vec<&str> = catalog.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Profile", "Repeat key"], "read from the board");
+        let repeat = catalog.iter().find(|c| c.name == "Repeat key").unwrap();
+
+        let mut draft = CustomDraft::pick(repeat);
+        assert_eq!(draft.staged(&catalog), None, "no key yet: nothing to write");
+        draft.param1 = Some(0x07_0004);
+        draft.param2 = Some(3);
+        let staged = draft.staged(&catalog).expect("complete");
+        bench.write(at(1, 6), KeyAction::Zmk(staged.clone()));
+        assert_eq!(bench.board.live_binding(1, 6), (5, 0x07_0004, 3));
+        assert!(bench.editor.zmk_dirty);
+
+        // Read back through the Studio client: the same binding.
+        let reply = bench.keyboard.studio(StudioRequest::Reread);
+        reply
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap()
+            .unwrap();
+        assert_eq!(bench.shown(at(1, 6)), Some(KeyAction::Zmk(staged.clone())));
+        // The key opens on the Behaviours page with its values.
+        bench.editor.retarget(&bench.keyboard, at(1, 6));
+        assert_eq!(
+            bench.editor.zmk_draft.custom,
+            CustomDraft::from_behavior(&staged)
+        );
+
+        // Values the board's metadata refuses never stage, and are refused if sent anyway.
+        draft.param2 = Some(9);
+        assert_eq!(draft.staged(&catalog), None);
+        let over = match staged {
+            Behavior::Custom {
+                behavior_id,
+                display_name,
+                param1,
+                ..
+            } => Behavior::Custom {
+                behavior_id,
+                display_name,
+                param1,
+                param2: zmk_studio_api::BehaviorParam::Number(9),
+            },
+            _ => unreachable!(),
+        };
+        bench
+            .editor
+            .apply_write(&bench.keyboard, at(1, 7), KeyAction::Zmk(over));
+        assert!(!bench.editor.session_busy(), "not sent");
+        assert!(bench
+            .editor
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("doesn't take those values"));
+        assert_eq!(bench.board.live_binding(1, 7).0, 2, "still transparent");
+        let _ = ZmkDraft::default();
+    }
+}
+
+/// #582: the Behaviours page, for review: a key bound to the board's own behaviour, and one
+/// whose second value follows its first (two parameter sets).
+#[test]
+fn the_behaviours_page_renders() {
+    use crate::keymap_editor::CustomDraft;
+    let board = FakeBoard::corne();
+    let mut bench = Bench::open(board);
+    bench.ready();
+    let catalog = bench.keyboard.custom_behaviors();
+    let repeat = catalog.iter().find(|c| c.name == "Repeat key").unwrap();
+    let staged = repeat.stage(Some(0x07_0004), Some(3)).unwrap();
+    bench.write(at(0, 3), KeyAction::Zmk(staged));
+    bench.frame();
+    assert!(
+        bench.editor.zmk_draft.custom.is_some(),
+        "the Behaviours page"
+    );
+    bench.png("ui-keymap-f6-behaviours.png");
+
+    let profile = catalog.iter().find(|c| c.name == "Profile").unwrap();
+    let staged = profile.stage(Some(1), Some(2)).unwrap();
+    bench.write(at(0, 4), KeyAction::Zmk(staged));
+    bench.frame();
+    bench.png("ui-keymap-f6-behaviours-two-sets.png");
+    // Picked but incomplete: the page asks for the rest and writes nothing.
+    let before = bench.board.live_binding(0, 5);
+    bench.editor.retarget(&bench.keyboard, at(0, 5));
+    bench.editor.zmk_draft.custom = Some(CustomDraft::pick(repeat));
+    bench.frame();
+    assert_eq!(bench.board.live_binding(0, 5), before);
+    bench.png("ui-keymap-f6-behaviours-pick.png");
+}

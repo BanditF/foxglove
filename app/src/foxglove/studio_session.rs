@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use zmk_studio_api::proto::zmk::{core, keymap, meta, studio};
 use zmk_studio_api::{Behavior, ClientError, ResolvedLayer, StudioClient};
 
+use crate::foxglove::behavior_catalog::{self, Catalog, CustomBehavior};
 use crate::key_action::KeymapSnapshot;
 use crate::key_matrix::KeyMatrix;
 use crate::protocols::DeviceLocked;
@@ -141,6 +142,7 @@ pub struct StudioDone {
     respond: Sender<Result<Status, String>>,
     wake: UiWake,
     matrix: Arc<Mutex<KeyMatrix>>,
+    catalog: Option<Catalog>,
 }
 
 impl StudioDone {
@@ -153,6 +155,20 @@ impl StudioDone {
             respond,
             wake,
             matrix,
+            catalog: None,
+        }
+    }
+
+    /// Where the board's own behaviours go when the session opens (#582).
+    pub fn with_catalog(mut self, catalog: Catalog) -> Self {
+        self.catalog = Some(catalog);
+        self
+    }
+
+    /// Hands the editor the board's own behaviours (#582).
+    fn publish(&self, behaviors: &[CustomBehavior]) {
+        if let Some(catalog) = &self.catalog {
+            *catalog.lock().unwrap_or_else(|e| e.into_inner()) = behaviors.to_vec();
         }
     }
 
@@ -228,6 +244,8 @@ pub struct StudioEditor {
     parked: Option<Parked>,
     status: Status,
     settled: Option<Settled>,
+    /// The board's own behaviours (#582), read once per link to this board.
+    custom: Option<Vec<CustomBehavior>>,
 }
 
 /// Told the keymap (and physical layouts) a board keeps after Save, Discard or Restore stock
@@ -242,6 +260,7 @@ impl StudioEditor {
             parked: None,
             status: Status::default(),
             settled: None,
+            custom: None,
         }
     }
 
@@ -362,11 +381,20 @@ impl StudioEditor {
     pub fn open(&mut self) -> Result<Status, Box<dyn Error>> {
         self.link()?;
         if !self.status.locked {
-            let unsaved = self.run(|c| {
+            let read = self.custom.is_none();
+            let (unsaved, custom) = self.run(|c| {
                 c.ensure_behavior_catalog()?;
-                c.check_unsaved_changes()
+                let custom = if read {
+                    Some(behavior_catalog::read(c)?)
+                } else {
+                    None
+                };
+                Ok((c.check_unsaved_changes()?, custom))
             })?;
             self.status.unsaved = unsaved;
+            if custom.is_some() {
+                self.custom = custom;
+            }
         }
         Ok(self.status)
     }
@@ -421,7 +449,7 @@ impl StudioEditor {
             StudioRequest::Discard | StudioRequest::RestoreStock
         );
         let changed = match request {
-            StudioRequest::Open => return done.send(self.open().map_err(error_text)),
+            StudioRequest::Open => return self.answer_open(done),
             StudioRequest::WaitUnlock => return self.wait_unlock(done),
             StudioRequest::Discard => self.run(|c| c.discard_changes()).map(|_| ()),
             StudioRequest::Reread => Ok(()),
@@ -441,13 +469,22 @@ impl StudioEditor {
         }
     }
 
+    /// Opens the session and answers, handing the editor the board's own behaviours.
+    fn answer_open(&mut self, done: StudioDone) {
+        let result = self.open().map_err(error_text);
+        if result.is_ok() {
+            done.publish(self.custom.as_deref().unwrap_or_default());
+        }
+        done.send(result);
+    }
+
     /// Lends the link to a thread that waits for the board's `lock_state_changed`.
     fn wait_unlock(&mut self, done: StudioDone) {
         if let Err(e) = self.link() {
             return done.send(Err(error_text(e)));
         }
         if !self.status.locked {
-            return done.send(self.open().map_err(error_text));
+            return self.answer_open(done);
         }
         let Some(mut link) = self.link.take() else {
             return done.send(Err("no Studio link".into()));
@@ -457,7 +494,10 @@ impl StudioEditor {
         let (back_tx, back) = mpsc::channel();
         let mut status = self.status;
         crate::foxglove::services::spawn_named("studio-unlock-wait", move || {
-            let result = wait_for_unlock(&mut link, &mut status);
+            let result = wait_for_unlock(&mut link, &mut status).map(|(status, custom)| {
+                done.publish(&custom);
+                status
+            });
             *link.gate.until() = None;
             let (link, status) = match &result {
                 Ok(status) => (Some(link), *status),
@@ -512,7 +552,10 @@ impl WaitError {
 /// Blocks on the board's notifications until it reports `unlocked` (noted in `status`, so a
 /// stop after it still hands the link back as unlocked), then gets the session ready as
 /// [`StudioEditor::open`] does.
-fn wait_for_unlock(link: &mut Link, status: &mut Status) -> Result<Status, WaitError> {
+fn wait_for_unlock(
+    link: &mut Link,
+    status: &mut Status,
+) -> Result<(Status, Vec<CustomBehavior>), WaitError> {
     loop {
         let n = link
             .client
@@ -527,10 +570,16 @@ fn wait_for_unlock(link: &mut Link, status: &mut Status) -> Result<Status, WaitE
     let client = &mut link.client;
     client
         .ensure_behavior_catalog()
-        .and_then(|()| client.check_unsaved_changes())
-        .map(|unsaved| Status {
-            locked: false,
-            unsaved,
+        .and_then(|()| behavior_catalog::read(client))
+        .and_then(|custom| Ok((client.check_unsaved_changes()?, custom)))
+        .map(|(unsaved, custom)| {
+            (
+                Status {
+                    locked: false,
+                    unsaved,
+                },
+                custom,
+            )
         })
         .map_err(WaitError::from_client)
 }

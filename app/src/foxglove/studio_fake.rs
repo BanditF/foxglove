@@ -15,6 +15,7 @@ use prost::Message;
 use zmk_studio_api::proto::zmk::{behaviors, core, keymap, meta, studio};
 use zmk_studio_api::{Behavior, BehaviorRole, HidUsage, ResolvedLayer};
 
+use super::behavior_catalog::CustomBehavior;
 use super::keymap_cache::{encode_frame, Frames};
 use super::studio_session::{Link, StudioDone, StudioEditor, StudioRequest};
 use crate::key_action::{KeyAction, KeymapSnapshot, LayerInfo};
@@ -27,6 +28,12 @@ const BEHAVIORS: [(u32, BehaviorRole); 4] = [
     (3, BehaviorRole::MomentaryLayer),
     (4, BehaviorRole::None),
 ];
+/// #582: behaviours the board defines in its own keymap, with their parameter metadata: a key
+/// and a count (`hid_usage` + `range`), and two parameter sets (`constant`s, then a `range`).
+fn custom_behaviors() -> Vec<CustomBehavior> {
+    use crate::foxglove::behavior_catalog::tests::{key_and_count, two_sets};
+    vec![key_and_count(5), two_sets(6)]
+}
 const KEY_PRESS: i32 = 1;
 const TRANSPARENT: i32 = 2;
 const MOMENTARY: i32 = 3;
@@ -179,6 +186,12 @@ impl FakeBoard {
         self.state().unsaved
     }
 
+    /// The live binding at a key: behaviour id and both parameters.
+    pub(crate) fn live_binding(&self, layer: usize, pos: usize) -> (i32, u32, u32) {
+        let b = self.state().live[layer].bindings[pos];
+        (b.behavior_id, b.param1, b.param2)
+    }
+
     pub(crate) fn live_param(&self, layer: usize, pos: usize) -> u32 {
         self.state().live[layer].bindings[pos].param1
     }
@@ -214,7 +227,19 @@ fn resolve(b: &keymap::BehaviorBinding) -> Behavior {
         KEY_PRESS => Behavior::KeyPress(HidUsage::from_encoded(b.param1)),
         TRANSPARENT => Behavior::Transparent,
         MOMENTARY => Behavior::MomentaryLayer { layer_id: b.param1 },
-        _ => Behavior::None,
+        id => match custom_behaviors().into_iter().find(|c| c.id as i32 == id) {
+            Some(c) => {
+                let (param1, param2) =
+                    crate::foxglove::behavior_catalog::typed_params(&c.sets, b.param1, b.param2);
+                Behavior::Custom {
+                    behavior_id: c.id,
+                    display_name: c.name,
+                    param1,
+                    param2,
+                }
+            }
+            None => Behavior::None,
+        },
     }
 }
 
@@ -365,7 +390,24 @@ fn answer_behaviors(r: behaviors::request::RequestType) -> behaviors::response::
     match r {
         behaviors::request::RequestType::ListAllBehaviors(_) => {
             R::ListAllBehaviors(behaviors::ListAllBehaviorsResponse {
-                behaviors: BEHAVIORS.iter().map(|(id, _)| *id).collect(),
+                behaviors: BEHAVIORS
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .chain(custom_behaviors().iter().map(|c| c.id))
+                    .collect(),
+            })
+        }
+        behaviors::request::RequestType::GetBehaviorDetails(q)
+            if custom_behaviors().iter().any(|c| c.id == q.behavior_id) =>
+        {
+            let c = custom_behaviors()
+                .into_iter()
+                .find(|c| c.id == q.behavior_id)
+                .expect("listed");
+            R::GetBehaviorDetails(behaviors::GetBehaviorDetailsResponse {
+                id: c.id,
+                display_name: c.name,
+                metadata: c.sets,
             })
         }
         behaviors::request::RequestType::GetBehaviorDetails(q) => {

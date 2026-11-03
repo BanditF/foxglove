@@ -159,6 +159,8 @@ pub struct Keyboard {
     action_filter: Option<crate::protocols::ActionFilter>,
     /// Foxglove (#578): wakes the reader so a command runs without waiting for a report.
     reader_waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// Foxglove (#582): the board's own behaviours, read when the edit session opens.
+    custom_behaviors: crate::foxglove::behavior_catalog::Catalog,
 }
 
 /// A keymap command for the protocol, executed on the reader thread so writes
@@ -180,6 +182,7 @@ pub enum KeymapCommand {
     Studio {
         request: crate::foxglove::studio_session::StudioRequest,
         respond: mpsc::Sender<Result<crate::foxglove::studio_session::Status, String>>,
+        catalog: crate::foxglove::behavior_catalog::Catalog,
     },
 }
 
@@ -242,12 +245,17 @@ fn run_keymap_command(
             let _ = respond.send(result);
         }
         KeymapCommand::EndEditSession => protocol.end_edit_session(),
-        KeymapCommand::Studio { request, respond } => {
+        KeymapCommand::Studio {
+            request,
+            respond,
+            catalog,
+        } => {
             let done = crate::foxglove::studio_session::StudioDone::new(
                 respond,
                 ui_wake.clone(),
                 Arc::clone(matrix),
-            );
+            )
+            .with_catalog(catalog);
             protocol.studio(request, done);
             // A discard or restore may have renamed layers.
             let guard = matrix.lock().unwrap_or_else(|e| e.into_inner());
@@ -346,6 +354,7 @@ impl Keyboard {
             _keepalive: keepalive,
             action_filter,
             reader_waker,
+            custom_behaviors: Default::default(),
         };
 
         let layer_state_clone = Arc::clone(&keyboard.layer_state);
@@ -575,16 +584,27 @@ impl Keyboard {
         request: crate::foxglove::studio_session::StudioRequest,
     ) -> mpsc::Receiver<Result<crate::foxglove::studio_session::Status, String>> {
         let (respond, receiver) = mpsc::channel();
-        if let Err(e) = self
-            .command_tx
-            .send(KeymapCommand::Studio { request, respond })
-        {
+        let catalog = Arc::clone(&self.custom_behaviors);
+        if let Err(e) = self.command_tx.send(KeymapCommand::Studio {
+            request,
+            respond,
+            catalog,
+        }) {
             if let KeymapCommand::Studio { respond, .. } = e.0 {
                 let _ = respond.send(Err("Connection lost".to_string()));
             }
         }
         self.wake_reader();
         receiver
+    }
+
+    /// Foxglove (#582): the behaviours the board defines in its own keymap, as read when the
+    /// edit session last opened (empty before that).
+    pub fn custom_behaviors(&self) -> Vec<crate::foxglove::behavior_catalog::CustomBehavior> {
+        self.custom_behaviors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Foxglove (#578): runs queued commands now on a reader that sleeps until a report.
