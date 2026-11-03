@@ -416,7 +416,10 @@ impl StudioEditor {
         keymap: impl FnOnce(&[ResolvedLayer], &keymap::Keymap) -> KeymapSnapshot,
     ) {
         // Save-like requests leave the board's live keymap equal to its saved one (#592).
-        let settles = matches!(request, StudioRequest::Discard | StudioRequest::RestoreStock);
+        let settles = matches!(
+            request,
+            StudioRequest::Discard | StudioRequest::RestoreStock
+        );
         let changed = match request {
             StudioRequest::Open => return done.send(self.open().map_err(error_text)),
             StudioRequest::WaitUnlock => return self.wait_unlock(done),
