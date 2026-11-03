@@ -5,10 +5,10 @@
 //! happens (a read, a write, a save, the board's unsaved notification); [`rows`] only reads. No
 //! polling.
 //!
-//! The row shape matches `art_keys_health::HealthRow` and `lamp_health::HealthRow` (#704): the
-//! health view keeps one shared type when it lands (#709/#710).
+//! The rows are the Keyboard health view's shared type (`foxglove_link::health::HealthRow`, #705),
+//! registered with `health::register` as "keymap".
 
-// The shared health view (#705) picks these up; until it lands only the tests read them.
+// Some of the notes are read only by the tests so far.
 #![allow(dead_code)]
 
 #[cfg(not(test))]
@@ -77,22 +77,8 @@ impl KeymapHealth {
     }
 }
 
-/// A row's state in the health view (as `art_keys_health::Level`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Level {
-    Ok,
-    Warn,
-    Fail,
-}
-
-/// One view-model row for the health view (as `art_keys_health::HealthRow`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HealthRow {
-    pub subsystem: &'static str,
-    pub item: String,
-    pub level: Level,
-    pub detail: String,
-}
+// The shared row type of the Keyboard health view (#705).
+pub use super::health::{HealthRow, Level};
 
 #[cfg(not(test))]
 static HEALTH: Mutex<KeymapHealth> = Mutex::new(KeymapHealth {
@@ -125,13 +111,15 @@ pub fn now() -> KeymapHealth {
     HEALTH.with(|h| h.borrow().clone())
 }
 
+/// The health view's rows now (registered with `health::register`).
+pub fn rows_now() -> Vec<HealthRow> {
+    rows(&now())
+}
+
 /// The health view's rows: Read, Unsaved changes, Last save, Last change.
 pub fn rows(h: &KeymapHealth) -> Vec<HealthRow> {
-    let row = |what: &str, level, detail: String| HealthRow {
-        subsystem: SUBSYSTEM,
-        item: format!("Keymap · {what}"),
-        level,
-        detail,
+    let row = |what: &str, level, detail: String| {
+        HealthRow::new(SUBSYSTEM, format!("Keymap · {what}"), level, detail)
     };
     let read = match &h.read {
         None => row("Read", Level::Ok, "not read since Foxglove started".into()),

@@ -194,6 +194,7 @@ pub fn start() {
     register("dynamic_lighting", super::lamp_health::rows_now); // #691
     register("wallpaper_sync", super::wallpaper_sync_health::rows_now); // #586
     register("art_playlist", super::art_health::rows); // #522, #521
+    register("keymap", super::keymap_health::rows_now); // #582, #583
     let events = super::services::First::new(super::devices::bus().subscribe(false));
     let _ = super::services::spawn_supervised("health", move || {
         let events = events.take_or(|| super::devices::bus().subscribe(false));
