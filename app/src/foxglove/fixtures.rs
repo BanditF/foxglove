@@ -40,6 +40,7 @@ pub(crate) fn row(d: &CatalogDevice, control: Control) -> Row {
         zone_positions: d.zones.iter().map(|z| z.position).collect(),
         zone_roles: d.zones.iter().map(|z| z.role).collect(),
         kind: d.kind,
+        lamp_access: None,
     }
 }
 
@@ -60,6 +61,7 @@ fn lamp_array_row(key: &str, name: &str) -> Row {
         zone_positions: vec![],
         zone_roles: vec![],
         kind: Default::default(),
+        lamp_access: None,
     }
 }
 
@@ -294,6 +296,26 @@ hint = "Quit Nimbus Glow from its tray icon, or turn off its lighting control."
             positions: true,
             min_update_us: 20_000,
             kind: 5,
+        }
+    }
+
+    /// The lightbar as the Lights worker reads it: its attributes and 12 accent lamps in a
+    /// row along its 400 x 24 mm front.
+    pub(crate) fn lightbar_desc() -> foxglove_devices::pc_lighting::LampArrayDesc {
+        use foxglove_devices::pc_lighting::{lamp_array::purpose, Lamp, LampArrayDesc};
+        let step = 400.0 / LIGHTBAR_LAMPS as f32;
+        LampArrayDesc {
+            vid: LIGHTBAR.0,
+            pid: LIGHTBAR.1,
+            info: lightbar_info(),
+            size: Some([400, 24]),
+            lamps: (0..LIGHTBAR_LAMPS)
+                .map(|i| Lamp {
+                    position: Some([(step * (i as f32 + 0.5)) as u16, 12]),
+                    purposes: purpose::ACCENT,
+                    colour: true,
+                })
+                .collect(),
         }
     }
 

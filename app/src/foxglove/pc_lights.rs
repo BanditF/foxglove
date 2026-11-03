@@ -23,8 +23,8 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Condvar, Mutex, OnceLock};
 
 use foxglove_devices::pc_lighting::{
-    self as pcl, Catalog, CatalogDevice, Control, Found, HidWriter, LampArrayInfo, LightCaps,
-    LightingDevice, Protocol, Unknown,
+    self as pcl, Catalog, CatalogDevice, Control, Found, HidWriter, LampArrayDesc, LampArrayInfo,
+    LightCaps, LightingDevice, Protocol, Unknown,
 };
 use foxglove_devices::{DeviceError, Rgb};
 use serde::{Deserialize, Serialize};
@@ -71,6 +71,8 @@ pub struct Row {
     pub zone_roles: Vec<foxglove_devices::pc_lighting::ZoneRole>,
     /// What it is, from the catalog.
     pub kind: foxglove_devices::pc_lighting::DeviceKind,
+    /// A Dynamic Lighting device Foxglove drives: whether Windows lets it now (#691).
+    pub lamp_access: Option<pcl::LampAccess>,
 }
 
 /// An app the catalog names as a conflict for a found device, running now.
@@ -99,6 +101,9 @@ pub struct Snapshot {
     pub unknown: Vec<Unknown>,
     /// Where the user's own entries are saved.
     pub local_file: Option<String>,
+    /// How the last write to each Dynamic Lighting device went, by key, for the health view
+    /// (#691, [`super::lamp_health`]).
+    pub lamp_applies: BTreeMap<String, super::lamp_health::Apply>,
 }
 
 /// A request to the worker.
@@ -151,6 +156,9 @@ pub enum Msg {
     /// The scene ended: each board gets back the colours from before it (or the ones the user
     /// picked meanwhile, or the keyboard's colour it follows).
     SceneEnd,
+    /// Windows changed who may drive this Dynamic Lighting device (`AvailabilityChanged`,
+    /// #691): its colours go back on when Foxglove may again.
+    LampChanged(String),
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -347,8 +355,13 @@ fn rgb(c: [u8; 3]) -> Rgb {
 /// Opens a HID path for writing (the hidapi writer, or a recording one in tests).
 pub type Writers = Box<dyn Fn(&str) -> foxglove_devices::Result<Box<dyn HidWriter>> + Send>;
 
-/// Reads every LampArray's attributes (Windows), by VID/PID.
-pub type LampArrays = Box<dyn FnMut() -> Vec<(u16, u16, LampArrayInfo)> + Send>;
+/// Reads every LampArray's attributes and lamps (Windows).
+pub type LampArrays = Box<dyn FnMut() -> Vec<LampArrayDesc> + Send>;
+
+/// Opens the host's handle on a found Dynamic Lighting device (#691): Windows' LampArray, or a
+/// fake in tests. `None` when the host has none for it.
+pub type LampOpener =
+    Box<dyn FnMut(&Found) -> Option<Box<dyn foxglove_devices::pc_lighting::LampHandle>> + Send>;
 
 /// The worker's state, apart from the OS: tests drive it with a mocked HID writer.
 pub struct Worker {
@@ -358,7 +371,8 @@ pub struct Worker {
     catalog: Catalog,
     writers: Writers,
     lamp_arrays: LampArrays,
-    lamp_info: BTreeMap<(u16, u16), LampArrayInfo>,
+    lamp_info: BTreeMap<(u16, u16), LampArrayDesc>,
+    lamp_opener: LampOpener,
     found: Vec<Found>,
     unknown: Vec<Unknown>,
     /// The catalog changed: scan again, without putting colours back.
@@ -375,6 +389,8 @@ pub struct Worker {
     scene: Option<BTreeMap<String, Vec<Option<Rgb>>>>,
     /// A scene write failed once already (logged once per scene).
     scene_error: bool,
+    /// The last write to each Dynamic Lighting device, by key (#691's health signal).
+    lamp_applies: BTreeMap<String, super::lamp_health::Apply>,
 }
 
 impl Worker {
@@ -403,6 +419,7 @@ impl Worker {
             writers,
             lamp_arrays,
             lamp_info: BTreeMap::new(),
+            lamp_opener: Box::new(|_| None),
             found: Vec::new(),
             unknown: Vec::new(),
             rescan: false,
@@ -414,7 +431,14 @@ impl Worker {
             dirty: false,
             scene: None,
             scene_error: false,
+            lamp_applies: BTreeMap::new(),
         }
+    }
+
+    /// Drives Dynamic Lighting devices through `opener` (#691); without one they are listed only.
+    pub fn with_lamp_opener(mut self, opener: LampOpener) -> Self {
+        self.lamp_opener = opener;
+        self
     }
 
     /// A new enumeration: opens drivers for arrivals and puts their saved colours back (unless
@@ -456,15 +480,18 @@ impl Worker {
             f.control == Control::LampArray && !self.lamp_info.contains_key(&(f.vid, f.pid))
         });
         if unread {
-            for (vid, pid, info) in (self.lamp_arrays)() {
-                self.lamp_info.insert((vid, pid), info);
+            for desc in (self.lamp_arrays)() {
+                self.lamp_info.insert((desc.vid, desc.pid), desc);
             }
         }
+        // Its lamps are its zones (#691): one each, named by purpose, at its position.
         for f in &mut now {
-            if let (Control::LampArray, Some(info)) =
+            if let (Control::LampArray, Some(desc)) =
                 (f.control, self.lamp_info.get(&(f.vid, f.pid)))
             {
-                f.caps = LightCaps::from_lamp_array(*info);
+                f.caps = LightCaps::from_lamp_array(desc.info);
+                f.zones = pcl::lamp_array::lamp_zones(&desc.lamps);
+                f.size = desc.size;
             }
         }
         // Same device, same interface, same catalog entry: keep its driver.
@@ -477,10 +504,19 @@ impl Worker {
         });
         for f in &now {
             let arrived = !self.found.iter().any(|o| same(o, f));
-            if !arrived || !matches!(f.control, Control::Driver(_)) {
+            if !arrived || f.control == Control::NotYet {
                 continue;
             }
-            match (self.writers)(&f.path).and_then(|w| pcl::open(f, w)) {
+            let opened = match f.control {
+                // A Dynamic Lighting device, its lamps read: the host's handle on it (#691).
+                Control::LampArray if f.zones.is_empty() => continue,
+                Control::LampArray => match (self.lamp_opener)(f) {
+                    Some(handle) => pcl::open_lamp_array(f, handle),
+                    None => continue,
+                },
+                _ => (self.writers)(&f.path).and_then(|w| pcl::open(f, w)),
+            };
+            match opened {
                 Ok(driver) => {
                     self.drivers.insert(f.key.clone(), driver);
                     let fought = self.conflicts.iter().any(|c| c.key == f.key);
@@ -570,7 +606,7 @@ impl Worker {
     pub fn handle(&mut self, msg: Msg, paused: bool, wait: &mut dyn FnMut(std::time::Duration)) {
         // Scene frames stop quietly while paused; the scene's end gives the colours back even
         // then, as leases do (#404).
-        if paused && matches!(msg, Msg::SceneFrame { .. }) {
+        if paused && matches!(msg, Msg::SceneFrame { .. } | Msg::LampChanged(_)) {
             return;
         }
         let writes = !matches!(
@@ -613,6 +649,7 @@ impl Worker {
                 }
             }
             Msg::SceneFrame { key, colors } => self.scene_frame(&key, &colors),
+            Msg::LampChanged(key) => self.lamp_changed(&key),
             Msg::SceneEnd => {
                 self.scene_end();
                 scene_ended();
@@ -732,6 +769,55 @@ impl Worker {
                 self.save_local();
             }
         }
+    }
+
+    /// Windows gave a Dynamic Lighting device back (#691): the colours Foxglove set on it go
+    /// on again, unsaved (they are saved already), in case another app drew on it meanwhile.
+    /// Nothing while a scene holds it (the scene's writer puts its frame back, and its end puts
+    /// these back) or while Windows still keeps it from Foxglove.
+    fn lamp_changed(&mut self, key: &str) {
+        if self.scene.is_some() {
+            return;
+        }
+        let Some(d) = self.drivers.get_mut(key) else {
+            return;
+        };
+        if !d.lamp_access().is_some_and(|a| a.available && a.enabled) {
+            return;
+        }
+        let colors: Vec<(usize, Rgb)> = d
+            .colors()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, c)| Some((i, c?)))
+            .collect();
+        if colors.is_empty() {
+            return;
+        }
+        let result = d.set_zones(&colors);
+        if let Err(e) = &result {
+            eprintln!(
+                "Foxglove: {}: colours back after Windows gave it back: {e}",
+                d.name()
+            );
+        }
+        self.lamp_applied(key, &result);
+    }
+
+    /// Notes how a write to a Dynamic Lighting device went, for the health view (#691).
+    fn lamp_applied(&mut self, key: &str, result: &foxglove_devices::Result<()>) {
+        if !self
+            .drivers
+            .get(key)
+            .is_some_and(|d| d.lamp_access().is_some())
+        {
+            return;
+        }
+        let apply = match result {
+            Ok(()) => super::lamp_health::Apply::Ok,
+            Err(e) => super::lamp_health::Apply::Failed(e.to_string()),
+        };
+        self.lamp_applies.insert(key.to_string(), apply);
     }
 
     /// The user's colours on some zones (the page's Apply, the API's `pc_lighting.set_zone`),
@@ -901,6 +987,10 @@ impl Worker {
             return;
         };
         let result = call(d.as_mut());
+        self.lamp_applied(key, &result);
+        let Some(d) = self.drivers.get_mut(key) else {
+            return;
+        };
         // Under a scene, the other zones show its frame: the user's colours are the kept ones.
         let colors = match self.scene.as_ref().and_then(|s| s.get(key)) {
             Some(kept) if manual => kept.clone(),
@@ -972,6 +1062,7 @@ impl Worker {
                     zone_positions: f.zones.iter().map(|z| z.position).collect(),
                     zone_roles: f.zones.iter().map(|z| z.role).collect(),
                     kind: f.kind,
+                    lamp_access: self.drivers.get(&f.key).and_then(|d| d.lamp_access()),
                 }
             })
             .collect();
@@ -982,8 +1073,18 @@ impl Worker {
             busy: false,
             unknown: self.unknown.clone(),
             local_file: self.local_path.as_ref().map(|p| p.display().to_string()),
+            lamp_applies: self.lamp_applies.clone(),
         }
     }
+}
+
+/// The Dynamic Lighting devices' health now (#691), for the shared health view: found,
+/// controllable, what Windows lets Foxglove do, and the last apply. Read from the worker's
+/// snapshot; asks nothing of the devices.
+#[allow(dead_code)] // for the shared health view (worktrees\health)
+pub fn lamp_health() -> Vec<super::lamp_health::LampHealth> {
+    let s = snapshot();
+    super::lamp_health::from_snapshot(&s, &s.lamp_applies, super::scene_lamps::identity())
 }
 
 /// Starts the worker, the HID arrival watch and the first scan.
@@ -1022,7 +1123,14 @@ pub fn start() {
             settings,
             writers,
             Box::new(lamp_arrays),
-        );
+        )
+        .with_lamp_opener({
+            // Windows' AvailabilityChanged, on its thread: one message to this queue.
+            let tx = tx.clone();
+            super::scene_lamps::worker_opener(std::sync::Arc::new(move |key: &str| {
+                let _ = ticketed(&tx, Msg::LampChanged(key.to_string()));
+            }))
+        });
         let _ = ticketed(&tx, Msg::Scan);
         while let Ok(first) = rx.recv() {
             // A burst of arrivals (a hub with several interfaces) scans once.
@@ -1150,14 +1258,15 @@ pub fn lamp_layouts() -> BTreeMap<(u16, u16), LampLayout> {
         .clone()
 }
 
-/// Every LampArray's attributes, through Windows' Dynamic Lighting API: lamp count, whether
-/// lamps have positions, the update interval and kind. Read once per new LampArray on a scan;
-/// nothing is written to it. Each one's shape is kept for [`lamp_layouts`].
+/// Every LampArray's attributes and lamps, through Windows' Dynamic Lighting API: lamp count,
+/// each lamp's position, purposes and whether it takes a colour, the update interval and kind.
+/// Read once per new LampArray on a scan; nothing is written to it. Each one's shape is kept
+/// for [`lamp_layouts`].
 #[cfg(target_os = "windows")]
-pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
+pub fn lamp_arrays() -> Vec<LampArrayDesc> {
     use windows::Devices::Enumeration::DeviceInformation;
     use windows::Devices::Lights::LampArray;
-    let read = || -> windows::core::Result<Vec<(u16, u16, LampArrayInfo)>> {
+    let read = || -> windows::core::Result<Vec<LampArrayDesc>> {
         let selector = LampArray::GetDeviceSelector()?;
         let list = DeviceInformation::FindAllAsyncAqsFilter(&selector)?.join()?;
         let mut out = Vec::new();
@@ -1166,9 +1275,13 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
                 continue;
             };
             let count = lamps.LampCount().unwrap_or(0).max(0);
+            let infos: Vec<_> = (0..count.min(512))
+                .map(|i| lamps.GetLampInfo(i).ok())
+                .collect();
             // Windows gives metres.
-            let at: Vec<_> = (0..count.min(512))
-                .map(|i| lamps.GetLampInfo(i).and_then(|l| l.Position()).ok())
+            let at: Vec<_> = infos
+                .iter()
+                .map(|l| l.as_ref().and_then(|l| l.Position().ok()))
                 .collect();
             let positions = at
                 .iter()
@@ -1191,10 +1304,27 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert((vid, pid), layout);
-            out.push((
+            let mm = |m: f32| (m * 1000.0).round().clamp(0.0, f32::from(u16::MAX)) as u16;
+            let lamp_list = infos
+                .iter()
+                .zip(&at)
+                .map(|(l, p)| pcl::Lamp {
+                    position: positions.then(|| p.map_or([0; 2], |p| [mm(p.X), mm(p.Y)])),
+                    purposes: l
+                        .as_ref()
+                        .and_then(|l| l.Purposes().ok())
+                        .map_or(0, |p| p.0),
+                    colour: l.as_ref().is_some_and(|l| {
+                        let levels = [l.RedLevelCount(), l.GreenLevelCount(), l.BlueLevelCount()];
+                        let fixed = l.FixedColor().and_then(|c| c.Value()).is_ok();
+                        !fixed && levels.into_iter().any(|n| n.unwrap_or(0) > 0)
+                    }),
+                })
+                .collect();
+            out.push(LampArrayDesc {
                 vid,
                 pid,
-                LampArrayInfo {
+                info: LampArrayInfo {
                     lamp_count: count as u32,
                     positions,
                     // TimeSpan counts 100 ns.
@@ -1203,7 +1333,10 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
                         .map_or(0, |t| (t.Duration.max(0) / 10) as u64),
                     kind,
                 },
-            ));
+                size: (size_mm[0] > 0.0 && size_mm[1] > 0.0)
+                    .then(|| [mm(size_mm[0] / 1000.0), mm(size_mm[1] / 1000.0)]),
+                lamps: lamp_list,
+            });
         }
         Ok(out)
     };
@@ -1214,7 +1347,7 @@ pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn lamp_arrays() -> Vec<(u16, u16, LampArrayInfo)> {
+pub fn lamp_arrays() -> Vec<LampArrayDesc> {
     Vec::new()
 }
 
@@ -1296,22 +1429,39 @@ mod tests {
         let s = sent.clone();
         let writers: Writers =
             Box::new(move |_path: &str| Ok(Box::new(Recorder(s.clone())) as Box<dyn HidWriter>));
-        let lamps: LampArrays = Box::new(|| {
-            vec![(
-                0x046d,
-                0xc332,
-                LampArrayInfo {
-                    lamp_count: 2,
-                    positions: true,
-                    min_update_us: 33_000,
-                    kind: 2,
-                },
-            )]
-        });
+        let lamps: LampArrays = Box::new(|| vec![g502()]);
         (
             Worker::new(Catalog::bundled(), local, settings, writers, lamps),
             sent,
         )
+    }
+
+    /// The mouse as Windows reports it: a mouse-kind array of 2 lamps, a logo and an accent.
+    fn g502() -> LampArrayDesc {
+        use foxglove_devices::pc_lighting::lamp_array::purpose;
+        LampArrayDesc {
+            vid: 0x046d,
+            pid: 0xc332,
+            info: LampArrayInfo {
+                lamp_count: 2,
+                positions: true,
+                min_update_us: 33_000,
+                kind: 2,
+            },
+            size: Some([68, 132]),
+            lamps: vec![
+                pcl::Lamp {
+                    position: Some([34, 90]),
+                    purposes: purpose::BRANDING,
+                    colour: true,
+                },
+                pcl::Lamp {
+                    position: Some([34, 30]),
+                    purposes: purpose::ACCENT,
+                    colour: true,
+                },
+            ],
+        }
     }
 
     fn case_hid() -> Vec<HidEntry> {
@@ -1431,7 +1581,7 @@ mod tests {
                     5
                 ),
                 ("HP OMEN liquid cooler", Control::NotYet, 0),
-                ("G502 Proteus Spectrum", Control::LampArray, 0),
+                ("G502 Proteus Spectrum", Control::LampArray, 2),
             ]
         );
         let names: Vec<_> = s
@@ -1827,6 +1977,345 @@ mod tests {
         assert_eq!(parse_hex("#f08a3"), None);
     }
 
+    /// What a fake Dynamic Lighting device was asked: `None` index = every lamp.
+    type LampCalls = Arc<Mutex<Vec<(String, Option<usize>, [u8; 3])>>>;
+
+    /// A fake LampArray of any vendor: records each write under its key.
+    struct FakeLamps {
+        key: String,
+        count: usize,
+        calls: LampCalls,
+        access: Arc<Mutex<pcl::LampAccess>>,
+    }
+
+    impl pcl::LampHandle for FakeLamps {
+        fn lamp_count(&self) -> usize {
+            self.count
+        }
+        fn access(&self) -> pcl::LampAccess {
+            *self.access.lock().unwrap()
+        }
+        fn set_all(&mut self, c: Rgb) -> foxglove_devices::Result<()> {
+            let call = (self.key.clone(), None, [c.r, c.g, c.b]);
+            self.calls.lock().unwrap().push(call);
+            Ok(())
+        }
+        fn set_lamps(&mut self, lamps: &[(usize, Rgb)]) -> foxglove_devices::Result<()> {
+            let mut calls = self.calls.lock().unwrap();
+            for &(i, c) in lamps {
+                calls.push((self.key.clone(), Some(i), [c.r, c.g, c.b]));
+            }
+            Ok(())
+        }
+    }
+
+    /// Opens a fake for every Dynamic Lighting device, sized by its lamps.
+    fn fake_lamps(calls: &LampCalls) -> LampOpener {
+        fake_lamps_with(calls, &Arc::default())
+    }
+
+    /// The same, with what Windows lets Foxglove do with them set by the test.
+    fn fake_lamps_with(calls: &LampCalls, access: &Arc<Mutex<pcl::LampAccess>>) -> LampOpener {
+        let (calls, access) = (calls.clone(), access.clone());
+        Box::new(move |f: &Found| {
+            Some(Box::new(FakeLamps {
+                key: f.key.clone(),
+                count: f.zones.len(),
+                calls: calls.clone(),
+                access: access.clone(),
+            }) as Box<dyn pcl::LampHandle>)
+        })
+    }
+
+    /// A Dynamic Lighting device whose writes fail, as Windows' would for a device gone.
+    struct BrokenLamps(usize);
+
+    impl pcl::LampHandle for BrokenLamps {
+        fn lamp_count(&self) -> usize {
+            self.0
+        }
+        fn set_all(&mut self, _: Rgb) -> foxglove_devices::Result<()> {
+            Err(DeviceError::Backend("the device is gone".into()))
+        }
+        fn set_lamps(&mut self, _: &[(usize, Rgb)]) -> foxglove_devices::Result<()> {
+            Err(DeviceError::Backend("the device is gone".into()))
+        }
+    }
+
+    /// #691's health signal: each Dynamic Lighting device reports found, controllable, what
+    /// Windows lets Foxglove do and how the last apply went, and the rows change when they do.
+    #[test]
+    fn the_health_rows_follow_each_lamp_arrays_state() {
+        use crate::foxglove::lamp_health::{from_snapshot, rows, Apply, Level};
+        let calls = LampCalls::default();
+        let access = Arc::new(Mutex::new(pcl::LampAccess::default()));
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(fake_lamps_with(&calls, &access));
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let health = |w: &Worker| {
+            let s = w.snapshot();
+            from_snapshot(&s, &s.lamp_applies, false)
+        };
+        let h = health(&w);
+        assert_eq!(h.len(), 1, "only the Dynamic Lighting device");
+        assert_eq!(
+            (h[0].lamps, h[0].controllable, h[0].last_apply.clone()),
+            (2, true, None)
+        );
+        w.handle(Msg::Off(MOUSE.into()), false, &mut no_wait());
+        assert_eq!(health(&w)[0].last_apply, Some(Apply::Ok));
+        // Windows takes it: the Windows row warns.
+        access.lock().unwrap().available = false;
+        w.handle(Msg::LampChanged(MOUSE.into()), false, &mut no_wait());
+        let r = rows(&health(&w)[0]);
+        assert_eq!(r[2].level, Level::Warn, "{r:?}");
+        // A device whose writes fail: the last apply fails, with the reason.
+        let (w2, _) = worker(Settings::default());
+        let mut w2 = w2.with_lamp_opener(Box::new(|f: &Found| {
+            Some(Box::new(BrokenLamps(f.zones.len())) as Box<dyn pcl::LampHandle>)
+        }));
+        w2.scan(&case_hid(), &mut nothing(), false, true);
+        w2.handle(Msg::Off(MOUSE.into()), false, &mut no_wait());
+        let r = rows(&health(&w2)[0]);
+        assert_eq!(r[3].level, Level::Fail);
+        assert!(r[3].detail.contains("the device is gone"), "{r:?}");
+        // The case board isn't a Dynamic Lighting device: no rows, no apply noted.
+        w2.handle(Msg::Off("103c:84fd".into()), false, &mut no_wait());
+        assert!(!w2.snapshot().lamp_applies.contains_key("103c:84fd"));
+        // No handle: found, not controllable.
+        let (mut bare, _) = worker(Settings::default());
+        bare.scan(&case_hid(), &mut nothing(), false, true);
+        let r = rows(&health(&bare)[0]);
+        assert_eq!((r[1].level, r.len()), (Level::Warn, 3));
+    }
+
+    /// #691: "Match keyboard" on a Dynamic Lighting device follows the keyboard's report (so
+    /// the accent or wallpaper it follows), a scene holds it without the worker writing, and
+    /// the scene's end puts the matched colour back.
+    #[test]
+    fn a_lamp_array_matches_the_keyboard_and_comes_back_after_a_scene() {
+        let calls = LampCalls::default();
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(fake_lamps(&calls));
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        w.handle(Msg::Keyboard(solid(0)), false, &mut no_wait());
+        w.handle(Msg::Match(MOUSE.into(), true), false, &mut no_wait());
+        let red = (MOUSE.to_string(), None, [255, 0, 0]);
+        assert_eq!(
+            calls.lock().unwrap().drain(..).collect::<Vec<_>>(),
+            vec![red.clone()]
+        );
+        assert!(w.snapshot_row(MOUSE).unwrap().match_keyboard);
+        // A scene takes the lights (its own writer draws on the device): the worker keeps out.
+        w.handle(Msg::SceneStart, false, &mut no_wait());
+        w.handle(Msg::Keyboard(solid(240)), false, &mut no_wait());
+        w.handle(Msg::LampChanged(MOUSE.into()), false, &mut no_wait());
+        assert!(calls.lock().unwrap().is_empty(), "the scene holds it");
+        // Its end: the colour the keyboard shows now.
+        w.handle(Msg::SceneEnd, false, &mut no_wait());
+        let back = calls.lock().unwrap().drain(..).collect::<Vec<_>>();
+        assert_eq!(back, vec![(MOUSE.to_string(), None, [0, 0, 255])]);
+    }
+
+    /// #691: Windows takes the device (Foxglove's window went to the back, another app came
+    /// first) and gives it back: on its event the colours go on again, and the page knows
+    /// which it is. Nothing polls; nothing is written while Windows keeps it.
+    #[test]
+    fn a_lamp_array_gets_its_colours_back_when_windows_gives_it_back() {
+        let calls = LampCalls::default();
+        let access = Arc::new(Mutex::new(pcl::LampAccess::default()));
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(fake_lamps_with(&calls, &access));
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let pine = [0x5f, 0xc4, 0x8e];
+        w.handle(
+            Msg::Set {
+                key: MOUSE.into(),
+                colors: vec![(0, pine)],
+            },
+            false,
+            &mut no_wait(),
+        );
+        calls.lock().unwrap().clear();
+        assert_eq!(
+            w.snapshot_row(MOUSE).unwrap().lamp_access,
+            Some(pcl::LampAccess::default())
+        );
+        access.lock().unwrap().available = false;
+        w.handle(Msg::LampChanged(MOUSE.into()), false, &mut no_wait());
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "Windows keeps it: nothing"
+        );
+        assert_eq!(
+            w.snapshot_row(MOUSE)
+                .unwrap()
+                .lamp_access
+                .map(|a| a.available),
+            Some(false)
+        );
+        access.lock().unwrap().available = true;
+        // Paused (#404): the event is dropped; the next one puts the colours back.
+        w.handle(Msg::LampChanged(MOUSE.into()), true, &mut no_wait());
+        assert!(calls.lock().unwrap().is_empty());
+        w.handle(Msg::LampChanged(MOUSE.into()), false, &mut no_wait());
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![(MOUSE.to_string(), Some(0), pine)],
+            "only the lamp Foxglove set"
+        );
+        // Turned off in Windows' settings: left alone.
+        calls.lock().unwrap().clear();
+        access.lock().unwrap().enabled = false;
+        w.handle(Msg::LampChanged(MOUSE.into()), false, &mut no_wait());
+        assert!(calls.lock().unwrap().is_empty());
+        // A case board has no such state.
+        assert_eq!(w.snapshot_row("103c:84fd").unwrap().lamp_access, None);
+    }
+
+    const MOUSE: &str = "046d:c332";
+
+    /// #691: the mouse on Dynamic Lighting takes a colour on all its lamps or on one, goes
+    /// dark, blinks and comes back, and its colours are saved like any device's.
+    #[test]
+    fn a_lamp_array_takes_colours_per_lamp_off_and_identify() {
+        let calls = LampCalls::default();
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(fake_lamps(&calls));
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "nothing saved: nothing written"
+        );
+        let orange = [0xf0, 0x8a, 0x3c];
+        w.handle(
+            Msg::Set {
+                key: MOUSE.into(),
+                colors: vec![(0, orange), (1, orange)],
+            },
+            false,
+            &mut no_wait(),
+        );
+        w.handle(
+            Msg::Set {
+                key: MOUSE.into(),
+                colors: vec![(1, [0, 0, 255])],
+            },
+            false,
+            &mut no_wait(),
+        );
+        assert_eq!(
+            calls.lock().unwrap().drain(..).collect::<Vec<_>>(),
+            vec![
+                (MOUSE.to_string(), None, orange),
+                (MOUSE.to_string(), Some(1), [0, 0, 255]),
+            ],
+            "one colour on every lamp is one call; one lamp is that lamp"
+        );
+        let row = w.snapshot_row(MOUSE).unwrap();
+        assert_eq!(row.zones[0], ("Lamp 1 · Logo".to_string(), Some(orange)));
+        assert_eq!(row.zones[1].1, Some([0, 0, 255]));
+        assert_eq!(
+            w.settings.devices[MOUSE].colors,
+            BTreeMap::from([
+                ("0".to_string(), "#f08a3c".to_string()),
+                ("1".to_string(), "#0000ff".to_string())
+            ])
+        );
+        assert_eq!(
+            w.status.as_deref(),
+            Some("G502 Proteus Spectrum: colours set")
+        );
+        w.handle(Msg::Off(MOUSE.into()), false, &mut no_wait());
+        assert_eq!(
+            calls.lock().unwrap().drain(..).collect::<Vec<_>>(),
+            vec![(MOUSE.to_string(), None, [0, 0, 0])]
+        );
+        // Identify blinks the whole device, then puts back what it had (dark, after Off).
+        w.handle(Msg::Identify(MOUSE.into()), false, &mut no_wait());
+        let blink = calls.lock().unwrap().drain(..).collect::<Vec<_>>();
+        assert_eq!(blink.len(), pcl::IDENTIFY_STEPS + 1);
+        assert_eq!(blink[0], (MOUSE.to_string(), None, [255, 255, 255]));
+        assert_eq!(*blink.last().unwrap(), (MOUSE.to_string(), None, [0, 0, 0]));
+        // Paused (#404): refused, nothing written.
+        w.handle(
+            Msg::Set {
+                key: MOUSE.into(),
+                colors: vec![(0, orange)],
+            },
+            true,
+            &mut no_wait(),
+        );
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    /// #691: a Dynamic Lighting device's saved colours go back on when it arrives, as a case
+    /// board's do, and one with no handle (Windows lists none) is listed only.
+    #[test]
+    fn a_lamp_arrays_saved_colours_come_back_on_arrival() {
+        let calls = LampCalls::default();
+        let mut settings = Settings::default();
+        settings.devices.insert(
+            MOUSE.into(),
+            Saved {
+                colors: BTreeMap::from([
+                    ("0".into(), "#ff0000".into()),
+                    ("1".into(), "#00ff00".into()),
+                ]),
+                match_keyboard: false,
+            },
+        );
+        let (w, _) = worker(settings.clone());
+        let mut w = w.with_lamp_opener(fake_lamps(&calls));
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                (MOUSE.to_string(), Some(0), [255, 0, 0]),
+                (MOUSE.to_string(), Some(1), [0, 255, 0]),
+            ]
+        );
+        // The same scan again: not an arrival, nothing written.
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        assert_eq!(calls.lock().unwrap().len(), 2);
+        // No handle: listed, not driven.
+        let (mut bare, _) = worker(settings);
+        bare.scan(&case_hid(), &mut nothing(), false, true);
+        bare.handle(Msg::Off(MOUSE.into()), false, &mut no_wait());
+        assert_eq!(
+            bare.status.as_deref(),
+            Some("That device isn't connected now")
+        );
+        assert_eq!(bare.snapshot_row(MOUSE).unwrap().zones.len(), 2);
+    }
+
+    /// Systems, not products (#563): the second desk's 12-lamp lightbar, another vendor and
+    /// kind, through the same code.
+    #[test]
+    fn any_lamp_array_takes_a_colour_per_lamp() {
+        use crate::foxglove::fixtures::second_desk as desk;
+        let calls = LampCalls::default();
+        let writers: Writers =
+            Box::new(|_path: &str| Ok(Box::new(Recorder(Arc::default())) as Box<dyn HidWriter>));
+        let lamps: LampArrays = Box::new(|| vec![desk::lightbar_desc()]);
+        let mut w = Worker::new(desk::catalog(), None, Settings::default(), writers, lamps)
+            .with_lamp_opener(fake_lamps(&calls));
+        w.scan(&desk::hid(), &mut nothing(), false, true);
+        let key = w.snapshot().devices[1].key.clone();
+        let colors: Vec<_> = (0..12).map(|i| (i, [i as u8 * 20, 0, 0])).collect();
+        w.handle(
+            Msg::Set {
+                key: key.clone(),
+                colors,
+            },
+            false,
+            &mut no_wait(),
+        );
+        let calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.len(), 12);
+        assert_eq!(calls[11], (key, Some(11), [220, 0, 0]));
+    }
+
     #[test]
     fn devices_carry_caps_and_lamp_arrays_are_read_once() {
         let (mut w, _) = worker(Settings::default());
@@ -1844,6 +2333,18 @@ mod tests {
             s.devices[2].caps.chips(false)[0],
             "Per-LED RGB · 2 lamps · up to 30 fps"
         );
+        // #691: its lamps, by purpose and position, from what the device reports.
+        let mouse = &s.devices[2];
+        assert_eq!(
+            mouse.zones,
+            vec![
+                ("Lamp 1 · Logo".to_string(), None),
+                ("Lamp 2 · Accent".to_string(), None)
+            ]
+        );
+        assert_eq!(mouse.zone_ids, vec!["0", "1"]);
+        assert_eq!(mouse.zone_positions, vec![Some([34, 90]), Some([34, 30])]);
+        assert_eq!(mouse.size, Some([68, 132]));
         assert!(s.unknown.is_empty(), "all three are placed");
     }
 
@@ -1856,8 +2357,7 @@ mod tests {
         let s = sent.clone();
         let writers: Writers =
             Box::new(move |_path: &str| Ok(Box::new(Recorder(s.clone())) as Box<dyn HidWriter>));
-        let lamps: LampArrays =
-            Box::new(|| vec![(desk::LIGHTBAR.0, desk::LIGHTBAR.1, desk::lightbar_info())]);
+        let lamps: LampArrays = Box::new(|| vec![desk::lightbar_desc()]);
         let mut w = Worker::new(desk::catalog(), None, Settings::default(), writers, lamps);
         w.scan(&desk::hid(), &mut nothing(), false, true);
         let snap = w.snapshot();
@@ -1870,9 +2370,14 @@ mod tests {
             rows,
             vec![
                 ("Nimbus Strata case lights", Control::NotYet, 4),
-                ("Lumen desk lightbar", Control::LampArray, 0),
+                ("Lumen desk lightbar", Control::LampArray, 12),
             ]
         );
+        // Its lamps are its zones, at the positions it reports (#691).
+        assert_eq!(snap.devices[1].zones[0].0, "Lamp 1 · Accent");
+        assert_eq!(snap.devices[1].zone_ids[11], "11");
+        assert_eq!(snap.devices[1].zone_positions[0], Some([16, 12]));
+        assert_eq!(snap.devices[1].size, Some([400, 24]));
         assert_eq!(
             snap.devices[0].caps.chips(false),
             vec!["Per-zone RGB · 4 zones"]

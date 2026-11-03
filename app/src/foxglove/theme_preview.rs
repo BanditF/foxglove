@@ -1766,6 +1766,22 @@ fn pc_lights_caps_and_add_render() {
     assert_ne!(pick, zones);
 }
 
+/// #691: the Lights page with Dynamic Lighting devices driven like any light: the mouse's two
+/// lamps (logo, accent) on the user's desk, and the second desk's 12-lamp lightbar while
+/// Windows keeps it from Foxglove. Review images `ui-691-lights-desk.png` and
+/// `ui-691-lights-second-desk.png`.
+#[test]
+fn lamp_array_cards_render() {
+    use crate::foxglove::shell::Page;
+    let mut second = Samples::full();
+    second.pc = crate::foxglove::pc_lights_ui::tests::sample_second_desk();
+    let desk = shell_preview_with(Page::Lights, &Samples::full(), 1900.0);
+    let other = shell_preview_with(Page::Lights, &second, 1900.0);
+    keep("ui-691-lights-desk.png", &desk);
+    keep("ui-691-lights-second-desk.png", &other);
+    assert_ne!(desk, other);
+}
+
 #[test]
 fn settings_preview_renders_in_the_theme() {
     use crate::foxglove::theme::{Choice, DARK, LIGHT};
