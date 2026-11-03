@@ -20,6 +20,7 @@ import labkit  # noqa: E402
 import wallpaper_check as wc  # noqa: E402
 import desktop  # noqa: E402
 import pc_away  # noqa: E402
+import game_flicker  # noqa: E402
 sys.path.pop(0)
 import tomllib  # noqa: E402
 import zlib  # noqa: E402
@@ -349,6 +350,22 @@ class PcAway(unittest.TestCase):
 
 class HandsFree(unittest.TestCase):
     """The hands-free sitting's runner and its scripts' gates."""
+
+    def test_no_wallpaper_push_lands_in_the_reload(self):
+        key = wc.utc('2026-11-02T19:57:34.400Z')
+        log = ['2026-11-02 19:57:30Z Foxglove: wallpaper sync: sent to 1 monitor(s): layer GAME, game mode on',
+               '2026-11-02 19:57:35Z Foxglove: wallpaper sync: sent to 1 monitor(s): layer GAME+, game mode on (layer change)',
+               '2026-11-02 19:57:36Z Foxglove: PC state to the keyboard: awake (lease renewal)',
+               '2026-11-02 19:57:37Z Foxglove: wallpaper sync: sent to 1 monitor(s): layer GAME, game mode on '
+               "(after a full-screen program (Wallpaper Engine's reload); 1 in the last minute, 0 duplicate(s) suppressed)"]
+        found = game_flicker.pushes(log, key)
+        self.assertEqual([t.second for t, _ in found], [35, 37], 'the push before the key is not counted')
+        self.assertEqual([t.second for t, _ in game_flicker.into_reload(found, key)], [35],
+                         "the 19:57:34-37 pair of the user's log: the first lands inside the reload")
+        self.assertEqual(game_flicker.into_reload(found[1:], key), [], 'the re-push after the quiet is fine')
+        edge = wc.utc('2026-11-02T19:57:34.000Z')
+        self.assertEqual(len(game_flicker.into_reload(found, edge)), 1, '35 is whole inside 34-36')
+        self.assertIn(game_flicker.RELOAD_REASON, found[1][1])
 
     def test_the_game_stand_in_needs_on_calls_ok(self):
         r = run('game_flicker.py')

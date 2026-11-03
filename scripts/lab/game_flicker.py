@@ -13,6 +13,10 @@ a full-screen game? Now HA5, between HA1 (Diagnostics on, the GAME layer on) and
    the HUD taken before the game. The frames are kept as PNGs in --out for a later look, and a
    flicker's times go next to HA2's devlog gaps.
 3. H3, close the game: Esc closes the Start menu (a real Esc tap), the probe window closes.
+4. Foxglove's side (#586's fix): its log has one line per wallpaper push, with why it went. No
+   push may land inside Wallpaper Engine's reload, the first RELOAD_QUIET_S after the Win key
+   (wallpaper_sync.rs RELOAD_QUIET). With Wallpaper Engine's "fullscreen: Stop" the reloaded
+   wallpaper gets the state once after it ("after a full-screen program"), which is printed.
 
 The monitor is the one whose device name contains --monitor (Wallpaper Engine's key piece, SAM).
 Only the band above the Start menu is measured (--band, the top 40 %), so the menu itself isn't a
@@ -26,19 +30,45 @@ runs only with FOXGLOVE_APP_OK=1 (On-call). It launches nothing.
     FOXGLOVE_APP_OK=1 python scripts/lab/game_flicker.py [--monitor SAM] [--out <dir>]   (exit 0 PASS, 1 FAIL, 2 BLOCKED)
 """
 import argparse
+import re
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from labkit import REPO, Checks, require_app_ok, require_user_idle  # noqa: E402
+from wallpaper_check import FOXGLOVE_LOG, read_lines, utc  # noqa: E402
+
+# wallpaper_sync.rs RELOAD_QUIET: Foxglove sends nothing this long after a full-screen program
+# leaves the front.
+RELOAD_QUIET_S = 2.0
+RELOAD_REASON = 'after a full-screen program'
 
 
 def band(rect, top_share):
     l, t, r, b = rect
     return [l, t, r, t + max(int((b - t) * top_share), 8)]
+
+
+def pushes(lines, since):
+    """[(time, line)] of Foxglove's wallpaper push lines ("wallpaper sync: ... sent to") at or
+    after `since`'s second."""
+    out = []
+    floor = since.replace(microsecond=0)
+    for l in lines:
+        m = re.match(r'(\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ) ', l)
+        if m and 'wallpaper sync:' in l and ' sent to ' in l and utc(m.group(1)) >= floor:
+            out.append((utc(m.group(1)), l))
+    return out
+
+
+def into_reload(found, key_at, quiet_s=RELOAD_QUIET_S):
+    """The pushes certainly inside the reload's quiet after the Win key at `key_at`: the log has
+    whole seconds, so a line counts when its whole second is after the key and before the end."""
+    end = key_at + timedelta(seconds=quiet_s)
+    return [(t, l) for t, l in found if t >= key_at and t + timedelta(seconds=1) <= end]
 
 
 def frames(desktop, rect, seconds, fps, out, tag):
@@ -93,6 +123,7 @@ def main(argv=None):
         print(f'  while the game runs: luma {sum(l for _, l, _ in under) / len(under):.1f} (the stand-in is black)',
               flush=True)
         # H2: the Win key.
+        key_at = datetime.now(timezone.utc)
         sent = desktop.key(desktop.VK_LWIN, 'H2 Win key in the full-screen game')
         check('H2: the Win key went in', sent == 2, f'{sent} events')
         after = frames(desktop, region, args.watch_s, args.fps, out, 'after')
@@ -111,6 +142,15 @@ def main(argv=None):
     end = frames(desktop, region, 1.0, args.fps, None, 'end')
     back = sum(l for _, l, _ in end) / len(end)
     check('H3: the HUD shows again after the game', back > mean * 0.5, f'luma {back:.0f} against {mean:.0f}')
+    # Foxglove's side: nothing into the reload; the push after it, if any, is printed.
+    found = pushes(read_lines(FOXGLOVE_LOG), key_at)
+    for t, l in found:
+        print(f'  push {t:%H:%M:%S}Z: {l.split("wallpaper sync: ", 1)[-1]}', flush=True)
+    bad = into_reload(found, key_at)
+    check(f'H2: Foxglove sent no wallpaper push in the {RELOAD_QUIET_S:.0f} s reload after the Win key (#586)',
+          not bad, [l for _, l in bad][-3:] or f'{len(found)} push(es) since the key, none inside')
+    after = [l for _, l in found if RELOAD_REASON in l]
+    print(f'  reload re-push (Wallpaper Engine on Stop): {after[-1] if after else "none"}', flush=True)
     check.finish()
 
 

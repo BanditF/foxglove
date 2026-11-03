@@ -131,3 +131,4 @@ pub mod wallpaper;
 pub mod wallpaper_engine;
 pub mod wallpaper_manifest;
 pub mod wallpaper_sync;
+pub mod wallpaper_sync_health;
