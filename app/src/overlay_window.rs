@@ -242,6 +242,11 @@ impl OverlayApp {
         if crate::foxglove::tray_panel::show(ctx) {
             self.ui.settings_visible = true;
         }
+        // Foxglove (#719): the knob's card, where Windows' volume flyout sits; click-through.
+        let monitor = self.monitor().to_string();
+        crate::foxglove::knob_popup::draw(ctx, || {
+            crate::monitors::find(&crate::monitors::list(), &monitor).is_none_or(|m| m.primary)
+        });
 
         if let Some(path) = self.ui.file_dialog.take_picked() {
             if let ConnectionDraft::Via { json_path } = &mut self.connect.draft {

@@ -594,6 +594,146 @@ fn knob_mockup_c_keyboard_first() {
     );
 }
 
+/// Option A as built (#719): the real `knob_popup::paint` for each moment, on a work area the
+/// size of a 1080p display's bottom strip, with Windows' own flyout (drawn here as a stand-in)
+/// under the master tab. Kept as `knob-a-real.png`.
+#[test]
+fn knob_a_real_renders() {
+    use crate::foxglove::knob_popup::{paint, spot, Card};
+    let cards: Vec<(&str, Card)> = vec![
+        (
+            "Click: the next app, 1 of 3",
+            Card::App {
+                name: "Spotify".into(),
+                place: Some((1, 3)),
+                level: Some(42),
+                muted: false,
+            },
+        ),
+        (
+            "Turn: the level, up 1.5 s after the last detent",
+            Card::App {
+                name: "Spotify".into(),
+                place: None,
+                level: Some(48),
+                muted: false,
+            },
+        ),
+        (
+            "Past the last app",
+            Card::Master {
+                level: Some(64),
+                note: "back to master",
+            },
+        ),
+        (
+            "Hold",
+            Card::Master {
+                level: Some(64),
+                note: "held: master",
+            },
+        ),
+        (
+            "Double click",
+            Card::App {
+                name: "Discord".into(),
+                place: None,
+                level: Some(70),
+                muted: true,
+            },
+        ),
+        (
+            "The app's sound ended",
+            Card::Stopped {
+                name: "Spotify".into(),
+            },
+        ),
+        ("On master: the tab over Windows' flyout", Card::MasterTab),
+    ];
+    let work = vec2(480.0, 150.0);
+    let cols = 2;
+    let rows = cards.len().div_ceil(cols);
+    let size = vec2(
+        cols as f32 * (work.x + GAP) + GAP,
+        40.0 + rows as f32 * (work.y + 24.0 + GAP),
+    );
+    let ctx = preview_ctx();
+    let img = render(&ctx, size, SHEET, |ctx| {
+        egui::Area::new(egui::Id::new("knob-a-real"))
+            .fixed_pos(Pos2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_min_size(size);
+                let p = ui.painter();
+                p.text(
+                    pos2(GAP, 20.0),
+                    Align2::LEFT_CENTER,
+                    "Knob popup A, as built: the overlay's card in Windows' flyout spot",
+                    FontId::proportional(15.0),
+                    TEXT,
+                );
+                for (i, (caption, card)) in cards.iter().enumerate() {
+                    let min = pos2(
+                        GAP + (i % cols) as f32 * (work.x + GAP),
+                        40.0 + (i / cols) as f32 * (work.y + 24.0 + GAP),
+                    );
+                    let w = Rect::from_min_size(min, work);
+                    p.rect_filled(w, 4.0, DESKTOP);
+                    // The taskbar just below the work area's bottom edge.
+                    p.rect_filled(
+                        Rect::from_min_size(pos2(w.left(), w.bottom()), vec2(w.width(), 6.0)),
+                        0.0,
+                        TASKBAR,
+                    );
+                    if *card == Card::MasterTab {
+                        // Windows' own flyout, as Windows draws it (a stand-in).
+                        let s = spot(w);
+                        p.rect_filled(s, 8.0, CARD);
+                        p.text(
+                            pos2(s.left() + 18.0, s.center().y),
+                            Align2::LEFT_CENTER,
+                            icon::SPEAKER_HIGH,
+                            FontId::proportional(16.0),
+                            TEXT,
+                        );
+                        bar(
+                            p,
+                            Rect::from_min_size(
+                                pos2(s.left() + 44.0, s.center().y - 2.0),
+                                vec2(110.0, 4.0),
+                            ),
+                            66,
+                            ACCENT,
+                        );
+                        p.text(
+                            pos2(s.right() - 12.0, s.center().y),
+                            Align2::RIGHT_CENTER,
+                            "66",
+                            FontId::proportional(13.0),
+                            TEXT,
+                        );
+                    }
+                    paint(p, w, card);
+                    p.text(
+                        pos2(w.left(), w.bottom() + 10.0),
+                        Align2::LEFT_TOP,
+                        *caption,
+                        FontId::proportional(11.0),
+                        TEXT,
+                    );
+                }
+            });
+    });
+    keep("knob-a-real.png", &img);
+    // The first card sits in the flyout's spot: its middle isn't the wallpaper.
+    let first = Rect::from_min_size(pos2(GAP, 40.0), work);
+    let s = spot(first);
+    let at = |x: f32, y: f32| img.get_pixel((x * PPP) as u32, (y * PPP) as u32).0;
+    assert_ne!(
+        at(s.center().x, s.center().y),
+        at(first.left() + 6.0, first.top() + 6.0)
+    );
+}
+
 /// The left screen's volume line with the knob's target (cheap: drawn, not the panel's renderer).
 #[test]
 fn knob_mockup_left_screen() {

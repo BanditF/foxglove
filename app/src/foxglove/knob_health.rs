@@ -37,6 +37,9 @@ pub struct KnobHealth {
     pub lost: u32,
     /// Why the knob last went back to master on its own (the app's sound ended, ...).
     pub last_back: Option<String>,
+    /// Popups shown (`knob_popup.rs`), and the last one's words.
+    pub popups: u32,
+    pub last_popup: Option<String>,
 }
 
 static HEALTH: Mutex<KnobHealth> = Mutex::new(KnobHealth {
@@ -47,6 +50,8 @@ static HEALTH: Mutex<KnobHealth> = Mutex::new(KnobHealth {
     events: 0,
     lost: 0,
     last_back: None,
+    popups: 0,
+    last_popup: None,
 });
 
 /// Changes the knob's health (the knob service, as events happen).
@@ -112,7 +117,15 @@ pub fn rows(h: &KnobHealth) -> Vec<HealthRow> {
             format!("couldn't set {app}'s level: {why}"),
         ),
     };
-    let mut out = vec![held, target, level];
+    let popup = row(
+        "Popup",
+        Level::Ok,
+        match &h.last_popup {
+            None => "none shown since Foxglove started".into(),
+            Some(last) => format!("shown {} times; last: {last}", h.popups),
+        },
+    );
+    let mut out = vec![held, target, level, popup];
     if h.lost > 0 {
         out.push(row(
             "Events",
@@ -166,6 +179,8 @@ mod tests {
             events: 5,
             lost: 2,
             last_back: Some("Discord's sound ended".into()),
+            popups: 3,
+            last_popup: Some("Discord stopped · knob: master".into()),
         };
         assert_eq!(
             levels(&h),
@@ -173,6 +188,7 @@ mod tests {
                 ("Knob · Held".to_string(), Level::Ok),
                 ("Knob · Target".to_string(), Level::Ok),
                 ("Knob · Last level".to_string(), Level::Fail),
+                ("Knob · Popup".to_string(), Level::Ok),
                 ("Knob · Events".to_string(), Level::Warn),
             ]
         );

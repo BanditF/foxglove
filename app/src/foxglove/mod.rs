@@ -58,6 +58,7 @@ pub mod keymap_session;
 // Foxglove (#719): the knob points at master or an app's volume.
 pub mod knob;
 pub mod knob_health;
+pub mod knob_popup;
 pub mod lamp_health;
 pub mod last_device;
 pub mod layer_access;
