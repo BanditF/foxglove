@@ -36,7 +36,9 @@
  *                    with sync on the left also hands the right its colour and effect, #624),
  *                    25 RIGHT_REDRAWS (D7 8E bytes 16-20: the right's redraw count, #618),
  *                    26 PC_STATE (D7 11: the PC awake with a lease, or away, #609, #604),
- *                    27 PANEL_POLARITY (D7 12: dark or light mono panels, both halves, #666).
+ *                    27 PANEL_POLARITY (D7 12: dark or light mono panels, both halves, #666),
+ *                    29 COLOUR_EFFECTS (D7 83 byte 29: the effects the left draws in the
+ *                    chosen colour; Swirl as a hue band around it, #626).
  *      HELLO has no byte left for the LED counts: bit 22 says D7 10 answers them.
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
@@ -125,6 +127,10 @@
  *      battery dim level in force (1-100). The right's comes from its doorbell (art_relay.h): sent
  *      when its LEDs go lit or dark and when the left subscribes, so a Spectrum's hue there is as
  *      of then. The unsolicited D7 83 also comes when either half's lit flag changes.
+ *      With capability bit 29 (#626) byte 29 says which of ZMK's effects the left draws in the
+ *      chosen colour, one bit per effect number (bit 0 solid, 1 breathe, 2 spectrum, 3 swirl):
+ *      0x0B with the colour Swirl (colour_effects.h). 0 (older firmware) says nothing: the
+ *      PC keeps its own table, where Spectrum and Swirl are rainbows.
  *   04 CONN_STATE  no payload (request D7 04)          reply: D7 84, active BLE profile index u8,
  *                                                     connected (0/1), bonded (0/1),
  *                                                     selected endpoint (0 USB, 1 BLE),
@@ -387,6 +393,8 @@
 #define HOST_LINK_CAP_PC_STATE (1U << 26)
 // D7 12 PANEL_POLARITY: dark or light mono panels, both halves (#666; panel_polarity.h).
 #define HOST_LINK_CAP_PANEL_POLARITY (1U << 27)
+// D7 83 byte 29: the effects the left draws in the chosen colour (#626; colour_effects.h).
+#define HOST_LINK_CAP_COLOUR_EFFECTS (1U << 29)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
