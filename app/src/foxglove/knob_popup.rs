@@ -136,7 +136,7 @@ pub fn show(card: Card, time: Duration) {
 }
 
 /// Size of Windows 11's volume flyout, in points.
-pub const SIZE: egui::Vec2 = vec2(196.0, 48.0);
+pub const SIZE: egui::Vec2 = vec2(236.0, 48.0);
 /// Its gap above the taskbar (the work area's bottom), in points.
 pub const GAP: f32 = 12.0;
 
@@ -255,6 +255,14 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
     };
     round_icon(p, pos2(s.left() + 24.0, s.center().y), fill, &glyph);
     let left = s.left() + 46.0;
+    let title_w = p
+        .layout_no_wrap(title.clone(), FontId::proportional(13.0), TEXT)
+        .size()
+        .x;
+    let note_w = p
+        .layout_no_wrap(note.clone(), FontId::proportional(10.0), DIM)
+        .size()
+        .x;
     p.text(
         pos2(left, s.top() + 15.0),
         Align2::LEFT_CENTER,
@@ -263,18 +271,27 @@ pub fn paint(p: &Painter, work: Rect, card: &Card) {
         TEXT,
     );
     if !note.is_empty() {
-        p.text(
-            pos2(s.right() - 12.0, s.top() + 15.0),
-            Align2::RIGHT_CENTER,
-            note,
-            FontId::proportional(10.0),
-            DIM,
-        );
+        let fits = left + title_w + 8.0 + note_w <= s.right() - 12.0;
+        // Beside the title when it fits; else on the second row when that is free (a long
+        // name with a level keeps only the level).
+        let at = if fits {
+            Some((pos2(s.right() - 12.0, s.top() + 15.0), Align2::RIGHT_CENTER))
+        } else if level.is_none() {
+            Some((pos2(left, s.top() + 33.0), Align2::LEFT_CENTER))
+        } else {
+            None
+        };
+        if let Some((at, align)) = at {
+            p.text(at, align, note, FontId::proportional(10.0), DIM);
+        }
     }
     if let Some(level) = level {
         bar(
             p,
-            Rect::from_min_size(pos2(left, s.top() + 31.0), vec2(108.0, 4.0)),
+            Rect::from_min_max(
+                pos2(left, s.top() + 31.0),
+                pos2(s.right() - 44.0, s.top() + 35.0),
+            ),
             level,
             if muted { TRACK } else { ACCENT },
         );
