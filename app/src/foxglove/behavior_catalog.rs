@@ -22,9 +22,32 @@ pub struct CustomBehavior {
     pub sets: Vec<BehaviorBindingParametersSet>,
 }
 
-/// The connected board's own behaviours, shared between the keyboard reader (which reads them
-/// when the edit session opens) and the editor.
-pub type Catalog = Arc<Mutex<Vec<CustomBehavior>>>;
+/// Room for layers on the board (#583), as its keymap and physical layouts report it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LayerRoom {
+    /// Layers "Add layer" can still enable (`available_layers`: reserved slots left).
+    pub free: u32,
+    /// The longest layer name the board keeps (`max_layer_name_length`).
+    pub name_max: u32,
+    /// The board's physical layouts, by name, and the active one.
+    pub layouts: Vec<String>,
+    pub active_layout: usize,
+    /// Layers removed this session, which "Restore" can put back: (id, name).
+    pub removed: Vec<(u32, String)>,
+}
+
+/// What a Studio board reports for the editor beyond its keymap: its own behaviours (#582)
+/// and its room for layers (#583).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BoardFacts {
+    pub behaviors: Vec<CustomBehavior>,
+    /// `None` until the edit session has read it.
+    pub room: Option<LayerRoom>,
+}
+
+/// The connected board's facts, shared between the keyboard reader (which reads them when the
+/// edit session opens and after each change) and the editor.
+pub type Catalog = Arc<Mutex<BoardFacts>>;
 
 /// How one parameter is chosen.
 #[derive(Clone, Debug, PartialEq)]
