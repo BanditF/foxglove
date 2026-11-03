@@ -153,6 +153,8 @@ fn a_locked_board_prompts_until_its_unlock_key_is_pressed() {
     bench.board.press_unlock_key();
     bench.ready();
     assert_eq!(bench.editor.studio.lock, Lock::Unlocked);
+    // #583: the room for layers comes with the unlock, so Layers… is offered at once.
+    assert_eq!(bench.keyboard.layer_room().map(|r| r.free), Some(2));
     assert!(bench.editor.overlay().is_none());
     assert!(!bench.editor.zmk_dirty);
 }
