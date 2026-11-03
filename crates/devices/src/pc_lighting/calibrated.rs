@@ -6,7 +6,7 @@
 //! restore, an identify or a recalibration puts the same palette back through the current
 //! calibration.
 
-use super::{LightingDevice, ZoneSpec};
+use super::{LampAccess, LightingDevice, ZoneSpec};
 use crate::calibration::{self, Calibration};
 use crate::{Result, Rgb};
 
@@ -62,6 +62,10 @@ impl LightingDevice for Calibrated {
 
     fn colors(&self) -> Vec<Option<Rgb>> {
         self.asked.clone()
+    }
+
+    fn lamp_access(&self) -> Option<LampAccess> {
+        self.inner.lamp_access()
     }
 
     fn set_zones(&mut self, colors: &[(usize, Rgb)]) -> Result<()> {

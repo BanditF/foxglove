@@ -49,6 +49,7 @@ pub mod keyboard_page;
 pub mod keyboard_settings;
 pub mod keymap_cache;
 pub mod keymap_session;
+pub mod lamp_health;
 pub mod last_device;
 pub mod layer_access;
 pub mod layer_names;

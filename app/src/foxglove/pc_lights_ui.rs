@@ -4,7 +4,10 @@
 //!
 //! The controls follow the device's capabilities: zone pickers only for per-zone or per-LED
 //! colour, swatches and Match only for devices that take a colour, Off and Identify only for
-//! lights that switch.
+//! lights that switch. A Windows Dynamic Lighting device (#691) gets the same card once
+//! Foxglove drives it: a picker per lamp for 2 to 12 lamps (more is a per-key board: one
+//! "All lamps" row, per-key colour lives in Scenes), and one muted line on what Windows lets
+//! Foxglove do with it.
 //!
 //! [`show`] reads the worker's snapshot and sends clicks to it; [`draw`] paints a [`View`] and
 //! returns [`Intent`]s, so the previews and tests need no hardware. Colours are picked first
@@ -15,7 +18,7 @@ use std::sync::Mutex;
 
 use egui::{Color32, RichText, Sense, Stroke};
 use foxglove_devices::pc_lighting::{
-    zones as zone_words, CatalogDevice, Control, LightCaps, Protocol,
+    self as pc_lighting, zones as zone_words, CatalogDevice, Control, LightCaps, Protocol,
 };
 
 use super::pc_lights::{self, Msg, Row, Snapshot};
@@ -250,6 +253,49 @@ pub fn chips(ui: &mut egui::Ui, chips: &[String]) {
     });
 }
 
+/// Whether Foxglove drives the device: a driver's, or a Dynamic Lighting device it opened
+/// (#691; Windows' access to it is known only then).
+pub fn driven(row: &Row) -> bool {
+    match row.control {
+        Control::Driver(_) => true,
+        Control::LampArray => row.lamp_access.is_some(),
+        Control::NotYet => false,
+    }
+}
+
+/// The most lamps that get a picker each; more is a per-key board (lighting-zones.md, hide
+/// rules): one row for all lamps.
+pub const MAX_LAMP_PICKERS: usize = 12;
+
+/// Whether a device gets a colour picker per zone (or lamp).
+fn pickers(row: &Row) -> bool {
+    row.caps.per_zone()
+        && (row.control != Control::LampArray || row.zones.len() <= MAX_LAMP_PICKERS)
+}
+
+/// What Windows lets Foxglove do with a Dynamic Lighting device, in one line (#691): from
+/// `IsEnabled` / `IsAvailable` and whether Foxglove has package identity (background control,
+/// #179). `None` when there's nothing to say.
+pub fn lamp_line(access: pc_lighting::LampAccess, identity: bool) -> Option<&'static str> {
+    if !access.enabled {
+        return Some("Turned off in Windows' Dynamic Lighting settings.");
+    }
+    match (access.available, identity) {
+        (false, true) => Some(
+            "Another app has these lights now. Settings > Personalization > Dynamic Lighting \
+             sets which app comes first.",
+        ),
+        (false, false) => {
+            Some("Windows shows Foxglove's colours here while Foxglove's window is in front.")
+        }
+        (true, false) => Some(
+            "Windows shows Foxglove's colours while Foxglove's window is in front; in the \
+             background its own Dynamic Lighting takes over.",
+        ),
+        (true, true) => None,
+    }
+}
+
 /// A device's real lighting resolution (#611): one summary line ("5 lighting zones",
 /// "Per-LED lighting, 24 lamps"), where it came from on hover, and its screens' chips. It
 /// replaces the light, brightness and onboard-effect chips (docs/lighting-zones.md section 6).
@@ -276,7 +322,7 @@ fn light_line(ui: &mut egui::Ui, caps: &LightCaps) {
 
 fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut Vec<Intent>) {
     let p = theme::palette(ui);
-    let driven = matches!(row.control, Control::Driver(_));
+    let driven = driven(row);
     // The buttons at the right (right to left: More ▸ last); the name and its notes wrap in the
     // room left of them.
     super::settings_ui::split_row(
@@ -322,12 +368,23 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
     match row.control {
         Control::Driver(_) if row.caps.takes_color() => zones(ui, row, busy, draft, out),
         Control::Driver(_) => {}
-        Control::LampArray => {
-            ui.weak(
-                "A Windows Dynamic Lighting device. Foxglove support is coming soon; until then \
-                 Windows Settings > Personalization > Dynamic Lighting controls it.",
-            );
-        }
+        Control::LampArray => match row.lamp_access {
+            Some(access) => {
+                if row.caps.takes_color() {
+                    zones(ui, row, busy, draft, out);
+                }
+                if let Some(line) = lamp_line(access, super::scene_lamps::identity()) {
+                    ui.add_space(2.0);
+                    ui.label(RichText::new(line).color(p.muted).size(12.5));
+                }
+            }
+            None if row.zones.is_empty() => {
+                ui.weak("Windows lighting: reading its lamps from Windows.");
+            }
+            None => {
+                ui.weak("Windows lists no Dynamic Lighting device for it right now.");
+            }
+        },
         Control::NotYet => {
             ui.weak("Found, not controllable yet.");
         }
@@ -398,7 +455,7 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
         .entry(row.key.clone())
         .or_insert_with(|| vec![None; row.zones.len()]);
     picks.resize(row.zones.len(), None);
-    if row.caps.per_zone() {
+    if pickers(row) {
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 14.0;
@@ -442,10 +499,10 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
         ui.spacing_mut().item_spacing.x = 10.0;
         ui.label(theme::caps_label(
             ui,
-            if row.caps.per_zone() {
-                "All zones"
-            } else {
-                "Colour"
+            match (row.caps.per_zone(), row.control) {
+                (false, _) => "Colour",
+                (true, Control::LampArray) => "All lamps",
+                (true, _) => "All zones",
             },
         ));
         for (name, rgb) in super::lights_page::SWATCHES {
@@ -597,6 +654,7 @@ pub mod tests {
             zone_positions: vec![],
             zone_roles: vec![],
             kind: foxglove_devices::pc_lighting::DeviceKind::Case,
+            lamp_access: None,
         }
     }
 
@@ -641,12 +699,16 @@ pub mod tests {
                         zone_positions: vec![],
                         zone_roles: vec![],
                         kind: Default::default(),
+                        lamp_access: None,
                     },
                     Row {
                         key: "046d:c332".into(),
                         name: "G502 Proteus Spectrum".into(),
                         control: Control::LampArray,
-                        zones: vec![],
+                        zones: vec![
+                            ("Lamp 1 · Logo".into(), orange),
+                            ("Lamp 2 · Accent".into(), pine),
+                        ],
                         match_keyboard: false,
                         caps: LightCaps::from_lamp_array(LampArrayInfo {
                             lamp_count: 2,
@@ -655,13 +717,14 @@ pub mod tests {
                             kind: 2,
                         }),
                         entry: None,
-                        zone_ids: vec![],
+                        zone_ids: vec!["0".into(), "1".into()],
                         calibration: None,
                         calibrated: false,
                         size: None,
                         zone_positions: vec![],
                         zone_roles: vec![],
                         kind: Default::default(),
+                        lamp_access: Some(Default::default()),
                     },
                 ],
                 conflicts: vec![pc_lights::Conflicting {
@@ -682,6 +745,7 @@ pub mod tests {
                         path: "pad".into(),
                     },
                 ],
+                lamp_applies: Default::default(),
                 local_file: Some(
                     r"C:\Users\you\AppData\Roaming\Foxglove\lighting-catalog.local.toml".into(),
                 ),
@@ -705,6 +769,18 @@ pub mod tests {
         use crate::foxglove::fixtures::second_desk as desk;
         let mut bar = desk::lightbar_row();
         bar.caps = LightCaps::from_lamp_array(desk::lightbar_info());
+        for (i, z) in pc_lighting::lamp_array::lamp_zones(&desk::lightbar_desc().lamps)
+            .into_iter()
+            .enumerate()
+        {
+            bar.zones
+                .push((z.name, (i % 3 == 0).then_some([0x5f, 0xc4, 0x8e])));
+            bar.zone_ids.push(z.id.to_string());
+        }
+        bar.lamp_access = Some(pc_lighting::LampAccess {
+            enabled: true,
+            available: false,
+        });
         View {
             pc: Snapshot {
                 devices: vec![desk::case_row(), bar],
@@ -812,6 +888,86 @@ pub mod tests {
         assert_eq!(parse_typed(" a57500 "), Some([0xa5, 0x75, 0x00]));
         assert_eq!(parse_typed("#a575"), None);
         assert_eq!(parse_typed("red"), None);
+    }
+
+    /// #691: a Dynamic Lighting device Foxglove drives has the card any light has, from the
+    /// effect table's LampArray row: its lamps by name, All lamps, Apply, Match, Identify and
+    /// Off, and one line on what Windows lets Foxglove do. No "coming soon".
+    #[test]
+    fn a_lamp_array_gets_the_card_from_the_effect_table() {
+        let text = shown(&sample());
+        for want in [
+            "G502 Proteus Spectrum",
+            "Windows lighting",
+            "Lamp 1 · Logo",
+            "Lamp 2 · Accent",
+            "ALL LAMPS",
+            "Windows shows Foxglove's colours while Foxglove's window is in front",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
+        assert!(!text.contains("coming soon"), "{text}");
+        assert_eq!(
+            text.matches("Match keyboard").count(),
+            2,
+            "the case and the mouse"
+        );
+        assert_eq!(text.matches("Identify").count(), 2);
+        // The effect table decides: the LampArray's one effect takes a colour.
+        let mouse = &sample().pc.devices[2];
+        assert!(effect_of(mouse.control).is_some_and(|e| e.uses_colour()));
+        // Another vendor's 12-lamp lightbar, which Windows keeps from Foxglove right now.
+        let text = shown(&sample_second_desk());
+        assert!(text.contains("Lamp 12 · Accent"), "{text}");
+        assert!(
+            text.contains("while Foxglove's window is in front."),
+            "{text}"
+        );
+    }
+
+    /// #611's hide rule: more than 12 lamps is a per-key board, so one All lamps row and no
+    /// picker per lamp; a lamp array not opened yet says why, with no controls.
+    #[test]
+    fn a_big_lamp_array_gets_one_row_and_an_unopened_one_no_controls() {
+        let mut v = sample_second_desk();
+        let bar = &mut v.pc.devices[1];
+        bar.zones = (0..24).map(|i| (format!("Lamp {}", i + 1), None)).collect();
+        bar.zone_ids = (0..24).map(|i| i.to_string()).collect();
+        bar.lamp_access = Some(Default::default());
+        let text = shown(&v);
+        assert!(
+            text.contains("ALL LAMPS") && !text.contains("Lamp 24"),
+            "{text}"
+        );
+        v.pc.devices[1].lamp_access = None;
+        let text = shown(&v);
+        assert!(
+            text.contains("Windows lists no Dynamic Lighting device"),
+            "{text}"
+        );
+        v.pc.devices[1].zones.clear();
+        let text = shown(&v);
+        assert!(text.contains("reading its lamps"), "{text}");
+        assert_eq!(text.matches("Match keyboard").count(), 1, "the case only");
+    }
+
+    #[test]
+    fn the_lamp_line_says_what_windows_lets_foxglove_do() {
+        use pc_lighting::LampAccess;
+        let on = LampAccess::default();
+        let taken = LampAccess {
+            available: false,
+            ..on
+        };
+        let off = LampAccess {
+            enabled: false,
+            ..on
+        };
+        assert!(lamp_line(off, true).unwrap().contains("Turned off"));
+        assert!(lamp_line(taken, true).unwrap().contains("Another app"));
+        assert!(lamp_line(taken, false).unwrap().contains("in front."));
+        assert!(lamp_line(on, false).unwrap().contains("background"));
+        assert_eq!(lamp_line(on, true), None);
     }
 
     #[test]
