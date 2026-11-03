@@ -555,11 +555,10 @@ fn a_behaviour_of_the_boards_own_is_assigned_and_round_trips() {
         assert!(bench.editor.zmk_dirty);
 
         // Read back through the Studio client: the same binding.
-        let reply = bench.keyboard.studio(StudioRequest::Reread);
-        reply
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap()
-            .unwrap();
+        bench
+            .editor
+            .start_studio(&bench.keyboard, StudioRequest::Reread, false);
+        bench.idle();
         assert_eq!(bench.shown(at(1, 6)), Some(KeyAction::Zmk(staged.clone())));
         // The key opens on the Behaviours page with its values.
         bench.editor.retarget(&bench.keyboard, at(1, 6));

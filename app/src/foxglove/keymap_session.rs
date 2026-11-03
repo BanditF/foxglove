@@ -286,7 +286,12 @@ impl KeymapSession {
 }
 
 impl EditorState {
-    fn start_studio(&mut self, keyboard: &Keyboard, request: StudioRequest, then_close: bool) {
+    pub(crate) fn start_studio(
+        &mut self,
+        keyboard: &Keyboard,
+        request: StudioRequest,
+        then_close: bool,
+    ) {
         self.error = None;
         self.studio.task = Some(Task {
             request,
