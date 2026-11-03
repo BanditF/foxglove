@@ -60,6 +60,29 @@ log = ["art key: "]
 needs_eyes = "hands: SYSTEM+P / O and Pause / Quit from the tray (no API call presses an art key with the app holding them); eyes: the card shows for about a second, which a capture can miss"
 
 [[step]]
+match = "Keyboard health after a batch flash (#705)"
+lab = ["health"]
+api = ["health.read"]
+sim = ["health"]
+note = "foxglove-lab health reads both halves (or the app's health.read while it runs) and exits 0/1/2; no eyes needed"
+
+[[step]]
+match = "Raw HID queue (#680)"
+lab = ["status"]
+needs_eyes = "hands: a real gaming session with layer changes (the drop showed only under a game's load); the lab then checks the log for dropped reports"
+
+[[step]]
+match = "#681's `lights_page.py` step"
+script = ["scripts/lab/lights_page.py"]
+note = "part of the release gate on the candidate (On-call's flash first)"
+
+[[step]]
+match = "Swirl in your colour (#626)"
+api = ["lighting.state"]
+sim = ["colour-swirl"]
+needs_eyes = "eyes: the band of hues around the colour on the LEDs (RGB_STATE reports one brightest colour, not the band)"
+
+[[step]]
 match = "Art playlist (#522)"
 api = ["art.status", "art.select"]
 log = ["art playlist: "]
