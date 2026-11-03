@@ -404,7 +404,8 @@ impl EditorState {
                     }
                     WriteSupport::None => {
                         ui.add_space(8.0);
-                        ui.weak("This key cannot be edited in this version.");
+                        // Foxglove (#581): VIA/Vial keyboards are read-only in 0.2.
+                        ui.weak("Read-only: Foxglove 0.2 doesn't write to VIA/Vial keyboards.");
                     }
                 }
             });

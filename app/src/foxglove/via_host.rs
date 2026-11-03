@@ -2,6 +2,7 @@
 //! Keychron K5 Pro, found by the VIA JSON definitions the user loads. They join the device layer (facts,
 //! the local API, plugins) next to the host-link keyboard. Nothing is written to them: the VIA
 //! backend opens devices read-only, and reset/bootloader/factory commands never go out.
+//! VIA/Vial writes stay off in 0.2 (#581, the `via-writes` feature), whatever a caller asks.
 //!
 //! Settings in the store's `[via]`; scanning happens on demand (Refresh, turning it on, adding a
 //! definition), never on a timer.
@@ -330,6 +331,18 @@ pub fn devices() -> Vec<(foxglove_devices::DeviceInfo, foxglove_devices::Caps)> 
         .collect()
 }
 
+/// The health view's row for VIA/Vial writes (#581): off in 0.2 (the `via-writes` feature), so
+/// "VIA/Vial writes: off (0.2)". Registered with `health::register` as "via_writes".
+pub fn health_rows() -> Vec<super::health::HealthRow> {
+    use super::health::{HealthRow, Level};
+    let detail = if foxglove_via::WRITES_ENABLED {
+        "on (test build)"
+    } else {
+        "off (0.2)"
+    };
+    vec![HealthRow::new("via", "VIA/Vial writes", Level::Ok, detail)]
+}
+
 /// Opens the configured VIA keyboards at start-up, if turned on.
 pub fn start() {
     if settings().enabled && !super::repaint_trace::disabled("via") {
@@ -541,6 +554,15 @@ mod tests {
         );
         set_paused(&a.0, false).unwrap();
         assert!(settings().paused.is_empty(), "resumed");
+    }
+
+    #[cfg(not(feature = "via-writes"))]
+    #[test]
+    fn the_health_view_says_via_writes_are_off() {
+        let rows = health_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].line(), "VIA/Vial writes: off (0.2)");
+        assert_eq!(rows[0].level, super::super::health::Level::Ok);
     }
 
     #[test]

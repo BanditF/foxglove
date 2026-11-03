@@ -7,8 +7,9 @@
 //! - `hid` (feature `hid`): the hidapi transport and backend
 //!
 //! Safety first: only allowlisted commands reach the keyboard. Reading is always allowed;
-//! writes (keycodes, lighting) only when the device was opened with writes enabled; reset,
-//! EEPROM reset, bootloader and Keychron's 0xAA-0xAB factory/DFU commands never.
+//! writes (keycodes, lighting) only when the crate is built with the `via-writes` feature (off
+//! in 0.2, #581) and the device was opened with writes enabled; reset, EEPROM reset, bootloader
+//! and Keychron's 0xAA-0xAB factory/DFU commands never.
 
 pub mod definition;
 pub mod device;
@@ -19,4 +20,4 @@ pub mod protocol;
 
 pub use definition::Definition;
 pub use device::ViaDevice;
-pub use protocol::{Guarded, Transport};
+pub use protocol::{Guarded, Transport, WRITES_ENABLED};

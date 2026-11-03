@@ -225,6 +225,12 @@ mod tests {
 
     impl Transport for &'static FakeVia {
         fn exchange(&self, r: &Report) -> Result<Report> {
+            // #581: while writes are off (0.2), any write reaching the keyboard fails the test.
+            assert!(
+                protocol::WRITES_ENABLED || !protocol::is_write(r),
+                "write {:#04x} reached the keyboard with VIA/Vial writes off",
+                r[0]
+            );
             self.sent.lock().unwrap().push(r[0]);
             let mut out = [0u8; REPORT];
             out[..4].copy_from_slice(&r[..4]);
@@ -315,6 +321,55 @@ mod tests {
         .contains(c)));
     }
 
+    /// #581: with `via-writes` off (0.2), a device opened asking for writes is read-only: no
+    /// keymap write support, every keycode and lighting write refused, reads still answered, and
+    /// the fake keyboard (which fails on any write opcode) never sees one.
+    #[cfg(not(feature = "via-writes"))]
+    #[test]
+    fn writes_off_nothing_is_written_even_when_writes_are_asked_for() {
+        let (dev, fake) = open(true);
+        assert!(!dev.caps().contains(Caps::KEYMAP_WRITE));
+        assert_eq!(Keymap::write_support(&dev), WriteSupport::None);
+        foxglove_devices::contract::check_device(&dev).unwrap();
+        assert_eq!(
+            dev.binding(0, 0, 0).unwrap().params,
+            vec![0x29],
+            "reads stay on"
+        );
+        assert!(dev
+            .set_binding(
+                0,
+                0,
+                0,
+                Binding {
+                    kind: "qmk".into(),
+                    params: vec![0x0004],
+                    label: None,
+                }
+            )
+            .is_err());
+        let lighting = dev.lighting().unwrap();
+        assert!(lighting.state().is_ok(), "lighting reads stay on");
+        assert!(lighting.set_color(180, 50, 100).is_err());
+        assert!(lighting
+            .set_effect(Effect {
+                id: "4".into(),
+                params: vec![]
+            })
+            .is_err());
+        for &c in protocol::WRITE_OPCODES {
+            assert!(dev.link.send(&[c, 0, 0, 0, 0, 0]).is_err(), "{c:#04x}");
+        }
+        let sent = fake.sent.lock().unwrap();
+        assert!(
+            !sent.iter().any(|&c| protocol::is_write(&[c])),
+            "{:x?}",
+            *sent
+        );
+        assert_eq!(fake.keymap.lock().unwrap().get(&(0, 0, 0)), Some(&0x0029));
+    }
+
+    #[cfg(feature = "via-writes")]
     #[test]
     fn writable_device_writes_keycodes_and_lighting_without_saving() {
         let (dev, fake) = open(true);

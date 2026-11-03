@@ -19,11 +19,52 @@ pub const CUSTOM_GET_VALUE: u8 = 0x08;
 pub const CUSTOM_SAVE: u8 = 0x09;
 pub const EEPROM_RESET: u8 = 0x0A;
 pub const BOOTLOADER_JUMP: u8 = 0x0B;
+pub const DYNAMIC_KEYMAP_MACRO_SET_BUFFER: u8 = 0x0F;
+pub const DYNAMIC_KEYMAP_MACRO_RESET: u8 = 0x10;
 pub const DYNAMIC_KEYMAP_GET_LAYER_COUNT: u8 = 0x11;
 pub const DYNAMIC_KEYMAP_GET_BUFFER: u8 = 0x12;
+pub const DYNAMIC_KEYMAP_SET_BUFFER: u8 = 0x13;
+pub const DYNAMIC_KEYMAP_SET_ENCODER: u8 = 0x15;
 /// Vial's commands start with this byte (unlock, QMK settings, dynamic entries).
 pub const VIAL_PREFIX: u8 = 0xFE;
 pub const UNHANDLED: u8 = 0xFF;
+
+/// Whether Foxglove may write to VIA/Vial keyboards at all: the `via-writes` Cargo feature,
+/// off in 0.2 (#581). Off, [`Guarded::with_writes`] opens read-only like [`Guarded::read_only`],
+/// and the app's VIA/Vial keymap adapters refuse every write, so no write command goes out.
+pub const WRITES_ENABLED: bool = cfg!(feature = "via-writes");
+
+/// Every VIA command that changes the keyboard (QMK `quantum/via.h`): values, keycodes, the
+/// keymap buffer, macros, encoders, lighting (custom values), saves, resets and the bootloader.
+pub const WRITE_OPCODES: &[u8] = &[
+    SET_KEYBOARD_VALUE,
+    DYNAMIC_KEYMAP_SET_KEYCODE,
+    DYNAMIC_KEYMAP_RESET,
+    CUSTOM_SET_VALUE,
+    CUSTOM_SAVE,
+    EEPROM_RESET,
+    BOOTLOADER_JUMP,
+    DYNAMIC_KEYMAP_MACRO_SET_BUFFER,
+    DYNAMIC_KEYMAP_MACRO_RESET,
+    DYNAMIC_KEYMAP_SET_BUFFER,
+    DYNAMIC_KEYMAP_SET_ENCODER,
+];
+
+/// The Vial commands (after [`VIAL_PREFIX`]) that only read: keyboard id, definition size, a
+/// definition block. Every other Vial command (unlock, encoders, QMK settings, dynamic entries)
+/// counts as a write.
+pub const VIAL_READS: &[u8] = &[0x00, 0x01, 0x02];
+
+/// Whether a report would change the keyboard: a VIA write ([`WRITE_OPCODES`]), Keychron's
+/// 0xAA-0xAB factory/DFU commands, or a Vial command that isn't a read. For tests and mocks
+/// that must fail on any write.
+pub fn is_write(report: &[u8]) -> bool {
+    match report {
+        [] => false,
+        [VIAL_PREFIX, rest @ ..] => !rest.first().is_some_and(|c| VIAL_READS.contains(c)),
+        [c, ..] => WRITE_OPCODES.contains(c) || matches!(*c, 0xAA | 0xAB),
+    }
+}
 
 /// `GET_KEYBOARD_VALUE` ids.
 pub mod keyboard_value {
@@ -87,11 +128,13 @@ impl<T: Transport> Guarded<T> {
         }
     }
 
-    /// Also allows keycode and lighting writes; still never resets or the bootloader.
+    /// Also allows keycode and lighting writes; still never resets or the bootloader. Only
+    /// with [`WRITES_ENABLED`] (the `via-writes` feature, off in 0.2, #581): without it this is
+    /// read-only too.
     pub fn with_writes(inner: T) -> Self {
         Guarded {
             inner,
-            writes: true,
+            writes: WRITES_ENABLED,
         }
     }
 
@@ -203,6 +246,44 @@ mod tests {
         assert_eq!(
             *g.inner.0.lock().unwrap(),
             vec![GET_KEYBOARD_VALUE, GET_KEYBOARD_VALUE]
+        );
+    }
+
+    /// #581: with `via-writes` off (0.2), asking for writes still opens read-only, and not one
+    /// write report reaches the transport.
+    #[cfg(not(feature = "via-writes"))]
+    #[test]
+    fn with_writes_stays_read_only_while_writes_are_off() {
+        let g = Guarded::with_writes(Echo(Mutex::default()));
+        assert!(!g.writes());
+        for &c in WRITE_OPCODES {
+            assert!(
+                matches!(g.send(&[c, 0, 0, 0, 0, 0]), Err(DeviceError::Denied(_))),
+                "{c:#04x}"
+            );
+        }
+        for sub in 0..=0xFF {
+            if is_write(&[VIAL_PREFIX, sub]) {
+                assert!(g.send(&[VIAL_PREFIX, sub]).is_err());
+            }
+        }
+        assert!(g.send(&[GET_PROTOCOL_VERSION]).is_ok(), "reads stay on");
+        assert_eq!(*g.inner.0.lock().unwrap(), vec![GET_PROTOCOL_VERSION]);
+    }
+
+    #[test]
+    fn write_opcodes_are_writes_and_reads_are_not() {
+        for &c in WRITE_OPCODES.iter().chain(FORBIDDEN) {
+            assert!(is_write(&[c]), "{c:#04x}");
+        }
+        for &c in READ {
+            assert!(!is_write(&[c]), "{c:#04x}");
+        }
+        assert!(WRITE.iter().all(|c| WRITE_OPCODES.contains(c)));
+        assert!(!is_write(&[VIAL_PREFIX, 0x02]) && is_write(&[VIAL_PREFIX, 0x06]));
+        assert!(
+            is_write(&[VIAL_PREFIX]),
+            "a bare Vial prefix isn't a known read"
         );
     }
 

@@ -1,4 +1,6 @@
-use super::qmk_common::{qmk_action_filter, qmk_read_snapshot, qmk_set_key, QmkFeatures};
+use super::qmk_common::{
+    qmk_action_filter, qmk_read_snapshot, qmk_set_key, qmk_write_support, QmkFeatures,
+};
 use super::{
     kle_parser, KeyboardDefinition, KeyboardProtocol, RawHidSubscription, SubscriptionSender,
     WriteSupport,
@@ -157,7 +159,8 @@ impl KeyboardProtocol for VialProtocol {
     }
 
     fn write_support(&self) -> WriteSupport {
-        WriteSupport::Immediate
+        // Foxglove (#581): `None` while VIA/Vial writes are off (0.2).
+        qmk_write_support()
     }
 
     fn set_key(
@@ -177,5 +180,20 @@ impl KeyboardProtocol for VialProtocol {
 
     fn action_filter(&self) -> Option<super::ActionFilter> {
         qmk_action_filter(self.features)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Foxglove (#581): the only Vial commands Foxglove sends read the definition; none writes.
+    #[test]
+    fn vial_commands_sent_are_reads() {
+        for cmd in [VialCommand::KeyboardId, VialCommand::Size, VialCommand::Def] {
+            let report = [VIAL_PREFIX, cmd as u8];
+            assert!(!foxglove_via::protocol::is_write(&report), "{report:x?}");
+        }
+        assert_eq!(VIAL_PREFIX, foxglove_via::protocol::VIAL_PREFIX);
     }
 }
