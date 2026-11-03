@@ -53,6 +53,7 @@ fn main() {
     foxglove::health::start(); // Foxglove (#705): the keyboard's self-report on each connect
     foxglove::reassert::start(); // Foxglove (#618): re-apply device state after events that lose it
     foxglove::pc_state::start(); // Foxglove (#609, #604): the PC awake or away, for the keyboard's idle
+    foxglove::knob::start(); // Foxglove (#719): the knob on master or an app's volume
     foxglove::devices::start(); // Foxglove: find the host-link keyboard whenever a link connects
     foxglove::keyboard_facts::start();
     foxglove::battery::start(); // Foxglove (#372, #373)

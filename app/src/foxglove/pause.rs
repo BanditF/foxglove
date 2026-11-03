@@ -49,6 +49,8 @@ pub fn set(paused: bool) {
             h.resumed();
         }
     }
+    // The knob goes back to the volume keys while paused, and is held again after (#719).
+    super::knob::pause_changed();
     // The tray icon, the tray panel and the layer overlay.
     super::tray_panel::wake();
 }

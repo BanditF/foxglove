@@ -66,6 +66,7 @@ pub fn hand_back(why: &str) {
                 super::scenes_ui::quitting(); // no profile starts a scene now
                 super::scene_run::quit(); // a scene gives the lights back (or keeps its effect)
                 super::art_service::stop();
+                super::knob::stop(); // the knob is the volume keys again
                 super::calibrate_ui::cancel(); // mid-calibration: the colours go back
                 super::led_map_ui::quit(); // mid "Find my LEDs": the lights go back
             }),
