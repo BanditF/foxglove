@@ -129,8 +129,13 @@ void pc_state_sim_driver(void);
 void polarity_sim_driver(void);
 void health_sim_driver(void);
 void colour_swirl_sim_driver(void);
+void knob_sim_driver(void);
 
 static void driver(void) {
+    if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_KNOB)) {
+        knob_sim_driver(); // the knob case plays the app and the encoder
+        return;
+    }
     if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_HEALTH)) {
         health_sim_driver(); // the health case plays the app
         return;

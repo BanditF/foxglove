@@ -42,6 +42,21 @@
             display-name = "Previous art";
             previous;
         };
+        // The knob (#719): the encoder's turns and click. Without Foxglove (or with master as its
+        // target) they are the volume keys and mute, as before; Foxglove may hold it to point the
+        // knob at an app (click: next app, double click: mute, hold: back to master).
+        knob: knob {
+            compatible = "foxglove,behavior-knob";
+            #sensor-binding-cells = <2>;
+            bindings = <&kp>, <&kp>;
+            display-name = "Knob";
+        };
+        knob_press: knob_press {
+            compatible = "foxglove,behavior-knob-press";
+            #binding-cells = <1>;
+            bindings = <&kp>;
+            display-name = "Knob click";
+        };
         td0: td0 {
             compatible = "zmk,behavior-tap-dance";
             display-name = "Shift/Caps Lock Tap Dance";
@@ -88,11 +103,11 @@
             bindings = <
 &kp TAB    &kp Q  &kp W  &kp E     &kp R  &kp T                               &kp UP                &kp Y        &kp U  &kp I      &kp O    &kp P     &kp BSPC
 &td0       &kp A  &kp S  &kp D     &kp F  &kp G                     &kp LEFT  &kp ENTER  &kp RIGHT  &kp H        &kp J  &kp K      &kp L    &kp SEMI  &kp SQT
-&kp LCTRL  &kp Z  &kp X  &kp C     &kp V  &kp B        &kp SPACE              &kp DOWN              &kp N        &kp M  &kp COMMA  &kp DOT  &kp FSLH  &kp ESC
+&kp LCTRL  &kp Z  &kp X  &kp C     &kp V  &kp B        &knob_press C_MUTE     &kp DOWN              &kp N        &kp M  &kp COMMA  &kp DOT  &kp FSLH  &kp ESC
                          &kp LGUI  &mo 1  &kp SPACE                                                 &kp ENTER    &mo 2  &kp RALT
             >;
 
-             sensor-bindings = <&inc_dec_kp C_VOLUME_UP C_VOLUME_DOWN>;
+            sensor-bindings = <&knob C_VOLUME_UP C_VOLUME_DOWN>;
         };
 
         // NUMBER: hold the middle left thumb. Bluetooth keys moved to SYSTEM;
@@ -136,7 +151,7 @@
                             &kp LALT  &mo 4   &kp SPACE                                                    &kp ENTER  &mo 2   &kp LGUI
             >;
 
-            sensor-bindings = <&inc_dec_kp C_VOLUME_UP C_VOLUME_DOWN>;
+            sensor-bindings = <&knob C_VOLUME_UP C_VOLUME_DOWN>;
         };
 
         // Hold the middle left thumb while in GAME: numbers where they'd sit on a
@@ -150,7 +165,7 @@
                          &trans  &mo 4   &trans                                                       &trans  &mo 2   &trans
             >;
 
-            sensor-bindings = <&inc_dec_kp C_VOLUME_UP C_VOLUME_DOWN>;
+            sensor-bindings = <&knob C_VOLUME_UP C_VOLUME_DOWN>;
         };
 
         // FUNCTION: hold BOTH middle thumbs (NUMBER + SYMBOL, or GAME+ + SYMBOL).

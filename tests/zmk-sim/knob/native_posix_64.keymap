@@ -1,0 +1,8 @@
+#include "../common/keymap.dtsi"
+
+&kscan {
+    // No key presses: module/knob_sim.c plays the PC and the encoder and ends the run when it is done
+    // ("knob: -- done"), so a driver that stops early fails on the snapshot.
+    /delete-property/ exit-after;
+    events = <ZMK_MOCK_RELEASE(4,0,10)>;
+};

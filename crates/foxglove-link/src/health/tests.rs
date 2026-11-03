@@ -481,3 +481,54 @@ fn without_hello_bit_28_nothing_is_asked() {
     assert_eq!(r.left.unwrap_err(), ReadError::NotBuilt);
     assert!(f.asked.borrow().is_empty());
 }
+
+#[test]
+fn a_version_2_block_carries_the_knob() {
+    // #719: bytes 96-103, as widgets/health.h lays them out.
+    let b = Block {
+        version: 2,
+        knob: Some(Knob {
+            flags: knob_flags::TURN | knob_flags::PRESS | knob_flags::HELD | knob_flags::ON_APP,
+            last: 2,
+            events: 12,
+            keys: 300,
+            drops: 1,
+        }),
+        ..left()
+    };
+    let bytes = b.to_bytes();
+    assert_eq!(bytes.len(), SIZE_V2);
+    assert_eq!(bytes[2], 104);
+    assert_eq!(&bytes[96..104], &[0x0F, 2, 12, 0, 0x2C, 0x01, 1, 0]);
+    assert_eq!(Block::parse(&bytes).unwrap(), b);
+    // Five chunks, the last one 8 bytes; the reader puts them back together.
+    let replies = b.replies(3);
+    assert_eq!(replies.len(), 5);
+    assert_eq!((replies[0][6], replies[0][7]), (5, 104));
+    let mut a = Assembler::default();
+    let mut got = None;
+    for (c, r) in replies.iter().enumerate() {
+        got = a.take(0, c as u8, r).unwrap();
+    }
+    assert_eq!(got.unwrap(), b);
+    let rows = rows(&report(b, right()), &Thresholds::default());
+    let knob = find(&rows, "Knob");
+    assert_eq!(knob.len(), 1);
+    assert_eq!(
+        knob[0].detail,
+        "held by Foxglove, on an app; 12 events, 300 keys, 1 hold dropped"
+    );
+}
+
+#[test]
+fn an_older_block_has_no_knob_and_a_shorter_right_reads() {
+    // A version 1 block (96 bytes) parses as before, with no knob row; and a version 2 left's
+    // D7 93 for an older right says 104 bytes while the block says 96 (docs/health.md).
+    let v1 = left();
+    assert_eq!(Block::parse(&v1.to_bytes()).unwrap().knob, None);
+    let mut padded = right().to_bytes();
+    padded.resize(SIZE_V2, 0);
+    let r = Block::parse(&padded).unwrap();
+    assert_eq!(r.knob, None);
+    assert!(find(&rows(&report(left(), r), &Thresholds::default()), "Knob").is_empty());
+}

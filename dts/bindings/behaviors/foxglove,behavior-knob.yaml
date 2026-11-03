@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT
+description: |
+  An encoder's turns (#719): `&knob C_VOLUME_UP C_VOLUME_DOWN` in a layer's sensor-bindings. By
+  default (and always while the knob's target is master) each detent taps its fallback key, the
+  first parameter clockwise and the second counter-clockwise, as `&inc_dec_kp` does: the system
+  volume works with or without Foxglove. While the PC holds the knob (D7 14 KNOB, HELLO bit 31)
+  with an app as its target, the turns go to the PC as events instead (D7 94 01 01 steps) and no
+  key is sent. Works with any ZMK encoder; widgets/knob.c.
+
+compatible: "foxglove,behavior-knob"
+
+include: behavior-metadata.yaml
+
+properties:
+  "#sensor-binding-cells":
+    type: int
+    required: true
+    const: 2
+  bindings:
+    type: phandles
+    required: true
+    description: The behaviour each detent taps with its parameter, clockwise then
+      counter-clockwise (`<&kp>, <&kp>`).
+  tap-ms:
+    type: int
+    default: 5
+    description: How long a fallback key stays pressed per detent.
+
+sensor-binding-cells:
+  - param1
+  - param2

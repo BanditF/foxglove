@@ -15,6 +15,8 @@ if(CONFIG_ZMK_DISPLAY AND CONFIG_NICE_VIEW_WIDGET_STATUS)
     zephyr_library_sources(widgets/status.c)
     if(CONFIG_NICE_VIEW_HOST_LINK)
       zephyr_library_sources(widgets/host_link.c)
+      # The knob (#719) asks the host link whether the PC holds it.
+      zephyr_library_compile_definitions(FOXGLOVE_HAS_HOST_LINK)
       if(CONFIG_FOXGLOVE_HOST_FRAMES)
         zephyr_library_sources(widgets/host_frames.c)
       endif()
@@ -81,6 +83,13 @@ endif()
 if(CONFIG_FOXGLOVE_HEALTH)
   zephyr_library_include_directories(${CMAKE_SOURCE_DIR}/include)
   zephyr_library_sources(widgets/health.c)
+endif()
+
+# &knob / &knob_press (#719): on the central (or a one-piece board), display or not. Without the
+# host link they are their fallback keys only.
+if(CONFIG_FOXGLOVE_KNOB AND (NOT CONFIG_ZMK_SPLIT OR CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
+  zephyr_library_include_directories(${CMAKE_SOURCE_DIR}/include)
+  zephyr_library_sources(widgets/knob.c)
 endif()
 
 # Version, SHA and half marker, shared with the foxglove_link shield.

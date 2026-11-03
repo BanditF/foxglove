@@ -85,6 +85,9 @@ pub mod capabilities {
     /// The right needs status version [`super::art::STORE_RIGHT_VERSION`] too; a left with the
     /// bit fails STORE to an older right before sending anything ([`crate::art::STORE_UNSUPPORTED`]).
     pub const ART_STORE: u32 = 1 << 30;
+    /// Settings KNOB (D7 14): the PC may hold the keymap's `&knob` / `&knob_press` (#719;
+    /// [`super::knob`]). Bits 29 and 30 are colour effects (#626) and art STORE (#522).
+    pub const KNOB: u32 = 1 << 31;
 }
 pub const VERSION: u8 = 1;
 
@@ -160,6 +163,8 @@ pub mod settings {
     pub const PANEL_POLARITY: u8 = 0x12;
     /// One half's self-report block, in chunks (#705): see [`crate::health`].
     pub const HEALTH: u8 = 0x13;
+    /// The PC holds the knob (#719): see [`super::knob`].
+    pub const KNOB: u8 = 0x14;
     /// The longest hold INVOKE accepts.
     pub const MAX_HOLD_MS: u16 = 10_000;
 }
@@ -918,6 +923,199 @@ pub fn art_key_event(r: &[u8]) -> Option<bool> {
 /// Whether `r` is PC_STATE's lease ask (D7 91 with event 1), which the keyboard sends on its own.
 pub fn is_pc_state_event(r: &[u8]) -> bool {
     is_reply(r, SETTINGS, settings::PC_STATE) && r.get(3).is_some_and(|&e| e != 0)
+}
+
+/// The knob (#719, D7 14 KNOB, HELLO bit 31; firmware widgets/knob.h, host_link.h): the keymap's
+/// `&knob` (an encoder's turns) and `&knob_press` (its click), which the PC may hold. Unheld they
+/// are their fallback keys (the volume keys and mute). Held, the click, a double click and a hold
+/// come as [`knob::Event`]s, and so do the turns while the target is an app; on master the turns
+/// stay the keys, and a double click also taps mute on the board. The board drops the hold on a
+/// USB disconnect or an endpoint change ([`knob::EventKind::HandedBack`] for the latter); there
+/// is no keep-alive, so the PC holds again after each HELLO.
+pub mod knob {
+    use super::{is_reply, settings, SETTINGS};
+
+    /// What the turns drive while the PC holds the knob.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Target {
+        /// The fallback keys: Windows' own master volume.
+        Master,
+        /// An app: the turns come to the PC.
+        App,
+    }
+
+    impl Target {
+        fn byte(self) -> u8 {
+            match self {
+                Target::Master => 0,
+                Target::App => 1,
+            }
+        }
+
+        fn of(b: u8) -> Target {
+            if b == 1 {
+                Target::App
+            } else {
+                Target::Master
+            }
+        }
+    }
+
+    /// Takes the knob with `target`: D7 14 01 target.
+    pub fn hold(target: Target) -> Vec<u8> {
+        vec![SETTINGS, settings::KNOB, 1, target.byte()]
+    }
+
+    /// Hands the knob back to the keyboard: D7 14 00.
+    pub fn release() -> Vec<u8> {
+        vec![SETTINGS, settings::KNOB, 0, 0]
+    }
+
+    /// Reads the hold: D7 14 FF.
+    pub fn read() -> Vec<u8> {
+        vec![SETTINGS, settings::KNOB, 0xff]
+    }
+
+    /// The keymap has `&knob` (D7 94 reply byte 6, bit 0).
+    pub const HAS_TURN: u8 = 1 << 0;
+    /// The keymap has `&knob_press` (bit 1).
+    pub const HAS_PRESS: u8 = 1 << 1;
+
+    /// The reply: D7 94, 00, status, held, target, knobs.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct State {
+        /// 0 ok, 4 not built in (no knob in the keymap), 5 bad request.
+        pub status: u8,
+        pub held: bool,
+        pub target: Target,
+        /// [`HAS_TURN`], [`HAS_PRESS`].
+        pub knobs: u8,
+    }
+
+    /// The KNOB reply; `None` for anything else (an [`Event`] included).
+    pub fn state(r: &[u8]) -> Option<State> {
+        if !is_reply(r, SETTINGS, settings::KNOB) || r.len() < 7 || r[2] != 0 {
+            return None;
+        }
+        Some(State {
+            status: r[3],
+            held: r[4] != 0,
+            target: Target::of(r[5]),
+            knobs: r[6],
+        })
+    }
+
+    /// What the knob did while the PC held it (firmware knob.h's `enum knob_event`).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum EventKind {
+        /// Detents, + clockwise (only while the target is an app).
+        Turn(i8),
+        /// A click, sent once the double-click time passed without a second: the next app.
+        Click,
+        /// A second click within the double-click time: mute the target (on master the board
+        /// already tapped mute).
+        Double,
+        /// The switch held for hold-ms: back to master.
+        Hold,
+        /// The board dropped the hold (an endpoint change).
+        HandedBack,
+    }
+
+    /// One knob event: D7 94, 01, kind, steps, target, seq.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Event {
+        pub kind: EventKind,
+        /// The target as the board had it.
+        pub target: Target,
+        /// One up per event (wraps), so a lost one shows.
+        pub seq: u8,
+    }
+
+    /// A knob event; `None` for anything else (the KNOB reply included).
+    pub fn event(r: &[u8]) -> Option<Event> {
+        if !is_reply(r, SETTINGS, settings::KNOB) || r.len() < 7 || r[2] != 1 {
+            return None;
+        }
+        let kind = match r[3] {
+            1 => EventKind::Turn(r[4] as i8),
+            2 => EventKind::Click,
+            3 => EventKind::Double,
+            4 => EventKind::Hold,
+            5 => EventKind::HandedBack,
+            _ => return None,
+        };
+        Some(Event {
+            kind,
+            target: Target::of(r[5]),
+            seq: r[6],
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn report(bytes: &[u8]) -> [u8; crate::protocol::REPORT] {
+            let mut r = [0u8; crate::protocol::REPORT];
+            r[..bytes.len()].copy_from_slice(bytes);
+            r
+        }
+
+        #[test]
+        fn requests_are_the_firmwares() {
+            assert_eq!(hold(Target::App), [0xD7, 0x14, 1, 1]);
+            assert_eq!(hold(Target::Master), [0xD7, 0x14, 1, 0]);
+            assert_eq!(release(), [0xD7, 0x14, 0, 0]);
+            assert_eq!(read(), [0xD7, 0x14, 0xff]);
+        }
+
+        // The bytes tests/zmk-sim/knob pins.
+        #[test]
+        fn replies_and_events_parse_as_the_simulator_prints_them() {
+            let s = state(&report(&[0xD7, 0x94, 0, 0, 1, 1, 3])).unwrap();
+            assert_eq!(
+                s,
+                State {
+                    status: 0,
+                    held: true,
+                    target: Target::App,
+                    knobs: HAS_TURN | HAS_PRESS
+                }
+            );
+            assert_eq!(
+                state(&report(&[0xD7, 0x94, 0, 5, 0, 0, 3])).unwrap().status,
+                5
+            );
+            let e = event(&report(&[0xD7, 0x94, 1, 1, 0xFF, 1, 4])).unwrap();
+            assert_eq!(e.kind, EventKind::Turn(-1));
+            assert_eq!((e.target, e.seq), (Target::App, 4));
+            assert_eq!(
+                event(&report(&[0xD7, 0x94, 1, 2])).unwrap().kind,
+                EventKind::Click
+            );
+            assert_eq!(
+                event(&report(&[0xD7, 0x94, 1, 3, 0, 0, 1])).unwrap(),
+                Event {
+                    kind: EventKind::Double,
+                    target: Target::Master,
+                    seq: 1
+                }
+            );
+            assert_eq!(
+                event(&report(&[0xD7, 0x94, 1, 4, 0, 1, 7])).unwrap().kind,
+                EventKind::Hold
+            );
+            assert_eq!(
+                event(&report(&[0xD7, 0x94, 1, 5, 0, 1, 8])).unwrap().kind,
+                EventKind::HandedBack
+            );
+            // Each parser leaves the other's report alone, and unknown kinds are nothing.
+            assert!(event(&report(&[0xD7, 0x94, 0, 0, 1, 1, 3])).is_none());
+            assert!(state(&report(&[0xD7, 0x94, 1, 2])).is_none());
+            assert!(event(&report(&[0xD7, 0x94, 1, 9])).is_none());
+            assert!(event(&report(&[0xD7, 0x8D, 1, 1])).is_none());
+        }
+    }
 }
 
 /// The keyboard's mono panels (#666, D7 12, HELLO bit 27; firmware widgets/panel_polarity.h):
@@ -1965,6 +2163,7 @@ mod tests {
             HEALTH,
             COLOUR_EFFECTS,
             ART_STORE,
+            KNOB,
         ];
         for (i, a) in all.iter().enumerate() {
             assert_eq!(a.count_ones(), 1);

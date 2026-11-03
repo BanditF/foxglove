@@ -13,6 +13,14 @@ QWERTY legends, including when GAME is active.
 | 5 | FUNCTION | Hold both middle thumbs: NUMBER + SYMBOL or GAME+ + SYMBOL. SYSTEM + F retains the FUNCTION toggle; see the conditional-layer caveat below. |
 | 6 | SYSTEM | Keep FUNCTION active, then hold Tab (outer-left top key). Keep the thumbs and Tab held while using it. |
 
+The knob (#719): on QWERTY, GAME and GAME+ the encoder is `&knob C_VOLUME_UP C_VOLUME_DOWN`
+and its click (the key between B and the joystick's down) `&knob_press C_MUTE`. Without Foxglove
+they are the volume keys and mute; the click used to be a second Space on QWERTY. While Foxglove
+runs, it holds the knob: a click points it at the next app playing sound, a double click mutes
+the app (on master: the system mute), a half-second hold goes back to master volume. On master the
+turns are always the plain volume keys. NUMBER, SYMBOL, FUNCTION and SYSTEM keep their scroll
+encoder and their own click keys.
+
 FUNCTION keeps F1-F12 in their previous positions, mouse controls, mute and the
 scroll encoder, Print Screen, Scroll Lock and Pause. Caps Lock is on A and Insert
 is on Z. The old Bluetooth/output positions in NUMBER and SYMBOL are now `&none`

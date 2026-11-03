@@ -40,7 +40,8 @@
  *                    28 HEALTH (D7 13: each half's self-report, #705),
  *                    29 COLOUR_EFFECTS (D7 83 byte 29: the effects the left draws in the
  *                    chosen colour; Swirl as a hue band around it, #626),
- *                    30 ART_STORE (D6 09: keep a piece on the right without showing it, #522).
+ *                    30 ART_STORE (D6 09: keep a piece on the right without showing it, #522),
+ *                    31 KNOB (D7 14: the PC may hold &knob / &knob_press, #719).
  *      HELLO has no byte left for the LED counts: bit 22 says D7 10 answers them.
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
@@ -349,6 +350,25 @@
  *      reply waits for the right (about a second under the link's latency). Status: 0 ok, 1 busy
  *      (a read of the right runs; its reply comes), 2 no relay link, 3 the right didn't answer,
  *      4 not built in or a right without the block, 5 bad half or chunk, 6 no copy yet.
+ *   14 KNOB  hold u8 (0 hand back, 1 hold; 0xff or a report cut short: read), target u8 (0 master,
+ *            1 an app; with hold 1)                                     (HELLO bit 31, #719)
+ *      reply: D7 94, 00, status (0 ok, 4 not built in: no knob behaviour in the keymap, 5 bad:
+ *             another hold or target; nothing changes), held
+ *             (0/1), target (0 master, 1 an app; 0 when not held), knobs (bit 0 the keymap has a
+ *             &knob, bit 1 a &knob_press; knob.h)
+ *      event: D7 94, 01, kind (knob.h: 1 turn, 2 click, 3 double click, 4 hold, 5 handed back),
+ *             steps (i8; turns only, + clockwise), target (as the board had it), seq u8 (one up
+ *             per event, so the PC sees a lost one)
+ *      The PC takes the knob, as ART_KEYS takes the art keys (#701, #302). Unheld, &knob taps its
+ *      fallback keys per detent and &knob_press is its fallback key, as today. Held: a click, a
+ *      double click and a hold (hold-ms, 500) are events, the click sent once double-tap-ms (300)
+ *      passed without a second, the double on the second press, the hold when the time is
+ *      reached. The turns are events only while the target is an app: on master they stay the
+ *      fallback keys, held or not, so Windows' own volume and popup work without the app; and a
+ *      double click on master also taps the fallback key (the system mute) on the board. A burst
+ *      of detents goes as one turn event. The hold drops (held 0, target master) on a USB
+ *      disconnect or an endpoint change, as ART_KEYS does; an endpoint change sends kind 5. No
+ *      keep-alive: hold again after HELLO, and set the target with each change.
  *   0B GUARD_TEST [delay_ms u16] (test hooks + split guard only)        reply: D7 8B, status
  *      The #122 split guard treats the current split link as stuck once, delay_ms from now (2000
  *      when left out; 0 = at once, even mid-relay, e.g. during an art push): it drops it, ZMK
@@ -417,6 +437,9 @@
 #define HOST_LINK_CAP_COLOUR_EFFECTS (1U << 29)
 // D6 09 STORE: keep a piece in a flash slot on the right without showing it (#522).
 #define HOST_LINK_CAP_ART_STORE (1U << 30)
+// D7 14 KNOB: the PC may hold &knob / &knob_press (#719; knob.h). Bits 29 and 30 are taken by
+// colour effects (#626) and art STORE (#522).
+#define HOST_LINK_CAP_KNOB (1U << 31)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);
@@ -444,6 +467,14 @@ void host_link_battery_dim_changed(void);
 // &art_next / &art_prev (art_keys.c): sends D7 8D 01 dir to the PC and returns 0 while it's
 // subscribed (D7 0D), -ENOTCONN otherwise (the board steps the art itself).
 int host_link_art_key(int8_t dir);
+
+// &knob / &knob_press (knob.c, D7 14 KNOB, #719): whether the PC holds the knob, and its target
+// (KNOB_MASTER when it doesn't). host_link_knob_event sends D7 94 01 kind steps target seq and
+// returns 0 while held, -ENOTCONN otherwise (nothing is sent).
+#include "knob.h"
+bool host_link_knob_held(void);
+enum knob_target host_link_knob_target(void);
+int host_link_knob_event(enum knob_event kind, int8_t steps);
 
 // art_relay_central.c: the right acknowledged the PC's colour, or a read-back after another
 // underglow command came in. Sends RGB_STATE (D7 83) after host traffic.

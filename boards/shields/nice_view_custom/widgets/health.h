@@ -19,8 +19,10 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/toolchain.h>
 
-#define HEALTH_VERSION 1
-#define HEALTH_SIZE 96
+// Version 2 (#719) appends the knob (bytes 96-103) to version 1's 96 bytes.
+#define HEALTH_VERSION 2
+#define HEALTH_SIZE 104
+#define HEALTH_V1_SIZE 96
 // D7 93 carries this many bytes of the block per report (bytes 8-31).
 #define HEALTH_CHUNK 24
 #define HEALTH_CHUNKS ((HEALTH_SIZE + HEALTH_CHUNK - 1) / HEALTH_CHUNK)
@@ -41,6 +43,9 @@ enum health_counter {
     HEALTH_LIGHT_SYNC_FAILS,  // left: RGB ops that failed (each retry counts)
     HEALTH_RGB_MISMATCHES,    // left: a status read showed the right with another look (#624)
     HEALTH_SPLIT_DROPS,       // split links that went down
+    HEALTH_KNOB_EVENTS,       // left: knob events sent to the PC (D7 94 01, #719)
+    HEALTH_KNOB_KEYS,         // left: fallback keys the knob tapped (detents, presses)
+    HEALTH_KNOB_DROPS,        // left: holds the board dropped (USB disconnect, endpoint change)
     HEALTH_COUNTERS,
 };
 
@@ -49,6 +54,8 @@ enum health_value {
     HEALTH_ART_LAST_ERROR, // left: enum art_relay_error of the last failed job; right: its state
     HEALTH_ART_SET,        // the art set shown (int8; 0x80 unknown)
     HEALTH_LAST_EFFECT,    // the PC effect kind running (0 none)
+    HEALTH_KNOB_STATE,     // left: the knob's hold (host_link.c: bit 0 held, bit 1 an app)
+    HEALTH_KNOB_LAST,      // left: the last knob event's kind (knob.h; 0 none)
     HEALTH_VALUES,
 };
 
@@ -69,6 +76,12 @@ enum health_state { HEALTH_PENDING, HEALTH_PASS, HEALTH_FAIL, HEALTH_NA };
 // device not ready, 2 no LEDs in the chain.
 #define HEALTH_DISPLAY_AFTER_S 10
 #define HEALTH_SETTINGS_AFTER_S 30
+
+// The knob byte (96): which knob behaviours the keymap has (knob.h's KNOB_HAS_*), and its hold.
+#define HEALTH_KNOB_TURN BIT(0)
+#define HEALTH_KNOB_PRESS BIT(1)
+#define HEALTH_KNOB_HELD BIT(2)
+#define HEALTH_KNOB_ON_APP BIT(3)
 
 // Block flags (byte 3): what this half has built in.
 #define HEALTH_F_RELAY_CENTRAL BIT(0)
@@ -132,6 +145,12 @@ struct health_wire {
     uint8_t polarity_right; // the left: what the right acknowledged (0xff none)
     uint8_t leds;          // this half's LEDs (its chain)
     uint8_t leds_right;    // the left: how many the left frames for the right (0 on the right)
+    // The knob (version 2, #719; the left)
+    uint8_t knob;          // HEALTH_KNOB_*
+    uint8_t knob_last;     // the last event's kind (knob.h; 0 none)
+    uint16_t knob_events;  // events sent to the PC
+    uint16_t knob_keys;    // fallback keys tapped
+    uint16_t knob_drops;   // holds dropped by the board
 } __packed;
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH)

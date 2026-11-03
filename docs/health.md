@@ -18,7 +18,7 @@ Counters count since that half's boot and saturate (u16 at 65535, u32 at 2^31 - 
 
 ## The command
 
-Request: `D7 13 half chunk` (half 0 left, 1 right; chunk 0-3). A report cut short reads half 0,
+Request: `D7 13 half chunk` (half 0 left, 1 right; chunk 0-4). A report cut short reads half 0,
 chunk 0.
 
 Reply `D7 93`:
@@ -29,27 +29,29 @@ Reply `D7 93`:
 | 3 | half |
 | 4 | copy number (one up with each chunk 0) |
 | 5 | chunk |
-| 6 | chunks (4) |
-| 7 | block length (96) |
+| 6 | chunks (5; 4 before version 2) |
+| 7 | block length (104; 96 before version 2) |
 | 8-31 | the block's bytes `chunk * 24` to `chunk * 24 + 23` |
 
-Chunk 0 takes a new copy of that half's block; chunks 1-3 come from that copy, so the four
+Chunk 0 takes a new copy of that half's block; chunks 1-4 come from that copy, so the five
 replies are one moment (check that their copy numbers match). For the right, chunk 0 makes the
 left read the right's block over the art relay, one response's worth per request (five at MTU
 23), each spaced `REQ_GAP_MS` after the right's last answer as every relay request is (#662);
 under the link's peripheral latency that is about a second. Its reply comes when the read is
 done (or failed: 2, 3 or 4). Wait up to 8 s for it.
 
-## The block (version 1, 96 bytes, little endian)
+## The block (version 2, 104 bytes, little endian)
+
+Version 1 was bytes 0-95; version 2 (#719) appends the knob, bytes 96-103.
 
 Fields a half doesn't have are 0, or 0xff where 0 means something; byte 3's flags say which parts
 the half has built in.
 
 | Offset | Size | Field |
 |---|---|---|
-| 0 | 1 | version (1) |
+| 0 | 1 | version (2; 1 before #719) |
 | 1 | 1 | half (0 left, 1 right) |
-| 2 | 1 | length (96) |
+| 2 | 1 | length (104; 96 in version 1) |
 | 3 | 1 | flags: bit 0 relay (the left's side), 1 Raw HID counters (the module's `raw_hid/stats.h`), 2 host link, 3 relay (the right's side), 4 lighting, 5 PC state, 6 polarity, 7 display |
 | 4 | 4 | firmware major, minor, patch, profile (0 dev, 1 GA) |
 | 8 | 8 | short git SHA, ASCII, zero-padded |
@@ -90,6 +92,11 @@ the half has built in.
 | 93 | 1 | the left: the polarity the right acknowledged on this link (0xff none) |
 | 94 | 1 | this half's LEDs (its chain) |
 | 95 | 1 | the left: the LEDs it frames for the right (`LAMP_PARTS_RIGHT`); compare with the right's byte 94 |
+| 96 | 1 | the knob (the left, #719; `knob.h`): bit 0 the keymap has `&knob`, 1 `&knob_press`, 2 the PC holds it (D7 14), 3 its target is an app (0: master) |
+| 97 | 1 | the last knob event sent to the PC (0 none, 1 turn, 2 click, 3 double click, 4 hold, 5 handed back) |
+| 98 | 2 | knob events sent to the PC (D7 94 01) |
+| 100 | 2 | fallback keys the knob tapped (a detent, a press, a double click's mute on master) |
+| 102 | 2 | holds the board dropped (a USB disconnect or an endpoint change) |
 
 ### Boot self-test (bytes 24-27)
 
@@ -105,14 +112,16 @@ Each byte is a state in bits 0-1 (0 pending, 1 pass, 2 fail, 3 not applicable) a
 
 ## Compatibility
 
-A newer field goes after byte 95 with a new version; a reader takes the fields it knows and the
-length the block says. Firmware without bit 28 answers D7 13 with nothing (no reply): ask only
+A newer field goes after the last one with a new version (version 2 added bytes 96-103); a reader
+takes the fields it knows and the length the block says. A left with version 2 reads an older
+right's 96-byte block to its own length and leaves the rest 0, so its D7 93 says 104 bytes while
+the block's byte 2 says 96: read byte 2. Firmware without bit 28 answers D7 13 with nothing (no reply): ask only
 with the bit. A right before #705 ends its relay status value at `ART_RELAY_HEALTH_AT`, so a left
 with the block answers 4 for it.
 
 ## Tests
 
-- zmk-sim `health` (`tests/zmk-sim/health`): HELLO bit 28, a block read in four chunks, a burst
+- zmk-sim `health` (`tests/zmk-sim/health`): HELLO bit 28, a block read in five chunks, a burst
   that drops two replies and the next block counting them, the settings check, and every error
   status the left gives without a relay.
 - relay-sim `health` (`tests/relay-sim`): the boot self-test's relay check pending, failed with no

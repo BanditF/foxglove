@@ -11,6 +11,7 @@
 
 #include <string.h>
 
+#include <zephyr/devicetree.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
 
@@ -18,6 +19,7 @@
 #include "half_marker.h"
 #include "lamp_parts.h"
 #include "panel_polarity.h"
+#include "knob.h"
 
 #define HEALTH_LEFT (!IS_ENABLED(CONFIG_ZMK_SPLIT) || IS_ENABLED(CONFIG_ZMK_SPLIT_ROLE_CENTRAL))
 
@@ -302,5 +304,27 @@ void health_fill(struct health_wire *out) {
 #if defined(HEALTH_RELAY_CENTRAL)
     out->polarity_right = art_relay_right_polarity();
 #endif
+#endif
+
+    // The knob (#719)
+#if HEALTH_LEFT && IS_ENABLED(CONFIG_FOXGLOVE_KNOB)
+    BUILD_ASSERT(HEALTH_KNOB_TURN == KNOB_HAS_TURN && HEALTH_KNOB_PRESS == KNOB_HAS_PRESS, "knob.h");
+    if (DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_knob)) {
+        out->knob |= HEALTH_KNOB_TURN;
+    }
+    if (DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_knob_press)) {
+        out->knob |= HEALTH_KNOB_PRESS;
+    }
+    uint8_t hold = (uint8_t)atomic_get(&values[HEALTH_KNOB_STATE]);
+    if (hold & BIT(0)) {
+        out->knob |= HEALTH_KNOB_HELD;
+    }
+    if (hold & BIT(1)) {
+        out->knob |= HEALTH_KNOB_ON_APP;
+    }
+    out->knob_last = (uint8_t)atomic_get(&values[HEALTH_KNOB_LAST]);
+    out->knob_events = u16_of(HEALTH_KNOB_EVENTS);
+    out->knob_keys = u16_of(HEALTH_KNOB_KEYS);
+    out->knob_drops = u16_of(HEALTH_KNOB_DROPS);
 #endif
 }
