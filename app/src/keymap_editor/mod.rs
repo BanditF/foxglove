@@ -7,7 +7,8 @@ mod qmk_catalog;
 mod qmk_editor;
 mod zmk_catalog;
 mod zmk_editor;
-pub use custom_page::CustomDraft; // Foxglove (#582)
+#[cfg(test)]
+pub use custom_page::CustomDraft; // Foxglove (#582): the previews drive its page
 pub use picker::KEY_UNIT;
 pub use qmk_editor::QmkDraft;
 pub use zmk_editor::ZmkDraft;
