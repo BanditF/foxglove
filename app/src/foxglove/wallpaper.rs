@@ -116,6 +116,20 @@ fn readable(text: &str, source: &Source) -> bool {
         || serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}')).is_ok()
 }
 
+/// Wallpaper Engine stops (unloads) wallpapers while another program is full-screen: its
+/// "Other application fullscreen: Stop" (`<user>.general.user.playbackfullscreen` is `"stop"`),
+/// so it loads them again, from their saved properties, when the program leaves (#586).
+pub fn stops_under_fullscreen(config: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(config.trim_start_matches('\u{feff}')) else {
+        return false;
+    };
+    v.as_object()
+        .into_iter()
+        .flat_map(|o| o.values())
+        .filter_map(|user| user.pointer("/general/user/playbackfullscreen"))
+        .any(|p| p.as_str() == Some("stop"))
+}
+
 /// Each monitor's wallpaper file from Wallpaper Engine's config, sorted by monitor key.
 pub fn selected(config: &str) -> Vec<(String, String)> {
     let Ok(v) = serde_json::from_str::<Value>(config.trim_start_matches('\u{feff}')) else {
@@ -538,7 +552,10 @@ pub fn start() {
             ));
             // Wallpaper sync (#493): the monitors showing a wallpaper that reads Foxglove's
             // properties get them; a new wallpaper gets them at once.
-            super::wallpaper_sync::wallpapers(sync_targets(&manifests, &text, &source));
+            super::wallpaper_sync::wallpapers(
+                sync_targets(&manifests, &text, &source),
+                stops_under_fullscreen(&text),
+            );
             let ids = ids_on_screen(&manifests, &text, &source);
             repaint |= {
                 let mut on = ON_SCREEN.lock().unwrap_or_else(|e| e.into_inner());
@@ -573,6 +590,17 @@ mod tests {
          "right":{"builtin":"Bandit_Idle","library":"hud.bin","bytes":10},"left":{"bin":"hud.left.bin","frames":1,"fps":0,"order":[0]}},
         {"id":"fury-stars","title":"Stars","workshop_id":null,"match":["projects/myprojects/bandit-fury-stars/"],
          "right":{"builtin":null,"library":"fury-stars.bin","bytes":10},"left":{"bin":"x","frames":1,"fps":0,"order":[0]}}]}"#;
+
+    /// The playback setting behind #586's reloads, as Wallpaper Engine writes it.
+    #[test]
+    fn the_stop_setting_under_full_screen_programs_is_read() {
+        let stop = "\u{feff}{\"me\":{\"general\":{\"user\":{\"playbackfullscreen\":\"stop\",\"playbackmaximized\":\"stop\"}}}}";
+        assert!(stops_under_fullscreen(stop));
+        let pause = r#"{"me":{"general":{"user":{"playbackfullscreen":"pause"}}}}"#;
+        assert!(!stops_under_fullscreen(pause));
+        assert!(!stops_under_fullscreen(r#"{"me":{"general":{}}}"#));
+        assert!(!stops_under_fullscreen("{half-written"));
+    }
 
     /// Only monitors showing a wallpaper whose manifest supports Foxglove's properties get
     /// wallpaper sync, with what it supports; "On screen" knows every wallpaper with a manifest.
