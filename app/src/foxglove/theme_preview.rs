@@ -13,6 +13,7 @@ use egui::{Color32, Pos2, Rect, TextureId};
 
 mod art_flow;
 mod keymap_session;
+mod knob_mockup;
 mod layout;
 mod overlay;
 
