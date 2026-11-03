@@ -1,0 +1,25 @@
+# When a count in the keyboard's self-report (#705, docs/health.md) is a warning or a failure:
+#   counter = warn, fail
+# A count at or above `warn` is a warning, at or above `fail` a failure; 0 never fires. Counts
+# are since that half's boot. crates/foxglove-link/src/health.rs reads this (built in).
+
+# Relay to the right half (the left's counts)
+relay_timeouts = 1, 10   # requests let go after 3 s without an answer
+relay_unsticks = 1, 3    # split links dropped to end a stuck request
+relay_refused = 5, 50    # requests that failed (either half)
+
+# Reports to the PC (the left)
+hid_reply_drops = 1, 20  # host link replies lost: its queue was full
+hid_dropped = 1, 20      # Raw HID reports dropped by the module's queue
+hid_failed = 1, 20       # reports USB or Bluetooth refused
+
+# Screens
+art_failed = 1, 5        # art pushes, SELECTs or slot jobs that failed
+snap_errors = 1, 5       # screen snapshots that failed
+
+# Lights (the left's view of the right)
+light_sync_fails = 3, 20 # underglow updates to the right that failed (each try)
+rgb_mismatches = 1, 5    # the right showed another look than it was sent
+
+# Link between the halves
+split_drops = 3, 20      # links that went down

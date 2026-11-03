@@ -21,6 +21,16 @@ sends the PC state; while the app runs, read only (`--allow-app`), since a send 
 app's own. `rgb-watch --seconds N` prints each D7 83 and D7 91 event the keyboard sends by
 itself, with milliseconds since the start (event-driven, ends at the deadline).
 
+`health [--json] [--record FILE] [--replay FILE]` (#705) is the test after a batch flash: it
+reads both halves' self-report (D7 13, HELLO bit 28; docs/health.md) and prints one line per
+feature, `PASS` / `WARN` / `FAIL`, the group and the reason ("FAIL screens    Right screen: 6 art
+pushes failed (relay timeout or write failure)"), then the result. Exit 0: nothing failed
+(warnings print), 1: something failed, 2: blocked (no keyboard, firmware without the report, the
+left unreadable, the app's API out of reach). While the app runs it asks the app's `health.read`
+(API 1.11) instead and never opens the link, so it needs no `--allow-app`. `--record` keeps the
+replies of a direct read; `--replay` judges such a file offline (`tests/data/health-recorded.hex`
+is one, read by `tests/offline.rs`).
+
 `--product FILTER`, `--allow-app`, `--keymap PATH` and `--studio-port COMn` apply to all commands.
 `--only CASE` selects names containing CASE; an empty match is an error.
 `--list` validates the whole suite, prints selected cases, and opens no devices.

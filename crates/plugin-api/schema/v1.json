@@ -1,5 +1,5 @@
 {
-  "api": "1.10",
+  "api": "1.11",
   "methods": {
     "action.invoked": {
       "kind": "event",
@@ -902,6 +902,79 @@
       "result": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Empty",
+        "type": "object"
+      }
+    },
+    "health.read": {
+      "kind": "call",
+      "params": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "device": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "device"
+        ],
+        "title": "DeviceParams",
+        "type": "object"
+      },
+      "permission": "devices.read",
+      "result": {
+        "$defs": {
+          "HealthLevel": {
+            "description": "How a health row stands (API 1.11, #705).",
+            "enum": [
+              "ok",
+              "warn",
+              "fail"
+            ],
+            "type": "string"
+          },
+          "HealthRow": {
+            "description": "One line of the Keyboard health view: a feature, how it stands and why (API 1.11, #705).",
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "item": {
+                "type": "string"
+              },
+              "level": {
+                "$ref": "#/$defs/HealthLevel"
+              },
+              "subsystem": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "subsystem",
+              "item",
+              "level",
+              "detail"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "The keyboard's self-report, read now, and Foxglove's features' rows (API 1.11, #705).",
+        "properties": {
+          "level": {
+            "$ref": "#/$defs/HealthLevel"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/$defs/HealthRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "level",
+          "rows"
+        ],
+        "title": "Health",
         "type": "object"
       }
     },

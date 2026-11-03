@@ -39,6 +39,7 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #include "effect_run.h"
 #endif
 #include "half_marker.h"
+#include "health.h"
 #include "host_link.h"
 #include "screen_snap.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
@@ -123,6 +124,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         LOG_INF("art relay: right half %s", data_handle ? "ready" : "has no relay");
         if (data_handle && status_handle) {
             discovery = ART_DISCOVERY_DONE;
+            health_relay_found();
             rgb_sync_link_up();
             lamps_link_up();
             effect_link_up();
@@ -151,6 +153,7 @@ static uint8_t chrc_found(struct bt_conn *conn, const struct bt_gatt_attr *attr,
         // queued after it on the split link (ZMK's own included).
         dbg.ends++;
         discovery = ART_DISCOVERY_DONE;
+        health_relay_found();
         atomic_clear(&discovering); // Zephyr gets no callback after a STOP
         rgb_sync_link_up();
         lamps_link_up();
@@ -256,8 +259,12 @@ static void connected(struct bt_conn *conn, uint8_t err) {
     // A new split link, even if the old one's disconnect hasn't come yet (the right rebooted):
     // holding on to the dead one left the relay pointed at it and never discovered the new one.
     bool was_ready = art_relay_link() == 2;
+    if (peer != NULL) {
+        health_link_down(); // the old link's disconnect never comes for us now
+    }
     drop_peer();
     peer = bt_conn_ref(conn);
+    health_link_up();
     guard_arm();
     if (bt_conn_get_security(conn) >= BT_SECURITY_L2) { // already encrypted: no security_changed
         peer_secure_at = k_uptime_get();
@@ -287,6 +294,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason) {
     }
     bool was_ready = art_relay_link() == 2;
     guard_cancel(false);
+    health_link_down();
     drop_peer();
     if (was_ready) {
         host_link_art_status();
@@ -450,6 +458,7 @@ static void unstick_cb(struct k_work *work) {
         LOG_WRN("art relay: a request to the right has had no answer for %d s; dropping the "
                 "split link to end it (%d in a row)",
                 STUCK_AFTER_MS / 1000, (int)atomic_get(&stuck_in_row));
+        health_inc(HEALTH_RELAY_UNSTICKS);
         bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
     } else {
         LOG_WRN("art relay: a request to the right is stuck again; leaving the link");
@@ -517,6 +526,7 @@ static int req_wait(struct relay_req *r, int ret) {
         unsigned int key = irq_lock();
         r->state = REQ_FREE; // Zephyr didn't take it: no callback comes
         irq_unlock(key);
+        health_inc(HEALTH_RELAY_REFUSED);
         return -EIO;
     }
     if (k_sem_take(&gatt_done, K_MSEC(GATT_TIMEOUT_MS))) {
@@ -528,12 +538,17 @@ static int req_wait(struct relay_req *r, int ret) {
         irq_unlock(key);
         if (let_go) {
             dbg.timeouts++;
+            health_inc(HEALTH_RELAY_TIMEOUTS); // since boot; dbg's is this link's
             unstick_arm();
             return -ETIMEDOUT;
         }
         k_sem_take(&gatt_done, K_NO_WAIT); // its callback came just now
     }
     dbg.att_err = gatt_err;
+    // A read past the end of the value is how a right without a field says so: not a failure.
+    if (gatt_err && gatt_err != BT_ATT_ERR_INVALID_OFFSET) {
+        health_inc(HEALTH_RELAY_REFUSED);
+    }
     return gatt_err ? -EIO : 0;
 }
 
@@ -628,6 +643,7 @@ static uint8_t read_cb(struct bt_conn *conn, uint8_t err, struct bt_gatt_read_pa
         }
         right_len = length;
         right_read_at = k_uptime_get();
+        health_set(HEALTH_ART_SET, (uint8_t)right.set);
         req_end(r, 0);
         if (right_rgb_known() != had || (had && right.rgb.on != was_on)) {
             host_link_rgb_right_changed(); // D7 83 (#478); nothing if the PC already has it
@@ -663,6 +679,13 @@ static int8_t select_set;
 static void fail(uint8_t err) {
     error = err;
     state = ART_LEFT_FAILED;
+    health_inc(HEALTH_ART_FAILED);
+    health_set(HEALTH_ART_LAST_ERROR, err);
+}
+
+static void done(void) {
+    state = ART_LEFT_DONE;
+    health_inc(HEALTH_ART_OK);
 }
 
 // The PC went quiet mid-blob (app killed, cable pulled): drop what came so far.
@@ -807,7 +830,7 @@ static void push_cb(struct k_work *work) {
         fail(err);
         return;
     }
-    state = ART_LEFT_DONE;
+    done();
 }
 static K_WORK_DEFINE(push_work, push_cb);
 
@@ -824,7 +847,7 @@ static void select_cb(struct k_work *work) {
         fail(ART_ERR_BLE);
         return;
     }
-    state = ART_LEFT_DONE;
+    done();
 }
 static K_WORK_DEFINE(select_work, select_cb);
 
@@ -845,7 +868,7 @@ static void slot_op_cb(struct k_work *work) {
         fail(ART_ERR_RIGHT);
         return;
     }
-    state = ART_LEFT_DONE;
+    done();
 }
 static K_WORK_DEFINE(slot_op_work, slot_op_cb);
 
@@ -1017,6 +1040,97 @@ static void dim_read(void) {
         k_work_submit_to_queue(&relay_q, &dim_read_work);
     }
 }
+
+/* D7 13 HEALTH for the right (#705): its self-report, past the redraw count. One response's worth
+ * per request: the callback takes the first chunk and stops, so no Read Blob is chained from the
+ * RX callback, and each request goes through req_new, so REQ_GAP_MS spaces them (#662) and each
+ * waits for the right's next listen under its latency. 96 bytes at MTU 23 is five requests.
+ * Start: the PC's D7 13 for half 1 (chunk 0). Stop: the block is in, or the first read that
+ * fails (no retry here; the PC asks again). A right before it ends the value at
+ * ART_RELAY_HEALTH_AT: the first read comes back empty, and the PC hears 4. */
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH)
+static uint8_t right_health[sizeof(struct health_wire)];
+static atomic_t right_health_ok;
+static atomic_t health_busy;
+
+static uint8_t health_chunk_cb(struct bt_conn *conn, uint8_t err,
+                               struct bt_gatt_read_params *params, const void *data,
+                               uint16_t length) {
+    struct relay_req *r = CONTAINER_OF(params, struct relay_req, read);
+    if (data != NULL) {
+        unsigned int key = irq_lock();
+        if (r->state == REQ_WAITING) { // a let-go read's chunk belongs to no one
+            uint16_t n = MIN(length, ofs_len - slot_got);
+            memcpy(&ofs_buf[slot_got], data, n);
+            slot_got += n;
+        }
+        irq_unlock(key);
+        req_end(r, 0);
+        return BT_GATT_ITER_STOP;
+    }
+    // An empty answer (no error): the value ends here, as on a right without the block.
+    req_end(r, err ? err : BT_ATT_ERR_INVALID_OFFSET);
+    return BT_GATT_ITER_STOP;
+}
+
+static void health_read_job(struct k_work *work) {
+    static uint8_t got[sizeof(right_health)];
+    uint8_t status = 2; // no relay link
+    struct bt_conn *conn = job_conn();
+    if (conn != NULL) {
+        status = 0;
+        for (uint16_t at = 0; at < sizeof(got);) {
+            slot_got = 0;
+            ofs_buf = &got[at];
+            ofs_len = sizeof(got) - at;
+            int err = read_value(conn, health_chunk_cb, ART_RELAY_HEALTH_AT + at);
+            if (err == -EBUSY) {
+                status = 1; // every request slot still held
+            } else if (err == -EIO && gatt_err == BT_ATT_ERR_INVALID_OFFSET) {
+                status = 4; // the right's firmware has no block
+            } else if (err || slot_got == 0) {
+                status = 3; // no answer, or an error
+            }
+            if (status != 0) {
+                break;
+            }
+            at += slot_got;
+        }
+        bt_conn_unref(conn);
+        if (status == 0 && got[0] == 0) {
+            status = 4; // not a block
+        }
+    }
+    if (status == 0) {
+        unsigned int key = irq_lock();
+        memcpy(right_health, got, sizeof(right_health));
+        irq_unlock(key);
+        atomic_set(&right_health_ok, 1);
+    }
+    atomic_clear(&health_busy);
+    host_link_health_right(status);
+}
+static K_WORK_DEFINE(health_read_work, health_read_job);
+
+int art_relay_health_read(void) {
+    if (!atomic_cas(&health_busy, 0, 1)) {
+        return -EBUSY;
+    }
+    k_work_submit_to_queue(&relay_q, &health_read_work);
+    return 0;
+}
+
+bool art_relay_right_health(uint8_t *out, uint8_t len) {
+    if (!atomic_get(&right_health_ok)) {
+        return false;
+    }
+    unsigned int key = irq_lock();
+    memcpy(out, right_health, MIN(len, sizeof(right_health)));
+    irq_unlock(key);
+    return true;
+}
+#endif
 
 int art_relay_slot(uint8_t slot) {
     if (!atomic_cas(&slot_busy, 0, 1)) {
@@ -1664,6 +1778,7 @@ static void rgb_sync_cb(struct k_work *work) {
             if (conn != NULL) {
                 bt_conn_unref(conn);
             }
+            health_inc(synced ? HEALTH_LIGHT_SYNCS : HEALTH_LIGHT_SYNC_FAILS);
             if (synced) {
                 bool dim_changed = !rgb_sent_valid || memcmp(&buf[3], &rgb_sent[3], 5) != 0;
                 memcpy(rgb_sent, buf, sizeof(buf));
@@ -1712,6 +1827,7 @@ static void rgb_reconcile(void) {
     if (atomic_get(&look_forced_valid) && memcmp(look, look_forced, sizeof(look)) == 0) {
         return; // sent once for this look already
     }
+    health_inc(HEALTH_RGB_MISMATCHES); // the right shows another look than it was sent (#705)
     memcpy(look_forced, look, sizeof(look));
     atomic_set(&look_forced_valid, 1);
     atomic_set(&rgb_force, 1);
@@ -1764,12 +1880,14 @@ static void hsb_cb(struct k_work *work) {
     }
     hsb_busy = 0;
     if (err) {
+        health_inc(HEALTH_LIGHT_SYNC_FAILS);
         if (hsb_retries++ < HSB_RETRIES) {
             k_work_reschedule_for_queue(&relay_q, dwork, HSB_RETRY);
         }
         return;
     }
     hsb_retries = 0;
+    health_inc(HEALTH_LIGHT_SYNCS);
     atomic_set(&hsb_sent, want);
     // The ack says the right has it: that's the right's colour now, for RGB_STATE.
     right.rgb.hue = want >> 16;

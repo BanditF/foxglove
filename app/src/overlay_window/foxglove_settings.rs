@@ -9,6 +9,7 @@ impl OverlayApp {
     pub(super) fn foxglove_keyboard_group(ui: &mut egui::Ui) {
         crate::foxglove::update::group(ui);
         crate::foxglove::live_feed::group(ui); // Foxglove (#499)
+        crate::foxglove::health::group(ui); // Foxglove (#705)
         crate::foxglove::troubleshooting::group(ui); // Foxglove (#535)
         // The Keyboard page's own cards are drawn at its top by the shell (#386).
         // The Lights page (#387).

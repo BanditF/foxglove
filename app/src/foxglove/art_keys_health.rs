@@ -4,8 +4,8 @@
 //! The art service notes each event as it happens (a connect, a press, pause, quit, a worker
 //! restart); [`rows`] only reads. No polling.
 //!
-//! The row shape matches `lamp_health::HealthRow` (#704): subsystem, item, level, detail. The
-//! health view keeps one shared type when both have landed.
+//! The rows are the Keyboard health view's shared type (`foxglove_link::health::HealthRow`, #705),
+//! registered with `health::register` as "art_keys".
 
 // The shared health view (#705) picks these up; until it lands only the tests read them.
 #![allow(dead_code)]
@@ -79,22 +79,8 @@ impl ArtKeysHealth {
     }
 }
 
-/// A row's state in the health view (as `lamp_health::Level`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Level {
-    Ok,
-    Warn,
-    Fail,
-}
-
-/// One view-model row for the health view (as `lamp_health::HealthRow`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HealthRow {
-    pub subsystem: &'static str,
-    pub item: String,
-    pub level: Level,
-    pub detail: String,
-}
+// The shared row type of the Keyboard health view (#705).
+pub use super::health::{HealthRow, Level};
 
 static HEALTH: Mutex<ArtKeysHealth> = Mutex::new(ArtKeysHealth {
     supported: None,
@@ -110,6 +96,11 @@ pub fn note(f: impl FnOnce(&mut ArtKeysHealth)) {
     f(&mut HEALTH.lock().unwrap_or_else(|e| e.into_inner()));
 }
 
+/// The health view's rows now (registered with `health::register`).
+pub fn rows_now() -> Vec<HealthRow> {
+    rows(&now())
+}
+
 /// The art keys' health now.
 pub fn now() -> ArtKeysHealth {
     HEALTH.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -117,11 +108,8 @@ pub fn now() -> ArtKeysHealth {
 
 /// The health view's rows: Held, Presses, Last hand-back.
 pub fn rows(h: &ArtKeysHealth) -> Vec<HealthRow> {
-    let row = |what: &str, level, detail: String| HealthRow {
-        subsystem: SUBSYSTEM,
-        item: format!("Art keys · {what}"),
-        level,
-        detail,
+    let row = |what: &str, level, detail: String| {
+        HealthRow::new(SUBSYSTEM, format!("Art keys · {what}"), level, detail)
     };
     let held = match (h.supported, h.held) {
         (None, _) => row("Held", Level::Ok, "no keyboard connected".into()),

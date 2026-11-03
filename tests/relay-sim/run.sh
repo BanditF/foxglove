@@ -22,9 +22,12 @@ DEFINES=(
     -DCONFIG_ZMK_SPLIT_ROLE_CENTRAL=1
     -DCONFIG_FOXGLOVE_RIGHT_LAMPS=21
     -DCONFIG_FOXGLOVE_PANEL_POLARITY=1
+    -DCONFIG_NICE_VIEW_ART_RELAY=1
+    -DCONFIG_FOXGLOVE_HEALTH=1
+    -DCONFIG_FOXGLOVE_HEALTH_RELAY_S=60
     -DCONFIG_ZMK_LOG_LEVEL=0
 )
-SCENARIOS=(wake wake-app relink-shown push-relink-tap stall stall-app late late-ignored select-snap snap-latency polarity-relink)
+SCENARIOS=(wake wake-app relink-shown push-relink-tap stall stall-app late late-ignored select-snap snap-latency polarity-relink health)
 # Known gaps: each must still FAIL (README.md, "Known gaps"). None at the moment.
 KNOWN_GAPS=()
 if [ "$#" -gt 0 ]; then
@@ -35,9 +38,14 @@ fi
 cc="${CC:-gcc}"
 flags=(-std=c11 -O1 -g -Wall -Wno-unused-function -Wno-unused-variable -Wno-missing-braces)
 "$cc" "${flags[@]}" -c "$here/sim_coro.c" -o "$out/sim_coro.o"
+# The self-report (#705) where the widgets have it (bisect.ps1 builds older ones too).
+extra=()
+if [ -f "$widgets/health.c" ]; then
+    extra=("$widgets/health.c")
+fi
 "$cc" "${flags[@]}" "${DEFINES[@]}" -I"$here/include" -I"$widgets" -I"$here" \
     "$here/sim_kernel.c" "$here/sim_bt.c" "$here/sim_stubs.c" "$here/main.c" \
-    "$widgets/art_relay_central.c" "$out/sim_coro.o" -o "$out/relay-sim"
+    "$widgets/art_relay_central.c" "${extra[@]}" "$out/sim_coro.o" -o "$out/relay-sim"
 
 fail=0
 for s in "${SCENARIOS[@]}"; do

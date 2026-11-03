@@ -40,6 +40,7 @@ pub(crate) mod fixtures;
 pub mod focus;
 pub mod foreground;
 pub mod gpu_reset;
+pub mod health;
 pub mod identity;
 pub mod keyboard_actions;
 #[cfg(test)]

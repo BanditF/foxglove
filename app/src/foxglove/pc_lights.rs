@@ -1081,7 +1081,6 @@ impl Worker {
 /// The Dynamic Lighting devices' health now (#691), for the shared health view: found,
 /// controllable, what Windows lets Foxglove do, and the last apply. Read from the worker's
 /// snapshot; asks nothing of the devices.
-#[allow(dead_code)] // for the shared health view (worktrees\health)
 pub fn lamp_health() -> Vec<super::lamp_health::LampHealth> {
     let s = snapshot();
     super::lamp_health::from_snapshot(&s, &s.lamp_applies, super::scene_lamps::identity())
