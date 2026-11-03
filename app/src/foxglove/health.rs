@@ -100,15 +100,15 @@ fn thresholds() -> Thresholds {
 pub fn read_now(why: Why) -> Option<Vec<HealthRow>> {
     let device = super::devices::device()?;
     let link = device.link().clone();
-    let capabilities = link
-        .state()
-        .connected
-        .and_then(|c| c.hello)
-        .map_or(0, |h| h.capabilities);
+    let hello = link.state().connected.and_then(|c| c.hello);
+    let capabilities = hello.map_or(0, |h| h.capabilities);
     let _one = ONE_READ.lock().unwrap_or_else(|e| e.into_inner());
     set_reading(true);
     let report = kh::read_both(link.as_ref(), capabilities);
     let mut rows = kh::rows(&report, &thresholds());
+    // HELLO v2: the capability words past HELLO's, asked only of firmware that offers them.
+    let v2 = hello.map(|h| foxglove_link::hello_v2::read(link.as_ref(), &h));
+    rows.push(foxglove_link::hello_v2::row(v2.as_ref()));
     in_zones(&mut rows, keyboard_zones().as_ref());
     let before = {
         let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());

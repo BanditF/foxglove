@@ -302,6 +302,22 @@ static void hello_reply(void) {
     reply(r, sizeof(r));
 }
 
+/* D5 08 CAPS (HELLO v2): the capability words past HELLO's full word 1, from word 2 on. Bit n of
+ * word 2 is capability 32 + n; none is defined yet, so word 2 is 0 on every build. */
+
+static uint32_t caps_word2(void) {
+    uint32_t caps = 0;
+    return caps;
+}
+
+static void caps_reply(void) {
+    uint8_t r[3 + 4 * HOST_LINK_CAPS_V2_WORDS] = {HOST_LINK_PANEL, 0x80 | HOST_LINK_PANEL_CAPS,
+                                                  HOST_LINK_CAPS_V2_WORDS};
+    BUILD_ASSERT(sizeof(r) <= 32, "D5 88 fits one report");
+    sys_put_le32(caps_word2(), &r[3]);
+    reply(r, sizeof(r));
+}
+
 /* D5 06 SCREENS (#160): the board's table (foxglove_screens[], e.g. screens_corne.c) as the PC
  * sees it. */
 
@@ -327,6 +343,9 @@ static void panel_command(const uint8_t *d) {
         hello_reply();
         break;
     }
+    case HOST_LINK_PANEL_CAPS:
+        caps_reply();
+        break;
     case PANEL_FILL: {
         k_spinlock_key_t key = k_spin_lock(&lock);
         memset(back, d[2] ? 0xff : 0x00, sizeof(back));
