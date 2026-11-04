@@ -456,7 +456,7 @@ mod tests {
             "Connection      USB",
             "Left battery    95%",
             "Right battery   61%",
-            "PANEL BUILD_INFO other 0x40000000",
+            "PANEL BUILD_INFO ART_STORE",
             "pomodoro 1.2.0",
             "obs-status 0.3.1 (off)",
             "Lights held by  zmk:1d50:615e: pomodoro (Normal)",
