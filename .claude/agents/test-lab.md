@@ -52,6 +52,8 @@ push or merge, and you don't invent harness features that don't exist.
 - `foxglove-lab` isn't on PATH. Build it with
   `powershell -File scripts\build-slot.ps1 cargo build --release -p foxglove-lab`, then run
   `target\release\foxglove-lab.exe`.
+- After a batch flash: `foxglove-lab health` (self-report plus the frames and effects cases;
+  `foxglove-lab lights --watchdog` for the frame timeout too; docs/test-lab/lights-cases.md).
 - Board: `foxglove-lab --allow-app status`, `build --half left|right`, `art-status`, `usb`, and
   `rgb-latency --writes 60 --hz 5` (app stopped; 250 ms is the fastest safe RGB_STATE read).
 - Suites: `foxglove-lab run --suite tests/hil/<resilience|art-keys|app-screens|positions|screens|ga>.toml

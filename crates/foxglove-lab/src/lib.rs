@@ -3,6 +3,7 @@ pub mod app_api;
 pub mod behaviors;
 pub mod health;
 pub mod host;
+pub mod host_lights;
 pub mod injections;
 pub mod lights;
 pub mod pc_hold;
