@@ -8,6 +8,7 @@
 //! - [`health`]: the keyboard's self-report (D7 13): parse, thresholds, rows (#705)
 //! - [`hello_v2`]: capability words past HELLO's full one (D5 08 CAPS, HELLO version 2)
 //! - [`lamps`]: a keyboard's LEDs by part, in SET_FRAME's order
+//! - [`lights_owner`]: who has the keyboard's lights, from the D7 8C / 8F owner byte (#491)
 //! - [`Transport`]: what the senders need from a connection; [`hid`] has the hidapi one
 //! - [`link`]: one shared owner of the connection, for apps where several parts talk to the board
 //! - [`panel`]: the 1-bit panel image and sending it
@@ -23,6 +24,7 @@ pub mod hello_v2;
 #[cfg(feature = "hid")]
 pub mod hid;
 pub mod lamps;
+pub mod lights_owner;
 pub mod link;
 pub mod panel;
 pub mod protocol;

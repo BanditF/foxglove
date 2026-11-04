@@ -33,6 +33,9 @@
 //!
 //!   Scenes that don't map (gradient, noise), and ripples or sweeps over a scene (#489), use
 //!   frames while they show. Copy diagnostics says which path the keyboard got.
+//! - Windows Dynamic Lighting comes first (#491): while the keyboard's owner byte says someone
+//!   else has its lights (a LampArray, `lights_owner`), the keyboard writer sends nothing
+//!   (`Yielding`); the report that frees them asks for the frame or effect again.
 //! - The case: the Lights worker keeps each board's colours from before the scene and puts them
 //!   back at its end; Identify still runs (the worker does one thing at a time, and frames that
 //!   wait meanwhile collapse to the newest); colours the user picks meanwhile are what comes back.
@@ -532,7 +535,11 @@ fn control(
             && super::led_map::effects_place_leds(super::devices::effect_lamps()),
         Ordering::Relaxed,
     );
-    let keyboard = KeyboardOut::spawn(Box::new(AppKeyboard::new(again.clone(), effects, clock)));
+    let keyboard = KeyboardOut::spawn(Box::new(Yielding {
+        lights: Box::new(AppKeyboard::new(again.clone(), effects, clock)),
+        owner: super::lights_owner::shared(),
+        again: again.clone(),
+    }));
     let frames = outputs.clone();
     let mailbox = keyboard.mailbox.clone();
     let scheduler = Scheduler::new(clock, MIN_INTERVAL, move |t| {
@@ -821,6 +828,51 @@ impl Drop for KeyboardOut {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+/// The keyboard's writes while someone else has its lights (#491): with the owner byte saying
+/// Windows Dynamic Lighting (or another owner) has them, frames and effects go nowhere; the
+/// report that frees them sets `again`, so the scene's next tick sends again. Hand-backs and
+/// the scene's end still go through.
+struct Yielding {
+    lights: Box<dyn KeyboardLights>,
+    owner: Arc<Mutex<super::lights_owner::State>>,
+    again: Arc<AtomicBool>,
+}
+
+impl Yielding {
+    /// True when this send steps aside; logs the start of each stretch.
+    fn steps_aside(&self) -> bool {
+        let mut o = super::lights_owner::lock(&self.owner);
+        let first = !o.now().yielding;
+        let aside = o.yield_to(&self.again);
+        if aside && first {
+            eprintln!(
+                "Foxglove: scene: the keyboard's lights are someone else's (owner {}); the scene steps aside until they're free",
+                o.owner().map_or(0, |w| w.byte())
+            );
+        }
+        aside
+    }
+}
+
+impl KeyboardLights for Yielding {
+    fn show(&mut self, f: &KeyboardFrame) {
+        if !self.steps_aside() {
+            self.lights.show(f);
+        }
+    }
+    fn effect(&mut self, e: &KeyboardEffect) {
+        if !self.steps_aside() {
+            self.lights.effect(e);
+        }
+    }
+    fn release_frames(&mut self) {
+        self.lights.release_frames();
+    }
+    fn give_back(&mut self) {
+        self.lights.give_back();
     }
 }
 
@@ -1164,6 +1216,8 @@ impl AppKeyboard {
         }
         self.device = Some(device.clone());
         self.tap(&kb);
+        // Its owner byte (#491): what the scene's own replies say feeds the yield rule.
+        super::lights_owner::attach(&kb);
         // The firmware may have changed under the same id (a flash): the scene follows it.
         // A map from "Find my LEDs" needs frames unless the firmware takes the LEDs' points
         // for its effects (EFFECT LAMPS, #550; led_map::effects_place_leds).
@@ -2036,6 +2090,46 @@ mod tests {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
         fn give_back(&mut self) {}
+    }
+
+    /// #491: a fake owner. Busy (owner 1 or 2) stops the scene's sends to the keyboard; the
+    /// release asks for them again and they resume. Hand-backs and the end still go through.
+    #[test]
+    fn a_busy_owner_stops_the_sends_and_the_release_resumes_them() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let owner = Arc::new(Mutex::new(super::super::lights_owner::State::default()));
+        let again = Arc::new(AtomicBool::new(false));
+        let mut y = Yielding {
+            lights: Box::new(Recorded(seen.clone())),
+            owner: owner.clone(),
+            again: again.clone(),
+        };
+        let say = |o: u8, event: bool| {
+            let mut r = [0u8; 32];
+            r[..7].copy_from_slice(&[0xD7, 0x8C, 0, o, 30, 1, u8::from(event)]);
+            owner.lock().unwrap().observe(&r);
+        };
+        y.show(&one(c(1)));
+        say(3, false);
+        for busy in [1, 2] {
+            say(busy, true);
+            y.show(&one(c(2)));
+            y.effect(&scan_effect(c(3)));
+            assert!(!again.load(Ordering::Relaxed), "owner {busy}: not yet");
+            say(0, true);
+            assert!(
+                again.swap(false, Ordering::Relaxed),
+                "owner {busy}: asked again"
+            );
+            y.show(&one(c(4)));
+        }
+        y.give_back();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [Some(c(1)), Some(c(4)), Some(c(4)), None],
+            "nothing while busy"
+        );
+        assert_eq!(owner.lock().unwrap().now().yields, 2);
     }
 
     #[test]

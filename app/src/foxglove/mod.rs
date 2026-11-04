@@ -68,6 +68,7 @@ pub mod led_map_confirm;
 pub mod led_map_ui;
 pub mod light_zones;
 pub mod lighting_leases;
+pub mod lights_owner;
 pub mod lights_page;
 pub mod link;
 pub mod live_feed;

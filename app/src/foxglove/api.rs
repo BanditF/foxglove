@@ -44,6 +44,8 @@ fn restore_on_connect() {
                 continue;
             }
             let device = e.device.to_string();
+            // The lights' owner is unknown until the keyboard says again (#491).
+            super::lights_owner::device_connected(&device);
             super::lighting_leases::with(|a| {
                 let shown = with_device(&device, |d| {
                     let light = d.lighting().ok_or_else(unsupported)?;
