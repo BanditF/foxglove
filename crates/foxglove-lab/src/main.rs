@@ -65,6 +65,25 @@ enum Command {
         /// Judge a recording instead of the keyboard (no device is opened).
         #[arg(long)]
         replay: Option<PathBuf>,
+        /// Leave out the frames and effects cases (#492) that a direct read runs after the
+        /// self-report.
+        #[arg(long)]
+        no_lights: bool,
+    },
+    /// The PC's lights end to end (#492): SET_FRAME (D7 0C, HELLO bit 14) and SET_EFFECT (D7 0F,
+    /// bit 19) cases, the replies' status and owner and the LEDs read back (D7 83, bit 24), the
+    /// lights handed back at the end. `health` runs them too, without the watchdog. Exit 0 pass,
+    /// 1 fail, 2 blocked (a bit missing, no keyboard, the app running).
+    Lights {
+        /// One JSON object instead of lines.
+        #[arg(long)]
+        json: bool,
+        /// Also wait out the keyboard's frame timeout (30 s) for its hand-back event.
+        #[arg(long)]
+        watchdog: bool,
+        /// Frames sent one in flight in the stream case (0 skips it).
+        #[arg(long, default_value_t = 30)]
+        stream: u16,
     },
     /// How each half shows up on USB (no keyboard link needed).
     Usb,
@@ -579,9 +598,10 @@ fn main() -> Result<std::process::ExitCode> {
         json,
         record,
         replay,
+        no_lights,
     } = &cli.command
     {
-        use foxglove_lab::health as lab_health;
+        use foxglove_lab::{health as lab_health, host_lights};
         // The probe guard is dropped at once, so the direct read below can take its own.
         let app_running = replay.is_none() && platform::guard(false).is_err();
         let out = match (lab_health::source(replay.is_some(), app_running), replay) {
@@ -591,7 +611,14 @@ fn main() -> Result<std::process::ExitCode> {
             }
             // The app holds the keyboard: ask it (health.read, API 1.11).
             (lab_health::Source::App, _) => {
-                lab_health::from_app(foxglove_lab::app_api::HEALTH_WAIT)
+                let mut out = lab_health::from_app(foxglove_lab::app_api::HEALTH_WAIT);
+                if !no_lights {
+                    host_lights::Cases::blocked_by(
+                        "frames and effects not tested: the app holds the keyboard (quit it, then foxglove-lab lights)",
+                    )
+                    .fold_into(&mut out);
+                }
+                out
             }
             _ => {
                 let _guard = platform::guard(cli.allow_app)?;
@@ -617,6 +644,11 @@ fn main() -> Result<std::process::ExitCode> {
                         out.rows.push(foxglove_link::hello_v2::row(v2.as_ref()));
                         out.rows
                             .push(foxglove_link::hello_v2::caps_row(c.hello.as_ref()));
+                        // The PC's lights (#492), on the link itself: the recording keeps D7 93 only.
+                        if !no_lights {
+                            host_lights::run(&link, caps, None, &host_lights::Options::QUICK)
+                                .fold_into(&mut out);
+                        }
                         out
                     }
                 }
@@ -630,6 +662,55 @@ fn main() -> Result<std::process::ExitCode> {
             }
         }
         return Ok(std::process::ExitCode::from(out.code()));
+    }
+    if let Command::Lights {
+        json,
+        watchdog,
+        stream,
+    } = &cli.command
+    {
+        use foxglove_lab::host_lights::{self, Cases, Events, Options};
+        let opts = Options {
+            stream: *stream,
+            watchdog: *watchdog,
+            ..Options::QUICK
+        };
+        // Never beside the app, --allow-app or not: its own frames and effects would take the
+        // lights in the middle of a case.
+        let cases = match platform::guard(false) {
+            Err(_) => Cases::blocked_by(
+                "the app holds the keyboard: quit it (tray, Quit), then run again",
+            ),
+            Ok(_guard) => {
+                let _lab = platform::lab_lock(Duration::from_secs(120))?;
+                match connect(cli.product.clone()).and_then(|l| {
+                    let c = l.wait_connected(Duration::from_secs(10))?;
+                    Ok((l, c))
+                }) {
+                    Err(e) => Cases::blocked_by(format!("no keyboard: {e:#}")),
+                    Ok((link, c)) => {
+                        let caps = c.hello.map_or(0, |h| h.capabilities);
+                        // The keyboard's own reports (the frames' hand-back event), for the
+                        // watchdog; on the link's reader, only enqueue.
+                        let (tx, rx) = std::sync::mpsc::channel();
+                        let _reports = link.subscribe_reports(move |_, r| {
+                            let _ = tx.send(*r);
+                        });
+                        let wait = move |d: Duration| rx.recv_timeout(d).ok();
+                        let events: Events<'_> = &wait;
+                        host_lights::run(&link, caps, Some(events), &opts)
+                    }
+                }
+            }
+        };
+        if *json {
+            println!("{}", cases.json());
+        } else {
+            for line in cases.lines() {
+                println!("{line}");
+            }
+        }
+        return Ok(std::process::ExitCode::from(cases.code()));
     }
     let suite_name = if let Command::Run { suite, .. } = &cli.command {
         suite.clone()

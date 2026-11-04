@@ -30,6 +30,14 @@ left unreadable, the app's API out of reach). While the app runs it asks the app
 (API 1.11) instead and never opens the link, so it needs no `--allow-app`. `--record` keeps the
 replies of a direct read; `--replay` judges such a file offline (`tests/data/health-recorded.hex`
 is one, read by `tests/offline.rs`).
+A direct read then runs the frames and effects cases (#492, `lights` rows; `--no-lights` skips
+them): a missing HELLO bit there is a warning, a failed case fails health.
+
+`lights [--watchdog] [--stream N] [--json]` (#492) runs those cases alone: SET_FRAME (D7 0C) and
+SET_EFFECT (D7 0F) replies' status and owner, the LEDs read back (D7 83), the lights handed back.
+Exit 0 pass, 1 fail, 2 blocked (a HELLO bit missing, no keyboard, the app running). `--watchdog`
+also waits out the frame timeout (30 s) for the hand-back event. Cases:
+docs/test-lab/lights-cases.md.
 
 `--product FILTER`, `--allow-app`, `--keymap PATH` and `--studio-port COMn` apply to all commands.
 `--only CASE` selects names containing CASE; an empty match is an error.

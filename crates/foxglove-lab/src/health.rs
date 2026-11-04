@@ -41,18 +41,7 @@ impl Outcome {
 
     /// The printed lines: one per row (PASS / WARN / FAIL, the group, the line), then the result.
     pub fn lines(&self) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .rows
-            .iter()
-            .map(|r| {
-                let word = match r.level {
-                    Level::Ok => "PASS",
-                    Level::Warn => "WARN",
-                    Level::Fail => "FAIL",
-                };
-                format!("{word} {:<10} {}", r.subsystem, r.line())
-            })
-            .collect();
+        let mut out: Vec<String> = self.rows.iter().map(row_line).collect();
         let fails = self.rows.iter().filter(|r| r.level == Level::Fail).count();
         let warns = self.rows.iter().filter(|r| r.level == Level::Warn).count();
         out.push(match (&self.blocked, self.code()) {
@@ -100,6 +89,16 @@ pub fn source(replay: bool, app_running: bool) -> Source {
     } else {
         Source::Direct
     }
+}
+
+/// One printed row: PASS / WARN / FAIL, the group, the line ("FAIL screens    Right screen: ...").
+pub fn row_line(r: &HealthRow) -> String {
+    let word = match r.level {
+        Level::Ok => "PASS",
+        Level::Warn => "WARN",
+        Level::Fail => "FAIL",
+    };
+    format!("{word} {:<10} {}", r.subsystem, r.line())
 }
 
 /// Judges one read of both halves. A left that can't be read (or firmware without the report)
