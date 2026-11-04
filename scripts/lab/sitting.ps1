@@ -99,7 +99,9 @@ try {
             python scripts/lab/game_flicker.py --monitor $Monitor --out (Join-Path $Out 'game-flicker')
         }
         Step 'HA2' 'the game, from the logs: game mode kept, no dropped -control, reloads' {
-            python scripts/lab/wallpaper_check.py game --since $since
+            # No game (HA5 BLOCKED): nothing for Foxglove to tell the wallpaper, so HA2 is BLOCKED too.
+            $noGame = if ("$($results['HA5'])" -like 'BLOCKED*') { @('--game-blocked') } else { @() }
+            python scripts/lab/wallpaper_check.py game --since $since @noGame
         }
         Step 'HA2b' 'Diagnostics off, GAME layer off' {
             python scripts/lab/wallpaper_check.py debug off --monitor $Monitor

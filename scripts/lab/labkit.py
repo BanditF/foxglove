@@ -295,6 +295,11 @@ class Windows:
     def visible(self, hwnd):
         return bool(self.u.IsWindowVisible(hwnd))
 
+    def enabled(self, hwnd):
+        """IsWindowEnabled: WindowFromPoint skips a disabled window (as it skips a hidden one), so a
+        hit test that passes the overlay by can mean a disabled overlay, not a wrong style."""
+        return bool(self.u.IsWindowEnabled(ctypes.c_void_p(hwnd)))
+
     def region_box(self, hwnd):
         """The window region's bounding box in screen pixels (SetWindowRgn, #405), or None when
         the window has no region (the whole window hit-tests)."""
@@ -417,6 +422,22 @@ def same_box(a, b, tolerance=2):
     """Two [left, top, right, bottom] boxes equal within `tolerance` pixels (the panel's region is
     its rect rounded outward, tray_panel::region)."""
     return a is not None and b is not None and all(abs(x - y) <= tolerance for x, y in zip(a, b))
+
+
+# The art re-apply line (reassert::line, art_service.rs): "Foxglove: re-applied the art on <the
+# art screen's name> (<trigger>)". The screen's name comes from the board profile (#695 changed
+# "the right screen's art" to it), so only the stable start and the trigger are matched.
+ART_REAPPLY = 'Foxglove: re-applied the art'
+
+
+def is_art_reapply(line, trigger):
+    """Whether `line` is the art re-apply line for `trigger` (e.g. 'display change')."""
+    return ART_REAPPLY in line and line.rstrip().endswith(f'({trigger})')
+
+
+def art_reapply_lines(cfg, trigger):
+    """The test app's art re-apply lines for `trigger`."""
+    return [l for l in log_lines(cfg, ART_REAPPLY) if is_art_reapply(l, trigger)]
 
 
 def centre(box):

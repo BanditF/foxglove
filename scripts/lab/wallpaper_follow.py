@@ -14,6 +14,10 @@ Foxglove follows and the log must say "Foxglove accent: applied h/s":
 Each expectation prints its source. The temp store has no [calibration], so RGB_STATE shows the
 hue/sat Foxglove asked for; on the user's own app it shows them after the keyboard's calibration
 (gamma 2.5 there: 42/97 reads about 23/100). The lights are put back after.
+The temp store gets the user's remembered keyboard ([connection.last]) so the test app's overlay
+connects and reads the keymap: after a flash the saved keymap is from the old build, the app (#633)
+won't use its ids, and with no live read the lighting command stays unknown (the 11/04 batch:
+lighting.set code 4, "keymap not read", no accent applied).
 
 The case only follows with its "Match keyboard" on (off in the user's store), so it isn't checked
 here; whether the colours look like the wallpaper is the sitting's one eyes step (H5).
@@ -22,7 +26,8 @@ here; whether the colours look like the wallpaper is the sitting's one eyes step
 """
 import argparse, json, os, re, tempfile, time
 from pathlib import Path
-from labkit import App, Checks, TARGET, log_lines, require_app_ok, restore_lights, rgb, temp_config, tool_arg, wait
+from labkit import (App, Checks, TARGET, log_lines, require_app_ok, restore_lights, rgb, temp_config, tool_arg,
+                    users_keyboard, wait)
 from wallpaper_check import STEAM_WE, colour, expected, manifest_accent, picked_accent, windows_accent
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -75,7 +80,9 @@ print(f"  (the colour picked in Windows' Settings, DWM AccentColor, which Foxglo
 
 over = Path(tempfile.mkdtemp(prefix='foxglove-wallpaper-hook-')) / 'wallpaper.txt'
 over.write_text(a_id, encoding='utf-8')
-cfg = temp_config('foxglove-wallpaper-follow-', '[lighting]\nfollow_wallpaper = true\n')
+KEYBOARD = users_keyboard()
+print('remembered keyboard for the test app:', KEYBOARD.strip().replace('\n', '; ') or 'none', flush=True)
+cfg = temp_config('foxglove-wallpaper-follow-', '[lighting]\nfollow_wallpaper = true\n' + KEYBOARD)
 original = rgb(args.lab, dict(os.environ))
 with App(args.app, cfg, env={'FOXGLOVE_WALLPAPER_OVERRIDE': str(over)}) as app:
     read = lambda: rgb(args.lab, app.env)
