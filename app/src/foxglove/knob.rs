@@ -29,6 +29,7 @@ use foxglove_link::Transport;
 use foxglove_panel::sessions::{Change, Sessions};
 
 use super::knob_health::{self, LastLevel};
+use super::knob_popup::{self, Card};
 
 /// The app the knob points at.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -55,6 +56,11 @@ pub struct Cycle {
     pub last_level: Option<LastLevel>,
     /// Why the knob last went back to master on its own.
     pub last_back: Option<String>,
+    /// The target's level and mute as last read or set (the left screen's line).
+    pub level: Option<(u8, bool)>,
+    /// The popup the last event calls for, and for how long (`knob_popup.rs`); the service
+    /// takes it.
+    pub popup: Option<(Card, Duration)>,
 }
 
 impl Cycle {
@@ -70,6 +76,9 @@ impl Cycle {
     /// Sets the target; what to tell the keyboard (only a change between master and an app).
     fn set(&mut self, target: Option<App>) -> Tell {
         let was = self.wire();
+        if self.target.as_ref().map(|a| &a.id) != target.as_ref().map(|a| &a.id) {
+            self.level = None;
+        }
         self.target = target;
         if self.wire() == was {
             Tell::Nothing
@@ -88,14 +97,11 @@ impl Cycle {
                 return Tell::Nothing;
             }
         };
-        let next = match &self.target {
-            None => list.first(),
-            Some(t) => match list.iter().position(|s| s.id == t.id) {
-                Some(i) => list.get(i + 1),
-                None => list.first(),
-            },
+        let at = match &self.target {
+            None => 0,
+            Some(t) => list.iter().position(|s| s.id == t.id).map_or(0, |i| i + 1),
         };
-        let next = next.map(|s| App {
+        let next = list.get(at).map(|s| App {
             id: s.id.clone(),
             name: s.name.clone(),
         });
@@ -104,7 +110,53 @@ impl Cycle {
             next.as_ref()
                 .map_or("master".to_string(), |a| a.name.clone())
         );
-        self.set(next)
+        let was_app = self.target.is_some();
+        let tell = self.set(next);
+        self.popup = Some(match &self.target {
+            Some(app) => {
+                self.level = sessions.level(&app.id).ok();
+                (
+                    Card::App {
+                        name: app.name.clone(),
+                        place: Some((at + 1, list.len())),
+                        level: self.level.map(|l| l.0),
+                        muted: self.level.is_some_and(|l| l.1),
+                    },
+                    knob_popup::CLICK,
+                )
+            }
+            None => (
+                Card::Master {
+                    level: sessions.master().ok().map(|m| m.0),
+                    note: if was_app {
+                        "back to master"
+                    } else {
+                        "no app playing sound"
+                    },
+                },
+                knob_popup::MASTER,
+            ),
+        });
+        tell
+    }
+
+    /// The card for the target now (after a turn or a mute).
+    fn app_card(&mut self, sessions: &dyn Sessions, time: Duration) {
+        let Some(app) = &self.target else {
+            return;
+        };
+        if let Ok(l) = sessions.level(&app.id) {
+            self.level = Some(l);
+        }
+        self.popup = Some((
+            Card::App {
+                name: app.name.clone(),
+                place: None,
+                level: self.level.map(|l| l.0),
+                muted: self.level.is_some_and(|l| l.1),
+            },
+            time,
+        ));
     }
 
     /// Detents (+ clockwise) while an app is the target: its level, 2 % each.
@@ -125,7 +177,11 @@ impl Cycle {
                 }
             }
         };
+        let ok = matches!(last, LastLevel::Set { .. });
         self.last_level = Some(last);
+        if ok {
+            self.app_card(sessions, knob_popup::TURN);
+        }
     }
 
     /// A double click: mutes or unmutes the app. On master the keyboard tapped the system mute.
@@ -143,11 +199,22 @@ impl Cycle {
                 why,
             },
         };
+        let ok = matches!(last, LastLevel::Muted { .. });
         self.last_level = Some(last);
+        if ok {
+            self.app_card(sessions, knob_popup::MUTE);
+        }
     }
 
     /// A hold: back to master.
-    pub fn hold(&mut self) -> Tell {
+    pub fn hold(&mut self, sessions: &dyn Sessions) -> Tell {
+        self.popup = Some((
+            Card::Master {
+                level: sessions.master().ok().map(|m| m.0),
+                note: "held: master",
+            },
+            knob_popup::MASTER,
+        ));
         self.set(None)
     }
 
@@ -158,6 +225,12 @@ impl Cycle {
         };
         let why = format!("{}'s sound ended", app.name);
         eprintln!("Foxglove: knob: {why}; back to master");
+        self.popup = Some((
+            Card::Stopped {
+                name: app.name.clone(),
+            },
+            knob_popup::STOPPED,
+        ));
         self.last_back = Some(why);
         self.set(None)
     }
@@ -180,12 +253,28 @@ impl Cycle {
                 self.double(sessions);
                 Tell::Nothing
             }
-            EventKind::Hold => self.hold(),
+            EventKind::Hold => self.hold(sessions),
             EventKind::HandedBack => {
                 self.dropped();
                 Tell::Nothing
             }
         }
+    }
+
+    /// Master's level or mute changed while the knob is held on master: Windows shows its own
+    /// flyout, and Foxglove only the tab on top of it.
+    pub fn master_changed(&mut self, held: bool) {
+        if held && self.target.is_none() {
+            self.popup = Some((Card::MasterTab, knob_popup::TAB));
+        }
+    }
+
+    /// What the left screen's volume line says: the target's name, level and mute (`None`:
+    /// master, the plain volume bar).
+    pub fn panel_line(&self) -> Option<(String, u8, bool)> {
+        let app = self.target.as_ref()?;
+        let (level, muted) = self.level.unwrap_or((0, false));
+        Some((app.name.clone(), level, muted))
     }
 
     /// Puts what this knows into the health view.
@@ -409,6 +498,9 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
                 }
             }
             Work::Sessions(Change::Changed) => {}
+            Work::Sessions(Change::Master) => {
+                cycle.master_changed(current.is_some() && knob_health::now().held);
+            }
             Work::Pause => {
                 let Some(link) = current.as_ref() else {
                     continue;
@@ -418,6 +510,32 @@ fn run(rx: mpsc::Receiver<Work>, tx: mpsc::Sender<Work>, sessions: &dyn Sessions
             }
         }
         cycle.note_health();
+        if let Some((card, time)) = cycle.popup.take() {
+            if !super::pause::paused() {
+                knob_popup::show(card, time);
+            }
+        }
+        publish_panel(cycle.panel_line());
+    }
+}
+
+/// The left screen's volume line: the knob's target (`None`: master).
+static PANEL: Mutex<Option<(String, u8, bool)>> = Mutex::new(None);
+
+/// What the left screen's volume line names now (`screens.rs` reads it each frame).
+pub fn panel_line() -> Option<(String, u8, bool)> {
+    PANEL.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn publish_panel(line: Option<(String, u8, bool)>) {
+    let changed = {
+        let mut p = PANEL.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = *p != line;
+        *p = line;
+        changed
+    };
+    if changed {
+        super::screens::knob_changed();
     }
 }
 
@@ -497,6 +615,125 @@ mod tests {
             s.3 = !s.3;
             Ok(s.3)
         }
+
+        fn level(&self, id: &str) -> Result<(u8, bool), String> {
+            let list = self.list.lock().unwrap();
+            let s = list
+                .iter()
+                .find(|s| s.0 == id)
+                .ok_or_else(|| "the app's sound ended".to_string())?;
+            Ok((s.2 as u8, s.3))
+        }
+
+        fn master(&self) -> Result<(u8, bool), String> {
+            Ok((64, false))
+        }
+    }
+
+    fn popup(c: &mut Cycle) -> Option<(Card, Duration)> {
+        c.popup.take()
+    }
+
+    #[test]
+    fn each_moment_shows_the_storyboards_card() {
+        // #719 option A: what shows, and for how long.
+        let s = FakeSessions::with(&[
+            ("a", "Spotify", 40),
+            ("b", "Discord", 80),
+            ("c", "Game", 60),
+        ]);
+        let mut c = Cycle::default();
+        // 1. A click: the app, its place in the cycle and its level, 2 s.
+        c.event(&s, EventKind::Click);
+        assert_eq!(
+            popup(&mut c),
+            Some((
+                Card::App {
+                    name: "Spotify".into(),
+                    place: Some((1, 3)),
+                    level: Some(40),
+                    muted: false
+                },
+                knob_popup::CLICK
+            ))
+        );
+        // 2. A turn: the card with the new level, up until 1.5 s after the last detent.
+        c.event(&s, EventKind::Turn(3));
+        assert_eq!(
+            popup(&mut c),
+            Some((
+                Card::App {
+                    name: "Spotify".into(),
+                    place: None,
+                    level: Some(46),
+                    muted: false
+                },
+                knob_popup::TURN
+            ))
+        );
+        assert_eq!(c.panel_line(), Some(("Spotify".into(), 46, false)));
+        // 5. A double click: muted, 2 s.
+        c.event(&s, EventKind::Double);
+        let (card, time) = popup(&mut c).unwrap();
+        assert!(matches!(card, Card::App { muted: true, .. }));
+        assert_eq!(time, knob_popup::MUTE);
+        assert_eq!(c.panel_line(), Some(("Spotify".into(), 46, true)));
+        // 3. Past the last app: the master card, back to master, 2 s.
+        c.event(&s, EventKind::Click);
+        c.event(&s, EventKind::Click);
+        popup(&mut c);
+        c.event(&s, EventKind::Click);
+        assert_eq!(
+            popup(&mut c),
+            Some((
+                Card::Master {
+                    level: Some(64),
+                    note: "back to master"
+                },
+                knob_popup::MASTER
+            ))
+        );
+        assert_eq!(c.panel_line(), None, "master: the plain volume bar");
+        // 4. A hold: the master card, 2 s.
+        c.event(&s, EventKind::Click);
+        c.event(&s, EventKind::Hold);
+        assert_eq!(
+            popup(&mut c),
+            Some((
+                Card::Master {
+                    level: Some(64),
+                    note: "held: master"
+                },
+                knob_popup::MASTER
+            ))
+        );
+        // 6. The target's sound ends: "<app> stopped · knob: master", 3 s.
+        c.event(&s, EventKind::Click);
+        popup(&mut c);
+        c.gone("a");
+        assert_eq!(
+            popup(&mut c),
+            Some((
+                Card::Stopped {
+                    name: "Spotify".into()
+                },
+                knob_popup::STOPPED
+            ))
+        );
+        // 7. Master's level changes while held on master: only the tab over Windows' flyout;
+        // not held, or on an app, nothing.
+        c.master_changed(true);
+        assert_eq!(popup(&mut c), Some((Card::MasterTab, knob_popup::TAB)));
+        c.master_changed(false);
+        assert_eq!(popup(&mut c), None);
+        c.event(&s, EventKind::Click);
+        popup(&mut c);
+        c.master_changed(true);
+        assert_eq!(
+            popup(&mut c),
+            None,
+            "never a second popup for an app's own turns"
+        );
     }
 
     fn target(c: &Cycle) -> Option<&str> {

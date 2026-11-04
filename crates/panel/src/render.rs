@@ -29,6 +29,9 @@ pub struct View {
     pub artist: Option<String>,
     pub playing: bool,
     pub hint: Option<String>,
+    /// The knob's target (#719): an app's name, level and mute; the volume line names it
+    /// instead of master's bar. `None`: master.
+    pub knob: Option<(String, u8, bool)>,
 }
 
 fn text_width(font: &MonoFont, s: &str) -> i32 {
@@ -142,8 +145,15 @@ pub fn draw(p: &mut Panel, v: &View, tick: u32) {
         draw_clock_with_mark(p, v);
     }
 
-    // Volume: speaker and a bar, crossed out when muted
-    if let Some((vol, muted)) = v.volume {
+    // Volume: the knob's app by name (#719), else master's speaker and bar, crossed out muted
+    if let Some((name, level, muted)) = &v.knob {
+        let words = if *muted {
+            format!("{name} MUTE")
+        } else {
+            format!("{name} {level}")
+        };
+        band_text(p, &FONT_5X8, &words, 19, on, 0);
+    } else if let Some((vol, muted)) = v.volume {
         let y = 20;
         Rectangle::new(Point::new(0, y + 2), Size::new(2, 3))
             .into_styled(fill)
@@ -599,6 +609,34 @@ mod tests {
         v.hint = Some("A hint that needs to scroll".into());
         assert!(animated(&v, 64));
         assert!(!animated(&v, 256));
+    }
+
+    #[test]
+    fn the_volume_line_names_the_knobs_app() {
+        // #719: on an app the line is its name and level; on master the speaker and bar.
+        let row = |v: &View| {
+            let mut p = Panel::new(64, 52);
+            draw(&mut p, v, 0);
+            p.bits[19 * p.stride..28 * p.stride]
+                .iter()
+                .map(|b| b.count_ones())
+                .sum::<u32>()
+        };
+        let master = View {
+            volume: Some((40, false)),
+            ..View::default()
+        };
+        let app = View {
+            knob: Some(("Spotify".into(), 42, false)),
+            ..master.clone()
+        };
+        let muted = View {
+            knob: Some(("Spotify".into(), 42, true)),
+            ..master.clone()
+        };
+        assert!(row(&app) > 0);
+        assert_ne!(row(&app), row(&master));
+        assert_ne!(row(&app), row(&muted));
     }
 
     #[test]

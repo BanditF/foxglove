@@ -365,6 +365,11 @@ fn current_art_card(now: Instant) -> Option<(render::ArtCard, Instant)> {
     c.clone()
 }
 
+/// The knob's target or its level changed (#719): the left screen's volume line names it.
+pub fn knob_changed() {
+    wake();
+}
+
 fn wake() {
     if let Some(tx) = EVENTS.get().and_then(|s| s.lock().ok()) {
         if let Some(tx) = tx.as_ref() {
@@ -713,6 +718,7 @@ fn run() {
             render::draw_stats(&mut d.panel, &l.stats);
             animated = false;
         } else {
+            view.knob = super::knob::panel_line();
             render::draw(&mut d.panel, &view, tick);
         }
         let clock_at = load.as_ref().map_or(clock_at, |l| clock_at.min(l.next));

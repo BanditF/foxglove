@@ -29,6 +29,8 @@ pub enum Change {
     Changed,
     /// A session expired or was disconnected (its app closed, its device went): `id`.
     Gone(String),
+    /// Master's level or mute changed (the volume keys, the knob on master; #719's tab).
+    Master,
 }
 
 /// What the knob asks of Windows' sessions. Implemented by [`start`]'s handle and by tests.
@@ -39,6 +41,10 @@ pub trait Sessions: Send + Sync {
     fn step(&self, id: &str, steps: i32) -> Result<u8, String>;
     /// Mutes or unmutes session `id`; whether it is muted now.
     fn toggle_mute(&self, id: &str) -> Result<bool, String>;
+    /// Session `id`'s level in percent, and whether it is muted.
+    fn level(&self, id: &str) -> Result<(u8, bool), String>;
+    /// Master's (the default output device's) level in percent, and whether it is muted.
+    fn master(&self) -> Result<(u8, bool), String>;
 }
 
 /// One detent: 2 %, the step Windows' own volume keys take.
@@ -86,6 +92,9 @@ mod imp {
 
     use windows::core::{implement, Interface, Ref, Result, BOOL, GUID, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, MAX_PATH, PROPERTYKEY, S_OK};
+    use windows::Win32::Media::Audio::Endpoints::{
+        IAudioEndpointVolume, IAudioEndpointVolumeCallback, IAudioEndpointVolumeCallback_Impl,
+    };
     use windows::Win32::Media::Audio::*;
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_MULTITHREADED,
@@ -111,6 +120,9 @@ mod imp {
         Active(SyncSender<std::result::Result<Vec<Session>, String>>),
         Step(String, i32, SyncSender<std::result::Result<u8, String>>),
         Mute(String, SyncSender<std::result::Result<bool, String>>),
+        Level(String, SyncSender<std::result::Result<(u8, bool), String>>),
+        MasterLevel(SyncSender<std::result::Result<(u8, bool), String>>),
+        Master,
         Created(Control),
         State(String, AudioSessionState),
         Disconnected(String),
@@ -161,6 +173,15 @@ mod imp {
         }
         fn OnSessionDisconnected(&self, _: AudioSessionDisconnectReason) -> Result<()> {
             let _ = self.tx.send(Req::Disconnected(self.id.clone()));
+            Ok(())
+        }
+    }
+
+    #[implement(IAudioEndpointVolumeCallback)]
+    struct MasterChanged(Sender<Req>);
+    impl IAudioEndpointVolumeCallback_Impl for MasterChanged_Impl {
+        fn OnNotify(&self, _: *mut AUDIO_VOLUME_NOTIFICATION_DATA) -> Result<()> {
+            let _ = self.0.send(Req::Master);
             Ok(())
         }
     }
@@ -224,6 +245,15 @@ mod imp {
         }
     }
 
+    /// Master's level in percent and its mute.
+    fn master_level(e: &IAudioEndpointVolume) -> Result<(u8, bool)> {
+        // SAFETY: COM calls on the sessions' MTA thread.
+        unsafe {
+            let level = e.GetMasterVolumeLevelScalar()?;
+            Ok(((level * 100.0).round() as u8, e.GetMute()?.as_bool()))
+        }
+    }
+
     struct Tracked {
         id: String,
         control: IAudioSessionControl,
@@ -266,6 +296,8 @@ mod imp {
         devices_client: IMMNotificationClient,
         manager: Option<IAudioSessionManager2>,
         created: IAudioSessionNotification,
+        endpoint: Option<IAudioEndpointVolume>,
+        master_changed: IAudioEndpointVolumeCallback,
         sessions: Vec<Tracked>,
     }
 
@@ -278,11 +310,20 @@ mod imp {
                 return;
             };
             // SAFETY: COM calls on this MTA thread.
-            let manager = unsafe {
-                devices
-                    .GetDefaultAudioEndpoint(eRender, eConsole)
-                    .and_then(|d| d.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None))
-            };
+            let device = unsafe { devices.GetDefaultAudioEndpoint(eRender, eConsole) };
+            // Master's level: its changes come as events (the knob's tab on master).
+            if let Ok(d) = &device {
+                // SAFETY: as above; unregistered in `close`.
+                unsafe {
+                    if let Ok(e) = d.Activate::<IAudioEndpointVolume>(CLSCTX_ALL, None) {
+                        let _ = e.RegisterControlChangeNotify(&self.master_changed);
+                        self.endpoint = Some(e);
+                    }
+                }
+            }
+            // SAFETY: as above.
+            let manager = device
+                .and_then(|d| unsafe { d.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) });
             let manager = match manager {
                 Ok(m) => m,
                 Err(e) => {
@@ -308,6 +349,12 @@ mod imp {
         }
 
         fn close(&mut self) {
+            if let Some(e) = self.endpoint.take() {
+                // SAFETY: COM call on this MTA thread, with the object registered in `open`.
+                unsafe {
+                    let _ = e.UnregisterControlChangeNotify(&self.master_changed);
+                }
+            }
             if let Some(m) = self.manager.take() {
                 // SAFETY: COM call on this MTA thread, with the object registered above.
                 unsafe {
@@ -401,6 +448,25 @@ mod imp {
                     });
                     let _ = reply.send(r);
                 }
+                Req::Level(id, reply) => {
+                    let r = self.find(&id).and_then(|t| t.volume()).and_then(|v| {
+                        // SAFETY: COM calls on this MTA thread.
+                        unsafe {
+                            let level = v.GetMasterVolume().map_err(|e| e.to_string())?;
+                            let muted = v.GetMute().map_err(|e| e.to_string())?.as_bool();
+                            Ok(((level * 100.0).round() as u8, muted))
+                        }
+                    });
+                    let _ = reply.send(r);
+                }
+                Req::MasterLevel(reply) => {
+                    let r = match &self.endpoint {
+                        None => Err("no output device".to_string()),
+                        Some(e) => master_level(e).map_err(|e| e.to_string()),
+                    };
+                    let _ = reply.send(r);
+                }
+                Req::Master => (self.notify)(Change::Master),
                 Req::Created(Control(c)) => {
                     self.track(c);
                     (self.notify)(Change::Changed);
@@ -455,6 +521,12 @@ mod imp {
         fn toggle_mute(&self, id: &str) -> std::result::Result<bool, String> {
             self.ask(|r| Req::Mute(id.to_string(), r))
         }
+        fn level(&self, id: &str) -> std::result::Result<(u8, bool), String> {
+            self.ask(|r| Req::Level(id.to_string(), r))
+        }
+        fn master(&self) -> std::result::Result<(u8, bool), String> {
+            self.ask(Req::MasterLevel)
+        }
     }
 
     /// Starts following Windows' sessions; `notify` hears each change (on the sessions' thread:
@@ -485,7 +557,9 @@ mod imp {
                     devices,
                     devices_client,
                     manager: None,
-                    created: Created(worker_tx).into(),
+                    created: Created(worker_tx.clone()).into(),
+                    endpoint: None,
+                    master_changed: MasterChanged(worker_tx).into(),
                     sessions: Vec::new(),
                 };
                 w.open();
