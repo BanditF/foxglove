@@ -5,6 +5,8 @@
  * config/eyelash_corne.conf) times. Faked here: ZMK's underglow (each on/off prints "LEDs"), the
  * cable (pc_state_read_usb), and the relay to the right (prints what the right would be sent).
  * The driver plays the app; simulated time runs unslowed, and the run ends at ZMK's deep sleep.
+ * The rgb-idle-race case (CONFIG_FOXGLOVE_SIM_RGB_IDLE_RACE) runs its own driver on the same
+ * fakes: a key, then away before the key's check (rgb_idle_race_sim_driver, at the end).
  * SPDX-License-Identifier: MIT
  */
 
@@ -18,6 +20,7 @@
 #include <raw_hid/events.h>
 #include <zmk/activity.h>
 #include <zmk/event_manager.h>
+#include <zmk/events/position_state_changed.h>
 #include <zmk/rgb_underglow.h>
 
 #include "activity_relay.h"
@@ -223,6 +226,13 @@ static void user_rgb(bool on) {
     k_msleep(200);
 }
 
+// The same, with away (or anything else) free to come before the check.
+static void user_rgb_now(bool on) {
+    printk("pcstate: -- the user turns the underglow %s\n", on ? "on" : "off");
+    leds(on);
+    rgb_idle_check();
+}
+
 static void rgb_state(void) {
     const uint8_t d[] = {0xD7, 0x03};
     asked_83 = true;
@@ -343,4 +353,64 @@ void pc_state_sim_driver(void) {
     state("29 min 50 s after the last activity");
     // ZMK sleeps at 30 min: SIM_SLEEP ends the run (module/stubs.c).
     k_sleep(K_FOREVER);
+}
+
+/* The rgb-idle-race case (tests/zmk-sim/rgb-idle-race): a key, then away before the key's check.
+ * Only its own "race:" lines are pinned; what this half shows is read directly. */
+
+static void race_note(const char *what) { printk("race: -- %s\n", what); }
+
+static void race_state(const char *when) {
+    struct rgb_shown_wire s;
+    rgb_idle_shown(&s);
+    printk("race: %s: LEDs %s; shown lit %d, wanted %d, idle %d\n", when, zmk_on ? "on" : "off",
+           !!(s.flags & RGB_SHOWN_LIT), !!(s.flags & RGB_SHOWN_WANTED),
+           !!(s.flags & RGB_SHOWN_IDLE));
+}
+
+// A real key through ZMK's keymap (position 1, Q on the base layer): rgb_idle.c schedules its
+// check 50 ms after each press and release, as after any binding.
+static void key_switch(bool down) {
+    raise_zmk_position_state_changed((struct zmk_position_state_changed){
+        .source = ZMK_POSITION_STATE_CHANGE_SOURCE_LOCAL,
+        .state = down,
+        .position = 1,
+        .timestamp = k_uptime_get()});
+}
+
+void rgb_idle_race_sim_driver(void) {
+    k_msleep(1000);
+    cable(true, true);
+    BACK(LEASE);
+    race_state("the PC awake, on USB");
+
+    race_note("a key (the L of Win+L), then the PC locks: away lands before the key's 50 ms check");
+    key_switch(true);
+    k_msleep(10);
+    key_switch(false);
+    AWAY(); // at once; the check runs during its 200 ms
+    race_state("away, after the key's check");
+    k_msleep(11000);
+    race_state("away, past the 10 s save delay");
+
+    race_note("the PC unlocks: back with the wake lights it again");
+    BACK(LEASE);
+    race_state("back");
+
+    race_note("the user's own off and on still count");
+    user_rgb(false);
+    race_state("the user's off");
+    user_rgb(true);
+    race_state("the user's on");
+
+    race_note("the user's off, then away before its check: still the user's");
+    user_rgb_now(false);
+    AWAY();
+    race_state("away after the user's off");
+    BACK(LEASE);
+    race_state("back after the user's off");
+    user_rgb(true);
+    race_state("the user's on again");
+    race_note("done");
+    k_sleep(K_FOREVER); // the mock's exit-after ends the run
 }
