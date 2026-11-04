@@ -996,6 +996,30 @@ fn screens_playlist_renders() {
     assert_ne!(with, without, "the playlist shows");
 }
 
+/// The keyboard card after a connect that found kept places lost (#521): what changed, and
+/// what Foxglove put back from this PC (the words `art_seen::restored_line` makes).
+#[test]
+fn screens_art_restored_renders() {
+    use crate::foxglove::shell::Page;
+    let mut samples = Samples::full();
+    let (s, _) = samples.art.as_mut().expect("art sample");
+    let line = crate::foxglove::art_seen::restored_line(
+        &["fury".into(), "constellations".into()],
+        &[("skyline".into(), "this PC has no copy of it".into())],
+        3,
+    );
+    s.notice = Some(crate::foxglove::art_seen::with_restored(
+        Some("No longer kept on the keyboard: fury, constellations, skyline.".into()),
+        &line,
+    ));
+    let img = shell_preview_with(Page::Screens, &samples, 1300.0);
+    keep("ui-521-restored.png", &img);
+    assert_ne!(
+        img,
+        shell_preview_with(Page::Screens, &Samples::full(), 1300.0)
+    );
+}
+
 /// The Plugins page (#389): the installed and catalog cards, three to a row.
 #[test]
 fn plugins_page_renders() {

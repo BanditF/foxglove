@@ -3,6 +3,11 @@
 //! something else, the Screens page says what happened: the kept pieces still there (they live
 //! above the firmware image, so an update leaves them), and the pieces that came or went with
 //! the new firmware. Read from the keyboard on the connect after the update; no polling.
+//!
+//! Places a connect finds empty that held a piece before (a settings reset, an update that
+//! moved the art partition) are put back from this PC's copy (#521, [`plan`]): the art service
+//! sends each one into its old place with STORE, without showing it, and says "Foxglove put back
+//! N of M" ([`restored_line`]; health row "art restored N/M").
 
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +22,17 @@ pub struct Seen {
     pub named: bool,
     /// The kept pieces' names.
     pub kept: Vec<String>,
+    /// The kept places with what each held (#521), so a lost one can be put back.
+    pub places: Vec<Place>,
+}
+
+/// A kept place and the piece in it, as the keyboard reports it (its name and length).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Place {
+    pub slot: u8,
+    pub name: String,
+    pub len: u16,
 }
 
 impl Seen {
@@ -30,7 +46,18 @@ impl Seen {
         if st.flash_slots > 0 && s.slots.len() < usize::from(st.flash_slots.min(8)) {
             return None; // the places aren't read yet
         }
+        let places = s
+            .slots
+            .iter()
+            .filter(|i| i.used && !s.cycle.places.contains(&i.slot))
+            .map(|i| Place {
+                slot: i.slot,
+                name: i.name.clone(),
+                len: i.len,
+            })
+            .collect();
         Some(Seen {
+            places,
             built_ins: s.built_ins().into_iter().map(|(_, name)| name).collect(),
             named: super::art_manifest::sets(st.right_set_count).is_some(),
             kept: s
@@ -51,6 +78,83 @@ pub fn load() -> Option<Seen> {
 pub fn save(seen: &Seen) {
     if let Err(e) = super::store::save("art.seen", seen) {
         eprintln!("Foxglove: can't save what the keyboard holds: {e}");
+    }
+}
+
+/// The places that held a piece at the last look and don't hold it now.
+pub fn lost(before: &Seen, now: &Seen) -> Vec<Place> {
+    before
+        .places
+        .iter()
+        .filter(|p| !now.places.contains(p))
+        .cloned()
+        .collect()
+}
+
+/// How to put the lost places back: each into its old place from the PC file with the same
+/// name and length (`files`: a file and the name and length it is kept under). Not put back,
+/// with the reason: a place that holds another piece now, a piece this PC has no copy of.
+#[allow(clippy::type_complexity)]
+pub fn plan(
+    lost: &[Place],
+    flash_used: u8,
+    files: &[(std::path::PathBuf, (String, usize))],
+) -> (Vec<(Place, std::path::PathBuf)>, Vec<(String, String)>) {
+    let mut go = Vec::new();
+    let mut not = Vec::new();
+    for p in lost {
+        if p.slot < 8 && flash_used & (1 << p.slot) != 0 {
+            not.push((p.name.clone(), "its place holds another piece now".into()));
+            continue;
+        }
+        match files
+            .iter()
+            .find(|(_, (name, len))| *name == p.name && *len == usize::from(p.len))
+        {
+            Some((file, _)) => go.push((p.clone(), file.clone())),
+            None => not.push((p.name.clone(), "this PC has no copy of it".into())),
+        }
+    }
+    (go, not)
+}
+
+/// What a restore did, in words: "Foxglove put back 2 of 3 kept pieces: fury, radar. Not put
+/// back: gem (this PC has no copy of it)."
+pub fn restored_line(restored: &[String], failed: &[(String, String)], total: usize) -> String {
+    let mut out = match restored.len() {
+        0 => format!("Foxglove couldn't put back the {total} lost pieces."),
+        n if n == total && n == 1 => format!("Foxglove put back the lost piece: {}.", restored[0]),
+        n => format!(
+            "Foxglove put back {n} of {total} kept pieces: {}.",
+            restored.join(", ")
+        ),
+    };
+    if !failed.is_empty() {
+        let why: Vec<String> = failed.iter().map(|(n, e)| format!("{n} ({e})")).collect();
+        out.push_str(&format!(" Not put back: {}.", why.join(", ")));
+    }
+    out
+}
+
+/// The connect's notice with a restore's line in place of its "No longer kept on the keyboard:
+/// …." sentence, which the restore answers.
+pub fn with_restored(notice: Option<String>, line: &str) -> String {
+    const LOST: &str = "No longer kept on the keyboard: ";
+    let Some(notice) = notice else {
+        return line.to_string();
+    };
+    match notice.find(LOST) {
+        Some(at) => {
+            let end = notice[at..].find(". ").map_or(notice.len(), |e| at + e + 2);
+            let rest = notice[end..].trim();
+            let head = notice[..at].trim();
+            [head, line, rest]
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+        None => format!("{notice} {line}"),
     }
 }
 
@@ -112,6 +216,7 @@ mod tests {
             built_ins: built_ins.iter().map(|s| s.to_string()).collect(),
             named: true,
             kept: kept.iter().map(|s| s.to_string()).collect(),
+            places: Vec::new(),
         }
     }
 
@@ -151,6 +256,85 @@ mod tests {
             .contains("Your kept piece is still on the keyboard."));
     }
 
+    use std::path::PathBuf;
+
+    fn place(slot: u8, name: &str, len: u16) -> Place {
+        Place {
+            slot,
+            name: name.into(),
+            len,
+        }
+    }
+
+    /// Places lost since the last look are put back from the PC copy with the same name and
+    /// length; a place that holds something else now, or a piece the PC lacks, is said so.
+    #[test]
+    fn lost_places_are_planned_back_from_this_pc() {
+        let before = Seen {
+            places: vec![
+                place(0, "fury", 900),
+                place(1, "radar", 3600),
+                place(2, "gem", 2048),
+                place(3, "orbit", 1000),
+            ],
+            ..Seen::default()
+        };
+        let now = Seen {
+            places: vec![place(0, "fury", 900)],
+            ..Seen::default()
+        };
+        let lost = lost(&before, &now);
+        assert_eq!(
+            lost.iter().map(|p| p.slot).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let files = vec![
+            (PathBuf::from("art/radar.bin"), ("radar".to_string(), 3600)),
+            (PathBuf::from("art/gem.bin"), ("gem".to_string(), 2047)),
+            (PathBuf::from("art/orbit.bin"), ("orbit".to_string(), 1000)),
+        ];
+        // Place 4 (index 3) holds another piece now.
+        let (go, not) = plan(&lost, 0b1001, &files);
+        assert_eq!(
+            go,
+            vec![(place(1, "radar", 3600), PathBuf::from("art/radar.bin"))]
+        );
+        assert_eq!(
+            not,
+            vec![
+                ("gem".to_string(), "this PC has no copy of it".to_string()),
+                (
+                    "orbit".to_string(),
+                    "its place holds another piece now".to_string()
+                )
+            ]
+        );
+        assert_eq!(
+            restored_line(&["radar".into()], &not, 3),
+            "Foxglove put back 1 of 3 kept pieces: radar. Not put back: gem (this PC has no copy \
+             of it), orbit (its place holds another piece now)."
+        );
+        assert_eq!(
+            restored_line(&["fury".into()], &[], 1),
+            "Foxglove put back the lost piece: fury."
+        );
+        assert!(restored_line(&[], &not, 2).starts_with("Foxglove couldn't put back the 2"));
+        // The restore's line answers the connect's "No longer kept" sentence.
+        let notice = "The keyboard's firmware changed. No longer kept on the keyboard: radar, \
+                      gem. New with the keyboard: Bandit skyline.";
+        assert_eq!(
+            with_restored(
+                Some(notice.into()),
+                "Foxglove put back 2 of 2 kept pieces: radar, gem."
+            ),
+            "The keyboard's firmware changed. Foxglove put back 2 of 2 kept pieces: radar, gem. \
+             New with the keyboard: Bandit skyline."
+        );
+        assert_eq!(with_restored(None, "x."), "x.");
+        assert_eq!(with_restored(Some("a.".into()), "x."), "a. x.");
+        assert!(super::lost(&now, &now).is_empty());
+    }
+
     #[test]
     fn seen_waits_for_the_places() {
         let unlinked = Snapshot {
@@ -181,6 +365,13 @@ mod tests {
             .collect();
         let seen = Seen::of(&s).unwrap();
         assert_eq!(seen.kept, vec!["fury".to_string()]);
+        assert_eq!(
+            seen.places.iter().map(|p| p.slot).collect::<Vec<_>>(),
+            vec![1]
+        );
+        // A place lent to the playlist (#522) isn't one of the user's.
+        s.cycle.places = vec![1];
+        assert!(Seen::of(&s).unwrap().places.is_empty());
         assert_eq!(seen.built_ins.len(), 2);
     }
 }

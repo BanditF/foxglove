@@ -1,8 +1,9 @@
-//! Health of the art playlist (#522), as plain data for the shared "Keyboard health" view
-//! (`health.read`, the app's health page, `foxglove-lab health`; #705): how long the playlist
-//! is, which places it has and what they hold, and how its last swap went. The art service
-//! notes each event as it happens (a step, a stage that landed or failed, a stage skipped and
-//! why); [`rows`] only reads. No polling.
+//! Health of the art playlist (#522) and of art across firmware updates (#521), as plain data
+//! for the shared "Keyboard health" view (`health.read`, the app's health page,
+//! `foxglove-lab health`; #705): how long the playlist is, which places it has and what they
+//! hold, how its last swap went; and after an update, "art restored N/M". The art service notes
+//! each event as it happens (a step, a stage that landed or failed, a stage skipped and why, a
+//! restore's end); [`rows`] only reads. No polling.
 //!
 //! The rows are the Keyboard health view's shared type (`foxglove_link::health::HealthRow`, #705);
 //! [`rows`] is the `health::Provider` registered with `health::register` as "art_playlist".
@@ -15,6 +16,66 @@ use std::time::{Duration, Instant};
 
 /// The subsystem these rows belong to in the health view.
 pub const SUBSYSTEM: &str = "screens.art_playlist";
+/// The restore's rows (#521).
+pub const RESTORE: &str = "screens.art_restore";
+
+/// The last time a connect found kept places lost (#521) and what Foxglove put back.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RestoreHealth {
+    /// Pieces lost (M); 0 when no connect lost any since Foxglove started.
+    pub lost: usize,
+    /// Put back (N of them), by name.
+    pub restored: Vec<String>,
+    /// Not put back, with the reason.
+    pub failed: Vec<(String, String)>,
+}
+
+static RESTORED: Mutex<Option<RestoreHealth>> = Mutex::new(None);
+
+/// Notes a restore's end (the art service calls this).
+pub fn note_restore(r: RestoreHealth) {
+    *RESTORED.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+}
+
+pub fn restore_now() -> RestoreHealth {
+    RESTORED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_default()
+}
+
+/// The restore's row: "art restored N/M"; Warn when some weren't, Fail when none were.
+pub fn restore_rows(r: &RestoreHealth) -> Vec<HealthRow> {
+    let (level, detail) = if r.lost == 0 {
+        (
+            Level::Ok,
+            "no kept pieces lost since Foxglove started".to_string(),
+        )
+    } else {
+        let n = r.restored.len();
+        let mut d = format!("art restored {n}/{}", r.lost);
+        if !r.restored.is_empty() {
+            d.push_str(&format!(": {}", r.restored.join(", ")));
+        }
+        if !r.failed.is_empty() {
+            let why: Vec<String> = r.failed.iter().map(|(n, e)| format!("{n} ({e})")).collect();
+            d.push_str(&format!("; not restored: {}", why.join(", ")));
+        }
+        let level = match n {
+            0 => Level::Fail,
+            n if n < r.lost => Level::Warn,
+            _ => Level::Ok,
+        };
+        (level, d)
+    };
+    vec![HealthRow {
+        subsystem: RESTORE.into(),
+        item: "Art after a firmware update · Restored".into(),
+        level,
+        detail,
+    }]
+}
 
 // The shared row type of the Keyboard health view (#705).
 pub use super::health::{HealthRow, Level};
@@ -118,9 +179,11 @@ pub fn now() -> PlaylistHealth {
         .unwrap_or_default()
 }
 
-/// The rows for the health view now (a `health::Provider`).
+/// The rows for the health view now (a `health::Provider`): the playlist's, then the restore's.
 pub fn rows() -> Vec<HealthRow> {
-    rows_of(&now(), Instant::now())
+    let mut out = rows_of(&now(), Instant::now());
+    out.extend(restore_rows(&restore_now()));
+    out
 }
 
 fn ago(at: Instant, now: Instant) -> String {
@@ -243,6 +306,41 @@ mod tests {
 
     fn levels(h: &PlaylistHealth, now: Instant) -> Vec<Level> {
         rows_of(h, now).into_iter().map(|r| r.level).collect()
+    }
+
+    /// "art restored N/M" at each level: nothing lost, all, some, none.
+    #[test]
+    fn the_restore_row_says_n_of_m() {
+        let row = |r: &RestoreHealth| restore_rows(r).remove(0);
+        let none = row(&RestoreHealth::default());
+        assert_eq!((none.level, none.subsystem.as_str()), (Level::Ok, RESTORE));
+        let all = RestoreHealth {
+            lost: 2,
+            restored: vec!["fury".into(), "radar".into()],
+            failed: vec![],
+        };
+        assert_eq!(row(&all).detail, "art restored 2/2: fury, radar");
+        assert_eq!(row(&all).level, Level::Ok);
+        let some = RestoreHealth {
+            lost: 3,
+            failed: vec![("gem".into(), "this PC has no copy of it".into())],
+            ..all.clone()
+        };
+        assert_eq!(row(&some).level, Level::Warn);
+        assert_eq!(
+            row(&some).detail,
+            "art restored 2/3: fury, radar; not restored: gem (this PC has no copy of it)"
+        );
+        let zero = RestoreHealth {
+            lost: 1,
+            restored: vec![],
+            failed: vec![("gem".into(), "Bluetooth write failed".into())],
+        };
+        assert_eq!(row(&zero).level, Level::Fail);
+        note_restore(some.clone());
+        assert!(rows()
+            .iter()
+            .any(|r| r.detail.starts_with("art restored 2/3")));
     }
 
     /// The signal fires: each event the art service notes shows in the rows.

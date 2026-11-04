@@ -193,7 +193,7 @@ pub fn start() {
     register("art_keys", super::art_keys_health::rows_now); // #701
     register("dynamic_lighting", super::lamp_health::rows_now); // #691
     register("wallpaper_sync", super::wallpaper_sync_health::rows_now); // #586
-    register("art_playlist", super::art_health::rows); // #522
+    register("art_playlist", super::art_health::rows); // #522, #521
     let events = super::services::First::new(super::devices::bus().subscribe(false));
     let _ = super::services::spawn_supervised("health", move || {
         let events = events.take_or(|| super::devices::bus().subscribe(false));

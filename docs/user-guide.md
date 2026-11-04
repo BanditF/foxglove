@@ -443,6 +443,13 @@ show. To change what Rotation shows, keep or remove pieces on the keyboard, or p
 
 ### Keeping art on the keyboard
 
+**After a firmware update** Screens says what happened to your kept pieces and the keyboard's
+own. Kept pieces normally survive an update (they live above the firmware). If a connect finds
+some gone (after a settings reset, say), Foxglove puts each back into its old place from the
+copy on this PC, without showing it, and says "Foxglove put back N of M kept pieces"; pieces
+this PC has no copy of are named. A restore cut short (the keyboard went) goes on at the next
+connect. Firmware without STORE can't do it unseen: keep those pieces again by hand.
+
 The right half keeps up to 8 pieces of your own, and they play without this PC. **Screens → On
 the keyboard** shows how full it is ("Kept: 5 of 8 places") and what each place holds.
 - **Show a piece from this PC:** click it under **On this PC**. It shows until the keyboard
