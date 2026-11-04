@@ -114,6 +114,29 @@ pub fn check_write(
                 return Err("it points at a layer the keyboard doesn't have".into());
             }
         }
+        // #582: a behaviour of the board's own, with values its metadata accepts.
+        if let zmk_studio_api::Behavior::Custom {
+            behavior_id,
+            display_name,
+            ..
+        } = behavior
+        {
+            let catalog = keyboard.custom_behaviors();
+            match catalog.iter().find(|c| c.id == *behavior_id) {
+                None => {
+                    return Err(format!(
+                        "the keyboard doesn't list \u{201c}{display_name}\u{201d}"
+                    ))
+                }
+                Some(c) if !c.accepts(behavior) => {
+                    return Err(format!(
+                        "\u{201c}{}\u{201d} doesn't take those values",
+                        c.name
+                    ))
+                }
+                Some(_) => {}
+            }
+        }
     }
     Ok(())
 }
@@ -263,7 +286,12 @@ impl KeymapSession {
 }
 
 impl EditorState {
-    fn start_studio(&mut self, keyboard: &Keyboard, request: StudioRequest, then_close: bool) {
+    pub(crate) fn start_studio(
+        &mut self,
+        keyboard: &Keyboard,
+        request: StudioRequest,
+        then_close: bool,
+    ) {
         self.error = None;
         self.studio.task = Some(Task {
             request,

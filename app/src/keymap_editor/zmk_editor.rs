@@ -8,6 +8,8 @@ use super::picker::{
     framed_candidate_groups, modifier_toggle_grid, multi_candidate_groups, titled_candidate_group,
     Candidate, CandidateGroup, SelectedKey,
 };
+use super::custom_page::CustomDraft;
+use super::profile::{EditorProfile, FeatureManifest, SupportLevel};
 use super::zmk_catalog::{self, ZmkBehaviorKind};
 use super::{EditTarget, EditorState};
 use crate::ui_widgets::titled_group;
@@ -29,6 +31,8 @@ pub enum Section {
     MouseScroll,
     System,
     Special,
+    /// Foxglove (#582): the behaviours the board defines in its own keymap.
+    Custom,
 }
 
 impl Section {
@@ -48,6 +52,7 @@ impl Section {
             Self::MouseScroll => "Mouse Scroll",
             Self::System => "System",
             Self::Special => "Special",
+            Self::Custom => "Behaviours",
         }
     }
 
@@ -88,6 +93,7 @@ impl Section {
             Self::MouseScroll => MouseScroll,
             Self::System => Reset,
             Self::Special => Transparent,
+            Self::Custom => KeyPress, // unused: the custom page has no role
         }
     }
 
@@ -108,6 +114,7 @@ impl Section {
             Self::MouseScroll => &[MouseScroll],
             Self::System => &[Reset, Bootloader, SoftOff, StudioUnlock, ExternalPower],
             Self::Special => &[Transparent, None, CapsWord, KeyRepeat, GraveEscape],
+            Self::Custom => &[],
         }
     }
 
@@ -121,7 +128,10 @@ impl Section {
     }
 
     fn is_supported(self, keyboard: &Keyboard) -> bool {
-        self.supported_kinds(keyboard).next().is_some()
+        match self {
+            Self::Custom => !keyboard.custom_behaviors().is_empty(),
+            _ => self.supported_kinds(keyboard).next().is_some(),
+        }
     }
 }
 
@@ -131,11 +141,55 @@ impl super::SidebarItem for Section {
     }
 
     fn is_supported(self, keyboard: &Keyboard) -> bool {
-        Section::is_supported(self, keyboard)
+        // Foxglove (#579): the ZMK profile's manifest decides.
+        ZmkProfile.available(self, keyboard)
     }
 }
 
-const ZMK_SECTIONS: [super::SidebarSection<Section>; 6] = [
+/// Foxglove (#579): the ZMK editor's profile. Every section depends on the board: a role page
+/// on the roles it lists, the Behaviours page on behaviours of its own (#582).
+struct ZmkProfile;
+
+impl EditorProfile for ZmkProfile {
+    type Section = Section;
+
+    fn sidebar(&self) -> &'static [super::SidebarSection<Section>] {
+        &ZMK_SECTIONS
+    }
+
+    fn manifest(&self) -> &'static [FeatureManifest<Section>] {
+        const fn when_board_has(section: Section) -> FeatureManifest<Section> {
+            FeatureManifest {
+                section,
+                support: SupportLevel::Conditional,
+            }
+        }
+        const MANIFEST: [FeatureManifest<Section>; 15] = [
+            when_board_has(Section::KeyPress),
+            when_board_has(Section::KeyToggle),
+            when_board_has(Section::StickyKey),
+            when_board_has(Section::Layers),
+            when_board_has(Section::ModTap),
+            when_board_has(Section::Bluetooth),
+            when_board_has(Section::OutputSelection),
+            when_board_has(Section::Backlight),
+            when_board_has(Section::Underglow),
+            when_board_has(Section::MouseKeyPress),
+            when_board_has(Section::MouseMove),
+            when_board_has(Section::MouseScroll),
+            when_board_has(Section::System),
+            when_board_has(Section::Special),
+            when_board_has(Section::Custom),
+        ];
+        &MANIFEST
+    }
+
+    fn board_has(&self, section: Section, keyboard: &Keyboard) -> bool {
+        Section::is_supported(section, keyboard)
+    }
+}
+
+const ZMK_SECTIONS: [super::SidebarSection<Section>; 7] = [
     super::SidebarSection {
         title: "Keys",
         items: &[Section::KeyPress, Section::KeyToggle, Section::StickyKey],
@@ -159,6 +213,10 @@ const ZMK_SECTIONS: [super::SidebarSection<Section>; 6] = [
             Section::MouseMove,
             Section::MouseScroll,
         ],
+    },
+    super::SidebarSection {
+        title: "Your keymap",
+        items: &[Section::Custom],
     },
     super::SidebarSection {
         title: "Other",
@@ -187,6 +245,8 @@ pub struct ZmkDraft {
     pub layer_id: Option<u32>,
     /// Parameter state for backlight adjustment commands.
     pub backlight: BacklightDraft,
+    /// Foxglove (#582): the Behaviours page's draft; `Some` while that page is open.
+    pub custom: Option<CustomDraft>,
 }
 
 impl Default for ZmkDraft {
@@ -198,6 +258,7 @@ impl Default for ZmkDraft {
             hold_mods: 0,
             layer_id: None,
             backlight: BacklightDraft::default(),
+            custom: None,
         }
     }
 }
@@ -227,6 +288,15 @@ impl ZmkDraft {
         }
     }
 
+    /// Foxglove (#582): the page this draft belongs on.
+    fn section(&self) -> Section {
+        if self.custom.is_some() {
+            Section::Custom
+        } else {
+            Section::from_kind(self.kind)
+        }
+    }
+
     /// Returns the combined HID usage with draft modifiers applied, if selected.
     pub fn tap_usage(&self) -> Option<HidUsage> {
         self.usage
@@ -239,6 +309,7 @@ impl ZmkDraft {
         let mut draft = ZmkDraft {
             kind,
             layer_id: behavior.layer_id(),
+            custom: CustomDraft::from_behavior(behavior), // Foxglove (#582)
             ..Default::default()
         };
         match behavior {
@@ -313,10 +384,12 @@ impl EditorState {
         style: &crate::key_paint::KeyPaintStyle,
     ) {
         // If the current draft kind is not supported on this keyboard, switch to the first supported one.
-        if !keyboard.is_action_supported(&KeyAction::Zmk(zmk_catalog::sample_behavior(
+        if self.zmk_draft.custom.is_none()
+            && !keyboard.is_action_supported(&KeyAction::Zmk(zmk_catalog::sample_behavior(
             self.zmk_draft.kind,
         ))) {
-            if let Some(first) = ZMK_SECTIONS
+            if let Some(first) = ZmkProfile
+                .sidebar()
                 .iter()
                 .flat_map(|s| s.items.iter())
                 .filter(|s| s.is_supported(keyboard))
@@ -328,13 +401,13 @@ impl EditorState {
             self.zmk_draft.backlight.staged = false;
         }
 
-        let current_section = Section::from_kind(self.zmk_draft.kind);
+        let current_section = self.zmk_draft.section();
         if let Some(section) = super::editor_left_panel(
             ui,
             "zmk_kinds",
             keyboard,
             current_section,
-            &ZMK_SECTIONS,
+            ZmkProfile.sidebar(),
             &mut self.search_query,
         ) {
             self.search_query.clear();
@@ -343,13 +416,24 @@ impl EditorState {
                 Section::Layers | Section::System | Section::Special => {
                     self.zmk_draft = ZmkDraft::for_section(section, current_action.as_ref());
                 }
+                // Foxglove (#582): the key's own behaviour if it has one, else nothing picked.
+                Section::Custom => {
+                    let custom = match &current_action {
+                        Some(KeyAction::Zmk(b)) => CustomDraft::from_behavior(b),
+                        _ => None,
+                    };
+                    self.zmk_draft = ZmkDraft {
+                        custom: Some(custom.unwrap_or_default()),
+                        ..Default::default()
+                    };
+                }
                 _ => {
                     self.reset_zmk_draft_for_kind(keyboard, target, section.default_kind());
                 }
             }
         }
 
-        let current_section = Section::from_kind(self.zmk_draft.kind);
+        let current_section = self.zmk_draft.section();
         let is_valid = self.zmk_draft.is_valid();
         let search_query = self.search_query.clone();
         super::editor_central_panel(ui, (target.layer_index, current_section), |ui| {
@@ -368,6 +452,9 @@ impl EditorState {
                 }
                 Section::Layers => {
                     self.draw_zmk_layer_page(ui, keyboard, target, &search_query, is_valid, style);
+                }
+                Section::Custom => {
+                    self.draw_custom_page(ui, keyboard, target, &search_query, style);
                 }
                 Section::ModTap => {
                     titled_group(ui, "Hold modifier", |ui| {
