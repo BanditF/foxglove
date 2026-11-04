@@ -88,6 +88,98 @@ pub mod capabilities {
     /// Settings KNOB (D7 14): the PC may hold the keymap's `&knob` / `&knob_press` (#719;
     /// [`super::knob`]). Bits 29 and 30 are colour effects (#626) and art STORE (#522).
     pub const KNOB: u32 = 1 << 31;
+
+    /// Every bit above with its name, in bit order (the health view and diagnostics print them).
+    pub const NAMES: [(u32, &str); 32] = [
+        (PANEL, "PANEL"),
+        (ART_RELAY, "ART_RELAY"),
+        (SETTINGS_RGB, "SETTINGS_RGB"),
+        (ART_STATUS_EVENT, "ART_STATUS_EVENT"),
+        (CONN_STATE, "CONN_STATE"),
+        (POSITION, "POSITION"),
+        (SCREEN, "SCREEN"),
+        (INVOKE_REFUSES, "INVOKE_REFUSES"),
+        (CONN_STATE_EVENT, "CONN_STATE_EVENT"),
+        (BOOTLOADER, "BOOTLOADER"),
+        (ART_SLOTS, "ART_SLOTS"),
+        (RGB_STATE_EVENT, "RGB_STATE_EVENT"),
+        (BUILD_INFO, "BUILD_INFO"),
+        (SCREENS, "SCREENS"),
+        (FRAMES, "FRAMES"),
+        (PANEL_HOLD, "PANEL_HOLD"),
+        (ART_KEYS, "ART_KEYS"),
+        (LEFT_BATTERY, "LEFT_BATTERY"),
+        (BATTERY_DIM, "BATTERY_DIM"),
+        (EFFECTS, "EFFECTS"),
+        (RIGHT_EVENTS, "RIGHT_EVENTS"),
+        (EFFECT_LAMPS, "EFFECT_LAMPS"),
+        (LAMP_PARTS, "LAMP_PARTS"),
+        (ACTIVITY_RELAY, "ACTIVITY_RELAY"),
+        (RGB_SHOWN, "RGB_SHOWN"),
+        (RIGHT_REDRAWS, "RIGHT_REDRAWS"),
+        (PC_STATE, "PC_STATE"),
+        (PANEL_POLARITY, "PANEL_POLARITY"),
+        (HEALTH, "HEALTH"),
+        (COLOUR_EFFECTS, "COLOUR_EFFECTS"),
+        (ART_STORE, "ART_STORE"),
+        (KNOB, "KNOB"),
+    ];
+
+    /// The set bits' names in bit order, a bit without a name as "bit N"; empty for 0.
+    pub fn names(word: u32) -> Vec<String> {
+        (0..32)
+            .filter(|n| word & (1u32 << n) != 0)
+            .map(|n| {
+                NAMES
+                    .iter()
+                    .find(|(b, _)| *b == 1u32 << n)
+                    .map_or_else(|| format!("bit {n}"), |(_, name)| (*name).to_string())
+            })
+            .collect()
+    }
+
+    /// "PANEL, ART_RELAY, KNOB (0x80000003)"; "none (0x00000000)".
+    pub fn describe(word: u32) -> String {
+        let names = names(word);
+        let list = if names.is_empty() {
+            "none".to_string()
+        } else {
+            names.join(", ")
+        };
+        format!("{list} (0x{word:08x})")
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Each bit has one name, in bit order: a new constant without a row here fails.
+        #[test]
+        fn names_cover_every_bit_once() {
+            for (n, (bit, name)) in NAMES.iter().enumerate() {
+                assert_eq!(*bit, 1u32 << n, "{name} at row {n}");
+            }
+            let mut seen: Vec<&str> = NAMES.iter().map(|(_, n)| *n).collect();
+            seen.sort_unstable();
+            seen.dedup();
+            assert_eq!(seen.len(), 32, "names are unique");
+            assert!(names(u32::MAX).iter().all(|n| !n.starts_with("bit ")));
+            assert_eq!(names(1 << 4), vec!["CONN_STATE".to_string()]);
+        }
+
+        #[test]
+        fn describe_all_some_and_none() {
+            let all = describe(u32::MAX);
+            assert!(all.starts_with("PANEL, ART_RELAY, SETTINGS_RGB, "), "{all}");
+            assert!(all.ends_with("ART_STORE, KNOB (0xffffffff)"), "{all}");
+            assert_eq!(all.matches(", ").count(), 31);
+            assert_eq!(
+                describe(PANEL | SCREENS | KNOB),
+                "PANEL, SCREENS, KNOB (0x80002001)"
+            );
+            assert_eq!(describe(0), "none (0x00000000)");
+        }
+    }
 }
 pub const VERSION: u8 = 1;
 
