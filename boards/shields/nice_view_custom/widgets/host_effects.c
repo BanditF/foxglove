@@ -36,7 +36,7 @@
 #define RIGHT (IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY) || IS_ENABLED(CONFIG_FOXGLOVE_SIM_HOSTLINK))
 
 enum { OP_RELEASE = 0, OP_PLACE = 1, OP_EFFECT = 2, OP_LAMPS = 3 };
-enum { STATUS_OK = 0, STATUS_BAD = 5 };
+enum { STATUS_OK = 0, STATUS_BUSY = 1, STATUS_BAD = 5 };
 enum { ROOM, LEFT, RIGHT_HALF };
 
 #define EFFECT_COLOURS_AT 19
@@ -201,11 +201,20 @@ void host_effects_command(const uint8_t *d, int len, uint8_t r[HOST_EFFECTS_REPL
     bool ok = op == OP_RELEASE || (op == OP_PLACE && parse_place(d, len, p)) ||
               (op == OP_EFFECT && parse_effect(d, len, &e, &at)) ||
               (op == OP_LAMPS && parse_lamps(d, len));
-    if (ok && op == OP_EFFECT) {
-        // The PC's frames give way first (not under our lock: SET_FRAME takes its lock, then ours).
-        host_frames_yield();
-    }
+    // The PC's frames give way first (not under our lock: SET_FRAME takes its lock, then ours). A
+    // HID LampArray doesn't (#88): Windows keeps the lights and the effect is refused busy.
+    bool busy = ok && op == OP_EFFECT && !host_frames_yield();
     k_spinlock_key_t key = k_spin_lock(&lock);
+    // A LampArray that took the lights between the yield and here stopped only the old effect:
+    // refuse this one as well.
+    busy = busy || (ok && op == OP_EFFECT && HOST_FRAMES_OWNER_IS_LAMPARRAY(host_frames_owner()));
+    if (busy) {
+        fill_reply(r, STATUS_BUSY);
+        r[3] = host_frames_owner();
+        k_spin_unlock(&lock, key);
+        host_frames_lamparray_refused();
+        return;
+    }
     if (ok && op == OP_RELEASE) {
         stop(true);
     } else if (ok && op == OP_LAMPS) {

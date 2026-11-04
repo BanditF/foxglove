@@ -15,6 +15,15 @@
  * CONFIG_FOXGLOVE_HOST_FRAMES_TIMEOUT_S without a frame report, on a USB unplug while USB is the
  * endpoint, or on an endpoint change; the last three send D7 8C unsolicited (event byte 1).
  *
+ * The HID LampArray (lamparray.c, #88) is a second way in to the same frame and the same owner:
+ * Windows Dynamic Lighting turning autonomous mode off takes the lights (owner 1 USB, 2 BLE) from
+ * the keyboard's effect, the host link's frames or its effect, and says so with D7 8C event 1;
+ * autonomous mode on, a USB unplug or suspend (USB), a disconnect or an endpoint change (BLE) hand
+ * them back with D7 8C owner 0, event 1. While a LampArray has them, the host link's SHOW and
+ * SET_EFFECT are refused busy (status 1) and its chunks are dropped: Windows wins, as Settings >
+ * Dynamic Lighting puts the OS ahead of apps. No timeout for a LampArray: Windows sends only
+ * changes.
+ *
  * Start/stop (no polling):
  *   left draw   starts on SHOW; runs once.
  *   right send  starts on SHOW (at most every RIGHT_GAP_MS, coalesced); stops on the right's ack,
@@ -33,6 +42,10 @@
 #include <zmk/events/endpoint_changed.h>
 #include <zmk/events/usb_conn_state_changed.h>
 #include <zmk/usb.h>
+
+#if IS_ENABLED(CONFIG_FOXGLOVE_LAMPARRAY_BLE)
+#include <zmk/events/ble_active_profile_changed.h>
+#endif
 
 #include "art_relay.h"
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
@@ -54,7 +67,7 @@ BUILD_ASSERT(LAMPS <= UINT8_MAX, "lamp ids are one byte");
 #define RIGHT_GAP_MS 100  // the right draws at most 10 frames a second
 #define TIMEOUT K_SECONDS(CONFIG_FOXGLOVE_HOST_FRAMES_TIMEOUT_S)
 
-enum { STATUS_OK = 0, STATUS_BAD = 5 };
+enum { STATUS_OK = 0, STATUS_BUSY = 1, STATUS_BAD = 5 };
 
 // One lock for the frame and the owner: commands (the USB or Bluetooth thread), hand-backs (the
 // system queue, event listeners) and the right's send take turns, so a hand-back never lands
@@ -62,7 +75,22 @@ enum { STATUS_OK = 0, STATUS_BAD = 5 };
 // block. Everything under it only copies bytes and queues work.
 static struct k_spinlock lock;
 static uint8_t frame[LAMPS][3]; // staging
-static bool owned;              // the host link has the lights
+static uint8_t owner;           // HOST_FRAMES_OWNER_*: who has the lights
+static atomic_t owner_now;      // owner, for reads without the lock
+// LampArray counters (D7 90, lamparray_state), under lock.
+static uint16_t lamparray_takes, lamparray_hand_backs, lamparray_refused;
+
+// Under lock.
+static void set_owner(uint8_t o) {
+    owner = o;
+    atomic_set(&owner_now, o);
+}
+
+static void bump(uint16_t *c) {
+    if (*c < UINT16_MAX) {
+        (*c)++;
+    }
+}
 
 static uint8_t right_state(void) {
 #if RIGHT
@@ -76,7 +104,7 @@ static void fill_reply(uint8_t r[HOST_FRAMES_REPLY_SIZE], uint8_t status, bool e
     r[0] = HOST_LINK_SETTINGS;
     r[1] = 0x8C;
     r[2] = status;
-    r[3] = owned ? HOST_FRAMES_OWNER_HOST_LINK : HOST_FRAMES_OWNER_NONE;
+    r[3] = owner;
     r[4] = MIN(CONFIG_FOXGLOVE_HOST_FRAMES_TIMEOUT_S, UINT8_MAX);
     r[5] = right_state();
     r[6] = event;
@@ -87,7 +115,7 @@ static int64_t right_sent_at = -RIGHT_GAP_MS; // under lock
 
 static void right_cb(struct k_work *work) {
     k_spinlock_key_t key = k_spin_lock(&lock);
-    if (owned) { // else handed back meanwhile, and release() told the relay
+    if (owner != HOST_FRAMES_OWNER_NONE) { // else handed back meanwhile; release() told the relay
         right_sent_at = k_uptime_get();
         art_relay_lamps(true, (const uint8_t(*)[3])&frame[LEFT_LAMPS]); // copies
     }
@@ -113,13 +141,12 @@ static void show(void) {
 static void timeout_cb(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(timeout_work, timeout_cb);
 
-// Hands both halves back to their own effect. Returns whether the host link had the lights.
-// Under lock.
+// Hands both halves back to their own effect. Returns whether anyone had the lights. Under lock.
 static bool release(void) {
-    if (!owned) {
+    if (owner == HOST_FRAMES_OWNER_NONE) {
         return false;
     }
-    owned = false;
+    set_owner(HOST_FRAMES_OWNER_NONE);
     k_work_cancel_delayable(&timeout_work);
     lamp_strip_host(false);
     memset(frame, 0, sizeof(frame)); // a new take-over starts from black, as the strips do
@@ -131,18 +158,24 @@ static bool release(void) {
     return true;
 }
 
-// Hand-backs the PC didn't ask for: it hears at once (it has sent frames, so it's listening).
-static void release_event(void) {
+// Hand-backs the PC didn't ask for, if `who` has the lights. The host link's PC hears at once
+// (it has sent frames, so it's listening); a LampArray's hand-back goes out after host traffic.
+static void release_event(uint8_t who) {
     k_spinlock_key_t key = k_spin_lock(&lock);
-    if (release()) {
+    if (owner == who && release()) {
         uint8_t r[HOST_FRAMES_REPLY_SIZE];
         fill_reply(r, STATUS_OK, true);
-        host_link_send(r, sizeof(r)); // queued: goes out from the system queue
+        if (HOST_FRAMES_OWNER_IS_LAMPARRAY(who)) {
+            bump(&lamparray_hand_backs);
+            host_link_event(r, sizeof(r));
+        } else {
+            host_link_send(r, sizeof(r)); // queued: goes out from the system queue
+        }
     }
     k_spin_unlock(&lock, key);
 }
 
-static void timeout_cb(struct k_work *work) { release_event(); }
+static void timeout_cb(struct k_work *work) { release_event(HOST_FRAMES_OWNER_HOST_LINK); }
 
 int host_frames_parts(uint8_t *out, int max) {
     int n = 0;
@@ -157,9 +190,79 @@ int host_frames_parts(uint8_t *out, int max) {
     return n;
 }
 
-void host_frames_yield(void) {
+bool host_frames_yield(void) {
     k_spinlock_key_t key = k_spin_lock(&lock);
-    release();
+    bool lamparray = HOST_FRAMES_OWNER_IS_LAMPARRAY(owner);
+    if (!lamparray) {
+        release();
+    }
+    k_spin_unlock(&lock, key);
+    return !lamparray;
+}
+
+uint8_t host_frames_owner(void) { return (uint8_t)atomic_get(&owner_now); }
+
+int host_frames_lamps(void) { return LAMPS; }
+
+void host_frames_lamparray(uint8_t who, bool take) {
+    if (!HOST_FRAMES_OWNER_IS_LAMPARRAY(who)) {
+        return;
+    }
+    if (!take) {
+        release_event(who); // only the owner's own hand-back does anything
+        return;
+    }
+    k_spinlock_key_t key = k_spin_lock(&lock);
+    if (owner != who) {
+        // The host link's frames, or the other transport's LampArray, give way: whichever host
+        // turned autonomous mode off last draws.
+        if (!release()) {
+#if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
+            host_effects_yield(); // a SET_EFFECT stops on both halves, as for a SHOW
+#endif
+        }
+        memset(frame, 0, sizeof(frame)); // from black, as the strips start
+        set_owner(who);
+        bump(&lamparray_takes);
+        show();
+        uint8_t r[HOST_FRAMES_REPLY_SIZE];
+        fill_reply(r, STATUS_OK, true);
+        host_link_event(r, sizeof(r));
+    }
+    k_spin_unlock(&lock, key);
+}
+
+bool host_frames_lamparray_set(uint8_t who, int lamp, uint8_t r, uint8_t g, uint8_t b) {
+    k_spinlock_key_t key = k_spin_lock(&lock);
+    bool ours = owner == who && HOST_FRAMES_OWNER_IS_LAMPARRAY(who);
+    if (ours && lamp >= 0 && lamp < LAMPS) {
+        frame[lamp][0] = r;
+        frame[lamp][1] = g;
+        frame[lamp][2] = b;
+    }
+    k_spin_unlock(&lock, key);
+    return ours;
+}
+
+void host_frames_lamparray_show(uint8_t who) {
+    k_spinlock_key_t key = k_spin_lock(&lock);
+    if (owner == who && HOST_FRAMES_OWNER_IS_LAMPARRAY(who)) {
+        show();
+    }
+    k_spin_unlock(&lock, key);
+}
+
+void host_frames_lamparray_counts(uint16_t *takes, uint16_t *hand_backs, uint16_t *refused) {
+    k_spinlock_key_t key = k_spin_lock(&lock);
+    *takes = lamparray_takes;
+    *hand_backs = lamparray_hand_backs;
+    *refused = lamparray_refused;
+    k_spin_unlock(&lock, key);
+}
+
+void host_frames_lamparray_refused(void) {
+    k_spinlock_key_t key = k_spin_lock(&lock);
+    bump(&lamparray_refused);
     k_spin_unlock(&lock, key);
 }
 
@@ -167,12 +270,24 @@ void host_frames_yield(void) {
 static bool command(const uint8_t *d, int len, uint8_t r[HOST_FRAMES_REPLY_SIZE]) {
     uint8_t flags = len >= 3 ? d[2] : 0, start = len >= 4 ? d[3] : 0, count = len >= 5 ? d[4] : 0;
     if (flags & FRAME_RELEASE) {
-        release();
+        if (owner == HOST_FRAMES_OWNER_HOST_LINK) {
+            release(); // only its own: a LampArray keeps the lights (the owner byte says)
+        }
         fill_reply(r, STATUS_OK, false);
         return true;
     }
     if (count > FRAME_MAX_LAMPS || len < 5 + 3 * count || start + count > LAMPS) {
         fill_reply(r, STATUS_BAD, false);
+        return true;
+    }
+    if (HOST_FRAMES_OWNER_IS_LAMPARRAY(owner)) {
+        // Windows has the lights: chunks are dropped (the frame is the LampArray's), a SHOW is
+        // refused busy with the owner, and nothing restarts the timeout.
+        if (!(flags & FRAME_SHOW)) {
+            return false;
+        }
+        bump(&lamparray_refused);
+        fill_reply(r, STATUS_BUSY, false);
         return true;
     }
     memcpy(frame[start], &d[5], 3 * count);
@@ -183,11 +298,11 @@ static bool command(const uint8_t *d, int len, uint8_t r[HOST_FRAMES_REPLY_SIZE]
         return false; // chunks don't reply, like the panel's ROWS
     }
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
-    if (!owned) {
+    if (owner == HOST_FRAMES_OWNER_NONE) {
         host_effects_yield(); // a SET_EFFECT gives way: frames draw over it on both halves
     }
 #endif
-    owned = true;
+    set_owner(HOST_FRAMES_OWNER_HOST_LINK);
     show();
     fill_reply(r, STATUS_OK, false);
     return true;
@@ -201,14 +316,25 @@ bool host_frames_command(const uint8_t *d, int len, uint8_t r[HOST_FRAMES_REPLY_
 }
 
 // The frames came over a link that's gone: USB unplugged while it's the endpoint, or the
-// endpoint changed (USB <-> BLE).
+// endpoint changed (USB <-> BLE). A LampArray over USB goes with the USB link itself (unplugged or
+// suspended; its control pipe works whatever the endpoint), over BLE with an endpoint or profile
+// change (lamparray_hog.c also hands back on a disconnect).
 static int frames_link_listener(const zmk_event_t *eh) {
     if (as_zmk_endpoint_changed(eh) != NULL) {
-        release_event();
+        release_event(HOST_FRAMES_OWNER_HOST_LINK);
+        release_event(HOST_FRAMES_OWNER_LAMPARRAY_BLE);
     }
+#if IS_ENABLED(CONFIG_FOXGLOVE_LAMPARRAY_BLE)
+    else if (as_zmk_ble_active_profile_changed(eh) != NULL) {
+        release_event(HOST_FRAMES_OWNER_LAMPARRAY_BLE);
+    }
+#endif
 #if IS_ENABLED(CONFIG_ZMK_USB)
-    else if (!zmk_usb_is_hid_ready() && zmk_endpoints_selected().transport == ZMK_TRANSPORT_USB) {
-        release_event();
+    else if (!zmk_usb_is_hid_ready()) {
+        if (zmk_endpoints_selected().transport == ZMK_TRANSPORT_USB) {
+            release_event(HOST_FRAMES_OWNER_HOST_LINK);
+        }
+        release_event(HOST_FRAMES_OWNER_LAMPARRAY_USB);
     }
 #endif
     return ZMK_EV_EVENT_BUBBLE;
@@ -216,6 +342,9 @@ static int frames_link_listener(const zmk_event_t *eh) {
 
 ZMK_LISTENER(host_frames, frames_link_listener);
 ZMK_SUBSCRIPTION(host_frames, zmk_endpoint_changed);
+#if IS_ENABLED(CONFIG_FOXGLOVE_LAMPARRAY_BLE)
+ZMK_SUBSCRIPTION(host_frames, zmk_ble_active_profile_changed);
+#endif
 #if IS_ENABLED(CONFIG_ZMK_USB)
 ZMK_SUBSCRIPTION(host_frames, zmk_usb_conn_state_changed);
 #endif
