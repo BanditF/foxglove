@@ -48,6 +48,10 @@ config FOXGLOVE_SIM_PC_STATE
     depends on !FOXGLOVE_SIM_FRAMES && !FOXGLOVE_SIM_EFFECTS && !FOXGLOVE_SIM_RGB_STATE
     depends on SETTINGS
 
+config FOXGLOVE_SIM_RGB_IDLE_RACE
+    bool "Simulator: rgb_idle's key-then-away race (the pc-state case's fakes with its own driver, module/pc_state_sim.c)"
+    depends on FOXGLOVE_SIM_PC_STATE
+
 config FOXGLOVE_SIM_POLARITY
     bool "Simulator: panel polarity case (panel_polarity.c and host_link.c with faked drawers, settings backend and relay, module/polarity_sim.c)"
     depends on !FOXGLOVE_SIM_FRAMES && !FOXGLOVE_SIM_EFFECTS && !FOXGLOVE_SIM_RGB_STATE && !FOXGLOVE_SIM_PC_STATE

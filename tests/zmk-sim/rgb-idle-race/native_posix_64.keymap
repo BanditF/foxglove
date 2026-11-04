@@ -1,0 +1,9 @@
+#include "../common/keymap.dtsi"
+
+&kscan {
+    events = <
+        // No key presses here: module/pc_state_sim.c plays the app and raises its own key. This
+        // only keeps the simulator running until the driver is done (about 15 s).
+        ZMK_MOCK_RELEASE(4,0,20000) // fires at ~20 s; the mock exits ~20 s later
+    >;
+};

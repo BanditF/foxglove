@@ -1,0 +1,5 @@
+# rgb_idle's key-then-away race: on USB with the PC awake, a real key (position 1) and then away
+# at once, before the key's 50 ms check: the lights go dark, the user's on/off stays on through
+# the 10 s save delay, and back lights them again. The user's own off and on still count, and
+# the user's off just before away is still the user's (dark after back).
+/^race: /p

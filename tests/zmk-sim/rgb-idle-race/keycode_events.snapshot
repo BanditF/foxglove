@@ -1,0 +1,14 @@
+race: the PC awake, on USB: LEDs on; shown lit 1, wanted 1, idle 0
+race: -- a key (the L of Win+L), then the PC locks: away lands before the key's 50 ms check
+race: away, after the key's check: LEDs off; shown lit 0, wanted 1, idle 1
+race: away, past the 10 s save delay: LEDs off; shown lit 0, wanted 1, idle 1
+race: -- the PC unlocks: back with the wake lights it again
+race: back: LEDs on; shown lit 1, wanted 1, idle 0
+race: -- the user's own off and on still count
+race: the user's off: LEDs off; shown lit 0, wanted 0, idle 0
+race: the user's on: LEDs on; shown lit 1, wanted 1, idle 0
+race: -- the user's off, then away before its check: still the user's
+race: away after the user's off: LEDs off; shown lit 0, wanted 0, idle 1
+race: back after the user's off: LEDs off; shown lit 0, wanted 0, idle 0
+race: the user's on again: LEDs on; shown lit 1, wanted 1, idle 0
+race: -- done

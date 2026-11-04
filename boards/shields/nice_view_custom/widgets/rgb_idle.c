@@ -310,6 +310,12 @@ static void save(void) { k_work_reschedule(&save_work, SAVE_DELAY); }
 
 static int8_t told = -1; // the on/off last told to the PC (left) or the left (right), -1 none
 
+// ZMK's on/off as this file last set it (idle, the PC state, sync, hand-back), or as the user
+// last set it; -1 unknown (before the first apply, and from hand-back until its apply). A key's
+// check counts only a change from this as the user's, never one this file made itself: away
+// can turn the lights off between a key and its check (#651), which isn't the user's off.
+static int8_t applied = -1;
+
 // The on/off may have changed: the PC hears (left), the left reads it (right). Under a scene too,
 // where it's the on/off hand-back will show (#542).
 static void tell(bool on) {
@@ -352,12 +358,21 @@ static void apply_cb(struct k_work *work) {
     // whatever the on/off (#542); this runs again on hand-back, which puts target back.
     if (!atomic_get(&host_drawn)) {
         bool on;
-        if (zmk_rgb_underglow_get_state(&on) == 0 && on != want) {
-            if (want) {
-                zmk_rgb_underglow_on();
-            } else {
-                zmk_rgb_underglow_off();
+        if (zmk_rgb_underglow_get_state(&on) == 0) {
+            if (on != want) {
+                if (want) {
+                    zmk_rgb_underglow_on();
+                } else {
+                    zmk_rgb_underglow_off();
+                }
+                if (zmk_rgb_underglow_get_state(&on) == 0) {
+                    applied = on;
+                }
+            } else if (applied < 0) {
+                applied = on;
             }
+            // Already as wanted: applied stays, so a user's toggle just before (to what this
+            // shows now) is still the user's at the check.
         }
     }
     tell(want);
@@ -393,9 +408,14 @@ static void check_cb(struct k_work *work) {
     kick_if_look_changed();
 #endif
     bool on;
-    // Under the PC's frames ZMK's underglow is off on purpose: that's not the user's choice.
-    if (!following && !atomic_get(&host_drawn) && zmk_rgb_underglow_get_state(&on) == 0 &&
-        on != wanted) {
+    // Under the PC's frames ZMK's underglow is off on purpose: that's not the user's choice. Nor
+    // is a change this file made (applied): only one from what it last set is the user's.
+    if (!following && !atomic_get(&host_drawn) && applied >= 0 &&
+        zmk_rgb_underglow_get_state(&on) == 0 && on != applied) {
+        applied = on;
+        if (on == wanted) {
+            return; // back to what this file had turned off or on: no change of the user's
+        }
         wanted = on; // toggled with a key
         save();
         tell(on);
@@ -474,6 +494,7 @@ static void host_back_cb(struct k_work *work) {
     }
     atomic_set(&host_drawn, 0);
     frame_forget(false); // ZMK's frames from before the scene are gone
+    applied = -1;        // lamp_strip.c turned ZMK's underglow off: apply_cb sets it again
     apply_cb(work);
 }
 static K_WORK_DEFINE(host_back_work, host_back_cb);
