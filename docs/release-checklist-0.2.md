@@ -18,13 +18,15 @@ Each item lands or is dropped, and its PENDING line in the notes is resolved eit
 
 - [ ] BanditF/zmk-raw-hid#2 (foxglove#680): Raw HID report queue. If it lands, the firmware's
       west manifest points at the merged commit (not a branch), and #682's CI-only firmware
-      build is closed. Health counters land first.
+      build is closed. Health counters land first. *Merged into `nonblocking` as 2a26c3d and
+      #682 closed; the manifest still names the branch, and hardware is under Known untested
+      items.*
 - [x] #678: the lab's red cases on main, done by #689 (2bc521c): they report BLOCKED with the
       outside cause; a product failure is still a FAIL.
 - [x] #664: the right's bootloader drive after standby, done by #687 (d9fa1e2): one replug prompt.
 - [x] The automated sitting: #690 (f7564981), `scripts/lab/sitting.ps1`, 0 user steps. Its run on the candidate is in section 4.
-- [ ] The keyboard's self-report and `foxglove-lab health` (the test after a batch flash).
-- [ ] The Dynamic Lighting stack (#691: #693, #697, #699, #700, #704) lands, and its PENDING note is written.
+- [x] The keyboard's self-report and `foxglove-lab health` (the test after a batch flash), done by #711.
+- [x] The Dynamic Lighting stack (#691: #693, #697, #699, #700, #704) lands, and its PENDING note is written.
 - [ ] #681's `lights_page.py` step passes in a release gate on the candidate (#677).
 
 ## 1. Versions
