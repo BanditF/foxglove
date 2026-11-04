@@ -865,7 +865,7 @@ fn playlist(ui: &mut egui::Ui, art: &Art, cycle: &mut Cycle, changed: &mut bool)
         .id_salt("art-playlist")
         .default_open(cycle.playlist)
         .show(ui, |ui| {
-            ui.weak("Steps through more art than the keyboard keeps. Pieces from this PC go into the places lent to the playlist before their turn, so each step is instant. Without Foxglove the keyboard shows what those places hold.");
+            ui.weak("Steps through more art than the keyboard keeps; each piece is staged ahead, so steps are instant.");
             let mut on = cycle.playlist;
             if ui.checkbox(&mut on, "Play the playlist").changed() {
                 cycle.playlist = on;

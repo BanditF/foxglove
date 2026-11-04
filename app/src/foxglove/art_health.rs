@@ -4,11 +4,10 @@
 //! notes each event as it happens (a step, a stage that landed or failed, a stage skipped and
 //! why); [`rows`] only reads. No polling.
 //!
-//! The row shape is `foxglove_link::health::HealthRow`'s (#709: subsystem, item, level,
-//! detail), mirrored here as `art_keys_health` does until that lands; [`rows`] is a
-//! `health::Provider` (`fn() -> Vec<HealthRow>`) for `health::register` (#710).
+//! The rows are the Keyboard health view's shared type (`foxglove_link::health::HealthRow`, #705);
+//! [`rows`] is the `health::Provider` registered with `health::register` as "art_playlist".
 
-// The shared health view (#705) picks these up; until it lands only the tests read them.
+// Some of the notes are read only by the tests so far.
 #![allow(dead_code)]
 
 use std::sync::Mutex;
@@ -17,22 +16,8 @@ use std::time::{Duration, Instant};
 /// The subsystem these rows belong to in the health view.
 pub const SUBSYSTEM: &str = "screens.art_playlist";
 
-/// A row's state in the health view (as `foxglove_link::health::Level`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Level {
-    Ok,
-    Warn,
-    Fail,
-}
-
-/// One view-model row for the health view (as `foxglove_link::health::HealthRow`).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HealthRow {
-    pub subsystem: String,
-    pub item: String,
-    pub level: Level,
-    pub detail: String,
-}
+// The shared row type of the Keyboard health view (#705).
+pub use super::health::{HealthRow, Level};
 
 /// One swap: a piece put into a lent place ahead of its step.
 #[derive(Clone, Debug, PartialEq, Eq)]
