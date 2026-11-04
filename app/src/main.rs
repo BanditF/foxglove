@@ -27,11 +27,19 @@ use settings::Settings;
 fn main() {
     // Foxglove (#370): stderr and panics to logs\foxglove.log, first, so an early exit is seen.
     foxglove::app_log::start();
-    if foxglove::update::helper_entry() { return; }
-    if foxglove::identity::entry() { return; }
-    if foxglove::autostart::uninstall_entry() { return; } // Foxglove (#444): MSI uninstall
-    // Foxglove (#345): one per user; a second launch shows the running one and exits 0.
-    if !foxglove::single_instance::claim() { return; }
+    if foxglove::update::helper_entry() {
+        return;
+    }
+    if foxglove::identity::entry() {
+        return;
+    }
+    if foxglove::autostart::uninstall_entry() {
+        return;
+    } // Foxglove (#444): MSI uninstall
+      // Foxglove (#345): one per user; a second launch shows the running one and exits 0.
+    if !foxglove::single_instance::claim() {
+        return;
+    }
     foxglove::update::start();
     os_layout::init();
     foxglove::gpu_reset::start(); // Foxglove (#346): a fresh copy after a GPU reset

@@ -4,11 +4,11 @@ use crate::key_action::KeyAction;
 use crate::keyboard::Keyboard;
 use zmk_studio_api::{Behavior, HidUsage, HID_USAGE_KEYBOARD};
 
+use super::custom_page::CustomDraft;
 use super::picker::{
     framed_candidate_groups, modifier_toggle_grid, multi_candidate_groups, titled_candidate_group,
     Candidate, CandidateGroup, SelectedKey,
 };
-use super::custom_page::CustomDraft;
 use super::profile::{EditorProfile, FeatureManifest, SupportLevel};
 use super::zmk_catalog::{self, ZmkBehaviorKind};
 use super::{EditTarget, EditorState};
@@ -386,8 +386,9 @@ impl EditorState {
         // If the current draft kind is not supported on this keyboard, switch to the first supported one.
         if self.zmk_draft.custom.is_none()
             && !keyboard.is_action_supported(&KeyAction::Zmk(zmk_catalog::sample_behavior(
-            self.zmk_draft.kind,
-        ))) {
+                self.zmk_draft.kind,
+            )))
+        {
             if let Some(first) = ZmkProfile
                 .sidebar()
                 .iter()

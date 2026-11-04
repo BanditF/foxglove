@@ -11,8 +11,8 @@ impl OverlayApp {
         crate::foxglove::live_feed::group(ui); // Foxglove (#499)
         crate::foxglove::health::group(ui); // Foxglove (#705)
         crate::foxglove::troubleshooting::group(ui); // Foxglove (#535)
-        // The Keyboard page's own cards are drawn at its top by the shell (#386).
-        // The Lights page (#387).
+                                                     // The Keyboard page's own cards are drawn at its top by the shell (#386).
+                                                     // The Lights page (#387).
         titled_group(ui, "Lights", crate::foxglove::lights_page::show);
     }
 }

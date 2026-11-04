@@ -36,7 +36,10 @@ fn main() {
     } else {
         String::new()
     };
-    assert!(manifest.contains(MSIX_MARKER), "manifest lost its {MSIX_MARKER} marker");
+    assert!(
+        manifest.contains(MSIX_MARKER),
+        "manifest lost its {MSIX_MARKER} marker"
+    );
     res.set_manifest(&manifest.replace(MSIX_MARKER, msix.trim()));
     res.compile().expect("Failed to embed Windows resources.");
 }

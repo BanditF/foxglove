@@ -82,7 +82,12 @@ impl OverlayApp {
         }
 
         // Let go (or egui lost the drag): keep it whole on the display under the pointer.
-        let from = self.ui.overlay_grab.take().map(|d| d.from).unwrap_or_default();
+        let from = self
+            .ui
+            .overlay_grab
+            .take()
+            .map(|d| d.from)
+            .unwrap_or_default();
         self.ui.overlay_drag = None;
         let Some(place) = overlay_place::dropped(cursor, grab, rect.size(), &monitors) else {
             return;

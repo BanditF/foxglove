@@ -226,7 +226,11 @@ impl OverlayApp {
         }
 
         // Out of tries: wait for the device to arrive (the watch sets a new burst).
-        let AppConnectionState::Reconnecting { next_attempt_at: Some(next_attempt_at), .. } = &self.session.connection else {
+        let AppConnectionState::Reconnecting {
+            next_attempt_at: Some(next_attempt_at),
+            ..
+        } = &self.session.connection
+        else {
             return;
         };
         let next_attempt_at = *next_attempt_at;

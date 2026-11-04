@@ -426,7 +426,10 @@ impl Settings {
         }
         if let Some(val) = section.get("label_opacity") {
             // "follow" (or anything else that isn't a number) follows the overlay's opacity.
-            s.label_opacity = val.parse::<u8>().ok().map(|v| v.min(*Self::OPACITY_RANGE.end()));
+            s.label_opacity = val
+                .parse::<u8>()
+                .ok()
+                .map(|v| v.min(*Self::OPACITY_RANGE.end()));
         }
         Some(s)
     }

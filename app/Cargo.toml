@@ -90,6 +90,8 @@ windows = { version = "0.62.2", features = [
     "Win32_Devices_DeviceAndDriverInstallation",
     "Win32_Graphics_Dwm",
     "Win32_UI_Shell",
+    # Foxglove (#741): the Startup-folder shortcut (IShellLinkW, IPersistFile).
+    "Win32_System_Com",
     "Win32_System_Registry",
     # Foxglove (#410): lock/unlock and display on/off.
     "Win32_System_Power",

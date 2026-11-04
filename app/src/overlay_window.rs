@@ -108,8 +108,8 @@ impl OverlayApp {
         // (`foxglove::overlay_grab`).
         // A host without native windows (Wayland) draws Settings inside the overlay: the whole
         // overlay takes the mouse then, as the editor does.
-        let editor = self.editor.target.is_some()
-            || (self.ui.settings_visible && ctx.embed_viewports());
+        let editor =
+            self.editor.target.is_some() || (self.ui.settings_visible && ctx.embed_viewports());
         let tray = crate::foxglove::tray_panel::is_open();
         let settings = self.ui.settings_visible && self.ui.overlay_armed;
         // A drag (of the overlay) takes the whole display, so the overlay never draws clipped.
@@ -233,7 +233,9 @@ impl OverlayApp {
         }
         // Foxglove: a profile switch reloads the overlay's settings.
         if crate::foxglove::overlay_profile::switched(ctx, &mut self.profile_seen) {
-            let s = crate::foxglove::overlay_profile::effective(crate::settings::Settings::load().unwrap_or_default());
+            let s = crate::foxglove::overlay_profile::effective(
+                crate::settings::Settings::load().unwrap_or_default(),
+            );
             self.settings.active = s.clone();
             self.settings.draft = s;
         }
