@@ -78,6 +78,30 @@ impl Outcome {
     }
 }
 
+/// Where `foxglove-lab health` reads from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// `--replay FILE`: a recording, no device.
+    Replay,
+    /// The app holds the keyboard: its `health.read`.
+    App,
+    /// The keyboard over the lab's own link.
+    Direct,
+}
+
+/// The source for a run: a replay first, else the app while it runs, else the keyboard.
+/// `app_running` must be probed before the lab takes its own app guard (`platform::guard`):
+/// once the lab holds the app's mutex, the probe fails as if the app ran.
+pub fn source(replay: bool, app_running: bool) -> Source {
+    if replay {
+        Source::Replay
+    } else if app_running {
+        Source::App
+    } else {
+        Source::Direct
+    }
+}
+
 /// Judges one read of both halves. A left that can't be read (or firmware without the report)
 /// blocks the test: nothing about the keyboard is known. A right that can't be read is a
 /// failure: the relay or the right half is what's broken.
@@ -264,6 +288,14 @@ mod tests {
             s.push('\n');
         }
         s
+    }
+
+    #[test]
+    fn the_source_is_the_replay_then_the_app_then_the_keyboard() {
+        assert_eq!(source(true, true), Source::Replay);
+        assert_eq!(source(true, false), Source::Replay);
+        assert_eq!(source(false, true), Source::App);
+        assert_eq!(source(false, false), Source::Direct);
     }
 
     #[test]
