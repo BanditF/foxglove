@@ -18,7 +18,10 @@
 //!
 //! The firmware's replies carry no sequence number, so only one request per (proto, command) is
 //! on the wire at a time; later ones wait their turn, and a request whose caller has given up is
-//! never sent. The link reconnects by itself; whatever was queued for a lost connection is
+//! never sent. At most [`MAX_IN_FLIGHT`] requests of any kind are, too (#739): the keyboard keeps
+//! its replies and its own events in one 4-deep queue, and a connect's burst of requests from
+//! several threads overran it (health: "replies dropped"). Commands after a request held back
+//! wait with it, so nothing overtakes it. The link reconnects by itself; whatever was queued for a lost connection is
 //! dropped, never sent to the next one.
 //!
 //! A callback that panics (an event sink, a report observer or a subscriber's filter) is dropped
@@ -58,6 +61,11 @@ const SUBSCRIBER_BUFFER: usize = 1024;
 /// After a request times out, its (proto, command) is held this long: a late reply in that
 /// window is dropped instead of answering the next request of the same kind.
 const LATE_REPLY_GRACE: Duration = Duration::from_millis(500);
+/// Requests on the wire at once, a reply still owed for each (timed-out ones within their
+/// [`LATE_REPLY_GRACE`] count too): the firmware's reply queue holds 4 (`reply_msgq`,
+/// widgets/host_link.c), and its own events (art STATUS, the frames' hand-back, PC_STATE's lease
+/// ask, the lights owner) need the rest.
+pub const MAX_IN_FLIGHT: usize = 2;
 
 pub type Report = [u8; REPORT];
 
@@ -525,6 +533,11 @@ impl Requests {
             .retain(|c| c.reply.as_ref().is_none_or(|r| r.deadline > now));
     }
 
+    /// Replies the keyboard still owes: requests in flight and timed-out ones still held.
+    fn owed(&self) -> usize {
+        self.in_flight.len() + self.held.len()
+    }
+
     fn next_deadline(&self) -> Option<Instant> {
         let waiting = self.waiting.iter().filter_map(|c| c.reply.as_ref());
         let held = waiting
@@ -551,6 +564,8 @@ fn write_loop(dev: &dyn RawHid, commands: &Receiver<Message>, shared: &Shared) -
         }
         requests.expire(Instant::now());
         let queued: Vec<_> = requests.waiting.drain(..).collect();
+        // Set once a request waits for room on the wire: everything after it waits too.
+        let mut full = false;
         for c in queued {
             if let Some(r) = &c.reply {
                 if r.deadline <= Instant::now() {
@@ -560,6 +575,11 @@ fn write_loop(dev: &dyn RawHid, commands: &Receiver<Message>, shared: &Shared) -
                     requests.waiting.push_back(c);
                     continue;
                 }
+                full |= requests.owed() >= MAX_IN_FLIGHT;
+            }
+            if full {
+                requests.waiting.push_back(c);
+                continue;
             }
             match dev.write(&c.report) {
                 Ok(()) => write_errors = 0,
@@ -1318,6 +1338,74 @@ mod tests {
         fake.wait_written(2);
         fake.release_one();
         assert_eq!(second.join().unwrap().unwrap(), 2);
+    }
+
+    /// A tagged request of its own (proto, command): `cmd` keeps the keys apart.
+    fn ask(l: &Link, cmd: u8, timeout: Duration) -> Result<u8> {
+        l.request(&[protocol::SETTINGS, cmd, cmd], protocol::SETTINGS, cmd, timeout)
+            .map(|r| r[2])
+    }
+
+    #[test]
+    fn at_most_max_in_flight_requests_are_on_the_wire() {
+        // #739: a connect's burst from several threads, each its own command.
+        let fake = Fake::default();
+        fake.hold.store(true, Ordering::Relaxed);
+        let l = Arc::new(link(&fake));
+        let asks: Vec<_> = (1..=5u8)
+            .map(|cmd| {
+                let l = l.clone();
+                std::thread::spawn(move || ask(&l, cmd, WAIT))
+            })
+            .collect();
+        fake.wait_written(MAX_IN_FLIGHT);
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(fake.written().len(), MAX_IN_FLIGHT, "the rest wait for a reply");
+        // Each reply makes room for one more, and every caller gets its own answer.
+        for n in MAX_IN_FLIGHT + 1..=5 {
+            fake.release_one();
+            fake.wait_written(n);
+            assert_eq!(fake.written().len(), n);
+        }
+        for _ in 0..MAX_IN_FLIGHT {
+            fake.release_one();
+        }
+        let mut got: Vec<u8> = asks.into_iter().map(|a| a.join().unwrap().unwrap()).collect();
+        got.sort();
+        assert_eq!(got, [1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn nothing_overtakes_a_request_waiting_for_room() {
+        let fake = Fake::default();
+        fake.hold.store(true, Ordering::Relaxed);
+        let l = Arc::new(link(&fake));
+        let first: Vec<_> = (1..=MAX_IN_FLIGHT as u8)
+            .map(|cmd| {
+                let l = l.clone();
+                std::thread::spawn(move || ask(&l, cmd, WAIT))
+            })
+            .collect();
+        fake.wait_written(MAX_IN_FLIGHT);
+        let third = std::thread::spawn({
+            let l = l.clone();
+            move || ask(&l, 9, WAIT)
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        l.send(&[protocol::SETTINGS, 0x20, 0x20]).unwrap(); // a plain send after it
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(fake.written().len(), MAX_IN_FLIGHT, "the send waits behind the request");
+        fake.release_one();
+        fake.wait_written(MAX_IN_FLIGHT + 2);
+        let order: Vec<u8> = fake.written()[MAX_IN_FLIGHT..].iter().map(|w| w[1]).collect();
+        assert_eq!(order, [9, 0x20], "in the order they were asked");
+        while !fake.held.lock().unwrap().is_empty() {
+            fake.release_one();
+        }
+        for a in first {
+            a.join().unwrap().unwrap();
+        }
+        assert_eq!(third.join().unwrap().unwrap(), 9);
     }
 
     #[test]
