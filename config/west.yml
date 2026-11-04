@@ -19,12 +19,11 @@ manifest:
       revision: v0.3.0
       import: app/west.yml
     # nonblocking includes the USB reply recovery (zmk-raw-hid#1, foxglove #434): Raw HID replies
-    # come back after a PC restart. Pinned to the per-transport counters (raw_hid/stats.h version
-    # 2: a Bluetooth report nobody listens for is skipped, not failed), on nonblocking once
-    # BanditF/zmk-raw-hid's fix/per-transport-counters merges.
+    # come back after a PC restart, and the per-transport counters (zmk-raw-hid#3, raw_hid/stats.h
+    # version 2: a Bluetooth report nobody listens for is skipped, not failed).
     - name: zmk-raw-hid
       url: https://github.com/BanditF/zmk-raw-hid
-      revision: 08d0582b8b9e7f18e43284df43847ce10f907baf
+      revision: nonblocking
     - name: zmk-keypeek-layer-notifier
       remote: srwi
       revision: master
