@@ -586,7 +586,7 @@ fn a_version_3_block_counts_each_transport_and_skipped_is_no_warning() {
         }),
         ..b
     };
-    let rows = rows(&report(failing, right()), &Thresholds::default());
+    let rows = super::rows(&report(failing, right()), &Thresholds::default());
     let hid: Vec<(Level, &str)> = find(&rows, "Reports to the PC")
         .iter()
         .map(|r| (r.level, r.detail.as_str()))
