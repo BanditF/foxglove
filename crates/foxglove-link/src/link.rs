@@ -22,8 +22,7 @@
 //! its replies and its own events in one 4-deep queue, and a connect's burst of requests from
 //! several threads overran it (health: "replies dropped"). Commands after a request held back
 //! wait with it, so nothing overtakes it. The link reconnects by itself; whatever was queued for a
-//! lost connection is
-//! dropped, never sent to the next one.
+//! lost connection is dropped, never sent to the next one.
 //!
 //! A callback that panics (an event sink, a report observer or a subscriber's filter) is dropped
 //! on the spot: it can't take the link thread down or poison the lists (#587). A poisoned lock
