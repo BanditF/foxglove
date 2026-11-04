@@ -596,3 +596,15 @@ pub fn sink(
 ) -> Result<(String, Option<String>)> {
     anyhow::bail!("typing sink requires Windows")
 }
+
+#[cfg(all(test, windows))]
+mod tests {
+    /// Why `foxglove-lab health` probes for the app before the run's own guard: a held guard
+    /// makes the next probe fail as if the app ran, app running or not.
+    #[test]
+    fn a_held_guard_looks_like_the_app() {
+        let held = super::guard(true).unwrap();
+        assert!(super::guard(false).is_err());
+        drop(held);
+    }
+}
