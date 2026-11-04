@@ -53,11 +53,13 @@ impl Reopener for ZmkReopener {
         let (vid, pid) = (self.layout.definition.vid, self.layout.definition.pid);
         // Ask only once the keyboard is back, so a slow restart doesn't use up the tries.
         crate::foxglove::reconnect::require_hid(vid, pid)?;
+        let mut last_error = None;
         let fresh = (0..3).find_map(|attempt| {
             if attempt > 0 {
                 std::thread::sleep(Duration::from_millis(1500));
             }
             fetch_and_save(vid, pid, &self.transport)
+                .map_err(|e| last_error = Some(e.to_string()))
                 .ok()
                 .and_then(|(data, build)| {
                     // Read from the keyboard just now: its ids are this build's (#633).
@@ -65,6 +67,10 @@ impl Reopener for ZmkReopener {
                     build_from_zmk_data(vid, pid, data).ok()
                 })
         });
+        if let (None, Some(e)) = (&fresh, &last_error) {
+            // Foxglove (F6): the overlay keeps the keymap read before.
+            note_read_failed(&format!("kept the keymap read before ({e})"), true);
+        }
         let layout = fresh.map_or_else(|| Arc::clone(&self.layout), Arc::new);
         Ok(Box::new(ZmkProtocol::open_hid(
             layout,
@@ -81,11 +87,27 @@ fn fetch_and_save(
     transport: &ZmkTransport,
 ) -> Result<(ZmkData, Option<String>), Box<dyn Error>> {
     let (data, recording) = zmk_rpc::fetch_zmk_data(transport)?;
+    note_read(&data);
     let build = crate::foxglove::devices::firmware_build();
     if let Some(recording) = recording {
         crate::foxglove::keymap_cache::save(vid, pid, &recording, &data, build.as_deref());
     }
     Ok((data, build))
+}
+
+/// Foxglove (F6): the keymap health row "Read".
+fn note_read(data: &ZmkData) {
+    use crate::foxglove::keymap_health::{note, Read};
+    let layers = data.resolved_layers.len();
+    let keys = data.resolved_layers.first().map_or(0, |l| l.bindings.len());
+    note(|h| h.read(Read::Board { layers, keys }));
+}
+
+/// Foxglove (F6): a keymap read that failed, shown from the saved copy (`cached`) or not at all.
+fn note_read_failed(error: &dyn std::fmt::Display, cached: bool) {
+    use crate::foxglove::keymap_health::{note, Read};
+    let why = error.to_string();
+    note(|h| h.read(if cached { Read::Cached(why) } else { Read::Failed(why) }));
 }
 
 /// Foxglove: what the app may invoke, from a keymap read under firmware `build` (#633).
@@ -109,11 +131,14 @@ impl ZmkProtocol {
             }
             Err(e) => {
                 let Some((client, saved)) = crate::foxglove::keymap_cache::replay(vid, pid) else {
+                    note_read_failed(&e, false);
                     return Err(e);
                 };
                 let Ok(data) = zmk_rpc::fetch_zmk_data_from_client(client) else {
+                    note_read_failed(&e, false);
                     return Err(e);
                 };
+                note_read_failed(&e, true);
                 // The saved copy is shown either way; its ids are used only while the keyboard
                 // runs the build it was read from (#633), else they wait for a keymap read.
                 let now = crate::foxglove::devices::firmware_build();

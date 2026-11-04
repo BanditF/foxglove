@@ -130,6 +130,9 @@ pub enum StudioRequest {
     Discard,
     /// The board's stock keymap (`reset_settings`), then its keymap again.
     RestoreStock,
+    /// Read the keymap and the unsaved state again, changing nothing (F6: after a failed write,
+    /// to show what the board really has).
+    Reread,
 }
 
 /// Answers one [`StudioRequest`]: the editor's channel, a repaint, and a new keymap for the
@@ -412,10 +415,16 @@ impl StudioEditor {
         done: StudioDone,
         keymap: impl FnOnce(&[ResolvedLayer], &keymap::Keymap) -> KeymapSnapshot,
     ) {
+        // Save-like requests leave the board's live keymap equal to its saved one (#592).
+        let settles = matches!(
+            request,
+            StudioRequest::Discard | StudioRequest::RestoreStock
+        );
         let changed = match request {
             StudioRequest::Open => return done.send(self.open().map_err(error_text)),
             StudioRequest::WaitUnlock => return self.wait_unlock(done),
             StudioRequest::Discard => self.run(|c| c.discard_changes()).map(|_| ()),
+            StudioRequest::Reread => Ok(()),
             StudioRequest::RestoreStock => self.run(|c| c.reset_settings()).and_then(|done| {
                 done.then_some(())
                     .ok_or_else(|| "The keyboard didn't restore its stock keymap.".into())
@@ -424,7 +433,9 @@ impl StudioEditor {
         match changed.and_then(|()| self.reread()) {
             Ok((layers, raw)) => {
                 done.send_with_keymap(self.status, keymap(&layers, &raw));
-                self.settle(Some(raw));
+                if settles {
+                    self.settle(Some(raw));
+                }
             }
             Err(e) => done.send(Err(error_text(e))),
         }

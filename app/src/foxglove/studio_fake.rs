@@ -40,6 +40,13 @@ struct State {
     unsaved: bool,
     out: VecDeque<u8>,
     lines_opened: usize,
+    /// F6: the next binding write is refused (`INVALID_PARAMETERS`), the binding kept.
+    refuse_write: bool,
+    /// F6: the next request is applied but its answer is lost and the line breaks.
+    lose_reply: bool,
+    broken: bool,
+    /// F6: the next save fails with this code, the changes kept live and unsaved.
+    save_error: Option<keymap::SaveChangesErrorCode>,
 }
 
 struct Shared {
@@ -78,6 +85,10 @@ impl FakeBoard {
                 unsaved: false,
                 out: VecDeque::new(),
                 lines_opened: 0,
+                refuse_write: false,
+                lose_reply: false,
+                broken: false,
+                save_error: None,
             }),
             ready: Condvar::new(),
         }))
@@ -147,6 +158,25 @@ impl FakeBoard {
         let mut state = self.state();
         state.live[layer].bindings[pos] = binding(KEY_PRESS, 0x07_0035);
         state.unsaved = true;
+    }
+
+    /// F6: the board refuses the next binding write and keeps the binding it has.
+    pub(crate) fn refuse_next_write(&self) {
+        self.state().refuse_write = true;
+    }
+
+    /// F6: the board applies the next request, but its answer never arrives: the line breaks.
+    pub(crate) fn lose_next_reply(&self) {
+        self.state().lose_reply = true;
+    }
+
+    /// F6: the next save fails with `code`; the changes stay live and unsaved, as in ZMK.
+    pub(crate) fn fail_next_save(&self, code: keymap::SaveChangesErrorCode) {
+        self.state().save_error = Some(code);
+    }
+
+    pub(crate) fn unsaved(&self) -> bool {
+        self.state().unsaved
     }
 
     pub(crate) fn live_param(&self, layer: usize, pos: usize) -> u32 {
@@ -281,6 +311,9 @@ fn answer_keymap(
             available_layers: 0,
             max_layer_name_length: 20,
         }),
+        Q::SetLayerBinding(_) if std::mem::take(&mut state.refuse_write) => R::SetLayerBinding(
+            keymap::SetLayerBindingResponse::SetLayerBindingRespInvalidParameters as i32,
+        ),
         Q::SetLayerBinding(set) => {
             let keys = state.keys;
             let slot = state
@@ -304,6 +337,12 @@ fn answer_keymap(
             R::SetLayerBinding(code as i32)
         }
         Q::CheckUnsavedChanges(_) => R::CheckUnsavedChanges(state.unsaved),
+        Q::SaveChanges(_) if state.save_error.is_some() => {
+            let code = state.save_error.take().map_or(0, |c| c as i32);
+            R::SaveChanges(keymap::SaveChangesResponse {
+                result: Some(keymap::save_changes_response::Result::Err(code)),
+            })
+        }
         Q::SaveChanges(_) => {
             state.saved = state.live.clone();
             mark_unsaved(state, false);
@@ -390,7 +429,10 @@ pub(crate) struct FakeLine {
 
 impl Read for FakeLine {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let state = self.board.state.lock().unwrap();
+        let mut state = self.board.state.lock().unwrap();
+        if std::mem::take(&mut state.broken) {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
         // Like a serial port's read timeout: wait a little for bytes, then report none.
         let (mut state, _) = self
             .board
@@ -414,6 +456,10 @@ impl Write for FakeLine {
         for frame in self.frames.push(buf) {
             if let Ok(request) = studio::Request::decode(frame.as_slice()) {
                 let response = answer(&mut state, request);
+                if std::mem::take(&mut state.lose_reply) {
+                    state.broken = true;
+                    continue;
+                }
                 push(&mut state, response);
             }
         }

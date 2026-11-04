@@ -8,17 +8,25 @@
 //! reports. Everything here works from what the board reports, for any Studio board.
 //!
 //! The KeyPeek editor (`crate::keymap_editor`) keeps its window and pickers; it calls in here.
+//!
+//! F6 (#582, #583): every change is checked before it is written ([`check_write`]), a failed
+//! write reads the keymap back so the editor shows what the board really has, a failed save
+//! says why and keeps the changes, and each of these is noted in `keymap_health`.
 
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use egui::RichText;
 use egui_phosphor::regular as icon;
 
+use crate::foxglove::keymap_health::{self, Change};
 use crate::foxglove::studio_session::{Status, StudioRequest, LOCKED_MESSAGE};
 use crate::key_action::KeyAction;
 use crate::keyboard::Keyboard;
 use crate::keymap_editor::{EditTarget, EditorState, PendingKind, ZmkSessionState};
 use crate::protocols::WriteSupport;
+
+/// Said while the keymap is read back after a failure; dropped when the read is done.
+const READING_BACK: &str = " Reading the keyboard's keymap back…";
 
 /// Studio keeps every step; a long session keeps the last this many.
 const HISTORY_LIMIT: usize = 200;
@@ -72,6 +80,80 @@ impl History {
         self.undo.clear();
         self.redo.clear();
     }
+}
+
+/// Checks a change before it is written (F6): the key and layer are on the keyboard, the
+/// keyboard offers the behaviour with these values (its own metadata, the firmware's rule), and
+/// a layer it points at exists. `Err` is the reason, in the user's words; nothing is sent.
+pub fn check_write(
+    keyboard: &Keyboard,
+    target: EditTarget,
+    action: &KeyAction,
+) -> Result<(), String> {
+    let layers = keyboard.layer_infos();
+    if target.layer_index >= layers.len() {
+        return Err(format!(
+            "layer {} isn't on the keyboard",
+            target.layer_index + 1
+        ));
+    }
+    let on_layout = keyboard
+        .layout()
+        .keys
+        .iter()
+        .any(|k| k.row == target.row && k.col == target.col);
+    if !on_layout {
+        return Err("that key isn't on the keyboard's layout".into());
+    }
+    if !keyboard.is_action_supported(action) {
+        return Err("the keyboard doesn't offer that behaviour with these values".into());
+    }
+    if let KeyAction::Zmk(behavior) = action {
+        if let Some(id) = behavior.layer_id() {
+            if !layers.iter().any(|l| l.id == id) {
+                return Err("it points at a layer the keyboard doesn't have".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The board's error codes in the user's words; anything else as the board said it.
+pub fn plain_reason(error: &str) -> String {
+    const PLAIN: [(&str, &str); 7] = [
+        (
+            "SET_LAYER_BINDING_RESP_INVALID_LOCATION",
+            "that key or layer isn't on the keyboard",
+        ),
+        (
+            "SET_LAYER_BINDING_RESP_INVALID_BEHAVIOR",
+            "the keyboard doesn't have that behaviour",
+        ),
+        (
+            "SET_LAYER_BINDING_RESP_INVALID_PARAMETERS",
+            "the keyboard doesn't accept those values",
+        ),
+        (
+            "SAVE_CHANGES_ERR_NO_SPACE",
+            "the keyboard has no room left to save",
+        ),
+        (
+            "SAVE_CHANGES_ERR_NOT_SUPPORTED",
+            "this keyboard's firmware can't save changes",
+        ),
+        ("SAVE_CHANGES_ERR_GENERIC", "the keyboard couldn't save"),
+        ("No response from device", "the keyboard didn't answer"),
+    ];
+    PLAIN
+        .iter()
+        .find(|(code, _)| error.contains(code))
+        .map_or_else(|| error.to_string(), |(_, plain)| (*plain).to_string())
+}
+
+/// True when the board answered and refused (it kept its binding); otherwise the link failed
+/// and nobody knows whether the board took the write.
+fn board_refused(error: &str) -> bool {
+    error.contains("SET_LAYER_BINDING_RESP_") || error.contains("Invalid layer or position")
 }
 
 /// Which way a write moves through the history.
@@ -196,6 +278,85 @@ impl EditorState {
         self.start_studio(keyboard, StudioRequest::Open, false);
     }
 
+    /// Checks `action` before it is written (F6). A refused change is shown and noted, and never
+    /// sent. True when it may be written.
+    pub(crate) fn check_before_write(
+        &mut self,
+        keyboard: &Keyboard,
+        target: EditTarget,
+        action: &KeyAction,
+    ) -> bool {
+        match check_write(keyboard, target, action) {
+            Ok(()) => true,
+            Err(why) => {
+                self.error = Some(format!("Not changed: {why}."));
+                keymap_health::note(|h| h.changed(Change::Refused(why)));
+                false
+            }
+        }
+    }
+
+    /// A write or save the board took (F6: the health rows).
+    pub(crate) fn task_done(&mut self, keyboard: &Keyboard, kind: PendingKind) {
+        let session = keyboard.write_support() == WriteSupport::Session;
+        let dirty = self.zmk_dirty;
+        keymap_health::note(|h| {
+            match kind {
+                PendingKind::Set => h.changed(Change::Written),
+                PendingKind::Save => h.saved(Ok(())),
+            }
+            if session {
+                h.unsaved(dirty);
+            }
+        });
+    }
+
+    /// A write or save failed (F6). A save keeps the changes on the board and says so; a key
+    /// write on a Studio board reads the keymap back, so the overlay, the draft and the Unsaved
+    /// state show what the board really has (it may or may not have taken the write).
+    pub(crate) fn task_failed(&mut self, keyboard: &Keyboard, error: String) {
+        let kind = self.pending.as_ref().map(|t| t.kind);
+        self.fail_task(error.clone());
+        if self.studio.lock == Lock::Locked || error == LOCKED_MESSAGE {
+            return; // the unlock prompt, not an error
+        }
+        let why = plain_reason(&error);
+        match kind {
+            Some(PendingKind::Save) => {
+                self.error = Some(format!(
+                    "Not saved: {why}. Your changes are on the keyboard until it restarts: \
+                     Save again, or Discard to go back to the last saved keymap."
+                ));
+                keymap_health::note(|h| h.saved(Err(why)));
+            }
+            Some(PendingKind::Set) => {
+                let refused = board_refused(&error);
+                self.error = Some(if refused {
+                    format!("The keyboard didn't take that change: {why}.")
+                } else {
+                    format!("The change may not have reached the keyboard: {why}.{READING_BACK}")
+                });
+                keymap_health::note(|h| {
+                    h.changed(if refused {
+                        Change::Rejected(why)
+                    } else {
+                        Change::LinkFailed(why)
+                    })
+                });
+                if keyboard.write_support() == WriteSupport::Session {
+                    self.start_studio_keep_error(keyboard, StudioRequest::Reread);
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn start_studio_keep_error(&mut self, keyboard: &Keyboard, request: StudioRequest) {
+        let error = self.error.take();
+        self.start_studio(keyboard, request, false);
+        self.error = error;
+    }
+
     /// True while a write, save or session request is under way.
     pub(crate) fn session_busy(&self) -> bool {
         self.pending.is_some() || self.studio.task.is_some() || self.closing
@@ -246,9 +407,33 @@ impl EditorState {
                     self.retarget(keyboard, target);
                 }
             }
-            (StudioRequest::Discard | StudioRequest::RestoreStock, Err(e)) => {
-                self.error = Some(e);
+            (
+                StudioRequest::Discard | StudioRequest::RestoreStock | StudioRequest::Reread,
+                Err(e),
+            ) if e == LOCKED_MESSAGE => {
+                self.studio.lock = Lock::Locked;
             }
+            (StudioRequest::Discard | StudioRequest::RestoreStock, Err(e)) => {
+                self.error = Some(format!("{}{READING_BACK}", plain_reason(&e)));
+                self.start_studio_keep_error(keyboard, StudioRequest::Reread);
+            }
+            (StudioRequest::Reread, Ok(status)) => {
+                // After a failure: show the board's keymap, and keep saying what went wrong.
+                self.zmk_dirty = status.unsaved;
+                let error = self.error.take().map(|e| e.replace(READING_BACK, ""));
+                if let Some(target) = self.target {
+                    self.retarget(keyboard, target);
+                }
+                self.error = error;
+            }
+            (StudioRequest::Reread, Err(e)) => {
+                self.zmk_session = ZmkSessionState::Failed;
+                self.error = Some(format!("Couldn't read the keyboard's keymap back: {e}"));
+            }
+        }
+        if self.studio.lock != Lock::Locked {
+            let dirty = self.zmk_dirty;
+            keymap_health::note(|h| h.unsaved(dirty));
         }
         false
     }
@@ -279,6 +464,9 @@ impl EditorState {
             Step::Undo => edit.before.clone(),
             _ => edit.after.clone(),
         };
+        if !self.check_before_write(keyboard, edit.target, &action) {
+            return;
+        }
         let receiver = edit.target.set_key(keyboard, action);
         self.studio.writing = Some((step, edit));
         self.start_task(PendingKind::Set, receiver);
