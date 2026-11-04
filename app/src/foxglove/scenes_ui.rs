@@ -793,6 +793,8 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         ui.add_space(4.0);
         ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
     }
+    // Who drives the keyboard's lights now (#491): the scene steps aside for Windows.
+    super::lights_owner::show_line(ui, 4.0);
     if v.keyboard_frames && !v.leds_placed {
         let (label, hint, text, color) = if v.leds_shipped {
             (

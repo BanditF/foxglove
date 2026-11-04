@@ -1371,6 +1371,49 @@ fn lights_colour_swirl_renders() {
     assert_ne!(img, blue, "the band follows the colour");
 }
 
+/// #491: the owner line on the Lights page (a scene drives the lights, then Windows Dynamic
+/// Lighting has them and the scene steps aside, in the warning colour) and on the Scenes page.
+#[test]
+fn lights_owner_line_renders() {
+    use crate::foxglove::lights_owner::{line, Who, PREVIEW};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let near = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| {
+                let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).abs();
+                d(p.0[0], c.r()) + d(p.0[1], c.g()) + d(p.0[2], c.b()) < 24
+            })
+            .count()
+    };
+    let scene = Some("Bandit scanline");
+    let page_with = |page, height, owner: Option<Who>| {
+        PREVIEW.set(owner.map(|w| line(&w, scene)));
+        let img = shell_preview_with(page, &Samples::full(), height);
+        PREVIEW.set(None);
+        img
+    };
+    let plain = page_with(Page::Lights, 980.0, None);
+    let lights = page_with(
+        Page::Lights,
+        980.0,
+        Some(Who::Scene("Bandit scanline".into())),
+    );
+    let windows = page_with(Page::Lights, 980.0, Some(Who::Windows));
+    let scenes_plain = page_with(Page::Scenes, 1400.0, None);
+    let scenes = page_with(Page::Scenes, 1400.0, Some(Who::Windows));
+    keep("ui-491-owner-lights-scene.png", &lights);
+    keep("ui-491-owner-lights-windows.png", &windows);
+    keep("ui-491-owner-scenes-windows.png", &scenes);
+    assert_ne!(plain, lights, "the Lights page shows the line");
+    assert_ne!(lights, windows, "the line follows the owner");
+    assert!(
+        near(&windows, DARK.warn) > near(&lights, DARK.warn),
+        "the scene waiting for Windows is a warning"
+    );
+    assert_ne!(scenes_plain, scenes, "the Scenes page shows the line");
+}
+
 /// The Scenes page (#487): the user's room with a scene running (wide and at the window's
 /// default size), a scene being dragged, and an empty room with nothing running.
 #[test]
