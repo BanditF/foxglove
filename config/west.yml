@@ -19,7 +19,8 @@ manifest:
       revision: v0.3.0
       import: app/west.yml
     # nonblocking includes the USB reply recovery (zmk-raw-hid#1, foxglove #434): Raw HID replies
-    # come back after a PC restart.
+    # come back after a PC restart, and the per-transport counters (zmk-raw-hid#3, raw_hid/stats.h
+    # version 2: a Bluetooth report nobody listens for is skipped, not failed).
     - name: zmk-raw-hid
       url: https://github.com/BanditF/zmk-raw-hid
       revision: nonblocking

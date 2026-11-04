@@ -245,6 +245,12 @@ void health_fill(struct health_wire *out) {
     out->hid_queued = (uint16_t)MIN(hid.queued, UINT16_MAX);
     out->hid_dropped = (uint16_t)MIN(hid.dropped, UINT16_MAX);
     out->hid_failed = (uint16_t)MIN(hid.failed, UINT16_MAX);
+#if RAW_HID_STATS_VERSION >= 2
+    out->hid_usb_failed = (uint16_t)MIN(hid.usb_failed, UINT16_MAX);
+    out->hid_ble_sent = (uint16_t)MIN(hid.ble_sent, UINT16_MAX);
+    out->hid_ble_failed = (uint16_t)MIN(hid.ble_failed, UINT16_MAX);
+    out->hid_ble_skipped = (uint16_t)MIN(hid.ble_skipped, UINT16_MAX);
+#endif
 #endif
 
     // Screens
