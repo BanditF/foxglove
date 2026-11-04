@@ -78,7 +78,7 @@ the half has built in.
 | 68 | 1 | the left: `enum art_relay_error` of the last failure; the right: its state then (3 bad CRC, 4 bad blob, 5 too big) |
 | 69 | 1 | art set shown (int8; -1 a pushed set; -128 not known yet) |
 | 70 | 2 | screen snapshots that failed (a capture, or the right's transfer timing out) |
-| 72 | 2 | the PC's colour, frames or effect applied on this half |
+| 72 | 2 | the PC's colour, frames or effect applied on this half (on the left also a HID LampArray frame, #88; its own counters are D7 90's bytes 12-23) |
 | 74 | 2 | the left: underglow ops the right acknowledged; the right: ops it took |
 | 76 | 2 | the left: underglow ops to the right that failed (each try) |
 | 78 | 2 | the left: status reads that showed the right with another look than it was sent (#624) |

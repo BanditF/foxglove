@@ -228,6 +228,15 @@
  *      halves back to their own effect (no pixels). A whole frame is ceil(lamps / 9) reports (the
  *      Corne's 42: start 0, 9, 18, 27, 36); a report may also carry just the lamps that changed. Lamps keep their colour
  *      from one frame to the next; a take-over starts from black.
+ *      The HID LampArray (#88, CONFIG_FOXGLOVE_LAMPARRAY; Windows Dynamic Lighting) draws the same
+ *      lamps in the same order through the same owner: its autonomous mode off takes the lights
+ *      (owner 1 over USB, 2 over BLE) from the keyboard's effect, frames or an effect, and sends
+ *      D7 8C 00 owner ... event 1 on its own; autonomous mode on, or the board losing that host
+ *      (USB unplugged or suspended; BLE disconnected, another profile or endpoint), sends owner 0,
+ *      event 1. Both only after host traffic. The LampArray wins: while it has the lights a SHOW
+ *      answers 1 (busy, with its owner), chunks are dropped, RELEASE answers 0 and leaves them
+ *      with it, and SET_EFFECT's op EFFECT answers 1. A PC that stepped aside sends its frame or
+ *      effect again on the owner-0 event.
  *      The first SHOW takes the lights from the keyboard's effect (ZMK's underglow turns off,
  *      and idle/sync leave it alone; the user's on/off comes back on hand-back). They go back on
  *      RELEASE, after `timeout s` (CONFIG_FOXGLOVE_HOST_FRAMES_TIMEOUT_S, 0 = never) without a
@@ -238,12 +247,13 @@
  *      first, over the split link: only the lamps that changed since the right's last
  *      acknowledged frame go (one colour as a fill), the last write acknowledged, so a static
  *      frame sends nothing.
- *      Status: 0 ok, 4 not built in, 5 bad request (count > 9, short report, lamps past the end).
+ *      Status: 0 ok, 1 busy (a LampArray has the lights), 4 not built in, 5 bad request (count > 9,
+ *      short report, lamps past the end).
  *      While frames hold, RGB_STATE and the right's sync report the user's on/off (what comes
  *      back), not ZMK's off; an &rgb_ug key that turns ZMK's underglow on mixes its effect with
  *      the frames until RELEASE.
- *      Owner: 0 none (the keyboard's own effect), 3 the host link (1 and 2 are kept for a HID
- *      LampArray over USB and BLE). Right: 0 no relay link yet, 1 the right draws frames,
+ *      Owner: 0 none (the keyboard's own effect), 1 the HID LampArray over USB, 2 over BLE, 3 the
+ *      host link. Right: 0 no relay link yet, 1 the right draws frames,
  *      2 the right's firmware can't (it keeps its own effect).
  *   0D ART_KEYS on u8                                      reply: D7 8D, 00, on
  *      The PC takes the &art_next / &art_prev keys (#60, HELLO bit 16): while on, each press
@@ -305,6 +315,12 @@
  *      LEDs in SET_FRAME's order (the left's chain, then the right's; the Corne: 2, 21, 21). The
  *      left's is its devicetree chain; the right's is CONFIG_FOXGLOVE_RIGHT_LAMPS, else the
  *      left's own. SET_FRAME's lamps and EFFECT LAMPS' bounds are these counts.
+ *      Bytes 12-23, the HID LampArray (#88; all 0 without it, so a PC tells a LampArray build by
+ *      byte 12): flags (bit 0 USB built in, 1 BLE built in, 2 its USB interface registered, 3 its
+ *      BLE service up), the lights' owner now (SET_FRAME's owner byte), then u16 LE counters since
+ *      boot: take-overs (autonomous mode off), hand-backs (the host's or the board's), frames
+ *      drawn (updates with LampUpdateComplete), the host link's SHOWs and effects refused busy,
+ *      and LampArray reports refused (short or unknown).
  *      The left sends the right its copy over the art relay with the left's clock read just before
  *      the send, so both halves agree on the phase within the link's latency; again on link-up.
  *      The take-over and owner rules are SET_FRAME's, with no timeout and no hand-back on USB or
@@ -316,7 +332,8 @@
  *      Owner: 0 the keyboard's own effect, 3 the host link's effect. Kind: the one running (0
  *      none). Right: as SET_FRAME's (0 no relay link yet, 1 the right draws it, 2 its firmware
  *      can't and keeps its own effect). Event: always 0 (no unsolicited D7 8F).
- *      Status: 0 ok, 4 not built in (CONFIG_FOXGLOVE_HOST_EFFECTS, dev builds), 5 bad request.
+ *      Status: 0 ok, 1 busy (op EFFECT while a HID LampArray has the lights; byte 3 is its owner,
+ *      1 or 2), 4 not built in (CONFIG_FOXGLOVE_HOST_EFFECTS, dev builds), 5 bad request.
  *   11 PC_STATE  state u8 (0 away, 1 awake, 0xff read), flags u8 (bit 0 wake), lease s u16 LE
  *                (awake: 1-3600)                                 (HELLO bit 26, #609, #604)
  *      reply: D7 91, status (0 ok, 4 not built in, 5 bad: another state, or an awake lease out of
@@ -461,6 +478,8 @@ void host_link_bootloader_reply(uint8_t status, uint8_t half);
 
 // Queues a report to the PC (nonblocking; dropped if the queue is full).
 void host_link_send(const uint8_t *data, int len);
+// The same, but only after host traffic (an unsolicited event no request led to). Any thread.
+void host_link_event(const uint8_t *data, int len);
 
 struct foxglove_build_info;
 // D7 89 BUILD_INFO reply; build may be NULL on errors.

@@ -1,0 +1,129 @@
+lamparray: -- before any host traffic: a take-over and a hand-back draw, but send no D7 8C
+lamparray: -- USB: autonomous mode off
+frames: left taken from its effect
+frames: left draws black
+frames: right taken from its effect
+frames: right link sends a fill of 21 lamps from 21: 000000
+frames: right draws black
+lamparray: owner 1
+lamparray: -- USB: autonomous mode on
+frames: left back to its effect
+frames: right back to its effect
+lamparray: owner 0
+lamparray: -- hello (host traffic from here on)
+lamparray: state flags 0x00 owner 0 takes 1 hand-backs 1 drawn 0 refused 0 bad 0
+lamparray: -- attributes: the lamps SET_FRAME has, in SET_EFFECT's room
+lamparray: attributes (USB): 22 bytes, 42 lamps, box 328000 x 86000 x 10000 um, kind 1, interval 33000 us
+lamparray: attributes (BLE): 22 bytes, 42 lamps, box 328000 x 86000 x 10000 um, kind 1, interval 100000 us
+lamparray: -- the lamp walk: request one, then each read moves on; ids past the end clamp
+lamparray: lamp 0 at 9548, 19092 um (28 bytes), purposes 2, levels 255 255 255 255, programmable 1, key 0
+lamparray: lamp 1 at 9548, 38184 um (28 bytes), purposes 2, levels 255 255 255 255, programmable 1, key 0
+lamparray: lamp 21 at 318452, 19092 um (28 bytes), purposes 2, levels 255 255 255 255, programmable 1, key 0
+lamparray: lamp 41 at 213548, 76454 um (28 bytes), purposes 2, levels 255 255 255 255, programmable 1, key 0
+lamparray: lamp 0 at 9548, 19092 um (28 bytes), purposes 2, levels 255 255 255 255, programmable 1, key 0
+lamparray: -- an update while the keyboard has the lights: taken, not drawn
+lamparray: multi ok
+lamparray: owner 0
+lamparray: -- USB: autonomous mode off
+frames: left taken from its effect
+frames: left draws black
+frames: right taken from its effect
+frames: right link sends a fill of 21 lamps from 21: 000000
+frames: right draws black
+hostlink: rx D7 8C 00 01 03 01 01
+lamparray: owner 1
+lamparray: -- a multi update on both halves: lamp 0 red, 5 green at half intensity, 30 blue
+frames: left draws 0=FF0000 5=008000
+lamparray: multi ok
+frames: right link sends 1 lamps from 30
+frames: right draws 30=0000FF
+lamparray: -- a range update: the right half all blue
+frames: left draws 0=FF0000 5=008000
+lamparray: range ok
+frames: right link sends a fill of 21 lamps from 21: 0000FF
+frames: right draws 21-41=0000FF
+lamparray: -- lamp 1 white without LampUpdateComplete: nothing drawn until a range of 2-3 completes
+lamparray: multi ok
+frames: left draws 0=FF0000 1-3=FFFFFF 5=008000
+lamparray: range ok
+frames: right link sends nothing (no change)
+lamparray: -- Foxglove while Windows has the lights: SHOW busy, a chunk dropped, RELEASE leaves them
+hostlink: rx D7 8C 01 01 03 01
+hostlink: rx D7 8C 00 01 03 01
+lamparray: owner 1
+lamparray: state flags 0x00 owner 1 takes 2 hand-backs 1 drawn 3 refused 1 bad 0
+lamparray: -- USB: autonomous mode on
+frames: left back to its effect
+frames: right back to its effect
+hostlink: rx D7 8C 00 00 03 01 01
+lamparray: owner 0
+lamparray: -- autonomous mode on again: nothing to hand back
+lamparray: -- USB: autonomous mode on
+lamparray: owner 0
+lamparray: -- over BLE: owner 2, the last host to turn autonomous mode off draws
+lamparray: -- BLE: autonomous mode off
+frames: left taken from its effect
+frames: left draws black
+frames: right taken from its effect
+frames: right link sends a fill of 21 lamps from 21: 000000
+frames: right draws black
+hostlink: rx D7 8C 00 02 03 01 01
+lamparray: owner 2
+lamparray: -- USB: autonomous mode off
+frames: left back to its effect
+frames: right back to its effect
+frames: left taken from its effect
+frames: left draws black
+frames: right taken from its effect
+frames: right link sends a fill of 21 lamps from 21: 000000
+frames: right draws black
+hostlink: rx D7 8C 00 01 03 01 01
+lamparray: owner 1
+lamparray: -- BLE's autonomous mode on and an endpoint change leave USB's lights alone
+lamparray: -- BLE: autonomous mode on
+lamparray: owner 1
+lamparray: owner 1
+lamparray: -- BLE: autonomous mode off
+frames: left back to its effect
+frames: right back to its effect
+frames: left taken from its effect
+frames: left draws black
+frames: right taken from its effect
+frames: right link sends a fill of 21 lamps from 21: 000000
+frames: right draws black
+hostlink: rx D7 8C 00 02 03 01 01
+lamparray: owner 2
+lamparray: -- an endpoint change hands BLE's back
+frames: left back to its effect
+frames: right back to its effect
+hostlink: rx D7 8C 00 00 03 01 01
+lamparray: owner 0
+lamparray: -- Foxglove's frames, then Windows takes them (owner 3, then 1)
+frames: left taken from its effect
+frames: left draws 0=FFFFFF
+frames: right taken from its effect
+frames: right link sends a fill of 21 lamps from 21: 000000
+frames: right draws black
+hostlink: rx D7 8C 00 03 03 01
+lamparray: -- USB: autonomous mode off
+frames: left back to its effect
+frames: right back to its effect
+frames: left taken from its effect
+frames: left draws black
+frames: right taken from its effect
+frames: right link sends a fill of 21 lamps from 21: 000000
+frames: right draws black
+hostlink: rx D7 8C 00 01 03 01 01
+lamparray: owner 1
+lamparray: -- USB: autonomous mode on
+frames: left back to its effect
+frames: right back to its effect
+hostlink: rx D7 8C 00 00 03 01 01
+lamparray: owner 0
+lamparray: -- reports refused: a short multi update, an unknown id, an empty control, a set-only read
+lamparray: short multi EINVAL
+lamparray: id 9 ENOTSUP
+lamparray: empty control EINVAL
+lamparray: read multi ENOTSUP
+lamparray: state flags 0x00 owner 0 takes 6 hand-backs 4 drawn 3 refused 1 bad 3
+lamparray: -- done

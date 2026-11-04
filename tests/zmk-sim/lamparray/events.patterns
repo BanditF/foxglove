@@ -1,0 +1,8 @@
+# HID LampArray (module/lamparray_sim.c): attributes and the lamp walk; updates land on both halves
+# only while a LampArray has the lights; autonomous mode off/on flips the owner with an unasked
+# D7 8C (event 1, owner 1 USB / 2 BLE, then 0), only after host traffic; SET_FRAME is refused
+# busy meanwhile; the last host to take them draws; the D7 90 tail counts it all.
+/^lamparray:/p
+/^frames:/p
+/^hostlink: rx D7 8C/p
+s/.*hid_listener_keycode/kp/p

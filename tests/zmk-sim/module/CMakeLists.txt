@@ -84,6 +84,12 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
     # SET_FRAME (#272): the real host_frames.c; the strip and the relay are faked (21 lamps each).
     zephyr_library_compile_definitions(LAMP_STRIP_LEN=21)
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/host_frames.c frames_sim.c)
+    if(CONFIG_FOXGLOVE_SIM_LAMPARRAY)
+      # The HID LampArray (#88): the real core (no USB or BLE transport) on host_frames.c, its
+      # positions from lamp_effect.c's table; frames_sim.c's fakes print what each half draws.
+      zephyr_library_sources(${FOXGLOVE_WIDGETS}/lamparray.c ${FOXGLOVE_WIDGETS}/lamp_effect.c
+                             lamparray_sim.c)
+    endif()
   endif()
   if(CONFIG_FOXGLOVE_SIM_EFFECTS)
     # SET_EFFECT (#490): the real host_effects.c, effect_run.c and lamp_effect.c, with

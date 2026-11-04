@@ -44,6 +44,9 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_EFFECTS)
 #include "host_effects.h"
 #endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_LAMPARRAY)
+#include "lamparray.h"
+#endif
 #if IS_ENABLED(CONFIG_FOXGLOVE_TEST_HOOKS)
 #include "test_hooks.h"
 #endif
@@ -191,6 +194,12 @@ void screen_snap_command(const uint8_t *data, int len) {
 #endif
 
 void host_link_send(const uint8_t *data, int len) { reply(data, len); }
+
+void host_link_event(const uint8_t *data, int len) {
+    if (atomic_get(&host_seen)) {
+        reply(data, len);
+    }
+}
 
 void host_link_build_info_reply(uint8_t status, uint8_t half,
                                 const struct foxglove_build_info *build) {
@@ -1010,10 +1019,15 @@ static void settings_command(const uint8_t *d, int len) {
         break;
     }
     case SETTING_LAMP_PARTS: {
-        uint8_t r[8] = {HOST_LINK_SETTINGS, 0x80 | SETTING_LAMP_PARTS, 4}; // not built in
+        // Parts at bytes 4-11, the LampArray's state at 12-23 (host_link.h).
+        uint8_t r[24] = {HOST_LINK_SETTINGS, 0x80 | SETTING_LAMP_PARTS, 4}; // not built in
 #if IS_ENABLED(CONFIG_FOXGLOVE_HOST_FRAMES)
-        r[3] = host_frames_parts(&r[4], sizeof(r) - 4);
+        r[3] = host_frames_parts(&r[4], 8);
         r[2] = 0;
+#endif
+#if IS_ENABLED(CONFIG_FOXGLOVE_LAMPARRAY)
+        BUILD_ASSERT(LAMPARRAY_STATE_AT + LAMPARRAY_STATE_SIZE <= sizeof(r), "D7 90's tail");
+        lamparray_state(&r[LAMPARRAY_STATE_AT]);
 #endif
         reply(r, sizeof(r));
         break;
