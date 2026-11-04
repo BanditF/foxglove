@@ -5,13 +5,16 @@ use std::cell::RefCell;
 #[derive(Default)]
 struct FakeRun(RefCell<Option<String>>);
 
-impl RunKey for FakeRun {
-    fn get(&self) -> std::io::Result<Option<String>> {
-        Ok(self.0.borrow().clone())
-    }
+impl FakeRun {
     fn set(&self, command: &str) -> std::io::Result<()> {
         *self.0.borrow_mut() = Some(command.into());
         Ok(())
+    }
+}
+
+impl RunKey for FakeRun {
+    fn get(&self) -> std::io::Result<Option<String>> {
+        Ok(self.0.borrow().clone())
     }
     fn remove(&self) -> std::io::Result<()> {
         *self.0.borrow_mut() = None;
@@ -470,7 +473,7 @@ fn the_windows_places_round_trip_on_a_test_root() {
         // The move from a Run value, then uninstall.
         owned.entry.remove().unwrap();
         owned.approved.clear().unwrap();
-        p.run.set(&command(&exe)).unwrap();
+        owned.run.set(&command(&exe)).unwrap();
         let mut s = AutostartSettings::default();
         assert_eq!(
             reconcile(&mut s, &exe, None, &p, &|f| f.is_file()).unwrap(),

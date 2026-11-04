@@ -61,7 +61,6 @@ impl Default for AutostartSettings {
 /// The old Run value, behind a trait so tests never touch the registry.
 pub trait RunKey {
     fn get(&self) -> std::io::Result<Option<String>>;
-    fn set(&self, command: &str) -> std::io::Result<()>;
     fn remove(&self) -> std::io::Result<()>;
 }
 
@@ -356,10 +355,6 @@ mod windows_places {
             };
             not_found(key.get_value::<String, _>(&self.name))
         }
-        fn set(&self, command: &str) -> std::io::Result<()> {
-            let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(&self.key)?;
-            key.set_value(&self.name, &command)
-        }
         fn remove(&self) -> std::io::Result<()> {
             let hkcu = RegKey::predef(HKEY_CURRENT_USER);
             let Some(key) = not_found(hkcu.open_subkey_with_flags(&self.key, KEY_SET_VALUE))?
@@ -367,6 +362,15 @@ mod windows_places {
                 return Ok(());
             };
             not_found(key.delete_value(&self.name)).map(|_| ())
+        }
+    }
+
+    impl RegString {
+        /// Seeds a Run value (tests only: Foxglove no longer writes one).
+        #[cfg(test)]
+        pub fn set(&self, command: &str) -> std::io::Result<()> {
+            let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(&self.key)?;
+            key.set_value(&self.name, &command)
         }
     }
 
