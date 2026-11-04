@@ -91,6 +91,10 @@ struct EframeApp {
     // frame.
     #[cfg(target_os = "windows")]
     was_away: bool,
+    // Foxglove: whether the PC was away (locked, display off) at the last frame; the regular
+    // placement waits meanwhile (overlay_restore::placement_tries).
+    #[cfg(target_os = "windows")]
+    placement_held: bool,
 }
 
 impl eframe::App for EframeApp {
@@ -168,6 +172,15 @@ impl EframeApp {
             self.placement_tries = 1;
             ctx.request_repaint();
         }
+        // Foxglove: not while the PC is away; coming back places it once.
+        let pc_away = crate::foxglove::away::away();
+        let held = std::mem::replace(&mut self.placement_held, pc_away);
+        let Some(tries) =
+            crate::foxglove::overlay_restore::placement_tries(pc_away, held, self.placement_tries)
+        else {
+            return;
+        };
+        self.placement_tries = tries;
         let chosen_changed = self.placed_on_monitor != self.app.monitor();
         let due = self
             .displays_checked
@@ -450,6 +463,8 @@ fn run_inner(
                 displays_checked: None,
                 #[cfg(target_os = "windows")]
                 was_away: false,
+                #[cfg(target_os = "windows")]
+                placement_held: false,
             }))
         }),
     )

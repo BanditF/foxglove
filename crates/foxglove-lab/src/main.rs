@@ -615,6 +615,7 @@ fn main() -> Result<std::process::ExitCode> {
                         // HELLO v2 (after the recording, which holds D7 93 replies only).
                         let v2 = c.hello.map(|h| foxglove_link::hello_v2::read(&link, &h));
                         out.rows.push(foxglove_link::hello_v2::row(v2.as_ref()));
+                        out.rows.push(foxglove_link::hello_v2::caps_row(c.hello.as_ref()));
                         out
                     }
                 }

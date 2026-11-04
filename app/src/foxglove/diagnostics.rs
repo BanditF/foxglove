@@ -115,30 +115,7 @@ fn replace_ignore_case(text: &str, needle: &str, with: &str) -> String {
 
 /// The names of the HELLO capability bits that are set, then any unnamed ones.
 fn capability_names(bits: u32) -> String {
-    use foxglove_link::protocol::capabilities as c;
-    let named = [
-        (c::PANEL, "PANEL"),
-        (c::ART_RELAY, "ART_RELAY"),
-        (c::SETTINGS_RGB, "SETTINGS_RGB"),
-        (c::ART_STATUS_EVENT, "ART_STATUS_EVENT"),
-        (c::CONN_STATE, "CONN_STATE"),
-        (c::POSITION, "POSITION"),
-        (c::SCREEN, "SCREEN"),
-        (c::INVOKE_REFUSES, "INVOKE_REFUSES"),
-        (c::CONN_STATE_EVENT, "CONN_STATE_EVENT"),
-        (c::BOOTLOADER, "BOOTLOADER"),
-        (c::ART_SLOTS, "ART_SLOTS"),
-        (c::RGB_STATE_EVENT, "RGB_STATE_EVENT"),
-        (c::BUILD_INFO, "BUILD_INFO"),
-        (c::SCREENS, "SCREENS"),
-        (c::PANEL_HOLD, "PANEL_HOLD"),
-        (c::FRAMES, "FRAMES"),
-        (c::LEFT_BATTERY, "LEFT_BATTERY"),
-        (c::BATTERY_DIM, "BATTERY_DIM"),
-        (c::EFFECTS, "EFFECTS"),
-        (c::RIGHT_EVENTS, "RIGHT_EVENTS"),
-        (c::HEALTH, "HEALTH"),
-    ];
+    let named = foxglove_link::protocol::capabilities::NAMES;
     let mut names: Vec<String> = named
         .iter()
         .filter(|(b, _)| bits & b != 0)

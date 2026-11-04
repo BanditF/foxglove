@@ -112,6 +112,24 @@ pub fn place_due(iconic: bool, rect: Option<[i32; 4]>, target: [i32; 4], tries: 
     !away(iconic, rect) && rect != Some(target) && tries < PLACEMENT_TRIES
 }
 
+/// The regular placement while the PC is away (locked or display off) and on coming back:
+/// `None` skips it this frame, `Some` is the tries it goes on with. A sleeping monitor's link can
+/// drop and come back every few seconds all night: Windows moves the overlay off it each time,
+/// and placing it back each time logged one `placed at` line about every 9.5 s (main 90e7a4c,
+/// 2026-11-04, 03:07-05:37 and 10:01-10:09 UTC) and moved a display-sized window with nothing on
+/// screen. As with [`defer_while_away`], it waits; coming back gives it fresh tries, so one
+/// placement (one line) puts the overlay where it belongs. No timer: it runs on the frames that
+/// come anyway.
+pub fn placement_tries(pc_away: bool, was_pc_away: bool, tries: u32) -> Option<u32> {
+    if pc_away {
+        None
+    } else if was_pc_away {
+        Some(0)
+    } else {
+        Some(tries)
+    }
+}
+
 const WS_MINIMIZE: u32 = 0x2000_0000;
 
 /// The overlay window hook's answer to a style change (`WM_STYLECHANGING`, `GWL_STYLE`): while
@@ -974,6 +992,37 @@ mod tests {
             !place_due(false, Some(SMALL), MAIN, PLACEMENT_TRIES),
             "out of tries"
         );
+    }
+
+    /// A sleeping monitor's link dropping every ~9.5 s while the display is off: the placement
+    /// waits through every move Windows makes, then places the window once on coming back.
+    #[test]
+    fn the_regular_placement_waits_while_away_then_places_once() {
+        let (mut rect, mut tries, mut was, mut lines) = (Some(MAIN), PLACEMENT_TRIES, false, 0);
+        let mut frame = |pc_away: bool, moved_to: Option<[i32; 4]>| {
+            if let Some(r) = moved_to {
+                rect = Some(r); // Windows moved it off the dropped monitor
+            }
+            let held = std::mem::replace(&mut was, pc_away);
+            let Some(t) = placement_tries(pc_away, held, tries) else {
+                return;
+            };
+            tries = t;
+            if place_due(false, rect, MAIN, tries) {
+                tries += 1;
+                rect = Some(MAIN);
+                lines += 1;
+            }
+        };
+        for _ in 0..50 {
+            frame(true, Some(SMALL));
+            frame(true, None);
+        }
+        frame(false, None);
+        frame(false, None);
+        assert_eq!(rect, Some(MAIN));
+        assert_eq!(lines, 1, "one placement, after coming back");
+        assert_eq!(placement_tries(false, false, 2), Some(2), "not away");
     }
 
     /// A window-free stand-in for the overlay window and its frame loop: the checks and the

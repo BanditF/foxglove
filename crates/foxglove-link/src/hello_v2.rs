@@ -162,6 +162,17 @@ pub fn row(state: Option<&State>) -> HealthRow {
     HealthRow::new(SUBSYSTEM, "HELLO v2", level, detail)
 }
 
+/// The "HELLO caps" row: HELLO's capability word (word 1) by name, e.g. "PANEL, ART_RELAY, …,
+/// KNOB (0xffffffff)". Always OK: the bits say what the firmware offers, not a fault. `None`: no
+/// keyboard, or no HELLO.
+pub fn caps_row(hello: Option<&Hello>) -> HealthRow {
+    let detail = hello.map_or_else(
+        || "no HELLO read".to_string(),
+        |h| crate::protocol::capabilities::describe(h.capabilities),
+    );
+    HealthRow::new(SUBSYSTEM, "HELLO caps", Level::Ok, detail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,5 +329,25 @@ mod tests {
         ]);
         assert_eq!(read(&board, &h).word2(), 7, "the second try is read");
         assert_eq!(row(None).detail, "no keyboard connected");
+    }
+
+    /// Word 1 by name: every bit, a few, none, and no HELLO.
+    #[test]
+    fn caps_row_names_hellos_word() {
+        use crate::protocol::capabilities as c;
+        let mut h = Hello::parse(&hello_reply(2));
+        h.capabilities = u32::MAX;
+        let row = caps_row(Some(&h));
+        assert_eq!(row.subsystem, "firmware");
+        assert_eq!(row.item, "HELLO caps");
+        assert_eq!(row.level, Level::Ok);
+        let all = row.detail;
+        assert!(all.starts_with("PANEL, ART_RELAY, "), "{all}");
+        assert!(all.ends_with(", KNOB (0xffffffff)"), "{all}");
+        h.capabilities = c::PANEL | c::HEALTH;
+        assert_eq!(caps_row(Some(&h)).detail, "PANEL, HEALTH (0x10000001)");
+        h.capabilities = 0;
+        assert_eq!(caps_row(Some(&h)).detail, "none (0x00000000)");
+        assert_eq!(caps_row(None).detail, "no HELLO read");
     }
 }
