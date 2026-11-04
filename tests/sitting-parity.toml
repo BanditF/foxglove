@@ -60,6 +60,12 @@ log = ["art key: "]
 needs_eyes = "hands: SYSTEM+P / O and Pause / Quit from the tray (no API call presses an art key with the app holding them); eyes: the card shows for about a second, which a capture can miss"
 
 [[step]]
+match = "Art playlist (#522)"
+api = ["art.status", "art.select"]
+log = ["art playlist: "]
+needs_eyes = "eyes: the screen must not show the staged piece before its step, which a status read can't tell from a fast step; hands: Quit, then the art keys (relay-sim playlist-store proves the staging and timing)"
+
+[[step]]
 match = "Let the left go idle (lights off), then replug its cable"
 api = ["lighting.state", "lighting.set_sync"]
 lab = ["status"]

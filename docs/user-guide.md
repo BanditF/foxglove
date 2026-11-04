@@ -412,9 +412,16 @@ presets are the same in every profile.
 **Screens → Showing now → Rotation** steps through what the keyboard holds: the piece that
 comes with it (the Bandit emblem), then the ones you kept on it. With nothing kept, **Next ›**
 from a piece sent from this PC shows the emblem, and from the emblem there is nothing else to
-show. There is no separate list: to change what Rotation
-shows, keep or remove pieces on the keyboard. (A playlist of art that only this PC has is a
-later idea, #522.)
+show. To change what Rotation shows, keep or remove pieces on the keyboard, or play a playlist.
+- **Playlist** (#522; needs keyboard firmware with STORE, else each step sends its piece): open
+  **Playlist** under Rotation, tick **Play the playlist**, and **Add a piece…** from this PC, the
+  keyboard's own art or your kept pieces; **↑** moves one earlier, **Remove** takes it out.
+  Turning it on lends the playlist two free places on the keyboard (**Lend a place** / **Give one
+  back**). Right after each step Foxglove puts the next piece from this PC into the lent place
+  that isn't showing, without showing it, so the step to it is instant. Without Foxglove the
+  keyboard keeps showing what those two places hold. To spare the keyboard's flash, a place is
+  written at most once an hour; a step whose piece isn't in a place yet sends it from this PC
+  (about a second, not kept). The places lent stay out of **Keep on keyboard**.
 - **Next piece** comes on any of these, in any mix:
   - **on the art key** *(after 0.1)*: hold SYSTEM (both middle thumbs + Tab), then **P** for
     next and **O** for previous. While Foxglove runs, the left screen shows **ART** with the

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use super::art_cycle::{self, Cycle};
 use super::art_keys_health::{self, HandBack};
 use super::art_triggers::{Change, Triggers};
+use super::{art_health, art_playlist};
 
 use foxglove_link::art;
 use foxglove_link::link::{Event as LinkEvent, EventSubscription, Link};
@@ -264,6 +265,15 @@ enum Command {
     ArtKeys,
     /// A user's job that can't run after all: it ends with this error.
     Refused(String),
+    /// The playlist stepped, was changed, or a keyboard connected (#522): stage its next piece
+    /// into a lent place if it needs one (`art_playlist::stage`).
+    StageNext,
+    /// Put `file` into lent place `slot` under `name` with STORE, the screen untouched (#522).
+    Stage {
+        file: PathBuf,
+        slot: u8,
+        name: String,
+    },
 }
 
 /// Whether the UI may send `command` (#404): while Foxglove is paused only reads go out.
@@ -427,12 +437,15 @@ impl Handle {
             if user_refused(&s) || self.stop.load(Ordering::Relaxed) {
                 return Err("another art job is running".into());
             }
-            art_cycle::step(
-                &art_cycle::rotation(&st),
-                art_cycle::on_screen(&st),
-                forward,
-            )
-            .ok_or("the keyboard has nothing else to show")?;
+            // The playlist (#522) finds its entry on the worker, which can read the files.
+            if !art_playlist::active(&s.cycle) {
+                art_cycle::step(
+                    &art_cycle::rotation(&st),
+                    art_cycle::on_screen(&st),
+                    forward,
+                )
+                .ok_or("the keyboard has nothing else to show")?;
+            }
             self.cancel.store(false, Ordering::Relaxed);
             self.commands
                 .send(Command::Step { forward, card })
@@ -626,6 +639,59 @@ fn sync_art_keys(link: &Arc<Link>, has_keys: bool, want: bool, told: Option<bool
 }
 
 /// The art key's card (#60) for a step to `choice`: its place in `list` and its name.
+/// A playlist file's key in a lent place (#522): the name it is kept under and the length of
+/// the bytes it is sent as.
+fn place_key(p: &std::path::Path) -> Option<art_playlist::Key> {
+    let bytes = pushed_bytes(p).ok()?;
+    Some((
+        protocol::art_name_fit(&file_name(p)).to_string(),
+        bytes.len(),
+    ))
+}
+
+/// Rotation's step with the playlist on (#522): its next entry (a lent place when the piece is
+/// staged there), its position saved and the step noted; the piece after it is staged next.
+fn playlist_step(
+    h: &Handle,
+    snap: &Snapshot,
+    st: &ArtStatus,
+    forward: bool,
+) -> Option<(usize, Choice)> {
+    let resolve = |i: &art_cycle::Item| art_cycle::resolve(i, st.right_set_count, st.flash_used);
+    let (at, choice) = art_playlist::step(&snap.cycle, &snap.slots, forward, &place_key, &resolve)?;
+    let mut cycle = snap.cycle.clone();
+    cycle.position = at;
+    if let Err(e) = cycle.save() {
+        eprintln!("Foxglove: art playlist: can't save the position: {e}");
+    }
+    h.update(|s| s.cycle.position = at);
+    art_health::note(|p| p.stepped(!matches!(choice, Choice::File(_))));
+    let _ = h.commands.send(Command::StageNext);
+    Some((at, choice))
+}
+
+/// The playlist's settings and its places as the keyboard reports them, for its health rows.
+fn note_playlist(s: &Snapshot, can_store: Option<bool>) {
+    let c = &s.cycle;
+    let files = c
+        .items
+        .iter()
+        .filter(|i| matches!(i, art_cycle::Item::File(_)))
+        .count();
+    let places = c
+        .places
+        .iter()
+        .map(|n| {
+            let held = s.slots.iter().find(|i| i.slot == *n && i.used);
+            (*n, held.map(|i| i.name.clone()))
+        })
+        .collect();
+    art_health::note(|p| {
+        p.configured(c.playlist, c.items.len(), files, places);
+        p.connected(can_store);
+    });
+}
+
 fn art_card(
     list: &[Choice],
     choice: &Choice,
@@ -936,6 +1002,35 @@ fn keep(
     Ok(st)
 }
 
+/// Stages a playlist piece (#522): `file` into lent place `slot` with STORE, the screen
+/// untouched. The places are read again after, and after a failure too (the right empties a
+/// place before it writes it).
+fn stage(
+    link: &impl Transport,
+    h: &Handle,
+    file: &std::path::Path,
+    slot: u8,
+    name: &str,
+) -> Result<ArtStatus, String> {
+    let blob = pushed_bytes(file)?;
+    if !art::is_blob(&blob) {
+        return Err(format!("{} is not an art blob", file.display()));
+    }
+    match art::store(link, &blob, slot, name, |_| {}, || h.cancelled()) {
+        Ok(st) => {
+            h.update(|s| s.status = Some(st));
+            read_slots(link, h, &st);
+            Ok(st)
+        }
+        Err(e) => {
+            if let Ok(st) = art::status(link) {
+                read_slots(link, h, &st);
+            }
+            Err(e.to_string())
+        }
+    }
+}
+
 /// Reads every flash slot the right half has; none on firmware without them.
 fn read_slots(link: &impl Transport, h: &Handle, st: &ArtStatus) {
     let mut slots = Vec::new();
@@ -1032,6 +1127,10 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
     // The current keyboard has the art keys (HELLO bit 16), and what it was last told (#60).
     let mut has_art_keys = false;
     let mut art_keys_told: Option<bool> = None;
+    // The current keyboard can keep a piece without showing it (HELLO bit 30; false once a STORE
+    // found a right before it), and when the playlist last wrote each place (#522, flash wear).
+    let mut can_store: Option<bool> = None;
+    let mut place_writes: std::collections::HashMap<u8, Instant> = Default::default();
     while !h.stop.load(Ordering::Relaxed) {
         let next_deadline = match (due, triggers.deadline()) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -1260,6 +1359,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
         let command = match command {
             Command::CycleChanged => {
                 due = reschedule(current.is_some());
+                // The playlist turned on, or its list or places changed: stage what's next.
+                let _ = h.commands.send(Command::StageNext);
                 // Turning on "match the wallpaper" shows the current wallpaper's art right away.
                 if h.snapshot().cycle.follow == art_cycle::Follow::Wallpaper {
                     if let Some(w) =
@@ -1287,16 +1388,60 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 if triggers.top(&snap.cycle).is_some() {
                     continue;
                 }
-                // Rotation is the keyboard's own art (#515): what it stores is what it steps.
-                let Some(choice) = art_cycle::step(
-                    &art_cycle::rotation(&st),
-                    art_cycle::on_screen(&st),
-                    forward,
-                ) else {
+                // Rotation is the keyboard's own art (#515): what it stores is what it steps;
+                // or the playlist, when it plays (#522).
+                let choice = if art_playlist::active(&snap.cycle) {
+                    playlist_step(h, &snap, &st, forward).map(|(_, c)| c)
+                } else {
+                    art_cycle::step(
+                        &art_cycle::rotation(&st),
+                        art_cycle::on_screen(&st),
+                        forward,
+                    )
+                };
+                let Some(choice) = choice else {
                     continue;
                 };
                 background = true;
                 Command::Choose(choice)
+            }
+            // After a playlist step (or a change, or a connect): its next piece into a lent
+            // place, as Foxglove's own job, so the step to it is a SELECT (#522). Start: that
+            // event. Stop: the stage's end; a user's command takes it over.
+            Command::StageNext => {
+                let snap = h.snapshot();
+                let (Some(st), false, true) = (snap.status, snap.busy, current.is_some()) else {
+                    continue;
+                };
+                note_playlist(&snap, can_store);
+                if !art_playlist::active(&snap.cycle) || super::pause::paused() {
+                    continue;
+                }
+                let last = |n: u8| place_writes.get(&n).copied();
+                match art_playlist::stage(
+                    &snap.cycle,
+                    &st,
+                    &snap.slots,
+                    &place_key,
+                    &last,
+                    Instant::now(),
+                    can_store != Some(false),
+                ) {
+                    Ok(Some(s)) => {
+                        background = true;
+                        Command::Stage {
+                            file: s.file,
+                            slot: s.slot,
+                            name: s.name,
+                        }
+                    }
+                    Ok(None) => continue,
+                    Err(why) => {
+                        eprintln!("Foxglove: art playlist: the next piece isn't staged: {why}");
+                        art_health::note(|p| p.skipped(why));
+                        continue;
+                    }
+                }
             }
             // The user's (or an agent's) Next › / ‹: it holds `busy` already, and shows even
             // over layer or preset art.
@@ -1304,6 +1449,16 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                 due = reschedule(current.is_some());
                 let snap = h.snapshot();
                 let step = snap.status.filter(|_| current.is_some()).and_then(|st| {
+                    if art_playlist::active(&snap.cycle) {
+                        let (at, choice) = playlist_step(h, &snap, &st, forward)?;
+                        let card = card.then(|| foxglove_panel::render::ArtCard {
+                            index: at,
+                            total: snap.cycle.items.len(),
+                            name: name_of(&choice, &snap),
+                            forward,
+                        });
+                        return Some((card, choice));
+                    }
                     let list = art_cycle::rotation(&st);
                     let choice = art_cycle::step(&list, art_cycle::on_screen(&st), forward)?;
                     let card = card
@@ -1385,6 +1540,8 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     (has_art_keys, art_keys_told) = (false, None);
                     held_art_keys(None);
                     art_keys_health::note(|a| a.disconnected());
+                    can_store = None;
+                    art_health::note(|p| p.connected(None));
                     triggers.disconnected();
                     h.update(|s| {
                         s.connected = false;
@@ -1418,6 +1575,9 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                     s.wake_events = wake_events;
                 });
                 connected_now = true;
+                // The playlist stages its next piece once the places are read (#522).
+                can_store = Some(caps & protocol::capabilities::ART_STORE != 0);
+                let _ = h.commands.send(Command::StageNext);
                 due = reschedule(true);
                 true
             }
@@ -1491,6 +1651,7 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             let job = job_for(&command, &h.snapshot(), !from_ui);
             h.update(|s| s.job = job);
         }
+        let staging = matches!(command, Command::Stage { .. });
         let result = if let Some((id, _)) = current {
             let link: &Link = links[id].0.as_ref();
             if automatic {
@@ -1585,6 +1746,30 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
                         with_relay(link, h, &what, || choose(link, h, &choice))
                     }
                     Command::Refused(e) => Err(e),
+                    Command::Stage { .. } if taken_over() => Err("taken over".into()),
+                    Command::Stage { file, slot, name } => {
+                        let started = Instant::now();
+                        let r = with_relay(link, h, &format!("stage {name}"), || {
+                            stage(link, h, &file, slot, &name)
+                        });
+                        if r.as_ref()
+                            .is_err_and(|e| e.contains(art::STORE_UNSUPPORTED))
+                        {
+                            can_store = Some(false);
+                        }
+                        if r.is_ok() {
+                            place_writes.insert(slot, Instant::now());
+                        }
+                        art_health::note(|p| {
+                            p.swapped(art_health::Swap {
+                                name: name.clone(),
+                                slot,
+                                result: r.as_ref().map(|_| started.elapsed()).map_err(Clone::clone),
+                                at: Instant::now(),
+                            })
+                        });
+                        r
+                    }
                     Command::Choose(choice) => {
                         let what = name_of(&choice, &h.snapshot());
                         with_relay(link, h, &what, || choose(link, h, &choice)).and_then(|st| {
@@ -1607,6 +1792,21 @@ fn run_events(h: &Handle, receiver: &mpsc::Receiver<Command>) {
             if let Ok(st) = result {
                 h.update(|s| s.status = Some(st));
             }
+            continue;
+        }
+        // A playlist stage is quiet: no strip, no outcome; its health rows say how it went.
+        if staging {
+            if let Err(e) = &result {
+                eprintln!("Foxglove: art playlist: staging failed: {e}");
+            }
+            h.update(|s| {
+                s.busy = false;
+                s.background = false;
+                if let Ok(st) = result {
+                    s.status = Some(st);
+                }
+            });
+            note_playlist(&h.snapshot(), can_store);
             continue;
         }
         if let Err(e) = &result {
@@ -1704,6 +1904,9 @@ mod tests {
         pushed: Cell<u16>,
         kept: RefCell<Vec<(u8, String, u16)>>,
         save_fails: bool,
+        /// A keyboard without STORE (#522): the left fails it, "right half rejected it".
+        no_store: bool,
+        error: Cell<u8>,
     }
 
     impl FakeKeyboard {
@@ -1712,6 +1915,7 @@ mod tests {
             r[0] = protocol::ART;
             r[1] = 0x80 | command;
             r[2] = self.left.get();
+            r[3] = self.error.get();
             r[8] = 2; // link: relay ready
             r[9] = 3; // right status version with places
             r[10] = self.right.get();
@@ -1762,6 +1966,24 @@ mod tests {
                         self.used.set(self.used.get() | 1 << slot);
                         self.right.set(right_state::SAVED);
                     }
+                }
+                cmd::STORE if self.no_store => {
+                    self.left.set(left_state::FAILED);
+                    self.error.set(protocol::relay_error::RIGHT);
+                }
+                // The piece into its place; the screen keeps what it plays (#522).
+                cmd::STORE => {
+                    let slot = report[2];
+                    let name: Vec<u8> = report[3..]
+                        .iter()
+                        .copied()
+                        .take_while(|b| *b != 0)
+                        .collect();
+                    let name = String::from_utf8_lossy(&name).into_owned();
+                    self.kept.borrow_mut().retain(|k| k.0 != slot);
+                    self.kept.borrow_mut().push((slot, name, self.pushed.get()));
+                    self.used.set(self.used.get() | 1 << slot);
+                    self.left.set(left_state::DONE);
                 }
                 cmd::SELECT => {
                     self.set.set(report[2] as i8);
@@ -1831,6 +2053,47 @@ mod tests {
     }
 
     /// The piece already on screen from this file is saved as it is: no second send.
+    /// A playlist stage (#522): BEGIN, DATA, STORE into the lent place, with no COMMIT, SAVE or
+    /// SELECT: the screen keeps its set. The places are read again, and the place then matches
+    /// the file the way the playlist looks for it.
+    #[test]
+    fn a_stage_keeps_the_piece_without_showing_it() {
+        let kb = FakeKeyboard::default();
+        let h = idle_handle(Snapshot::default());
+        let st = stage(&kb, &h, &fury(), 7, "fury").expect("staged");
+        let log = kb.log.borrow().clone();
+        assert!(log.contains(&cmd::BEGIN) && log.contains(&cmd::STORE));
+        for c in [cmd::COMMIT, cmd::SAVE, cmd::SELECT] {
+            assert!(!log.contains(&c), "{c:#x} sent: {log:?}");
+        }
+        assert_eq!(kb.set.get(), 0, "the screen kept its set");
+        assert_eq!(st.right_set, 0);
+        let s = h.snapshot();
+        let place = s.slots.iter().find(|i| i.slot == 7).unwrap();
+        assert!(place.used);
+        assert_eq!(
+            place_key(&fury()),
+            Some((place.name.clone(), usize::from(place.len)))
+        );
+        assert_eq!(
+            art_playlist::place_of(&[6, 7], &s.slots, &place_key(&fury()).unwrap()),
+            Some(7)
+        );
+    }
+
+    /// A keyboard without STORE: the stage fails with the words the service falls back on.
+    #[test]
+    fn a_stage_says_when_the_keyboard_cannot() {
+        let kb = FakeKeyboard {
+            no_store: true,
+            ..Default::default()
+        };
+        let h = idle_handle(Snapshot::default());
+        let e = stage(&kb, &h, &fury(), 7, "fury").unwrap_err();
+        assert!(e.contains(art::STORE_UNSUPPORTED), "{e}");
+        assert!(kb.kept.borrow().is_empty());
+    }
+
     #[test]
     fn keep_of_the_piece_on_screen_skips_the_send() {
         let kb = FakeKeyboard::default();

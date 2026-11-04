@@ -1,7 +1,8 @@
 # Right-screen art cycling (#60)
 
 Status: since #515 the list Rotation steps is the keyboard's own art (built-ins, then kept
-places), not a separate hotlist; `items` is kept for a playlist (#522). The rest is the original
+places), not a separate hotlist. Since #522 `items` is the playlist (see "The playlist" at the
+end). The rest is the original
 spec, for history. Today's hotlist (`app/src/foxglove/art_cycle.rs`, `[art.cycle]` in the
 store, profiled) has four modes: **Don't cycle**, **Every N minutes**, **When the lights wake**,
 and **Match the wallpaper**. This adds three event-driven triggers (**on a key**, **on a
@@ -160,3 +161,28 @@ store keeps `position` across restarts, as now.
   art, or the firmware has none: Warn), **Presses** (pressed and stepped; Warn with the last
   reason when one didn't step) and **Last hand-back** (pause, quit, the keyboard going; Warn
   after a worker restart retook them; Fail when quit got no answer).
+
+## The playlist (#522, as built)
+
+Rotation steps through `[art.cycle] items` instead of the keyboard's own art while `playlist` is
+on (`art_playlist.rs`). Emulates Wallpaper Engine's playlists and a watch's face rotation; the
+staging is ours, from the keyboard's limits.
+
+- **Places:** turning it on lends the playlist the two highest free places (`places`). Keep on
+  keyboard never offers them; `[art.seen]` doesn't count them as the user's.
+- **Staging:** right after each step (and on a connect or a change) the worker stages the next
+  entry that is a file into the lent place not on screen, the one written least, with STORE (D6
+  09): sent and kept without being shown. The step to it is then a SELECT of that place. Built-ins
+  and the user's kept places show as themselves.
+- **Timing:** a stage takes 1.6-1.9 s under the split link's latency in relay-sim
+  (`playlist-store`), a step 0.7-1.1 s; the next step is a minute away at least.
+- **Flash wear:** a place is written at most once per hour (`PLACE_GAP`) and not past 9 000
+  writes (`WEAR_STOP`, 90% of the nRF52840's 10 000). A piece that isn't staged in time is sent
+  from this PC at its step (about 1 s, not kept).
+- **Firmware without STORE** (no HELLO bit 30, or a right before status version 10): nothing is
+  staged, each step sends its piece.
+- **Health** (`art_health.rs`, subsystem `screens.art_playlist`): Length, Places (what each holds),
+  Last swap (OK with the time it took, or failed with the reason; Warn when the next isn't staged
+  and why), Steps (instant vs sent, swaps OK/failed).
+- **No polling:** staging starts on the step, the connect or the change; it ends with the STORE's
+  end, and a user's command takes it over.
