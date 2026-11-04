@@ -10,7 +10,7 @@ health: PC sends D7 13 00 03
 health: keyboard D7 93: status 0, half 0, chunk 3 of 5, length 116
 health: PC sends D7 13 00 04
 health: keyboard D7 93: status 0, half 0, chunk 4 of 5, length 116
-health: block version 4, half 0, length 116, flags 0x02, build 0.2.0 simtest
+health: block version 4, half 0, length 116, flags 0x02, build 0.3.0 simtest
 health: self-test display n/a, settings pass, relay n/a, LEDs n/a
 health: raw HID sent some, reply drops 0; split connected 0, drops 0; pc state FF, polarity FF, LEDs 0, uptime 1 s or more
 health: raw HID per transport: USB failed 0; BLE sent 0, failed 0, skipped some, at most the sent; last error USB 0, BLE -12
@@ -31,7 +31,7 @@ health: PC sends D7 13 00 03
 health: keyboard D7 93: status 0, half 0, chunk 3 of 5, length 116
 health: PC sends D7 13 00 04
 health: keyboard D7 93: status 0, half 0, chunk 4 of 5, length 116
-health: block version 4, half 0, length 116, flags 0x02, build 0.2.0 simtest
+health: block version 4, half 0, length 116, flags 0x02, build 0.3.0 simtest
 health: self-test display n/a, settings pass, relay n/a, LEDs n/a
 health: raw HID sent some, reply drops 2; split connected 0, drops 0; pc state FF, polarity FF, LEDs 0, uptime 1 s or more
 health: raw HID per transport: USB failed 0; BLE sent 0, failed 0, skipped some, at most the sent; last error USB 0, BLE -12

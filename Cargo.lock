@@ -549,7 +549,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 
 [[package]]
 name = "foxglove-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "foxglove-plugin-api",
  "foxglove-plugin-host",
@@ -558,7 +558,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-devices"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "hidapi",
  "serde",
@@ -568,11 +568,11 @@ dependencies = [
 
 [[package]]
 name = "foxglove-flash"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "foxglove-lab"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-link"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "crc32fast",
@@ -607,7 +607,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-panel"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "embedded-graphics",
@@ -618,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-plugin"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "foxglove-plugin-api",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-plugin-host"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "foxglove-devices",
@@ -650,7 +650,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-plugin-trust"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "minisign",
  "minisign-verify",
@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-scene"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "noise",
  "palette",
@@ -672,7 +672,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-update"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64",
  "chrono",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "foxglove-via"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "foxglove-devices",
  "hidapi",
@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "hostpanel"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
