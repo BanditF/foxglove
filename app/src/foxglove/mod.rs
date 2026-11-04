@@ -51,13 +51,13 @@ mod keyboard_direction_vectors;
 pub mod keyboard_facts;
 pub mod keyboard_page;
 pub mod keyboard_settings;
-// Foxglove (#719): the knob points at master or an app's volume.
-pub mod knob;
-pub mod knob_health;
 pub mod keymap_cache;
 pub mod keymap_health;
 pub mod keymap_layers;
 pub mod keymap_session;
+// Foxglove (#719): the knob points at master or an app's volume.
+pub mod knob;
+pub mod knob_health;
 pub mod lamp_health;
 pub mod last_device;
 pub mod layer_access;
