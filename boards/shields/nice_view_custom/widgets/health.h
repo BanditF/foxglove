@@ -20,9 +20,10 @@
 #include <zephyr/toolchain.h>
 
 // Version 2 (#719) appends the knob (bytes 96-103) to version 1's 96 bytes; version 3 appends the
-// Raw HID counts per transport (bytes 104-111).
-#define HEALTH_VERSION 3
-#define HEALTH_SIZE 112
+// Raw HID counts per transport (bytes 104-111); version 4 each transport's last refusal's error
+// code (bytes 112-115).
+#define HEALTH_VERSION 4
+#define HEALTH_SIZE 116
 #define HEALTH_V1_SIZE 96
 // D7 93 carries this many bytes of the block per report (bytes 8-31).
 #define HEALTH_CHUNK 24
@@ -159,6 +160,10 @@ struct health_wire {
     uint16_t hid_ble_failed;  // BLE notifies refused on a link that listens
     uint16_t hid_ble_skipped; // BLE reports nobody listened for (no link, notifications off,
                               // not encrypted yet): normal while the PC uses USB
+    // The last refusal's error code per transport (version 4; the module's raw_hid/stats.h
+    // version 3, else 0): a negative errno, 0 while it refused none.
+    int16_t hid_usb_last_err;
+    int16_t hid_ble_last_err;
 } __packed;
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH)

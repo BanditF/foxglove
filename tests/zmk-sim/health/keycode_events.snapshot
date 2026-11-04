@@ -1,49 +1,49 @@
 health: HELLO caps bit 28 HEALTH 1
 health: -- one read: five chunks of one copy
 health: PC sends D7 13 00 00
-health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 112
+health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 116
 health: PC sends D7 13 00 01
-health: keyboard D7 93: status 0, half 0, chunk 1 of 5, length 112
+health: keyboard D7 93: status 0, half 0, chunk 1 of 5, length 116
 health: PC sends D7 13 00 02
-health: keyboard D7 93: status 0, half 0, chunk 2 of 5, length 112
+health: keyboard D7 93: status 0, half 0, chunk 2 of 5, length 116
 health: PC sends D7 13 00 03
-health: keyboard D7 93: status 0, half 0, chunk 3 of 5, length 112
+health: keyboard D7 93: status 0, half 0, chunk 3 of 5, length 116
 health: PC sends D7 13 00 04
-health: keyboard D7 93: status 0, half 0, chunk 4 of 5, length 112
-health: block version 3, half 0, length 112, flags 0x02, build 0.2.0 simtest
+health: keyboard D7 93: status 0, half 0, chunk 4 of 5, length 116
+health: block version 4, half 0, length 116, flags 0x02, build 0.2.0 simtest
 health: self-test display n/a, settings pass, relay n/a, LEDs n/a
 health: raw HID sent some, reply drops 0; split connected 0, drops 0; pc state FF, polarity FF, LEDs 0, uptime 1 s or more
-health: raw HID per transport: USB failed 0; BLE sent 0, failed 0, skipped some, at most the sent
+health: raw HID per transport: USB failed 0; BLE sent 0, failed 0, skipped some, at most the sent; last error USB 0, BLE -12
 health: -- six requests while the system queue can't run: four replies, two dropped
-health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 112
-health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 112
-health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 112
-health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 112
+health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 116
+health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 116
+health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 116
+health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 116
 health: 4 of 6 replies came
 health: -- the next read counts the two dropped
 health: PC sends D7 13 00 00
-health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 112
+health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 116
 health: PC sends D7 13 00 01
-health: keyboard D7 93: status 0, half 0, chunk 1 of 5, length 112
+health: keyboard D7 93: status 0, half 0, chunk 1 of 5, length 116
 health: PC sends D7 13 00 02
-health: keyboard D7 93: status 0, half 0, chunk 2 of 5, length 112
+health: keyboard D7 93: status 0, half 0, chunk 2 of 5, length 116
 health: PC sends D7 13 00 03
-health: keyboard D7 93: status 0, half 0, chunk 3 of 5, length 112
+health: keyboard D7 93: status 0, half 0, chunk 3 of 5, length 116
 health: PC sends D7 13 00 04
-health: keyboard D7 93: status 0, half 0, chunk 4 of 5, length 112
-health: block version 3, half 0, length 112, flags 0x02, build 0.2.0 simtest
+health: keyboard D7 93: status 0, half 0, chunk 4 of 5, length 116
+health: block version 4, half 0, length 116, flags 0x02, build 0.2.0 simtest
 health: self-test display n/a, settings pass, relay n/a, LEDs n/a
 health: raw HID sent some, reply drops 2; split connected 0, drops 0; pc state FF, polarity FF, LEDs 0, uptime 1 s or more
-health: raw HID per transport: USB failed 0; BLE sent 0, failed 0, skipped some, at most the sent
+health: raw HID per transport: USB failed 0; BLE sent 0, failed 0, skipped some, at most the sent; last error USB 0, BLE -12
 health: -- bad half, bad chunk, the right's chunk before its copy, the right without a relay
 health: PC sends D7 13 02 00
-health: keyboard D7 93: status 5, half 2, chunk 0 of 5, length 112
+health: keyboard D7 93: status 5, half 2, chunk 0 of 5, length 116
 health: PC sends D7 13 00 05
-health: keyboard D7 93: status 5, half 0, chunk 5 of 5, length 112
+health: keyboard D7 93: status 5, half 0, chunk 5 of 5, length 116
 health: PC sends D7 13 01 01
-health: keyboard D7 93: status 6, half 1, chunk 1 of 5, length 112
+health: keyboard D7 93: status 6, half 1, chunk 1 of 5, length 116
 health: PC sends D7 13 01 00
-health: keyboard D7 93: status 2, half 1, chunk 0 of 5, length 112
+health: keyboard D7 93: status 2, half 1, chunk 0 of 5, length 116
 health: -- a report cut short reads the left's chunk 0
-health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 112
+health: keyboard D7 93: status 0, half 0, chunk 0 of 5, length 116
 health: -- done

@@ -546,6 +546,7 @@ fn a_version_3_block_counts_each_transport_and_skipped_is_no_warning() {
             ble_sent: 0,
             ble_failed: 0,
             ble_skipped: 3,
+            ..HidTransport::default()
         }),
         ..left()
     };
@@ -617,4 +618,57 @@ fn an_older_block_has_no_transport_counts() {
     let rows = rows(&report(v2, right()), &Thresholds::default());
     let hid = find(&rows, "Reports to the PC");
     assert_eq!(hid[0].detail, "3 reports refused by USB or Bluetooth");
+}
+
+#[test]
+fn a_version_4_block_says_why_a_transport_refused() {
+    // The d7b5f4f batch's left: Bluetooth sent 50, refused 3 on a link where the PC listens,
+    // skipped 3; version 4 adds the last refusal's code (bytes 112-115, int16 each).
+    let b = Block {
+        version: 4,
+        hid_sent: 50,
+        hid_failed: 3,
+        knob: Some(Knob::default()),
+        hid_transport: Some(HidTransport {
+            ble_sent: 50,
+            ble_failed: 3,
+            ble_skipped: 3,
+            ble_last_err: -12,
+            ..HidTransport::default()
+        }),
+        ..left()
+    };
+    let bytes = b.to_bytes();
+    assert_eq!(bytes.len(), SIZE_V4);
+    assert_eq!(bytes[2], 116);
+    assert_eq!(&bytes[112..116], &[0, 0, 0xf4, 0xff]);
+    assert_eq!(Block::parse(&bytes).unwrap(), b);
+    let replies = b.replies(1);
+    assert_eq!(replies.len(), 5);
+    assert_eq!((replies[0][6], replies[0][7]), (5, 116));
+
+    let rows = rows(&report(b.clone(), right()), &Thresholds::default());
+    let hid: Vec<(Level, &str)> = find(&rows, "Reports to the PC")
+        .iter()
+        .map(|r| (r.level, r.detail.as_str()))
+        .collect();
+    assert_eq!(
+        hid,
+        vec![
+            (
+                Level::Warn,
+                "3 reports refused: 0 by USB, 3 by Bluetooth; Bluetooth's last: -12 ENOMEM, no buffer free"
+            ),
+            (
+                Level::Ok,
+                "3 Bluetooth reports skipped (no PC listening on Bluetooth)"
+            ),
+        ]
+    );
+
+    // A version 3 block reads its codes as 0, and the row says no cause.
+    let v3 = Block { version: 3, ..b };
+    let parsed = Block::parse(&v3.to_bytes()).unwrap();
+    assert_eq!(parsed.hid_transport.unwrap().ble_last_err, 0);
+    assert_eq!(errno_words(-99), "-99");
 }

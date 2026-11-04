@@ -1063,7 +1063,7 @@ static void dim_read(void) {
 /* D7 13 HEALTH for the right (#705): its self-report, past the redraw count. One response's worth
  * per request: the callback takes the first chunk and stops, so no Read Blob is chained from the
  * RX callback, and each request goes through req_new, so REQ_GAP_MS spaces them (#662) and each
- * waits for the right's next listen under its latency. 112 bytes at MTU 23 is six requests.
+ * waits for the right's next listen under its latency. 116 bytes at MTU 23 is six requests.
  * Start: the PC's D7 13 for half 1 (chunk 0). Stop: the block is in (as long as the block's own
  * length says: a right with version 1's 96 bytes is read to its end, the rest left 0), or the
  * first read that fails (no retry here; the PC asks again). A right before it ends the value at
@@ -1119,7 +1119,7 @@ static void health_read_job(struct k_work *work) {
             }
             at += slot_got;
             if (at > 2 && got[2] >= HEALTH_V1_SIZE && got[2] < want) {
-                want = got[2]; // an older right's shorter block (96 or 104 bytes, #719)
+                want = got[2]; // an older right's shorter block (96, 104 or 112 bytes, #719)
             }
         }
         bt_conn_unref(conn);
