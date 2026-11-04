@@ -223,6 +223,7 @@ mod imp {
         // them free.
         crate::foxglove::screens::stop();
         crate::foxglove::art_service::stop();
+        crate::foxglove::knob::stop();
         crate::foxglove::single_instance::release();
         let exe = match std::env::current_exe() {
             Ok(exe) => exe,
