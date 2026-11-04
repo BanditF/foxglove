@@ -34,6 +34,9 @@ get tested.
 | `snap-latency` | the snapshot under the link's real timing (#662's d265853 hardware failure): latency 30, the response-buffer rule, the right's system queue busy 20 ms after each redraw and 20 ms on each art frame (10 a second), the app's traffic; select 0, snapshot, select 1, snapshot, two more snapshots while it animates, two art pushes, a SELECT | every snapshot OK and the slowest under 2 s (40% of the 5 s budget), nothing unanswered, no re-link; prints each snapshot's and push's simulated time |
 | `snap-latency-old` (diagnostic) | `snap-latency` against a right before the push: it refuses the push byte, the left reads | not gating: the reads time out at the 5 s budget (the reply still comes inside the lab's 6 s) |
 | `polarity-relink` | the panel polarity (#666): the left's value on link-up, a flip, a burst of flips with a SELECT among them (select-snap's response-buffer rule and busy right, the app's traffic), a flip while the link is down, a re-link with no change | the right has the newest value each time and the left reports it acknowledged (unknown while the link is down); one write per re-link, then quiet; no request unanswered, no re-link |
+| `playlist-store` | the art playlist (#522) with two places lent to it, under `snap-latency`'s link (latency 30, the response-buffer rule, the right's busy system queue, the app's traffic): STORE (D6 09) stages a piece into a place ahead, then five steps, each a SELECT of the staged place and the next piece STOREd into the other place; then a STORE into the place on screen, one after it, and a SLOT read back | every STORE lands (the place holds those bytes, name and length) with the screen untouched (same set, no push played), slowest stage under 4 s and slowest step under 1.5 s, the store into the shown place refused with the screen and link left alone, the place reads back, no re-link, nothing unanswered; prints each stage's and step's simulated time and the places' write counts |
+| `playlist-store-old` | `playlist-store`'s STORE against a right before it (status version 9) | the left fails it with error 7 (right rejected) before sending anything, within 1 s, the screen untouched; the keep path that shows the piece (push, SAVE) works, as Foxglove falls back to there |
+| `restore-update` | art across a firmware update (#521): three places kept with STORE, then the right restarts with new firmware twice: one update keeps the places, one wipes them (a settings reset); Foxglove STOREs them back, and the link drops in the middle of the second | the places survive the first update (SLOT reads, used bits); after the wipe the first pass restores 2/3, the retry once the relay is back 3/3 (`art restored N/M`, from the reads back), the screen stays on the right's own art throughout, nothing unanswered |
 | `health` | the self-report (#705, `health.c` built with the relay): the right switched on 70 s after the left; the right's block read (D7 13 half 1) under the response-buffer rule and a busy right; a status read answered 4.5 s late; a push the right refuses, then one it takes; a right without the block; a re-link | the relay self-test reads pending, then failed with no link (code 2), then failed late (code 1); the right's block arrives within 5 s with nothing unanswered and no re-link; the left counts the timeout, the failed push (last error: the right refused) and the good one, the right's block counts its refusal and its blob; a right without the block answers 4 and counts no refusal; the re-link counts a drop and a second find. `stall` also checks the timeouts, unstick, drop and re-find since boot |
 | `lost` (diagnostic) | one request never answered | not gating: the SELECT queued behind it can't be answered either; the push after the unstick's re-link works |
 
@@ -88,6 +91,17 @@ the link goes. `sim_bt_faults.late_err` gives a late answer an ATT error.
   (ATT 0x0d); the left then snaps and reads as before for that link (`snap-latency-old`). Art
   pushes under latency: 3599 bytes in ~0.9 s from COMMIT, 3190 in ~1.1 s; a request after a
   request (SELECT's status read) waits for the right's next listen, 0.3-0.8 s per SELECT.
+
+## STORE (#522, #521)
+
+The right's flash places (`art_slots.c`, 8 of 20 KiB at 0xAD000) took a piece only with SAVE,
+which saves the set on screen: keeping a piece meant showing it first. STORE (relay op 19, D6 09
+from the PC, right status version 10, HELLO bit 30) ends a push instead of COMMIT: the right
+checks the set it received and writes it into a place without showing it, so the playlist can
+stage its next piece ahead of the step and a firmware update's lost places come back without the
+screen flickering through them. The fake right models SAVE, STORE and the places (each write
+takes `flash_write_us`, 650 ms by default, on the right's own queue; status SAVING meanwhile, a
+BEGIN or SELECT then gets 0x82), and `sim_bt_right_update` restarts it with new firmware.
 
 ## Known gaps (run in CI, must still fail)
 

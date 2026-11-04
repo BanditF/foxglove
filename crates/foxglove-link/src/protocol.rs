@@ -81,6 +81,10 @@ pub mod capabilities {
     /// RGB_STATE (D7 83) byte 29 says which underglow effects the left draws in the chosen
     /// colour ([`super::RgbState::colour_effects`], #626): Swirl as a band of hues around it.
     pub const COLOUR_EFFECTS: u32 = 1 << 29;
+    /// Art STORE (D6 09): keep a piece in a flash slot on the right without showing it (#522).
+    /// The right needs status version [`super::art::STORE_RIGHT_VERSION`] too; a left with the
+    /// bit fails STORE to an older right before sending anything ([`crate::art::STORE_UNSUPPORTED`]).
+    pub const ART_STORE: u32 = 1 << 30;
 }
 pub const VERSION: u8 = 1;
 
@@ -118,6 +122,10 @@ pub mod art {
     /// One flash slot's info; replies D6 87 once the right has answered.
     pub const SLOT: u8 = 0x07;
     pub const ERASE: u8 = 0x08;
+    /// In place of COMMIT (#522): the right keeps the blob in a flash slot without showing it.
+    pub const STORE: u8 = 0x09;
+    /// The right's status version with STORE (art_relay.h `ART_RELAY_STORE_STATUS_VERSION`).
+    pub const STORE_RIGHT_VERSION: u8 = 10;
     pub const DATA_MAX: usize = 27;
     /// Bytes of a slot name.
     pub const NAME_LEN: usize = 16;
@@ -336,6 +344,14 @@ pub fn art_save(slot: u8, name: &str) -> Vec<u8> {
     let mut r = vec![ART, art::SAVE, slot];
     r.extend_from_slice(art_name_fit(name).as_bytes());
     r.resize(3 + art::NAME_LEN, 0);
+    r
+}
+
+/// D6 09 STORE (#522): ends a BEGIN/DATA push in place of COMMIT; the right keeps the set in
+/// flash slot `slot` under `name` (cut as [`art_save`] cuts it) without showing it.
+pub fn art_store(slot: u8, name: &str) -> Vec<u8> {
+    let mut r = art_save(slot, name);
+    r[1] = art::STORE;
     r
 }
 
@@ -1404,7 +1420,12 @@ pub const RIGHT_STATES: [&str; 9] = [
 /// The right half's art states (art_relay.h `art_relay_right_state`).
 pub mod right_state {
     pub const BUILT_IN: u8 = 0;
+    pub const RECEIVING: u8 = 1;
     pub const PLAYING: u8 = 2;
+    /// The right refused a set: its CRC, its header, or its size.
+    pub const BAD_CRC: u8 = 3;
+    pub const BAD_BLOB: u8 = 4;
+    pub const TOO_BIG: u8 = 5;
     pub const SAVING: u8 = 6;
     pub const SAVED: u8 = 7;
     pub const SAVE_FAILED: u8 = 8;
@@ -1414,6 +1435,8 @@ pub mod right_state {
 pub mod relay_error {
     /// "Bluetooth write failed": the left's write to the right didn't go through.
     pub const BLE: u8 = 6;
+    /// "right half rejected it": a set the right refused, or a STORE a right before it can't do.
+    pub const RIGHT: u8 = 7;
 }
 
 /// Left-half relay states (enum art_relay_left_state).
@@ -1941,6 +1964,7 @@ mod tests {
             PANEL_POLARITY,
             HEALTH,
             COLOUR_EFFECTS,
+            ART_STORE,
         ];
         for (i, a) in all.iter().enumerate() {
             assert_eq!(a.count_ones(), 1);
@@ -2275,6 +2299,11 @@ mod slot_tests {
         assert_eq!(art_name_fit("fifteen chars!!ü"), "fifteen chars!!"); // ü would cross byte 16
         assert_eq!(art_name_fit("exactly 16 chars"), "exactly 16 chars");
         assert_eq!(art_erase(1), [ART, art::ERASE, 1]);
+        // STORE (#522) is SAVE's report with its own command: slot, then the name cut the same.
+        let store = art_store(2, "fox ünïcode name too long");
+        assert_eq!(&store[..3], &[ART, art::STORE, 2]);
+        assert_eq!(store[3..], save[3..]);
+        assert_eq!(capabilities::ART_STORE, 1 << 30);
         let mut r = [0u8; REPORT];
         r[..11].copy_from_slice(&[0xD6, 0x87, 0, 3, 1, 5, 0, 0, 0, 0x10, 0x27]);
         r[11..14].copy_from_slice(b"fox");

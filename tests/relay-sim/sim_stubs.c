@@ -44,8 +44,9 @@ void host_link_rgb_right_changed(void) { sim_left.rgb_events++; }
 void host_link_rgb_right_followed(void) { sim_left.rgb_followed++; }
 void host_link_battery_dim_changed(void) { sim_left.dim_events++; }
 void host_link_send(const uint8_t *data, int len) {
-    (void)data;
-    (void)len;
+    int n = len < (int)sizeof(sim_left.last_send) ? len : (int)sizeof(sim_left.last_send);
+    memcpy(sim_left.last_send, data, n);
+    sim_left.last_send_len = n;
     sim_left.sends++;
 }
 /* The self-report (#705): host_link.c's D7 93 for the right, and what health.c reads. */

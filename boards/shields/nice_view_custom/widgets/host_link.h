@@ -39,7 +39,8 @@
  *                    27 PANEL_POLARITY (D7 12: dark or light mono panels, both halves, #666),
  *                    28 HEALTH (D7 13: each half's self-report, #705),
  *                    29 COLOUR_EFFECTS (D7 83 byte 29: the effects the left draws in the
- *                    chosen colour; Swirl as a hue band around it, #626).
+ *                    chosen colour; Swirl as a hue band around it, #626),
+ *                    30 ART_STORE (D6 09: keep a piece on the right without showing it, #522).
  *      HELLO has no byte left for the LED counts: bit 22 says D7 10 answers them.
  *      Old firmware pads appended fields with zero; version and prior fields stay unchanged.
  *      After host traffic, a right battery change sends an unsolicited HELLO with the same payload.
@@ -78,6 +79,11 @@
  *                                   name[16] (status 0 ok, 1 busy, 2 no link, 3 BLE error,
  *                                   4 right without slots); comes once the right has answered
  *   08 ERASE   slot u8              empty flash slot n
+ *   09 STORE   slot u8, name[16]    in place of COMMIT (#522): check the CRC, push the blob and
+ *                                   have the right keep it in flash slot n without showing it;
+ *                                   STATUS shows SAVING, then the shown set's state again (or
+ *                                   SAVE_FAILED). A right before it fails it with error 7
+ *                                   (right rejected) before anything is sent.
  *   SAVE and ERASE reply like SELECT; the write then runs on the right, and STATUS shows the
  *   right's state SAVING (6), then SAVED (7) or SAVE_FAILED (8). SELECT set_count + n plays
  *   flash slot n. The right status (version 3) ends with flash_slots u8, flash_used u8 (bits).
@@ -409,6 +415,8 @@
 #define HOST_LINK_CAP_HEALTH (1U << 28)
 // D7 83 byte 29: the effects the left draws in the chosen colour (#626; colour_effects.h).
 #define HOST_LINK_CAP_COLOUR_EFFECTS (1U << 29)
+// D6 09 STORE: keep a piece in a flash slot on the right without showing it (#522).
+#define HOST_LINK_CAP_ART_STORE (1U << 30)
 
 // Nonblocking POSITION response; also used by the test-hooks worker.
 void host_link_position_reply(uint8_t status, uint8_t pos);

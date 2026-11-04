@@ -688,7 +688,7 @@ static void respond(uint8_t err, const void *data, uint16_t len) {
 
 static uint16_t status_value(uint8_t *out) {
     struct art_relay_status s = {0};
-    s.version = 9;
+    s.version = sim_right.version;
     s.state = sim_right.state;
     s.received = sim_right.received;
     s.capacity = 16384;
@@ -703,11 +703,21 @@ static uint16_t status_value(uint8_t *out) {
     s.rgb.effect = sim_right.look[4];
     s.rgb.speed = 3;
     s.flash_slots = ART_RELAY_FLASH_SLOTS;
+    for (int i = 0; i < ART_RELAY_FLASH_SLOTS; i++) {
+        s.flash_used |= sim_right.flash[i].used ? BIT(i) : 0;
+    }
     uint16_t n = 0;
     memcpy(out, &s, sizeof(s));
     n += sizeof(s);
-    memset(out + n, 0, ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info));
-    n += ART_RELAY_FLASH_SLOTS * sizeof(struct art_relay_slot_info);
+    for (int i = 0; i < ART_RELAY_FLASH_SLOTS; i++) { // art_slots_info
+        struct art_relay_slot_info info = {0};
+        info.used = sim_right.flash[i].used;
+        info.writes = sim_right.flash[i].writes;
+        info.len = sim_right.flash[i].len;
+        memcpy(info.name, sim_right.flash[i].name, sizeof(info.name));
+        memcpy(out + n, &info, sizeof(info));
+        n += sizeof(info);
+    }
     struct foxglove_build_info b = {0, 1, 0, 0, "sim"};
     memcpy(out + n, &b, sizeof(b));
     n += sizeof(b);
@@ -769,10 +779,47 @@ static void right_update_lit(void) {
 
 static bool snap_push; // the capture under way is to be pushed (SNAP with ART_RELAY_SNAP_PUSH)
 
+// The flash write SAVE or STORE started (art_slots_save on its own queue), and where it goes.
+static struct {
+    uint8_t slot;
+    struct sim_flash_slot to;
+    bool store;
+    uint8_t resume; // STORE: the state of what the screen shows, back once written
+} flash_job;
+static void flash_done_cb(struct k_work *w) {
+    (void)w;
+    struct sim_flash_slot *s = &sim_right.flash[flash_job.slot];
+    uint32_t writes = s->writes + 1;
+    *s = flash_job.to;
+    s->writes = writes;
+    if (flash_job.store) {
+        sim_right.stores_ok++;
+        sim_right.state = flash_job.resume;
+    } else {
+        sim_right.saves_ok++;
+        sim_right.state = ART_RIGHT_SAVED;
+    }
+}
+static K_WORK_DELAYABLE_DEFINE(flash_done_work, flash_done_cb);
+
+static void flash_start(uint8_t slot, const uint8_t *name, uint16_t len, uint32_t crc) {
+    flash_job.slot = slot;
+    flash_job.to.used = true;
+    flash_job.to.len = len;
+    flash_job.to.crc = crc;
+    memcpy(flash_job.to.name, name, sizeof(flash_job.to.name));
+    sim_right.state = ART_RIGHT_SAVING;
+    int64_t us = sim_bt_faults.flash_write_us ? sim_bt_faults.flash_write_us : 650000;
+    k_work_schedule_for_queue(&right_sys_q, &flash_done_work, K_USEC(us));
+}
+
 // The relay op's ATT error (0: accepted).
 static uint8_t right_op(const uint8_t *d, uint16_t len) {
     switch (d[0]) {
     case ART_RELAY_BEGIN:
+        if (sim_right.state == ART_RIGHT_SAVING) {
+            return 0x82; // the slot being written stays put
+        }
         sim_right.blob_len = sys_get_le16(&d[1]);
         sim_right.blob_crc = sys_get_le32(&d[3]);
         sim_right.received = 0;
@@ -798,6 +845,8 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
             crc32_ieee(blob, sim_right.blob_len) == sim_right.blob_crc) {
             sim_right.state = ART_RIGHT_PLAYING;
             sim_right.set = -1;
+            sim_right.shown_len = sim_right.blob_len;
+            sim_right.shown_crc = sim_right.blob_crc;
             sim_right.pushes_ok++;
             sim_right.redraws++;
             right_redraw();
@@ -805,7 +854,46 @@ static uint8_t right_op(const uint8_t *d, uint16_t len) {
             sim_right.state = ART_RIGHT_BAD_CRC;
         }
         return 0;
+    case ART_RELAY_SAVE: // the pushed set on screen into flash slot n (art_relay_peripheral.c)
+        if (len != 18) {
+            return BT_ATT_ERR_INVALID_ATTRIBUTE_LEN;
+        }
+        if (sim_right.state == ART_RIGHT_SAVING) {
+            return 0x82;
+        }
+        if (sim_right.set != -1 || d[1] >= ART_RELAY_FLASH_SLOTS) {
+            return 0x85;
+        }
+        flash_job.store = false;
+        flash_start(d[1], &d[2], sim_right.shown_len, sim_right.shown_crc);
+        return 0;
+    case ART_RELAY_STORE: // #522: the set received since BEGIN into flash, never shown
+        if (sim_right.version < ART_RELAY_STORE_STATUS_VERSION) {
+            return 0; // a right before it: no case for the op, answered like any write
+        }
+        if (len != 18) {
+            return BT_ATT_ERR_INVALID_ATTRIBUTE_LEN;
+        }
+        if (sim_right.state == ART_RIGHT_SAVING) {
+            return 0x82;
+        }
+        if (sim_right.state != ART_RIGHT_RECEIVING || d[1] >= ART_RELAY_FLASH_SLOTS ||
+            (sim_right.set >= 1 && sim_right.set - 1 == d[1])) {
+            return 0x85; // nothing received, no such slot, or the slot on screen
+        }
+        if (sim_right.received != sim_right.blob_len ||
+            crc32_ieee(blob, sim_right.blob_len) != sim_right.blob_crc) {
+            sim_right.state = ART_RIGHT_BAD_CRC;
+            return 0;
+        }
+        flash_job.store = true;
+        flash_job.resume = sim_right.set == -1 ? ART_RIGHT_PLAYING : ART_RIGHT_IDLE;
+        flash_start(d[1], &d[2], sim_right.blob_len, sim_right.blob_crc);
+        return 0;
     case ART_RELAY_SELECT:
+        if (sim_right.state == ART_RIGHT_SAVING) {
+            return 0x82;
+        }
         sim_right.set = (int8_t)d[1];
         sim_right.state = ART_RIGHT_IDLE;
         sim_right.redraws++;
@@ -1198,6 +1286,21 @@ void sim_bt_drop(int64_t back_after_us) {
     k_work_submit_to_queue(&bt_rx_q, &disconnected_work);
 }
 
+void sim_bt_right_update(bool wipe, int64_t back_after_us) {
+    sim_bt_drop(back_after_us);
+    sim_right.updates++;
+    sim_right.set = 0; // it starts on its own art
+    sim_right.state = ART_RIGHT_IDLE;
+    sim_right.received = 0;
+    if (wipe) {
+        for (int i = 0; i < ART_RELAY_FLASH_SLOTS; i++) {
+            uint32_t writes = sim_right.flash[i].writes + (sim_right.flash[i].used ? 1 : 0);
+            memset(&sim_right.flash[i], 0, sizeof(sim_right.flash[i]));
+            sim_right.flash[i].writes = writes;
+        }
+    }
+}
+
 int bt_conn_disconnect(struct bt_conn *conn, uint8_t reason) {
     (void)reason;
     if (conn != link || !link_up) {
@@ -1214,6 +1317,7 @@ void sim_bt_init(void) {
     k_work_init_delayable(&att_timeout_work, att_timeout_cb);
     att_timeout_work.target = &k_sys_work_q;
     sim_right.set = 0;
+    sim_right.version = ART_RELAY_STORE_STATUS_VERSION;
     sim_right.polarity = -1;
     sim_right.follow = true;
     sim_right.rgb_on = true;

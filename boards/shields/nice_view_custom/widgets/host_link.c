@@ -68,7 +68,17 @@ LOG_MODULE_DECLARE(zmk, CONFIG_ZMK_LOG_LEVEL);
 
 enum { PANEL_HELLO = 0x01, PANEL_FILL, PANEL_ROWS, PANEL_PRESENT, PANEL_RELEASE, PANEL_SCREENS,
        PANEL_ROWS_AT };
-enum { ART_BEGIN = 0x01, ART_DATA, ART_COMMIT, ART_SELECT, ART_STATUS, ART_SAVE, ART_SLOT, ART_ERASE };
+enum {
+    ART_BEGIN = 0x01,
+    ART_DATA,
+    ART_COMMIT,
+    ART_SELECT,
+    ART_STATUS,
+    ART_SAVE,
+    ART_SLOT,
+    ART_ERASE,
+    ART_STORE, // 09 (#522)
+};
 enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_STATE, SETTING_POSITION,
        SETTING_SCREEN_SNAP, SETTING_SCREEN_READ, SETTING_BOOTLOADER,
        SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B, // 0x0A: LAMP_TEST (#115 branch)
@@ -219,6 +229,7 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_NICE_VIEW_ART_RELAY)
     caps |= HOST_LINK_CAP_ART_RELAY | HOST_LINK_CAP_ART_STATUS_EVENT | HOST_LINK_CAP_ART_SLOTS;
     caps |= HOST_LINK_CAP_ACTIVITY_RELAY; // activity_relay.c is built with the relay
+    caps |= HOST_LINK_CAP_ART_STORE;      // D6 09 (#522); the right's status version says too
 #endif
 #if IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
     caps |= HOST_LINK_CAP_SETTINGS_RGB | HOST_LINK_CAP_RGB_STATE_EVENT | HOST_LINK_CAP_RGB_SHOWN;
@@ -380,6 +391,9 @@ static void art_command(const uint8_t *d) {
         break;
     case ART_ERASE:
         err = art_relay_erase(d[2]);
+        break;
+    case ART_STORE:
+        err = art_relay_store(d[2], &d[3]);
         break;
     case ART_SLOT:
         if (art_relay_slot(d[2]) == 0) {
