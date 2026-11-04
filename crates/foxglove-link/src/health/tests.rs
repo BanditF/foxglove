@@ -532,3 +532,89 @@ fn an_older_block_has_no_knob_and_a_shorter_right_reads() {
     assert_eq!(r.knob, None);
     assert!(find(&rows(&report(left(), r), &Thresholds::default()), "Knob").is_empty());
 }
+
+#[test]
+fn a_version_3_block_counts_each_transport_and_skipped_is_no_warning() {
+    // Bytes 104-111, as widgets/health.h lays them out: USB failed, BLE sent, failed, skipped.
+    let b = Block {
+        version: 3,
+        hid_sent: 112,
+        hid_failed: 0,
+        knob: Some(Knob::default()),
+        hid_transport: Some(HidTransport {
+            usb_failed: 0,
+            ble_sent: 0,
+            ble_failed: 0,
+            ble_skipped: 3,
+        }),
+        ..left()
+    };
+    let bytes = b.to_bytes();
+    assert_eq!(bytes.len(), SIZE_V3);
+    assert_eq!(bytes[2], 112);
+    assert_eq!(&bytes[104..112], &[0, 0, 0, 0, 0, 0, 3, 0]);
+    assert_eq!(Block::parse(&bytes).unwrap(), b);
+    // Still five chunks of 24, the last one 16 bytes.
+    let replies = b.replies(4);
+    assert_eq!(replies.len(), 5);
+    assert_eq!((replies[0][6], replies[0][7]), (5, 112));
+    let mut a = Assembler::default();
+    let mut got = None;
+    for (c, r) in replies.iter().enumerate() {
+        got = a.take(0, c as u8, r).unwrap();
+    }
+    assert_eq!(got.unwrap(), b);
+
+    // The 9ddafe5 batch's reading, counted per transport: 3 skipped on Bluetooth, none failed.
+    let rows = rows(&report(b.clone(), right()), &Thresholds::default());
+    assert_eq!(worst(&rows), Level::Ok, "{rows:#?}");
+    let hid = find(&rows, "Reports to the PC");
+    assert_eq!(hid.len(), 1, "{rows:#?}");
+    assert_eq!(
+        hid[0].detail,
+        "no problems since start; 3 Bluetooth reports skipped (no PC listening on Bluetooth)"
+    );
+
+    // A real refusal stays a warning, said per transport, with the skipped line beside it.
+    let failing = Block {
+        hid_failed: 2,
+        hid_transport: Some(HidTransport {
+            usb_failed: 1,
+            ble_failed: 1,
+            ble_skipped: 1,
+            ..HidTransport::default()
+        }),
+        ..b
+    };
+    let rows = rows(&report(failing, right()), &Thresholds::default());
+    let hid: Vec<(Level, &str)> = find(&rows, "Reports to the PC")
+        .iter()
+        .map(|r| (r.level, r.detail.as_str()))
+        .collect();
+    assert_eq!(
+        hid,
+        vec![
+            (Level::Warn, "2 reports refused: 1 by USB, 1 by Bluetooth"),
+            (
+                Level::Ok,
+                "1 Bluetooth report skipped (no PC listening on Bluetooth)"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn an_older_block_has_no_transport_counts() {
+    let mut v2 = Block {
+        version: 2,
+        knob: Some(Knob::default()),
+        hid_failed: 3,
+        ..left()
+    };
+    assert_eq!(v2.to_bytes().len(), SIZE_V2);
+    assert_eq!(Block::parse(&v2.to_bytes()).unwrap().hid_transport, None);
+    v2.knob = None;
+    let rows = rows(&report(v2, right()), &Thresholds::default());
+    let hid = find(&rows, "Reports to the PC");
+    assert_eq!(hid[0].detail, "3 reports refused by USB or Bluetooth");
+}

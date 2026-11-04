@@ -19,9 +19,10 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/toolchain.h>
 
-// Version 2 (#719) appends the knob (bytes 96-103) to version 1's 96 bytes.
-#define HEALTH_VERSION 2
-#define HEALTH_SIZE 104
+// Version 2 (#719) appends the knob (bytes 96-103) to version 1's 96 bytes; version 3 appends the
+// Raw HID counts per transport (bytes 104-111).
+#define HEALTH_VERSION 3
+#define HEALTH_SIZE 112
 #define HEALTH_V1_SIZE 96
 // D7 93 carries this many bytes of the block per report (bytes 8-31).
 #define HEALTH_CHUNK 24
@@ -151,6 +152,13 @@ struct health_wire {
     uint16_t knob_events;  // events sent to the PC
     uint16_t knob_keys;    // fallback keys tapped
     uint16_t knob_drops;   // holds dropped by the board
+    // Raw HID per transport (version 3; the left, with HEALTH_F_HID_STATS and the module's
+    // raw_hid/stats.h version 2, else 0). hid_sent and hid_failed above are the sums.
+    uint16_t hid_usb_failed;  // reports the USB driver refused
+    uint16_t hid_ble_sent;    // BLE notifications queued
+    uint16_t hid_ble_failed;  // BLE notifies refused on a link that listens
+    uint16_t hid_ble_skipped; // BLE reports nobody listened for (no link, notifications off,
+                              // not encrypted yet): normal while the PC uses USB
 } __packed;
 
 #if IS_ENABLED(CONFIG_FOXGLOVE_HEALTH)

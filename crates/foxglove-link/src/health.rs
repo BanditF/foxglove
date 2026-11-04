@@ -16,11 +16,13 @@ use crate::protocol::{self, REPORT};
 use crate::Transport;
 
 /// The newest block version this reader knows (firmware HEALTH_VERSION).
-pub const VERSION: u8 = 2;
+pub const VERSION: u8 = 3;
 /// The block's size in version 1 (every block has at least these bytes).
 pub const SIZE: usize = 96;
 /// The block's size in version 2 (#719: the knob, bytes 96-103).
 pub const SIZE_V2: usize = 104;
+/// The block's size in version 3 (the Raw HID counts per transport, bytes 104-111).
+pub const SIZE_V3: usize = 112;
 /// Block bytes per D7 93 reply (bytes 8-31).
 pub const CHUNK: usize = 24;
 /// Replies per block.
@@ -152,6 +154,22 @@ pub struct Knob {
     pub drops: u16,
 }
 
+/// The Raw HID counts per transport (version 3, bytes 104-111, the left). The block's
+/// `hid_sent` and `hid_failed` are the sums over USB and Bluetooth.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HidTransport {
+    /// Reports the USB driver refused.
+    pub usb_failed: u16,
+    /// Bluetooth notifications queued.
+    pub ble_sent: u16,
+    /// Bluetooth notifies refused on a link where the PC listens.
+    pub ble_failed: u16,
+    /// Bluetooth reports nobody listened for: no link on the active profile, the PC hasn't
+    /// turned the report's notifications on, or the link isn't encrypted yet. Normal while the
+    /// PC uses USB, so never a warning.
+    pub ble_skipped: u16,
+}
+
 /// The knob byte (96): which knob behaviours the keymap has, and the hold.
 pub mod knob_flags {
     pub const TURN: u8 = 1 << 0;
@@ -160,7 +178,7 @@ pub mod knob_flags {
     pub const ON_APP: u8 = 1 << 3;
 }
 
-/// One half's self-report block (docs/health.md, versions 1 and 2).
+/// One half's self-report block (docs/health.md, versions 1 to 3).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Block {
     pub version: u8,
@@ -212,6 +230,8 @@ pub struct Block {
     pub leds_right: u8,
     /// Version 2 (#719); `None` in a version 1 block.
     pub knob: Option<Knob>,
+    /// Version 3; `None` in an older block.
+    pub hid_transport: Option<HidTransport>,
 }
 
 fn u16_at(b: &[u8], at: usize) -> u16 {
@@ -294,13 +314,27 @@ impl Block {
                 keys: u16_at(b, 100),
                 drops: u16_at(b, 102),
             }),
+            hid_transport: (b[0] >= 3 && usize::from(b[2]) >= SIZE_V3 && b.len() >= SIZE_V3).then(
+                || HidTransport {
+                    usb_failed: u16_at(b, 104),
+                    ble_sent: u16_at(b, 106),
+                    ble_failed: u16_at(b, 108),
+                    ble_skipped: u16_at(b, 110),
+                },
+            ),
         })
     }
 
-    /// The block as the firmware sends it (version 2 with a knob, else version 1's 96 bytes):
-    /// for tests, fixtures and recordings.
+    /// The block as the firmware sends it (version 3 with the per-transport counts, version 2
+    /// with a knob, else version 1's 96 bytes): for tests, fixtures and recordings.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let size = if self.knob.is_some() { SIZE_V2 } else { SIZE };
+        let size = if self.hid_transport.is_some() {
+            SIZE_V3
+        } else if self.knob.is_some() {
+            SIZE_V2
+        } else {
+            SIZE
+        };
         let mut b = vec![0u8; size];
         b[0] = self.version;
         b[1] = self.half;
@@ -361,6 +395,12 @@ impl Block {
             put16(&mut b, 98, k.events);
             put16(&mut b, 100, k.keys);
             put16(&mut b, 102, k.drops);
+        }
+        if let Some(h) = self.hid_transport {
+            put16(&mut b, 104, h.usb_failed);
+            put16(&mut b, 106, h.ble_sent);
+            put16(&mut b, 108, h.ble_failed);
+            put16(&mut b, 110, h.ble_skipped);
         }
         b
     }
@@ -905,19 +945,46 @@ fn half_rows(b: &Block, t: &Thresholds, out: &mut Vec<HealthRow>) {
                     )
                 ),
             );
-            count_row(
-                t,
-                out,
-                "raw_hid",
-                item,
-                "hid_failed",
-                u32::from(b.hid_failed),
-                plural(
+            let failed_words = match b.hid_transport {
+                Some(h) => format!(
+                    "{}: {} by USB, {} by Bluetooth",
+                    plural(u32::from(b.hid_failed), "report refused", "reports refused"),
+                    h.usb_failed,
+                    h.ble_failed
+                ),
+                None => plural(
                     u32::from(b.hid_failed),
                     "report refused by USB or Bluetooth",
                     "reports refused by USB or Bluetooth",
                 ),
+            };
+            count_row(
+                t,
+                out,
+                "raw_hid",
+                item.clone(),
+                "hid_failed",
+                u32::from(b.hid_failed),
+                failed_words,
             );
+            // Information, never a warning: Bluetooth reports with no PC listening there.
+            if let Some(h) = b.hid_transport.filter(|h| h.ble_skipped > 0) {
+                let skipped = format!(
+                    "{} skipped (no PC listening on Bluetooth)",
+                    plural(
+                        u32::from(h.ble_skipped),
+                        "Bluetooth report",
+                        "Bluetooth reports"
+                    )
+                );
+                // Alone, it also stands for the group's "no problems" line.
+                let detail = if out.iter().any(|r| r.subsystem == "raw_hid") {
+                    skipped
+                } else {
+                    format!("no problems since start; {skipped}")
+                };
+                out.push(HealthRow::new("raw_hid", item, Level::Ok, detail));
+            }
         }
     }
 

@@ -22,12 +22,15 @@
 
 static void note(const char *what) { printk("health: -- %s\n", what); }
 
-/* The Raw HID module's counters: every report it is handed goes out */
+/* The Raw HID module's counters: every report it is handed goes out over USB; Bluetooth has no
+ * PC listening (the PC uses USB), so each report is skipped there, as the module counts it. */
 
 static atomic_t sent;
 void raw_hid_stats_get(struct raw_hid_stats *out) {
     memset(out, 0, sizeof(*out));
     out->sent = (uint32_t)atomic_get(&sent);
+    out->usb_sent = out->sent;
+    out->ble_skipped = out->sent;
 }
 
 /* The keyboard's reports */
@@ -108,6 +111,10 @@ static void read_left(void) {
            "polarity %02X, LEDs %u, uptime %s\n",
            h.hid_sent > 0 ? "some" : "none", h.hid_reply_drops, h.split_connected, h.split_drops,
            h.pc_state, h.polarity, h.leds, h.uptime_s >= 1 ? "1 s or more" : "0 s");
+    printk("health: raw HID per transport: USB failed %u; BLE sent %u, failed %u, skipped %s\n",
+           h.hid_usb_failed, h.hid_ble_sent, h.hid_ble_failed,
+           h.hid_ble_skipped > 0 && h.hid_ble_skipped <= h.hid_sent ? "some, at most the sent"
+                                                                   : "wrong");
 }
 
 void health_sim_driver(void) {

@@ -30,28 +30,29 @@ Reply `D7 93`:
 | 4 | copy number (one up with each chunk 0) |
 | 5 | chunk |
 | 6 | chunks (5; 4 before version 2) |
-| 7 | block length (104; 96 before version 2) |
+| 7 | block length (112; 104 in version 2, 96 before) |
 | 8-31 | the block's bytes `chunk * 24` to `chunk * 24 + 23` |
 
 Chunk 0 takes a new copy of that half's block; chunks 1-4 come from that copy, so the five
 replies are one moment (check that their copy numbers match). For the right, chunk 0 makes the
-left read the right's block over the art relay, one response's worth per request (five at MTU
+left read the right's block over the art relay, one response's worth per request (six at MTU
 23), each spaced `REQ_GAP_MS` after the right's last answer as every relay request is (#662);
 under the link's peripheral latency that is about a second. Its reply comes when the read is
 done (or failed: 2, 3 or 4). Wait up to 8 s for it.
 
-## The block (version 2, 104 bytes, little endian)
+## The block (version 3, 112 bytes, little endian)
 
-Version 1 was bytes 0-95; version 2 (#719) appends the knob, bytes 96-103.
+Version 1 was bytes 0-95; version 2 (#719) appends the knob, bytes 96-103; version 3 appends the
+Raw HID counts per transport, bytes 104-111.
 
 Fields a half doesn't have are 0, or 0xff where 0 means something; byte 3's flags say which parts
 the half has built in.
 
 | Offset | Size | Field |
 |---|---|---|
-| 0 | 1 | version (2; 1 before #719) |
+| 0 | 1 | version (3; 2 before the per-transport counts, 1 before #719) |
 | 1 | 1 | half (0 left, 1 right) |
-| 2 | 1 | length (104; 96 in version 1) |
+| 2 | 1 | length (112; 104 in version 2, 96 in version 1) |
 | 3 | 1 | flags: bit 0 relay (the left's side), 1 Raw HID counters (the module's `raw_hid/stats.h`), 2 host link, 3 relay (the right's side), 4 lighting, 5 PC state, 6 polarity, 7 display |
 | 4 | 4 | firmware major, minor, patch, profile (0 dev, 1 GA) |
 | 8 | 8 | short git SHA, ASCII, zero-padded |
@@ -65,10 +66,10 @@ the half has built in.
 | 44 | 1 | relay requests in flight now (the left) |
 | 45 | 1 | relay discovery result (int8: 0 idle, 1 running, 2 no service, 3 no characteristics, 4 found; negative a `bt_gatt_discover` error) |
 | 46 | 2 | the left: relay requests that failed; the right: ops it refused |
-| 48 | 4 | Raw HID reports sent (the module's count; a report on USB and BLE counts twice) |
+| 48 | 4 | Raw HID reports sent (the module's count; a report on USB and BLE counts twice; USB's plus Bluetooth's) |
 | 52 | 2 | Raw HID reports that waited for a USB transfer in flight |
 | 54 | 2 | Raw HID reports that waited and were dropped (ring full, or a USB reset) |
-| 56 | 2 | Raw HID reports a transport refused |
+| 56 | 2 | Raw HID reports a transport refused (USB's plus Bluetooth's, 104 and 108). Since the module's `raw_hid/stats.h` version 2 a Bluetooth report nobody listens for isn't counted here but at 110 |
 | 58 | 2 | host link replies dropped: its reply queue (4) was full |
 | 60 | 4 | screen redraws: the left's host panel; the right's whole-screen rewrites (#618) |
 | 64 | 2 | art jobs done: the left's pushes, SELECTs and slot ops; blobs the right took |
@@ -97,6 +98,10 @@ the half has built in.
 | 98 | 2 | knob events sent to the PC (D7 94 01) |
 | 100 | 2 | fallback keys the knob tapped (a detent, a press, a double click's mute on master) |
 | 102 | 2 | holds the board dropped (a USB disconnect or an endpoint change) |
+| 104 | 2 | Raw HID reports the USB driver refused (version 3, the left; 0 with the module's `raw_hid/stats.h` before version 2) |
+| 106 | 2 | Raw HID Bluetooth notifications queued |
+| 108 | 2 | Raw HID Bluetooth notifies refused on a link where the PC listens |
+| 110 | 2 | Raw HID Bluetooth reports skipped: nobody listens (no link on the active profile, the PC hasn't turned the report's notifications on, or the link isn't encrypted yet). Normal while the PC uses USB: the health row says it as information (OK), never a warning; byte 56's refusals stay a warning (`hid_failed` in `data/health.toml`) |
 
 ### Boot self-test (bytes 24-27)
 
@@ -112,16 +117,18 @@ Each byte is a state in bits 0-1 (0 pending, 1 pass, 2 fail, 3 not applicable) a
 
 ## Compatibility
 
-A newer field goes after the last one with a new version (version 2 added bytes 96-103); a reader
-takes the fields it knows and the length the block says. A left with version 2 reads an older
-right's 96-byte block to its own length and leaves the rest 0, so its D7 93 says 104 bytes while
-the block's byte 2 says 96: read byte 2. Firmware without bit 28 answers D7 13 with nothing (no reply): ask only
+A newer field goes after the last one with a new version (version 2 added bytes 96-103, version 3
+bytes 104-111); a reader takes the fields it knows and the length the block says. A left reads an
+older right's 96- or 104-byte block to its own length and leaves the rest 0, so its D7 93 says 112
+bytes while the block's byte 2 says 96 or 104: read byte 2. The block stays within five chunks
+(120 bytes) up to version 3. Firmware without bit 28 answers D7 13 with nothing (no reply): ask only
 with the bit. A right before #705 ends its relay status value at `ART_RELAY_HEALTH_AT`, so a left
 with the block answers 4 for it.
 
 ## Tests
 
-- zmk-sim `health` (`tests/zmk-sim/health`): HELLO bit 28, a block read in five chunks, a burst
+- zmk-sim `health` (`tests/zmk-sim/health`): HELLO bit 28, a block read in five chunks (version 3,
+  with the Raw HID counts per transport from the module's faked `raw_hid/stats.h`), a burst
   that drops two replies and the next block counting them, the settings check, and every error
   status the left gives without a relay.
 - relay-sim `health` (`tests/relay-sim`): the boot self-test's relay check pending, failed with no
