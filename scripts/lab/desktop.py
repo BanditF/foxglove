@@ -147,12 +147,24 @@ def cursor():
     return p.x, p.y
 
 
+# Where the last click() pressed: (cursor (x, y), the window under it then), for a report's detail.
+last_landed = None
+
+# A person's mouse rests on a target before pressing it. Targets that track the hover (DWM's
+# caption buttons, the Windows 11 taskbar's tray icons) ignored a press that came in the same
+# batch as the move: the d7b5f4f batch's minimize and tray clicks went in (3 events) and did
+# nothing, while a plain window's probe took them.
+HOVER_S, PRESS_S = 0.25, 0.06
+
+
 def click(x, y, what):
     """A real left click at screen pixel (x, y) through SendInput (Windows routes it as the mouse:
-    hit test, window regions, WS_EX_TRANSPARENT), then the mouse back where it was. Returns the
-    number of input events Windows took (3 when all went in; 0 when UIPI or the secure desktop
-    refused)."""
-    _, u, _, _ = _win()
+    hit test, window regions, WS_EX_TRANSPARENT): the move, a rest of HOVER_S, the press, PRESS_S,
+    the release, then the mouse back where it was. Returns the number of input events Windows took
+    (3 when all went in; 0 when UIPI or the secure desktop refused); last_landed says where the
+    press was."""
+    global last_landed
+    wintypes, u, _, _ = _win()
     back = cursor()
     ax, ay = absolute(x, y, virtual_desktop())
     flags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
@@ -160,9 +172,18 @@ def click(x, y, what):
     down = _INPUT(INPUT_MOUSE, _U(mi=_MI(ax, ay, 0, flags | MOUSEEVENTF_LEFTDOWN, 0, 0)))
     up = _INPUT(INPUT_MOUSE, _U(mi=_MI(ax, ay, 0, flags | MOUSEEVENTF_LEFTUP, 0, 0)))
     with injecting(f'{what} (lab click at {x},{y})'):
-        sent = _send(move, down, up)
+        sent = _send(move)
+        time.sleep(HOVER_S)
+        at = cursor()
+        f = u.WindowFromPoint
+        f.restype, f.argtypes = ctypes.c_void_p, [wintypes.POINT]
+        under = f(wintypes.POINT(*at)) or 0
+        sent += _send(down)
+        time.sleep(PRESS_S)
+        sent += _send(up)
         time.sleep(0.15)
         u.SetCursorPos(*back)
+    last_landed = (at, under)
     return sent
 
 

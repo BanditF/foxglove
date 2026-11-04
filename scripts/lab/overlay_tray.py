@@ -377,7 +377,11 @@ def real_click_cases(api, win, hwnd):
     else:
         sent = desktop.click(*point, 'I1 Settings minimize button')
         ok, _ = wait(lambda: bool(win.u.IsIconic(settings)) or not win.visible(settings), lambda v: v, 5)
-        check('I1: a real click on the minimize button minimizes Settings', ok, f'{point}, {sent} events in')
+        if not check('I1: a real click on the minimize button minimizes Settings', ok,
+                     f'{point}, {sent} events in, {landed(win)}'):
+            # The cases after it want Settings out of the way as I1 leaves it on a pass.
+            with injecting('Settings minimize after I1 (lab hook)'):
+                win.u.ShowWindow(settings, win.SW_MINIMIZE)
     try:
         app.proc.wait(3)  # bounded: an app that quits ends within a few seconds
     except subprocess.TimeoutExpired:
@@ -406,7 +410,7 @@ def real_click_cases(api, win, hwnd):
         sent = desktop.click(x, y, 'I2 click on the overlay')
         ok, n = wait(lambda: len(under.clicks), lambda n: n > before, 2, poll=0.05)
         check('I2: a real click on the overlay reaches the window under it (#549)', ok,
-              f'({x}, {y}): {n - before} click(s) in the probe, {sent} events in')
+              f'({x}, {y}): {n - before} click(s) in the probe, {sent} events in, {landed(win)}')
 
     # I3: a real click on the fox tray icon opens the panel.
     icons = win.find('tray_icon_app')
@@ -420,7 +424,7 @@ def real_click_cases(api, win, hwnd):
         time.sleep(0.5)
         sent = desktop.click(*centre(rect), 'I3 tray icon click')
         ok, p = wait(lambda: call(api, 'tray.panel'), lambda p: p and p['open'], 5)
-        if not check('I3: a real tray click opens the panel', ok, f'{p}, {sent} events in'):
+        if not check('I3: a real tray click opens the panel', ok, f'{p}, {sent} events in, {landed(win)}'):
             return
         # I4: a real click on another window moves the focus and closes the panel (#406).
         px, py = centre(other.rect)
@@ -432,6 +436,15 @@ def real_click_cases(api, win, hwnd):
         check('I4: the panel closed (#406)', ok, p)
     desktop.move(*back, 'mouse back where it was')
     call(api, 'tray.set_panel', {'open': False})
+
+
+def landed(win):
+    """Where desktop.click's last press was, for a real-input case's detail."""
+    import desktop
+    if desktop.last_landed is None:
+        return 'no press'
+    at, under = desktop.last_landed
+    return f'pressed at {at} on {win.describe(under) if under else "no window"}'
 
 
 def keyboard_cases(api, cfg, env):
