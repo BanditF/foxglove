@@ -30,8 +30,10 @@ Every feature request passes this gate before anyone designs or builds it (user 
 ## Merging
 - Merge only after the author says "ready to merge", the gate passed and the code-reviewer agent
   approved. Follow-ups go in new PRs.
-- Steps: retarget stacked PRs to their real base first, merge the base into the PR, run
-  `scripts/check.ps1`, push, `gh pr merge <n> --merge` (a merge commit, never squash).
+- Steps: one PR at a time, in stack order. Rebase the PR onto current main so it holds only its
+  own changes, run `scripts/check.ps1` on that head, push, wait for CI on that head, then
+  `gh pr merge <n> --squash` (one squash commit per PR). Never merge a stack through its top PR,
+  close lower PRs as "included", or retitle a PR to the whole stack.
 - Base rule (the guard checks it, `scripts/hooks/guard.py` `expected_base`):
   - `backport/*`, `*-backport`, and `*-0.x` go to `release/0.x`, except `docs/*-0.x`;
   - `forward/*` and `*-main` go to `main`;
