@@ -4,7 +4,7 @@
 
 #include <stdint.h>
 
-#define RAW_HID_STATS_VERSION 2
+#define RAW_HID_STATS_VERSION 3
 
 struct raw_hid_stats {
     uint32_t sent;
@@ -18,6 +18,9 @@ struct raw_hid_stats {
     uint32_t ble_sent;
     uint32_t ble_failed;
     uint32_t ble_skipped;
+    // Version 3: each transport's last refusal's error code.
+    int32_t usb_last_err;
+    int32_t ble_last_err;
 };
 
 void raw_hid_stats_get(struct raw_hid_stats *out);

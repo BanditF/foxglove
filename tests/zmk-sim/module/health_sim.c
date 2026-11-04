@@ -31,6 +31,7 @@ void raw_hid_stats_get(struct raw_hid_stats *out) {
     out->sent = (uint32_t)atomic_get(&sent);
     out->usb_sent = out->sent;
     out->ble_skipped = out->sent;
+    out->ble_last_err = -12; // an earlier refusal's (-ENOMEM), kept as the module keeps it
 }
 
 /* The keyboard's reports */
@@ -111,10 +112,12 @@ static void read_left(void) {
            "polarity %02X, LEDs %u, uptime %s\n",
            h.hid_sent > 0 ? "some" : "none", h.hid_reply_drops, h.split_connected, h.split_drops,
            h.pc_state, h.polarity, h.leds, h.uptime_s >= 1 ? "1 s or more" : "0 s");
-    printk("health: raw HID per transport: USB failed %u; BLE sent %u, failed %u, skipped %s\n",
+    printk("health: raw HID per transport: USB failed %u; BLE sent %u, failed %u, skipped %s; "
+           "last error USB %d, BLE %d\n",
            h.hid_usb_failed, h.hid_ble_sent, h.hid_ble_failed,
            h.hid_ble_skipped > 0 && h.hid_ble_skipped <= h.hid_sent ? "some, at most the sent"
-                                                                   : "wrong");
+                                                                   : "wrong",
+           h.hid_usb_last_err, h.hid_ble_last_err);
 }
 
 void health_sim_driver(void) {

@@ -145,7 +145,14 @@ pub fn row(state: Option<&State>) -> HealthRow {
         None => (Level::Ok, "no keyboard connected".to_string()),
         Some(State::Read(w)) => (
             Level::Ok,
-            format!("v2 read, caps=0x{:08X} ({} word(s))", w.word(2), w.count),
+            // Named as word 2: HELLO's own word 1 is the "HELLO caps" row, and an empty word 2
+            // (no capability defined there yet) read as "caps=0" looked like a fault.
+            format!(
+                "v2 read: word 2 (capabilities 32-63) = 0x{:08X}{}; {} word(s) past HELLO's",
+                w.word(2),
+                if w.word(2) == 0 { ", none set" } else { "" },
+                w.count
+            ),
         ),
         Some(State::NotOffered { version }) => (
             Level::Ok,
@@ -269,7 +276,10 @@ mod tests {
         );
         let row = row(Some(&s));
         assert_eq!(row.level, Level::Ok);
-        assert_eq!(row.detail, "v2 read, caps=0x80000005 (1 word(s))");
+        assert_eq!(
+            row.detail,
+            "v2 read: word 2 (capabilities 32-63) = 0x80000005; 1 word(s) past HELLO's"
+        );
         // Today's firmware: one word, no bits.
         let w = Words::parse(&caps_reply(&[0xD5, 0x88, 1])).unwrap();
         assert_eq!((w.count, w.word(2)), (1, 0));

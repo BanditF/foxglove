@@ -251,6 +251,10 @@ void health_fill(struct health_wire *out) {
     out->hid_ble_failed = (uint16_t)MIN(hid.ble_failed, UINT16_MAX);
     out->hid_ble_skipped = (uint16_t)MIN(hid.ble_skipped, UINT16_MAX);
 #endif
+#if RAW_HID_STATS_VERSION >= 3
+    out->hid_usb_last_err = (int16_t)CLAMP(hid.usb_last_err, INT16_MIN, INT16_MAX);
+    out->hid_ble_last_err = (int16_t)CLAMP(hid.ble_last_err, INT16_MIN, INT16_MAX);
+#endif
 #endif
 
     // Screens

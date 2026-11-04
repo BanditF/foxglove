@@ -16,13 +16,15 @@ use crate::protocol::{self, REPORT};
 use crate::Transport;
 
 /// The newest block version this reader knows (firmware HEALTH_VERSION).
-pub const VERSION: u8 = 3;
+pub const VERSION: u8 = 4;
 /// The block's size in version 1 (every block has at least these bytes).
 pub const SIZE: usize = 96;
 /// The block's size in version 2 (#719: the knob, bytes 96-103).
 pub const SIZE_V2: usize = 104;
 /// The block's size in version 3 (the Raw HID counts per transport, bytes 104-111).
 pub const SIZE_V3: usize = 112;
+/// The block's size in version 4 (each transport's last refusal's error code, bytes 112-115).
+pub const SIZE_V4: usize = 116;
 /// Block bytes per D7 93 reply (bytes 8-31).
 pub const CHUNK: usize = 24;
 /// Replies per block.
@@ -154,8 +156,9 @@ pub struct Knob {
     pub drops: u16,
 }
 
-/// The Raw HID counts per transport (version 3, bytes 104-111, the left). The block's
-/// `hid_sent` and `hid_failed` are the sums over USB and Bluetooth.
+/// The Raw HID counts per transport (version 3, bytes 104-111, the left; version 4 adds the last
+/// error codes, bytes 112-115). The block's `hid_sent` and `hid_failed` are the sums over USB and
+/// Bluetooth.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HidTransport {
     /// Reports the USB driver refused.
@@ -168,6 +171,29 @@ pub struct HidTransport {
     /// turned the report's notifications on, or the link isn't encrypted yet. Normal while the
     /// PC uses USB, so never a warning.
     pub ble_skipped: u16,
+    /// The last report the USB driver refused: its error code (a negative errno), 0 while it
+    /// refused none or before version 4.
+    pub usb_last_err: i16,
+    /// The same for Bluetooth notifies refused on a link where the PC listens.
+    pub ble_last_err: i16,
+}
+
+/// A Zephyr error code as the health rows say it: "-12 ENOMEM, no buffer free".
+pub fn errno_words(err: i16) -> String {
+    let what = match -i32::from(err) {
+        1 => "EPERM, not allowed",
+        5 => "EIO, I/O error",
+        11 => "EAGAIN, not ready yet",
+        12 => "ENOMEM, no buffer free",
+        16 => "EBUSY, busy",
+        19 => "ENODEV, no device",
+        22 => "EINVAL, not turned on",
+        105 => "ENOBUFS, no buffer free",
+        116 => "ETIMEDOUT, timed out",
+        128 => "ENOTCONN, not connected",
+        _ => return err.to_string(),
+    };
+    format!("{err} {what}")
 }
 
 /// The knob byte (96): which knob behaviours the keymap has, and the hold.
@@ -232,6 +258,15 @@ pub struct Block {
     pub knob: Option<Knob>,
     /// Version 3; `None` in an older block.
     pub hid_transport: Option<HidTransport>,
+}
+
+/// A version 4 block's error code at `at`; 0 in an older or shorter block.
+fn last_err(b: &[u8], at: usize) -> i16 {
+    if b[0] >= 4 && usize::from(b[2]) >= SIZE_V4 && b.len() >= SIZE_V4 {
+        u16_at(b, at) as i16
+    } else {
+        0
+    }
 }
 
 fn u16_at(b: &[u8], at: usize) -> u16 {
@@ -320,15 +355,19 @@ impl Block {
                     ble_sent: u16_at(b, 106),
                     ble_failed: u16_at(b, 108),
                     ble_skipped: u16_at(b, 110),
+                    usb_last_err: last_err(b, 112),
+                    ble_last_err: last_err(b, 114),
                 },
             ),
         })
     }
 
-    /// The block as the firmware sends it (version 3 with the per-transport counts, version 2
-    /// with a knob, else version 1's 96 bytes): for tests, fixtures and recordings.
+    /// The block as the firmware sends it (version 4 or 3 with the per-transport counts, version
+    /// 2 with a knob, else version 1's 96 bytes): for tests, fixtures and recordings.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let size = if self.hid_transport.is_some() {
+        let size = if self.hid_transport.is_some() && self.version >= 4 {
+            SIZE_V4
+        } else if self.hid_transport.is_some() {
             SIZE_V3
         } else if self.knob.is_some() {
             SIZE_V2
@@ -401,6 +440,10 @@ impl Block {
             put16(&mut b, 106, h.ble_sent);
             put16(&mut b, 108, h.ble_failed);
             put16(&mut b, 110, h.ble_skipped);
+            if size >= SIZE_V4 {
+                put16(&mut b, 112, h.usb_last_err as u16);
+                put16(&mut b, 114, h.ble_last_err as u16);
+            }
         }
         b
     }
@@ -946,12 +989,24 @@ fn half_rows(b: &Block, t: &Thresholds, out: &mut Vec<HealthRow>) {
                 ),
             );
             let failed_words = match b.hid_transport {
-                Some(h) => format!(
-                    "{}: {} by USB, {} by Bluetooth",
-                    plural(u32::from(b.hid_failed), "report refused", "reports refused"),
-                    h.usb_failed,
-                    h.ble_failed
-                ),
+                Some(h) => {
+                    let mut words = format!(
+                        "{}: {} by USB, {} by Bluetooth",
+                        plural(u32::from(b.hid_failed), "report refused", "reports refused"),
+                        h.usb_failed,
+                        h.ble_failed
+                    );
+                    // Version 4: why, as the last refusal on each transport said it.
+                    for (n, err, by) in [
+                        (h.usb_failed, h.usb_last_err, "USB"),
+                        (h.ble_failed, h.ble_last_err, "Bluetooth"),
+                    ] {
+                        if n > 0 && err != 0 {
+                            words += &format!("; {by}'s last: {}", errno_words(err));
+                        }
+                    }
+                    words
+                }
                 None => plural(
                     u32::from(b.hid_failed),
                     "report refused by USB or Bluetooth",
