@@ -452,11 +452,55 @@ def debug(args, check):
     check(f'Diagnostics {args.on} sent to {keys[0]}', r.returncode == 0, f'exit {r.returncode}')
 
 
+START = re.compile(r'(\d{4}-\d\d-\d\d \d\d:\d\d:\d\dZ) Foxglove \S+ started \(pid (\d+)')
+
+
+def user_app_gap(lines, since, alive):
+    """Why the user's Foxglove (its log, FOXGLOVE_LOG) can't have said anything since `since`, or
+    None when one instance ran through: it started before `since`, logged no quit, and its pid is
+    still running (`alive(pid)`). A second launch's "started" line, followed by "already running;
+    showing that one", isn't the running one. The 11/04 batch quit the user's app for the flash
+    and HA2 read its silent log as FAIL."""
+    starts = []  # [(time, pid)], the last one the instance that runs
+    for l in lines:
+        m = START.match(l)
+        if m:
+            starts.append((utc(m.group(1)), int(m.group(2))))
+        elif l.endswith('Foxglove: already running; showing that one') and starts:
+            starts.pop()
+        elif 'Foxglove: quitting' in l:
+            starts = []
+    if not starts:
+        return "the user's Foxglove isn't running (its log's last start ended with a quit, or there is none)"
+    at, pid = starts[-1]
+    if at > since:
+        return f"the user's Foxglove started at {at:%H:%M:%S}Z, after the window began ({since:%H:%M:%S}Z)"
+    if not alive(pid):
+        return f"the user's Foxglove (pid {pid}, started {at:%H:%M:%S}Z) isn't running now: quit or stopped without a line"
+    return None
+
+
+def foxglove_alive(pid):
+    """Whether process `pid` is running and named exactly foxglove.exe (tasklist, read only)."""
+    try:
+        r = subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/FO', 'CSV', '/NH'], capture_output=True,
+                           text=True, timeout=10, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return any(l.split(',')[0].strip('"').lower() == 'foxglove.exe' for l in r.stdout.splitlines())
+
+
 def game(args, check):
     since = utc(args.since)
     fox = read_lines(FOXGLOVE_LOG)
     on = log_since(fox, since, 'game mode on')
-    check('Foxglove told the wallpaper game mode on (#586 setup)', bool(on), on[-1][1] if on else 'no line')
+    # Nothing to tell without a game (HA5 BLOCKED) or without the user's app to tell it: BLOCKED.
+    gap = 'HA5 ran no game (BLOCKED)' if args.game_blocked else None
+    gap = gap or (None if on else user_app_gap(fox, since, foxglove_alive))
+    if gap and not on:
+        check('Foxglove told the wallpaper game mode on (#586 setup)', False, gap, blocked=True)
+    else:
+        check('Foxglove told the wallpaper game mode on (#586 setup)', bool(on), on[-1][1] if on else 'no line')
     we_lines = read_lines(we_dir(args.we) / 'log.txt')
     dropped = we_log_since(we_lines, since, 'Command ignored because Windows is reentrant')
     check('Wallpaper Engine dropped no -control command', not dropped, dropped[-3:] or 'none')
@@ -499,6 +543,7 @@ def main(argv=None):
     g.add_argument('--since', required=True, help='UTC, e.g. 2026-10-29T09:00:00Z (just before H1)')
     g.add_argument('--devlog', default=str(DEVLOG))
     g.add_argument('--wallpaper', default='Bandit HUD', help="the snapshots' wallpaper title")
+    g.add_argument('--game-blocked', action='store_true', help='HA5 (the game) was BLOCKED: no game to tell')
     pr = sub.add_parser('presets')
     pr.add_argument('--app', type=tool_arg('--app'), help='read a test app of this build (temp config, FOXGLOVE_APP_OK=1) instead of the running Foxglove')
     gd = sub.add_parser('gold')

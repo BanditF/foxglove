@@ -60,8 +60,8 @@ test app ends mid-run the run stops with one FAIL saying how (exit code, its log
     FOXGLOVE_APP_OK=1 python scripts/lab/overlay_tray.py --app <foxglove.exe> [--focus] [--real-clicks]  (exit 0 PASS, 1 FAIL, 2 BLOCKED)
 """
 import argparse, ctypes, json, subprocess, time
-from labkit import (App, AppGone, tool_arg, Checks, REPO, TARGET, Windows, away, centre, click_through, connect,
-                    covering, injecting, log_lines, outside, require_app_ok, require_user_idle, same_box, temp_config,
+from labkit import (App, AppGone, tool_arg, Checks, REPO, TARGET, Windows, art_reapply_lines, away, centre,
+                    click_through, connect, covering, injecting, log_lines, outside, require_app_ok, require_user_idle, same_box, temp_config,
                     users_keyboard, wait)
 
 ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -187,7 +187,16 @@ def hit_check(name, win, hwnd, at, ok, detail):
     if cover:
         return check(name, False, f'{detail}: {win.describe(cover)} is above the overlay there, so it takes '
                                   'any click; rerun with the PC unlocked and nothing over the screen', blocked=True)
-    return check(name, ok, detail)
+    return check(name, ok, f'{detail}; {hit_detail(win, hwnd, at)}')
+
+
+def hit_detail(win, hwnd, at):
+    """What the hit test reached (class, exe, title) and the overlay's enabled and visible state:
+    the 11/04 batch saw one window, 6557032, at every point, the panel's too, and its report
+    couldn't say what that window was or whether the overlay was disabled (WindowFromPoint skips
+    disabled and hidden windows)."""
+    reached = win.describe(at) if at else 'nothing'
+    return f'reached {reached}; overlay enabled {win.enabled(hwnd)}, visible {win.visible(hwnd)}'
 
 
 def click_cases(api, win):
@@ -464,17 +473,17 @@ def keyboard_cases(api, cfg, env):
     # art.status answers from the app's last read, which still says the pinned built-in: the
     # push went behind the app's back. Since #673 the display change reads the right afresh and
     # puts the pin back over the push, with one line; wait for that line (bounded), then read.
-    line = "re-applied the right screen's art (display change)"
-    before = len(log_lines(cfg, line))
+    reapplied = lambda: len(art_reapply_lines(cfg, 'display change'))  # labkit.ART_REAPPLY (#695's wording)
+    before = reapplied()
     Windows(app.proc.pid).display_change()
-    ok, after = wait(lambda: len(log_lines(cfg, line)), lambda n: n > before, 20)
+    ok, after = wait(reapplied, lambda n: n > before, 20)
     check('display change: one re-applied line', ok and after == before + 1, after - before)
     ok, s = wait(lambda: call(api, 'art.status', {'device': device}), lambda s: s and s['built_in'] == names[0], 20)
     check('display change: the pinned set is re-applied', ok, s)
     Windows(app.proc.pid).display_change()
     time.sleep(5)  # bounded: a re-apply would have logged within the art worker's status read
     check('display change while it shows: nothing re-applied',
-          len(log_lines(cfg, line)) == after,
+          reapplied() == after,
           'no SELECT, no line')
 
     # Re-apply after relay-ready (#622): drop the split link once (dev build's guard hook).

@@ -407,5 +407,81 @@ class HandsFree(unittest.TestCase):
         self.assertEqual(r.stdout.strip(), '0', r.stdout + r.stderr)
 
 
+class Batch0204(unittest.TestCase):
+    """The 11/04 0.2 batch's lab faults (HA4, HA2, IA), each from its own inputs."""
+
+    def test_ha4_the_test_app_gets_the_users_keyboard(self):
+        # HA4 FAIL: lighting.set code 4 "keymap not read". The temp store had no [connection.last],
+        # the copied keymap was from the build before the flash (#633 won't use it), so nothing
+        # read the keymap and the lighting command stayed unknown.
+        text = (LAB / 'wallpaper_follow.py').read_text(encoding='utf-8')
+        self.assertIn("KEYBOARD = users_keyboard()", text)
+        self.assertIn(r"'[lighting]\nfollow_wallpaper = true\n' + KEYBOARD)", text)
+        store = 'schema = 1\n[lighting]\nfollow_wallpaper = true\n' + labkit.remembered_keyboard(
+            '[connection.last]\nid = "COM4"\npid = 24926\ntransport = "serial"\nvid = 7504\n')
+        parsed = tomllib.loads(store)
+        self.assertTrue(parsed['lighting']['follow_wallpaper'])
+        self.assertEqual(parsed['connection']['last']['id'], 'COM4')
+
+    def test_ha2_a_quit_or_restarted_app_is_a_gap(self):
+        since = wc.utc('2026-11-04T10:12:14Z')
+        alive = lambda pid: pid == 100
+        ran = ['2026-11-04 08:00:00Z Foxglove 0.2.0 started (pid 100, 5 s after boot)',
+               '2026-11-04 10:12:30Z Foxglove 0.2.0 started (pid 200, 9 s after boot)',
+               '2026-11-04 10:12:30Z Foxglove: already running; showing that one']
+        self.assertIsNone(wc.user_app_gap(ran, since, alive), 'a second launch is not the running one')
+        # The batch: the app (pid 9) ran, was stopped for the flash with no line, restarted at 10:55.
+        stopped = ['2026-11-04 09:00:00Z Foxglove 0.1.0 started (pid 9, 5 s after boot)']
+        self.assertIn("isn't running now", wc.user_app_gap(stopped, since, alive))
+        later = stopped + ['2026-11-04 10:55:08Z Foxglove 0.2.0 started (pid 100, 152869 s after boot)']
+        self.assertIn('after the window began', wc.user_app_gap(later, since, alive))
+        quit = ran[:1] + ['2026-11-04 09:00:00Z Foxglove: quitting (tray Quit); handed everything back in 80 ms']
+        self.assertIn("isn't running", wc.user_app_gap(quit, since, alive))
+        self.assertIn("isn't running", wc.user_app_gap([], since, alive))
+
+    def test_ha2_is_blocked_after_a_blocked_game(self):
+        text = (LAB / 'sitting.ps1').read_text(encoding='utf-8')
+        self.assertIn("-like 'BLOCKED*') { @('--game-blocked') }", text)
+        self.assertIn('wallpaper_check.py game --since $since @noGame', text)
+
+    def test_ia_the_art_reapply_line_by_its_stable_start(self):
+        # IA FAIL "display change: one re-applied line: 0": #695 reworded the line.
+        now = "2026-11-04 10:13:11Z Foxglove: re-applied the art on the art screen (display change)"
+        old = "2026-11-02 17:51:55Z Foxglove: re-applied the right screen's art (display change)"
+        relay = "2026-11-04 10:13:40Z Foxglove: re-applied the art on the art screen (right relay ready)"
+        accent = "2026-11-04 10:13:41Z Foxglove: re-applied the accent colour 42/97 (display change)"
+        self.assertTrue(labkit.is_art_reapply(now, 'display change'))
+        self.assertFalse(labkit.is_art_reapply(relay, 'display change'))
+        self.assertFalse(labkit.is_art_reapply(accent, 'display change'))
+        self.assertFalse(labkit.is_art_reapply(old, 'display change'), 'the pre-#695 wording is gone')
+        text = (LAB / 'overlay_tray.py').read_text(encoding='utf-8')
+        self.assertNotIn("re-applied the right screen's art", text)
+        self.assertIn("art_reapply_lines(cfg, 'display change')", text)
+
+    def test_ia_hit_tests_say_what_they_reached(self):
+        class Win:
+            def describe(self, h):
+                return f'{h} (SysListView32, explorer.exe, "FolderView")'
+
+            def enabled(self, h):
+                return False
+
+            def visible(self, h):
+                return True
+        sys.path.insert(0, str(LAB))
+        try:
+            text = (LAB / 'overlay_tray.py').read_text(encoding='utf-8')
+            src = text[text.index('def hit_detail'):text.index('def click_cases')]
+            ns = {}
+            exec(src, ns)
+        finally:
+            sys.path.pop(0)
+        self.assertEqual(ns['hit_detail'](Win(), 789424, 6557032),
+                         'reached 6557032 (SysListView32, explorer.exe, "FolderView"); '
+                         'overlay enabled False, visible True')
+        self.assertIn('reached nothing', ns['hit_detail'](Win(), 789424, None))
+        self.assertIn("return check(name, ok, f'{detail}; {hit_detail(win, hwnd, at)}')", text)
+
+
 if __name__ == '__main__':
     unittest.main()
