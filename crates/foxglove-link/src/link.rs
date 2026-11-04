@@ -21,7 +21,8 @@
 //! never sent. At most [`MAX_IN_FLIGHT`] requests of any kind are, too (#739): the keyboard keeps
 //! its replies and its own events in one 4-deep queue, and a connect's burst of requests from
 //! several threads overran it (health: "replies dropped"). Commands after a request held back
-//! wait with it, so nothing overtakes it. The link reconnects by itself; whatever was queued for a lost connection is
+//! wait with it, so nothing overtakes it. The link reconnects by itself; whatever was queued for a
+//! lost connection is
 //! dropped, never sent to the next one.
 //!
 //! A callback that panics (an event sink, a report observer or a subscriber's filter) is dropped
