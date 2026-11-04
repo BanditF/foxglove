@@ -122,7 +122,9 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
             {
                 let size = [f64::from(rect.size.width), f64::from(rect.size.height)];
                 // Foxglove (#612): the panel draws in the overlay, so un-minimize it first.
-                crate::foxglove::overlay_restore::request(crate::foxglove::overlay_restore::Trigger::TrayClick);
+                crate::foxglove::overlay_restore::request(
+                    crate::foxglove::overlay_restore::Trigger::TrayClick,
+                );
                 crate::foxglove::tray_panel::clicked([rect.position.x, rect.position.y], size);
             }
         }
@@ -148,7 +150,11 @@ pub fn create_tray_icon(on_settings: Arc<dyn Fn() + Send + Sync>) -> Tray {
     #[cfg(not(target_os = "linux"))]
     {
         let icon = crate::foxglove::taskbar::Slot::new(build_tray_icon);
-        Tray { icon, glyph: crate::foxglove::tray::Glyph::Disconnected, tooltip: "Foxglove".into() }
+        Tray {
+            icon,
+            glyph: crate::foxglove::tray::Glyph::Disconnected,
+            tooltip: "Foxglove".into(),
+        }
     }
 }
 
@@ -160,13 +166,17 @@ impl Tray {
             let taskbar_started = crate::foxglove::taskbar::take();
             if taskbar_started {
                 // Foxglove (#612): bring the overlay back if Explorer's restart left it minimized.
-                crate::foxglove::overlay_restore::request(crate::foxglove::overlay_restore::Trigger::TaskbarRestart);
+                crate::foxglove::overlay_restore::request(
+                    crate::foxglove::overlay_restore::Trigger::TaskbarRestart,
+                );
             }
             if taskbar_started && self.icon.taskbar_created(build_tray_icon) {
                 self.glyph = crate::foxglove::tray::Glyph::Disconnected;
                 self.tooltip = "Foxglove".into();
             }
-            let Some((icon, controls)) = self.icon.get_mut() else { return };
+            let Some((icon, controls)) = self.icon.get_mut() else {
+                return;
+            };
             controls.update();
             // Foxglove: swap the glyph only when it changes.
             let glyph = controls.glyph();

@@ -89,7 +89,8 @@ impl OverlayApp {
                 // Foxglove: an opacity slider being dragged previews it too.
                 self.is_any_window_open()
                     || crate::foxglove::overlay_opacity::previewing()
-                    || (!crate::foxglove::pause::paused() && keyboard.overlay_is_visible(Instant::now()))
+                    || (!crate::foxglove::pause::paused()
+                        && keyboard.overlay_is_visible(Instant::now()))
             }
         }
     }

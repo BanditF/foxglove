@@ -224,9 +224,11 @@ impl OverlayApp {
             return;
         }
         let retry = match self.session.connection {
-            AppConnectionState::Reconnecting { next_attempt_at: Some(next_attempt_at), .. }
-                if Instant::now() >= next_attempt_at
-                    && self.serial_watch.scanned_attempt != Some(next_attempt_at) =>
+            AppConnectionState::Reconnecting {
+                next_attempt_at: Some(next_attempt_at),
+                ..
+            } if Instant::now() >= next_attempt_at
+                && self.serial_watch.scanned_attempt != Some(next_attempt_at) =>
             {
                 self.serial_watch.scanned_attempt = Some(next_attempt_at);
                 true

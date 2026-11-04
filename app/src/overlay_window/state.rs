@@ -27,7 +27,10 @@ pub enum AppConnectionState {
 impl AppConnectionState {
     /// A new burst of tries, starting now.
     pub fn reconnect_now() -> Self {
-        AppConnectionState::Reconnecting { next_attempt_at: Some(Instant::now()), tries: 0 }
+        AppConnectionState::Reconnecting {
+            next_attempt_at: Some(Instant::now()),
+            tries: 0,
+        }
     }
 }
 

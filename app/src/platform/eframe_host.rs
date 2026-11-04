@@ -358,7 +358,8 @@ fn run_inner(
         .with_always_on_top()
         // Foxglove: the window icon (Alt+Tab, Linux), the same art as the exe's.
         .with_icon(std::sync::Arc::new(
-            eframe::icon_data::from_png_bytes(include_bytes!("../../resources/icon.png")).unwrap_or_default(),
+            eframe::icon_data::from_png_bytes(include_bytes!("../../resources/icon.png"))
+                .unwrap_or_default(),
         ));
 
     #[cfg(target_os = "linux")]
@@ -407,7 +408,12 @@ fn run_inner(
             if let Some(gl) = &cc.gl {
                 use eframe::glow::HasContext;
                 // SAFETY: plain string queries on the context eframe just made current.
-                let (renderer, version) = unsafe { (gl.get_parameter_string(eframe::glow::RENDERER), gl.get_parameter_string(eframe::glow::VERSION)) };
+                let (renderer, version) = unsafe {
+                    (
+                        gl.get_parameter_string(eframe::glow::RENDERER),
+                        gl.get_parameter_string(eframe::glow::VERSION),
+                    )
+                };
                 crate::foxglove::diagnostics::set_gpu(&renderer, &version);
             }
 

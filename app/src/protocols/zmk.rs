@@ -107,7 +107,13 @@ fn note_read(data: &ZmkData) {
 fn note_read_failed(error: &dyn std::fmt::Display, cached: bool) {
     use crate::foxglove::keymap_health::{note, Read};
     let why = error.to_string();
-    note(|h| h.read(if cached { Read::Cached(why) } else { Read::Failed(why) }));
+    note(|h| {
+        h.read(if cached {
+            Read::Cached(why)
+        } else {
+            Read::Failed(why)
+        })
+    });
 }
 
 /// Foxglove: what the app may invoke, from a keymap read under firmware `build` (#633).
@@ -222,7 +228,9 @@ impl KeyboardProtocol for ZmkProtocol {
     fn hid_read(&self) -> Result<Vec<u8>, Box<dyn Error>> {
         // Blocks until a report or a disconnect (#282), and errors at once while the keyboard
         // is gone (the reader treats repeated errors as a lost connection and reopens).
-        let gone = || -> Result<Vec<u8>, Box<dyn Error>> { Err("HID read error: keyboard disconnected".into()) };
+        let gone = || -> Result<Vec<u8>, Box<dyn Error>> {
+            Err("HID read error: keyboard disconnected".into())
+        };
         if self.link.state().connected.is_none() {
             return gone();
         }

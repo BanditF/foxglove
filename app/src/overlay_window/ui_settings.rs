@@ -1,7 +1,7 @@
 use super::state::AppConnectionState;
 use super::OverlayApp;
-use crate::settings::{LayerMask, LegendMode, Settings, ThemeColor, ThemeSettings, WindowPosition};
 use crate::foxglove::settings_ui::section as titled_group;
+use crate::settings::{LayerMask, LegendMode, Settings, ThemeColor, ThemeSettings, WindowPosition};
 
 impl OverlayApp {
     /// The color button that ends every theme row, right-aligned in the row.
@@ -106,379 +106,397 @@ impl OverlayApp {
             dragging: self.ui.overlay_grab.is_some(),
             ..Default::default()
         };
-        ctx.show_viewport_immediate(crate::foxglove::settings_window::id(), builder, |ui, class| {
-            let ctx = ui.ctx().clone();
-            // Foxglove: minimized is closed (the app lives in the tray).
-            let minimized = self.ui.settings_window.frame(&ctx);
-            seen.minimized = minimized;
-            seen.settings_focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
-            if minimized || ctx.input(|i| i.viewport().close_requested()) {
-                open = false;
-            }
-            if class == egui::ViewportClass::EmbeddedWindow && ui.button("Close").clicked() {
-                // A host without native windows (Wayland) draws it inside the overlay instead.
-                open = false;
-            }
-            // The dialogs and messages it opens show in its window too.
-            self.ui.file_dialog.update(&ctx);
-            crate::foxglove::art_ui::update(&ctx);
-            Self::message_window(&ctx, "Error", &mut self.ui.settings_error);
-            Self::message_window(&ctx, "Notice", &mut self.ui.settings_warning);
-            // Foxglove (#534): the keymap source shows only with a choice to make.
-            crate::foxglove::settings_ui::keymap_choice(
-                self.connect.available_devices.len(),
-                matches!(self.session.connection, AppConnectionState::Connected { .. }),
-                self.session.layout_names.len(),
-            );
-            // Foxglove (#385): the sidebar, status strip and pages; each page scrolls itself.
-            crate::foxglove::shell::frame(ui, |ui| {
-                titled_group(ui, "Connection", |ui| {
-                    let control_spacing = ui.spacing().item_spacing.x;
-                    const RIGHT_COLUMN_WIDTH: f32 = 100.0;
+        ctx.show_viewport_immediate(
+            crate::foxglove::settings_window::id(),
+            builder,
+            |ui, class| {
+                let ctx = ui.ctx().clone();
+                // Foxglove: minimized is closed (the app lives in the tray).
+                let minimized = self.ui.settings_window.frame(&ctx);
+                seen.minimized = minimized;
+                seen.settings_focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
+                if minimized || ctx.input(|i| i.viewport().close_requested()) {
+                    open = false;
+                }
+                if class == egui::ViewportClass::EmbeddedWindow && ui.button("Close").clicked() {
+                    // A host without native windows (Wayland) draws it inside the overlay instead.
+                    open = false;
+                }
+                // The dialogs and messages it opens show in its window too.
+                self.ui.file_dialog.update(&ctx);
+                crate::foxglove::art_ui::update(&ctx);
+                Self::message_window(&ctx, "Error", &mut self.ui.settings_error);
+                Self::message_window(&ctx, "Notice", &mut self.ui.settings_warning);
+                // Foxglove (#534): the keymap source shows only with a choice to make.
+                crate::foxglove::settings_ui::keymap_choice(
+                    self.connect.available_devices.len(),
+                    matches!(
+                        self.session.connection,
+                        AppConnectionState::Connected { .. }
+                    ),
+                    self.session.layout_names.len(),
+                );
+                // Foxglove (#385): the sidebar, status strip and pages; each page scrolls itself.
+                crate::foxglove::shell::frame(ui, |ui| {
+                    titled_group(ui, "Connection", |ui| {
+                        let control_spacing = ui.spacing().item_spacing.x;
+                        const RIGHT_COLUMN_WIDTH: f32 = 100.0;
 
-                    egui::Grid::new("connection_grid")
-                        .num_columns(2)
-                        .striped(true)
-                        .spacing([20.0, 10.0])
-                        .show(ui, |ui| {
-                            ui.label("Device");
-                            ui.add_enabled_ui(!connection_locked, |ui| {
+                        egui::Grid::new("connection_grid")
+                            .num_columns(2)
+                            .striped(true)
+                            .spacing([20.0, 10.0])
+                            .show(ui, |ui| {
+                                ui.label("Device");
+                                ui.add_enabled_ui(!connection_locked, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let combo_width = (ui.available_width()
+                                            - RIGHT_COLUMN_WIDTH
+                                            - control_spacing)
+                                            .max(120.0);
+                                        egui::ComboBox::from_id_salt("device_combo")
+                                            .width(combo_width)
+                                            .selected_text(selected_device_text.clone())
+                                            .show_ui(ui, |ui| {
+                                                for idx in 0..self.connect.available_devices.len() {
+                                                    let device =
+                                                        &self.connect.available_devices[idx];
+                                                    let selected =
+                                                        self.connect.selected_device_index
+                                                            == Some(idx);
+                                                    if ui
+                                                        .selectable_label(
+                                                            selected,
+                                                            device.display_name(),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        self.select_device(idx);
+                                                    }
+                                                }
+                                                if self.connect.available_devices.is_empty() {
+                                                    ui.weak("No devices found");
+                                                }
+                                            });
+
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(RIGHT_COLUMN_WIDTH, 20.0),
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                let connect_in_progress =
+                                                    self.connect.pending_connect.is_some();
+                                                let can_connect = !connection_locked
+                                                    && !connect_in_progress
+                                                    && self.connect.selected_device_index.is_some();
+                                                let button_label = if reconnecting {
+                                                    "Reconnecting..."
+                                                } else if connect_in_progress {
+                                                    "Connecting..."
+                                                } else {
+                                                    "Connect"
+                                                };
+                                                ui.add_enabled_ui(can_connect, |ui| {
+                                                    if ui
+                                                        .add_sized(
+                                                            [RIGHT_COLUMN_WIDTH, 20.0],
+                                                            egui::Button::new(button_label),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        self.connect_from_ui();
+                                                    }
+                                                });
+                                            },
+                                        );
+                                    });
+                                });
+                                ui.end_row();
+
+                                ui.label("Layout");
                                 ui.horizontal(|ui| {
-                                    let combo_width = (ui.available_width()
+                                    let layout_enabled = !self.session.layout_names.is_empty();
+                                    let layout_width = (ui.available_width()
                                         - RIGHT_COLUMN_WIDTH
                                         - control_spacing)
                                         .max(120.0);
-                                    egui::ComboBox::from_id_salt("device_combo")
-                                        .width(combo_width)
-                                        .selected_text(selected_device_text.clone())
-                                        .show_ui(ui, |ui| {
-                                            for idx in 0..self.connect.available_devices.len() {
-                                                let device = &self.connect.available_devices[idx];
-                                                let selected =
-                                                    self.connect.selected_device_index == Some(idx);
-                                                if ui
-                                                    .selectable_label(
-                                                        selected,
-                                                        device.display_name(),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    self.select_device(idx);
-                                                }
-                                            }
-                                            if self.connect.available_devices.is_empty() {
-                                                ui.weak("No devices found");
-                                            }
-                                        });
-
-                                    ui.allocate_ui_with_layout(
-                                        egui::vec2(RIGHT_COLUMN_WIDTH, 20.0),
-                                        egui::Layout::left_to_right(egui::Align::Center),
-                                        |ui| {
-                                            let connect_in_progress =
-                                                self.connect.pending_connect.is_some();
-                                            let can_connect = !connection_locked
-                                                && !connect_in_progress
-                                                && self.connect.selected_device_index.is_some();
-                                            let button_label = if reconnecting {
-                                                "Reconnecting..."
-                                            } else if connect_in_progress {
-                                                "Connecting..."
-                                            } else {
-                                                "Connect"
-                                            };
-                                            ui.add_enabled_ui(can_connect, |ui| {
-                                                if ui
-                                                    .add_sized(
-                                                        [RIGHT_COLUMN_WIDTH, 20.0],
-                                                        egui::Button::new(button_label),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    self.connect_from_ui();
+                                    ui.add_enabled_ui(layout_enabled, |ui| {
+                                        let selected_text = if self.session.layout_names.is_empty()
+                                        {
+                                            "Connect to device first".to_string()
+                                        } else {
+                                            self.session.draft_layout_name.clone()
+                                        };
+                                        egui::ComboBox::from_id_salt("layout_combo")
+                                            .width(layout_width)
+                                            .selected_text(selected_text)
+                                            .show_ui(ui, |ui| {
+                                                for name in &self.session.layout_names {
+                                                    ui.selectable_value(
+                                                        &mut self.session.draft_layout_name,
+                                                        name.clone(),
+                                                        name,
+                                                    );
                                                 }
                                             });
-                                        },
-                                    );
+                                    });
+                                    ui.allocate_space(egui::vec2(RIGHT_COLUMN_WIDTH, 20.0));
                                 });
+                                ui.end_row();
                             });
-                            ui.end_row();
+                    });
 
-                            ui.label("Layout");
-                            ui.horizontal(|ui| {
-                                let layout_enabled = !self.session.layout_names.is_empty();
-                                let layout_width =
-                                    (ui.available_width() - RIGHT_COLUMN_WIDTH - control_spacing)
-                                        .max(120.0);
-                                ui.add_enabled_ui(layout_enabled, |ui| {
-                                    let selected_text = if self.session.layout_names.is_empty() {
-                                        "Connect to device first".to_string()
-                                    } else {
-                                        self.session.draft_layout_name.clone()
-                                    };
-                                    egui::ComboBox::from_id_salt("layout_combo")
-                                        .width(layout_width)
-                                        .selected_text(selected_text)
+                    titled_group(ui, "Overlay Appearance", |ui| {
+                        egui::Grid::new("appearance_grid")
+                            .num_columns(2)
+                            .striped(true)
+                            .spacing([20.0, 10.0])
+                            .show(ui, |ui| {
+                                // Foxglove (#534): when it shows, then how it looks.
+                                crate::foxglove::settings_ui::grid_heading(ui, "When it shows");
+                                ui.label("Display duration");
+                                let mut timeout_ui =
+                                    Self::timeout_to_ui_value(self.settings.draft.timeout);
+                                ui.add_sized(
+                                    ui.available_size(),
+                                    egui::DragValue::new(&mut timeout_ui)
+                                        .speed(50)
+                                        .range(0..=15_000)
+                                        .custom_formatter(|value, _range| {
+                                            if value >= 15_000.0 {
+                                                "∞".to_string()
+                                            } else {
+                                                format!("{} ms", value as i64)
+                                            }
+                                        }),
+                                );
+                                self.settings.draft.timeout = Self::ui_value_to_timeout(timeout_ui);
+                                ui.end_row();
+
+                                ui.label("Activation delay");
+                                ui.add_sized(
+                                    ui.available_size(),
+                                    egui::DragValue::new(&mut self.settings.draft.activation_delay)
+                                        .speed(10)
+                                        .range(0..=Settings::MAX_ACTIVATION_DELAY_MS)
+                                        .suffix(" ms"),
+                                )
+                                .on_hover_text(
+                                    "How long a layer has to be held before the overlay appears",
+                                );
+                                ui.end_row();
+
+                                crate::foxglove::settings_ui::grid_heading(ui, "Appearance");
+                                let monitors = crate::monitors::list();
+                                if monitors.len() > 1 {
+                                    let current = crate::monitors::find(
+                                        &monitors,
+                                        &self.settings.draft.monitor,
+                                    );
+                                    ui.label("Display");
+                                    egui::ComboBox::from_id_salt("monitor_combo")
+                                        .width(ui.available_width())
+                                        .selected_text(current.map(|m| m.label).unwrap_or_default())
                                         .show_ui(ui, |ui| {
-                                            for name in &self.session.layout_names {
-                                                ui.selectable_value(
-                                                    &mut self.session.draft_layout_name,
-                                                    name.clone(),
-                                                    name,
-                                                );
+                                            for monitor in &monitors {
+                                                if ui
+                                                    .selectable_value(
+                                                        &mut self.settings.draft.monitor,
+                                                        monitor.id.clone(),
+                                                        &monitor.label,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    // Foxglove: back to that display's anchor.
+                                                    self.reset_overlay_place();
+                                                }
                                             }
                                         });
-                                });
-                                ui.allocate_space(egui::vec2(RIGHT_COLUMN_WIDTH, 20.0));
-                            });
-                            ui.end_row();
-                        });
-                });
+                                    ui.end_row();
+                                }
 
-                titled_group(ui, "Overlay Appearance", |ui| {
-                    egui::Grid::new("appearance_grid")
-                        .num_columns(2)
-                        .striped(true)
-                        .spacing([20.0, 10.0])
-                        .show(ui, |ui| {
-                            // Foxglove (#534): when it shows, then how it looks.
-                            crate::foxglove::settings_ui::grid_heading(ui, "When it shows");
-                            ui.label("Display duration");
-                            let mut timeout_ui =
-                                Self::timeout_to_ui_value(self.settings.draft.timeout);
-                            ui.add_sized(
-                                ui.available_size(),
-                                egui::DragValue::new(&mut timeout_ui)
-                                    .speed(50)
-                                    .range(0..=15_000)
-                                    .custom_formatter(|value, _range| {
-                                        if value >= 15_000.0 {
-                                            "∞".to_string()
-                                        } else {
-                                            format!("{} ms", value as i64)
-                                        }
-                                    }),
-                            );
-                            self.settings.draft.timeout = Self::ui_value_to_timeout(timeout_ui);
-                            ui.end_row();
-
-                            ui.label("Activation delay");
-                            ui.add_sized(
-                                ui.available_size(),
-                                egui::DragValue::new(&mut self.settings.draft.activation_delay)
-                                    .speed(10)
-                                    .range(0..=Settings::MAX_ACTIVATION_DELAY_MS)
-                                    .suffix(" ms"),
-                            )
-                            .on_hover_text(
-                                "How long a layer has to be held before the overlay appears",
-                            );
-                            ui.end_row();
-
-                            crate::foxglove::settings_ui::grid_heading(ui, "Appearance");
-                            let monitors = crate::monitors::list();
-                            if monitors.len() > 1 {
-                                let current =
-                                    crate::monitors::find(&monitors, &self.settings.draft.monitor);
-                                ui.label("Display");
-                                egui::ComboBox::from_id_salt("monitor_combo")
+                                ui.label("Alignment");
+                                egui::ComboBox::from_id_salt("position_combo")
                                     .width(ui.available_width())
-                                    .selected_text(current.map(|m| m.label).unwrap_or_default())
+                                    .selected_text(self.settings.draft.position.to_string())
                                     .show_ui(ui, |ui| {
-                                        for monitor in &monitors {
+                                        for pos in [
+                                            WindowPosition::TopLeft,
+                                            WindowPosition::TopRight,
+                                            WindowPosition::BottomLeft,
+                                            WindowPosition::BottomRight,
+                                            WindowPosition::Top,
+                                            WindowPosition::Bottom,
+                                        ] {
                                             if ui
                                                 .selectable_value(
-                                                    &mut self.settings.draft.monitor,
-                                                    monitor.id.clone(),
-                                                    &monitor.label,
+                                                    &mut self.settings.draft.position,
+                                                    pos,
+                                                    pos.to_string(),
                                                 )
                                                 .clicked()
                                             {
-                                                // Foxglove: back to that display's anchor.
+                                                // Foxglove: an alignment drops a dragged place.
                                                 self.reset_overlay_place();
                                             }
                                         }
                                     });
                                 ui.end_row();
-                            }
 
-                            ui.label("Alignment");
-                            egui::ComboBox::from_id_salt("position_combo")
-                                .width(ui.available_width())
-                                .selected_text(self.settings.draft.position.to_string())
-                                .show_ui(ui, |ui| {
-                                    for pos in [
-                                        WindowPosition::TopLeft,
-                                        WindowPosition::TopRight,
-                                        WindowPosition::BottomLeft,
-                                        WindowPosition::BottomRight,
-                                        WindowPosition::Top,
-                                        WindowPosition::Bottom,
-                                    ] {
-                                        if ui
-                                            .selectable_value(
-                                                &mut self.settings.draft.position,
-                                                pos,
-                                                pos.to_string(),
-                                            )
-                                            .clicked()
-                                        {
-                                            // Foxglove: an alignment drops a dragged place.
-                                            self.reset_overlay_place();
-                                        }
-                                    }
-                                });
-                            ui.end_row();
+                                // Foxglove: the overlay can be dragged; this says so and undoes it.
+                                self.overlay_place_row(ui);
 
-                            // Foxglove: the overlay can be dragged; this says so and undoes it.
-                            self.overlay_place_row(ui);
+                                ui.label("Distance from screen edge");
+                                ui.add_sized(
+                                    ui.available_size(),
+                                    egui::DragValue::new(&mut self.settings.draft.margin)
+                                        .speed(1)
+                                        .suffix(" px"),
+                                );
+                                ui.end_row();
 
-                            ui.label("Distance from screen edge");
-                            ui.add_sized(
-                                ui.available_size(),
-                                egui::DragValue::new(&mut self.settings.draft.margin)
-                                    .speed(1)
-                                    .suffix(" px"),
-                            );
-                            ui.end_row();
+                                ui.label("Key unit size");
+                                ui.add_sized(
+                                    ui.available_size(),
+                                    egui::DragValue::new(&mut self.settings.draft.size)
+                                        .speed(1)
+                                        .range(20..=1000)
+                                        .suffix(" px"),
+                                );
+                                ui.end_row();
 
-                            ui.label("Key unit size");
-                            ui.add_sized(
-                                ui.available_size(),
-                                egui::DragValue::new(&mut self.settings.draft.size)
-                                    .speed(1)
-                                    .range(20..=1000)
-                                    .suffix(" px"),
-                            );
-                            ui.end_row();
+                                // Foxglove: the key popup's and its labels' opacity, applied live.
+                                crate::foxglove::overlay_opacity::rows(
+                                    ui,
+                                    &mut self.settings.draft,
+                                );
 
-                            // Foxglove: the key popup's and its labels' opacity, applied live.
-                            crate::foxglove::overlay_opacity::rows(ui, &mut self.settings.draft);
-
-                            ui.label("Key label font scale");
-                            ui.add_sized(
-                                ui.available_size(),
-                                egui::DragValue::new(&mut self.settings.draft.font_size_multiplier)
+                                ui.label("Key label font scale");
+                                ui.add_sized(
+                                    ui.available_size(),
+                                    egui::DragValue::new(
+                                        &mut self.settings.draft.font_size_multiplier,
+                                    )
                                     .speed(0.01)
                                     .range(0.5..=1.5)
                                     .suffix(" x"),
-                            );
-                            ui.end_row();
+                                );
+                                ui.end_row();
 
-                            ui.label("Auto-fit long labels");
-                            ui.checkbox(
-                                &mut self.settings.draft.auto_fit_before_ellipsis,
-                                "Fit long labels to available space",
-                            );
-                            ui.end_row();
+                                ui.label("Auto-fit long labels");
+                                ui.checkbox(
+                                    &mut self.settings.draft.auto_fit_before_ellipsis,
+                                    "Fit long labels to available space",
+                                );
+                                ui.end_row();
 
-                            ui.label("Legend mode");
-                            egui::ComboBox::from_id_salt("legend_mode_combo")
-                                .width(ui.available_width())
-                                .selected_text(self.settings.draft.legend_mode.to_string())
-                                .show_ui(ui, |ui| {
-                                    for mode in [
-                                        LegendMode::Stacked,
-                                        LegendMode::Single,
-                                        LegendMode::SingleLive,
-                                    ] {
-                                        ui.selectable_value(
-                                            &mut self.settings.draft.legend_mode,
-                                            mode,
-                                            mode.to_string(),
-                                        );
-                                    }
-                                })
-                                .response
-                                .on_hover_text(
-                                    "Stacked: Base+Shifted shown together (default). Single: \
+                                ui.label("Legend mode");
+                                egui::ComboBox::from_id_salt("legend_mode_combo")
+                                    .width(ui.available_width())
+                                    .selected_text(self.settings.draft.legend_mode.to_string())
+                                    .show_ui(ui, |ui| {
+                                        for mode in [
+                                            LegendMode::Stacked,
+                                            LegendMode::Single,
+                                            LegendMode::SingleLive,
+                                        ] {
+                                            ui.selectable_value(
+                                                &mut self.settings.draft.legend_mode,
+                                                mode,
+                                                mode.to_string(),
+                                            );
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text(
+                                        "Stacked: Base+Shifted shown together (default). Single: \
                                      only what a plain tap produces. Single + live preview: \
                                      also swaps to the Shift/RAlt result while that modifier \
                                      is physically held.",
-                                );
-                            ui.end_row();
-                        });
-                });
-
-                titled_group(ui, "Theme", |ui| {
-                    const LAYERS: usize = ThemeSettings::OTHER_LAYERS as usize;
-                    const HALF: usize = LAYERS / 2;
-
-                    // The keyboard's layer names (ZMK), remembered from the last connection,
-                    // else "Layer n".
-                    let names: Vec<Option<String>> = match &self.session.connection {
-                        AppConnectionState::Connected { keyboard } => {
-                            let names: Vec<_> =
-                                keyboard.layer_infos().into_iter().map(|l| l.name).collect();
-                            crate::foxglove::layer_names::remember(&names);
-                            names
-                        }
-                        _ => crate::foxglove::layer_names::remembered(),
-                    };
-                    let layer_label = |layer: usize| {
-                        names
-                            .get(layer)
-                            .cloned()
-                            .flatten()
-                            .filter(|n| !n.trim().is_empty())
-                            .unwrap_or_else(|| format!("Layer {layer}"))
-                    };
-
-                    // Foxglove (#390): the window theme is in "Appearance".
-                    let draft = &mut self.settings.draft;
-                    Self::theme_color_entry(ui, "Text colour", &mut draft.theme.font_color);
-
-                    let mut layer_table = |ui: &mut egui::Ui, id: &str, layers: &[usize]| {
-                        egui::Grid::new(id)
-                            .num_columns(4)
-                            .spacing([12.0, 6.0])
-                            .show(ui, |ui| {
-                                ui.weak("Show");
-                                ui.weak("Hold");
-                                ui.weak("Layer");
-                                ui.label("");
-                                ui.end_row();
-                                for &layer in layers {
-                                    let (label, mask) = if layer == LAYERS {
-                                        ("Other layers".to_string(), !0 << layer)
-                                    } else {
-                                        (layer_label(layer), 1 << layer)
-                                    };
-                                    Self::theme_layer_row(
-                                        ui,
-                                        &label,
-                                        &mut draft.theme.layer_colors[layer],
-                                        &mut draft.visible_layers,
-                                        &mut draft.held_layers,
-                                        mask,
                                     );
-                                }
+                                ui.end_row();
                             });
-                    };
-                    // Foxglove (#390): one table when the card is too narrow for two.
-                    if ui.available_width() < 560.0 {
-                        let all: Vec<usize> = (0..=LAYERS).collect();
-                        layer_table(ui, "theme_layers_all", &all);
-                        return;
-                    }
-                    ui.columns(2, |columns| {
-                        let left: Vec<usize> = (0..HALF).collect();
-                        let right: Vec<usize> = (HALF..=LAYERS).collect();
-                        layer_table(&mut columns[0], "theme_layers_left", &left);
-                        layer_table(&mut columns[1], "theme_layers_right", &right);
                     });
+
+                    titled_group(ui, "Theme", |ui| {
+                        const LAYERS: usize = ThemeSettings::OTHER_LAYERS as usize;
+                        const HALF: usize = LAYERS / 2;
+
+                        // The keyboard's layer names (ZMK), remembered from the last connection,
+                        // else "Layer n".
+                        let names: Vec<Option<String>> = match &self.session.connection {
+                            AppConnectionState::Connected { keyboard } => {
+                                let names: Vec<_> =
+                                    keyboard.layer_infos().into_iter().map(|l| l.name).collect();
+                                crate::foxglove::layer_names::remember(&names);
+                                names
+                            }
+                            _ => crate::foxglove::layer_names::remembered(),
+                        };
+                        let layer_label = |layer: usize| {
+                            names
+                                .get(layer)
+                                .cloned()
+                                .flatten()
+                                .filter(|n| !n.trim().is_empty())
+                                .unwrap_or_else(|| format!("Layer {layer}"))
+                        };
+
+                        // Foxglove (#390): the window theme is in "Appearance".
+                        let draft = &mut self.settings.draft;
+                        Self::theme_color_entry(ui, "Text colour", &mut draft.theme.font_color);
+
+                        let mut layer_table = |ui: &mut egui::Ui, id: &str, layers: &[usize]| {
+                            egui::Grid::new(id)
+                                .num_columns(4)
+                                .spacing([12.0, 6.0])
+                                .show(ui, |ui| {
+                                    ui.weak("Show");
+                                    ui.weak("Hold");
+                                    ui.weak("Layer");
+                                    ui.label("");
+                                    ui.end_row();
+                                    for &layer in layers {
+                                        let (label, mask) = if layer == LAYERS {
+                                            ("Other layers".to_string(), !0 << layer)
+                                        } else {
+                                            (layer_label(layer), 1 << layer)
+                                        };
+                                        Self::theme_layer_row(
+                                            ui,
+                                            &label,
+                                            &mut draft.theme.layer_colors[layer],
+                                            &mut draft.visible_layers,
+                                            &mut draft.held_layers,
+                                            mask,
+                                        );
+                                    }
+                                });
+                        };
+                        // Foxglove (#390): one table when the card is too narrow for two.
+                        if ui.available_width() < 560.0 {
+                            let all: Vec<usize> = (0..=LAYERS).collect();
+                            layer_table(ui, "theme_layers_all", &all);
+                            return;
+                        }
+                        ui.columns(2, |columns| {
+                            let left: Vec<usize> = (0..HALF).collect();
+                            let right: Vec<usize> = (HALF..=LAYERS).collect();
+                            layer_table(&mut columns[0], "theme_layers_left", &left);
+                            layer_table(&mut columns[1], "theme_layers_right", &right);
+                        });
+                    });
+
+                    crate::foxglove::profiles_ui::picker(ui); // Foxglove
+                    Self::foxglove_keyboard_group(ui); // Foxglove
+                                                       // Foxglove (#388): the Screens page draws at its page's top, from the shell.
+                    crate::foxglove::via_ui::group(ui);
+                    crate::foxglove::plugins_ui::group(ui);
+
+                    // Foxglove (#384): links, KeyPeek credit and font credits, stacked.
+                    crate::foxglove::settings_ui::footer(ui);
                 });
-
-                crate::foxglove::profiles_ui::picker(ui); // Foxglove
-                Self::foxglove_keyboard_group(ui); // Foxglove
-                // Foxglove (#388): the Screens page draws at its page's top, from the shell.
-                crate::foxglove::via_ui::group(ui);
-                crate::foxglove::plugins_ui::group(ui);
-
-                // Foxglove (#384): links, KeyPeek credit and font credits, stacked.
-                crate::foxglove::settings_ui::footer(ui);
-            });
-        });
+            },
+        );
 
         seen.open = open;
         let armed = crate::foxglove::overlay_grab::next(self.ui.overlay_armed, seen);
