@@ -4,6 +4,15 @@
 //!
 //! [`FakeBoard::plank3`] is the second desk's one-piece board with Studio locking on;
 //! [`FakeBoard::corne`] is the user's split board, whose build has locking off.
+//!
+//! #583: reserved layer slots (`available_layers`) that Add layer enables, Remove and Restore,
+//! Move, Rename, and physical layouts (the Plank 3 has two).
+
+/// A board's shape beyond its keys: reserved layer slots and physical layout names.
+struct Shape {
+    reserved: usize,
+    layouts: &'static [&'static str],
+}
 
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
@@ -44,6 +53,13 @@ struct State {
     stock: Vec<keymap::Layer>,
     saved: Vec<keymap::Layer>,
     live: Vec<keymap::Layer>,
+    /// #583: disabled layer slots (reserved, or removed this session), live/saved/stock.
+    spare: Vec<keymap::Layer>,
+    saved_spare: Vec<keymap::Layer>,
+    stock_spare: Vec<keymap::Layer>,
+    layouts: Vec<String>,
+    active_layout: u32,
+    saved_layout: u32,
     unsaved: bool,
     out: VecDeque<u8>,
     lines_opened: usize,
@@ -65,7 +81,7 @@ struct Shared {
 pub(crate) struct FakeBoard(Arc<Shared>);
 
 impl FakeBoard {
-    fn new(keys: usize, layers: &[&str], locked: bool) -> Self {
+    fn new(keys: usize, layers: &[&str], locked: bool, shape: Shape) -> Self {
         let stock: Vec<keymap::Layer> = layers
             .iter()
             .enumerate()
@@ -82,6 +98,13 @@ impl FakeBoard {
                     .collect(),
             })
             .collect();
+        let spare: Vec<keymap::Layer> = (0..shape.reserved)
+            .map(|i| keymap::Layer {
+                id: (layers.len() + i) as u32,
+                name: String::new(),
+                bindings: vec![binding(TRANSPARENT, 0); keys],
+            })
+            .collect();
         Self(Arc::new(Shared {
             state: Mutex::new(State {
                 keys,
@@ -89,6 +112,12 @@ impl FakeBoard {
                 saved: stock.clone(),
                 live: stock.clone(),
                 stock,
+                saved_spare: spare.clone(),
+                stock_spare: spare.clone(),
+                spare,
+                layouts: shape.layouts.iter().map(|s| s.to_string()).collect(),
+                active_layout: 0,
+                saved_layout: 0,
                 unsaved: false,
                 out: VecDeque::new(),
                 lines_opened: 0,
@@ -107,6 +136,10 @@ impl FakeBoard {
             crate::foxglove::fixtures::second_desk::KEYS,
             &["Base", "Nav", "Num"],
             true,
+            Shape {
+                reserved: 2,
+                layouts: &["Standard", "Split space"],
+            },
         )
     }
 
@@ -116,6 +149,11 @@ impl FakeBoard {
             crate::foxglove::fixtures::users_desk::KEYS,
             &["Base", "Lower", "Raise", "Adjust"],
             false,
+            // #580: the Corne build reserves 3 layers for Studio.
+            Shape {
+                reserved: 3,
+                layouts: &["Eyelash Corne"],
+            },
         )
     }
 
@@ -190,6 +228,16 @@ impl FakeBoard {
     pub(crate) fn live_binding(&self, layer: usize, pos: usize) -> (i32, u32, u32) {
         let b = self.state().live[layer].bindings[pos];
         (b.behavior_id, b.param1, b.param2)
+    }
+
+    /// #583: the live layers' names, in order.
+    pub(crate) fn layer_names(&self) -> Vec<String> {
+        self.state().live.iter().map(|l| l.name.clone()).collect()
+    }
+
+    /// #583: the active physical layout.
+    pub(crate) fn active_layout(&self) -> u32 {
+        self.state().active_layout
     }
 
     pub(crate) fn live_param(&self, layer: usize, pos: usize) -> u32 {
@@ -314,6 +362,10 @@ fn answer_core(state: &mut State, r: core::request::RequestType) -> core::respon
         core::request::RequestType::ResetSettings(_) => {
             state.saved = state.stock.clone();
             state.live = state.stock.clone();
+            state.spare = state.stock_spare.clone();
+            state.saved_spare = state.stock_spare.clone();
+            state.active_layout = 0;
+            state.saved_layout = 0;
             mark_unsaved(state, false);
             R::ResetSettings(true)
         }
@@ -331,11 +383,7 @@ fn answer_keymap(
     use keymap::request::RequestType as Q;
     use keymap::response::ResponseType as R;
     match r {
-        Q::GetKeymap(_) => R::GetKeymap(keymap::Keymap {
-            layers: state.live.clone(),
-            available_layers: 0,
-            max_layer_name_length: 20,
-        }),
+        Q::GetKeymap(_) => R::GetKeymap(live_keymap(state)),
         Q::SetLayerBinding(_) if std::mem::take(&mut state.refuse_write) => R::SetLayerBinding(
             keymap::SetLayerBindingResponse::SetLayerBindingRespInvalidParameters as i32,
         ),
@@ -370,6 +418,8 @@ fn answer_keymap(
         }
         Q::SaveChanges(_) => {
             state.saved = state.live.clone();
+            state.saved_spare = state.spare.clone();
+            state.saved_layout = state.active_layout;
             mark_unsaved(state, false);
             R::SaveChanges(keymap::SaveChangesResponse {
                 result: Some(keymap::save_changes_response::Result::Ok(true)),
@@ -378,8 +428,139 @@ fn answer_keymap(
         Q::DiscardChanges(_) => {
             let had = state.unsaved;
             state.live = state.saved.clone();
+            state.spare = state.saved_spare.clone();
+            state.active_layout = state.saved_layout;
             mark_unsaved(state, false);
             R::DiscardChanges(had)
+        }
+        Q::GetPhysicalLayouts(_) => R::GetPhysicalLayouts(keymap::PhysicalLayouts {
+            active_layout_index: state.active_layout,
+            layouts: state
+                .layouts
+                .iter()
+                .map(|name| keymap::PhysicalLayout {
+                    name: name.clone(),
+                    keys: vec![],
+                })
+                .collect(),
+        }),
+        q => answer_layers(state, q),
+    }
+}
+
+fn live_keymap(state: &State) -> keymap::Keymap {
+    keymap::Keymap {
+        layers: state.live.clone(),
+        available_layers: state.spare.len() as u32,
+        max_layer_name_length: 20,
+    }
+}
+
+/// #583: the layer and physical layout requests, as ZMK answers them (each whole or not at all).
+fn answer_layers(
+    state: &mut State,
+    request: keymap::request::RequestType,
+) -> keymap::response::ResponseType {
+    use keymap::request::RequestType as Q;
+    use keymap::response::ResponseType as R;
+    match request {
+        Q::AddLayer(_) => {
+            let result = if state.spare.is_empty() {
+                keymap::add_layer_response::Result::Err(
+                    keymap::AddLayerErrorCode::AddLayerErrNoSpace as i32,
+                )
+            } else {
+                let mut layer = state.spare.remove(0);
+                layer.name.clear();
+                layer.bindings = vec![binding(TRANSPARENT, 0); state.keys];
+                state.live.push(layer.clone());
+                mark_unsaved(state, true);
+                keymap::add_layer_response::Result::Ok(keymap::AddLayerResponseDetails {
+                    index: (state.live.len() - 1) as u32,
+                    layer: Some(layer),
+                })
+            };
+            R::AddLayer(keymap::AddLayerResponse {
+                result: Some(result),
+            })
+        }
+        Q::RemoveLayer(q) => {
+            let index = q.layer_index as usize;
+            let result = if index < state.live.len() && state.live.len() > 1 {
+                let layer = state.live.remove(index);
+                state.spare.push(layer);
+                mark_unsaved(state, true);
+                keymap::remove_layer_response::Result::Ok(keymap::RemoveLayerOk {})
+            } else {
+                keymap::remove_layer_response::Result::Err(
+                    keymap::RemoveLayerErrorCode::RemoveLayerErrInvalidIndex as i32,
+                )
+            };
+            R::RemoveLayer(keymap::RemoveLayerResponse {
+                result: Some(result),
+            })
+        }
+        Q::RestoreLayer(q) => {
+            let found = state.spare.iter().position(|l| l.id == q.layer_id);
+            let result = match found {
+                Some(i) if q.at_index as usize <= state.live.len() => {
+                    let layer = state.spare.remove(i);
+                    state.live.insert(q.at_index as usize, layer.clone());
+                    mark_unsaved(state, true);
+                    keymap::restore_layer_response::Result::Ok(layer)
+                }
+                Some(_) => keymap::restore_layer_response::Result::Err(
+                    keymap::RestoreLayerErrorCode::RestoreLayerErrInvalidIndex as i32,
+                ),
+                None => keymap::restore_layer_response::Result::Err(
+                    keymap::RestoreLayerErrorCode::RestoreLayerErrInvalidId as i32,
+                ),
+            };
+            R::RestoreLayer(keymap::RestoreLayerResponse {
+                result: Some(result),
+            })
+        }
+        Q::MoveLayer(q) => {
+            let (from, to) = (q.start_index as usize, q.dest_index as usize);
+            let result = if from < state.live.len() && to < state.live.len() {
+                let layer = state.live.remove(from);
+                state.live.insert(to, layer);
+                mark_unsaved(state, true);
+                keymap::move_layer_response::Result::Ok(live_keymap(state))
+            } else {
+                keymap::move_layer_response::Result::Err(
+                    keymap::MoveLayerErrorCode::MoveLayerErrInvalidDestination as i32,
+                )
+            };
+            R::MoveLayer(keymap::MoveLayerResponse {
+                result: Some(result),
+            })
+        }
+        Q::SetLayerProps(q) => {
+            let code = match state.live.iter_mut().find(|l| l.id == q.layer_id) {
+                Some(layer) => {
+                    layer.name = q.name;
+                    mark_unsaved(state, true);
+                    keymap::SetLayerPropsResponse::SetLayerPropsRespOk
+                }
+                None => keymap::SetLayerPropsResponse::SetLayerPropsRespErrInvalidId,
+            };
+            R::SetLayerProps(code as i32)
+        }
+        Q::SetActivePhysicalLayout(index) => {
+            let result = if (index as usize) < state.layouts.len() {
+                state.active_layout = index;
+                mark_unsaved(state, true);
+                keymap::set_active_physical_layout_response::Result::Ok(live_keymap(state))
+            } else {
+                keymap::set_active_physical_layout_response::Result::Err(
+                    keymap::SetActivePhysicalLayoutErrorCode::SetActivePhysicalLayoutErrInvalidLayoutIndex
+                        as i32,
+                )
+            };
+            R::SetActivePhysicalLayout(keymap::SetActivePhysicalLayoutResponse {
+                result: Some(result),
+            })
         }
         _ => R::GetPhysicalLayouts(keymap::PhysicalLayouts::default()),
     }

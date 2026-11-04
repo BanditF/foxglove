@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use zmk_studio_api::proto::zmk::{core, keymap, meta, studio};
 use zmk_studio_api::{Behavior, ClientError, ResolvedLayer, StudioClient};
 
-use crate::foxglove::behavior_catalog::{self, Catalog, CustomBehavior};
+use crate::foxglove::behavior_catalog::{self, Catalog, CustomBehavior, LayerRoom};
 use crate::key_action::KeymapSnapshot;
 use crate::key_matrix::KeyMatrix;
 use crate::protocols::DeviceLocked;
@@ -120,8 +120,36 @@ pub struct Status {
     pub unsaved: bool,
 }
 
+/// A change to the board's layers or physical layout (#583), as ZMK Studio's layer picker
+/// makes them. Indexes are positions in the layer list; ids are the board's stable layer ids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LayerOp {
+    /// Enable a reserved layer slot (`add_layer`).
+    Add,
+    Remove {
+        index: u32,
+    },
+    /// Put back a layer removed this session (`restore_layer`).
+    Restore {
+        id: u32,
+        at: u32,
+    },
+    Move {
+        from: u32,
+        to: u32,
+    },
+    Rename {
+        id: u32,
+        name: String,
+    },
+    /// Switch the active physical layout (`set_active_physical_layout`).
+    Layout {
+        index: u32,
+    },
+}
+
 /// A session request from the editor.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StudioRequest {
     /// Open the session: the lock state, and whether the board has unsaved changes.
     Open,
@@ -134,6 +162,8 @@ pub enum StudioRequest {
     /// Read the keymap and the unsaved state again, changing nothing (F6: after a failed write,
     /// to show what the board really has).
     Reread,
+    /// Change the layers or the physical layout, then read the keymap again (#583).
+    Layers(LayerOp),
 }
 
 /// Answers one [`StudioRequest`]: the editor's channel, a repaint, and a new keymap for the
@@ -168,7 +198,14 @@ impl StudioDone {
     /// Hands the editor the board's own behaviours (#582).
     fn publish(&self, behaviors: &[CustomBehavior]) {
         if let Some(catalog) = &self.catalog {
-            *catalog.lock().unwrap_or_else(|e| e.into_inner()) = behaviors.to_vec();
+            catalog.lock().unwrap_or_else(|e| e.into_inner()).behaviors = behaviors.to_vec();
+        }
+    }
+
+    /// Hands the editor the board's room for layers (#583).
+    fn publish_room(&self, room: LayerRoom) {
+        if let Some(catalog) = &self.catalog {
+            catalog.lock().unwrap_or_else(|e| e.into_inner()).room = Some(room);
         }
     }
 
@@ -246,6 +283,10 @@ pub struct StudioEditor {
     settled: Option<Settled>,
     /// The board's own behaviours (#582), read once per link to this board.
     custom: Option<Vec<CustomBehavior>>,
+    /// The board's room for layers as last read (#583), and the layers removed this session.
+    room: LayerRoom,
+    /// The keymap as last read, to name a layer before it is removed.
+    last_keymap: Option<keymap::Keymap>,
 }
 
 /// Told the keymap (and physical layouts) a board keeps after Save, Discard or Restore stock
@@ -261,6 +302,8 @@ impl StudioEditor {
             status: Status::default(),
             settled: None,
             custom: None,
+            room: LayerRoom::default(),
+            last_keymap: None,
         }
     }
 
@@ -382,19 +425,22 @@ impl StudioEditor {
         self.link()?;
         if !self.status.locked {
             let read = self.custom.is_none();
-            let (unsaved, custom) = self.run(|c| {
+            let (unsaved, custom, raw, layouts) = self.run(|c| {
                 c.ensure_behavior_catalog()?;
                 let custom = if read {
                     Some(behavior_catalog::read(c)?)
                 } else {
                     None
                 };
-                Ok((c.check_unsaved_changes()?, custom))
+                let raw = c.get_keymap()?;
+                let layouts = c.get_physical_layouts()?;
+                Ok((c.check_unsaved_changes()?, custom, raw, layouts))
             })?;
             self.status.unsaved = unsaved;
             if custom.is_some() {
                 self.custom = custom;
             }
+            self.note_room(raw, &layouts);
         }
         Ok(self.status)
     }
@@ -413,6 +459,7 @@ impl StudioEditor {
     pub fn save(&mut self) -> Result<(), Box<dyn Error>> {
         self.run(|c| c.save_changes())?;
         self.status.unsaved = false;
+        self.room.removed.clear(); // saved: removed layers are gone for good
         self.settle(None);
         Ok(())
     }
@@ -426,13 +473,52 @@ impl StudioEditor {
 
     /// The keymap as the board has it now, and whether it still has unsaved changes.
     fn reread(&mut self) -> Result<(Vec<ResolvedLayer>, keymap::Keymap), Box<dyn Error>> {
-        let (layers, raw, unsaved) = self.run(|c| {
+        let (layers, raw, layouts, unsaved) = self.run(|c| {
             let layers = c.resolve_keymap()?;
             let raw = c.get_keymap()?;
-            Ok((layers, raw, c.check_unsaved_changes()?))
+            let layouts = c.get_physical_layouts()?;
+            Ok((layers, raw, layouts, c.check_unsaved_changes()?))
         })?;
         self.status.unsaved = unsaved;
+        self.note_room(raw.clone(), &layouts);
         Ok((layers, raw))
+    }
+
+    /// Notes the board's room for layers from a keymap and its layouts just read (#583).
+    fn note_room(&mut self, raw: keymap::Keymap, layouts: &keymap::PhysicalLayouts) {
+        let removed = std::mem::take(&mut self.room.removed);
+        self.room = LayerRoom {
+            removed,
+            ..room_from(&raw, layouts)
+        };
+        self.last_keymap = Some(raw);
+    }
+
+    /// Makes one layer change on the board (#583), keeping the list of layers removed this
+    /// session for Restore.
+    fn layer_op(&mut self, op: &LayerOp) -> Result<(), Box<dyn Error>> {
+        let removing = match op {
+            LayerOp::Remove { index } => self
+                .last_keymap
+                .as_ref()
+                .and_then(|k| k.layers.get(*index as usize))
+                .map(|l| (l.id, l.name.clone())),
+            _ => None,
+        };
+        self.run(|c| match op {
+            LayerOp::Add => c.add_layer().map(|_| ()),
+            LayerOp::Remove { index } => c.remove_layer(*index),
+            LayerOp::Restore { id, at } => c.restore_layer(*id, *at).map(|_| ()),
+            LayerOp::Move { from, to } => c.move_layer(*from, *to).map(|_| ()),
+            LayerOp::Rename { id, name } => c.set_layer_props(*id, name.clone()),
+            LayerOp::Layout { index } => c.set_active_physical_layout(*index).map(|_| ()),
+        })?;
+        match op {
+            LayerOp::Remove { .. } => self.room.removed.extend(removing),
+            LayerOp::Restore { id, .. } => self.room.removed.retain(|(r, _)| r != id),
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Answers `request` through `done`: at once, or for an unlock wait when the board unlocks.
@@ -448,17 +534,24 @@ impl StudioEditor {
             request,
             StudioRequest::Discard | StudioRequest::RestoreStock
         );
+        if settles {
+            self.room.removed.clear(); // as in Studio: nothing removed is left to restore
+        }
         let changed = match request {
             StudioRequest::Open => return self.answer_open(done),
             StudioRequest::WaitUnlock => return self.wait_unlock(done),
             StudioRequest::Discard => self.run(|c| c.discard_changes()).map(|_| ()),
             StudioRequest::Reread => Ok(()),
+            StudioRequest::Layers(op) => self.layer_op(&op),
             StudioRequest::RestoreStock => self.run(|c| c.reset_settings()).and_then(|done| {
                 done.then_some(())
                     .ok_or_else(|| "The keyboard didn't restore its stock keymap.".into())
             }),
         };
-        match changed.and_then(|()| self.reread()) {
+        let changed = changed.and_then(|()| self.reread());
+        // The room is worth showing even when the change failed: read it back if it can be.
+        done.publish_room(self.room.clone());
+        match changed {
             Ok((layers, raw)) => {
                 done.send_with_keymap(self.status, keymap(&layers, &raw));
                 if settles {
@@ -474,6 +567,9 @@ impl StudioEditor {
         let result = self.open().map_err(error_text);
         if result.is_ok() {
             done.publish(self.custom.as_deref().unwrap_or_default());
+            if !self.status.locked {
+                done.publish_room(self.room.clone());
+            }
         }
         done.send(result);
     }
@@ -494,8 +590,9 @@ impl StudioEditor {
         let (back_tx, back) = mpsc::channel();
         let mut status = self.status;
         crate::foxglove::services::spawn_named("studio-unlock-wait", move || {
-            let result = wait_for_unlock(&mut link, &mut status).map(|(status, custom)| {
+            let result = wait_for_unlock(&mut link, &mut status).map(|(status, custom, room)| {
                 done.publish(&custom);
+                done.publish_room(room);
                 status
             });
             *link.gate.until() = None;
@@ -555,7 +652,7 @@ impl WaitError {
 fn wait_for_unlock(
     link: &mut Link,
     status: &mut Status,
-) -> Result<(Status, Vec<CustomBehavior>), WaitError> {
+) -> Result<(Status, Vec<CustomBehavior>, LayerRoom), WaitError> {
     loop {
         let n = link
             .client
@@ -571,17 +668,43 @@ fn wait_for_unlock(
     client
         .ensure_behavior_catalog()
         .and_then(|()| behavior_catalog::read(client))
-        .and_then(|custom| Ok((client.check_unsaved_changes()?, custom)))
-        .map(|(unsaved, custom)| {
+        .and_then(|custom| {
+            let room = room_from(&client.get_keymap()?, &client.get_physical_layouts()?);
+            Ok((client.check_unsaved_changes()?, custom, room))
+        })
+        .map(|(unsaved, custom, room)| {
             (
                 Status {
                     locked: false,
                     unsaved,
                 },
                 custom,
+                room,
             )
         })
         .map_err(WaitError::from_client)
+}
+
+/// The board's room for layers from its keymap and physical layouts (#583); nothing removed.
+fn room_from(raw: &keymap::Keymap, layouts: &keymap::PhysicalLayouts) -> LayerRoom {
+    LayerRoom {
+        free: raw.available_layers,
+        name_max: raw.max_layer_name_length,
+        layouts: layouts
+            .layouts
+            .iter()
+            .enumerate()
+            .map(|(i, l)| {
+                if l.name.is_empty() {
+                    format!("Layout {}", i + 1)
+                } else {
+                    l.name.clone()
+                }
+            })
+            .collect(),
+        active_layout: layouts.active_layout_index as usize,
+        removed: Vec::new(),
+    }
 }
 
 /// What the editor shows for a session error.

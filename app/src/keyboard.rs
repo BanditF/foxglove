@@ -604,7 +604,24 @@ impl Keyboard {
         self.custom_behaviors
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .behaviors
             .clone()
+    }
+
+    /// Foxglove (#583): the board's room for layers and its physical layouts, as read when the
+    /// edit session opened or last changed the keymap.
+    pub fn layer_room(&self) -> Option<crate::foxglove::behavior_catalog::LayerRoom> {
+        self.custom_behaviors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .room
+            .clone()
+    }
+
+    /// Foxglove (#583): drops the connection so the app connects again and reads the board
+    /// afresh (its physical layout changed, so the overlay's shape must follow).
+    pub fn reconnect(&self) {
+        self.alive.store(false, Ordering::Relaxed);
     }
 
     /// Foxglove (#578): runs queued commands now on a reader that sleeps until a report.

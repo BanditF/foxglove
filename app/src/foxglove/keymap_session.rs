@@ -201,6 +201,8 @@ pub enum Lock {
 pub enum Prompt {
     RestoreStock,
     Close,
+    /// #583: the board's layers and physical layout (`keymap_layers`).
+    Layers,
 }
 
 struct Task {
@@ -219,6 +221,8 @@ pub struct KeymapSession {
     task: Option<Task>,
     /// The key an undo or redo just changed, for the editor to show.
     jump: Option<EditTarget>,
+    /// #583: the Layers prompt's name boxes, one per layer.
+    pub layer_names: Vec<String>,
 }
 
 impl KeymapSession {
@@ -294,8 +298,8 @@ impl EditorState {
     ) {
         self.error = None;
         self.studio.task = Some(Task {
+            reply: keyboard.studio(request.clone()),
             request,
-            reply: keyboard.studio(request),
             then_close,
         });
     }
@@ -379,7 +383,7 @@ impl EditorState {
         }
     }
 
-    fn start_studio_keep_error(&mut self, keyboard: &Keyboard, request: StudioRequest) {
+    pub(crate) fn start_studio_keep_error(&mut self, keyboard: &Keyboard, request: StudioRequest) {
         let error = self.error.take();
         self.start_studio(keyboard, request, false);
         self.error = error;
@@ -458,6 +462,13 @@ impl EditorState {
                 self.zmk_session = ZmkSessionState::Failed;
                 self.error = Some(format!("Couldn't read the keyboard's keymap back: {e}"));
             }
+            (StudioRequest::Layers(op), result) => {
+                if self.layer_op_done(keyboard, op, result) {
+                    self.reset();
+                    keyboard.end_edit_session();
+                    return true;
+                }
+            }
         }
         if self.studio.lock != Lock::Locked {
             let dirty = self.zmk_dirty;
@@ -529,6 +540,7 @@ impl EditorState {
         let can_redo = !busy && self.studio.history.next_redo().is_some();
         let (mut undo, mut redo, mut save, mut discard, mut restore) =
             (false, false, false, false, false);
+        let mut layers = false;
         // The shortcuts work unless a text box (the search) has the keyboard or a prompt is up.
         if self.overlay().is_none() && ui.ctx().memory(|m| m.focused().is_none()) {
             use egui::{Key, KeyboardShortcut, Modifiers};
@@ -573,6 +585,11 @@ impl EditorState {
                             ui.add(egui::Label::new(RichText::new(note).weak()).wrap());
                             ui.separator();
                         }
+                        // #583: only once the board has said how much room it has.
+                        if keyboard.layer_room().is_some() && ui.button("Layers…").clicked() {
+                            layers = true;
+                            ui.close();
+                        }
                         if ui
                             .button("Restore stock keymap…")
                             .on_hover_text(
@@ -612,6 +629,8 @@ impl EditorState {
             self.discard(keyboard, false);
         } else if restore {
             self.studio.prompt = Some(Prompt::RestoreStock);
+        } else if layers {
+            self.open_layers(keyboard);
         }
     }
 
@@ -682,6 +701,8 @@ impl EditorState {
         if let Some(task) = &self.studio.task {
             let text = match task.request {
                 StudioRequest::RestoreStock => "Restoring the stock keymap…",
+                StudioRequest::Layers(_) => "Changing the layers…",
+                StudioRequest::Reread => "Reading the keyboard's keymap back…",
                 _ => "Discarding changes…",
             };
             ui.horizontal(|ui| {
@@ -715,6 +736,7 @@ impl EditorState {
                     }
                 });
             }
+            Some(Prompt::Layers) => self.layers_prompt(ui, keyboard),
             Some(Prompt::Close) => {
                 heading(ui, icon::FLOPPY_DISK, "Save your changes?");
                 ui.label(

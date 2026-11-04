@@ -153,6 +153,8 @@ fn a_locked_board_prompts_until_its_unlock_key_is_pressed() {
     bench.board.press_unlock_key();
     bench.ready();
     assert_eq!(bench.editor.studio.lock, Lock::Unlocked);
+    // #583: the room for layers comes with the unlock, so Layers… is offered at once.
+    assert_eq!(bench.keyboard.layer_room().map(|r| r.free), Some(2));
     assert!(bench.editor.overlay().is_none());
     assert!(!bench.editor.zmk_dirty);
 }
@@ -371,6 +373,14 @@ fn the_session_bar_and_prompts_lay_out_without_overlaps() {
                 editor.draw_window(ui.ctx(), keyboard, style)
             }));
         }
+    }
+    // #583: the Layers prompt, with its physical layout choice.
+    bench.editor.open_layers(&bench.keyboard);
+    for ppp in SCALES {
+        let (editor, keyboard, style) = (&mut bench.editor, &bench.keyboard, &bench.style);
+        found.extend(check("Layers", CANVAS, ppp, false, None, |ui| {
+            editor.draw_window(ui.ctx(), keyboard, style)
+        }));
     }
     bench.editor.studio.prompt = Some(Prompt::Close);
     for ppp in SCALES {
@@ -630,4 +640,135 @@ fn the_behaviours_page_renders() {
     bench.frame();
     assert_eq!(bench.board.live_binding(0, 5), before);
     bench.png("ui-keymap-f6-behaviours-pick.png");
+}
+
+/// #583: the layer names the overlay has now.
+fn overlay_layers(bench: &Bench) -> Vec<String> {
+    bench
+        .keyboard
+        .layer_infos()
+        .iter()
+        .map(|l| l.name.clone().unwrap_or_default())
+        .collect()
+}
+
+/// #583: on a board with 2 reserved slots, add, rename, reorder, remove and restore all work,
+/// a third add says "no space" plainly, and the overlay's layers follow every change; Discard
+/// puts the layers back as saved.
+#[test]
+fn layers_are_added_renamed_moved_removed_and_restored() {
+    use crate::foxglove::keymap_layers::NO_SPACE;
+    use crate::foxglove::studio_session::LayerOp;
+    let board = FakeBoard::plank3();
+    board.unlock();
+    let mut bench = Bench::open(board);
+    bench.ready();
+    bench.editor.open_layers(&bench.keyboard);
+    let room = bench.keyboard.layer_room().expect("read on open");
+    assert_eq!(room.free, 2);
+    assert_eq!(room.layouts, ["Standard", "Split space"]);
+    bench.frame();
+    bench.png("ui-keymap-f6-layers.png");
+
+    let op = |bench: &mut Bench, op: LayerOp| {
+        bench.editor.layer_op(&bench.keyboard, op);
+        bench.idle();
+    };
+    op(&mut bench, LayerOp::Add);
+    op(&mut bench, LayerOp::Add);
+    assert_eq!(bench.board.layer_names().len(), 5);
+    assert_eq!(overlay_layers(&bench).len(), 5, "the overlay follows");
+    assert_eq!(bench.keyboard.layer_room().unwrap().free, 0);
+    assert!(bench.editor.zmk_dirty);
+    // The third: refused before sending, in plain words.
+    op(&mut bench, LayerOp::Add);
+    assert_eq!(bench.board.layer_names().len(), 5);
+    assert_eq!(
+        bench.editor.error.as_deref(),
+        Some("Not changed: there's no space for another layer")
+    );
+    assert_eq!(
+        crate::foxglove::keymap_layers::headroom(&bench.keyboard.layer_room().unwrap()),
+        NO_SPACE
+    );
+    bench.frame();
+    bench.png("ui-keymap-f6-layers-full.png");
+
+    let id = bench.keyboard.layer_infos()[3].id;
+    op(
+        &mut bench,
+        LayerOp::Rename {
+            id,
+            name: "Mouse".into(),
+        },
+    );
+    assert_eq!(bench.board.layer_names()[3], "Mouse");
+    assert_eq!(overlay_layers(&bench)[3], "Mouse");
+    op(&mut bench, LayerOp::Move { from: 3, to: 1 });
+    assert_eq!(bench.board.layer_names()[1], "Mouse");
+    assert_eq!(overlay_layers(&bench)[1], "Mouse");
+    op(&mut bench, LayerOp::Remove { index: 1 });
+    assert!(!bench.board.layer_names().contains(&"Mouse".to_string()));
+    let room = bench.keyboard.layer_room().unwrap();
+    assert_eq!(room.removed, [(id, "Mouse".to_string())]);
+    op(&mut bench, LayerOp::Restore { id, at: 1 });
+    assert_eq!(bench.board.layer_names()[1], "Mouse");
+    assert!(bench.keyboard.layer_room().unwrap().removed.is_empty());
+    assert!(
+        bench.editor.studio.history.next_undo().is_none(),
+        "positions moved"
+    );
+
+    bench.editor.discard(&bench.keyboard, false);
+    bench.idle();
+    assert_eq!(bench.board.layer_names(), ["Base", "Nav", "Num"]);
+    assert_eq!(overlay_layers(&bench), ["Base", "Nav", "Num"]);
+    assert_eq!(bench.keyboard.layer_room().unwrap().free, 2);
+}
+
+/// #583: switching the physical layout writes it, then the keyboard connects again so the
+/// overlay takes the board's new shape; the editor closes with it.
+#[test]
+fn switching_the_physical_layout_reconnects() {
+    use crate::foxglove::studio_session::LayerOp;
+    let board = FakeBoard::plank3();
+    board.unlock();
+    let mut bench = Bench::open(board);
+    bench.ready();
+    assert!(bench.keyboard.is_alive());
+    bench.editor.open_layers(&bench.keyboard);
+    bench
+        .editor
+        .layer_op(&bench.keyboard, LayerOp::Layout { index: 1 });
+    bench.settle("closed", |e| e.target.is_none());
+    assert_eq!(bench.board.active_layout(), 1);
+    assert!(!bench.keyboard.is_alive(), "the app connects again");
+}
+
+/// #583: the board refuses a layer change: nothing changes, the editor says so and reads the
+/// keymap back.
+#[test]
+fn a_layer_change_the_board_refuses_changes_nothing() {
+    use crate::foxglove::studio_session::LayerOp;
+    let board = FakeBoard::corne();
+    let mut bench = Bench::open(board);
+    bench.ready();
+    // A layer id the board doesn't have slips past the checks only if the overlay is stale;
+    // send it straight to the board to see its refusal handled.
+    bench.editor.start_studio(
+        &bench.keyboard,
+        crate::foxglove::studio_session::StudioRequest::Layers(LayerOp::Rename {
+            id: 42,
+            name: "X".into(),
+        }),
+        false,
+    );
+    bench.idle();
+    assert_eq!(
+        bench.board.layer_names(),
+        ["Base", "Lower", "Raise", "Adjust"]
+    );
+    let error = bench.editor.error.clone().unwrap_or_default();
+    assert!(error.contains("didn't make that change"), "{error}");
+    assert!(!bench.editor.zmk_dirty);
 }
