@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MIT
+description: |
+  An encoder's click (#719): `&knob_press C_MUTE`. By default it is its fallback key (the
+  parameter, through `bindings`), pressed and released with the switch, as `&kp` is. While the PC
+  holds the knob (D7 14 KNOB, HELLO bit 31) a click, a double click and a hold (hold-ms or more)
+  go to the PC as events (D7 94 01 kind) instead; a double click with master as the target also
+  taps the fallback key on the board, so master's mute is Windows' own. widgets/knob.c.
+
+compatible: "foxglove,behavior-knob-press"
+
+include: one_param.yaml
+
+properties:
+  bindings:
+    type: phandles
+    required: true
+    description: The behaviour the fallback key goes through, with the parameter (`<&kp>`).
+  hold-ms:
+    type: int
+    default: 500
+    description: While held by the PC, a press this long is a hold (sent as the time is reached).
+  double-tap-ms:
+    type: int
+    default: 300
+    description: While held by the PC, a second click within this time of the first is a double
+      click; a click is sent once this time has passed without a second.
+  tap-ms:
+    type: int
+    default: 5
+    description: How long the fallback key stays pressed when the board taps it (a double click
+      on master).

@@ -1,0 +1,7 @@
+# The knob (module/knob_sim.c): HELLO bit 31; not held, turns and the click are the volume keys
+# and mute; held on master the turns stay the keys, a click and a hold are events and a double
+# click taps mute on the board too; held on an app the turns are events (a burst is one) and no
+# key goes; an endpoint change drops the hold (event 5) and the keys are back; a bad request is 5.
+/^knob: /p
+/^hostlink: rx D7 94/p
+s/.*hid_listener_keycode/kp/p

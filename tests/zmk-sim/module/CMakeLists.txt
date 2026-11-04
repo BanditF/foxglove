@@ -165,6 +165,11 @@ if(CONFIG_FOXGLOVE_SIM_HOSTLINK)
     # &art_next / &art_prev (#60): the real behaviour; the board-side step prints instead.
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/art_keys.c art_keys_sim.c)
   endif()
+  if(CONFIG_FOXGLOVE_SIM_KNOB)
+    # &knob / &knob_press (#719): the real behaviours, asking the real host_link.c.
+    zephyr_library_compile_definitions(FOXGLOVE_HAS_HOST_LINK)
+    zephyr_library_sources(${FOXGLOVE_WIDGETS}/knob.c knob_sim.c)
+  endif()
   if(CONFIG_FOXGLOVE_TEST_HOOKS)
     zephyr_library_sources(${FOXGLOVE_WIDGETS}/test_hooks.c)
   endif()

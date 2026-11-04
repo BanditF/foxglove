@@ -1,0 +1,63 @@
+knob: pc sends D5 01 01
+knob: HELLO caps bit 31 KNOB 1
+knob: -- not held: the turns and the click are the keys
+knob: turn 1
+kp_pressed: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+knob: turn -2
+kp_pressed: usage_page 0x0C keycode 0xEA implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xEA implicit_mods 0x00 explicit_mods 0x00
+kp_pressed: usage_page 0x0C keycode 0xEA implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xEA implicit_mods 0x00 explicit_mods 0x00
+knob: click
+kp_pressed: usage_page 0x0C keycode 0xE2 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xE2 implicit_mods 0x00 explicit_mods 0x00
+knob: pc sends D7 14 FF
+hostlink: rx D7 94 00 00 00 00 03
+knob: -- held, master: the turns stay the keys; click and hold are events; a double mutes here
+knob: pc sends D7 14 01 00
+hostlink: rx D7 94 00 00 01 00 03
+knob: turn 1
+kp_pressed: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+knob: click
+hostlink: rx D7 94 01 02
+knob: double click
+hostlink: rx D7 94 01 03 00 00 01
+kp_pressed: usage_page 0x0C keycode 0xE2 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xE2 implicit_mods 0x00 explicit_mods 0x00
+knob: hold 700 ms
+hostlink: rx D7 94 01 04 00 00 02
+knob: -- held, an app: the turns are events (a burst is one), and so is everything else
+knob: pc sends D7 14 01 01
+hostlink: rx D7 94 00 00 01 01 03
+knob: turn 3
+hostlink: rx D7 94 01 01 03 01 03
+knob: turn -1
+hostlink: rx D7 94 01 01 FF 01 04
+knob: click
+hostlink: rx D7 94 01 02 00 01 05
+knob: double click
+hostlink: rx D7 94 01 03 00 01 06
+knob: hold 700 ms
+hostlink: rx D7 94 01 04 00 01 07
+knob: -- the endpoint changes: the board drops the hold and says so; the keys again
+knob: the endpoint changes
+hostlink: rx D7 94 01 05 00 01 08
+knob: turn 1
+kp_pressed: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xE9 implicit_mods 0x00 explicit_mods 0x00
+knob: click
+kp_pressed: usage_page 0x0C keycode 0xE2 implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xE2 implicit_mods 0x00 explicit_mods 0x00
+knob: -- a bad request changes nothing; handing back is the keys again
+knob: pc sends D7 14 02 00
+hostlink: rx D7 94 00 05 00 00 03
+knob: pc sends D7 14 01 01
+hostlink: rx D7 94 00 00 01 01 03
+knob: pc sends D7 14 00
+hostlink: rx D7 94 00 00 00 00 03
+knob: turn -1
+kp_pressed: usage_page 0x0C keycode 0xEA implicit_mods 0x00 explicit_mods 0x00
+kp_released: usage_page 0x0C keycode 0xEA implicit_mods 0x00 explicit_mods 0x00
+knob: -- done

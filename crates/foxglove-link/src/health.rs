@@ -15,10 +15,12 @@ use std::time::Duration;
 use crate::protocol::{self, REPORT};
 use crate::Transport;
 
-/// The block's version this reader knows (firmware HEALTH_VERSION).
-pub const VERSION: u8 = 1;
-/// The block's size in version 1.
+/// The newest block version this reader knows (firmware HEALTH_VERSION).
+pub const VERSION: u8 = 2;
+/// The block's size in version 1 (every block has at least these bytes).
 pub const SIZE: usize = 96;
+/// The block's size in version 2 (#719: the knob, bytes 96-103).
+pub const SIZE_V2: usize = 104;
 /// Block bytes per D7 93 reply (bytes 8-31).
 pub const CHUNK: usize = 24;
 /// Replies per block.
@@ -135,7 +137,30 @@ pub mod flags {
     pub const DISPLAY: u8 = 1 << 7;
 }
 
-/// One half's self-report block (docs/health.md, version 1).
+/// The knob's part of the block (version 2, bytes 96-103, the left; #719).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Knob {
+    /// [`knob_flags`].
+    pub flags: u8,
+    /// The last event's kind (0 none, 1 turn, 2 click, 3 double click, 4 hold, 5 handed back).
+    pub last: u8,
+    /// Events sent to the PC.
+    pub events: u16,
+    /// Fallback keys the knob tapped.
+    pub keys: u16,
+    /// Holds the board dropped (a USB disconnect or an endpoint change).
+    pub drops: u16,
+}
+
+/// The knob byte (96): which knob behaviours the keymap has, and the hold.
+pub mod knob_flags {
+    pub const TURN: u8 = 1 << 0;
+    pub const PRESS: u8 = 1 << 1;
+    pub const HELD: u8 = 1 << 2;
+    pub const ON_APP: u8 = 1 << 3;
+}
+
+/// One half's self-report block (docs/health.md, versions 1 and 2).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Block {
     pub version: u8,
@@ -185,6 +210,8 @@ pub struct Block {
     pub polarity_right: u8,
     pub leds: u8,
     pub leds_right: u8,
+    /// Version 2 (#719); `None` in a version 1 block.
+    pub knob: Option<Knob>,
 }
 
 fn u16_at(b: &[u8], at: usize) -> u16 {
@@ -260,15 +287,24 @@ impl Block {
             polarity_right: b[93],
             leds: b[94],
             leds_right: b[95],
+            knob: (b[0] >= 2 && usize::from(b[2]) >= SIZE_V2 && b.len() >= SIZE_V2).then(|| Knob {
+                flags: b[96],
+                last: b[97],
+                events: u16_at(b, 98),
+                keys: u16_at(b, 100),
+                drops: u16_at(b, 102),
+            }),
         })
     }
 
-    /// The block as the firmware sends it (version 1): for tests, fixtures and recordings.
+    /// The block as the firmware sends it (version 2 with a knob, else version 1's 96 bytes):
+    /// for tests, fixtures and recordings.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut b = vec![0u8; SIZE];
+        let size = if self.knob.is_some() { SIZE_V2 } else { SIZE };
+        let mut b = vec![0u8; size];
         b[0] = self.version;
         b[1] = self.half;
-        b[2] = SIZE as u8;
+        b[2] = size as u8;
         b[3] = self.flags;
         b[4..8].copy_from_slice(&[
             self.firmware.major,
@@ -319,13 +355,21 @@ impl Block {
         b[93] = self.polarity_right;
         b[94] = self.leds;
         b[95] = self.leds_right;
+        if let Some(k) = self.knob {
+            b[96] = k.flags;
+            b[97] = k.last;
+            put16(&mut b, 98, k.events);
+            put16(&mut b, 100, k.keys);
+            put16(&mut b, 102, k.drops);
+        }
         b
     }
 
     /// The D7 93 replies that carry this block (copy number `copy`), as the keyboard sends them.
     pub fn replies(&self, copy: u8) -> Vec<[u8; REPORT]> {
         let bytes = self.to_bytes();
-        (0..CHUNKS)
+        let chunks = bytes.len().div_ceil(CHUNK) as u8;
+        (0..chunks)
             .map(|c| {
                 let mut r = [0u8; REPORT];
                 r[0] = protocol::SETTINGS;
@@ -333,10 +377,11 @@ impl Block {
                 r[3] = self.half;
                 r[4] = copy;
                 r[5] = c;
-                r[6] = CHUNKS;
-                r[7] = SIZE as u8;
+                r[6] = chunks;
+                r[7] = bytes.len() as u8;
                 let at = usize::from(c) * CHUNK;
-                r[8..8 + CHUNK].copy_from_slice(&bytes[at..at + CHUNK]);
+                let n = CHUNK.min(bytes.len() - at);
+                r[8..8 + n].copy_from_slice(&bytes[at..at + n]);
                 r
             })
             .collect()
@@ -918,6 +963,31 @@ fn half_rows(b: &Block, t: &Thresholds, out: &mut Vec<HealthRow>) {
             plural(u32::from(b.split_drops), "time", "times")
         ),
     );
+
+    // The knob (#719): what the board says about its hold; the app adds its own rows.
+    if let Some(k) = b
+        .knob
+        .filter(|k| k.flags & (knob_flags::TURN | knob_flags::PRESS) != 0)
+    {
+        out.push(HealthRow::new("knob", "Knob", Level::Ok, knob_words(&k)));
+    }
+}
+
+/// "held by Foxglove, on an app; 12 events, 30 keys, 1 hold dropped".
+pub fn knob_words(k: &Knob) -> String {
+    let hold = if k.flags & knob_flags::HELD == 0 {
+        "not held: the volume keys and mute"
+    } else if k.flags & knob_flags::ON_APP != 0 {
+        "held by Foxglove, on an app"
+    } else {
+        "held by Foxglove, on master"
+    };
+    format!(
+        "{hold}; {}, {}, {}",
+        plural(u32::from(k.events), "event", "events"),
+        plural(u32::from(k.keys), "key", "keys"),
+        plural(u32::from(k.drops), "hold dropped", "holds dropped")
+    )
 }
 
 /// The Keyboard health view's rows for one read of both halves, the worst first within each

@@ -84,7 +84,8 @@ enum { SETTING_RGB_SYNC = 0x01, SETTING_INVOKE, SETTING_RGB_STATE, SETTING_CONN_
        SETTING_BUILD_INFO, SETTING_GUARD_TEST = 0x0B, // 0x0A: LAMP_TEST (#115 branch)
        SETTING_FRAME = 0x0C, SETTING_ART_KEYS = 0x0D,
        SETTING_BATTERY_DIM = 0x0E, SETTING_EFFECT = 0x0F, SETTING_LAMP_PARTS = 0x10,
-       SETTING_PC_STATE = 0x11, SETTING_PANEL_POLARITY = 0x12, SETTING_HEALTH = 0x13 };
+       SETTING_PC_STATE = 0x11, SETTING_PANEL_POLARITY = 0x12, SETTING_HEALTH = 0x13,
+       SETTING_KNOB = 0x14 };
 enum {
     INVOKE_OK, INVOKE_UNKNOWN, INVOKE_BUSY, INVOKE_FAILED, INVOKE_UNSUPPORTED,
     INVOKE_BAD_LENGTH, INVOKE_REFUSED
@@ -92,6 +93,13 @@ enum {
 
 #define REPORT_SIZE CONFIG_RAW_HID_REPORT_SIZE
 #define ALIVE_TIMEOUT K_SECONDS(CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S)
+
+// The knob behaviours this keymap has (#719; knob.c, built with CONFIG_FOXGLOVE_KNOB).
+#if IS_ENABLED(CONFIG_FOXGLOVE_KNOB)
+#define KNOB_PARTS                                                                                     ((DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_knob) ? KNOB_HAS_TURN : 0) |                          (DT_HAS_COMPAT_STATUS_OKAY(foxglove_behavior_knob_press) ? KNOB_HAS_PRESS : 0))
+#else
+#define KNOB_PARTS 0
+#endif
 
 /*
  * Reports arrive on the USB thread. Rows go straight into the back buffer and PRESENT copies it
@@ -274,6 +282,9 @@ static void hello_reply(void) {
 #if IS_ENABLED(CONFIG_FOXGLOVE_COLOUR_SWIRL) && IS_ENABLED(CONFIG_NICE_VIEW_RGB_IDLE)
     caps |= HOST_LINK_CAP_COLOUR_EFFECTS;
 #endif
+    if (KNOB_PARTS != 0) {
+        caps |= HOST_LINK_CAP_KNOB; // D7 14 (#719): the keymap has &knob or &knob_press
+    }
     if (CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S == 0) {
         caps |= HOST_LINK_CAP_PANEL_HOLD; // no keep-alive needed (#279)
     }
@@ -583,15 +594,88 @@ int host_link_art_key(int8_t dir) {
     return 0;
 }
 
+/* D7 14 KNOB (#719, HELLO bit 31): the PC holds &knob / &knob_press (knob.c) */
+
+// The state, one value so a target is never seen without its hold: bit 0 held, bit 1 an app.
+#define KNOB_HELD BIT(0)
+#define KNOB_ON_APP BIT(1)
+static atomic_t knob_state;
+static atomic_t knob_seq;
+
+bool host_link_knob_held(void) { return (atomic_get(&knob_state) & KNOB_HELD) != 0; }
+
+enum knob_target host_link_knob_target(void) {
+    return (atomic_get(&knob_state) & KNOB_ON_APP) ? KNOB_APP : KNOB_MASTER;
+}
+
+static void knob_send(enum knob_event kind, int8_t steps, atomic_val_t state) {
+    uint8_t r[7] = {HOST_LINK_SETTINGS, 0x80 | SETTING_KNOB, 1, kind, (uint8_t)steps,
+                    (state & KNOB_ON_APP) ? KNOB_APP : KNOB_MASTER,
+                    (uint8_t)atomic_inc(&knob_seq)};
+    reply(r, sizeof(r));
+    health_inc(HEALTH_KNOB_EVENTS);
+    health_set(HEALTH_KNOB_LAST, kind);
+}
+
+int host_link_knob_event(enum knob_event kind, int8_t steps) {
+    atomic_val_t state = atomic_get(&knob_state);
+    if (!(state & KNOB_HELD)) {
+        return -ENOTCONN;
+    }
+    knob_send(kind, steps, state);
+    return 0;
+}
+
+static void knob_set(atomic_val_t state) {
+    atomic_set(&knob_state, state);
+    health_set(HEALTH_KNOB_STATE, (uint8_t)state);
+}
+
+// The PC may be gone (a USB disconnect, an endpoint change): the knob is its fallback keys again
+// until the PC holds it anew. `tell`: say so (D7 94 01 05), for a PC that is still there.
+static void knob_drop(bool tell) {
+    atomic_val_t was = atomic_set(&knob_state, 0);
+    if (!(was & KNOB_HELD)) {
+        return;
+    }
+    health_set(HEALTH_KNOB_STATE, 0);
+    health_inc(HEALTH_KNOB_DROPS);
+    if (tell) {
+        knob_send(KNOB_HANDED_BACK, 0, was);
+    }
+}
+
+static void knob_command(const uint8_t *d, int len) {
+    uint8_t status = 0;
+    if (KNOB_PARTS == 0) {
+        status = 4; // no &knob / &knob_press in this keymap (or CONFIG_FOXGLOVE_KNOB off)
+    } else if (len >= 3 && d[2] != 0xff) {
+        uint8_t hold = d[2], target = len >= 4 ? d[3] : KNOB_MASTER;
+        if (hold > 1 || target > KNOB_APP) {
+            status = 5;
+        } else {
+            knob_set(hold ? (KNOB_HELD | (target == KNOB_APP ? KNOB_ON_APP : 0)) : 0);
+        }
+    }
+    atomic_val_t state = atomic_get(&knob_state);
+    uint8_t r[7] = {HOST_LINK_SETTINGS, 0x80 | SETTING_KNOB, 0, status,
+                    (state & KNOB_HELD) ? 1 : 0, (state & KNOB_ON_APP) ? KNOB_APP : KNOB_MASTER,
+                    KNOB_PARTS};
+    reply(r, sizeof(r));
+}
+
 static int conn_state_listener(const zmk_event_t *eh) {
-    // The PC side may be gone: the keys step the art on the board again until it subscribes anew.
+    // The PC side may be gone: the keys step the art on the board again until it subscribes
+    // anew, and the knob is its fallback keys until it is held anew (#719).
 #if IS_ENABLED(CONFIG_ZMK_USB)
     if (!zmk_usb_is_hid_ready()) {
         atomic_set(&art_keys, 0);
+        knob_drop(false); // no USB to say it on
     }
 #endif
     if (as_zmk_endpoint_changed(eh) != NULL) {
         atomic_set(&art_keys, 0);
+        knob_drop(true);
     }
     if (atomic_get(&host_seen)) {
         k_work_reschedule(&conn_state_event_work, CONN_STATE_SETTLE);
@@ -954,6 +1038,9 @@ static void settings_command(const uint8_t *d, int len) {
         reply(r, sizeof(r));
         break;
     }
+    case SETTING_KNOB:
+        knob_command(d, len);
+        break;
     case SETTING_ART_KEYS: {
         atomic_set(&art_keys, len >= 3 && d[2] != 0);
         uint8_t r[4] = {HOST_LINK_SETTINGS, 0x80 | SETTING_ART_KEYS, 0, atomic_get(&art_keys)};

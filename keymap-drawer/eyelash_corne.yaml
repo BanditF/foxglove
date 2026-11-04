@@ -35,7 +35,7 @@ layers:
   - C
   - V
   - B
-  - $$mdi:keyboard-space$$
+  - '&knob_press C_MUTE'
   - $$mdi:arrow-down-bold$$
   - N
   - M

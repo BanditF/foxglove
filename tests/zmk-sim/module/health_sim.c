@@ -116,7 +116,7 @@ void health_sim_driver(void) {
         const uint8_t d[] = {0xD5, 0x01, 0x01};
         put(d, sizeof(d), 32);
     }
-    note("one read: four chunks of one copy");
+    note("one read: five chunks of one copy");
     read_left();
 
     note("six requests while the system queue can't run: four replies, two dropped");

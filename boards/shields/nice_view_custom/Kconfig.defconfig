@@ -133,6 +133,16 @@ config FOXGLOVE_HEALTH_RELAY_S
       found later than this, or never, fails the check (code 1 late, 2 no split link, 3 a link
       but no relay).
 
+config FOXGLOVE_KNOB
+    bool "&knob / &knob_press: an encoder's turns and click, which the PC may hold (#719)"
+    default y
+    help
+      Two behaviours for any ZMK encoder: &knob (sensor-bindings; its fallback keys per detent,
+      e.g. C_VOLUME_UP C_VOLUME_DOWN) and &knob_press (its fallback key, e.g. C_MUTE). Without
+      the PC they are those keys. With the host link, D7 14 KNOB (HELLO bit 31) lets the PC hold
+      the knob: a click, a double click and a hold become events, and so do the turns while the
+      PC's target is an app (on master they stay the keys). See widgets/knob.h.
+
 config NICE_VIEW_RGB_IDLE
     bool "Underglow idle auto-off that survives a reboot; right half follows the left"
     default y if ZMK_RGB_UNDERGLOW
