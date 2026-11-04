@@ -8,6 +8,9 @@ license = "MIT"
 [features]
 default = ["hid"]
 hid = ["dep:hidapi"]
+# VIA/Vial writes (keycodes, lighting). Off in 0.2 (#581): without it every write is refused before
+# it reaches the keyboard, whatever a caller asks. Turn on in 0.3 after a test on a real board.
+via-writes = []
 
 [dependencies]
 hidapi = { version = "2.6", optional = true }

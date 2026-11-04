@@ -50,14 +50,52 @@ pub fn qmk_read_snapshot(
     })
 }
 
-/// Writes a key binding to a QMK keyboard.
+/// Foxglove (#581): whether VIA/Vial keymap writes are on. One flag for the app and the VIA
+/// backend: the `via-writes` feature, off in 0.2 ("Foxglove never writes to these keyboards").
+pub const WRITES_ENABLED: bool = foxglove_via::WRITES_ENABLED;
+
+/// Foxglove (#581): what a write answers while writes are off.
+pub const WRITES_OFF: &str = "Foxglove 0.2 only reads VIA/Vial keyboards; it doesn't write to them";
+
+/// Foxglove (#581): the VIA/Vial adapters' write support. `None` while writes are off, so the
+/// keymap editor offers no write controls for these keyboards.
+pub fn qmk_write_support() -> super::WriteSupport {
+    if WRITES_ENABLED {
+        super::WriteSupport::Immediate
+    } else {
+        super::WriteSupport::None
+    }
+}
+
+/// Foxglove (#581): the two keymap calls a key write makes, so a test can stand in for the
+/// keyboard. `set_key` sends VIA's `DYNAMIC_KEYMAP_SET_KEYCODE` (0x05), `get_key` its
+/// `DYNAMIC_KEYMAP_GET_KEYCODE` (0x04).
+pub trait QmkKeyLink {
+    fn set_key(&self, layer: u8, row: u8, col: u8, code: u16) -> qmk_via_api::Result<u16>;
+    fn get_key(&self, layer: u8, row: u8, col: u8) -> qmk_via_api::Result<u16>;
+}
+
+impl QmkKeyLink for KeyboardApi {
+    fn set_key(&self, layer: u8, row: u8, col: u8, code: u16) -> qmk_via_api::Result<u16> {
+        KeyboardApi::set_key(self, layer, row, col, code)
+    }
+    fn get_key(&self, layer: u8, row: u8, col: u8) -> qmk_via_api::Result<u16> {
+        KeyboardApi::get_key(self, layer, row, col)
+    }
+}
+
+/// Writes a key binding to a QMK keyboard. Refused before anything is sent while VIA/Vial
+/// writes are off (#581).
 pub fn qmk_set_key(
-    api: &KeyboardApi,
+    api: &impl QmkKeyLink,
     layer_index: usize,
     row: usize,
     col: usize,
     action: &KeyAction,
 ) -> Result<(), Box<dyn Error>> {
+    if !WRITES_ENABLED {
+        return Err(WRITES_OFF.into());
+    }
     match action {
         KeyAction::Qmk(code) => qmk_set_key_with_retry(api, layer_index, row, col, *code),
         KeyAction::Zmk(_) => Err("Cannot apply a ZMK behavior to a QMK keyboard".into()),
@@ -66,7 +104,7 @@ pub fn qmk_set_key(
 
 /// Writes a keycode via the VIA protocol with readback verification on error.
 pub(crate) fn qmk_set_key_with_retry(
-    api: &KeyboardApi,
+    api: &impl QmkKeyLink,
     layer_index: usize,
     row: usize,
     col: usize,
@@ -113,5 +151,62 @@ mod tests {
             Keycode::QK_RGB_MATRIX_TOGGLE as u16
         )));
         assert!(!filter(&KeyAction::Qmk(Keycode::QK_AUDIO_TOGGLE as u16)));
+    }
+
+    /// A VIA keyboard in memory that records each command's opcode and fails the test if a
+    /// write opcode goes out while VIA/Vial writes are off (#581).
+    #[derive(Default)]
+    struct MockVia {
+        sent: std::sync::Mutex<Vec<u8>>,
+    }
+
+    impl MockVia {
+        fn send(&self, opcode: u8) {
+            assert!(
+                WRITES_ENABLED || !foxglove_via::protocol::is_write(&[opcode]),
+                "write {opcode:#04x} went out with VIA/Vial writes off"
+            );
+            self.sent.lock().unwrap().push(opcode);
+        }
+    }
+
+    impl QmkKeyLink for MockVia {
+        fn set_key(&self, _: u8, _: u8, _: u8, code: u16) -> qmk_via_api::Result<u16> {
+            self.send(foxglove_via::protocol::DYNAMIC_KEYMAP_SET_KEYCODE);
+            Ok(code)
+        }
+        fn get_key(&self, _: u8, _: u8, _: u8) -> qmk_via_api::Result<u16> {
+            self.send(foxglove_via::protocol::DYNAMIC_KEYMAP_GET_KEYCODE);
+            Ok(0)
+        }
+    }
+
+    /// #581: with writes off (0.2), the VIA/Vial adapters offer no writes, and a key write is
+    /// refused before any command reaches the keyboard.
+    #[cfg(not(feature = "via-writes"))]
+    #[test]
+    fn writes_off_no_key_write_reaches_a_via_keyboard() {
+        assert_eq!(qmk_write_support(), super::super::WriteSupport::None);
+        let kb = MockVia::default();
+        for action in [
+            KeyAction::Qmk(Keycode::KC_A as u16),
+            KeyAction::Qmk(Keycode::KC_NO as u16),
+        ] {
+            let err = qmk_set_key(&kb, 0, 1, 2, &action).unwrap_err();
+            assert_eq!(err.to_string(), WRITES_OFF);
+        }
+        assert!(kb.sent.lock().unwrap().is_empty(), "nothing was sent");
+    }
+
+    #[cfg(feature = "via-writes")]
+    #[test]
+    fn writes_on_a_key_write_goes_out() {
+        assert_eq!(qmk_write_support(), super::super::WriteSupport::Immediate);
+        let kb = MockVia::default();
+        qmk_set_key(&kb, 0, 1, 2, &KeyAction::Qmk(Keycode::KC_A as u16)).unwrap();
+        assert_eq!(
+            *kb.sent.lock().unwrap(),
+            [foxglove_via::protocol::DYNAMIC_KEYMAP_SET_KEYCODE]
+        );
     }
 }

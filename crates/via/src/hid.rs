@@ -68,7 +68,8 @@ impl ViaBackend {
     }
 
     /// Opens devices with keycode and lighting writes allowed. Off by default: turn on only
-    /// with the user's OK for that keyboard.
+    /// with the user's OK for that keyboard. Has no effect without the `via-writes` feature
+    /// (off in 0.2, #581).
     pub fn allow_writes(mut self) -> Self {
         self.writes = true;
         self

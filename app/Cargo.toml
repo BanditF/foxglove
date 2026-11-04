@@ -8,6 +8,12 @@ readme = "README.md"
 version = "0.2.0"
 edition = "2021"
 
+[features]
+# Foxglove (#581): VIA/Vial writes (keymap, lighting). Off in 0.2; one flag for the VIA backend
+# and the KeyPeek VIA/Vial adapters (`foxglove_via::WRITES_ENABLED`). For 0.3, after a test on a
+# real VIA/Vial board.
+via-writes = ["foxglove-via/via-writes"]
+
 [dependencies]
 foxglove-update = { path = "../crates/foxglove-update" }
 ureq = { version = "3.3", default-features = false, features = ["rustls"] }

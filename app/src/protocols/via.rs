@@ -1,4 +1,6 @@
-use super::qmk_common::{qmk_action_filter, qmk_read_snapshot, qmk_set_key, QmkFeatures};
+use super::qmk_common::{
+    qmk_action_filter, qmk_read_snapshot, qmk_set_key, qmk_write_support, QmkFeatures,
+};
 use super::{
     qmk_json_parser, KeyboardDefinition, KeyboardProtocol, RawHidSubscription, SubscriptionSender,
     WriteSupport,
@@ -64,7 +66,8 @@ impl KeyboardProtocol for ViaProtocol {
     }
 
     fn write_support(&self) -> WriteSupport {
-        WriteSupport::Immediate
+        // Foxglove (#581): `None` while VIA/Vial writes are off (0.2).
+        qmk_write_support()
     }
 
     fn set_key(
