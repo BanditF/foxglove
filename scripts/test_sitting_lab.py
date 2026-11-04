@@ -483,5 +483,30 @@ class Batch0204(unittest.TestCase):
         self.assertIn("return check(name, ok, f'{detail}; {hit_detail(win, hwnd, at)}')", text)
 
 
+class RestoreGuard(unittest.TestCase):
+    """restore_guard.py (#737 follow-up): a lab run killed before App's exit still loses its
+    test app. Stand-ins only: two sleeping Pythons as the lab and the test app, and no user paths,
+    so nothing is started."""
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows process handles')
+    def test_a_killed_lab_run_loses_its_test_app(self):
+        sleep = [sys.executable, '-c', 'import time; time.sleep(60)']
+        lab, app = subprocess.Popen(sleep), subprocess.Popen(sleep)
+        try:
+            guard = subprocess.Popen([sys.executable, '-I', str(LAB / 'restore_guard.py'), str(lab.pid), str(app.pid)])
+            lab.kill()  # the run dies without App's __exit__
+            guard.wait(30)
+            self.assertIsNotNone(app.wait(5), 'the guard stopped the test app')
+        finally:
+            for p in (lab, app):
+                if p.poll() is None:
+                    p.kill()
+
+    def test_app_starts_the_guard_after_the_test_app(self):
+        text = (LAB / 'labkit.py').read_text(encoding='utf-8')
+        start = text.index('self.proc = subprocess.Popen([str(self.exe)]')
+        self.assertLess(start, text.index("with_name('restore_guard.py')"))
+
+
 if __name__ == '__main__':
     unittest.main()

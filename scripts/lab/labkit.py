@@ -497,7 +497,17 @@ class App:
                            "$p | Wait-Process -Timeout 20 -ErrorAction SilentlyContinue").split()
         for p in self.plugins:
             kill(p)
-        self.proc = subprocess.Popen([str(self.exe)], env=self.env)
+        try:
+            self.proc = subprocess.Popen([str(self.exe)], env=self.env)
+        except OSError:
+            self.restore()  # no test app: the user's comes straight back
+            raise
+        # A run killed before __exit__ (a timeout, an abort) leaves this to the guard: it stops
+        # the test app and starts the user's again once this process is gone (restore_guard.py).
+        guard = Path(__file__).with_name('restore_guard.py')
+        subprocess.Popen([sys.executable, '-I', str(guard), str(os.getpid()), str(self.proc.pid), *self.previous],
+                         creationflags=0x00000008 | 0x00000200,  # detached, its own group
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return self
 
     def exited(self):
