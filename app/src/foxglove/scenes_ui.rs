@@ -80,6 +80,29 @@ pub struct View {
     /// What Windows lets the scene do with Dynamic Lighting devices (#503), when it limits it:
     /// the text, and whether a device stopped (shown as a warning).
     pub lamp_note: Option<(String, bool)>,
+    /// The running scene stepped aside for someone else's lights (#491): who, in words
+    /// ("Windows Dynamic Lighting", "another app").
+    pub yielded_to: Option<&'static str>,
+}
+
+/// How the status line reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Ok,
+    Warn,
+    Plain,
+    Muted,
+}
+
+/// The scene's status line: stopping, paused for someone else's lights (#491), running, or
+/// not running.
+pub fn status(v: &View) -> (String, Tone) {
+    match (&v.running, v.stopping, v.yielded_to) {
+        (_, true, _) => ("Stopping: putting the lights back…".into(), Tone::Plain),
+        (Some(_), false, Some(who)) => (format!("Paused for {who}"), Tone::Warn),
+        (Some(name), false, None) => (format!("Running: {name}"), Tone::Ok),
+        (None, false, _) => ("Not running. The map shows a preview.".into(), Tone::Muted),
+    }
 }
 
 /// The Triggers card's three boxes (#489).
@@ -248,6 +271,7 @@ fn show(ui: &mut egui::Ui) {
         leds_shipped: super::led_map::state(super::boards::current().as_ref())
             == super::led_map::MapState::Shipped,
         lamp_note: lamp_note(st),
+        yielded_to: super::lights_owner::yielded_to(),
     };
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     let intents = draw(ui, &view, &mut draft);
@@ -776,10 +800,12 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
             }
         },
         |ui| {
-            let (text, color) = match (&v.running, v.stopping) {
-                (_, true) => ("Stopping: putting the lights back…".to_string(), p.text),
-                (Some(name), false) => (format!("Running: {name}"), p.ok),
-                (None, false) => ("Not running. The map shows a preview.".to_string(), p.muted),
+            let (text, tone) = status(v);
+            let color = match tone {
+                Tone::Ok => p.ok,
+                Tone::Warn => p.warn,
+                Tone::Plain => p.text,
+                Tone::Muted => p.muted,
             };
             ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
         },
@@ -793,8 +819,11 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
         ui.add_space(4.0);
         ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
     }
-    // Who drives the keyboard's lights now (#491): the scene steps aside for Windows.
-    super::lights_owner::show_line(ui, 4.0);
+    // Who drives the keyboard's lights (#491), while no scene runs: a running one's status says
+    // it (running, or paused for Windows).
+    if v.running.is_none() {
+        super::lights_owner::show_line(ui, 4.0);
+    }
     if v.keyboard_frames && !v.leds_placed {
         let (label, hint, text, color) = if v.leds_shipped {
             (
@@ -1543,6 +1572,7 @@ pub(crate) mod tests {
             leds_placed: true,
             leds_shipped: false,
             lamp_note: None,
+            yielded_to: None,
         }
     }
 
@@ -1602,7 +1632,51 @@ pub(crate) mod tests {
             leds_placed: false,
             leds_shipped: false,
             lamp_note: None,
+            yielded_to: None,
         }
+    }
+
+    /// #491: while the scene steps aside the status says for whom, in the warning tone; after
+    /// the release it runs again.
+    #[test]
+    fn the_status_says_paused_while_the_scene_steps_aside() {
+        use crate::foxglove::lights_owner::{yielded_words, State};
+        let mut owner = State::default();
+        let again = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let say = |s: &mut State, o: u8| {
+            let mut r = [0u8; 32];
+            r[..7].copy_from_slice(&[0xD7, 0x8C, 0, o, 30, 1, 1]);
+            s.observe(&r);
+        };
+        let status_now = |s: &State| {
+            status(&View {
+                yielded_to: yielded_words(&s.now()),
+                ..sample()
+            })
+        };
+        say(&mut owner, 3);
+        assert!(!owner.yield_to(&again));
+        let running = ("Running: Bandit scanline".to_string(), Tone::Ok);
+        assert_eq!(status_now(&owner), running);
+        say(&mut owner, 1);
+        assert!(owner.yield_to(&again));
+        assert_eq!(
+            status_now(&owner),
+            ("Paused for Windows Dynamic Lighting".into(), Tone::Warn)
+        );
+        say(&mut owner, 0);
+        assert_eq!(status_now(&owner), running, "released: running again");
+        say(&mut owner, 9);
+        assert!(owner.yield_to(&again));
+        assert_eq!(
+            status_now(&owner),
+            ("Paused for another app".into(), Tone::Warn)
+        );
+        let none = View {
+            yielded_to: Some("another app"),
+            ..sample_none()
+        };
+        assert_eq!(status(&none).1, Tone::Muted, "no scene, nothing paused");
     }
 
     #[test]

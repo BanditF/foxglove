@@ -112,6 +112,10 @@ impl State {
         }
         if !std::mem::replace(&mut self.yielding, true) {
             self.yields = self.yields.saturating_add(1);
+            // The Scenes page's status says "Paused for ..." from now on.
+            if let Some(w) = &self.wake {
+                w.request_repaint();
+            }
         }
         self.waiting.retain(|w| w.strong_count() > 0);
         if !self
@@ -267,6 +271,23 @@ pub fn line(who: &Who, scene: Option<&str>) -> Line {
         ));
     }
     Line { text, warn: waits }
+}
+
+/// For whom a running scene steps aside now, in words: `None` while it doesn't.
+pub fn yielded_words(now: &Now) -> Option<&'static str> {
+    if !now.yielding {
+        return None;
+    }
+    Some(match now.owner {
+        Some(o) if o.lamp_array() => "Windows Dynamic Lighting",
+        _ => "another app",
+    })
+}
+
+/// [`yielded_words`] for the app's owner now (the Scenes page's status).
+#[cfg_attr(test, allow(dead_code))]
+pub fn yielded_to() -> Option<&'static str> {
+    yielded_words(&lock(&STATE).now())
 }
 
 /// The keyboard's winning lease connection, `None` while paused or with none.

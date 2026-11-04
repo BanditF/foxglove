@@ -1372,7 +1372,9 @@ fn lights_colour_swirl_renders() {
 }
 
 /// #491: the owner line on the Lights page (a scene drives the lights, then Windows Dynamic
-/// Lighting has them and the scene steps aside, in the warning colour) and on the Scenes page.
+/// Lighting has them and the scene steps aside, in the warning colour), and the Scenes page's
+/// status while the scene steps aside ("Paused for Windows Dynamic Lighting", amber, in place
+/// of the green "Running"; the page's owner line shows only with no scene running).
 #[test]
 fn lights_owner_line_renders() {
     use crate::foxglove::lights_owner::{line, Who, PREVIEW};
@@ -1387,21 +1389,29 @@ fn lights_owner_line_renders() {
             .count()
     };
     let scene = Some("Bandit scanline");
-    let page_with = |page, height, owner: Option<Who>| {
+    let page_with = |page, height, owner: Option<Who>, yielded: Option<&'static str>| {
         PREVIEW.set(owner.map(|w| line(&w, scene)));
-        let img = shell_preview_with(page, &Samples::full(), height);
+        let mut samples = Samples::full();
+        samples.scenes.0.yielded_to = yielded;
+        let img = shell_preview_with(page, &samples, height);
         PREVIEW.set(None);
         img
     };
-    let plain = page_with(Page::Lights, 980.0, None);
+    let plain = page_with(Page::Lights, 980.0, None, None);
     let lights = page_with(
         Page::Lights,
         980.0,
         Some(Who::Scene("Bandit scanline".into())),
+        None,
     );
-    let windows = page_with(Page::Lights, 980.0, Some(Who::Windows));
-    let scenes_plain = page_with(Page::Scenes, 1400.0, None);
-    let scenes = page_with(Page::Scenes, 1400.0, Some(Who::Windows));
+    let windows = page_with(Page::Lights, 980.0, Some(Who::Windows), None);
+    let scenes_running = page_with(Page::Scenes, 1400.0, Some(Who::Windows), None);
+    let scenes = page_with(
+        Page::Scenes,
+        1400.0,
+        Some(Who::Windows),
+        Some("Windows Dynamic Lighting"),
+    );
     keep("ui-491-owner-lights-scene.png", &lights);
     keep("ui-491-owner-lights-windows.png", &windows);
     keep("ui-491-owner-scenes-windows.png", &scenes);
@@ -1411,7 +1421,15 @@ fn lights_owner_line_renders() {
         near(&windows, DARK.warn) > near(&lights, DARK.warn),
         "the scene waiting for Windows is a warning"
     );
-    assert_ne!(scenes_plain, scenes, "the Scenes page shows the line");
+    assert_ne!(scenes_running, scenes, "the status says paused");
+    assert!(
+        near(&scenes, DARK.warn) > near(&scenes_running, DARK.warn),
+        "paused is amber"
+    );
+    assert!(
+        near(&scenes, DARK.ok) < near(&scenes_running, DARK.ok),
+        "not the green Running"
+    );
 }
 
 /// The Scenes page (#487): the user's room with a scene running (wide and at the window's
