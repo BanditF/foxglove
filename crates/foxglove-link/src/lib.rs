@@ -6,6 +6,7 @@
 //!
 //! - [`protocol`]: report builders and reply parsers, no I/O
 //! - [`health`]: the keyboard's self-report (D7 13): parse, thresholds, rows (#705)
+//! - [`hello_v2`]: capability words past HELLO's full one (D5 08 CAPS, HELLO version 2)
 //! - [`lamps`]: a keyboard's LEDs by part, in SET_FRAME's order
 //! - [`Transport`]: what the senders need from a connection; [`hid`] has the hidapi one
 //! - [`link`]: one shared owner of the connection, for apps where several parts talk to the board
@@ -18,6 +19,7 @@ pub mod art;
 #[cfg(feature = "devices")]
 pub mod devices;
 pub mod health;
+pub mod hello_v2;
 #[cfg(feature = "hid")]
 pub mod hid;
 pub mod lamps;

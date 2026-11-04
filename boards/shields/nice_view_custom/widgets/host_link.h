@@ -65,6 +65,15 @@
  *      one frame may mix them freely; the next PRESENT shows the result, last write wins per byte.
  *      The Corne: 0 left display 160x68 rot 1; 1 panel 64x52 at (2,106) on 0 (D5 02-05 address it);
  *      2 right display; 3 right art area 68x140 at (0,20) on 2.
+ *   08 CAPS                         reply D5 88: n words (u8), then n u32 LE capability words
+ *                                   from word 2 on (bytes 3-6 word 2, 7-10 word 3, ... at most 7)
+ *      HELLO v2 (foxglove_link::hello_v2 has the PC side): the HELLO reply is one full
+ *      32-byte report, and its capability word (word 1, bytes 21-24) has no bit left (29 colour
+ *      effects, 30 art STORE, 31 KNOB). HELLO's version byte (reply byte 2) is 2 from this
+ *      firmware on: 2 or more says D5 08 answers, so the PC asks it only then and firmware with
+ *      version 1 is never asked (no timeout). The HELLO reply keeps its layout; only byte 2 changed (1 to 2).
+ *      Bit n of word 2 is capability 32 + n; none is defined yet (HOST_LINK_CAPS2_*). A PC that
+ *      reads fewer words than n ignores the rest; words past n read as 0.
  * The panel takes the area at the first PRESENT and keeps the last presented frame until RELEASE.
  * With CONFIG_NICE_VIEW_HOST_PANEL_TIMEOUT_S > 0, the WPM chart also comes back after that many
  * seconds without a 0xD5 report.
@@ -384,7 +393,11 @@
 #define HOST_LINK_PANEL 0xD5
 #define HOST_LINK_ART 0xD6
 #define HOST_LINK_SETTINGS 0xD7
-#define HOST_LINK_VERSION 1
+// HELLO's version byte. 2 (HELLO v2): D5 08 CAPS answers with the capability words past HELLO's.
+#define HOST_LINK_VERSION 2
+#define HOST_LINK_PANEL_CAPS 0x08
+// Capability words D5 88 carries (word 2 on). Word 2's bits: HOST_LINK_CAPS2_*, none yet.
+#define HOST_LINK_CAPS_V2_WORDS 1
 
 #define HOST_LINK_CAP_PANEL (1U << 0)
 #define HOST_LINK_CAP_ART_RELAY (1U << 1)

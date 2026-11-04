@@ -607,11 +607,14 @@ fn main() -> Result<std::process::ExitCode> {
                     Ok((link, c)) => {
                         let caps = c.hello.map_or(0, |h| h.capabilities);
                         let rec = lab_health::Recorder::new(&link);
-                        let out = lab_health::read(&rec, caps);
+                        let mut out = lab_health::read(&rec, caps);
                         if let Some(path) = record {
                             std::fs::write(path, rec.text(caps))?;
                             eprintln!("recorded to {}", path.display());
                         }
+                        // HELLO v2 (after the recording, which holds D7 93 replies only).
+                        let v2 = c.hello.map(|h| foxglove_link::hello_v2::read(&link, &h));
+                        out.rows.push(foxglove_link::hello_v2::row(v2.as_ref()));
                         out
                     }
                 }

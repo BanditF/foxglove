@@ -175,6 +175,10 @@ static void driver(void) {
     note("hello: version, caps, panel timeout, build");
     SEND(0xD5, 0x01, 0x01);
 
+    // HELLO v2: version byte 2 above says D5 08 answers; one word (word 2), no bits defined yet.
+    note("hello v2: the capability words past HELLO's (D5 08)");
+    SEND(0xD5, 0x08);
+
     note("screens: the descriptors, then one past the end");
     for (uint8_t i = 0; i <= 2; i++) {
         SEND(0xD5, 0x06, i);
