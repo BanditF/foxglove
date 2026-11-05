@@ -335,6 +335,8 @@ Each check:
 5. For each release, write `catalog.json` with a higher `sequence` and sign it with `catalog.key`.
 6. Ship both files and their `.minisig` signatures in `app/resources/plugin-trust/`.
 
+**Launch (#785):** the keys, the signing secret and the Pages workflow that publishes `plugins/v2/` are in [plugin-catalog-launch.md](plugin-catalog-launch.md). `plugin-sign` (in `crates/plugin-trust`, `--features sign`) makes minisign-format keys and signs `root.json` and `catalog.json`, so the `minisign` tool isn't needed.
+
 **Publishing (#190):** `scripts/publish-plugins.ps1`, with the catalog edits done by `plugin-catalog` (in `crates/plugin-trust`). The order is: zips first, checked, then the signed catalog.
 1. Run `powershell -File scripts\publish-plugins.ps1 -Crate plugin-focus-timer[,…] [-Channel beta]`. This dry run:
    - packs each plugin;

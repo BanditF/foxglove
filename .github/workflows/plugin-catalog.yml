@@ -1,0 +1,137 @@
+name: Plugin catalog
+# Signs plugins/catalog/catalog.json with the catalog key and publishes plugins/v2/ (root.json,
+# catalog.json and their .minisig files) to GitHub Pages (#785). The app fetches it from
+# https://banditf.github.io/foxglove/plugins/v2/ (app/src/foxglove/catalog_refresh.rs).
+#
+# Inert until the user's steps in docs/plugin-catalog-launch.md are done. The gate job skips
+# everything, with a notice and a green run, unless all of these hold:
+# - the FOXGLOVE_CATALOG_KEY secret exists;
+# - GitHub Pages is on, with Source: GitHub Actions;
+# - app/resources/plugin-trust/root.pub is a real key (not the placeholder) and root.json is
+#   signed next to it.
+# The root key never comes here: root.json is signed offline. Only the catalog key is a secret.
+on:
+  workflow_dispatch:
+  # The re-sign: a catalog expires 30 days after it's signed, so a fresh one goes out on the 1st
+  # and the 15th. The same gate applies, so this too does nothing until the launch steps are done.
+  schedule:
+    - cron: "17 6 1,15 * *"
+  push:
+    branches: [main]
+    paths:
+      - "plugins/catalog/**"
+
+permissions:
+  contents: read
+
+# One publish at a time, and a running one is never cut off halfway.
+concurrency:
+  group: plugin-catalog-pages
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pages: read
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+      base: ${{ steps.check.outputs.base }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: app/resources/plugin-trust
+      - id: check
+        env:
+          # Only whether the secret is set; its value never reaches this job.
+          HAS_KEY: ${{ secrets.FOXGLOVE_CATALOG_KEY != '' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ready=true
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::notice::No FOXGLOVE_CATALOG_KEY secret, so nothing is signed or published (docs/plugin-catalog-launch.md)."
+            ready=false
+          fi
+          pages=$(gh api "repos/$GITHUB_REPOSITORY/pages" 2>/dev/null) || pages=""
+          build_type=$(printf '%s' "$pages" | jq -r '.build_type // empty' 2>/dev/null || true)
+          if [ "$build_type" != "workflow" ]; then
+            echo "::notice::GitHub Pages isn't on with Source: GitHub Actions (${build_type:-not enabled}), so nothing is published."
+            ready=false
+          fi
+          trust=app/resources/plugin-trust
+          if grep -q '^PLACEHOLDER' "$trust/root.pub" || [ ! -s "$trust/root.json" ] || [ ! -s "$trust/root.json.minisig" ]; then
+            echo "::notice::The root key is still the placeholder or root.json isn't signed, so nothing is published."
+            ready=false
+          fi
+          base=$(printf '%s' "$pages" | jq -r '.html_url // empty' 2>/dev/null || true)
+          echo "ready=$ready" >> "$GITHUB_OUTPUT"
+          echo "base=${base%/}/plugins/v2/" >> "$GITHUB_OUTPUT"
+
+  sign:
+    needs: gate
+    if: needs.gate.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      # Built before the key is in any step's environment.
+      - run: cargo build --locked -p foxglove-plugin-trust --features sign --bin plugin-sign
+      # What's published now, so the new sequence is above it. Only "not there yet" (404) means
+      # none; any other failure stops, since a guessed sequence could be refused as a rollback.
+      - name: Fetch the published catalog
+        env:
+          BASE: ${{ needs.gate.outputs.base }}
+        run: |
+          code=$(curl -sS -o published.json -w '%{http_code}' "${BASE}catalog.json")
+          case "$code" in
+            200) echo "Published: sequence $(jq .sequence published.json)" ;;
+            404) rm -f published.json; echo "Nothing published yet" ;;
+            *) echo "::error::${BASE}catalog.json answered $code"; exit 1 ;;
+          esac
+      - name: Sign
+        env:
+          CATALOG_KEY: ${{ secrets.FOXGLOVE_CATALOG_KEY }}
+          FOXGLOVE_SIGN_PASSWORD: ${{ secrets.FOXGLOVE_CATALOG_KEY_PASSWORD }}
+        run: |
+          # The key's lines are masked, written to a private temp file only, and that file is
+          # deleted however the step ends. Nothing here echoes it (no set -x).
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then echo "::add-mask::$line"; fi
+          done <<< "$CATALOG_KEY"
+          if [ -n "$FOXGLOVE_SIGN_PASSWORD" ]; then echo "::add-mask::$FOXGLOVE_SIGN_PASSWORD"; fi
+          umask 077
+          key=$(mktemp "$RUNNER_TEMP/catalog-key.XXXXXX")
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$CATALOG_KEY" > "$key"
+          unset CATALOG_KEY
+          published=()
+          if [ -f published.json ]; then published=(--published published.json); fi
+          target/debug/plugin-sign catalog \
+            --key "$key" \
+            --pin app/resources/plugin-trust/root.pub \
+            --root app/resources/plugin-trust \
+            --source plugins/catalog/catalog.json \
+            "${published[@]}" \
+            --out site/plugins/v2
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: sign
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}plugins/v2/catalog.json
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

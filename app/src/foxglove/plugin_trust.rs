@@ -241,6 +241,56 @@ pub fn health_rows() -> Vec<super::health::HealthRow> {
     health_rows_for(signing_key_missing())
 }
 
+/// Warn this many days before the verified catalog expires (#785): the app refuses an expired
+/// one, so it must be re-signed and published before then.
+pub const EXPIRY_WARN_DAYS: u64 = 7;
+
+/// When the newest verified catalog expires, as it says (RFC 3339), set each time one verifies.
+/// `None` while no catalog verifies, so nothing warns before the catalog is available.
+static EXPIRES: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn note_expiry(catalog: Option<&Catalog>) {
+    *EXPIRES.lock().unwrap_or_else(|e| e.into_inner()) = catalog.map(|c| c.expires.clone());
+}
+
+/// The health text for a catalog expiring in `days` whole days.
+pub fn expiry_text(days: u64) -> String {
+    match days {
+        0 => "plugin catalog expires today; publish a fresh one".into(),
+        1 => "plugin catalog expires in 1 day; publish a fresh one".into(),
+        n => format!("plugin catalog expires in {n} days; publish a fresh one"),
+    }
+}
+
+/// The expiry row for a verified catalog's `expires` at `now` (Unix seconds): a warning in the
+/// last [`EXPIRY_WARN_DAYS`] days, nothing before, and nothing without a verified catalog.
+pub fn expiry_rows_for(expires: Option<&str>, now: u64) -> Vec<super::health::HealthRow> {
+    use super::health::{HealthRow, Level};
+    let Some(at) = expires.and_then(foxglove_plugin_trust::parse_utc) else {
+        return vec![];
+    };
+    let left = at.saturating_sub(now);
+    if left >= EXPIRY_WARN_DAYS * 86_400 {
+        return vec![];
+    }
+    vec![HealthRow::new(
+        "plugins",
+        "Plugin catalog",
+        Level::Warn,
+        expiry_text(left / 86_400),
+    )]
+}
+
+/// The health view's provider for the catalog's expiry: what the last verification saw, against
+/// the clock now. It reads nothing from disk.
+pub fn expiry_rows() -> Vec<super::health::HealthRow> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let expires = EXPIRES.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    expiry_rows_for(expires.as_deref(), now)
+}
+
 /// The one-time line, if it's due: a real key, plugins that were grandfathered, not shown yet.
 pub fn signing_notice(g: &Grandfather, key_missing: bool) -> Option<&'static str> {
     (!key_missing && g.taken && !g.plugins.is_empty() && !g.notice_shown)
@@ -417,7 +467,9 @@ pub fn catalog() -> Result<Catalog, String> {
     let now = foxglove_plugin_trust::now_utc();
     let seen = load_seen();
     let sets: Vec<Signed> = cached().into_iter().chain([built_in()]).collect();
-    let (root, catalog) = newest(&sets, ROOT_KEY, &now, &seen)?;
+    let found = newest(&sets, ROOT_KEY, &now, &seen);
+    note_expiry(found.as_ref().ok().map(|(_, c)| c));
+    let (root, catalog) = found?;
     record(&seen, &root, &catalog)?;
     Ok(catalog)
 }
@@ -439,6 +491,7 @@ pub fn accept_download(set: &Signed) -> Result<u64, String> {
     let dir = cache_dir().ok_or("no settings folder")?;
     write_all(&dir, set).map_err(|e| format!("can't keep the catalog: {e}"))?;
     record(&seen, &root, &catalog)?;
+    note_expiry(Some(&catalog));
     Ok(catalog.sequence)
 }
 
@@ -482,6 +535,41 @@ pub fn entry_in(catalog: &Catalog, archive: &[u8]) -> Result<Option<Entry>, Stri
 #[cfg(test)]
 pub mod tests {
     use super::*;
+
+    #[test]
+    fn expiry_warns_in_the_last_week_only() {
+        use crate::foxglove::health::Level;
+        // A fake clock and a verified catalog's expiry.
+        let now = foxglove_plugin_trust::parse_utc("2026-11-05T12:00:00Z").unwrap();
+        let mut c = catalog_with(vec![], vec![]);
+        let rows = |expires: &str| expiry_rows_for(Some(expires), now);
+
+        c.expires = "2026-12-05T12:00:00Z".into();
+        assert!(rows(&c.expires).is_empty(), "30 days left: no row");
+        assert!(
+            rows("2026-11-12T12:00:00Z").is_empty(),
+            "exactly 7 days: no row"
+        );
+
+        let r = rows("2026-11-12T11:59:59Z");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].level, Level::Warn);
+        assert_eq!(
+            r[0].detail,
+            "plugin catalog expires in 6 days; publish a fresh one"
+        );
+        assert_eq!(
+            rows("2026-11-07T00:00:00Z")[0].detail,
+            "plugin catalog expires in 1 day; publish a fresh one"
+        );
+        assert_eq!(
+            rows("2026-11-05T13:00:00Z")[0].detail,
+            "plugin catalog expires today; publish a fresh one"
+        );
+        // Not available (no verified catalog, or an unreadable date): no row.
+        assert!(expiry_rows_for(None, now).is_empty());
+        assert!(rows("soon").is_empty());
+    }
 
     #[test]
     fn placeholder_build_trusts_nothing() {

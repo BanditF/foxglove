@@ -200,6 +200,7 @@ pub fn start() {
     register("knob", super::knob_health::rows_now); // #719
     register("lights_owner", super::lights_owner::rows_now); // #491
     register("plugin_signing", super::plugin_trust::health_rows); // #381
+    register("plugin_catalog_expiry", super::plugin_trust::expiry_rows); // #785
     let events = super::services::First::new(super::devices::bus().subscribe(false));
     let _ = super::services::spawn_supervised("health", move || {
         let events = events.take_or(|| super::devices::bus().subscribe(false));
