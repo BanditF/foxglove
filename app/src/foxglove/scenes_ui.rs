@@ -397,9 +397,17 @@ fn lamp_note(st: &State) -> Option<(String, bool)> {
         .iter()
         .map(|key| {
             let id = format!("light:{key}");
-            st.room
-                .device(&id)
-                .map_or_else(|| key.clone(), |d| d.name.clone())
+            st.room.device(&id).map_or_else(
+                // The keyboard's own LampArray (#749 b) has no room device of its own: its name.
+                || {
+                    super::pc_lights::snapshot()
+                        .keyboard_lamp_arrays
+                        .iter()
+                        .find(|a| key.starts_with(&format!("{:04x}:{:04x}", a.vid, a.pid)))
+                        .map_or_else(|| key.clone(), |a| a.name.clone())
+                },
+                |d| d.name.clone(),
+            )
         })
         .collect();
     let text = super::scene_lamps::note(

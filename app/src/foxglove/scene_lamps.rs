@@ -13,6 +13,11 @@
 //! the newest frame per device and, at the scene's end or on pause and away, lets go of every
 //! device (Windows' own lighting comes back). Frames are paced by `scene_output` (at most
 //! [`super::scene_output::LAMP_INTERVAL`]).
+//!
+//! The keyboard's own LampArray is one of them while Windows Dynamic Lighting holds the
+//! keyboard's lights (#749 b): the scene output sends it frames under its key like any other,
+//! and each change of who may drive a device is passed on ([`LampWriter::spawn`]'s `notify`), so
+//! a held keyboard tries its host link once on it (`lights_owner::retry`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::mpsc;
@@ -76,6 +81,8 @@ struct Core {
     held: BTreeMap<String, Option<Held>>,
     tx: mpsc::Sender<Job>,
     status: Status,
+    /// Told the key each time Windows changes whether Foxglove may drive its devices.
+    notify: Option<Notify>,
 }
 
 impl Core {
@@ -111,7 +118,13 @@ impl Core {
                                 }
                             );
                         }
+                        let flipped = h.available != now;
                         h.available = now;
+                        if flipped {
+                            if let Some(n) = &self.notify {
+                                n(&key);
+                            }
+                        }
                         touched.insert(key);
                     }
                 }
@@ -219,7 +232,8 @@ pub struct LampWriter {
 }
 
 impl LampWriter {
-    pub fn spawn(opener: Box<dyn Opener>, status: Status) -> Self {
+    /// `notify` gets a device's key each time Windows changes whether Foxglove may drive it.
+    pub fn spawn(opener: Box<dyn Opener>, status: Status, notify: Option<Notify>) -> Self {
         *status.lock().unwrap_or_else(|e| e.into_inner()) = LampStatus::default();
         let (tx, rx) = mpsc::channel();
         let mut core = Core {
@@ -227,6 +241,7 @@ impl LampWriter {
             held: BTreeMap::new(),
             tx: tx.clone(),
             status,
+            notify,
         };
         let thread = super::services::spawn_named("scene-lamps", move || {
             // Blocks until a job; a burst is taken whole, so only each device's newest frame
@@ -628,6 +643,7 @@ mod tests {
             held: BTreeMap::new(),
             tx,
             status: Status::default(),
+            notify: None,
         };
         (core, rx)
     }
@@ -667,6 +683,28 @@ mod tests {
         assert!(core.status().showing.contains(KEY));
         assert!(core.status().waiting.is_empty());
         assert_eq!(fake.opened.load(Ordering::SeqCst), 1, "opened once");
+    }
+
+    /// #749 b: the keyboard's own LampArray while Foxglove isn't in front (`IsAvailable` false):
+    /// nothing is written; the event that makes it available shows the newest frame at once,
+    /// and each change of availability is passed on (a held keyboard retries its host link).
+    #[test]
+    fn the_keyboards_lamparray_waits_for_windows_and_says_each_change() {
+        let fake = Arc::new(Fake::default());
+        let (mut core, rx) = core(&fake);
+        let told = Arc::new(Mutex::new(Vec::<String>::new()));
+        let t = told.clone();
+        core.notify = Some(Arc::new(move |k: &str| t.lock().unwrap().push(k.into())));
+        core.handle(vec![frame(1), frame(2)]);
+        assert!(fake.writes.lock().unwrap().is_empty(), "not Foxglove's yet");
+        assert!(core.status().waiting.contains(KEY));
+        windows_says(&mut core, &rx, &fake, true);
+        assert_eq!(*fake.writes.lock().unwrap(), [vec![[2, 0, 0]; 8]]);
+        // The same answer again changes nothing and isn't passed on.
+        windows_says(&mut core, &rx, &fake, true);
+        windows_says(&mut core, &rx, &fake, false);
+        assert_eq!(*told.lock().unwrap(), [KEY, KEY]);
+        assert_eq!(fake.writes.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -729,6 +767,7 @@ mod tests {
                 fake: fake.clone(),
             }),
             status.clone(),
+            None,
         );
         writer.poster().post(KEY.into(), vec![[9, 9, 9]]);
         drop(writer);
