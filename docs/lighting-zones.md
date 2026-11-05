@@ -132,9 +132,19 @@ They become one feature called **Check zones…**. See `zones-probe.png`.
   - Clicking *between* keys (underglow) still places a point, as Find my LEDs does today.
 - **No drawing (a case, a strip):** the same step with typed names, as Add a device does today:
   "Light zone N", then type what lit, or leave it empty for nothing.
-- **Saving:** **Save** writes the store's `[led_map]` in the profile's `[lighting]` shape (`zones` /
-  `led_keys`, `dead`), so it is readable and hand-editable. Cancel, leaving the page, locking the PC
-  or going idle gives the lights back, as today.
+- **Saving:** **Save** writes the store's `[led_map]` in the profile's `[lighting]` shape, so it is
+  readable and hand-editable. Cancel, leaving the page, locking the PC or going idle gives the
+  lights back, as today. The saved entry (built: `led_map::BoardLeds::zones`) has one `led_keys`
+  entry per lamp in SET_FRAME order, as a profile writes it: a key number, a list of the keys that
+  lit together, or `[]` for "Nothing lit". Read back, those keys are the board's map and each live
+  lamp sits at its keys' centre, so the source is "From your check".
+  ```toml
+  [led_map.boards.eyelash-corne]
+  lamps = 42
+  halves = 2
+  parts = [21, 21]
+  led_keys = [[15, 16, 17, 20], [12, 13, 14, 19], 18, [], ...]  # lamp 0, 1, 2, 3, ...
+  ```
 - **Afterwards:** the summary's source says "From your check". The zone drawing offers **Forget my
   check** (back to the profile or the device's report), which replaces today's "Click each LED…"
   start-over path.

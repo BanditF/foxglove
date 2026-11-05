@@ -1,0 +1,7 @@
+# Per-zone frames (module/zones_sim.c): each look's frame drawn on both halves, every zone's lamp
+# its zone's colour and the 15 dead lamps a half black (left out of the draw lines); the check
+# line counts the looks that match the app. What the right link carries is host-frames' business.
+/^frames: right link/d
+/^frames:/p
+/^hostlink: rx D7 8C/p
+s/.*hid_listener_keycode/kp/p

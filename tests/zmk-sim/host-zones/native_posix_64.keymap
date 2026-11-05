@@ -1,0 +1,9 @@
+#include "../common/keymap.dtsi"
+
+&kscan {
+    events = <
+        // No key presses: module/hostlink_sim.c plays the PC. This only keeps the simulator
+        // running until the driver is done.
+        ZMK_MOCK_RELEASE(4,0,20000) // fires at ~20 s; the mock exits ~20 s later
+    >;
+};

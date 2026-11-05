@@ -124,6 +124,7 @@ void panel_stream_driver(void);
 void art_keys_sim_driver(void);
 void frames_sim_driver(void);
 void lamparray_sim_driver(void);
+void zones_sim_driver(void);
 void effects_sim_driver(void);
 void rgb_state_sim_driver(void);
 void pc_state_sim_driver(void);
@@ -164,6 +165,10 @@ static void driver(void) {
     }
     if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_EFFECTS)) {
         effects_sim_driver(); // the host-effects case plays a different PC
+        return;
+    }
+    if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_ZONES)) {
+        zones_sim_driver(); // the host-zones case plays the app's per-key scene
         return;
     }
     if (IS_ENABLED(CONFIG_FOXGLOVE_SIM_LAMPARRAY)) {

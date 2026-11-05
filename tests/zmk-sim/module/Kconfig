@@ -37,6 +37,10 @@ config FOXGLOVE_SIM_LAMPARRAY
     bool "Simulator: HID LampArray case (lamparray.c's core on host_frames.c with frames_sim.c's fake strip and relay, module/lamparray_sim.c)"
     depends on FOXGLOVE_SIM_FRAMES
 
+config FOXGLOVE_SIM_ZONES
+    bool "Simulator: per-zone SET_FRAME case (host_frames.c with frames_sim.c's fake strip and relay; module/zones_sim.c plays the app's per-key scene on the Corne's zones)"
+    depends on FOXGLOVE_SIM_FRAMES && !FOXGLOVE_SIM_LAMPARRAY
+
 # The shield's symbol (Kconfig.defconfig): the core only, no USB or BLE transport here.
 config FOXGLOVE_LAMPARRAY
     bool

@@ -109,6 +109,13 @@ void art_relay_lamps(bool host, const uint8_t rgb[ART_RELAY_LAMPS_MAX][3]) {
 
 uint8_t art_relay_lamps_right(void) { return ART_LAMPS_OK; }
 
+/* What each half shows now, for the host-zones case (module/zones_sim.c): the left strip's
+ * pixels, then the right's from its last acknowledged frame. */
+void frames_sim_shown(uint8_t out[LAMP_STRIP_LEN + ART_RELAY_LAMPS_MAX][3]) {
+    memcpy(out, left, sizeof(left));
+    memcpy(out[LAMP_STRIP_LEN], acked, sizeof(acked));
+}
+
 /* The PC */
 
 static uint32_t caps;

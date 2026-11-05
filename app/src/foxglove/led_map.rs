@@ -31,7 +31,7 @@ use foxglove_devices::{DeviceError, Lighting, Rgb};
 use foxglove_link::lamps::LampParts;
 use serde::{Deserialize, Serialize};
 
-use super::boards::{Board, Drawing, LED_MAP_CHECKED, LED_MAP_SHIPPED};
+use super::boards::{Board, Drawing, Lamp, LED_MAP_CHECKED, LED_MAP_SHIPPED};
 use super::lighting_leases::{Arbiter, Lease, Priority};
 
 /// The store section with every board's map.
@@ -61,8 +61,15 @@ pub struct BoardLeds {
     #[serde(default)]
     pub parts: Vec<u16>,
     /// Each LED the user saw; one they couldn't see is left out.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub leds: Vec<Seen>,
+    /// What each lamp lit, from "Check zones..." (#611, docs/lighting-zones.md section 4): one
+    /// entry per lamp in SET_FRAME order, in the profile's `[lighting] led_keys` shape (a key
+    /// number, a list of the keys that lit together, or `[]` for "Nothing lit"), so the saved
+    /// check reads and hand-edits like a profile. Empty in maps from "Find my LEDs" and the dot
+    /// test, which save points only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub led_keys: Vec<Lamp>,
 }
 
 /// Where one LED was seen: its lamp (SET_FRAME order) and a point on its half's drawing, in
@@ -75,6 +82,23 @@ pub struct Seen {
 }
 
 impl BoardLeds {
+    /// What "Check zones..." saves (#611): `lit`, what each lamp of `parts` lit in SET_FRAME
+    /// order, on a board of `halves`. `None` unless there is one answer per lamp. Its Save
+    /// hands this to [`save`].
+    #[cfg_attr(not(test), allow(dead_code))] // the Check zones... page (#611) isn't built yet
+    pub fn zones(halves: u8, parts: &LampParts, lit: Vec<Lamp>) -> Option<BoardLeds> {
+        if lit.len() != parts.total() {
+            return None;
+        }
+        Some(BoardLeds {
+            lamps: u16::try_from(parts.total()).ok()?,
+            halves,
+            parts: parts.counts().map(|n| n as u16).collect(),
+            leds: Vec::new(),
+            led_keys: lit,
+        })
+    }
+
     /// One entry per lamp: where it was seen, or `None`.
     pub fn points(&self) -> Vec<Option<[f32; 2]>> {
         let mut out = vec![None; usize::from(self.lamps)];
@@ -107,6 +131,7 @@ pub fn apply(board: &mut Board) {
 }
 
 fn apply_leds(board: &mut Board, leds: &BoardLeds) {
+    let drawing = super::boards::drawing(Some(board));
     let lighting = board
         .lighting
         .get_or_insert_with(|| super::boards::Lighting {
@@ -123,7 +148,33 @@ fn apply_leds(board: &mut Board, leds: &BoardLeds) {
         );
         return;
     }
-    lighting.led_points = leds.points();
+    let mut points = leds.points();
+    if !leds.led_keys.is_empty() {
+        // "Check zones...": the user's keys are the map, and each lamp that lit keys sits at
+        // their centre (as the dot test saves it), so the user's check is the zones' source.
+        let Some(parts) = lighting
+            .lamp_parts(board.halves)
+            .filter(|p| p.total() == leds.led_keys.len())
+        else {
+            eprintln!(
+                "Foxglove: the zone check for {} has {} lamps, not the profile's {}: check again",
+                board.id,
+                leds.led_keys.len(),
+                lighting.lamps
+            );
+            return;
+        };
+        for p in 0..parts.len() {
+            let keys = drawing.keys(p == 1);
+            for i in parts.range(p) {
+                if points[i].is_none() {
+                    points[i] = leds.led_keys[i].center(&keys).map(|c| [c.x, c.y]);
+                }
+            }
+        }
+        lighting.led_keys = leds.led_keys.clone();
+    }
+    lighting.led_points = points;
     lighting.led_map = LED_MAP_CHECKED.into();
 }
 
@@ -317,6 +368,7 @@ impl Wizard {
                     })
                 })
                 .collect(),
+            led_keys: Vec::new(),
         }
     }
 }

@@ -115,6 +115,7 @@ fn the_map_keeps_only_the_leds_seen_and_goes_back_into_the_profile() {
         lamps: 2,
         halves: 2,
         parts: Vec::new(),
+        led_keys: Vec::new(),
         leds: vec![
             Seen {
                 lamp: 7,
@@ -836,4 +837,124 @@ fn a_shipped_map_is_used_and_asked_about_a_checked_one_is_not() {
     let c = super::super::led_map_confirm::Confirm::new(&b).unwrap();
     apply_leds(&mut b, &c.result());
     assert_eq!(state(Some(&b)), MapState::Checked);
+}
+
+/// What "Check zones..." would save on the Corne (#611): both halves' lamps as the user
+/// answered them, groups of keys that lit together, a single key, and "Nothing lit".
+fn zone_answers() -> (LampParts, Vec<Lamp>) {
+    let b = corne();
+    let l = b.lighting.as_ref().unwrap();
+    let parts = l.lamp_parts(b.halves).unwrap();
+    let mut lit: Vec<Lamp> = (0..parts.len())
+        .flat_map(|p| l.part_keys(&parts, p).unwrap().to_vec())
+        .collect();
+    lit[27] = Lamp::from(18); // the right's pixel 6 lit one key, the outer thumb
+    (parts, lit)
+}
+
+/// #611's criterion: what the probe saves round-trips as readable, hand-editable TOML. Saved
+/// through the store, the file reads like a profile's `[lighting] led_keys`; parse, write and
+/// parse again give the same map, and a hand edit reads back as the edit.
+#[test]
+fn a_zone_check_round_trips_as_readable_toml() {
+    crate::foxglove::store::test_config_dir();
+    let (parts, lit) = zone_answers();
+    assert_eq!(
+        BoardLeds::zones(2, &parts, lit[1..].to_vec()),
+        None,
+        "one answer per lamp"
+    );
+    let leds = BoardLeds::zones(2, &parts, lit.clone()).unwrap();
+    assert_eq!(
+        (leds.lamps, leds.halves, leds.parts.clone()),
+        (42, 2, vec![21, 21])
+    );
+    let mut all = Saved::default();
+    all.boards.insert("test-zones-board".into(), leds.clone());
+    crate::foxglove::store::save(SECTION, &all).unwrap();
+    assert_eq!(saved("test-zones-board").as_ref(), Some(&leds));
+
+    // The file as the user would open it.
+    let text = std::fs::read_to_string(crate::foxglove::store::path().unwrap()).unwrap();
+    let table: toml::Table = text.parse().unwrap();
+    let section = &table[SECTION]["boards"]["test-zones-board"];
+    let parsed: BoardLeds = section.clone().try_into().unwrap();
+    assert_eq!(parsed, leds);
+    let written = toml::to_string_pretty(&parsed).unwrap();
+    assert!(written.contains("led_keys = ["), "{written}");
+    assert!(
+        !written.contains("leds ="),
+        "no empty points list: {written}"
+    );
+    // The profile's shape: a group as a list of keys, one key as a number, nothing as [].
+    let shape: toml::Table = written.parse().unwrap();
+    let keys = shape["led_keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 42);
+    let group: Vec<i64> = keys[0]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_integer().unwrap())
+        .collect();
+    assert_eq!(group, [15, 16, 17, 20], "{written}");
+    assert_eq!(keys[27].as_integer(), Some(18), "{written}");
+    assert!(keys[6].as_array().unwrap().is_empty(), "{written}");
+    let again: BoardLeds = toml::from_str(&written).unwrap();
+    assert_eq!(again, leds, "parse, write, parse");
+    assert_eq!(toml::to_string_pretty(&again).unwrap(), written);
+    assert_eq!(
+        again.led_keys[27],
+        Lamp(vec![18]),
+        "a single key as a number reads back"
+    );
+
+    // A hand edit: the left's pixel 6 lights Q too.
+    let edited = written.replacen("[]", "[3]", 1);
+    let hand: BoardLeds = toml::from_str(&edited).unwrap();
+    assert_eq!(hand.led_keys[6], Lamp(vec![3]));
+    assert_eq!(hand.led_keys[..6], leds.led_keys[..6]);
+}
+
+/// A custom board with no map of its own reaches working zones through the check alone: the
+/// saved keys become its map, the zones' source is the user's check, and scenes get one light
+/// per lamp that lit keys, none for the dead.
+#[test]
+fn a_zone_check_alone_gives_a_custom_board_its_zones() {
+    let (parts, lit) = zone_answers();
+    let mut board = corne();
+    board.id = "custom-zones".into();
+    let l = board.lighting.as_mut().unwrap();
+    l.led_keys.clear();
+    l.led_map = "provisional".into();
+    let drawing = crate::foxglove::boards::drawing(Some(&board));
+    assert_eq!(
+        crate::foxglove::light_zones::keyboard(Some(&board), &drawing, None),
+        None,
+        "no zones before the check"
+    );
+
+    apply_leds(
+        &mut board,
+        &BoardLeds::zones(2, &parts, lit.clone()).unwrap(),
+    );
+    let l = board.lighting.as_ref().unwrap();
+    assert_eq!(l.led_keys, lit);
+    assert_eq!(l.led_map, LED_MAP_CHECKED);
+    let z = crate::foxglove::light_zones::keyboard(Some(&board), &drawing, None).unwrap();
+    assert_eq!(z.source, foxglove_devices::pc_lighting::ZoneSource::Check);
+    assert_eq!((z.live(), z.dead.clone()), (vec![6, 7], vec![15, 14]));
+    assert_eq!(z.list[0].keys.len(), 4, "a group stays a group");
+    let halves = crate::foxglove::scene_room::devices(Some(&board), &[], &BTreeMap::new());
+    assert_eq!(halves[0].lights.len(), 6);
+    assert_eq!(halves[1].lights.len(), 7);
+
+    // A check saved for another lamp count is left out.
+    let mut other = corne();
+    let short = BoardLeds {
+        lamps: 42,
+        led_keys: lit[..41].to_vec(),
+        ..BoardLeds::zones(2, &parts, lit).unwrap()
+    };
+    apply_leds(&mut other, &short);
+    assert_eq!(other.lighting.unwrap().led_map, "shipped");
 }
