@@ -172,6 +172,11 @@ pub fn show(ui: &mut egui::Ui) {
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     draft.settle(view.state.as_ref());
     for intent in draw(ui, &view, &mut draft) {
+        if !matches!(intent, Intent::Refresh | Intent::AskFollow) {
+            // The user acted on the lights: while Windows holds them, a running scene tries
+            // the keyboard once (#749).
+            super::lights_owner::retry("the user changed the keyboard's lights");
+        }
         match intent {
             Intent::Lights(on) => ks::set_lights(on, ctx.clone()),
             Intent::Effect(e) => ks::set_effect(e, ctx.clone()),

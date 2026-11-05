@@ -1137,6 +1137,10 @@ pub fn start() {
             let tx = tx.clone();
             super::scene_lamps::worker_opener(std::sync::Arc::new(move |key: &str| {
                 let _ = ticketed(&tx, Msg::LampChanged(key.to_string()));
+                // And a held scene tries the keyboard once (#749): Windows may have let go.
+                super::lights_owner::retry(
+                    "Windows changed a Dynamic Lighting device's availability",
+                );
             }))
         });
         let _ = ticketed(&tx, Msg::Scan);
