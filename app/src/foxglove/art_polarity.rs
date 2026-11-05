@@ -51,8 +51,17 @@ static CACHE: Mutex<Option<Overrides>> = Mutex::new(None);
 
 fn with<T>(f: impl FnOnce(&mut Overrides) -> T) -> T {
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    let o = cache.get_or_insert_with(|| super::store::try_load(SECTION).unwrap_or_default());
-    f(o)
+    // A failed read isn't kept (#741): the next call reads again, and the store refuses to save
+    // the defaults over the real section meanwhile.
+    if cache.is_none() {
+        if let Ok(saved) = super::store::load(SECTION) {
+            *cache = Some(saved.unwrap_or_default());
+        }
+    }
+    match cache.as_mut() {
+        Some(o) => f(o),
+        None => f(&mut Overrides::default()),
+    }
 }
 
 /// The polarity chosen for the piece at `path` (a library file or a folder of frames).

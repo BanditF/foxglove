@@ -672,3 +672,77 @@ fn a_version_4_block_says_why_a_transport_refused() {
     assert_eq!(parsed.hid_transport.unwrap().ble_last_err, 0);
     assert_eq!(errno_words(-99), "-99");
 }
+
+#[test]
+fn usb_reports_while_the_pc_restarts_are_information() {
+    // The 11/05 reboot (#741): 6 USB reports refused with -11 EAGAIN while the PC re-enumerated
+    // the keyboard, 1 Bluetooth notify refused with -12 ENOMEM.
+    let b = Block {
+        version: 4,
+        hid_sent: 50,
+        hid_failed: 7,
+        knob: Some(Knob::default()),
+        hid_transport: Some(HidTransport {
+            usb_failed: 6,
+            usb_last_err: USB_NOT_CONFIGURED,
+            ble_failed: 1,
+            ble_last_err: -12,
+            ..HidTransport::default()
+        }),
+        ..left()
+    };
+    let rows = rows(&report(b.clone(), right()), &Thresholds::default());
+    let hid: Vec<(Level, &str)> = find(&rows, "Reports to the PC")
+        .iter()
+        .map(|r| (r.level, r.detail.as_str()))
+        .collect();
+    assert_eq!(
+        hid,
+        vec![
+            (
+                Level::Warn,
+                "1 report refused: 0 by USB, 1 by Bluetooth; Bluetooth's last: -12 ENOMEM, no buffer free"
+            ),
+            (
+                Level::Ok,
+                "6 USB reports not sent while the PC wasn't ready (-11 EAGAIN, not ready yet: a PC restart, sleep or replug)"
+            ),
+        ]
+    );
+
+    // Only the restart's: no warning at all, and the line says so.
+    let only_usb = Block {
+        hid_failed: 6,
+        hid_transport: Some(HidTransport {
+            usb_failed: 6,
+            usb_last_err: USB_NOT_CONFIGURED,
+            ..HidTransport::default()
+        }),
+        ..b.clone()
+    };
+    let rows = super::rows(&report(only_usb, right()), &Thresholds::default());
+    let hid = find(&rows, "Reports to the PC");
+    assert_eq!(hid.len(), 1, "{rows:#?}");
+    assert_eq!(hid[0].level, Level::Ok);
+    assert!(hid[0]
+        .detail
+        .starts_with("no problems since start; 6 USB reports not sent"));
+
+    // Another USB code stays a warning.
+    let busy = Block {
+        hid_failed: 2,
+        hid_transport: Some(HidTransport {
+            usb_failed: 2,
+            usb_last_err: -16,
+            ..HidTransport::default()
+        }),
+        ..b
+    };
+    let rows = super::rows(&report(busy, right()), &Thresholds::default());
+    let hid = find(&rows, "Reports to the PC");
+    assert_eq!(hid[0].level, Level::Warn);
+    assert_eq!(
+        hid[0].detail,
+        "2 reports refused: 2 by USB, 0 by Bluetooth; USB's last: -16 EBUSY, busy"
+    );
+}
