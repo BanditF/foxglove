@@ -201,6 +201,9 @@ pub fn show(ui: &mut egui::Ui) {
         if let Some(key) = &through {
             let left = view.state.map(|s| s.left);
             if let Some((look, speed)) = card_pick(&intent, left.as_ref()) {
+                // The keyboard's report doesn't change meanwhile: the lighting facts (and the
+                // live feed's lights) follow the pick (#789).
+                super::keyboard_facts::card_drawn(look);
                 // Breathe, Spectrum and Swirl run on the scene engine (#768); the rest is the
                 // Lights worker's steady colour.
                 let in_colour = look

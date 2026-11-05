@@ -274,6 +274,9 @@ pub fn attach(kb: &foxglove_link::devices::FoxgloveLinkDevice) {
                 // And the Keyboard card's effect drawn through it ends (#768).
                 super::scene_card::release();
             }
+            // The lighting facts follow what Foxglove draws through Windows while it holds
+            // the keyboard, and the keyboard's own report again when it lets go (#789).
+            super::keyboard_facts::held(through_windows().is_some());
         }
     });
     *tap = Some((kb.link().clone(), watch));
@@ -290,6 +293,8 @@ pub fn device_connected(device: &str) {
         return;
     }
     lock(&STATE).connected();
+    // Nothing known until the keyboard says: its own report is the lighting facts' source.
+    super::keyboard_facts::held(false);
     attach(&kb);
 }
 
