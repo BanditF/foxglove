@@ -15,6 +15,16 @@
 //!   ([`State::yield_to`]). The event that frees them (any report saying 0 or 3) asks the scene
 //!   for its frame or effect again. Firmware before LampArray (#115) only says 0 or 3, so it
 //!   never yields.
+//! - The scene output stops streaming to the keyboard while it steps aside (#749): its "held"
+//!   flag ([`State::watch_hold`]) is set while someone else has the lights, so no keyboard
+//!   frame or effect is even made. It tries the keyboard again only on an event, never on a
+//!   timer: the report that frees the lights, a keyboard (re)connect, or [`retry`] (the user
+//!   acting, Windows changing a LampArray's availability), which lets exactly one send
+//!   through; its reply holds the output again while Windows still has the lights.
+//! - While a LampArray has them, the Lights page's Keyboard card says so in one amber line
+//!   ([`NOTICE`], [`setting_path`]) with a button to the Windows Dynamic Lighting settings
+//!   ([`DL_SETTINGS`]); it goes on the first report saying they're free. The Scenes page only
+//!   names who has them.
 //! - The pages repaint on the owner's change ([`set_wake`]), not on a timer.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,6 +52,24 @@ pub struct State {
     waiting: Vec<Weak<AtomicBool>>,
     /// Repaints the pages that show the line.
     wake: Option<crate::ui_wake::UiWake>,
+    /// Scene outputs' "held" flags (#749): true while someone else has the lights, so the
+    /// output sends the keyboard nothing at all.
+    holds: Vec<Weak<AtomicBool>>,
+    /// A retry on an event (#749): one send goes through, and its reply decides.
+    probe: Probe,
+    /// Retries since Foxglove started.
+    retries: u32,
+}
+
+/// Where a retry stands.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Probe {
+    #[default]
+    None,
+    /// Asked for: the next send goes through.
+    Armed,
+    /// That send went: the rest wait for its reply.
+    Sent,
 }
 
 /// What [`State`] knows, as plain data (health rows, tests).
@@ -51,6 +79,7 @@ pub struct Now {
     pub yields: u32,
     pub yielding: bool,
     pub changes: u32,
+    pub retries: u32,
 }
 
 impl State {
@@ -69,16 +98,79 @@ impl State {
             yields: self.yields,
             yielding: self.yielding,
             changes: self.changes,
+            retries: self.retries,
         }
     }
 
-    /// A report from the keyboard; true when the owner changed.
+    /// A report from the keyboard; true when the owner changed. Any owner report ends a retry:
+    /// the same busy owner again holds the scene output again.
     pub fn observe(&mut self, r: &[u8]) -> bool {
-        if !self.tracker.observe(r) {
+        let Some(said) = foxglove_link::lights_owner::said(r) else {
+            return false;
+        };
+        if !self.tracker.apply(said) {
+            if self.probe != Probe::None {
+                self.probe = Probe::None;
+                self.publish_holds();
+            }
             return false;
         }
         self.changes = self.changes.saturating_add(1);
         self.changed();
+        true
+    }
+
+    /// The scene outputs hold while someone else has the lights and no retry is out.
+    fn held(&self) -> bool {
+        self.busy() && self.probe == Probe::None
+    }
+
+    /// Sets every live hold flag; a held output is a scene stepping aside.
+    fn publish_holds(&mut self) {
+        self.holds.retain(|w| w.strong_count() > 0);
+        let held = self.held();
+        for flag in self.holds.iter().filter_map(Weak::upgrade) {
+            flag.store(held, Ordering::Relaxed);
+        }
+        if held && !self.holds.is_empty() {
+            self.step_aside();
+        }
+    }
+
+    /// A scene's output stepping aside: counted once per stretch.
+    fn step_aside(&mut self) {
+        if !std::mem::replace(&mut self.yielding, true) {
+            self.yields = self.yields.saturating_add(1);
+            // The Scenes page's status says "Paused for ..." from now on.
+            if let Some(w) = &self.wake {
+                w.request_repaint();
+            }
+        }
+    }
+
+    /// A scene output's "held" flag: set now and on every change while it lives (#749).
+    pub fn watch_hold(&mut self, held: &Arc<AtomicBool>) {
+        self.holds.retain(|w| w.strong_count() > 0);
+        if !self.holds.iter().any(|w| w.as_ptr() == Arc::as_ptr(held)) {
+            self.holds.push(Arc::downgrade(held));
+        }
+        self.publish_holds();
+    }
+
+    /// An event worth trying the keyboard again on (#749): the user acted, or Windows changed a
+    /// LampArray's availability. While someone else has the lights, the scene output sends once
+    /// and its reply says who has them; true when that retry is out. Nothing repeats it.
+    pub fn retry(&mut self) -> bool {
+        if !self.busy() || self.probe == Probe::Armed {
+            return false;
+        }
+        self.probe = Probe::Armed;
+        self.retries = self.retries.saturating_add(1);
+        self.publish_holds();
+        // The output sends its frame or effect in full, not only what changed.
+        for flag in self.waiting.iter().filter_map(Weak::upgrade) {
+            flag.store(true, Ordering::Relaxed);
+        }
         true
     }
 
@@ -93,6 +185,8 @@ impl State {
     }
 
     fn changed(&mut self) {
+        self.probe = Probe::None;
+        self.publish_holds();
         if !self.busy() {
             self.yielding = false;
             for flag in self.waiting.drain(..).filter_map(|w| w.upgrade()) {
@@ -110,12 +204,11 @@ impl State {
         if !self.busy() {
             return false;
         }
-        if !std::mem::replace(&mut self.yielding, true) {
-            self.yields = self.yields.saturating_add(1);
-            // The Scenes page's status says "Paused for ..." from now on.
-            if let Some(w) = &self.wake {
-                w.request_repaint();
-            }
+        let through = self.probe == Probe::Armed;
+        if through {
+            self.probe = Probe::Sent;
+        } else {
+            self.step_aside();
         }
         self.waiting.retain(|w| w.strong_count() > 0);
         if !self
@@ -125,7 +218,7 @@ impl State {
         {
             self.waiting.push(Arc::downgrade(again));
         }
-        true
+        !through
     }
 
     pub fn set_wake(&mut self, wake: crate::ui_wake::UiWake) {
@@ -186,6 +279,15 @@ pub fn device_connected(device: &str) {
     }
     lock(&STATE).connected();
     attach(&kb);
+}
+
+/// An event worth trying the keyboard again on, in words for the log (#749): the user acted on
+/// the lights or a scene, or Windows changed a Dynamic Lighting device's availability. Does
+/// nothing unless someone else has the lights.
+pub fn retry(why: &str) {
+    if lock(&STATE).retry() {
+        eprintln!("Foxglove: lights owner: {why}; the scene tries the keyboard once");
+    }
 }
 
 /// Repaints the page showing the line when the owner changes.
@@ -261,16 +363,48 @@ pub const TIP: &str = "Who drives the keyboard's lights, as the keyboard says. W
                        Lighting comes first: a running scene stops sending while Windows has \
                        them, and comes back when Windows lets go.";
 
-/// The line for `who`, with the running scene's name.
-pub fn line(who: &Who, scene: Option<&str>) -> Line {
-    let mut text = format!("Lights now: {}", who.words());
-    let waits = matches!(who, Who::Windows) && scene.is_some();
-    if let Some(name) = scene.filter(|_| waits) {
+/// What the pages say while a LampArray (Windows Dynamic Lighting) has the keyboard's lights
+/// (#749).
+pub const NOTICE: &str = "Windows Dynamic Lighting holds the keyboard's lights";
+
+/// The Windows setting that gives the lights back, for the keyboard as Windows lists it (its
+/// USB product name; "your keyboard" while unknown). Foxglove never changes it.
+pub fn setting_path(device: Option<&str>) -> String {
+    let device = device.map(str::trim).filter(|d| !d.is_empty());
+    format!(
+        "Settings > Personalization > Dynamic Lighting > {} > \u{201c}Use Dynamic Lighting on my devices\u{201d}",
+        device.unwrap_or("your keyboard")
+    )
+}
+
+/// The one line while Windows holds the lights: [`NOTICE`], the setting that gives them back,
+/// and the running scene that waits for them.
+pub fn windows_line(device: Option<&str>, scene: Option<&str>) -> String {
+    let mut text = format!(
+        "{NOTICE}. Turn off {} to give them back.",
+        setting_path(device)
+    );
+    if let Some(name) = scene {
         text.push_str(&format!(
-            ". The scene \u{201c}{name}\u{201d} steps aside and comes back when Windows lets go."
+            " The scene \u{201c}{name}\u{201d} comes back then."
         ));
     }
-    Line { text, warn: waits }
+    text
+}
+
+/// The line for `who`, with the running scene's name and the keyboard's name (for the
+/// Windows setting).
+pub fn line(who: &Who, scene: Option<&str>, device: Option<&str>) -> Line {
+    if matches!(who, Who::Windows) {
+        return Line {
+            text: windows_line(device, scene),
+            warn: true,
+        };
+    }
+    Line {
+        text: format!("Lights now: {}", who.words()),
+        warn: false,
+    }
 }
 
 /// For whom a running scene steps aside now, in words: `None` while it doesn't.
@@ -315,7 +449,11 @@ fn who_now(owner: Option<Owner>) -> (Who, Option<String>) {
 pub fn line_now() -> Line {
     let owner = lock(&STATE).owner();
     let (who, scene) = who_now(owner);
-    line(&who, scene.as_deref())
+    line(
+        &who,
+        scene.as_deref(),
+        super::devices::keyboard_name().as_deref(),
+    )
 }
 
 #[cfg(test)]
@@ -324,9 +462,16 @@ thread_local! {
     pub static PREVIEW: std::cell::RefCell<Option<Line>> = const { std::cell::RefCell::new(None) };
 }
 
+/// The Windows Settings page for Dynamic Lighting (#749).
+pub const DL_SETTINGS: &str = "ms-settings:personalization-lighting";
+
+/// The button after the notice that opens [`DL_SETTINGS`].
+pub const DL_BUTTON: &str = "Open Dynamic Lighting settings";
+
 /// Draws the owner line (the Lights page's Keyboard card, the Scenes page) after `space` points;
-/// true when it drew one.
-pub fn show_line(ui: &mut egui::Ui, space: f32) -> bool {
+/// true when it drew one. With `notice` (the Lights page only, #749), Windows holding the lights
+/// is the amber notice and a button to its settings; without, the line only names Windows.
+pub fn show_line(ui: &mut egui::Ui, space: f32, notice: bool) -> bool {
     #[cfg(test)]
     let line = match PREVIEW.with_borrow(|l| l.clone()) {
         Some(l) => l,
@@ -338,10 +483,19 @@ pub fn show_line(ui: &mut egui::Ui, space: f32) -> bool {
         line_now()
     };
     let p = super::theme::palette(ui);
-    let color = if line.warn { p.warn } else { p.text };
     ui.add_space(space);
+    if line.warn && !notice {
+        let text = format!("Lights now: {}", Who::Windows.words());
+        ui.add(egui::Label::new(egui::RichText::new(text).color(p.text)).wrap())
+            .on_hover_text(TIP);
+        return true;
+    }
+    let color = if line.warn { p.warn } else { p.text };
     ui.add(egui::Label::new(egui::RichText::new(line.text).color(color)).wrap())
         .on_hover_text(TIP);
+    if line.warn && ui.small_button(DL_BUTTON).clicked() {
+        super::notifications_ui::open_settings_page(DL_SETTINGS);
+    }
     true
 }
 
@@ -452,6 +606,7 @@ mod tests {
             line(
                 &who(s.owner(), scene, Some(super::super::scene_run::SCENE_CONN)),
                 scene,
+                Some("Eyelash Corne"),
             )
         };
         s.observe(&frame_report(3, false));
@@ -466,11 +621,12 @@ mod tests {
         assert_eq!(repaints.load(Ordering::SeqCst), 2);
         let l = now(&s);
         assert!(l.warn);
-        assert!(
-            l.text
-                .starts_with("Lights now: Windows Dynamic Lighting. The scene"),
-            "{}",
-            l.text
+        assert_eq!(
+            l.text,
+            "Windows Dynamic Lighting holds the keyboard's lights. Turn off Settings > \
+             Personalization > Dynamic Lighting > Eyelash Corne > \u{201c}Use Dynamic Lighting \
+             on my devices\u{201d} to give them back. The scene \u{201c}Bandit scanline\u{201d} \
+             comes back then."
         );
         s.observe(&frame_report(0, true));
         assert_eq!(repaints.load(Ordering::SeqCst), 3);
@@ -506,10 +662,129 @@ mod tests {
         assert_eq!(who(Some(Owner::Keyboard), None, None), Who::Keyboard);
         assert_eq!(who(None, None, None), Who::Keyboard);
         assert_eq!(
-            line(&Who::Keyboard, None).text,
+            line(&Who::Keyboard, None, None).text,
             "Lights now: the keyboard itself (its own effect)"
         );
-        assert!(!line(&Who::Windows, None).warn, "no scene waits");
+        assert!(!line(&Who::Keyboard, None, None).warn);
+        let w = line(&Who::Windows, None, None);
+        assert!(w.warn, "Windows holding the lights is worth a look");
+        assert!(w.text.starts_with(NOTICE), "{}", w.text);
+        assert!(
+            w.text.contains("> your keyboard >"),
+            "no name yet: {}",
+            w.text
+        );
+    }
+
+    /// #749: the notice names the Windows setting for the keyboard as Windows lists it, shows
+    /// only for a LampArray owner, and goes on the first report saying the lights are free.
+    #[test]
+    fn the_notice_follows_the_replies() {
+        let notice = |o: Option<Owner>, d: Option<&str>| {
+            let l = line(&who(o, None, None), None, d);
+            l.warn.then_some(l.text)
+        };
+        assert_eq!(
+            setting_path(Some(" Eyelash Corne ")),
+            "Settings > Personalization > Dynamic Lighting > Eyelash Corne > \u{201c}Use \
+             Dynamic Lighting on my devices\u{201d}"
+        );
+        assert!(setting_path(Some("")).contains("> your keyboard >"));
+        for o in [
+            None,
+            Some(Owner::Keyboard),
+            Some(Owner::HostLink),
+            Some(Owner::Other(9)),
+        ] {
+            assert_eq!(notice(o, Some("K")), None, "{o:?}");
+        }
+        let mut s = State::default();
+        // A SET_FRAME SHOW refused busy, owner USB LampArray (status 1): the notice shows.
+        let mut busy = frame_report(1, false);
+        busy[2] = 1;
+        s.observe(&busy);
+        let n = notice(s.owner(), Some("Eyelash Corne")).expect("the notice");
+        assert!(n.starts_with(NOTICE) && n.contains("Eyelash Corne"), "{n}");
+        // The same from SET_EFFECT (D7 8F), owner BLE LampArray.
+        let mut s2 = State::default();
+        let mut effect = [0u8; 32];
+        effect[..7].copy_from_slice(&[0xD7, 0x8F, 1, 2, 0, 0, 0]);
+        s2.observe(&effect);
+        assert!(notice(s2.owner(), None).is_some());
+        // The first reply saying they're free (Foxglove's frame shown) clears it.
+        s.observe(&frame_report(3, false));
+        assert_eq!(notice(s.owner(), Some("Eyelash Corne")), None);
+    }
+
+    /// #749: the scene output's hold flag is set while Windows has the lights (so it streams
+    /// nothing), cleared by the report that frees them and by a reconnect; never by time.
+    #[test]
+    fn the_output_holds_while_busy_and_lets_go_on_events() {
+        let mut s = State::default();
+        let held = Arc::new(AtomicBool::new(true));
+        s.watch_hold(&held);
+        assert!(!held.load(Ordering::Relaxed), "nothing said yet: stream");
+        s.observe(&frame_report(1, true));
+        assert!(held.load(Ordering::Relaxed), "Windows took them: hold");
+        assert!(s.now().yielding, "a held output is a scene stepping aside");
+        assert_eq!(s.now().yields, 1);
+        // Further busy replies change nothing.
+        s.observe(&frame_report(1, false));
+        assert!(held.load(Ordering::Relaxed));
+        assert_eq!(s.now().yields, 1);
+        // Freed by the keyboard's event.
+        s.observe(&frame_report(0, true));
+        assert!(!held.load(Ordering::Relaxed));
+        assert!(!s.now().yielding);
+        // Busy again, then a reconnect: nothing known, so the output tries.
+        s.observe(&frame_report(2, true));
+        assert!(held.load(Ordering::Relaxed));
+        s.connected();
+        assert!(!held.load(Ordering::Relaxed));
+        // A new scene's output registered while busy starts held.
+        s.observe(&frame_report(1, true));
+        let late = Arc::new(AtomicBool::new(false));
+        s.watch_hold(&late);
+        assert!(late.load(Ordering::Relaxed));
+        // A dropped output is forgotten.
+        drop(late);
+        s.observe(&frame_report(0, true));
+        assert_eq!(s.holds.len(), 1);
+    }
+
+    /// #749: a retry (the user acted, a LampArray's availability changed) lets exactly one
+    /// send through; its busy reply holds the output again, a free one ends the wait.
+    #[test]
+    fn a_retry_sends_once_and_the_reply_decides() {
+        let mut s = State::default();
+        let held = Arc::new(AtomicBool::new(false));
+        let again = Arc::new(AtomicBool::new(false));
+        s.watch_hold(&held);
+        assert!(!s.retry(), "nobody else has the lights: nothing to retry");
+        s.observe(&frame_report(1, true));
+        assert!(held.load(Ordering::Relaxed));
+        assert!(s.yield_to(&again), "held: the writer steps aside too");
+
+        assert!(s.retry());
+        assert!(!s.retry(), "one retry at a time");
+        assert!(!held.load(Ordering::Relaxed), "the output sends once");
+        assert!(again.swap(false, Ordering::Relaxed), "in full");
+        assert!(!s.yield_to(&again), "the one send goes through");
+        assert!(s.yield_to(&again), "the rest wait for its reply");
+        // Still busy: held again; the notice stays.
+        s.observe(&frame_report(1, false));
+        assert!(held.load(Ordering::Relaxed));
+        assert!(s.busy());
+        assert_eq!(s.now().retries, 1);
+
+        // Another retry, and this time the reply says Foxglove's frame is shown.
+        assert!(s.retry());
+        assert!(!s.yield_to(&again));
+        s.observe(&frame_report(3, false));
+        assert!(!held.load(Ordering::Relaxed));
+        assert!(!s.yield_to(&again), "streaming again");
+        assert!(!s.now().yielding);
+        assert_eq!(s.now().retries, 2);
     }
 
     /// The health row carries the owner and the yield count.

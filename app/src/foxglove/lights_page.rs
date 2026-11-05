@@ -172,6 +172,11 @@ pub fn show(ui: &mut egui::Ui) {
     let mut draft = DRAFT.lock().unwrap_or_else(|e| e.into_inner());
     draft.settle(view.state.as_ref());
     for intent in draw(ui, &view, &mut draft) {
+        if !matches!(intent, Intent::Refresh | Intent::AskFollow) {
+            // The user acted on the lights: while Windows holds them, a running scene tries
+            // the keyboard once (#749).
+            super::lights_owner::retry("the user changed the keyboard's lights");
+        }
         match intent {
             Intent::Lights(on) => ks::set_lights(on, ctx.clone()),
             Intent::Effect(e) => ks::set_effect(e, ctx.clone()),
@@ -263,7 +268,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft) -> Vec<Intent> {
     let mut out = Vec::new();
     card(ui, "Keyboard", |ui| {
         // Who drives the lights now (#491): a scene, Windows Dynamic Lighting, another app.
-        if super::lights_owner::show_line(ui, 0.0) {
+        if super::lights_owner::show_line(ui, 0.0, true) {
             ui.add_space(6.0);
         }
         if let Some(line) = &v.zones {

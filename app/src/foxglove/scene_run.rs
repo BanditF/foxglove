@@ -524,10 +524,15 @@ fn control(
         LAMPS.clone(),
     );
     let lamp_poster = lamp_writer.poster();
-    let (again, effects) = {
+    let (again, effects, held) = {
         let o = outputs.lock().unwrap_or_else(|e| e.into_inner());
-        (o.keyboard_again(), o.keyboard_effects())
+        (o.keyboard_again(), o.keyboard_effects(), o.keyboard_held())
     };
+    // While Windows Dynamic Lighting has the keyboard's lights, the output streams nothing to
+    // it (#749); the lights owner clears this on the event that frees them, or for one retry.
+    super::lights_owner::lock(&super::lights_owner::shared()).watch_hold(&held);
+    // A scene starting is worth one try, in case Windows has let go meanwhile.
+    super::lights_owner::retry("a scene started");
     // What the keyboard found last says (the writer corrects it), so the first send is
     // already the effect rather than a frame.
     effects.store(
@@ -609,6 +614,7 @@ fn control(
                 .burst(sweep);
         }
         Ctl::Effect(name, effect) => {
+            super::lights_owner::retry("the scene's look changed");
             // The wallpapers draw the new look on the same clock (#493).
             super::wallpaper_sync::scene_started(&name, &effect, clock, placed.clone());
             outputs

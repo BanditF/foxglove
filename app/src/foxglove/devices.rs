@@ -343,6 +343,19 @@ pub fn keyboard_id() -> Option<String> {
         .then(|| d.info().id.to_string())
 }
 
+/// The connected keyboard's name (its USB product string, as Windows lists it), without
+/// blocking or discovery (for the UI).
+pub fn keyboard_name() -> Option<String> {
+    use foxglove_devices::Device as _;
+    let cached = DEVICE.try_lock().ok()?;
+    let d = cached.as_ref()?;
+    d.link()
+        .state()
+        .connected
+        .is_some()
+        .then(|| d.info().name.clone())
+}
+
 /// What the app knows of the keyboard's lighting command, the keymap's `&rgb_ug` (#633).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Underglow {

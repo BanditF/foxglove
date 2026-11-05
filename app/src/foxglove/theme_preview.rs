@@ -1390,7 +1390,7 @@ fn lights_owner_line_renders() {
     };
     let scene = Some("Bandit scanline");
     let page_with = |page, height, owner: Option<Who>, yielded: Option<&'static str>| {
-        PREVIEW.set(owner.map(|w| line(&w, scene)));
+        PREVIEW.set(owner.map(|w| line(&w, scene, Some("Eyelash Corne"))));
         let mut samples = Samples::full();
         samples.scenes.0.yielded_to = yielded;
         let img = shell_preview_with(page, &samples, height);
@@ -1429,6 +1429,36 @@ fn lights_owner_line_renders() {
     assert!(
         near(&scenes, DARK.ok) < near(&scenes_running, DARK.ok),
         "not the green Running"
+    );
+}
+
+/// #749: Windows Dynamic Lighting holds the keyboard's lights. Only the Lights page's Keyboard
+/// card says so: one amber line naming the Windows setting, then a small button that opens it.
+/// With the lights free, it doesn't show. Saved as the review image.
+#[test]
+fn dynamic_lighting_notice_renders() {
+    use crate::foxglove::lights_owner::{line, Who, PREVIEW};
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::theme::DARK;
+    let near = |img: &image::RgbaImage, c: Color32| {
+        img.pixels()
+            .filter(|p| {
+                let d = |a: u8, b: u8| (i32::from(a) - i32::from(b)).abs();
+                d(p.0[0], c.r()) + d(p.0[1], c.g()) + d(p.0[2], c.b()) < 24
+            })
+            .count()
+    };
+    let device = Some("Eyelash Corne");
+    PREVIEW.set(Some(line(&Who::Windows, None, device)));
+    let lights = shell_preview_with(Page::Lights, &Samples::full(), 980.0);
+    PREVIEW.set(Some(line(&Who::Keyboard, None, device)));
+    let lights_free = shell_preview_with(Page::Lights, &Samples::full(), 980.0);
+    PREVIEW.set(None);
+    keep("ui-749-dl-notice.png", &lights);
+    assert_ne!(lights, lights_free, "the Lights page shows the notice");
+    assert!(
+        near(&lights, DARK.warn) > near(&lights_free, DARK.warn),
+        "the notice is amber"
     );
 }
 

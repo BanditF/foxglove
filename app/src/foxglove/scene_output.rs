@@ -436,6 +436,9 @@ pub struct Outputs {
     /// Set from elsewhere (the keyboard handed its frames back): send the keyboard's next frame
     /// in full even though nothing changed.
     keyboard_again: Arc<AtomicBool>,
+    /// Someone else (Windows Dynamic Lighting) has the keyboard's lights (#749): no keyboard
+    /// frame or effect is made at all, and the next one after goes in full.
+    keyboard_held: Arc<AtomicBool>,
     /// Rings and sweeps over the scene (#489), drawn by these same frames.
     bursts: Bursts,
     /// Eases the ambient lights (the case's interior light) frame to frame.
@@ -459,6 +462,7 @@ impl Outputs {
             effect_sent: false,
             keyboard_effects: Arc::default(),
             keyboard_again: Arc::default(),
+            keyboard_held: Arc::default(),
             bursts: Bursts::default(),
             ambient: Ambient::new(),
         };
@@ -487,6 +491,12 @@ impl Outputs {
     /// paused.
     pub fn keyboard_again(&self) -> Arc<AtomicBool> {
         self.keyboard_again.clone()
+    }
+
+    /// A flag set while someone else has the keyboard's lights (#749), from the lights owner
+    /// (`lights_owner::State::watch_hold`): the keyboard gets nothing while it is.
+    pub fn keyboard_held(&self) -> Arc<AtomicBool> {
+        self.keyboard_held.clone()
     }
 
     /// A flag saying the keyboard takes SET_EFFECT (#542), shared with the keyboard's writer:
@@ -580,6 +590,13 @@ impl Outputs {
             self.effect_sent = false;
         }
         let mut due = self.pacing.due(t);
+        if self.keyboard_held.load(Ordering::Relaxed) {
+            // Held (#749): the keyboard streams nothing until the lights are free, and then
+            // gets its frame or effect in full.
+            due.retain(|id| id != KEYBOARD);
+            self.sent_keyboard = None;
+            self.effect_sent = false;
+        }
         if due.is_empty() {
             return Vec::new();
         }
@@ -1223,6 +1240,51 @@ mod tests {
         o.keyboard_again().store(true, Ordering::Relaxed);
         assert_eq!(kb(o.frame(SceneTime(400))), 1);
         assert_eq!(kb(o.frame(SceneTime(600))), 0);
+    }
+
+    /// #749: while Windows Dynamic Lighting holds the keyboard's lights, the keyboard streams
+    /// nothing (frames or its effect) and the case keeps its frames; once they're free, the
+    /// keyboard gets its frame or effect in full, once.
+    #[test]
+    fn a_held_keyboard_streams_nothing_and_gets_it_all_after() {
+        let count = |outs: &[Out]| -> (usize, usize, usize) {
+            let e = outs
+                .iter()
+                .filter(|o| matches!(o, Out::KeyboardEffect(_)))
+                .count();
+            let f = outs
+                .iter()
+                .filter(|o| matches!(o, Out::Keyboard(_)))
+                .count();
+            (e, f, outs.len() - e - f)
+        };
+        for effects in [false, true] {
+            let (room, cases) = desk();
+            let mut o = Outputs::new(scanline(), room, cases);
+            o.keyboard_effects().store(effects, Ordering::Relaxed);
+            let held = o.keyboard_held();
+            let run = |o: &mut Outputs, from: i64, to: i64| {
+                let mut sum = (0, 0, 0);
+                for ms in (from..to).step_by(33) {
+                    let (e, f, c) = count(&o.frame(SceneTime(ms)));
+                    sum = (sum.0 + e, sum.1 + f, sum.2 + c);
+                }
+                sum
+            };
+            let (e, f, _) = run(&mut o, 0, 500);
+            assert!(e + f > 0, "streams before");
+            held.store(true, Ordering::Relaxed);
+            let (e, f, case) = run(&mut o, 500, 3000);
+            assert_eq!((e, f), (0, 0), "nothing for the keyboard while held");
+            assert!(case > 10, "the case still gets its frames: {case}");
+            held.store(false, Ordering::Relaxed);
+            let (e, f, _) = run(&mut o, 3000, 3100);
+            if effects {
+                assert_eq!((e, f), (1, 0), "the effect again, once");
+            } else {
+                assert!(f >= 1 && e == 0, "frames again");
+            }
+        }
     }
 
     /// A key ripple (#489) over a still scene: the keyboard changes while the ring passes, then
