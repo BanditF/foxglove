@@ -60,6 +60,35 @@ fn parse(src: &str) -> Vec<Option<Picture>> {
     (0..count.min(128)).map(|n| first_frame(src, n)).collect()
 }
 
+/// Built-in `index`'s whole animation on a keyboard reporting `set_count` built-ins, as the
+/// firmware stores it (the live feed's art, `live_art`): its unique frames (stored size, a set
+/// bit is ink), the play order and frames a second. `None` on other firmware, like [`picture`].
+pub fn animation(index: i8, set_count: u8) -> Option<super::live_art::Stored> {
+    let set = super::art_manifest::sets(set_count)?.get(usize::try_from(index).ok()?)?;
+    let n = usize::try_from(index).ok()?;
+    let order = array(SOURCE, &format!("set_{n}_order"))?;
+    let stride = W.div_ceil(8);
+    let mut bits = vec![0u8; stride * H];
+    let mut unique = Vec::new();
+    while let Some(delta) = array(SOURCE, &format!("set_{n}_delta_{}", unique.len())) {
+        super::art_preview::apply(&delta, &mut bits).ok()?;
+        unique.push(bits.clone());
+        if unique.len() >= 256 {
+            break;
+        }
+    }
+    (!unique.is_empty() && order.iter().all(|&o| usize::from(o) < unique.len())).then(|| {
+        super::live_art::Stored {
+            width: W,
+            height: H,
+            ink: true,
+            fps: u8::try_from(set.fps).unwrap_or(u8::MAX),
+            order,
+            unique,
+        }
+    })
+}
+
 /// Set `n`'s first frame: its unique frames are XOR deltas applied in turn, and the play
 /// order's first entry names the one shown first.
 fn first_frame(src: &str, n: usize) -> Option<Picture> {
