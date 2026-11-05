@@ -2,7 +2,9 @@
 //! opened ([`Probe`]) and, when one is loaded, its VIA definition:
 //!
 //! - keymap (read; written only when opened with writes): needs the definition's matrix and
-//!   layout, so a board found without one has no keymap yet;
+//!   layout, so a board found without one has no keymap yet. The layout is the one for the
+//!   layout options the keyboard has chosen (split backspace, ISO enter...), or the default
+//!   when it doesn't say;
 //! - lighting: the best lighting channel the keyboard answers (RGB Matrix, RGB Light, LED Matrix
 //!   or backlight), through VIA's lighting values in the scheme its protocol version uses.
 //!
@@ -23,6 +25,8 @@ use crate::protocol::{self, Guarded, Transport};
 pub struct ViaDevice<T: Transport> {
     info: DeviceInfo,
     def: Option<Definition>,
+    /// The definition's layout for the keyboard's layout options.
+    layout: Option<Layout>,
     link: Guarded<T>,
     /// What the keyboard answered when opened.
     pub probe: Probe,
@@ -51,9 +55,13 @@ impl<T: Transport> ViaDevice<T> {
                 .or_else(|| probe.lighting.first().map(|s| &s.channel))
                 .map(|&c| (scheme, c))
         });
+        let layout = def
+            .as_ref()
+            .map(|d| d.layout_for(probe.layout_options.unwrap_or(0)));
         Ok(ViaDevice {
             info,
             def,
+            layout,
             link,
             probe,
             light,
@@ -124,10 +132,7 @@ impl<T: Transport> Device for ViaDevice<T> {
 
 impl<T: Transport> Keymap for ViaDevice<T> {
     fn layout(&self) -> Result<Layout> {
-        self.def
-            .as_ref()
-            .map(|d| d.layout.clone())
-            .ok_or(DeviceError::Unsupported)
+        self.layout.clone().ok_or(DeviceError::Unsupported)
     }
 
     fn layers(&self) -> Result<Vec<LayerInfo>> {
@@ -356,6 +361,33 @@ mod tests {
         assert_eq!(dev.lighting_channel(), Some(Channel::RgbMatrix));
         assert_eq!(dev.read_keymap(), Err(DeviceError::Unsupported));
         foxglove_devices::contract::check_device(&dev).unwrap();
+    }
+
+    /// The layout is the one for the options the keyboard has chosen (#74); a keyboard that
+    /// doesn't answer the layout options read gets the default. Either way it's only reads.
+    #[test]
+    fn the_layout_follows_the_keyboards_layout_options() {
+        let def = Definition::parse(crate::definition::OPTIONS).unwrap();
+        for (answer, value) in [(Some(0b1101), 0b1101), (Some(0), 0), (None, 0)] {
+            let fake = leak(FakeQmk {
+                protocol_version: 12,
+                layers: 2,
+                layout_options: answer,
+                matrix: (3, 4),
+                ..FakeQmk::default()
+            });
+            let dev = open_with(fake, Some(def.clone()), false);
+            assert_eq!(dev.probe.layout_options, answer);
+            let layout = Keymap::layout(&dev).unwrap();
+            assert_eq!(layout, def.layout_for(value));
+            let mut at: Vec<_> = layout.keys.iter().map(|k| (k.row, k.col)).collect();
+            at.sort();
+            at.dedup();
+            assert_eq!(at.len(), layout.keys.len(), "each matrix position once");
+            foxglove_devices::contract::check_device(&dev).unwrap();
+            let sent = fake.sent.lock().unwrap();
+            assert!(!sent.iter().any(|r| protocol::is_write(r)), "{sent:x?}");
+        }
     }
 
     #[test]
