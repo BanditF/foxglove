@@ -5,6 +5,7 @@ pub mod health;
 pub mod host;
 pub mod host_lights;
 pub mod injections;
+pub mod knob;
 pub mod lights;
 pub mod pc_hold;
 pub mod platform;

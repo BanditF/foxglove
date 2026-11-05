@@ -69,6 +69,18 @@ enum Command {
         /// self-report.
         #[arg(long)]
         no_lights: bool,
+        /// Leave out the knob cases (#719) that a direct read runs after the lights.
+        #[arg(long)]
+        no_knob: bool,
+    },
+    /// The knob end to end (#719): the PC's hold (D7 14 KNOB, HELLO bit 31) on master, on an
+    /// app, back to master and released, and the knob's health row (D7 13 block v2). Turns and
+    /// clicks need a person: one HUMAN line. `health` runs them too. Exit 0 pass, 1 fail, 2
+    /// blocked (no bit 31, no keyboard, the app running).
+    Knob {
+        /// One JSON object instead of lines.
+        #[arg(long)]
+        json: bool,
     },
     /// The PC's lights end to end (#492): SET_FRAME (D7 0C, HELLO bit 14) and SET_EFFECT (D7 0F,
     /// bit 19) cases, the replies' status and owner and the LEDs read back (D7 83, bit 24), the
@@ -599,9 +611,10 @@ fn main() -> Result<std::process::ExitCode> {
         record,
         replay,
         no_lights,
+        no_knob,
     } = &cli.command
     {
-        use foxglove_lab::{health as lab_health, host_lights};
+        use foxglove_lab::{health as lab_health, host_lights, knob};
         // The probe guard is dropped at once, so the direct read below can take its own.
         let app_running = replay.is_none() && platform::guard(false).is_err();
         let out = match (lab_health::source(replay.is_some(), app_running), replay) {
@@ -615,6 +628,12 @@ fn main() -> Result<std::process::ExitCode> {
                 if !no_lights {
                     host_lights::Cases::blocked_by(
                         "frames and effects not tested: the app holds the keyboard (quit it, then foxglove-lab lights)",
+                    )
+                    .fold_into(&mut out);
+                }
+                if !no_knob {
+                    knob::Cases::blocked_by(
+                        "the knob not tested: the app holds the keyboard (quit it, then foxglove-lab knob)",
                     )
                     .fold_into(&mut out);
                 }
@@ -648,6 +667,10 @@ fn main() -> Result<std::process::ExitCode> {
                         if !no_lights {
                             host_lights::run(&link, caps, None, &host_lights::Options::QUICK)
                                 .fold_into(&mut out);
+                        }
+                        // The knob (#719): its hold, handed back at the end, and its health row.
+                        if !no_knob {
+                            knob::run(&link, caps).fold_into(&mut out);
                         }
                         out
                     }
@@ -700,6 +723,34 @@ fn main() -> Result<std::process::ExitCode> {
                         let events: Events<'_> = &wait;
                         host_lights::run(&link, caps, Some(events), &opts)
                     }
+                }
+            }
+        };
+        if *json {
+            println!("{}", cases.json());
+        } else {
+            for line in cases.lines() {
+                println!("{line}");
+            }
+        }
+        return Ok(std::process::ExitCode::from(cases.code()));
+    }
+    if let Command::Knob { json } = &cli.command {
+        use foxglove_lab::knob::{self, Cases};
+        // Never beside the app, --allow-app or not: it holds the knob itself after each HELLO,
+        // and its knob service would take the case's hold back mid-case.
+        let cases = match platform::guard(false) {
+            Err(_) => Cases::blocked_by(
+                "the app holds the keyboard: quit it (tray, Quit), then run again",
+            ),
+            Ok(_guard) => {
+                let _lab = platform::lab_lock(Duration::from_secs(120))?;
+                match connect(cli.product.clone()).and_then(|l| {
+                    let c = l.wait_connected(Duration::from_secs(10))?;
+                    Ok((l, c))
+                }) {
+                    Err(e) => Cases::blocked_by(format!("no keyboard: {e:#}")),
+                    Ok((link, c)) => knob::run(&link, c.hello.map_or(0, |h| h.capabilities)),
                 }
             }
         };
