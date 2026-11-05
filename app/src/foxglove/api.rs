@@ -979,7 +979,7 @@ fn sync_result(
 fn writable(r: &super::pc_lights::Row) -> bool {
     use foxglove_devices::pc_lighting::Control;
     match r.control {
-        Control::Driver(_) => true,
+        Control::Driver(_) | Control::OpenRgb => true,
         Control::LampArray => !r.zones.is_empty(),
         Control::NotYet => false,
     }

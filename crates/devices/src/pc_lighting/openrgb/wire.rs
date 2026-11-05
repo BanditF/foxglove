@@ -430,8 +430,9 @@ impl Reader<'_> {
 
 /// Builds controller data blocks the way the document lays them out, for tests (here and in the
 /// client's fake server). Written from the document's tables, not captured from OpenRGB.
-#[cfg(test)]
-pub(crate) mod fixture {
+#[cfg(any(test, feature = "mock"))]
+#[doc(hidden)]
+pub mod fixture {
     #[derive(Default)]
     pub struct Blob(pub Vec<u8>);
 

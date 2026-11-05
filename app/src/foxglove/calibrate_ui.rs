@@ -1017,7 +1017,10 @@ fn others(target: &Target) -> Vec<Target> {
     let lights = super::pc_lights::snapshot()
         .devices
         .iter()
-        .filter(|r| matches!(r.control, foxglove_devices::pc_lighting::Control::Driver(_)))
+        .filter(|r| {
+            use foxglove_devices::pc_lighting::Control;
+            matches!(r.control, Control::Driver(_) | Control::OpenRgb)
+        })
         .filter(|r| r.caps.takes_color())
         .map(lights_target)
         .collect::<Vec<_>>();

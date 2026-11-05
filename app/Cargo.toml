@@ -168,7 +168,8 @@ auto_link_exclude_list = [
 ]
 
 [dev-dependencies]
-# Foxglove: the devices crate's fakes (the scripted HID++ device, #505) for window- and
+# Foxglove: the devices crate's fakes (the scripted HID++ device, #505; the in-process OpenRGB
+# server, #471) for window- and
 # device-free tests.
 foxglove-devices = { path = "../crates/devices", features = ["hid", "mock"] }
 # Foxglove: checks that the built-in plugin icons render (the resvg egui_extras uses).

@@ -17,14 +17,21 @@
 //!
 //! Every driver writes through its device's colour calibration (`pc_lighting::open` wraps it);
 //! the colours here, saved and shown, are the palette's, before calibration.
+//!
+//! OpenRGB's controllers (#471) are light sources here too, once the user turns "Use OpenRGB's
+//! devices" on (the store's `[openrgb]`, off by default): the worker connects to OpenRGB's SDK
+//! server at start-up and when the setting changes, lists its controllers again on OpenRGB's
+//! own DEVICE_LIST_UPDATED push, and (only if the user asked) tries again after OpenRGB goes, on
+//! the crate's bounded backoff. Nothing polls; with the setting off there is no socket.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{mpsc, Condvar, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
+use std::time::Duration;
 
 use foxglove_devices::pc_lighting::{
-    self as pcl, Catalog, CatalogDevice, Control, Found, HidWriter, LampArrayDesc, LampArrayInfo,
-    LightCaps, LightingDevice, Protocol, Unknown,
+    self as pcl, openrgb, Catalog, CatalogDevice, Control, Found, HidWriter, LampArrayDesc,
+    LampArrayInfo, LightCaps, LightingDevice, Protocol, Unknown,
 };
 use foxglove_devices::{DeviceError, Rgb};
 use serde::{Deserialize, Serialize};
@@ -108,6 +115,18 @@ pub struct Snapshot {
     /// their own link drives them, so they aren't in [`Self::devices`]; the health view names
     /// them.
     pub keyboard_lamp_arrays: Vec<pcl::KeyboardLampArray>,
+    /// "Use OpenRGB's devices" (#471): the user's settings and how the connection is.
+    pub openrgb: OpenRgbView,
+}
+
+/// OpenRGB as the page shows it (#471).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OpenRgbView {
+    pub settings: openrgb::Settings,
+    /// Connected now.
+    pub connected: bool,
+    /// How it went, for the line under the toggle; `None` while it's off.
+    pub status: Option<String>,
 }
 
 /// A request to the worker.
@@ -163,6 +182,13 @@ pub enum Msg {
     /// Windows changed who may drive this Dynamic Lighting device (`AvailabilityChanged`,
     /// #691): its colours go back on when Foxglove may again.
     LampChanged(String),
+    /// The user changed the OpenRGB settings (#471): saved, then connected (or closed) anew.
+    OpenRgbSettings(openrgb::Settings),
+    /// Connect to OpenRGB if it's on and not connected (start-up, a backoff try).
+    OpenRgbConnect,
+    /// OpenRGB's push or the connection's end, from the connection it numbers (an older one's
+    /// news is dropped).
+    OpenRgbEvent(u64, openrgb::Event),
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -367,6 +393,42 @@ pub type LampArrays = Box<dyn FnMut() -> Vec<LampArrayDesc> + Send>;
 pub type LampOpener =
     Box<dyn FnMut(&Found) -> Option<Box<dyn foxglove_devices::pc_lighting::LampHandle>> + Send>;
 
+/// Where OpenRGB's news goes: the connection's number and the event (the worker's own queue;
+/// a channel in tests).
+pub type OpenRgbEvents = Arc<dyn Fn(u64, openrgb::Event) + Send + Sync>;
+
+/// OpenRGB's side of the worker (#471).
+struct OpenRgb {
+    settings: openrgb::Settings,
+    client: Option<Arc<openrgb::Client>>,
+    /// Numbers each connection, so a closed one's late news is told apart.
+    conn: u64,
+    /// Its controllers as last listed.
+    sources: Vec<openrgb::Source>,
+    status: Option<String>,
+    /// The reconnect waits left, while trying again (only when the user asked for it).
+    backoff: Option<openrgb::Backoff>,
+    events: OpenRgbEvents,
+}
+
+impl OpenRgb {
+    fn new(settings: openrgb::Settings, events: OpenRgbEvents) -> Self {
+        Self {
+            settings,
+            client: None,
+            conn: 0,
+            sources: Vec::new(),
+            status: None,
+            backoff: None,
+            events,
+        }
+    }
+
+    fn at(&self) -> String {
+        format!("{}:{}", self.settings.host.trim(), self.settings.port)
+    }
+}
+
 /// The worker's state, apart from the OS: tests drive it with a mocked HID writer.
 pub struct Worker {
     bundled: Catalog,
@@ -397,6 +459,15 @@ pub struct Worker {
     scene_error: bool,
     /// The last write to each Dynamic Lighting device, by key (#691's health signal).
     lamp_applies: BTreeMap<String, super::lamp_health::Apply>,
+    /// The last HID enumeration, for placing OpenRGB's list beside it without another one.
+    hid: Vec<pcl::HidEntry>,
+    openrgb: OpenRgb,
+    /// OpenRGB's list changed: place it again, with the HID devices as last enumerated.
+    pub relist: bool,
+    /// The OpenRGB settings changed and need saving (`[openrgb]`).
+    pub openrgb_dirty: bool,
+    /// Try connecting to OpenRGB again after this wait (the bounded backoff's next step).
+    pub openrgb_retry: Option<Duration>,
 }
 
 impl Worker {
@@ -439,6 +510,117 @@ impl Worker {
             scene: None,
             scene_error: false,
             lamp_applies: BTreeMap::new(),
+            hid: Vec::new(),
+            openrgb: OpenRgb::new(openrgb::Settings::default(), Arc::new(|_, _| {})),
+            relist: false,
+            openrgb_dirty: false,
+            openrgb_retry: None,
+        }
+    }
+
+    /// OpenRGB's settings (the store's `[openrgb]`), and where its connection's news goes. It
+    /// connects on [`Msg::OpenRgbConnect`], not here.
+    pub fn with_openrgb(mut self, settings: openrgb::Settings, events: OpenRgbEvents) -> Self {
+        self.openrgb = OpenRgb::new(settings, events);
+        self
+    }
+
+    /// The OpenRGB settings as they are now (to save).
+    pub fn openrgb_settings(&self) -> &openrgb::Settings {
+        &self.openrgb.settings
+    }
+
+    /// Places OpenRGB's list again beside the HID devices as last enumerated (no new
+    /// enumeration): arrivals get their saved colours back.
+    pub fn relist(&mut self, running: &mut dyn FnMut(&[&str]) -> bool, paused: bool) {
+        let hid = std::mem::take(&mut self.hid);
+        self.scan(&hid, running, paused, true);
+    }
+
+    /// Connects when the setting is on (a connection already open stays, unless `fresh`);
+    /// closes when it's off. The list follows on [`Self::relist`].
+    fn openrgb_connect(&mut self, fresh: bool) {
+        if self.openrgb.client.is_some() && !fresh {
+            return;
+        }
+        let had = self.openrgb.client.take().is_some() || !self.openrgb.sources.is_empty();
+        self.openrgb.sources.clear();
+        self.openrgb.conn += 1;
+        if !self.openrgb.settings.enabled {
+            self.openrgb.status = None;
+            self.openrgb.backoff = None;
+            self.relist |= had;
+            return;
+        }
+        let conn = self.openrgb.conn;
+        let events = Arc::clone(&self.openrgb.events);
+        match openrgb::connect(&self.openrgb.settings, move |e| events(conn, e)) {
+            Ok(Some(client)) => {
+                self.openrgb.backoff = None;
+                self.openrgb.client = Some(client);
+                self.openrgb_list();
+            }
+            Ok(None) => {}
+            Err(e) => {
+                let why = format!("Can't reach OpenRGB at {} ({e})", self.openrgb.at());
+                self.openrgb_failed(why);
+            }
+        }
+        self.relist = true;
+    }
+
+    /// Reads OpenRGB's controllers. A list that changed while being read waits for the push
+    /// that announced it.
+    fn openrgb_list(&mut self) {
+        let Some(client) = &self.openrgb.client else {
+            return;
+        };
+        match openrgb::list(client) {
+            Ok(sources) => {
+                let n = sources.len();
+                self.openrgb.sources = sources;
+                self.openrgb.status = Some(format!(
+                    "Connected to OpenRGB at {}: {n} device{}",
+                    self.openrgb.at(),
+                    if n == 1 { "" } else { "s" }
+                ));
+            }
+            Err(DeviceError::Busy(_)) => {}
+            Err(e) => {
+                self.openrgb.status = Some(format!("OpenRGB's device list: {e}"));
+            }
+        }
+        self.relist = true;
+    }
+
+    /// The connection failed or ended: says why, and tries again only if the user asked to,
+    /// at most the backoff's few times.
+    fn openrgb_failed(&mut self, why: String) {
+        self.openrgb.client = None;
+        if self.openrgb.backoff.is_none() {
+            self.openrgb.backoff = self.openrgb.settings.backoff();
+        }
+        let wait = self.openrgb.backoff.as_mut().and_then(Iterator::next);
+        self.openrgb.status = Some(match (wait, self.openrgb.settings.reconnect) {
+            (Some(w), _) => format!("{why}; trying again in {} s", w.as_secs()),
+            (None, true) => format!("{why}; stopped trying"),
+            (None, false) => why,
+        });
+        self.openrgb_retry = wait;
+    }
+
+    /// OpenRGB's news, from the connection open now.
+    fn openrgb_event(&mut self, conn: u64, event: openrgb::Event) {
+        if conn != self.openrgb.conn || self.openrgb.client.is_none() {
+            return;
+        }
+        match event {
+            openrgb::Event::DeviceListUpdated => self.openrgb_list(),
+            openrgb::Event::Disconnected => {
+                self.openrgb.sources.clear();
+                self.relist = true;
+                self.openrgb_failed("OpenRGB closed the connection".into());
+            }
         }
     }
 
@@ -461,6 +643,9 @@ impl Worker {
         restore: bool,
     ) {
         let mut now = pcl::discover(&self.catalog, hid);
+        self.hid = hid.to_vec();
+        // OpenRGB's controllers, as last listed (#471).
+        now.extend(self.openrgb.sources.iter().map(openrgb::found));
         // Each app's processes are looked for once a scan, however many devices name it.
         let mut asked: BTreeMap<Vec<String>, bool> = BTreeMap::new();
         let mut conflicts = Vec::new();
@@ -522,6 +707,13 @@ impl Worker {
                     Some(handle) => pcl::open_lamp_array(f, handle),
                     None => continue,
                 },
+                Control::OpenRgb => {
+                    let source = self.openrgb.sources.iter().find(|s| s.key == f.key);
+                    match (&self.openrgb.client, source) {
+                        (Some(client), Some(s)) => openrgb::open(Arc::clone(client), s),
+                        _ => continue,
+                    }
+                }
                 _ => (self.writers)(&f.path).and_then(|w| pcl::open(f, w)),
             };
             match opened {
@@ -627,6 +819,9 @@ impl Worker {
                 | Msg::RemoveLocal(..)
                 | Msg::SceneStart
                 | Msg::SceneEnd
+                | Msg::OpenRgbSettings(_)
+                | Msg::OpenRgbConnect
+                | Msg::OpenRgbEvent(..)
         );
         if paused && writes {
             self.status = Some(super::pause::REFUSED.replace("the keyboard", "the lights"));
@@ -634,6 +829,16 @@ impl Worker {
         }
         match msg {
             Msg::Scan => {}
+            Msg::OpenRgbSettings(settings) => {
+                if settings != self.openrgb.settings {
+                    self.openrgb.settings = settings;
+                    self.openrgb.backoff = None;
+                    self.openrgb_dirty = true;
+                    self.openrgb_connect(true);
+                }
+            }
+            Msg::OpenRgbConnect => self.openrgb_connect(false),
+            Msg::OpenRgbEvent(conn, event) => self.openrgb_event(conn, event),
             Msg::Set { key, colors } => {
                 if let Some(line) = self.set_colors(&key, colors) {
                     eprintln!("{line}");
@@ -1083,6 +1288,16 @@ impl Worker {
             local_file: self.local_path.as_ref().map(|p| p.display().to_string()),
             lamp_applies: self.lamp_applies.clone(),
             keyboard_lamp_arrays: self.keyboard_lamps.clone(),
+            openrgb: OpenRgbView {
+                settings: self.openrgb.settings.clone(),
+                connected: self.openrgb.client.is_some(),
+                status: self
+                    .openrgb
+                    .settings
+                    .enabled
+                    .then(|| self.openrgb.status.clone())
+                    .flatten(),
+            },
         }
     }
 }
@@ -1110,6 +1325,9 @@ pub fn start() {
     let _ = super::services::spawn_supervised("pc-lights", move || {
         let rx = rx.lock().unwrap_or_else(|e| e.into_inner());
         let settings = super::store::try_load::<Settings>("pc_lighting").unwrap_or_default();
+        // Off unless the user turned it on (#471).
+        let openrgb_settings =
+            super::store::try_load::<openrgb::Settings>(OPENRGB_SECTION).unwrap_or_default();
         #[cfg(target_os = "windows")]
         let _watch = {
             let tx = tx.clone();
@@ -1142,8 +1360,19 @@ pub fn start() {
                     "Windows changed a Dynamic Lighting device's availability",
                 );
             }))
+        })
+        .with_openrgb(openrgb_settings, {
+            // OpenRGB's push, on its reader thread: one message to this queue.
+            let tx = Mutex::new(tx.clone());
+            Arc::new(move |conn, event| {
+                let tx = tx.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = ticketed(&tx, Msg::OpenRgbEvent(conn, event));
+            })
         });
         let _ = ticketed(&tx, Msg::Scan);
+        if worker.openrgb_settings().enabled {
+            let _ = ticketed(&tx, Msg::OpenRgbConnect);
+        }
         while let Ok(first) = rx.recv() {
             // A burst of arrivals (a hub with several interfaces) scans once.
             let mut batch = vec![first];
@@ -1165,6 +1394,24 @@ pub fn start() {
             if std::mem::take(&mut worker.rescan) {
                 scan(&mut worker, false);
             }
+            if std::mem::take(&mut worker.relist) {
+                scanned = true;
+                worker.relist(&mut |names| process_running(names), super::pause::paused());
+            }
+            if std::mem::take(&mut worker.openrgb_dirty) {
+                if let Err(e) = super::store::save(OPENRGB_SECTION, worker.openrgb_settings()) {
+                    eprintln!("Foxglove: can't save the OpenRGB settings: {e}");
+                }
+            }
+            // The user asked to try again after OpenRGB goes: one bounded wait per try, on the
+            // crate's backoff (at most a few, then it stops).
+            if let Some(wait) = worker.openrgb_retry.take() {
+                let tx = tx.clone();
+                let _ = super::services::spawn_named("openrgb-retry", move || {
+                    std::thread::sleep(wait);
+                    let _ = ticketed(&tx, Msg::OpenRgbConnect);
+                });
+            }
             if std::mem::take(&mut worker.dirty) {
                 if let Err(e) = super::store::save("pc_lighting", &worker.settings) {
                     eprintln!("Foxglove: can't save the PC lighting settings: {e}");
@@ -1181,6 +1428,9 @@ pub fn start() {
         }
     });
 }
+
+/// The store's section for the OpenRGB settings (#471).
+pub const OPENRGB_SECTION: &str = "openrgb";
 
 /// Drops every [`Msg::Show`] (and [`Msg::SceneFrame`]) a later one for the same device
 /// replaces: the calibrator's sliders and a scene can ask faster than a board writes, and only
@@ -2851,5 +3101,232 @@ zones = [{ id = 3, name = \"Logo\" }]
             end_scene(std::time::Duration::from_millis(10)),
             "no worker: nothing to wait for"
         );
+    }
+
+    /// A fake OpenRGB server (#471) serving one four-LED memory module, and a worker pointed at
+    /// it whose OpenRGB news lands in a channel.
+    mod openrgb_fake {
+        use super::*;
+        use foxglove_devices::pc_lighting::openrgb::client::fake::{Answers, Fake};
+        use foxglove_devices::pc_lighting::openrgb::wire::fixture::{controller, ZoneFx};
+
+        pub const KEY: &str = "openrgb:Memory module:SN-1";
+
+        pub fn server() -> Fake {
+            Fake::start(
+                Answers::Version(4),
+                vec![Box::new(|v| {
+                    controller(
+                        v,
+                        "Memory module",
+                        "SN-1",
+                        &[ZoneFx {
+                            name: "Stick",
+                            leds: 4,
+                            matrix: None,
+                            segments: vec![],
+                        }],
+                        |i| format!("LED {}", i + 1),
+                        [0; 3],
+                    )
+                })],
+            )
+        }
+
+        pub fn on(port: u16, reconnect: bool) -> openrgb::Settings {
+            openrgb::Settings {
+                enabled: true,
+                port,
+                reconnect,
+                ..Default::default()
+            }
+        }
+
+        pub type News = mpsc::Receiver<(u64, openrgb::Event)>;
+
+        pub fn worker(settings: Settings, openrgb: openrgb::Settings) -> (Worker, News) {
+            let (w, _) = super::worker(settings);
+            let (tx, rx) = mpsc::channel();
+            let tx = Mutex::new(tx);
+            let events: OpenRgbEvents = Arc::new(move |conn, e| {
+                let _ = tx.lock().unwrap().send((conn, e));
+            });
+            (w.with_openrgb(openrgb, events), rx)
+        }
+
+        /// The next news, handed to the worker, and the list placed again.
+        pub fn next(w: &mut Worker, news: &News) -> openrgb::Event {
+            let (conn, e) = news.recv_timeout(openrgb::TIMEOUT).expect("OpenRGB's news");
+            w.handle(Msg::OpenRgbEvent(conn, e), false, &mut no_wait());
+            if std::mem::take(&mut w.relist) {
+                w.relist(&mut nothing(), false);
+            }
+            e
+        }
+
+        pub fn connect(w: &mut Worker) {
+            w.handle(Msg::OpenRgbConnect, false, &mut no_wait());
+            assert!(std::mem::take(&mut w.relist));
+            w.relist(&mut nothing(), false);
+        }
+    }
+
+    /// #471: off by default, nothing connects and no OpenRGB row shows; on, OpenRGB's
+    /// controllers are rows beside the HID devices ("Through OpenRGB"), saved colours go back
+    /// on when they arrive, scenes drive them, and OpenRGB's push lists them again.
+    #[test]
+    fn openrgb_controllers_are_light_sources_once_turned_on() {
+        use foxglove_devices::pc_lighting::openrgb::wire::id;
+        use openrgb_fake::*;
+        // Off (the default): a connect request opens nothing.
+        let (mut off, _news) = openrgb_fake::worker(Settings::default(), Default::default());
+        off.scan(&case_hid(), &mut nothing(), false, true);
+        off.handle(Msg::OpenRgbConnect, false, &mut no_wait());
+        assert!(!off.relist && off.openrgb_retry.is_none());
+        let s = off.snapshot();
+        assert!(!s.openrgb.settings.enabled && !s.openrgb.connected);
+        assert_eq!(s.openrgb.status, None);
+        assert!(s.devices.iter().all(|r| r.control != Control::OpenRgb));
+
+        let fake = server();
+        let mut saved = Settings::default();
+        saved.devices.insert(
+            KEY.into(),
+            Saved {
+                colors: [("1".to_string(), "#ff0000".to_string())].into(),
+                match_keyboard: false,
+            },
+        );
+        let (mut w, news) = openrgb_fake::worker(saved, on(fake.addr.port(), false));
+        w.scan(&case_hid(), &mut nothing(), false, true);
+        let hid_rows = w.snapshot().devices.len();
+        connect(&mut w);
+        let s = w.snapshot();
+        assert!(s.openrgb.connected, "{:?}", s.openrgb);
+        assert_eq!(
+            s.openrgb.status.as_deref(),
+            Some(
+                format!(
+                    "Connected to OpenRGB at 127.0.0.1:{}: 1 device",
+                    fake.addr.port()
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(s.devices.len(), hid_rows + 1, "beside the HID devices");
+        let row = s.devices.iter().find(|r| r.key == KEY).unwrap();
+        assert_eq!(row.control, Control::OpenRgb);
+        assert_eq!(row.name, "Memory module");
+        assert_eq!(row.zone_ids, vec!["0", "1", "2", "3"]);
+        assert_eq!(row.zones[1], ("LED 2".to_string(), Some([255, 0, 0])));
+
+        // A scene drives it like any board.
+        w.handle(Msg::SceneStart, false, &mut no_wait());
+        w.handle(
+            Msg::SceneFrame {
+                key: KEY.into(),
+                colors: (0..4).map(|i| (i, [0, 0, 255])).collect(),
+            },
+            false,
+            &mut no_wait(),
+        );
+        // OpenRGB's push lists it again (a round trip: the fake has read every write).
+        fake.push.send(Some(())).unwrap();
+        assert_eq!(next(&mut w, &news), openrgb::Event::DeviceListUpdated);
+        // Read in order: the saved colour on LED 2 alone, then the frame on every LED.
+        assert!(
+            !fake.sent(id::SETCUSTOMMODE).is_empty(),
+            "custom mode first"
+        );
+        let zone = fake.sent(id::UPDATEZONELEDS);
+        assert!(
+            zone.first()
+                .is_some_and(|p| p.payload[14..18] == [255, 0, 0, 0]),
+            "the saved colour: {zone:?}"
+        );
+        let all = fake.sent(id::UPDATELEDS);
+        assert!(
+            all.first()
+                .is_some_and(|p| p.payload[6..10] == [0, 0, 255, 0]),
+            "the frame lit every LED: {all:?}"
+        );
+        assert!(
+            w.snapshot().devices.iter().any(|r| r.key == KEY),
+            "listed again"
+        );
+
+        // OpenRGB quits: its rows go, and (not asked to) nothing tries again.
+        drop(fake);
+        assert_eq!(next(&mut w, &news), openrgb::Event::Disconnected);
+        let s = w.snapshot();
+        assert!(s.devices.iter().all(|r| r.control != Control::OpenRgb));
+        assert_eq!(s.devices.len(), hid_rows);
+        assert_eq!(
+            s.openrgb.status.as_deref(),
+            Some("OpenRGB closed the connection")
+        );
+        assert!(!s.openrgb.connected && w.openrgb_retry.is_none());
+
+        // Turned off: saved, no status line.
+        w.handle(
+            Msg::OpenRgbSettings(openrgb::Settings::default()),
+            false,
+            &mut no_wait(),
+        );
+        assert!(w.openrgb_dirty);
+        assert_eq!(w.snapshot().openrgb.status, None);
+    }
+
+    /// #471: with nothing listening, the status says so; "try again" (its own opt-in) waits
+    /// on the crate's bounded backoff, a connection's late news is dropped, and a new address
+    /// connects anew.
+    #[test]
+    fn openrgb_retries_only_when_asked_and_on_a_bounded_backoff() {
+        use openrgb_fake::*;
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        let (mut w, _news) = openrgb_fake::worker(Settings::default(), on(port, false));
+        connect(&mut w);
+        let status = w.snapshot().openrgb.status.unwrap();
+        assert!(
+            status.starts_with(&format!("Can't reach OpenRGB at 127.0.0.1:{port}")),
+            "{status}"
+        );
+        assert_eq!(w.openrgb_retry, None, "not asked to try again");
+
+        w.handle(Msg::OpenRgbSettings(on(port, true)), false, &mut no_wait());
+        assert!(w.openrgb_dirty);
+        let mut waits = Vec::new();
+        while let Some(wait) = w.openrgb_retry.take() {
+            waits.push(wait.as_secs());
+            w.handle(Msg::OpenRgbConnect, false, &mut no_wait());
+        }
+        assert_eq!(waits, vec![1, 2, 4, 8, 16, 30, 30, 30], "then it stops");
+        assert!(
+            w.snapshot()
+                .openrgb
+                .status
+                .unwrap()
+                .ends_with("stopped trying"),
+            "says so"
+        );
+
+        // A server at another address: connected, and the old connection's news is dropped.
+        let fake = server();
+        w.handle(
+            Msg::OpenRgbSettings(on(fake.addr.port(), true)),
+            false,
+            &mut no_wait(),
+        );
+        w.relist(&mut nothing(), false);
+        assert!(w.snapshot().openrgb.connected);
+        w.handle(
+            Msg::OpenRgbEvent(0, openrgb::Event::Disconnected),
+            false,
+            &mut no_wait(),
+        );
+        assert!(w.snapshot().openrgb.connected, "an older connection's news");
+        assert!(w.snapshot().devices.iter().any(|r| r.key == KEY));
     }
 }

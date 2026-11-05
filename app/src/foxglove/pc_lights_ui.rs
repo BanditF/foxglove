@@ -9,6 +9,9 @@
 //! "All lamps" row, per-key colour lives in Scenes), and one muted line on what Windows lets
 //! Foxglove do with it.
 //!
+//! "Use OpenRGB's devices" (#471, off by default) adds the controllers a running OpenRGB
+//! drives as rows like any other, "Through OpenRGB"; its host and port sit under the toggle.
+//!
 //! [`show`] reads the worker's snapshot and sends clicks to it; [`draw`] paints a [`View`] and
 //! returns [`Intent`]s, so the previews and tests need no hardware. Colours are picked first
 //! and written on Apply: dragging a picker sends nothing.
@@ -18,7 +21,7 @@ use std::sync::Mutex;
 
 use egui::{Color32, RichText, Sense, Stroke};
 use foxglove_devices::pc_lighting::{
-    self as pc_lighting, zones as zone_words, CatalogDevice, Control, LightCaps, Protocol,
+    self as pc_lighting, openrgb, zones as zone_words, CatalogDevice, Control, LightCaps, Protocol,
 };
 
 use super::pc_lights::{self, Msg, Row, Snapshot};
@@ -60,6 +63,10 @@ pub enum Intent {
     Calibrate(String),
     /// Open it at a picked colour on a zone, to add a match for it.
     CalibrateColor(String, Option<String>, [u8; 3]),
+    /// New OpenRGB settings (#471): the toggle, or a host and port to connect to.
+    OpenRgb(openrgb::Settings),
+    /// Connect to OpenRGB again at the same address.
+    OpenRgbConnect,
 }
 
 /// The colours being picked per device (by key), until Apply.
@@ -68,6 +75,8 @@ pub struct Draft {
     pub colors: BTreeMap<String, Vec<Option<[u8; 3]>>>,
     /// The device whose "Remove" was clicked in its More menu, waiting for the second click.
     pub removing: Option<String>,
+    /// OpenRGB's host and port as being typed, until Connect.
+    pub openrgb: Option<(String, String)>,
 }
 
 impl Draft {
@@ -172,6 +181,11 @@ pub fn show(ui: &mut egui::Ui) {
                     super::calibrate_ui::open_at(target, zone, Some(color));
                 }
             }
+            Intent::OpenRgb(settings) => {
+                draft.openrgb = None;
+                pc_lights::send(Msg::OpenRgbSettings(settings));
+            }
+            Intent::OpenRgbConnect => pc_lights::send(Msg::OpenRgbConnect),
         }
     }
 }
@@ -190,6 +204,7 @@ pub fn control_text(c: Control) -> &'static str {
         Control::Driver(_) => "Built-in support",
         Control::LampArray => "Windows lighting",
         Control::NotYet => "Not controllable yet",
+        Control::OpenRgb => "Through OpenRGB",
     }
 }
 
@@ -226,6 +241,9 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
         }
         ui.add_space(8.0);
         ui.separator();
+        openrgb_row(ui, &s.openrgb, draft, &mut out);
+        ui.add_space(8.0);
+        ui.separator();
         add::draw(ui, s, wizard, &mut out);
         if let Some(status) = &s.status {
             ui.add_space(6.0);
@@ -233,6 +251,107 @@ pub fn draw(ui: &mut egui::Ui, v: &View, draft: &mut Draft, wizard: &mut Wizard)
         }
     });
     out
+}
+
+/// "Use OpenRGB's devices" (#471): the toggle; while it's on, the server's host and port, a
+/// Connect for typed ones, "try again" and how the connection is.
+fn openrgb_row(
+    ui: &mut egui::Ui,
+    v: &pc_lights::OpenRgbView,
+    draft: &mut Draft,
+    out: &mut Vec<Intent>,
+) {
+    let p = theme::palette(ui);
+    let s = &v.settings;
+    let mut on = s.enabled;
+    if ui
+        .checkbox(
+            &mut on,
+            RichText::new("Use OpenRGB's devices")
+                .color(p.text_strong)
+                .strong(),
+        )
+        .on_hover_text(
+            "List the devices a running OpenRGB drives (memory, graphics cards, motherboards, \
+             fans) here, so Foxglove and its scenes can light them. Turn on OpenRGB's SDK \
+             server first.",
+        )
+        .changed()
+    {
+        draft.openrgb = None;
+        out.push(Intent::OpenRgb(openrgb::Settings {
+            enabled: on,
+            ..s.clone()
+        }));
+    }
+    if !s.enabled {
+        ui.weak("Off: Foxglove doesn't connect to OpenRGB.");
+        return;
+    }
+    let (host, port) = draft
+        .openrgb
+        .get_or_insert_with(|| (s.host.clone(), s.port.to_string()));
+    let typed = port
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .map(|port| openrgb::Settings {
+            host: host.trim().to_string(),
+            port,
+            ..s.clone()
+        });
+    let valid = typed.as_ref().filter(|t| t.addr().is_some());
+    let mut connect = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.label(theme::caps_label(ui, "Host"));
+        ui.add(egui::TextEdit::singleline(host).desired_width(120.0))
+            .on_hover_text("OpenRGB's address: an IP address, or localhost");
+        ui.label(theme::caps_label(ui, "Port"));
+        ui.add(
+            egui::TextEdit::singleline(port)
+                .desired_width(56.0)
+                .char_limit(5),
+        );
+        connect = ui
+            .add_enabled(
+                valid.is_some_and(|t| t != s) || !v.connected && valid.is_some(),
+                egui::Button::new("Connect"),
+            )
+            .on_hover_text("Connect to OpenRGB at this address")
+            .clicked();
+    });
+    if valid.is_none() {
+        ui.label(
+            RichText::new("Host: an IP address or localhost; port: 1 to 65535.").color(p.warn),
+        );
+    }
+    let mut again = s.reconnect;
+    if ui
+        .checkbox(&mut again, "Try again when OpenRGB isn't running")
+        .on_hover_text("A few tries, a little longer apart each time, then Foxglove stops")
+        .changed()
+    {
+        out.push(Intent::OpenRgb(openrgb::Settings {
+            reconnect: again,
+            ..s.clone()
+        }));
+    }
+    if let Some(status) = &v.status {
+        ui.label(
+            RichText::new(status)
+                .color(if v.connected { p.muted } else { p.warn })
+                .font(theme::mono(12.0)),
+        );
+    }
+    if connect {
+        match valid.cloned() {
+            // The same address, not connected now: try it again.
+            Some(t) if &t == s => out.push(Intent::OpenRgbConnect),
+            Some(t) => out.push(Intent::OpenRgb(t)),
+            None => {}
+        }
+    }
 }
 
 /// A row of small capability chips.
@@ -257,7 +376,7 @@ pub fn chips(ui: &mut egui::Ui, chips: &[String]) {
 /// (#691; Windows' access to it is known only then).
 pub fn driven(row: &Row) -> bool {
     match row.control {
-        Control::Driver(_) => true,
+        Control::Driver(_) | Control::OpenRgb => true,
         Control::LampArray => row.lamp_access.is_some(),
         Control::NotYet => false,
     }
@@ -270,7 +389,8 @@ pub const MAX_LAMP_PICKERS: usize = 12;
 /// Whether a device gets a colour picker per zone (or lamp).
 fn pickers(row: &Row) -> bool {
     row.caps.per_zone()
-        && (row.control != Control::LampArray || row.zones.len() <= MAX_LAMP_PICKERS)
+        && (!matches!(row.control, Control::LampArray | Control::OpenRgb)
+            || row.zones.len() <= MAX_LAMP_PICKERS)
 }
 
 /// What Windows lets Foxglove do with a Dynamic Lighting device, in one line (#691): from
@@ -366,8 +486,10 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
     );
     light_line(ui, &row.caps);
     match row.control {
-        Control::Driver(_) if row.caps.takes_color() => zones(ui, row, busy, draft, out),
-        Control::Driver(_) => {}
+        Control::Driver(_) | Control::OpenRgb if row.caps.takes_color() => {
+            zones(ui, row, busy, draft, out)
+        }
+        Control::Driver(_) | Control::OpenRgb => {}
         Control::LampArray => match row.lamp_access {
             Some(access) => {
                 if row.caps.takes_color() {
@@ -439,7 +561,7 @@ fn more(ui: &mut egui::Ui, row: &Row, entry: &str, draft: &mut Draft, out: &mut 
 pub fn effect_of(control: Control) -> Option<&'static super::effect_controls::EffectSpec> {
     use super::effect_controls::{spec, EffectClass};
     match control {
-        Control::Driver(_) => spec(EffectClass::PcLights, "static"),
+        Control::Driver(_) | Control::OpenRgb => spec(EffectClass::PcLights, "static"),
         Control::LampArray => spec(EffectClass::LampArray, "static"),
         Control::NotYet => None,
     }
@@ -502,6 +624,7 @@ fn zones(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut 
             match (row.caps.per_zone(), row.control) {
                 (false, _) => "Colour",
                 (true, Control::LampArray) => "All lamps",
+                (true, Control::OpenRgb) => "All LEDs",
                 (true, _) => "All zones",
             },
         ));
@@ -747,6 +870,7 @@ pub mod tests {
                 ],
                 lamp_applies: Default::default(),
                 keyboard_lamp_arrays: Vec::new(),
+                openrgb: Default::default(),
                 local_file: Some(
                     r"C:\Users\you\AppData\Roaming\Foxglove\lighting-catalog.local.toml".into(),
                 ),
@@ -788,6 +912,110 @@ pub mod tests {
                 ..Default::default()
             },
         }
+    }
+
+    /// An OpenRGB controller as the worker lists it (#471): `leds` LEDs, a zone each.
+    pub fn openrgb_row(name: &str, leds: usize, color: Option<[u8; 3]>) -> Row {
+        Row {
+            key: format!("openrgb:{name}:#0"),
+            name: name.into(),
+            control: Control::OpenRgb,
+            zones: (0..leds)
+                .map(|i| (format!("LED {}", i + 1), color))
+                .collect(),
+            match_keyboard: false,
+            caps: LightCaps {
+                color: Color::PerLed,
+                count: leds as u32,
+                effects: vec!["Direct".into(), "Static".into(), "Rainbow".into()],
+                ..Default::default()
+            },
+            entry: None,
+            zone_ids: (0..leds).map(|i| i.to_string()).collect(),
+            calibration: None,
+            calibrated: false,
+            size: None,
+            zone_positions: vec![],
+            zone_roles: vec![],
+            kind: Default::default(),
+            lamp_access: None,
+        }
+    }
+
+    /// The second desk's case board with "Use OpenRGB's devices" on (#471): a four-LED memory
+    /// module and a 40-LED fan hub through OpenRGB.
+    pub fn sample_openrgb() -> View {
+        let mut v = sample_second_desk();
+        v.pc.devices.truncate(1);
+        v.pc.devices
+            .push(openrgb_row("Memory module", 4, Some([0xf0, 0x8a, 0x3c])));
+        v.pc.devices.push(openrgb_row("ARGB fan hub", 40, None));
+        v.pc.openrgb = pc_lights::OpenRgbView {
+            settings: openrgb::Settings {
+                enabled: true,
+                ..Default::default()
+            },
+            connected: true,
+            status: Some("Connected to OpenRGB at 127.0.0.1:6742: 2 devices".into()),
+        };
+        v
+    }
+
+    /// #471: off by default, the card says so and lists nothing of OpenRGB's; on, its
+    /// controllers are rows like any other ("Through OpenRGB") with pickers up to 12 LEDs and
+    /// one "All LEDs" row past that, and the host and port sit under the toggle.
+    #[test]
+    fn openrgb_is_off_until_turned_on_then_its_devices_are_rows() {
+        let text = shown(&sample_second_desk());
+        assert!(text.contains("Use OpenRGB's devices"), "{text}");
+        assert!(
+            text.contains("Foxglove doesn't connect to OpenRGB"),
+            "{text}"
+        );
+        assert!(!text.contains("Through OpenRGB") && !text.contains("HOST"));
+        let text = shown(&sample_openrgb());
+        for want in [
+            "Memory module",
+            "ARGB fan hub",
+            "Through OpenRGB",
+            "LED 4",
+            "ALL LEDS",
+            "HOST",
+            "127.0.0.1",
+            "6742",
+            "Try again when OpenRGB isn't running",
+            "Connected to OpenRGB at 127.0.0.1:6742: 2 devices",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
+        assert!(!text.contains("LED 40"), "40 LEDs: one row, no picker each");
+        assert_eq!(
+            text.matches("Through OpenRGB").count(),
+            2,
+            "one label per device"
+        );
+        assert!(driven(&openrgb_row("x", 1, None)));
+        assert!(effect_of(Control::OpenRgb).is_some_and(|e| e.uses_colour()));
+    }
+
+    /// A typed host that is not an IP address or localhost says why (no name lookups).
+    #[test]
+    fn a_typed_openrgb_address_is_checked_before_connect() {
+        let v = sample_openrgb();
+        let mut draft = Draft {
+            openrgb: Some(("openrgb.example".into(), "6742".into())),
+            ..Draft::default()
+        };
+        let text = shown_with(&v, &mut draft);
+        assert!(text.contains("an IP address or localhost"), "{text}");
+        // Typed another address: the draft holds it until Connect.
+        let mut draft = Draft {
+            openrgb: Some(("192.168.1.20".into(), "6743".into())),
+            ..Draft::default()
+        };
+        let text = shown_with(&v, &mut draft);
+        assert!(!text.contains("an IP address or localhost"), "{text}");
+        assert!(text.contains("192.168.1.20") && text.contains("Connect"));
     }
 
     #[test]
@@ -979,6 +1207,7 @@ pub mod tests {
         );
         assert_eq!(control_text(Control::LampArray), "Windows lighting");
         assert_eq!(control_text(Control::NotYet), "Not controllable yet");
+        assert_eq!(control_text(Control::OpenRgb), "Through OpenRGB");
     }
 
     /// A headless context with the app's fonts and theme.

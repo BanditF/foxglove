@@ -457,7 +457,7 @@ fn gather() -> (foxglove_scene::RoomMap, Vec<CaseTarget>, Vec<LampTarget>) {
     let rows = super::pc_lights::snapshot().devices;
     let cases = rows
         .iter()
-        .filter(|r| matches!(r.control, Control::Driver(_)))
+        .filter(|r| matches!(r.control, Control::Driver(_) | Control::OpenRgb))
         .map(|r| CaseTarget {
             key: r.key.clone(),
             zone_ids: r.zone_ids.clone(),
