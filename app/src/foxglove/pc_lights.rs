@@ -1238,6 +1238,7 @@ impl Worker {
                 caps: LightCaps::default(),
                 local: false,
                 calibration: None,
+                calibration_hint: None,
                 size: None,
                 kind: pcl::DeviceKind::default(),
                 conflicts: Vec::new(),
