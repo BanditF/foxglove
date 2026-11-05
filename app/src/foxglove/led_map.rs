@@ -116,6 +116,15 @@ fn load() -> Saved {
     super::store::try_load(SECTION).unwrap_or_default()
 }
 
+/// `[led_map]` is read, changed and written back whole, so writers take turns: two saves (or a
+/// save and a forget) at once would otherwise drop each other's board. Tests that write the
+/// whole section hold it too.
+static EDIT: Mutex<()> = Mutex::new(());
+
+fn edit_lock() -> std::sync::MutexGuard<'static, ()> {
+    EDIT.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// The saved map for a board, if any.
 pub fn saved(board: &str) -> Option<BoardLeds> {
     load().boards.remove(board)
@@ -180,9 +189,12 @@ fn apply_leds(board: &mut Board, leds: &BoardLeds) {
 /// Saves a board's map and puts it into the connected keyboard's profile at once; the scenes'
 /// room is built again.
 pub fn save(board: &str, leds: BoardLeds) -> std::io::Result<()> {
-    let mut all = load();
-    all.boards.insert(board.to_string(), leds);
-    super::store::save(SECTION, &all)?;
+    {
+        let _edit = edit_lock();
+        let mut all = load();
+        all.boards.insert(board.to_string(), leds);
+        super::store::save(SECTION, &all)?;
+    }
     super::boards::led_map_changed();
     super::scene_run::devices_changed();
     Ok(())
@@ -191,11 +203,14 @@ pub fn save(board: &str, leds: BoardLeds) -> std::io::Result<()> {
 /// "Forget my check" (#611): drops a board's saved map, so its profile's map (or the
 /// keyboard's own report) is the source again. Nothing to forget is no error.
 pub fn forget(board: &str) -> std::io::Result<()> {
-    let mut all = load();
-    if all.boards.remove(board).is_none() {
-        return Ok(());
+    {
+        let _edit = edit_lock();
+        let mut all = load();
+        if all.boards.remove(board).is_none() {
+            return Ok(());
+        }
+        super::store::save(SECTION, &all)?;
     }
-    super::store::save(SECTION, &all)?;
     super::boards::led_map_changed();
     super::scene_run::devices_changed();
     Ok(())
