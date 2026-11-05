@@ -64,8 +64,12 @@ thread_local! {
     pub static PREVIEW_OPEN: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Whether `device`'s drawing is open (this session only).
+/// Whether `device`'s drawing is open (this session only). With egui's "everything is visible"
+/// (the tests that look for every sentence, #794) it is open.
 pub fn is_open(ctx: &egui::Context, device: &str) -> bool {
+    if ctx.memory(|m| m.everything_is_visible()) {
+        return true;
+    }
     #[cfg(test)]
     if PREVIEW_OPEN.with_borrow(|open| open.iter().any(|d| d == device)) {
         return true;
@@ -161,21 +165,30 @@ pub fn mirrored(z: &Zones) -> bool {
     }
 }
 
-/// The keyboard's drawing under its summary line: source line, board, zone list and footer.
+/// The drawing's title on the Keyboard card.
+pub const TITLE: &str = "Zones";
+
+/// The keyboard's drawing under its summary line: a header (its title, with how per-key looks
+/// land on zones on hover, and the source as a chip, #794 K7/K9), board, zone list and footer.
 /// `check` says Check zones… can run on the connected keyboard.
 pub fn keyboard(ui: &mut egui::Ui, line: &Line, check: bool) -> Option<Ask> {
     let z = line.zones.as_ref()?;
-    let p = theme::palette(ui);
-    if let Some(source) = &line.source {
-        ui.add(egui::Label::new(RichText::new(source).color(p.muted).size(12.5)).wrap());
-    }
+    ui.horizontal_wrapped(|ui| {
+        let title = ui.label(theme::caps_label(ui, TITLE));
+        if line.kind == ZoneKind::Zones {
+            title.on_hover_text(words::ZONE_LOOKS);
+        }
+        if let Some(source) = &line.source {
+            theme::hint_chip(ui, source, None, None);
+        }
+    });
     ui.add_space(4.0);
     let per_key = line.kind == ZoneKind::PerLed;
     board(ui, line, z, per_key);
     if !per_key {
         list(ui, z);
     }
-    footer(ui, z, line.dead.as_deref(), line.kind, Some(check))
+    footer(ui, z, line.dead.as_deref(), line.kind, false, Some(check))
 }
 
 /// The board, top-down: each zone's keys tinted, a numbered dot on its top key (none on a
@@ -346,18 +359,19 @@ pub fn device(ui: &mut egui::Ui, caps: &LightCaps, names: &[String]) {
         });
         entries(ui, tiles, kind == ZoneKind::Zones);
     }
-    footer(ui, z, words::dead_line(z).as_deref(), kind, None);
+    footer(ui, z, words::dead_line(z).as_deref(), kind, true, None);
 }
 
 /// The muted footer, at most three lines: lamps that light nothing, how per-key looks land on
-/// zones (zone devices only), and "Not right? Check zones…" (`check`: `None` where the probe
-/// isn't offered, else whether it can run now) with "Forget my check" while the user's own
-/// check wins.
+/// zones (zone devices only, with `looks`; the keyboard has it on its title's hover), and "Not
+/// right? Check zones…" (`check`: `None` where the probe isn't offered, else whether it can run
+/// now) with "Forget my check" while the user's own check wins.
 fn footer(
     ui: &mut egui::Ui,
     z: &Zones,
     dead: Option<&str>,
     kind: ZoneKind,
+    looks: bool,
     check: Option<bool>,
 ) -> Option<Ask> {
     let p = theme::palette(ui);
@@ -369,7 +383,7 @@ fn footer(
     if let Some(dead) = dead {
         muted(ui, dead);
     }
-    if kind == ZoneKind::Zones {
+    if looks && kind == ZoneKind::Zones {
         muted(ui, words::ZONE_LOOKS);
     }
     if let Some(can) = check {
