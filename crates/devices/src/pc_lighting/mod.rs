@@ -216,15 +216,7 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
         {
             continue;
         }
-        let name = entry
-            .product
-            .as_deref()
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .map_or_else(
-                || format!("Lighting device {:04x}:{:04x}", entry.vid, entry.pid),
-                str::to_string,
-            );
+        let name = lamp_array_name(hid, entry);
         found.push(Found {
             key,
             name,
@@ -246,6 +238,70 @@ pub fn discover(catalog: &Catalog, hid: &[HidEntry]) -> Vec<Found> {
         });
     }
     found
+}
+
+/// A LampArray's name: the device's own, as its other interfaces give it (a virtual LampArray,
+/// such as one a vendor's driver adds for a mouse, carries the driver's name, "HID VHF Driver"),
+/// else the LampArray interface's, else its VID/PID.
+fn lamp_array_name(hid: &[HidEntry], entry: &HidEntry) -> String {
+    let named = |e: &HidEntry| {
+        e.product
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+    };
+    hid.iter()
+        .filter(|o| (o.vid, o.pid) == (entry.vid, entry.pid))
+        .filter(|o| o.usage_page != LAMP_ARRAY_USAGE_PAGE)
+        .find_map(named)
+        .or_else(|| named(entry))
+        .unwrap_or_else(|| format!("Lighting device {:04x}:{:04x}", entry.vid, entry.pid))
+}
+
+/// A keyboard's own LampArray (#88, #754): Windows lists it under Dynamic Lighting, and
+/// [`discover`] leaves it out because the keyboard's link drives its lights. Listed so the app
+/// can say so instead of showing nothing for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyboardLampArray {
+    /// [`Found::key`]'s form: `vvvv:pppp`, plus the serial when the interface has one.
+    pub key: String,
+    pub name: String,
+    pub vid: u16,
+    pub pid: u16,
+    /// Over Bluetooth LE (HID over GATT), not USB.
+    pub bluetooth: bool,
+}
+
+/// HID over GATT's service in a Windows interface path: the interface is Bluetooth LE.
+const HOGP_SERVICE: &str = "00001812-0000-1000-8000-00805f9b34fb";
+
+/// The LampArray interfaces of keyboards with a Raw HID interface (the ones [`discover`] leaves
+/// to the keyboard's link), one per interface key; over USB and Bluetooth they are two.
+pub fn keyboard_lamp_arrays(hid: &[HidEntry]) -> Vec<KeyboardLampArray> {
+    let raw_hid_keyboard = |vid, pid| {
+        hid.iter()
+            .any(|o| (o.vid, o.pid) == (vid, pid) && o.usage_page == RAW_HID_USAGE_PAGE)
+    };
+    let mut out: Vec<KeyboardLampArray> = Vec::new();
+    for entry in hid {
+        let key = device_key(entry);
+        if entry.usage_page != LAMP_ARRAY_USAGE_PAGE
+            || entry.usage != LAMP_ARRAY_USAGE
+            || !raw_hid_keyboard(entry.vid, entry.pid)
+            || out.iter().any(|k| k.key == key)
+        {
+            continue;
+        }
+        out.push(KeyboardLampArray {
+            key,
+            name: lamp_array_name(hid, entry),
+            vid: entry.vid,
+            pid: entry.pid,
+            bluetooth: entry.path.to_ascii_lowercase().contains(HOGP_SERVICE),
+        });
+    }
+    out
 }
 
 fn device_key(entry: &HidEntry) -> String {
@@ -488,6 +544,81 @@ mod tests {
         let keys: Vec<_> = found.iter().map(|f| f.key.as_str()).collect();
         assert_eq!(keys, vec!["1234:5678"]);
         assert!(unknown(&catalog, &hid).is_empty());
+    }
+
+    /// #754: the keyboard's own LampArray, left out above, is still listed as the keyboard's,
+    /// over USB and over Bluetooth, named as the keyboard names itself.
+    #[test]
+    fn a_keyboards_own_lamp_arrays_are_listed_as_the_keyboards() {
+        let named = |e: HidEntry, name: &str| HidEntry {
+            product: Some(name.into()),
+            ..e
+        };
+        let usb = HidEntry {
+            serial: Some("1E89EF085AA8A635".into()),
+            ..entry(
+                0x1d50,
+                0x615e,
+                0x59,
+                1,
+                r"\\?\hid#vid_1d50&pid_615e&mi_04#7&1",
+            )
+        };
+        let ble = entry(
+            0x1d50,
+            0x615e,
+            0x59,
+            1,
+            r"\\?\hid#{00001812-0000-1000-8000-00805f9b34fb}_dev_vid&011d50_pid&615e#9&2",
+        );
+        let hid = vec![
+            named(entry(0x1d50, 0x615e, 1, 6, "corne-keys"), "Eyelash Corne"),
+            entry(0x1d50, 0x615e, 0xff60, 0x61, "corne-raw"),
+            usb,
+            ble,
+            entry(0x1234, 0x5678, 0x59, 1, "strip"),
+        ];
+        let k = keyboard_lamp_arrays(&hid);
+        let rows: Vec<_> = k
+            .iter()
+            .map(|k| (k.key.as_str(), k.name.as_str(), k.bluetooth))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("1d50:615e:1E89EF085AA8A635", "Eyelash Corne", false),
+                ("1d50:615e", "Eyelash Corne", true),
+            ]
+        );
+        assert!(
+            keyboard_lamp_arrays(&hid[2..]).is_empty(),
+            "no Raw HID, no keyboard"
+        );
+    }
+
+    /// A virtual LampArray (a vendor driver's, "HID VHF Driver") is named as its device is.
+    #[test]
+    fn a_lamp_array_takes_its_devices_own_name() {
+        let catalog = Catalog::bundled();
+        let hid = vec![
+            HidEntry {
+                product: Some("HID VHF Driver".into()),
+                ..entry(0x046d, 0xc332, 0x59, 1, "vhf")
+            },
+            HidEntry {
+                product: Some("G502 Proteus Spectrum".into()),
+                ..entry(0x046d, 0xc332, 1, 2, "mouse")
+            },
+            HidEntry {
+                product: Some("HID VHF Driver".into()),
+                ..entry(0x1234, 0x5678, 0x59, 1, "alone")
+            },
+        ];
+        let names: Vec<_> = discover(&catalog, &hid)
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(names, vec!["G502 Proteus Spectrum", "HID VHF Driver"]);
     }
 
     #[test]

@@ -746,6 +746,7 @@ pub mod tests {
                     },
                 ],
                 lamp_applies: Default::default(),
+                keyboard_lamp_arrays: Vec::new(),
                 local_file: Some(
                     r"C:\Users\you\AppData\Roaming\Foxglove\lighting-catalog.local.toml".into(),
                 ),

@@ -7,7 +7,7 @@
 //! The rows are the Keyboard health view's shared type (`foxglove_link::health::HealthRow`, #705),
 //! registered with `health::register` as "dynamic_lighting".
 
-use foxglove_devices::pc_lighting::{Control, LampAccess};
+use foxglove_devices::pc_lighting::{Control, KeyboardLampArray, LampAccess};
 
 use super::pc_lights::Snapshot;
 
@@ -48,9 +48,44 @@ pub use super::health::{HealthRow, Level};
 /// The health view's rows now, every Dynamic Lighting device's (registered with
 /// `health::register`).
 pub fn rows_now() -> Vec<HealthRow> {
-    super::pc_lights::lamp_health()
+    let mut out: Vec<HealthRow> = super::pc_lights::lamp_health()
         .iter()
         .flat_map(rows)
+        .collect();
+    out.extend(keyboard_rows(
+        &super::pc_lights::snapshot().keyboard_lamp_arrays,
+    ));
+    out
+}
+
+/// One row per keyboard that is also a LampArray (#754): Windows lists it under Dynamic
+/// Lighting (over USB, Bluetooth or both), and Foxglove drives its lights over the keyboard's
+/// own link instead (the Keyboard card), so it has no Dynamic Lighting device rows of its own.
+pub fn keyboard_rows(keyboards: &[KeyboardLampArray]) -> Vec<HealthRow> {
+    let mut names: Vec<&str> = Vec::new();
+    for k in keyboards {
+        if !names.contains(&k.name.as_str()) {
+            names.push(&k.name);
+        }
+    }
+    names
+        .into_iter()
+        .map(|name| {
+            let of = || keyboards.iter().filter(|k| k.name == name);
+            let via = match (of().any(|k| !k.bluetooth), of().any(|k| k.bluetooth)) {
+                (true, true) => "over USB and Bluetooth",
+                (false, true) => "over Bluetooth",
+                _ => "over USB",
+            };
+            HealthRow::new(
+                SUBSYSTEM,
+                format!("{name} (keyboard) · Found"),
+                Level::Ok,
+                format!(
+                    "Windows lists it {via}; Foxglove drives its lights over the keyboard's                      own link (the Keyboard card), not through Dynamic Lighting"
+                ),
+            )
+        })
         .collect()
 }
 
@@ -158,6 +193,38 @@ mod tests {
 
     fn levels(h: &LampHealth) -> Vec<(String, Level)> {
         rows(h).into_iter().map(|r| (r.item, r.level)).collect()
+    }
+
+    /// #754: a keyboard that is also a LampArray is named in the Dynamic Lighting rows, once
+    /// for USB and Bluetooth, as the keyboard's.
+    #[test]
+    fn a_keyboards_own_lamp_array_has_one_row_labelled_as_the_keyboard() {
+        let corne = |key: &str, bluetooth| KeyboardLampArray {
+            key: key.into(),
+            name: "Eyelash Corne".into(),
+            vid: 0x1d50,
+            pid: 0x615e,
+            bluetooth,
+        };
+        let r = keyboard_rows(&[corne("1d50:615e:1E89", false), corne("1d50:615e", true)]);
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert_eq!(r[0].item, "Eyelash Corne (keyboard) · Found");
+        assert_eq!(
+            (r[0].level, r[0].subsystem.as_str()),
+            (Level::Ok, SUBSYSTEM)
+        );
+        assert!(
+            r[0].detail
+                .starts_with("Windows lists it over USB and Bluetooth; "),
+            "{r:?}"
+        );
+        assert!(r[0].detail.contains("the Keyboard card"), "{r:?}");
+        let usb = keyboard_rows(&[corne("1d50:615e:1E89", false)]);
+        assert!(
+            usb[0].detail.starts_with("Windows lists it over USB;"),
+            "{usb:?}"
+        );
+        assert!(keyboard_rows(&[]).is_empty());
     }
 
     #[test]
