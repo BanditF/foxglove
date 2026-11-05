@@ -1800,6 +1800,71 @@ fn pc_lights_render() {
     assert_ne!(fresh, none);
 }
 
+/// #611's zone drawing and Check zones (docs/lighting-zones.md sections 2 to 4): the Corne's
+/// zones shown, the case's and the mouse's, a per-key board's, a keyboard whose zones are
+/// unknown, the probe mid-way with keys picked and at its end, and the Scenes page's words.
+#[test]
+fn zones_render() {
+    use crate::foxglove::shell::Page;
+    use crate::foxglove::zones_ui::PREVIEW_OPEN;
+    let mut shots = Vec::new();
+    let open = |keys: Vec<String>| PREVIEW_OPEN.set(keys);
+    open(vec![crate::foxglove::lights_page::ZONES_KEY.into()]);
+    let corne = shell_preview_with(Page::Lights, &Samples::full(), 1500.0);
+    keep("ui-611-zones-corne.png", &corne);
+    shots.push(corne);
+    // The Hub's cut on #775: rows with named pickers have no Show zones; the strip keeps it.
+    let mut s = Samples::full();
+    s.pc.pc
+        .devices
+        .push(crate::foxglove::pc_lights_ui::tests::strip_row());
+    open(s.pc.pc.devices.iter().map(|r| r.key.clone()).collect());
+    let devices = shell_preview_with(Page::Lights, &s, 1700.0);
+    keep("ui-611-zones-devices.png", &devices);
+    shots.push(devices);
+    open(vec![crate::foxglove::lights_page::ZONES_KEY.into()]);
+    let mut s = Samples::full();
+    let plank = crate::foxglove::fixtures::second_desk::board();
+    s.lights.parts = plank.parts();
+    s.lights.zones = Some(crate::foxglove::lights_page::tests::zone_line_of(&plank));
+    if let Some(st) = s.lights.state.as_mut() {
+        st.right = None;
+    }
+    let per_key = shell_preview_with(Page::Lights, &s, 1500.0);
+    keep("ui-611-zones-per-key.png", &per_key);
+    shots.push(per_key);
+    open(vec![]);
+    let mut s = Samples::full();
+    s.lights = crate::foxglove::lights_page::tests::sample_zones_unknown();
+    let unknown = shell_preview_with(Page::Lights, &s, 1180.0);
+    keep("ui-611-zones-unknown.png", &unknown);
+    shots.push(unknown);
+    // The probe: lamp 10 on the left half lit, two keys picked; then the end.
+    let mut s = Samples::full();
+    let (v, mut w) = crate::foxglove::led_map_ui::tests::sample(9);
+    w.toggle(9);
+    w.toggle(10);
+    s.leds = Some((v, w));
+    let probe = shell_preview_with(Page::Lights, &s, 900.0);
+    keep("ui-611-check-zones.png", &probe);
+    shots.push(probe);
+    let mut s = Samples::full();
+    s.leds = Some(crate::foxglove::led_map_ui::tests::sample(42));
+    let done = shell_preview_with(Page::Lights, &s, 900.0);
+    keep("ui-611-check-zones-done.png", &done);
+    shots.push(done);
+    let mut s = Samples::full();
+    s.scenes.0.keyboard_frames = true;
+    let scenes = shell_preview_with(Page::Scenes, &s, 1000.0);
+    keep("ui-611-scenes-zones.png", &scenes);
+    shots.push(scenes);
+    for (i, a) in shots.iter().enumerate() {
+        for b in &shots[i + 1..] {
+            assert_ne!(a, b);
+        }
+    }
+}
+
 /// "Find my LEDs" (#90 row G): the Keyboard card's entry, the first LED while it lights, one
 /// mid-way on each half with the LEDs placed so far, the end with Save, and the Scenes page's
 /// prompt while the LEDs aren't placed.
@@ -1830,9 +1895,7 @@ fn led_map_renders() {
         keep(&format!("ui-ledmap-{name}.png"), &img);
         shots.push(img);
     }
-    // The LEDs placed so far are accent dots: more of them as it goes on.
-    let dots: Vec<usize> = shots.iter().map(|i| count(i, DARK.accent)).collect();
-    assert!(dots[1] > dots[0] && dots[2] > dots[1], "{dots:?}");
+    // Check zones (#611): the keys each lamp lit fill in as it goes on.
     for pair in shots.windows(2) {
         assert_ne!(pair[0], pair[1]);
     }

@@ -21,7 +21,7 @@ use std::sync::Mutex;
 
 use egui::{Color32, RichText, Sense, Stroke};
 use foxglove_devices::pc_lighting::{
-    self as pc_lighting, openrgb, zones as zone_words, CatalogDevice, Control, LightCaps, Protocol,
+    self as pc_lighting, openrgb, CatalogDevice, Control, Protocol,
 };
 
 use super::pc_lights::{self, Msg, Row, Snapshot};
@@ -393,6 +393,31 @@ fn pickers(row: &Row) -> bool {
             || row.zones.len() <= MAX_LAMP_PICKERS)
 }
 
+/// Whether the row already shows each zone by name: a colour picker per zone, drawn (the
+/// device takes colour from Foxglove now, its effect uses colour, and it has few enough zones).
+/// Same conditions as the row's own drawing, from the device's data alone.
+fn named_pickers(row: &Row) -> bool {
+    let drawn = match row.control {
+        Control::Driver(_) | Control::OpenRgb => true,
+        Control::LampArray => row.lamp_access.is_some(),
+        Control::NotYet => false,
+    };
+    drawn
+        && row.caps.takes_color()
+        && effect_of(row.control).is_some_and(|e| e.uses_colour())
+        && pickers(row)
+}
+
+/// Whether a device row offers **Show zones** (#611, the Hub's cut on #775): only where the
+/// drawing adds what the row can't show, so not when each zone already has a named picker on
+/// the row. A per-LED strip past [`MAX_LAMP_PICKERS`] (one "All" row) or a device Foxglove
+/// can't drive yet keeps it.
+pub fn offers_zones(row: &Row) -> bool {
+    row.caps.zones.is_some()
+        && super::zones_ui::drawable(row.caps.kind(false))
+        && !named_pickers(row)
+}
+
 /// What Windows lets Foxglove do with a Dynamic Lighting device, in one line (#691): from
 /// `IsEnabled` / `IsAvailable` and whether Foxglove has package identity (background control,
 /// #179). `None` when there's nothing to say.
@@ -417,23 +442,30 @@ pub fn lamp_line(access: pc_lighting::LampAccess, identity: bool) -> Option<&'st
 }
 
 /// A device's real lighting resolution (#611): one summary line ("5 lighting zones",
-/// "Per-LED lighting, 24 lamps"), where it came from on hover, and its screens' chips. It
-/// replaces the light, brightness and onboard-effect chips (docs/lighting-zones.md section 6).
-fn light_line(ui: &mut egui::Ui, caps: &LightCaps) {
+/// "Per-LED lighting, 24 lamps") with what it means on hover, **Show zones** where the
+/// drawing adds to the row ([`offers_zones`]), and its screens' chips. It
+/// replaces the light, brightness and onboard-effect chips (section 6).
+fn light_line(ui: &mut egui::Ui, row: &Row) {
+    let caps = &row.caps;
     let p = theme::palette(ui);
     let mut others = caps.screen_chips();
+    let mut open = false;
     match caps.summary(false) {
         Some(summary) => {
-            let mut tip = vec![super::light_zones::TIP.to_string()];
-            if let Some(z) = &caps.zones {
-                tip.push(zone_words::source_line(z, false));
-                tip.extend(zone_words::dead_line(z));
-            }
-            ui.add(egui::Label::new(RichText::new(summary).color(p.text)).wrap())
-                .on_hover_text(tip.join("\n"));
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::Label::new(RichText::new(summary).color(p.text)).wrap())
+                    .on_hover_text(super::light_zones::TIP);
+                if offers_zones(row) {
+                    open = super::zones_ui::toggle(ui, &row.key, caps.kind(false));
+                }
+            });
         }
         None if others.is_empty() => others.push("No lights Foxglove knows of".into()),
         None => {}
+    }
+    if open {
+        let names: Vec<String> = row.zones.iter().map(|(n, _)| n.clone()).collect();
+        super::zones_ui::device(ui, caps, &names);
     }
     if !others.is_empty() {
         chips(ui, &others);
@@ -484,7 +516,7 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
             }
         },
     );
-    light_line(ui, &row.caps);
+    light_line(ui, row);
     match row.control {
         Control::Driver(_) | Control::OpenRgb if row.caps.takes_color() => {
             zones(ui, row, busy, draft, out)
@@ -767,6 +799,19 @@ pub mod tests {
                     .map(String::from)
                     .to_vec(),
                 brightness: true,
+                // As the catalog gives it (#611): five areas.
+                zones: Some(pc_lighting::Zones {
+                    list: names
+                        .iter()
+                        .map(|n| pc_lighting::Zone {
+                            area: Some(n.to_string()),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    dead: vec![0],
+                    source: pc_lighting::ZoneSource::Catalog,
+                    reported: None,
+                }),
                 ..Default::default()
             },
             entry: None,
@@ -1182,6 +1227,62 @@ pub mod tests {
         let text = shown(&v);
         assert!(text.contains("reading its lamps"), "{text}");
         assert_eq!(text.matches("Match keyboard").count(), 1, "the case only");
+    }
+
+    /// A 40-LED fan hub through OpenRGB, its LEDs reported (no picker each: one All LEDs row).
+    pub fn strip_row() -> Row {
+        let mut row = openrgb_row("ARGB fan hub", 40, None);
+        row.caps.zones = Some(pc_lighting::Zones::from_report(&[40]));
+        row
+    }
+
+    /// #611's hide rules on Other devices (with the Hub's cut on #775): a device whose zones
+    /// already show as named colour pickers (the case's 5 zones, the mouse's 2 lamps) gets no
+    /// Show zones; a per-LED strip with one All row keeps it, with the source line and no
+    /// zone-looks line; one colour gets no link and no pickers. No device offers Check zones
+    /// (that's the keyboard's probe).
+    #[test]
+    fn device_zone_drawings_follow_the_hide_rules_per_kind() {
+        use crate::foxglove::zones_ui::{CHECK, HIDE, PREVIEW_OPEN, SHOW};
+        use foxglove_devices::pc_lighting::zones::ZONE_LOOKS;
+        let mut v = sample();
+        assert!(v.pc.devices.iter().all(|r| !offers_zones(r)));
+        PREVIEW_OPEN.set(v.pc.devices.iter().map(|r| r.key.clone()).collect());
+        let text = shown(&v);
+        PREVIEW_OPEN.set(vec![]);
+        for not in [SHOW, HIDE, ZONE_LOOKS, "From Foxglove's device list"] {
+            assert!(!text.contains(not), "named pickers: {not}: {text}");
+        }
+        assert!(text.contains("Diamond display") && text.contains("Lamp 1 · Logo"));
+        // The same mouse before Windows opens it: no pickers drawn, so the drawing shows its lamps.
+        v.pc.devices[2].lamp_access = None;
+        assert!(offers_zones(&v.pc.devices[2]));
+        v.pc.devices[2].lamp_access = Some(Default::default());
+        // A per-LED strip: one All LEDs row, so Show zones stays.
+        v.pc.devices.push(strip_row());
+        let closed = shown(&v);
+        assert_eq!(closed.matches(SHOW).count(), 1, "the strip only: {closed}");
+        PREVIEW_OPEN.set(v.pc.devices.iter().map(|r| r.key.clone()).collect());
+        let open = shown(&v);
+        PREVIEW_OPEN.set(vec![]);
+        for want in [HIDE, "Reported by the device", "ALL LEDS"] {
+            assert!(open.contains(want), "{want}: {open}");
+        }
+        assert!(
+            !open.contains(ZONE_LOOKS) && !open.contains(CHECK),
+            "{open}"
+        );
+        // One colour: no link, no pickers.
+        let mut one = sample_fresh();
+        one.pc.devices[0].caps.color = Color::Single;
+        one.pc.devices[0].caps.zones = None;
+        PREVIEW_OPEN.set(vec![one.pc.devices[0].key.clone()]);
+        let text = shown(&one);
+        PREVIEW_OPEN.set(vec![]);
+        assert!(text.contains("1 zone (whole device)"), "{text}");
+        for not in [SHOW, HIDE, ZONE_LOOKS, "Front top fan"] {
+            assert!(!text.contains(not), "one colour: {not}: {text}");
+        }
     }
 
     #[test]

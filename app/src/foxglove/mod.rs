@@ -147,3 +147,4 @@ pub mod wallpaper_image;
 pub mod wallpaper_manifest;
 pub mod wallpaper_sync;
 pub mod wallpaper_sync_health;
+pub mod zones_ui;

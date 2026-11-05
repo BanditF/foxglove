@@ -1,5 +1,7 @@
-//! "Find my LEDs…" (#90 row G): Lights › Keyboard card, and the Scenes page's prompt while the
-//! keyboard's LEDs aren't placed. One LED lights at a time; one click on the drawing places it.
+//! "Check zones…" (#611, #90 row G; was "Find my LEDs…"): the zone drawing's "Not right?", the
+//! Keyboard card's zone line while the zones are unknown, and the Scenes page's prompt while
+//! the keyboard's map isn't checked. One lamp lights at a time; the user clicks every key it
+//! lights (docs/lighting-zones.md section 4).
 //!
 //! It opens on "Check LED map" first ([`led_map_confirm`]): a dot runs along the LEDs on the
 //! keyboard and on the drawing, and one to three answers (matches, backwards, mirrored, rows
@@ -7,9 +9,11 @@
 //! per key or a chain the answers can't fix.
 //!
 //! The pattern is Philips Hue's entertainment-area setup and Nanoleaf's layout assistant: the
-//! light you're asked about blinks in the room, you show the app where it is. Here it's one
-//! click per LED anywhere on the lit half's outline (underglow sits under and between keys),
-//! "Can't see it" to skip, Back to undo, and a count of how far along it is.
+//! light you're asked about blinks in the room, you show the app where it is. Here it's a
+//! click on each key that lit (a second click unpicks it) and Next, a click between keys for
+//! underglow, "Nothing lit" for a dead lamp, Back to undo, and a count of how far along it is.
+//! One answer is the whole group of keys a lamp lights, so the saved check is the board's
+//! zones ([`led_map::BoardLeds::led_keys`]).
 //!
 //! While open it replaces the Lights page's cards. Leaving the page, closing the window,
 //! quitting, pausing or going away (locked, display off) cancels it, which gives the lights
@@ -76,7 +80,7 @@ pub enum Done {
 pub struct Geometry {
     origin: Pos2,
     /// Points per key unit.
-    scale: f32,
+    pub scale: f32,
     /// One area's size, in key units.
     area: Vec2,
     areas: usize,
@@ -138,10 +142,38 @@ fn half_name(w: &Wizard, half: usize) -> String {
     Parts::halves(w.halves).lower(half)
 }
 
-/// Paints the wizard; returns what was asked this frame.
+/// The probe's title (#611, docs/lighting-zones.md section 4): one name, "Check zones · <device>".
+pub fn title(name: &str) -> String {
+    format!("Check zones · {name}")
+}
+
+/// "Lamp 3 of 21 on the left half is lit in white on your keyboard." ("Lamp 3 of 61 is lit
+/// …" on a one-piece board).
+pub fn lamp_text(w: &Wizard, s: led_map::Step) -> String {
+    let on = if w.halves == 1 {
+        String::new()
+    } else {
+        format!(" on the {}", half_name(w, s.half))
+    };
+    format!(
+        "Lamp {} of {}{on} is lit in white on your keyboard.",
+        s.index + 1,
+        w.part_total(s.half)
+    )
+}
+
+/// The ask under it.
+pub const ASK: &str = "Click the keys that lit, then Next.";
+
+/// The muted line under the ask.
+pub const HOW: &str =
+    "A second click unpicks a key. Lit under no key (underglow)? Click where you see it.";
+
+/// Paints the wizard (Check zones' main step: one lamp lit, the user clicks every key it
+/// lights); returns what was asked this frame.
 pub fn draw(ui: &mut egui::Ui, v: &View, w: &mut Wizard) -> Output {
     let mut out = Output::default();
-    card(ui, "Find my LEDs", |ui| {
+    card(ui, &title(&w.name), |ui| {
         let p = theme::palette(ui);
         let total = w.total();
         let answered = w.answers.len();
@@ -153,44 +185,33 @@ pub fn draw(ui: &mut egui::Ui, v: &View, w: &mut Wizard) -> Output {
                 split_row(
                     ui,
                     |ui| {
-                        let skipped = answered - w.seen();
-                        if skipped > 0 {
-                            ui.label(RichText::new(format!("{skipped} not seen")).color(p.muted));
+                        let nothing = answered - w.seen();
+                        if nothing > 0 {
+                            ui.label(
+                                RichText::new(format!("{nothing} lit nothing")).color(p.muted),
+                            );
                         }
                     },
                     |ui| {
-                        ui.label(
-                            RichText::new(format!(
-                                "LED {} of {total} · {}",
-                                s.lamp + 1,
-                                half_name(w, s.half)
-                            ))
-                            .color(p.text_strong),
+                        ui.add(
+                            egui::Label::new(RichText::new(lamp_text(w, s)).color(p.text_strong))
+                                .wrap(),
                         );
                     },
                 );
                 progress(ui, answered, total);
-                let text = format!(
-                    "One LED on the {} is lit white. Click where you see it on the drawing, \
-                     under a key or between keys.",
-                    half_name(w, s.half)
-                );
-                ui.add(egui::Label::new(text).wrap());
+                ui.add(egui::Label::new(RichText::new(ASK).color(p.text_strong)).wrap());
+                ui.add(egui::Label::new(RichText::new(HOW).color(p.muted).size(12.5)).wrap());
             }
             None => {
-                ui.label(RichText::new(format!("All {total} LEDs done")).color(p.text_strong));
+                ui.label(RichText::new(format!("All {total} lamps done")).color(p.text_strong));
                 progress(ui, answered, total);
                 let text = match total - w.seen() {
-                    0 => "Save, and scenes light each LED where it is.".to_string(),
+                    0 => "Save, and scenes light each zone where it is.".to_string(),
                     n => format!(
-                        "{} placed, {n} not seen: those take the colour of {}'s middle. \
-                         Save, and scenes light each LED where it is.",
-                        w.seen(),
-                        if w.halves == 1 {
-                            "the keyboard"
-                        } else {
-                            "their half"
-                        }
+                        "{} lit something, {n} lit nothing: Foxglove leaves those out. Save, \
+                         and scenes light each zone where it is.",
+                        w.seen()
                     ),
                 };
                 ui.add(egui::Label::new(text).wrap());
@@ -198,7 +219,7 @@ pub fn draw(ui: &mut egui::Ui, v: &View, w: &mut Wizard) -> Output {
         }
         status_line(ui, v, w);
         ui.add_space(4.0);
-        board(ui, w, &mut out);
+        board(ui, w);
         ui.add_space(6.0);
         buttons(ui, w, &mut out);
         if let Some(note) = &w.note {
@@ -213,7 +234,7 @@ fn progress(ui: &mut egui::Ui, answered: usize, total: usize) {
     ui.add(egui::ProgressBar::new(done).desired_height(6.0));
 }
 
-/// Whether the LED is lit yet, or what went wrong.
+/// Whether the lamp is lit yet, or what went wrong.
 fn status_line(ui: &mut egui::Ui, v: &View, w: &Wizard) {
     let p = theme::palette(ui);
     if let Some(e) = &v.error {
@@ -229,9 +250,18 @@ fn status_line(ui: &mut egui::Ui, v: &View, w: &Wizard) {
     }
 }
 
-/// The board, top-down: the halves' keys, the LEDs placed so far, and the click area on the lit
-/// half.
-fn board(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
+/// The key of a part's drawing (`keys`) under `at` (key units), if any.
+pub fn key_at(keys: &[Rect], at: [f32; 2]) -> Option<u8> {
+    let at = Pos2::new(at[0], at[1]);
+    keys.iter()
+        .position(|k| k.contains(at))
+        .and_then(|k| u8::try_from(k).ok())
+}
+
+/// The board, top-down: the halves' keys, what the lamps before lit (faint), the keys picked
+/// for the lit lamp (filled), and the click area on the lit half. A click on a key picks or
+/// unpicks it; a click between keys places the lamp there.
+fn board(ui: &mut egui::Ui, w: &mut Wizard) {
     let p = theme::palette(ui);
     let size = Vec2::new(ui.available_width(), DRAWING_HEIGHT);
     let step = w.step();
@@ -246,6 +276,13 @@ fn board(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
     let g = Geometry::new(&w.drawing, w.halves, rect.shrink(12.0));
     let active = step.map(|s| s.half);
     let areas = usize::from(w.halves.clamp(1, 2));
+    let hover = step.and_then(|s| {
+        let half = s.half.min(areas - 1);
+        response
+            .hover_pos()
+            .and_then(|pos| g.at(half, pos))
+            .map(|at| (half, at))
+    });
     for a in 0..areas {
         let lit = active == Some(a);
         let outline = g.rect(a).expand(MARGIN * g.scale);
@@ -263,47 +300,81 @@ fn board(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
         } else {
             p.line
         };
-        for k in g.keys(&w.drawing, a) {
+        let keys = g.keys(&w.drawing, a);
+        // What the lamps before lit on this part.
+        let before: Vec<u8> = w
+            .keys
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| w.part_of(*i).min(areas - 1) == a)
+            .flat_map(|(_, k)| k.iter().copied())
+            .collect();
+        let hovered = hover
+            .filter(|(h, _)| *h == a)
+            .and_then(|(_, at)| key_at(&keys, at));
+        for (i, k) in keys.iter().enumerate() {
             let r = Rect::from_min_max(
                 g.screen(a, [k.min.x, k.min.y]),
                 g.screen(a, [k.max.x, k.max.y]),
             )
             .shrink(g.scale * 0.06);
-            painter.rect_stroke(r, 3.0, Stroke::new(1.0, key_line), egui::StrokeKind::Inside);
+            let i = u8::try_from(i).ok();
+            let picked = lit && i.is_some_and(|i| w.picked.contains(&i));
+            let fill = if picked {
+                p.accent.gamma_multiply(0.6)
+            } else if i.is_some_and(|i| before.contains(&i)) {
+                p.accent.gamma_multiply(0.15)
+            } else {
+                Color32::TRANSPARENT
+            };
+            let line = if hovered.is_some() && hovered == i {
+                p.accent
+            } else {
+                key_line
+            };
+            painter.rect(
+                r,
+                3.0,
+                fill,
+                Stroke::new(1.0, line),
+                egui::StrokeKind::Inside,
+            );
         }
     }
-    // The LEDs placed so far, the newest ringed.
-    let newest = w.answers.iter().rposition(Option::is_some);
+    // The lamps placed between keys so far.
     for (i, a) in w.answers.iter().enumerate() {
         let Some(at) = a else { continue };
-        let half = w.part_of(i);
-        let c = g.screen(half.min(areas - 1), *at);
-        painter.circle_filled(c, 4.0, p.accent);
-        if Some(i) == newest && step.is_some() {
-            painter.circle_stroke(c, 7.0, Stroke::new(1.0, p.accent));
+        if w.keys.get(i).is_some_and(|k| !k.is_empty()) {
+            continue;
         }
+        let half = w.part_of(i);
+        painter.circle_filled(g.screen(half.min(areas - 1), *at), 4.0, p.accent);
     }
     let Some(s) = step else {
         return;
     };
     let half = s.half.min(areas - 1);
-    let hover = response.hover_pos().and_then(|pos| g.at(half, pos));
-    if let Some(at) = hover {
-        painter.circle(
-            g.screen(half, at),
-            6.0,
-            Color32::WHITE,
-            Stroke::new(1.0, p.accent),
-        );
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+    if let Some(at) = w.point {
+        let c = g.screen(half, at);
+        painter.circle(c, 5.0, Color32::WHITE, Stroke::new(1.5, p.accent));
+    }
+    if let Some((_, at)) = hover {
+        if key_at(&g.keys(&w.drawing, half), at).is_none() {
+            painter.circle_stroke(g.screen(half, at), 6.0, Stroke::new(1.0, p.accent));
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        } else {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
     }
     if response.clicked() {
         if let Some(at) = response
             .interact_pointer_pos()
             .and_then(|pos| g.at(half, pos))
         {
-            w.place(at);
-            out.changed = true;
+            match key_at(&g.keys(&w.drawing, half), at) {
+                Some(k) => w.toggle(k),
+                None => w.pick_point(at),
+            }
         }
     }
 }
@@ -322,22 +393,33 @@ fn buttons(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
             if w.done() {
                 if ui
                     .add(theme::primary_button(ui, "Save"))
-                    .on_hover_text("Keep where the LEDs are; scenes use it from now on")
+                    .on_hover_text("Keep what each lamp lights; scenes use it from now on")
                     .clicked()
                 {
                     out.done = Some(Done::Save);
                 }
-            } else if ui
-                .button("Can't see it")
-                .on_hover_text("Skip this LED (hidden, or not fitted)")
-                .clicked()
-            {
-                w.skip();
-                out.changed = true;
+            } else {
+                if ui
+                    .add_enabled(w.has_pick(), theme::primary_button(ui, "Next"))
+                    .on_hover_text("These keys lit; light the next lamp")
+                    .on_disabled_hover_text("Click the keys that lit first")
+                    .clicked()
+                {
+                    w.next();
+                    out.changed = true;
+                }
+                if ui
+                    .button("Nothing lit")
+                    .on_hover_text("This lamp lights nothing you can see (hidden, or not fitted)")
+                    .clicked()
+                {
+                    w.skip();
+                    out.changed = true;
+                }
             }
             if ui
                 .add_enabled(!w.answers.is_empty(), egui::Button::new("Back"))
-                .on_hover_text("Light the LED before again and place it anew")
+                .on_hover_text("Light the lamp before again and answer it anew")
                 .clicked()
             {
                 w.back();
@@ -495,8 +577,8 @@ enum Next {
 
 /// The click wizard's opening words when the dot test's corrections didn't fit.
 pub const NONE_FIT: &str = "None of the quick fixes fit: these LEDs don't run along the keys in \
-     a way Foxglove can turn round. So one LED lights at a time instead, and you click where \
-     you see it. About a minute; Can't see it skips one.";
+     a way Foxglove can turn round. So one lamp lights at a time instead, and you click the \
+     keys it lights. About a minute; Nothing lit skips one.";
 
 /// Draws the click-each-LED wizard and acts on it; true when it closes.
 fn show_wizard_ui(ui: &mut egui::Ui, status: &Status, w: &mut Wizard, worker: &Worker) -> bool {
@@ -578,7 +660,7 @@ pub enum CheckIntent {
 /// Paints the dot test; returns what was asked this frame.
 pub fn draw_check(ui: &mut egui::Ui, v: &CheckView, c: &mut Confirm) -> Option<CheckIntent> {
     let mut out = None;
-    card(ui, "Check LED map", |ui| {
+    card(ui, &title(&c.name), |ui| {
         let p = theme::palette(ui);
         let parts = Parts::halves(c.halves);
         let on = parts.all();
@@ -693,8 +775,8 @@ fn mismatch(ui: &mut egui::Ui, c: &mut Confirm) -> Option<CheckIntent> {
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Doesn't match?").color(p.text_strong));
             if ui
-                .button("Click each LED…")
-                .on_hover_text("Light one LED at a time and click where it is")
+                .button("Check each lamp…")
+                .on_hover_text("Light one lamp at a time and click the keys it lights")
                 .clicked()
             {
                 out = Some(CheckIntent::Wizard { none_fit: false });
@@ -753,7 +835,7 @@ fn mismatch(ui: &mut egui::Ui, c: &mut Confirm) -> Option<CheckIntent> {
         }
         if ui
             .button("None of these…")
-            .on_hover_text("Place each LED by clicking where it lights: about a minute")
+            .on_hover_text("Light one lamp at a time and click the keys it lights: about a minute")
             .clicked()
         {
             out = Some(CheckIntent::Wizard { none_fit: true });
@@ -763,8 +845,8 @@ fn mismatch(ui: &mut egui::Ui, c: &mut Confirm) -> Option<CheckIntent> {
         ui.add(
             egui::Label::new(
                 RichText::new(
-                    "Still not right after three answers? None of these… places each LED by \
-                     clicking instead.",
+                    "Still not right after three answers? None of these… lights one lamp at \
+                     a time instead.",
                 )
                 .color(p.muted),
             )
@@ -923,8 +1005,8 @@ pub fn pause_changed(paused: bool) {
     }
 }
 
-/// The Lights page's Keyboard card: "Check LED map…" (or "Find my LEDs…" while there's no map)
-/// and how far the map is known. True when clicked.
+/// The Keyboard card's entry for a keyboard without a zone line: "Check zones…" and how far
+/// the map is known. True when clicked.
 pub fn entry(ui: &mut egui::Ui, available: bool, state: MapState) -> bool {
     let p = theme::palette(ui);
     let mut clicked = false;
@@ -933,15 +1015,15 @@ pub fn entry(ui: &mut egui::Ui, available: bool, state: MapState) -> bool {
         |ui| {
             let (label, hint) = match (available, state) {
                 (false, _) => (
-                    "Find my LEDs…",
+                    "Check zones…",
                     "Needs keyboard firmware that lights one LED at a time, and a board profile",
                 ),
                 (true, MapState::Unknown) => (
-                    "Find my LEDs…",
+                    "Check zones…",
                     "Show Foxglove where each LED is, so scenes light every LED in its place",
                 ),
                 (true, _) => (
-                    "Check LED map…",
+                    "Check zones…",
                     "A dot runs along the LEDs; say whether it follows the drawing",
                 ),
             };
@@ -969,22 +1051,24 @@ pub mod tests {
     use crate::foxglove::boards::Board;
     use crate::foxglove::led_map_confirm::Answer;
 
-    /// A Corne with the built-in profile, `answered` LEDs in (every third one not seen).
+    /// A Corne with the built-in profile, `answered` lamps in: every third lit nothing, the
+    /// others lit a key (every other one two keys), as Check zones answers them.
     pub fn sample(answered: usize) -> (View, Wizard) {
         let mut board: Board =
             Board::parse(include_str!("../../resources/boards/eyelash-corne.toml")).unwrap();
         board.lighting.as_mut().unwrap().led_points.clear();
         let mut w = Wizard::new(&board);
-        let keys_l = w.drawing.keys(false);
-        let keys_r = w.drawing.keys(true);
+        let keys = w.drawing.keys(false).len();
         for i in 0..answered {
-            let half = w.part_of(i);
-            let keys = if half == 0 { &keys_l } else { &keys_r };
-            let k = keys[i % keys.len()];
+            let k = (i % keys) as u8;
             if i % 3 == 2 {
                 w.skip();
             } else {
-                w.place([k.center().x, k.center().y + 0.4]);
+                w.toggle(k);
+                if i % 3 == 0 {
+                    w.toggle((k + 1) % keys as u8);
+                }
+                w.next();
             }
         }
         (
@@ -1079,7 +1163,7 @@ pub mod tests {
         check_frame(&ctx, &v, &mut found, Vec::new());
         check_frame(&ctx, &v, &mut found, Vec::new());
         assert_eq!(
-            press(&ctx, &mut found, "Click each LED…"),
+            press(&ctx, &mut found, "Check each lamp…"),
             Some(CheckIntent::Wizard { none_fit: false })
         );
     }
@@ -1207,32 +1291,67 @@ pub mod tests {
         }
     }
 
+    /// Check zones' main step (#611, docs/lighting-zones.md section 4): a click on a key picks
+    /// it, a second click unpicks it, Next takes the keys; a click between keys places the
+    /// lamp there; Nothing lit marks a dead lamp, Back undoes.
     #[test]
-    fn a_click_places_the_lit_led_and_the_buttons_skip_and_undo() {
+    fn keys_that_lit_are_picked_then_next_and_the_buttons_skip_and_undo() {
         let ctx = crate::foxglove::pc_lights_ui::tests::test_ctx();
         let (v, mut w) = sample(0);
         frame(&ctx, &v, &mut w, Vec::new());
         let (_, drawing) = frame(&ctx, &v, &mut w, Vec::new());
+        let text = SHAPES.with_borrow(|shapes| {
+            let mut t = String::new();
+            for s in shapes {
+                crate::foxglove::zones_ui::tests::collect(&s.shape, &mut t);
+            }
+            t
+        });
+        for want in [
+            "Check zones · Eyelash Corne",
+            "Lamp 1 of 21 on the left half is lit in white on your keyboard.",
+            ASK,
+            "Next",
+            "Nothing lit",
+            "Back",
+            "Cancel",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
         let g = Geometry::new(&w.drawing, 2, drawing.expect("the drawing").shrink(12.0));
-        let out = clicked(&ctx, &v, &mut w, g.screen(0, [1.5, 1.5]));
-        assert!(out.changed);
-        assert_eq!(w.answers.len(), 1);
+        let k = w.drawing.keys(false)[4].center();
+        let on_key = g.screen(0, [k.x, k.y]);
+        clicked(&ctx, &v, &mut w, on_key);
+        assert_eq!(w.picked, [4]);
+        clicked(&ctx, &v, &mut w, on_key);
+        assert!(w.picked.is_empty(), "a second click unpicks");
+        clicked(&ctx, &v, &mut w, on_key);
+        let k5 = w.drawing.keys(false)[5].center();
+        clicked(&ctx, &v, &mut w, g.screen(0, [k5.x, k5.y]));
+        assert_eq!(w.picked, [4, 5]);
+        // A click on the other half isn't where the lit lamp is.
+        clicked(&ctx, &v, &mut w, g.screen(1, [1.5, 1.5]));
+        assert_eq!(w.picked, [4, 5]);
+        let next = button_at(&ctx, "Next");
+        assert!(clicked(&ctx, &v, &mut w, next).changed);
+        assert_eq!(w.keys, vec![vec![4, 5]]);
         let at = w.answers[0].unwrap();
-        assert!(
-            (at[0] - 1.5).abs() < 0.05 && (at[1] - 1.5).abs() < 0.05,
-            "{at:?}"
-        );
-        // A click on the other half isn't where the lit LED is.
-        let out = clicked(&ctx, &v, &mut w, g.screen(1, [1.5, 1.5]));
-        assert!(!out.changed);
-        assert_eq!(w.answers.len(), 1);
-        // "Can't see it" skips, Back undoes.
-        let skip = button_at(&ctx, "Can't see it");
+        assert!((at[1] - (k.y + k5.y) / 2.0).abs() < 0.01, "{at:?}");
+        // Between keys (underglow): a point, no keys.
+        clicked(&ctx, &v, &mut w, g.screen(0, [-0.2, 0.1]));
+        assert!(w.point.is_some() && w.picked.is_empty());
+        let next = button_at(&ctx, "Next");
+        clicked(&ctx, &v, &mut w, next);
+        assert_eq!(w.keys, vec![vec![4, 5], vec![]]);
+        assert!(w.answers[1].is_some());
+        // "Nothing lit" skips, Back undoes.
+        let skip = button_at(&ctx, "Nothing lit");
         assert!(clicked(&ctx, &v, &mut w, skip).changed);
-        assert_eq!(w.answers, vec![Some(at), None]);
+        assert_eq!(w.answers.len(), 3);
+        assert_eq!(w.answers[2], None);
         let back = button_at(&ctx, "Back");
         assert!(clicked(&ctx, &v, &mut w, back).changed);
-        assert_eq!(w.answers, vec![Some(at)]);
+        assert_eq!((w.answers.len(), w.keys.len()), (2, 2));
         let cancel = button_at(&ctx, "Cancel");
         assert_eq!(clicked(&ctx, &v, &mut w, cancel).done, Some(Done::Cancel));
     }
@@ -1244,6 +1363,12 @@ pub mod tests {
         assert!(w.done());
         assert_eq!(w.seen(), 28);
         assert_eq!(w.result().leds.len(), 28);
+        // What each lamp lit, in the profile's shape: one entry per lamp, `[]` for nothing.
+        let saved = w.result().led_keys;
+        assert_eq!(saved.len(), 42);
+        assert_eq!(saved[0].keys(), [0, 1]);
+        assert_eq!(saved[1].keys(), [1]);
+        assert!(saved[2].dead());
         frame(&ctx, &v, &mut w, Vec::new());
         frame(&ctx, &v, &mut w, Vec::new());
         let save = button_at(&ctx, "Save");

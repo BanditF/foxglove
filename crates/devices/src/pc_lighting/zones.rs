@@ -218,25 +218,98 @@ pub fn summary(
     if (keys && z.per_key()) || z.per_lamp() {
         return Some(per_led(total));
     }
-    let live = z.live();
-    let mut text = match (mirrored(&live), live.len()) {
-        (Some(n), parts) => format!(
-            "{} {}",
-            plural(n, "lighting zone", "lighting zones"),
-            per_part(parts)
-        ),
-        (None, 1) => plural(total, "lighting zone", "lighting zones"),
-        (None, _) => {
-            let counts: Vec<String> = live.iter().map(u32::to_string).collect();
-            format!("{} lighting zones", counts.join(" + "))
-        }
-    };
+    let mut text = zone_count(z, "lighting zone", "lighting zones");
     if let Some(how) = z.arrangement() {
         text.push_str(", ");
         text.push_str(how);
     }
     Some(text)
 }
+
+/// "6 lighting zones per half", "6 + 7 lighting zones", "5 lighting zones", with `one` and
+/// `many` the noun.
+fn zone_count(z: &Zones, one: &str, many: &str) -> String {
+    let live = z.live();
+    match (mirrored(&live), live.len()) {
+        (Some(n), parts) => format!("{} {}", plural(n, one, many), per_part(parts)),
+        (None, 1) => plural(z.list.len() as u32, one, many),
+        (None, _) => {
+            let counts: Vec<String> = live.iter().map(u32::to_string).collect();
+            format!("{} {many}", counts.join(" + "))
+        }
+    }
+}
+
+/// What a device's lights can be told, for the hide rules (docs/lighting-zones.md section 3):
+/// a control the device can't honour isn't drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// No lights Foxglove knows of.
+    None,
+    /// Lights that only switch.
+    OnOff,
+    /// One colour for the whole device: no zone drawing, no per-zone pickers, no Check zones.
+    Single,
+    /// A few zones (2 or more, not one per key): the drawing with numbers and a list.
+    Zones,
+    /// A colour per key or LED: the drawing without numbers or a list.
+    PerLed,
+    /// The device takes colour but which zones it has isn't known: Check zones is offered.
+    Unknown,
+}
+
+/// The [`Kind`] of a device, from the same facts as [`summary`] (and the same order: one zone
+/// is the whole device whatever the colour kind says).
+pub fn kind(color: super::Color, count: u32, zones: Option<&Zones>, keys: bool) -> Kind {
+    use super::Color;
+    if color == Color::None && zones.is_none() {
+        return Kind::None;
+    }
+    if color == Color::OnOff {
+        return Kind::OnOff;
+    }
+    let Some(z) = zones.filter(|z| !z.list.is_empty()) else {
+        return match color {
+            Color::Single => Kind::Single,
+            Color::PerZone if count > 1 => Kind::Zones,
+            Color::PerLed if count > 1 => Kind::PerLed,
+            Color::PerZone | Color::PerLed if count == 1 => Kind::Single,
+            _ => Kind::Unknown,
+        };
+    };
+    if z.list.len() == 1 {
+        Kind::Single
+    } else if (keys && z.per_key()) || z.per_lamp() {
+        Kind::PerLed
+    } else {
+        Kind::Zones
+    }
+}
+
+/// The Scenes page's words for how a device takes a scene (docs/lighting-zones.md section 1):
+/// "6 zones per half", "6 + 7 zones", "5 zones", "one colour", "a colour per key", "a colour
+/// per LED". `None` when the zones aren't known.
+pub fn scene_words(
+    color: super::Color,
+    count: u32,
+    zones: Option<&Zones>,
+    keys: bool,
+) -> Option<String> {
+    let per = if keys { "key" } else { "LED" };
+    match kind(color, count, zones, keys) {
+        Kind::Single => Some("one colour".into()),
+        Kind::PerLed => Some(format!("a colour per {per}")),
+        Kind::Zones => Some(match zones.filter(|z| !z.list.is_empty()) {
+            Some(z) => zone_count(z, "zone", "zones"),
+            None => plural(count, "zone", "zones"),
+        }),
+        Kind::None | Kind::OnOff | Kind::Unknown => None,
+    }
+}
+
+/// The zone drawing's footer line for a zone device (docs/lighting-zones.md section 2).
+pub const ZONE_LOOKS: &str =
+    "Per-key looks (scenes, ripples) take one colour per zone here: the colour at the zone's centre.";
 
 /// The zone drawing's muted footer line about lamps that light nothing: "15 more lamps per
 /// half light nothing; Foxglove leaves them out." `None` when every lamp lights something.
@@ -661,6 +734,45 @@ mod tests {
         assert_eq!(
             source_line(&won, true),
             "From your check · the keyboard reports 21 lamps per half; 15 of them light nothing here"
+        );
+    }
+
+    /// The hide rules' kinds (#611 section 3), and the Scenes page's words for each.
+    #[test]
+    fn each_device_has_a_kind_and_scene_words() {
+        let corne = corne(ZoneSource::Profile { checked: false });
+        assert_eq!(kind(Color::PerZone, 0, Some(&corne), true), Kind::Zones);
+        assert_eq!(
+            scene_words(Color::PerZone, 0, Some(&corne), true).unwrap(),
+            "6 zones per half"
+        );
+        assert_eq!(kind(Color::PerZone, 5, Some(&case()), false), Kind::Zones);
+        assert_eq!(
+            scene_words(Color::PerZone, 5, Some(&case()), false).unwrap(),
+            "5 zones"
+        );
+        assert_eq!(kind(Color::Single, 0, None, false), Kind::Single);
+        assert_eq!(
+            scene_words(Color::Single, 0, None, false).unwrap(),
+            "one colour"
+        );
+        let one = Zones::from_report(&[1]);
+        assert_eq!(kind(Color::PerLed, 1, Some(&one), false), Kind::Single);
+        let bar = Zones::from_report(&[24]);
+        assert_eq!(kind(Color::PerLed, 24, Some(&bar), false), Kind::PerLed);
+        assert_eq!(
+            scene_words(Color::PerLed, 24, Some(&bar), false).unwrap(),
+            "a colour per LED"
+        );
+        assert_eq!(kind(Color::PerZone, 0, None, false), Kind::Unknown);
+        assert_eq!(scene_words(Color::PerZone, 0, None, false), None);
+        assert_eq!(kind(Color::None, 0, None, false), Kind::None);
+        assert_eq!(kind(Color::OnOff, 0, None, false), Kind::OnOff);
+        let mut differ = corne.clone();
+        differ.list.pop();
+        assert_eq!(
+            scene_words(Color::PerZone, 0, Some(&differ), true).unwrap(),
+            "6 + 5 zones"
         );
     }
 

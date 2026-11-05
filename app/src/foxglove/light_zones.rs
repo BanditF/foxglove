@@ -12,7 +12,9 @@
 //! LampArray rows use too. Everything here is data: a board's zones come from its profile, no
 //! board is named in code. Built when the Lights page draws, from caches; nothing is asked.
 
-use foxglove_devices::pc_lighting::{zones, Color, Zone, ZoneHealth, ZoneKey, ZoneSource, Zones};
+use foxglove_devices::pc_lighting::{
+    zones, Color, Zone, ZoneHealth, ZoneKey, ZoneKind, ZoneSource, Zones,
+};
 use foxglove_link::lamps::LampParts;
 
 use super::boards::{Board, Drawing, Lamp, LED_MAP_CHECKED};
@@ -25,12 +27,25 @@ pub const TIP: &str =
 /// group.
 const NEAR: f32 = 0.5;
 
-/// The Keyboard card's lighting line: the summary ("6 lighting zones per half, by column")
-/// and the lines of its tooltip (what it means, where it came from, lamps that light nothing).
+/// The Keyboard card's lighting line: the summary ("6 lighting zones per half, by column"),
+/// its tooltip, and what the zone drawing shows under it (docs/lighting-zones.md sections 1
+/// and 2).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Line {
     pub summary: String,
+    /// The summary's tooltip: what it means (and, while the zones are unknown, what the
+    /// keyboard reports).
     pub details: Vec<String>,
+    /// What the hide rules go by.
+    pub kind: ZoneKind,
+    /// The zones the drawing shows; `None` while they're unknown.
+    pub zones: Option<Zones>,
+    /// The drawing's muted source line: "From the board's profile · not checked on yours yet".
+    pub source: Option<String>,
+    /// "15 more lamps per half light nothing; Foxglove leaves them out."
+    pub dead: Option<String>,
+    /// The board's drawing, one part (the second is its mirror image).
+    pub drawing: Drawing,
 }
 
 /// A key of the drawing as a zone key: its column and row when the drawing is a grid and the
@@ -154,27 +169,36 @@ fn lamps_text(counts: &[u32]) -> String {
     format!("{n} {}{each}", if n == 1 { "lamp" } else { "lamps" })
 }
 
-/// The Keyboard card's line for `zones`. Lamp counts alone (the keyboard's report) say how
-/// many lamps there are, not which keys each lights, so the zones are unknown then.
-pub fn line(found: Option<&Zones>) -> Line {
-    let unknown = "Lighting zones unknown".to_string();
-    let mut details = vec![TIP.to_string()];
-    let summary = match found {
-        Some(z) if z.source != ZoneSource::Reported => {
-            details.push(zones::source_line(z, true));
-            details.extend(zones::dead_line(z));
-            zones::summary(Color::PerZone, 0, Some(z), true).unwrap_or(unknown)
-        }
-        Some(z) => {
-            details.push(format!(
-                "The keyboard reports {}; which keys each one lights isn't known yet.",
-                lamps_text(&z.lamps())
-            ));
-            unknown
-        }
-        None => unknown,
+/// The Keyboard card's line for `zones`, on `drawing`. Lamp counts alone (the keyboard's
+/// report) say how many lamps there are, not which keys each lights, so the zones are unknown
+/// then.
+pub fn line(found: Option<&Zones>, drawing: &Drawing) -> Line {
+    let mut out = Line {
+        summary: "Lighting zones unknown".to_string(),
+        details: vec![TIP.to_string()],
+        kind: ZoneKind::Unknown,
+        zones: None,
+        source: None,
+        dead: None,
+        drawing: drawing.clone(),
     };
-    Line { summary, details }
+    match found {
+        Some(z) if z.source != ZoneSource::Reported => {
+            if let Some(summary) = zones::summary(Color::PerZone, 0, Some(z), true) {
+                out.summary = summary;
+            }
+            out.kind = zones::kind(Color::PerZone, 0, Some(z), true);
+            out.source = Some(zones::source_line(z, true));
+            out.dead = zones::dead_line(z);
+            out.zones = Some(z.clone());
+        }
+        Some(z) => out.details.push(format!(
+            "The keyboard reports {}; which keys each one lights isn't known yet.",
+            lamps_text(&z.lamps())
+        )),
+        None => {}
+    }
+    out
 }
 
 /// The connected keyboard's line, from the caches: its profile (with the user's check applied),
@@ -190,7 +214,15 @@ pub fn current() -> Option<Line> {
     let drawing = super::boards::drawing(board.as_ref());
     Some(line(
         keyboard(board.as_ref(), &drawing, firmware.as_ref()).as_ref(),
+        &drawing,
     ))
+}
+
+/// The Scenes page's words for the connected keyboard (#611): "6 zones per half", "a colour
+/// per key"; `None` while its zones are unknown.
+pub fn scene_words() -> Option<String> {
+    let line = current()?;
+    zones::scene_words(Color::PerZone, 0, line.zones.as_ref(), true)
 }
 
 /// The keyboard's lighting-zones health row (#611): the zones and lamps found, the source, and
@@ -224,7 +256,8 @@ mod tests {
     #[test]
     fn the_corne_profile_is_six_zones_per_half_by_column() {
         let b = corne();
-        let z = from_profile(&b, &drawing(&b)).unwrap();
+        let d = drawing(&b);
+        let z = from_profile(&b, &d).unwrap();
         assert_eq!(z.live(), [6, 6]);
         assert_eq!(z.dead, [15, 15]);
         assert_eq!(z.source, ZoneSource::Profile { checked: false });
@@ -232,15 +265,17 @@ mod tests {
         assert_eq!(z.list[0].keys.len(), 4);
         assert!(z.list[0].keys[..3].iter().all(|k| k.column == Some(5)));
         assert_eq!(z.list[0].keys[3].column, None);
-        let l = line(Some(&z));
+        let l = line(Some(&z), &d);
         assert_eq!(l.summary, "6 lighting zones per half, by column");
+        assert_eq!(l.details, [TIP]);
+        assert_eq!(l.kind, ZoneKind::Zones);
         assert_eq!(
-            l.details,
-            [
-                TIP,
-                "From the board's profile · not checked on yours yet",
-                "15 more lamps per half light nothing; Foxglove leaves them out."
-            ]
+            l.source.as_deref(),
+            Some("From the board's profile · not checked on yours yet")
+        );
+        assert_eq!(
+            l.dead.as_deref(),
+            Some("15 more lamps per half light nothing; Foxglove leaves them out.")
         );
     }
 
@@ -256,14 +291,15 @@ mod tests {
         assert_eq!(z.reported, None);
         let only = keyboard(None, &d, Some(&report)).unwrap();
         assert_eq!(only.source, ZoneSource::Reported);
-        let l = line(Some(&only));
+        let l = line(Some(&only), &d);
         assert_eq!(l.summary, "Lighting zones unknown");
+        assert_eq!((l.kind, l.zones.is_none()), (ZoneKind::Unknown, true));
         assert_eq!(
             l.details[1],
             "The keyboard reports 21 lamps per half; which keys each one lights isn't known yet."
         );
         assert_eq!(keyboard(None, &d, None), None);
-        assert_eq!(line(None).summary, "Lighting zones unknown");
+        assert_eq!(line(None, &d).summary, "Lighting zones unknown");
         // A provisional map isn't used by scenes: not a source.
         let mut provisional = corne();
         provisional.lighting.as_mut().unwrap().led_map = "provisional".into();
@@ -296,9 +332,9 @@ mod tests {
             4,
             "the whole group, not the key under its centre"
         );
-        let l = line(Some(&z));
+        let l = line(Some(&z), &d);
         assert_eq!(l.summary, "6 lighting zones per half, by column");
-        assert_eq!(l.details[1], "From your check");
+        assert_eq!(l.source.as_deref(), Some("From your check"));
     }
 
     /// The health signal fires (#611): the Corne's firmware agreeing with its profile is OK;
@@ -330,9 +366,11 @@ mod tests {
     #[test]
     fn a_per_key_one_piece_board_says_per_key() {
         let b = Board::parse(crate::foxglove::fixtures::second_desk::PLANK3).unwrap();
-        let z = keyboard(Some(&b), &drawing(&b), None).unwrap();
-        let l = line(Some(&z));
+        let d = drawing(&b);
+        let z = keyboard(Some(&b), &d, None).unwrap();
+        let l = line(Some(&z), &d);
         assert_eq!(l.summary, "Per-key lighting, 61 keys");
-        assert!(!l.details.join(" ").contains("half"), "{:?}", l.details);
+        assert_eq!(l.kind, ZoneKind::PerLed);
+        assert!(!l.source.unwrap().contains("half"));
     }
 }
