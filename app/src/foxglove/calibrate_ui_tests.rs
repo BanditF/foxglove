@@ -401,9 +401,9 @@ pub fn answer_toward(w: &mut Wizard, target: [u8; 3]) -> u8 {
     n
 }
 
-/// A warmer white than the screen's: the light side's choices find it within one
-/// just-noticeable difference (in hue and strength) in six choices, and it's kept as White's
-/// match, with the next colour offered.
+/// A warmer white than the screen's: the light side's choices (two warm or cool, two green or
+/// pink, then two brightness) find it within one just-noticeable difference in six choices,
+/// and it's kept as White's match, with the next colour offered.
 #[test]
 fn choices_find_the_match_and_keep_it() {
     use foxglove_devices::{bracket::MAX_ROUNDS, oklab};
@@ -428,14 +428,19 @@ fn choices_find_the_match_and_keep_it() {
         assert!(text.contains(t), "{t}: {text}");
     }
     let white = oklab::from_srgb([153; 3]);
-    let target = oklab::to_srgb([white[0], white[1] - 0.01, white[2] + 0.04]);
+    let target = oklab::to_srgb([white[0], white[1] - 0.01, white[2] + 0.03]);
     assert_eq!(answer_toward(&mut w, target), 6);
+    // Skin and Warm: hue and strength three each, then brightness twice.
+    for step in [Step::Skin, Step::Warm] {
+        let mut other = Wizard::new(case(), None);
+        other.go_to(step, None);
+        assert_eq!(other.ask.as_ref().unwrap().planned(), 8, "{step:?}");
+    }
     assert!(w.ask.is_none() && w.matched(Step::White.color()));
     assert_eq!(w.cal.matches.len(), 1);
     assert_eq!(w.cal.matches[0].light, w.current.light);
     assert_eq!(w.cal.matches[0].screen, [153; 3], "the screen side as is");
-    let (r, t) = (oklab::from_srgb(w.current.light), oklab::from_srgb(target));
-    let off = oklab::distance([0.0, r[1], r[2]], [0.0, t[1], t[2]]);
+    let off = oklab::delta_e(w.current.light, target);
     assert!(
         off < oklab::JND,
         "{:?} vs {target:?}: {off}",
@@ -448,7 +453,8 @@ fn choices_find_the_match_and_keep_it() {
         note.starts_with("Matched: White · 6 choices · moved ΔE 0.0"),
         "{note}"
     );
-    assert!(note.ends_with("within ΔE 0.010"), "{note}");
+    assert!(note.contains(" · within ΔE 0.01"), "{note}");
+    assert!(w.finished.as_ref().unwrap().left() < oklab::JND);
     let text = shown(&View::default(), &mut w);
     for t in [
         "✓ Matched after 6 choices",

@@ -7,31 +7,55 @@
 //!
 //! Each question changes one perceptual thing (an axis): warm or cool and green or pink for a
 //! white or grey, hue and strength (Oklch chroma) for a colour, brightness for a colour that
-//! lights one channel only. Candidates never light a channel the test colour leaves off: a
-//! match says nothing about a channel its colour doesn't use.
+//! lights one channel only. A colour that lights every channel (white, grey, skin, warm) ends
+//! with brightness too, after its other axes, so it can be corrected for brightness alone.
+//! Candidates never light a channel the test colour leaves off: a match says nothing about a
+//! channel its colour doesn't use.
 //!
-//! **Stop rule.** It stops when the user says they match, when every axis's step has fallen
-//! below a just-noticeable difference ([`oklab::JND`]), or after [`MAX_ROUNDS`] choices. With
-//! [`START_STEP`] 0.08 that is three choices an axis (0.08, 0.04, 0.02; then 0.01 is below
-//! one): six for a white, a grey or a mixed colour, three for red, green or blue. A match can
-//! move up to 0.07 on an axis (0.04 + 0.02 + 0.01) in one round of choices ("Ask again" goes on
-//! from there) and ends within 0.01 of where the user's choices put it.
+//! **Steps.** An axis's step halves after each choice and the axis ends once the step falls
+//! below a just-noticeable difference ([`oklab::JND`], 0.02):
+//! - a white or grey's tint axes start at [`WHITE_STEP`] 0.05 (0.05, 0.025): two choices each;
+//! - a colour's hue and strength, and a one- or two-channel colour's brightness, start at
+//!   [`START_STEP`] 0.08 (0.08, 0.04, 0.02): three choices each;
+//! - the final brightness of a colour that lights every channel starts at [`BRIGHTNESS_STEP`]
+//!   0.05, at most [`BRIGHTNESS_CHOICES`] (2) choices.
+//!
+//! So White and Grey take 6 choices (2 + 2 + 2), Skin and Warm 8 (3 + 3 + 2), Red, Green and
+//! Blue 3, and a two-channel colour 6.
+//!
+//! **Stop rule.** It stops when the user says they match, when every axis has ended, or after
+//! [`MAX_ROUNDS`] choices. In one round of choices a match can move half of each step on an
+//! axis (0.07 from 0.08, 0.0375 from 0.05; "Ask again" goes on from there), and ends within
+//! half its last step.
 
 use crate::oklab::{self, JND};
 
-/// The first step on each axis (Oklab ΔE from where the match stands to either candidate):
-/// about four just-noticeable differences, so the first choice is an easy one.
+/// The first step (Oklab ΔE from where the match stands to either candidate) on a colour's hue
+/// and strength, and on a one- or two-channel colour's brightness: about four just-noticeable
+/// differences, so the first choice is an easy one.
 pub const START_STEP: f32 = 0.08;
 
-/// Choices an axis gets: the step halves after each one and the axis ends below [`JND`].
-pub const PER_AXIS: u8 = per_axis();
+/// The first step on a white or grey's warm or cool and green or pink: smaller, since the same
+/// ΔE reads as a strong tint on a grey.
+pub const WHITE_STEP: f32 = 0.05;
+
+/// The first step of the final brightness axis of a colour that lights every channel.
+pub const BRIGHTNESS_STEP: f32 = 0.05;
+
+/// The most choices that final brightness axis gets.
+pub const BRIGHTNESS_CHOICES: u8 = 2;
+
+/// Choices an axis starting at [`START_STEP`] gets.
+pub const PER_AXIS: u8 = choices(START_STEP);
 
 /// The most choices for one colour, whatever happens.
 pub const MAX_ROUNDS: u8 = 8;
 
-const fn per_axis() -> u8 {
+/// Choices an axis starting at `step` gets: the step halves after each one and the axis ends
+/// once it falls below [`JND`].
+pub const fn choices(step: f32) -> u8 {
     let mut n = 0u8;
-    let mut step = START_STEP;
+    let mut step = step;
     while step >= JND - 1e-6 {
         step /= 2.0;
         n += 1;
@@ -104,18 +128,54 @@ struct Line {
     axis: Axis,
     /// A unit direction in Oklab.
     dir: [f32; 3],
+    /// Its first step.
+    first: f32,
+    /// The most choices it gets.
+    max: u8,
+    /// Asked only once every other axis has ended.
+    last: bool,
     asked: u8,
     /// Its two candidates come out the same in 8 bits: nothing to ask.
     flat: bool,
 }
 
 impl Line {
+    fn new(axis: Axis, dir: [f32; 3], first: f32) -> Self {
+        Self {
+            axis,
+            dir,
+            first,
+            max: choices(first),
+            last: false,
+            asked: 0,
+            flat: false,
+        }
+    }
+
+    /// The final brightness of a colour that lights every channel.
+    fn brightness() -> Self {
+        Self {
+            max: BRIGHTNESS_CHOICES.min(choices(BRIGHTNESS_STEP)),
+            last: true,
+            ..Self::new(Axis::Lightness, [1.0, 0.0, 0.0], BRIGHTNESS_STEP)
+        }
+    }
+
     fn step(&self) -> f32 {
-        START_STEP / f32::from(1u16 << self.asked)
+        self.first / f32::from(1u16 << self.asked)
     }
 
     fn open(&self) -> bool {
-        !self.flat && self.asked < PER_AXIS
+        !self.flat && self.asked < self.max
+    }
+
+    /// Choices it has left.
+    fn left(&self) -> u8 {
+        if self.flat {
+            0
+        } else {
+            self.max - self.asked.min(self.max)
+        }
     }
 }
 
@@ -149,29 +209,30 @@ impl Bracket {
         } else {
             ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
         };
-        let axes: Vec<(Axis, [f32; 3])> = match lit {
+        let light = [1.0, 0.0, 0.0];
+        let lines = match lit {
             0 => Vec::new(),
-            1 => vec![(Axis::Lightness, [1.0, 0.0, 0.0])],
-            2 => vec![(Axis::Hue, hue), (Axis::Lightness, [1.0, 0.0, 0.0])],
-            _ if c < GREY_CHROMA => vec![
-                (Axis::WarmCool, [0.0, 0.0, 1.0]),
-                (Axis::Tint, [0.0, 1.0, 0.0]),
+            1 => vec![Line::new(Axis::Lightness, light, START_STEP)],
+            2 => vec![
+                Line::new(Axis::Hue, hue, START_STEP),
+                Line::new(Axis::Lightness, light, START_STEP),
             ],
-            _ => vec![(Axis::Hue, hue), (Axis::Chroma, chroma)],
+            _ if c < GREY_CHROMA => vec![
+                Line::new(Axis::WarmCool, [0.0, 0.0, 1.0], WHITE_STEP),
+                Line::new(Axis::Tint, [0.0, 1.0, 0.0], WHITE_STEP),
+                Line::brightness(),
+            ],
+            _ => vec![
+                Line::new(Axis::Hue, hue, START_STEP),
+                Line::new(Axis::Chroma, chroma, START_STEP),
+                Line::brightness(),
+            ],
         };
         let mut b = Self {
             color,
             start,
             center: oklab::from_srgb(start),
-            lines: axes
-                .into_iter()
-                .map(|(axis, dir)| Line {
-                    axis,
-                    dir,
-                    asked: 0,
-                    flat: false,
-                })
-                .collect(),
+            lines,
             turn: 0,
             rounds: 0,
             stop: None,
@@ -201,11 +262,16 @@ impl Bracket {
     }
 
     /// Asks the next open axis from `from` on (round-robin), skipping any whose candidates
-    /// come out the same; stops when none is left.
+    /// come out the same; a final axis only once the others have ended. Stops when none is
+    /// left.
     fn advance(&mut self, from: usize) {
         let n = self.lines.len();
-        for k in 0..n {
-            let i = (from + k) % n;
+        let order = (0..n)
+            .map(|k| (from + k) % n)
+            .filter(|i| !self.lines[*i].last)
+            .chain((0..n).filter(|i| self.lines[*i].last))
+            .collect::<Vec<_>>();
+        for i in order {
             if !self.lines[i].open() {
                 continue;
             }
@@ -268,11 +334,10 @@ impl Bracket {
             *c += s * d;
         }
         line.asked += 1;
-        if self.rounds >= MAX_ROUNDS {
-            self.stop = Some(Stop::Rounds);
-            return;
-        }
         self.advance(self.turn + 1);
+        if self.stop.is_none() && self.rounds >= MAX_ROUNDS {
+            self.stop = Some(Stop::Rounds);
+        }
     }
 
     /// Why it stopped, `None` while it's asking.
@@ -291,12 +356,7 @@ impl Bracket {
         if self.stop.is_some() {
             return self.rounds;
         }
-        let open: u8 = self
-            .lines
-            .iter()
-            .filter(|l| !l.flat)
-            .map(|l| PER_AXIS - l.asked.min(PER_AXIS))
-            .sum();
+        let open: u8 = self.lines.iter().map(Line::left).sum();
         (self.rounds + open).min(MAX_ROUNDS)
     }
 
@@ -330,41 +390,60 @@ impl Bracket {
 mod tests {
     use super::*;
 
-    /// A user who sees exactly: picks the candidate nearer `target` in Oklab, or says they
-    /// match when the two are equally near (within a tenth of a just-noticeable difference).
+    /// A user who sees exactly and never says they match: picks the candidate nearer `target`
+    /// in Oklab (A when they are equally near). They match would end the colour there, before
+    /// its brightness is asked.
     fn observe(b: &mut Bracket, target: [u8; 3]) {
         let t = oklab::from_srgb(target);
         while let Some((a, bb)) = b.pair() {
             let da = oklab::distance(oklab::from_srgb(a), t);
             let db = oklab::distance(oklab::from_srgb(bb), t);
-            b.answer(if (da - db).abs() < JND / 10.0 {
-                Answer::Same
-            } else if da < db {
-                Answer::Closer(Pick::A)
-            } else {
-                Answer::Closer(Pick::B)
-            });
+            b.answer(Answer::Closer(if da <= db { Pick::A } else { Pick::B }));
             assert!(b.rounds() <= MAX_ROUNDS);
         }
     }
 
-    #[test]
-    fn three_choices_an_axis_and_never_more_than_eight() {
-        assert_eq!(PER_AXIS, 3, "0.08, 0.04, 0.02, then 0.01 is below one JND");
-        let white = Bracket::new([153; 3], [153; 3]);
-        assert_eq!(white.axis(), Some(Axis::WarmCool));
-        assert_eq!(white.planned(), 6);
-        let red = Bracket::new([153, 0, 0], [153, 0, 0]);
-        assert_eq!((red.axis(), red.planned()), (Some(Axis::Lightness), 3));
-        let skin = Bracket::new([153, 112, 92], [153, 112, 92]);
-        assert_eq!((skin.axis(), skin.planned()), (Some(Axis::Hue), 6));
-        // A user who always picks A: every axis runs out, at six.
-        let mut b = white.clone();
-        while b.pair().is_some() {
+    /// The axes a user who always picks A is asked, in order.
+    fn asked(color: [u8; 3]) -> (Vec<Axis>, Bracket) {
+        let mut b = Bracket::new(color, color);
+        let mut axes = Vec::new();
+        while let Some(axis) = b.axis() {
+            axes.push(axis);
             b.answer(Answer::Closer(Pick::A));
         }
-        assert_eq!((b.stop(), b.rounds()), (Some(Stop::Settled), 6));
-        assert!(b.left() < JND, "{}", b.left());
+        (axes, b)
+    }
+
+    #[test]
+    fn choices_per_colour_and_never_more_than_eight() {
+        use Axis::*;
+        assert_eq!(PER_AXIS, 3, "0.08, 0.04, 0.02, then 0.01 is below one JND");
+        assert_eq!(choices(WHITE_STEP), 2, "0.05, 0.025, then 0.0125");
+        assert_eq!(BRIGHTNESS_CHOICES.min(choices(BRIGHTNESS_STEP)), 2);
+        let tint = vec![WarmCool, Tint, WarmCool, Tint, Lightness, Lightness];
+        let hue = vec![Hue, Chroma, Hue, Chroma, Hue, Chroma, Lightness, Lightness];
+        for (color, want) in [
+            ([153, 153, 153], tint.clone()),
+            ([115, 115, 115], tint),
+            ([153, 112, 92], hue.clone()),
+            ([153, 97, 38], hue),
+            ([153, 0, 0], vec![Lightness; 3]),
+            ([0, 153, 0], vec![Lightness; 3]),
+            ([0, 0, 153], vec![Lightness; 3]),
+            (
+                [153, 77, 0],
+                vec![Hue, Lightness, Hue, Lightness, Hue, Lightness],
+            ),
+        ] {
+            let planned = Bracket::new(color, color).planned();
+            let (axes, b) = asked(color);
+            assert_eq!(axes, want, "{color:?}");
+            assert_eq!(usize::from(planned), want.len(), "{color:?}");
+            assert!(planned <= MAX_ROUNDS);
+            // Every axis ran out: settled, with less than a JND left.
+            assert_eq!(b.stop(), Some(Stop::Settled), "{color:?}");
+            assert!(b.left() < JND, "{color:?}: {}", b.left());
+        }
     }
 
     #[test]
@@ -374,7 +453,7 @@ mod tests {
         let c = [153; 3];
         for x in [a, bb] {
             let d = oklab::delta_e(c, x);
-            assert!((d - START_STEP).abs() < 0.006, "{x:?}: {d}");
+            assert!((d - WHITE_STEP).abs() < 0.006, "{x:?}: {d}");
         }
         // Warm or cool: A is the bluer, B the yellower.
         assert!(a[2] > bb[2] && a[0] < bb[0], "{a:?} {bb:?}");
@@ -387,21 +466,25 @@ mod tests {
     }
 
     #[test]
-    fn bracketing_finds_an_off_white_within_one_jnd() {
-        // Whites at the test colour's lightness: warmer, cooler and greener, pinker, as is.
+    fn bracketing_finds_an_off_white_within_about_one_jnd() {
+        // Whites warmer, cooler, greener, pinker, dimmer, brighter, and as is.
         let white = oklab::from_srgb([153; 3]);
-        for (da, db) in [
-            (0.0, 0.04),
-            (-0.03, -0.05),
-            (0.06, 0.02),
-            (-0.06, 0.05),
-            (0.0, 0.0),
+        for (dl, da, db) in [
+            (0.0, 0.0, 0.03),
+            (0.0, -0.02, -0.03),
+            (0.0, 0.03, 0.01),
+            (-0.02, -0.025, 0.02),
+            (0.025, 0.0, 0.0),
+            (0.0, 0.0, 0.0),
         ] {
-            let target = oklab::to_srgb([white[0], white[1] + da, white[2] + db]);
+            let target = oklab::to_srgb([white[0] + dl, white[1] + da, white[2] + db]);
             let mut b = Bracket::new([153; 3], [153; 3]);
             observe(&mut b, target);
+            // Each of the three axes ends within half its last step (0.0125): together about
+            // one JND, plus 8-bit rounding.
             let off = oklab::delta_e(b.result(), target);
-            assert!(off < JND, "{target:?}: {:?} is {off} off", b.result());
+            let bound = (3.0f32).sqrt() * WHITE_STEP / 4.0 + 0.003;
+            assert!(off < bound, "{target:?}: {:?} is {off} off", b.result());
             assert!(b.rounds() <= 6);
         }
     }
@@ -434,14 +517,8 @@ mod tests {
                 b.answer(Answer::Closer(if closer { Pick::A } else { Pick::B }));
             }
             assert!(b.rounds() <= MAX_ROUNDS && b.rounds() >= 3, "{color:?}");
-            // Two-way report: what's left between the match and the target, in ΔE (for a
-            // colour that lights every channel, in hue and strength: its brightness isn't asked).
-            let (r, t) = (oklab::from_srgb(b.result()), oklab::from_srgb(target));
-            let off = if color.iter().all(|v| *v > 0) {
-                oklab::distance([0.0, r[1], r[2]], [0.0, t[1], t[2]])
-            } else {
-                oklab::distance(r, t)
-            };
+            // Two-way report: what's left between the match and the target, in ΔE.
+            let off = oklab::delta_e(b.result(), target);
             assert!(
                 off < 2.0 * JND,
                 "{color:?}: {:?} vs {target:?}: {off}",
