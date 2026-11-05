@@ -1342,8 +1342,13 @@ mod tests {
 
     /// A tagged request of its own (proto, command): `cmd` keeps the keys apart.
     fn ask(l: &Link, cmd: u8, timeout: Duration) -> Result<u8> {
-        l.request(&[protocol::SETTINGS, cmd, cmd], protocol::SETTINGS, cmd, timeout)
-            .map(|r| r[2])
+        l.request(
+            &[protocol::SETTINGS, cmd, cmd],
+            protocol::SETTINGS,
+            cmd,
+            timeout,
+        )
+        .map(|r| r[2])
     }
 
     #[test]
@@ -1360,7 +1365,11 @@ mod tests {
             .collect();
         fake.wait_written(MAX_IN_FLIGHT);
         std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(fake.written().len(), MAX_IN_FLIGHT, "the rest wait for a reply");
+        assert_eq!(
+            fake.written().len(),
+            MAX_IN_FLIGHT,
+            "the rest wait for a reply"
+        );
         // Each reply makes room for one more, and every caller gets its own answer.
         for n in MAX_IN_FLIGHT + 1..=5 {
             fake.release_one();
@@ -1370,7 +1379,10 @@ mod tests {
         for _ in 0..MAX_IN_FLIGHT {
             fake.release_one();
         }
-        let mut got: Vec<u8> = asks.into_iter().map(|a| a.join().unwrap().unwrap()).collect();
+        let mut got: Vec<u8> = asks
+            .into_iter()
+            .map(|a| a.join().unwrap().unwrap())
+            .collect();
         got.sort();
         assert_eq!(got, [1, 2, 3, 4, 5]);
     }
@@ -1394,10 +1406,17 @@ mod tests {
         std::thread::sleep(Duration::from_millis(50));
         l.send(&[protocol::SETTINGS, 0x20, 0x20]).unwrap(); // a plain send after it
         std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(fake.written().len(), MAX_IN_FLIGHT, "the send waits behind the request");
+        assert_eq!(
+            fake.written().len(),
+            MAX_IN_FLIGHT,
+            "the send waits behind the request"
+        );
         fake.release_one();
         fake.wait_written(MAX_IN_FLIGHT + 2);
-        let order: Vec<u8> = fake.written()[MAX_IN_FLIGHT..].iter().map(|w| w[1]).collect();
+        let order: Vec<u8> = fake.written()[MAX_IN_FLIGHT..]
+            .iter()
+            .map(|w| w[1])
+            .collect();
         assert_eq!(order, [9, 0x20], "in the order they were asked");
         while !fake.held.lock().unwrap().is_empty() {
             fake.release_one();
