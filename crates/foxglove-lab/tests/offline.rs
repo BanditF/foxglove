@@ -319,6 +319,40 @@ fn rgb_on_off_is_checked_per_half() {
     }
 }
 
+/// #753: Windows Dynamic Lighting has the lights (a LampArray build): a case watching RGB_STATE
+/// is BLOCKED with that reason, after one owner read that changes nothing; free lights run it.
+#[test]
+fn rgb_cases_block_while_a_lamp_array_holds_the_lights() {
+    const FRAMES: u32 = 1 << 14;
+    let steps = "[{expect_rgb={right_age_max_s=2,left_on=true,right_on=false}}]";
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .push_back(reply(&[0xd7, 0x8c, 5, 2, 30, 1, 0]));
+    let result = run_with(&fake, &case(steps), 20 | FRAMES);
+    assert_eq!(result.status, Status::Blocked, "{}", result.message);
+    assert_eq!(
+        result.message,
+        "host holds lights (Windows Dynamic Lighting): the keyboard's own lights don't show (owner 2)"
+    );
+    assert_eq!(
+        fake.requests.borrow().as_slice(),
+        &[vec![0xd7, 0x0c, 0, 0, 10]],
+        "only the owner read: no SHOW, no RELEASE, a count the keyboard refuses"
+    );
+
+    let mut rgb = reply(&[0xd7, 0x83, 1]);
+    rgb[9] = 1;
+    let fake = Fake::default();
+    fake.replies
+        .borrow_mut()
+        .extend([reply(&[0xd7, 0x8c, 5, 0, 30, 1, 0]), rgb]);
+    assert_eq!(
+        run_with(&fake, &case(steps), 20 | FRAMES).status,
+        Status::Pass
+    );
+}
+
 /// #618 after #651: an idle wait with pc_away tells the keyboard the PC is away first (on USB it
 /// is held lit while the PC is awake), and the case's end puts the PC state back: here the
 /// app's lease, with what was left of it. Firmware without HELLO bit 26 gets nothing.

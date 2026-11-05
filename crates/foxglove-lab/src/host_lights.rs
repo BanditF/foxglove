@@ -19,6 +19,12 @@
 //! app's frame rate cap (app tests), typing while frames stream (the resilience suite's typing
 //! cases), and the right's 10 fps coalescing (the zmk-sim host-frames case).
 //!
+//! A HID LampArray host (Windows Dynamic Lighting, owner 1 over USB or 2 over Bluetooth) wins
+//! over the host link (host_link.h, D7 0C): while it has the lights, SHOW and EFFECT answer 1
+//! (busy). That isn't a fault of the cases: they are BLOCKED, "host holds lights (Windows Dynamic
+//! Lighting)" (#753). The owner is read first with a report that changes nothing
+//! ([`settings::frame_owner`]); a busy reply mid-run blocks the rest the same way.
+//!
 //! Every case is bounded: each request waits at most the link's 500 ms, the stream sends a fixed
 //! count, the watchdog waits the reply's timeout plus 5 s. Both releases run at the end whatever
 //! happened (a drop guard); a lab killed mid-run leaves the lights to the keyboard's timeout.
@@ -26,6 +32,7 @@
 use crate::health::{row_line, Outcome, BLOCKED, FAIL, PASS};
 use foxglove_link::health::{HealthRow, Level};
 use foxglove_link::lamps::LampParts;
+use foxglove_link::lights_owner::Owner;
 use foxglove_link::protocol::{
     self, capabilities, Effect, EffectKind, EffectReply, FrameReply, FrameRight, REPORT,
 };
@@ -140,6 +147,38 @@ impl Cases {
     }
 }
 
+/// Why nothing about the PC's lights can be tested: a LampArray host holds them.
+pub const HOST_HOLDS: &str = "host holds lights (Windows Dynamic Lighting)";
+
+/// The blocked reason when a LampArray host has the lights.
+fn held_reason(what: &str, owner: u8) -> String {
+    let via = match Owner::from_byte(owner) {
+        Owner::LampArrayUsb => "its LampArray over USB",
+        Owner::LampArrayBle => "its LampArray over Bluetooth",
+        _ => "a LampArray",
+    };
+    format!("{what} not tested: {HOST_HOLDS}; owner {owner}, {via}")
+}
+
+/// `Some(reason)` when a LampArray host (Windows Dynamic Lighting) has the keyboard's lights
+/// now, read with a report that changes nothing; `None` when it doesn't, or the keyboard has no
+/// SET_FRAME (HELLO bit 14) or didn't answer. For cases that need the keyboard's own lights
+/// (its idle, on/off and colours in RGB_STATE): they can't show while Windows draws.
+pub fn lamp_array_holds(t: &impl Transport, caps: u32) -> Option<String> {
+    if caps & capabilities::FRAMES == 0 {
+        return None;
+    }
+    settings::frame_owner(t)
+        .ok()
+        .filter(|o| o.lamp_array())
+        .map(|o| {
+            format!(
+                "{HOST_HOLDS}: the keyboard's own lights don't show (owner {})",
+                o.byte()
+            )
+        })
+}
+
 /// Runs the cases on `t`; `caps` are HELLO's. Events are needed only for the watchdog.
 pub fn run(t: &impl Transport, caps: u32, events: Option<Events<'_>>, opts: &Options) -> Cases {
     let mut r = Run {
@@ -147,6 +186,7 @@ pub fn run(t: &impl Transport, caps: u32, events: Option<Events<'_>>, opts: &Opt
         caps,
         opts: *opts,
         cases: Cases::default(),
+        held: false,
     };
     let frames = caps & capabilities::FRAMES != 0;
     let effects = caps & capabilities::EFFECTS != 0;
@@ -162,6 +202,17 @@ pub fn run(t: &impl Transport, caps: u32, events: Option<Events<'_>>, opts: &Opt
     }
     if !frames && !effects {
         return r.cases;
+    }
+    // Windows Dynamic Lighting has the lights: every case would be refused busy.
+    if frames {
+        if let Ok(o) = settings::frame_owner(t) {
+            if o.lamp_array() {
+                r.cases
+                    .blocked
+                    .push(held_reason("SET_FRAME and SET_EFFECT", o.byte()));
+                return r.cases;
+            }
+        }
     }
     let _release = Release { t, frames, effects };
     if caps & capabilities::RGB_SHOWN == 0 {
@@ -203,11 +254,14 @@ struct Run<'a, T: Transport> {
     caps: u32,
     opts: Options,
     cases: Cases,
+    /// A busy reply said a LampArray host took the lights mid-run: the rest is blocked.
+    held: bool,
 }
 
 fn status_text(s: u8) -> &'static str {
     match s {
         0 => "ok",
+        1 => "busy: a LampArray host has the lights",
         4 => "not built in",
         5 => "bad request",
         _ => "unknown",
@@ -257,12 +311,36 @@ impl<T: Transport> Run<'_, T> {
         LampParts::old_firmware().total()
     }
 
+    /// A LampArray host took the lights: blocked, once, from `what` on.
+    fn hold(&mut self, what: &str, owner: u8) {
+        if !self.held {
+            self.held = true;
+            self.cases.blocked.push(held_reason(what, owner));
+        }
+    }
+
+    /// Whether a LampArray host has the lights now (read without changing anything): if so,
+    /// blocked from `item` on. For a result a LampArray taking over would also explain.
+    fn windows_took(&mut self, item: &str) -> bool {
+        match settings::frame_owner(self.t) {
+            Ok(o) if o.lamp_array() && self.caps & capabilities::FRAMES != 0 => {
+                self.hold(&format!("{item:?} on"), o.byte());
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// A frame's reply as a row: ok, the PC's, and the right drawing it. Whether the PC holds
     /// the lights.
     fn frame_row(&mut self, item: &str, reply: anyhow::Result<FrameReply>, what: &str) -> bool {
         match reply {
             Err(e) => {
                 self.row(item, Level::Fail, format!("no reply to SET_FRAME: {e:#}"));
+                false
+            }
+            Ok(r) if r.busy() => {
+                self.hold(&format!("SET_FRAME from {item:?} on"), r.owner);
                 false
             }
             Ok(r) if r.status != 0 => {
@@ -299,7 +377,7 @@ impl<T: Transport> Run<'_, T> {
 
     /// The left's LEDs as RGB_STATE reports them: the PC's or not, and the colour while lit.
     fn read_back(&mut self, item: &str, want_host: bool, want: Option<(u16, &str)>) {
-        if self.caps & capabilities::RGB_SHOWN == 0 {
+        if self.held || self.caps & capabilities::RGB_SHOWN == 0 {
             return;
         }
         std::thread::sleep(self.opts.settle);
@@ -314,6 +392,10 @@ impl<T: Transport> Run<'_, T> {
                 "RGB_STATE says nothing about the left's LEDs",
             );
         };
+        // Windows took the lights after the hand-back: the LEDs are its, not the PC's.
+        if left.host && !want_host && self.windows_took(item) {
+            return;
+        }
         if left.host != want_host {
             let detail = if want_host {
                 "the left's LEDs aren't the PC's (RGB_STATE host flag off)"
@@ -357,6 +439,9 @@ impl<T: Transport> Run<'_, T> {
             self.lost_chunk(n);
             self.stream(n);
         }
+        if self.held {
+            return;
+        }
         self.frame_release("Frame release");
         if self.opts.watchdog {
             match events {
@@ -371,6 +456,9 @@ impl<T: Transport> Run<'_, T> {
 
     /// A frame whose last report (SHOW) was lost, then a whole one: the whole one shows.
     fn lost_chunk(&mut self, n: usize) {
+        if self.held {
+            return;
+        }
         let green = protocol::frame(0, &vec![GREEN; n]);
         let Some((_, chunks)) = green.split_last().filter(|(_, c)| !c.is_empty()) else {
             return self.row(
@@ -398,7 +486,7 @@ impl<T: Transport> Run<'_, T> {
     /// Frames one in flight, as the app's scenes send them: every reply ok and the PC's.
     fn stream(&mut self, n: usize) {
         let count = self.opts.stream;
-        if count == 0 {
+        if count == 0 || self.held {
             return;
         }
         let red = vec![RED; n];
@@ -409,6 +497,9 @@ impl<T: Transport> Run<'_, T> {
             let frame = if i % 2 == 0 { &blue } else { &red };
             let bad = match settings::set_frame(self.t, 0, frame) {
                 Err(e) => Some(format!("no reply: {e:#}")),
+                Ok(r) if r.busy() => {
+                    return self.hold("SET_FRAME from \"Frame stream\" on", r.owner)
+                }
                 Ok(r) if r.status != 0 => {
                     Some(format!("status {} ({})", r.status, status_text(r.status)))
                 }
@@ -440,6 +531,9 @@ impl<T: Transport> Run<'_, T> {
 
     /// RELEASE: owner back to the keyboard, the LEDs its own.
     fn frame_release(&mut self, item: &str) {
+        if self.held {
+            return;
+        }
         match settings::release_frame(self.t) {
             Err(e) => self.row(item, Level::Fail, format!("no reply to RELEASE: {e:#}")),
             Ok(r) if r.status != 0 => self.row(
@@ -452,6 +546,9 @@ impl<T: Transport> Run<'_, T> {
                 Level::Fail,
                 "RELEASE ok but the PC still owns the lights (owner 3)",
             ),
+            Ok(r) if Owner::from_byte(r.owner).lamp_array() => {
+                self.hold(&format!("{item:?} on"), r.owner)
+            }
             Ok(r) => {
                 self.row(
                     item,
@@ -546,6 +643,10 @@ impl<T: Transport> Run<'_, T> {
                 self.row(item, Level::Fail, format!("no reply to SET_EFFECT: {e:#}"));
                 false
             }
+            Ok(r) if r.busy() => {
+                self.hold(&format!("SET_EFFECT from {item:?} on"), r.owner);
+                false
+            }
             Ok(r) if r.status != 0 => {
                 self.row(
                     item,
@@ -587,6 +688,9 @@ impl<T: Transport> Run<'_, T> {
     }
 
     fn effects(&mut self, frames: bool) {
+        if self.held {
+            return;
+        }
         let reply = settings::set_effect(self.t, &breathe(RED));
         if self.effect_row("Effect", reply, "a still red breathe") {
             self.read_back("Effect read-back", true, Some((0, "red")));
@@ -595,10 +699,16 @@ impl<T: Transport> Run<'_, T> {
                 self.frame_over_effect();
             }
         }
+        if self.held {
+            return;
+        }
         // Released whether it started or not; a second one so the release has one to end.
         let reply = settings::set_effect(self.t, &breathe(BLUE));
         if self.effect_row("Effect again", reply, "a still blue breathe") {
             self.read_back("Effect again read-back", true, Some((240, "blue")));
+        }
+        if self.held {
+            return;
         }
         match settings::release_effect(self.t) {
             Err(e) => self.row(
@@ -633,6 +743,9 @@ impl<T: Transport> Run<'_, T> {
     /// An effect the keyboard can't draw (kind 0): refused with status 5, the running one on.
     fn bad_effect(&mut self) {
         const ITEM: &str = "Bad effect refused";
+        if self.held {
+            return;
+        }
         let Some(mut report) = protocol::effect(&breathe(GREEN)) else {
             return self.row(ITEM, Level::Fail, "the probe doesn't fit the wire");
         };
@@ -648,6 +761,7 @@ impl<T: Transport> Run<'_, T> {
             .map(|r| EffectReply::parse(&r));
         match reply {
             Err(e) => self.row(ITEM, Level::Fail, format!("no reply: {e:#}")),
+            Ok(r) if r.busy() => self.hold(&format!("{ITEM:?} on"), r.owner),
             Ok(r) if r.status != 5 => self.row(
                 ITEM,
                 Level::Fail,
@@ -657,6 +771,7 @@ impl<T: Transport> Run<'_, T> {
                     status_text(r.status)
                 ),
             ),
+            Ok(r) if !r.running() && self.windows_took(ITEM) => {}
             Ok(r) if !r.running() || r.kind != EffectKind::Breathe as u8 => self.row(
                 ITEM,
                 Level::Fail,
@@ -676,6 +791,9 @@ impl<T: Transport> Run<'_, T> {
     /// A frame takes the lights from a running effect: the effect stops, quietly.
     fn frame_over_effect(&mut self) {
         const ITEM: &str = "Frame over effect";
+        if self.held {
+            return;
+        }
         let n = self.lamps();
         let reply = settings::set_frame(self.t, 0, &vec![BLUE; n]);
         if !self.frame_row(ITEM, reply, "a blue frame over the running breathe") {
@@ -718,6 +836,12 @@ mod tests {
         hue_off: u16,
         /// SET_FRAME answers this status.
         frame_status: u8,
+        /// A HID LampArray's owner byte (1 USB, 2 Bluetooth) once it has the lights; 0 none.
+        lamp_array: u8,
+        /// The LampArray takes the lights at this request (counted from 1); `None`: from the
+        /// start, if `lamp_array` is set.
+        takes_at: Option<usize>,
+        requests: usize,
     }
 
     impl Default for Kb {
@@ -733,6 +857,9 @@ mod tests {
                 release_keeps: false,
                 hue_off: 0,
                 frame_status: 0,
+                lamp_array: 0,
+                takes_at: None,
+                requests: 0,
             }
         }
     }
@@ -805,7 +932,36 @@ mod tests {
             *self.sent.borrow_mut() += 1;
             assert_eq!(proto, 0xd7);
             let mut kb = self.kb.borrow_mut();
+            kb.requests += 1;
+            // host_frames.c: a LampArray wins; frames and an effect stop, SHOW and EFFECT are
+            // refused busy with its owner, RELEASE answers ok and leaves it the lights.
+            let windows = kb.lamp_array != 0 && kb.takes_at.is_none_or(|n| kb.requests >= n);
+            if windows {
+                kb.frames_owned = false;
+                kb.effect = None;
+            }
+            let lamp_owner = if windows { kb.lamp_array } else { 0 };
+            let release = r.get(2).is_some_and(|f| f & protocol::frame::RELEASE != 0);
             match cmd {
+                0x0c if !release
+                    && (r.len() < 5 || r[4] > 9 || r.len() < 5 + 3 * usize::from(r[4])) =>
+                {
+                    let owner = lamp_owner.max(Fake::owner(kb.frames_owned));
+                    Ok(reply(&[0xd7, 0x8c, 5, owner, kb.timeout_s, kb.right, 0]))
+                }
+                0x0c if windows && !release => Ok(reply(&[
+                    0xd7,
+                    0x8c,
+                    1,
+                    lamp_owner,
+                    kb.timeout_s,
+                    kb.right,
+                    0,
+                ])),
+                // Only an effect it could draw is refused busy; a bad one is still bad (5).
+                0x0f if windows && r[2] == 2 && (1..=4).contains(&r[3]) => {
+                    Ok(reply(&[0xd7, 0x8f, 1, lamp_owner, 0, kb.right, 0]))
+                }
                 0x0c => {
                     if r[2] & protocol::frame::RELEASE != 0 {
                         if !kb.release_keeps {
@@ -826,7 +982,7 @@ mod tests {
                         0xd7,
                         0x8c,
                         status,
-                        Fake::owner(kb.frames_owned),
+                        lamp_owner.max(Fake::owner(kb.frames_owned)),
                         kb.timeout_s,
                         kb.right,
                         0,
@@ -860,7 +1016,7 @@ mod tests {
                     ]))
                 }
                 0x03 => {
-                    let host = kb.frames_owned || kb.effect.is_some();
+                    let host = kb.frames_owned || kb.effect.is_some() || windows;
                     let mut out = reply(&[0xd7, 0x83]);
                     out[9] = 0xff; // no right half heard from
                     let drawn = kb.lit;
@@ -1108,6 +1264,89 @@ mod tests {
             .any(|l| l.starts_with("WARN lights     Watchdog: timeout 0")));
         let out = run(&Fake::default(), ALL, None, &opts);
         assert_eq!(out.code(), BLOCKED);
+    }
+
+    /// #753: Windows Dynamic Lighting has the lights (the left_lamparray build): every case is
+    /// BLOCKED with that reason, not FAIL on "status 1 (unknown)", and nothing else is sent.
+    #[test]
+    fn windows_dynamic_lighting_holding_the_lights_blocks() {
+        for (owner, via) in [(1, "USB"), (2, "Bluetooth")] {
+            let f = Fake::with(Kb {
+                lamp_array: owner,
+                ..Kb::default()
+            });
+            let opts = Options {
+                watchdog: true,
+                ..FAST
+            };
+            let none = |_: Duration| -> Option<[u8; REPORT]> { None };
+            let out = run(&f, ALL, Some(&none), &opts);
+            let lines = out.lines();
+            assert_eq!(out.code(), BLOCKED, "{lines:#?}");
+            assert!(out.rows.is_empty(), "{lines:#?}");
+            assert_eq!(
+                lines.last().unwrap(),
+                &format!(
+                    "BLOCKED: SET_FRAME and SET_EFFECT not tested: host holds lights (Windows \
+                     Dynamic Lighting); owner {owner}, its LampArray over {via}"
+                )
+            );
+            assert_eq!(*f.sent.borrow(), 1, "only the owner read: {lines:#?}");
+            assert_eq!(out.json()["result"], "blocked");
+            // Health: a warning, not a failure.
+            let mut health = Outcome {
+                rows: Vec::new(),
+                blocked: None,
+            };
+            out.fold_into(&mut health);
+            assert_eq!(health.code(), PASS, "{:#?}", health.lines());
+        }
+        assert_eq!(
+            lamp_array_holds(
+                &Fake::with(Kb {
+                    lamp_array: 1,
+                    ..Kb::default()
+                }),
+                ALL
+            )
+            .as_deref(),
+            Some("host holds lights (Windows Dynamic Lighting): the keyboard's own lights don't show (owner 1)")
+        );
+        assert_eq!(lamp_array_holds(&Fake::default(), ALL), None);
+        assert_eq!(
+            lamp_array_holds(&Fake::default(), 0),
+            None,
+            "no SET_FRAME, no read"
+        );
+    }
+
+    /// Windows takes the lights mid-run: the busy reply blocks the rest; nothing fails.
+    #[test]
+    fn a_lamp_array_taking_the_lights_mid_run_blocks_the_rest() {
+        let healthy = Fake::default();
+        run(&healthy, ALL, None, &FAST);
+        let total = healthy.kb.borrow().requests;
+        // At every request after the owner read, up to the cases' last (the drop guard's two
+        // releases come after them).
+        for at in 2..=total - 2 {
+            let f = Fake::with(Kb {
+                lamp_array: 2,
+                takes_at: Some(at),
+                ..Kb::default()
+            });
+            let out = run(&f, ALL, None, &FAST);
+            let lines = out.lines();
+            assert_eq!(out.code(), BLOCKED, "at {at}: {lines:#?}");
+            assert!(
+                out.rows.iter().all(|r| r.level != Level::Fail),
+                "at {at}: {lines:#?}"
+            );
+            assert_eq!(out.blocked.len(), 1, "at {at}: {lines:#?}");
+            assert!(
+                out.blocked[0].contains("host holds lights (Windows Dynamic Lighting); owner 2"),
+                "at {at}: {lines:#?}"
+            );
+        }
     }
 
     #[test]

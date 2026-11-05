@@ -194,6 +194,20 @@ pub fn release_frame(t: &impl Transport) -> Result<protocol::FrameReply> {
     Ok(protocol::FrameReply::parse(&r))
 }
 
+/// Who has the lights now, without changing anything: SET_FRAME's owner byte, from a report
+/// the keyboard refuses (status 5, [`protocol::frame_owner_probe`]). Needs HELLO bit 14.
+pub fn frame_owner(t: &impl Transport) -> Result<crate::lights_owner::Owner> {
+    let r = t.request(
+        &protocol::frame_owner_probe(),
+        protocol::SETTINGS,
+        protocol::settings::FRAME,
+        Duration::from_millis(500),
+    )?;
+    let r = protocol::FrameReply::parse(&r);
+    anyhow::ensure!(r.status != 4, "SET_FRAME not built in");
+    Ok(crate::lights_owner::Owner::from_byte(r.owner))
+}
+
 /// SET_EFFECT (#490): one request, answered with D7 8F.
 fn effect_request(t: &impl Transport, report: &[u8]) -> Result<protocol::EffectReply> {
     let r = t.request(
