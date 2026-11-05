@@ -104,6 +104,10 @@ pub struct Snapshot {
     /// How the last write to each Dynamic Lighting device went, by key, for the health view
     /// (#691, [`super::lamp_health`]).
     pub lamp_applies: BTreeMap<String, super::lamp_health::Apply>,
+    /// Keyboards that are also LampArrays (#754): Windows lists them under Dynamic Lighting,
+    /// their own link drives them, so they aren't in [`Self::devices`]; the health view names
+    /// them.
+    pub keyboard_lamp_arrays: Vec<pcl::KeyboardLampArray>,
 }
 
 /// A request to the worker.
@@ -375,6 +379,8 @@ pub struct Worker {
     lamp_opener: LampOpener,
     found: Vec<Found>,
     unknown: Vec<Unknown>,
+    /// Keyboards' own LampArrays, from the last scan (#754).
+    keyboard_lamps: Vec<pcl::KeyboardLampArray>,
     /// The catalog changed: scan again, without putting colours back.
     pub rescan: bool,
     drivers: BTreeMap<String, Box<dyn LightingDevice>>,
@@ -422,6 +428,7 @@ impl Worker {
             lamp_opener: Box::new(|_| None),
             found: Vec::new(),
             unknown: Vec::new(),
+            keyboard_lamps: Vec::new(),
             rescan: false,
             drivers: BTreeMap::new(),
             settings,
@@ -475,6 +482,7 @@ impl Worker {
         }
         self.conflicts = conflicts;
         self.unknown = pcl::unknown(&self.catalog, hid);
+        self.keyboard_lamps = pcl::keyboard_lamp_arrays(hid);
         // A LampArray not read yet: read them all once (Windows), then reuse.
         let unread = now.iter().any(|f| {
             f.control == Control::LampArray && !self.lamp_info.contains_key(&(f.vid, f.pid))
@@ -1074,6 +1082,7 @@ impl Worker {
             unknown: self.unknown.clone(),
             local_file: self.local_path.as_ref().map(|p| p.display().to_string()),
             lamp_applies: self.lamp_applies.clone(),
+            keyboard_lamp_arrays: self.keyboard_lamps.clone(),
         }
     }
 }
@@ -2086,6 +2095,45 @@ mod tests {
         bare.scan(&case_hid(), &mut nothing(), false, true);
         let r = rows(&health(&bare)[0]);
         assert_eq!((r[1].level, r.len()), (Level::Warn, 3));
+    }
+
+    /// #754: a keyboard that is also a LampArray isn't a device here (its link drives it), but
+    /// the snapshot names it, so the health view's Dynamic Lighting rows aren't silent on it.
+    #[test]
+    fn a_keyboards_lamp_array_is_named_but_not_driven() {
+        let calls = LampCalls::default();
+        let (w, _) = worker(Settings::default());
+        let mut w = w.with_lamp_opener(fake_lamps(&calls));
+        let mut hid = case_hid();
+        for (page, usage, path) in [
+            (1, 6, "corne-keys"),
+            (0xff60, 0x61, "corne-raw"),
+            (0x59, 1, "corne-lamps"),
+        ] {
+            hid.push(HidEntry {
+                vid: 0x1d50,
+                pid: 0x615e,
+                usage_page: page,
+                usage,
+                path: path.into(),
+                product: Some("Eyelash Corne".into()),
+                ..Default::default()
+            });
+        }
+        w.scan(&hid, &mut nothing(), false, true);
+        let s = w.snapshot();
+        assert!(
+            s.devices.iter().all(|d| d.key != "1d50:615e"),
+            "not driven here"
+        );
+        let k: Vec<_> = s
+            .keyboard_lamp_arrays
+            .iter()
+            .map(|k| (k.key.as_str(), k.name.as_str(), k.bluetooth))
+            .collect();
+        assert_eq!(k, vec![("1d50:615e", "Eyelash Corne", false)]);
+        let rows = crate::foxglove::lamp_health::keyboard_rows(&s.keyboard_lamp_arrays);
+        assert_eq!(rows[0].item, "Eyelash Corne (keyboard) · Found");
     }
 
     /// #691: "Match keyboard" on a Dynamic Lighting device follows the keyboard's report (so
