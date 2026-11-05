@@ -78,6 +78,7 @@ pub mod live_art;
 pub mod live_feed;
 pub mod live_wire;
 pub mod mic_broker;
+pub mod notice;
 pub mod notifications;
 pub mod notifications_ui;
 mod notify_windows;

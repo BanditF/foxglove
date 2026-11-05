@@ -21,10 +21,16 @@
 //! {"t":"board","board":{...}}               the geometry changed (another keyboard, layout)
 //! {"t":"quiet","why":"away"}                nothing more until "live": paused, away, fullscreen
 //! {"t":"live"}
+//! {"t":"notify","id":7,"title":"Right half battery low","body":"14% left.","level":"info"}
 //! ```
 //!
-//! Wallpaper → Foxglove: `{"t":"hi","wallpaper":"bandit-live-board"}` and
-//! `{"t":"paused","paused":true}` (Wallpaper Engine's `setPaused`). Anything else is ignored.
+//! Wallpaper → Foxglove: `{"t":"hi","wallpaper":"bandit-live-board","caps":["notify"]}`,
+//! `{"t":"paused","paused":true}` (Wallpaper Engine's `setPaused`) and `{"t":"notified","id":7}`
+//! (it drew notification 7). Anything else is ignored.
+//!
+//! **Notifications:** only a client that said `caps: ["notify"]` in its `hi` gets `notify`, and
+//! only while the feed isn't quiet. Without its `notified` in [`ACK_LIMIT`] Foxglove shows the
+//! Windows notification instead, so nothing is lost.
 
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +49,10 @@ pub const MAX_BATCH: usize = 64;
 pub const BATCH_MS: u64 = 16;
 /// Wallpapers connected at once.
 pub const MAX_CLIENTS: usize = 4;
+/// The capability a wallpaper declares in its `hi` to be sent notifications.
+pub const CAP_NOTIFY: &str = "notify";
+/// How long a wallpaper has to say it drew a notification before Windows shows it instead.
+pub const ACK_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// One key on the board: top-left corner, size and rotation (degrees, clockwise about the key's
 /// centre), in key units, as the layer overlay draws it.
@@ -164,6 +174,15 @@ pub enum Why {
     Fullscreen,
 }
 
+/// How much a notification matters: `warn` for a battery about to go, `info` for the rest.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Level {
+    #[default]
+    Info,
+    Warn,
+}
+
 /// One key event: index, 1 down / 0 up, ms since the batch's first event.
 pub type KeyEvent = (u16, u8, u16);
 
@@ -196,6 +215,13 @@ pub enum Message {
         why: Why,
     },
     Live,
+    /// A notification for a wallpaper that declared [`CAP_NOTIFY`]; it answers `notified`.
+    Notify {
+        id: u64,
+        title: String,
+        body: String,
+        level: Level,
+    },
 }
 
 impl Message {
@@ -211,10 +237,24 @@ pub enum FromWallpaper {
     Hi {
         #[serde(default)]
         wallpaper: String,
+        /// What it can do beyond the feed: [`CAP_NOTIFY`].
+        #[serde(default)]
+        caps: Vec<String>,
     },
     Paused {
         paused: bool,
     },
+    /// It drew notification `id`.
+    Notified {
+        id: u64,
+    },
+}
+
+impl FromWallpaper {
+    /// A `hi` that asks for notifications.
+    pub fn wants_notify(caps: &[String]) -> bool {
+        caps.iter().any(|c| c == CAP_NOTIFY)
+    }
 }
 
 pub fn parse(text: &str) -> Option<FromWallpaper> {
@@ -411,6 +451,12 @@ mod tests {
             Message::Panel {
                 panel: Panel::of(16, 2, 2, &[0x80, 0x01, 0xff, 0x00]),
             },
+            Message::Notify {
+                id: 7,
+                title: "Right half battery low".into(),
+                body: "14% left. Charge it soon.".into(),
+                level: Level::Warn,
+            },
         ]
     }
 
@@ -464,6 +510,11 @@ mod tests {
             "w",
             "h",
             "bits",
+            // `notify`: a notification's own words, only to a client that declared the cap.
+            "id",
+            "title",
+            "body",
+            "level",
         ];
         for m in every_message() {
             let json = m.json();
@@ -497,6 +548,10 @@ mod tests {
         );
         assert_eq!(m[5].json(), r#"{"t":"quiet","why":"fullscreen"}"#);
         assert_eq!(m[6].json(), r#"{"t":"live"}"#);
+        assert_eq!(
+            m[8].json(),
+            r#"{"t":"notify","id":7,"title":"Right half battery low","body":"14% left. Charge it soon.","level":"warn"}"#
+        );
         assert_eq!(
             Message::Art { art: None }.json(),
             r#"{"t":"art","art":null}"#
@@ -554,8 +609,20 @@ mod tests {
         assert_eq!(
             parse(r#"{"t":"hi","wallpaper":"bandit-live-board","extra":1}"#),
             Some(FromWallpaper::Hi {
-                wallpaper: "bandit-live-board".into()
+                wallpaper: "bandit-live-board".into(),
+                caps: Vec::new(),
             })
+        );
+        let Some(FromWallpaper::Hi { caps, .. }) =
+            parse(r#"{"t":"hi","wallpaper":"x","caps":["notify","later"]}"#)
+        else {
+            panic!()
+        };
+        assert!(FromWallpaper::wants_notify(&caps));
+        assert!(!FromWallpaper::wants_notify(&["later".into()]));
+        assert_eq!(
+            parse(r#"{"t":"notified","id":7}"#),
+            Some(FromWallpaper::Notified { id: 7 })
         );
         assert_eq!(
             parse(r#"{"t":"keys"}"#),
