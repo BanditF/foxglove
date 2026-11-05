@@ -293,8 +293,19 @@ pub(crate) mod fake {
         pub custom: Mutex<HashMap<(u8, u8), [u8; 2]>>,
         /// Lighting values by legacy id.
         pub legacy: Mutex<HashMap<u8, [u8; 2]>>,
+        /// Vial firmware: answers the Vial reads with its compressed definition.
+        pub vial: Option<FakeVial>,
+        /// From this definition block on, Vial reads get no reply.
+        pub vial_silent_from: Mutex<Option<u32>>,
         /// Every report that reached it.
         pub sent: Mutex<Vec<Vec<u8>>>,
+    }
+
+    /// What a Vial board keeps: its protocol version, uid and compressed definition.
+    pub struct FakeVial {
+        pub protocol: u32,
+        pub uid: [u8; 8],
+        pub blob: Vec<u8>,
     }
 
     impl FakeQmk {
@@ -317,6 +328,38 @@ pub(crate) mod fake {
                 Ok(out)
             };
             match r[0] {
+                // Vial replies carry their data from byte 0, as vial-qmk's handler writes them.
+                protocol::VIAL_PREFIX => {
+                    let Some(v) = &self.vial else {
+                        return unhandled(out);
+                    };
+                    match r[1] {
+                        0x00 => {
+                            out[..4].copy_from_slice(&v.protocol.to_le_bytes());
+                            out[4..12].copy_from_slice(&v.uid);
+                        }
+                        0x01 => out[..4].copy_from_slice(&(v.blob.len() as u32).to_le_bytes()),
+                        0x02 => {
+                            // The firmware reads the block number's low 16 bits.
+                            let block = u32::from(u16::from_le_bytes([r[2], r[3]]));
+                            if self
+                                .vial_silent_from
+                                .lock()
+                                .unwrap()
+                                .is_some_and(|s| block >= s)
+                            {
+                                return Err(DeviceError::Timeout);
+                            }
+                            let start = block as usize * REPORT;
+                            // Past the end the report comes back unchanged.
+                            if let Some(rest) = v.blob.get(start..).filter(|r| !r.is_empty()) {
+                                let n = rest.len().min(REPORT);
+                                out[..n].copy_from_slice(&rest[..n]);
+                            }
+                        }
+                        _ => return unhandled(out),
+                    }
+                }
                 protocol::GET_PROTOCOL_VERSION => {
                     out[1..3].copy_from_slice(&self.protocol_version.to_be_bytes())
                 }

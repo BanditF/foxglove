@@ -28,9 +28,28 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(500);
 /// traffic on the same interface) are skipped until the timeout.
 pub struct HidTransport(Mutex<HidDevice>);
 
-impl Transport for HidTransport {
-    fn exchange(&self, report: &Report) -> Result<Report> {
+/// Reports left unread before a Vial read that are dropped first, at most.
+const STALE_REPLIES: usize = 16;
+
+impl HidTransport {
+    /// Writes `report`, then returns the first reply `accept` takes, within the timeout.
+    fn send(
+        &self,
+        report: &Report,
+        drain: bool,
+        accept: impl Fn(&Report) -> bool,
+    ) -> Result<Report> {
         let dev = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if drain {
+            // A late reply to an earlier read would pass for this one's data.
+            let mut stale = [0u8; REPORT];
+            for _ in 0..STALE_REPLIES {
+                match dev.read_timeout(&mut stale, 0) {
+                    Ok(n) if n > 0 => {}
+                    _ => break,
+                }
+            }
+        }
         let mut out = [0u8; REPORT + 1]; // byte 0 is the report id
         out[1..].copy_from_slice(report);
         dev.write(&out)
@@ -45,10 +64,24 @@ impl Transport for HidTransport {
             let n = dev
                 .read_timeout(&mut reply, left.as_millis() as i32)
                 .map_err(|_| DeviceError::Disconnected)?;
-            if n > 0 && (reply[0] == report[0] || reply[0] == crate::protocol::UNHANDLED) {
+            if n > 0 && accept(&reply) {
                 return Ok(reply);
             }
         }
+    }
+}
+
+impl Transport for HidTransport {
+    fn exchange(&self, report: &Report) -> Result<Report> {
+        self.send(report, false, |reply| {
+            reply[0] == report[0] || reply[0] == crate::protocol::UNHANDLED
+        })
+    }
+
+    /// Vial's replies don't echo the command, so any reply is taken; stale ones are dropped
+    /// first, and the XZ checksum catches the rest.
+    fn exchange_any(&self, report: &Report) -> Result<Report> {
+        self.send(report, true, |_| true)
     }
 }
 
