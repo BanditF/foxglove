@@ -482,6 +482,29 @@ pub fn wallpapers_changed() {
     show_art(&chosen);
 }
 
+/// The "Wallpaper" palette's colours changed (#40: another wallpaper on screen, or its picture
+/// read for the first time). The running scene takes them when it is the chosen look and that
+/// look follows the wallpaper; any other scene is left alone.
+pub fn wallpaper_palette_changed() {
+    let Some((running, _)) = super::scene_run::running() else {
+        return;
+    };
+    let page = STATE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .filter(|st| !st.reload)
+        .map(|st| st.chosen.clone());
+    let chosen = page.unwrap_or_else(looks::load_chosen);
+    let saved = looks::load_saved().presets;
+    let name = scene_name(&chosen.look, &saved);
+    if !chosen.look.follows_wallpaper() || running != name {
+        return;
+    }
+    let room = super::scene_room::room();
+    super::scene_run::set_effect(&name, chosen.look.effect(&room));
+}
+
 /// Only a scene that ran under the page's unnamed fallback while its look is a wallpaper's
 /// is restyled: never the demo scene, a named preset or the user's own look.
 fn restyle_on_wallpapers(running: &str, chosen_is_wallpaper_look: bool) -> bool {
@@ -1335,8 +1358,18 @@ fn effect_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Int
                     .iter()
                     .any(|p| p.name == look.palette))
             .then_some(look.palette.as_str());
-            for name in PALETTES.iter().map(|(n, _)| *n).chain(own) {
-                if theme::pill(ui, look.palette == name, name).clicked() {
+            // Then the palette that follows the wallpaper on screen (#40).
+            let names = PALETTES
+                .iter()
+                .map(|(n, _)| *n)
+                .chain([looks::WALLPAPER])
+                .chain(own);
+            for name in names {
+                let mut pill = theme::pill(ui, look.palette == name, name);
+                if name == looks::WALLPAPER {
+                    pill = pill.on_hover_text(looks::WALLPAPER_HINT);
+                }
+                if pill.clicked() {
                     set(
                         Look {
                             palette: name.into(),
@@ -1968,5 +2001,28 @@ pub(crate) mod tests {
             "{forest:?}"
         );
         assert!(click(&sample_none(), "Reef").is_empty());
+    }
+
+    /// #40: every palette effect offers the "Wallpaper" palette after Foxglove's own; a
+    /// one-colour effect doesn't.
+    #[test]
+    fn the_wallpaper_palette_is_a_pill() {
+        let v = View {
+            look: Look {
+                kind: Kind::Gradient,
+                ..Look::default()
+            },
+            ..sample_none()
+        };
+        let picked = click(&v, looks::WALLPAPER);
+        assert!(
+            matches!(&picked[..], [Intent::Look { look, save: true }] if look.follows_wallpaper()),
+            "{picked:?}"
+        );
+        let scan = View {
+            look: Look::default(),
+            ..sample_none()
+        };
+        assert!(click(&scan, looks::WALLPAPER).is_empty());
     }
 }

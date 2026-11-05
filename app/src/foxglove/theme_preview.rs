@@ -1584,6 +1584,42 @@ fn scenes_wallpaper_presets_render() {
     assert_ne!(running, picked);
 }
 
+/// #40: the "Wallpaper" palette picked for a sweep, running, wide; and a drift with it at the
+/// window's default size (one column). Under test the wallpaper on screen is a sunset picture.
+#[test]
+fn scenes_wallpaper_palette_renders() {
+    use crate::foxglove::scene_looks::{Direction, Kind, Look, WALLPAPER};
+    use crate::foxglove::scenes_ui::{tests, View};
+    use crate::foxglove::shell::Page;
+    let mut s = Samples::full();
+    s.scenes.0 = View {
+        look: Look {
+            kind: Kind::Sweep,
+            palette: WALLPAPER.into(),
+            direction: Direction::Right,
+            speed: 4,
+            ..Look::default()
+        },
+        running: Some("Custom scene".into()),
+        t: foxglove_scene::SceneTime(900),
+        ..tests::sample()
+    };
+    let sweep = shell_preview_with(Page::Scenes, &s, 1200.0);
+    keep("ui-40-scenes-wallpaper-sweep.png", &sweep);
+    s.scenes.0 = View {
+        look: Look {
+            kind: Kind::Drift,
+            palette: WALLPAPER.into(),
+            width_mm: 250,
+            ..Look::default()
+        },
+        ..tests::sample_none()
+    };
+    let drift = shell_preview_with(Page::Scenes, &s, 1000.0);
+    keep("ui-40-scenes-wallpaper-drift.png", &drift);
+    assert_ne!(sweep, drift);
+}
+
 /// The Triggers card (#489) under Effect: the Game profile starting its scene with key
 /// ripples on, and the base settings with every box off.
 #[test]

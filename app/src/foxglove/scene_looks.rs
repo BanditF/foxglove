@@ -12,8 +12,14 @@
 //! app: a look is only an effect and its colours. With Wallpaper Engine showing that wallpaper,
 //! the scene's clock reaches it through wallpaper sync (#493) when the scene starts or its look
 //! changes.
+//!
+//! The [`WALLPAPER`] palette (#40) follows whichever wallpaper is on screen: its manifest's
+//! palette, else the colours of its picture (`wallpaper_image`). The wallpaper service sets it on
+//! its change pass ([`set_wallpaper_palette`]); it reads the picture only once someone used the
+//! palette, and a running scene with it takes the new colours (`scenes_ui`).
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -200,11 +206,95 @@ pub const PALETTES: [(&str, &[[u8; 3]]); 5] = [
     ),
 ];
 
-/// A palette's stops: one of [`PALETTES`] or a wallpaper's (its manifest). An unknown name (a
-/// wallpaper since removed, or not gathered yet) shows as the first.
+/// The palette that follows the wallpaper on screen (#40): its manifest's palette, else its
+/// picture's colours (`wallpaper_image::stops`). Offered after [`PALETTES`].
+pub const WALLPAPER: &str = "Wallpaper";
+
+/// The hover of the [`WALLPAPER`] palette's pill.
+pub const WALLPAPER_HINT: &str = "The colours of the wallpaper on screen: its Foxglove palette \
+    (foxglove.json), else its picture's. A grey picture gives Bandit.";
+
+/// Whether `name` is one of Foxglove's own palettes ([`PALETTES`] or [`WALLPAPER`]), so a
+/// wallpaper's palette of that name is renamed.
+pub fn is_foxglove_palette(name: &str) -> bool {
+    name == WALLPAPER || PALETTES.iter().any(|(n, _)| *n == name)
+}
+
+/// What the wallpaper service last found for the [`WALLPAPER`] palette.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OnScreen {
+    /// Not looked at: nobody has asked for the palette yet, and the wallpaper on screen has no
+    /// manifest palette.
+    Unread,
+    /// The wallpaper's colours, or `None` when it has none (a grey picture, no picture).
+    Known(Option<Vec<Rgb>>),
+}
+
+static ON_SCREEN: Mutex<Option<OnScreen>> = Mutex::new(None);
+/// Someone used the [`WALLPAPER`] palette, so the wallpaper service reads the picture on each
+/// wallpaper change from now on.
+static WANTED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(not(test))]
+fn first_on_screen() -> OnScreen {
+    OnScreen::Unread
+}
+
+/// Under test, a sunset picture's colours, so the previews show the palette.
+#[cfg(test)]
+fn first_on_screen() -> OnScreen {
+    OnScreen::Known(Some(tests::sunset()))
+}
+
+fn on_screen() -> OnScreen {
+    ON_SCREEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(first_on_screen)
+        .clone()
+}
+
+/// The wallpaper service's find for the [`WALLPAPER`] palette; true when it differs from before.
+pub fn set_wallpaper_palette(found: OnScreen) -> bool {
+    let mut g = ON_SCREEN.lock().unwrap_or_else(|e| e.into_inner());
+    let before = g.get_or_insert_with(first_on_screen);
+    if *before == found {
+        return false;
+    }
+    *before = found;
+    true
+}
+
+/// Whether the wallpaper service should read the picture on screen for the [`WALLPAPER`]
+/// palette: someone used it.
+pub fn wallpaper_palette_wanted() -> bool {
+    WANTED.load(Ordering::Relaxed)
+}
+
+/// The [`WALLPAPER`] palette's stops now, if the wallpaper on screen gave any. The first use asks
+/// the wallpaper service for one pass (an event, not a poll); until it answers, `None`.
+pub fn wallpaper_palette() -> Option<Vec<Rgb>> {
+    if !WANTED.swap(true, Ordering::Relaxed) {
+        super::wallpaper::recheck_palette();
+    }
+    match on_screen() {
+        OnScreen::Known(stops) => stops,
+        OnScreen::Unread => None,
+    }
+}
+
+/// A palette's stops: one of [`PALETTES`], the [`WALLPAPER`] palette, or a wallpaper's (its
+/// manifest). An unknown name (a wallpaper since removed, or not gathered yet), and the
+/// [`WALLPAPER`] palette without colours, show as the first.
 pub fn palette(name: &str) -> Vec<Rgb> {
     if let Some((_, stops)) = PALETTES.iter().find(|(n, _)| *n == name) {
         return stops.iter().map(|c| Rgb(*c)).collect();
+    }
+    if name == WALLPAPER {
+        if let Some(stops) = wallpaper_palette() {
+            return stops;
+        }
+        return PALETTES[0].1.iter().map(|c| Rgb(*c)).collect();
     }
     if let Some(p) = scenes().palettes.iter().find(|p| p.name == name) {
         return p.stops.clone();
@@ -278,6 +368,11 @@ impl Look {
         self.speed = self.speed.clamp(*SPEEDS.start(), *SPEEDS.end());
         self.width_mm = self.width_mm.clamp(*WIDTHS.start(), *WIDTHS.end());
         self
+    }
+
+    /// Its effect takes the [`WALLPAPER`] palette, so it changes with the wallpaper.
+    pub fn follows_wallpaper(&self) -> bool {
+        !self.kind.uses_colour() && self.palette == WALLPAPER
     }
 
     /// The effect this look runs, over `room` (a ripple starts at its keyboard).
@@ -697,6 +792,52 @@ pub fn save_saved(s: &Saved) {
 mod tests {
     use super::*;
     use foxglove_scene::{DeviceInfo, Layout, SceneTime};
+
+    /// The test wallpaper's colours (a sunset picture's): the [`WALLPAPER`] palette under test.
+    pub(crate) fn sunset() -> Vec<Rgb> {
+        vec![
+            Rgb([0xe8, 0x6a, 0x3a]),
+            Rgb([0x7a, 0x3e, 0x8c]),
+            Rgb([0x1a, 0x1c, 0x3a]),
+        ]
+    }
+
+    /// #40: the Wallpaper palette is the wallpaper's colours, reaches the effect, and marks the
+    /// looks that change with the wallpaper; a wallpaper's own palette can't take its name.
+    #[test]
+    fn the_wallpaper_palette_follows_the_wallpaper() {
+        assert_eq!(palette(WALLPAPER), sunset());
+        assert!(
+            wallpaper_palette_wanted(),
+            "asked for, so the service reads the picture"
+        );
+        assert!(
+            !set_wallpaper_palette(OnScreen::Known(Some(sunset()))),
+            "the same colours are no change"
+        );
+        let sweep = Look {
+            kind: Kind::Sweep,
+            palette: WALLPAPER.into(),
+            ..Look::default()
+        };
+        assert!(sweep.follows_wallpaper());
+        match sweep.effect(&RoomMap::default()) {
+            Effect::Sweep { stops, .. } => assert_eq!(stops, sunset()),
+            e => panic!("{e:?}"),
+        }
+        let scan = Look {
+            kind: Kind::Scanline,
+            ..sweep.clone()
+        };
+        assert!(
+            !scan.follows_wallpaper(),
+            "a one-colour effect has no palette"
+        );
+        assert!(!Look::default().follows_wallpaper());
+        assert!(is_foxglove_palette(WALLPAPER) && is_foxglove_palette("Steel"));
+        assert!(!is_foxglove_palette("Reef"));
+        assert!(!scenes().palettes.iter().any(|p| p.name == WALLPAPER));
+    }
 
     #[test]
     fn the_wallpapers_come_first_then_the_demo_scene() {
