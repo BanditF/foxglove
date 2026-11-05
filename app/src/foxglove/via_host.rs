@@ -14,7 +14,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use foxglove_devices::{Device, Registry};
-use foxglove_via::client::Channel;
 use foxglove_via::hid::ViaBackend;
 use foxglove_via::vial::Unreadable;
 use foxglove_via::{Definition, Source, Summary};
@@ -293,6 +292,7 @@ pub fn rescan() {
                     summaries.get(&entry.info.id).unwrap_or_else(|| Summary {
                         firmware: d.info().firmware.clone(),
                         lighting: None,
+                        lighting_asked: true,
                         source: Source::Missing { why: None },
                         layers: None,
                     })
@@ -356,9 +356,14 @@ pub fn devices() -> Vec<(foxglove_devices::DeviceInfo, foxglove_devices::Caps)> 
         .collect()
 }
 
-/// A lighting channel's name, or that none answered.
-pub fn lighting_text(c: Option<Channel>) -> &'static str {
-    c.map(Channel::label).unwrap_or("none answered")
+/// A board's lighting channel name; else that none answered, or, for a model the catalog says
+/// has none (never asked), that it has none.
+pub fn lighting_text(s: &Summary) -> &'static str {
+    match (s.lighting, s.lighting_asked) {
+        (Some(c), _) => c.label(),
+        (None, true) => "none answered",
+        (None, false) => "none (this model has none)",
+    }
 }
 
 /// Where a board's definition came from, as the settings say it: a read failure in plain
@@ -390,7 +395,7 @@ pub fn summary_line(s: &Summary) -> String {
     format!(
         "Firmware: {} · Lighting: {} · Definition: {}",
         s.firmware.as_deref().unwrap_or("unknown"),
-        lighting_text(s.lighting),
+        lighting_text(s),
         source_text(&s.source)
     )
 }
@@ -418,7 +423,7 @@ pub fn board_rows(found: &[Found]) -> Vec<super::health::HealthRow> {
                     "{}; {}; lighting: {}",
                     source_detail(&s.source),
                     s.firmware.as_deref().unwrap_or("firmware unknown"),
-                    lighting_text(s.lighting)
+                    lighting_text(s)
                 ),
             ))
         })
@@ -450,6 +455,7 @@ pub fn start() {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use foxglove_via::client::Channel;
 
     fn known(id: &str) -> Known {
         Known {
@@ -670,6 +676,7 @@ pub(crate) mod tests {
             opened: Ok(Summary {
                 firmware: Some(firmware.into()),
                 lighting,
+                lighting_asked: true,
                 source,
                 layers,
             }),
@@ -743,6 +750,38 @@ pub(crate) mod tests {
             "Firmware: VIA protocol 9, Vial protocol 6 · Lighting: none answered · Definition: \
              the keyboard's own couldn't be read (its stored data was damaged), so no keymap"
         );
+    }
+
+    /// A model the catalog says has no lighting (`lighting = "none"`, never asked) says so in
+    /// both the settings line and the health row; one that was asked keeps "none answered".
+    #[test]
+    fn a_model_without_lighting_says_so_instead_of_none_answered() {
+        let board = |lighting_asked| Found {
+            name: "Keychron K5 Pro (ANSI, white)".into(),
+            opened: Ok(Summary {
+                firmware: Some("VIA protocol 11".into()),
+                lighting: None,
+                lighting_asked,
+                source: Source::Loaded,
+                layers: Some(4),
+            }),
+            key: Some("via:k5".into()),
+            paused: false,
+            maybe: None,
+        };
+        let never = board(false);
+        assert_eq!(
+            summary_line(never.opened.as_ref().unwrap()),
+            "Firmware: VIA protocol 11 · Lighting: none (this model has none) · Definition: from a loaded file"
+        );
+        assert!(board_rows(&[never])[0]
+            .line()
+            .ends_with("; VIA protocol 11; lighting: none (this model has none)"));
+        let asked = board(true);
+        assert!(summary_line(asked.opened.as_ref().unwrap()).contains("Lighting: none answered"));
+        assert!(board_rows(&[asked])[0]
+            .line()
+            .ends_with("; lighting: none answered"));
     }
 
     /// The definition source is a health signal: a row per open board, none for a paused one.

@@ -44,6 +44,9 @@ pub struct Summary {
     pub firmware: Option<String>,
     /// The lighting channel shown, if any answered.
     pub lighting: Option<Channel>,
+    /// Whether its lighting was asked for: false when the catalog says the model has none
+    /// (`lighting = "none"`), so it never was.
+    pub lighting_asked: bool,
     pub source: Source,
     /// Layers, when it has a keymap.
     pub layers: Option<u8>,
@@ -119,6 +122,7 @@ impl<T: Transport> ViaDevice<T> {
         Summary {
             firmware: self.info.firmware.clone(),
             lighting: self.lighting_channel(),
+            lighting_asked: self.probe.scheme.is_some(),
             source: self.source.clone(),
             layers: self.def.is_some().then_some(self.probe.layers),
         }
@@ -451,6 +455,7 @@ mod tests {
             Summary {
                 firmware: Some("VIA protocol 12".into()),
                 lighting: Some(Channel::RgbMatrix),
+                lighting_asked: true,
                 source: Source::Missing { why: None },
                 layers: None,
             }
@@ -611,6 +616,8 @@ mod tests {
         assert_eq!(dev.info().firmware.as_deref(), Some("VIA protocol 11"));
         assert_eq!(dev.probe.scheme, None);
         assert!(dev.lighting().is_none());
+        let s = dev.summary();
+        assert_eq!((s.lighting, s.lighting_asked), (None, false));
         assert_eq!(dev.binding(0, 0, 0).unwrap().params, vec![0x29]);
         let sent = fake.sent.lock().unwrap();
         assert!(
