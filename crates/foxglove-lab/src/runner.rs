@@ -1620,6 +1620,17 @@ impl<'a, D: Device> Runner<'a, D> {
                 blocked.push(why);
             }
         }
+        // RGB_STATE steps watch the keyboard's own lights (idle, on/off, colours): while a HID
+        // LampArray host (Windows Dynamic Lighting) has them they never show, so the case is
+        // BLOCKED, not FAIL (#753). Read with a report that changes nothing.
+        if selected && blocked.is_empty() && c.steps.iter().any(|s| matches!(s, Step::ExpectRgb(_)))
+        {
+            if let Some(why) =
+                crate::host_lights::lamp_array_holds(self.device, self.hello.capabilities)
+            {
+                blocked.push(why);
+            }
+        }
         if c.manual && self.non_interactive {
             blocked.push("manual case requires interactive confirmation".into());
         }

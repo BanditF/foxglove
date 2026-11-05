@@ -1301,6 +1301,14 @@ pub fn frame_release() -> Vec<u8> {
     vec![SETTINGS, settings::FRAME, frame::RELEASE]
 }
 
+/// A FRAME report that changes nothing, to read the lights' owner: no SHOW, no RELEASE and a
+/// count past [`frame::MAX_LAMPS`], so the keyboard answers 5 (bad request) with its owner byte
+/// and leaves its lights, frames and timeout as they are (host_frames.c checks the count before
+/// anything else).
+pub fn frame_owner_probe() -> Vec<u8> {
+    vec![SETTINGS, settings::FRAME, 0, 0, frame::MAX_LAMPS as u8 + 1]
+}
+
 /// Whether the right half draws frames (the D7 8C reply's byte 5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameRight {
@@ -1315,7 +1323,8 @@ pub enum FrameRight {
 /// after its timeout, a USB unplug or an endpoint change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameReply {
-    /// 0 ok, 4 not built in, 5 bad request.
+    /// 0 ok, 1 busy (a HID LampArray host, Windows Dynamic Lighting, has the lights: the owner
+    /// byte says which), 4 not built in, 5 bad request.
     pub status: u8,
     /// [`FrameReply::OWNER_HOST_LINK`] while the PC's frames show; 0 is the keyboard's effect.
     pub owner: u8,
@@ -1329,6 +1338,8 @@ pub struct FrameReply {
 impl FrameReply {
     /// The owner byte when the host link has the lights.
     pub const OWNER_HOST_LINK: u8 = 3;
+    /// The status when a LampArray host has the lights (SET_FRAME's SHOW, SET_EFFECT's EFFECT).
+    pub const STATUS_BUSY: u8 = 1;
 
     pub fn parse(r: &[u8; REPORT]) -> Self {
         Self {
@@ -1347,6 +1358,11 @@ impl FrameReply {
     /// Whether the PC's frames are showing.
     pub fn held(&self) -> bool {
         self.owner == Self::OWNER_HOST_LINK
+    }
+
+    /// Refused because a LampArray host (Windows Dynamic Lighting) has the lights.
+    pub fn busy(&self) -> bool {
+        self.status == Self::STATUS_BUSY
     }
 }
 
@@ -1513,7 +1529,8 @@ pub fn effect_release() -> Vec<u8> {
 /// The reply to EFFECT (D7 8F).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EffectReply {
-    /// 0 ok, 4 not built in, 5 bad request.
+    /// 0 ok, 1 busy (a HID LampArray host has the lights; the owner byte is its), 4 not built
+    /// in, 5 bad request.
     pub status: u8,
     /// [`FrameReply::OWNER_HOST_LINK`] while the PC's effect shows; 0 is the keyboard's own.
     pub owner: u8,
@@ -1540,6 +1557,11 @@ impl EffectReply {
     /// Whether the PC's effect is showing.
     pub fn running(&self) -> bool {
         self.owner == FrameReply::OWNER_HOST_LINK
+    }
+
+    /// Refused because a LampArray host (Windows Dynamic Lighting) has the lights.
+    pub fn busy(&self) -> bool {
+        self.status == FrameReply::STATUS_BUSY
     }
 }
 
