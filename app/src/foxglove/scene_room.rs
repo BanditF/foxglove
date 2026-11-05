@@ -98,7 +98,7 @@ pub fn devices(
         let ids = vid_pid(&row.key);
         let device = match row.control {
             Control::NotYet => continue,
-            Control::Driver(_) => zones(row),
+            Control::Driver(_) | Control::OpenRgb => zones(row),
             Control::LampArray => lamp_array(row, ids.and_then(|ids| lamps.get(&ids))),
         };
         out.push(device);

@@ -53,6 +53,8 @@ pub enum Control {
     LampArray,
     /// Recognised, but Foxglove can't change its lights yet.
     NotYet,
+    /// A controller a running OpenRGB drives, through its SDK server (#471, [`openrgb`]).
+    OpenRgb,
 }
 
 /// One interface from a HID enumeration, in plain data so discovery tests need no hardware.

@@ -241,8 +241,10 @@ fn io_error(e: std::io::Error) -> DeviceError {
 
 /// An in-process fake OpenRGB server on 127.0.0.1, for tests here and in the driver's: it
 /// answers from controller blocks built with [`wire::fixture`] and records what it is sent.
-#[cfg(test)]
-pub(crate) mod fake {
+/// An in-process fake OpenRGB server, for tests here and in the app (the `mock` feature).
+#[cfg(any(test, feature = "mock"))]
+#[doc(hidden)]
+pub mod fake {
     use super::*;
     use std::net::TcpListener;
 

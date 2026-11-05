@@ -29,7 +29,7 @@ pub use wire::Controller;
 
 use super::caps::{Color, LightCaps};
 use super::zones::{Zone, ZoneSource, Zones};
-use super::{calibrated, DeviceKind, LightingDevice, ZoneRole, ZoneSpec};
+use super::{calibrated, Control, DeviceKind, Found, LightingDevice, ZoneRole, ZoneSpec};
 use crate::{DeviceError, Result, Rgb};
 
 /// How long a connect or an answer may take before it counts as failed. OpenRGB on the same
@@ -194,6 +194,27 @@ pub fn sources(controllers: &[Controller], generation: u64) -> Vec<Source> {
         });
     }
     out
+}
+
+/// The source as a found light ([`Control::OpenRgb`]), for the host's device list beside the
+/// HID ones. Its path names the list generation and index, so a list change (which may move
+/// indices) reopens its driver. No VID/PID: OpenRGB's devices aren't the catalog's.
+pub fn found(source: &Source) -> Found {
+    Found {
+        key: source.key.clone(),
+        name: source.name.clone(),
+        vid: 0,
+        pid: 0,
+        control: Control::OpenRgb,
+        path: format!("{KEY_PREFIX}{}:{}", source.generation, source.index),
+        zones: source.zones.clone(),
+        caps: source.caps.clone(),
+        local: false,
+        calibration: None,
+        size: None,
+        kind: source.kind,
+        conflicts: Vec::new(),
+    }
 }
 
 /// `openrgb:<name>:<serial>`, else `:<location>` (its port or bus address), else the index.
@@ -539,6 +560,17 @@ mod tests {
         assert_eq!(s.caps.effects, vec!["Direct"]);
         assert_eq!(s.caps.zones.as_ref().unwrap().list.len(), 4);
         assert_eq!(s.kind, DeviceKind::Other);
+        let f = found(s);
+        assert_eq!(
+            (f.key.as_str(), f.control, f.path.as_str(), f.zones.len()),
+            (
+                "openrgb:Fixture RAM:SN-7",
+                Control::OpenRgb,
+                "openrgb:0:0",
+                4
+            )
+        );
+        assert_eq!(found(&sources[1]).path, "openrgb:0:1");
 
         let long = &sources[2];
         assert_eq!(

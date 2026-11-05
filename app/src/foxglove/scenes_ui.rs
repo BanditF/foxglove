@@ -380,7 +380,12 @@ fn rebuild_room(st: &mut State) {
             .map(|r| format!("light:{}", r.key))
             .collect()
     };
-    st.lit = ids(|c| matches!(c, Control::Driver(_) | Control::LampArray));
+    st.lit = ids(|c| {
+        matches!(
+            c,
+            Control::Driver(_) | Control::LampArray | Control::OpenRgb
+        )
+    });
     st.lamp_ids = ids(|c| *c == Control::LampArray);
 }
 

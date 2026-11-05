@@ -1968,6 +1968,23 @@ fn hidpp_batteries_render() {
     assert_ne!(on, off);
 }
 
+/// #471: the Lights page with "Use OpenRGB's devices" on: a memory module (a picker per LED)
+/// and a 40-LED fan hub (one All LEDs row) through OpenRGB, the host and port under the
+/// toggle. Review image `ui-471-openrgb-lights.png`; `ui-471-openrgb-off.png` is the toggle off.
+#[test]
+fn openrgb_cards_render() {
+    use crate::foxglove::shell::Page;
+    let mut on = Samples::full();
+    on.pc = crate::foxglove::pc_lights_ui::tests::sample_openrgb();
+    let mut off = Samples::full();
+    off.pc = crate::foxglove::pc_lights_ui::tests::sample_second_desk();
+    let on = shell_preview_with(Page::Lights, &on, 2300.0);
+    let off = shell_preview_with(Page::Lights, &off, 1900.0);
+    keep("ui-471-openrgb-lights.png", &on);
+    keep("ui-471-openrgb-off.png", &off);
+    assert_ne!(on, off);
+}
+
 #[test]
 fn settings_preview_renders_in_the_theme() {
     use crate::foxglove::theme::{Choice, DARK, LIGHT};
