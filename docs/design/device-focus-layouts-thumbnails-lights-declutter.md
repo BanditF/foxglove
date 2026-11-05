@@ -291,6 +291,14 @@ No per-product art ships, and a board without a layout gets the plain Keyboard s
 7. **The casual viewer sees state and controls:** who drives the lights, the effect, the colour,
    brightness, and each device's thumbnail and name. Everything else is one hover or one click
    away.
+8. **A result shows next to what was clicked, and its tone sets how long it stays** (A3b,
+   2026-11-05). A confirmation is a flat chip with a green dot on that row (closed rows too)
+   and fades after 5 s, the art strip's pace. A note (nothing changed, and why) is a muted info
+   bar under the row. A problem is an amber info bar under the row. Both stay until the next
+   result. There are no toasts for in-window actions: Windows notifications stay for events
+   that happen while the window is closed. A card-wide result (a file that can't be saved, a
+   pause) goes to the card's top, Add a device's on More sources, and the keyboard card's own
+   on the keyboard card. The full text is the hover or the ⓘ.
 
 ### Sentence inventory: where each one goes
 
@@ -373,7 +381,7 @@ Sources: `lights_page.rs`, `lights_owner.rs`, `light_zones.rs`, `zones_ui.rs`,
 | O28 | OpenRGB status line (mono) | More sources, as now |
 | O29 | "Add a device…" + "For lighting gear Foxglove doesn't recognise yet." | More sources: the button; the sentence becomes its hover *(moved)* |
 | O30 | Add-a-device wizard (all its lines: "Add a device: which one?", "Every HID device on this PC is recognised already.", "Name the zones: zone {id} ({i} of {n})", "Light zone {id}", "What lit up?", "Foxglove will list it and remember its name, but can't light it.", "Saved to {file}. Copy entry shares it later.", "Pick a device first", "Give it a name", "Name at least one zone, or choose Unknown", buttons) | Unchanged: it is a flow, opened on purpose |
-| O31 | Worker status line (mono, muted) | Card footer, one line, truncated, full on hover |
+| O31 | Worker status line (mono, muted) | Next to what was clicked (rule 8, A3b): a fading chip on the row, or a bar under it that stays; the full line on hover or the ⓘ |
 
 Count: 32 keyboard-card items and 31 Other-devices items. Zero are removed. 17 change place
 (*moved*), and every amber item stays on screen.

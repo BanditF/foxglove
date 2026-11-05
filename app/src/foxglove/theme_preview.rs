@@ -2846,6 +2846,83 @@ fn other_devices_card(
     (crop, h)
 }
 
+/// A3b (#795 follow-up): the worker's last word next to what was clicked, not a loose line at
+/// the card's foot. A confirmation is a fading chip on the row (here the case's "Colours
+/// set"), a problem an amber bar under the row, a note a muted bar; the card-wide ones at the
+/// card's top, Add a device's on More sources, the keyboard card's own on the keyboard card.
+#[test]
+fn lights_results_a3b_render() {
+    use crate::foxglove::pc_lights::{Place, Status, Tone};
+    use crate::foxglove::pc_lights_ui::tests::sample;
+    use crate::foxglove::theme::Choice;
+    let width = 980.0;
+    let none: Vec<String> = Vec::new();
+    let with = |place: Place, tone: Tone, text: &str| {
+        let mut v = sample();
+        v.pc.status = Some(Status::new(place, tone, text));
+        v
+    };
+    let case = Place::Row("103c:84fd".into());
+    let mouse = Place::Row(sample().pc.devices[2].key.clone());
+    let (done, _) = other_devices_card(Choice::Dark, &sample(), &none, width);
+    let (done_light, _) = other_devices_card(Choice::Light, &sample(), &none, width);
+    let problem = with(
+        case.clone(),
+        Tone::Problem,
+        "HP OMEN 45L case lights: not connected",
+    );
+    let (problem, _) = other_devices_card(Choice::Dark, &problem, &none, width);
+    let note = with(
+        mouse,
+        Tone::Note,
+        "Match keyboard: the keyboard plays Swirl, which G502 Proteus Spectrum can't match \
+         from Foxglove, so it keeps its colours",
+    );
+    let (note, _) = other_devices_card(Choice::Dark, &note, &none, width);
+    let card = with(
+        Place::Card,
+        Tone::Problem,
+        "Foxglove is paused: it doesn't change the lights until you resume",
+    );
+    let (card, _) = other_devices_card(Choice::Dark, &card, &none, width);
+    let sources = with(
+        Place::Sources,
+        Tone::Done,
+        "Desk strip: saved as your own device",
+    );
+    let (sources, _) = other_devices_card(Choice::Dark, &sources, &none, width);
+    // The keyboard card's own pick drawn through Windows (#749 b).
+    let through = with(
+        Place::Keyboard,
+        Tone::Done,
+        "Eyelash Corne: shown through Windows Dynamic Lighting",
+    );
+    crate::foxglove::pc_lights_ui::PREVIEW.set(Some((through, Default::default())));
+    let corne = Some("Eyelash Corne");
+    let owner = Some(crate::foxglove::lights_owner::line(
+        &crate::foxglove::lights_owner::Who::Foxglove,
+        None,
+        corne,
+    ));
+    let (keyboard, _) = keyboard_card(
+        Choice::Dark,
+        &crate::foxglove::lights_page::tests::sample(),
+        owner,
+        crate::foxglove::battery_dim_ui::tests::sample(),
+        width,
+    );
+    crate::foxglove::pc_lights_ui::PREVIEW.set(None);
+    keep("ui-a3b-row-done.png", &done);
+    keep("ui-a3b-row-done-light.png", &done_light);
+    keep("ui-a3b-row-problem.png", &problem);
+    keep("ui-a3b-row-note.png", &note);
+    keep("ui-a3b-card-problem.png", &card);
+    keep("ui-a3b-sources-done.png", &sources);
+    keep("ui-a3b-keyboard-done.png", &keyboard);
+    assert_ne!(done, problem);
+    assert_ne!(problem, note);
+}
+
 /// #795: the Other devices card at 980 points with 1, 3 (a vendor app running: the conflict)
 /// and 7 devices, OpenRGB on and not answering (amber), dark and light; and the 45L (a device
 /// with zones) and More sources opened.

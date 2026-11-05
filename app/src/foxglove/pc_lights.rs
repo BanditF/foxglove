@@ -104,8 +104,8 @@ pub struct Snapshot {
     /// Apps running now that may put their own colours back on a found device (from the
     /// catalog's conflicts), one per app and device.
     pub conflicts: Vec<Conflicting>,
-    /// The last action's result, for the status line.
-    pub status: Option<String>,
+    /// The last action's result, shown next to what was clicked ([`Status`]).
+    pub status: Option<Status>,
     pub busy: bool,
     /// HID devices nothing recognises, for "Add a device".
     pub unknown: Vec<Unknown>,
@@ -120,6 +120,90 @@ pub struct Snapshot {
     pub keyboard_lamp_arrays: Vec<pcl::KeyboardLampArray>,
     /// "Use OpenRGB's devices" (#471): the user's settings and how the connection is.
     pub openrgb: OpenRgbView,
+}
+
+/// Where an action's result shows (ux-1105: feedback sits next to what was clicked).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Place {
+    /// On the device's row in Other devices (its key).
+    Row(String),
+    /// On the Lights page's keyboard card: its picks drawn through Windows (#749 b).
+    Keyboard,
+    /// In More sources: Add a device, your own entries.
+    Sources,
+    /// The whole card: nothing narrower to put it on (a file that can't be saved, a pause).
+    Card,
+}
+
+/// How a result reads, which decides how long it stays: a confirmation fades, the rest stays
+/// until the next result replaces it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    /// It worked: a flat chip with a green dot that fades ([`DONE_FOR`]).
+    Done,
+    /// Nothing went wrong, but nothing changed either, and here is why (a scene draws the
+    /// lights, a rainbow has no colour to copy): a muted info bar that stays.
+    Note,
+    /// It didn't work: an amber info bar that stays.
+    Problem,
+}
+
+/// How long a confirmation stays on screen: the art strip's (#511), so the app has one pace.
+pub const DONE_FOR: Duration = super::art_words::DONE_FOR;
+
+/// The worker's last word: what it says, where, how it reads, and when.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Status {
+    pub text: String,
+    pub place: Place,
+    pub tone: Tone,
+    pub at: std::time::Instant,
+}
+
+impl Status {
+    pub fn new(place: Place, tone: Tone, text: impl Into<String>) -> Status {
+        Status {
+            text: text.into(),
+            place,
+            tone,
+            at: std::time::Instant::now(),
+        }
+    }
+
+    /// A confirmation past [`DONE_FOR`] is gone; anything else stays.
+    pub fn shown(&self) -> bool {
+        self.tone != Tone::Done || self.at.elapsed() < DONE_FOR
+    }
+}
+
+impl std::ops::Deref for Status {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+/// A plain line for the whole card (tests and previews).
+impl From<&str> for Status {
+    fn from(text: &str) -> Status {
+        Status::new(Place::Card, Tone::Note, text)
+    }
+}
+
+/// Where a request's result belongs: the device it names, the keyboard card, Add a device, or
+/// the card.
+pub fn place_of(msg: &Msg) -> Place {
+    match msg {
+        Msg::Set { key, .. }
+        | Msg::Show { key, .. }
+        | Msg::Off(key)
+        | Msg::Identify(key)
+        | Msg::Match(key, _)
+        | Msg::Recalibrate(key) => Place::Row(key.clone()),
+        Msg::KeyboardLamp { .. } | Msg::KeyboardLampRelease => Place::Keyboard,
+        Msg::TestZone { .. } | Msg::SaveLocal(_) | Msg::RemoveLocal(..) => Place::Sources,
+        _ => Place::Card,
+    }
 }
 
 /// OpenRGB as the page shows it (#471).
@@ -229,6 +313,16 @@ pub fn snapshot() -> Snapshot {
         .unwrap_or_else(|e| e.into_inner())
         .clone()
         .unwrap_or_default()
+}
+
+/// The worker's last word alone, for the keyboard card (no device list cloned per frame).
+#[cfg_attr(test, allow(dead_code))]
+pub fn status() -> Option<Status> {
+    SNAPSHOT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|s| s.status.clone())
 }
 
 /// Queues a request; a no-op before [`start`].
@@ -470,7 +564,7 @@ pub struct Worker {
     /// What the keyboard last reported it shows ("Match keyboard" follows it).
     follow: Option<KeyboardLights>,
     conflicts: Vec<Conflicting>,
-    status: Option<String>,
+    status: Option<Status>,
     /// Settings changed and need saving.
     pub dirty: bool,
     /// A scene holds the lights: each board's colours from before it, by key.
@@ -832,6 +926,11 @@ impl Worker {
     }
 
     /// Writes the user's own catalog and rebuilds the merged one.
+    /// Puts the last action's result where it was asked for ([`Status`]).
+    fn say(&mut self, place: Place, tone: Tone, text: impl Into<String>) {
+        self.status = Some(Status::new(place, tone, text));
+    }
+
     fn save_local(&mut self) {
         self.catalog = self.bundled.clone().with_local(&self.local);
         self.rescan = true;
@@ -842,7 +941,11 @@ impl Worker {
         let result =
             std::fs::write(&tmp, self.local.to_toml()).and_then(|()| std::fs::rename(&tmp, path));
         if let Err(e) = result {
-            self.status = Some(format!("Can't save {}: {e}", path.display()));
+            self.say(
+                Place::Card,
+                Tone::Problem,
+                format!("Can't save {}: {e}", path.display()),
+            );
         }
     }
 
@@ -888,7 +991,12 @@ impl Worker {
                 | Msg::KeyboardLampRelease
         );
         if paused && writes {
-            self.status = Some(super::pause::REFUSED.replace("the keyboard", "the lights"));
+            let place = place_of(&msg);
+            self.say(
+                place,
+                Tone::Problem,
+                super::pause::REFUSED.replace("the keyboard", "the lights"),
+            );
             return;
         }
         match msg {
@@ -1028,16 +1136,19 @@ impl Worker {
                 } else {
                     "left white (no colour known for it)"
                 };
-                self.status = Some(match result {
-                    Ok(()) => format!("Zone {zone}: blinked, {back}"),
-                    Err(DeviceError::Unsupported) => {
-                        "Foxglove can't light zones with an unknown protocol".into()
-                    }
-                    Err(e) => format!("Zone {zone}: {e}"),
-                });
+                let (tone, text) = match result {
+                    Ok(()) => (Tone::Done, format!("Zone {zone}: blinked, {back}")),
+                    Err(DeviceError::Unsupported) => (
+                        Tone::Problem,
+                        "Foxglove can't light zones with an unknown protocol".into(),
+                    ),
+                    Err(e) => (Tone::Problem, format!("Zone {zone}: {e}")),
+                };
+                self.say(Place::Sources, tone, text);
             }
             Msg::SaveLocal(device) => {
-                self.status = Some(format!("{}: saved as your own device", device.name));
+                let saved = format!("{}: saved as your own device", device.name);
+                self.say(Place::Sources, Tone::Done, saved);
                 let mut device = CatalogDevice {
                     local: true,
                     ..*device
@@ -1060,7 +1171,8 @@ impl Worker {
             }
             Msg::RemoveLocal(vid, pid) => {
                 self.local.devices.retain(|d| (d.vid, d.pid) != (vid, pid));
-                self.status = Some(format!("{vid:04x}:{pid:04x}: your entry removed"));
+                let removed = format!("{vid:04x}:{pid:04x}: your entry removed");
+                self.say(Place::Sources, Tone::Done, removed);
                 self.save_local();
             }
         }
@@ -1270,25 +1382,37 @@ impl Worker {
     ) {
         if let Some(l) = look.filter(|_| animated) {
             let Some(name) = self.keyboard_lamp_array(key).map(|a| a.name.clone()) else {
-                self.status = Some("The keyboard isn't listed under Dynamic Lighting now".into());
+                self.say(
+                    Place::Keyboard,
+                    Tone::Problem,
+                    "The keyboard isn't listed under Dynamic Lighting now",
+                );
                 return;
             };
             self.keyboard_lamp = None;
-            self.status = Some(if self.scene.is_some() {
-                format!("{name}: {SCENE_FIRST}")
+            let (tone, text) = if self.scene.is_some() {
+                (Tone::Note, format!("{name}: {SCENE_FIRST}"))
             } else {
-                format!(
-                    "{name}: {} runs through Windows Dynamic Lighting",
-                    l.effect_label()
+                (
+                    Tone::Done,
+                    format!(
+                        "{name}: {} runs through Windows Dynamic Lighting",
+                        l.effect_label()
+                    ),
                 )
-            });
+            };
+            self.say(Place::Keyboard, tone, text);
             return;
         }
         if self.keyboard_lamp.as_ref().is_none_or(|k| k.key != key) {
             // Another keyboard's first: its devices are let go before these are claimed.
             self.keyboard_lamp = None;
             let Some(a) = self.keyboard_lamp_array(key).cloned() else {
-                self.status = Some("The keyboard isn't listed under Dynamic Lighting now".into());
+                self.say(
+                    Place::Keyboard,
+                    Tone::Problem,
+                    "The keyboard isn't listed under Dynamic Lighting now",
+                );
                 return;
             };
             let found = Found {
@@ -1308,10 +1432,11 @@ impl Worker {
                 conflicts: Vec::new(),
             };
             let Some(handle) = (self.lamp_opener)(&found) else {
-                self.status = Some(format!(
+                let text = format!(
                     "{}: Windows has no Dynamic Lighting device for it now",
                     a.name
-                ));
+                );
+                self.say(Place::Keyboard, Tone::Problem, text);
                 return;
             };
             self.keyboard_lamp = Some(KeyboardLamp {
@@ -1331,11 +1456,12 @@ impl Worker {
                 Some(c) => rgb(c[0]),
                 None => {
                     let name = self.keyboard_lamp.as_ref().map_or("", |k| &k.name);
-                    self.status = Some(format!(
+                    let text = format!(
                         "{name}: {} is a rainbow the keyboard makes itself; through Windows \
                          Foxglove shows one colour, so the lights keep theirs",
                         l.effect_label()
-                    ));
+                    );
+                    self.say(Place::Keyboard, Tone::Note, text);
                     return;
                 }
             },
@@ -1346,7 +1472,8 @@ impl Worker {
         if self.scene.is_some() {
             // The scene draws the keyboard through Windows (#761): its end puts this back.
             k.shown = Some(colour);
-            self.status = Some(format!("{}: {SCENE_FIRST}", k.name));
+            let text = format!("{}: {SCENE_FIRST}", k.name);
+            self.say(Place::Keyboard, Tone::Note, text);
             return;
         }
         let sent = k.sent(colour);
@@ -1356,14 +1483,21 @@ impl Worker {
             k.shown = Some(colour);
         }
         let name = k.name.clone();
-        self.status = Some(match &result {
-            Ok(()) if available => format!("{name}: shown through Windows Dynamic Lighting"),
-            Ok(()) => format!(
-                "{name}: set through Windows Dynamic Lighting; it shows while Foxglove's window \
-                 is in front"
+        let (tone, text) = match &result {
+            Ok(()) if available => (
+                Tone::Done,
+                format!("{name}: shown through Windows Dynamic Lighting"),
             ),
-            Err(e) => format!("{name}: {e}"),
-        });
+            Ok(()) => (
+                Tone::Done,
+                format!(
+                    "{name}: set through Windows Dynamic Lighting; it shows while Foxglove's \
+                     window is in front"
+                ),
+            ),
+            Err(e) => (Tone::Problem, format!("{name}: {e}")),
+        };
+        self.say(Place::Keyboard, tone, text);
         let apply = match result {
             Ok(()) => super::lamp_health::Apply::Ok,
             Err(e) => super::lamp_health::Apply::Failed(e.to_string()),
@@ -1398,20 +1532,24 @@ impl Worker {
     /// are. Never the colour the keyboard was sent but doesn't show (#616).
     fn match_keyboard(&mut self, key: &str) {
         let Some(k) = self.follow else {
-            self.status =
-                Some("Match keyboard: waiting for the keyboard to report its lights".into());
+            self.say(
+                Place::Row(key.to_string()),
+                Tone::Note,
+                "Match keyboard: waiting for the keyboard to report its lights",
+            );
             return;
         };
         let Some(d) = self.drivers.get(key) else {
             return;
         };
         let Some(colors) = k.colors(d.zones().len()) else {
-            self.status = Some(format!(
+            let text = format!(
                 "Match keyboard: the keyboard plays {}, which {} can't match from Foxglove, so \
                  it keeps its colours",
                 k.effect_label(),
                 d.name()
-            ));
+            );
+            self.say(Place::Row(key.to_string()), Tone::Note, text);
             return;
         };
         let colors: Vec<(usize, Rgb)> = colors.into_iter().map(rgb).enumerate().collect();
@@ -1432,7 +1570,11 @@ impl Worker {
         manual: bool,
     ) {
         let Some(d) = self.drivers.get_mut(key) else {
-            self.status = Some("That device isn't connected now".into());
+            self.say(
+                Place::Row(key.to_string()),
+                Tone::Problem,
+                "That device isn't connected now",
+            );
             return;
         };
         let result = call(d.as_mut());
@@ -1446,11 +1588,12 @@ impl Worker {
             _ => d.colors(),
         };
         let name = d.name().to_string();
-        self.status = Some(match &result {
-            Ok(()) => format!("{name}: {}", done.to_lowercase()),
-            Err(DeviceError::Disconnected) => format!("{name}: not connected"),
-            Err(e) => format!("{name}: {e}"),
-        });
+        let (tone, text) = match &result {
+            Ok(()) => (Tone::Done, format!("{name}: {}", done.to_lowercase())),
+            Err(DeviceError::Disconnected) => (Tone::Problem, format!("{name}: not connected")),
+            Err(e) => (Tone::Problem, format!("{name}: {e}")),
+        };
+        self.say(Place::Row(key.to_string()), tone, text);
         if result.is_err() || !manual {
             return;
         }
@@ -2263,7 +2406,7 @@ mod tests {
             sent.lock().unwrap().is_empty(),
             "nothing to copy from a rainbow"
         );
-        let status = w.status.clone().unwrap_or_default();
+        let status = w.status.as_deref().unwrap_or_default().to_string();
         assert!(
             status.contains("plays Swirl, which")
                 && !status.contains("colour not used yet")
