@@ -87,6 +87,8 @@ against the ground. The Rust reader (`palette_file::readable`) and the wallpaper
 
 ## Changing a Bandit colour
 
-Edit `app/resources/palettes/bandit.json` only, then re-vendor it into bandit-wallpapers. For now
-a test (`palette_file.rs`) checks that the theme and the scenes still equal the file; once they
-read it (#40(c) step 5), the tests check that the theme's contrast rules still hold.
+Edit `app/resources/palettes/bandit.json` only, then re-vendor it into bandit-wallpapers. The
+theme (`theme.rs`) and the scenes (`scene_looks.rs`) read it when the app starts; the theme's
+tests check that its contrast rules hold for the file, and for either Bandit orange with the
+hand-picked `highlight` and `accent_light` taken out. Keep `name` as `Bandit`: saved looks and
+manifests name the palette.

@@ -5,8 +5,13 @@
 //! The layer overlay keeps its own look: its key labels use `FontFamily::Proportional`, which
 //! stays egui's default font. Only the text styles (`Body`, `Heading`, ...) move to the new fonts.
 
+use std::sync::LazyLock;
+
 use egui::{Color32, CornerRadius, FontFamily, FontId, RichText, Stroke, TextStyle};
+use foxglove_scene::Rgb;
 use serde::{Deserialize, Serialize};
+
+use super::palette_file::{self, Roles};
 
 /// One theme's colour tokens.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -28,7 +33,7 @@ pub struct Palette {
     pub text: Color32,
     pub text_strong: Color32,
     pub muted: Color32,
-    /// Bandit orange.
+    /// Bandit orange: the palette file's `accent` (dark) or `accent_light` (light).
     pub accent: Color32,
     pub accent_hover: Color32,
     /// Text on an accent fill.
@@ -45,51 +50,67 @@ const fn hex(rgb: u32) -> Color32 {
     Color32::from_rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 
-/// Dark graphite with Bandit orange, as drawn on the approved canvas.
-pub const DARK: Palette = Palette {
-    dark: true,
-    ground: hex(0x0e1211),
-    surface: hex(0x161c1a),
-    surface_raised: hex(0x1d2422),
-    well: hex(0x0a0d0c),
-    line: hex(0x2a3330),
-    control: hex(0x232b28),
-    control_line: hex(0x34403b),
-    text: hex(0xd9e0dc),
-    text_strong: hex(0xf2f5f3),
-    muted: hex(0x8e9a94),
-    accent: hex(0xf08a3c),
-    accent_hover: hex(0xffb070),
-    on_accent: hex(0x140d07),
-    selected_fill: hex(0x3a2412),
-    selected_text: hex(0xffcfa6),
-    ok: hex(0x5fc48e),
-    warn: hex(0xf0b53c),
-    danger: hex(0xe5604f),
-};
+fn role(c: Rgb) -> Color32 {
+    let [r, g, b] = c.0;
+    Color32::from_rgb(r, g, b)
+}
+
+/// Dark graphite with Bandit orange, as drawn on the approved canvas. The orange is the bundled
+/// palette's (`resources/palettes/bandit.json`, docs/palette.md).
+pub static DARK: LazyLock<Palette> = LazyLock::new(|| dark(&palette_file::bandit().roles));
 
 /// The same tokens on a light ground. The orange is darker so text in it still reads.
-pub const LIGHT: Palette = Palette {
-    dark: false,
-    ground: hex(0xf1f4f2),
-    surface: hex(0xffffff),
-    surface_raised: hex(0xe8ede9),
-    well: hex(0xf8faf9),
-    line: hex(0xcfd8d3),
-    control: hex(0xe8ede9),
-    control_line: hex(0xb9c4be),
-    text: hex(0x26302c),
-    text_strong: hex(0x0e1211),
-    muted: hex(0x5a6660),
-    accent: hex(0xb4540f),
-    accent_hover: hex(0xd8701f),
-    on_accent: hex(0xffffff),
-    selected_fill: hex(0xfbe4d0),
-    selected_text: hex(0x6e3105),
-    ok: hex(0x237a4b),
-    warn: hex(0x8f6100),
-    danger: hex(0xb8352a),
-};
+pub static LIGHT: LazyLock<Palette> = LazyLock::new(|| light(&palette_file::bandit().roles));
+
+/// The dark theme around a palette's roles: `accent` and `highlight` (hover).
+pub fn dark(roles: &Roles) -> Palette {
+    Palette {
+        dark: true,
+        ground: hex(0x0e1211),
+        surface: hex(0x161c1a),
+        surface_raised: hex(0x1d2422),
+        well: hex(0x0a0d0c),
+        line: hex(0x2a3330),
+        control: hex(0x232b28),
+        control_line: hex(0x34403b),
+        text: hex(0xd9e0dc),
+        text_strong: hex(0xf2f5f3),
+        muted: hex(0x8e9a94),
+        accent: role(roles.accent),
+        accent_hover: role(roles.highlight),
+        on_accent: hex(0x140d07),
+        selected_fill: hex(0x3a2412),
+        selected_text: hex(0xffcfa6),
+        ok: hex(0x5fc48e),
+        warn: hex(0xf0b53c),
+        danger: hex(0xe5604f),
+    }
+}
+
+/// The light theme around a palette's roles: `accent_light`.
+pub fn light(roles: &Roles) -> Palette {
+    Palette {
+        dark: false,
+        ground: hex(0xf1f4f2),
+        surface: hex(0xffffff),
+        surface_raised: hex(0xe8ede9),
+        well: hex(0xf8faf9),
+        line: hex(0xcfd8d3),
+        control: hex(0xe8ede9),
+        control_line: hex(0xb9c4be),
+        text: hex(0x26302c),
+        text_strong: hex(0x0e1211),
+        muted: hex(0x5a6660),
+        accent: role(roles.accent_light),
+        accent_hover: hex(0xd8701f),
+        on_accent: hex(0xffffff),
+        selected_fill: hex(0xfbe4d0),
+        selected_text: hex(0x6e3105),
+        ok: hex(0x237a4b),
+        warn: hex(0x8f6100),
+        danger: hex(0xb8352a),
+    }
+}
 
 impl Palette {
     /// Every token by name, for the palette checks.
@@ -425,7 +446,7 @@ mod tests {
         for (name, color) in dark.iter().chain(&light) {
             assert_eq!(color.a(), 255, "{name} must be opaque");
         }
-        const { assert!(DARK.dark && !LIGHT.dark) };
+        assert!(DARK.dark && !LIGHT.dark);
     }
 
     #[test]
@@ -434,7 +455,8 @@ mod tests {
         assert_eq!(DARK.surface, Color32::from_rgb(0x16, 0x1c, 0x1a));
         assert_eq!(DARK.surface_raised, Color32::from_rgb(0x1d, 0x24, 0x22));
         assert_eq!(DARK.line, Color32::from_rgb(0x2a, 0x33, 0x30));
-        assert_eq!(DARK.accent, Color32::from_rgb(0xf0, 0x8a, 0x3c));
+        // The orange is the palette file's (docs/palette.md).
+        assert_eq!(DARK.accent, role(palette_file::bandit().roles.accent));
         assert_eq!(DARK.muted, Color32::from_rgb(0x8e, 0x9a, 0x94));
     }
 
@@ -455,9 +477,24 @@ mod tests {
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }
 
+    /// The themes the bundled file gives, and those either Bandit orange (#40 Q1) would give
+    /// with the hand-picked shades taken out of the file.
+    fn every_theme() -> Vec<Palette> {
+        let mut out = vec![*DARK, *LIGHT];
+        for orange in ["#f08a3c", "#e5732b"] {
+            let text = palette_file::BANDIT_JSON
+                .replace("\"#f08a3c\"", &format!("\"{orange}\""))
+                .replace("\"highlight\": \"#ffb070\",", "")
+                .replace("\"accent_light\": \"#b4540f\",", "");
+            let roles = palette_file::parse(&text, None).unwrap().unwrap().roles;
+            out.extend([dark(&roles), light(&roles)]);
+        }
+        out
+    }
+
     #[test]
     fn text_reads_on_every_surface() {
-        for p in [&DARK, &LIGHT] {
+        for p in &every_theme() {
             for bg in [p.ground, p.surface, p.surface_raised, p.control] {
                 for (name, fg) in [("text", p.text), ("muted", p.muted)] {
                     let c = contrast(fg, bg);
