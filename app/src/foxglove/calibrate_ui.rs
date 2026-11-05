@@ -8,11 +8,12 @@
 //! Oklab step either side of where the match stands, and the user picks the one closer to the
 //! reference or says **They match**. On the light side the device shows one candidate at a time
 //! (the user switches it between A and B); on the screen side both are drawn. Each choice halves
-//! the step around the picked side, and the colour is matched when the user says they match or
-//! every step falls below a just-noticeable difference (at most six choices for White and Grey,
-//! eight for Skin and Warm, three for Red, Green and Blue). Each side keeps its own values (blue down 30% on the light and up 5% on the screen are
-//! both kept), and the device's transforms are fitted to the matches
-//! (`foxglove_devices::calibration::Fit`).
+//! the step around the picked side. They match on a tint question skips ahead to brightness;
+//! the colour is matched when the user says they match on brightness, or every step falls below
+//! a just-noticeable difference (at most six choices for White and Grey, eight for Skin and
+//! Warm, three for Red, Green and Blue). Each side keeps its own values (blue down 30% on the
+//! light and up 5% on the screen are both kept), and the device's transforms are fitted to the
+//! matches (`foxglove_devices::calibration::Fit`).
 //!
 //! The test colours sit mid-range (about 60%, never a full channel), so either side can go up
 //! as well as down. A click marks the frame, and the frame sends one write (the PC lights'

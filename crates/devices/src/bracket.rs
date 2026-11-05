@@ -23,7 +23,9 @@
 //! So White and Grey take 6 choices (2 + 2 + 2), Skin and Warm 8 (3 + 3 + 2), Red, Green and
 //! Blue 3, and a two-channel colour 6.
 //!
-//! **Stop rule.** It stops when the user says they match, when every axis has ended, or after
+//! **Stop rule.** They match on a tint axis (warm or cool, green or pink, hue, strength) ends
+//! the tint axes and skips ahead to brightness; on brightness (or when there's no brightness
+//! left to ask) it ends the colour. Otherwise it stops when every axis has ended, or after
 //! [`MAX_ROUNDS`] choices. In one round of choices a match can move half of each step on an
 //! axis (0.07 from 0.08, 0.0375 from 0.05; "Ask again" goes on from there), and ends within
 //! half its last step.
@@ -137,6 +139,8 @@ struct Line {
     asked: u8,
     /// Its two candidates come out the same in 8 bits: nothing to ask.
     flat: bool,
+    /// Ended by "they match" before its steps ran out.
+    ended: bool,
 }
 
 impl Line {
@@ -149,6 +153,7 @@ impl Line {
             last: false,
             asked: 0,
             flat: false,
+            ended: false,
         }
     }
 
@@ -166,12 +171,12 @@ impl Line {
     }
 
     fn open(&self) -> bool {
-        !self.flat && self.asked < self.max
+        !self.flat && !self.ended && self.asked < self.max
     }
 
     /// Choices it has left.
     fn left(&self) -> u8 {
-        if self.flat {
+        if self.flat || self.ended {
             0
         } else {
             self.max - self.asked.min(self.max)
@@ -314,7 +319,9 @@ impl Bracket {
     }
 
     /// Takes the user's answer: a pick moves the match half a step toward that candidate and
-    /// halves the step (the bracket halves around the picked side); they match stops there.
+    /// halves the step (the bracket halves around the picked side). They match keeps the match
+    /// where it stands: on a tint axis it ends every tint axis and goes on to brightness, on
+    /// brightness it ends the colour.
     pub fn answer(&mut self, answer: Answer) {
         if self.stop.is_some() {
             return;
@@ -322,7 +329,18 @@ impl Bracket {
         self.rounds += 1;
         let sign = match answer {
             Answer::Same => {
-                self.stop = Some(Stop::Same);
+                let on_brightness = self.lines[self.turn].axis == Axis::Lightness;
+                for line in &mut self.lines {
+                    if on_brightness || line.axis != Axis::Lightness {
+                        line.ended = true;
+                    }
+                }
+                self.advance(self.turn + 1);
+                if self.stop.is_some() {
+                    self.stop = Some(Stop::Same);
+                } else if self.rounds >= MAX_ROUNDS {
+                    self.stop = Some(Stop::Rounds);
+                }
                 return;
             }
             Answer::Closer(Pick::A) => -1.0,
@@ -528,17 +546,50 @@ mod tests {
     }
 
     #[test]
-    fn they_match_stops_at_once_and_black_has_nothing_to_ask() {
+    fn they_match_on_a_tint_axis_skips_to_brightness() {
+        // White: one warm or cool pick, then they match: green or pink is skipped.
         let mut b = Bracket::new([153; 3], [153, 150, 140]);
         b.answer(Answer::Closer(Pick::B));
+        let before = b.result();
+        b.answer(Answer::Same);
+        assert_eq!(
+            b.result(),
+            before,
+            "they match keeps the match where it stands"
+        );
+        assert_eq!((b.stop(), b.axis()), (None, Some(Axis::Lightness)));
+        assert_eq!(b.planned(), 4, "two choices, then two of brightness");
+        // Both brightness choices are still asked, then it settles.
+        b.answer(Answer::Closer(Pick::A));
+        assert_eq!(b.axis(), Some(Axis::Lightness));
+        b.answer(Answer::Closer(Pick::B));
+        assert_eq!((b.stop(), b.rounds()), (Some(Stop::Settled), 4));
+        // Skin: they match on hue skips strength too.
+        let mut skin = Bracket::new([153, 112, 92], [153, 112, 92]);
+        assert_eq!(skin.axis(), Some(Axis::Hue));
+        skin.answer(Answer::Same);
+        assert_eq!((skin.axis(), skin.planned()), (Some(Axis::Lightness), 3));
+    }
+
+    #[test]
+    fn they_match_on_brightness_ends_the_colour_and_black_has_nothing_to_ask() {
+        // White, at its brightness: they match ends it there.
+        let mut b = Bracket::new([153; 3], [153, 150, 140]);
+        b.answer(Answer::Same);
+        assert_eq!(b.axis(), Some(Axis::Lightness));
         b.answer(Answer::Same);
         assert_eq!(
             (b.stop(), b.rounds(), b.pair()),
             (Some(Stop::Same), 2, None)
         );
-        assert!(b.moved() > JND, "it moved one step");
         b.answer(Answer::Closer(Pick::A));
         assert_eq!(b.rounds(), 2, "answers after it stopped change nothing");
+        // Red has only brightness: they match ends it at once, as before.
+        let mut red = Bracket::new([153, 0, 0], [140, 0, 0]);
+        red.answer(Answer::Closer(Pick::B));
+        red.answer(Answer::Same);
+        assert_eq!((red.stop(), red.rounds()), (Some(Stop::Same), 2));
+        assert!(red.moved() > JND, "it moved one step");
         let black = Bracket::new([0; 3], [0; 3]);
         assert_eq!(
             (black.stop(), black.pair(), black.planned()),

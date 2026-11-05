@@ -472,17 +472,34 @@ fn choices_find_the_match_and_keep_it() {
     assert_eq!(w.ask.as_ref().unwrap().start(), w.current.light);
 }
 
+/// They match on White's warm or cool skips green or pink and goes on to brightness; they match
+/// there ends the colour and keeps it where the choices stand.
 #[test]
-fn they_match_stops_and_keeps_where_the_choices_stand() {
+fn they_match_skips_to_brightness_then_ends_the_colour() {
     let mut w = Wizard::new(case(), None);
     assert!(!w.choose(Answer::Closer(Pick::B)));
     let moved = w.current.light;
     assert_ne!(moved, [153; 3], "a pick moves the light half a step");
     assert!(w.unconfirmed(), "Save would take it as it stands");
+    assert!(!w.choose(Answer::Same), "still asking: brightness");
+    assert_eq!(w.current.light, moved);
+    assert!(w.cal.matches.is_empty());
+    let text = shown(&View::default(), &mut w);
+    assert!(text.contains("Choice 3 of 4 · brightness"), "{text}");
     assert!(w.choose(Answer::Same));
     assert_eq!(w.cal.matches[0].light, moved);
-    assert_eq!(w.finished.as_ref().unwrap().rounds(), 2);
-    assert!(w.note.clone().unwrap().contains("· 2 choices ·"));
+    assert_eq!(w.finished.as_ref().unwrap().rounds(), 3);
+    assert!(w.note.clone().unwrap().contains("· 3 choices ·"));
+}
+
+/// Red has only brightness: they match ends the colour at once.
+#[test]
+fn they_match_on_a_one_channel_colour_ends_it() {
+    let mut w = Wizard::new(case(), None);
+    w.go_to(Step::Red, None);
+    assert!(w.choose(Answer::Same));
+    assert!(w.matched(Step::Red.color()));
+    assert_eq!(w.finished.as_ref().unwrap().rounds(), 1);
 }
 
 /// Red lights one channel: three choices of brightness, and green and blue stay off in every
