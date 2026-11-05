@@ -21,10 +21,7 @@ pub fn bring_to_front(ctx: &egui::Context, viewport: egui::ViewportId, hwnd: Opt
     {
         let _ = (ctx, viewport);
         if let Some(hwnd) = hwnd {
-            use windows::Win32::Foundation::HWND;
-            use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
-            // SAFETY: a plain call on a window handle; a stale one just fails.
-            let _ = unsafe { SetForegroundWindow(HWND(hwnd as *mut core::ffi::c_void)) };
+            to_foreground(hwnd);
         }
     }
     #[cfg(not(windows))]
@@ -32,6 +29,15 @@ pub fn bring_to_front(ctx: &egui::Context, viewport: egui::ViewportId, hwnd: Opt
         let _ = hwnd;
         ctx.send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
     }
+}
+
+/// `SetForegroundWindow` alone on a native window (Windows), from any thread: no fake input.
+#[cfg(windows)]
+pub fn to_foreground(hwnd: isize) {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::SetForegroundWindow;
+    // SAFETY: a plain call on a window handle; a stale one just fails.
+    let _ = unsafe { SetForegroundWindow(HWND(hwnd as *mut core::ffi::c_void)) };
 }
 
 #[cfg(test)]

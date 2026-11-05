@@ -173,6 +173,16 @@ impl OverlayApp {
         }
     }
 
+    /// Opens Settings (tray, tray panel, second launch). Foxglove: already open, it may be
+    /// minimized, behind other windows, on another display or made but hidden: it's shown
+    /// whatever its state (settings_open.rs). The first frame of a new opening shows it itself.
+    fn open_settings(&mut self, ctx: &egui::Context) {
+        if self.ui.settings_visible {
+            self.ui.settings_window.reshow(ctx);
+        }
+        self.ui.settings_visible = true;
+    }
+
     /// Wakes the UI up when the overlay is due to appear or disappear on its own.
     fn schedule_overlay_repaint(&self, ctx: &egui::Context) {
         // Foxglove (#404): paused, the overlay stays hidden, so nothing is due.
@@ -209,16 +219,8 @@ impl OverlayApp {
     }
 
     pub fn ui(&mut self, ctx: &egui::Context, host: &mut dyn OverlayHost) {
-        if self.settings_requested.swap(false, Ordering::Relaxed) {
-            if self.ui.settings_visible {
-                // Foxglove: already open, maybe minimized, behind other windows or on another
-                // display.
-                let id = crate::foxglove::settings_window::id();
-                ctx.send_viewport_cmd_to(id, egui::ViewportCommand::Minimized(false));
-                // Foxglove (#618): no fake input to take the focus (foxglove::focus).
-                crate::foxglove::focus::bring_to_front(ctx, id, self.ui.settings_window.hwnd());
-            }
-            self.ui.settings_visible = true;
+        if self.settings_requested.swap(false, Ordering::Acquire) {
+            self.open_settings(ctx);
         }
 
         self.poll_connect_result();
@@ -242,7 +244,10 @@ impl OverlayApp {
         self._tray.update();
         // Foxglove (#391): the tray panel; its "Open Foxglove" opens the settings.
         if crate::foxglove::tray_panel::show(ctx) {
-            self.ui.settings_visible = true;
+            crate::foxglove::settings_open::requested_in_frame(
+                crate::foxglove::settings_open::Source::TrayPanel,
+            );
+            self.open_settings(ctx);
         }
         // Foxglove (#719): the knob's card, where Windows' volume flyout sits; click-through.
         let monitor = self.monitor().to_string();

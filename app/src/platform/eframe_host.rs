@@ -3,7 +3,7 @@ use crate::device_discovery::DiscoveredDevice;
 use crate::overlay_window::OverlayApp;
 use crate::settings::Settings;
 use crate::ui_wake::UiWake;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 struct EframeHost<'a> {
@@ -424,8 +424,12 @@ fn run_inner(
                 let settings_requested = settings_requested.clone();
                 let ui_wake = ui_wake.clone();
                 Arc::new(move || {
-                    settings_requested.store(true, Ordering::Relaxed);
-                    ui_wake.request_repaint();
+                    // Foxglove: logged, woken on the root viewport, and shown at once if known.
+                    crate::foxglove::settings_open::request(
+                        crate::foxglove::settings_open::Source::TrayMenu,
+                        &settings_requested,
+                        &|| ui_wake.request_repaint(),
+                    );
                 })
             });
             // Foxglove: a frame when the taskbar starts, to add a tray icon missing at sign-in.
@@ -439,8 +443,11 @@ fn run_inner(
                 let settings_requested = settings_requested.clone();
                 let ui_wake = ui_wake.clone();
                 move || {
-                    settings_requested.store(true, Ordering::Relaxed);
-                    ui_wake.request_repaint();
+                    crate::foxglove::settings_open::request(
+                        crate::foxglove::settings_open::Source::SecondLaunch,
+                        &settings_requested,
+                        &|| ui_wake.request_repaint(),
+                    );
                 }
             });
 
