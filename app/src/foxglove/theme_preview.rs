@@ -1949,6 +1949,25 @@ fn lamp_array_cards_render() {
     assert_ne!(desk, other);
 }
 
+/// #505: the Keyboard page's Batteries card. Review image `ui-505-hidpp-batteries.png` is the
+/// default: "Read Logitech batteries" off (unticked), no HID++ rows. The "on" example
+/// `ui-505-hidpp-batteries-on-example.png` has it ticked, a mouse read over HID++ among the
+/// other devices.
+#[test]
+fn hidpp_batteries_render() {
+    use crate::foxglove::shell::Page;
+    let defaults = Samples::full();
+    assert!(!defaults.keyboard.logitech, "the default sample has it off");
+    let mut on = Samples::full();
+    on.keyboard.logitech = true;
+    on.keyboard.devices = crate::foxglove::peripherals::tests::sample_hidpp();
+    let on = shell_preview_with(Page::Keyboard, &on, 1300.0);
+    let off = shell_preview_with(Page::Keyboard, &defaults, 1300.0);
+    keep("ui-505-hidpp-batteries.png", &off);
+    keep("ui-505-hidpp-batteries-on-example.png", &on);
+    assert_ne!(on, off);
+}
+
 #[test]
 fn settings_preview_renders_in_the_theme() {
     use crate::foxglove::theme::{Choice, DARK, LIGHT};

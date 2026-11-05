@@ -168,6 +168,9 @@ auto_link_exclude_list = [
 ]
 
 [dev-dependencies]
+# Foxglove: the devices crate's fakes (the scripted HID++ device, #505) for window- and
+# device-free tests.
+foxglove-devices = { path = "../crates/devices", features = ["hid", "mock"] }
 # Foxglove: checks that the built-in plugin icons render (the resvg egui_extras uses).
 resvg = { version = "0.45", default-features = false }
 # Foxglove: a fake keyboard for the art tests answers foxglove-link's Transport, whose results are anyhow's.

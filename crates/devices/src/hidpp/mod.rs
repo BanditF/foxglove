@@ -4,8 +4,9 @@
 //! protocol's public descriptions; the facts were cross-checked against libratbag (MIT) and
 //! read in Solaar and Linux's hid-logitech-hidpp (GPL-2.0, learned from, nothing copied).
 //!
-//! It talks through a [`Transport`], so the tests run on a fake with no device. Nothing here
-//! opens a device, and the public API only reads: every request it sends is a "get" function
+//! It talks through a [`Transport`], so the tests run on a fake with no device. Only [`hid`]
+//! (the `hid` feature, hidapi) opens one, for the app; [`probe`] finds the HID++ interfaces in an
+//! enumeration and reads the batteries behind each. The public API only reads: every request it sends is a "get" function
 //! (root GetFeature and GetProtocolVersion, feature-set GetCount and GetFeatureId, battery
 //! status). Lighting and onboard-profile writes aren't part of it (#505's plan).
 //!
@@ -23,6 +24,9 @@
 //! old device says to a 2.0 request): see [`Error20`] and [`Error10`].
 
 pub mod battery;
+#[cfg(feature = "hid")]
+pub mod hid;
+pub mod probe;
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -63,6 +67,16 @@ pub const MAX_SKIPPED: usize = 64;
 pub trait Transport {
     fn write(&mut self, report: &[u8]) -> crate::Result<()>;
     fn read(&mut self, timeout: Duration) -> crate::Result<Option<Vec<u8>>>;
+}
+
+impl<T: Transport + ?Sized> Transport for &mut T {
+    fn write(&mut self, report: &[u8]) -> crate::Result<()> {
+        (**self).write(report)
+    }
+
+    fn read(&mut self, timeout: Duration) -> crate::Result<Option<Vec<u8>>> {
+        (**self).read(timeout)
+    }
 }
 
 /// HID++ 2.0 error codes, from a `0xFF` reply.
@@ -388,8 +402,10 @@ impl<T: Transport> Hidpp<T> {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod fake {
+/// A scripted HID++ device, for tests here and in the app (the `mock` feature).
+#[cfg(any(test, feature = "mock"))]
+#[doc(hidden)]
+pub mod fake {
     use std::collections::VecDeque;
     use std::time::Duration;
 
