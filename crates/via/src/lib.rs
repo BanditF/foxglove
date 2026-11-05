@@ -5,7 +5,8 @@
 //! - [`client`]: the read client (protocol version, layers, layout options, keymap buffer,
 //!   lighting channels)
 //! - [`catalog`]: vendor and board quirks, as data (`qmk-catalog.toml`)
-//! - [`definition`]: a VIA JSON keyboard definition (matrix, layout, lighting)
+//! - [`definition`]: a VIA JSON keyboard definition (matrix, layout and its layout options,
+//!   lighting)
 //! - [`device`]: the keyboard as a device-layer device (keymap read, lighting)
 //! - [`discovery`]: which Raw HID interfaces are VIA keyboards (with a definition, or any QMK
 //!   board in generic mode)

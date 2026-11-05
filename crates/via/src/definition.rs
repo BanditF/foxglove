@@ -3,6 +3,13 @@
 //!
 //! Only what the device layer needs is read. The layout is KLE (keyboard-layout-editor) rows whose key
 //! labels start with `row,col`; this is a small parser of our own.
+//!
+//! Layout options (#74): a key whose fourth label line is `group,choice` belongs to one choice of
+//! a layout option (split backspace, ISO enter, bottom row). `layouts.labels` names the groups: a
+//! string is an on/off toggle, an array is `[name, choice 0, choice 1, ...]`. The keyboard keeps
+//! the chosen ones as one number (VIA's layout options value): each group in the fewest bits that
+//! hold its choices, the first group in the highest bits. Choice 0 is the default; another
+//! choice's keys are moved so its top-left key sits where choice 0's does, as VIA draws them.
 
 use foxglove_devices::{Key, Layout};
 
@@ -17,9 +24,47 @@ pub struct Definition {
     pub product_id: u16,
     pub rows: u16,
     pub cols: u16,
+    /// The default layout: every key outside a layout option, and choice 0 of each option.
+    /// [`Definition::layout_for`] gives the layout for the options a keyboard has chosen.
     pub layout: Layout,
+    /// The layout options, in group order.
+    pub options: Vec<LayoutOption>,
     /// The QMK lighting controls the definition offers, best first.
     pub lighting: Vec<Channel>,
+    /// Every key, with the layout option choice it belongs to.
+    keys: Vec<Placed>,
+}
+
+/// One layout option group (an entry of `layouts.labels`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LayoutOption {
+    pub name: String,
+    /// The choices' names; empty for an on/off toggle (off is choice 0).
+    pub choices: Vec<String>,
+}
+
+impl LayoutOption {
+    /// How many choices it has: 2 for a toggle.
+    pub fn count(&self) -> u32 {
+        if self.choices.is_empty() {
+            2
+        } else {
+            self.choices.len() as u32
+        }
+    }
+
+    /// The bits it takes in the layout options value: the fewest that hold its choices, at
+    /// least one.
+    fn bits(&self) -> u32 {
+        (u32::BITS - (self.count() - 1).leading_zeros()).max(1)
+    }
+}
+
+/// A key and the layout option choice (`group, choice`) it belongs to, if any.
+#[derive(Clone, Debug, PartialEq)]
+struct Placed {
+    key: Key,
+    option: Option<(u8, u8)>,
 }
 
 #[derive(Deserialize)]
@@ -45,6 +90,8 @@ struct Matrix {
 #[derive(Deserialize)]
 struct Layouts {
     keymap: Vec<Value>,
+    #[serde(default)]
+    labels: Vec<Value>,
 }
 
 fn hex(s: &str) -> Result<u16, String> {
@@ -55,8 +102,8 @@ fn hex(s: &str) -> Result<u16, String> {
 impl Definition {
     pub fn parse(json: &str) -> Result<Definition, String> {
         let raw: Raw = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        let keys = kle_keys(&raw.layouts.keymap)?;
-        for k in &keys {
+        let mut keys = kle_keys(&raw.layouts.keymap)?;
+        for Placed { key: k, .. } in &keys {
             if k.row >= raw.matrix.rows || k.col >= raw.matrix.cols {
                 return Err(format!(
                     "key {},{} is outside the {}x{} matrix",
@@ -81,7 +128,20 @@ impl Definition {
         .filter(|(menu, _)| text.contains(menu))
         .map(|(_, c)| c)
         .collect();
-        Ok(Definition {
+        let options = options(&raw.layouts.labels, &keys);
+        // The default layout's top-left corner is the origin, as in VIA.
+        let (x0, y0) = keys
+            .iter()
+            .filter(|p| p.option.is_none_or(|(_, c)| c == 0))
+            .fold((f32::INFINITY, f32::INFINITY), |(x, y), p| {
+                (x.min(p.key.x), y.min(p.key.y))
+            });
+        if x0.is_finite() && y0.is_finite() {
+            for p in &mut keys {
+                (p.key.x, p.key.y) = (p.key.x - x0, p.key.y - y0);
+            }
+        }
+        let mut d = Definition {
             lighting,
             name: raw.name.clone(),
             vendor_id: hex(&raw.vendor_id)?,
@@ -90,16 +150,117 @@ impl Definition {
             cols: raw.matrix.cols,
             layout: Layout {
                 name: raw.name,
-                keys,
+                keys: vec![],
             },
-        })
+            options,
+            keys,
+        };
+        d.layout = d.layout_for(0);
+        Ok(d)
+    }
+
+    /// The choice of each layout option in a layout options value (as the keyboard reports it),
+    /// in group order. The last group is in the lowest bits; a choice past a group's last is 0.
+    pub fn choices(&self, value: u32) -> Vec<u8> {
+        let mut shift = 0u32;
+        let mut out: Vec<u8> = self
+            .options
+            .iter()
+            .rev()
+            .map(|o| {
+                let bits = o.bits().min(8);
+                let c = u64::from(value).checked_shr(shift).unwrap_or(0) & ((1 << bits) - 1);
+                shift += bits;
+                if c < u64::from(o.count()) {
+                    c as u8
+                } else {
+                    0
+                }
+            })
+            .collect();
+        out.reverse();
+        out
+    }
+
+    /// The layout for a layout options value: the keys outside any option and, of each option,
+    /// the chosen choice's keys, moved so its top-left key is where choice 0's is.
+    pub fn layout_for(&self, value: u32) -> Layout {
+        let chosen = self.choices(value);
+        // A choice's top-left key: the topmost, then the leftmost.
+        let pivot = |g: u8, c: u8| {
+            self.keys
+                .iter()
+                .filter(|p| p.option == Some((g, c)))
+                .map(|p| (p.key.x, p.key.y))
+                .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.total_cmp(&b.0)))
+        };
+        let keys = self
+            .keys
+            .iter()
+            .filter_map(|p| match p.option {
+                None => Some(p.key.clone()),
+                Some((g, c)) if chosen.get(usize::from(g)).copied().unwrap_or(0) != c => None,
+                Some((_, 0)) => Some(p.key.clone()),
+                Some((g, c)) => {
+                    let mut k = p.key.clone();
+                    if let (Some(to), Some(from)) = (pivot(g, 0), pivot(g, c)) {
+                        (k.x, k.y) = (k.x + to.0 - from.0, k.y + to.1 - from.1);
+                    }
+                    Some(k)
+                }
+            })
+            .collect();
+        Layout {
+            name: self.layout.name.clone(),
+            keys,
+        }
     }
 }
 
-/// Keys from KLE rows: strings are keys (label `row,col` first), objects set the next key's
-/// offset (`x`, `y`) and size (`w`, `h`). Keys whose label isn't `row,col` (decals, layout
-/// options) are skipped.
-fn kle_keys(rows: &[Value]) -> Result<Vec<Key>, String> {
+/// The layout option groups: as `layouts.labels` names them, and for a group or choice that a
+/// key uses but the labels don't name, numbered ones (at least a toggle's two choices), so the
+/// value still unpacks.
+fn options(labels: &[Value], keys: &[Placed]) -> Vec<LayoutOption> {
+    let text = |v: &Value| {
+        v.as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| v.to_string())
+    };
+    let mut options: Vec<LayoutOption> = labels
+        .iter()
+        .map(|l| match l {
+            Value::Array(items) => LayoutOption {
+                name: items.first().map(text).unwrap_or_default(),
+                choices: items.iter().skip(1).map(text).collect(),
+            },
+            other => LayoutOption {
+                name: text(other),
+                choices: vec![],
+            },
+        })
+        .collect();
+    for (g, c) in keys.iter().filter_map(|p| p.option) {
+        let g = usize::from(g);
+        while options.len() <= g {
+            options.push(LayoutOption {
+                name: format!("Option {}", options.len()),
+                choices: vec![],
+            });
+        }
+        let o = &mut options[g];
+        if u32::from(c) >= o.count() {
+            let named = o.choices.len();
+            o.choices
+                .extend((named..=usize::from(c)).map(|c| c.to_string()));
+        }
+    }
+    options
+}
+
+/// Keys from KLE rows: strings are keys (label `row,col` first, `group,choice` on the fourth
+/// line for a layout option's keys), objects set the next key's offset (`x`, `y`) and size
+/// (`w`, `h`). Keys whose label isn't `row,col` (decals, option labels) are skipped.
+fn kle_keys(rows: &[Value]) -> Result<Vec<Placed>, String> {
     let mut keys = Vec::new();
     let mut y = 0.0f32;
     for row in rows {
@@ -120,19 +281,19 @@ fn kle_keys(rows: &[Value]) -> Result<Vec<Key>, String> {
                     decal = o.get("d").and_then(Value::as_bool).unwrap_or(false);
                 }
                 Value::String(label) => {
-                    let first = label.split('\n').next().unwrap_or("");
-                    let pos = first
-                        .split_once(',')
-                        .and_then(|(r, c)| Some((r.trim().parse().ok()?, c.trim().parse().ok()?)));
-                    if let (Some((row, col)), false) = (pos, decal) {
-                        keys.push(Key {
-                            row,
-                            col,
-                            x,
-                            y,
-                            w,
-                            h,
-                            r: 0.0,
+                    let lines: Vec<&str> = label.split('\n').collect();
+                    if let (Some((row, col)), false) = (pair(lines[0]), decal) {
+                        keys.push(Placed {
+                            key: Key {
+                                row,
+                                col,
+                                x,
+                                y,
+                                w,
+                                h,
+                                r: 0.0,
+                            },
+                            option: lines.get(3).and_then(|l| pair(l)),
                         });
                     }
                     x += w;
@@ -144,6 +305,12 @@ fn kle_keys(rows: &[Value]) -> Result<Vec<Key>, String> {
         y += 1.0;
     }
     Ok(keys)
+}
+
+/// `a,b` as two numbers.
+fn pair<N: std::str::FromStr>(s: &str) -> Option<(N, N)> {
+    let (a, b) = s.split_once(',')?;
+    Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
 }
 
 #[cfg(test)]
@@ -158,6 +325,28 @@ pub(crate) const SAMPLE: &str = r#"{
     ["0,0", {"w": 1.5}, "0,1", "0,2", {"x": 0.25}, "0,3"],
     [{"y": 0.5, "w": 2.25}, "1,0", {"d": true}, "decal", "1,1\n\n\n0,0", "1,2"]
   ]}
+}"#;
+
+/// A board with three layout options, the way VIA definitions draw them: the alternatives to the
+/// right of (or below) the default keys.
+/// - group 0, "Split Backspace" (toggle): one 2u key (0,3) or two 1u keys (0,3 and 1,3)
+/// - group 1, "Enter" (3 choices, 2 bits): 1,2 as 1u, 1.5u or 2u
+/// - group 2, "Split Space" (toggle): 2,0 as one 3u key, or 2,0 and 2,1 as 1.5u each
+#[cfg(test)]
+pub(crate) const OPTIONS: &str = r#"{
+  "name": "Options board",
+  "vendorId": "0xFEED",
+  "productId": "0x0002",
+  "matrix": {"rows": 3, "cols": 4},
+  "layouts": {
+    "labels": ["Split Backspace", ["Enter", "1u", "1.5u", "2u"], "Split Space"],
+    "keymap": [
+      ["0,0", "0,1", "0,2", {"w": 2}, "0,3\n\n\n0,0", {"x": 1}, "0,3\n\n\n0,1", "1,3\n\n\n0,1"],
+      ["1,0", "1,1", "1,2\n\n\n1,0", {"x": 1, "w": 1.5}, "1,2\n\n\n1,1", {"x": 1, "w": 2}, "1,2\n\n\n1,2"],
+      [{"w": 3}, "2,0\n\n\n2,0"],
+      [{"y": 0.5, "w": 1.5}, "2,0\n\n\n2,1", {"w": 1.5}, "2,1\n\n\n2,1"]
+    ]
+  }
 }"#;
 
 #[cfg(test)]
@@ -196,5 +385,123 @@ mod tests {
     fn rejects_keys_outside_the_matrix() {
         let bad = SAMPLE.replace("\"1,2\"", "\"5,2\"");
         assert!(Definition::parse(&bad).unwrap_err().contains("outside"));
+        let bad = OPTIONS.replace("1,3\\n\\n\\n0,1", "1,9\\n\\n\\n0,1");
+        assert!(
+            Definition::parse(&bad).unwrap_err().contains("outside"),
+            "an alternative's keys are checked too"
+        );
+    }
+
+    #[test]
+    fn reads_the_layout_option_groups() {
+        let d = Definition::parse(OPTIONS).unwrap();
+        let names: Vec<_> = d.options.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["Split Backspace", "Enter", "Split Space"]);
+        assert_eq!(d.options[1].choices, ["1u", "1.5u", "2u"]);
+        assert_eq!(
+            d.options.iter().map(|o| o.bits()).collect::<Vec<_>>(),
+            [1, 2, 1]
+        );
+    }
+
+    /// The first group in the highest bits: 0b1101 is 1 | 10 | 1: split backspace,
+    /// 2u enter, split space.
+    #[test]
+    fn unpacks_the_layout_options_value() {
+        let d = Definition::parse(OPTIONS).unwrap();
+        assert_eq!(d.choices(0), [0, 0, 0]);
+        assert_eq!(d.choices(0b1101), [1, 2, 1]);
+        assert_eq!(d.choices(0b0010), [0, 1, 0]);
+        assert_eq!(d.choices(0b0110), [0, 0, 0], "no fourth enter: the default");
+        assert_eq!(
+            d.choices(0xFFFF_FFF0),
+            [0, 0, 0],
+            "bits above the groups are ignored"
+        );
+    }
+
+    fn keys(l: &Layout) -> Vec<(u16, u16, f32, f32, f32)> {
+        let mut v: Vec<_> = l
+            .keys
+            .iter()
+            .map(|k| (k.row, k.col, k.x, k.y, k.w))
+            .collect();
+        v.sort_by_key(|k| (k.0, k.1));
+        v
+    }
+
+    #[test]
+    fn the_default_layout_has_choice_zero_of_each_option() {
+        let d = Definition::parse(OPTIONS).unwrap();
+        assert_eq!(d.layout, d.layout_for(0));
+        assert_eq!(
+            keys(&d.layout),
+            [
+                (0, 0, 0.0, 0.0, 1.0),
+                (0, 1, 1.0, 0.0, 1.0),
+                (0, 2, 2.0, 0.0, 1.0),
+                (0, 3, 3.0, 0.0, 2.0),
+                (1, 0, 0.0, 1.0, 1.0),
+                (1, 1, 1.0, 1.0, 1.0),
+                (1, 2, 2.0, 1.0, 1.0),
+                (2, 0, 0.0, 2.0, 3.0),
+            ]
+        );
+    }
+
+    /// Each matrix position once, and the alternatives moved onto the default keys' place.
+    #[test]
+    fn a_chosen_option_replaces_the_default_keys_in_place() {
+        let d = Definition::parse(OPTIONS).unwrap();
+        assert_eq!(
+            keys(&d.layout_for(0b1101)),
+            [
+                (0, 0, 0.0, 0.0, 1.0),
+                (0, 1, 1.0, 0.0, 1.0),
+                (0, 2, 2.0, 0.0, 1.0),
+                (0, 3, 3.0, 0.0, 1.0),
+                (1, 0, 0.0, 1.0, 1.0),
+                (1, 1, 1.0, 1.0, 1.0),
+                (1, 2, 2.0, 1.0, 2.0),
+                (1, 3, 4.0, 0.0, 1.0),
+                (2, 0, 0.0, 2.0, 1.5),
+                (2, 1, 1.5, 2.0, 1.5),
+            ]
+        );
+        // The 1.5u enter, drawn further right in the file, lands on the default's place too.
+        let enter: Vec<_> = keys(&d.layout_for(0b0010))
+            .into_iter()
+            .filter(|k| (k.0, k.1) == (1, 2))
+            .collect();
+        assert_eq!(enter, [(1, 2, 2.0, 1.0, 1.5)]);
+    }
+
+    /// Labels missing (some definitions only mark the keys): the groups and choices the keys
+    /// use still unpack, each a toggle unless a key uses a later choice.
+    #[test]
+    fn keys_marked_without_labels_still_unpack() {
+        let raw = OPTIONS.replace(
+            r#""labels": ["Split Backspace", ["Enter", "1u", "1.5u", "2u"], "Split Space"],"#,
+            "",
+        );
+        let d = Definition::parse(&raw).unwrap();
+        assert_eq!(
+            d.options
+                .iter()
+                .map(LayoutOption::count)
+                .collect::<Vec<_>>(),
+            [2, 3, 2]
+        );
+        assert_eq!(d.choices(0b1101), [1, 2, 1]);
+        assert_eq!(d.options[0].name, "Option 0");
+    }
+
+    #[test]
+    fn a_definition_without_options_is_unchanged_by_the_value() {
+        let d = Definition::parse(SAMPLE).unwrap();
+        // SAMPLE's 1,1 is marked 0,0 without labels: one toggle group.
+        assert_eq!(d.options.len(), 1);
+        assert_eq!(keys(&d.layout_for(0)), keys(&d.layout));
+        assert_eq!(d.layout_for(1).keys.len(), 6, "choice 1 has no keys");
     }
 }
