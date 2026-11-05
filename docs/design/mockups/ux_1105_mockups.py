@@ -167,10 +167,19 @@ def button(c, x, y, label, primary=False, size=12.5):
     return w
 
 
-def chip(c, x, y, label, color=TEXT, fill=WELL, outline=LINE, size=11.5):
-    w = c.tw(label, size) + 16
-    c.rect(x, y, w, 19, fill=fill, outline=outline, r=9)
-    c.text(x + 8, y + 2, label, size, color)
+CHIP_FILL = (0x20, 0x28, 0x25)  # muted, flat: a status chip is never outlined
+WARN_FILL = (0x2A, 0x22, 0x10)
+
+
+def chip(c, x, y, label, color=TEXT, fill=None, dot=None, size=11.5):
+    """A read-only status chip: flat muted fill, no outline, optional leading dot."""
+    fill = fill or (WARN_FILL if color == WARN else CHIP_FILL)
+    pad = 16 if dot else 8
+    w = c.tw(label, size) + pad + 8
+    c.rect(x, y, w, 19, fill=fill, r=9.5)
+    if dot:
+        c.circle(x + 9.5, y + 9.5, 3, fill=dot)
+    c.text(x + pad, y + 2, label, size, color)
     return w
 
 
@@ -268,11 +277,11 @@ def shell(c, W, H, page, menu_open=False):
     c.text(sx + 60, 88, "2 keyboards \u00b7 switch", 11, MUTED)
     c.text(sx + 204, 77, "\u25be", 13, TEXT)
     hx = sx + 234
-    c.rect(hx, 72, 262, 30, fill=SURFACE, outline=LINE, r=6)
+    c.rect(hx, 72, 262, 30, fill=CHIP_FILL, r=6)
     c.circle(hx + 12, 87, 4, fill=OK)
     c.text(hx + 22, 78, "Left  on USB \u00b7 0.3.0 \u00b7 battery 95%", 12.5, TEXT)
     hx += 270
-    c.rect(hx, 72, 200, 30, fill=SURFACE, outline=LINE, r=6)
+    c.rect(hx, 72, 200, 30, fill=CHIP_FILL, r=6)
     c.circle(hx + 12, 87, 4, fill=OK)
     c.text(hx + 22, 78, "Right  linked \u00b7 battery 61%", 12.5, TEXT)
     c.rect(W - 32 - 140, 70, 140, 26, fill=CONTROL, outline=CONTROL_LINE, r=5)
@@ -442,7 +451,7 @@ def focus(out):
     x0, y0, cw = shell(c, W, H, "Keyboard", menu_open=True)
     # the Keyboard page under it, named for the focus
     card(c, x0, y0, cw, 250, "Eyelash Corne")
-    chip(c, x0 + 140, y0 + 12, "Layout from the keyboard", OK)
+    chip(c, x0 + 140, y0 + 12, "Layout from the keyboard", TEXT, dot=OK)
     unit = 28
     draw_keys(c, x0 + 30, y0 + 52, unit, corne_half())
     draw_keys(c, x0 + 30 + 7.8 * unit, y0 + 52, unit, corne_half(right=True))
@@ -525,7 +534,7 @@ def layouts(out):
     y = 56
     c.rect(x0, y, 540, 250, fill=SURFACE, outline=LINE, r=8)
     c.text(x0 + 16, y + 12, "EYELASH CORNE", 13, STRONG, "hud")
-    chip(c, x0 + 150, y + 11, "Layout from the keyboard", OK)
+    chip(c, x0 + 150, y + 11, "Layout from the keyboard", TEXT, dot=OK)
     unit = 30
     draw_keys(c, x0 + 30, y + 54, unit, corne_half())
     draw_keys(c, x0 + 30 + 7.8 * unit, y + 54, unit, corne_half(right=True))
@@ -535,7 +544,7 @@ def layouts(out):
     # K5 Pro from its VIA definition
     c.rect(x0 + 556, y, 576, 250, fill=SURFACE, outline=LINE, r=8)
     c.text(x0 + 572, y + 12, "KEYCHRON K5 PRO", 13, STRONG, "hud")
-    chip(c, x0 + 720, y + 11, "Layout from its VIA definition", OK)
+    chip(c, x0 + 720, y + 11, "Layout from its VIA definition", TEXT, dot=OK)
     unit = 23.5
     draw_keys(c, x0 + 572, y + 50, unit, full_size(), gap=0.07)
     c.text(x0 + 572, y + 222, "ANSI · layout options read from the keyboard (#770)", 11.5, MUTED)
@@ -544,7 +553,7 @@ def layouts(out):
     y2 = y + 270
     c.rect(x0, y2, 540, 230, fill=SURFACE, outline=LINE, r=8)
     c.text(x0 + 16, y2 + 12, "ZMK KEYBOARD", 13, STRONG, "hud")
-    chip(c, x0 + 140, y2 + 11, "Shape guessed from 36 keys", WARN, outline=(0x5A, 0x48, 0x20))
+    chip(c, x0 + 140, y2 + 11, "Shape guessed from 36 keys", TEXT, dot=WARN)
     unit = 30
     keys = [((i % 12) * 1.0, (i // 12) * 1.0, 1, 1) for i in range(36)]
     draw_keys(c, x0 + 90, y2 + 54, unit, keys, tint=(0x1A, 0x20, 0x1E))
@@ -670,43 +679,43 @@ def thumbs(out):
 # --- 4: Lights page declutter -----------------------------------------------------------------
 
 def lights(out):
-    W, H = 1240, 1020
+    W, H = 1240, 1040
     c = Canvas(W, H)
     x0, y0, cw = shell(c, W, H, "Lights")
     # Keyboard card
     y = y0
-    card(c, x0, y, cw, 360, "Eyelash Corne")
+    card(c, x0, y, cw, 378, "Eyelash Corne")
     # status highlights row
     yy = y + 44
     xx = x0 + 16
-    xx += chip(c, xx, yy, "Lights now: Foxglove", TEXT) + 6
-    xx += info(c, xx, yy + 1) + 8
+    xx += chip(c, xx, yy, "Lights now: Foxglove", TEXT, dot=OK) + 6
+    xx += 4
     xx += chip(c, xx, yy, "6 zones per half", TEXT) + 6
     c.text(xx + 2, yy + 2, "Show zones", 12, ACCENT)
     xx += c.tw("Show zones", 12) + 16
-    xx += chip(c, xx, yy, "calibrated", OK) + 6
-    xx += chip(c, xx, yy, "◑ dims on battery", TEXT) + 6
+    xx += chip(c, xx, yy, "calibrated", TEXT, dot=OK) + 6
+    xx += chip(c, xx, yy, "Right on battery · dims to 80%", TEXT, dot=MUTED) + 6
     # left column: controls
     lx, ly = x0 + 16, yy + 36
     pw = pill(c, lx, ly, "Off")
     pill(c, lx + pw + 6, ly, "On", True)
-    caps(c, lx + 520, ly + 6, "Effect")
+    caps(c, lx, ly + 34, "Effect")
     ex = lx
     for i, e in enumerate(["Solid", "Breathe", "Spectrum", "Swirl"]):
-        ex += pill(c, ex, ly + 32, e, i == 0) + 6
-    caps(c, lx, ly + 70, "Colour")
+        ex += pill(c, ex, ly + 50, e, i == 0) + 6
+    caps(c, lx, ly + 88, "Colour")
     sx = lx
     for i, rgb in enumerate(SWATCHES):
-        sx += swatch(c, sx, ly + 88, rgb, i == 0)
-    pill(c, sx, ly + 90, "Custom")
-    c.text(lx, ly + 126, "Brightness", 12.5)
-    c.text(lx + 530, ly + 126, "80%", 12.5, TEXT, "mono", anchor="ra")
-    slider(c, lx, ly + 142, 530, 0.8)
-    c.text(lx, ly + 170, "Speed", 12.5)
-    c.text(lx + 530, ly + 170, "3", 12.5, TEXT, "mono", anchor="ra")
-    slider(c, lx, ly + 186, 530, 0.5)
-    bw = button(c, lx, ly + 220, "Apply colour", primary=True)
-    c.rect(lx + bw + 8, ly + 225, 28, 14, fill=ACCENT, r=3)
+        sx += swatch(c, sx, ly + 106, rgb, i == 0)
+    pill(c, sx, ly + 108, "Custom")
+    c.text(lx, ly + 144, "Brightness", 12.5)
+    c.text(lx + 530, ly + 144, "80%", 12.5, TEXT, "mono", anchor="ra")
+    slider(c, lx, ly + 160, 530, 0.8)
+    c.text(lx, ly + 188, "Speed", 12.5)
+    c.text(lx + 530, ly + 188, "3", 12.5, TEXT, "mono", anchor="ra")
+    slider(c, lx, ly + 204, 530, 0.5)
+    bw = button(c, lx, ly + 238, "Apply colour", primary=True)
+    c.rect(lx + bw + 8, ly + 243, 28, 14, fill=ACCENT, r=3)
     # right column: halves + switches
     rx = x0 + 600
     caps(c, rx, ly, "Both halves now")
@@ -732,11 +741,10 @@ def lights(out):
             " A running scene keeps the lights until it ends.", 11.5)
 
     # Other devices, decluttered
-    y = y0 + 380
+    y = y0 + 398
     card(c, x0, y, cw, 420, "Other devices")
-    info(c, x0 + 16 + c.tw("Other devices", 14.5, "hud") + 8, y + 13)
     yy = y + 44
-    c.rect(x0 + 16, yy, cw - 32, 28, fill=(0x2A, 0x22, 0x10), outline=(0x5A, 0x48, 0x20), r=5)
+    c.rect(x0 + 16, yy, cw - 32, 28, fill=WARN_FILL, r=5)
     c.text(x0 + 28, yy + 6, "⚠  OMEN Light Studio may override the case", 12.5, WARN)
     info(c, x0 + 28 + c.tw("⚠  OMEN Light Studio may override the case", 12.5) + 8, yy + 6, WARN)
     yy += 40
@@ -745,8 +753,7 @@ def lights(out):
     thumb_frame(c, x0 + 16, yy + 10, lambda a, b, w, h: mini_case(c, a, b, w, h, [ACCENT, ACCENT, (0xFF, 0x5F, 0x3C)], strip=ACCENT))
     c.text(x0 + 84, yy + 10, "OMEN 45L case", 13, STRONG)
     c.text(x0 + 90 + c.tw("OMEN 45L case", 13), yy + 10, "Built-in support · calibrated", 12, MUTED)
-    c.text(x0 + 84, yy + 30, "5 zones", 12, TEXT)
-    info(c, x0 + 84 + c.tw("5 zones", 12) + 6, yy + 30)
+    chip(c, x0 + 84, yy + 29, "5 zones", TEXT)
     bx = x0 + cw - 16
     for lbl in ["⋯", "Identify", "Off", "Calibrate…"]:
         bx -= c.tw(lbl, 12.5) + 20 + 6
@@ -778,8 +785,7 @@ def lights(out):
         c.text(x0 + 76, yy + 10, name, 13, STRONG)
         c.text(x0 + 82 + c.tw(name, 13), yy + 10, ctl, 12, MUTED)
         if name.startswith("G502"):
-            chip(c, x0 + 76, yy + 28, "in front only", WARN, outline=(0x5A, 0x48, 0x20))
-            info(c, x0 + 76 + c.tw("in front only", 11.5) + 22, yy + 28, WARN)
+            chip(c, x0 + 76, yy + 28, "in front only", TEXT, dot=MUTED)
         c.text(x0 + cw - 30, yy + 12, "▸", 13, MUTED)
         yy += 48
     c.line(x0 + 1, yy, x0 + cw - 1, yy, LINE)
@@ -817,7 +823,7 @@ def lights_states(out):
     y += 24
     for now, short, btn in rows:
         hh = c.wrap(x0, y, now, 540, 12, WARN) - y
-        c.rect(x0 + 580, y - 4, 552, 28, fill=(0x2A, 0x22, 0x10), outline=(0x5A, 0x48, 0x20), r=5)
+        c.rect(x0 + 580, y - 4, 552, 28, fill=WARN_FILL, r=5)
         c.text(x0 + 592, y + 2, "⚠  " + short, 12.5, WARN)
         ix = x0 + 592 + c.tw("⚠  " + short, 12.5) + 8
         info(c, ix, y + 2, WARN)

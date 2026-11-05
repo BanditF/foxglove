@@ -1,7 +1,23 @@
 # Device focus, real key layouts, device thumbnails, and a quieter Lights page
 
-Design only (ux-1105, 2026-11-05). Taste-sensitive, waiting on the Hub. Nothing here is built.
-The issues at the end are drafts. They get filed once the Hub approves.
+Design only (ux-1105, 2026-11-05). **Approved by the user on 2026-11-05** ("i like that a lot"),
+with two fixes now folded in: status chips are flat, and the EFFECT label sits above its pills.
+Nothing here is built yet. The issues are filed; the plan below links them.
+
+## Decisions (2026-11-05, all option a)
+
+1. **Focus:** one global switcher in the status strip. The overlay and the wallpaper feed can
+   pin their own keyboard.
+2. **Other devices rows:** collapsed by default.
+3. **Hidden detail:** an ⓘ on controls (and on amber info bars); chips, labels and card titles
+   carry their text on hover, with no ⓘ.
+4. **"Follow the keyboard I type on":** later (C4), off by default.
+5. A read-only VIA or LampArray-only keyboard that has the focus shows its lights in the
+   keyboard card, with muted read-only chips, and isn't listed again under Other devices.
+6. **No first-run highlight on the ⓘ icons.** The user declined it.
+7. **Flat status chips** (user fix): see section 4, rule 2. This holds app-wide, not only on Lights.
+8. **EFFECT label above the effect pills** (user fix), like COLOUR above the swatches: every
+   control group's caps label sits on its own line above the group, never beside another row.
 
 The user's request: "device 'focus' selection should be a thing for any integrated
 representations of the keyboard. as well as key layout detection. and when it comes to the
@@ -189,13 +205,13 @@ can no longer disagree.
 **The source, best first:**
 1. **The keyboard says**: ZMK Studio's physical layouts (the active one, and the others as
    choices), or Vial's own definition with its layout options. Chip: "Layout from the keyboard"
-   (ok colour).
+   (green dot).
 2. **A definition you loaded**: VIA JSON (already loadable in Settings › Other keyboards), and
-   later QMK `info.json` or a raw KLE file. Chip: "Layout from its VIA definition" (ok colour).
+   later QMK `info.json` or a raw KLE file. Chip: "Layout from its VIA definition" (green dot).
 3. **Its board profile**: `[drawing]` in `resources/boards` or the user's boards folder. Chip:
-   "Layout from Foxglove's board profile" (plain).
+   "Layout from Foxglove's board profile" (no dot).
 4. **Guessed**: today's `Drawing::plain(keymap key count)`. Chip: "Shape guessed from N keys"
-   (amber outline, not amber fill: it isn't a fault). Muted line: "Key order is right; their
+   (amber dot; flat like every status chip, and not an amber bar: it isn't a fault). Muted line: "Key order is right; their
    places aren't known." Link: "Load a layout…".
 
 **Rules:**
@@ -254,16 +270,25 @@ No per-product art ships, and a board without a layout gets the plain Keyboard s
    collapsed expander.
 2. **State becomes a chip, explanation becomes a tooltip.** A chip is 1 to 4 words, the state
    only: "6 zones per half", "calibrated", "in front only". The sentence that explains it is the
-   chip's or the ⓘ's hover text, word for word. Nothing is reworded away.
-3. **ⓘ only where the label is a control** (a checkbox, a button). Hovering the label itself
-   already shows the same text, so the ⓘ is a hint that there is more, not a second place for it.
-   Plain-text chips carry their hover text directly.
-4. **Amber is never collapsed.** It becomes one InfoBar line of 60 characters or less that names
+   chip's hover text, word for word. Nothing is reworded away.
+   **Status chips are flat** (app-wide rule): a read-only chip has **no outline**, a muted fill
+   (`CHIP_FILL`, between `surface` and `control`) and, when its state has a colour, a **leading
+   dot** in it (ok green, muted grey, warn amber). The text stays `text`, not coloured.
+   **Outlines are only for clickable things:** pills, buttons, dropdowns, text fields. The same
+   goes for the status strip's part chips and for amber info bars (fill only). A link is accent
+   text, never a chip.
+3. **ⓘ only on controls** (a checkbox, a button) **and on amber info bars.** Hovering the
+   control's label shows the same text, so the ⓘ is a hint that there is more, not a second place
+   for it. Chips, plain labels and card titles carry their hover text directly, with no ⓘ. There
+   is no first-run highlight on the ⓘ.
+4. **Caps labels sit above their group,** never to the side: OFF/ON, then EFFECT over the effect
+   pills, then COLOUR over the swatches.
+5. **Amber is never collapsed.** It becomes one InfoBar line of 60 characters or less that names
    the problem, plus its action button. The full sentence, Settings path included, goes in the
    InfoBar's ⓘ, and the health view keeps the long copy.
-5. **Expanders are collapsed by default, and remembered for the session** (as Show zones is now):
+6. **Expanders are collapsed by default, and remembered for the session** (as Show zones is now):
    each device row, "More sources" (OpenRGB, Add a device), "Adjust levels…".
-6. **The casual viewer sees state and controls:** who drives the lights, the effect, the colour,
+7. **The casual viewer sees state and controls:** who drives the lights, the effect, the colour,
    brightness, and each device's thumbnail and name. Everything else is one hover or one click
    away.
 
@@ -281,7 +306,7 @@ Sources: `lights_page.rs`, `lights_owner.rs`, `light_zones.rs`, `zones_ui.rs`,
 
 | # | Text now | Goes to |
 |---|---|---|
-| K1 | "Lights now: {who}" (+ TIP on hover: "Who drives the keyboard's lights… lets go.") | Chip "Lights now: Foxglove" + ⓘ with TIP |
+| K1 | "Lights now: {who}" (+ TIP on hover: "Who drives the keyboard's lights… lets go.") | Chip "Lights now: Foxglove" (green dot); hover = TIP |
 | K2 | "Windows Dynamic Lighting holds the keyboard's lights. Turn off Settings > Personalization > Dynamic Lighting > {device} > "Use Dynamic Lighting on my devices" to give them back. [The scene "{name}" comes back then.]" | Amber InfoBar "Windows has the keyboard's lights · {scene} waits" + button "Open Dynamic Lighting settings" (unchanged) + ⓘ with the full sentence *(moved)* |
 | K3 | "Windows Dynamic Lighting holds the keyboard's lights; Foxglove draws through it [while its window is in front]. Turn off … to give them back." | Amber InfoBar "Windows has the lights · Foxglove draws through it [in front]" + button + ⓘ full *(moved)* |
 | K4 | Zone summary "6 lighting zones per half, by column" (+ details on hover) | Chip "6 zones per half"; hover = the summary + details *(moved)*; "Show zones" link stays beside it |
@@ -289,7 +314,7 @@ Sources: `lights_page.rs`, `lights_owner.rs`, `light_zones.rs`, `zones_ui.rs`,
 | K6 | "The keyboard reports {n} lamps; which keys each one lights isn't known yet." (hover) | Tooltip of the K5 chip |
 | K7 | Zone drawing: source line ("From your check" / "From the board's profile · not checked on yours yet" / "Reported by the device" …) | Expander (Show zones), as now; the source becomes a chip in the drawing's header |
 | K8 | Zone drawing: "{n} more lamps … light nothing; Foxglove leaves them out." | Expander, visible muted line under the drawing (it is state) |
-| K9 | Zone drawing: ZONE_LOOKS "Per-key looks (scenes, ripples) take one colour per zone here: the colour at the zone's centre." | Expander, ⓘ beside the drawing's title *(moved)* |
+| K9 | Zone drawing: ZONE_LOOKS "Per-key looks (scenes, ripples) take one colour per zone here: the colour at the zone's centre." | Expander, hover on the drawing's title *(moved)* |
 | K10 | "Not right?" + "Check zones…" + "Forget my check" (hint: "Go back to the board's profile, or what the keyboard reports") | Expander, as now |
 | K11 | Effect pill hover "Swirl (rainbow; colour not used yet)" | Tooltip, as now |
 | K12 | "The keyboard shows {X}; Foxglove saved {Y}. Pick {an effect / an effect or a colour} to change it." | Chip "Saved: {Y}" beside the effect pills + hover = the sentence *(moved)* |
@@ -307,7 +332,7 @@ Sources: `lights_page.rs`, `lights_owner.rs`, `light_zones.rs`, `zones_ui.rs`,
 | K24 | "{Right half}'s lights follow the {left}" + hover follow_tip ("On: … Saved on the keyboard.") | Checkbox "Right follows left" + ⓘ; hover starts with the full label, then the tip |
 | K25 | "Asking the keyboard…" / "{label}: needs a keyboard with Foxglove's firmware" / "{label}: needs newer keyboard firmware" + ↻ | Disabled checkbox + muted chip "needs newer firmware" / "needs Foxglove firmware"; the full line is the hover; ↻ stays |
 | K26 | "Save battery: dim lights on battery" + hover "Each half dims its own lights … works without Foxglove." | Checkbox "Dim on battery" + ⓘ; hover starts with the full label |
-| K27 | Status lines "Right half on battery · 80%", "Left half on USB · 100%" | Header chip "◑ Right on battery · 80%" (the part being dimmed); both lines on its hover *(moved)* |
+| K27 | Status lines "Right half on battery · 80%", "Left half on USB · 100%" | Header chip "Right on battery · dims to 80%" (grey dot; the part being dimmed); both lines on its hover *(moved)* |
 | K28 | "Off: your brightness on battery too." | Hover of the unchecked "Dim on battery" *(moved)* |
 | K29 | "{The right half} takes these levels when it next connects." | Visible muted line under the checkbox (pending state) |
 | K30 | "Adjust…" / "Hide levels" (hover "The brightness on power, on battery and on low battery"), rows "On power" / "On battery" / "Low battery" / "Low battery threshold" + hints, "Defaults" (hover "100% on power, 80% on battery, 12% below 20% charge") | "Adjust levels…" expander, collapsed, contents unchanged |
@@ -318,19 +343,19 @@ Sources: `lights_page.rs`, `lights_owner.rs`, `light_zones.rs`, `zones_ui.rs`,
 
 | # | Text now | Goes to |
 |---|---|---|
-| O1 | "Case lights, screens and other lighting devices on this PC, and what each can do." | ⓘ beside the card title *(moved)* |
+| O1 | "Case lights, screens and other lighting devices on this PC, and what each can do." | Hover on the card title *(moved)* |
 | O2 | "{app} is running and may override Foxglove's colours on {device}." (+ hint on hover) | Amber InfoBar "{app} may override the {device}" + ⓘ with the sentence and the hint |
 | O3 | "No PC or peripheral lights found." | Visible (empty state) |
 | O4 | Row header: name, "Built-in support" / "Windows lighting" / "Not controllable yet" / "Through OpenRGB", "· added by you", "· calibrated" | Visible, one muted line, beside the new thumbnail |
-| O5 | Light summary "5 lighting zones" / "Per-LED lighting, 24 lamps" / "On/off light" / "1 zone (whole device)" (+ TIP "How finely Foxglove can set this device's colours. Effects use one colour per zone.") | Short "5 zones" in the collapsed row + ⓘ with TIP; full summary in the expanded row |
+| O5 | Light summary "5 lighting zones" / "Per-LED lighting, 24 lamps" / "On/off light" / "1 zone (whole device)" (+ TIP "How finely Foxglove can set this device's colours. Effects use one colour per zone.") | Chip "5 zones" in the collapsed row, hover = TIP; full summary in the expanded row |
 | O6 | Screen chips ("Screen · images & animations"), "No lights Foxglove knows of" | Chips, as now |
 | O7 | "Show zones" / "Hide zones" | Inside the expanded row, as now |
 | O8 | "Calibrate…" (hover), "Off" (hover "Turn every zone dark"), "Identify" (hover "Blink this device …") | Identify stays on the collapsed row (also on the thumbnail); Calibrate… and Off in the expanded row; hovers unchanged |
-| O9 | "Turned off in Windows' Dynamic Lighting settings." | Amber chip "off in Windows" + hover = the sentence *(moved)* |
-| O10 | "Another app has these lights now. Settings > Personalization > Dynamic Lighting sets which app comes first." | Amber chip "another app has it" + button "Open Dynamic Lighting settings" (new, the same one as K2) + hover = the sentence |
-| O11 | "Windows shows Foxglove's colours here while Foxglove's window is in front." / "…; in the background its own Dynamic Lighting takes over." | Muted chip "in front only" + ⓘ with the sentence *(moved)* |
-| O12 | "Windows lighting: reading its lamps from Windows." | Muted chip "reading lamps…" + hover *(moved)* |
-| O13 | "Windows lists no Dynamic Lighting device for it right now." | Muted chip "not in Windows right now" + hover *(moved)* |
+| O9 | "Turned off in Windows' Dynamic Lighting settings." | Chip "off in Windows" (amber dot) + hover = the sentence *(moved)* |
+| O10 | "Another app has these lights now. Settings > Personalization > Dynamic Lighting sets which app comes first." | Chip "another app has it" (amber dot) + button "Open Dynamic Lighting settings" (new, the same one as K2) + hover = the sentence |
+| O11 | "Windows shows Foxglove's colours here while Foxglove's window is in front." / "…; in the background its own Dynamic Lighting takes over." | Chip "in front only" (grey dot), hover = the sentence *(moved)* |
+| O12 | "Windows lighting: reading its lamps from Windows." | Chip "reading lamps…" (grey dot) + hover *(moved)* |
+| O13 | "Windows lists no Dynamic Lighting device for it right now." | Chip "not in Windows right now" (grey dot) + hover *(moved)* |
 | O14 | "Found, not controllable yet." | Merged into O4's "Not controllable yet" (same words); the sentence is its hover |
 | O15 | Zone pickers: hover "{zone}: pick a colour, then Apply", "not set", "changed", zone names | Expanded row, as now |
 | O16 | Hex box "#rrggbb" (hover "{zone}: type a colour as #rrggbb, then Apply") | Expanded row, inside each zone's swatch popup (one click), so the row loses a line of boxes |
@@ -340,7 +365,7 @@ Sources: `lights_page.rs`, `lights_owner.rs`, `light_zones.rs`, `zones_ui.rs`,
 | O20 | "Match keyboard" + hover "Show the colour the keyboard's lights show … Picking a colour here stops it." | Checkbox + ⓘ; hover unchanged |
 | O21 | "Forget your entry for this device?" + Remove / Keep | Visible (amber, transient), as now |
 | O22 | "More ▸" (hover "Copy entry, Remove"), "Copy entry" (hover "Copy this device's catalog entry (TOML) …"), "Remove…" (hover "Forget your entry for this device") | "⋯" menu on the row, contents unchanged |
-| O23 | "Use OpenRGB's devices" + hover "List the devices a running OpenRGB drives … Turn on OpenRGB's SDK server first." | "More sources" expander (collapsed); its header summary says "OpenRGB off" / "OpenRGB: 4 devices"; an amber chip "OpenRGB not connected" in the header while it is on and down (amber stays visible) |
+| O23 | "Use OpenRGB's devices" + hover "List the devices a running OpenRGB drives … Turn on OpenRGB's SDK server first." | "More sources" expander (collapsed); its header summary says "OpenRGB off" / "OpenRGB: 4 devices"; a chip "OpenRGB not connected" (amber dot) in the header while it is on and down (amber stays visible) |
 | O24 | "Off: Foxglove doesn't connect to OpenRGB." | Hover of the unchecked checkbox *(moved)* |
 | O25 | "Host", "Port" (hover "OpenRGB's address: an IP address, or localhost"), "Connect" (hover "Connect to OpenRGB at this address") | More sources, as now |
 | O26 | "Host: an IP address or localhost; port: 1 to 65535." | More sources: amber "Host or port not valid" + ⓘ with the sentence |
@@ -365,11 +390,14 @@ not per PR.
 1. **A1 · Disclosure widgets.** `theme::hint_chip(text, hover)`, `theme::info_dot(hover)`,
    `theme::info_bar(level, short, full, action)`, and `settings_ui::expander(key, header,
    summary)` with session-remembered open state (generalising `zones_ui::toggle`).
-   - *AC:* a preview sheet of each widget, dark and light. The ⓘ hover equals the given text.
-     `info_bar` never collapses. Keyboard focus reaches the ⓘ, and Enter/Space shows its text (for
+   - *AC:* a preview sheet of each widget, dark and light. `hint_chip` has no outline, a muted
+     fill and an optional leading dot (the flat-chip rule); a source test keeps strokes off it.
+     The ⓘ hover equals the given text. No first-run highlight. `info_bar` is fill only and
+     never collapses. Keyboard focus reaches the ⓘ, and Enter/Space shows its text (for
      keyboard users). No page changes yet.
 2. **A2 · Keyboard card declutter** (K1–K32).
-   - *AC:* each K row behaves as the inventory says. A test asserts every K-row string still
+   - *AC:* each K row behaves as the inventory says. EFFECT sits above the effect pills, like
+     COLOUR. A test asserts every K-row string still
      renders somewhere: visible, or as hover text found through egui's `WidgetInfo`/tooltips in a
      headless frame. Previews `ui-1105-lights-keyboard{,-windows,-through,-unknown-zones,-old-firmware}.png`.
      The card is shorter than today's at 980 pt (measured in the preview). Amber is still visible
@@ -468,9 +496,9 @@ Each one uses the Feature template. Research and Scope are summarised from the s
   iCUE/SignalRGB tinted tiles, LampArrayKind + lamp positions.
 - **Thumbnails on device rows, the battery list and the switcher** (D2).
 
-## Open questions for the Hub
+## Open questions for the Hub (answered 2026-11-05: all a)
 
-At most 4 decisions. The recommended option is listed first.
+Kept for the record; the answers are in Decisions at the top.
 
 1. **Where does the focus picker live?** (`C:\Users\fuchs\splitkeeb\worktrees\_logs\review\ux-1105\ux-1105-proposed-1-focus.png`)
    a) One global focus in the status strip's switcher; the overlay and feed can pin. *(recommended)*
