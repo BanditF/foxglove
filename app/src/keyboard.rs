@@ -711,6 +711,19 @@ impl Keyboard {
     }
 }
 
+/// Foxglove (#579, after upstream KeyPeek `9e061b7`): a reader that sleeps until a report
+/// would outlive its keyboard on a silent board. Closing the command channel first and then
+/// waking the reader makes it see the closed channel and end now.
+impl Drop for Keyboard {
+    fn drop(&mut self) {
+        if self.reader_waker.is_some() {
+            let (closed, _) = mpsc::channel();
+            drop(std::mem::replace(&mut self.command_tx, closed));
+            self.wake_reader();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::ActiveLayers::{Base, Excluded, Selected};
@@ -800,6 +813,91 @@ mod tests {
         assert_eq!(
             ActiveLayers::classify(GAME, 1, not_game, u32::MAX),
             Excluded
+        );
+    }
+
+    /// A board that never sends a report: its reader sleeps until woken, and it tells the
+    /// test when the reader thread let go of it.
+    struct SilentBoard {
+        definition: crate::protocols::KeyboardDefinition,
+        wake: mpsc::Sender<()>,
+        woken: mpsc::Receiver<()>,
+        released: mpsc::Sender<()>,
+    }
+
+    impl Drop for SilentBoard {
+        fn drop(&mut self) {
+            let _ = self.released.send(());
+        }
+    }
+
+    impl KeyboardProtocol for SilentBoard {
+        fn get_layout_definition(&self) -> &crate::protocols::KeyboardDefinition {
+            &self.definition
+        }
+
+        fn read_keymap(&self) -> Result<crate::key_action::KeymapSnapshot, Box<dyn Error>> {
+            Ok(crate::key_action::KeymapSnapshot {
+                layers: crate::key_action::LayerInfo::indexed(1),
+                actions: vec![vec![vec![None]]],
+            })
+        }
+
+        fn hid_read(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+            match self.woken.recv() {
+                Ok(()) => Ok(Vec::new()),
+                Err(_) => Err("gone".into()),
+            }
+        }
+
+        fn reader_waker(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+            let wake = self.wake.clone();
+            Some(Arc::new(move || {
+                let _ = wake.send(());
+            }))
+        }
+    }
+
+    /// Foxglove (#579, upstream `9e061b7`): dropping the keyboard ends the reader of a board
+    /// that stays silent, instead of leaving it asleep until a report that never comes.
+    #[test]
+    fn dropping_the_keyboard_ends_a_silent_reader() {
+        let (released, protocol_gone) = mpsc::channel();
+        let (wake, woken) = mpsc::channel();
+        let board = SilentBoard {
+            definition: crate::protocols::KeyboardDefinition {
+                vid: 0,
+                pid: 0,
+                rows: 1,
+                cols: 1,
+                layouts: vec![KeyboardLayout {
+                    name: "silent".into(),
+                    keys: vec![crate::protocols::Key {
+                        row: 0,
+                        col: 0,
+                        x: 0.0,
+                        y: 0.0,
+                        w: 1.0,
+                        h: 1.0,
+                        r: 0.0,
+                    }],
+                }],
+            },
+            wake,
+            woken,
+            released,
+        };
+        let keyboard = Keyboard::new(
+            Box::new(board),
+            "silent".into(),
+            CONFIG,
+            UiWake::new(Arc::new(|| {})),
+        )
+        .expect("the silent board connects");
+        drop(keyboard);
+        assert!(
+            protocol_gone.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the reader thread still holds the board"
         );
     }
 }

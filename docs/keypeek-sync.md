@@ -4,9 +4,37 @@
 with `git subtree` from BanditF/keypeek `monitor-select` (upstream `master` plus the monitor
 picker), history included, and renamed to Foxglove.
 
+## `app/` is a hard fork (since #579)
+
+The fork point is upstream [`d7f5a89`](https://github.com/srwi/keypeek/commit/d7f5a89)
+(2026-09-05) plus our monitor picker. Since then upstream has rebuilt the whole app (crate split
+`2aaccf7`, unified drivers and transport `1a0381e`/`e9905ef`), and a `git subtree pull` dry run
+gave 145 unmerged paths and moved our `src/foxglove/` into an upstream crate. So:
+
+- **Don't** `git subtree pull` upstream, and don't depend on its crates. The
+  [Pulling upstream](#pulling-upstream) steps below are history, for the old layout only.
+- **Do** port upstream fixes one at a time, by hand or by cherry-pick, and say which upstream
+  commit each came from (`Foxglove (#NNN, upstream <sha>)`).
+- **Do** send generic work back with `git subtree split` ([below](#sending-a-change-upstream)).
+- Licence: upstream's crates are GPL-3.0-only like `app/`. Their code may come into `app/`,
+  never into our MIT crates (`crates/`).
+- The editor profiles were ported as ideas, not code: `app/src/keymap_editor/profile.rs`
+  (#579, #582), layers and layouts (#583).
+
+Write-up: `research/keypeek-upstream-579.md` in the workspace folder.
+
+### Upstream fixes checked (to `a12d051`)
+
+| Upstream | What | Here |
+|---|---|---|
+| [`b52dd3e`](https://github.com/srwi/keypeek/commit/b52dd3e) | missing/incorrect keycodes | Not needed for ZMK: our ZMK lists come from `zmk-studio-api`'s `BehaviorRole::standard_candidates`, which already has scroll left/right, a backlight level and no breathing, and we already have a Special page. The rest (Alt Repeat, Key Lock, `RM_*` names, dynamic macros) is QMK, which is read-only here (#74) and takes its keycodes from `qmk-via-api`. |
+| [`2608346`](https://github.com/srwi/keypeek/commit/2608346) | QMK Space Cadet, Auto Shift, Combo keycodes | Not taken: QMK editing is read-only here (#74), and the QMK picker's keycodes come from `qmk-via-api`'s categories, not a hand-made catalog. Revisit with QMK writes. |
+| [`b933833`](https://github.com/srwi/keypeek/commit/b933833) | QMK one-shot mods | Not taken: same reason as `2608346` (QMK, read-only, `qmk-via-api` catalog). |
+| [`9e061b7`](https://github.com/srwi/keypeek/commit/9e061b7) | reader threads end on drop | Ported (#579): `impl Drop for Keyboard` closes the command channel and wakes a reader that sleeps until a report (ZMK over the link, the Studio fake), so it ends on a silent board. QMK readers already time out. Test: `keyboard::tests::dropping_the_keyboard_ends_a_silent_reader`. |
+
 ## What we changed, and keep small
 
-Only names, so upstream changes merge cleanly:
+At first only names, so upstream changes merged cleanly:
 
 - `Cargo.toml`: package `foxglove`, version, description, repository, bundle name/identifier
 - Window titles, tray tooltip, log prefixes, the Wayland layer namespace
@@ -19,6 +47,9 @@ New Foxglove code goes in new modules (`src/foxglove/`) rather than into upstrea
 `app/` keeps its own Cargo workspace and `Cargo.lock`, like upstream, so lockfile updates merge too.
 
 ## Pulling upstream
+
+Before the hard fork only (upstream's layout up to `d7f5a89`); don't run this against today's
+upstream.
 
 ```bash
 git fetch https://github.com/srwi/keypeek master
