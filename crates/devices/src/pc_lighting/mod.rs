@@ -10,10 +10,13 @@
 //!   [`unknown`] lists the rest for "Add a device", and [`test_zone`] lights one zone of it
 //! - [`lamp_array`]: Windows Dynamic Lighting (LampArray) devices' lamps, as zones
 //! - [`omen_tracer`]: the HP OMEN case lighting board (TracerLED)
+//! - [`openrgb`]: every device a running OpenRGB drives, through its SDK server (#471);
+//!   opt-in, off by default
 //! - [`calibrated`]: every opened driver's colours go through the device's colour calibration
 //! - `hid` (feature `hid`): the hidapi enumeration and report writer
 //!
-//! Discovery is caller-driven: the host calls it on device-arrival events, never on a timer.
+//! Discovery is caller-driven: the host calls it on device-arrival events, never on a timer
+//! (OpenRGB's sources: on its own DEVICE_LIST_UPDATED push).
 //! Nothing streams: every write follows a call.
 
 pub mod calibrated;
@@ -23,6 +26,7 @@ pub mod catalog;
 pub mod hid;
 pub mod lamp_array;
 pub mod omen_tracer;
+pub mod openrgb;
 pub mod zones;
 
 use std::time::Duration;

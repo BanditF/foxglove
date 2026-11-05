@@ -27,3 +27,12 @@ Unifying, Bolt or Lightspeed receiver: framing, the root feature lookup, the fea
 replies, and battery reads (0x1000, 0x1001, 0x1004) into the generic `battery::Battery`. It
 talks through a `hidpp::Transport`, so its tests run on a scripted fake; it opens no device
 itself and sends only "get" requests.
+
+`pc_lighting::openrgb` is an OpenRGB SDK client (#471), written clean-room from OpenRGB's public
+protocol document (OpenRGB is GPL-2.0; no code copied, and the GPL-2.0 `openrgb`/`openrgb2`
+crates are not used). Off by default (`openrgb::Settings::enabled`), it connects to a running
+OpenRGB (`127.0.0.1:6742`), negotiates protocol version 4 or lower, and turns each controller
+into a `Source` (a zone per LED, or per OpenRGB zone past 256 LEDs) with a `LightingDevice`
+driver (SETCUSTOMMODE once, then UPDATELEDS or UPDATEZONELEDS). Waits are bounded; the
+server's DEVICE_LIST_UPDATED push arrives as an event, and reconnecting is a separate opt-in
+with a bounded backoff.
