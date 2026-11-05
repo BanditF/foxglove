@@ -31,6 +31,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub mod publish;
+#[cfg(feature = "sign")]
+pub mod sign;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Root {

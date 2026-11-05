@@ -43,6 +43,8 @@ try {
     }
     Step 'crates: clippy' { cargo clippy --workspace --all-targets -- -D warnings }
     Step 'crates: tests' { cargo test --workspace }
+    # The catalog signer (#785) is behind a feature the app never turns on.
+    Step 'plugin-trust signer' { cargo clippy -p foxglove-plugin-trust --features sign --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p foxglove-plugin-trust --features sign } }
     Step 'foxglove-link without hidapi' { cargo build -p foxglove-link --no-default-features }
     Step 'foxglove-link Devices device' { cargo clippy -p foxglove-link --features devices --all-targets -- -D warnings; if (!$LASTEXITCODE) { cargo test -p foxglove-link --features devices } }
     Step 'app: clippy' { cargo clippy --manifest-path app/Cargo.toml --all-targets -- -D warnings }

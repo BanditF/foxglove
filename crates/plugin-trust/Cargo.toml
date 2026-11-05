@@ -5,7 +5,16 @@ edition = "2021"
 description = "Verifies Foxglove plugins: a pinned root key signs root.json, which names the keys that sign the plugin catalog; the catalog pins each plugin's archive hash and files"
 license = "MIT"
 
+[features]
+# The signer (`plugin-sign`, #785). The app only verifies, so it never links it.
+sign = ["dep:minisign"]
+
+[[bin]]
+name = "plugin-sign"
+required-features = ["sign"]
+
 [dependencies]
+minisign = { version = "0.7", optional = true }
 minisign-verify = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
