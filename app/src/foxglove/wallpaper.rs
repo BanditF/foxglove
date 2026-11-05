@@ -24,6 +24,9 @@
 //!   manifest's palette on each of those changes (`accent::wallpaper_changed`); a wallpaper
 //!   without one gives its picture's accent (#40, `wallpaper_image`), taken only while the
 //!   lights follow the wallpaper and decoded again only when the picture changed.
+//! - The Scenes page's "Wallpaper" palette (#40, `scene_looks::WALLPAPER`) is set on the same
+//!   pass: the manifest's palette of the wallpaper on screen, else its picture's colours, read
+//!   only once someone used the palette (its first use asks for one pass, `recheck_palette`).
 
 use std::path::PathBuf;
 
@@ -411,16 +414,58 @@ fn accent_on_screen(
     source: &Source,
     monitor: Option<&str>,
 ) -> Option<[u8; 3]> {
+    manifest_on_screen(manifests, text, source, monitor, |m| m.accent.map(|c| c.0))
+}
+
+/// The palette of the wallpaper on screen, from its manifest, for the Scenes page's "Wallpaper"
+/// palette (#40): chosen as [`accent_on_screen`] chooses.
+fn palette_on_screen(
+    manifests: &[Manifest],
+    text: &str,
+    source: &Source,
+    monitor: Option<&str>,
+) -> Option<Vec<foxglove_scene::Rgb>> {
+    manifest_on_screen(manifests, text, source, monitor, |m| {
+        m.palette.as_ref().map(|p| p.stops.clone())
+    })
+}
+
+/// `get` of the first wallpaper on screen whose manifest gives it: on the monitor the setting
+/// names (Wallpaper Engine's only), else on any monitor.
+fn manifest_on_screen<T>(
+    manifests: &[Manifest],
+    text: &str,
+    source: &Source,
+    monitor: Option<&str>,
+    get: impl Fn(&Manifest) -> Option<T>,
+) -> Option<T> {
     let engine = matches!(source, Source::Engine(_));
     let monitor = monitor.filter(|_| engine);
     on_screen(text, source)
         .iter()
         .filter(|(m, _)| monitor.is_none_or(|want| want == m))
         .find_map(|(_, file)| {
-            super::wallpaper_manifest::for_file(manifests, file, !engine)?
-                .accent
-                .map(|c| c.0)
+            get(super::wallpaper_manifest::for_file(
+                manifests, file, !engine,
+            )?)
         })
+}
+
+/// What the Scenes page's "Wallpaper" palette gets from a pass: the manifest's palette, else,
+/// once the palette is `wanted`, the picture's stops (or none), else nothing read.
+fn scene_palette(
+    manifest: Option<Vec<foxglove_scene::Rgb>>,
+    wanted: bool,
+    picture: impl FnOnce() -> Option<Vec<super::wallpaper_image::Swatch>>,
+) -> super::scene_looks::OnScreen {
+    use super::scene_looks::OnScreen;
+    match manifest {
+        Some(stops) => OnScreen::Known(Some(stops)),
+        None if wanted => {
+            OnScreen::Known(picture().and_then(|p| super::wallpaper_image::stops(&p)))
+        }
+        None => OnScreen::Unread,
+    }
 }
 
 /// The pictures that stand for the wallpaper on screen (#40), best first, for its accent when it
@@ -458,6 +503,10 @@ static RESCAN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::ne
 /// changed or not.
 static RECHECK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The Scenes page's "Wallpaper" palette was first used (#40): the next pass reads the picture on
+/// screen, changed or not.
+static PALETTE_DUE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Wakes the wallpaper service: a watched folder changed, or the user pressed Refresh.
 static WAKE: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> = std::sync::Mutex::new(None);
 
@@ -485,6 +534,25 @@ pub fn recheck() -> bool {
         .unwrap_or_else(|e| e.into_inner())
         .as_ref()
         .is_some_and(|tx| tx.send(()).is_ok())
+}
+
+/// The pass found `p` for the "Wallpaper" palette: a running scene with it takes the new
+/// colours. True when it changed (the page repaints).
+fn set_scene_palette(p: super::scene_looks::OnScreen) -> bool {
+    let changed = super::scene_looks::set_wallpaper_palette(p);
+    if changed {
+        super::scenes_ui::wallpaper_palette_changed();
+    }
+    changed
+}
+
+/// The Scenes page's "Wallpaper" palette was first used (#40): the wallpaper service makes one
+/// pass for it. Without the service, nothing: the palette shows as Bandit.
+pub fn recheck_palette() {
+    PALETTE_DUE.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(tx) = WAKE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        let _ = tx.send(());
+    }
 }
 
 /// Watches the wallpaper sources and tells the art service about the wallpaper on screen. Each
@@ -541,7 +609,8 @@ pub fn start() {
                 // Whatever this pass finds, the follower runs after it (`recheck`).
                 follower_due = true;
             }
-            if n > 0 && !refresh && !recheck && seen.as_ref() == Some(&now) {
+            let palette_due = PALETTE_DUE.swap(false, std::sync::atomic::Ordering::Relaxed);
+            if n > 0 && !refresh && !recheck && !palette_due && seen.as_ref() == Some(&now) {
                 continue;
             }
             seen = Some(now);
@@ -576,8 +645,10 @@ pub fn start() {
                 // and art now.
                 super::scenes_ui::wallpapers_changed();
             }
+            let palette_wanted = super::scene_looks::wallpaper_palette_wanted();
             let Some(text) = text else {
                 super::accent::wallpaper_changed(None);
+                repaint |= set_scene_palette(scene_palette(None, palette_wanted, || None));
                 if std::mem::take(&mut follower_due) {
                     super::accent::wake();
                 }
@@ -593,24 +664,30 @@ pub fn start() {
                 continue;
             }
             let monitor = super::art_cycle::Cycle::load().wallpaper_monitor;
+            // The picture on screen's palette (#40), decoded only when asked for and changed.
+            let mut picture = || {
+                let desktop = desktop_marker();
+                let found =
+                    pictures_on_screen(&text, &source, monitor.as_deref(), desktop.as_deref());
+                pictures.palette(&found)
+            };
             // Lights follow the wallpaper (#70): the accent on screen now, from a manifest's
             // palette, else (#40) from the picture, read only while the lights follow it.
             let accent =
                 accent_on_screen(&manifests, &text, &source, monitor.as_deref()).or_else(|| {
                     super::accent::wallpaper_enabled()
-                        .then(|| {
-                            let desktop = desktop_marker();
-                            let found = pictures_on_screen(
-                                &text,
-                                &source,
-                                monitor.as_deref(),
-                                desktop.as_deref(),
-                            );
-                            pictures.accent(&found).map(|c| c.0)
-                        })
+                        .then(|| picture().and_then(|p| super::wallpaper_image::accent(&p)))
                         .flatten()
+                        .map(|c| c.0)
                 });
             super::accent::wallpaper_changed(accent);
+            // The Scenes page's "Wallpaper" palette (#40): the manifest's palette, else the
+            // picture's, read only once someone used it (the same decode as the accent's).
+            repaint |= set_scene_palette(scene_palette(
+                palette_on_screen(&manifests, &text, &source, monitor.as_deref()),
+                palette_wanted,
+                picture,
+            ));
             if std::mem::take(&mut follower_due) {
                 super::accent::wake();
             }
@@ -721,6 +798,21 @@ mod tests {
             accent_on_screen(&ms, "C:/Pictures/beach.jpg", &Source::Desktop, None),
             None
         );
+        // The Scenes page's "Wallpaper" palette (#40): the same wallpaper's manifest palette.
+        let reef = ms.iter().find(|m| m.id == "tidepool.reef").unwrap();
+        let stops = reef.palette.as_ref().unwrap().stops.clone();
+        assert_eq!(
+            palette_on_screen(&ms, config, &engine, None),
+            Some(stops.clone())
+        );
+        assert_eq!(
+            palette_on_screen(&ms, config, &engine, Some("//?/DISPLAY#SAM0E3C#2")),
+            None
+        );
+        assert_eq!(
+            palette_on_screen(&ms, "tidepool.reef", &o, None),
+            Some(stops)
+        );
         // The Scenes page's "On screen": every wallpaper with a manifest, once each, from any
         // source.
         assert_eq!(
@@ -780,6 +872,39 @@ mod tests {
         );
         assert!(pictures_on_screen("", &Source::Desktop, None, Some(&copy)).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #40: the "Wallpaper" palette takes the manifest's palette without reading the picture;
+    /// else the picture only once the palette is wanted, and a grey one gives no colours.
+    #[test]
+    fn the_scene_palette_reads_the_picture_only_when_wanted() {
+        use super::super::scene_looks::OnScreen;
+        use super::super::wallpaper_image::{palette, Swatch};
+        use foxglove_scene::Rgb;
+        let reef = vec![Rgb([0x0f, 0xb5, 0xae]), Rgb([0x0b, 0x25, 0x45])];
+        let read = std::cell::Cell::new(0);
+        let teal = || {
+            read.set(read.get() + 1);
+            Some(palette(&[Rgb([0x0f, 0xb5, 0xae]); 16]))
+        };
+        assert_eq!(
+            scene_palette(Some(reef.clone()), true, teal),
+            OnScreen::Known(Some(reef.clone()))
+        );
+        assert_eq!(scene_palette(None, false, teal), OnScreen::Unread);
+        assert_eq!(read.get(), 0, "no picture read");
+        let OnScreen::Known(Some(stops)) = scene_palette(None, true, teal) else {
+            panic!("the picture's stops");
+        };
+        assert_eq!((read.get(), stops.len()), (1, 2));
+        let grey = || {
+            Some(vec![Swatch {
+                colour: Rgb([128, 128, 128]),
+                share: 1.0,
+            }])
+        };
+        assert_eq!(scene_palette(None, true, grey), OnScreen::Known(None));
+        assert_eq!(scene_palette(None, true, || None), OnScreen::Known(None));
     }
 
     /// A config read while Wallpaper Engine writes it is skipped, not taken as "no wallpapers"

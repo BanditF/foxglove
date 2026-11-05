@@ -99,7 +99,7 @@ One of the Scenes page's six effects, with only the parameters it uses:
 | `kind` | `scanline`, `sweep`, `ripple`, `breathe`, `gradient`, `drift` | (required) |
 | `colour` | `#rrggbb` (scanline, ripple, breathe) | Foxglove's orange |
 | `background` | `night`, `off` | `night` |
-| `palette` | Foxglove's (`Bandit`, `Forest`, `Steel`, `Ember`, `Spectrum`) or the manifest's own `palette.name` (sweep, gradient, drift) | `Bandit` |
+| `palette` | Foxglove's (`Bandit`, `Forest`, `Steel`, `Ember`, `Spectrum`, or `Wallpaper`: the colours of whichever wallpaper is on screen) or the manifest's own `palette.name` (sweep, gradient, drift) | `Bandit` |
 | `speed` | 1–10 | 5 |
 | `direction` | `down`, `up`, `right`, `left` | `down` |
 | `width_mm` | 20–400 (the band's width, or Drift's size) | 80 |

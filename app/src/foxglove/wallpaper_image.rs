@@ -12,6 +12,8 @@
 //!   #474), where distances look even. The accent is the colour with the most colour for its
 //!   share of the picture; a picture without one (greys, near black) gives none, so the lights
 //!   fall back to the Windows accent.
+//! - The Scenes page's "Wallpaper" palette (`scene_looks::WALLPAPER`) takes the same palette as
+//!   stops ([`stops`]), from the same decode.
 //! - Event-driven: the wallpaper service asks on each of its change passes (`wallpaper.rs`), on
 //!   its own thread, and [`Images`] decodes again only when the image's path, write time or
 //!   size changed. Nothing polls.
@@ -187,11 +189,42 @@ pub fn thumbnail(path: &Path) -> Option<Vec<Rgb>> {
     )
 }
 
-/// The accent of the picture at `path` (see [`accent`]).
-pub fn accent_of(path: &Path) -> Option<Rgb> {
+/// Swatches covering less of the picture than this stay out of a scene palette.
+const MIN_SHARE: f32 = 0.03;
+/// A scene palette has at most this many stops.
+const MAX_STOPS: usize = 5;
+/// Two swatches nearer than this (squared Oklab distance) read as one stop.
+const SAME_STOP: f32 = 0.0016;
+
+/// The picture's palette as a scene palette's stops (the Scenes page's "Wallpaper" palette, #40):
+/// the [`accent`] first, then the other colours, most of the picture first, without specks or
+/// near twins. A one-colour picture gets a dim copy of it as the second stop. None when the
+/// picture has no accent (greys, near black), as for the lights.
+pub fn stops(palette: &[Swatch]) -> Option<Vec<Rgb>> {
+    let first = accent(palette)?;
+    let mut out = vec![first];
+    for s in palette {
+        if out.len() == MAX_STOPS {
+            break;
+        }
+        let lab = s.colour.lab();
+        let twin = out.iter().any(|c| dist(&c.lab(), &lab) < SAME_STOP);
+        if s.share >= MIN_SHARE && !twin {
+            out.push(s.colour);
+        }
+    }
+    if out.len() == 1 {
+        let [l, a, b] = first.lab();
+        out.push(Rgb::from_lab([l * 0.3, a * 0.3, b * 0.3]));
+    }
+    Some(out)
+}
+
+/// The palette of the picture at `path` (see [`palette`]); None when it can't be read.
+pub fn palette_of(path: &Path) -> Option<Vec<Swatch>> {
     // A decoder bug in one odd file shouldn't restart the whole wallpaper service.
     let pixels = std::panic::catch_unwind(|| thumbnail(path)).ok()??;
-    accent(&palette(&pixels))
+    Some(palette(&pixels))
 }
 
 /// Whether `path`'s extension is a picture `image` reads.
@@ -239,29 +272,29 @@ fn key(path: &Path) -> Option<Key> {
     Some((path.to_path_buf(), m.modified().ok(), m.len()))
 }
 
-/// The wallpaper service's last picture and its accent: decoded again only when the picture
-/// changed.
+/// The wallpaper service's last picture and its palette: decoded again only when the picture
+/// changed. The lights' accent and the scenes' palette share one decode.
 #[derive(Default)]
 pub struct Images {
-    last: Option<(Key, Option<Rgb>)>,
+    last: Option<(Key, Option<Vec<Swatch>>)>,
     /// How many pictures were decoded (for tests).
     decoded: usize,
 }
 
 impl Images {
-    /// The accent of the first of `candidates` that exists, decoding it only when it isn't the
+    /// The palette of the first of `candidates` that exists, decoding it only when it isn't the
     /// picture asked last, unchanged.
-    pub fn accent(&mut self, candidates: &[PathBuf]) -> Option<Rgb> {
+    pub fn palette(&mut self, candidates: &[PathBuf]) -> Option<Vec<Swatch>> {
         let k = candidates.iter().find_map(|p| key(p))?;
-        if let Some((last, accent)) = &self.last {
+        if let Some((last, palette)) = &self.last {
             if *last == k {
-                return *accent;
+                return palette.clone();
             }
         }
         self.decoded += 1;
-        let accent = accent_of(&k.0);
-        self.last = Some((k, accent));
-        accent
+        let palette = palette_of(&k.0);
+        self.last = Some((k, palette.clone()));
+        palette
     }
 }
 
@@ -307,6 +340,49 @@ mod tests {
         assert_eq!(p[0].colour, Rgb(navy), "the largest first");
         let a = accent(&p).unwrap();
         assert!(hue(a).abs_diff(hue(Rgb(teal))) <= 2, "{a:?}");
+    }
+
+    /// The scenes' "Wallpaper" palette from a picture: the accent first, then the rest by share,
+    /// with no speck; one colour gets a dim second stop; a grey picture gives none.
+    #[test]
+    fn a_picture_gives_scene_stops() {
+        let (navy, teal, pink) = ([0x0b, 0x25, 0x45], [0x0f, 0xb5, 0xae], [0xff, 0x2d, 0x95]);
+        let px = |img: &image::RgbImage| img.pixels().map(|p| Rgb(p.0)).collect::<Vec<_>>();
+        let reef = picture(200, 100, |x, y| {
+            if x < 3 && y < 3 {
+                pink
+            } else if y < 55 {
+                navy
+            } else {
+                teal
+            }
+        });
+        let s = stops(&palette(&px(&reef))).unwrap();
+        assert_eq!(s.len(), 2, "{s:?}: the pink speck stays out");
+        assert!(hue(s[0]).abs_diff(hue(Rgb(teal))) <= 2, "{s:?}");
+        assert_eq!(s[1], Rgb(navy));
+        let solid = stops(&palette(&px(&picture(16, 16, |_, _| teal)))).unwrap();
+        assert_eq!(solid.len(), 2);
+        assert!(
+            solid[1].lab()[0] < solid[0].lab()[0] * 0.5,
+            "a dim second stop"
+        );
+        let grey = picture(64, 64, |x, _| {
+            let v = (x * 4) as u8;
+            [v, v, v]
+        });
+        assert_eq!(stops(&palette(&px(&grey))), None);
+        let many = picture(60, 10, |x, _| {
+            [
+                [255, 40, 40],
+                [255, 220, 40],
+                [40, 220, 80],
+                [40, 200, 255],
+                [80, 60, 255],
+                [230, 40, 220],
+            ][(x / 10) as usize]
+        });
+        assert!(stops(&palette(&px(&many))).unwrap().len() <= MAX_STOPS);
     }
 
     /// Greys, and a near-black picture with a dim tint, give no accent: the lights fall back to
@@ -400,21 +476,22 @@ mod tests {
         picture(32, 32, |_, _| [0x0f, 0xb5, 0xae]).save(&a).unwrap();
         picture(32, 32, |_, _| [0xe0, 0x30, 0x20]).save(&b).unwrap();
         let mut images = Images::default();
-        let teal = images.accent(&[d.join("gone.png"), a.clone()]).unwrap();
+        let mut accent_of = |c: &[PathBuf]| images.palette(c).and_then(|p| accent(&p));
+        let teal = accent_of(&[d.join("gone.png"), a.clone()]).unwrap();
         for _ in 0..5 {
-            assert_eq!(images.accent(std::slice::from_ref(&a)), Some(teal));
+            assert_eq!(accent_of(std::slice::from_ref(&a)), Some(teal));
         }
-        assert_eq!(images.decoded, 1);
-        let red = images.accent(std::slice::from_ref(&b)).unwrap();
+        let red = accent_of(std::slice::from_ref(&b)).unwrap();
         assert_ne!(hue(red), hue(teal));
-        assert_eq!(images.decoded, 2);
         // Rewritten in place, with other colours (and so another size).
         picture(48, 48, |_, _| [0x30, 0x40, 0xe0]).save(&b).unwrap();
-        let blue = images.accent(std::slice::from_ref(&b)).unwrap();
-        assert_eq!(images.decoded, 3);
+        let blue = accent_of(std::slice::from_ref(&b)).unwrap();
         assert_ne!(hue(blue), hue(red));
-        assert_eq!(images.accent(&[d.join("none.png")]), None);
-        assert_eq!(images.decoded, 3, "nothing to decode");
+        assert_eq!(accent_of(&[d.join("none.png")]), None);
+        assert_eq!(
+            images.decoded, 3,
+            "once per picture, nothing for a missing one"
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 

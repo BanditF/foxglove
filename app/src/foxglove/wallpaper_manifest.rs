@@ -26,7 +26,7 @@ use serde::Deserialize;
 use foxglove_scene::Rgb;
 
 use super::scene_looks::{
-    self as looks, Art, FileLook, NamedPalette, Preset, Scenes, WallpaperLook, PALETTES,
+    self as looks, Art, FileLook, NamedPalette, Preset, Scenes, WallpaperLook,
 };
 
 /// The manifest's file name, next to the wallpaper's `project.json`.
@@ -244,7 +244,7 @@ pub fn parse(text: &str, dir: &Path, project_title: Option<&str>) -> Result<Mani
     for m in f.motifs {
         let name = shown_name(&m.name, "motif")?;
         let look = m.look.look().map_err(|e| format!("{name}: {e}"))?;
-        let palette_ok = PALETTES.iter().any(|(n, _)| *n == look.palette)
+        let palette_ok = looks::is_foxglove_palette(&look.palette)
             || palette.as_ref().is_some_and(|p| p.name == look.palette);
         if look.kind.uses_colour() || palette_ok {
             motifs.push(Motif {
@@ -465,7 +465,7 @@ pub fn scenes_of(manifests: &[Manifest]) -> Scenes {
     for m in manifests {
         let mut own = m.palette.clone();
         if let Some(p) = own.as_mut() {
-            let builtin = PALETTES.iter().any(|(n, _)| *n == p.name);
+            let builtin = looks::is_foxglove_palette(&p.name);
             let other = palettes.iter().find(|q| q.name == p.name);
             if builtin || other.is_some_and(|q| q.stops != p.stops) {
                 p.name = format!("{} ({})", p.name, m.title);
