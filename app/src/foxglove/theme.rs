@@ -403,7 +403,6 @@ pub fn primary_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
 pub enum Dot {
     Ok,
     Muted,
-    #[cfg_attr(not(test), allow(dead_code))] // Other devices takes it up in #795.
     Warn,
 }
 
@@ -422,7 +421,9 @@ impl Dot {
 pub enum Level {
     Info,
     Warn,
-    #[cfg_attr(not(test), allow(dead_code))] // Other devices takes it up in #795.
+    // WinUI's third severity. Phase A has no red state (#795 drew none), so only the previews
+    // and tests use it for now.
+    #[cfg_attr(not(test), allow(dead_code))]
     Danger,
 }
 
@@ -530,7 +531,7 @@ pub fn hint_chip(
 /// A chip that opens something when clicked (such as the status strip's focus switcher): the
 /// [`hint_chip`] face plus the outline every clickable thing has, the accent on hover and the
 /// focus ring on keyboard focus. Enter and Space click it, as they click a button.
-#[cfg_attr(not(test), allow(dead_code))] // The Lights page takes these up in #795 and the focus switcher (#800).
+#[cfg_attr(not(test), allow(dead_code))] // The focus switcher takes it up (#800).
 pub fn click_chip(
     ui: &mut egui::Ui,
     text: &str,
@@ -616,8 +617,8 @@ pub fn with_info(ui: &mut egui::Ui, control: egui::Response, hover: &str) -> egu
 
 /// What an [`info_bar`] did this frame.
 pub struct BarResponse {
-    /// The whole bar.
-    #[cfg_attr(not(test), allow(dead_code))] // Other devices takes it up in #795.
+    /// The whole bar. No page reads it yet (#795 needed only the action); the tests measure it.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub response: egui::Response,
     /// Its action button, when it has one.
     pub action: Option<egui::Response>,
