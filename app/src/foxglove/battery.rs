@@ -547,4 +547,23 @@ mod tests {
         let old: BatterySettings = toml::from_str("low_battery_notice = false").unwrap();
         assert!(!old.low_battery_notice && old.device_notice);
     }
+
+    /// #505: "Read Logitech batteries" is off until the user ticks it: in the defaults, on
+    /// first run (nothing saved yet), and in a store from before the switch.
+    #[test]
+    fn logitech_batteries_are_off_by_default() {
+        crate::foxglove::store::test_config_dir();
+        assert!(!BatterySettings::default().logitech);
+        let empty: BatterySettings = toml::from_str("").unwrap();
+        assert!(!empty.logitech, "a store without the section: off");
+        let old: BatterySettings =
+            toml::from_str("low_battery_notice = true\ndevice_notice = true").unwrap();
+        assert!(!old.logitech, "a store from before #505: off");
+        // First run: no [battery] section saved, so the app reads the switch as off.
+        assert_eq!(
+            crate::foxglove::store::try_load::<BatterySettings>("battery"),
+            None
+        );
+        assert!(!logitech_on());
+    }
 }
