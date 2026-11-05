@@ -2,11 +2,15 @@
 
 pub mod actor;
 
+pub mod battery;
+
 pub mod calibration;
 
 mod capabilities;
 
 mod events;
+
+pub mod hidpp;
 
 pub mod pc_lighting;
 
