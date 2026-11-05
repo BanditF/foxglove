@@ -135,6 +135,8 @@ fn the_map_keeps_only_the_leds_seen_and_goes_back_into_the_profile() {
 #[test]
 fn the_map_survives_the_store() {
     crate::foxglove::store::test_config_dir();
+    // The whole section is replaced and read back: no other writer in between.
+    let _edit = edit_lock();
     let mut w = Wizard::new(&corne());
     w.place([2.5, 1.25]);
     w.skip();
@@ -871,11 +873,14 @@ fn a_zone_check_round_trips_as_readable_toml() {
     );
     let mut all = Saved::default();
     all.boards.insert("test-zones-board".into(), leds.clone());
-    crate::foxglove::store::save(SECTION, &all).unwrap();
-    assert_eq!(saved("test-zones-board").as_ref(), Some(&leds));
-
-    // The file as the user would open it.
-    let text = std::fs::read_to_string(crate::foxglove::store::path().unwrap()).unwrap();
+    // The whole section is replaced and the file read back: no other writer in between.
+    let text = {
+        let _edit = edit_lock();
+        crate::foxglove::store::save(SECTION, &all).unwrap();
+        assert_eq!(saved("test-zones-board").as_ref(), Some(&leds));
+        // The file as the user would open it.
+        std::fs::read_to_string(crate::foxglove::store::path().unwrap()).unwrap()
+    };
     let table: toml::Table = text.parse().unwrap();
     let section = &table[SECTION]["boards"]["test-zones-board"];
     let parsed: BoardLeds = section.clone().try_into().unwrap();
