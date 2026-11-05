@@ -273,13 +273,7 @@ fn catalog_words(ui: &egui::Ui) -> (String, bool) {
     catalog_refresh::set_wake(crate::ui_wake::UiWake::from_ctx(ui.ctx()));
     catalog_refresh::request(Trigger::TabOpened);
     let status = catalog_refresh::status();
-    let words = match &status {
-        Status::Idle => "Catalog: not checked yet".to_string(),
-        Status::Checking => "Catalog: checking…".to_string(),
-        Status::UpToDate { .. } => "Catalog: up to date".to_string(),
-        Status::Failed(e) => format!("Catalog: couldn't check ({e})"),
-    };
-    (words, status != Status::Checking)
+    (catalog_refresh::words(&status), status != Status::Checking)
 }
 
 fn plugin_state(id: &str) -> String {

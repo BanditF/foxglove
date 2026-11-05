@@ -9,7 +9,12 @@
 //! Each file goes out as a conditional GET (`If-None-Match` with the last ETag). A failure backs
 //! off 15 min, 1 h, 6 h, then 24 h, persisted in the store's `[plugins.refresh]` so a restart
 //! doesn't hammer the server. What arrives is kept only if it verifies
-//! ([`super::plugin_trust::accept_download`]). `FOXGLOVE_PLUGIN_CATALOG_URL` points it elsewhere
+//! ([`super::plugin_trust::accept_download`]).
+//!
+//! A catalog that isn't there yet (a 404, or a build whose root key is still the placeholder,
+//! so nothing could verify) isn't a failure: it waits the longest step (a day) without adding
+//! to `failures`, and the page says "Catalog: not available yet". With the placeholder key no
+//! request goes out at all. `FOXGLOVE_PLUGIN_CATALOG_URL` points it elsewhere
 //! (tests); `FOXGLOVE_DISABLE=catalog` turns the start-up check off.
 
 use std::collections::BTreeMap;
@@ -41,6 +46,8 @@ struct State {
     last_attempt: u64,
     failures: u32,
     retry_after: u64,
+    /// The last check found no catalog to fetch yet (not a failure).
+    unavailable: bool,
     /// File name to the ETag it came with.
     etags: BTreeMap<String, String>,
 }
@@ -88,7 +95,24 @@ pub enum Status {
     UpToDate {
         sequence: Option<u64>,
     },
+    /// Nothing published yet, or this build can't verify a catalog (placeholder key).
+    NotAvailable,
     Failed(String),
+}
+
+/// What a check that didn't succeed ran into.
+#[derive(Debug, PartialEq)]
+enum Error {
+    /// The catalog isn't published yet, or this build has no key to verify one with.
+    NotAvailable,
+    /// A real problem: network, HTTP, a bad signature, a parse error.
+    Failed(String),
+}
+
+impl From<String> for Error {
+    fn from(e: String) -> Self {
+        Error::Failed(e)
+    }
 }
 
 static STATUS: Mutex<Status> = Mutex::new(Status::Idle);
@@ -127,6 +151,9 @@ pub fn start() {
         return;
     }
     let state: State = super::store::try_load("plugins.refresh").unwrap_or_default();
+    if state.unavailable && status() == Status::Idle {
+        set_status(Status::NotAvailable);
+    }
     if due(Trigger::Startup, now(), &state) {
         super::services::spawn_named("catalog-refresh", || {
             std::thread::sleep(jitter());
@@ -156,7 +183,7 @@ fn run_guarded(trigger: Trigger) {
 }
 
 fn run(trigger: Trigger) {
-    let mut state: State = super::store::try_load("plugins.refresh").unwrap_or_default();
+    let state: State = super::store::try_load("plugins.refresh").unwrap_or_default();
     if !due(trigger, now(), &state) {
         return;
     }
@@ -167,30 +194,77 @@ fn run(trigger: Trigger) {
             .as_ref()
             .and_then(|d| std::fs::read(d.join(name)).ok())
     };
-    let result = fetch(&base(), &state.etags, &cached).and_then(|fetched| match fetched {
-        Fetched::Unchanged => Ok((None, state.etags.clone())),
-        Fetched::New(set, etags) => {
-            super::plugin_trust::accept_download(&set).map(|seq| (Some(seq), etags))
-        }
-    });
-    let t = now();
+    let result = attempt(
+        &base(),
+        &state.etags,
+        &cached,
+        super::plugin_trust::signing_key_missing(),
+        &super::plugin_trust::accept_download,
+    );
+    let (state, status) = settle(state, result, now());
+    set_status(status);
+    if let Err(e) = super::store::save("plugins.refresh", &state) {
+        set_status(Status::Failed(format!("can't save the refresh state: {e}")));
+    }
+}
+
+type Outcome = Result<(Option<u64>, BTreeMap<String, String>), Error>;
+
+/// One check: the new sequence (`None` when nothing changed) and ETags. With the placeholder
+/// key nothing could verify, so it doesn't ask the server.
+fn attempt(
+    base: &str,
+    etags: &BTreeMap<String, String>,
+    cached: &dyn Fn(&str) -> Option<Vec<u8>>,
+    key_missing: bool,
+    accept: &dyn Fn(&Signed) -> Result<u64, String>,
+) -> Outcome {
+    if key_missing {
+        return Err(Error::NotAvailable);
+    }
+    match fetch(base, etags, cached)? {
+        Fetched::Unchanged => Ok((None, etags.clone())),
+        Fetched::New(set, etags) => Ok((Some(accept(&set)?), etags)),
+    }
+}
+
+/// The refresh state and status after a check at `t`.
+fn settle(mut state: State, result: Outcome, t: u64) -> (State, Status) {
     state.last_attempt = t;
-    match result {
+    let status = match result {
         Ok((sequence, etags)) => {
             state.last_success = t;
             state.failures = 0;
             state.retry_after = 0;
+            state.unavailable = false;
             state.etags = etags;
-            set_status(Status::UpToDate { sequence });
+            Status::UpToDate { sequence }
         }
-        Err(e) => {
+        Err(Error::NotAvailable) => {
+            // Not a failure, so the count starts over; and no sooner than the longest step.
+            state.failures = 0;
+            state.retry_after = t + DAY;
+            state.unavailable = true;
+            Status::NotAvailable
+        }
+        Err(Error::Failed(e)) => {
             state.failures = state.failures.saturating_add(1);
             state.retry_after = t + backoff(state.failures);
-            set_status(Status::Failed(e));
+            state.unavailable = false;
+            Status::Failed(e)
         }
-    }
-    if let Err(e) = super::store::save("plugins.refresh", &state) {
-        set_status(Status::Failed(format!("can't save the refresh state: {e}")));
+    };
+    (state, status)
+}
+
+/// The status in plain words, for the Plugins page.
+pub fn words(status: &Status) -> String {
+    match status {
+        Status::Idle => "Catalog: not checked yet".to_string(),
+        Status::Checking => "Catalog: checking…".to_string(),
+        Status::UpToDate { .. } => "Catalog: up to date".to_string(),
+        Status::NotAvailable => "Catalog: not available yet".to_string(),
+        Status::Failed(e) => format!("Catalog: couldn't check ({e})"),
     }
 }
 
@@ -207,14 +281,18 @@ enum Got {
     Body(Vec<u8>, Option<String>),
 }
 
-fn get(agent: &ureq::Agent, url: &str, etag: Option<&str>) -> Result<Got, String> {
+fn get(agent: &ureq::Agent, url: &str, etag: Option<&str>) -> Result<Got, Error> {
     let mut req = agent.get(url).header("User-Agent", "Foxglove-plugins");
     if let Some(etag) = etag {
         req = req.header("If-None-Match", etag);
     }
-    let mut resp = req.call().map_err(|e| format!("{url}: {e}"))?;
+    let mut resp = req
+        .call()
+        .map_err(|e| Error::Failed(format!("{url}: {e}")))?;
     match resp.status().as_u16() {
         304 => Ok(Got::NotModified),
+        // GitHub Pages answers 404 until the catalog is published.
+        404 => Err(Error::NotAvailable),
         200 => {
             let etag = resp
                 .headers()
@@ -226,10 +304,10 @@ fn get(agent: &ureq::Agent, url: &str, etag: Option<&str>) -> Result<Got, String
                 .with_config()
                 .limit(LIMIT)
                 .read_to_vec()
-                .map_err(|e| format!("{url}: {e}"))?;
+                .map_err(|e| Error::Failed(format!("{url}: {e}")))?;
             Ok(Got::Body(body, etag))
         }
-        code => Err(format!("{url}: HTTP {code}")),
+        code => Err(Error::Failed(format!("{url}: HTTP {code}"))),
     }
 }
 
@@ -238,12 +316,12 @@ fn fetch(
     base: &str,
     etags: &BTreeMap<String, String>,
     cached: &dyn Fn(&str) -> Option<Vec<u8>>,
-) -> Result<Fetched, String> {
+) -> Result<Fetched, Error> {
     if !(base.starts_with("https://")
         || base.starts_with("http://127.0.0.1")
         || base.starts_with("http://localhost"))
     {
-        return Err(format!("the catalog URL must use HTTPS: {base}"));
+        return Err(format!("the catalog URL must use HTTPS: {base}").into());
     }
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(30)))
@@ -261,7 +339,9 @@ fn fetch(
             .map(String::as_str);
         match get(&agent, &format!("{base}{name}"), etag)? {
             Got::NotModified => {
-                files.push(have.ok_or_else(|| format!("{name}: 304 without a cached copy"))?);
+                files.push(
+                    have.ok_or_else(|| Error::from(format!("{name}: 304 without a cached copy")))?,
+                );
                 if let Some(e) = etag {
                     new_etags.insert(name.to_string(), e.to_string());
                 }
@@ -280,7 +360,7 @@ fn fetch(
     }
     let files: [Vec<u8>; 4] = files
         .try_into()
-        .map_err(|_| "incomplete catalog".to_string())?;
+        .map_err(|_| Error::from("incomplete catalog".to_string()))?;
     Ok(Fetched::New(Signed::from_files(files), new_etags))
 }
 
@@ -417,7 +497,130 @@ mod tests {
     #[test]
     fn only_https_or_local_test_servers() {
         assert!(fetch("http://example.com/", &BTreeMap::new(), &|_| None)
-            .unwrap_err()
-            .contains("HTTPS"));
+            .is_err_and(|e| matches!(e, Error::Failed(m) if m.contains("HTTPS"))));
+    }
+
+    /// A server that answers one request with `status` and an empty body.
+    fn answer(status: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!(
+            "http://127.0.0.1:{}/plugins/v2/",
+            listener.local_addr().unwrap().port()
+        );
+        std::thread::spawn(move || {
+            if let Some(Ok(mut stream)) = listener.incoming().next() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                        break;
+                    }
+                }
+                let reply =
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                let _ = stream.write_all(reply.as_bytes());
+            }
+        });
+        base
+    }
+
+    fn never(_: &Signed) -> Result<u64, String> {
+        panic!("nothing should be verified")
+    }
+
+    #[test]
+    fn a_catalog_not_published_yet_is_not_a_failure() {
+        // GitHub Pages' 404: not available, without a failure.
+        let base = answer("404 Not Found");
+        let got = attempt(&base, &BTreeMap::new(), &|_| None, false, &never);
+        assert_eq!(got, Err(Error::NotAvailable));
+        let before = State {
+            failures: 9,
+            last_attempt: 10,
+            retry_after: 20,
+            ..State::default()
+        };
+        let (s, status) = settle(before, got, 1000);
+        assert_eq!(status, Status::NotAvailable);
+        assert_eq!(s.failures, 0, "not counted");
+        assert_eq!(s.last_success, 0);
+        assert_eq!(s.last_attempt, 1000);
+        assert_eq!(s.retry_after, 1000 + DAY, "the longest step, no sooner");
+        assert!(s.unavailable);
+        assert!(!due(Trigger::Startup, 999 + DAY, &s));
+        assert!(!due(Trigger::TabOpened, 999 + DAY, &s));
+        assert!(due(Trigger::Startup, 1000 + DAY, &s));
+        assert_eq!(words(&status), "Catalog: not available yet");
+
+        // The placeholder root key: no request at all (nothing listens on port 1).
+        let got = attempt(
+            "http://127.0.0.1:1/",
+            &BTreeMap::new(),
+            &|_| None,
+            true,
+            &never,
+        );
+        assert_eq!(got, Err(Error::NotAvailable));
+    }
+
+    #[test]
+    fn real_errors_still_count_and_show() {
+        // A server error.
+        let base = answer("500 Internal Server Error");
+        let got = attempt(&base, &BTreeMap::new(), &|_| None, false, &never);
+        assert!(matches!(&got, Err(Error::Failed(m)) if m.ends_with("HTTP 500")));
+        let (s, status) = settle(State::default(), got, 1000);
+        assert_eq!(s.failures, 1);
+        assert_eq!(s.retry_after, 1000 + 15 * 60);
+        assert!(!s.unavailable);
+        assert!(words(&status).starts_with("Catalog: couldn't check ("));
+
+        // No server (network).
+        let got = attempt(
+            "http://127.0.0.1:1/",
+            &BTreeMap::new(),
+            &|_| None,
+            false,
+            &never,
+        );
+        assert!(matches!(got, Err(Error::Failed(_))));
+
+        // The files arrive but don't verify (a bad signature, or a parse error, with a real key).
+        let (base, server) = serve(4);
+        let bad = |_: &Signed| Err("the catalog's signature doesn't verify".to_string());
+        let got = attempt(&base, &BTreeMap::new(), &|_| None, false, &bad);
+        server.join().unwrap();
+        let after_unavailable = State {
+            unavailable: true,
+            ..State::default()
+        };
+        let (s, status) = settle(after_unavailable, got, 1000);
+        assert_eq!(s.failures, 1);
+        assert!(!s.unavailable);
+        assert_eq!(
+            status,
+            Status::Failed("the catalog's signature doesn't verify".into())
+        );
+
+        // And a good one clears it all.
+        let (base, server) = serve(4);
+        let got = attempt(&base, &BTreeMap::new(), &|_| None, false, &|_| Ok(7));
+        server.join().unwrap();
+        let (s, status) = settle(s, got, 2000);
+        assert_eq!(status, Status::UpToDate { sequence: Some(7) });
+        assert_eq!((s.failures, s.retry_after, s.last_success), (0, 0, 2000));
+    }
+
+    #[test]
+    fn an_older_saved_state_still_reads() {
+        // The user's file before this change: no `unavailable` key.
+        let old: State =
+            toml::from_str("failures = 9\nlast_attempt = 5\nlast_success = 0\nretry_after = 6\n")
+                .unwrap();
+        assert!(!old.unavailable);
+        assert_eq!(old.failures, 9);
+        let (s, _) = settle(old, Err(Error::NotAvailable), 1000);
+        let back: State = toml::from_str(&toml::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
     }
 }
