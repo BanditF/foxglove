@@ -1748,6 +1748,7 @@ version = "0.3.0"
 dependencies = [
  "foxglove-devices",
  "hidapi",
+ "lzma-rs",
  "serde",
  "serde_json",
  "toml 0.9.12+spec-1.1.0",

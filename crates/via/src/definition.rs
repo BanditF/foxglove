@@ -70,9 +70,9 @@ struct Placed {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Raw {
-    name: String,
-    vendor_id: String,
-    product_id: String,
+    name: Option<String>,
+    vendor_id: Option<String>,
+    product_id: Option<String>,
     matrix: Matrix,
     layouts: Layouts,
     #[serde(default)]
@@ -100,8 +100,31 @@ fn hex(s: &str) -> Result<u16, String> {
 }
 
 impl Definition {
+    /// A VIA definition file: it names the keyboard and gives its USB ids.
     pub fn parse(json: &str) -> Result<Definition, String> {
         let raw: Raw = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let field = |v: &Option<String>, what: &str| v.clone().ok_or(format!("no {what}"));
+        let name = field(&raw.name, "name")?;
+        let ids = (
+            hex(&field(&raw.vendor_id, "vendorId")?)?,
+            hex(&field(&raw.product_id, "productId")?)?,
+        );
+        Definition::build(raw, name, ids)
+    }
+
+    /// A definition a keyboard keeps itself (Vial's): the board's own USB ids count, and the
+    /// JSON's name, else `name`, since Vial's definitions may leave both out.
+    pub fn from_board(json: &str, vid: u16, pid: u16, name: &str) -> Result<Definition, String> {
+        let raw: Raw = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let name = raw.name.clone().unwrap_or_else(|| name.to_string());
+        Definition::build(raw, name, (vid, pid))
+    }
+
+    fn build(
+        raw: Raw,
+        name: String,
+        (vendor_id, product_id): (u16, u16),
+    ) -> Result<Definition, String> {
         let mut keys = kle_keys(&raw.layouts.keymap)?;
         for Placed { key: k, .. } in &keys {
             if k.row >= raw.matrix.rows || k.col >= raw.matrix.cols {
@@ -143,15 +166,12 @@ impl Definition {
         }
         let mut d = Definition {
             lighting,
-            name: raw.name.clone(),
-            vendor_id: hex(&raw.vendor_id)?,
-            product_id: hex(&raw.product_id)?,
+            name: name.clone(),
+            vendor_id,
+            product_id,
             rows: raw.matrix.rows,
             cols: raw.matrix.cols,
-            layout: Layout {
-                name: raw.name,
-                keys: vec![],
-            },
+            layout: Layout { name, keys: vec![] },
             options,
             keys,
         };
@@ -379,6 +399,32 @@ mod tests {
         assert_eq!((k(1, 0).y, k(1, 0).w), (1.5, 2.25));
         assert_eq!(k(1, 1).x, 3.25, "the decal took space but isn't a key");
         assert_eq!(d.layout.keys.len(), 7);
+    }
+
+    /// Vial's definitions may leave out the name and ids: the board's own count, and a file
+    /// still needs them.
+    #[test]
+    fn a_boards_own_definition_takes_the_boards_ids() {
+        let bare = r#"{"matrix": {"rows": 1, "cols": 2}, "lighting": "qmk_rgblight",
+            "layouts": {"keymap": [["0,0", "0,1"]]}}"#;
+        let d = Definition::from_board(bare, 0xFEED, 0x6060, "QMK keyboard feed:6060").unwrap();
+        assert_eq!(
+            (
+                d.name.as_str(),
+                d.vendor_id,
+                d.product_id,
+                d.layout.keys.len()
+            ),
+            ("QMK keyboard feed:6060", 0xFEED, 0x6060, 2)
+        );
+        assert_eq!(d.lighting, vec![Channel::RgbLight]);
+        assert!(Definition::parse(bare).unwrap_err().contains("name"));
+        let named = Definition::from_board(SAMPLE, 0x1234, 0x0001, "fallback").unwrap();
+        assert_eq!(
+            (named.name.as_str(), named.vendor_id),
+            ("Sample K5-like", 0x1234),
+            "the board's ids win over the JSON's"
+        );
     }
 
     #[test]

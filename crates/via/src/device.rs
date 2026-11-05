@@ -2,9 +2,10 @@
 //! opened ([`Probe`]) and, when one is loaded, its VIA definition:
 //!
 //! - keymap (read; written only when opened with writes): needs the definition's matrix and
-//!   layout, so a board found without one has no keymap yet. The layout is the one for the
-//!   layout options the keyboard has chosen (split backspace, ISO enter...), or the default
-//!   when it doesn't say;
+//!   layout. A board found without a loaded one is asked for its own: Vial boards keep it
+//!   compressed in the firmware ([`crate::vial`]); other boards have no keymap yet. The layout
+//!   is the one for the layout options the keyboard has chosen (split backspace, ISO enter...),
+//!   or the default when it doesn't say;
 //! - lighting: the best lighting channel the keyboard answers (RGB Matrix, RGB Light, LED Matrix
 //!   or backlight), through VIA's lighting values in the scheme its protocol version uses.
 //!
@@ -21,10 +22,25 @@ use crate::catalog::Catalog;
 use crate::client::{Channel, Client, Probe, Scheme};
 use crate::definition::Definition;
 use crate::protocol::{self, Guarded, Transport};
+use crate::vial;
+
+/// Where a device's definition came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// A definition file loaded for it.
+    Loaded,
+    /// The keyboard's own, read from its Vial firmware.
+    Vial { protocol: u32 },
+    /// None: not a Vial board (`why` is `None`), or a Vial board whose definition couldn't be
+    /// read (`why` says what went wrong). It has no keymap.
+    Missing { why: Option<String> },
+}
 
 pub struct ViaDevice<T: Transport> {
     info: DeviceInfo,
     def: Option<Definition>,
+    /// Where `def` came from.
+    pub source: Source,
     /// The definition's layout for the keyboard's layout options.
     layout: Option<Layout>,
     link: Guarded<T>,
@@ -37,6 +53,7 @@ pub struct ViaDevice<T: Transport> {
 impl<T: Transport> ViaDevice<T> {
     /// Asks the keyboard for its protocol version, layers, layout options and lighting; fails
     /// on keyboards that don't answer VIA. The catalog decides how lighting is addressed.
+    /// Without `def`, a Vial board's own definition is read (bounded, see [`crate::vial`]).
     pub fn open(
         mut info: DeviceInfo,
         def: Option<Definition>,
@@ -46,6 +63,16 @@ impl<T: Transport> ViaDevice<T> {
         let (vid, pid) = (info.id.vid, info.id.pid);
         let probe = Client(&link).probe(|v| catalog.scheme(vid, pid, v))?;
         info.firmware = Some(format!("VIA protocol {}", probe.protocol_version));
+        let (def, source) = match def {
+            Some(d) => (Some(d), Source::Loaded),
+            None => board_definition(&link, &info)?,
+        };
+        if let Source::Vial { protocol } = source {
+            info.firmware = Some(format!(
+                "VIA protocol {}, Vial protocol {protocol}",
+                probe.protocol_version
+            ));
+        }
         let listed = def.as_ref().map(|d| d.lighting.as_slice()).unwrap_or(&[]);
         let light = probe.scheme.and_then(|scheme| {
             let answered = |c: &&Channel| probe.lighting.iter().any(|s| s.channel == **c);
@@ -61,6 +88,7 @@ impl<T: Transport> ViaDevice<T> {
         Ok(ViaDevice {
             info,
             def,
+            source,
             layout,
             link,
             probe,
@@ -85,6 +113,36 @@ impl<T: Transport> ViaDevice<T> {
         let (mut report, _) = channel.request(scheme, protocol::CUSTOM_SET_VALUE, value)?;
         report.extend_from_slice(data);
         self.link.send(&report).map(|_| ())
+    }
+}
+
+/// The keyboard's own definition, if it's a Vial board. Only a failing link (a lost connection,
+/// a failed write) fails the open; a definition that can't be read leaves the board without a
+/// keymap, and says why.
+fn board_definition<T: Transport>(
+    link: &Guarded<T>,
+    info: &DeviceInfo,
+) -> Result<(Option<Definition>, Source)> {
+    let missing = |why: Option<String>| Ok((None, Source::Missing { why }));
+    let id = match vial::keyboard_id(link) {
+        Ok(id) => id,
+        // Unhandled or unanswered: not a Vial board.
+        Err(DeviceError::Unsupported | DeviceError::Timeout) => return missing(None),
+        Err(e) => return Err(e),
+    };
+    let json = match vial::compressed(link, vial::BUDGET).and_then(|b| vial::decompress(&b)) {
+        Ok(json) => json,
+        Err(DeviceError::Disconnected) => return Err(DeviceError::Disconnected),
+        Err(e) => return missing(Some(e.to_string())),
+    };
+    match Definition::from_board(&json, info.id.vid, info.id.pid, &info.name) {
+        Ok(d) => Ok((
+            Some(d),
+            Source::Vial {
+                protocol: id.protocol,
+            },
+        )),
+        Err(e) => missing(Some(format!("the Vial definition doesn't parse: {e}"))),
     }
 }
 
@@ -257,7 +315,7 @@ impl<T: Transport> Lighting for ViaDevice<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::fake::{leak, FakeQmk};
+    use crate::client::fake::{leak, FakeQmk, FakeVial};
     use crate::definition::SAMPLE;
     use foxglove_devices::{BackendId, DeviceId, DeviceKind};
 
@@ -356,6 +414,11 @@ mod tests {
     fn a_board_without_a_definition_has_lighting_but_no_keymap() {
         let fake = board(12);
         let dev = open_with(fake, None, false);
+        assert_eq!(
+            dev.source,
+            Source::Missing { why: None },
+            "not a Vial board"
+        );
         assert!(dev.keymap().is_none() && !dev.caps().contains(Caps::KEYMAP));
         assert!(dev.caps().contains(Caps::LIGHTING));
         assert_eq!(dev.lighting_channel(), Some(Channel::RgbMatrix));
@@ -388,6 +451,83 @@ mod tests {
             let sent = fake.sent.lock().unwrap();
             assert!(!sent.iter().any(|r| protocol::is_write(r)), "{sent:x?}");
         }
+    }
+
+    /// A Vial board's own definition (#74): no file loaded, and it still has a keymap, laid out
+    /// for its layout options. Only reads go out.
+    #[test]
+    fn a_vial_board_without_a_file_gets_its_keymap_from_the_board() {
+        let json = crate::definition::OPTIONS;
+        let fake = leak(FakeQmk {
+            protocol_version: 9,
+            layers: 2,
+            layout_options: Some(0b1101),
+            matrix: (3, 4),
+            vial: Some(FakeVial {
+                protocol: 6,
+                uid: *b"BANDIT01",
+                blob: crate::vial::xz(json),
+            }),
+            ..FakeQmk::default()
+        });
+        let dev = open_with(fake, None, false);
+        assert_eq!(dev.source, Source::Vial { protocol: 6 });
+        assert_eq!(
+            dev.info().firmware.as_deref(),
+            Some("VIA protocol 9, Vial protocol 6")
+        );
+        assert!(dev.caps().contains(Caps::KEYMAP));
+        let def = Definition::from_board(json, 0xFEED, 0x0001, "test").unwrap();
+        assert_eq!(Keymap::layout(&dev).unwrap(), def.layout_for(0b1101));
+        assert_eq!(dev.read_keymap().unwrap().len(), 2 * 3 * 4);
+        foxglove_devices::contract::check_device(&dev).unwrap();
+        let sent = fake.sent.lock().unwrap();
+        assert!(!sent.iter().any(|r| protocol::is_write(r)), "{sent:x?}");
+    }
+
+    /// A Vial board whose definition doesn't unpack still opens, with its lighting, and says why
+    /// it has no keymap.
+    #[test]
+    fn a_vial_board_with_a_bad_definition_opens_without_a_keymap() {
+        let mut blob = crate::vial::xz(SAMPLE);
+        let last = blob.len() - 1;
+        blob[last] ^= 0xFF; // the footer's magic
+        let fake = leak(FakeQmk {
+            protocol_version: 9,
+            layers: 4,
+            vial: Some(FakeVial {
+                protocol: 6,
+                uid: [0; 8],
+                blob,
+            }),
+            ..FakeQmk::default()
+        });
+        fake.legacy
+            .lock()
+            .unwrap()
+            .extend([(0x09, [100, 0]), (0x0A, [0, 0])]);
+        let dev = open_with(fake, None, false);
+        assert!(
+            matches!(&dev.source, Source::Missing { why: Some(_) }),
+            "{:?}",
+            dev.source
+        );
+        assert!(dev.keymap().is_none());
+        assert_eq!(dev.lighting_channel(), Some(Channel::Backlight));
+        foxglove_devices::contract::check_device(&dev).unwrap();
+    }
+
+    /// A loaded definition wins: the board isn't asked for its own.
+    #[test]
+    fn a_loaded_definition_sends_no_vial_reads() {
+        let (dev, fake) = open(false);
+        assert_eq!(dev.source, Source::Loaded);
+        assert!(!fake
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r[0] == protocol::VIAL_PREFIX));
     }
 
     #[test]

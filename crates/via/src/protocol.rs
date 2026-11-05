@@ -109,7 +109,16 @@ pub const FORBIDDEN: &[u8] = &[
 
 /// A connection that exchanges one report for its reply.
 pub trait Transport: Send + Sync {
+    /// Sends a report and returns the reply that echoes its command (or marks it unhandled).
     fn exchange(&self, report: &Report) -> Result<Report>;
+
+    /// Sends a report and returns the next reply, whatever its first byte: Vial's reads answer
+    /// with data from byte 0, so they never echo the command. Same timeout as [`exchange`].
+    ///
+    /// [`exchange`]: Transport::exchange
+    fn exchange_any(&self, report: &Report) -> Result<Report> {
+        self.exchange(report)
+    }
 }
 
 /// The allowlist in front of a transport. Only this type is handed to the device code, so a
@@ -162,7 +171,8 @@ impl<T: Transport> Guarded<T> {
         Err(DeviceError::Denied(if FORBIDDEN.contains(&command) {
             format!("VIA command {command:#04x} (reset, bootloader or factory) is never sent")
         } else if command == VIAL_PREFIX {
-            "Vial commands (unlock, settings) aren't sent; Foxglove reads Vial boards through VIA"
+            "Vial commands (unlock, settings) aren't sent; only the definition reads go out, \
+             through Guarded::vial_read"
                 .into()
         } else if WRITE.contains(&command) {
             format!("VIA command {command:#04x} writes; this keyboard is open read-only")
@@ -186,6 +196,25 @@ impl<T: Transport> Guarded<T> {
                 "reply {other:#04x} to command {command:#04x}"
             ))),
         }
+    }
+
+    /// Sends one of Vial's reads ([`VIAL_PREFIX`], a command from [`VIAL_READS`], then `args`)
+    /// and returns the raw reply, which carries its data from byte 0. Every other Vial command
+    /// (unlock, settings, dynamic entries) is refused here, writes on or off; [`Guarded::send`]
+    /// refuses all of them.
+    pub fn vial_read(&self, command: u8, args: &[u8]) -> Result<Report> {
+        if !VIAL_READS.contains(&command) {
+            return Err(DeviceError::Denied(format!(
+                "Vial command {command:#04x} isn't a read; it's never sent"
+            )));
+        }
+        let mut report = [0u8; REPORT];
+        report[0] = VIAL_PREFIX;
+        report[1] = command;
+        let n = args.len().min(REPORT - 2);
+        report[2..2 + n].copy_from_slice(&args[..n]);
+        debug_assert!(!is_write(&report));
+        self.inner.exchange_any(&report)
     }
 }
 
@@ -223,6 +252,23 @@ mod tests {
             );
         }
         assert!(g.inner.0.lock().unwrap().is_empty(), "nothing was sent");
+    }
+
+    /// Only Vial's id, size and definition reads go out, and only through `vial_read`; unlock
+    /// and the rest never do, even with writes asked for.
+    #[test]
+    fn vial_reads_go_out_and_nothing_else_of_vial() {
+        let g = Guarded::with_writes(Echo(Mutex::default()));
+        for &sub in VIAL_READS {
+            let r = g.vial_read(sub, &[1, 2, 3, 4]).unwrap();
+            assert_eq!(r[..6], [VIAL_PREFIX, sub, 1, 2, 3, 4]);
+        }
+        for sub in 0..=0xFF {
+            if !VIAL_READS.contains(&sub) {
+                assert!(matches!(g.vial_read(sub, &[]), Err(DeviceError::Denied(_))));
+            }
+        }
+        assert_eq!(*g.inner.0.lock().unwrap(), vec![VIAL_PREFIX; 3]);
     }
 
     #[test]
