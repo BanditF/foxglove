@@ -1,5 +1,10 @@
-//! A VIA keyboard as a device-layer device: its keymap (read; written only when opened with writes)
-//! and, when the definition has it, RGB Matrix lighting through VIA's custom values.
+//! A VIA keyboard as a device-layer device. What it offers comes from what it answers when
+//! opened ([`Probe`]) and, when one is loaded, its VIA definition:
+//!
+//! - keymap (read; written only when opened with writes): needs the definition's matrix and
+//!   layout, so a board found without one has no keymap yet;
+//! - lighting: the best lighting channel the keyboard answers (RGB Matrix, RGB Light, LED Matrix
+//!   or backlight), through VIA's lighting values in the scheme its protocol version uses.
 //!
 //! Lighting changes are not saved to the keyboard's EEPROM (no CUSTOM_SAVE): they last until
 //! the keyboard restarts, so experiments can't wear or overwrite the stored settings.
@@ -10,47 +15,75 @@ use foxglove_devices::{
     Lighting, LightingState, Result, WriteSupport, Zone,
 };
 
+use crate::catalog::Catalog;
+use crate::client::{Channel, Client, Probe, Scheme};
 use crate::definition::Definition;
-use crate::protocol::{self, rgb_matrix, Guarded, Transport};
+use crate::protocol::{self, Guarded, Transport};
 
 pub struct ViaDevice<T: Transport> {
     info: DeviceInfo,
-    def: Definition,
+    def: Option<Definition>,
     link: Guarded<T>,
-    /// VIA protocol version, from the keyboard.
-    pub protocol_version: u16,
-    layers: u8,
+    /// What the keyboard answered when opened.
+    pub probe: Probe,
+    /// The lighting channel shown, and how it's addressed.
+    light: Option<(Scheme, Channel)>,
 }
 
 impl<T: Transport> ViaDevice<T> {
-    /// Asks the keyboard for its protocol version and layer count; fails on keyboards that
-    /// don't answer VIA.
-    pub fn open(info: DeviceInfo, def: Definition, link: Guarded<T>) -> Result<Self> {
-        let v = link.send(&[protocol::GET_PROTOCOL_VERSION])?;
-        let protocol_version = u16::from_be_bytes([v[1], v[2]]);
-        let layers = link.send(&[protocol::DYNAMIC_KEYMAP_GET_LAYER_COUNT])?[1];
+    /// Asks the keyboard for its protocol version, layers, layout options and lighting; fails
+    /// on keyboards that don't answer VIA. The catalog decides how lighting is addressed.
+    pub fn open(
+        mut info: DeviceInfo,
+        def: Option<Definition>,
+        link: Guarded<T>,
+        catalog: &Catalog,
+    ) -> Result<Self> {
+        let (vid, pid) = (info.id.vid, info.id.pid);
+        let probe = Client(&link).probe(|v| catalog.scheme(vid, pid, v))?;
+        info.firmware = Some(format!("VIA protocol {}", probe.protocol_version));
+        let listed = def.as_ref().map(|d| d.lighting.as_slice()).unwrap_or(&[]);
+        let light = probe.scheme.and_then(|scheme| {
+            let answered = |c: &&Channel| probe.lighting.iter().any(|s| s.channel == **c);
+            listed
+                .iter()
+                .find(answered)
+                .or_else(|| probe.lighting.first().map(|s| &s.channel))
+                .map(|&c| (scheme, c))
+        });
         Ok(ViaDevice {
             info,
             def,
             link,
-            protocol_version,
-            layers,
+            probe,
+            light,
         })
     }
 
-    fn custom_get(&self, id: u8) -> Result<[u8; 2]> {
-        let r = self
-            .link
-            .send(&[protocol::CUSTOM_GET_VALUE, rgb_matrix::CHANNEL, id])?;
-        Ok([r[3], r[4]])
+    /// The lighting channel Foxglove shows, if any answered.
+    pub fn lighting_channel(&self) -> Option<Channel> {
+        self.light.map(|(_, c)| c)
     }
 
-    fn custom_set(&self, id: u8, data: &[u8]) -> Result<()> {
-        let mut report = vec![protocol::CUSTOM_SET_VALUE, rgb_matrix::CHANNEL, id];
+    /// The whole keymap in one go (layer, row, column), through the keymap buffer; needs the
+    /// definition's matrix.
+    pub fn read_keymap(&self) -> Result<Vec<u16>> {
+        let def = self.def.as_ref().ok_or(DeviceError::Unsupported)?;
+        Client(&self.link).keymap(self.probe.layers, def.rows, def.cols)
+    }
+
+    fn set_value(&self, value: u8, data: &[u8]) -> Result<()> {
+        let (scheme, channel) = self.light.ok_or(DeviceError::Unsupported)?;
+        let (mut report, _) = channel.request(scheme, protocol::CUSTOM_SET_VALUE, value)?;
         report.extend_from_slice(data);
         self.link.send(&report).map(|_| ())
     }
 }
+
+/// Value ids within a lighting channel.
+const BRIGHTNESS: u8 = 1;
+const EFFECT: u8 = 2;
+const COLOR: u8 = 4;
 
 /// 0-255 (QMK) to 0-100 (the device layer) and back.
 fn to_percent(v: u8) -> u8 {
@@ -67,32 +100,38 @@ impl<T: Transport> Device for ViaDevice<T> {
     }
 
     fn caps(&self) -> Caps {
-        let mut caps = Caps::KEYMAP;
-        if self.link.writes() {
-            caps |= Caps::KEYMAP_WRITE;
+        let mut caps = Caps::default();
+        if self.def.is_some() {
+            caps |= Caps::KEYMAP;
+            if self.link.writes() {
+                caps |= Caps::KEYMAP_WRITE;
+            }
         }
-        if self.def.rgb_matrix {
+        if self.light.is_some() {
             caps |= Caps::LIGHTING;
         }
         caps
     }
 
     fn keymap(&self) -> Option<&dyn Keymap> {
-        Some(self)
+        self.def.is_some().then_some(self as &dyn Keymap)
     }
 
     fn lighting(&self) -> Option<&dyn Lighting> {
-        self.def.rgb_matrix.then_some(self as &dyn Lighting)
+        self.light.is_some().then_some(self as &dyn Lighting)
     }
 }
 
 impl<T: Transport> Keymap for ViaDevice<T> {
     fn layout(&self) -> Result<Layout> {
-        Ok(self.def.layout.clone())
+        self.def
+            .as_ref()
+            .map(|d| d.layout.clone())
+            .ok_or(DeviceError::Unsupported)
     }
 
     fn layers(&self) -> Result<Vec<LayerInfo>> {
-        Ok((0..u32::from(self.layers))
+        Ok((0..u32::from(self.probe.layers))
             .map(|id| LayerInfo { id, name: None })
             .collect())
     }
@@ -157,10 +196,9 @@ impl<T: Transport> Lighting for ViaDevice<T> {
     }
 
     fn state(&self) -> Result<LightingState> {
-        let brightness = self.custom_get(rgb_matrix::BRIGHTNESS)?[0];
-        let effect = self.custom_get(rgb_matrix::EFFECT)?[0];
-        let speed = self.custom_get(rgb_matrix::EFFECT_SPEED)?[0];
-        let [hue, sat] = self.custom_get(rgb_matrix::COLOR)?;
+        let (scheme, channel) = self.light.ok_or(DeviceError::Unsupported)?;
+        let s = Client(&self.link).lighting(scheme, channel)?;
+        let (hue, sat) = s.color.unwrap_or((0, 0));
         // In Foxglove's palette: the colour asked for, not its calibrated form.
         let key = calibration::key_for(&self.info.id);
         let (hue, sat, shown) = calibration::asked_hsb(
@@ -168,36 +206,41 @@ impl<T: Transport> Lighting for ViaDevice<T> {
             (
                 ((u32::from(hue) * 360 + 128) / 256) as u16 % 360,
                 to_percent(sat),
-                to_percent(brightness),
+                to_percent(s.brightness),
             ),
         );
         Ok(LightingState {
-            on: brightness > 0 && effect > 0,
+            // A backlight's effect is breathing on or off; it's lit whenever it's bright.
+            on: s.brightness > 0 && (s.effect > 0 || channel == Channel::Backlight),
             hue,
             sat,
             brightness: shown,
             effect: Effect {
-                id: effect.to_string(),
+                id: s.effect.to_string(),
                 params: vec![],
             },
-            speed,
+            speed: s.speed.unwrap_or(0),
             settled: true,
         })
     }
 
-    /// RGB Matrix effects by QMK number (0 = off).
+    /// Effects by QMK number (RGB Matrix and RGB Light: 0 = off).
     fn set_effect(&self, effect: Effect) -> Result<()> {
         let n: u8 = effect.id.parse().map_err(|_| DeviceError::Unsupported)?;
-        self.custom_set(rgb_matrix::EFFECT, &[n])
+        self.set_value(EFFECT, &[n])
     }
 
-    /// Through the keyboard's colour calibration.
+    /// Through the keyboard's colour calibration; a channel without colour takes the
+    /// brightness only.
     fn set_color(&self, hue: u16, sat: u8, brightness: u8) -> Result<()> {
+        let (_, channel) = self.light.ok_or(DeviceError::Unsupported)?;
         let key = calibration::key_for(&self.info.id);
         calibration::send_hsb(&key, (hue, sat, brightness), |(hue, sat, brightness)| {
-            let h = ((u32::from(hue) * 256) / 360) as u8;
-            self.custom_set(rgb_matrix::COLOR, &[h, from_percent(sat)])?;
-            self.custom_set(rgb_matrix::BRIGHTNESS, &[from_percent(brightness)])
+            if channel.has_color() {
+                let h = ((u32::from(hue) * 256) / 360) as u8;
+                self.set_value(COLOR, &[h, from_percent(sat)])?;
+            }
+            self.set_value(BRIGHTNESS, &[from_percent(brightness)])
         })
     }
 
@@ -209,101 +252,87 @@ impl<T: Transport> Lighting for ViaDevice<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::client::fake::{leak, FakeQmk};
     use crate::definition::SAMPLE;
-    use crate::protocol::{Report, REPORT};
     use foxglove_devices::{BackendId, DeviceId, DeviceKind};
-    use std::collections::HashMap;
-    use std::sync::Mutex;
 
-    /// A VIA keyboard in memory.
-    #[derive(Default)]
-    struct FakeVia {
-        keymap: Mutex<HashMap<(u8, u8, u8), u16>>,
-        custom: Mutex<HashMap<u8, [u8; 2]>>,
-        sent: Mutex<Vec<u8>>,
+    /// A K5-like board: protocol 12, 4 layers, RGB Matrix and a backlight channel, ESC at 0,0.
+    fn board(protocol_version: u16) -> &'static FakeQmk {
+        let f = leak(FakeQmk {
+            protocol_version,
+            layers: 4,
+            layout_options: Some(0),
+            matrix: (2, 4),
+            ..FakeQmk::default()
+        });
+        // 4 layers × 2 rows × 4 cols, all KC_NO but 0,0,0 = KC_ESC.
+        let mut keymap = vec![0u8; 4 * 2 * 4 * 2];
+        keymap[1] = 0x29;
+        *f.keymap.lock().unwrap() = keymap;
+        f.custom.lock().unwrap().extend([
+            ((3, 1), [255, 0]),
+            ((3, 2), [4, 0]),
+            ((3, 3), [128, 0]),
+            ((3, 4), [128, 255]),
+            ((1, 1), [10, 0]),
+            ((1, 2), [0, 0]),
+        ]);
+        f.legacy
+            .lock()
+            .unwrap()
+            .extend([(0x09, [100, 0]), (0x0A, [0, 0])]);
+        f
     }
 
-    impl Transport for &'static FakeVia {
-        fn exchange(&self, r: &Report) -> Result<Report> {
-            // #581: while writes are off (0.2), any write reaching the keyboard fails the test.
-            assert!(
-                protocol::WRITES_ENABLED || !protocol::is_write(r),
-                "write {:#04x} reached the keyboard with VIA/Vial writes off",
-                r[0]
-            );
-            self.sent.lock().unwrap().push(r[0]);
-            let mut out = [0u8; REPORT];
-            out[..4].copy_from_slice(&r[..4]);
-            match r[0] {
-                protocol::GET_PROTOCOL_VERSION => out[1..3].copy_from_slice(&12u16.to_be_bytes()),
-                protocol::DYNAMIC_KEYMAP_GET_LAYER_COUNT => out[1] = 4,
-                protocol::DYNAMIC_KEYMAP_GET_KEYCODE => {
-                    let kc = self
-                        .keymap
-                        .lock()
-                        .unwrap()
-                        .get(&(r[1], r[2], r[3]))
-                        .copied()
-                        .unwrap_or(0);
-                    out[4..6].copy_from_slice(&kc.to_be_bytes());
-                }
-                protocol::DYNAMIC_KEYMAP_SET_KEYCODE => {
-                    self.keymap
-                        .lock()
-                        .unwrap()
-                        .insert((r[1], r[2], r[3]), u16::from_be_bytes([r[4], r[5]]));
-                }
-                protocol::CUSTOM_GET_VALUE => {
-                    let v = self
-                        .custom
-                        .lock()
-                        .unwrap()
-                        .get(&r[2])
-                        .copied()
-                        .unwrap_or([0, 0]);
-                    out[3..5].copy_from_slice(&v);
-                }
-                protocol::CUSTOM_SET_VALUE => {
-                    self.custom.lock().unwrap().insert(r[2], [r[3], r[4]]);
-                }
-                _ => out[0] = protocol::UNHANDLED,
-            }
-            Ok(out)
+    fn info(vid: u16, pid: u16) -> DeviceInfo {
+        let id = DeviceId::new(BackendId("via".into()), vid, pid, None, "p");
+        DeviceInfo {
+            id: id.clone(),
+            backend: id.backend.clone(),
+            name: "test".into(),
+            kind: DeviceKind::Keyboard,
+            firmware: None,
         }
     }
 
-    fn open(writes: bool) -> (ViaDevice<&'static FakeVia>, &'static FakeVia) {
-        let fake: &'static FakeVia = Box::leak(Box::default());
-        fake.keymap.lock().unwrap().insert((0, 0, 0), 0x0029); // KC_ESC
-        let def = Definition::parse(SAMPLE).unwrap();
-        let id = DeviceId::new(
-            BackendId("via".into()),
-            def.vendor_id,
-            def.product_id,
-            None,
-            "p",
-        );
-        let info = DeviceInfo {
-            id: id.clone(),
-            backend: id.backend.clone(),
-            name: def.name.clone(),
-            kind: DeviceKind::Keyboard,
-            firmware: None,
-        };
+    fn open_with(
+        fake: &'static FakeQmk,
+        def: Option<Definition>,
+        writes: bool,
+    ) -> ViaDevice<&'static FakeQmk> {
+        let info = def
+            .as_ref()
+            .map(|d| info(d.vendor_id, d.product_id))
+            .unwrap_or_else(|| info(0xFEED, 0x0001));
         let link = if writes {
             Guarded::with_writes(fake)
         } else {
             Guarded::read_only(fake)
         };
-        (ViaDevice::open(info, def, link).unwrap(), fake)
+        ViaDevice::open(info, def, link, &Catalog::bundled()).unwrap()
+    }
+
+    fn open(writes: bool) -> (ViaDevice<&'static FakeQmk>, &'static FakeQmk) {
+        let fake = board(12);
+        let def = Definition::parse(SAMPLE).unwrap();
+        (open_with(fake, Some(def), writes), fake)
     }
 
     #[test]
     fn read_only_device_passes_the_contract_and_never_writes() {
         let (dev, fake) = open(false);
-        assert_eq!((dev.protocol_version, dev.layers), (12, 4));
+        assert_eq!((dev.probe.protocol_version, dev.probe.layers), (12, 4));
+        assert_eq!(dev.info().firmware.as_deref(), Some("VIA protocol 12"));
+        assert_eq!(dev.lighting_channel(), Some(Channel::RgbMatrix));
         foxglove_devices::contract::check_device(&dev).unwrap();
         assert_eq!(dev.binding(0, 0, 0).unwrap().params, vec![0x29]);
+        let all = dev.read_keymap().unwrap();
+        assert_eq!((all.len(), all[0], all[1]), (32, 0x29, 0));
+        let s = dev.lighting().unwrap().state().unwrap();
+        assert_eq!(
+            (s.on, s.hue, s.sat, s.brightness, s.speed),
+            (true, 180, 100, 100, 128)
+        );
         assert!(dev
             .lighting()
             .unwrap()
@@ -313,12 +342,60 @@ mod tests {
             })
             .is_err());
         let sent = fake.sent.lock().unwrap();
-        assert!(!sent.iter().any(|c| [
-            protocol::DYNAMIC_KEYMAP_SET_KEYCODE,
-            protocol::CUSTOM_SET_VALUE,
-            protocol::CUSTOM_SAVE
-        ]
-        .contains(c)));
+        assert!(!sent.iter().any(|r| protocol::is_write(r)), "{sent:x?}");
+    }
+
+    /// Systems, not products: a board with no VIA definition is still a device, with its
+    /// lighting, but without a keymap until a definition gives its matrix.
+    #[test]
+    fn a_board_without_a_definition_has_lighting_but_no_keymap() {
+        let fake = board(12);
+        let dev = open_with(fake, None, false);
+        assert!(dev.keymap().is_none() && !dev.caps().contains(Caps::KEYMAP));
+        assert!(dev.caps().contains(Caps::LIGHTING));
+        assert_eq!(dev.lighting_channel(), Some(Channel::RgbMatrix));
+        assert_eq!(dev.read_keymap(), Err(DeviceError::Unsupported));
+        foxglove_devices::contract::check_device(&dev).unwrap();
+    }
+
+    #[test]
+    fn the_definition_picks_among_the_channels_that_answered() {
+        let fake = board(12);
+        let def = Definition::parse(&SAMPLE.replace("qmk_rgb_matrix", "qmk_backlight")).unwrap();
+        let dev = open_with(fake, Some(def), false);
+        assert_eq!(dev.lighting_channel(), Some(Channel::Backlight));
+        let s = dev.lighting().unwrap().state().unwrap();
+        assert_eq!((s.on, s.sat, s.brightness, s.speed), (true, 0, 4, 0));
+    }
+
+    /// Vial and older VIA firmware report an older protocol; lighting is read through QMK's
+    /// fixed ids instead of channels.
+    #[test]
+    fn an_older_protocol_reads_lighting_through_the_legacy_ids() {
+        let fake = board(9);
+        let dev = open_with(fake, None, false);
+        assert_eq!(dev.probe.scheme, Some(Scheme::Legacy));
+        assert_eq!(dev.lighting_channel(), Some(Channel::Backlight));
+        let s = dev.lighting().unwrap().state().unwrap();
+        assert_eq!((s.on, s.brightness), (true, 39));
+        assert!(fake
+            .sent
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r[..2] == [protocol::CUSTOM_GET_VALUE, 0x09]));
+    }
+
+    #[test]
+    fn a_board_with_no_lighting_has_no_lighting() {
+        let fake = leak(FakeQmk {
+            protocol_version: 12,
+            layers: 2,
+            ..FakeQmk::default()
+        });
+        let dev = open_with(fake, None, false);
+        assert!(dev.lighting().is_none() && dev.caps() == Caps::default());
+        foxglove_devices::contract::check_device(&dev).unwrap();
     }
 
     /// #581: with `via-writes` off (0.2), a device opened asking for writes is read-only: no
@@ -361,12 +438,7 @@ mod tests {
             assert!(dev.link.send(&[c, 0, 0, 0, 0, 0]).is_err(), "{c:#04x}");
         }
         let sent = fake.sent.lock().unwrap();
-        assert!(
-            !sent.iter().any(|&c| protocol::is_write(&[c])),
-            "{:x?}",
-            *sent
-        );
-        assert_eq!(fake.keymap.lock().unwrap().get(&(0, 0, 0)), Some(&0x0029));
+        assert!(!sent.iter().any(|r| protocol::is_write(r)), "{sent:x?}");
     }
 
     #[cfg(feature = "via-writes")]
@@ -399,7 +471,12 @@ mod tests {
             (180, 50, 100, "4", true)
         );
         assert!(
-            !fake.sent.lock().unwrap().contains(&protocol::CUSTOM_SAVE),
+            !fake
+                .sent
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|r| r[0] == protocol::CUSTOM_SAVE),
             "nothing persisted"
         );
     }

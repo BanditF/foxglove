@@ -1,10 +1,12 @@
 //! A VIA keyboard definition (the JSON VIA and Keychron publish): which keyboard it is, its
-//! switch matrix, the physical layout and whether it has RGB Matrix lighting.
+//! switch matrix, the physical layout and which QMK lighting it offers.
 //!
 //! Only what the device layer needs is read. The layout is KLE (keyboard-layout-editor) rows whose key
 //! labels start with `row,col`; this is a small parser of our own.
 
 use foxglove_devices::{Key, Layout};
+
+use crate::client::Channel;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -16,8 +18,8 @@ pub struct Definition {
     pub rows: u16,
     pub cols: u16,
     pub layout: Layout,
-    /// The definition offers QMK RGB Matrix controls.
-    pub rgb_matrix: bool,
+    /// The QMK lighting controls the definition offers, best first.
+    pub lighting: Vec<Channel>,
 }
 
 #[derive(Deserialize)]
@@ -62,10 +64,25 @@ impl Definition {
                 ));
             }
         }
-        let mentions_rgb_matrix = |v: &Value| v.to_string().contains("qmk_rgb_matrix");
+        // VIA's built-in lighting menus (`qmk_backlight_rgblight` names two).
+        let text: String = raw
+            .menus
+            .iter()
+            .chain(raw.lighting.as_ref())
+            .map(Value::to_string)
+            .collect();
+        let lighting = [
+            ("qmk_rgb_matrix", Channel::RgbMatrix),
+            ("rgblight", Channel::RgbLight), // qmk_rgblight, qmk_backlight_rgblight
+            ("qmk_led_matrix", Channel::LedMatrix),
+            ("qmk_backlight", Channel::Backlight),
+        ]
+        .into_iter()
+        .filter(|(menu, _)| text.contains(menu))
+        .map(|(_, c)| c)
+        .collect();
         Ok(Definition {
-            rgb_matrix: raw.menus.iter().any(mentions_rgb_matrix)
-                || raw.lighting.as_ref().is_some_and(mentions_rgb_matrix),
+            lighting,
             name: raw.name.clone(),
             vendor_id: hex(&raw.vendor_id)?,
             product_id: hex(&raw.product_id)?,
@@ -154,7 +171,12 @@ mod tests {
             (d.vendor_id, d.product_id, d.rows, d.cols),
             (0x3434, 0x0250, 2, 4)
         );
-        assert!(d.rgb_matrix);
+        assert_eq!(d.lighting, vec![Channel::RgbMatrix]);
+        let both = Definition::parse(&SAMPLE.replace("qmk_rgb_matrix", "qmk_backlight_rgblight"));
+        assert_eq!(
+            both.unwrap().lighting,
+            vec![Channel::RgbLight, Channel::Backlight]
+        );
         let k = |r, c| {
             d.layout
                 .keys

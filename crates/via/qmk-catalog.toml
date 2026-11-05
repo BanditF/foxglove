@@ -1,0 +1,45 @@
+# QMK keyboards on Raw HID (usage page 0xFF60, usage 0x61): what Foxglove needs to know about
+# vendors and boards beyond what the VIA protocol says (#74). The driver works for any board
+# that answers VIA; quirks go here, not in code.
+#
+# [lighting]
+#   custom_channels_from: the first VIA protocol version whose lighting values go through
+#   custom-value channels (command 0x08: channel, value id). Older firmware, and Vial, which
+#   reports an older VIA protocol, use the earlier lighting value ids on the same command.
+#
+# [[vendor]]: `vid`, `name` (for boards that have no VIA definition loaded).
+#
+# [[board]]: `vid`, `pid`, all else optional:
+#   name      the board's name, when no VIA definition is loaded
+#   skip      true: never probed with VIA (it uses Raw HID for something else); `reason` says what
+#   lighting  "custom" | "legacy" | "none": overrides the scheme the protocol version implies
+#
+# Entries marked "unverified" haven't been checked on hardware.
+
+[lighting]
+# QMK moved lighting to custom-value channels with VIA protocol 12 (VIA v3 definitions).
+custom_channels_from = 12
+
+[[vendor]]
+vid = 0x3434
+name = "Keychron"
+
+[[board]]
+# ZMK's default ids: Foxglove's own keyboards (Eyelash Corne, Toucan, Halcyon) answer the
+# Foxglove host link on this interface, not VIA.
+vid = 0x1D50
+pid = 0x615E
+skip = true
+reason = "a ZMK keyboard: Foxglove talks to it over its own host link"
+
+[[board]]
+# From OpenRGB's Keychron inventory (#74 research); unverified.
+vid = 0x3434
+pid = 0x0250
+name = "Keychron K5 Pro (ANSI, RGB)"
+
+[[board]]
+# From OpenRGB's Keychron inventory (#74 research); unverified.
+vid = 0x3434
+pid = 0x0251
+name = "Keychron K5 Pro (ISO, RGB)"
