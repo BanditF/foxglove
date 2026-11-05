@@ -472,7 +472,7 @@ fn gather() -> (foxglove_scene::RoomMap, Vec<CaseTarget>, Vec<LampTarget>) {
 }
 
 /// The host-link keyboard's own LampArray (#749 b), paired by VID/PID, with its shape as
-/// Windows last gave it; `None` without a keyboard or when Windows lists no LampArray of it.
+/// Windows last gave it and the keyboard's colour calibration; `None` without a keyboard or when Windows lists no LampArray of it.
 /// Never blocks or looks for the keyboard.
 fn keyboard_lamps() -> Option<KeyboardLamps> {
     let keyboard = super::devices::keyboard_key()?;
@@ -483,10 +483,10 @@ fn keyboard_lamps() -> Option<KeyboardLamps> {
         .find(|a| format!("{:04x}:{:04x}", a.vid, a.pid) == key)?;
     let layouts = super::pc_lights::lamp_layouts();
     let layout = layouts.get(&(a.vid, a.pid));
-    Some(KeyboardLamps::new(
-        key,
-        layout.map(|l| (l.size_mm, l.lamps.as_slice())),
-    ))
+    Some(
+        KeyboardLamps::new(key, layout.map(|l| (l.size_mm, l.lamps.as_slice())))
+            .calibrated(Some(keyboard)),
+    )
 }
 
 /// A Lights page row as a Dynamic Lighting output: any LampArray, by its own attributes.

@@ -54,14 +54,18 @@ pub fn rows_now() -> Vec<HealthRow> {
         .collect();
     out.extend(keyboard_rows(
         &super::pc_lights::snapshot().keyboard_lamp_arrays,
+        super::scene_lamps::identity(),
     ));
     out
 }
 
 /// One row per keyboard that is also a LampArray (#754): Windows lists it under Dynamic
 /// Lighting (over USB, Bluetooth or both), and Foxglove drives its lights over the keyboard's
-/// own link instead (the Keyboard card), so it has no Dynamic Lighting device rows of its own.
-pub fn keyboard_rows(keyboards: &[KeyboardLampArray]) -> Vec<HealthRow> {
+/// own link (the Keyboard card), so it has no Dynamic Lighting device rows of its own. While
+/// Windows Dynamic Lighting holds the keyboard's lights, Foxglove draws through it (#749 b):
+/// only while its window is in front, unless `identity` (package identity, #179) says
+/// Windows' background order decides. The wording follows `lights_owner`'s notice.
+pub fn keyboard_rows(keyboards: &[KeyboardLampArray], identity: bool) -> Vec<HealthRow> {
     let mut names: Vec<&str> = Vec::new();
     for k in keyboards {
         if !names.contains(&k.name.as_str()) {
@@ -82,7 +86,14 @@ pub fn keyboard_rows(keyboards: &[KeyboardLampArray]) -> Vec<HealthRow> {
                 format!("{name} (keyboard) · Found"),
                 Level::Ok,
                 format!(
-                    "Windows lists it {via}; Foxglove drives its lights over the keyboard's                      own link (the Keyboard card), not through Dynamic Lighting"
+                    "Windows lists it {via}; Foxglove drives its lights over the keyboard's \
+                     own link (the Keyboard card). While Windows Dynamic Lighting holds the \
+                     keyboard's lights, {}",
+                    if identity {
+                        super::lights_owner::THROUGH_IDENTITY
+                    } else {
+                        super::lights_owner::THROUGH
+                    }
                 ),
             )
         })
@@ -206,7 +217,10 @@ mod tests {
             pid: 0x615e,
             bluetooth,
         };
-        let r = keyboard_rows(&[corne("1d50:615e:1E89", false), corne("1d50:615e", true)]);
+        let r = keyboard_rows(
+            &[corne("1d50:615e:1E89", false), corne("1d50:615e", true)],
+            false,
+        );
         assert_eq!(r.len(), 1, "{r:?}");
         assert_eq!(r[0].item, "Eyelash Corne (keyboard) · Found");
         assert_eq!(
@@ -219,12 +233,26 @@ mod tests {
             "{r:?}"
         );
         assert!(r[0].detail.contains("the Keyboard card"), "{r:?}");
-        let usb = keyboard_rows(&[corne("1d50:615e:1E89", false)]);
+        // #749 b: the notice's wording, not the old "not through Dynamic Lighting".
+        assert!(
+            r[0].detail.ends_with(
+                "While Windows Dynamic Lighting holds the keyboard's lights, Foxglove draws \
+                 through it while its window is in front"
+            ),
+            "{r:?}"
+        );
+        assert!(!r[0].detail.contains("not through"), "{r:?}");
+        assert!(!r[0].detail.contains("  "), "no stray spaces: {r:?}");
+        let usb = keyboard_rows(&[corne("1d50:615e:1E89", false)], true);
         assert!(
             usb[0].detail.starts_with("Windows lists it over USB;"),
             "{usb:?}"
         );
-        assert!(keyboard_rows(&[]).is_empty());
+        assert!(
+            usb[0].detail.ends_with("Foxglove draws through it"),
+            "package identity: no front-window clause: {usb:?}"
+        );
+        assert!(keyboard_rows(&[], false).is_empty());
     }
 
     #[test]

@@ -189,6 +189,14 @@ pub fn on_screen(key: &str, zone: Option<&str>, c: [u8; 3]) -> [u8; 3] {
     [out.r, out.g, out.b]
 }
 
+/// The colour a zone of a device is sent for `c`, through its calibration as the registry holds
+/// it now (the driver boundary's `Registry::rgb`). For writes that go past a driver: the
+/// keyboard drawn through its own LampArray (#749 b) takes the keyboard's calibration here.
+pub fn on_device(key: &str, zone: Option<&str>, c: [u8; 3]) -> [u8; 3] {
+    let out = calibration::global().rgb(key, zone, None, rgb(c));
+    [out.r, out.g, out.b]
+}
+
 /// [`on_screen`] as a colour to paint.
 pub fn screen_color(key: &str, zone: Option<&str>, c: [u8; 3]) -> egui::Color32 {
     let [r, g, b] = on_screen(key, zone, c);
