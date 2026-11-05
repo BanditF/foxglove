@@ -63,6 +63,8 @@ pub struct View {
     pub devices: Vec<super::peripherals::Peripheral>,
     /// Their low-battery heads-up is on (#504).
     pub device_notice: bool,
+    /// "Read Logitech batteries" is on (#505).
+    pub logitech: bool,
 }
 
 /// What a click on the page asks for.
@@ -76,6 +78,8 @@ pub enum Intent {
     Update(super::firmware_update::Intent),
     /// Turns the other devices' low-battery heads-up on or off (#504).
     DeviceNotice(bool),
+    /// Turns "Read Logitech batteries" on or off (#505).
+    Logitech(bool),
 }
 
 /// The firmware card's lines for the cached builds, one per part (#559): a one-piece board has
@@ -179,6 +183,7 @@ pub fn view(ctx: &egui::Context) -> View {
         update: super::firmware_update::view(),
         devices: super::peripherals::list(),
         device_notice: super::battery::device_notices_on(),
+        logitech: super::battery::logitech_on(),
     }
 }
 
@@ -237,6 +242,12 @@ fn show(ui: &mut egui::Ui) {
             if let Err(e) = super::battery::set_device_notices(on) {
                 eprintln!("Foxglove: can't save the battery setting: {e}");
             }
+        }
+        Some(Intent::Logitech(on)) => {
+            if let Err(e) = super::battery::set_logitech(on) {
+                eprintln!("Foxglove: can't save the battery setting: {e}");
+            }
+            super::peripherals::hidpp_setting_changed();
         }
         None => {}
     }
@@ -348,9 +359,12 @@ fn devices(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
     card(ui, "Batteries", |ui| {
         let p = theme::palette(ui);
         ui.label(
-            RichText::new(
-                "Batteries of the Bluetooth devices and game controllers connected to this PC.",
-            )
+            RichText::new(if v.logitech {
+                "Batteries of the Bluetooth devices, game controllers and Logitech devices \
+                 connected to this PC."
+            } else {
+                "Batteries of the Bluetooth devices and game controllers connected to this PC."
+            })
             .color(p.muted),
         );
         ui.add_space(4.0);
@@ -368,10 +382,7 @@ fn devices(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
                 &d.name,
                 RichText::new(super::peripherals::level_text(d)).color(tone_color(ui, tone)),
             )
-            .on_hover_text(match d.kind {
-                super::peripherals::Kind::Bluetooth => "Bluetooth",
-                super::peripherals::Kind::Controller => "Game controller",
-            });
+            .on_hover_text(d.kind.label());
         }
         ui.add_space(4.0);
         let mut on = v.device_notice;
@@ -385,6 +396,18 @@ fn devices(ui: &mut egui::Ui, v: &View) -> Option<Intent> {
             .changed()
         {
             intent = Some(Intent::DeviceNotice(on));
+        }
+        let mut logitech = v.logitech;
+        if ui
+            .checkbox(&mut logitech, "Read Logitech batteries")
+            .on_hover_text(
+                "Ask Logitech mice, keyboards and headsets (on a receiver, a cable or \
+                 Bluetooth) for their battery: when one connects, and at most once a minute \
+                 while this list is open. Off: Foxglove doesn't open them.",
+            )
+            .changed()
+        {
+            intent = Some(Intent::Logitech(logitech));
         }
     });
     intent
@@ -967,6 +990,7 @@ pub mod tests {
             update: super::super::firmware_update::tests::sample(),
             devices: super::super::peripherals::tests::sample(),
             device_notice: true,
+            logitech: false,
         }
     }
 

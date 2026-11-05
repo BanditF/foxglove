@@ -1949,6 +1949,20 @@ fn lamp_array_cards_render() {
     assert_ne!(desk, other);
 }
 
+/// #505: the Keyboard page's Batteries card with "Read Logitech batteries" on, a mouse read
+/// over HID++ among the other devices. Review image `ui-505-hidpp-batteries.png`.
+#[test]
+fn hidpp_batteries_render() {
+    use crate::foxglove::shell::Page;
+    let mut on = Samples::full();
+    on.keyboard.logitech = true;
+    on.keyboard.devices = crate::foxglove::peripherals::tests::sample_hidpp();
+    let on = shell_preview_with(Page::Keyboard, &on, 1300.0);
+    let off = shell_preview_with(Page::Keyboard, &Samples::full(), 1300.0);
+    keep("ui-505-hidpp-batteries.png", &on);
+    assert_ne!(on, off);
+}
+
 #[test]
 fn settings_preview_renders_in_the_theme() {
     use crate::foxglove::theme::{Choice, DARK, LIGHT};

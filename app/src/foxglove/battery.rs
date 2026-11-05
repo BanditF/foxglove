@@ -140,6 +140,8 @@ pub struct BatterySettings {
     pub low_battery_notice: bool,
     /// The same heads-up for Bluetooth devices and controllers (#504).
     pub device_notice: bool,
+    /// "Read Logitech batteries" (#505): ask HID++ devices for theirs. Off by default.
+    pub logitech: bool,
 }
 
 impl Default for BatterySettings {
@@ -147,6 +149,7 @@ impl Default for BatterySettings {
         Self {
             low_battery_notice: true,
             device_notice: true,
+            logitech: false,
         }
     }
 }
@@ -193,6 +196,28 @@ pub fn device_notices_on() -> bool {
 pub fn set_device_notices(on: bool) -> std::io::Result<()> {
     DEVICE_NOTICES.store(if on { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
     save_with(|s| s.device_notice = on)
+}
+
+/// "Read Logitech batteries" (#505), cached like [`notices_on`]. Off by default.
+static LOGITECH: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn logitech_on() -> bool {
+    use std::sync::atomic::Ordering;
+    match LOGITECH.load(Ordering::Relaxed) {
+        0 => {
+            let on = super::store::try_load::<BatterySettings>("battery")
+                .unwrap_or_default()
+                .logitech;
+            LOGITECH.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+        v => v == 2,
+    }
+}
+
+pub fn set_logitech(on: bool) -> std::io::Result<()> {
+    LOGITECH.store(if on { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
+    save_with(|s| s.logitech = on)
 }
 
 /// Changes one switch and keeps the other as stored.
