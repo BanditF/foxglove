@@ -12,7 +12,9 @@
 //! While Windows Dynamic Lighting holds the keyboard's lights and the keyboard is also a
 //! LampArray, the card's picks are drawn through Windows (#749 b): the Lights worker opens the
 //! keyboard's own LampArray with the same handle as any Dynamic Lighting device
-//! ([`through_windows`], `pc_lights::Msg::KeyboardLamp`). Only on the owner's word.
+//! ([`through_windows`], `pc_lights::Msg::KeyboardLamp`). Only on the owner's word. Breathe,
+//! Spectrum and Swirl run there as a scene look on the scene engine (#768, `scene_card`,
+//! [`card_pick`]); a running scene comes first.
 
 use std::sync::Mutex;
 
@@ -192,12 +194,29 @@ pub fn show(ui: &mut egui::Ui) {
         }
         if let Some(key) = &through {
             let left = view.state.map(|s| s.left);
-            if let Some(look) = through_windows(&intent, left.as_ref()) {
-                super::pc_lights::send(super::pc_lights::Msg::KeyboardLamp {
-                    key: key.clone(),
-                    look,
-                    calibration: super::devices::keyboard_key(),
-                });
+            if let Some((look, speed)) = card_pick(&intent, left.as_ref()) {
+                // Breathe, Spectrum and Swirl run on the scene engine (#768); the rest is the
+                // Lights worker's steady colour.
+                let in_colour = look
+                    .and_then(|l| {
+                        super::effect_controls::underglow_in(view.state.as_ref(), l.effect)
+                    })
+                    .is_some_and(|e| e.band);
+                let animated =
+                    super::scene_card::show(look.map(|lights| super::scene_card::CardLook {
+                        lights,
+                        speed,
+                        in_colour,
+                    }));
+                // The speed is only an effect's pace: a steady colour has none.
+                if animated || !matches!(intent, Intent::Speed(_)) {
+                    super::pc_lights::send(super::pc_lights::Msg::KeyboardLamp {
+                        key: key.clone(),
+                        look,
+                        calibration: super::devices::keyboard_key(),
+                        animated,
+                    });
+                }
             }
         }
         match intent {
@@ -284,6 +303,20 @@ pub fn through_windows(
             effect: now.map_or(0, |k| k.effect),
         })),
         _ => None,
+    }
+}
+
+/// What a Keyboard card click asks of the keyboard's own LampArray while Windows holds the
+/// lights (#768): [`through_windows`]'s look with the speed its effect runs at. A speed click
+/// keeps the look the keyboard reports and changes only the pace.
+pub fn card_pick(
+    intent: &Intent,
+    left: Option<&RgbHalf>,
+) -> Option<(Option<super::pc_lights::KeyboardLights>, u8)> {
+    use super::pc_lights::KeyboardLights;
+    match *intent {
+        Intent::Speed(speed) => left.map(|l| (Some(KeyboardLights::from_half(l)), speed)),
+        _ => through_windows(intent, left).map(|look| (look, left.map_or(0, |l| l.speed))),
     }
 }
 
@@ -901,6 +934,29 @@ pub mod tests {
         ] {
             assert_eq!(through_windows(&other, Some(&left)), None, "{other:?}");
         }
+    }
+
+    /// #768: each pick carries the speed its effect runs at; a speed click keeps the look and
+    /// changes only the pace; the rest draws nothing, as before.
+    #[test]
+    fn card_picks_carry_the_speed() {
+        use crate::foxglove::pc_lights::KeyboardLights;
+        let left = half(true, 26, 3);
+        let now = KeyboardLights::from_half(&left);
+        assert_eq!(
+            card_pick(&Intent::Effect(2), Some(&left)),
+            Some((Some(KeyboardLights { effect: 2, ..now }), 3))
+        );
+        assert_eq!(
+            card_pick(&Intent::Speed(5), Some(&left)),
+            Some((Some(now), 5))
+        );
+        assert_eq!(card_pick(&Intent::Speed(5), None), None);
+        assert_eq!(
+            card_pick(&Intent::Lights(false), Some(&left)),
+            Some((None, 3))
+        );
+        assert_eq!(card_pick(&Intent::Refresh, Some(&left)), None);
     }
 
     #[test]

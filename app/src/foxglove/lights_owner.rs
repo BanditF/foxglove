@@ -271,6 +271,8 @@ pub fn attach(kb: &foxglove_link::devices::FoxgloveLinkDevice) {
             // Windows let go (#749 b): the Lights page lets go of the keyboard's LampArray.
             if before.is_some_and(Owner::lamp_array) && !now.is_some_and(Owner::lamp_array) {
                 super::pc_lights::send(super::pc_lights::Msg::KeyboardLampRelease);
+                // And the Keyboard card's effect drawn through it ends (#768).
+                super::scene_card::release();
             }
         }
     });
