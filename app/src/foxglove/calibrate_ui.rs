@@ -4,13 +4,19 @@
 //! "really" is. For each test colour the device shows it and the reference (the screen, as a
 //! swatch, or another device, the "master") shows it too. The user moves the **light** (what
 //! the device is sent) or the **screen** (what Foxglove draws for this device), or both, with
-//! the "Adjust" switch, until the two look alike, then clicks **These match**. Each side keeps
-//! its own values (blue down 30% on the light and up 5% on the screen are both kept), and the
-//! device's transforms are fitted to the matches (`foxglove_devices::calibration::Fit`).
+//! the "Adjust" switch, by A/B choices (#474, `foxglove_devices::bracket`): two candidates an
+//! Oklab step either side of where the match stands, and the user picks the one closer to the
+//! reference or says **They match**. On the light side the device shows one candidate at a time
+//! (the user switches it between A and B); on the screen side both are drawn. Each choice halves
+//! the step around the picked side, and the colour is matched when the user says they match or
+//! the step falls below a just-noticeable difference (six choices at most for a white, three for
+//! red). Each side keeps its own values (blue down 30% on the light and up 5% on the screen are
+//! both kept), and the device's transforms are fitted to the matches
+//! (`foxglove_devices::calibration::Fit`).
 //!
 //! The test colours sit mid-range (about 60%, never a full channel), so either side can go up
-//! as well as down. A slider change marks the frame, and the frame sends one write (the PC
-//! lights' worker and the keyboard's writer drop any that a newer one replaces). Nothing moves,
+//! as well as down. A click marks the frame, and the frame sends one write (the PC lights'
+//! worker and the keyboard's writer drop any that a newer one replaces). Nothing clicked,
 //! nothing is written.
 //!
 //! Save keeps the matches; Cancel puts the previous calibration and colours back. [`show`] runs
@@ -21,6 +27,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use egui::{Color32, RichText, Sense, Stroke};
+use foxglove_devices::bracket::{Answer, Bracket, Pick};
 use foxglove_devices::calibration::{self, DeviceCalibration, Match, Side};
 
 use super::calibrate::{self, Before, Kind, Target};
@@ -84,7 +91,6 @@ impl Step {
     }
 }
 
-const CHANNELS: [&str; 3] = ["Red", "Green", "Blue"];
 const SHORT: [&str; 3] = ["R", "G", "B"];
 
 /// A colour brought down to the test level, keeping its hue: a colour from a picker, matched.
@@ -107,8 +113,15 @@ pub struct Wizard {
     pub step: Step,
     /// A colour from a picker being matched, in place of the step's.
     pub custom: Option<[u8; 3]>,
-    /// Which side the sliders move.
+    /// Which side the choices move.
     pub side: Side,
+    /// The A/B choices for the colour on show, while they're being asked; `None` once it's
+    /// matched (or when it has nothing to ask).
+    pub ask: Option<Bracket>,
+    /// The candidate the device shows while the light side is asked.
+    pub showing: Pick,
+    /// The choices that just matched the colour on show, for the finished view.
+    pub finished: Option<Bracket>,
     /// The match being made for the colour on show.
     pub current: Match,
     /// The calibration being made: the device's values and its matches.
@@ -136,6 +149,9 @@ impl Wizard {
             step: Step::White,
             custom: None,
             side: Side::Light,
+            ask: None,
+            showing: Pick::A,
+            finished: None,
             current: Match::plain(Step::White.color()),
             cal,
             saved,
@@ -169,15 +185,75 @@ impl Wizard {
 
     /// The match to adjust for the colour on show: its saved one, else where the matches so far
     /// put it (so each match starts from the ones before), or, before the zone has any, from
-    /// the model's starting hint (#473).
-    fn load_current(&mut self) {
+    /// the model's starting hint (#473). A colour without a match starts its choices there.
+    pub fn load_current(&mut self) {
         let color = self.color();
-        self.current = match self.saved_match(color) {
+        let saved = self.saved_match(color);
+        self.current = match saved {
             Some(i) => self.cal.matches[i].clone(),
             None => self
                 .cal
                 .start_match(color, self.zone.as_deref(), self.target.hint),
         };
+        self.ask = None;
+        self.finished = None;
+        if saved.is_none() {
+            self.ask_from_here();
+        }
+    }
+
+    /// Starts the choices for the side being adjusted from where the match stands now.
+    pub fn ask_from_here(&mut self) {
+        let b = Bracket::new(self.current.color, self.current.side(self.side));
+        self.ask = b.pair().is_some().then_some(b);
+        self.showing = Pick::A;
+        self.finished = None;
+    }
+
+    /// What the device is sent now: the candidate it shows while the light side is asked,
+    /// else the match's light.
+    pub fn lit(&self) -> [u8; 3] {
+        match (&self.ask, self.side) {
+            (Some(b), Side::Light) => b.candidate(self.showing).unwrap_or(self.current.light),
+            _ => self.current.light,
+        }
+    }
+
+    /// Takes an answer to the choice on offer. The side moves to where the choices put it;
+    /// once they stop, that is kept as this colour's match. True when they stopped.
+    pub fn choose(&mut self, answer: Answer) -> bool {
+        let Some(b) = self.ask.as_mut() else {
+            return false;
+        };
+        b.answer(answer);
+        *self.current.side_mut(self.side) = b.result();
+        self.showing = Pick::A;
+        if b.stop().is_none() {
+            return false;
+        }
+        let Some(b) = self.ask.take() else {
+            return false;
+        };
+        self.confirm();
+        let note = format!(
+            "Matched: {} · {} choices · moved ΔE {:.3} · within ΔE {:.3}",
+            self.color_name(),
+            b.rounds(),
+            b.moved(),
+            b.left()
+        );
+        eprintln!("Foxglove: calibrate: {note} ({:?})", b.stop());
+        self.note = Some(note);
+        self.finished = Some(b);
+        true
+    }
+
+    /// The colour on show by name: the step's, or "Your colour" for a picked one.
+    fn color_name(&self) -> String {
+        match self.custom {
+            Some(_) => "Your colour".to_string(),
+            None => self.step.name().to_string(),
+        }
     }
 
     /// Goes to a test colour (`custom`: a picked one).
@@ -235,12 +311,26 @@ impl Wizard {
         self.step = step.unwrap_or(self.step);
         self.custom = step.is_none().then_some(m.color);
         self.current = m;
+        self.ask_from_here();
     }
 
-    /// One side of the colour on show back to the colour itself.
+    /// One side of the colour on show back to the colour itself, and the choices again from
+    /// there.
     pub fn reset_side(&mut self, side: Side) {
         let color = self.current.color;
         *self.current.side_mut(side) = color;
+        self.ask_from_here();
+    }
+
+    /// Switches the side the choices move; choices being asked start again on that side.
+    pub fn set_side(&mut self, side: Side) {
+        if self.side == side {
+            return;
+        }
+        self.side = side;
+        if self.ask.is_some() {
+            self.ask_from_here();
+        }
     }
 
     /// Every match gone and the values back to the model's default, from the first colour.
@@ -380,8 +470,8 @@ pub fn draw(ui: &mut egui::Ui, v: &View, w: &mut Wizard) -> Output {
         let p = theme::palette(ui);
         ui.weak(
             "Match this device to your screen (or another device), one test colour at a time: \
-             adjust the light, the screen or both until the two look alike to you, then click \
-             These match. Colours between your matches follow them.",
+             pick which of two choices looks closer until the two look alike to you. Colours \
+             between your matches follow them.",
         );
         ui.add_space(6.0);
         choices(ui, v, w, &mut out);
@@ -405,12 +495,12 @@ pub fn draw(ui: &mut egui::Ui, v: &View, w: &mut Wizard) -> Output {
                     |ui| swatches(ui, w),
                 );
                 ui.add_space(14.0);
-                ui.vertical(|ui| sliders(ui, w, &mut out));
+                ui.vertical(|ui| ask(ui, w, &mut out));
             });
         } else {
             swatches(ui, w);
             ui.add_space(8.0);
-            sliders(ui, w, &mut out);
+            ask(ui, w, &mut out);
         }
         ui.add_space(10.0);
         buttons(ui, w, &mut out);
@@ -493,14 +583,67 @@ fn go(w: &mut Wizard, step: Step, out: &mut Output) {
     out.show_reference = true;
 }
 
+/// What the colour is compared with, in words: "your screen" or "the Eyelash Corne".
+fn reference_name(w: &Wizard) -> String {
+    match &w.reference {
+        None => "your screen".to_string(),
+        Some(t) => format!("the {}", t.name),
+    }
+}
+
+/// One swatch: a well, the colour, a 2-point accent ring when `ring`, a letter in its corner
+/// (`mark`) and a caption under it (`label`, if any).
+fn swatch(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    color: [u8; 3],
+    mark: Option<&str>,
+    ring: bool,
+    label: Option<&str>,
+) {
+    let p = theme::palette(ui);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter().rect_filled(rect.expand(2.0), 10.0, p.well);
+    let fill = Color32::from_rgb(color[0], color[1], color[2]);
+    let stroke = if ring {
+        Stroke::new(2.0, p.accent)
+    } else {
+        Stroke::new(1.0, p.line)
+    };
+    ui.painter()
+        .rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
+    if let Some(mark) = mark {
+        // Dark on a light colour, light on a dark one.
+        let light = color.iter().map(|v| u32::from(*v)).sum::<u32>() > 3 * 110;
+        let ink = if light {
+            Color32::from_black_alpha(200)
+        } else {
+            Color32::from_white_alpha(220)
+        };
+        ui.painter().text(
+            rect.left_top() + egui::vec2(8.0, 6.0),
+            egui::Align2::LEFT_TOP,
+            mark,
+            theme::mono(12.0),
+            ink,
+        );
+    }
+    if let Some(label) = label {
+        ui.label(RichText::new(label).size(12.0).color(p.muted));
+    }
+}
+
 /// The reference colour (the screen's swatch, through the screen side, or a note to look at the
-/// other device) beside what goes to this device.
+/// other device) beside what goes to this device. While the light side is asked, what goes to
+/// the device is candidates A and B, the one it shows ringed; while the screen side is asked,
+/// the screen draws both candidates.
 fn swatches(ui: &mut egui::Ui, w: &mut Wizard) {
     let p = theme::palette(ui);
-    let sent = w
-        .cal
-        .zone(w.zone.as_deref())
-        .apply_rgb(rgb(w.current.light));
+    let zone = w.cal.zone(w.zone.as_deref()).clone();
+    let sent = |c: [u8; 3]| {
+        let s = zone.apply_rgb(rgb(c));
+        [s.r, s.g, s.b]
+    };
     let reference = match &w.reference {
         None => "On your screen".to_string(),
         Some(t) => format!("On the {}", t.name),
@@ -509,25 +652,53 @@ fn swatches(ui: &mut egui::Ui, w: &mut Wizard) {
         None => w.current.screen,
         Some(_) => w.current.color,
     };
+    let pair = w.ask.as_ref().and_then(Bracket::pair);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 10.0;
-        for (label, color, big) in [
-            (reference.as_str(), screen, true),
-            ("Sent to this device", [sent.r, sent.g, sent.b], false),
-        ] {
-            ui.vertical(|ui| {
-                let size = if big { 120.0 } else { 72.0 };
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(size, 120.0), Sense::hover());
-                ui.painter().rect_filled(rect.expand(2.0), 10.0, p.well);
-                ui.painter().rect(
-                    rect,
-                    8.0,
-                    Color32::from_rgb(color[0], color[1], color[2]),
-                    Stroke::new(1.0, p.line),
-                    egui::StrokeKind::Inside,
-                );
-                ui.label(RichText::new(label).size(12.0).color(p.muted));
-            });
+        match (pair, w.side) {
+            (Some((a, b)), Side::Screen) => {
+                for (mark, c) in [("A", a), ("B", b)] {
+                    ui.vertical(|ui| {
+                        let label = format!("Screen {mark}");
+                        swatch(ui, egui::vec2(105.0, 120.0), c, None, false, Some(&label));
+                    });
+                }
+            }
+            (pair, _) => {
+                ui.vertical(|ui| {
+                    swatch(
+                        ui,
+                        egui::vec2(120.0, 120.0),
+                        screen,
+                        None,
+                        false,
+                        Some(&reference),
+                    );
+                });
+                ui.vertical(|ui| match pair {
+                    Some((a, b)) => {
+                        ui.spacing_mut().item_spacing.y = 10.0;
+                        for (mark, pick, c) in [("A", Pick::A, a), ("B", Pick::B, b)] {
+                            let ring = w.showing == pick;
+                            swatch(ui, egui::vec2(72.0, 55.0), sent(c), Some(mark), ring, None);
+                        }
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        ui.label(
+                            RichText::new("Sent to this device")
+                                .size(12.0)
+                                .color(p.muted),
+                        );
+                    }
+                    None => swatch(
+                        ui,
+                        egui::vec2(72.0, 120.0),
+                        sent(w.current.light),
+                        None,
+                        false,
+                        Some("Sent to this device"),
+                    ),
+                });
+            }
         }
     });
     if w.reference.is_some() {
@@ -539,14 +710,12 @@ fn swatches(ui: &mut egui::Ui, w: &mut Wizard) {
     }
 }
 
-/// "Adjust: Light | Screen", each side's values, and the selected side's sliders.
-fn sliders(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
+/// "Adjust: Light | Screen", both sides' values, and the choice on offer: which candidate the
+/// device shows, then "A is closer", "B is closer" or "They match". Once the colour is matched,
+/// how it went, "Next" and "Ask again".
+fn ask(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
     let p = theme::palette(ui);
-    let name = match w.custom {
-        Some(_) => "Your colour".to_string(),
-        None => w.step.name().to_string(),
-    };
-    ui.label(RichText::new(name).color(p.text_strong).strong());
+    ui.label(RichText::new(w.color_name()).color(p.text_strong).strong());
     ui.horizontal_wrapped(|ui| {
         ui.label(theme::caps_label(ui, "Adjust"));
         for (side, text, hover) in [
@@ -560,82 +729,133 @@ fn sliders(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
             if theme::pill(ui, w.side == side, text)
                 .on_hover_text(hover)
                 .clicked()
+                && w.side != side
             {
-                w.side = side;
+                w.set_side(side);
+                out.show = true;
             }
         }
     });
     ui.label(RichText::new(match_text(&w.current)).font(theme::mono(12.0)));
-    ui.add_space(4.0);
-    let side = w.side;
-    let color = w.current.color;
-    let mut changed = false;
-    for (i, name) in CHANNELS.iter().enumerate() {
-        let lit = color[i] > 0;
-        let value = &mut w.current.side_mut(side)[i];
-        // Whole percent, as the slider steps: drawing it never counts as a move.
-        let mut pct = if lit {
-            (f32::from(*value) * 100.0 / f32::from(color[i])).round()
-        } else {
-            100.0
-        };
-        let moved = ui
-            .add_enabled_ui(lit, |ui| slider(ui, name, &mut pct))
-            .inner;
-        if moved && lit {
-            *value = (f32::from(color[i]) * pct / 100.0)
-                .round()
-                .clamp(0.0, 255.0) as u8;
-            changed = true;
-        }
-    }
+    ui.add_space(6.0);
+    let Some(b) = w.ask.clone() else {
+        finished(ui, w, out);
+        return;
+    };
+    let axis = b.axis().map_or("", |a| a.name());
     ui.label(
-        RichText::new(
-            "100% is the colour as it is; go either way. Channels this colour doesn't use stay off.",
-        )
-        .size(12.0)
+        RichText::new(format!(
+            "Choice {} of {} · {axis}",
+            b.rounds() + 1,
+            b.planned()
+        ))
+        .font(theme::mono(12.0))
         .color(p.muted),
     );
-    if changed && side == Side::Light {
+    let question = match w.side {
+        Side::Light => {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(theme::caps_label(ui, "Device shows"));
+                for (pick, text) in [(Pick::A, "A"), (Pick::B, "B")] {
+                    if theme::pill(ui, w.showing == pick, text)
+                        .on_hover_text("Light this candidate on the device")
+                        .clicked()
+                        && w.showing != pick
+                    {
+                        w.showing = pick;
+                        out.show = true;
+                    }
+                }
+            });
+            format!("Which looks closer to {}?", reference_name(w))
+        }
+        Side::Screen => "Which swatch looks closer to this device?".to_string(),
+    };
+    ui.label(RichText::new(question).color(p.text_strong));
+    ui.add_space(2.0);
+    let mut answer = None;
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("A is closer").clicked() {
+            answer = Some(Answer::Closer(Pick::A));
+        }
+        if ui.button("B is closer").clicked() {
+            answer = Some(Answer::Closer(Pick::B));
+        }
+        if ui
+            .add(theme::primary_button(ui, "They match"))
+            .on_hover_text("Neither looks closer: keep the colour between them as the match")
+            .clicked()
+        {
+            answer = Some(Answer::Same);
+        }
+    });
+    let hint = match w.side {
+        Side::Light => {
+            "Switch the device between A and B and compare each. Every choice narrows it down; \
+             it stops once the two are too close to tell apart."
+        }
+        Side::Screen => {
+            "Compare each swatch with the device. Every choice narrows it down; it stops once \
+             the two are too close to tell apart."
+        }
+    };
+    ui.label(RichText::new(hint).size(12.0).color(p.muted));
+    if let Some(answer) = answer {
+        w.choose(answer);
         out.show = true;
     }
 }
 
-/// One channel's slider across the column, in percent of the colour (0-200), its value in the
-/// row above.
-fn slider(ui: &mut egui::Ui, name: &str, pct: &mut f32) -> bool {
-    ui.horizontal(|ui| {
-        ui.label(name);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(RichText::new(format!("{pct:.0}%")).font(theme::mono(12.5)));
-        });
-    });
-    ui.spacing_mut().slider_width = ui.available_width();
-    ui.add(
-        egui::Slider::new(pct, 0.0..=200.0)
-            .show_value(false)
-            .step_by(1.0),
-    )
-    .changed()
-}
-
-/// These match, reset per side, Start over, Cancel and Save.
-fn buttons(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
-    ui.horizontal_wrapped(|ui| {
+/// The colour on show is matched: how, then "Next: Grey" and "Ask again".
+fn finished(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
+    let p = theme::palette(ui);
+    if !w.matched(w.color()) {
+        // Nothing to choose (a colour with every channel off): keep it as it is.
+        ui.label(RichText::new("Nothing to choose for this colour.").color(p.text_strong));
         if ui
-            .add(theme::primary_button(ui, "These match"))
-            .on_hover_text("Keep this pair: the light and the screen as they are now")
+            .add(theme::primary_button(ui, "Keep as is"))
+            .on_hover_text("Keep this colour's match as it is")
             .clicked()
         {
             w.confirm();
-            let name = w
-                .custom
-                .map_or(w.step.name().to_string(), |_| "Your colour".into());
-            w.note = Some(format!("Matched: {name}"));
-            if let Some(next) = w.next_unmatched().filter(|_| w.custom.is_none()) {
+        }
+        return;
+    }
+    let how = match &w.finished {
+        Some(b) => format!("✓ Matched after {} choices", b.rounds()),
+        None => "✓ Matched".to_string(),
+    };
+    ui.label(RichText::new(how).color(p.text_strong));
+    ui.label(
+        RichText::new("Kept as this colour's match. Colours between your matches follow them.")
+            .size(12.0)
+            .color(p.muted),
+    );
+    ui.add_space(2.0);
+    ui.horizontal_wrapped(|ui| {
+        if let Some(next) = w.next_unmatched().filter(|_| w.custom.is_none()) {
+            if ui
+                .add(theme::primary_button(ui, &format!("Next: {}", next.name())))
+                .on_hover_text("The next test colour without a match")
+                .clicked()
+            {
                 go(w, next, out);
             }
         }
+        if ui
+            .button("Ask again")
+            .on_hover_text("Choose again, from where this match stands")
+            .clicked()
+        {
+            w.ask_from_here();
+            out.show = true;
+        }
+    });
+}
+
+/// Reset per side, Start over, Cancel and Save.
+fn buttons(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
+    ui.horizontal_wrapped(|ui| {
         if ui
             .button("Reset light")
             .on_hover_text("The light back to the colour as it is")
@@ -650,6 +870,7 @@ fn buttons(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
             .clicked()
         {
             w.reset_side(Side::Screen);
+            out.show = true;
         }
     });
     ui.horizontal(|ui| {
@@ -686,7 +907,7 @@ fn matches(ui: &mut egui::Ui, w: &mut Wizard, out: &mut Output) {
     let p = theme::palette(ui);
     ui.label(theme::caps_label(ui, "Matches"));
     if w.cal.matches.is_empty() {
-        ui.weak("None yet: match a colour, then click These match.");
+        ui.weak("None yet: answer the choices for a colour and it's kept as a match.");
         return;
     }
     let zones = match &w.target.kind {
@@ -940,7 +1161,7 @@ fn act(w: &mut Wizard, out: Output) -> bool {
         // The registry holds the values without the matches, so the device shows the light
         // value being adjusted as it is.
         calibration::global().set_device(&w.target.key, Some(w.previewing()));
-        calibrate::show(&w.target, w.current.light);
+        calibrate::show(&w.target, w.lit());
     }
     if out.show_reference {
         if let Some(r) = &w.reference {

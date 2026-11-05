@@ -2034,8 +2034,8 @@ fn calibrate_renders() {
     assert_ne!(master, shots[3]);
 }
 
-/// A strip whose model class has a catalog hint (#473): its first match, White, opens with the
-/// light already warmed by the hint (green and blue down), the screen as is.
+/// A strip whose model class has a catalog hint (#473): its first match, White, opens its
+/// choices from the light already warmed by the hint (green and blue down), the screen as is.
 #[test]
 fn calibrate_hinted_renders() {
     use crate::foxglove::calibrate_ui::{
@@ -2045,7 +2045,8 @@ fn calibrate_hinted_renders() {
     use crate::foxglove::shell::Page;
     let mut w = Wizard::new(hinted_strip(), None);
     w.fresh = false;
-    let sent = w.current.light;
+    let sent = w.ask.as_ref().and_then(|b| b.pair()).unwrap().0;
+    assert_eq!(w.ask.as_ref().unwrap().start(), w.current.light);
     let mut s = Samples::full();
     s.calibrate = Some((
         View {
@@ -2058,12 +2059,13 @@ fn calibrate_hinted_renders() {
     keep("ui-calibrate-hinted.png", &img);
     assert!(
         img.pixels().filter(|p| p.0[..3] == sent).count() > 2000,
-        "the sent swatch draws the hinted light {sent:?}"
+        "the sent swatch draws candidate A around the hinted light {sent:?}"
     );
 }
 
 /// The calibrator's "Adjust" switch on each side, side by side in one image: blue with the light
-/// down 30% and the screen up 5%, both kept.
+/// down 30% and the screen up 5%, both kept. On the light side the device's A and B sit beside
+/// the screen's swatch; on the screen side the screen draws both.
 #[test]
 fn calibrate_two_way_renders() {
     use crate::foxglove::calibrate_ui::{tests::sample, Step};
@@ -2073,7 +2075,7 @@ fn calibrate_two_way_renders() {
     for side in [Side::Light, Side::Screen] {
         let mut s = Samples::full();
         let (v, mut w) = sample(Step::Blue, false);
-        w.side = side;
+        w.set_side(side);
         s.calibrate = Some((v, w));
         shots.push(shell_preview_with(Page::Lights, &s, 1180.0));
     }
@@ -2088,9 +2090,53 @@ fn calibrate_two_way_renders() {
     image::imageops::overlay(&mut both, a, 0, 0);
     image::imageops::overlay(&mut both, b, i64::from(a.width() + gap), 0);
     keep("ui-calibrate-2way.png", &both);
-    // The screen's swatch draws blue up 5% on both: the switch only picks what the sliders move.
-    let blue = |img: &image::RgbaImage| img.pixels().filter(|p| p.0[..3] == [0, 0, 161]).count();
-    assert!(blue(a) > 5000 && blue(b) > 5000);
+    // The light side: the screen's swatch draws blue up 5%. The screen side: both candidates
+    // around it, large.
+    let n = |img: &image::RgbaImage, c: [u8; 3]| img.pixels().filter(|p| p.0[..3] == c).count();
+    assert!(n(a, [0, 0, 161]) > 5000);
+    let (_, mut w) = sample(Step::Blue, false);
+    w.set_side(Side::Screen);
+    let (ca, cb) = w.ask.as_ref().and_then(|b| b.pair()).unwrap();
+    assert!(n(b, ca) > 5000 && n(b, cb) > 5000, "{ca:?} {cb:?}");
+}
+
+/// The A/B choices (#474) on Grey against the screen: a step part-way (two choices made, the
+/// device showing B), then the finished state once the choices settle.
+#[test]
+fn calibrate_ab_renders() {
+    use crate::foxglove::calibrate_ui::tests::{answer_toward, sample};
+    use crate::foxglove::calibrate_ui::Step;
+    use crate::foxglove::shell::Page;
+    use foxglove_devices::bracket::{Answer, Pick};
+    use foxglove_devices::oklab;
+    let n = |img: &image::RgbaImage, c: [u8; 3]| img.pixels().filter(|p| p.0[..3] == c).count();
+    let (v, mut w) = sample(Step::Grey, false);
+    // Grey starts from the White match's warm light: the user picks the cooler A, then the
+    // pinker B.
+    w.choose(Answer::Closer(Pick::A));
+    w.choose(Answer::Closer(Pick::B));
+    w.showing = Pick::B;
+    let (a, b) = w.ask.as_ref().and_then(|b| b.pair()).unwrap();
+    let mut s = Samples::full();
+    s.calibrate = Some((v.clone(), w.clone()));
+    let step = shell_preview_with(Page::Lights, &s, 1180.0);
+    keep("ui-calibrate-ab-step.png", &step);
+    assert!(
+        n(&step, a) > 1500 && n(&step, b) > 1500,
+        "A and B both drawn"
+    );
+    let grey = oklab::from_srgb(Step::Grey.color());
+    answer_toward(&mut w, oklab::to_srgb([grey[0], grey[1], grey[2] + 0.04]));
+    assert!(w.ask.is_none() && w.finished.is_some());
+    let light = w.current.light;
+    s.calibrate = Some((v, w));
+    let done = shell_preview_with(Page::Lights, &s, 1180.0);
+    keep("ui-calibrate-ab-done.png", &done);
+    assert!(
+        n(&done, light) > 3000,
+        "the sent swatch draws the match {light:?}"
+    );
+    assert_ne!(step, done);
 }
 
 /// What each device can do, as chips (the keyboard from HELLO, the case and cooler from the
