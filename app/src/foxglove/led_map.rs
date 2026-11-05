@@ -85,7 +85,6 @@ impl BoardLeds {
     /// What "Check zones..." saves (#611): `lit`, what each lamp of `parts` lit in SET_FRAME
     /// order, on a board of `halves`. `None` unless there is one answer per lamp. Its Save
     /// hands this to [`save`].
-    #[cfg_attr(not(test), allow(dead_code))] // the Check zones... page (#611) isn't built yet
     pub fn zones(halves: u8, parts: &LampParts, lit: Vec<Lamp>) -> Option<BoardLeds> {
         if lit.len() != parts.total() {
             return None;
@@ -189,6 +188,19 @@ pub fn save(board: &str, leds: BoardLeds) -> std::io::Result<()> {
     Ok(())
 }
 
+/// "Forget my check" (#611): drops a board's saved map, so its profile's map (or the
+/// keyboard's own report) is the source again. Nothing to forget is no error.
+pub fn forget(board: &str) -> std::io::Result<()> {
+    let mut all = load();
+    if all.boards.remove(board).is_none() {
+        return Ok(());
+    }
+    super::store::save(SECTION, &all)?;
+    super::boards::led_map_changed();
+    super::scene_run::devices_changed();
+    Ok(())
+}
+
 /// The connected keyboard's profile has a map from "Find my LEDs".
 static PLACED: AtomicBool = AtomicBool::new(false);
 
@@ -256,8 +268,16 @@ pub struct Wizard {
     pub halves: u8,
     /// The board's LEDs by part, in frame order (#561).
     pub parts: LampParts,
-    /// One answer per LED so far, in order: where it was seen, or `None` ("Can't see it").
+    /// One answer per lamp so far, in order: where it was seen (the centre of the keys it lit,
+    /// or a point between keys), or `None` ("Nothing lit").
     pub answers: Vec<Option<[f32; 2]>>,
+    /// The keys each answered lamp lit (#611, Check zones), in step with `answers`: empty for
+    /// a lamp placed between keys or that lit nothing. Keys are indexes on its part's drawing.
+    pub keys: Vec<Vec<u8>>,
+    /// The keys picked for the lamp lit now, until Next.
+    pub picked: Vec<u8>,
+    /// A point picked between keys for the lamp lit now (underglow), until Next.
+    pub point: Option<[f32; 2]>,
     /// A problem to show (a failed save).
     pub note: Option<String>,
     /// Why it opened, when it's the dot test's fallback (none of the corrections fit).
@@ -290,8 +310,64 @@ impl Wizard {
             halves,
             parts,
             answers: Vec::new(),
+            keys: Vec::new(),
+            picked: Vec::new(),
+            point: None,
             note: None,
             intro: None,
+        }
+    }
+
+    /// How many lamps part `p` has.
+    pub fn part_total(&self, p: usize) -> usize {
+        self.parts.counts().nth(p).unwrap_or(0)
+    }
+
+    /// A click on key `key` of the lit lamp's part: picked, or unpicked when it already was
+    /// (Check zones' multi-select). A point picked between keys goes.
+    pub fn toggle(&mut self, key: u8) {
+        if self.step().is_none() {
+            return;
+        }
+        self.point = None;
+        match self.picked.iter().position(|&k| k == key) {
+            Some(i) => {
+                self.picked.remove(i);
+            }
+            None => self.picked.push(key),
+        }
+    }
+
+    /// A click between keys (underglow): the lamp is there, under no key. Picked keys go.
+    pub fn pick_point(&mut self, at: [f32; 2]) {
+        if self.step().is_some() && at.iter().all(|v| v.is_finite()) {
+            self.picked.clear();
+            self.point = Some(at);
+        }
+    }
+
+    /// Something is picked for the lamp lit now: Next can take it.
+    pub fn has_pick(&self) -> bool {
+        !self.picked.is_empty() || self.point.is_some()
+    }
+
+    /// Next: the picked keys (or the point) are the lit lamp's answer. Each lamp that lit keys
+    /// sits at their centre.
+    pub fn next(&mut self) {
+        let Some(s) = self.step() else { return };
+        if !self.picked.is_empty() {
+            let mut keys = std::mem::take(&mut self.picked);
+            keys.sort_unstable();
+            keys.dedup();
+            let drawn = self.drawing.keys(s.half == 1);
+            let at = Lamp(keys.clone()).center(&drawn).map(|c| {
+                [(c.x * 1000.0).round() / 1000.0, (c.y * 1000.0).round() / 1000.0]
+            });
+            self.answers.push(at);
+            self.keys.push(if at.is_some() { keys } else { Vec::new() });
+        } else if let Some(at) = self.point.take() {
+            self.answers.push(Some(at));
+            self.keys.push(Vec::new());
         }
     }
 
@@ -315,19 +391,30 @@ impl Wizard {
     pub fn place(&mut self, at: [f32; 2]) {
         if self.step().is_some() && at.iter().all(|v| v.is_finite()) {
             self.answers.push(Some(at));
+            self.keys.push(Vec::new());
+            self.clear_pick();
         }
     }
 
-    /// "Can't see it".
+    /// "Nothing lit" (a lamp that lights nothing, or hidden).
     pub fn skip(&mut self) {
         if self.step().is_some() {
             self.answers.push(None);
+            self.keys.push(Vec::new());
+            self.clear_pick();
         }
     }
 
-    /// Back: the LED before is lit again and its answer goes.
+    /// Back: the lamp before is lit again and its answer goes.
     pub fn back(&mut self) {
         self.answers.pop();
+        self.keys.truncate(self.answers.len());
+        self.clear_pick();
+    }
+
+    fn clear_pick(&mut self) {
+        self.picked.clear();
+        self.point = None;
     }
 
     pub fn done(&self) -> bool {
@@ -349,9 +436,10 @@ impl Wizard {
         frame
     }
 
-    /// The map to save: every LED seen so far.
+    /// The map to save: every lamp seen so far, and (once any lamp lit keys) what each lamp
+    /// lit in the profile's `led_keys` shape (#611), so the check reads back as zones.
     pub fn result(&self) -> BoardLeds {
-        BoardLeds {
+        let mut out = BoardLeds {
             lamps: u16::try_from(self.total()).unwrap_or(u16::MAX),
             halves: self.halves,
             parts: self.parts.counts().map(|n| n as u16).collect(),
@@ -369,7 +457,16 @@ impl Wizard {
                 })
                 .collect(),
             led_keys: Vec::new(),
+        };
+        if self.keys.iter().any(|k| !k.is_empty()) {
+            let lit = (0..self.total())
+                .map(|i| Lamp(self.keys.get(i).cloned().unwrap_or_default()))
+                .collect();
+            if let Some(z) = BoardLeds::zones(self.halves, &self.parts, lit) {
+                out.led_keys = z.led_keys;
+            }
         }
+        out
     }
 }
 

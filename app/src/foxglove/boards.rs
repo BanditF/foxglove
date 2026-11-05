@@ -809,10 +809,22 @@ fn plain_or_profile(board: Option<&Board>, keys: usize) -> Drawing {
     }
 }
 
-/// "Find my LEDs" saved a map: the connected keyboard's profile takes it at once.
+/// A map was saved (Check zones, the dot test) or forgotten ("Forget my check", #611): the
+/// connected keyboard's profile is read again and takes the store's map at once, so a forgotten
+/// check gives the profile's own map back.
 pub fn led_map_changed() {
+    let id = current().map(|b| b.id);
+    let fresh = id.and_then(|id| {
+        load(user_dir().as_deref())
+            .into_iter()
+            .rev()
+            .find(|b| b.id == id)
+    });
     let mut current = CURRENT.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(b) = current.as_mut() {
+        if let Some(fresh) = fresh.filter(|f| f.id == b.id) {
+            *b = fresh;
+        }
         super::led_map::apply(b);
     }
     super::led_map::note_current(current.as_ref());

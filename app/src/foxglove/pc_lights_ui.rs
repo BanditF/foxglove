@@ -21,7 +21,7 @@ use std::sync::Mutex;
 
 use egui::{Color32, RichText, Sense, Stroke};
 use foxglove_devices::pc_lighting::{
-    self as pc_lighting, openrgb, zones as zone_words, CatalogDevice, Control, LightCaps, Protocol,
+    self as pc_lighting, openrgb, CatalogDevice, Control, Protocol,
 };
 
 use super::pc_lights::{self, Msg, Row, Snapshot};
@@ -417,23 +417,30 @@ pub fn lamp_line(access: pc_lighting::LampAccess, identity: bool) -> Option<&'st
 }
 
 /// A device's real lighting resolution (#611): one summary line ("5 lighting zones",
-/// "Per-LED lighting, 24 lamps"), where it came from on hover, and its screens' chips. It
-/// replaces the light, brightness and onboard-effect chips (docs/lighting-zones.md section 6).
-fn light_line(ui: &mut egui::Ui, caps: &LightCaps) {
+/// "Per-LED lighting, 24 lamps") with what it means on hover, **Show zones** for a device with
+/// zones (docs/lighting-zones.md section 2; none for one zone), and its screens' chips. It
+/// replaces the light, brightness and onboard-effect chips (section 6).
+fn light_line(ui: &mut egui::Ui, row: &Row) {
+    let caps = &row.caps;
     let p = theme::palette(ui);
     let mut others = caps.screen_chips();
+    let mut open = false;
     match caps.summary(false) {
         Some(summary) => {
-            let mut tip = vec![super::light_zones::TIP.to_string()];
-            if let Some(z) = &caps.zones {
-                tip.push(zone_words::source_line(z, false));
-                tip.extend(zone_words::dead_line(z));
-            }
-            ui.add(egui::Label::new(RichText::new(summary).color(p.text)).wrap())
-                .on_hover_text(tip.join("\n"));
+            ui.horizontal_wrapped(|ui| {
+                ui.add(egui::Label::new(RichText::new(summary).color(p.text)).wrap())
+                    .on_hover_text(super::light_zones::TIP);
+                if caps.zones.is_some() {
+                    open = super::zones_ui::toggle(ui, &row.key, caps.kind(false));
+                }
+            });
         }
         None if others.is_empty() => others.push("No lights Foxglove knows of".into()),
         None => {}
+    }
+    if open {
+        let names: Vec<String> = row.zones.iter().map(|(n, _)| n.clone()).collect();
+        super::zones_ui::device(ui, caps, &names);
     }
     if !others.is_empty() {
         chips(ui, &others);
@@ -484,7 +491,7 @@ fn device(ui: &mut egui::Ui, row: &Row, busy: bool, draft: &mut Draft, out: &mut
             }
         },
     );
-    light_line(ui, &row.caps);
+    light_line(ui, row);
     match row.control {
         Control::Driver(_) | Control::OpenRgb if row.caps.takes_color() => {
             zones(ui, row, busy, draft, out)
@@ -767,6 +774,19 @@ pub mod tests {
                     .map(String::from)
                     .to_vec(),
                 brightness: true,
+                // As the catalog gives it (#611): five areas.
+                zones: Some(pc_lighting::Zones {
+                    list: names
+                        .iter()
+                        .map(|n| pc_lighting::Zone {
+                            area: Some(n.to_string()),
+                            ..Default::default()
+                        })
+                        .collect(),
+                    dead: vec![0],
+                    source: pc_lighting::ZoneSource::Catalog,
+                    reported: None,
+                }),
                 ..Default::default()
             },
             entry: None,
@@ -1182,6 +1202,48 @@ pub mod tests {
         let text = shown(&v);
         assert!(text.contains("reading its lamps"), "{text}");
         assert_eq!(text.matches("Match keyboard").count(), 1, "the case only");
+    }
+
+    /// #611's hide rules on Other devices, one snapshot per kind: a zone device (areas) gets
+    /// Show zones and its zones as numbered tiles with the zone-looks line; a per-LED device
+    /// tiles without numbers and no zone-looks line; one colour no link and no pickers. No
+    /// device offers Check zones (that's the keyboard's probe).
+    #[test]
+    fn device_zone_drawings_follow_the_hide_rules_per_kind() {
+        use crate::foxglove::zones_ui::{CHECK, HIDE, PREVIEW_OPEN, SHOW};
+        use foxglove_devices::pc_lighting::zones::ZONE_LOOKS;
+        let v = sample();
+        let closed = shown(&v);
+        assert_eq!(closed.matches(SHOW).count(), 2, "the case and the mouse: {closed}");
+        assert!(!closed.contains("From Foxglove's device list"), "{closed}");
+        PREVIEW_OPEN.set(v.pc.devices.iter().map(|r| r.key.clone()).collect());
+        let open = shown(&v);
+        PREVIEW_OPEN.set(vec![]);
+        for want in [
+            HIDE,
+            "From Foxglove's device list",
+            "Reported by the device",
+            ZONE_LOOKS,
+        ] {
+            assert!(open.contains(want), "{want}: {open}");
+        }
+        assert_eq!(open.matches(ZONE_LOOKS).count(), 1, "the case only: {open}");
+        assert!(!open.contains(CHECK), "{open}");
+        // The case's tiles are numbered 1 to 5, in zone order.
+        assert!(open.contains("1\nDiamond display") && open.contains("5\nFront top fan"), "{open}");
+        // The mouse's lamps are tiles without numbers.
+        assert!(!open.contains("1\nLamp 1 · Logo"), "{open}");
+        // One colour: no link, no pickers.
+        let mut one = sample_fresh();
+        one.pc.devices[0].caps.color = Color::Single;
+        one.pc.devices[0].caps.zones = None;
+        PREVIEW_OPEN.set(vec![one.pc.devices[0].key.clone()]);
+        let text = shown(&one);
+        PREVIEW_OPEN.set(vec![]);
+        assert!(text.contains("1 zone (whole device)"), "{text}");
+        for not in [SHOW, HIDE, ZONE_LOOKS, "Front top fan"] {
+            assert!(!text.contains(not), "one colour: {not}: {text}");
+        }
     }
 
     #[test]

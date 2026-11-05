@@ -46,6 +46,9 @@ pub struct View {
     pub keyboard_lit: bool,
     /// It takes SET_FRAME frames (#529): each half (or LED) its own colour, not one for both.
     pub keyboard_frames: bool,
+    /// How the keyboard takes a scene, from its zones (#611): "6 zones per half", "a colour
+    /// per key"; `None` while they're unknown.
+    pub keyboard_zones: Option<String>,
     /// The room ids of the other devices a scene lights (boards with a driver, Dynamic
     /// Lighting devices).
     pub lit: Vec<String>,
@@ -254,6 +257,7 @@ fn show(ui: &mut egui::Ui) {
         room: st.room.clone(),
         keyboard_lit: st.keyboard_lit,
         keyboard_frames: st.keyboard_frames,
+        keyboard_zones: super::light_zones::scene_words(),
         lit: st.lit.clone(),
         look: st.chosen.look.clone(),
         saved: st.saved.presets.clone(),
@@ -863,14 +867,14 @@ fn room_card(ui: &mut egui::Ui, v: &View, draft: &mut Draft, out: &mut Vec<Inten
     if v.keyboard_frames && !v.leds_placed {
         let (label, hint, text, color) = if v.leds_shipped {
             (
-                "Check LED map…",
+                "Check zones…",
                 "A dot runs along the LEDs; say whether it follows the drawing: about 20 seconds",
                 "Scenes use the LED map that comes with this keyboard, not yet checked on yours.",
                 p.muted,
             )
         } else {
             (
-                "Find my LEDs…",
+                "Check zones…",
                 "Show Foxglove where each LED is, so scenes light every LED in its place",
                 if super::parts::Parts::current().is_split() {
                     "The keyboard lights a colour per half until Foxglove knows where its LEDs are."
@@ -916,7 +920,11 @@ fn legend_for(v: &View, parts: &super::parts::Parts) -> String {
             // A split's halves are "keyboard:left" and "keyboard:right"; one piece is "keyboard".
             let split = d.id.contains(':');
             let how = if d.lights.len() > 1 && v.keyboard_frames {
-                "a colour per LED".to_string()
+                // Its real resolution (#611): "6 zones per half", never a colour per LED it
+                // can't show.
+                v.keyboard_zones
+                    .clone()
+                    .unwrap_or_else(|| "a colour per LED".to_string())
             } else if !split {
                 "one colour".to_string()
             } else if !v.keyboard_frames {
@@ -1590,6 +1598,7 @@ pub(crate) mod tests {
             room: sample_room(),
             keyboard_lit: true,
             keyboard_frames: false,
+            keyboard_zones: Some("6 zones per half".into()),
             lit: vec![SAMPLE_CASE.into()],
             look: Look::default(),
             saved: vec![Preset {
@@ -1657,6 +1666,7 @@ pub(crate) mod tests {
             room: sample_room_empty(),
             keyboard_lit: false,
             keyboard_frames: false,
+            keyboard_zones: None,
             lit: vec![],
             look: Look {
                 kind: Kind::Drift,
@@ -1758,16 +1768,26 @@ pub(crate) mod tests {
         let none = legend(&sample_none());
         assert!(none.starts_with("Nothing to light yet"), "{none}");
         assert!(none.contains("Shown only: Keyboard (one colour"), "{none}");
-        // Firmware with SET_FRAME (#529): with the profile's shipped LED map, each LED its own
-        // colour.
+        // Firmware with SET_FRAME (#529): with the profile's shipped LED map, each zone its own
+        // colour, in the zones' words (#611), never a colour per LED it can't show.
         let frames = View {
             keyboard_frames: true,
             ..sample()
         };
         let text = legend(&frames);
         assert!(
-            text.starts_with("Lights: Eyelash Corne (a colour per LED), HP OMEN 45L"),
+            text.starts_with("Lights: Eyelash Corne (6 zones per half), HP OMEN 45L"),
             "{text}"
+        );
+        // Zones not known: the old words.
+        let unknown = View {
+            keyboard_zones: None,
+            ..frames
+        };
+        assert!(
+            legend(&unknown).starts_with("Lights: Eyelash Corne (a colour per LED)"),
+            "{}",
+            legend(&unknown)
         );
         // #563: a split whose parts aren't halves reads in its own words.
         let wedge = crate::foxglove::fixtures::wedge_parts();

@@ -260,17 +260,21 @@ at main 96e425b.
 
 ## 9. Hand-off to app-engineer (acceptance)
 
-- [ ] `LightCaps` (existing type) gains `zones: Vec<Zone { keys | area, centre, dead }>`. The summary
+- [x] `LightCaps` (existing type) gains `zones: Vec<Zone { keys | area, centre, dead }>`. The summary
   line comes from it alone. One UI snapshot test per kind: `Single`, `PerZone` with keys, `PerZone`
   with areas, `PerLed`, and unknown. Each asserts the hidden controls of section 3 are absent from
   the drawn text.
-- [ ] "by column / by row" is derived from the data, with a unit test (the Corne → column, the case →
+- [x] "by column / by row" is derived from the data, with a unit test (the Corne → column, the case →
   nothing).
-- [ ] The zone drawing is closed by default and opened by Show zones. For the Corne it shows the
+- [x] The zone drawing is closed by default and opened by Show zones. For the Corne it shows the
   zones from `led_keys` and the dead-lamp line.
-- [ ] One probe entry, **Check zones…**, with a multi-select "keys that lit" step. The saved TOML
+- [x] One probe entry, **Check zones…**, with a multi-select "keys that lit" step. The saved TOML
   round-trips (#611's criterion).
-- [ ] The source line and the conflict wording follow section 5, with no warning colour.
+- [x] The source line and the conflict wording follow section 5, with no warning colour.
+- Built (#611): the summary's kind (`zones::Kind`) drives the hide rules; the Keyboard card's
+  old LED-map entry and its state line are merged into the zone line and drawing; the Scenes
+  line says "6 zones per half". The zone list names zones by their data ("column 6 + 1 thumb
+  key"), not by keymap legends, which the app doesn't keep. Devices get no Check zones yet.
 - [ ] The section 6 merges: Colour from pills, one state line, one ↻, ··· menus, hex in the picker,
   Speed hidden for Solid.
 - [ ] The before/after snapshot (`ui-387-lights.png`) is updated, and UX signs off on it before merge.

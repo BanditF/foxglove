@@ -105,6 +105,12 @@ impl LightCaps {
         zones::summary(self.color, self.count, self.zones.as_ref(), keys)
     }
 
+    /// What its lights can be told, for the hide rules (#611, docs/lighting-zones.md section
+    /// 3). `keys` says the device is a keyboard.
+    pub fn kind(&self, keys: bool) -> zones::Kind {
+        zones::kind(self.color, self.count, self.zones.as_ref(), keys)
+    }
+
     /// The chips shown beside the summary line (#611, docs/lighting-zones.md section 6): only
     /// the screens. The light chip is the summary now; brightness and onboard effects show as
     /// their own controls.
