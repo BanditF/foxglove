@@ -544,6 +544,8 @@ fn control(
     let (room, cases, lamp_targets) = gather();
     eprintln!("Foxglove: scene {name} started; room: {}", room.summary());
     super::wallpaper_sync::scene_started(name, &effect, clock, room.clone());
+    // While Windows holds the keyboard, the lighting facts follow the look (#789).
+    super::keyboard_facts::scene_look(name, &effect);
     // The room as last placed, for the wallpapers when the look changes.
     let mut placed = room.clone();
     let outputs = Arc::new(Mutex::new(Outputs::new(effect, room, cases)));
@@ -661,6 +663,7 @@ fn control(
             super::lights_owner::retry("the scene's look changed");
             // The wallpapers draw the new look on the same clock (#493).
             super::wallpaper_sync::scene_started(&name, &effect, clock, placed.clone());
+            super::keyboard_facts::scene_look(&name, &effect);
             outputs
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -705,6 +708,7 @@ impl Drop for GiveBack {
         // Idempotent: nothing to end when the keyboard writer already gave it back.
         super::api::end_leases(|l| l.conn == SCENE_CONN);
         super::wallpaper_sync::scene_stopped();
+        super::keyboard_facts::scene_ended();
         // The art from before the scene, when it showed a wallpaper's.
         let art = ART.lock().unwrap_or_else(|e| e.into_inner()).take();
         if matches!(art, Some(Some(_))) {
